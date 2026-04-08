@@ -27,6 +27,7 @@ import type { SecretRedactor } from "../secrets/mod.ts";
 import type { MethodExecutionEvent } from "./method_events.ts";
 import { CalVer } from "./calver.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
+import type { DataQueryService } from "../data/data_query_service.ts";
 import {
   type DataId,
   type DataMetadata,
@@ -265,6 +266,11 @@ export interface MethodContext {
    * Optional secret redactor for stripping vault secrets from output.
    */
   redactor?: SecretRedactor;
+
+  /**
+   * Optional data query service for catalog-backed data access.
+   */
+  dataQueryService?: DataQueryService;
 
   /**
    * The execution driver type for this execution.

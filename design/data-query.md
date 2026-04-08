@@ -38,14 +38,22 @@ interface DataRecord {
   streaming: boolean;
   size: number;
   content: string;
+
+  // Provenance fields — promoted from tags/ownerDefinition.
+  // Empty string when data was not produced inside a workflow.
+  ownerRef: string;
+  workflowRunId: string;
+  workflowName: string;
+  jobName: string;
+  stepName: string;
+  source: string;
 }
 ```
 
-The new fields are populated by all existing `DataRecord` producers
-(`ModelResolver.dataToRecord()` and `DataAccessService.dataToRecord()`), so
-they are available everywhere `DataRecord` is used — not just in query results.
+All `DataRecord` fields are populated by a unified `DataRecordMapper`
+(`fromRow()` for catalog-backed queries, `fromData()` for version lookups).
 This is backward-compatible: existing code that reads `record.name` or
-`record.attributes` continues to work; the new fields are additive.
+`record.attributes` continues to work; the provenance fields are additive.
 
 For JSON resources (`contentType == "application/json"`), `attributes` contains
 the parsed content — matching the existing behavior of `data.latest()` and
@@ -78,6 +86,12 @@ filterable fields:
 | `streaming` | bool | Whether data is append-only |
 | `size` | int | Content size in bytes |
 | `content` | string | Raw text content (lazy-loaded, text types only) |
+| `ownerRef` | string | Model definition ID that owns this data |
+| `workflowRunId` | string | Workflow run ID (`""` outside workflows) |
+| `workflowName` | string | Workflow name (`""` outside workflows) |
+| `jobName` | string | Job name (`""` outside workflows) |
+| `stepName` | string | Step name (`""` outside workflows) |
+| `source` | string | Provenance source (e.g. `"step-output"`, `""`) |
 
 All fields except `attributes` and `content` are metadata stored in the
 catalog. `attributes` and `content` are loaded from disk on demand when the
@@ -86,21 +100,28 @@ JSON (for `application/json` only). `content` contains the raw text string
 (for `text/*`, `application/json`, `application/yaml`). For binary content
 types, `content` is `""`.
 
-## Workflow Run Scoping
+## Provenance-Based Filtering
 
-When `context.readModelData()` or `context.queryData()` is called inside a
-workflow run, results are automatically scoped to data produced during the
-current run. This prevents stale data from previous runs leaking into workflow
-pipeline steps — the same scoping behavior applied to `data.findBySpec()` in
-CEL expressions.
+Data produced inside a workflow carries first-class provenance fields
+(`workflowRunId`, `workflowName`, `stepName`, etc.). These fields are
+queryable just like any other `DataRecord` field — no hidden scoping is
+applied by the framework.
 
-- **`context.readModelData(modelName, specName)`** — filters by
-  `ownerDefinition.workflowRunId` matching the current run.
-- **`context.queryData(predicate)`** — injects
-  `tags.workflowRunId == "<currentRunId>"` into the predicate.
+To scope results to a specific workflow run, write an explicit predicate:
 
-Outside a workflow context (standalone CLI execution), both functions return
-all data globally.
+```cel
+modelName == "dedup" && specName == "episode" && workflowRunId == "run-uuid"
+```
+
+All data access functions (`data.findBySpec()`, `data.findByTag()`,
+`data.latest()`, `data.query()`, `context.readModelData()`,
+`context.queryData()`) return unscoped results by default. The predicate
+string is the contract — if it doesn't say it, it isn't happening.
+
+**Vault resolution:** JSON attributes containing `vault.get(...)` references
+are resolved automatically in async data access paths (extension methods,
+`data.query()` in CEL). Resolution failures leave the reference unresolved
+rather than failing the record.
 
 ## Predicate Syntax
 
@@ -158,19 +179,31 @@ CREATE TABLE catalog (
   size            INTEGER NOT NULL DEFAULT 0,
   created_at      TEXT NOT NULL,
   tags            TEXT NOT NULL DEFAULT '{}',
+  owner_ref       TEXT NOT NULL DEFAULT '',
+  workflow_run_id TEXT NOT NULL DEFAULT '',
+  workflow_name   TEXT NOT NULL DEFAULT '',
+  job_name        TEXT NOT NULL DEFAULT '',
+  step_name       TEXT NOT NULL DEFAULT '',
+  source          TEXT NOT NULL DEFAULT '',
   PRIMARY KEY (type_normalized, model_id, data_name)
 );
 
-CREATE INDEX idx_model_name ON catalog(model_name);
-CREATE INDEX idx_spec_name  ON catalog(spec_name);
-CREATE INDEX idx_data_type  ON catalog(data_type);
-CREATE INDEX idx_created_at ON catalog(created_at);
+CREATE INDEX idx_model_name      ON catalog(model_name);
+CREATE INDEX idx_spec_name       ON catalog(spec_name);
+CREATE INDEX idx_data_type       ON catalog(data_type);
+CREATE INDEX idx_created_at      ON catalog(created_at);
+CREATE INDEX idx_workflow_run_id ON catalog(workflow_run_id);
+CREATE INDEX idx_step_name       ON catalog(step_name);
 
 CREATE TABLE catalog_meta (
   key   TEXT PRIMARY KEY,
   value TEXT NOT NULL
 );
 ```
+
+The catalog includes a `schema_version` key in `catalog_meta`. When the
+version changes, the catalog table is dropped and rebuilt via self-healing
+backfill on next query.
 
 Content is not stored in the catalog. It remains on disk in the existing
 versioned file layout.

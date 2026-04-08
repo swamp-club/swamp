@@ -39,6 +39,8 @@ import { FileSystemUnifiedDataRepository } from "../src/infrastructure/persisten
 import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
 import { ModelResolver } from "../src/domain/expressions/model_resolver.ts";
 import { CelEvaluator } from "../src/infrastructure/cel/cel_evaluator.ts";
+import { CatalogStore } from "../src/infrastructure/persistence/catalog_store.ts";
+import { DataQueryService } from "../src/domain/data/data_query_service.ts";
 import { composeDataName } from "../src/domain/data/mod.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
@@ -159,7 +161,7 @@ Deno.test("Vary: data.latest() resolves composite name from persisted data", asy
         contentType: "application/json",
         lifetime: "infinite",
         garbageCollection: 10,
-        tags: { type: "resource", specName: "result" },
+        tags: { type: "resource", specName: "result", modelName: "scanner" },
         ownerDefinition: owner,
       });
 
@@ -172,25 +174,35 @@ Deno.test("Vary: data.latest() resolves composite name from persisted data", asy
     }
 
     // Build context and verify data.latest() with vary works
-    const modelResolver = new ModelResolver(definitionRepo, {
-      repoDir,
-      dataRepo,
-    });
-    const context = await modelResolver.buildContext();
-    assertExists(context.data);
+    const catalog = new CatalogStore(
+      join(repoDir, ".swamp", "data", "_catalog.db"),
+    );
+    const dqs = new DataQueryService(catalog, dataRepo);
+    await dqs.query('name == ""');
+    try {
+      const modelResolver = new ModelResolver(definitionRepo, {
+        repoDir,
+        dataRepo,
+        dataQueryService: dqs,
+      });
+      const context = await modelResolver.buildContext();
+      assertExists(context.data);
 
-    // Each environment has its own data
-    const devData = context.data.latest("scanner", "result-dev");
-    assertExists(devData);
-    assertEquals(devData.attributes.env, "dev");
+      // Each environment has its own data
+      const devData = await context.data.latest("scanner", "result-dev");
+      assertExists(devData);
+      assertEquals(devData.attributes.env, "dev");
 
-    const prodData = context.data.latest("scanner", "result-prod");
-    assertExists(prodData);
-    assertEquals(prodData.attributes.env, "prod");
+      const prodData = await context.data.latest("scanner", "result-prod");
+      assertExists(prodData);
+      assertEquals(prodData.attributes.env, "prod");
 
-    // Non-varied base name has no data
-    const baseData = context.data.latest("scanner", "result");
-    assertEquals(baseData, null);
+      // Non-varied base name has no data
+      const baseData = await context.data.latest("scanner", "result");
+      assertEquals(baseData, null);
+    } finally {
+      catalog.close();
+    }
   });
 });
 
@@ -214,7 +226,7 @@ Deno.test("Vary: CEL data.latest() with vary array resolves composite name", asy
       contentType: "application/json",
       lifetime: "infinite",
       garbageCollection: 10,
-      tags: { type: "resource", specName: "result" },
+      tags: { type: "resource", specName: "result", modelName: "scanner" },
       ownerDefinition: owner,
     });
     await dataRepo.save(
@@ -227,19 +239,29 @@ Deno.test("Vary: CEL data.latest() with vary array resolves composite name", asy
     );
 
     // Build context
-    const modelResolver = new ModelResolver(definitionRepo, {
-      repoDir,
-      dataRepo,
-    });
-    const context = await modelResolver.buildContext();
-
-    // Evaluate CEL expression with vary array
-    const celEvaluator = new CelEvaluator();
-    const result = celEvaluator.evaluate(
-      'data.latest("scanner", "result", ["prod"]).attributes.count',
-      context,
+    const catalog = new CatalogStore(
+      join(repoDir, ".swamp", "data", "_catalog.db"),
     );
-    assertEquals(result, 42);
+    const dqs = new DataQueryService(catalog, dataRepo);
+    await dqs.query('name == ""');
+    try {
+      const modelResolver = new ModelResolver(definitionRepo, {
+        repoDir,
+        dataRepo,
+        dataQueryService: dqs,
+      });
+      const context = await modelResolver.buildContext();
+
+      // Evaluate CEL expression with vary array
+      const celEvaluator = new CelEvaluator();
+      const result = await celEvaluator.evaluateAsync(
+        'data.latest("scanner", "result", ["prod"]).attributes.count',
+        context,
+      );
+      assertEquals(result, 42);
+    } finally {
+      catalog.close();
+    }
   });
 });
 
@@ -263,7 +285,7 @@ Deno.test("Vary: each varied data name has independent versioning", async () => 
       contentType: "application/json",
       lifetime: "infinite",
       garbageCollection: 10,
-      tags: { type: "resource" },
+      tags: { type: "resource", modelName: "scanner" },
       ownerDefinition: owner,
     });
 
@@ -281,7 +303,7 @@ Deno.test("Vary: each varied data name has independent versioning", async () => 
       contentType: "application/json",
       lifetime: "infinite",
       garbageCollection: 10,
-      tags: { type: "resource" },
+      tags: { type: "resource", modelName: "scanner" },
       ownerDefinition: owner,
     });
     await dataRepo.save(
@@ -292,30 +314,40 @@ Deno.test("Vary: each varied data name has independent versioning", async () => 
     );
 
     // Build context
-    const modelResolver = new ModelResolver(definitionRepo, {
-      repoDir,
-      dataRepo,
-    });
-    const context = await modelResolver.buildContext();
-    assertExists(context.data);
+    const catalog = new CatalogStore(
+      join(repoDir, ".swamp", "data", "_catalog.db"),
+    );
+    const dqs = new DataQueryService(catalog, dataRepo);
+    await dqs.query('name == ""');
+    try {
+      const modelResolver = new ModelResolver(definitionRepo, {
+        repoDir,
+        dataRepo,
+        dataQueryService: dqs,
+      });
+      const context = await modelResolver.buildContext();
+      assertExists(context.data);
 
-    // Dev has 3 versions
-    const devVersions = context.data.listVersions("scanner", "result-dev");
-    assertEquals(devVersions.length, 3);
+      // Dev has 3 versions
+      const devVersions = context.data.listVersions("scanner", "result-dev");
+      assertEquals(devVersions.length, 3);
 
-    const devLatest = context.data.latest("scanner", "result-dev");
-    assertExists(devLatest);
-    assertEquals(devLatest.version, 3);
-    assertEquals(devLatest.attributes.iteration, 3);
+      const devLatest = await context.data.latest("scanner", "result-dev");
+      assertExists(devLatest);
+      assertEquals(devLatest.version, 3);
+      assertEquals(devLatest.attributes.iteration, 3);
 
-    // Prod has 1 version
-    const prodVersions = context.data.listVersions("scanner", "result-prod");
-    assertEquals(prodVersions.length, 1);
+      // Prod has 1 version
+      const prodVersions = context.data.listVersions("scanner", "result-prod");
+      assertEquals(prodVersions.length, 1);
 
-    const prodLatest = context.data.latest("scanner", "result-prod");
-    assertExists(prodLatest);
-    assertEquals(prodLatest.version, 1);
-    assertEquals(prodLatest.attributes.iteration, 1);
+      const prodLatest = await context.data.latest("scanner", "result-prod");
+      assertExists(prodLatest);
+      assertEquals(prodLatest.version, 1);
+      assertEquals(prodLatest.attributes.iteration, 1);
+    } finally {
+      catalog.close();
+    }
   });
 });
 
@@ -365,14 +397,14 @@ Deno.test("Vary: CEL data.version() with vary resolves specific version", async 
     const celEvaluator = new CelEvaluator();
 
     // Access version 1 with vary
-    const v1 = celEvaluator.evaluate(
+    const v1 = await celEvaluator.evaluateAsync(
       'data.version("scanner", "result", ["staging"], 1).attributes.value',
       context,
     );
     assertEquals(v1, "first");
 
     // Access version 2 with vary
-    const v2 = celEvaluator.evaluate(
+    const v2 = await celEvaluator.evaluateAsync(
       'data.version("scanner", "result", ["staging"], 2).attributes.value',
       context,
     );

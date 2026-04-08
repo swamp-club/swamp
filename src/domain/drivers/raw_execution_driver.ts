@@ -134,19 +134,13 @@ export class RawExecutionDriver implements ExecutionDriver {
       this.context.dataRepository,
       this.context.vaultService,
       this.context.redactor,
+      this.context.dataQueryService,
     );
-    const workflowRunId = this.context.tagOverrides?.["workflowRunId"];
     const readModelData = (modelName: string, specName?: string) =>
-      dataAccessService.readModelData(modelName, specName, workflowRunId);
+      dataAccessService.readModelData(modelName, specName);
 
-    // Scope queryData to workflow run when executing inside a workflow
-    const queryData = this.context.queryData && workflowRunId
-      ? (predicate: string, select?: string) => {
-        const scopedPredicate =
-          `(${predicate}) && tags.workflowRunId == "${workflowRunId}"`;
-        return this.context.queryData!(scopedPredicate, select);
-      }
-      : this.context.queryData;
+    // queryData passes through directly — no hidden scoping
+    const queryData = this.context.queryData;
 
     this.contextWithWriters = {
       ...this.context,

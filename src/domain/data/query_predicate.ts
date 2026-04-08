@@ -37,6 +37,12 @@ export const QUERY_FIELDS = new Set([
   "streaming",
   "size",
   "content",
+  "ownerRef",
+  "workflowRunId",
+  "workflowName",
+  "jobName",
+  "stepName",
+  "source",
 ]);
 
 /** CEL built-in identifiers that may appear as root `id` nodes. */

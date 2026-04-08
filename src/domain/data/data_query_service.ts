@@ -34,6 +34,9 @@ import {
   validateFieldReferences,
 } from "./query_predicate.ts";
 import { isTextContentType } from "./content_type.ts";
+import type { VaultService } from "../vaults/vault_service.ts";
+import type { SecretRedactor } from "../secrets/mod.ts";
+import { resolveVaultRefsInData } from "../models/data_writer.ts";
 
 const logger = getLogger(["swamp", "domain", "data", "query"]);
 
@@ -41,6 +44,8 @@ export interface DataQueryOptions {
   limit?: number;
   /** CEL projection expression. When set, results are projected and returned as unknown[]. */
   select?: string;
+  /** Force-load JSON attributes even when the predicate doesn't reference them. */
+  loadAttributes?: boolean;
 }
 
 /**
@@ -52,6 +57,8 @@ export interface DataQueryOptions {
  */
 export class DataQueryService {
   private readonly queryEnv: Environment;
+  private vaultService?: VaultService;
+  private redactor?: SecretRedactor;
 
   constructor(
     private readonly catalogStore: CatalogStore,
@@ -63,9 +70,20 @@ export class DataQueryService {
     });
   }
 
+  /** Configures vault resolution for query results. */
+  setVaultService(
+    vaultService: VaultService,
+    redactor?: SecretRedactor,
+  ): void {
+    this.vaultService = vaultService;
+    this.redactor = redactor;
+  }
+
   /**
-   * Queries data artifacts matching a CEL predicate (async version).
+   * Queries data artifacts matching a CEL predicate.
    * Triggers backfill if the catalog is not yet populated.
+   * Vault references in JSON attributes are resolved when a VaultService
+   * is configured. Individual resolution failures leave refs unresolved.
    */
   async query(
     predicate: string,
@@ -74,13 +92,38 @@ export class DataQueryService {
     if (!this.catalogStore.isPopulated()) {
       await this.backfillAsync();
     }
-    return this.executeQuery(predicate, options);
+    const results = this.executeQuery(predicate, options);
+
+    // Resolve vault references in result attributes
+    if (this.vaultService && Array.isArray(results)) {
+      for (const item of results) {
+        if (
+          typeof item === "object" && item !== null && "attributes" in item
+        ) {
+          const record = item as DataRecord;
+          if (Object.keys(record.attributes).length > 0) {
+            try {
+              await resolveVaultRefsInData(
+                record.attributes,
+                this.vaultService,
+                this.redactor,
+              );
+            } catch {
+              // Leave unresolved — vault unavailable or key missing
+            }
+          }
+        }
+      }
+    }
+
+    return results;
   }
 
   /**
    * Queries data artifacts matching a CEL predicate (sync version).
    * Used by CEL expression evaluation which must be synchronous.
    * Triggers sync backfill if the catalog is not yet populated.
+   * NOTE: Vault resolution does NOT happen in the sync path.
    */
   querySync(
     predicate: string,
@@ -115,7 +158,8 @@ export class DataQueryService {
     }
 
     // Detect attributes and content usage — union filter and select expression
-    let needsAttributes = referencesAttributes(filterAst);
+    let needsAttributes = options?.loadAttributes ??
+      referencesAttributes(filterAst);
     let needsContent = referencesContent(filterAst);
     if (options?.select) {
       const selectAst = (selectParsed as unknown as { ast: ASTNode }).ast;
@@ -217,6 +261,12 @@ export class DataQueryService {
       streaming: row.streaming === 1,
       size: row.size,
       content: textContent,
+      ownerRef: row.owner_ref,
+      workflowRunId: row.workflow_run_id,
+      workflowName: row.workflow_name,
+      jobName: row.job_name,
+      stepName: row.step_name,
+      source: row.source,
     };
   }
 
@@ -240,6 +290,12 @@ export class DataQueryService {
         size: data.size ?? 0,
         created_at: data.createdAt.toISOString(),
         tags: JSON.stringify(data.tags),
+        owner_ref: data.ownerDefinition.ownerRef,
+        workflow_run_id: data.ownerDefinition.workflowRunId ?? "",
+        workflow_name: data.ownerDefinition.workflowName ?? "",
+        job_name: data.ownerDefinition.jobName ?? "",
+        step_name: data.ownerDefinition.stepName ?? "",
+        source: data.ownerDefinition.source ?? "",
       });
     }
     this.catalogStore.markPopulated();
@@ -265,6 +321,12 @@ export class DataQueryService {
         size: data.size ?? 0,
         created_at: data.createdAt.toISOString(),
         tags: JSON.stringify(data.tags),
+        owner_ref: data.ownerDefinition.ownerRef,
+        workflow_run_id: data.ownerDefinition.workflowRunId ?? "",
+        workflow_name: data.ownerDefinition.workflowName ?? "",
+        job_name: data.ownerDefinition.jobName ?? "",
+        step_name: data.ownerDefinition.stepName ?? "",
+        source: data.ownerDefinition.source ?? "",
       });
     }
     this.catalogStore.markPopulated();

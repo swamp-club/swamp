@@ -86,6 +86,12 @@ const FIELD_TO_COLUMN: Record<string, { column: string; numeric: boolean }> = {
   lifetime: { column: "lifetime", numeric: false },
   ownerType: { column: "owner_type", numeric: false },
   size: { column: "size", numeric: true },
+  ownerRef: { column: "owner_ref", numeric: false },
+  workflowRunId: { column: "workflow_run_id", numeric: false },
+  workflowName: { column: "workflow_name", numeric: false },
+  jobName: { column: "job_name", numeric: false },
+  stepName: { column: "step_name", numeric: false },
+  source: { column: "source", numeric: false },
 };
 
 /** Field type hints for display in the autocomplete dropdown. */
@@ -106,6 +112,12 @@ const FIELD_TYPES: Record<string, string> = {
   streaming: "bool",
   size: "int",
   content: "string",
+  ownerRef: "string",
+  workflowRunId: "string",
+  workflowName: "string",
+  jobName: "string",
+  stepName: "string",
+  source: "string",
 };
 
 /**

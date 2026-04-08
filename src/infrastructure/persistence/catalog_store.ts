@@ -41,6 +41,12 @@ export interface CatalogRow {
   size: number;
   created_at: string;
   tags: string;
+  owner_ref: string;
+  workflow_run_id: string;
+  workflow_name: string;
+  job_name: string;
+  step_name: string;
+  source: string;
 }
 
 /**
@@ -55,6 +61,13 @@ export interface CatalogRow {
  */
 export const ITERATE_PAGE_SIZE = 1000;
 
+/**
+ * Schema version. Bump this when the catalog table structure changes.
+ * On startup, if the stored version differs, the catalog is dropped and
+ * rebuilt via self-healing backfill.
+ */
+export const CATALOG_SCHEMA_VERSION = "2";
+
 export class CatalogStore {
   private readonly db: DatabaseSync;
 
@@ -64,6 +77,7 @@ export class CatalogStore {
     this.db.exec("PRAGMA busy_timeout=5000");
     this.db.exec("PRAGMA journal_mode=WAL");
     this.createSchema();
+    this.migrateIfNeeded();
   }
 
   private createSchema(): void {
@@ -84,19 +98,49 @@ export class CatalogStore {
         size            INTEGER NOT NULL DEFAULT 0,
         created_at      TEXT NOT NULL,
         tags            TEXT NOT NULL DEFAULT '{}',
+        owner_ref       TEXT NOT NULL DEFAULT '',
+        workflow_run_id TEXT NOT NULL DEFAULT '',
+        workflow_name   TEXT NOT NULL DEFAULT '',
+        job_name        TEXT NOT NULL DEFAULT '',
+        step_name       TEXT NOT NULL DEFAULT '',
+        source          TEXT NOT NULL DEFAULT '',
         PRIMARY KEY (type_normalized, model_id, data_name)
       );
 
-      CREATE INDEX IF NOT EXISTS idx_catalog_model_name ON catalog(model_name);
-      CREATE INDEX IF NOT EXISTS idx_catalog_spec_name  ON catalog(spec_name);
-      CREATE INDEX IF NOT EXISTS idx_catalog_data_type  ON catalog(data_type);
-      CREATE INDEX IF NOT EXISTS idx_catalog_created_at ON catalog(created_at);
+      CREATE INDEX IF NOT EXISTS idx_catalog_model_name      ON catalog(model_name);
+      CREATE INDEX IF NOT EXISTS idx_catalog_spec_name       ON catalog(spec_name);
+      CREATE INDEX IF NOT EXISTS idx_catalog_data_type       ON catalog(data_type);
+      CREATE INDEX IF NOT EXISTS idx_catalog_created_at      ON catalog(created_at);
+      CREATE INDEX IF NOT EXISTS idx_catalog_workflow_run_id ON catalog(workflow_run_id);
+      CREATE INDEX IF NOT EXISTS idx_catalog_step_name       ON catalog(step_name);
 
       CREATE TABLE IF NOT EXISTS catalog_meta (
         key   TEXT PRIMARY KEY,
         value TEXT NOT NULL
       );
     `);
+  }
+
+  /**
+   * Checks the stored schema version against {@link CATALOG_SCHEMA_VERSION}.
+   * If they differ, drops the catalog table and clears the populated flag
+   * so the next query triggers a full backfill with the new schema.
+   */
+  private migrateIfNeeded(): void {
+    const stmt = this.db.prepare(
+      "SELECT value FROM catalog_meta WHERE key = 'schema_version'",
+    );
+    const row = stmt.get() as { value: string } | undefined;
+    if (row?.value === CATALOG_SCHEMA_VERSION) return;
+
+    this.db.exec("DROP TABLE IF EXISTS catalog");
+    this.createSchema();
+    this.db.prepare(
+      "INSERT OR REPLACE INTO catalog_meta (key, value) VALUES ('schema_version', ?)",
+    ).run(CATALOG_SCHEMA_VERSION);
+    this.db.prepare(
+      "DELETE FROM catalog_meta WHERE key = 'populated'",
+    ).run();
   }
 
   /**
@@ -108,8 +152,9 @@ export class CatalogStore {
       INSERT OR REPLACE INTO catalog (
         type_normalized, model_id, data_name, id, version, model_name,
         spec_name, data_type, content_type, lifetime, owner_type,
-        streaming, size, created_at, tags
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        streaming, size, created_at, tags,
+        owner_ref, workflow_run_id, workflow_name, job_name, step_name, source
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     stmt.run(
       row.type_normalized,
@@ -127,6 +172,12 @@ export class CatalogStore {
       row.size,
       row.created_at,
       row.tags,
+      row.owner_ref,
+      row.workflow_run_id,
+      row.workflow_name,
+      row.job_name,
+      row.step_name,
+      row.source,
     );
   }
 
@@ -220,7 +271,13 @@ export class CatalogStore {
       | "content_type"
       | "lifetime"
       | "owner_type"
-      | "size",
+      | "size"
+      | "owner_ref"
+      | "workflow_run_id"
+      | "workflow_name"
+      | "job_name"
+      | "step_name"
+      | "source",
   ): string[] {
     const ALLOWED = new Set([
       "id",
@@ -235,6 +292,12 @@ export class CatalogStore {
       "lifetime",
       "owner_type",
       "size",
+      "owner_ref",
+      "workflow_run_id",
+      "workflow_name",
+      "job_name",
+      "step_name",
+      "source",
     ]);
     if (!ALLOWED.has(column)) return [];
     const stmt = this.db.prepare(

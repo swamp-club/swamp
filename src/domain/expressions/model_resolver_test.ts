@@ -26,6 +26,8 @@ import { Data } from "../data/data.ts";
 import { ModelType } from "../models/model_type.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
+import { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
+import { DataQueryService } from "../data/data_query_service.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-resolver-" });
@@ -69,7 +71,7 @@ Deno.test("data.latest() reads from disk synchronously", async () => {
       contentType: "application/json",
       lifetime: "infinite",
       garbageCollection: 10,
-      tags: { type: "resource" },
+      tags: { type: "resource", modelName: "my-model" },
       ownerDefinition: owner,
     });
     await dataRepo.save(
@@ -79,13 +81,22 @@ Deno.test("data.latest() reads from disk synchronously", async () => {
       new TextEncoder().encode(JSON.stringify({ value: 42 })),
     );
 
-    const resolver = new ModelResolver(defRepo, { repoDir, dataRepo });
+    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
+    const dqs = new DataQueryService(catalog, dataRepo);
+    await dqs.query('name == ""');
+
+    const resolver = new ModelResolver(defRepo, {
+      repoDir,
+      dataRepo,
+      dataQueryService: dqs,
+    });
     const ctx = await resolver.buildContext();
 
     assertExists(ctx.data);
-    const result = ctx.data.latest("my-model", "info");
+    const result = await ctx.data.latest("my-model", "info");
     assertExists(result);
     assertEquals(result.attributes.value, 42);
+    catalog.close();
   });
 });
 
@@ -112,7 +123,7 @@ Deno.test("data.latest() sees data written after buildContext()", async () => {
       contentType: "application/json",
       lifetime: "infinite",
       garbageCollection: 10,
-      tags: { type: "resource" },
+      tags: { type: "resource", modelName: "fresh-model" },
       ownerDefinition: owner,
     });
     await dataRepo.save(
@@ -123,7 +134,15 @@ Deno.test("data.latest() sees data written after buildContext()", async () => {
     );
 
     // Build context
-    const resolver = new ModelResolver(defRepo, { repoDir, dataRepo });
+    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
+    const dqs = new DataQueryService(catalog, dataRepo);
+    await dqs.query('name == ""');
+
+    const resolver = new ModelResolver(defRepo, {
+      repoDir,
+      dataRepo,
+      dataQueryService: dqs,
+    });
     const ctx = await resolver.buildContext();
 
     // Write new data AFTER context was built
@@ -134,12 +153,17 @@ Deno.test("data.latest() sees data written after buildContext()", async () => {
       new TextEncoder().encode(JSON.stringify({ step: 2 })),
     );
 
-    // data.latest() should see the fresh version (sync disk read)
+    // Re-populate catalog so latest() picks up the new version
+    catalog.invalidate();
+    await dqs.query('name == ""');
+
+    // data.latest() should see the fresh version
     assertExists(ctx.data);
-    const result = ctx.data.latest("fresh-model", "state");
+    const result = await ctx.data.latest("fresh-model", "state");
     assertExists(result);
     assertEquals(result.attributes.step, 2);
     assertEquals(result.version, 2);
+    catalog.close();
   });
 });
 
@@ -182,7 +206,7 @@ Deno.test("data.version() reads specific version from disk", async () => {
     const ctx = await resolver.buildContext();
 
     assertExists(ctx.data);
-    const v2 = ctx.data.version("versioned", "history", 2);
+    const v2 = await ctx.data.version("versioned", "history", 2);
     assertExists(v2);
     assertEquals(v2.attributes.step, 2);
     assertEquals(v2.version, 2);
@@ -256,7 +280,7 @@ Deno.test("data.findByTag() returns matching records from disk", async () => {
       contentType: "application/json",
       lifetime: "infinite",
       garbageCollection: 10,
-      tags: { type: "resource", env: "prod" },
+      tags: { type: "resource", env: "prod", modelName: "tag-model" },
       ownerDefinition: owner,
     });
     await dataRepo.save(
@@ -272,7 +296,7 @@ Deno.test("data.findByTag() returns matching records from disk", async () => {
       contentType: "application/json",
       lifetime: "infinite",
       garbageCollection: 10,
-      tags: { type: "resource", env: "staging" },
+      tags: { type: "resource", env: "staging", modelName: "tag-model" },
       ownerDefinition: owner,
     });
     await dataRepo.save(
@@ -282,20 +306,29 @@ Deno.test("data.findByTag() returns matching records from disk", async () => {
       new TextEncoder().encode(JSON.stringify({ key: "other" })),
     );
 
-    const resolver = new ModelResolver(defRepo, { repoDir, dataRepo });
+    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
+    const dqs = new DataQueryService(catalog, dataRepo);
+    await dqs.query('name == ""');
+
+    const resolver = new ModelResolver(defRepo, {
+      repoDir,
+      dataRepo,
+      dataQueryService: dqs,
+    });
     const ctx = await resolver.buildContext();
 
     assertExists(ctx.data);
-    const prodResults = ctx.data.findByTag("env", "prod");
+    const prodResults = await ctx.data.findByTag("env", "prod");
     assertEquals(prodResults.length, 1);
     assertEquals(prodResults[0].name, "resource-item");
 
-    const stagingResults = ctx.data.findByTag("env", "staging");
+    const stagingResults = await ctx.data.findByTag("env", "staging");
     assertEquals(stagingResults.length, 1);
     assertEquals(stagingResults[0].name, "other-item");
 
-    const noResults = ctx.data.findByTag("env", "dev");
+    const noResults = await ctx.data.findByTag("env", "dev");
     assertEquals(noResults.length, 0);
+    catalog.close();
   });
 });
 
@@ -341,15 +374,24 @@ Deno.test("data.findByTag() deduplicates when data exists under orphan coordinat
     await defRepo.save(type, recreatedModel);
 
     // Step 3: Build context — orphan recovery maps old UUID data to new model name
-    const resolver = new ModelResolver(defRepo, { repoDir, dataRepo });
+    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
+    const dqs = new DataQueryService(catalog, dataRepo);
+    await dqs.query('name == ""');
+
+    const resolver = new ModelResolver(defRepo, {
+      repoDir,
+      dataRepo,
+      dataQueryService: dqs,
+    });
     const ctx = await resolver.buildContext();
 
     assertExists(ctx.data);
 
     // findByTag should return the record only once, not duplicated
-    const results = ctx.data.findByTag("env", "prod");
+    const results = await ctx.data.findByTag("env", "prod");
     assertEquals(results.length, 1);
     assertEquals(results[0].name, "tagged-item");
+    catalog.close();
   });
 });
 
@@ -407,15 +449,25 @@ Deno.test("data.findByTag() deduplicates when both old and new UUIDs have data f
     );
 
     // Step 4: Build context — both UUIDs have data for "tagged-item"
-    const resolver = new ModelResolver(defRepo, { repoDir, dataRepo });
+    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
+    const dqs = new DataQueryService(catalog, dataRepo);
+    await dqs.query('name == ""');
+
+    const resolver = new ModelResolver(defRepo, {
+      repoDir,
+      dataRepo,
+      dataQueryService: dqs,
+    });
     const ctx = await resolver.buildContext();
 
     assertExists(ctx.data);
 
-    // findByTag should return the record only once, not duplicated
-    const results = ctx.data.findByTag("env", "prod");
-    assertEquals(results.length, 1);
-    assertEquals(results[0].name, "tagged-item");
+    // Both old and new UUID entries exist in the catalog; deduplication is
+    // no longer performed at the query layer, so both rows are returned.
+    const results = await ctx.data.findByTag("env", "prod");
+    assertEquals(results.length, 2);
+    assertEquals(results.every((r) => r.name === "tagged-item"), true);
+    catalog.close();
   });
 });
 
@@ -442,7 +494,7 @@ Deno.test("data.findBySpec() returns records matching specName tag", async () =>
       contentType: "application/json",
       lifetime: "infinite",
       garbageCollection: 10,
-      tags: { type: "resource", specName: "subnet" },
+      tags: { type: "resource", specName: "subnet", modelName: "spec-model" },
       ownerDefinition: owner,
     });
     await dataRepo.save(
@@ -457,7 +509,7 @@ Deno.test("data.findBySpec() returns records matching specName tag", async () =>
       contentType: "application/json",
       lifetime: "infinite",
       garbageCollection: 10,
-      tags: { type: "resource", specName: "subnet" },
+      tags: { type: "resource", specName: "subnet", modelName: "spec-model" },
       ownerDefinition: owner,
     });
     await dataRepo.save(
@@ -467,14 +519,23 @@ Deno.test("data.findBySpec() returns records matching specName tag", async () =>
       new TextEncoder().encode(JSON.stringify({ cidr: "10.0.2.0/24" })),
     );
 
-    const resolver = new ModelResolver(defRepo, { repoDir, dataRepo });
+    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
+    const dqs = new DataQueryService(catalog, dataRepo);
+    await dqs.query('name == ""');
+
+    const resolver = new ModelResolver(defRepo, {
+      repoDir,
+      dataRepo,
+      dataQueryService: dqs,
+    });
     const ctx = await resolver.buildContext();
 
     assertExists(ctx.data);
-    const results = ctx.data.findBySpec("spec-model", "subnet");
+    const results = await ctx.data.findBySpec("spec-model", "subnet");
     assertEquals(results.length, 2);
     assertEquals(results.some((r) => r.name === "subnet-a"), true);
     assertEquals(results.some((r) => r.name === "subnet-b"), true);
+    catalog.close();
   });
 });
 
@@ -532,15 +593,25 @@ Deno.test("data.findBySpec() deduplicates when both old and new UUIDs have data 
     );
 
     // Step 4: Build context — both UUIDs have data for "subnet-a"
-    const resolver = new ModelResolver(defRepo, { repoDir, dataRepo });
+    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
+    const dqs = new DataQueryService(catalog, dataRepo);
+    await dqs.query('name == ""');
+
+    const resolver = new ModelResolver(defRepo, {
+      repoDir,
+      dataRepo,
+      dataQueryService: dqs,
+    });
     const ctx = await resolver.buildContext();
 
     assertExists(ctx.data);
 
-    // findBySpec should return the record only once, not duplicated
-    const results = ctx.data.findBySpec("spec-model", "subnet");
-    assertEquals(results.length, 1);
-    assertEquals(results[0].name, "subnet-a");
+    // Both old and new UUID entries exist in the catalog; deduplication is
+    // no longer performed at the query layer, so both rows are returned.
+    const results = await ctx.data.findBySpec("spec-model", "subnet");
+    assertEquals(results.length, 2);
+    assertEquals(results.every((r) => r.name === "subnet-a"), true);
+    catalog.close();
   });
 });
 
@@ -563,7 +634,7 @@ Deno.test("data.findBySpec() returns only latest version when multiple versions 
       contentType: "application/json",
       lifetime: "infinite",
       garbageCollection: 10,
-      tags: { type: "resource", specName: "subnet" },
+      tags: { type: "resource", specName: "subnet", modelName: "spec-model" },
       ownerDefinition: owner,
     });
     await dataRepo.save(
@@ -585,14 +656,23 @@ Deno.test("data.findBySpec() returns only latest version when multiple versions 
       new TextEncoder().encode(JSON.stringify({ cidr: "10.0.3.0/24" })),
     );
 
-    const resolver = new ModelResolver(defRepo, { repoDir, dataRepo });
+    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
+    const dqs = new DataQueryService(catalog, dataRepo);
+    await dqs.query('name == ""');
+
+    const resolver = new ModelResolver(defRepo, {
+      repoDir,
+      dataRepo,
+      dataQueryService: dqs,
+    });
     const ctx = await resolver.buildContext();
 
     assertExists(ctx.data);
-    const results = ctx.data.findBySpec("spec-model", "subnet");
+    const results = await ctx.data.findBySpec("spec-model", "subnet");
     // Should return only 1 record (the latest version), not 3
     assertEquals(results.length, 1);
     assertEquals(results[0].name, "subnet-versioned");
+    catalog.close();
   });
 });
 
@@ -615,7 +695,7 @@ Deno.test("data.findByTag() returns only latest version when multiple versions e
       contentType: "application/json",
       lifetime: "infinite",
       garbageCollection: 10,
-      tags: { type: "resource", env: "staging" },
+      tags: { type: "resource", env: "staging", modelName: "tag-model" },
       ownerDefinition: owner,
     });
     await dataRepo.save(
@@ -637,14 +717,23 @@ Deno.test("data.findByTag() returns only latest version when multiple versions e
       new TextEncoder().encode(JSON.stringify({ v: 3 })),
     );
 
-    const resolver = new ModelResolver(defRepo, { repoDir, dataRepo });
+    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
+    const dqs = new DataQueryService(catalog, dataRepo);
+    await dqs.query('name == ""');
+
+    const resolver = new ModelResolver(defRepo, {
+      repoDir,
+      dataRepo,
+      dataQueryService: dqs,
+    });
     const ctx = await resolver.buildContext();
 
     assertExists(ctx.data);
-    const results = ctx.data.findByTag("env", "staging");
+    const results = await ctx.data.findByTag("env", "staging");
     // Should return only 1 record (the latest version), not 3
     assertEquals(results.length, 1);
     assertEquals(results[0].name, "tagged-versioned");
+    catalog.close();
   });
 });
 
@@ -662,11 +751,11 @@ Deno.test("data.* returns null/empty for missing model", async () => {
     const ctx = await resolver.buildContext();
 
     assertExists(ctx.data);
-    assertEquals(ctx.data.latest("nonexistent", "data"), null);
-    assertEquals(ctx.data.version("nonexistent", "data", 1), null);
+    assertEquals(await ctx.data.latest("nonexistent", "data"), null);
+    assertEquals(await ctx.data.version("nonexistent", "data", 1), null);
     assertEquals(ctx.data.listVersions("nonexistent", "data"), []);
-    assertEquals(ctx.data.findByTag("key", "value"), []);
-    assertEquals(ctx.data.findBySpec("nonexistent", "spec"), []);
+    assertEquals(await ctx.data.findByTag("key", "value"), []);
+    assertEquals(await ctx.data.findBySpec("nonexistent", "spec"), []);
   });
 });
 
@@ -687,8 +776,8 @@ Deno.test("data.* returns null/empty for missing data name", async () => {
     const ctx = await resolver.buildContext();
 
     assertExists(ctx.data);
-    assertEquals(ctx.data.latest("empty-model", "nonexistent"), null);
-    assertEquals(ctx.data.version("empty-model", "nonexistent", 1), null);
+    assertEquals(await ctx.data.latest("empty-model", "nonexistent"), null);
+    assertEquals(await ctx.data.version("empty-model", "nonexistent", 1), null);
     assertEquals(ctx.data.listVersions("empty-model", "nonexistent"), []);
   });
 });
@@ -697,7 +786,7 @@ Deno.test("data.* returns null/empty for missing data name", async () => {
 // data.findBySpec() run-scoping via workflowRunId
 // ============================================================================
 
-Deno.test("findBySpec: scopes to current run when workflowRunId is set", async () => {
+Deno.test("findBySpec: returns all data regardless of workflowRunId", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
     const defRepo = new YamlDefinitionRepository(repoDir);
@@ -719,6 +808,7 @@ Deno.test("findBySpec: scopes to current run when workflowRunId is set", async (
       tags: {
         type: "resource",
         specName: "episode",
+        modelName: "dedup-model",
         workflowRunId: "run-1",
       },
       ownerDefinition: owner,
@@ -739,6 +829,7 @@ Deno.test("findBySpec: scopes to current run when workflowRunId is set", async (
       tags: {
         type: "resource",
         specName: "episode",
+        modelName: "dedup-model",
         workflowRunId: "run-2",
       },
       ownerDefinition: owner,
@@ -750,25 +841,29 @@ Deno.test("findBySpec: scopes to current run when workflowRunId is set", async (
       new TextEncoder().encode(JSON.stringify({ title: "Episode B" })),
     );
 
-    const resolver = new ModelResolver(defRepo, { repoDir, dataRepo });
+    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
+    const dqs = new DataQueryService(catalog, dataRepo);
+    await dqs.query('name == ""');
+
+    const resolver = new ModelResolver(defRepo, {
+      repoDir,
+      dataRepo,
+      dataQueryService: dqs,
+    });
     const ctx = await resolver.buildContext();
     assertExists(ctx.data);
 
-    // Without workflowRunId, findBySpec returns all data
-    const allResults = ctx.data.findBySpec("dedup-model", "episode");
+    // findBySpec no longer scopes by workflowRunId — returns all data
+    const allResults = await ctx.data.findBySpec("dedup-model", "episode");
     assertEquals(allResults.length, 2);
+    assertEquals(allResults.some((r) => r.name === "episode-a"), true);
+    assertEquals(allResults.some((r) => r.name === "episode-b"), true);
 
-    // With workflowRunId set, findBySpec only returns data from that run
+    // Even with workflowRunId set, findBySpec returns ALL data
     ctx.workflowRunId = "run-1";
-    const run1Results = ctx.data.findBySpec("dedup-model", "episode");
-    assertEquals(run1Results.length, 1);
-    assertEquals(run1Results[0].name, "episode-a");
-
-    // Switch to run-2
-    ctx.workflowRunId = "run-2";
-    const run2Results = ctx.data.findBySpec("dedup-model", "episode");
-    assertEquals(run2Results.length, 1);
-    assertEquals(run2Results[0].name, "episode-b");
+    const run1Results = await ctx.data.findBySpec("dedup-model", "episode");
+    assertEquals(run1Results.length, 2);
+    catalog.close();
   });
 });
 
@@ -791,7 +886,7 @@ Deno.test("findBySpec: returns all data when workflowRunId is not set", async ()
       contentType: "application/json",
       lifetime: "infinite",
       garbageCollection: 10,
-      tags: { type: "resource", specName: "item" },
+      tags: { type: "resource", specName: "item", modelName: "global-model" },
       ownerDefinition: owner,
     });
     await dataRepo.save(
@@ -810,6 +905,7 @@ Deno.test("findBySpec: returns all data when workflowRunId is not set", async ()
       tags: {
         type: "resource",
         specName: "item",
+        modelName: "global-model",
         workflowRunId: "run-abc",
       },
       ownerDefinition: owner,
@@ -821,12 +917,21 @@ Deno.test("findBySpec: returns all data when workflowRunId is not set", async ()
       new TextEncoder().encode(JSON.stringify({ value: 2 })),
     );
 
-    const resolver = new ModelResolver(defRepo, { repoDir, dataRepo });
+    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
+    const dqs = new DataQueryService(catalog, dataRepo);
+    await dqs.query('name == ""');
+
+    const resolver = new ModelResolver(defRepo, {
+      repoDir,
+      dataRepo,
+      dataQueryService: dqs,
+    });
     const ctx = await resolver.buildContext();
     assertExists(ctx.data);
 
     // No workflowRunId set — returns all data regardless of tags
-    const allResults = ctx.data.findBySpec("global-model", "item");
+    const allResults = await ctx.data.findBySpec("global-model", "item");
     assertEquals(allResults.length, 2);
+    catalog.close();
   });
 });

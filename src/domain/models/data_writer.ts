@@ -581,6 +581,11 @@ export function createResourceWriter(
         ...(tagOverrides?.["workflowRunId"]
           ? { workflowRunId: tagOverrides["workflowRunId"] }
           : {}),
+        ...(tagOverrides?.["workflow"]
+          ? { workflowName: tagOverrides["workflow"] }
+          : {}),
+        ...(tagOverrides?.["step"] ? { stepName: tagOverrides["step"] } : {}),
+        ...(tagOverrides?.["source"] ? { source: tagOverrides["source"] } : {}),
       },
     };
 
@@ -862,6 +867,11 @@ export function createFileWriterFactory(
         ...(tagOverrides?.["workflowRunId"]
           ? { workflowRunId: tagOverrides["workflowRunId"] }
           : {}),
+        ...(tagOverrides?.["workflow"]
+          ? { workflowName: tagOverrides["workflow"] }
+          : {}),
+        ...(tagOverrides?.["step"] ? { stepName: tagOverrides["step"] } : {}),
+        ...(tagOverrides?.["source"] ? { source: tagOverrides["source"] } : {}),
       },
     };
 

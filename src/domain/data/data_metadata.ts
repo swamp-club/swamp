@@ -106,6 +106,10 @@ export const OwnerDefinitionSchema = z.object({
   ownerRef: z.string().min(1),
   workflowId: z.string().uuid().optional(),
   workflowRunId: z.string().uuid().optional(),
+  workflowName: z.string().optional(),
+  jobName: z.string().optional(),
+  stepName: z.string().optional(),
+  source: z.string().optional(),
 });
 
 export type OwnerDefinition = z.infer<typeof OwnerDefinitionSchema>;

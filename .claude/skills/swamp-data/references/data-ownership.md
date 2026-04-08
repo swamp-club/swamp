@@ -7,13 +7,25 @@ ensures data integrity and prevents accidental overwrites.
 
 Each data item tracks its owner through the `ownerDefinition` field:
 
-| Field            | Description                                  |
-| ---------------- | -------------------------------------------- |
-| `ownerType`      | `model-method`, `workflow-step`, or `manual` |
-| `ownerRef`       | Reference to the creating entity             |
-| `definitionHash` | Hash of the definition at creation time      |
-| `workflowId`     | Set when created during workflow execution   |
-| `workflowRunId`  | Specific run that created this data          |
+| Field            | Description                                    |
+| ---------------- | ---------------------------------------------- |
+| `ownerType`      | `model-method`, `workflow-step`, or `manual`   |
+| `ownerRef`       | Reference to the creating entity               |
+| `definitionHash` | Hash of the definition at creation time        |
+| `workflowId`     | Set when created during workflow execution     |
+| `workflowRunId`  | Specific run that created this data            |
+| `workflowName`   | Name of the workflow (empty outside workflows) |
+| `jobName`        | Name of the job (empty outside workflows)      |
+| `stepName`       | Name of the step (empty outside workflows)     |
+| `source`         | Provenance source (e.g. `"step-output"`, `""`) |
+
+These provenance fields are also promoted to first-class `DataRecord` fields
+(`ownerRef`, `workflowRunId`, `workflowName`, `jobName`, `stepName`, `source`)
+and are directly queryable in CEL predicates:
+
+```cel
+workflowRunId == "run-uuid" && stepName == "dedup"
+```
 
 ## Ownership Validation
 

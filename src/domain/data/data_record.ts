@@ -43,4 +43,13 @@ export interface DataRecord {
   streaming: boolean;
   size: number;
   content: string;
+
+  // Provenance fields — promoted from tags/ownerDefinition to first-class.
+  // Empty string when the data was not produced inside a workflow.
+  ownerRef: string;
+  workflowRunId: string;
+  workflowName: string;
+  jobName: string;
+  stepName: string;
+  source: string;
 }

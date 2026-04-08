@@ -360,6 +360,38 @@ export class CelEvaluator {
   }
 
   /**
+   * Evaluates a CEL expression that may contain async functions.
+   *
+   * cel-js natively propagates Promises through operators and macros.
+   * When a registered function returns a Promise, env.evaluate() returns
+   * a Promise. This method awaits it.
+   *
+   * Use this for expressions that may call data namespace functions
+   * (data.findBySpec, data.latest, etc.) which are async.
+   * Use the sync evaluate() for predicate filtering where no async
+   * functions are involved.
+   */
+  async evaluateAsync(
+    expression: string,
+    context: Record<string, unknown>,
+  ): Promise<unknown> {
+    try {
+      const transformedExpr = transformHyphenatedModelRefs(expression);
+      this.warnDeprecatedPatterns(transformedExpr);
+      const wrappedContext = this.wrapNamespaces(context);
+      const result = await this.env.evaluate(transformedExpr, wrappedContext);
+      return coerceBigInts(result);
+    } catch (error) {
+      throw new InvalidExpressionError(
+        error instanceof Error ? error.message : String(error),
+        expression,
+        undefined,
+        error instanceof Error ? error : undefined,
+      );
+    }
+  }
+
+  /**
    * Validates a CEL expression without evaluating it.
    *
    * @param expression - The CEL expression to validate

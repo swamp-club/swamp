@@ -42,6 +42,8 @@ import {
 } from "../src/domain/expressions/model_resolver.ts";
 import { ExpressionEvaluationService } from "../src/domain/expressions/expression_evaluation_service.ts";
 import { CelEvaluator } from "../src/infrastructure/cel/cel_evaluator.ts";
+import { CatalogStore } from "../src/infrastructure/persistence/catalog_store.ts";
+import { DataQueryService } from "../src/domain/data/data_query_service.ts";
 import { initializeTestRepo, runCliCommand } from "./test_helpers.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
@@ -301,7 +303,7 @@ Deno.test("CEL Data Access: access specific version via data.version()", async (
 
     // Access specific versions
     for (let v = 1; v <= 5; v++) {
-      const vData: DataRecord | null = context.data.version(
+      const vData: DataRecord | null = await context.data.version(
         "versioned_model",
         "history",
         v,
@@ -313,7 +315,11 @@ Deno.test("CEL Data Access: access specific version via data.version()", async (
     }
 
     // Non-existent version returns null
-    const nonexistent = context.data.version("versioned_model", "history", 99);
+    const nonexistent = await context.data.version(
+      "versioned_model",
+      "history",
+      99,
+    );
     assertEquals(nonexistent, null);
   });
 });
@@ -337,7 +343,7 @@ Deno.test("CEL Data Access: access data via data.latest()", async () => {
       contentType: "application/json",
       lifetime: "infinite",
       garbageCollection: 10,
-      tags: { type: "state" },
+      tags: { type: "state", modelName: "latest_test" },
       ownerDefinition: owner,
     });
 
@@ -351,18 +357,28 @@ Deno.test("CEL Data Access: access data via data.latest()", async () => {
       );
     }
 
-    const modelResolver = new ModelResolver(definitionRepo, {
-      repoDir,
-      dataRepo,
-    });
-    const context = await modelResolver.buildContext();
+    const catalog = new CatalogStore(
+      join(repoDir, ".swamp", "data", "_catalog.db"),
+    );
+    const dqs = new DataQueryService(catalog, dataRepo);
+    await dqs.query('name == ""');
+    try {
+      const modelResolver = new ModelResolver(definitionRepo, {
+        repoDir,
+        dataRepo,
+        dataQueryService: dqs,
+      });
+      const context = await modelResolver.buildContext();
 
-    assertExists(context.data);
+      assertExists(context.data);
 
-    const latest = context.data.latest("latest_test", "current_state");
-    assertExists(latest);
-    assertEquals(latest.version, 4);
-    assertEquals(latest.attributes.iteration, 4);
+      const latest = await context.data.latest("latest_test", "current_state");
+      assertExists(latest);
+      assertEquals(latest.version, 4);
+      assertEquals(latest.attributes.iteration, 4);
+    } finally {
+      catalog.close();
+    }
   });
 });
 
@@ -728,7 +744,7 @@ Deno.test("CEL Data Access: handle missing model gracefully", async () => {
     const versions = context.data.listVersions("nonexistent", "data");
     assertEquals(versions, []);
 
-    const latest = context.data.latest("nonexistent", "data");
+    const latest = await context.data.latest("nonexistent", "data");
     assertEquals(latest, null);
   });
 });
@@ -761,7 +777,7 @@ Deno.test("CEL Data Access: handle missing data gracefully", async () => {
     const versions = context.data.listVersions("no_data_model", "nonexistent");
     assertEquals(versions, []);
 
-    const latest = context.data.latest("no_data_model", "nonexistent");
+    const latest = await context.data.latest("no_data_model", "nonexistent");
     assertEquals(latest, null);
   });
 });
@@ -1110,7 +1126,7 @@ Deno.test("CEL Data Access: data.latest() sees data written after buildContext()
       contentType: "application/json",
       lifetime: "infinite",
       garbageCollection: 10,
-      tags: { type: "resource" },
+      tags: { type: "resource", modelName: "fresh_data_model" },
       ownerDefinition: owner,
     });
     await dataRepo.save(
@@ -1120,27 +1136,43 @@ Deno.test("CEL Data Access: data.latest() sees data written after buildContext()
       new TextEncoder().encode(JSON.stringify({ step: 1 })),
     );
 
-    // Build context — captures a snapshot of coordinates
-    const modelResolver = new ModelResolver(definitionRepo, {
-      repoDir,
-      dataRepo,
-    });
-    const context = await modelResolver.buildContext();
-
-    // Write NEW data AFTER context was built
-    await dataRepo.save(
-      type,
-      model.id,
-      data,
-      new TextEncoder().encode(JSON.stringify({ step: 2, fresh: true })),
+    const catalog = new CatalogStore(
+      join(repoDir, ".swamp", "data", "_catalog.db"),
     );
+    const dqs = new DataQueryService(catalog, dataRepo);
+    await dqs.query('name == ""');
+    try {
+      // Build context — captures a snapshot of coordinates
+      const modelResolver = new ModelResolver(definitionRepo, {
+        repoDir,
+        dataRepo,
+        dataQueryService: dqs,
+      });
+      const context = await modelResolver.buildContext();
 
-    // data.latest() should see the fresh version (sync disk read, no cache)
-    assertExists(context.data);
-    const latest = context.data.latest("fresh_data_model", "live_state");
-    assertExists(latest);
-    assertEquals(latest.version, 2);
-    assertEquals(latest.attributes.step, 2);
-    assertEquals(latest.attributes.fresh, true);
+      // Write NEW data AFTER context was built
+      await dataRepo.save(
+        type,
+        model.id,
+        data,
+        new TextEncoder().encode(JSON.stringify({ step: 2, fresh: true })),
+      );
+
+      // Invalidate catalog so re-backfill picks up the new data
+      catalog.invalidate();
+
+      // data.latest() should see the fresh version
+      assertExists(context.data);
+      const latest = await context.data.latest(
+        "fresh_data_model",
+        "live_state",
+      );
+      assertExists(latest);
+      assertEquals(latest.version, 2);
+      assertEquals(latest.attributes.step, 2);
+      assertEquals(latest.attributes.fresh, true);
+    } finally {
+      catalog.close();
+    }
   });
 });

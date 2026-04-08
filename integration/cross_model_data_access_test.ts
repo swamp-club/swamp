@@ -275,27 +275,13 @@ Deno.test("cross-model data access: workflowRunId scoping returns only matching 
 
     const service = new DataAccessService(defRepo, dataRepo);
 
-    // Scoped to run 1 — should return only run 1's data
-    const run1Records = await service.readModelData(
-      "scoped-source",
-      "episode",
-      runId1,
-    );
-    assertEquals(run1Records.length, 1);
-    assertEquals(run1Records[0].attributes, { title: "from run 1" });
-
-    // Scoped to run 2 — should return only run 2's data
-    const run2Records = await service.readModelData(
-      "scoped-source",
-      "episode",
-      runId2,
-    );
-    assertEquals(run2Records.length, 1);
-    assertEquals(run2Records[0].attributes, { title: "from run 2" });
-
-    // No scope — should return both
+    // readModelData no longer accepts workflowRunId — verify all data is returned
     const allRecords = await service.readModelData("scoped-source", "episode");
     assertEquals(allRecords.length, 2);
+
+    // Verify both runs' data is present
+    const titles = allRecords.map((r) => r.attributes.title).sort();
+    assertEquals(titles, ["from run 1", "from run 2"]);
   });
 });
 

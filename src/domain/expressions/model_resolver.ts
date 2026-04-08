@@ -27,6 +27,7 @@ import type { Data } from "../data/data.ts";
 import type { DataRecord } from "../data/data_record.ts";
 import type { DataQueryService } from "../data/data_query_service.ts";
 import { isTextContentType } from "../data/content_type.ts";
+import { fromData } from "../data/data_record_mapper.ts";
 import { ModelNotFoundError } from "./errors.ts";
 import { VaultService } from "../vaults/vault_service.ts";
 import type { SecretRedactor } from "../secrets/mod.ts";
@@ -52,6 +53,11 @@ export function buildEnvContext(): Record<string, string> {
 
 // Re-export DataRecord from its canonical location.
 export type { DataRecord } from "../data/data_record.ts";
+
+/** Escapes a string for safe embedding in a CEL string literal. */
+function escapeCelString(s: string): string {
+  return s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
 
 /**
  * File metadata record for CEL expressions.
@@ -105,58 +111,46 @@ export interface ModelData {
  */
 export interface DataNamespace {
   /**
-   * Get a specific version of data.
-   * @param modelName - The model name
-   * @param dataName - The data name
-   * @param version - The version number
-   * @returns The DataRecord or null if not found
+   * Get a specific version of data. Remains file-system-based because
+   * the catalog only stores the latest version per item.
    */
   version(
     modelName: string,
     dataName: string,
     version: number,
-  ): DataRecord | null;
+  ): Promise<DataRecord | null>;
 
   /**
-   * Get the latest version of data.
-   * @param modelName - The model name
-   * @param dataName - The data name
-   * @returns The DataRecord or null if not found
+   * Get the latest version of data. Delegates to catalog query.
    */
-  latest(modelName: string, dataName: string): DataRecord | null;
+  latest(
+    modelName: string,
+    dataName: string,
+  ): Promise<DataRecord | null>;
 
   /**
-   * List all version numbers for a data item.
-   * @param modelName - The model name
-   * @param dataName - The data name
-   * @returns Array of version numbers in ascending order
+   * List all version numbers for a data item. Remains file-system-based.
    */
   listVersions(modelName: string, dataName: string): number[];
 
   /**
-   * Find all data records with a specific tag.
-   * @param tagKey - The tag key to search
-   * @param tagValue - The tag value to match
-   * @returns Array of matching DataRecords
+   * Find all data records with a specific tag. Delegates to catalog query.
    */
-  findByTag(tagKey: string, tagValue: string): DataRecord[];
+  findByTag(tagKey: string, tagValue: string): Promise<DataRecord[]>;
 
   /**
-   * Find all data records for a model that match a given spec name.
-   * Uses the auto-injected `specName` tag to identify records from a specific output spec.
-   * @param modelName - The model name
-   * @param specName - The output spec name
-   * @returns Array of matching DataRecords
+   * Find all data records for a model matching a spec name.
+   * Delegates to catalog query — no hidden scoping.
    */
-  findBySpec(modelName: string, specName: string): DataRecord[];
+  findBySpec(modelName: string, specName: string): Promise<DataRecord[]>;
 
   /**
    * Query data artifacts using a CEL predicate, with optional projection.
-   * @param predicate - CEL expression evaluated against DataRecord fields
-   * @param select - Optional CEL projection expression
-   * @returns Array of DataRecords, or projected values if select is provided
    */
-  query(predicate: string, select?: string): DataRecord[] | unknown[];
+  query(
+    predicate: string,
+    select?: string,
+  ): Promise<DataRecord[] | unknown[]>;
 }
 
 /**
@@ -513,15 +507,16 @@ export class ModelResolver {
       }
     }
 
-    // Create data namespace with sync disk reads
+    // Create data namespace — most functions delegate to DataQueryService
     const dataRepo = this.dataRepo;
-    const dataToRecord = this.dataToRecord.bind(this);
     context.data = {
-      version: (
+      // version() and listVersions() remain file-system-based because the
+      // catalog only stores the latest version per item.
+      version: async (
         modelName: string,
         dataName: string,
         version: number,
-      ): DataRecord | null => {
+      ): Promise<DataRecord | null> => {
         if (!dataRepo) return null;
         const allCoords = coordsMap.get(modelName);
         if (!allCoords) return null;
@@ -533,48 +528,30 @@ export class ModelResolver {
             version,
           );
           if (data) {
-            return dataToRecord(
-              data,
-              modelType,
-              modelId,
-              dataName,
+            return await fromData(data, modelType, modelId, dataRepo, {
               version,
               modelName,
-            );
+              dataName,
+              vaultService: this.vaultService,
+            });
           }
         }
         return null;
       },
-      latest: (modelName: string, dataName: string): DataRecord | null => {
-        if (!dataRepo) return null;
-        const allCoords = coordsMap.get(modelName);
-        if (!allCoords) return null;
-        for (const { modelType, modelId } of allCoords) {
-          const latestVersion = dataRepo.getLatestVersionSync(
-            modelType,
-            modelId,
-            dataName,
-          );
-          if (latestVersion !== null) {
-            const data = dataRepo.findByNameSync(
-              modelType,
-              modelId,
-              dataName,
-              latestVersion,
-            );
-            if (data) {
-              return dataToRecord(
-                data,
-                modelType,
-                modelId,
-                dataName,
-                latestVersion,
-                modelName,
-              );
-            }
-          }
-        }
-        return null;
+      latest: async (
+        modelName: string,
+        dataName: string,
+      ): Promise<DataRecord | null> => {
+        if (!this.dataQueryService) return null;
+        const escaped = escapeCelString;
+        const predicate = `modelName == "${escaped(modelName)}" && name == "${
+          escaped(dataName)
+        }"`;
+        const results = await this.dataQueryService.query(predicate, {
+          limit: 1,
+          loadAttributes: true,
+        }) as DataRecord[];
+        return results.length > 0 ? results[0] : null;
       },
       listVersions: (modelName: string, dataName: string): number[] => {
         if (!dataRepo) return [];
@@ -590,97 +567,36 @@ export class ModelResolver {
         }
         return [];
       },
-      findByTag: (tagKey: string, tagValue: string): DataRecord[] => {
-        if (!dataRepo) return [];
-        const results: DataRecord[] = [];
-        const seen = new Set<string>();
-        for (const [tagModelName, allCoords] of coordsMap) {
-          for (const { modelType, modelId } of allCoords) {
-            const allData = dataRepo.findAllForModelSync(modelType, modelId);
-            for (const data of allData) {
-              const latestVersion = dataRepo.getLatestVersionSync(
-                modelType,
-                modelId,
-                data.name,
-              );
-              if (latestVersion === null) continue;
-              const versionData = dataRepo.findByNameSync(
-                modelType,
-                modelId,
-                data.name,
-                latestVersion,
-              );
-              if (versionData && versionData.tags[tagKey] === tagValue) {
-                const dedupeKey = `${tagModelName}:${data.name}`;
-                if (seen.has(dedupeKey)) continue;
-                seen.add(dedupeKey);
-                const record = dataToRecord(
-                  versionData,
-                  modelType,
-                  modelId,
-                  data.name,
-                  latestVersion,
-                  tagModelName,
-                );
-                if (record) results.push(record);
-              }
-            }
-          }
-        }
-        return results;
+      findByTag: async (
+        tagKey: string,
+        tagValue: string,
+      ): Promise<DataRecord[]> => {
+        if (!this.dataQueryService) return [];
+        const escaped = escapeCelString;
+        const predicate = `tags.${escaped(tagKey)} == "${escaped(tagValue)}"`;
+        return await this.dataQueryService.query(predicate, {
+          loadAttributes: true,
+        }) as DataRecord[];
       },
-      findBySpec: (
+      findBySpec: async (
         specModelName: string,
         specName: string,
-      ): DataRecord[] => {
-        if (!dataRepo) return [];
-        const allCoords = coordsMap.get(specModelName);
-        if (!allCoords) return [];
-        const results: DataRecord[] = [];
-        const seen = new Set<string>();
-        const runId = context.workflowRunId;
-        for (const { modelType, modelId } of allCoords) {
-          const allData = dataRepo.findAllForModelSync(modelType, modelId);
-          for (const data of allData) {
-            const latestVersion = dataRepo.getLatestVersionSync(
-              modelType,
-              modelId,
-              data.name,
-            );
-            if (latestVersion === null) continue;
-            const versionData = dataRepo.findByNameSync(
-              modelType,
-              modelId,
-              data.name,
-              latestVersion,
-            );
-            if (versionData && versionData.tags["specName"] === specName) {
-              // When inside a workflow run, scope to current run's data only
-              if (runId && versionData.tags["workflowRunId"] !== runId) {
-                continue;
-              }
-              if (seen.has(data.name)) continue;
-              seen.add(data.name);
-              const record = dataToRecord(
-                versionData,
-                modelType,
-                modelId,
-                data.name,
-                latestVersion,
-                specModelName,
-              );
-              if (record) results.push(record);
-            }
-          }
-        }
-        return results;
+      ): Promise<DataRecord[]> => {
+        if (!this.dataQueryService) return [];
+        const escaped = escapeCelString;
+        const predicate = `modelName == "${
+          escaped(specModelName)
+        }" && specName == "${escaped(specName)}"`;
+        return await this.dataQueryService.query(predicate, {
+          loadAttributes: true,
+        }) as DataRecord[];
       },
-      query: (
+      query: async (
         predicate: string,
         select?: string,
-      ): DataRecord[] | unknown[] => {
+      ): Promise<DataRecord[] | unknown[]> => {
         if (!this.dataQueryService) return [];
-        return this.dataQueryService.querySync(predicate, { select });
+        return await this.dataQueryService.query(predicate, { select });
       },
     };
 
@@ -855,6 +771,12 @@ export class ModelResolver {
       streaming: data.streaming,
       size: data.size ?? 0,
       content: textContent,
+      ownerRef: data.ownerDefinition.ownerRef,
+      workflowRunId: data.ownerDefinition.workflowRunId ?? "",
+      workflowName: data.ownerDefinition.workflowName ?? "",
+      jobName: data.ownerDefinition.jobName ?? "",
+      stepName: data.ownerDefinition.stepName ?? "",
+      source: data.ownerDefinition.source ?? "",
     };
   }
 

@@ -36,6 +36,8 @@ import { Definition } from "../src/domain/definitions/definition.ts";
 import { FileSystemUnifiedDataRepository } from "../src/infrastructure/persistence/unified_data_repository.ts";
 import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
 import { ModelResolver } from "../src/domain/expressions/model_resolver.ts";
+import { CatalogStore } from "../src/infrastructure/persistence/catalog_store.ts";
+import { DataQueryService } from "../src/domain/data/data_query_service.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-data-tagging-" });
@@ -220,32 +222,42 @@ Deno.test("Data Tagging: findByTag returns matching records", async () => {
     }
 
     // Build context and query by tags
-    const modelResolver = new ModelResolver(definitionRepo, {
-      repoDir,
-      dataRepo,
-    });
-    const context = await modelResolver.buildContext();
+    const catalog = new CatalogStore(
+      join(repoDir, ".swamp", "data", "_catalog.db"),
+    );
+    const dqs = new DataQueryService(catalog, dataRepo);
+    await dqs.query('name == ""');
+    try {
+      const modelResolver = new ModelResolver(definitionRepo, {
+        repoDir,
+        dataRepo,
+        dataQueryService: dqs,
+      });
+      const context = await modelResolver.buildContext();
 
-    assertExists(context.data);
+      assertExists(context.data);
 
-    // Find all resources
-    const resources = context.data.findByTag("type", "resource");
-    assertEquals(resources.length, 2);
-    assertEquals(resources.every((r) => r.tags.type === "resource"), true);
+      // Find all resources
+      const resources = await context.data.findByTag("type", "resource");
+      assertEquals(resources.length, 2);
+      assertEquals(resources.every((r) => r.tags.type === "resource"), true);
 
-    // Find all logs
-    const logs = context.data.findByTag("type", "log");
-    assertEquals(logs.length, 1);
-    assertEquals(logs[0].tags.type, "log");
+      // Find all logs
+      const logs = await context.data.findByTag("type", "log");
+      assertEquals(logs.length, 1);
+      assertEquals(logs[0].tags.type, "log");
 
-    // Find all configs
-    const configs = context.data.findByTag("type", "config");
-    assertEquals(configs.length, 1);
-    assertEquals(configs[0].tags.type, "config");
+      // Find all configs
+      const configs = await context.data.findByTag("type", "config");
+      assertEquals(configs.length, 1);
+      assertEquals(configs[0].tags.type, "config");
 
-    // Non-matching tag returns empty
-    const nonexistent = context.data.findByTag("type", "nonexistent");
-    assertEquals(nonexistent.length, 0);
+      // Non-matching tag returns empty
+      const nonexistent = await context.data.findByTag("type", "nonexistent");
+      assertEquals(nonexistent.length, 0);
+    } finally {
+      catalog.close();
+    }
   });
 });
 
@@ -285,26 +297,42 @@ Deno.test("Data Tagging: findByTag with custom tags", async () => {
       );
     }
 
-    const modelResolver = new ModelResolver(definitionRepo, {
-      repoDir,
-      dataRepo,
-    });
-    const context = await modelResolver.buildContext();
+    const catalog = new CatalogStore(
+      join(repoDir, ".swamp", "data", "_catalog.db"),
+    );
+    const dqs = new DataQueryService(catalog, dataRepo);
+    await dqs.query('name == ""');
+    try {
+      const modelResolver = new ModelResolver(definitionRepo, {
+        repoDir,
+        dataRepo,
+        dataQueryService: dqs,
+      });
+      const context = await modelResolver.buildContext();
 
-    assertExists(context.data);
+      assertExists(context.data);
 
-    // Find by environment
-    const prodData = context.data.findByTag("environment", "production");
-    assertEquals(prodData.length, 1);
-    assertEquals(prodData[0].tags.environment, "production");
+      // Find by environment
+      const prodData = await context.data.findByTag(
+        "environment",
+        "production",
+      );
+      assertEquals(prodData.length, 1);
+      assertEquals(prodData[0].tags.environment, "production");
 
-    const stagingData = context.data.findByTag("environment", "staging");
-    assertEquals(stagingData.length, 1);
-    assertEquals(stagingData[0].tags.environment, "staging");
+      const stagingData = await context.data.findByTag(
+        "environment",
+        "staging",
+      );
+      assertEquals(stagingData.length, 1);
+      assertEquals(stagingData[0].tags.environment, "staging");
 
-    // Find all state types (all 3)
-    const allStates = context.data.findByTag("type", "state");
-    assertEquals(allStates.length, 3);
+      // Find all state types (all 3)
+      const allStates = await context.data.findByTag("type", "state");
+      assertEquals(allStates.length, 3);
+    } finally {
+      catalog.close();
+    }
   });
 });
 
@@ -342,20 +370,30 @@ Deno.test("Data Tagging: findByTag returns only latest version with matching tag
       );
     }
 
-    const modelResolver = new ModelResolver(definitionRepo, {
-      repoDir,
-      dataRepo,
-    });
-    const context = await modelResolver.buildContext();
+    const catalog = new CatalogStore(
+      join(repoDir, ".swamp", "data", "_catalog.db"),
+    );
+    const dqs = new DataQueryService(catalog, dataRepo);
+    await dqs.query('name == ""');
+    try {
+      const modelResolver = new ModelResolver(definitionRepo, {
+        repoDir,
+        dataRepo,
+        dataQueryService: dqs,
+      });
+      const context = await modelResolver.buildContext();
 
-    assertExists(context.data);
+      assertExists(context.data);
 
-    // findByTag returns only the latest version, not all versions
-    const results = context.data.findByTag("type", "versioned");
-    assertEquals(results.length, 1);
+      // findByTag returns only the latest version, not all versions
+      const results = await context.data.findByTag("type", "versioned");
+      assertEquals(results.length, 1);
 
-    // Verify it's the latest version
-    assertEquals(results[0].version, 5);
+      // Verify it's the latest version
+      assertEquals(results[0].version, 5);
+    } finally {
+      catalog.close();
+    }
   });
 });
 
@@ -405,19 +443,29 @@ Deno.test("Data Tagging: different type categories", async () => {
       );
     }
 
-    const modelResolver = new ModelResolver(definitionRepo, {
-      repoDir,
-      dataRepo,
-    });
-    const context = await modelResolver.buildContext();
+    const catalog = new CatalogStore(
+      join(repoDir, ".swamp", "data", "_catalog.db"),
+    );
+    const dqs = new DataQueryService(catalog, dataRepo);
+    await dqs.query('name == ""');
+    try {
+      const modelResolver = new ModelResolver(definitionRepo, {
+        repoDir,
+        dataRepo,
+        dataQueryService: dqs,
+      });
+      const context = await modelResolver.buildContext();
 
-    assertExists(context.data);
+      assertExists(context.data);
 
-    // Verify each category can be found
-    for (const category of categories) {
-      const results = context.data.findByTag("type", category.name);
-      assertEquals(results.length, 1);
-      assertEquals(results[0].tags.type, category.name);
+      // Verify each category can be found
+      for (const category of categories) {
+        const results = await context.data.findByTag("type", category.name);
+        assertEquals(results.length, 1);
+        assertEquals(results[0].tags.type, category.name);
+      }
+    } finally {
+      catalog.close();
     }
   });
 });
@@ -470,28 +518,41 @@ Deno.test("Data Tagging: workflow and step tags", async () => {
       }
     }
 
-    const modelResolver = new ModelResolver(definitionRepo, {
-      repoDir,
-      dataRepo,
-    });
-    const context = await modelResolver.buildContext();
+    const catalog = new CatalogStore(
+      join(repoDir, ".swamp", "data", "_catalog.db"),
+    );
+    const dqs = new DataQueryService(catalog, dataRepo);
+    await dqs.query('name == ""');
+    try {
+      const modelResolver = new ModelResolver(definitionRepo, {
+        repoDir,
+        dataRepo,
+        dataQueryService: dqs,
+      });
+      const context = await modelResolver.buildContext();
 
-    assertExists(context.data);
+      assertExists(context.data);
 
-    // Find all step outputs
-    const allStepOutputs = context.data.findByTag("source", "step-output");
-    assertEquals(allStepOutputs.length, 5);
+      // Find all step outputs
+      const allStepOutputs = await context.data.findByTag(
+        "source",
+        "step-output",
+      );
+      assertEquals(allStepOutputs.length, 5);
 
-    // Find by workflow
-    const deploySteps = context.data.findByTag("workflow", "deploy");
-    assertEquals(deploySteps.length, 3);
+      // Find by workflow
+      const deploySteps = await context.data.findByTag("workflow", "deploy");
+      assertEquals(deploySteps.length, 3);
 
-    const ciSteps = context.data.findByTag("workflow", "ci");
-    assertEquals(ciSteps.length, 2);
+      const ciSteps = await context.data.findByTag("workflow", "ci");
+      assertEquals(ciSteps.length, 2);
 
-    // Find by step
-    const testSteps = context.data.findByTag("step", "test");
-    assertEquals(testSteps.length, 2);
+      // Find by step
+      const testSteps = await context.data.findByTag("step", "test");
+      assertEquals(testSteps.length, 2);
+    } finally {
+      catalog.close();
+    }
   });
 });
 
@@ -620,38 +681,54 @@ Deno.test("Data Tagging: multiple resource items with different tags", async () 
       );
     }
 
-    const modelResolver = new ModelResolver(definitionRepo, {
-      repoDir,
-      dataRepo,
-    });
-    const context = await modelResolver.buildContext();
+    const catalog = new CatalogStore(
+      join(repoDir, ".swamp", "data", "_catalog.db"),
+    );
+    const dqs = new DataQueryService(catalog, dataRepo);
+    await dqs.query('name == ""');
+    try {
+      const modelResolver = new ModelResolver(definitionRepo, {
+        repoDir,
+        dataRepo,
+        dataQueryService: dqs,
+      });
+      const context = await modelResolver.buildContext();
 
-    // Access all resource data from model (resource is a map of specName -> instanceName -> DataRecord)
-    const modelData = context.model["multi-output-model"];
-    assertExists(modelData);
-    assertExists(modelData.resource);
-    const resourceMap = modelData.resource as Record<
-      string,
-      Record<string, { tags: Record<string, string> }>
-    >;
-    assertExists(resourceMap["stdout"]);
-    assertExists(resourceMap["stderr"]);
-    assertExists(resourceMap["exit-code"]);
-    assertExists(resourceMap["timing"]);
+      // Access all resource data from model (resource is a map of specName -> instanceName -> DataRecord)
+      const modelData = context.model["multi-output-model"];
+      assertExists(modelData);
+      assertExists(modelData.resource);
+      const resourceMap = modelData.resource as Record<
+        string,
+        Record<string, { tags: Record<string, string> }>
+      >;
+      assertExists(resourceMap["stdout"]);
+      assertExists(resourceMap["stderr"]);
+      assertExists(resourceMap["exit-code"]);
+      assertExists(resourceMap["timing"]);
 
-    // Verify custom tags (access via specName -> instanceName)
-    assertEquals(resourceMap["stdout"]["stdout"].tags.stream, "stdout");
-    assertEquals(resourceMap["stderr"]["stderr"].tags.stream, "stderr");
-    assertEquals(resourceMap["timing"]["timing"].tags.category, "performance");
+      // Verify custom tags (access via specName -> instanceName)
+      assertEquals(resourceMap["stdout"]["stdout"].tags.stream, "stdout");
+      assertEquals(resourceMap["stderr"]["stderr"].tags.stream, "stderr");
+      assertEquals(
+        resourceMap["timing"]["timing"].tags.category,
+        "performance",
+      );
 
-    // Query by tags
-    assertExists(context.data);
+      // Query by tags
+      assertExists(context.data);
 
-    const resources = context.data.findByTag("type", "resource");
-    assertEquals(resources.length, 4);
+      const resources = await context.data.findByTag("type", "resource");
+      assertEquals(resources.length, 4);
 
-    const perfItems = context.data.findByTag("category", "performance");
-    assertEquals(perfItems.length, 1);
+      const perfItems = await context.data.findByTag(
+        "category",
+        "performance",
+      );
+      assertEquals(perfItems.length, 1);
+    } finally {
+      catalog.close();
+    }
   });
 });
 
@@ -674,7 +751,7 @@ Deno.test("Data Tagging: empty findByTag results", async () => {
     assertExists(context.data);
 
     // Query in empty repo
-    const results = context.data.findByTag("type", "anything");
+    const results = await context.data.findByTag("type", "anything");
     assertEquals(results, []);
   });
 });

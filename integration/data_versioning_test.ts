@@ -36,6 +36,8 @@ import { Definition } from "../src/domain/definitions/definition.ts";
 import { FileSystemUnifiedDataRepository } from "../src/infrastructure/persistence/unified_data_repository.ts";
 import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
 import { ModelResolver } from "../src/domain/expressions/model_resolver.ts";
+import { CatalogStore } from "../src/infrastructure/persistence/catalog_store.ts";
+import { DataQueryService } from "../src/domain/data/data_query_service.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-data-versioning-" });
@@ -389,7 +391,7 @@ Deno.test("Data Versioning: access specific version via data.version()", async (
       contentType: "application/json",
       lifetime: "infinite",
       garbageCollection: 10,
-      tags: { type: "output" },
+      tags: { type: "output", modelName: "version-access-model" },
       ownerDefinition: owner,
     });
 
@@ -407,34 +409,59 @@ Deno.test("Data Versioning: access specific version via data.version()", async (
     }
 
     // Build context with data namespace
-    const modelResolver = new ModelResolver(definitionRepo, {
-      repoDir,
-      dataRepo,
-    });
-    const context = await modelResolver.buildContext();
+    const catalog = new CatalogStore(
+      join(repoDir, ".swamp", "data", "_catalog.db"),
+    );
+    const dqs = new DataQueryService(catalog, dataRepo);
+    await dqs.query('name == ""');
+    try {
+      const modelResolver = new ModelResolver(definitionRepo, {
+        repoDir,
+        dataRepo,
+        dataQueryService: dqs,
+      });
+      const context = await modelResolver.buildContext();
 
-    assertExists(context.data);
+      assertExists(context.data);
 
-    // Access specific versions
-    const v1 = context.data.version("version-access-model", "results", 1);
-    assertExists(v1);
-    assertEquals(v1.version, 1);
-    assertEquals(v1.attributes.value, 100);
+      // Access specific versions
+      const v1 = await context.data.version(
+        "version-access-model",
+        "results",
+        1,
+      );
+      assertExists(v1);
+      assertEquals(v1.version, 1);
+      assertEquals(v1.attributes.value, 100);
 
-    const v2 = context.data.version("version-access-model", "results", 2);
-    assertExists(v2);
-    assertEquals(v2.version, 2);
-    assertEquals(v2.attributes.value, 200);
+      const v2 = await context.data.version(
+        "version-access-model",
+        "results",
+        2,
+      );
+      assertExists(v2);
+      assertEquals(v2.version, 2);
+      assertEquals(v2.attributes.value, 200);
 
-    const v3 = context.data.version("version-access-model", "results", 3);
-    assertExists(v3);
-    assertEquals(v3.version, 3);
-    assertEquals(v3.attributes.value, 300);
+      const v3 = await context.data.version(
+        "version-access-model",
+        "results",
+        3,
+      );
+      assertExists(v3);
+      assertEquals(v3.version, 3);
+      assertEquals(v3.attributes.value, 300);
 
-    // Latest should be v3
-    const latest = context.data.latest("version-access-model", "results");
-    assertExists(latest);
-    assertEquals(latest.version, 3);
+      // Latest should be v3
+      const latest = await context.data.latest(
+        "version-access-model",
+        "results",
+      );
+      assertExists(latest);
+      assertEquals(latest.version, 3);
+    } finally {
+      catalog.close();
+    }
   });
 });
 

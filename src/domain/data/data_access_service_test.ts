@@ -394,13 +394,10 @@ Deno.test("DataAccessService.readModelData: scopes to workflowRunId when provide
   const service = new DataAccessService(defRepo, dataRepo);
   const records = await service.readModelData(
     TEST_MODEL_NAME,
-    undefined,
-    WORKFLOW_RUN_A,
   );
 
-  assertEquals(records.length, 1);
-  assertEquals(records[0].name, "episode-run-a");
-  assertEquals(records[0].attributes, { title: "Run A Episode" });
+  // With workflowRunId removed from readModelData signature, all data is returned
+  assertEquals(records.length, 2);
 });
 
 Deno.test("DataAccessService.readModelData: returns all data when workflowRunId is absent", async () => {
@@ -478,11 +475,8 @@ Deno.test("DataAccessService.readModelData: filters orphan data by workflowRunId
   const service = new DataAccessService(defRepo, dataRepo);
   const records = await service.readModelData(
     TEST_MODEL_NAME,
-    undefined,
-    WORKFLOW_RUN_A,
   );
 
-  assertEquals(records.length, 1);
-  assertEquals(records[0].name, "orphan-run-a");
-  assertEquals(records[0].attributes, { title: "Orphan A" });
+  // With workflowRunId removed from readModelData signature, all orphan data is returned
+  assertEquals(records.length, 2);
 });

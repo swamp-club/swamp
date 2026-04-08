@@ -37,6 +37,8 @@ import { FileSystemUnifiedDataRepository } from "../src/infrastructure/persisten
 import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
 import { ModelResolver } from "../src/domain/expressions/model_resolver.ts";
 import { CelEvaluator } from "../src/infrastructure/cel/cel_evaluator.ts";
+import { CatalogStore } from "../src/infrastructure/persistence/catalog_store.ts";
+import { DataQueryService } from "../src/domain/data/data_query_service.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-data-expr-" });
@@ -191,17 +193,17 @@ Deno.test("Integration: data.version() retrieves specific version", async () => 
     // Access specific versions via data.version()
     assertExists(context.data);
 
-    const v1 = context.data.version("my-model", "result", 1);
+    const v1 = await context.data.version("my-model", "result", 1);
     assertExists(v1);
     assertEquals(v1.version, 1);
     assertEquals(v1.attributes.value, 10);
 
-    const v2 = context.data.version("my-model", "result", 2);
+    const v2 = await context.data.version("my-model", "result", 2);
     assertExists(v2);
     assertEquals(v2.version, 2);
     assertEquals(v2.attributes.value, 20);
 
-    const v3 = context.data.version("my-model", "result", 3);
+    const v3 = await context.data.version("my-model", "result", 3);
     assertExists(v3);
     assertEquals(v3.version, 3);
     assertEquals(v3.attributes.value, 30);
@@ -247,7 +249,7 @@ Deno.test("Integration: data.version() returns null for missing version", async 
 
     // Try to access non-existent version
     assertExists(context.data);
-    const result = context.data.version("my-model", "result", 99);
+    const result = await context.data.version("my-model", "result", 99);
     assertEquals(result, null);
   });
 });
@@ -277,7 +279,7 @@ Deno.test("Integration: data.latest() retrieves latest version", async () => {
       contentType: "application/json",
       lifetime: "infinite",
       garbageCollection: 5,
-      tags: { type: "output" },
+      tags: { type: "output", modelName: "my-model" },
       ownerDefinition: owner,
     });
 
@@ -291,17 +293,27 @@ Deno.test("Integration: data.latest() retrieves latest version", async () => {
       );
     }
 
-    const modelResolver = new ModelResolver(definitionRepo, {
-      repoDir,
-      dataRepo,
-    });
-    const context = await modelResolver.buildContext();
+    const catalog = new CatalogStore(
+      join(repoDir, ".swamp", "data", "_catalog.db"),
+    );
+    const dqs = new DataQueryService(catalog, dataRepo);
+    await dqs.query('name == ""');
+    try {
+      const modelResolver = new ModelResolver(definitionRepo, {
+        repoDir,
+        dataRepo,
+        dataQueryService: dqs,
+      });
+      const context = await modelResolver.buildContext();
 
-    assertExists(context.data);
-    const latest = context.data.latest("my-model", "output");
-    assertExists(latest);
-    assertEquals(latest.version, 3);
-    assertEquals(latest.attributes.step, 3);
+      assertExists(context.data);
+      const latest = await context.data.latest("my-model", "output");
+      assertExists(latest);
+      assertEquals(latest.version, 3);
+      assertEquals(latest.attributes.step, 3);
+    } finally {
+      catalog.close();
+    }
   });
 });
 
@@ -456,27 +468,37 @@ Deno.test("Integration: data.findByTag() returns matching records", async () => 
       new TextEncoder().encode(JSON.stringify({ value: 42 })),
     );
 
-    const modelResolver = new ModelResolver(definitionRepo, {
-      repoDir,
-      dataRepo,
-    });
-    const context = await modelResolver.buildContext();
+    const catalog = new CatalogStore(
+      join(repoDir, ".swamp", "data", "_catalog.db"),
+    );
+    const dqs = new DataQueryService(catalog, dataRepo);
+    await dqs.query('name == ""');
+    try {
+      const modelResolver = new ModelResolver(definitionRepo, {
+        repoDir,
+        dataRepo,
+        dataQueryService: dqs,
+      });
+      const context = await modelResolver.buildContext();
 
-    assertExists(context.data);
+      assertExists(context.data);
 
-    // Find all logs
-    const logs = context.data.findByTag("type", "log");
-    assertEquals(logs.length, 2);
-    assertEquals(logs.every((r) => r.tags.type === "log"), true);
+      // Find all logs
+      const logs = await context.data.findByTag("type", "log");
+      assertEquals(logs.length, 2);
+      assertEquals(logs.every((r) => r.tags.type === "log"), true);
 
-    // Find all outputs
-    const outputs = context.data.findByTag("type", "output");
-    assertEquals(outputs.length, 1);
-    assertEquals(outputs[0].tags.type, "output");
+      // Find all outputs
+      const outputs = await context.data.findByTag("type", "output");
+      assertEquals(outputs.length, 1);
+      assertEquals(outputs[0].tags.type, "output");
 
-    // Non-matching tag
-    const nonexistent = context.data.findByTag("type", "nonexistent");
-    assertEquals(nonexistent.length, 0);
+      // Non-matching tag
+      const nonexistent = await context.data.findByTag("type", "nonexistent");
+      assertEquals(nonexistent.length, 0);
+    } finally {
+      catalog.close();
+    }
   });
 });
 
@@ -599,7 +621,7 @@ Deno.test("Integration: handles hyphenated model names in data expressions", asy
       contentType: "application/json",
       lifetime: "infinite",
       garbageCollection: 5,
-      tags: { type: "test" },
+      tags: { type: "test", modelName: "my-hyphenated-model" },
       ownerDefinition: owner,
     });
     await dataRepo.save(
@@ -609,20 +631,30 @@ Deno.test("Integration: handles hyphenated model names in data expressions", asy
       new TextEncoder().encode(JSON.stringify({ key: "value" })),
     );
 
-    const modelResolver = new ModelResolver(definitionRepo, {
-      repoDir,
-      dataRepo,
-    });
-    const context = await modelResolver.buildContext();
-
-    // Access via bracket notation (required for hyphenated names)
-    assertExists(context.data);
-    const latest = context.data.latest(
-      "my-hyphenated-model",
-      "my-hyphenated-data",
+    const catalog = new CatalogStore(
+      join(repoDir, ".swamp", "data", "_catalog.db"),
     );
-    assertExists(latest);
-    assertEquals(latest.attributes.key, "value");
+    const dqs = new DataQueryService(catalog, dataRepo);
+    await dqs.query('name == ""');
+    try {
+      const modelResolver = new ModelResolver(definitionRepo, {
+        repoDir,
+        dataRepo,
+        dataQueryService: dqs,
+      });
+      const context = await modelResolver.buildContext();
+
+      // Access via bracket notation (required for hyphenated names)
+      assertExists(context.data);
+      const latest = await context.data.latest(
+        "my-hyphenated-model",
+        "my-hyphenated-data",
+      );
+      assertExists(latest);
+      assertEquals(latest.attributes.key, "value");
+    } finally {
+      catalog.close();
+    }
   });
 });
 
@@ -657,6 +689,6 @@ Deno.test("Integration: buildContext works without dataRepo", async () => {
     // Data namespace should still exist but return empty results
     assertExists(context.data);
     assertEquals(context.data.listVersions("my-model", "anything"), []);
-    assertEquals(context.data.findByTag("type", "any"), []);
+    assertEquals(await context.data.findByTag("type", "any"), []);
   });
 });

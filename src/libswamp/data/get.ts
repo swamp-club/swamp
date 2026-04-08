@@ -57,6 +57,10 @@ export interface DataGetData {
     ownerRef: string;
     workflowId?: string;
     workflowRunId?: string;
+    workflowName?: string;
+    jobName?: string;
+    stepName?: string;
+    source?: string;
   };
   createdAt: string;
   size?: number;
@@ -91,6 +95,10 @@ export interface DataItem {
     ownerRef: string;
     workflowId?: string;
     workflowRunId?: string;
+    workflowName?: string;
+    jobName?: string;
+    stepName?: string;
+    source?: string;
   };
   createdAt: Date;
   size?: number;

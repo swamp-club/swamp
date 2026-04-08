@@ -47,6 +47,12 @@ function makeRow(overrides: Partial<CatalogRow> = {}): CatalogRow {
     size: 256,
     created_at: "2026-01-01T00:00:00.000Z",
     tags: '{"type":"resource","specName":"result","modelName":"ingest"}',
+    owner_ref: "",
+    workflow_run_id: "",
+    workflow_name: "",
+    job_name: "",
+    step_name: "",
+    source: "",
     ...overrides,
   };
 }

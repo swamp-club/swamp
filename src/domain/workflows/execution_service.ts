@@ -321,7 +321,7 @@ export class DefaultStepExecutor implements StepExecutor {
           new YamlDefinitionRepository(ctx.repoDir),
           ctx.repoDir,
         );
-        stepInputs = evalService.evaluateData(
+        stepInputs = await evalService.evaluateData(
           task.inputs,
           ctx.expressionContext,
         ) as Record<string, unknown>;
@@ -592,6 +592,13 @@ export class DefaultStepExecutor implements StepExecutor {
               streaming: handle.metadata.streaming,
               size: handle.size,
               content: "",
+              ownerRef: handle.metadata.ownerDefinition.ownerRef,
+              workflowRunId: handle.metadata.ownerDefinition.workflowRunId ??
+                "",
+              workflowName: handle.metadata.ownerDefinition.workflowName ?? "",
+              jobName: handle.metadata.ownerDefinition.jobName ?? "",
+              stepName: handle.metadata.ownerDefinition.stepName ?? "",
+              source: handle.metadata.ownerDefinition.source ?? "",
             };
           } else if (handle.kind === "file") {
             const contentPath = unifiedDataRepo.getContentPath(
@@ -950,7 +957,10 @@ export class DefaultStepExecutor implements StepExecutor {
       }
 
       try {
-        const value = celEvaluator.evaluate(expr.celExpression, context);
+        const value = await celEvaluator.evaluateAsync(
+          expr.celExpression,
+          context,
+        );
         evaluatedValues.set(expr.raw, value);
       } catch {
         // Leave unresolved — CEL threw because an input referenced directly
@@ -1180,7 +1190,7 @@ export class WorkflowExecutionService {
           expressionContext.inputs = options.inputs;
         }
 
-        workflow = this.evaluateWorkflow(
+        workflow = await this.evaluateWorkflow(
           workflow,
           expressionContext,
         );
@@ -1937,7 +1947,7 @@ export class WorkflowExecutionService {
         new YamlDefinitionRepository(this.repoDir),
         this.repoDir,
       );
-      evaluatedInputs = evalService.evaluateData(
+      evaluatedInputs = await evalService.evaluateData(
         task.inputs,
         expressionContext,
       ) as Record<string, unknown>;
@@ -2060,10 +2070,10 @@ export class WorkflowExecutionService {
    * forEach-related expressions (self.* and forEach.in) are left raw for
    * runtime expansion.
    */
-  private evaluateWorkflow(
+  private async evaluateWorkflow(
     workflow: Workflow,
     context: ExpressionContext,
-  ): Workflow {
+  ): Promise<Workflow> {
     const evalSpan = getTracer().startSpan("swamp.workflow.evaluate", {
       attributes: { "workflow.name": workflow.name },
     });
@@ -2113,7 +2123,10 @@ export class WorkflowExecutionService {
           continue;
         }
 
-        const value = celEvaluator.evaluate(expr.celExpression, context);
+        const value = await celEvaluator.evaluateAsync(
+          expr.celExpression,
+          context,
+        );
         evaluatedValues.set(expr.raw, value);
       }
 

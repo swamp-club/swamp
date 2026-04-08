@@ -454,6 +454,12 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       size: data.size ?? 0,
       created_at: data.createdAt.toISOString(),
       tags: JSON.stringify(data.tags),
+      owner_ref: data.ownerDefinition.ownerRef,
+      workflow_run_id: data.ownerDefinition.workflowRunId ?? "",
+      workflow_name: data.ownerDefinition.workflowName ?? "",
+      job_name: data.ownerDefinition.jobName ?? "",
+      step_name: data.ownerDefinition.stepName ?? "",
+      source: data.ownerDefinition.source ?? "",
     });
   }
 

@@ -24,6 +24,7 @@ import type { VaultService } from "../vaults/vault_service.ts";
 import type { SecretRedactor } from "../secrets/mod.ts";
 import type { Data } from "./data.ts";
 import type { DataRecord } from "./data_record.ts";
+import type { DataQueryService } from "./data_query_service.ts";
 import { resolveVaultRefsInData } from "../models/data_writer.ts";
 import { isTextContentType } from "./content_type.ts";
 
@@ -65,6 +66,7 @@ export class DataAccessService {
     private readonly dataRepo: UnifiedDataRepository,
     private readonly vaultService?: VaultService,
     private readonly redactor?: SecretRedactor,
+    private readonly dataQueryService?: DataQueryService,
   ) {}
 
   /**
@@ -104,8 +106,19 @@ export class DataAccessService {
   async readModelData(
     modelName: string,
     specName?: string,
-    workflowRunId?: string,
   ): Promise<DataRecord[]> {
+    if (this.dataQueryService) {
+      // Delegate to catalog-backed query — vault resolution handled there
+      const escape = (s: string) =>
+        s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+      let predicate = `modelName == "${escape(modelName)}"`;
+      if (specName) {
+        predicate += ` && specName == "${escape(specName)}"`;
+      }
+      return await this.dataQueryService.query(predicate) as DataRecord[];
+    }
+
+    // Fallback: file-system-based access (no catalog available)
     const resolved = await this.resolveModel(modelName);
     if (!resolved) {
       return [];
@@ -146,17 +159,9 @@ export class DataAccessService {
       (d) => !d.data.isRenamed && !d.data.isDeleted,
     );
 
-    // Scope to current workflow run when executing inside a workflow
-    const scoped = workflowRunId
-      ? active.filter(
-        (d) => d.data.ownerDefinition.workflowRunId === workflowRunId,
-      )
-      : active;
-
-    // Convert to DataRecords with parsed content, using the correct modelId
-    // for each item (orphan data lives under the old UUID on disk)
+    // Convert to DataRecords with parsed content
     const records: DataRecord[] = [];
-    for (const located of scoped) {
+    for (const located of active) {
       const record = await this.dataToRecord(
         located.data,
         located.modelType,
@@ -308,6 +313,12 @@ export class DataAccessService {
       streaming: data.streaming,
       size: data.size ?? 0,
       content: textContent,
+      ownerRef: data.ownerDefinition.ownerRef,
+      workflowRunId: data.ownerDefinition.workflowRunId ?? "",
+      workflowName: data.ownerDefinition.workflowName ?? "",
+      jobName: data.ownerDefinition.jobName ?? "",
+      stepName: data.ownerDefinition.stepName ?? "",
+      source: data.ownerDefinition.source ?? "",
     };
   }
 }

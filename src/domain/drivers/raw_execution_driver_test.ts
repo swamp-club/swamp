@@ -284,8 +284,7 @@ Deno.test("RawExecutionDriver: passes workflowRunId from tagOverrides to readMod
   assertEquals(result, []);
 });
 
-Deno.test("RawExecutionDriver: scopes queryData predicate with workflowRunId when in workflow", async () => {
-  const WORKFLOW_RUN_ID = "d00d0d00-d00d-4d0d-900d-d00d0d00d00d";
+Deno.test("RawExecutionDriver: passes queryData predicate through without scoping", async () => {
   let capturedPredicate = "";
 
   const executor: MethodExecutor = {
@@ -297,7 +296,7 @@ Deno.test("RawExecutionDriver: scopes queryData predicate with workflowRunId whe
 
   const context = createMockContext();
   context.tagOverrides = {
-    workflowRunId: WORKFLOW_RUN_ID,
+    workflowRunId: "d00d0d00-d00d-4d0d-900d-d00d0d00d00d",
   };
   context.definitionRepository = {
     findByNameGlobal: () => Promise.resolve(null),
@@ -320,10 +319,8 @@ Deno.test("RawExecutionDriver: scopes queryData predicate with workflowRunId whe
 
   await driver.execute(createMockRequest());
 
-  assertEquals(
-    capturedPredicate,
-    `(model_name == 'source') && tags.workflowRunId == "${WORKFLOW_RUN_ID}"`,
-  );
+  // No hidden scoping — predicate passes through unmodified
+  assertEquals(capturedPredicate, "model_name == 'source'");
 });
 
 Deno.test("RawExecutionDriver: leaves queryData unscoped when no workflowRunId", async () => {

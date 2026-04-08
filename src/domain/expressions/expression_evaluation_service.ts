@@ -149,10 +149,10 @@ export class ExpressionEvaluationService {
    * @param context - The evaluation context
    * @returns The data with expressions replaced
    */
-  evaluateData(
+  async evaluateData(
     data: unknown,
     context: ExpressionContext,
-  ): unknown {
+  ): Promise<unknown> {
     const expressions = extractExpressions(data);
     if (expressions.length === 0) {
       return data;
@@ -165,7 +165,10 @@ export class ExpressionEvaluationService {
         continue;
       }
 
-      const value = this.celEvaluator.evaluate(expr.celExpression, context);
+      const value = await this.celEvaluator.evaluateAsync(
+        expr.celExpression,
+        context,
+      );
       evaluatedValues.set(expr.raw, value);
     }
 
@@ -246,7 +249,10 @@ export class ExpressionEvaluationService {
       }
 
       try {
-        const value = this.celEvaluator.evaluate(expr.celExpression, ctx);
+        const value = await this.celEvaluator.evaluateAsync(
+          expr.celExpression,
+          ctx,
+        );
         evaluatedValues.set(expr.raw, value);
       } catch {
         // Leave unresolved — CEL threw because an input referenced directly
