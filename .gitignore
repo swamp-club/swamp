@@ -11,18 +11,10 @@ resources/
 plans/
 
 # Generated/runtime data (ignored)
-.swamp/data/
-.swamp/outputs/
-.swamp/workflow-runs/
-.swamp/inputs-evaluated/
-.swamp/definitions-evaluated/
-.swamp/workflows-evaluated/
-.swamp/logs/
-.swamp/files/
-.swamp/secrets/
-.swamp/telemetry/
-.swamp/bundles/
-.swamp/vault-bundles/
+.swamp/
+
+# Claude Code git worktrees (nested checkouts, not part of main working tree)
+.claude/worktrees/
 
 test-repo/
 .vault-*/

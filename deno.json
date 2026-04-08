@@ -62,6 +62,8 @@
     "workflows/",
     ".vault-test-vault/",
     "resources/",
-    "evals/"
+    "evals/",
+    ".swamp/",
+    ".claude/worktrees/"
   ]
 }
