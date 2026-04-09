@@ -37,6 +37,7 @@ import { DataAccessService } from "../src/domain/data/data_access_service.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";
 import { FileSystemUnifiedDataRepository } from "../src/infrastructure/persistence/unified_data_repository.ts";
+import { CatalogStore } from "../src/infrastructure/persistence/catalog_store.ts";
 import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
 import { computeDefinitionHash } from "../src/domain/models/model_output.ts";
 
@@ -92,7 +93,11 @@ Deno.test("cross-model data access: read another model's data by name", async ()
     await setupRepoDir(repoDir);
 
     const defRepo = new YamlDefinitionRepository(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const sourceType = ModelType.create("test/source");
 
     // Create source model definition
@@ -128,7 +133,11 @@ Deno.test("cross-model data access: filter by specName", async () => {
     await setupRepoDir(repoDir);
 
     const defRepo = new YamlDefinitionRepository(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const sourceType = ModelType.create("test/source");
 
     const sourceDef = Definition.create({
@@ -179,7 +188,11 @@ Deno.test("cross-model data access: non-existent model returns empty array", asy
     await setupRepoDir(repoDir);
 
     const defRepo = new YamlDefinitionRepository(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
 
     const service = new DataAccessService(defRepo, dataRepo);
     const records = await service.readModelData("nonexistent-model");
@@ -193,7 +206,11 @@ Deno.test("cross-model data access: model with no data returns empty array", asy
     await setupRepoDir(repoDir);
 
     const defRepo = new YamlDefinitionRepository(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const sourceType = ModelType.create("test/empty");
 
     // Create model but don't write any data
@@ -215,7 +232,11 @@ Deno.test("cross-model data access: workflowRunId scoping returns only matching 
     await setupRepoDir(repoDir);
 
     const defRepo = new YamlDefinitionRepository(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const sourceType = ModelType.create("test/source");
 
     const sourceDef = Definition.create({
@@ -290,7 +311,11 @@ Deno.test("cross-model data access: orphan recovery reads content from old UUID 
     await setupRepoDir(repoDir);
 
     const defRepo = new YamlDefinitionRepository(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const sourceType = ModelType.create("test/orphan");
 
     // Step 1: Create original model and write data

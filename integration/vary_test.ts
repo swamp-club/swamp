@@ -142,7 +142,11 @@ async function runCliCommand(
 Deno.test("Vary: data.latest() resolves composite name from persisted data", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
     const owner = createOwner("test/model:vary");
@@ -210,7 +214,11 @@ Deno.test("Vary: data.latest() resolves composite name from persisted data", asy
 Deno.test("Vary: CEL data.latest() with vary array resolves composite name", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
     const owner = createOwner("test/model:cel-vary");
@@ -269,7 +277,11 @@ Deno.test("Vary: CEL data.latest() with vary array resolves composite name", asy
 Deno.test("Vary: each varied data name has independent versioning", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
     const owner = createOwner("test/model:versioning");
@@ -355,7 +367,11 @@ Deno.test("Vary: each varied data name has independent versioning", async () => 
 Deno.test("Vary: CEL data.version() with vary resolves specific version", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
     const owner = createOwner("test/model:cel-version");
@@ -416,7 +432,11 @@ Deno.test("Vary: CEL data.version() with vary resolves specific version", async 
 Deno.test("Vary: CEL data.listVersions() with vary lists correct versions", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
     const owner = createOwner("test/model:cel-list");

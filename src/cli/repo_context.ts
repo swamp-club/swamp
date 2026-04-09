@@ -388,7 +388,7 @@ export function requireInitializedRepo(
     // If a remote sync pulled fresh data, invalidate the catalog so the
     // next query backfills from the freshly-pulled local cache.
     if (needsCatalogInvalidation) {
-      repoContext.catalogStore?.invalidate();
+      repoContext.catalogStore.invalidate();
     }
 
     return {

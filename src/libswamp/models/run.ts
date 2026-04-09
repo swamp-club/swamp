@@ -156,8 +156,8 @@ export interface ModelMethodRunDeps {
   dataRepo: UnifiedDataRepository;
   definitionRepo: YamlDefinitionRepository;
   outputRepo: OutputRepository;
-  /** Pre-built query function for context.queryData(). Absent = feature unavailable. */
-  queryData?: (
+  /** Pre-built query function for context.queryData(). */
+  queryData: (
     predicate: string,
     select?: string,
   ) => Promise<DataRecord[] | unknown[]>;

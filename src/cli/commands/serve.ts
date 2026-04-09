@@ -321,5 +321,5 @@ export const serveCommand = new Command()
 
     await server.finished;
 
-    repoContext.catalogStore?.close();
+    repoContext.catalogStore.close();
   });

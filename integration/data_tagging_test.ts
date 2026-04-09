@@ -67,7 +67,11 @@ function createOwner(ref: string): OwnerDefinition {
 Deno.test("Data Tagging: create data with required type tag", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const repo = new FileSystemUnifiedDataRepository(repoDir);
+    const repo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
     const owner = createOwner("test/model:tag-test");
@@ -97,7 +101,11 @@ Deno.test("Data Tagging: create data with required type tag", async () => {
 Deno.test("Data Tagging: create data with multiple tags", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const repo = new FileSystemUnifiedDataRepository(repoDir);
+    const repo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
     const owner = createOwner("test/model:multi-tag");
@@ -137,7 +145,11 @@ Deno.test("Data Tagging: create data with multiple tags", async () => {
 Deno.test("Data Tagging: tags persist across versions", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const repo = new FileSystemUnifiedDataRepository(repoDir);
+    const repo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
     const owner = createOwner("test/model:tag-persist");
@@ -183,7 +195,11 @@ Deno.test("Data Tagging: tags persist across versions", async () => {
 Deno.test("Data Tagging: findByTag returns matching records", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
     const owner = createOwner("test/model:find-tag");
@@ -264,7 +280,11 @@ Deno.test("Data Tagging: findByTag returns matching records", async () => {
 Deno.test("Data Tagging: findByTag with custom tags", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
     const owner = createOwner("test/model:custom-tags");
@@ -339,7 +359,11 @@ Deno.test("Data Tagging: findByTag with custom tags", async () => {
 Deno.test("Data Tagging: findByTag returns only latest version with matching tag", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
     const owner = createOwner("test/model:latest-only");
@@ -404,7 +428,11 @@ Deno.test("Data Tagging: findByTag returns only latest version with matching tag
 Deno.test("Data Tagging: different type categories", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
     const owner = createOwner("test/model:categories");
@@ -473,7 +501,11 @@ Deno.test("Data Tagging: different type categories", async () => {
 Deno.test("Data Tagging: workflow and step tags", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
     const owner = createOwner("test/model:workflow-tags");
@@ -563,7 +595,11 @@ Deno.test("Data Tagging: workflow and step tags", async () => {
 Deno.test("Data Tagging: access tags via model.X.resource.specName.tags", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
     const owner = createOwner("test/model:tag-access");
@@ -623,7 +659,11 @@ Deno.test("Data Tagging: access tags via model.X.resource.specName.tags", async 
 Deno.test("Data Tagging: multiple resource items with different tags", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
     const owner = createOwner("test/model:multi-data");
@@ -739,7 +779,11 @@ Deno.test("Data Tagging: multiple resource items with different tags", async () 
 Deno.test("Data Tagging: empty findByTag results", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const definitionRepo = new YamlDefinitionRepository(repoDir);
 
     const modelResolver = new ModelResolver(definitionRepo, {
@@ -759,7 +803,11 @@ Deno.test("Data Tagging: empty findByTag results", async () => {
 Deno.test("Data Tagging: special characters in tag values", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
     const owner = createOwner("test/model:special-tags");
@@ -807,7 +855,11 @@ Deno.test("Data Tagging: special characters in tag values", async () => {
 Deno.test("Data Tagging: tag-based organization in findAllForModel", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const repo = new FileSystemUnifiedDataRepository(repoDir);
+    const repo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
     const owner = createOwner("test/model:find-all");

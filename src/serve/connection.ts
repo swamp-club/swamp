@@ -255,7 +255,7 @@ async function handleModelMethodRun(
         }],
         ctx.repoDir,
       );
-      if (lockResult.synced) ctx.repoContext.catalogStore?.invalidate();
+      if (lockResult.synced) ctx.repoContext.catalogStore.invalidate();
       flushLocks = lockResult.flush;
     }
 

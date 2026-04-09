@@ -198,7 +198,11 @@ Deno.test("CEL Data Access: reference hyphenated model name", async () => {
 Deno.test("CEL Data Access: access latest resource via model.X.resource.specName", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
     const owner = createOwner("test/model:create");
@@ -256,7 +260,11 @@ Deno.test("CEL Data Access: access latest resource via model.X.resource.specName
 Deno.test("CEL Data Access: access specific version via data.version()", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
     const owner = createOwner("test/model:version-access");
@@ -327,7 +335,11 @@ Deno.test("CEL Data Access: access specific version via data.version()", async (
 Deno.test("CEL Data Access: access data via data.latest()", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
     const owner = createOwner("test/model:latest");
@@ -385,7 +397,11 @@ Deno.test("CEL Data Access: access data via data.latest()", async () => {
 Deno.test("CEL Data Access: list all versions via data.listVersions()", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
     const owner = createOwner("test/model:list");
@@ -435,7 +451,11 @@ Deno.test("CEL Data Access: list all versions via data.listVersions()", async ()
 Deno.test("CEL Data Access: reference resource from dependent model", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
     const owner = createOwner("test/model:cross-ref");
@@ -498,7 +518,11 @@ Deno.test("CEL Data Access: reference resource from dependent model", async () =
 Deno.test("CEL Data Access: chain data references across multiple models", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
     const owner = createOwner("test/model:chain");
@@ -752,7 +776,11 @@ Deno.test("CEL Data Access: handle missing model gracefully", async () => {
 Deno.test("CEL Data Access: handle missing data gracefully", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
 
@@ -785,7 +813,11 @@ Deno.test("CEL Data Access: handle missing data gracefully", async () => {
 Deno.test("CEL Data Access: multiple resource items from same model", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
     const owner = createOwner("test/model:multi-data");
@@ -845,7 +877,11 @@ Deno.test(
   async () => {
     await withTempDir(async (repoDir) => {
       await setupRepoDir(repoDir);
-      const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+      const dataRepo = new FileSystemUnifiedDataRepository(
+        repoDir,
+        undefined,
+        new CatalogStore(join(repoDir, "_catalog.db")),
+      );
       const definitionRepo = new YamlDefinitionRepository(repoDir);
       const type = ModelType.create("test/model");
       const owner = createOwner("test/model:spec-name-test");
@@ -904,7 +940,11 @@ Deno.test(
   async () => {
     await withTempDir(async (repoDir) => {
       await initializeTestRepo(repoDir);
-      const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+      const dataRepo = new FileSystemUnifiedDataRepository(
+        repoDir,
+        undefined,
+        new CatalogStore(join(repoDir, "_catalog.db")),
+      );
       const definitionRepo = new YamlDefinitionRepository(repoDir);
       const type = ModelType.create("test/model");
       const owner = createOwner("test/model:cli-spec-name-test");
@@ -965,7 +1005,11 @@ Deno.test(
 Deno.test("CEL Data Access: cross-type resource with specName tag via ExpressionEvaluationService (#370)", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const owner = createOwner("user/s3-inventory:create");
 
@@ -1032,7 +1076,11 @@ Deno.test("CEL Data Access: cross-type resource with specName tag via Expression
 Deno.test("CEL Data Access: resource resolves after model delete and recreate with new UUID (#370)", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const inventoryType = ModelType.create("@user/s3-inventory");
     const reportType = ModelType.create("@user/s3-report");
@@ -1109,7 +1157,11 @@ Deno.test("CEL Data Access: resource resolves after model delete and recreate wi
 Deno.test("CEL Data Access: data.latest() sees data written after buildContext()", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
     const owner = createOwner("test/model:fresh-data");

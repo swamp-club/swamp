@@ -68,7 +68,11 @@ function createOwner(ref: string): OwnerDefinition {
 Deno.test("Integration: model.X.resource.specName accesses latest version of resource", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
 
@@ -148,7 +152,11 @@ Deno.test("Integration: model.X.resource.specName accesses latest version of res
 Deno.test("Integration: data.version() retrieves specific version", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
 
@@ -213,7 +221,11 @@ Deno.test("Integration: data.version() retrieves specific version", async () => 
 Deno.test("Integration: data.version() returns null for missing version", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
 
@@ -261,7 +273,11 @@ Deno.test("Integration: data.version() returns null for missing version", async 
 Deno.test("Integration: data.latest() retrieves latest version", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
 
@@ -324,7 +340,11 @@ Deno.test("Integration: data.latest() retrieves latest version", async () => {
 Deno.test("Integration: data.listVersions() returns sorted version numbers", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
 
@@ -370,7 +390,11 @@ Deno.test("Integration: data.listVersions() returns sorted version numbers", asy
 Deno.test("Integration: data.listVersions() returns empty array for missing data", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
 
@@ -400,7 +424,11 @@ Deno.test("Integration: data.listVersions() returns empty array for missing data
 Deno.test("Integration: data.findByTag() returns matching records", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
 
@@ -509,7 +537,11 @@ Deno.test("Integration: data.findByTag() returns matching records", async () => 
 Deno.test("Integration: model can have multiple named data items with mixed types", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
 
@@ -604,7 +636,11 @@ Deno.test("Integration: model can have multiple named data items with mixed type
 Deno.test("Integration: handles hyphenated model names in data expressions", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
 

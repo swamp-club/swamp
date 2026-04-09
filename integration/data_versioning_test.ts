@@ -67,7 +67,11 @@ function createOwner(ref: string): OwnerDefinition {
 Deno.test("Data Versioning: write multiple versions of same data", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const repo = new FileSystemUnifiedDataRepository(repoDir);
+    const repo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
     const owner = createOwner("test/model:versioning");
@@ -117,7 +121,11 @@ Deno.test("Data Versioning: write multiple versions of same data", async () => {
 Deno.test("Data Versioning: retrieve specific versions", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const repo = new FileSystemUnifiedDataRepository(repoDir);
+    const repo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
     const owner = createOwner("test/model:retrieve");
@@ -165,7 +173,11 @@ Deno.test("Data Versioning: retrieve specific versions", async () => {
 Deno.test("Data Versioning: latest symlink points to newest version", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const repo = new FileSystemUnifiedDataRepository(repoDir);
+    const repo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
     const owner = createOwner("test/model:symlink");
@@ -220,7 +232,11 @@ Deno.test("Data Versioning: latest symlink points to newest version", async () =
 Deno.test("Data Versioning: garbage collection by version count", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const repo = new FileSystemUnifiedDataRepository(repoDir);
+    const repo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
     const owner = createOwner("test/model:gc-count");
@@ -271,7 +287,11 @@ Deno.test("Data Versioning: garbage collection by version count", async () => {
 Deno.test("Data Versioning: garbage collection preserves minimum versions", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const repo = new FileSystemUnifiedDataRepository(repoDir);
+    const repo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
     const owner = createOwner("test/model:gc-preserve");
@@ -309,7 +329,11 @@ Deno.test("Data Versioning: garbage collection preserves minimum versions", asyn
 Deno.test("Data Versioning: multiple data items with different GC policies", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const repo = new FileSystemUnifiedDataRepository(repoDir);
+    const repo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
     const owner = createOwner("test/model:multi-gc");
@@ -371,7 +395,11 @@ Deno.test("Data Versioning: multiple data items with different GC policies", asy
 Deno.test("Data Versioning: access specific version via data.version()", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
 
@@ -468,7 +496,11 @@ Deno.test("Data Versioning: access specific version via data.version()", async (
 Deno.test("Data Versioning: listVersions returns all versions in order", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
 
@@ -524,7 +556,11 @@ Deno.test("Data Versioning: listVersions returns all versions in order", async (
 Deno.test("Data Versioning: each version has independent content", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const repo = new FileSystemUnifiedDataRepository(repoDir);
+    const repo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
     const owner = createOwner("test/model:content-integrity");
@@ -569,7 +605,11 @@ Deno.test("Data Versioning: each version has independent content", async () => {
 Deno.test("Data Versioning: version metadata is preserved", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const repo = new FileSystemUnifiedDataRepository(repoDir);
+    const repo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
     const owner = createOwner("test/model:metadata");
@@ -605,7 +645,11 @@ Deno.test("Data Versioning: version metadata is preserved", async () => {
 Deno.test("Data Versioning: non-existent version returns null", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const repo = new FileSystemUnifiedDataRepository(repoDir);
+    const repo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
     const owner = createOwner("test/model:nonexistent");
@@ -639,7 +683,11 @@ Deno.test("Data Versioning: non-existent version returns null", async () => {
 Deno.test("Data Versioning: delete specific version", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const repo = new FileSystemUnifiedDataRepository(repoDir);
+    const repo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
     const owner = createOwner("test/model:delete-version");
@@ -681,7 +729,11 @@ Deno.test("Data Versioning: delete specific version", async () => {
 Deno.test("Data Versioning: delete all versions", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const repo = new FileSystemUnifiedDataRepository(repoDir);
+    const repo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
     const owner = createOwner("test/model:delete-all");

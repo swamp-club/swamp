@@ -42,6 +42,7 @@ import { YamlWorkflowRepository } from "../src/infrastructure/persistence/yaml_w
 import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
 import { YamlWorkflowRunRepository } from "../src/infrastructure/persistence/yaml_workflow_run_repository.ts";
 import { FileSystemUnifiedDataRepository } from "../src/infrastructure/persistence/unified_data_repository.ts";
+import { CatalogStore } from "../src/infrastructure/persistence/catalog_store.ts";
 import { SHELL_MODEL_TYPE } from "../src/domain/models/command/shell/shell_model.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
@@ -792,7 +793,11 @@ Deno.test("Workflow Architecture: data persists after workflow completion", asyn
     await setupRepoDir(repoDir);
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const workflowRepo = new YamlWorkflowRepository(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
 
     const model = Definition.create({
       name: "persist-data-model",

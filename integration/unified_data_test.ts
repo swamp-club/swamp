@@ -37,6 +37,7 @@ import {
   FileSystemUnifiedDataRepository,
   OwnershipValidationError,
 } from "../src/infrastructure/persistence/unified_data_repository.ts";
+import { CatalogStore } from "../src/infrastructure/persistence/catalog_store.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-unified-data-" });
@@ -65,7 +66,11 @@ function createOwner(ref: string): OwnerDefinition {
 Deno.test("Integration: save creates directory structure and symlink", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const repo = new FileSystemUnifiedDataRepository(repoDir);
+    const repo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
     const owner = createOwner("test/model:create");
@@ -107,7 +112,11 @@ Deno.test("Integration: save creates directory structure and symlink", async () 
 Deno.test("Integration: save auto-increments version", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const repo = new FileSystemUnifiedDataRepository(repoDir);
+    const repo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
     const owner = createOwner("test/model:version");
@@ -157,7 +166,11 @@ Deno.test("Integration: save auto-increments version", async () => {
 Deno.test("Integration: save validates ownership", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const repo = new FileSystemUnifiedDataRepository(repoDir);
+    const repo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
     const owner1 = createOwner("test/model:owner1");
@@ -208,7 +221,11 @@ Deno.test("Integration: save validates ownership", async () => {
 Deno.test("Integration: findByName returns latest version by default", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const repo = new FileSystemUnifiedDataRepository(repoDir);
+    const repo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
     const owner = createOwner("test/model:find");
@@ -234,7 +251,11 @@ Deno.test("Integration: findByName returns latest version by default", async () 
 Deno.test("Integration: findByName returns specific version when requested", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const repo = new FileSystemUnifiedDataRepository(repoDir);
+    const repo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
     const owner = createOwner("test/model:find");
@@ -263,7 +284,11 @@ Deno.test("Integration: findByName returns specific version when requested", asy
 Deno.test("Integration: listVersions returns sorted version list", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const repo = new FileSystemUnifiedDataRepository(repoDir);
+    const repo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
     const owner = createOwner("test/model:list");
@@ -289,7 +314,11 @@ Deno.test("Integration: listVersions returns sorted version list", async () => {
 Deno.test("Integration: findAllForModel returns all data", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const repo = new FileSystemUnifiedDataRepository(repoDir);
+    const repo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
     const owner = createOwner("test/model:all");
@@ -331,7 +360,11 @@ Deno.test("Integration: findAllForModel returns all data", async () => {
 Deno.test("Integration: getContent returns data content", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const repo = new FileSystemUnifiedDataRepository(repoDir);
+    const repo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
     const owner = createOwner("test/model:content");
@@ -361,7 +394,11 @@ Deno.test("Integration: getContent returns data content", async () => {
 Deno.test("Integration: stream returns content chunks", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const repo = new FileSystemUnifiedDataRepository(repoDir);
+    const repo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
     const owner = createOwner("test/model:stream");
@@ -408,7 +445,11 @@ Deno.test("Integration: stream returns content chunks", async () => {
 Deno.test("Integration: append works for streaming data", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const repo = new FileSystemUnifiedDataRepository(repoDir);
+    const repo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
     const owner = createOwner("test/model:append");
@@ -460,7 +501,11 @@ Deno.test("Integration: append works for streaming data", async () => {
 Deno.test("Integration: delete removes specific version", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const repo = new FileSystemUnifiedDataRepository(repoDir);
+    const repo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
     const owner = createOwner("test/model:delete");
@@ -489,7 +534,11 @@ Deno.test("Integration: delete removes specific version", async () => {
 Deno.test("Integration: delete removes all versions when no version specified", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const repo = new FileSystemUnifiedDataRepository(repoDir);
+    const repo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
     const owner = createOwner("test/model:delete-all");
@@ -521,7 +570,11 @@ Deno.test("Integration: delete removes all versions when no version specified", 
 Deno.test("Integration: collectGarbage removes old versions by count", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const repo = new FileSystemUnifiedDataRepository(repoDir);
+    const repo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
     const owner = createOwner("test/model:gc");
@@ -556,7 +609,11 @@ Deno.test("Integration: collectGarbage removes old versions by count", async () 
 Deno.test("Integration: full lifecycle - create, write versions, read by version", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const repo = new FileSystemUnifiedDataRepository(repoDir);
+    const repo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
     const owner = createOwner("test/model:lifecycle");

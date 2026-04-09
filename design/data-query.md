@@ -222,9 +222,10 @@ Every mutation in `UnifiedDataRepository` updates the catalog inline:
 | `removeLatestMarker()` | Remove row |
 | `collectGarbage()` | Update version or remove row |
 
-The `CatalogStore` is an optional constructor parameter on
-`UnifiedDataRepository`. When absent (tests, lightweight contexts), the
-repository behaves as before.
+The `CatalogStore` is a required constructor parameter on
+`UnifiedDataRepository`. Every repository instance maintains write-through
+catalog consistency. Use `createCatalogStore()` from `repository_factory.ts`
+to construct one from a repo directory.
 
 ### Population Strategy
 

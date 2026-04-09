@@ -29,6 +29,8 @@ import {
 } from "./run.ts";
 import { createLibSwampContext } from "../context.ts";
 import { collect } from "../testing.ts";
+import { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
+import { join } from "@std/path";
 import { Workflow } from "../../domain/workflows/workflow.ts";
 import { Job } from "../../domain/workflows/job.ts";
 import { Step } from "../../domain/workflows/step.ts";
@@ -169,14 +171,18 @@ function createTestDeps(
 ): WorkflowRunDeps {
   const workflowRepo = new InMemoryWorkflowRepository();
   const runRepo = new InMemoryWorkflowRunRepository();
+  const tempDir = Deno.makeTempDirSync();
+  const catalogStore = new CatalogStore(join(tempDir, "catalog.db"));
 
   return {
     workflowRepo,
     runRepo,
     repoDir: "/tmp/test",
+    catalogStore,
     lookupWorkflow: (_repo, _idOrName) => Promise.resolve(workflow),
-    // deno-lint-ignore no-explicit-any
-    createExecutionService: () => createFakeService(events) as any,
+    createExecutionService: (_wr, _rr, _rd, _cs) =>
+      // deno-lint-ignore no-explicit-any
+      createFakeService(events) as any,
   };
 }
 
@@ -432,13 +438,16 @@ function createTestDepsWithCapture(
 ): WorkflowRunDeps {
   const workflowRepo = new InMemoryWorkflowRepository();
   const runRepo = new InMemoryWorkflowRunRepository();
+  const tempDir = Deno.makeTempDirSync();
+  const catalogStore = new CatalogStore(join(tempDir, "catalog.db"));
 
   return {
     workflowRepo,
     runRepo,
     repoDir: "/tmp/test",
+    catalogStore,
     lookupWorkflow: (_repo, _idOrName) => Promise.resolve(workflow),
-    createExecutionService: () =>
+    createExecutionService: (_wr, _rr, _rd, _cs) =>
       // deno-lint-ignore no-explicit-any
       createCapturingFakeService(events, captured) as any,
   };
@@ -868,7 +877,7 @@ Deno.test("workflowRun yields cancelled error when abort signal fires during exe
   // Create a service that aborts mid-stream
   const deps: WorkflowRunDeps = {
     ...createTestDeps(workflow, []),
-    createExecutionService: () =>
+    createExecutionService: (_wr, _rr, _rd, _cs) =>
       ({
         // deno-lint-ignore require-yield
         async *run() {
@@ -902,7 +911,7 @@ Deno.test("workflowRun yields cancelled error when signal is pre-aborted", async
   // Service throws AbortError immediately
   const deps: WorkflowRunDeps = {
     ...createTestDeps(workflow, []),
-    createExecutionService: () =>
+    createExecutionService: (_wr, _rr, _rd, _cs) =>
       ({
         // deno-lint-ignore require-yield
         async *run() {

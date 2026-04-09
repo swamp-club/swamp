@@ -92,7 +92,7 @@ export const modelEvaluateCommand = new Command()
       const lockResult = await acquireModelLocks(datastoreConfig, [
         { modelType: type.normalized, modelId: definition.id },
       ], repoDir);
-      if (lockResult.synced) repoContext.catalogStore?.invalidate();
+      if (lockResult.synced) repoContext.catalogStore.invalidate();
       const flushModelLocks = lockResult.flush;
 
       const ctx = createLibSwampContext({ logger: cliCtx.logger });

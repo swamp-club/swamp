@@ -23,6 +23,7 @@
  * Tests verify that models properly declare and use resource/file output specifications.
  */
 import { assertEquals, assertStringIncludes } from "@std/assert";
+import { join } from "@std/path";
 import { getLogger } from "@logtape/logtape";
 import { ModelType } from "../src/domain/models/model_type.ts";
 import {
@@ -33,6 +34,7 @@ import { Definition } from "../src/domain/definitions/definition.ts";
 import { DefaultMethodExecutionService } from "../src/domain/models/method_execution_service.ts";
 import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
 import { FileSystemUnifiedDataRepository } from "../src/infrastructure/persistence/unified_data_repository.ts";
+import { CatalogStore } from "../src/infrastructure/persistence/catalog_store.ts";
 import {
   createFileWriterFactory,
   createResourceWriter,
@@ -78,7 +80,11 @@ Deno.test("Data output specs - shell model declares log file spec", () => {
 Deno.test("Data output specs - shell model execution produces valid resource handle", async () => {
   await withTempDir(async (repoDir) => {
     const definitionRepo = new YamlDefinitionRepository(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const executionService = new DefaultMethodExecutionService();
 
     const modelType = ModelType.create("command/shell");
@@ -162,7 +168,11 @@ Deno.test("Data output specs - shell model execution produces valid resource han
 Deno.test("Data output specs - undeclared resource spec fails at writeResource", async () => {
   await withTempDir(async (repoDir) => {
     const definitionRepo = new YamlDefinitionRepository(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const executionService = new DefaultMethodExecutionService();
 
     const shellModelType = ModelType.create("command/shell");
@@ -234,7 +244,11 @@ Deno.test("Data output specs - undeclared resource spec fails at writeResource",
 Deno.test("Data output specs - undeclared file spec fails at createFileWriter", async () => {
   await withTempDir(async (repoDir) => {
     const definitionRepo = new YamlDefinitionRepository(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const executionService = new DefaultMethodExecutionService();
 
     const shellModelType = ModelType.create("command/shell");

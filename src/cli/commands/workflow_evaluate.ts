@@ -166,7 +166,7 @@ export const workflowEvaluateCommand = new Command()
             unlocked.repoDir,
           );
           if (lockResult.synced) {
-            unlocked.repoContext.catalogStore?.invalidate();
+            unlocked.repoContext.catalogStore.invalidate();
           }
           flushModelLocks = lockResult.flush;
         }

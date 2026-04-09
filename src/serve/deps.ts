@@ -104,20 +104,20 @@ export async function createModelMethodRunDeps(
     lookupDefinition: (idOrName) =>
       findDefinitionByIdOrName(repoContext.definitionRepo, idOrName),
     getModelDef: (type) => resolveModelType(type, getAutoResolver()),
-    createEvaluationService: () =>
-      new ExpressionEvaluationService(
+    createEvaluationService: () => {
+      const dqs = new DataQueryService(
+        repoContext.catalogStore,
+        repoContext.unifiedDataRepo,
+      );
+      return new ExpressionEvaluationService(
         repoContext.definitionRepo,
         repoDir,
         {
           dataRepo: repoContext.unifiedDataRepo,
-          dataQueryService: repoContext.catalogStore
-            ? new DataQueryService(
-              repoContext.catalogStore,
-              repoContext.unifiedDataRepo,
-            )
-            : undefined,
+          dataQueryService: dqs,
         },
-      ),
+      );
+    },
     loadEvaluatedDefinition: (type, name) =>
       repoContext.evaluatedDefinitionRepo.findByName(type, name),
     saveEvaluatedDefinition: (type, definition) =>
@@ -127,15 +127,14 @@ export async function createModelMethodRunDeps(
     dataRepo: repoContext.unifiedDataRepo,
     definitionRepo: repoContext.definitionRepo,
     outputRepo: repoContext.outputRepo,
-    queryData: repoContext.catalogStore
-      ? ((dqs) => (predicate: string, select?: string) =>
+    queryData:
+      ((dqs) => (predicate: string, select?: string) =>
         dqs.query(predicate, { select }))(
           new DataQueryService(
             repoContext.catalogStore,
             repoContext.unifiedDataRepo,
           ),
-        )
-      : undefined,
+        ),
     createRunLog: async (modelType, method, definitionId) => {
       const redactor = new SecretRedactor();
       const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -215,7 +214,7 @@ export async function executeWorkflowWithLocks(
             resolvedModels,
             repoDir,
           );
-          if (lockResult.synced) repoContext.catalogStore?.invalidate();
+          if (lockResult.synced) repoContext.catalogStore.invalidate();
           flushLocks = lockResult.flush;
         }
       }

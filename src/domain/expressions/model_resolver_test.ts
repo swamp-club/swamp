@@ -57,7 +57,12 @@ Deno.test("data.latest() reads from disk synchronously", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
     const defRepo = new YamlDefinitionRepository(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      catalog,
+    );
     const type = ModelType.create("test/model");
 
     const model = Definition.create({
@@ -80,8 +85,6 @@ Deno.test("data.latest() reads from disk synchronously", async () => {
       data,
       new TextEncoder().encode(JSON.stringify({ value: 42 })),
     );
-
-    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
     const dqs = new DataQueryService(catalog, dataRepo);
     await dqs.query('name == ""');
 
@@ -108,7 +111,12 @@ Deno.test("data.latest() sees data written after buildContext()", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
     const defRepo = new YamlDefinitionRepository(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      catalog,
+    );
     const type = ModelType.create("test/model");
 
     const model = Definition.create({
@@ -134,7 +142,6 @@ Deno.test("data.latest() sees data written after buildContext()", async () => {
     );
 
     // Build context
-    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
     const dqs = new DataQueryService(catalog, dataRepo);
     await dqs.query('name == ""');
 
@@ -175,7 +182,12 @@ Deno.test("data.version() reads specific version from disk", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
     const defRepo = new YamlDefinitionRepository(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const catalogStore = new CatalogStore(join(repoDir, "_catalog.db"));
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      catalogStore,
+    );
     const type = ModelType.create("test/model");
 
     const model = Definition.create({
@@ -221,7 +233,12 @@ Deno.test("data.listVersions() returns sorted version numbers", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
     const defRepo = new YamlDefinitionRepository(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const catalogStore = new CatalogStore(join(repoDir, "_catalog.db"));
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      catalogStore,
+    );
     const type = ModelType.create("test/model");
 
     const model = Definition.create({
@@ -265,7 +282,12 @@ Deno.test("data.findByTag() returns matching records from disk", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
     const defRepo = new YamlDefinitionRepository(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      catalog,
+    );
     const type = ModelType.create("test/model");
 
     const model = Definition.create({
@@ -305,8 +327,6 @@ Deno.test("data.findByTag() returns matching records from disk", async () => {
       otherData,
       new TextEncoder().encode(JSON.stringify({ key: "other" })),
     );
-
-    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
     const dqs = new DataQueryService(catalog, dataRepo);
     await dqs.query('name == ""');
 
@@ -340,7 +360,12 @@ Deno.test("data.findByTag() deduplicates when data exists under orphan coordinat
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
     const defRepo = new YamlDefinitionRepository(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      catalog,
+    );
     const type = ModelType.create("test/model");
 
     // Step 1: Create model and save data under its UUID
@@ -374,7 +399,6 @@ Deno.test("data.findByTag() deduplicates when data exists under orphan coordinat
     await defRepo.save(type, recreatedModel);
 
     // Step 3: Build context — orphan recovery maps old UUID data to new model name
-    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
     const dqs = new DataQueryService(catalog, dataRepo);
     await dqs.query('name == ""');
 
@@ -399,7 +423,12 @@ Deno.test("data.findByTag() deduplicates when both old and new UUIDs have data f
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
     const defRepo = new YamlDefinitionRepository(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      catalog,
+    );
     const type = ModelType.create("test/model");
 
     // Step 1: Create model and save data under its UUID
@@ -449,7 +478,6 @@ Deno.test("data.findByTag() deduplicates when both old and new UUIDs have data f
     );
 
     // Step 4: Build context — both UUIDs have data for "tagged-item"
-    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
     const dqs = new DataQueryService(catalog, dataRepo);
     await dqs.query('name == ""');
 
@@ -479,7 +507,12 @@ Deno.test("data.findBySpec() returns records matching specName tag", async () =>
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
     const defRepo = new YamlDefinitionRepository(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      catalog,
+    );
     const type = ModelType.create("test/model");
 
     const model = Definition.create({
@@ -518,8 +551,6 @@ Deno.test("data.findBySpec() returns records matching specName tag", async () =>
       subnetB,
       new TextEncoder().encode(JSON.stringify({ cidr: "10.0.2.0/24" })),
     );
-
-    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
     const dqs = new DataQueryService(catalog, dataRepo);
     await dqs.query('name == ""');
 
@@ -543,7 +574,12 @@ Deno.test("data.findBySpec() deduplicates when both old and new UUIDs have data 
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
     const defRepo = new YamlDefinitionRepository(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      catalog,
+    );
     const type = ModelType.create("test/model");
 
     // Step 1: Create model and save data under its UUID
@@ -593,7 +629,6 @@ Deno.test("data.findBySpec() deduplicates when both old and new UUIDs have data 
     );
 
     // Step 4: Build context — both UUIDs have data for "subnet-a"
-    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
     const dqs = new DataQueryService(catalog, dataRepo);
     await dqs.query('name == ""');
 
@@ -619,7 +654,12 @@ Deno.test("data.findBySpec() returns only latest version when multiple versions 
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
     const defRepo = new YamlDefinitionRepository(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      catalog,
+    );
     const type = ModelType.create("test/model");
 
     const model = Definition.create({
@@ -655,8 +695,6 @@ Deno.test("data.findBySpec() returns only latest version when multiple versions 
       subnet,
       new TextEncoder().encode(JSON.stringify({ cidr: "10.0.3.0/24" })),
     );
-
-    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
     const dqs = new DataQueryService(catalog, dataRepo);
     await dqs.query('name == ""');
 
@@ -680,7 +718,12 @@ Deno.test("data.findByTag() returns only latest version when multiple versions e
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
     const defRepo = new YamlDefinitionRepository(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      catalog,
+    );
     const type = ModelType.create("test/model");
 
     const model = Definition.create({
@@ -716,8 +759,6 @@ Deno.test("data.findByTag() returns only latest version when multiple versions e
       item,
       new TextEncoder().encode(JSON.stringify({ v: 3 })),
     );
-
-    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
     const dqs = new DataQueryService(catalog, dataRepo);
     await dqs.query('name == ""');
 
@@ -745,7 +786,12 @@ Deno.test("data.* returns null/empty for missing model", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
     const defRepo = new YamlDefinitionRepository(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const catalogStore = new CatalogStore(join(repoDir, "_catalog.db"));
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      catalogStore,
+    );
 
     const resolver = new ModelResolver(defRepo, { repoDir, dataRepo });
     const ctx = await resolver.buildContext();
@@ -763,7 +809,12 @@ Deno.test("data.* returns null/empty for missing data name", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
     const defRepo = new YamlDefinitionRepository(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const catalogStore = new CatalogStore(join(repoDir, "_catalog.db"));
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      catalogStore,
+    );
     const type = ModelType.create("test/model");
 
     const model = Definition.create({
@@ -790,7 +841,12 @@ Deno.test("findBySpec: returns all data regardless of workflowRunId", async () =
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
     const defRepo = new YamlDefinitionRepository(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      catalog,
+    );
     const type = ModelType.create("test/model");
 
     const model = Definition.create({
@@ -840,8 +896,6 @@ Deno.test("findBySpec: returns all data regardless of workflowRunId", async () =
       episodeB,
       new TextEncoder().encode(JSON.stringify({ title: "Episode B" })),
     );
-
-    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
     const dqs = new DataQueryService(catalog, dataRepo);
     await dqs.query('name == ""');
 
@@ -871,7 +925,12 @@ Deno.test("findBySpec: returns all data when workflowRunId is not set", async ()
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
     const defRepo = new YamlDefinitionRepository(repoDir);
-    const dataRepo = new FileSystemUnifiedDataRepository(repoDir);
+    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      catalog,
+    );
     const type = ModelType.create("test/model");
 
     const model = Definition.create({
@@ -916,8 +975,6 @@ Deno.test("findBySpec: returns all data when workflowRunId is not set", async ()
       dataWithRun,
       new TextEncoder().encode(JSON.stringify({ value: 2 })),
     );
-
-    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
     const dqs = new DataQueryService(catalog, dataRepo);
     await dqs.query('name == ""');
 

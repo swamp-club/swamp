@@ -185,9 +185,9 @@ export interface WorkflowRunDeps {
     workflowRepo: WorkflowRepository,
     runRepo: WorkflowRunRepository,
     repoDir: string,
-    catalogStore?: CatalogStore,
+    catalogStore: CatalogStore,
   ) => WorkflowExecutionService;
-  catalogStore?: CatalogStore;
+  catalogStore: CatalogStore;
   dataRepo?: UnifiedDataRepository;
   definitionRepo?: DefinitionRepository;
 }

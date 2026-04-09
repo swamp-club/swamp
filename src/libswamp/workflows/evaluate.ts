@@ -40,13 +40,9 @@ import type { WorkflowRepository } from "../../domain/workflows/repositories.ts"
 import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
-import {
-  SWAMP_SUBDIRS,
-  swampPath,
-} from "../../infrastructure/persistence/paths.ts";
-import { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
+import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
+import { createCatalogStore } from "../../infrastructure/persistence/repository_factory.ts";
 import { DataQueryService } from "../../domain/data/data_query_service.ts";
-import { join } from "@std/path";
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import type { LibSwampContext } from "../context.ts";
 import { notFound, type SwampError } from "../errors.ts";
@@ -111,10 +107,7 @@ export function createWorkflowEvaluateDeps(
   const dsPath = (subdir: string): string | undefined =>
     datastoreResolver?.resolvePath(subdir);
   const definitionRepo = new YamlDefinitionRepository(repoDir);
-  const dataBaseDir = dsPath(SWAMP_SUBDIRS.data) ??
-    swampPath(repoDir, SWAMP_SUBDIRS.data);
-  const catalogDbPath = join(dataBaseDir, "_catalog.db");
-  const catalogStore = new CatalogStore(catalogDbPath);
+  const catalogStore = createCatalogStore(repoDir, datastoreResolver);
   const dataRepo = new FileSystemUnifiedDataRepository(
     repoDir,
     dsPath(SWAMP_SUBDIRS.data),

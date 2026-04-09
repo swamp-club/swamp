@@ -36,6 +36,7 @@ import {
   FileSystemUnifiedDataRepository,
   OwnershipValidationError,
 } from "../src/infrastructure/persistence/unified_data_repository.ts";
+import { CatalogStore } from "../src/infrastructure/persistence/catalog_store.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-data-ownership-" });
@@ -71,7 +72,11 @@ function createOwner(
 Deno.test("Data Ownership: create data with model-method owner", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const repo = new FileSystemUnifiedDataRepository(repoDir);
+    const repo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
     const owner = createOwner("model-method", "test/model:create");
@@ -106,7 +111,11 @@ Deno.test("Data Ownership: create data with model-method owner", async () => {
 Deno.test("Data Ownership: create data with workflow-step owner", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const repo = new FileSystemUnifiedDataRepository(repoDir);
+    const repo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
     const workflowId = crypto.randomUUID();
@@ -147,7 +156,11 @@ Deno.test("Data Ownership: create data with workflow-step owner", async () => {
 Deno.test("Data Ownership: create data with manual owner", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const repo = new FileSystemUnifiedDataRepository(repoDir);
+    const repo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
     const owner = createOwner("manual", "user:admin@example.com");
@@ -184,7 +197,11 @@ Deno.test("Data Ownership: create data with manual owner", async () => {
 Deno.test("Data Ownership: same owner can write new versions", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const repo = new FileSystemUnifiedDataRepository(repoDir);
+    const repo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
     const owner = createOwner("model-method", "test/model:update");
@@ -230,7 +247,11 @@ Deno.test("Data Ownership: same owner can write new versions", async () => {
 Deno.test("Data Ownership: different owner is rejected", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const repo = new FileSystemUnifiedDataRepository(repoDir);
+    const repo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
 
@@ -292,7 +313,11 @@ Deno.test("Data Ownership: different owner is rejected", async () => {
 Deno.test("Data Ownership: different owner type is rejected", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const repo = new FileSystemUnifiedDataRepository(repoDir);
+    const repo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
 
@@ -343,7 +368,11 @@ Deno.test("Data Ownership: different owner type is rejected", async () => {
 Deno.test("Data Ownership: modified ownerRef is rejected", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const repo = new FileSystemUnifiedDataRepository(repoDir);
+    const repo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
 
@@ -400,7 +429,11 @@ Deno.test("Data Ownership: modified ownerRef is rejected", async () => {
 Deno.test("Data Ownership: multiple data items can have different owners", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const repo = new FileSystemUnifiedDataRepository(repoDir);
+    const repo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
 
@@ -502,7 +535,11 @@ Deno.test("Data Ownership: multiple data items can have different owners", async
 Deno.test("Data Ownership: new data with non-existing name succeeds", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const repo = new FileSystemUnifiedDataRepository(repoDir);
+    const repo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
 
@@ -541,7 +578,11 @@ Deno.test("Data Ownership: new data with non-existing name succeeds", async () =
 Deno.test("Data Ownership: same ownerType+ownerRef matches regardless of other fields", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const repo = new FileSystemUnifiedDataRepository(repoDir);
+    const repo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
 
@@ -591,7 +632,11 @@ Deno.test("Data Ownership: same ownerType+ownerRef matches regardless of other f
 Deno.test("Data Ownership: rejected write doesn't corrupt existing data", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const repo = new FileSystemUnifiedDataRepository(repoDir);
+    const repo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
 
@@ -657,7 +702,11 @@ Deno.test("Data Ownership: rejected write doesn't corrupt existing data", async 
 Deno.test("Data Ownership: owner persists across multiple versions", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const repo = new FileSystemUnifiedDataRepository(repoDir);
+    const repo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const type = ModelType.create("test/model");
     const modelId = crypto.randomUUID();
     const owner = createOwner("model-method", "persistent-owner");
@@ -693,7 +742,11 @@ Deno.test("Data Ownership: owner persists across multiple versions", async () =>
 Deno.test("Data Ownership: different models can own data with same name", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
-    const repo = new FileSystemUnifiedDataRepository(repoDir);
+    const repo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
     const type = ModelType.create("test/model");
 
     // Two different model instances

@@ -23,14 +23,21 @@ import {
   assertRejects,
   assertStringIncludes,
 } from "@std/assert";
+import { join } from "@std/path";
 import { FileSystemUnifiedDataRepository } from "./unified_data_repository.ts";
+import { CatalogStore } from "./catalog_store.ts";
 import { Data } from "../../domain/data/mod.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 
 const testType = ModelType.create("test/model");
 
 Deno.test("getPath rejects dataName with path traversal", () => {
-  const repo = new FileSystemUnifiedDataRepository("/tmp/test-repo");
+  const catalogStore = new CatalogStore(join("/tmp/test-repo", "_catalog.db"));
+  const repo = new FileSystemUnifiedDataRepository(
+    "/tmp/test-repo",
+    undefined,
+    catalogStore,
+  );
   try {
     repo.getPath(testType, "valid-model", "../escape", 1);
     throw new Error("Expected path traversal error");
@@ -43,7 +50,12 @@ Deno.test("getPath rejects dataName with path traversal", () => {
 });
 
 Deno.test("getPath rejects modelId with path traversal", () => {
-  const repo = new FileSystemUnifiedDataRepository("/tmp/test-repo");
+  const catalogStore = new CatalogStore(join("/tmp/test-repo", "_catalog.db"));
+  const repo = new FileSystemUnifiedDataRepository(
+    "/tmp/test-repo",
+    undefined,
+    catalogStore,
+  );
   try {
     repo.getPath(testType, "../escape", "valid-data", 1);
     throw new Error("Expected path traversal error");
@@ -56,14 +68,24 @@ Deno.test("getPath rejects modelId with path traversal", () => {
 });
 
 Deno.test("getPath accepts valid modelId and dataName", () => {
-  const repo = new FileSystemUnifiedDataRepository("/tmp/test-repo");
+  const catalogStore = new CatalogStore(join("/tmp/test-repo", "_catalog.db"));
+  const repo = new FileSystemUnifiedDataRepository(
+    "/tmp/test-repo",
+    undefined,
+    catalogStore,
+  );
   const path = repo.getPath(testType, "my-model-id", "my-data-name", 1);
   assertStringIncludes(path, "my-model-id");
   assertStringIncludes(path, "my-data-name");
 });
 
 Deno.test("listVersions rejects dataName with path traversal", async () => {
-  const repo = new FileSystemUnifiedDataRepository("/tmp/test-repo");
+  const catalogStore = new CatalogStore(join("/tmp/test-repo", "_catalog.db"));
+  const repo = new FileSystemUnifiedDataRepository(
+    "/tmp/test-repo",
+    undefined,
+    catalogStore,
+  );
   await assertRejects(
     () => repo.listVersions(testType, "valid-model", "../escape"),
     Error,
@@ -90,7 +112,12 @@ function makeData(name: string): Data {
 Deno.test("concurrent allocateVersion returns unique versions", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
-    const repo = new FileSystemUnifiedDataRepository(tmpDir);
+    const catalogStore = new CatalogStore(join(tmpDir, "_catalog.db"));
+    const repo = new FileSystemUnifiedDataRepository(
+      tmpDir,
+      undefined,
+      catalogStore,
+    );
     const data = makeData("concurrent-alloc");
     const concurrency = 10;
 
@@ -118,7 +145,12 @@ Deno.test("concurrent allocateVersion returns unique versions", async () => {
 Deno.test("concurrent save returns unique versions with distinct content", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
-    const repo = new FileSystemUnifiedDataRepository(tmpDir);
+    const catalogStore = new CatalogStore(join(tmpDir, "_catalog.db"));
+    const repo = new FileSystemUnifiedDataRepository(
+      tmpDir,
+      undefined,
+      catalogStore,
+    );
     const data = makeData("concurrent-save");
     const concurrency = 10;
 
@@ -158,7 +190,12 @@ Deno.test("concurrent save returns unique versions with distinct content", async
 Deno.test("save rejects reserved data name 'latest'", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
-    const repo = new FileSystemUnifiedDataRepository(tmpDir);
+    const catalogStore = new CatalogStore(join(tmpDir, "_catalog.db"));
+    const repo = new FileSystemUnifiedDataRepository(
+      tmpDir,
+      undefined,
+      catalogStore,
+    );
     const data = makeData("latest");
     const content = new TextEncoder().encode("test");
 
@@ -175,7 +212,12 @@ Deno.test("save rejects reserved data name 'latest'", async () => {
 Deno.test("save rejects reserved data name case-insensitively", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
-    const repo = new FileSystemUnifiedDataRepository(tmpDir);
+    const catalogStore = new CatalogStore(join(tmpDir, "_catalog.db"));
+    const repo = new FileSystemUnifiedDataRepository(
+      tmpDir,
+      undefined,
+      catalogStore,
+    );
     const data = makeData("LATEST");
     const content = new TextEncoder().encode("test");
 
@@ -192,7 +234,12 @@ Deno.test("save rejects reserved data name case-insensitively", async () => {
 Deno.test("allocateVersion rejects reserved data name 'latest'", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
-    const repo = new FileSystemUnifiedDataRepository(tmpDir);
+    const catalogStore = new CatalogStore(join(tmpDir, "_catalog.db"));
+    const repo = new FileSystemUnifiedDataRepository(
+      tmpDir,
+      undefined,
+      catalogStore,
+    );
     const data = makeData("latest");
 
     await assertRejects(
@@ -223,7 +270,12 @@ function makeJsonData(name: string): Data {
 Deno.test("getLatestVersionSync reads latest symlink", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
-    const repo = new FileSystemUnifiedDataRepository(tmpDir);
+    const catalogStore = new CatalogStore(join(tmpDir, "_catalog.db"));
+    const repo = new FileSystemUnifiedDataRepository(
+      tmpDir,
+      undefined,
+      catalogStore,
+    );
     const data = makeJsonData("sync-latest");
 
     await repo.save(
@@ -251,7 +303,14 @@ Deno.test("getLatestVersionSync reads latest symlink", async () => {
 });
 
 Deno.test("getLatestVersionSync returns null for missing data", () => {
-  const repo = new FileSystemUnifiedDataRepository("/tmp/nonexistent-repo");
+  const catalogStore = new CatalogStore(
+    join("/tmp/nonexistent-repo", "_catalog.db"),
+  );
+  const repo = new FileSystemUnifiedDataRepository(
+    "/tmp/nonexistent-repo",
+    undefined,
+    catalogStore,
+  );
   const result = repo.getLatestVersionSync(
     testType,
     "missing-model",
@@ -263,7 +322,12 @@ Deno.test("getLatestVersionSync returns null for missing data", () => {
 Deno.test("findByNameSync reads metadata", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
-    const repo = new FileSystemUnifiedDataRepository(tmpDir);
+    const catalogStore = new CatalogStore(join(tmpDir, "_catalog.db"));
+    const repo = new FileSystemUnifiedDataRepository(
+      tmpDir,
+      undefined,
+      catalogStore,
+    );
     const data = makeJsonData("sync-find");
 
     await repo.save(
@@ -283,7 +347,14 @@ Deno.test("findByNameSync reads metadata", async () => {
 });
 
 Deno.test("findByNameSync returns null for missing data", () => {
-  const repo = new FileSystemUnifiedDataRepository("/tmp/nonexistent-repo");
+  const catalogStore = new CatalogStore(
+    join("/tmp/nonexistent-repo", "_catalog.db"),
+  );
+  const repo = new FileSystemUnifiedDataRepository(
+    "/tmp/nonexistent-repo",
+    undefined,
+    catalogStore,
+  );
   const result = repo.findByNameSync(
     testType,
     "missing-model",
@@ -295,7 +366,12 @@ Deno.test("findByNameSync returns null for missing data", () => {
 Deno.test("listVersionsSync returns sorted version numbers", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
-    const repo = new FileSystemUnifiedDataRepository(tmpDir);
+    const catalogStore = new CatalogStore(join(tmpDir, "_catalog.db"));
+    const repo = new FileSystemUnifiedDataRepository(
+      tmpDir,
+      undefined,
+      catalogStore,
+    );
     const data = makeJsonData("sync-list");
 
     for (let i = 0; i < 3; i++) {
@@ -315,7 +391,14 @@ Deno.test("listVersionsSync returns sorted version numbers", async () => {
 });
 
 Deno.test("listVersionsSync returns empty for missing data", () => {
-  const repo = new FileSystemUnifiedDataRepository("/tmp/nonexistent-repo");
+  const catalogStore = new CatalogStore(
+    join("/tmp/nonexistent-repo", "_catalog.db"),
+  );
+  const repo = new FileSystemUnifiedDataRepository(
+    "/tmp/nonexistent-repo",
+    undefined,
+    catalogStore,
+  );
   const versions = repo.listVersionsSync(
     testType,
     "missing-model",
@@ -327,7 +410,12 @@ Deno.test("listVersionsSync returns empty for missing data", () => {
 Deno.test("getContentSync reads content bytes", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
-    const repo = new FileSystemUnifiedDataRepository(tmpDir);
+    const catalogStore = new CatalogStore(join(tmpDir, "_catalog.db"));
+    const repo = new FileSystemUnifiedDataRepository(
+      tmpDir,
+      undefined,
+      catalogStore,
+    );
     const data = makeJsonData("sync-content");
     const content = new TextEncoder().encode('{"hello":"world"}');
 
@@ -342,7 +430,14 @@ Deno.test("getContentSync reads content bytes", async () => {
 });
 
 Deno.test("getContentSync returns null for missing content", () => {
-  const repo = new FileSystemUnifiedDataRepository("/tmp/nonexistent-repo");
+  const catalogStore = new CatalogStore(
+    join("/tmp/nonexistent-repo", "_catalog.db"),
+  );
+  const repo = new FileSystemUnifiedDataRepository(
+    "/tmp/nonexistent-repo",
+    undefined,
+    catalogStore,
+  );
   const result = repo.getContentSync(
     testType,
     "missing-model",
@@ -354,7 +449,12 @@ Deno.test("getContentSync returns null for missing content", () => {
 Deno.test("findAllForModelSync returns all data items", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
-    const repo = new FileSystemUnifiedDataRepository(tmpDir);
+    const catalogStore = new CatalogStore(join(tmpDir, "_catalog.db"));
+    const repo = new FileSystemUnifiedDataRepository(
+      tmpDir,
+      undefined,
+      catalogStore,
+    );
 
     const data1 = makeJsonData("item-a");
     const data2 = makeJsonData("item-b");
@@ -382,7 +482,14 @@ Deno.test("findAllForModelSync returns all data items", async () => {
 });
 
 Deno.test("findAllForModelSync returns empty for missing model", () => {
-  const repo = new FileSystemUnifiedDataRepository("/tmp/nonexistent-repo");
+  const catalogStore = new CatalogStore(
+    join("/tmp/nonexistent-repo", "_catalog.db"),
+  );
+  const repo = new FileSystemUnifiedDataRepository(
+    "/tmp/nonexistent-repo",
+    undefined,
+    catalogStore,
+  );
   const results = repo.findAllForModelSync(testType, "missing-model");
   assertEquals(results, []);
 });

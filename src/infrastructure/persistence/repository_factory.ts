@@ -69,6 +69,31 @@ import { CatalogStore } from "./catalog_store.ts";
 import { join } from "@std/path";
 
 // =============================================================================
+// Catalog Store Factory
+// =============================================================================
+
+/**
+ * Creates a CatalogStore for the given repository.
+ *
+ * Centralizes the three-step pattern: resolve data base dir, build DB path,
+ * construct CatalogStore. Use this whenever you need a CatalogStore outside
+ * of {@link createRepositoryContext}.
+ *
+ * @param repoDir - The repository directory path
+ * @param datastoreResolver - Optional datastore path resolver
+ * @returns A new CatalogStore instance
+ */
+export function createCatalogStore(
+  repoDir: string,
+  datastoreResolver?: DatastorePathResolver,
+): CatalogStore {
+  const dataBaseDir = datastoreResolver?.resolvePath(SWAMP_SUBDIRS.data) ??
+    swampPath(repoDir, SWAMP_SUBDIRS.data);
+  const catalogDbPath = join(dataBaseDir, "_catalog.db");
+  return new CatalogStore(catalogDbPath);
+}
+
+// =============================================================================
 // Standalone Repository Factory Functions
 // =============================================================================
 // Use these when you need a single repository without the full context.
@@ -118,8 +143,10 @@ export function createEvaluatedDefinitionRepository(
  */
 export function createUnifiedDataRepository(
   repoDir: string,
+  catalogStore: CatalogStore,
+  baseDir?: string,
 ): FileSystemUnifiedDataRepository {
-  return new FileSystemUnifiedDataRepository(repoDir);
+  return new FileSystemUnifiedDataRepository(repoDir, baseDir, catalogStore);
 }
 
 /**
@@ -211,7 +238,7 @@ export interface RepositoryContext {
   workflowRepo: WorkflowRepository;
   workflowRunRepo: YamlWorkflowRunRepository;
   vaultConfigRepo: YamlVaultConfigRepository;
-  catalogStore?: CatalogStore;
+  catalogStore: CatalogStore;
 }
 
 /**
@@ -277,10 +304,7 @@ export function createRepositoryContext(
   );
 
   // Create catalog store for data query
-  const dataBaseDir = dsPath(SWAMP_SUBDIRS.data) ??
-    swampPath(repoDir, SWAMP_SUBDIRS.data);
-  const catalogDbPath = join(dataBaseDir, "_catalog.db");
-  const catalogStore = new CatalogStore(catalogDbPath);
+  const catalogStore = createCatalogStore(repoDir, datastoreResolver);
 
   // Unified data repository with catalog write-through
   const unifiedDataRepo = new FileSystemUnifiedDataRepository(

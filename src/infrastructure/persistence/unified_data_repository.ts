@@ -430,14 +430,13 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
 
   constructor(
     private readonly repoDir: string,
-    baseDir?: string,
-    private readonly catalogStore?: CatalogStore,
+    baseDir: string | undefined,
+    private readonly catalogStore: CatalogStore,
   ) {
     this.baseDir = baseDir ?? swampPath(repoDir, SWAMP_SUBDIRS.data);
   }
 
   private catalogUpsert(type: ModelType, modelId: string, data: Data): void {
-    if (!this.catalogStore) return;
     this.catalogStore.upsert({
       type_normalized: type.normalized,
       model_id: modelId,
@@ -468,7 +467,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     modelId: string,
     dataName: string,
   ): void {
-    if (!this.catalogStore) return;
     this.catalogStore.remove(type.normalized, modelId, dataName);
   }
 

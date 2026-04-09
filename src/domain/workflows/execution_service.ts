@@ -141,6 +141,8 @@ export interface StepExecutionContext {
   skipAllChecks?: boolean;
   /** Resolved base directory for data storage (S3 cache path) */
   dataBaseDir?: string;
+  /** Catalog store for write-through indexing */
+  catalogStore: CatalogStore;
 }
 
 /**
@@ -205,6 +207,7 @@ export class DefaultStepExecutor implements StepExecutor {
     const unifiedDataRepo = new FileSystemUnifiedDataRepository(
       ctx.repoDir,
       ctx.dataBaseDir,
+      ctx.catalogStore,
     );
     const outputRepo = new YamlOutputRepository(ctx.repoDir);
     const executionService = new DefaultMethodExecutionService();
@@ -1097,15 +1100,15 @@ export class WorkflowExecutionService {
   private readonly modelResolver: ModelResolver;
   private readonly dataRepo: FileSystemUnifiedDataRepository;
   private readonly dataBaseDir?: string;
-  private readonly catalogStore?: CatalogStore;
+  private readonly catalogStore: CatalogStore;
 
   constructor(
     private readonly workflowRepo: WorkflowRepository,
     private readonly runRepo: WorkflowRunRepository,
     private readonly repoDir: string,
-    executor?: StepExecutor,
-    dataBaseDir?: string,
-    catalogStore?: CatalogStore,
+    executor: StepExecutor | undefined,
+    dataBaseDir: string | undefined,
+    catalogStore: CatalogStore,
   ) {
     this.executor = executor ?? new DefaultStepExecutor();
     this.dataBaseDir = dataBaseDir;
@@ -1116,9 +1119,7 @@ export class WorkflowExecutionService {
       dataBaseDir,
       catalogStore,
     );
-    const dataQueryService = catalogStore
-      ? new DataQueryService(catalogStore, this.dataRepo)
-      : undefined;
+    const dataQueryService = new DataQueryService(catalogStore, this.dataRepo);
     this.modelResolver = new ModelResolver(this.definitionRepo, {
       repoDir,
       dataRepo: this.dataRepo,
@@ -1779,6 +1780,7 @@ export class WorkflowExecutionService {
           skipCheckLabels: options.skipCheckLabels,
           skipAllChecks: options.skipAllChecks,
           dataBaseDir: this.dataBaseDir,
+          catalogStore: this.catalogStore,
         };
         return this.executor.execute(step, ctx);
       });

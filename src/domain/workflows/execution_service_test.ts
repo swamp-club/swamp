@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertNotEquals, assertRejects } from "@std/assert";
+import { join } from "@std/path";
 import {
   coerceToSuffix,
   DefaultStepExecutor,
@@ -26,6 +27,7 @@ import {
   type StepExecutor,
   WorkflowExecutionService,
 } from "./execution_service.ts";
+import { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
 import { Workflow } from "./workflow.ts";
 import { Job } from "./job.ts";
 import { Step } from "./step.ts";
@@ -202,11 +204,14 @@ Deno.test("executes simple workflow with one job and one step", async () => {
     const workflow = createSimpleWorkflow();
     await workflowRepo.save(workflow);
 
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
     const service = new WorkflowExecutionService(
       workflowRepo,
       runRepo,
       tempDir,
       executor,
+      undefined,
+      catalogStore,
     );
 
     const run = await service.execute(workflow.name);
@@ -253,11 +258,14 @@ Deno.test("executes workflow with multiple jobs", async () => {
 
     await workflowRepo.save(workflow);
 
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
     const service = new WorkflowExecutionService(
       workflowRepo,
       runRepo,
       tempDir,
       executor,
+      undefined,
+      catalogStore,
     );
 
     const run = await service.execute(workflow.name);
@@ -300,11 +308,14 @@ Deno.test("executes workflow with step dependencies", async () => {
 
     await workflowRepo.save(workflow);
 
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
     const service = new WorkflowExecutionService(
       workflowRepo,
       runRepo,
       tempDir,
       executor,
+      undefined,
+      catalogStore,
     );
 
     const run = await service.execute(workflow.name);
@@ -327,11 +338,14 @@ Deno.test("marks workflow as failed when step fails", async () => {
     const workflow = createSimpleWorkflow();
     await workflowRepo.save(workflow);
 
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
     const service = new WorkflowExecutionService(
       workflowRepo,
       runRepo,
       tempDir,
       executor,
+      undefined,
+      catalogStore,
     );
 
     const run = await service.execute(workflow.name);
@@ -379,11 +393,14 @@ Deno.test("skips job when trigger condition not met", async () => {
 
     await workflowRepo.save(workflow);
 
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
     const service = new WorkflowExecutionService(
       workflowRepo,
       runRepo,
       tempDir,
       executor,
+      undefined,
+      catalogStore,
     );
 
     const run = await service.execute(workflow.name);
@@ -430,11 +447,14 @@ Deno.test("runs job on failure condition", async () => {
 
     await workflowRepo.save(workflow);
 
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
     const service = new WorkflowExecutionService(
       workflowRepo,
       runRepo,
       tempDir,
       executor,
+      undefined,
+      catalogStore,
     );
 
     const run = await service.execute(workflow.name);
@@ -450,10 +470,14 @@ Deno.test("throws error for nonexistent workflow", async () => {
     const workflowRepo = new InMemoryWorkflowRepository();
     const runRepo = new InMemoryWorkflowRunRepository();
 
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
     const service = new WorkflowExecutionService(
       workflowRepo,
       runRepo,
       tempDir,
+      undefined,
+      undefined,
+      catalogStore,
     );
 
     try {
@@ -474,11 +498,14 @@ Deno.test("saves workflow run to repository", async () => {
     const workflow = createSimpleWorkflow();
     await workflowRepo.save(workflow);
 
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
     const service = new WorkflowExecutionService(
       workflowRepo,
       runRepo,
       tempDir,
       executor,
+      undefined,
+      catalogStore,
     );
 
     const run = await service.execute(workflow.name);
@@ -498,11 +525,14 @@ Deno.test("run() yields lifecycle events during execution", async () => {
     const workflow = createSimpleWorkflow();
     await workflowRepo.save(workflow);
 
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
     const service = new WorkflowExecutionService(
       workflowRepo,
       runRepo,
       tempDir,
       executor,
+      undefined,
+      catalogStore,
     );
 
     const events: string[] = [];
@@ -599,11 +629,14 @@ Deno.test("executes independent jobs in parallel", async () => {
 
     await workflowRepo.save(workflow);
 
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
     const service = new WorkflowExecutionService(
       workflowRepo,
       runRepo,
       tempDir,
       executor,
+      undefined,
+      catalogStore,
     );
 
     const startTime = Date.now();
@@ -688,11 +721,14 @@ Deno.test("executes dependent jobs sequentially across levels", async () => {
 
     await workflowRepo.save(workflow);
 
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
     const service = new WorkflowExecutionService(
       workflowRepo,
       runRepo,
       tempDir,
       executor,
+      undefined,
+      catalogStore,
     );
 
     const events: string[] = [];
@@ -766,11 +802,14 @@ Deno.test("executes independent steps within a job in parallel", async () => {
 
     await workflowRepo.save(workflow);
 
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
     const service = new WorkflowExecutionService(
       workflowRepo,
       runRepo,
       tempDir,
       executor,
+      undefined,
+      catalogStore,
     );
 
     const startTime = Date.now();
@@ -910,11 +949,14 @@ Deno.test("updates data context between workflow steps", async () => {
 
     await workflowRepo.save(workflow);
 
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
     const service = new WorkflowExecutionService(
       workflowRepo,
       runRepo,
       tempDir,
       executor,
+      undefined,
+      catalogStore,
     );
 
     const run = await service.execute(workflow.name);
@@ -1010,11 +1052,14 @@ Deno.test("updates both resource and file context when step produces both", asyn
 
     await workflowRepo.save(workflow);
 
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
     const service = new WorkflowExecutionService(
       workflowRepo,
       runRepo,
       tempDir,
       executor,
+      undefined,
+      catalogStore,
     );
 
     const run = await service.execute(workflow.name);
@@ -1109,11 +1154,14 @@ Deno.test("executes linear chain where multiple steps reference same model", asy
 
     await workflowRepo.save(workflow);
 
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
     const service = new WorkflowExecutionService(
       workflowRepo,
       runRepo,
       tempDir,
       executor,
+      undefined,
+      catalogStore,
     );
 
     const run = await service.execute(workflow.name);
@@ -1138,11 +1186,14 @@ Deno.test("run() event stream includes all expected event types", async () => {
     const workflow = createSimpleWorkflow();
     await workflowRepo.save(workflow);
 
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
     const service = new WorkflowExecutionService(
       workflowRepo,
       runRepo,
       tempDir,
       executor,
+      undefined,
+      catalogStore,
     );
 
     const eventTypes: string[] = [];
@@ -1184,10 +1235,14 @@ Deno.test("workflow step fails when nesting depth exceeded", async () => {
     });
     await workflowRepo.save(workflow);
 
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
     const service = new WorkflowExecutionService(
       workflowRepo,
       runRepo,
       tempDir,
+      undefined,
+      undefined,
+      catalogStore,
     );
 
     const events: { kind: string; error?: string }[] = [];
@@ -1231,10 +1286,14 @@ Deno.test("workflow step fails on direct cycle detection", async () => {
     });
     await workflowRepo.save(workflow);
 
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
     const service = new WorkflowExecutionService(
       workflowRepo,
       runRepo,
       tempDir,
+      undefined,
+      undefined,
+      catalogStore,
     );
 
     const events: { kind: string; error?: string }[] = [];
@@ -1264,6 +1323,7 @@ Deno.test("DefaultStepExecutor rejects workflow task type", async () => {
     task: StepTask.workflow("child-workflow"),
   });
 
+  const catalogStore = new CatalogStore(join("/tmp", "_catalog.db"));
   const ctx: StepExecutionContext = {
     workflowId: createWorkflowId("parent-id"),
     workflowRunId: "run-123",
@@ -1272,6 +1332,7 @@ Deno.test("DefaultStepExecutor rejects workflow task type", async () => {
     stepName: "nested-step",
     repoDir: "/tmp",
     signal: new AbortController().signal,
+    catalogStore,
   };
 
   await assertRejects(
@@ -1336,11 +1397,14 @@ Deno.test("evaluateWorkflow skips task.inputs with step-output dependencies", as
 
     await workflowRepo.save(workflow);
 
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
     const service = new WorkflowExecutionService(
       workflowRepo,
       runRepo,
       tempDir,
       executor,
+      undefined,
+      catalogStore,
     );
 
     // This should NOT crash during evaluateWorkflow - the resource expression
@@ -1386,11 +1450,14 @@ Deno.test("step executor receives correct workflow context", async () => {
     });
     await workflowRepo.save(workflow);
 
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
     const service = new WorkflowExecutionService(
       workflowRepo,
       runRepo,
       tempDir,
       executor,
+      undefined,
+      catalogStore,
     );
 
     await service.execute(workflow.name);
@@ -1444,11 +1511,14 @@ Deno.test("task.inputs matching definition input keys are forwarded to step exec
     });
     await workflowRepo.save(workflow);
 
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
     const service = new WorkflowExecutionService(
       workflowRepo,
       runRepo,
       tempDir,
       executor,
+      undefined,
+      catalogStore,
     );
 
     const run = await service.execute(workflow.name);
@@ -1515,11 +1585,14 @@ Deno.test("workflow expressions are evaluated before step execution (Bug A)", as
     });
     await workflowRepo.save(workflow);
 
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
     const service = new WorkflowExecutionService(
       workflowRepo,
       runRepo,
       tempDir,
       executor,
+      undefined,
+      catalogStore,
     );
 
     const run = await service.execute(workflow.name, {
@@ -1586,11 +1659,14 @@ Deno.test("useLastEvaluated context carries task.inputs and expressionContext (B
     const evalWorkflowRepo = new YamlEvaluatedWorkflowRepository(tempDir);
     await evalWorkflowRepo.save(workflow);
 
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
     const service = new WorkflowExecutionService(
       workflowRepo,
       runRepo,
       tempDir,
       executor,
+      undefined,
+      catalogStore,
     );
 
     const run = await service.execute(workflow.name, {
@@ -1651,11 +1727,14 @@ Deno.test("step with allowFailure true fails but job still succeeds", async () =
     });
     await workflowRepo.save(workflow);
 
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
     const service = new WorkflowExecutionService(
       workflowRepo,
       runRepo,
       tempDir,
       executor,
+      undefined,
+      catalogStore,
     );
 
     const run = await service.execute(workflow.name);
@@ -1696,11 +1775,14 @@ Deno.test("step with allowFailure true fails but workflow still succeeds", async
     });
     await workflowRepo.save(workflow);
 
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
     const service = new WorkflowExecutionService(
       workflowRepo,
       runRepo,
       tempDir,
       executor,
+      undefined,
+      catalogStore,
     );
 
     const run = await service.execute(workflow.name);
@@ -1755,11 +1837,14 @@ Deno.test("downstream step with dependsOn succeeded skips when allowFailure step
     });
     await workflowRepo.save(workflow);
 
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
     const service = new WorkflowExecutionService(
       workflowRepo,
       runRepo,
       tempDir,
       executor,
+      undefined,
+      catalogStore,
     );
 
     const run = await service.execute(workflow.name);
@@ -1810,11 +1895,14 @@ Deno.test("downstream step with dependsOn completed runs when allowFailure step 
     });
     await workflowRepo.save(workflow);
 
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
     const service = new WorkflowExecutionService(
       workflowRepo,
       runRepo,
       tempDir,
       executor,
+      undefined,
+      catalogStore,
     );
 
     const run = await service.execute(workflow.name);
@@ -1860,11 +1948,14 @@ Deno.test("mix of allowFailure and regular failing steps causes job failure", as
     });
     await workflowRepo.save(workflow);
 
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
     const service = new WorkflowExecutionService(
       workflowRepo,
       runRepo,
       tempDir,
       executor,
+      undefined,
+      catalogStore,
     );
 
     const run = await service.execute(workflow.name);
@@ -1917,11 +2008,14 @@ Deno.test("check skip options and swampSha are threaded to step context", async 
     });
     await workflowRepo.save(workflow);
 
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
     const service = new WorkflowExecutionService(
       workflowRepo,
       runRepo,
       tempDir,
       executor,
+      undefined,
+      catalogStore,
     );
 
     for await (
@@ -1974,11 +2068,14 @@ Deno.test("expandForEachSteps: multi-expression step name produces unique names 
     });
     await workflowRepo.save(workflow);
 
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
     const service = new WorkflowExecutionService(
       workflowRepo,
       runRepo,
       tempDir,
       executor,
+      undefined,
+      catalogStore,
     );
 
     const run = await service.execute(workflow.name, {
@@ -2031,11 +2128,14 @@ Deno.test("expandForEachSteps: single-expression step name resolves correctly", 
     });
     await workflowRepo.save(workflow);
 
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
     const service = new WorkflowExecutionService(
       workflowRepo,
       runRepo,
       tempDir,
       executor,
+      undefined,
+      catalogStore,
     );
 
     const run = await service.execute(workflow.name, {
@@ -2080,11 +2180,14 @@ Deno.test("expandForEachSteps: step name without expressions appends item value"
     });
     await workflowRepo.save(workflow);
 
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
     const service = new WorkflowExecutionService(
       workflowRepo,
       runRepo,
       tempDir,
       executor,
+      undefined,
+      catalogStore,
     );
 
     const run = await service.execute(workflow.name, {
@@ -2129,11 +2232,14 @@ Deno.test("expandForEachSteps: object iteration with multi-expression step name"
     });
     await workflowRepo.save(workflow);
 
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
     const service = new WorkflowExecutionService(
       workflowRepo,
       runRepo,
       tempDir,
       executor,
+      undefined,
+      catalogStore,
     );
 
     const run = await service.execute(workflow.name, {
@@ -2187,11 +2293,14 @@ Deno.test("expandForEachSteps: appends index when array item expression evaluati
     });
     await workflowRepo.save(workflow);
 
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
     const service = new WorkflowExecutionService(
       workflowRepo,
       runRepo,
       tempDir,
       executor,
+      undefined,
+      catalogStore,
     );
 
     const run = await service.execute(workflow.name, {
@@ -2246,11 +2355,14 @@ Deno.test("expandForEachSteps: appends key when object item expression evaluatio
     });
     await workflowRepo.save(workflow);
 
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
     const service = new WorkflowExecutionService(
       workflowRepo,
       runRepo,
       tempDir,
       executor,
+      undefined,
+      catalogStore,
     );
 
     const run = await service.execute(workflow.name, {
@@ -2303,11 +2415,14 @@ Deno.test("expandForEachSteps: does not append index when expression evaluates s
     });
     await workflowRepo.save(workflow);
 
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
     const service = new WorkflowExecutionService(
       workflowRepo,
       runRepo,
       tempDir,
       executor,
+      undefined,
+      catalogStore,
     );
 
     const run = await service.execute(workflow.name, {

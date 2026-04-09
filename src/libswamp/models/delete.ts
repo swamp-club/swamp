@@ -27,6 +27,7 @@ import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_wo
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
 import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
+import { createCatalogStore } from "../../infrastructure/persistence/repository_factory.ts";
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import { createModelOutputId } from "../../domain/models/model_output.ts";
 import type { LibSwampContext } from "../context.ts";
@@ -108,6 +109,7 @@ export function createModelDeleteDeps(
   const unifiedDataRepo = new FileSystemUnifiedDataRepository(
     repoDir,
     dsPath(SWAMP_SUBDIRS.data),
+    createCatalogStore(repoDir, datastoreResolver),
   );
   const outputRepo = new YamlOutputRepository(
     repoDir,

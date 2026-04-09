@@ -165,6 +165,7 @@ function createTestDeps(
     dataRepo: createFakeDataRepo(),
     definitionRepo: createFakeDefinitionRepo(),
     outputRepo: createFakeOutputRepo(),
+    queryData: () => Promise.resolve([]),
     createRunLog: () =>
       Promise.resolve({
         logFilePath: "/tmp/test.log",

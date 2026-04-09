@@ -31,6 +31,7 @@ import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistenc
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
 import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
+import { createCatalogStore } from "../../infrastructure/persistence/repository_factory.ts";
 import type { LibSwampContext } from "../context.ts";
 import { notFound } from "../errors.ts";
 import type { ReportSearchEvent, StoredReportSummary } from "./report_views.ts";
@@ -83,6 +84,7 @@ export async function createReportSearchDeps(
   const dataRepo = new FileSystemUnifiedDataRepository(
     repoDir,
     dsPath(SWAMP_SUBDIRS.data),
+    createCatalogStore(repoDir, datastoreResolver),
   );
   const workflowRepo = new YamlWorkflowRepository(repoDir);
   return {

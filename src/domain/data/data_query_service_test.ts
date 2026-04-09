@@ -66,7 +66,7 @@ function setupTest(): {
   const dbPath = join(dir, ".swamp", "data", "_catalog.db");
   const catalog = new CatalogStore(dbPath);
   catalog.markPopulated(); // Pre-mark to avoid backfill
-  const dataRepo = new FileSystemUnifiedDataRepository(dir);
+  const dataRepo = new FileSystemUnifiedDataRepository(dir, undefined, catalog);
   const service = new DataQueryService(catalog, dataRepo);
   return { catalog, service, dir };
 }
@@ -284,7 +284,7 @@ Deno.test("DataQueryService: attributes filter with content on disk", () => {
 
   catalog.upsert(makeRow());
 
-  const dataRepo = new FileSystemUnifiedDataRepository(dir);
+  const dataRepo = new FileSystemUnifiedDataRepository(dir, undefined, catalog);
   const service = new DataQueryService(catalog, dataRepo);
 
   const results = service.querySync(
@@ -350,7 +350,7 @@ Deno.test("DataQueryService: select loads attributes for map literal projection"
 
   catalog.upsert(makeRow());
 
-  const dataRepo = new FileSystemUnifiedDataRepository(dir);
+  const dataRepo = new FileSystemUnifiedDataRepository(dir, undefined, catalog);
   const service = new DataQueryService(catalog, dataRepo);
 
   // Filter doesn't reference attributes, but select does (in a map literal).
@@ -408,7 +408,7 @@ Deno.test("DataQueryService: backfill triggers on unpopulated catalog", async ()
     "1",
   );
 
-  const dataRepo = new FileSystemUnifiedDataRepository(dir);
+  const dataRepo = new FileSystemUnifiedDataRepository(dir, undefined, catalog);
   const service = new DataQueryService(catalog, dataRepo);
 
   // Should trigger backfill since catalog is not populated
