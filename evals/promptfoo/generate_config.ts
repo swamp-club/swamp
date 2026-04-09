@@ -48,9 +48,9 @@ const PROVIDER_REGISTRY: Record<string, ProviderDefinition> = {
     apiKeyEnv: "ANTHROPIC_API_KEY",
   },
   "gpt-5.4": {
-    id: "openai:gpt-5",
+    id: "openai:gpt-5.4",
     apiKeyEnv: "OPENAI_API_KEY",
-    delay: 5000,
+    delay: 500,
   },
   "gemini-2.5-pro": {
     id: "google:gemini-2.5-pro",
