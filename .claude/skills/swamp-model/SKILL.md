@@ -259,7 +259,9 @@ Inputs are provided at runtime with `--input` or `--input-file` and referenced
 in globalArguments using `${{ inputs.<name> }}` expressions.
 
 **Factory pattern:** Use inputs to create multiple instances from one model
-definition — see
+definition — for **data reuse** (same schema, different parameters) and
+**concurrency** (separate instances hold separate locks, so long-running methods
+on one instance don't block other instances). See
 [references/scenarios.md#scenario-5](references/scenarios.md#scenario-5-factory-pattern-for-model-reuse).
 
 ## Edit a Model
@@ -476,6 +478,22 @@ sufficient. For browsing N artifacts, `data query` with `--select` is the
 primary pattern.
 
 ## Workflow Example
+
+**Design check — before creating a model, ask the user:**
+
+1. Will this model have **multiple methods** that might run at the same time
+   (e.g., a long-running build AND an SSH session)?
+2. Will any method be **long-running** (builds, deployments, large data
+   transfers)?
+
+If yes to either: each independent concern should be a **separate model
+instance**. Swamp holds an exclusive per-model lock for the entire duration of a
+method execution — a 20-minute build locks out every other method on that model.
+Use the factory pattern to split concerns into separate instances so they can
+run concurrently. See
+[references/scenarios.md#scenario-5](references/scenarios.md#scenario-5-factory-pattern-for-model-reuse).
+
+**Steps:**
 
 1. **Search** for the right type: `swamp model type search "shell" --json`
 2. **Search community** if no local type:

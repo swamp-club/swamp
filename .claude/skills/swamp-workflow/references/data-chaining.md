@@ -429,7 +429,14 @@ For a complete walkthrough, see the
 ### Calling One Model Multiple Times
 
 Steps within a job run in parallel. Each step calls the same `modelIdOrName`
-with different inputs:
+with different inputs.
+
+> **Lock contention:** Steps targeting the **same model** serialize on the
+> per-model lock — they won't actually run in parallel. For true parallelism,
+> use separate model instances (factory pattern) so each instance holds its own
+> lock. This matters most for long-running methods like builds or deployments.
+
+Example:
 
 ```yaml
 jobs:
