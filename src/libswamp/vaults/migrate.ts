@@ -248,6 +248,20 @@ export async function* vaultMigrate(
         return;
       }
 
+      // Same-type guard — prevent config deletion when source and target
+      // paths are identical (saveConfig then deleteConfig on the same file).
+      if (
+        sourceConfig.type.toLowerCase() === input.targetType.toLowerCase()
+      ) {
+        yield {
+          kind: "error",
+          error: validationFailed(
+            `Cannot migrate to the same type. Vault '${input.vaultName}' is already type '${sourceConfig.type}'.`,
+          ),
+        };
+        return;
+      }
+
       // Resolve target config
       await deps.resolveExtensionVaultType(input.targetType);
       const targetTypeInfo = deps.getVaultTypeInfo(input.targetType);
@@ -279,35 +293,47 @@ export async function* vaultMigrate(
       const vaultService = await deps.loadSourceVaultService();
       const keys = await vaultService.list(input.vaultName);
 
-      for (let i = 0; i < keys.length; i++) {
-        yield {
-          kind: "copying_secret",
-          index: i + 1,
-          total: keys.length,
-          key: keys[i],
-        };
-        const value = await vaultService.get(input.vaultName, keys[i]);
-        await targetProvider.put(keys[i], value);
-        ctx.logger.debug`Copied secret ${i + 1}/${keys.length}`;
-      }
-
-      // Swap config: save new first, then delete old
-      yield { kind: "updating_config" };
-      const newConfig = VaultConfig.create(
-        sourceConfig.id,
-        sourceConfig.name,
-        input.targetType,
-        targetConfig,
-      );
-      await deps.saveConfig(newConfig);
-      ctx.logger.debug`Saved new vault config`;
-
       try {
-        await deps.deleteConfig(sourceConfig);
-        ctx.logger.debug`Deleted old vault config`;
-      } catch (deleteErr) {
-        ctx.logger
-          .warn`Failed to delete old vault config file (vault still works): ${deleteErr}`;
+        for (let i = 0; i < keys.length; i++) {
+          yield {
+            kind: "copying_secret",
+            index: i + 1,
+            total: keys.length,
+            key: keys[i],
+          };
+          const value = await vaultService.get(input.vaultName, keys[i]);
+          await targetProvider.put(keys[i], value);
+          ctx.logger.debug`Copied secret ${i + 1}/${keys.length}`;
+        }
+
+        // Swap config: save new first, then delete old
+        yield { kind: "updating_config" };
+        const newConfig = VaultConfig.create(
+          sourceConfig.id,
+          sourceConfig.name,
+          input.targetType,
+          targetConfig,
+        );
+        await deps.saveConfig(newConfig);
+        ctx.logger.debug`Saved new vault config`;
+
+        try {
+          await deps.deleteConfig(sourceConfig);
+          ctx.logger.debug`Deleted old vault config`;
+        } catch (deleteErr) {
+          ctx.logger
+            .warn`Failed to delete old vault config file (vault still works): ${deleteErr}`;
+        }
+      } catch (err) {
+        yield {
+          kind: "error",
+          error: validationFailed(
+            `Migration failed: ${
+              err instanceof Error ? err.message : String(err)
+            }`,
+          ),
+        };
+        return;
       }
 
       yield {

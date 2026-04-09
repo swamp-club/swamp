@@ -381,3 +381,64 @@ Deno.test("vaultMigrate: case-insensitive target type resolves correct config", 
   assertEquals(createdProviderConfig?.auto_generate, true);
   assertEquals(createdProviderConfig?.base_dir, "/tmp/test-repo");
 });
+
+Deno.test("vaultMigrate: rejects same-type migration", async () => {
+  let deleteCalled = false;
+  const deps = makeDeps({
+    deleteConfig: () => {
+      deleteCalled = true;
+      return Promise.resolve();
+    },
+  });
+
+  const events = await collect<VaultMigrateEvent>(
+    vaultMigrate(createLibSwampContext(), deps, {
+      vaultName: "my-vault",
+      targetType: "mock", // same as source type
+      repoDir: "/tmp",
+    }),
+  );
+
+  const last = events[events.length - 1] as Extract<
+    VaultMigrateEvent,
+    { kind: "error" }
+  >;
+  assertEquals(last.kind, "error");
+  assertEquals(last.error.code, "validation_failed");
+  assertStringIncludes(last.error.message, "Cannot migrate to the same type");
+  // Config must NOT be deleted — that would destroy the vault
+  assertEquals(deleteCalled, false);
+});
+
+Deno.test("vaultMigrate: yields error event on secret copy failure", async () => {
+  let copyCount = 0;
+  const deps = makeDeps({
+    createProvider: (_type, name) => ({
+      get: () => Promise.reject(new Error("Not found")),
+      put: (_key: string, _value: string) => {
+        copyCount++;
+        if (copyCount >= 2) {
+          return Promise.reject(new Error("Network timeout"));
+        }
+        return Promise.resolve();
+      },
+      list: () => Promise.resolve([]),
+      getName: () => name,
+    }),
+  });
+
+  const events = await collect<VaultMigrateEvent>(
+    vaultMigrate(createLibSwampContext(), deps, {
+      vaultName: "my-vault",
+      targetType: "local_encryption",
+      repoDir: "/tmp",
+    }),
+  );
+
+  const last = events[events.length - 1] as Extract<
+    VaultMigrateEvent,
+    { kind: "error" }
+  >;
+  assertEquals(last.kind, "error");
+  assertStringIncludes(last.error.message, "Network timeout");
+});
