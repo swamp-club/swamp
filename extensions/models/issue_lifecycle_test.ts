@@ -14,8 +14,9 @@
 // You should have received a copy of the GNU Affero General Public License along
 // with Swamp. If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { model } from "./issue_lifecycle.ts";
+import { PR_COOLDOWN_MS } from "./_lib/schemas.ts";
 
 // ---------------------------------------------------------------------------
 // Test helpers
@@ -176,6 +177,121 @@ Deno.test("link_pr: rejects empty url via zod schema", async () => {
   await assertRejects(
     () => model.methods.link_pr.arguments.parseAsync({ url: "" }),
   );
+});
+
+Deno.test("link_pr: from pr_failed clears failure fields", async () => {
+  const { context, writes, restore } = await buildTestContext(42, {
+    resources: {
+      "pullRequest-main": {
+        url: "https://github.com/systeminit/swamp/pull/1141",
+        linkedAt: "2026-04-09T10:00:00.000Z",
+        failedAt: "2026-04-09T10:05:00.000Z",
+        failureReason: "CI failed",
+      },
+    },
+  });
+  try {
+    await model.methods.link_pr.execute(
+      { url: "https://github.com/systeminit/swamp/pull/1142" },
+      context,
+    );
+
+    const prWrite = writes.find((w) => w.specName === "pullRequest");
+    assertEquals(prWrite !== undefined, true);
+    assertEquals(
+      prWrite!.data.url,
+      "https://github.com/systeminit/swamp/pull/1142",
+    );
+    // link_pr overwrites the entire resource — failure fields are absent
+    assertEquals(prWrite!.data.failedAt, undefined);
+    assertEquals(prWrite!.data.failureReason, undefined);
+  } finally {
+    await restore();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// pr-cooldown check
+// ---------------------------------------------------------------------------
+
+Deno.test("pr-cooldown: rejects when PR was linked too recently", async () => {
+  const recentLinkedAt = new Date().toISOString();
+  const checkContext = {
+    methodName: "pr_merged",
+    dataRepository: {
+      getContent: (
+        _type: string,
+        _modelId: string,
+        dataName: string,
+      ) => {
+        if (dataName === "pullRequest-main") {
+          return Promise.resolve(
+            new TextEncoder().encode(
+              JSON.stringify({
+                url: "https://github.com/systeminit/swamp/pull/1",
+                linkedAt: recentLinkedAt,
+              }),
+            ),
+          );
+        }
+        return Promise.resolve(null);
+      },
+    },
+    modelType: "@swamp/issue-lifecycle",
+    modelId: "issue-42",
+  };
+
+  const result = await model.checks["pr-cooldown"].execute(checkContext);
+  assertEquals(result.pass, false);
+  assertStringIncludes(result.errors![0], "Wait");
+});
+
+Deno.test("pr-cooldown: passes when enough time has elapsed", async () => {
+  const oldLinkedAt = new Date(
+    Date.now() - PR_COOLDOWN_MS - 1000,
+  ).toISOString();
+  const checkContext = {
+    methodName: "pr_merged",
+    dataRepository: {
+      getContent: (
+        _type: string,
+        _modelId: string,
+        dataName: string,
+      ) => {
+        if (dataName === "pullRequest-main") {
+          return Promise.resolve(
+            new TextEncoder().encode(
+              JSON.stringify({
+                url: "https://github.com/systeminit/swamp/pull/1",
+                linkedAt: oldLinkedAt,
+              }),
+            ),
+          );
+        }
+        return Promise.resolve(null);
+      },
+    },
+    modelType: "@swamp/issue-lifecycle",
+    modelId: "issue-42",
+  };
+
+  const result = await model.checks["pr-cooldown"].execute(checkContext);
+  assertEquals(result.pass, true);
+});
+
+Deno.test("pr-cooldown: rejects when no pullRequest is linked", async () => {
+  const checkContext = {
+    methodName: "pr_merged",
+    dataRepository: {
+      getContent: () => Promise.resolve(null),
+    },
+    modelType: "@swamp/issue-lifecycle",
+    modelId: "issue-42",
+  };
+
+  const result = await model.checks["pr-cooldown"].execute(checkContext);
+  assertEquals(result.pass, false);
+  assertStringIncludes(result.errors![0], "No pull request linked");
 });
 
 // ---------------------------------------------------------------------------

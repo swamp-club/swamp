@@ -41,9 +41,11 @@ Deno.test("TRANSITIONS: complete accepts implementing, pr_open, and releasing", 
   assertEquals(TRANSITIONS.complete, ["implementing", "pr_open", "releasing"]);
 });
 
-Deno.test("TRANSITIONS: start (resume) includes pr_open so in-flight issues can be picked up", () => {
+Deno.test("TRANSITIONS: start (resume) includes pr_open, pr_failed, and releasing", () => {
   const startPhases = TRANSITIONS.start;
   assertEquals(startPhases.includes("pr_open"), true);
+  assertEquals(startPhases.includes("pr_failed"), true);
+  assertEquals(startPhases.includes("releasing"), true);
 });
 
 Deno.test("TRANSITIONS: link_pr is rejected from earlier lifecycle phases", () => {

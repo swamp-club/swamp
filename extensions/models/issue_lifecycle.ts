@@ -267,11 +267,11 @@ export const model = {
         if (!state) {
           return { pass: false, errors: ["No state found."] };
         }
-        if (state.phase !== "approved") {
+        if (state.phase !== "approved" && state.phase !== "pr_failed") {
           return {
             pass: false,
             errors: [
-              "Plan must be approved before implementation can begin.",
+              "Plan must be approved (or PR must have failed) before implementation can begin.",
             ],
           };
         }
@@ -1167,7 +1167,7 @@ export const model = {
       description:
         "Link a pull request to the implementation. Idempotent — calling " +
         "again overwrites the recorded URL with the latest link. " +
-        "Transitions the phase to pr_open if currently implementing.",
+        "Transitions the phase to pr_open from implementing or pr_failed.",
       arguments: z.object({
         url: z.string().min(1).describe(
           "Canonical pull request URL. Opaque to the model — pass whatever " +
