@@ -19,7 +19,7 @@
 
 import { getLogger } from "@logtape/logtape";
 import type { VaultConfiguration, VaultProvider } from "./vault_provider.ts";
-import { getVaultTypes } from "./vault_types.ts";
+import { getVaultTypes, RENAMED_VAULT_TYPES } from "./vault_types.ts";
 import { vaultTypeRegistry } from "./vault_type_registry.ts";
 import { resolveVaultType } from "../extensions/extension_auto_resolver.ts";
 import { getAutoResolver } from "../extensions/auto_resolver_context.ts";
@@ -230,14 +230,3 @@ export class VaultService {
     // Left in place to avoid breaking the fromRepository() call site.
   }
 }
-
-/**
- * Known renamed vault types and their current names.
- */
-export const RENAMED_VAULT_TYPES: Record<string, string> = {
-  "aws": "@swamp/aws-sm",
-  "aws-sm": "@swamp/aws-sm",
-  "azure": "@swamp/azure-kv",
-  "azure-kv": "@swamp/azure-kv",
-  "1password": "@swamp/1password",
-};

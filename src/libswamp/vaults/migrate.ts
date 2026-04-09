@@ -23,7 +23,7 @@ import {
   type VaultTypeInfo,
   vaultTypeRegistry,
 } from "../../domain/vaults/vault_type_registry.ts";
-import { RENAMED_VAULT_TYPES } from "../../domain/vaults/vault_service.ts";
+import { RENAMED_VAULT_TYPES } from "../../domain/vaults/vault_types.ts";
 import { createVaultProvider } from "../../domain/vaults/vault_provider_factory.ts";
 import { resolveVaultType } from "../../domain/extensions/extension_auto_resolver.ts";
 import { getAutoResolver } from "../../domain/extensions/auto_resolver_context.ts";

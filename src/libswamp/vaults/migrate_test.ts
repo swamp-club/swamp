@@ -261,23 +261,32 @@ Deno.test("vaultMigrate: yields error when target type unknown", async () => {
   assertEquals(last.error.code, "validation_failed");
 });
 
-Deno.test("vaultMigrate: handles empty vault", async () => {
+Deno.test("vaultMigrate: handles empty vault with zero secrets", async () => {
   let savedConfig: VaultConfig | null = null;
 
-  const deps = makeDeps({
-    loadSourceVaultService: async () => {
-      const { VaultService } = await import(
-        "../../domain/vaults/vault_service.ts"
-      );
-      const svc = new VaultService();
-      // Register a mock vault that returns empty list
-      svc.registerVault({
-        name: "empty-vault",
-        type: "mock",
-        config: {},
-      });
-      return svc;
+  const emptyProvider = {
+    get: (_key: string): Promise<string> => {
+      throw new Error("No secrets");
     },
+    put: (_key: string, _value: string) => Promise.resolve(),
+    list: () => Promise.resolve([] as string[]),
+    getName: () => "empty-vault",
+  };
+
+  const deps = makeDeps({
+    loadSourceVaultService: () => {
+      return Promise.resolve(
+        {
+          get: () => {
+            throw new Error("No secrets");
+          },
+          put: () => Promise.resolve(),
+          list: () => Promise.resolve([]),
+          getVaultNames: () => ["empty-vault"],
+        } as unknown as import("../../domain/vaults/vault_service.ts").VaultService,
+      );
+    },
+    createProvider: () => emptyProvider,
     findVaultConfig: () =>
       Promise.resolve(
         VaultConfig.create("vault-empty", "empty-vault", "mock", {}),
@@ -301,10 +310,9 @@ Deno.test("vaultMigrate: handles empty vault", async () => {
     { kind: "completed" }
   >;
   assertEquals(completed.kind, "completed");
-  // MockVaultProvider has default secrets, so count may be > 0
-  assertEquals(typeof completed.data.secretsMigrated, "number");
+  assertEquals(completed.data.secretsMigrated, 0);
 
-  // Config should still be updated even with no user secrets
+  // Config should still be updated even with zero secrets
   assertEquals(savedConfig!.type, "local_encryption");
 });
 

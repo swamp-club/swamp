@@ -68,6 +68,7 @@ Both the source and target vaults must be different types.`,
     "--config <config:string>",
     'Provider-specific config as JSON (e.g. \'{"region":"us-east-1"}\')',
   )
+  .option("-f, --force", "Skip confirmation prompt")
   .option("--dry-run", "Preview migration without making changes")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .example(
@@ -97,7 +98,7 @@ Both the source and target vaults must be different types.`,
         targetConfig = JSON.parse(options.config);
       } catch {
         throw new UserError(
-          `Invalid JSON for --config: ${options.config}`,
+          `Invalid JSON in --config: ${options.config}`,
         );
       }
     }
@@ -125,7 +126,7 @@ Both the source and target vaults must be different types.`,
 
     if (cliCtx.outputMode === "log") {
       logger
-        .info`Vault "${preview.vaultName}" (${preview.currentTypeName}) has ${preview.secretCount} secret(s).`;
+        .info`Vault "${preview.vaultName}" (${preview.currentType}) has ${preview.secretCount} secret(s).`;
       logger
         .info`Target: ${preview.targetTypeName} (${preview.targetType})`;
     }
@@ -138,7 +139,9 @@ Both the source and target vaults must be different types.`,
             dryRun: true,
             vaultName: preview.vaultName,
             currentType: preview.currentType,
+            currentTypeName: preview.currentTypeName,
             targetType: preview.targetType,
+            targetTypeName: preview.targetTypeName,
             secretCount: preview.secretCount,
           },
           null,
@@ -150,7 +153,7 @@ Both the source and target vaults must be different types.`,
       return;
     }
 
-    if (cliCtx.outputMode === "log") {
+    if (cliCtx.outputMode === "log" && !options.force) {
       const confirmed = await promptConfirmation(
         `Migrate vault backend from ${preview.currentType} to ${preview.targetType}?`,
       );

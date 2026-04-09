@@ -25,6 +25,19 @@ import {
 export type { VaultTypeInfo } from "./vault_type_registry.ts";
 
 /**
+ * Known renamed vault types and their current names.
+ * Used by VaultService (for auto-remapping on load), the provider factory
+ * (for helpful error messages), and libswamp operations (for early rejection).
+ */
+export const RENAMED_VAULT_TYPES: Record<string, string> = {
+  "aws": "@swamp/aws-sm",
+  "aws-sm": "@swamp/aws-sm",
+  "azure": "@swamp/azure-kv",
+  "azure-kv": "@swamp/azure-kv",
+  "1password": "@swamp/1password",
+};
+
+/**
  * Built-in vault type definitions.
  * Note: mock vault is intentionally excluded as it's for internal testing only.
  */

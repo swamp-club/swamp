@@ -24,18 +24,7 @@ import {
   type LocalEncryptionConfig,
   LocalEncryptionVaultProvider,
 } from "./local_encryption_vault_provider.ts";
-import { getVaultTypes } from "./vault_types.ts";
-
-/**
- * Known renamed vault types and their current names.
- */
-const RENAMED_VAULT_TYPES: Record<string, string> = {
-  "aws": "@swamp/aws-sm",
-  "aws-sm": "@swamp/aws-sm",
-  "azure": "@swamp/azure-kv",
-  "azure-kv": "@swamp/azure-kv",
-  "1password": "@swamp/1password",
-};
+import { getVaultTypes, RENAMED_VAULT_TYPES } from "./vault_types.ts";
 
 /**
  * Creates a VaultProvider instance for the given type, name, and config.
