@@ -67,11 +67,41 @@ export class ExtensionCatalogStore {
   constructor(dbPath: string) {
     ensureDirSync(dirname(dbPath));
     this.db = new DatabaseSync(dbPath);
-    // busy_timeout must be set BEFORE journal_mode=WAL so SQLite retries
-    // instead of failing immediately when another process holds the lock.
     this.db.exec("PRAGMA busy_timeout=5000");
-    this.db.exec("PRAGMA journal_mode=WAL");
-    this.createSchema();
+    this.initializeWithRetry();
+  }
+
+  /**
+   * Initializes WAL mode and schema with retry logic.
+   * PRAGMA journal_mode=WAL requires an exclusive lock to switch modes.
+   * When multiple processes open the database simultaneously, the SQLite
+   * busy handler may not cover the mode switch reliably, so we retry at
+   * the application level with exponential backoff.
+   */
+  private initializeWithRetry(): void {
+    const MAX_RETRIES = 5;
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
+      try {
+        this.db.exec("PRAGMA journal_mode=WAL");
+        this.createSchema();
+        return;
+      } catch (error: unknown) {
+        const isLock = error instanceof Error &&
+          /database is (locked|busy)/i.test(error.message);
+        if (isLock && attempt < MAX_RETRIES) {
+          const delay = 100 * Math.pow(2, attempt) +
+            Math.floor(Math.random() * 50);
+          Atomics.wait(
+            new Int32Array(new SharedArrayBuffer(4)),
+            0,
+            0,
+            delay,
+          );
+          continue;
+        }
+        throw error;
+      }
+    }
   }
 
   private createSchema(): void {
