@@ -102,7 +102,7 @@ async function buildTestContext(
 // link_pr
 // ---------------------------------------------------------------------------
 
-Deno.test("link_pr: writes pullRequest-main resource with url and linkedAt", async () => {
+Deno.test("link_pr: writes pullRequest-main resource with url, attempt, and linkedAt", async () => {
   const { context, writes, restore } = await buildTestContext(42);
   try {
     await model.methods.link_pr.execute(
@@ -121,6 +121,7 @@ Deno.test("link_pr: writes pullRequest-main resource with url and linkedAt", asy
       prWrite!.data.url,
       "https://github.com/systeminit/swamp/pull/1141",
     );
+    assertEquals(prWrite!.data.attempt, 1);
     assertEquals(typeof prWrite!.data.linkedAt, "string");
   } finally {
     await restore();
@@ -145,7 +146,7 @@ Deno.test("link_pr: transitions state to pr_open", async () => {
   }
 });
 
-Deno.test("link_pr: is idempotent — second call overwrites the pullRequest resource", async () => {
+Deno.test("link_pr: is idempotent — second call increments attempt", async () => {
   const { context, writes, restore } = await buildTestContext(42);
   try {
     await model.methods.link_pr.execute(
@@ -168,6 +169,8 @@ Deno.test("link_pr: is idempotent — second call overwrites the pullRequest res
       prWrites[1].data.url,
       "https://github.com/systeminit/swamp/pull/1142",
     );
+    assertEquals(prWrites[0].data.attempt, 1);
+    assertEquals(prWrites[1].data.attempt, 2);
   } finally {
     await restore();
   }
@@ -179,11 +182,12 @@ Deno.test("link_pr: rejects empty url via zod schema", async () => {
   );
 });
 
-Deno.test("link_pr: from pr_failed clears failure fields", async () => {
+Deno.test("link_pr: from pr_failed clears failure fields and increments attempt", async () => {
   const { context, writes, restore } = await buildTestContext(42, {
     resources: {
       "pullRequest-main": {
         url: "https://github.com/systeminit/swamp/pull/1141",
+        attempt: 1,
         linkedAt: "2026-04-09T10:00:00.000Z",
         failedAt: "2026-04-09T10:05:00.000Z",
         failureReason: "CI failed",
@@ -202,6 +206,7 @@ Deno.test("link_pr: from pr_failed clears failure fields", async () => {
       prWrite!.data.url,
       "https://github.com/systeminit/swamp/pull/1142",
     );
+    assertEquals(prWrite!.data.attempt, 2);
     // link_pr overwrites the entire resource — failure fields are absent
     assertEquals(prWrite!.data.failedAt, undefined);
     assertEquals(prWrite!.data.failureReason, undefined);
@@ -322,11 +327,12 @@ Deno.test("model: version bumped to 2026.04.09.1", () => {
 // pr_merged
 // ---------------------------------------------------------------------------
 
-Deno.test("pr_merged: transitions state to releasing and writes mergedAt", async () => {
+Deno.test("pr_merged: transitions state to releasing and writes mergedAt with attempt", async () => {
   const { context, writes, restore } = await buildTestContext(42, {
     resources: {
       "pullRequest-main": {
         url: "https://github.com/systeminit/swamp/pull/1141",
+        attempt: 2,
         linkedAt: "2026-04-09T10:00:00.000Z",
       },
     },
@@ -345,6 +351,7 @@ Deno.test("pr_merged: transitions state to releasing and writes mergedAt", async
       prWrite!.data.url,
       "https://github.com/systeminit/swamp/pull/1141",
     );
+    assertEquals(prWrite!.data.attempt, 2);
     assertEquals(typeof prWrite!.data.mergedAt, "string");
   } finally {
     await restore();
@@ -356,6 +363,7 @@ Deno.test("pr_merged: uses provided mergedAt when given", async () => {
     resources: {
       "pullRequest-main": {
         url: "https://github.com/systeminit/swamp/pull/1141",
+        attempt: 1,
         linkedAt: "2026-04-09T10:00:00.000Z",
       },
     },
@@ -390,11 +398,12 @@ Deno.test("pr_merged: throws if no pullRequest linked", async () => {
 // pr_failed
 // ---------------------------------------------------------------------------
 
-Deno.test("pr_failed: transitions state to pr_failed and writes failure info", async () => {
+Deno.test("pr_failed: transitions state to pr_failed and writes failure info with attempt", async () => {
   const { context, writes, restore } = await buildTestContext(42, {
     resources: {
       "pullRequest-main": {
         url: "https://github.com/systeminit/swamp/pull/1141",
+        attempt: 1,
         linkedAt: "2026-04-09T10:00:00.000Z",
       },
     },
@@ -412,6 +421,7 @@ Deno.test("pr_failed: transitions state to pr_failed and writes failure info", a
 
     const prWrite = writes.find((w) => w.specName === "pullRequest");
     assertEquals(prWrite !== undefined, true);
+    assertEquals(prWrite!.data.attempt, 1);
     assertEquals(prWrite!.data.failureReason, "CI failed: type check errors");
     assertEquals(typeof prWrite!.data.failedAt, "string");
   } finally {

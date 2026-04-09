@@ -79,6 +79,7 @@ Deno.test("PullRequestSchema: accepts any non-empty URL string", () => {
   for (const url of samples) {
     const parsed = PullRequestSchema.parse({
       url,
+      attempt: 1,
       linkedAt: "2026-04-08T15:00:00.000Z",
     });
     assertEquals(parsed.url, url);
@@ -88,6 +89,7 @@ Deno.test("PullRequestSchema: accepts any non-empty URL string", () => {
 Deno.test("PullRequestSchema: rejects empty url string", () => {
   const result = PullRequestSchema.safeParse({
     url: "",
+    attempt: 1,
     linkedAt: "2026-04-08T15:00:00.000Z",
   });
   assertEquals(result.success, false);

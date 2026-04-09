@@ -180,6 +180,10 @@ export const PullRequestSchema = z.object({
     "Canonical URL of the pull request. Opaque to the model — the agent " +
       "supplies whatever URL their git host produced.",
   ),
+  attempt: z.number().describe(
+    "Sequential attempt number. Starts at 1 on the first link_pr call, " +
+      "incremented on each subsequent link_pr call after a pr_failed cycle.",
+  ),
   linkedAt: z.string().describe(
     "ISO-8601 timestamp of when link_pr was called. Updated on every " +
       "subsequent link_pr call so the record reflects the latest link.",

@@ -1187,16 +1187,26 @@ export const model = {
             instanceName: string,
             data: Record<string, unknown>,
           ) => Promise<{ name: string }>;
+          readResource: (
+            instanceName: string,
+            version?: number,
+          ) => Promise<Record<string, unknown> | null>;
         },
       ) => {
         const { issueNumber } = context.globalArgs;
         const now = new Date().toISOString();
+
+        const existing = await context.readResource("pullRequest-main") as
+          | PullRequestData
+          | null;
+        const attempt = existing ? (existing.attempt ?? 0) + 1 : 1;
 
         const prHandle = await context.writeResource(
           "pullRequest",
           "pullRequest-main",
           {
             url: args.url,
+            attempt,
             linkedAt: now,
           },
         );
@@ -1207,7 +1217,10 @@ export const model = {
           updatedAt: now,
         });
 
-        context.logger.info("PR linked: {url}", { url: args.url });
+        context.logger.info("PR linked (attempt {attempt}): {url}", {
+          attempt,
+          url: args.url,
+        });
 
         const sc = await createSwampClubClient(
           context.globalArgs,
@@ -1216,9 +1229,9 @@ export const model = {
         await sc?.postLifecycleEntry({
           step: "pr_linked",
           targetStatus: "in_progress",
-          summary: `PR linked: ${args.url}`,
+          summary: `PR linked (attempt ${attempt}): ${args.url}`,
           emoji: "\u{1F517}",
-          payload: { url: args.url },
+          payload: { url: args.url, attempt },
           isVerbose: false,
         });
 
@@ -1264,9 +1277,12 @@ export const model = {
           throw new Error("No pull request linked. Call link_pr first.");
         }
 
+        const attempt = prContent.attempt ?? 1;
+
         handles.push(
           await context.writeResource("pullRequest", "pullRequest-main", {
             url: prContent.url,
+            attempt,
             linkedAt: prContent.linkedAt,
             mergedAt: args.mergedAt ?? now,
           }),
@@ -1280,7 +1296,10 @@ export const model = {
           }),
         );
 
-        context.logger.info("PR merged \u2014 awaiting release build", {});
+        context.logger.info(
+          "PR merged (attempt {attempt}) \u2014 awaiting release build",
+          { attempt },
+        );
 
         const sc = await createSwampClubClient(
           context.globalArgs,
@@ -1289,9 +1308,14 @@ export const model = {
         await sc?.postLifecycleEntry({
           step: "pr_merged",
           targetStatus: "in_progress",
-          summary: `PR merged: ${prContent.url} \u2014 awaiting release`,
+          summary:
+            `PR merged (attempt ${attempt}): ${prContent.url} \u2014 awaiting release`,
           emoji: "\u{1F389}",
-          payload: { url: prContent.url, mergedAt: args.mergedAt ?? now },
+          payload: {
+            url: prContent.url,
+            attempt,
+            mergedAt: args.mergedAt ?? now,
+          },
           isVerbose: false,
         });
 
@@ -1338,9 +1362,12 @@ export const model = {
           throw new Error("No pull request linked. Call link_pr first.");
         }
 
+        const attempt = prContent.attempt ?? 1;
+
         handles.push(
           await context.writeResource("pullRequest", "pullRequest-main", {
             url: prContent.url,
+            attempt,
             linkedAt: prContent.linkedAt,
             failedAt: now,
             failureReason: args.reason,
@@ -1355,7 +1382,10 @@ export const model = {
           }),
         );
 
-        context.logger.info("PR failed: {reason}", { reason: args.reason });
+        context.logger.info("PR failed (attempt {attempt}): {reason}", {
+          attempt,
+          reason: args.reason,
+        });
 
         const sc = await createSwampClubClient(
           context.globalArgs,
@@ -1364,9 +1394,9 @@ export const model = {
         await sc?.postLifecycleEntry({
           step: "pr_failed",
           targetStatus: "in_progress",
-          summary: `PR failed: ${args.reason}`,
+          summary: `PR failed (attempt ${attempt}): ${args.reason}`,
           emoji: "\u{274C}",
-          payload: { url: prContent.url, reason: args.reason },
+          payload: { url: prContent.url, attempt, reason: args.reason },
           isVerbose: false,
         });
 
