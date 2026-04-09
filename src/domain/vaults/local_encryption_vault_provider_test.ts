@@ -103,13 +103,15 @@ Deno.test("LocalEncryptionVaultProvider - SSH key-based encryption", async (t) =
     "should create vault directory with proper permissions",
     async () => {
       await withTempDir(async (dir) => {
-        await Deno.writeTextFile("test_ssh_key", MOCK_SSH_PRIVATE_KEY, {
-          mode: 0o600,
-        });
+        await Deno.writeTextFile(
+          join(dir, "test_ssh_key"),
+          MOCK_SSH_PRIVATE_KEY,
+          { mode: 0o600 },
+        );
 
         const vaultSecretsDir = secretsDir(dir, "secure-vault");
         const config: LocalEncryptionConfig = {
-          ssh_key_path: "test_ssh_key",
+          ssh_key_path: join(dir, "test_ssh_key"),
           base_dir: dir,
         };
         const vault = new LocalEncryptionVaultProvider("secure-vault", config);
@@ -124,13 +126,15 @@ Deno.test("LocalEncryptionVaultProvider - SSH key-based encryption", async (t) =
 
   await t.step("should store secrets in separate encrypted files", async () => {
     await withTempDir(async (dir) => {
-      await Deno.writeTextFile("test_ssh_key", MOCK_SSH_PRIVATE_KEY, {
-        mode: 0o600,
-      });
+      await Deno.writeTextFile(
+        join(dir, "test_ssh_key"),
+        MOCK_SSH_PRIVATE_KEY,
+        { mode: 0o600 },
+      );
 
       const vaultSecretsDir = secretsDir(dir, "multi-vault");
       const config: LocalEncryptionConfig = {
-        ssh_key_path: "test_ssh_key",
+        ssh_key_path: join(dir, "test_ssh_key"),
         base_dir: dir,
       };
       const vault = new LocalEncryptionVaultProvider("multi-vault", config);
@@ -435,13 +439,15 @@ Deno.test("LocalEncryptionVaultProvider - file permissions", async (t) => {
     "should create .enc files with 0o600 permissions",
     async () => {
       await withTempDir(async (dir) => {
-        await Deno.writeTextFile("test_ssh_key", MOCK_SSH_PRIVATE_KEY, {
-          mode: 0o600,
-        });
+        await Deno.writeTextFile(
+          join(dir, "test_ssh_key"),
+          MOCK_SSH_PRIVATE_KEY,
+          { mode: 0o600 },
+        );
 
         const vaultSecretsDir = secretsDir(dir, "perms-vault");
         const config: LocalEncryptionConfig = {
-          ssh_key_path: "test_ssh_key",
+          ssh_key_path: join(dir, "test_ssh_key"),
           base_dir: dir,
         };
         const vault = new LocalEncryptionVaultProvider("perms-vault", config);
@@ -458,13 +464,15 @@ Deno.test("LocalEncryptionVaultProvider - file permissions", async (t) => {
 Deno.test("LocalEncryptionVaultProvider - security properties", async (t) => {
   await t.step("should use different salts for different secrets", async () => {
     await withTempDir(async (dir) => {
-      await Deno.writeTextFile("test_ssh_key", MOCK_SSH_PRIVATE_KEY, {
-        mode: 0o600,
-      });
+      await Deno.writeTextFile(
+        join(dir, "test_ssh_key"),
+        MOCK_SSH_PRIVATE_KEY,
+        { mode: 0o600 },
+      );
 
       const vaultSecretsDir = secretsDir(dir, "security-vault");
       const config: LocalEncryptionConfig = {
-        ssh_key_path: "test_ssh_key",
+        ssh_key_path: join(dir, "test_ssh_key"),
         base_dir: dir,
       };
       const vault = new LocalEncryptionVaultProvider("security-vault", config);
@@ -494,13 +502,15 @@ Deno.test("LocalEncryptionVaultProvider - security properties", async (t) => {
     "should use different IVs for same secret updated multiple times",
     async () => {
       await withTempDir(async (dir) => {
-        await Deno.writeTextFile("test_ssh_key", MOCK_SSH_PRIVATE_KEY, {
-          mode: 0o600,
-        });
+        await Deno.writeTextFile(
+          join(dir, "test_ssh_key"),
+          MOCK_SSH_PRIVATE_KEY,
+          { mode: 0o600 },
+        );
 
         const vaultSecretsDir = secretsDir(dir, "iv-test-vault");
         const config: LocalEncryptionConfig = {
-          ssh_key_path: "test_ssh_key",
+          ssh_key_path: join(dir, "test_ssh_key"),
           base_dir: dir,
         };
         const vault = new LocalEncryptionVaultProvider("iv-test-vault", config);
@@ -534,12 +544,14 @@ Deno.test("LocalEncryptionVaultProvider - security properties", async (t) => {
     "should handle special characters and unicode in secrets",
     async () => {
       await withTempDir(async (dir) => {
-        await Deno.writeTextFile("test_ssh_key", MOCK_SSH_PRIVATE_KEY, {
-          mode: 0o600,
-        });
+        await Deno.writeTextFile(
+          join(dir, "test_ssh_key"),
+          MOCK_SSH_PRIVATE_KEY,
+          { mode: 0o600 },
+        );
 
         const config: LocalEncryptionConfig = {
-          ssh_key_path: "test_ssh_key",
+          ssh_key_path: join(dir, "test_ssh_key"),
           base_dir: dir,
         };
         const vault = new LocalEncryptionVaultProvider("unicode-vault", config);
