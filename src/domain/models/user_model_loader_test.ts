@@ -2539,6 +2539,72 @@ export const model = {
   }
 });
 
+Deno.test("UserModelLoader bundleWithCache uses cache when source and bundle have equal mtimes", async () => {
+  const ts = Date.now();
+  const modelCode = `
+import { z } from "npm:zod@4";
+
+export const model = {
+  type: "@user/equal-mtime-${ts}",
+  version: "2026.02.09.1",
+  methods: {
+    run: {
+      description: "Run",
+      arguments: z.object({}),
+      execute: async () => ({ dataHandles: [] }),
+    },
+  },
+};
+`;
+
+  const repoDir = await Deno.makeTempDir({
+    prefix: "swamp_equal_mtime_repo_",
+  });
+  const modelsDir = await Deno.makeTempDir({
+    prefix: "swamp_equal_mtime_models_",
+  });
+
+  try {
+    // Write model and load to produce cached bundle
+    await Deno.writeTextFile(join(modelsDir, "model.ts"), modelCode);
+    const loader1 = new UserModelLoader(testDenoRuntime, repoDir);
+    await loader1.loadModels(modelsDir);
+
+    const ns = bundleNamespace(modelsDir, repoDir);
+    const bundlePath = join(repoDir, ".swamp", "bundles", ns, "model.js");
+    const cachedBundle = await Deno.readTextFile(bundlePath);
+
+    // Set source and bundle to the exact same mtime
+    const sharedMtime = new Date("2026-01-01T00:00:00Z");
+    await Deno.utime(join(modelsDir, "model.ts"), sharedMtime, sharedMtime);
+    await Deno.utime(bundlePath, sharedMtime, sharedMtime);
+
+    // Load again — should use cached bundle, not rebundle
+    const loader2 = new UserModelLoader(testDenoRuntime, repoDir);
+    await loader2.loadModels(modelsDir);
+
+    const bundleAfter = await Deno.readTextFile(bundlePath);
+
+    // Bundle content should be identical (cache was used, not rebundled)
+    assertEquals(
+      cachedBundle,
+      bundleAfter,
+      "Bundle content should be unchanged when source and bundle have equal mtimes",
+    );
+
+    // Bundle mtime should still be the shared time (not updated by a rebundle)
+    const bundleStatAfter = await Deno.stat(bundlePath);
+    assertEquals(
+      bundleStatAfter.mtime?.getTime(),
+      sharedMtime.getTime(),
+      "Bundle mtime should be unchanged — cache was used, no rebundle occurred",
+    );
+  } finally {
+    await Deno.remove(repoDir, { recursive: true });
+    await Deno.remove(modelsDir, { recursive: true });
+  }
+});
+
 Deno.test("UserModelLoader: accepts optional DatastorePathResolver", () => {
   // Verify the constructor accepts a resolver without errors
   const mockResolver = {

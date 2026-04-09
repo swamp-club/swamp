@@ -686,7 +686,7 @@ export class UserReportLoader {
             },
             null,
           );
-          if (newestSourceMtime && bundleStat.mtime > newestSourceMtime) {
+          if (newestSourceMtime && bundleStat.mtime >= newestSourceMtime) {
             logger.debug`Using cached report bundle for ${relativePath}`;
             return await Deno.readTextFile(bundlePath);
           }

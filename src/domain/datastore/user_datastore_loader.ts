@@ -251,7 +251,7 @@ export class UserDatastoreLoader {
             },
             null,
           );
-          if (newestSourceMtime && bundleStat.mtime > newestSourceMtime) {
+          if (newestSourceMtime && bundleStat.mtime >= newestSourceMtime) {
             logger.debug`Using cached datastore bundle for ${relativePath}`;
             return await Deno.readTextFile(bundlePath);
           }

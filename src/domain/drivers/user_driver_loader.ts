@@ -276,7 +276,7 @@ export class UserDriverLoader {
             },
             null,
           );
-          if (newestSourceMtime && bundleStat.mtime > newestSourceMtime) {
+          if (newestSourceMtime && bundleStat.mtime >= newestSourceMtime) {
             logger.debug`Using cached driver bundle for ${relativePath}`;
             return await Deno.readTextFile(bundlePath);
           }

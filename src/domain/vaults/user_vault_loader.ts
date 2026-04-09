@@ -277,7 +277,7 @@ export class UserVaultLoader {
             },
             null,
           );
-          if (newestSourceMtime && bundleStat.mtime > newestSourceMtime) {
+          if (newestSourceMtime && bundleStat.mtime >= newestSourceMtime) {
             logger.debug`Using cached vault bundle for ${relativePath}`;
             return await Deno.readTextFile(bundlePath);
           }

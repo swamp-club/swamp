@@ -1156,7 +1156,7 @@ export class UserModelLoader {
             },
             null,
           );
-          if (newestSourceMtime && bundleStat.mtime > newestSourceMtime) {
+          if (newestSourceMtime && bundleStat.mtime >= newestSourceMtime) {
             logger.debug`Using cached bundle for ${relativePath}`;
             return await Deno.readTextFile(bundlePath);
           }
