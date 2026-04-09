@@ -227,14 +227,16 @@ export const workflowRunCommand = new Command()
           return await repo.findByName(idOrName) ??
             await repo.findById(createWorkflowId(idOrName));
         },
-        createExecutionService: (wfRepo, rnRepo, dir) =>
+        createExecutionService: (wfRepo, rnRepo, dir, catalogStore) =>
           new WorkflowExecutionService(
             wfRepo,
             rnRepo,
             dir,
             undefined,
             unlocked.datastoreResolver.resolvePath(SWAMP_SUBDIRS.data),
+            catalogStore,
           ),
+        catalogStore: repoContext.catalogStore,
         dataRepo: repoContext.unifiedDataRepo,
         definitionRepo: repoContext.definitionRepo,
       };

@@ -37,6 +37,8 @@ import { YamlEvaluatedDefinitionRepository } from "../../infrastructure/persiste
 import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
+import type { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
+import { DataQueryService } from "../data/data_query_service.ts";
 import { resolveModelType } from "../extensions/extension_auto_resolver.ts";
 import { BUILTIN_METHOD_REPORTS } from "../reports/builtin/mod.ts";
 import { getAutoResolver } from "../extensions/auto_resolver_context.ts";
@@ -1095,6 +1097,7 @@ export class WorkflowExecutionService {
   private readonly modelResolver: ModelResolver;
   private readonly dataRepo: FileSystemUnifiedDataRepository;
   private readonly dataBaseDir?: string;
+  private readonly catalogStore?: CatalogStore;
 
   constructor(
     private readonly workflowRepo: WorkflowRepository,
@@ -1102,14 +1105,24 @@ export class WorkflowExecutionService {
     private readonly repoDir: string,
     executor?: StepExecutor,
     dataBaseDir?: string,
+    catalogStore?: CatalogStore,
   ) {
     this.executor = executor ?? new DefaultStepExecutor();
     this.dataBaseDir = dataBaseDir;
+    this.catalogStore = catalogStore;
     this.definitionRepo = new YamlDefinitionRepository(repoDir);
-    this.dataRepo = new FileSystemUnifiedDataRepository(repoDir, dataBaseDir);
+    this.dataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      dataBaseDir,
+      catalogStore,
+    );
+    const dataQueryService = catalogStore
+      ? new DataQueryService(catalogStore, this.dataRepo)
+      : undefined;
     this.modelResolver = new ModelResolver(this.definitionRepo, {
       repoDir,
       dataRepo: this.dataRepo,
+      dataQueryService,
     });
   }
 
@@ -1962,6 +1975,7 @@ export class WorkflowExecutionService {
       this.repoDir,
       undefined,
       this.dataBaseDir,
+      this.catalogStore,
     );
 
     let childRun: WorkflowRun | undefined;

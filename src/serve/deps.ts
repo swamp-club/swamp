@@ -74,8 +74,16 @@ export async function createWorkflowRunDeps(
       return await repo.findByName(idOrName) ??
         await repo.findById(createWorkflowId(idOrName));
     },
-    createExecutionService: (wfRepo, rnRepo, dir) =>
-      new WorkflowExecutionService(wfRepo, rnRepo, dir),
+    createExecutionService: (wfRepo, rnRepo, dir, catalogStore) =>
+      new WorkflowExecutionService(
+        wfRepo,
+        rnRepo,
+        dir,
+        undefined,
+        undefined,
+        catalogStore,
+      ),
+    catalogStore: repoContext.catalogStore,
     dataRepo: repoContext.unifiedDataRepo,
     definitionRepo: repoContext.definitionRepo,
   };

@@ -61,6 +61,7 @@ import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { getWorkflowRunLogger } from "../../infrastructure/logging/logger.ts";
 import type { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
+import type { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
 import type { DefinitionRepository } from "../../domain/definitions/repositories.ts";
 import { YamlEvaluatedDefinitionRepository } from "../../infrastructure/persistence/yaml_evaluated_definition_repository.ts";
 import type { DataHandle } from "../../domain/models/model.ts";
@@ -184,7 +185,9 @@ export interface WorkflowRunDeps {
     workflowRepo: WorkflowRepository,
     runRepo: WorkflowRunRepository,
     repoDir: string,
+    catalogStore?: CatalogStore,
   ) => WorkflowExecutionService;
+  catalogStore?: CatalogStore;
   dataRepo?: UnifiedDataRepository;
   definitionRepo?: DefinitionRepository;
 }
@@ -428,6 +431,7 @@ export async function* workflowRun(
         deps.workflowRepo,
         deps.runRepo,
         deps.repoDir,
+        deps.catalogStore,
       );
 
       // Track model info from events for post-run reports
