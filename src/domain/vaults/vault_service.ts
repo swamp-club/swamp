@@ -23,13 +23,10 @@ import { getVaultTypes } from "./vault_types.ts";
 import { vaultTypeRegistry } from "./vault_type_registry.ts";
 import { resolveVaultType } from "../extensions/extension_auto_resolver.ts";
 import { getAutoResolver } from "../extensions/auto_resolver_context.ts";
-import { MockVaultProvider } from "./mock_vault_provider.ts";
-import {
-  type LocalEncryptionConfig,
-  LocalEncryptionVaultProvider,
-} from "./local_encryption_vault_provider.ts";
+import type { LocalEncryptionConfig } from "./local_encryption_vault_provider.ts";
 import { join } from "@std/path";
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
+import { createVaultProvider } from "./vault_provider_factory.ts";
 
 /**
  * Service for managing vault providers and resolving vault operations.
@@ -114,49 +111,11 @@ export class VaultService {
    * Registers a vault provider with the given configuration.
    */
   registerVault(config: VaultConfiguration): void {
-    let provider: VaultProvider;
-
-    // Check registry for user-defined types with a createProvider factory
-    const registeredType = vaultTypeRegistry.get(config.type);
-    if (registeredType?.createProvider && !registeredType.isBuiltIn) {
-      // Validate config against schema if provided
-      if (registeredType.configSchema) {
-        const result = registeredType.configSchema.safeParse(config.config);
-        if (!result.success) {
-          throw new Error(
-            `Invalid config for vault type '${config.type}' (vault '${config.name}'): ${result.error.message}`,
-          );
-        }
-      }
-      provider = registeredType.createProvider(config.name, config.config);
-      assertVaultProvider(provider, config.type, config.name);
-      this.providers.set(config.name, provider);
-      return;
-    }
-
-    // Built-in types
-    switch (config.type.toLowerCase()) {
-      case "mock":
-        provider = new MockVaultProvider(
-          config.name,
-          config.config as Record<string, string>,
-        );
-        break;
-      case "local_encryption":
-        provider = new LocalEncryptionVaultProvider(
-          config.name,
-          config.config as LocalEncryptionConfig,
-        );
-        break;
-      default: {
-        const allTypes = vaultTypeRegistry.getAll().map((v) => v.type);
-        throw new Error(
-          `Unsupported vault type: '${config.type}' (vault '${config.name}').` +
-            suggestVaultType(config.type, allTypes),
-        );
-      }
-    }
-
+    const provider = createVaultProvider(
+      config.type,
+      config.name,
+      config.config,
+    );
     this.providers.set(config.name, provider);
   }
 
@@ -273,35 +232,6 @@ export class VaultService {
 }
 
 /**
- * Validates that an object returned by a user-defined createProvider implements
- * the VaultProvider interface. Throws a descriptive error if any required method
- * is missing or not a function.
- */
-function assertVaultProvider(
-  obj: unknown,
-  vaultType: string,
-  vaultName: string,
-): asserts obj is VaultProvider {
-  const required: (keyof VaultProvider)[] = ["get", "put", "list", "getName"];
-  const missing: string[] = [];
-  for (const method of required) {
-    if (
-      typeof obj !== "object" || obj === null ||
-      typeof (obj as Record<string, unknown>)[method] !== "function"
-    ) {
-      missing.push(method);
-    }
-  }
-  if (missing.length > 0) {
-    throw new Error(
-      `createProvider for vault type '${vaultType}' (vault '${vaultName}') returned an invalid provider: ` +
-        `missing methods: ${missing.join(", ")}. ` +
-        `A VaultProvider must implement get, put, list, and getName.`,
-    );
-  }
-}
-
-/**
  * Known renamed vault types and their current names.
  */
 export const RENAMED_VAULT_TYPES: Record<string, string> = {
@@ -311,17 +241,3 @@ export const RENAMED_VAULT_TYPES: Record<string, string> = {
   "azure-kv": "@swamp/azure-kv",
   "1password": "@swamp/1password",
 };
-
-/**
- * Suggests the correct vault type name if the user provided a renamed or similar type.
- */
-function suggestVaultType(type: string, allTypes?: string[]): string {
-  const normalized = type.toLowerCase();
-  const renamed = RENAMED_VAULT_TYPES[normalized];
-  if (renamed) {
-    return ` The type '${type}' has been renamed to '${renamed}'. Update your vault configuration to use type: ${renamed}`;
-  }
-  const available = allTypes?.join(", ") ??
-    getVaultTypes().map((v) => v.type).join(", ");
-  return ` Available vault types: ${available}`;
-}
