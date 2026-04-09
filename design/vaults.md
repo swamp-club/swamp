@@ -388,6 +388,49 @@ dbHost: ${{ vault.get(my-1p, database/host) }}
 sharedCert: ${{ vault.get(my-1p, op://Shared/tls-cert/pem) }}
 ```
 
+## Vault Migration
+
+The `swamp vault migrate` command migrates a vault to a different backend type
+in-place. The vault name stays the same, so all existing vault reference
+expressions continue to work without modification.
+
+### Usage
+
+```
+swamp vault migrate <vault-name> --to-type <target-type> [--config <json>] [--dry-run]
+```
+
+### How It Works
+
+1. Lists all secret keys in the source vault
+2. Copies each secret value from the current backend to a new provider instance
+3. Updates the vault configuration file to point to the new backend type
+   (save-new first, then delete-old)
+4. The vault name is preserved — all existing `vault.get('name', 'key')`
+   expressions resolve identically after migration
+
+### Safety Model
+
+- **Secrets are copied, not moved.** The source backend retains its secrets until
+  the config file is deleted. If anything fails during copy, the original vault
+  remains fully functional.
+- **Config swap ordering.** The new config file is written before the old one is
+  removed. If the delete fails, an orphaned config file remains but the vault
+  works correctly on the new backend.
+- **Same-type migrations are rejected.** The target type must differ from the
+  current type.
+- **Dry-run support.** Use `--dry-run` to preview the migration (secret count,
+  type change) without making any changes.
+
+### Provider Factory
+
+Provider instantiation is handled by a shared factory function
+(`createVaultProvider` in `src/domain/vaults/vault_provider_factory.ts`) that
+supports both built-in types (local_encryption, mock) and extension types
+registered in the vault type registry. This factory is used by both
+`VaultService.registerVault()` and the migrate operation, ensuring consistent
+provider creation behavior.
+
 ## Extensibility
 
 The vault system is designed for easy extension to new providers:

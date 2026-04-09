@@ -255,11 +255,18 @@ export class LocalEncryptionVaultProvider implements VaultProvider {
 
         try {
           // createNew: true uses O_CREAT | O_EXCL — atomic exclusive creation
-          // prevents TOCTOU race where two processes both generate different keys
-          await Deno.writeTextFile(keyFile, generatedKey, {
+          // prevents TOCTOU race where two processes both generate different keys.
+          // Use open + write + close so we control when the handle is released.
+          const file = await Deno.open(keyFile, {
+            write: true,
             createNew: true,
             mode: 0o600,
           });
+          try {
+            await file.write(new TextEncoder().encode(generatedKey));
+          } finally {
+            file.close();
+          }
           return await crypto.subtle.importKey(
             "raw",
             new TextEncoder().encode(generatedKey),
@@ -271,8 +278,21 @@ export class LocalEncryptionVaultProvider implements VaultProvider {
           if (!(writeError instanceof Deno.errors.AlreadyExists)) {
             throw writeError;
           }
-          // Another process won the race — read back their key
-          const winnerKey = await Deno.readTextFile(keyFile);
+          // Another process won the race — read back their key.
+          // The winner may still be writing (file created but content not
+          // flushed), so retry until content is available.
+          let winnerKey = "";
+          for (let attempt = 0; attempt < 20; attempt++) {
+            winnerKey = await Deno.readTextFile(keyFile);
+            if (winnerKey.length > 0) break;
+            await new Promise<void>((r) => setTimeout(r, 5));
+          }
+          if (!winnerKey) {
+            throw new Error(
+              `Key file '${keyFile}' exists but is empty — ` +
+                `concurrent key generation may have failed`,
+            );
+          }
           return await crypto.subtle.importKey(
             "raw",
             new TextEncoder().encode(winnerKey),

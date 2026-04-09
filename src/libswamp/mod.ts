@@ -496,6 +496,18 @@ export {
   type VaultListKeysInput,
 } from "./vaults/list_keys.ts";
 
+// Vault migrate operations
+export {
+  createVaultMigrateDeps,
+  vaultMigrate,
+  type VaultMigrateData,
+  type VaultMigrateDeps,
+  type VaultMigrateEvent,
+  type VaultMigrateInput,
+  type VaultMigratePreview,
+  vaultMigratePreview,
+} from "./vaults/migrate.ts";
+
 // Extension search operations
 export {
   extensionSearch,

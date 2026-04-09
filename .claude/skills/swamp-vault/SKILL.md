@@ -36,6 +36,7 @@ Correct flow: `swamp vault create <type> <name> --json` → edit config if neede
 | Store interactive | `swamp vault put <vault> KEY` (prompts for value)  |
 | Get a secret      | `swamp vault get <vault> <key> --json`             |
 | List secret keys  | `swamp vault list-keys <vault> --json`             |
+| Migrate backend   | `swamp vault migrate <vault> --to-type <type>`     |
 
 ## Repository Structure
 
