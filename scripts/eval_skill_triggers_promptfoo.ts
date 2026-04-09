@@ -27,11 +27,11 @@
  *
  * Usage: deno run eval-skill-triggers [--model <alias>] [--concurrency <n>] [--threshold <0.0-1.0>]
  *
- * Supported models: sonnet (default), opus, gpt-4.1, gemini-2.5-pro
+ * Supported models: sonnet (default), opus, gpt-5.4, gemini-2.5-pro
  *
  * Environment:
  *   ANTHROPIC_API_KEY - Required for sonnet/opus models.
- *   OPENAI_API_KEY    - Required for gpt-4.1 model.
+ *   OPENAI_API_KEY    - Required for gpt-5.4 model.
  *   GOOGLE_API_KEY    - Required for gemini-2.5-pro model.
  */
 
@@ -41,7 +41,7 @@ import { join } from "@std/path";
 const API_KEY_ENV: Record<string, string> = {
   "sonnet": "ANTHROPIC_API_KEY",
   "opus": "ANTHROPIC_API_KEY",
-  "gpt-4.1": "OPENAI_API_KEY",
+  "gpt-5.4": "OPENAI_API_KEY",
   "gemini-2.5-pro": "GOOGLE_API_KEY",
 };
 
@@ -49,7 +49,7 @@ const API_KEY_ENV: Record<string, string> = {
 const TOKEN_PRICING: Record<string, { prompt: number; completion: number }> = {
   "sonnet": { prompt: 3.0, completion: 15.0 },
   "opus": { prompt: 15.0, completion: 75.0 },
-  "gpt-4.1": { prompt: 2.0, completion: 8.0 },
+  "gpt-5.4": { prompt: 2.0, completion: 8.0 },
   "gemini-2.5-pro": { prompt: 1.25, completion: 10.0 },
 };
 

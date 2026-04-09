@@ -25,7 +25,7 @@ jobs:
             concurrency: 20
           - model: opus
             concurrency: 20
-          - model: gpt-4.1
+          - model: gpt-5.4
             concurrency: 5
           - model: gemini-2.5-pro
             concurrency: 20

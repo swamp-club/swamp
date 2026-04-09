@@ -46,8 +46,8 @@ const PROVIDER_REGISTRY: Record<string, ProviderDefinition> = {
     id: "anthropic:messages:claude-opus-4-6",
     apiKeyEnv: "ANTHROPIC_API_KEY",
   },
-  "gpt-4.1": {
-    id: "openai:gpt-4.1",
+  "gpt-5.4": {
+    id: "openai:gpt-5",
     apiKeyEnv: "OPENAI_API_KEY",
   },
   "gemini-2.5-pro": {
