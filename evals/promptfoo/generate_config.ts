@@ -35,6 +35,7 @@ import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 interface ProviderDefinition {
   id: string;
   apiKeyEnv: string;
+  delay?: number;
 }
 
 const PROVIDER_REGISTRY: Record<string, ProviderDefinition> = {
@@ -49,6 +50,7 @@ const PROVIDER_REGISTRY: Record<string, ProviderDefinition> = {
   "gpt-5.4": {
     id: "openai:gpt-5",
     apiKeyEnv: "OPENAI_API_KEY",
+    delay: 5000,
   },
   "gemini-2.5-pro": {
     id: "google:gemini-2.5-pro",
@@ -252,6 +254,7 @@ async function main(): Promise<void> {
           systemMessage,
           tools,
         },
+        ...(provider.delay ? { delay: provider.delay } : {}),
       },
     ],
     tests,
