@@ -49,7 +49,10 @@ export const workflowValidateCommand = new Command()
     });
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createWorkflowValidateDeps(repoContext.workflowRepo);
+    const deps = createWorkflowValidateDeps(
+      repoContext.workflowRepo,
+      repoContext.definitionRepo,
+    );
 
     const renderer = createWorkflowValidateRenderer(cliCtx.outputMode);
     await consumeStream(

@@ -19,12 +19,15 @@
 
 import type { Workflow } from "./workflow.ts";
 import { WorkflowSchema } from "./workflow.ts";
+import type { WorkflowRepository } from "./repositories.ts";
+import { createWorkflowId } from "./workflow_id.ts";
 import {
   CyclicDependencyError,
   DuplicateNodeNameError,
   type GraphNode,
   TopologicalSortService,
 } from "./topological_sort_service.ts";
+
 /**
  * Value object representing the result of a single validation.
  */
@@ -62,6 +65,28 @@ export class WorkflowValidationResult {
 }
 
 /**
+ * Result of resolving a method's required arguments.
+ */
+export type MethodResolution =
+  | { status: "resolved"; requiredArgs: string[] }
+  | { status: "model_not_found" }
+  | { status: "method_not_found"; modelType: string }
+  | { status: "type_unresolvable"; modelType: string };
+
+/**
+ * Port interface for resolving method argument schemas.
+ *
+ * Abstracts model type resolution so the validation service can look up
+ * method argument schemas without depending on infrastructure.
+ */
+export interface ModelMethodResolver {
+  resolve(
+    modelIdOrName: string,
+    methodName: string,
+  ): Promise<MethodResolution>;
+}
+
+/**
  * Domain service for workflow validation.
  *
  * Validates:
@@ -72,6 +97,7 @@ export class WorkflowValidationResult {
  * 5. Valid step dependency references
  * 6. No cyclic dependencies between jobs
  * 7. No cyclic dependencies between steps within jobs
+ * 8. Step inputs match method/workflow required arguments
  */
 export interface WorkflowValidationService {
   /**
@@ -80,7 +106,7 @@ export interface WorkflowValidationService {
    * @param workflow The workflow to validate
    * @returns Array of validation results
    */
-  validate(workflow: Workflow): WorkflowValidationResult[];
+  validate(workflow: Workflow): Promise<WorkflowValidationResult[]>;
 }
 
 /**
@@ -90,7 +116,12 @@ export class DefaultWorkflowValidationService
   implements WorkflowValidationService {
   private readonly sortService = new TopologicalSortService();
 
-  validate(workflow: Workflow): WorkflowValidationResult[] {
+  constructor(
+    private readonly methodResolver?: ModelMethodResolver,
+    private readonly workflowRepo?: WorkflowRepository,
+  ) {}
+
+  async validate(workflow: Workflow): Promise<WorkflowValidationResult[]> {
     const results: WorkflowValidationResult[] = [];
 
     // 1. Schema validation
@@ -113,6 +144,11 @@ export class DefaultWorkflowValidationService
 
     // 7. No cyclic step dependencies within jobs
     results.push(...this.validateNoStepCycles(workflow));
+
+    // 8. Step inputs match required arguments
+    if (this.methodResolver || this.workflowRepo) {
+      results.push(...await this.validateStepInputs(workflow));
+    }
 
     return results;
   }
@@ -318,5 +354,155 @@ export class DefaultWorkflowValidationService
     }
 
     return results;
+  }
+
+  private async validateStepInputs(
+    workflow: Workflow,
+  ): Promise<WorkflowValidationResult[]> {
+    const results: WorkflowValidationResult[] = [];
+
+    for (const job of workflow.jobs) {
+      for (const step of job.steps) {
+        const task = step.task;
+        if (!task) continue;
+
+        const taskData = task.data;
+        if (taskData.type === "model_method" && this.methodResolver) {
+          results.push(
+            ...await this.validateModelMethodInputs(
+              job.name,
+              step.name,
+              taskData.modelIdOrName,
+              taskData.methodName,
+              taskData.inputs,
+            ),
+          );
+        } else if (taskData.type === "workflow" && this.workflowRepo) {
+          results.push(
+            ...await this.validateWorkflowTaskInputs(
+              job.name,
+              step.name,
+              taskData.workflowIdOrName,
+              taskData.inputs,
+            ),
+          );
+        }
+      }
+    }
+
+    return results;
+  }
+
+  private async validateModelMethodInputs(
+    jobName: string,
+    stepName: string,
+    modelIdOrName: string,
+    methodName: string,
+    inputs: Record<string, unknown> | undefined,
+  ): Promise<WorkflowValidationResult[]> {
+    const checkName =
+      `Step inputs for '${stepName}' in job '${jobName}' (${modelIdOrName}.${methodName})`;
+
+    // Skip dynamic CEL references — cannot resolve statically
+    if (modelIdOrName.includes("${{")) {
+      return [WorkflowValidationResult.pass(checkName)];
+    }
+
+    const resolution = await this.methodResolver!.resolve(
+      modelIdOrName,
+      methodName,
+    );
+
+    switch (resolution.status) {
+      case "model_not_found":
+        return [
+          WorkflowValidationResult.pass(
+            checkName +
+              " (model not found, skipped)",
+          ),
+        ];
+      case "type_unresolvable":
+        return [
+          WorkflowValidationResult.pass(
+            checkName +
+              " (model type not resolved, skipped)",
+          ),
+        ];
+      case "method_not_found":
+        return [
+          WorkflowValidationResult.fail(
+            checkName,
+            `Method '${methodName}' not found on model type '${resolution.modelType}'`,
+          ),
+        ];
+      case "resolved": {
+        const inputKeys = new Set(Object.keys(inputs ?? {}));
+        const missing = resolution.requiredArgs.filter((arg) =>
+          !inputKeys.has(arg)
+        );
+        if (missing.length > 0) {
+          return [
+            WorkflowValidationResult.fail(
+              checkName,
+              `Missing required inputs: ${missing.join(", ")}`,
+            ),
+          ];
+        }
+        return [WorkflowValidationResult.pass(checkName)];
+      }
+    }
+  }
+
+  private async validateWorkflowTaskInputs(
+    jobName: string,
+    stepName: string,
+    workflowIdOrName: string,
+    inputs: Record<string, unknown> | undefined,
+  ): Promise<WorkflowValidationResult[]> {
+    const checkName =
+      `Step inputs for '${stepName}' in job '${jobName}' (workflow: ${workflowIdOrName})`;
+
+    // Skip dynamic CEL references
+    if (workflowIdOrName.includes("${{")) {
+      return [WorkflowValidationResult.pass(checkName)];
+    }
+
+    // Try to find the nested workflow
+    let nested: Workflow | null = null;
+    try {
+      nested = await this.workflowRepo!.findByName(workflowIdOrName) ??
+        await this.workflowRepo!.findById(
+          createWorkflowId(workflowIdOrName),
+        );
+    } catch {
+      // ID may not be a valid UUID — that's fine, just not found
+    }
+
+    if (!nested) {
+      return [
+        WorkflowValidationResult.pass(
+          checkName +
+            " (workflow not found, skipped)",
+        ),
+      ];
+    }
+
+    const requiredInputs = nested.inputs?.required ?? [];
+    if (requiredInputs.length === 0) {
+      return [WorkflowValidationResult.pass(checkName)];
+    }
+
+    const inputKeys = new Set(Object.keys(inputs ?? {}));
+    const missing = requiredInputs.filter((arg) => !inputKeys.has(arg));
+    if (missing.length > 0) {
+      return [
+        WorkflowValidationResult.fail(
+          checkName,
+          `Missing required workflow inputs: ${missing.join(", ")}`,
+        ),
+      ];
+    }
+
+    return [WorkflowValidationResult.pass(checkName)];
   }
 }

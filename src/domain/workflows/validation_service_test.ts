@@ -18,12 +18,18 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { DefaultWorkflowValidationService } from "./validation_service.ts";
+import {
+  DefaultWorkflowValidationService,
+  type MethodResolution,
+  type ModelMethodResolver,
+} from "./validation_service.ts";
 import { Workflow } from "./workflow.ts";
 import { Job } from "./job.ts";
 import { Step } from "./step.ts";
 import { StepTask } from "./step_task.ts";
 import { TriggerCondition } from "./trigger_condition.ts";
+import type { WorkflowRepository } from "./repositories.ts";
+import type { WorkflowId } from "./workflow_id.ts";
 
 const service = new DefaultWorkflowValidationService();
 
@@ -44,9 +50,36 @@ function createSimpleWorkflow(): Workflow {
   });
 }
 
-Deno.test("validates simple valid workflow", () => {
+function mockResolver(
+  responses: Record<string, MethodResolution>,
+): ModelMethodResolver {
+  return {
+    resolve(modelIdOrName, methodName) {
+      const key = `${modelIdOrName}.${methodName}`;
+      return Promise.resolve(
+        responses[key] ?? { status: "model_not_found" as const },
+      );
+    },
+  };
+}
+
+function mockWorkflowRepo(
+  workflows: Record<string, Workflow>,
+): WorkflowRepository {
+  return {
+    findByName: (name) => Promise.resolve(workflows[name] ?? null),
+    findById: (_id) => Promise.resolve(null),
+    findAll: () => Promise.resolve(Object.values(workflows)),
+    save: () => Promise.resolve(),
+    delete: () => Promise.resolve(),
+    nextId: () => crypto.randomUUID() as WorkflowId,
+    getPath: () => "",
+  };
+}
+
+Deno.test("validates simple valid workflow", async () => {
   const workflow = createSimpleWorkflow();
-  const results = service.validate(workflow);
+  const results = await service.validate(workflow);
 
   const failed = results.filter((r) => !r.passed);
   assertEquals(
@@ -56,7 +89,7 @@ Deno.test("validates simple valid workflow", () => {
   );
 });
 
-Deno.test("validates workflow with job dependencies", () => {
+Deno.test("validates workflow with job dependencies", async () => {
   const workflow = Workflow.create({
     name: "test-workflow",
     jobs: [
@@ -84,12 +117,12 @@ Deno.test("validates workflow with job dependencies", () => {
     ],
   });
 
-  const results = service.validate(workflow);
+  const results = await service.validate(workflow);
   const failed = results.filter((r) => !r.passed);
   assertEquals(failed.length, 0);
 });
 
-Deno.test("validates workflow with step dependencies", () => {
+Deno.test("validates workflow with step dependencies", async () => {
   const workflow = Workflow.create({
     name: "test-workflow",
     jobs: [
@@ -112,12 +145,12 @@ Deno.test("validates workflow with step dependencies", () => {
     ],
   });
 
-  const results = service.validate(workflow);
+  const results = await service.validate(workflow);
   const failed = results.filter((r) => !r.passed);
   assertEquals(failed.length, 0);
 });
 
-Deno.test("fails on duplicate job names", () => {
+Deno.test("fails on duplicate job names", async () => {
   const workflow = Workflow.create({
     name: "test-workflow",
     jobs: [],
@@ -140,7 +173,7 @@ Deno.test("fails on duplicate job names", () => {
   // Access private _jobs directly for test purposes
   (workflow as unknown as { _jobs: Job[] })._jobs = [job1, job2];
 
-  const results = service.validate(workflow);
+  const results = await service.validate(workflow);
   const uniqueJobNamesResult = results.find((r) =>
     r.name === "Unique job names"
   );
@@ -148,7 +181,7 @@ Deno.test("fails on duplicate job names", () => {
   assertEquals(uniqueJobNamesResult?.error?.includes("build"), true);
 });
 
-Deno.test("fails on duplicate step names within job", () => {
+Deno.test("fails on duplicate step names within job", async () => {
   const step1 = Step.create({
     name: "compile",
     task: StepTask.model("test-model", "run"),
@@ -171,7 +204,7 @@ Deno.test("fails on duplicate step names within job", () => {
     jobs: [job],
   });
 
-  const results = service.validate(workflow);
+  const results = await service.validate(workflow);
   const stepNamesResult = results.find((r) =>
     r.name.includes("Unique step names")
   );
@@ -179,7 +212,7 @@ Deno.test("fails on duplicate step names within job", () => {
   assertEquals(stepNamesResult?.error?.includes("compile"), true);
 });
 
-Deno.test("fails on invalid job dependency reference", () => {
+Deno.test("fails on invalid job dependency reference", async () => {
   const workflow = Workflow.create({
     name: "test-workflow",
     jobs: [
@@ -198,7 +231,7 @@ Deno.test("fails on invalid job dependency reference", () => {
     ],
   });
 
-  const results = service.validate(workflow);
+  const results = await service.validate(workflow);
   const jobRefsResult = results.find((r) =>
     r.name === "Valid job dependency references"
   );
@@ -206,7 +239,7 @@ Deno.test("fails on invalid job dependency reference", () => {
   assertEquals(jobRefsResult?.error?.includes("nonexistent"), true);
 });
 
-Deno.test("fails on invalid step dependency reference", () => {
+Deno.test("fails on invalid step dependency reference", async () => {
   const workflow = Workflow.create({
     name: "test-workflow",
     jobs: [
@@ -225,7 +258,7 @@ Deno.test("fails on invalid step dependency reference", () => {
     ],
   });
 
-  const results = service.validate(workflow);
+  const results = await service.validate(workflow);
   const stepRefsResult = results.find((r) =>
     r.name.includes("Valid step dependency references")
   );
@@ -233,7 +266,7 @@ Deno.test("fails on invalid step dependency reference", () => {
   assertEquals(stepRefsResult?.error?.includes("nonexistent"), true);
 });
 
-Deno.test("fails on cyclic job dependencies", () => {
+Deno.test("fails on cyclic job dependencies", async () => {
   const jobA = Job.create({
     name: "a",
     steps: [
@@ -264,7 +297,7 @@ Deno.test("fails on cyclic job dependencies", () => {
     jobs: [jobA, jobB],
   });
 
-  const results = service.validate(workflow);
+  const results = await service.validate(workflow);
   const cycleResult = results.find((r) =>
     r.name === "No cyclic job dependencies"
   );
@@ -272,7 +305,7 @@ Deno.test("fails on cyclic job dependencies", () => {
   assertEquals(cycleResult?.error?.includes("Cyclic"), true);
 });
 
-Deno.test("fails on cyclic step dependencies", () => {
+Deno.test("fails on cyclic step dependencies", async () => {
   const stepA = Step.create({
     name: "a",
     task: StepTask.model("test-model", "run"),
@@ -304,7 +337,7 @@ Deno.test("fails on cyclic step dependencies", () => {
     ],
   });
 
-  const results = service.validate(workflow);
+  const results = await service.validate(workflow);
   const cycleResult = results.find((r) =>
     r.name.includes("No cyclic step dependencies")
   );
@@ -312,7 +345,7 @@ Deno.test("fails on cyclic step dependencies", () => {
   assertEquals(cycleResult?.error?.includes("Cyclic"), true);
 });
 
-Deno.test("passes all validations for complex valid workflow", () => {
+Deno.test("passes all validations for complex valid workflow", async () => {
   const workflow = Workflow.create({
     name: "ci-pipeline",
     description: "Complete CI pipeline",
@@ -383,7 +416,7 @@ Deno.test("passes all validations for complex valid workflow", () => {
     version: 1,
   });
 
-  const results = service.validate(workflow);
+  const results = await service.validate(workflow);
   const failed = results.filter((r) => !r.passed);
   assertEquals(
     failed.length,
@@ -392,15 +425,14 @@ Deno.test("passes all validations for complex valid workflow", () => {
   );
 });
 
-Deno.test("validate returns synchronously", () => {
+Deno.test("validate returns a promise", async () => {
   const workflow = createSimpleWorkflow();
-  // validate() is not async — calling it without await should return results directly
-  const results = service.validate(workflow);
+  const results = await service.validate(workflow);
   assertEquals(Array.isArray(results), true);
   assertEquals(results.length > 0, true);
 });
 
-Deno.test("does not produce implicit dependency validation results", () => {
+Deno.test("does not produce implicit dependency validation results", async () => {
   // Regression: implicit CEL dependency checks were removed.
   // No validation result should mention "implicit".
   const workflow = Workflow.create({
@@ -425,15 +457,13 @@ Deno.test("does not produce implicit dependency validation results", () => {
     ],
   });
 
-  const results = service.validate(workflow);
+  const results = await service.validate(workflow);
   const implicitResults = results.filter((r) => r.name.includes("implicit"));
   assertEquals(implicitResults.length, 0);
 });
 
-Deno.test("passes validation for linear chain that old implicit system would reject", () => {
+Deno.test("passes validation for linear chain that old implicit system would reject", async () => {
   // Regression test for the proxmox-manager stop-allthemons failure.
-  // A valid linear chain (auth → lookup → warn → stop-minecraft → stop-vm)
-  // where multiple steps reference the same model should not create false cycles.
   const workflow = Workflow.create({
     name: "stop-allthemons",
     jobs: [
@@ -483,7 +513,7 @@ Deno.test("passes validation for linear chain that old implicit system would rej
     ],
   });
 
-  const results = service.validate(workflow);
+  const results = await service.validate(workflow);
   const failed = results.filter((r) => !r.passed);
   assertEquals(
     failed.length,
@@ -494,11 +524,431 @@ Deno.test("passes validation for linear chain that old implicit system would rej
   );
 });
 
-Deno.test("validation results have equals method", () => {
+Deno.test("validation results have equals method", async () => {
   const workflow = createSimpleWorkflow();
-  const results = service.validate(workflow);
+  const results = await service.validate(workflow);
 
   const result1 = results[0];
   const result2 = results[0];
   assertEquals(result1.equals(result2), true);
+});
+
+// --- Step input validation tests (model_method) ---
+
+Deno.test("validateStepInputs: fails when required model method arg is missing", async () => {
+  const resolver = mockResolver({
+    "my-model.deploy": {
+      status: "resolved",
+      requiredArgs: ["environment", "version"],
+    },
+  });
+  const svc = new DefaultWorkflowValidationService(resolver);
+
+  const workflow = Workflow.create({
+    name: "test",
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: [
+          Step.create({
+            name: "step1",
+            task: StepTask.model("my-model", "deploy", {
+              environment: "prod",
+            }),
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await svc.validate(workflow);
+  const inputResult = results.find((r) => r.name.includes("Step inputs"));
+  assertEquals(inputResult?.passed, false);
+  assertEquals(inputResult?.error?.includes("version"), true);
+});
+
+Deno.test("validateStepInputs: passes when all required args present", async () => {
+  const resolver = mockResolver({
+    "my-model.deploy": {
+      status: "resolved",
+      requiredArgs: ["environment", "version"],
+    },
+  });
+  const svc = new DefaultWorkflowValidationService(resolver);
+
+  const workflow = Workflow.create({
+    name: "test",
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: [
+          Step.create({
+            name: "step1",
+            task: StepTask.model("my-model", "deploy", {
+              environment: "prod",
+              version: "1.0",
+            }),
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await svc.validate(workflow);
+  const inputResult = results.find((r) => r.name.includes("Step inputs"));
+  assertEquals(inputResult?.passed, true);
+});
+
+Deno.test("validateStepInputs: passes with CEL expression value for required arg", async () => {
+  const resolver = mockResolver({
+    "my-model.deploy": {
+      status: "resolved",
+      requiredArgs: ["environment"],
+    },
+  });
+  const svc = new DefaultWorkflowValidationService(resolver);
+
+  const workflow = Workflow.create({
+    name: "test",
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: [
+          Step.create({
+            name: "step1",
+            task: StepTask.model("my-model", "deploy", {
+              environment:
+                '${{ data.latest("config", "env").attributes.name }}',
+            }),
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await svc.validate(workflow);
+  const inputResult = results.find((r) => r.name.includes("Step inputs"));
+  assertEquals(inputResult?.passed, true);
+});
+
+Deno.test("validateStepInputs: fails when no inputs but method has required args", async () => {
+  const resolver = mockResolver({
+    "my-model.deploy": {
+      status: "resolved",
+      requiredArgs: ["environment"],
+    },
+  });
+  const svc = new DefaultWorkflowValidationService(resolver);
+
+  const workflow = Workflow.create({
+    name: "test",
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: [
+          Step.create({
+            name: "step1",
+            task: StepTask.model("my-model", "deploy"),
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await svc.validate(workflow);
+  const inputResult = results.find((r) => r.name.includes("Step inputs"));
+  assertEquals(inputResult?.passed, false);
+  assertEquals(inputResult?.error?.includes("environment"), true);
+});
+
+Deno.test("validateStepInputs: skipped when no resolver provided", async () => {
+  const svc = new DefaultWorkflowValidationService();
+
+  const workflow = Workflow.create({
+    name: "test",
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: [
+          Step.create({
+            name: "step1",
+            task: StepTask.model("my-model", "deploy"),
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await svc.validate(workflow);
+  const inputResults = results.filter((r) => r.name.includes("Step inputs"));
+  assertEquals(inputResults.length, 0);
+});
+
+Deno.test("validateStepInputs: model not found produces passing result with skip note", async () => {
+  const resolver = mockResolver({});
+  const svc = new DefaultWorkflowValidationService(resolver);
+
+  const workflow = Workflow.create({
+    name: "test",
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: [
+          Step.create({
+            name: "step1",
+            task: StepTask.model("missing-model", "run"),
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await svc.validate(workflow);
+  const inputResult = results.find((r) => r.name.includes("Step inputs"));
+  assertEquals(inputResult?.passed, true);
+  assertEquals(inputResult?.name.includes("skipped"), true);
+});
+
+Deno.test("validateStepInputs: method not found on model produces failure", async () => {
+  const resolver = mockResolver({
+    "my-model.nonexistent": {
+      status: "method_not_found",
+      modelType: "test/model",
+    },
+  });
+  const svc = new DefaultWorkflowValidationService(resolver);
+
+  const workflow = Workflow.create({
+    name: "test",
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: [
+          Step.create({
+            name: "step1",
+            task: StepTask.model("my-model", "nonexistent"),
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await svc.validate(workflow);
+  const inputResult = results.find((r) => r.name.includes("Step inputs"));
+  assertEquals(inputResult?.passed, false);
+  assertEquals(inputResult?.error?.includes("not found"), true);
+});
+
+Deno.test("validateStepInputs: method with no required args and no inputs passes", async () => {
+  const resolver = mockResolver({
+    "my-model.run": { status: "resolved", requiredArgs: [] },
+  });
+  const svc = new DefaultWorkflowValidationService(resolver);
+
+  const workflow = Workflow.create({
+    name: "test",
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: [
+          Step.create({
+            name: "step1",
+            task: StepTask.model("my-model", "run"),
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await svc.validate(workflow);
+  const inputResult = results.find((r) => r.name.includes("Step inputs"));
+  assertEquals(inputResult?.passed, true);
+});
+
+Deno.test("validateStepInputs: skips dynamic CEL model reference", async () => {
+  const resolver = mockResolver({});
+  const svc = new DefaultWorkflowValidationService(resolver);
+
+  const workflow = Workflow.create({
+    name: "test",
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: [
+          Step.create({
+            name: "step1",
+            task: StepTask.model("${{ inputs.model_name }}", "run"),
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await svc.validate(workflow);
+  const inputResult = results.find((r) => r.name.includes("Step inputs"));
+  assertEquals(inputResult?.passed, true);
+});
+
+// --- Step input validation tests (workflow tasks) ---
+
+Deno.test("validateStepInputs: fails when required workflow input is missing", async () => {
+  const nestedWorkflow = Workflow.create({
+    name: "deploy-pipeline",
+    inputs: {
+      type: "object",
+      properties: {
+        environment: { type: "string" },
+        version: { type: "string" },
+      },
+      required: ["environment", "version"],
+    },
+    jobs: [
+      Job.create({
+        name: "deploy",
+        steps: [
+          Step.create({
+            name: "run",
+            task: StepTask.model("test", "run"),
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const repo = mockWorkflowRepo({ "deploy-pipeline": nestedWorkflow });
+  const svc = new DefaultWorkflowValidationService(undefined, repo);
+
+  const workflow = Workflow.create({
+    name: "test",
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: [
+          Step.create({
+            name: "step1",
+            task: StepTask.workflow("deploy-pipeline", {
+              environment: "prod",
+            }),
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await svc.validate(workflow);
+  const inputResult = results.find((r) => r.name.includes("Step inputs"));
+  assertEquals(inputResult?.passed, false);
+  assertEquals(inputResult?.error?.includes("version"), true);
+});
+
+Deno.test("validateStepInputs: passes when all required workflow inputs present", async () => {
+  const nestedWorkflow = Workflow.create({
+    name: "deploy-pipeline",
+    inputs: {
+      type: "object",
+      properties: {
+        environment: { type: "string" },
+      },
+      required: ["environment"],
+    },
+    jobs: [
+      Job.create({
+        name: "deploy",
+        steps: [
+          Step.create({
+            name: "run",
+            task: StepTask.model("test", "run"),
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const repo = mockWorkflowRepo({ "deploy-pipeline": nestedWorkflow });
+  const svc = new DefaultWorkflowValidationService(undefined, repo);
+
+  const workflow = Workflow.create({
+    name: "test",
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: [
+          Step.create({
+            name: "step1",
+            task: StepTask.workflow("deploy-pipeline", {
+              environment: "prod",
+            }),
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await svc.validate(workflow);
+  const inputResult = results.find((r) => r.name.includes("Step inputs"));
+  assertEquals(inputResult?.passed, true);
+});
+
+Deno.test("validateStepInputs: nested workflow not found produces passing skip", async () => {
+  const repo = mockWorkflowRepo({});
+  const svc = new DefaultWorkflowValidationService(undefined, repo);
+
+  const workflow = Workflow.create({
+    name: "test",
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: [
+          Step.create({
+            name: "step1",
+            task: StepTask.workflow("nonexistent-workflow"),
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await svc.validate(workflow);
+  const inputResult = results.find((r) => r.name.includes("Step inputs"));
+  assertEquals(inputResult?.passed, true);
+  assertEquals(inputResult?.name.includes("skipped"), true);
+});
+
+Deno.test("validateStepInputs: nested workflow with no required inputs passes", async () => {
+  const nestedWorkflow = Workflow.create({
+    name: "simple-nested",
+    jobs: [
+      Job.create({
+        name: "deploy",
+        steps: [
+          Step.create({
+            name: "run",
+            task: StepTask.model("test", "run"),
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const repo = mockWorkflowRepo({ "simple-nested": nestedWorkflow });
+  const svc = new DefaultWorkflowValidationService(undefined, repo);
+
+  const workflow = Workflow.create({
+    name: "test",
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: [
+          Step.create({
+            name: "step1",
+            task: StepTask.workflow("simple-nested"),
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await svc.validate(workflow);
+  const inputResult = results.find((r) => r.name.includes("Step inputs"));
+  assertEquals(inputResult?.passed, true);
 });

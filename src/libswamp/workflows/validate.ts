@@ -21,11 +21,17 @@ import type { Workflow } from "../../domain/workflows/workflow.ts";
 import type { WorkflowValidationResult } from "../../domain/workflows/validation_service.ts";
 import {
   DefaultWorkflowValidationService,
+  type ModelMethodResolver,
 } from "../../domain/workflows/validation_service.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
 import type { LibSwampContext } from "../context.ts";
 import { notFound, type SwampError, validationFailed } from "../errors.ts";
+import type { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
+import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
+import { resolveModelType } from "../../domain/extensions/extension_auto_resolver.ts";
+import { getAutoResolver } from "../../domain/extensions/auto_resolver_context.ts";
+import { zodToJsonSchema } from "../types/schema_helpers.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /** UUID v4 regex pattern for detecting if an argument is a UUID. */
@@ -77,14 +83,60 @@ export interface WorkflowValidateDeps {
   findWorkflowById: (id: string) => Promise<Workflow | null>;
   findWorkflowByName: (name: string) => Promise<Workflow | null>;
   findAllWorkflows: () => Promise<Workflow[]>;
-  validate: (workflow: Workflow) => WorkflowValidationResult[];
+  validate: (workflow: Workflow) => Promise<WorkflowValidationResult[]>;
+}
+
+/**
+ * Creates a ModelMethodResolver that uses the definition repository and
+ * extension auto-resolver to look up method argument schemas.
+ */
+function createModelMethodResolver(
+  definitionRepo: YamlDefinitionRepository,
+): ModelMethodResolver {
+  return {
+    async resolve(modelIdOrName, methodName) {
+      const lookupResult = await findDefinitionByIdOrName(
+        definitionRepo,
+        modelIdOrName,
+      );
+      if (!lookupResult) {
+        return { status: "model_not_found" };
+      }
+
+      const { type: modelType } = lookupResult;
+      const modelDef = await resolveModelType(modelType, getAutoResolver());
+      if (!modelDef) {
+        return { status: "type_unresolvable", modelType: modelType.normalized };
+      }
+
+      const method = modelDef.methods[methodName];
+      if (!method) {
+        return { status: "method_not_found", modelType: modelType.normalized };
+      }
+
+      // Extract required fields from the method's Zod argument schema
+      const jsonSchema = zodToJsonSchema(method.arguments) as {
+        required?: string[];
+      };
+      const requiredArgs = jsonSchema.required ?? [];
+
+      return { status: "resolved", requiredArgs };
+    },
+  };
 }
 
 /** Wires real infrastructure into WorkflowValidateDeps. */
 export function createWorkflowValidateDeps(
   workflowRepo: WorkflowRepository,
+  definitionRepo?: YamlDefinitionRepository,
 ): WorkflowValidateDeps {
-  const validationService = new DefaultWorkflowValidationService();
+  const methodResolver = definitionRepo
+    ? createModelMethodResolver(definitionRepo)
+    : undefined;
+  const validationService = new DefaultWorkflowValidationService(
+    methodResolver,
+    definitionRepo ? workflowRepo : undefined,
+  );
   return {
     findWorkflowById: (id) => workflowRepo.findById(createWorkflowId(id)),
     findWorkflowByName: (name) => workflowRepo.findByName(name),
@@ -127,7 +179,7 @@ async function* validateAll(
 
   const results: WorkflowValidateData[] = [];
   for (const workflow of allWorkflows) {
-    const validationResults = deps.validate(workflow);
+    const validationResults = await deps.validate(workflow);
     const validations = toValidationItemData(validationResults);
     const allPassed = validationResults.every((r) => r.passed);
 
@@ -174,7 +226,7 @@ async function* validateSingle(
     return;
   }
 
-  const results = deps.validate(workflow);
+  const results = await deps.validate(workflow);
   const validations = toValidationItemData(results);
   const allPassed = results.every((r) => r.passed);
 
