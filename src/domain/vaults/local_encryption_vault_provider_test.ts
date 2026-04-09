@@ -27,14 +27,7 @@ import {
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-local-vault-test-" });
   try {
-    // Change to temp directory for test isolation
-    const originalCwd = Deno.cwd();
-    Deno.chdir(dir);
-    try {
-      await fn(dir);
-    } finally {
-      Deno.chdir(originalCwd);
-    }
+    await fn(dir);
   } finally {
     await Deno.remove(dir, { recursive: true });
   }
@@ -84,12 +77,16 @@ Deno.test("LocalEncryptionVaultProvider - SSH key-based encryption", async (t) =
   await t.step("should encrypt and decrypt secrets with SSH key", async () => {
     await withTempDir(async (dir) => {
       // Create a mock SSH key file
-      await Deno.writeTextFile("test_ssh_key", MOCK_SSH_PRIVATE_KEY, {
-        mode: 0o600,
-      });
+      await Deno.writeTextFile(
+        join(dir, "test_ssh_key"),
+        MOCK_SSH_PRIVATE_KEY,
+        {
+          mode: 0o600,
+        },
+      );
 
       const config: LocalEncryptionConfig = {
-        ssh_key_path: "test_ssh_key",
+        ssh_key_path: join(dir, "test_ssh_key"),
         base_dir: dir,
       };
       const vault = new LocalEncryptionVaultProvider("test-vault", config);
@@ -173,12 +170,16 @@ Deno.test("LocalEncryptionVaultProvider - SSH key-based encryption", async (t) =
 
   await t.step("should handle multiple secrets with same SSH key", async () => {
     await withTempDir(async (dir) => {
-      await Deno.writeTextFile("shared_ssh_key", MOCK_SSH_PRIVATE_KEY, {
-        mode: 0o600,
-      });
+      await Deno.writeTextFile(
+        join(dir, "shared_ssh_key"),
+        MOCK_SSH_PRIVATE_KEY,
+        {
+          mode: 0o600,
+        },
+      );
 
       const config: LocalEncryptionConfig = {
-        ssh_key_path: "shared_ssh_key",
+        ssh_key_path: join(dir, "shared_ssh_key"),
         base_dir: dir,
       };
       const vault = new LocalEncryptionVaultProvider("shared-vault", config);
@@ -256,7 +257,7 @@ Deno.test("LocalEncryptionVaultProvider - auto-generated keys", async (t) => {
 
   await t.step("should support custom key file location", async () => {
     await withTempDir(async (dir) => {
-      const customKeyPath = "custom-key-location.key";
+      const customKeyPath = join(dir, "custom-key-location.key");
       const config: LocalEncryptionConfig = {
         auto_generate: true,
         key_file: customKeyPath,
@@ -833,14 +834,18 @@ Deno.test("LocalEncryptionVaultProvider - SSH key validation", async (t) => {
   await t.step(
     "should reject encrypted OpenSSH key",
     async () => {
-      await withTempDir(async (_dir) => {
+      await withTempDir(async (dir) => {
         const encryptedKey = createMockEncryptedOpenSshKey("aes256-ctr");
-        await Deno.writeTextFile("encrypted_openssh_key", encryptedKey, {
-          mode: 0o600,
-        });
+        await Deno.writeTextFile(
+          join(dir, "encrypted_openssh_key"),
+          encryptedKey,
+          {
+            mode: 0o600,
+          },
+        );
 
         const config: LocalEncryptionConfig = {
-          ssh_key_path: "encrypted_openssh_key",
+          ssh_key_path: join(dir, "encrypted_openssh_key"),
         };
         const vault = new LocalEncryptionVaultProvider(
           "encrypted-openssh-vault",
@@ -861,13 +866,17 @@ Deno.test("LocalEncryptionVaultProvider - SSH key validation", async (t) => {
   await t.step(
     "should reject encrypted PEM key",
     async () => {
-      await withTempDir(async (_dir) => {
-        await Deno.writeTextFile("encrypted_pem_key", MOCK_ENCRYPTED_PEM_KEY, {
-          mode: 0o600,
-        });
+      await withTempDir(async (dir) => {
+        await Deno.writeTextFile(
+          join(dir, "encrypted_pem_key"),
+          MOCK_ENCRYPTED_PEM_KEY,
+          {
+            mode: 0o600,
+          },
+        );
 
         const config: LocalEncryptionConfig = {
-          ssh_key_path: "encrypted_pem_key",
+          ssh_key_path: join(dir, "encrypted_pem_key"),
         };
         const vault = new LocalEncryptionVaultProvider(
           "encrypted-pem-vault",
@@ -888,13 +897,17 @@ Deno.test("LocalEncryptionVaultProvider - SSH key validation", async (t) => {
   await t.step(
     "should reject SSH key with insecure permissions (0644)",
     async () => {
-      await withTempDir(async (_dir) => {
-        await Deno.writeTextFile("insecure_key", MOCK_SSH_PRIVATE_KEY, {
-          mode: 0o644,
-        });
+      await withTempDir(async (dir) => {
+        await Deno.writeTextFile(
+          join(dir, "insecure_key"),
+          MOCK_SSH_PRIVATE_KEY,
+          {
+            mode: 0o644,
+          },
+        );
 
         const config: LocalEncryptionConfig = {
-          ssh_key_path: "insecure_key",
+          ssh_key_path: join(dir, "insecure_key"),
         };
         const vault = new LocalEncryptionVaultProvider(
           "insecure-perms-vault",
@@ -916,12 +929,16 @@ Deno.test("LocalEncryptionVaultProvider - SSH key validation", async (t) => {
     "should accept SSH key with secure permissions (0600)",
     async () => {
       await withTempDir(async (dir) => {
-        await Deno.writeTextFile("secure_key", MOCK_SSH_PRIVATE_KEY, {
-          mode: 0o600,
-        });
+        await Deno.writeTextFile(
+          join(dir, "secure_key"),
+          MOCK_SSH_PRIVATE_KEY,
+          {
+            mode: 0o600,
+          },
+        );
 
         const config: LocalEncryptionConfig = {
-          ssh_key_path: "secure_key",
+          ssh_key_path: join(dir, "secure_key"),
           base_dir: dir,
         };
         const vault = new LocalEncryptionVaultProvider(
@@ -940,12 +957,16 @@ Deno.test("LocalEncryptionVaultProvider - SSH key validation", async (t) => {
     "should fall back to auto-generate when SSH key has insecure permissions",
     async () => {
       await withTempDir(async (dir) => {
-        await Deno.writeTextFile("bad_perms_key", MOCK_SSH_PRIVATE_KEY, {
-          mode: 0o644,
-        });
+        await Deno.writeTextFile(
+          join(dir, "bad_perms_key"),
+          MOCK_SSH_PRIVATE_KEY,
+          {
+            mode: 0o644,
+          },
+        );
 
         const config: LocalEncryptionConfig = {
-          ssh_key_path: "bad_perms_key",
+          ssh_key_path: join(dir, "bad_perms_key"),
           auto_generate: true,
           base_dir: dir,
         };

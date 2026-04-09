@@ -31,6 +31,7 @@ import { assertEquals, assertExists } from "@std/assert";
 import { join } from "@std/path";
 import { ensureDir } from "@std/fs";
 import { stringify as stringifyYaml } from "@std/yaml";
+import { CLI_ARGS } from "./test_helpers.ts";
 import { Data } from "../src/domain/data/data.ts";
 import type { OwnerDefinition } from "../src/domain/data/data_metadata.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
@@ -120,7 +121,7 @@ async function runCliCommand(
   cwd: string,
 ): Promise<{ stdout: string; stderr: string; code: number }> {
   const command = new Deno.Command(Deno.execPath(), {
-    args: ["task", "dev", ...args],
+    args: [...CLI_ARGS, ...args],
     stdout: "piped",
     stderr: "piped",
     cwd,

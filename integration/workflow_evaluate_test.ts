@@ -32,6 +32,7 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import { ensureDir, existsSync } from "@std/fs";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
+import { CLI_ARGS } from "./test_helpers.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-evaluate-" });
@@ -73,7 +74,7 @@ async function runCliCommand(
   cwd: string,
 ): Promise<{ stdout: string; stderr: string; code: number }> {
   const command = new Deno.Command(Deno.execPath(), {
-    args: ["task", "dev", ...args],
+    args: [...CLI_ARGS, ...args],
     stdout: "piped",
     stderr: "piped",
     cwd,

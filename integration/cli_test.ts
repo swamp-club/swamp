@@ -19,6 +19,7 @@
 
 import { assertStringIncludes } from "@std/assert";
 import { VERSION } from "../src/cli/commands/version.ts";
+import { CLI_ARGS } from "./test_helpers.ts";
 
 // Integration tests run the CLI as a subprocess to test end-to-end behavior
 
@@ -26,7 +27,7 @@ async function runCliCommand(
   args: string[],
 ): Promise<{ stdout: string; stderr: string; code: number }> {
   const command = new Deno.Command(Deno.execPath(), {
-    args: ["task", "dev", ...args],
+    args: [...CLI_ARGS, ...args],
     stdout: "piped",
     stderr: "piped",
     cwd: Deno.cwd(),

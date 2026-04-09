@@ -21,9 +21,26 @@
  * Shared test helpers for integration tests.
  */
 
-import { join } from "@std/path";
+import { dirname, fromFileUrl, join } from "@std/path";
 import { ensureDir } from "@std/fs";
 import { stringify as stringifyYaml } from "@std/yaml";
+
+/** Absolute path to the project root (parent of integration/). */
+const PROJECT_ROOT = join(dirname(fromFileUrl(import.meta.url)), "..");
+
+/** CLI launch args that bypass `deno task` config resolution. */
+export const CLI_ARGS = [
+  "run",
+  "--config",
+  join(PROJECT_ROOT, "deno.json"),
+  "--unstable-bundle",
+  "--allow-read",
+  "--allow-write",
+  "--allow-env",
+  "--allow-run",
+  "--allow-sys",
+  join(PROJECT_ROOT, "main.ts"),
+];
 
 /**
  * Initializes a test repository with the required marker file and directory structure.
@@ -66,7 +83,7 @@ export async function runCliCommand(
   cwd: string,
 ): Promise<{ stdout: string; stderr: string; code: number }> {
   const command = new Deno.Command(Deno.execPath(), {
-    args: ["task", "dev", ...args],
+    args: [...CLI_ARGS, ...args],
     stdout: "piped",
     stderr: "piped",
     cwd,

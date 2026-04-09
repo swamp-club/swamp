@@ -20,6 +20,7 @@
 import { assertStringIncludes } from "@std/assert/string-includes";
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
+import { CLI_ARGS } from "./test_helpers.ts";
 
 const PROJECT_ROOT = Deno.cwd();
 
@@ -28,7 +29,7 @@ async function runCli(
   env?: Record<string, string>,
 ): Promise<{ stdout: string; stderr: string; code: number }> {
   const command = new Deno.Command(Deno.execPath(), {
-    args: ["task", "dev", ...args],
+    args: [...CLI_ARGS, ...args],
     stdout: "piped",
     stderr: "piped",
     cwd: PROJECT_ROOT,
