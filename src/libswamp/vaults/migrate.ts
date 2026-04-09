@@ -115,7 +115,7 @@ function resolveBuiltInProviderConfig(
   vaultType: string,
   repoDir: string,
 ): Record<string, unknown> {
-  switch (vaultType) {
+  switch (vaultType.toLowerCase()) {
     case "local_encryption":
       return {
         auto_generate: true,

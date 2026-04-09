@@ -335,3 +335,49 @@ Deno.test("vaultMigrate: tolerates delete failure", async () => {
   const last = events[events.length - 1];
   assertEquals(last.kind, "completed");
 });
+
+Deno.test("vaultMigrate: case-insensitive target type resolves correct config", async () => {
+  let savedConfig: VaultConfig | null = null;
+  let createdProviderConfig: Record<string, unknown> | undefined;
+
+  const deps = makeDeps({
+    getVaultTypeInfo: (type) => {
+      if (
+        type.toLowerCase() === "mock" ||
+        type.toLowerCase() === "local_encryption"
+      ) {
+        return {
+          type,
+          name: type.toLowerCase() === "mock" ? "Mock" : "Local Encryption",
+          description: `${type} vault`,
+          isBuiltIn: true,
+        };
+      }
+      return undefined;
+    },
+    createProvider: (_type, name, config) => {
+      createdProviderConfig = config as Record<string, unknown>;
+      return new MockVaultProvider(name);
+    },
+    saveConfig: (config) => {
+      savedConfig = config;
+      return Promise.resolve();
+    },
+  });
+
+  const events = await collect<VaultMigrateEvent>(
+    vaultMigrate(createLibSwampContext(), deps, {
+      vaultName: "my-vault",
+      targetType: "Local_Encryption",
+      repoDir: "/tmp/test-repo",
+    }),
+  );
+
+  const last = events[events.length - 1];
+  assertEquals(last.kind, "completed");
+  assertEquals(savedConfig!.type, "Local_Encryption");
+  // The key assertion: config should have auto_generate and base_dir,
+  // not an empty object from the default branch
+  assertEquals(createdProviderConfig?.auto_generate, true);
+  assertEquals(createdProviderConfig?.base_dir, "/tmp/test-repo");
+});
