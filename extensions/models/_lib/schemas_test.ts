@@ -17,24 +17,28 @@
 import { assertEquals } from "@std/assert";
 import { Phase, PullRequestSchema, TRANSITIONS } from "./schemas.ts";
 
-Deno.test("Phase: includes pr_open between implementing and done", () => {
+Deno.test("Phase: includes pr_open, pr_failed, releasing between implementing and done", () => {
   const phases = Phase.options;
   const implementingIdx = phases.indexOf("implementing");
   const prOpenIdx = phases.indexOf("pr_open");
+  const prFailedIdx = phases.indexOf("pr_failed");
+  const releasingIdx = phases.indexOf("releasing");
   const doneIdx = phases.indexOf("done");
 
   assertEquals(prOpenIdx, implementingIdx + 1);
-  assertEquals(doneIdx, prOpenIdx + 1);
+  assertEquals(prFailedIdx, prOpenIdx + 1);
+  assertEquals(releasingIdx, prFailedIdx + 1);
+  assertEquals(doneIdx, releasingIdx + 1);
 });
 
-Deno.test("TRANSITIONS: link_pr is idempotent from implementing and pr_open", () => {
-  assertEquals(TRANSITIONS.link_pr, ["implementing", "pr_open"]);
+Deno.test("TRANSITIONS: link_pr accepts implementing, pr_open, and pr_failed", () => {
+  assertEquals(TRANSITIONS.link_pr, ["implementing", "pr_open", "pr_failed"]);
 });
 
-Deno.test("TRANSITIONS: complete accepts both implementing (legacy) and pr_open (new)", () => {
-  // Accepting both keeps existing records (created before this phase was
-  // introduced) able to finish without being forced through link_pr.
-  assertEquals(TRANSITIONS.complete, ["implementing", "pr_open"]);
+Deno.test("TRANSITIONS: complete accepts implementing, pr_open, and releasing", () => {
+  // Accepting all three keeps backwards compatibility while allowing
+  // the new releasing phase to be closed out directly.
+  assertEquals(TRANSITIONS.complete, ["implementing", "pr_open", "releasing"]);
 });
 
 Deno.test("TRANSITIONS: start (resume) includes pr_open so in-flight issues can be picked up", () => {

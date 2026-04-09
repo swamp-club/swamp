@@ -125,8 +125,10 @@ Use this table to determine what to do next:
 | `classified`     | Read [references/planning.md](references/planning.md)                     |
 | `plan_generated` | Read [references/adversarial-review.md](references/adversarial-review.md) |
 | `approved`       | Read [references/implementation.md](references/implementation.md)         |
-| `implementing`   | Check PR status or call `complete`                                        |
-| `pr_open`        | Check PR status or call `complete`                                        |
+| `implementing`   | Link a PR with `link_pr` or call `complete`                               |
+| `pr_open`        | Wait 3 min, then check PR: `pr_merged` if merged, `pr_failed` if failed   |
+| `pr_failed`      | Fix the issue, then `link_pr` (new PR) or `implement` (major rework)      |
+| `releasing`      | Check release build: `ship` when done, or `complete` as fallback          |
 | `done`           | Nothing to do — lifecycle is complete                                     |
 
 The canonical phase list lives in the `TRANSITIONS` constant in
@@ -140,11 +142,20 @@ When a PR has already merged and the lifecycle just needs to be marked done:
    ```
    swamp data get issue-<N> state-main --json
    ```
-2. If the phase is `implementing` and you have a PR URL, link it first:
+2. If the phase is `implementing`, link the PR first:
    ```
    swamp model method run issue-<N> link_pr --input url=<PR URL>
    ```
-3. Call `complete` (accepts both `implementing` and `pr_open` as source phases):
+3. If the phase is `pr_open`, record the merge:
+   ```
+   swamp model method run issue-<N> pr_merged
+   ```
+4. If the phase is `releasing`, ship it:
+   ```
+   swamp model method run issue-<N> ship
+   ```
+5. For quick close-out, `complete` still works from `implementing`, `pr_open`,
+   or `releasing`:
    ```
    swamp model method run issue-<N> complete
    ```
@@ -162,7 +173,9 @@ When a PR has already merged and the lifecycle just needs to be marked done:
    reference specific files, functions, and test paths.
 6. **Follow the planning conventions for this repository.** Read
    `agent-constraints/planning-conventions.md` if it exists.
-7. **File unrelated issues immediately.** If you discover a bug, code smell, or
+7. **Never open a PR without asking first.** Present the changes summary and
+   wait for the human to confirm before creating the pull request.
+8. **File unrelated issues immediately.** If you discover a bug, code smell, or
    problem during investigation that is NOT related to the current issue, file
    it as a new swamp-club issue. Do not try to fix it in the current work span —
    keep the scope focused.

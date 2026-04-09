@@ -44,10 +44,15 @@ export const Phase = z.enum([
   "approved",
   "implementing",
   "pr_open",
+  "pr_failed",
+  "releasing",
   "done",
 ]);
 
 export type Phase = z.infer<typeof Phase>;
+
+/** Minimum time (ms) between link_pr and pr_merged/pr_failed to allow CI to run. */
+export const PR_COOLDOWN_MS = 3 * 60 * 1000;
 
 /** Valid transitions: method name → allowed source phases */
 export const TRANSITIONS: Record<string, Phase[]> = {
@@ -59,16 +64,21 @@ export const TRANSITIONS: Record<string, Phase[]> = {
     "approved",
     "implementing",
     "pr_open",
+    "pr_failed",
+    "releasing",
   ],
   triage: ["triaging"],
   plan: ["classified"],
   iterate: ["plan_generated"],
   approve: ["plan_generated"],
-  implement: ["approved"],
+  implement: ["approved", "pr_failed"],
   adversarial_review: ["plan_generated"],
   resolve_findings: ["plan_generated"],
-  link_pr: ["implementing", "pr_open"],
-  complete: ["implementing", "pr_open"],
+  link_pr: ["implementing", "pr_open", "pr_failed"],
+  pr_merged: ["pr_open"],
+  pr_failed: ["pr_open"],
+  ship: ["releasing"],
+  complete: ["implementing", "pr_open", "releasing"],
 };
 
 // ---------------------------------------------------------------------------
@@ -173,6 +183,15 @@ export const PullRequestSchema = z.object({
   linkedAt: z.string().describe(
     "ISO-8601 timestamp of when link_pr was called. Updated on every " +
       "subsequent link_pr call so the record reflects the latest link.",
+  ),
+  mergedAt: z.string().optional().describe(
+    "ISO-8601 timestamp of when pr_merged was called. Set once.",
+  ),
+  failedAt: z.string().optional().describe(
+    "ISO-8601 timestamp of when pr_failed was called. Cleared on next link_pr.",
+  ),
+  failureReason: z.string().optional().describe(
+    "Why the PR failed (CI failure, review rejection, etc.). Cleared on next link_pr.",
   ),
 });
 

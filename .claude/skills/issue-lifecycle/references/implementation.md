@@ -37,6 +37,10 @@ Report verification results to the human before creating the PR:
 
 ## 4. Create a PR
 
+**Always ask the human before opening a PR.** Do not create the PR automatically
+— present a summary of the changes and ask if they are ready to open it. Only
+proceed after explicit confirmation.
+
 Use the repository's normal PR tooling. Read
 `agent-constraints/implementation-conventions.md` for repo-specific PR
 conventions.
@@ -69,13 +73,56 @@ Calling `link_pr` is **encouraged but not enforced** — `complete` still accept
 records. Prefer the `implementing → link_pr → complete` flow for all new work so
 the lifecycle record carries the PR link.
 
-## 5. Complete the Issue
+## 4b. Wait for CI and Check PR Status
 
-Once the PR has merged and the work is done, call `complete`:
+After linking the PR, wait at least 3 minutes for CI to run. The model enforces
+a `pr-cooldown` check — calling `pr_merged` or `pr_failed` within 3 minutes of
+`link_pr` will be rejected.
+
+Check the PR status externally (e.g.,
+`gh pr view <url> --json state,statusCheckRollup`):
+
+- **PR merged**: call `pr_merged` to transition to `releasing`
+  ```
+  swamp model method run issue-<N> pr_merged
+  ```
+- **PR failed** (CI red, changes requested): call `pr_failed` with the reason
+  ```
+  swamp model method run issue-<N> pr_failed --input reason="CI failed: type check errors"
+  ```
+- **PR still open and passing**: wait and check again later.
+
+## 4c. Handle PR Failure
+
+When in `pr_failed`, diagnose and fix the issue. Then either:
+
+- Push fixes and call `link_pr` again (same or new PR URL) to return to
+  `pr_open`:
+  ```
+  swamp model method run issue-<N> link_pr --input url=<PR URL>
+  ```
+- Call `implement` to go back to the implementing phase for major rework:
+  ```
+  swamp model method run issue-<N> implement
+  ```
+
+## 5. Ship the Release
+
+After `pr_merged` transitions to `releasing`, wait for the release build to
+complete. Once the release is out, call `ship`:
 
 ```
-swamp model method run issue-<N> complete
+swamp model method run issue-<N> ship
+```
+
+Optionally pass release metadata:
+
+```
+swamp model method run issue-<N> ship --input releaseUrl=<URL> --input releaseNotes="Bug fix release"
 ```
 
 This transitions the phase to `done`, transitions the swamp-club status to
-`shipped`, and posts a `complete` lifecycle entry.
+`shipped`, and posts a `shipped` lifecycle entry.
+
+For quick close-out (e.g., the PR merged and you just want to wrap up),
+`complete` still works from `implementing`, `pr_open`, or `releasing`.
