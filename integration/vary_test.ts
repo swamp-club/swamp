@@ -582,6 +582,7 @@ Deno.test("CLI: vary schema validates in workflow YAML", async () => {
                 modelIdOrName: "test-model",
                 methodName: "execute",
                 inputs: {
+                  run: "echo hello",
                   region: "us-east-1",
                 },
               },

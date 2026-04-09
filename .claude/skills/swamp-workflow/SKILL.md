@@ -207,7 +207,22 @@ swamp workflow delete my-workflow --json
 
 ## Validate Workflows
 
-Validate against schema and check for errors.
+Validate against schema, check for structural errors, and verify that step
+inputs match required method/workflow arguments.
+
+**Checks performed:**
+
+1. Schema validation (Zod)
+2. Unique job names
+3. Unique step names within each job
+4. Valid job dependency references
+5. Valid step dependency references
+6. No cyclic job dependencies
+7. No cyclic step dependencies within jobs
+8. Step inputs match required arguments — for `model_method` tasks, checks that
+   all required method arguments are provided in the step's `inputs:` block. For
+   `workflow` tasks, checks that all required workflow inputs are provided.
+   Dynamic CEL references (`${{ ... }}`) in model/workflow names are skipped.
 
 ```bash
 swamp workflow validate my-workflow --json
@@ -224,7 +239,11 @@ swamp workflow validate --json  # Validate all
     { "name": "Schema validation", "passed": true },
     { "name": "Unique job names", "passed": true },
     { "name": "Valid job dependency references", "passed": true },
-    { "name": "No cyclic job dependencies", "passed": true }
+    { "name": "No cyclic job dependencies", "passed": true },
+    {
+      "name": "Step inputs for 'deploy' in job 'release' (my-app.deploy)",
+      "passed": true
+    }
   ],
   "passed": true
 }

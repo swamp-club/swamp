@@ -42,10 +42,11 @@ function makeDeps(
     findWorkflowById: () => Promise.resolve(workflow),
     findWorkflowByName: () => Promise.resolve(workflow),
     findAllWorkflows: () => Promise.resolve([workflow]),
-    validate: () => [
-      WorkflowValidationResult.pass("schema"),
-      WorkflowValidationResult.pass("refs"),
-    ],
+    validate: () =>
+      Promise.resolve([
+        WorkflowValidationResult.pass("schema"),
+        WorkflowValidationResult.pass("refs"),
+      ]),
     ...overrides,
   };
 }
