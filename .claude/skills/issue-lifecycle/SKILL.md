@@ -108,14 +108,46 @@ swamp model output search issue-<N> --json
 
 ## Resuming a Session
 
-If the human comes back to an in-progress issue, check the current state:
+If the human comes back to an in-progress issue, check the current phase:
 
 ```
-swamp model get issue-<N> --json
+swamp data get issue-<N> state-main --json
 ```
 
-Then read the reference file for whatever phase the state shows and pick up from
-there.
+Read the `phase` field from the response. **Do NOT call `start` to resume** —
+`start` unconditionally resets the phase to `triaging`, destroying progress.
+
+Use this table to determine what to do next:
+
+| Phase            | Action                                                                    |
+| ---------------- | ------------------------------------------------------------------------- |
+| `triaging`       | Read [references/triage.md](references/triage.md)                         |
+| `classified`     | Read [references/planning.md](references/planning.md)                     |
+| `plan_generated` | Read [references/adversarial-review.md](references/adversarial-review.md) |
+| `approved`       | Read [references/implementation.md](references/implementation.md)         |
+| `implementing`   | Check PR status or call `complete`                                        |
+| `pr_open`        | Check PR status or call `complete`                                        |
+| `done`           | Nothing to do — lifecycle is complete                                     |
+
+The canonical phase list lives in the `TRANSITIONS` constant in
+`extensions/models/_lib/schemas.ts`.
+
+## Closing Out a Shipped Issue
+
+When a PR has already merged and the lifecycle just needs to be marked done:
+
+1. Check the current phase:
+   ```
+   swamp data get issue-<N> state-main --json
+   ```
+2. If the phase is `implementing` and you have a PR URL, link it first:
+   ```
+   swamp model method run issue-<N> link_pr --input url=<PR URL>
+   ```
+3. Call `complete` (accepts both `implementing` and `pr_open` as source phases):
+   ```
+   swamp model method run issue-<N> complete
+   ```
 
 ## Key Rules
 

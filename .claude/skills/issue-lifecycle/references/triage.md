@@ -3,6 +3,21 @@
 Steps 1–5 of the issue lifecycle. Read this when starting a new triage or
 resuming an issue in the `triaging` phase.
 
+## Before You Start
+
+Check whether the model instance already exists and is past triage:
+
+```
+swamp data get issue-<N> state-main --json
+```
+
+- If this **returns data** and the `phase` is anything other than `created` or
+  `triaging`, the issue is already in flight. **Do NOT call `start`** — go to
+  the "Resuming a Session" section in SKILL.md and use the phase-to-action table
+  to pick up where the issue left off.
+- If the command **fails** (no data found), the model instance hasn't been
+  created yet — proceed with step 1 below.
+
 ## 1. Create the Model Instance
 
 The swamp-club issue must already exist — create it in the swamp-club UI first,
@@ -24,6 +39,10 @@ commands in this skill also need `--repo-dir`.
 ```
 swamp model method run issue-<N> start
 ```
+
+> **Warning:** `start` unconditionally resets the phase to `triaging`. Only call
+> it once when beginning a new lifecycle. Never use it to resume an in-progress
+> issue — it will destroy all progress (classification, plan, approvals).
 
 This fetches the issue from swamp-club via `GET /api/v1/lab/issues/<N>` and
 writes the title, body, type, status, and comments to the `context` resource. If
