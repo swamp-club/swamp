@@ -63,3 +63,38 @@ jobs:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           GOOGLE_API_KEY: ${{ secrets.GOOGLE_API_KEY }}
         run: deno run eval-skill-triggers --model ${{ matrix.model }} --concurrency ${{ matrix.concurrency }}
+
+      - name: Upload eval results
+        if: steps.check.outputs.run == 'true' && always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: eval-results-${{ matrix.model }}
+          path: evals/promptfoo/results.json
+          retention-days: 30
+
+  analysis:
+    name: Cross-Model Analysis
+    runs-on: ubuntu-latest
+    needs: eval
+    if: always()
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Download all eval results
+        uses: actions/download-artifact@v4
+        with:
+          pattern: eval-results-*
+          path: eval-artifacts
+
+      - name: Run cross-model analysis
+        run: deno run --allow-read --allow-env=GITHUB_STEP_SUMMARY --allow-write scripts/analyze_eval_results.ts eval-artifacts
+        env:
+          GITHUB_STEP_SUMMARY: ${{ github.step_summary }}
