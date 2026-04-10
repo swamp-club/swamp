@@ -66,11 +66,11 @@ jobs:
 
       - name: Upload eval results
         if: steps.check.outputs.run == 'true' && always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v6
         with:
           name: eval-results-${{ matrix.model }}
           path: evals/promptfoo/results.json
-          retention-days: 30
+          retention-days: 14
 
   analysis:
     name: Cross-Model Analysis
