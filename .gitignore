@@ -24,4 +24,5 @@ CLAUDE.local.md
 resources/deno/
 /scripts/dist
 evals/promptfoo/results.json
+evals/promptfoo/promptfooconfig.yaml
 evals/promptfoo/node_modules/

@@ -15,7 +15,7 @@
     "audit": "deno run --allow-read --allow-net=api.osv.dev --allow-env=GITHUB_STEP_SUMMARY --allow-write scripts/audit_deps.ts",
     "audit-actions": "deno run --allow-read --allow-net=api.github.com --allow-env=GITHUB_STEP_SUMMARY,GITHUB_TOKEN --allow-write scripts/audit_actions.ts",
     "review-skills": "deno run --allow-read --allow-run --allow-env=GITHUB_STEP_SUMMARY --allow-write scripts/review_skills.ts",
-    "eval-skill-triggers": "deno run --allow-read --allow-run --allow-env --allow-write scripts/eval_skill_triggers_promptfoo.ts"
+    "eval-skill-triggers": "deno run --allow-read --allow-run --allow-env --allow-write --allow-net scripts/eval_skill_triggers_promptfoo.ts"
   },
   "imports": {
     "@std/assert": "jsr:@std/assert@^1.0.18",

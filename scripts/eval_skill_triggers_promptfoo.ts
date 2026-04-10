@@ -45,6 +45,96 @@ const API_KEY_ENV: Record<string, string> = {
   "gemini-2.5-pro": "GOOGLE_API_KEY",
 };
 
+// Maps model aliases to the API model ID used for preflight checks.
+const PREFLIGHT_MODEL_ID: Record<string, string> = {
+  "sonnet": "claude-sonnet-4-5",
+  "opus": "claude-opus-4-6",
+  "gpt-5.4": "gpt-5.4",
+  "gemini-2.5-pro": "gemini-2.5-pro",
+};
+
+interface PreflightConfig {
+  url: string;
+  headers: Record<string, string>;
+  body: string;
+}
+
+function buildPreflightRequest(
+  model: string,
+  apiKey: string,
+): PreflightConfig {
+  const modelId = PREFLIGHT_MODEL_ID[model];
+  if (model === "sonnet" || model === "opus") {
+    return {
+      url: "https://api.anthropic.com/v1/messages",
+      headers: {
+        "x-api-key": apiKey,
+        "anthropic-version": "2023-06-01",
+        "content-type": "application/json",
+      },
+      body: JSON.stringify({
+        model: modelId,
+        max_tokens: 1,
+        messages: [{ role: "user", content: "hi" }],
+      }),
+    };
+  } else if (model === "gpt-5.4") {
+    return {
+      url: "https://api.openai.com/v1/chat/completions",
+      headers: {
+        "Authorization": `Bearer ${apiKey}`,
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify({
+        model: modelId,
+        max_completion_tokens: 10,
+        messages: [{ role: "user", content: "hi" }],
+      }),
+    };
+  } else {
+    return {
+      url:
+        `https://generativelanguage.googleapis.com/v1beta/models/${modelId}:generateContent?key=${apiKey}`,
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        contents: [{ parts: [{ text: "hi" }] }],
+        generationConfig: { maxOutputTokens: 1 },
+      }),
+    };
+  }
+}
+
+async function preflightCheck(model: string): Promise<void> {
+  const apiKey = Deno.env.get(API_KEY_ENV[model])!;
+  const config = buildPreflightRequest(model, apiKey);
+
+  console.log(`Preflight: verifying ${model} API access…`);
+  const signal = AbortSignal.timeout(15_000);
+  const resp = await fetch(config.url, {
+    method: "POST",
+    headers: config.headers,
+    body: config.body,
+    signal,
+  });
+
+  if (!resp.ok) {
+    const body = await resp.text();
+    console.error(
+      `Preflight failed for ${model} (HTTP ${resp.status}): ${body.slice(0, 300)}`,
+    );
+    if (resp.status === 429) {
+      console.error(
+        "Hint: a 429 before any eval calls usually means insufficient credits or a billing issue, not a rate limit.",
+      );
+    }
+    Deno.exit(1);
+  }
+
+  // Drain the response body
+  await resp.text();
+  console.log(`Preflight: ${model} API access verified.`);
+}
+
 // Per-million-token pricing for cost estimation
 const TOKEN_PRICING: Record<string, { prompt: number; completion: number }> = {
   "sonnet": { prompt: 3.0, completion: 15.0 },
@@ -181,6 +271,11 @@ async function main(): Promise<void> {
     // Exit 0 — missing key is not a failure
     return;
   }
+
+  // Preflight: make a single API call to verify the key works before
+  // launching 202 eval calls. Catches billing/credit issues immediately
+  // instead of retrying for hours.
+  await preflightCheck(model);
 
   // Regenerate config for the selected model
   await regenerateConfig(projectRoot, model);
