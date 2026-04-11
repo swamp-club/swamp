@@ -332,6 +332,38 @@ export async function executeReports(
   modelTypeReports?: string[],
   varySuffix?: string,
 ): Promise<ReportExecutionSummary> {
+  // Promote lazy-registered reports for every candidate name before calling
+  // getAll(). getAll() only returns fully-loaded entries from the registry's
+  // `reports` Map; lazy entries in `lazyTypes` are excluded. Without this
+  // step, user extension reports registered lazily from the bundle catalog
+  // (second+ process run) would be silently filtered out of the applicable
+  // set — the regression fixed by #81 after the lazy loading rework in
+  // #1089.
+  //
+  // We promote every candidate name unconditionally, including ones whose
+  // scope will end up mismatched by filterReports() below. We cannot inspect
+  // `report.scope` until the bundle is imported, and extending
+  // LazyReportEntry with scope would duplicate the bundle catalog and
+  // defeat the point of lazy loading for scope-mismatched reports anyway.
+  // Wasted imports are bounded by |selection.require ∪ modelTypeReports|
+  // and only happen once per process — ensureTypeLoaded() dedupes concurrent
+  // callers via typeLoadPromises, and is a no-op for already-loaded and
+  // unknown names. Errors from ensureTypeLoaded() propagate unchanged: a
+  // broken bundle for a required report must fail loudly rather than be
+  // silently skipped.
+  const candidateNames = new Set<string>();
+  for (const ref of selection?.require ?? []) {
+    candidateNames.add(getReportRefName(ref));
+  }
+  if (modelTypeReports) {
+    for (const name of modelTypeReports) {
+      candidateNames.add(name);
+    }
+  }
+  await Promise.all(
+    Array.from(candidateNames, (name) => registry.ensureTypeLoaded(name)),
+  );
+
   const allReports = registry.getAll();
   const applicable = filterReports(
     allReports,

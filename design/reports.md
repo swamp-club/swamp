@@ -152,7 +152,45 @@ See `src/domain/reports/user_report_loader.ts`.
 ## Report Registry
 
 The `ReportRegistry` is a `Map`-backed registry of report definitions keyed by
-name. It provides `register`, `get`, `getAll`, `getByScope`, and `has` methods.
+name. Every report type exists in one of two states:
+
+- **Fully loaded** — the bundle has been imported and the `ReportDefinition`
+  (including its `execute` function) is available in the internal `reports`
+  map. `register`, `get`, `getAll`, `getByScope`, and `has` all operate on
+  fully-loaded entries.
+- **Lazy** — the type is known to exist from the extension bundle catalog,
+  but its bundle has not been imported yet. Lazy entries live in a separate
+  `lazyTypes` map and are materialized from the on-disk catalog on second
+  and subsequent process starts without touching the bundle files.
+  `registerLazy`, `isLazy`, `getAllLazy`, and the `LazyReportEntry` type
+  describe this state.
+
+`ensureTypeLoaded(name)` promotes a single lazy entry to fully loaded by
+importing its bundle on demand and invoking `promoteFromLazy`. Concurrent
+callers for the same type share a single in-flight promise via an internal
+`typeLoadPromises` map, so a burst of promotions still triggers at most one
+bundle import per type. `ensureTypeLoaded` is a no-op for types that are
+already loaded or not registered at all.
+
+The CLI wires two hooks into the registry at startup (see `src/cli/mod.ts`):
+
+- `setLoader` — a full eager-load fallback that walks the reports directory
+  and imports every bundle. Triggered by `ensureLoaded()` and used when no
+  catalog is available.
+- `setTypeLoader` — a per-type loader that imports a single bundle via the
+  catalog entry for that type. Backs `ensureTypeLoaded` in normal operation.
+
+**Promotion contract for iteration.** Because `getAll()` returns only
+fully-loaded entries, any domain service that iterates the registry (most
+notably `executeReports` in `report_execution_service.ts`) must first call
+`ensureTypeLoaded` for every candidate report name — typically the union of
+`selection.require` and the model type's declared report defaults — before
+calling `getAll()` and filtering the result. Skipping this promotion step
+causes lazy user-extension reports to be silently filtered out of the
+applicable set on the second and subsequent process runs (the catalog is
+populated, so the fully-loaded map contains only eagerly-registered builtin
+reports). Iteration without promotion is the regression fixed by issue #81
+after the lazy-loading rework in #1089.
 
 The global singleton uses `globalThis` so the same registry is shared across
 module boundaries (important when extensions are loaded outside the bundle):
@@ -164,7 +202,7 @@ export const reportRegistry: ReportRegistry =
 ```
 
 Duplicate name registration throws an error. See
-`src/domain/reports/report_registry.ts`.
+`src/domain/reports/report_registry.ts` for the full API.
 
 ## Three-Level Control Model
 

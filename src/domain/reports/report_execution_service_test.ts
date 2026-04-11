@@ -1077,3 +1077,215 @@ Deno.test("buildRedactSensitiveArgs: returns args unchanged for workflow scope",
   assertEquals(capturedResult !== null, true);
   assertEquals(capturedResult!.apiKey, "sk-secret");
 });
+
+// --- executeReports lazy-report promotion tests (regression: #81) ---
+
+/**
+ * Builds a minimal MethodReportContext for lazy-promotion tests.
+ */
+function makeMethodContext(
+  repo: ReturnType<typeof createInMemoryDataRepo>["repo"],
+  modelType: ModelType,
+): MethodReportContext {
+  return {
+    scope: "method",
+    repoDir: "/tmp/test",
+    logger: {
+      debug: () => {},
+      info: () => {},
+      warn: () => {},
+      error: () => {},
+      fatal: () => {},
+    } as unknown as MethodReportContext["logger"],
+    // deno-lint-ignore no-explicit-any
+    dataRepository: repo as any,
+    // deno-lint-ignore no-explicit-any
+    definitionRepository: {} as any,
+    modelType,
+    modelId: "test-id",
+    definition: { id: "test-id", name: "test", version: 1, tags: {} },
+    globalArgs: {},
+    methodArgs: {},
+    methodName: "run",
+    executionStatus: "succeeded",
+    dataHandles: [],
+  };
+}
+
+/**
+ * Creates a fresh ReportRegistry with a single lazy entry and a type loader
+ * that promotes it on demand. Returns the registry and a counter for the
+ * number of times the loader was invoked.
+ */
+function createRegistryWithLazyReport(
+  typeName: string,
+  scope: "method" | "model" | "workflow" = "method",
+): { registry: ReportRegistry; loaderCallCount: { value: number } } {
+  const registry = new ReportRegistry();
+  registry.registerLazy({
+    type: typeName,
+    bundlePath: `/tmp/fake-bundles/${typeName}.js`,
+    sourcePath: `/tmp/fake-sources/${typeName}.ts`,
+    version: "2026.04.11.1",
+  });
+
+  const loaderCallCount = { value: 0 };
+  registry.setTypeLoader((type) => {
+    loaderCallCount.value++;
+    registry.promoteFromLazy(type, makeReport(scope));
+    return Promise.resolve();
+  });
+
+  return { registry, loaderCallCount };
+}
+
+Deno.test("executeReports: promotes lazy report named in selection.require", async () => {
+  const { registry, loaderCallCount } = createRegistryWithLazyReport(
+    "@test/lazy-method",
+  );
+  const { repo, saved } = createInMemoryDataRepo();
+  const modelType = ModelType.create("test/model");
+  const context = makeMethodContext(repo, modelType);
+
+  const summary = await executeReports(
+    registry,
+    context,
+    modelType,
+    "test-id",
+    { require: ["@test/lazy-method"] },
+    {},
+    undefined,
+    "run",
+    undefined,
+  );
+
+  assertEquals(loaderCallCount.value, 1);
+  assertEquals(summary.failures, 0);
+  assertEquals(summary.results.length, 1);
+  assertEquals(summary.results[0].name, "@test/lazy-method");
+  assertEquals(summary.results[0].success, true);
+  // Persisted two artifacts (markdown + json)
+  assertEquals(saved.length, 2);
+  assertStringIncludes(saved[0].name, "test-lazy-method");
+});
+
+Deno.test("executeReports: promotes lazy report from modelTypeReports defaults", async () => {
+  const { registry, loaderCallCount } = createRegistryWithLazyReport(
+    "@test/lazy-default",
+  );
+  const { repo } = createInMemoryDataRepo();
+  const modelType = ModelType.create("test/model");
+  const context = makeMethodContext(repo, modelType);
+
+  const summary = await executeReports(
+    registry,
+    context,
+    modelType,
+    "test-id",
+    undefined,
+    {},
+    undefined,
+    "run",
+    ["@test/lazy-default"],
+  );
+
+  assertEquals(loaderCallCount.value, 1);
+  assertEquals(summary.failures, 0);
+  assertEquals(summary.results.length, 1);
+  assertEquals(summary.results[0].name, "@test/lazy-default");
+  assertEquals(summary.results[0].success, true);
+});
+
+Deno.test("executeReports: handles ReportRef object form in require", async () => {
+  const { registry, loaderCallCount } = createRegistryWithLazyReport(
+    "@test/lazy-ref",
+  );
+  const { repo } = createInMemoryDataRepo();
+  const modelType = ModelType.create("test/model");
+  const context = makeMethodContext(repo, modelType);
+
+  const summary = await executeReports(
+    registry,
+    context,
+    modelType,
+    "test-id",
+    { require: [{ name: "@test/lazy-ref", methods: ["run"] }] },
+    {},
+    undefined,
+    "run",
+    undefined,
+  );
+
+  assertEquals(loaderCallCount.value, 1);
+  assertEquals(summary.results.length, 1);
+  assertEquals(summary.results[0].name, "@test/lazy-ref");
+  assertEquals(summary.results[0].success, true);
+});
+
+Deno.test("executeReports: ensureTypeLoaded failure fails loudly", async () => {
+  const registry = new ReportRegistry();
+  registry.registerLazy({
+    type: "@test/lazy-broken",
+    bundlePath: "/tmp/fake-bundles/broken.js",
+    sourcePath: "/tmp/fake-sources/broken.ts",
+    version: "2026.04.11.1",
+  });
+  registry.setTypeLoader(() => {
+    return Promise.reject(new Error("bundle import failed"));
+  });
+
+  const { repo } = createInMemoryDataRepo();
+  const modelType = ModelType.create("test/model");
+  const context = makeMethodContext(repo, modelType);
+
+  let caught: Error | undefined;
+  try {
+    await executeReports(
+      registry,
+      context,
+      modelType,
+      "test-id",
+      { require: ["@test/lazy-broken"] },
+      {},
+      undefined,
+      "run",
+      undefined,
+    );
+  } catch (err) {
+    caught = err as Error;
+  }
+
+  assertEquals(caught !== undefined, true);
+  assertStringIncludes(caught!.message, "bundle import failed");
+});
+
+Deno.test("executeReports: already-loaded reports are not re-promoted", async () => {
+  const registry = new ReportRegistry();
+  registry.register("@test/already-loaded", makeReport("method"));
+
+  let loaderCalled = false;
+  registry.setTypeLoader(() => {
+    loaderCalled = true;
+    return Promise.reject(new Error("type loader should not be called"));
+  });
+
+  const { repo } = createInMemoryDataRepo();
+  const modelType = ModelType.create("test/model");
+  const context = makeMethodContext(repo, modelType);
+
+  const summary = await executeReports(
+    registry,
+    context,
+    modelType,
+    "test-id",
+    { require: ["@test/already-loaded"] },
+    {},
+    undefined,
+    "run",
+    undefined,
+  );
+
+  assertEquals(loaderCalled, false);
+  assertEquals(summary.results.length, 1);
+  assertEquals(summary.results[0].success, true);
+});
