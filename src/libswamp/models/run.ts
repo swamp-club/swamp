@@ -44,7 +44,8 @@ import type { OutputRepository } from "../../domain/models/repositories.ts";
 import type { VaultService } from "../../domain/vaults/vault_service.ts";
 import type { ExpressionEvaluationService } from "../../domain/expressions/expression_evaluation_service.ts";
 import type { SecretRedactor } from "../../domain/secrets/mod.ts";
-import type { DataRecord } from "../../domain/data/data_record.ts";
+import type { DataQueryService } from "../../domain/data/data_query_service.ts";
+import { buildMethodContext } from "../../domain/models/method_context.ts";
 import type {
   DataArtifactView,
   ModelMethodRunView,
@@ -156,11 +157,8 @@ export interface ModelMethodRunDeps {
   dataRepo: UnifiedDataRepository;
   definitionRepo: YamlDefinitionRepository;
   outputRepo: OutputRepository;
-  /** Pre-built query function for context.queryData(). */
-  queryData: (
-    predicate: string,
-    select?: string,
-  ) => Promise<DataRecord[] | unknown[]>;
+  /** Data query service — the driver derives context.queryData from this. */
+  dataQueryService: DataQueryService;
   createRunLog: (
     modelType: ModelType,
     methodName: string,
@@ -410,50 +408,54 @@ export async function* modelMethodRun(
                 evaluatedDefinition,
                 modelDef,
                 input.methodName,
-                {
-                  signal: ctx.signal,
-                  repoDir: deps.repoDir,
-                  modelType,
-                  modelId: evaluatedDefinition.id,
-                  globalArgs: evaluatedDefinition.globalArguments,
-                  definition: {
-                    id: evaluatedDefinition.id,
-                    name: evaluatedDefinition.name,
-                    version: evaluatedDefinition.version,
-                    tags: evaluatedDefinition.tags,
+                buildMethodContext(
+                  {
+                    dataRepository: deps.dataRepo,
+                    definitionRepository: deps.definitionRepo,
+                    vaultService,
+                    redactor,
+                    dataQueryService: deps.dataQueryService,
                   },
-                  methodName: input.methodName,
-                  logger: getRunLogger(definition.name, input.methodName),
-                  dataRepository: deps.dataRepo,
-                  definitionRepository: deps.definitionRepo,
-                  runtimeTags: input.runtimeTags,
-                  vaultService,
-                  redactor,
-                  vaultSecrets: secretBag,
-                  skipCheckNames: input.skipCheckNames,
-                  skipCheckLabels: input.skipCheckLabels,
-                  skipAllChecks: input.skipAllChecks,
-                  driver: input.driver,
-                  onEvent: (event: MethodExecutionEvent) => {
-                    if (event.type === "output") {
-                      push({
-                        kind: "method_output",
-                        modelName: definition.name,
-                        methodName: input.methodName,
-                        stream: event.stream,
-                        line: event.line,
-                      });
-                    } else {
-                      push({
-                        kind: "method_event",
-                        modelName: definition.name,
-                        methodName: input.methodName,
-                        event,
-                      });
-                    }
+                  {
+                    signal: ctx.signal,
+                    repoDir: deps.repoDir,
+                    modelType,
+                    modelId: evaluatedDefinition.id,
+                    globalArgs: evaluatedDefinition.globalArguments,
+                    definition: {
+                      id: evaluatedDefinition.id,
+                      name: evaluatedDefinition.name,
+                      version: evaluatedDefinition.version,
+                      tags: evaluatedDefinition.tags,
+                    },
+                    methodName: input.methodName,
+                    logger: getRunLogger(definition.name, input.methodName),
+                    runtimeTags: input.runtimeTags,
+                    vaultSecrets: secretBag,
+                    skipCheckNames: input.skipCheckNames,
+                    skipCheckLabels: input.skipCheckLabels,
+                    skipAllChecks: input.skipAllChecks,
+                    driver: input.driver,
+                    onEvent: (event: MethodExecutionEvent) => {
+                      if (event.type === "output") {
+                        push({
+                          kind: "method_output",
+                          modelName: definition.name,
+                          methodName: input.methodName,
+                          stream: event.stream,
+                          line: event.line,
+                        });
+                      } else {
+                        push({
+                          kind: "method_event",
+                          modelName: definition.name,
+                          methodName: input.methodName,
+                          event,
+                        });
+                      }
+                    },
                   },
-                  queryData: deps.queryData,
-                },
+                ),
               ),
           );
         } catch (error) {

@@ -30,6 +30,7 @@ import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
 import { createCatalogStore } from "../../infrastructure/persistence/repository_factory.ts";
+import { DataQueryService } from "../../domain/data/data_query_service.ts";
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import type { ModelType } from "../../domain/models/model_type.ts";
 import type { LibSwampContext } from "../context.ts";
@@ -122,17 +123,20 @@ export function createModelValidateDeps(
   const dsPath = (subdir: string): string | undefined =>
     datastoreResolver?.resolvePath(subdir);
   const definitionRepo = new YamlDefinitionRepository(repoDir);
+  const catalogStore = createCatalogStore(repoDir, datastoreResolver);
   const dataRepo = new FileSystemUnifiedDataRepository(
     repoDir,
     dsPath(SWAMP_SUBDIRS.data),
-    createCatalogStore(repoDir, datastoreResolver),
+    catalogStore,
   );
+  const dataQueryService = new DataQueryService(catalogStore, dataRepo);
   const validationService = new DefaultModelValidationService();
 
   const checkContext: CheckValidationContext = {
     repoDir,
     dataRepository: dataRepo,
     definitionRepository: definitionRepo,
+    dataQueryService,
     labels: options?.labels,
     method: options?.method,
   };

@@ -190,14 +190,10 @@ export const modelMethodRunCommand = new Command()
         dataRepo: repoContext.unifiedDataRepo,
         definitionRepo: repoContext.definitionRepo,
         outputRepo: repoContext.outputRepo,
-        queryData:
-          ((dqs) => (predicate: string, select?: string) =>
-            dqs.query(predicate, { select }))(
-              new DataQueryService(
-                repoContext.catalogStore,
-                repoContext.unifiedDataRepo,
-              ),
-            ),
+        dataQueryService: new DataQueryService(
+          repoContext.catalogStore,
+          repoContext.unifiedDataRepo,
+        ),
         createRunLog: async (modelType, method, definitionId) => {
           const redactor = new SecretRedactor();
           const timestamp = new Date().toISOString().replace(/[:.]/g, "-");

@@ -44,6 +44,7 @@ import { BUILTIN_METHOD_REPORTS } from "../reports/builtin/mod.ts";
 import { getAutoResolver } from "../extensions/auto_resolver_context.ts";
 import { DefaultMethodExecutionService } from "../models/method_execution_service.ts";
 import { DefaultModelValidationService } from "../models/validation_service.ts";
+import { buildMethodContext } from "../models/method_context.ts";
 import { buildOutputSpecs } from "../models/output_spec_builder.ts";
 import { detectEnvVarUsageInDefinition } from "../models/env_var_detector.ts";
 import type { Definition } from "../definitions/definition.ts";
@@ -208,6 +209,10 @@ export class DefaultStepExecutor implements StepExecutor {
       ctx.repoDir,
       ctx.dataBaseDir,
       ctx.catalogStore,
+    );
+    const dataQueryService = new DataQueryService(
+      ctx.catalogStore,
+      unifiedDataRepo,
     );
     const outputRepo = new YamlOutputRepository(ctx.repoDir);
     const executionService = new DefaultMethodExecutionService();
@@ -484,58 +489,63 @@ export class DefaultStepExecutor implements StepExecutor {
         evaluatedDefinition,
         modelDef,
         task.methodName,
-        {
-          signal: ctx.signal,
-          repoDir: ctx.repoDir,
-          modelType,
-          modelId: evaluatedDefinition.id,
-          globalArgs: evaluatedDefinition.globalArguments,
-          definition: {
-            id: evaluatedDefinition.id,
-            name: evaluatedDefinition.name,
-            version: evaluatedDefinition.version,
-            tags: evaluatedDefinition.tags,
+        buildMethodContext(
+          {
+            dataRepository: unifiedDataRepo,
+            definitionRepository: definitionRepo,
+            vaultService,
+            redactor: ctx.secretRedactor,
+            dataQueryService,
           },
-          methodName: task.methodName,
-          logger: runLogger,
-          dataRepository: unifiedDataRepo,
-          definitionRepository: definitionRepo,
-          tagOverrides: workflowTagOverrides,
-          runtimeTags: ctx.runtimeTags,
-          dataOutputOverrides: stepDataOutputOverrides,
-          vaultService,
-          redactor: ctx.secretRedactor,
-          vaultSecrets: secretBag,
-          driver: ctx.driver ?? evaluatedDefinition.driver,
-          driverConfig: ctx.driverConfig ?? evaluatedDefinition.driverConfig,
-          skipCheckNames: ctx.skipCheckNames,
-          skipCheckLabels: ctx.skipCheckLabels,
-          skipAllChecks: ctx.skipAllChecks,
-          onEvent: ctx.emitEvent
-            ? (event: MethodExecutionEvent) => {
-              if (event.type === "output") {
-                ctx.emitEvent!({
-                  kind: "method_output",
-                  jobId: ctx.jobName,
-                  stepId: ctx.stepName,
-                  modelName: originalDefinition.name,
-                  methodName: task.methodName,
-                  stream: event.stream,
-                  line: event.line,
-                });
-              } else {
-                ctx.emitEvent!({
-                  kind: "method_event",
-                  jobId: ctx.jobName,
-                  stepId: ctx.stepName,
-                  modelName: originalDefinition.name,
-                  methodName: task.methodName,
-                  event,
-                });
+          {
+            signal: ctx.signal,
+            repoDir: ctx.repoDir,
+            modelType,
+            modelId: evaluatedDefinition.id,
+            globalArgs: evaluatedDefinition.globalArguments,
+            definition: {
+              id: evaluatedDefinition.id,
+              name: evaluatedDefinition.name,
+              version: evaluatedDefinition.version,
+              tags: evaluatedDefinition.tags,
+            },
+            methodName: task.methodName,
+            logger: runLogger,
+            tagOverrides: workflowTagOverrides,
+            runtimeTags: ctx.runtimeTags,
+            dataOutputOverrides: stepDataOutputOverrides,
+            vaultSecrets: secretBag,
+            driver: ctx.driver ?? evaluatedDefinition.driver,
+            driverConfig: ctx.driverConfig ?? evaluatedDefinition.driverConfig,
+            skipCheckNames: ctx.skipCheckNames,
+            skipCheckLabels: ctx.skipCheckLabels,
+            skipAllChecks: ctx.skipAllChecks,
+            onEvent: ctx.emitEvent
+              ? (event: MethodExecutionEvent) => {
+                if (event.type === "output") {
+                  ctx.emitEvent!({
+                    kind: "method_output",
+                    jobId: ctx.jobName,
+                    stepId: ctx.stepName,
+                    modelName: originalDefinition.name,
+                    methodName: task.methodName,
+                    stream: event.stream,
+                    line: event.line,
+                  });
+                } else {
+                  ctx.emitEvent!({
+                    kind: "method_event",
+                    jobId: ctx.jobName,
+                    stepId: ctx.stepName,
+                    modelName: originalDefinition.name,
+                    methodName: task.methodName,
+                    event,
+                  });
+                }
               }
-            }
-            : undefined,
-        },
+              : undefined,
+          },
+        ),
       );
 
       // Extract artifact info from dataHandles (already persisted by DataWriter)

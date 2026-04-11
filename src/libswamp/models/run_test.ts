@@ -36,6 +36,7 @@ import type { ModelDefinition } from "../../domain/models/model.ts";
 import { z } from "zod";
 import { VaultSecretBag } from "../../domain/vaults/vault_secret_bag.ts";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
+import type { DataQueryService } from "../../domain/data/data_query_service.ts";
 
 await initializeLogging({});
 
@@ -165,7 +166,9 @@ function createTestDeps(
     dataRepo: createFakeDataRepo(),
     definitionRepo: createFakeDefinitionRepo(),
     outputRepo: createFakeOutputRepo(),
-    queryData: () => Promise.resolve([]),
+    dataQueryService: {
+      query: () => Promise.resolve([]),
+    } as unknown as DataQueryService,
     createRunLog: () =>
       Promise.resolve({
         logFilePath: "/tmp/test.log",

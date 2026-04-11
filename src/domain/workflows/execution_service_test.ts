@@ -2605,3 +2605,81 @@ Deno.test("coerceToSuffix: skips null/undefined properties", () => {
     "fallback-id",
   );
 });
+
+// Regression test for lab issue #35: workflow-path MethodContext must carry
+// dataQueryService (and therefore a derived queryData) so extension methods
+// invoked as workflow steps can call context.queryData. Guards the factory
+// call site in DefaultStepExecutor.executeModelMethod.
+Deno.test("DefaultStepExecutor wires dataQueryService into MethodContext", async () => {
+  const { z } = await import("zod");
+  const { ModelType } = await import("../models/model_type.ts");
+  const { modelRegistry } = await import("../models/model.ts");
+  const { Definition } = await import("../definitions/definition.ts");
+  const { YamlDefinitionRepository } = await import(
+    "../../infrastructure/persistence/yaml_definition_repository.ts"
+  );
+  const { initializeLogging } = await import(
+    "../../infrastructure/logging/logger.ts"
+  );
+  await initializeLogging({});
+
+  await withTempDir(async (tempDir) => {
+    const typeName = `@test-issue35/capture-${crypto.randomUUID().slice(0, 8)}`;
+    const modelType = ModelType.create(typeName);
+    let capturedDataQueryService: unknown;
+    let capturedQueryData: unknown;
+
+    modelRegistry.register({
+      type: modelType,
+      version: "2026.01.01.1",
+      globalArguments: z.object({}),
+      resources: {},
+      methods: {
+        run: {
+          description: "captures context for regression assertions",
+          arguments: z.object({}),
+          execute: (_args, context) => {
+            capturedDataQueryService = context.dataQueryService;
+            capturedQueryData = context.queryData;
+            return Promise.resolve({});
+          },
+        },
+      },
+    });
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    try {
+      const definitionRepo = new YamlDefinitionRepository(tempDir);
+      const instance = Definition.create({
+        name: "capture-instance",
+        type: modelType.normalized,
+      });
+      await definitionRepo.save(modelType, instance);
+
+      const step = Step.create({
+        name: "capture-step",
+        task: StepTask.model("capture-instance", "run"),
+      });
+      const ctx: StepExecutionContext = {
+        workflowId: createWorkflowId("00000000-0000-0000-0000-000000000000"),
+        workflowRunId: "00000000-0000-0000-0000-000000000000",
+        workflowName: "regression",
+        jobName: "job1",
+        stepName: "capture-step",
+        repoDir: tempDir,
+        signal: new AbortController().signal,
+        step,
+        catalogStore,
+      };
+
+      const executor = new DefaultStepExecutor();
+      await executor.execute(step, ctx);
+
+      assertNotEquals(capturedDataQueryService, undefined);
+      assertNotEquals(capturedQueryData, undefined);
+      assertEquals(typeof capturedQueryData, "function");
+    } finally {
+      catalogStore.close();
+    }
+  });
+});

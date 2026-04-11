@@ -20,9 +20,11 @@
 import type { z } from "zod";
 import type { MethodContext, ModelDefinition } from "./model.ts";
 import { modelRegistry } from "./model.ts";
+import { buildMethodContext } from "./method_context.ts";
 import type { Definition } from "../definitions/definition.ts";
 import { DefinitionSchema } from "../definitions/definition.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
+import type { DataQueryService } from "../data/data_query_service.ts";
 import {
   extractExpressions,
   stripExpressionFields,
@@ -231,6 +233,7 @@ export interface CheckValidationContext {
   repoDir: string;
   dataRepository: MethodContext["dataRepository"];
   definitionRepository: DefinitionRepository;
+  dataQueryService?: DataQueryService;
   labels?: string[];
   method?: string;
 }
@@ -375,32 +378,37 @@ export class DefaultModelValidationService implements ModelValidationService {
       }
 
       try {
-        const context: MethodContext = {
-          signal: new AbortController().signal,
-          repoDir: checkContext.repoDir,
-          modelType: modelDef.type,
-          modelId: definition.id,
-          globalArgs: definition.globalArguments,
-          definition: {
-            id: definition.id,
-            name: definition.name,
-            version: definition.version,
-            tags: definition.tags,
+        const context = buildMethodContext(
+          {
+            dataRepository: checkContext.dataRepository,
+            definitionRepository: checkContext.definitionRepository,
+            dataQueryService: checkContext.dataQueryService,
           },
-          methodName: checkContext.method ?? "",
-          logger: {
-            debug() {},
-            info() {},
-            warn() {},
-            error() {},
-            fatal() {},
-            with() {
-              return this;
+          {
+            signal: new AbortController().signal,
+            repoDir: checkContext.repoDir,
+            modelType: modelDef.type,
+            modelId: definition.id,
+            globalArgs: definition.globalArguments,
+            definition: {
+              id: definition.id,
+              name: definition.name,
+              version: definition.version,
+              tags: definition.tags,
             },
-          } as unknown as MethodContext["logger"],
-          dataRepository: checkContext.dataRepository,
-          definitionRepository: checkContext.definitionRepository,
-        };
+            methodName: checkContext.method ?? "",
+            logger: {
+              debug() {},
+              info() {},
+              warn() {},
+              error() {},
+              fatal() {},
+              with() {
+                return this;
+              },
+            } as unknown as MethodContext["logger"],
+          },
+        );
 
         const checkResult = await check.execute(context);
         if (!checkResult || typeof checkResult.pass !== "boolean") {

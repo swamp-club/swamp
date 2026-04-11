@@ -34,6 +34,7 @@ import type { UnifiedDataRepository } from "../../infrastructure/persistence/uni
 import type { DefinitionRepository } from "../definitions/repositories.ts";
 import { type DataId, generateDataId } from "../data/data_id.ts";
 import { getLogger } from "@logtape/logtape";
+import type { DataQueryService } from "../data/data_query_service.ts";
 
 const TEST_MODEL_TYPE = ModelType.create("test/raw-driver");
 
@@ -356,4 +357,87 @@ Deno.test("RawExecutionDriver: leaves queryData unscoped when no workflowRunId",
   await driver.execute(createMockRequest());
 
   assertEquals(capturedPredicate, "model_name == 'source'");
+});
+
+Deno.test("RawExecutionDriver: derives queryData from dataQueryService when not set", async () => {
+  let capturedPredicate = "";
+  let capturedSelect: string | undefined;
+
+  const executor: MethodExecutor = {
+    execute: async (_def, _method, context) => {
+      await context.queryData!("model_name == 'source'", "attributes.foo");
+      return {};
+    },
+  };
+
+  const context = createMockContext();
+  context.definitionRepository = {
+    findByNameGlobal: () => Promise.resolve(null),
+    findAll: () => Promise.resolve([]),
+    findAllGlobal: () => Promise.resolve([]),
+  } as unknown as DefinitionRepository;
+  context.dataQueryService = {
+    query: (predicate: string, opts?: { select?: string }) => {
+      capturedPredicate = predicate;
+      capturedSelect = opts?.select;
+      return Promise.resolve([]);
+    },
+  } as unknown as DataQueryService;
+
+  const driver = new RawExecutionDriver(
+    executor,
+    testDefinition,
+    testMethod,
+    testModelDef,
+    context,
+    "test",
+  );
+
+  await driver.execute(createMockRequest());
+
+  assertEquals(capturedPredicate, "model_name == 'source'");
+  assertEquals(capturedSelect, "attributes.foo");
+});
+
+Deno.test("RawExecutionDriver: explicit queryData wins over dataQueryService derivation", async () => {
+  let usedExplicit = false;
+  let usedDerived = false;
+
+  const executor: MethodExecutor = {
+    execute: async (_def, _method, context) => {
+      await context.queryData!("true", undefined);
+      return {};
+    },
+  };
+
+  const context = createMockContext();
+  context.definitionRepository = {
+    findByNameGlobal: () => Promise.resolve(null),
+    findAll: () => Promise.resolve([]),
+    findAllGlobal: () => Promise.resolve([]),
+  } as unknown as DefinitionRepository;
+  context.queryData = () => {
+    usedExplicit = true;
+    return Promise.resolve([]);
+  };
+  context.dataQueryService = {
+    query: () => {
+      usedDerived = true;
+      return Promise.resolve([]);
+    },
+  } as unknown as DataQueryService;
+
+  const driver = new RawExecutionDriver(
+    executor,
+    testDefinition,
+    testMethod,
+    testModelDef,
+    context,
+    "test",
+  );
+
+  await driver.execute(createMockRequest());
+
+  assertEquals(usedExplicit, true);
+  assertEquals(usedDerived, false);
 });

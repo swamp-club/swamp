@@ -139,8 +139,15 @@ export class RawExecutionDriver implements ExecutionDriver {
     const readModelData = (modelName: string, specName?: string) =>
       dataAccessService.readModelData(modelName, specName);
 
-    // queryData passes through directly — no hidden scoping
-    const queryData = this.context.queryData;
+    // Prefer an explicitly-set queryData (test fixtures), otherwise derive
+    // a binding from dataQueryService. Production callers supply only
+    // dataQueryService; the driver owns the single queryData binding.
+    const dataQueryService = this.context.dataQueryService;
+    const queryData = this.context.queryData ??
+      (dataQueryService
+        ? (predicate: string, select?: string) =>
+          dataQueryService.query(predicate, { select })
+        : undefined);
 
     this.contextWithWriters = {
       ...this.context,
