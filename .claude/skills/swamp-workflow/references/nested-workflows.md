@@ -2,6 +2,7 @@
 
 ## Table of Contents
 
+- [When to Use Nested Workflows](#when-to-use-nested-workflows)
 - [Basic Nested Workflow](#basic-nested-workflow)
 - [Workflow Task Fields](#workflow-task-fields)
 - [Nested Workflow with forEach](#nested-workflow-with-foreach)
@@ -10,6 +11,82 @@
 
 Steps can invoke another workflow using `type: workflow`. The parent step waits
 for the child workflow to complete before continuing.
+
+## When to Use Nested Workflows
+
+Reach for a child workflow when a flat workflow can't express the shape you
+need. The cases that come up in practice:
+
+### 1. forEach over an async list (`data.latest()`, `data.findByTag()`, etc.)
+
+`forEach.in` is evaluated **synchronously** at expansion time. CEL expressions
+that return a `Promise` — `data.latest()`, `data.findByTag()`,
+`data.findBySpec()` — never resolve in this position, and forEach fails with
+`forEach.in must evaluate to an array or object, got: object` (the "object" is
+the unresolved Promise).
+
+Task `inputs:` ARE awaited for both `model_method` and `workflow` tasks. Move
+the async call into the parent's `task.inputs` and let the child iterate over a
+plain `inputs.<name>`:
+
+```yaml
+# parent — task.inputs awaits data.latest() before invoking child
+- name: download
+  task:
+    type: workflow
+    workflowIdOrName: download-episodes
+    inputs:
+      episodes: ${{ data.latest("dedup", "current").attributes.episodes }}
+```
+
+```yaml
+# child — declares episodes as an array input
+inputs:
+  properties:
+    episodes:
+      type: array
+      items: { type: object }
+  required: ["episodes"]
+
+jobs:
+  - name: download
+    steps:
+      - name: download-${{ self.ep.show }}
+        forEach:
+          item: ep
+          in: ${{ inputs.episodes }} # already resolved — sync eval is fine
+        task:
+          type: model_method
+          modelIdOrName: transmission
+          methodName: add
+          inputs:
+            uri: ${{ self.ep.magnet }}
+            protocol: torrent
+```
+
+The child's input schema validates the boundary, so shape drift between producer
+and consumer is caught at invoke time.
+
+### 2. Reusable sub-process invoked from multiple parents
+
+When the same sequence of steps runs from a cron parent, a manual run, and
+another workflow, extract it into a child workflow with a typed input schema.
+Duplicating steps across workflows is the wrong trade — the child gives you one
+validated entry point.
+
+### 3. Independent cadence or isolation
+
+A child workflow can carry its own `trigger.schedule` and still be invoked by a
+parent. Splitting lets the child run independently — useful for backfill, manual
+replays, and tests — without dragging the parent's prelude along.
+
+### When NOT to nest
+
+- **Pure ordering within a single run** → use `dependsOn` between jobs or steps.
+  A workflow boundary is not an ordering primitive.
+- **Sharing a single resolved value across steps** → reference it directly via
+  CEL in each step's inputs; don't pay the boundary cost.
+- **Nesting depth pressure** — the cap is 10. Each level should earn its keep.
 
 ## Basic Nested Workflow
 

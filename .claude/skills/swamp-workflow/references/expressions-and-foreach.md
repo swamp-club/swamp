@@ -74,6 +74,24 @@ With `--input '{"tags": {"env": "prod", "team": "platform"}}'`, creates steps:
 | `self.{item}.key`   | Key name (object iteration)    |
 | `self.{item}.value` | Value (object iteration)       |
 
+### forEach.in Cannot Await Promises
+
+`forEach.in` is evaluated **synchronously**. Async CEL functions that return a
+Promise — `data.latest()`, `data.findByTag()`, `data.findBySpec()` — do not
+resolve in this position and the step fails with
+`forEach.in must evaluate to an array or object, got: object`.
+
+Only these shapes work directly in `forEach.in`:
+
+- `${{ inputs.<name> }}` — workflow inputs (pre-resolved before expansion)
+- Static literals
+
+To iterate over a list produced by `data.latest()` (or any async source), split
+into a parent + child workflow and let the parent's `task.inputs` resolve the
+list — task inputs ARE awaited. See
+[nested-workflows.md § When to Use Nested Workflows](nested-workflows.md#when-to-use-nested-workflows)
+for the canonical pattern.
+
 ### forEach with Vary Dimensions
 
 Use `vary` on `dataOutputOverrides` to isolate data per forEach iteration:

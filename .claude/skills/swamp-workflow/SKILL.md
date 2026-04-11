@@ -541,9 +541,10 @@ End-to-end workflow creation:
   [references/ci-integration.md](../swamp-repo/references/ci-integration.md) for
   installing swamp in CI and GitHub Actions examples
 - **Nested workflows**: See
-  [references/nested-workflows.md](references/nested-workflows.md) for full
-  examples of workflows calling other workflows, forEach with workflows, and
-  nesting limitations
+  [references/nested-workflows.md](references/nested-workflows.md) for when to
+  split a workflow into parent + child (including the async-list-into-forEach
+  pattern), full examples of workflows calling other workflows, forEach with
+  workflows, and nesting limitations
 - **Expressions, forEach, and data tracking**: See
   [references/expressions-and-foreach.md](references/expressions-and-foreach.md)
   for forEach iteration patterns, CEL expressions, environment variables, and
