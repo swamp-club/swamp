@@ -49,6 +49,16 @@ writes the title, body, type, status, and comments to the `context` resource. If
 the issue doesn't exist in swamp-club, `start` fails loudly — create the issue
 there first.
 
+### Auto-assignment
+
+`start` automatically assigns the issue to you in swamp-club. It reads your
+username from local auth (`~/.config/swamp/auth.json`, written by
+`swamp auth login`), resolves it to a userId via the eligible-assignees
+endpoint, and PATCHes the issue's assignees. Existing assignees are preserved
+(additive). If assignment fails for any reason (missing credentials, lookup
+error, API failure), `start` still succeeds — it logs a warning and continues
+with triage.
+
 ## 3. Read the Issue Context and Codebase
 
 Read the model output, then explore the codebase.

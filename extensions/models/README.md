@@ -130,7 +130,7 @@ swamp model output search issue-42 --json
 
 | Method               | Description                                     | State Transition                 |
 | -------------------- | ----------------------------------------------- | -------------------------------- |
-| `start`              | Fetch issue from swamp-club                     | \* -> triaging                   |
+| `start`              | Fetch issue from swamp-club, auto-assign to you | \* -> triaging                   |
 | `triage`             | Classify as bug/feature/security                | triaging -> classified           |
 | `plan`               | Generate implementation plan                    | classified -> plan_generated     |
 | `review`             | Display current plan (read-only)                | no change                        |
