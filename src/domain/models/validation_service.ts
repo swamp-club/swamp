@@ -700,7 +700,10 @@ export class DefaultModelValidationService implements ModelValidationService {
       };
     }
 
-    // Get the model definition
+    // Ensure the referenced type is fully loaded — without this,
+    // lazy-registered types (catalog-known but not yet imported) cause
+    // get() to return undefined even though has() reports them as registered.
+    await modelRegistry.ensureTypeLoaded(result.type);
     const targetDefinition = modelRegistry.get(result.type);
     if (!targetDefinition) {
       return {

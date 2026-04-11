@@ -24,7 +24,12 @@ import {
   ValidationResult,
 } from "./validation_service.ts";
 import { Definition, type DefinitionId } from "../definitions/definition.ts";
-import { defineModel, type ModelDefinition } from "./model.ts";
+import {
+  defineModel,
+  type LazyModelEntry,
+  type ModelDefinition,
+  modelRegistry,
+} from "./model.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
 import { ModelType } from "./model_type.ts";
 
@@ -985,6 +990,89 @@ Deno.test("validateModel passes for data.latest expression", async () => {
 
   const exprResult = results.find((r) => r.name === "Expression paths");
   assertEquals(exprResult?.passed, true);
+});
+
+// Regression test for issue #89: cross-model expression validation must
+// await ensureTypeLoaded before calling modelRegistry.get(), otherwise
+// lazy-registered types (catalog-known but not yet imported) cause the
+// validator to emit a misleading "Unknown model type" error even though
+// the type is registered and works at execution time. Introduced by PR
+// #1063 (lazy per-bundle loading); the execution path was wired up but
+// the validation path was missed.
+Deno.test("validateModel loads lazy types before resolving cross-model references", async () => {
+  // Unique type string avoids collision with other tests sharing the
+  // global modelRegistry singleton — defineModel is intentionally NOT
+  // used here because it would eagerly register the type and defeat the
+  // whole point of simulating the lazy state.
+  const LAZY_TYPE = "@test/issue-89-lazy-regression";
+  const LAZY_MODEL_TYPE = ModelType.create(LAZY_TYPE);
+  const lazyModel: ModelDefinition = {
+    type: LAZY_MODEL_TYPE,
+    version: "2026.04.11.1",
+    globalArguments: z.object({ ollamaUrl: z.string() }),
+    methods: {},
+  };
+
+  const lazyEntry: LazyModelEntry = {
+    type: LAZY_MODEL_TYPE,
+    bundlePath: `/repo/.swamp/bundles/${LAZY_TYPE}.js`,
+    sourcePath: `/repo/extensions/models/${LAZY_TYPE}.ts`,
+    version: "2026.04.11.1",
+  };
+  modelRegistry.registerLazy(lazyEntry);
+
+  let loaderCalled = false;
+  modelRegistry.setTypeLoader((type) => {
+    loaderCalled = true;
+    if (type === LAZY_TYPE) {
+      modelRegistry.promoteFromLazy(lazyModel);
+    }
+    return Promise.resolve();
+  });
+
+  try {
+    const service = new DefaultModelValidationService();
+    const targetDefinition = Definition.create({
+      name: "lazy-target",
+      globalArguments: { ollamaUrl: "http://localhost:11434" },
+    });
+    const definition = Definition.create({
+      name: "lazy-consumer",
+      globalArguments: {
+        ollamaUrl:
+          "${{ model.lazy-target.definition.globalArguments.ollamaUrl }}",
+      },
+    });
+
+    const mockRepo = createMockDefinitionRepo([
+      { name: "lazy-target", type: LAZY_TYPE, definition: targetDefinition },
+      {
+        name: "lazy-consumer",
+        type: "test/expr-validation",
+        definition,
+      },
+    ]);
+
+    const { results } = await service.validateModel(
+      definition,
+      testExprModel,
+      mockRepo,
+    );
+
+    const exprResult = results.find((r) => r.name === "Expression paths");
+    assertEquals(
+      exprResult?.passed,
+      true,
+      `Expression paths validation should pass once ensureTypeLoaded is awaited. Error: ${exprResult?.error}`,
+    );
+    assertEquals(
+      loaderCalled,
+      true,
+      "validateModelPathReference must await ensureTypeLoaded, which invokes the type loader for lazy types",
+    );
+  } finally {
+    modelRegistry.setTypeLoader(() => Promise.resolve());
+  }
 });
 
 // ---------- Check Validation Tests ----------
