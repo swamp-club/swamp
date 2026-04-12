@@ -34,7 +34,7 @@ import {
   StateSchema,
   TRANSITIONS,
 } from "./_lib/schemas.ts";
-import { createSwampClubClient } from "./_lib/swamp_club.ts";
+import { createSwampClubClient, loadAuthFile } from "./_lib/swamp_club.ts";
 
 /** Global args type for the issue-lifecycle model. */
 type GlobalArgs = {
@@ -70,7 +70,7 @@ async function readState(
 
 export const model = {
   type: "@swamp/issue-lifecycle",
-  version: "2026.04.09.1",
+  version: "2026.04.12.1",
   globalArguments: GlobalArgsSchema,
 
   upgrades: [
@@ -116,6 +116,15 @@ export const model = {
         "link_pr now accepts pr_failed as source phase for recovery. " +
         "implement now accepts pr_failed for rework scenarios. " +
         "complete now accepts releasing for backwards compatibility.",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+    {
+      toVersion: "2026.04.12.1",
+      description:
+        "Auto-assign issue to the authenticated user during start(). " +
+        "Reads username from local auth, resolves userId via the " +
+        "eligible-assignees endpoint, and PATCHes the issue's assignees. " +
+        "Best-effort — assignment failures are warnings, never errors.",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
   ],
@@ -478,6 +487,48 @@ export const model = {
           payload: { issueNumber },
           isVerbose: false,
         });
+
+        // Auto-assign the issue to the current authenticated user.
+        // All failures are warnings — assignment must never break the triage flow.
+        const authFile = await loadAuthFile();
+        const authUsername = authFile?.username;
+        if (!authUsername) {
+          context.logger.warning(
+            "Cannot determine your username — issue will not be auto-assigned. " +
+              "Run `swamp auth login` to enable auto-assignment.",
+            {},
+          );
+        } else {
+          const resolvedUserId = await sc.resolveUserId(authUsername);
+          if (!resolvedUserId) {
+            context.logger.warning(
+              "Could not resolve your swamp-club identity — issue will not be auto-assigned.",
+              {},
+            );
+          } else {
+            const existingIds = issue.assignees.map((a) => a.userId);
+            if (existingIds.includes(resolvedUserId)) {
+              context.logger.info(
+                "Already assigned to {username}",
+                { username: authUsername },
+              );
+            } else {
+              await sc.updateAssignees([...existingIds, resolvedUserId]);
+              await sc.postLifecycleEntry({
+                step: "assigned",
+                targetStatus: "open",
+                summary: `Assigned to ${authUsername}`,
+                emoji: "\u{1F464}",
+                payload: { username: authUsername, userId: resolvedUserId },
+                isVerbose: false,
+              });
+              context.logger.info(
+                "Auto-assigned issue to {username}",
+                { username: authUsername },
+              );
+            }
+          }
+        }
 
         return { dataHandles: handles };
       },

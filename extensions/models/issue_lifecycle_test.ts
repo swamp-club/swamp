@@ -319,8 +319,8 @@ Deno.test("model: exposes the new link_pr method definition", () => {
   );
 });
 
-Deno.test("model: version bumped to 2026.04.09.1", () => {
-  assertEquals(model.version, "2026.04.09.1");
+Deno.test("model: version bumped to 2026.04.12.1", () => {
+  assertEquals(model.version, "2026.04.12.1");
 });
 
 // ---------------------------------------------------------------------------
@@ -500,4 +500,386 @@ Deno.test("model: exposes pr_failed method definition", () => {
 
 Deno.test("model: exposes ship method definition", () => {
   assertEquals("ship" in model.methods, true);
+});
+
+// ---------------------------------------------------------------------------
+// start() auto-assignment tests
+// ---------------------------------------------------------------------------
+
+interface FetchStubRoute {
+  urlIncludes: string;
+  method?: string;
+  response: { status: number; body: unknown };
+}
+
+/**
+ * Build a test context for start() with a fetch stub and optional fake auth.json.
+ * The fetch stub intercepts all HTTP calls (health check, issue GET, assignees
+ * GET, issue PATCH). The fake auth.json provides a username for loadAuthFile().
+ */
+async function buildStartTestContext(
+  issueNumber: number,
+  opts: {
+    routes: FetchStubRoute[];
+    authUsername?: string;
+    /** If provided, written to auth.json alongside the username */
+    authApiKey?: string;
+  },
+): Promise<{
+  context: Parameters<typeof model.methods.start.execute>[1];
+  writes: RecordedWrite[];
+  warnings: string[];
+  patchBodies: unknown[];
+  restore: () => Promise<void>;
+}> {
+  const writes: RecordedWrite[] = [];
+  const warnings: string[] = [];
+  const patchBodies: unknown[] = [];
+  const tempDir = await Deno.makeTempDir({ prefix: "issue_lifecycle_test_" });
+
+  const original = {
+    SWAMP_API_KEY: Deno.env.get("SWAMP_API_KEY"),
+    SWAMP_CLUB_URL: Deno.env.get("SWAMP_CLUB_URL"),
+    HOME: Deno.env.get("HOME"),
+    XDG_CONFIG_HOME: Deno.env.get("XDG_CONFIG_HOME"),
+  };
+  const originalFetch = globalThis.fetch;
+
+  // Write fake auth.json if credentials are provided
+  if (opts.authUsername || opts.authApiKey) {
+    const configDir = `${tempDir}/swamp`;
+    await Deno.mkdir(configDir, { recursive: true });
+    const authData: Record<string, string> = {
+      serverUrl: "https://fake.swamp.club",
+      apiKey: opts.authApiKey ?? "swamp_fake_key",
+      apiKeyId: "fake-key-id",
+    };
+    if (opts.authUsername) {
+      authData.username = opts.authUsername;
+    }
+    await Deno.writeTextFile(
+      `${configDir}/auth.json`,
+      JSON.stringify(authData),
+    );
+  }
+
+  // Set env so createSwampClubClient uses auth.json (not SWAMP_API_KEY)
+  Deno.env.delete("SWAMP_API_KEY");
+  Deno.env.delete("SWAMP_CLUB_URL");
+  Deno.env.set("HOME", tempDir);
+  Deno.env.set("XDG_CONFIG_HOME", tempDir);
+
+  // Install fetch stub
+  globalThis.fetch = ((
+    input: string | URL | Request,
+    init?: RequestInit,
+  ): Promise<Response> => {
+    const url = typeof input === "string"
+      ? input
+      : input instanceof URL
+      ? input.toString()
+      : input.url;
+    const method = init?.method ?? "GET";
+
+    // Capture PATCH bodies for assertion
+    if (method === "PATCH" && init?.body) {
+      patchBodies.push(JSON.parse(init.body as string));
+    }
+
+    for (const route of opts.routes) {
+      if (
+        url.includes(route.urlIncludes) &&
+        (route.method === undefined || route.method === method)
+      ) {
+        return Promise.resolve(
+          new Response(JSON.stringify(route.response.body), {
+            status: route.response.status,
+            headers: { "Content-Type": "application/json" },
+          }),
+        );
+      }
+    }
+    // Default: 404
+    return Promise.resolve(new Response("Not Found", { status: 404 }));
+  }) as typeof fetch;
+
+  const restore = async () => {
+    globalThis.fetch = originalFetch;
+    for (const [k, v] of Object.entries(original)) {
+      if (v === undefined) {
+        Deno.env.delete(k);
+      } else {
+        Deno.env.set(k, v);
+      }
+    }
+    await Deno.remove(tempDir, { recursive: true });
+  };
+
+  const context = {
+    globalArgs: { issueNumber },
+    logger: {
+      info: () => {},
+      warning: (msg: string, _props: Record<string, unknown>) => {
+        warnings.push(msg);
+      },
+    },
+    writeResource: (
+      specName: string,
+      instanceName: string,
+      data: Record<string, unknown>,
+    ) => {
+      writes.push({ specName, instanceName, data });
+      return Promise.resolve({ name: instanceName });
+    },
+  };
+
+  return { context, writes, warnings, patchBodies, restore };
+}
+
+/** Standard routes for a successful start() + assignment flow. */
+function happyRoutes(opts: {
+  issueNumber: number;
+  issueAssignees?: { userId: string; username: string }[];
+  eligibleAssignees: { userId: string; username: string }[];
+}): FetchStubRoute[] {
+  return [
+    {
+      urlIncludes: "/api/health",
+      response: { status: 200, body: { ok: true } },
+    },
+    {
+      urlIncludes: `/api/v1/lab/issues/${opts.issueNumber}`,
+      method: "GET",
+      response: {
+        status: 200,
+        body: {
+          issue: {
+            number: opts.issueNumber,
+            type: "feature",
+            status: "open",
+            title: "Test issue",
+            body: "Test body",
+            comments: [],
+            assignees: opts.issueAssignees ?? [],
+          },
+        },
+      },
+    },
+    {
+      urlIncludes: `/api/v1/lab/issues/${opts.issueNumber}`,
+      method: "PATCH",
+      response: { status: 200, body: { issue: {} } },
+    },
+    {
+      urlIncludes: "/api/v1/lab/assignees",
+      method: "GET",
+      response: {
+        status: 200,
+        body: { assignees: opts.eligibleAssignees },
+      },
+    },
+    {
+      urlIncludes: `/api/v1/lab/issues/${opts.issueNumber}/lifecycle`,
+      method: "POST",
+      response: { status: 200, body: {} },
+    },
+  ];
+}
+
+Deno.test("start: auto-assigns the current user on happy path", async () => {
+  const { context, writes, patchBodies, restore } = await buildStartTestContext(
+    99,
+    {
+      authUsername: "alice",
+      routes: happyRoutes({
+        issueNumber: 99,
+        eligibleAssignees: [
+          { userId: "user-alice-id", username: "alice" },
+          { userId: "user-bob-id", username: "bob" },
+        ],
+      }),
+    },
+  );
+  try {
+    await model.methods.start.execute({}, context);
+
+    // Core start behavior: writes context + state
+    const contextWrite = writes.find((w) => w.specName === "context");
+    assertEquals(contextWrite !== undefined, true);
+    const stateWrite = writes.find((w) => w.specName === "state");
+    assertEquals(stateWrite !== undefined, true);
+    assertEquals(stateWrite!.data.phase, "triaging");
+
+    // Assignment: PATCH with alice's userId
+    assertEquals(patchBodies.length >= 1, true);
+    const assignPatch = patchBodies.find(
+      (b: unknown) => typeof b === "object" && b !== null && "assignees" in b,
+    ) as { assignees: string[] } | undefined;
+    assertEquals(assignPatch !== undefined, true);
+    assertEquals(assignPatch!.assignees, ["user-alice-id"]);
+  } finally {
+    await restore();
+  }
+});
+
+Deno.test("start: preserves pre-existing assignees (additive merge)", async () => {
+  const { context, patchBodies, restore } = await buildStartTestContext(99, {
+    authUsername: "charlie",
+    routes: happyRoutes({
+      issueNumber: 99,
+      issueAssignees: [
+        { userId: "user-alice-id", username: "alice" },
+        { userId: "user-bob-id", username: "bob" },
+      ],
+      eligibleAssignees: [
+        { userId: "user-alice-id", username: "alice" },
+        { userId: "user-bob-id", username: "bob" },
+        { userId: "user-charlie-id", username: "charlie" },
+      ],
+    }),
+  });
+  try {
+    await model.methods.start.execute({}, context);
+
+    const assignPatch = patchBodies.find(
+      (b: unknown) => typeof b === "object" && b !== null && "assignees" in b,
+    ) as { assignees: string[] } | undefined;
+    assertEquals(assignPatch !== undefined, true);
+    assertEquals(assignPatch!.assignees, [
+      "user-alice-id",
+      "user-bob-id",
+      "user-charlie-id",
+    ]);
+  } finally {
+    await restore();
+  }
+});
+
+Deno.test("start: skips PATCH when already assigned (idempotent)", async () => {
+  const { context, patchBodies, restore } = await buildStartTestContext(99, {
+    authUsername: "alice",
+    routes: happyRoutes({
+      issueNumber: 99,
+      issueAssignees: [{ userId: "user-alice-id", username: "alice" }],
+      eligibleAssignees: [{ userId: "user-alice-id", username: "alice" }],
+    }),
+  });
+  try {
+    await model.methods.start.execute({}, context);
+
+    // No assignees PATCH should have been made
+    const assignPatch = patchBodies.find(
+      (b: unknown) => typeof b === "object" && b !== null && "assignees" in b,
+    );
+    assertEquals(assignPatch, undefined);
+  } finally {
+    await restore();
+  }
+});
+
+Deno.test("start: warns and skips assignment when no username in auth", async () => {
+  // Provide an auth.json with apiKey but no username — simulates older auth
+  // files or env-var-only auth where username was never stored.
+  const routes = happyRoutes({
+    issueNumber: 99,
+    eligibleAssignees: [],
+  });
+  const { context, writes, warnings, patchBodies, restore } =
+    await buildStartTestContext(99, {
+      // authUsername is deliberately omitted — no username in auth.json
+      authApiKey: "swamp_fake_no_username",
+      routes,
+    });
+  try {
+    // start() should still succeed (not throw)
+    await model.methods.start.execute({}, context);
+
+    // Core behavior still works
+    const stateWrite = writes.find((w) => w.specName === "state");
+    assertEquals(stateWrite !== undefined, true);
+    assertEquals(stateWrite!.data.phase, "triaging");
+
+    // No assignees PATCH
+    const assignPatch = patchBodies.find(
+      (b: unknown) => typeof b === "object" && b !== null && "assignees" in b,
+    );
+    assertEquals(assignPatch, undefined);
+
+    // Warning was logged
+    assertEquals(warnings.length >= 1, true);
+  } finally {
+    await restore();
+  }
+});
+
+Deno.test("start: warns and skips assignment when assignees endpoint returns 403", async () => {
+  const routes = happyRoutes({
+    issueNumber: 99,
+    eligibleAssignees: [],
+  });
+  // Override the assignees route to return 403
+  const assigneesIdx = routes.findIndex((r) =>
+    r.urlIncludes.includes("assignees")
+  );
+  routes[assigneesIdx] = {
+    urlIncludes: "/api/v1/lab/assignees",
+    method: "GET",
+    response: { status: 403, body: { error: "Forbidden" } },
+  };
+
+  const { context, writes, patchBodies, restore } = await buildStartTestContext(
+    99,
+    {
+      authUsername: "alice",
+      routes,
+    },
+  );
+  try {
+    await model.methods.start.execute({}, context);
+
+    // Core behavior still works
+    const stateWrite = writes.find((w) => w.specName === "state");
+    assertEquals(stateWrite !== undefined, true);
+
+    // No assignees PATCH
+    const assignPatch = patchBodies.find(
+      (b: unknown) => typeof b === "object" && b !== null && "assignees" in b,
+    );
+    assertEquals(assignPatch, undefined);
+  } finally {
+    await restore();
+  }
+});
+
+Deno.test("start: succeeds even when PATCH fails", async () => {
+  const routes = happyRoutes({
+    issueNumber: 99,
+    eligibleAssignees: [{ userId: "user-alice-id", username: "alice" }],
+  });
+  // Override the PATCH route to return 500
+  const patchIdx = routes.findIndex(
+    (r) =>
+      r.urlIncludes.includes("/api/v1/lab/issues/99") && r.method === "PATCH",
+  );
+  routes[patchIdx] = {
+    urlIncludes: "/api/v1/lab/issues/99",
+    method: "PATCH",
+    response: { status: 500, body: { error: "Internal Server Error" } },
+  };
+
+  const { context, writes, restore } = await buildStartTestContext(99, {
+    authUsername: "alice",
+    routes,
+  });
+  try {
+    // start() should still succeed — assignment is best-effort
+    await model.methods.start.execute({}, context);
+
+    // Core behavior still works
+    const stateWrite = writes.find((w) => w.specName === "state");
+    assertEquals(stateWrite !== undefined, true);
+    assertEquals(stateWrite!.data.phase, "triaging");
+  } finally {
+    await restore();
+  }
 });

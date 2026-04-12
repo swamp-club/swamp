@@ -31,6 +31,11 @@ export interface LifecycleEntryParams {
   isVerbose?: boolean;
 }
 
+export interface EligibleAssignee {
+  userId: string;
+  username: string;
+}
+
 export interface FetchedIssue {
   number: number;
   type: IssueType;
@@ -38,6 +43,7 @@ export interface FetchedIssue {
   title: string;
   body: string;
   comments: { author: string; body: string; createdAt: string }[];
+  assignees: { userId: string; username: string }[];
 }
 
 /**
@@ -105,6 +111,10 @@ export class SwampClubClient {
             body?: string;
             createdAt?: string;
           }[];
+          assignees?: {
+            userId?: string;
+            username?: string;
+          }[];
         };
       };
       const issue = data?.issue;
@@ -120,6 +130,10 @@ export class SwampClubClient {
           body: c.body ?? "",
           createdAt: c.createdAt ?? "",
         })),
+        assignees: (issue.assignees ?? []).filter(
+          (a): a is { userId: string; username: string } =>
+            typeof a.userId === "string" && typeof a.username === "string",
+        ),
       };
     } catch (err) {
       this.log("swamp-club fetch issue error: {error}", {
@@ -175,6 +189,59 @@ export class SwampClubClient {
     await this.patchIssue({ type });
   }
 
+  /**
+   * Fetch the list of eligible assignees. Returns null on any error
+   * (401/403/network) — callers should treat failure as a warning, not a gate.
+   */
+  async fetchEligibleAssignees(): Promise<EligibleAssignee[] | null> {
+    try {
+      const url = `${this.baseUrl}/api/v1/lab/assignees`;
+      const res = await fetch(url, {
+        method: "GET",
+        headers: {
+          "Authorization": `Bearer ${this.#apiKey}`,
+        },
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        this.log("swamp-club fetch assignees failed: {status} {text}", {
+          status: res.status,
+          text,
+        });
+        return null;
+      }
+      const data = await res.json() as {
+        assignees?: { userId?: string; username?: string }[];
+      };
+      return (data.assignees ?? []).filter(
+        (a): a is EligibleAssignee =>
+          typeof a.userId === "string" && typeof a.username === "string",
+      );
+    } catch (err) {
+      this.log("swamp-club fetch assignees error: {error}", {
+        error: String(err),
+      });
+      return null;
+    }
+  }
+
+  /**
+   * Resolve a username to a userId via the eligible-assignees endpoint.
+   * Returns null if the lookup fails or the username is not found.
+   */
+  async resolveUserId(username: string): Promise<string | null> {
+    const assignees = await this.fetchEligibleAssignees();
+    if (!assignees) return null;
+    const match = assignees.find((a) => a.username === username);
+    return match?.userId ?? null;
+  }
+
+  /** Update the issue's assignees. Best-effort (same as other PATCH helpers). */
+  async updateAssignees(userIds: string[]): Promise<void> {
+    await this.patchIssue({ assignees: userIds });
+  }
+
   /** PATCH the issue with a partial set of fields. Best-effort. */
   private async patchIssue(
     patch: Record<string, unknown>,
@@ -207,10 +274,11 @@ export class SwampClubClient {
 
 /**
  * Load credentials from ~/.config/swamp/auth.json (or $XDG_CONFIG_HOME/swamp/auth.json).
- * Returns { serverUrl, apiKey } or null if the file doesn't exist.
+ * Returns { serverUrl, apiKey, username? } or null if the file doesn't exist.
+ * Username is optional — older auth.json files and env-var auth may not have it.
  */
-async function loadAuthFile(): Promise<
-  { serverUrl: string; apiKey: string } | null
+export async function loadAuthFile(): Promise<
+  { serverUrl: string; apiKey: string; username?: string } | null
 > {
   try {
     const xdg = Deno.env.get("XDG_CONFIG_HOME");
@@ -227,11 +295,13 @@ async function loadAuthFile(): Promise<
     const creds = JSON.parse(content) as {
       serverUrl?: string;
       apiKey?: string;
+      username?: string;
     };
     if (creds.apiKey) {
       return {
         serverUrl: creds.serverUrl ?? "https://swamp.club",
         apiKey: creds.apiKey,
+        username: creds.username || undefined,
       };
     }
     return null;
