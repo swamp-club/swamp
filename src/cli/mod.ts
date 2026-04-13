@@ -45,6 +45,7 @@ import { summariseCommand } from "./commands/summarise.ts";
 import { datastoreCommand } from "./commands/datastore.ts";
 import { reportCommand } from "./commands/report.ts";
 import { serveCommand } from "./commands/serve.ts";
+import { openCommand } from "./commands/open.ts";
 import { createHelpCommand } from "./commands/help.ts";
 import { unknownCommandErrorHandler } from "./unknown_command_handler.ts";
 import {
@@ -214,6 +215,144 @@ const NON_REPO_COMMANDS = new Set([
  *
  * @internal Exported for testing
  */
+/**
+ * Configures the extension loaders on all registries for a given repository.
+ * Exported so that commands that can switch repositories at runtime (like
+ * `swamp serve open` with its filesystem picker) can re-configure the loaders
+ * when the user picks a different repo.
+ */
+export async function configureExtensionLoaders(
+  repoDir: string,
+  marker: RepoMarkerData | null,
+  resolvedSources: ResolvedSourceDirs[],
+  deferredWarnings: DeferredWarning[],
+): Promise<void> {
+  const denoRuntime = new EmbeddedDenoRuntime();
+  const sourceModelsDirs = collectDirsForKind(resolvedSources, "models");
+  const sourceVaultsDirs = collectDirsForKind(resolvedSources, "vaults");
+  const sourceDriversDirs = collectDirsForKind(resolvedSources, "drivers");
+  const sourceDatastoresDirs = collectDirsForKind(
+    resolvedSources,
+    "datastores",
+  );
+  const sourceReportsDirs = collectDirsForKind(resolvedSources, "reports");
+
+  let resolverPromise: Promise<DatastorePathResolver | undefined> | undefined;
+  const lazyResolver = (): Promise<DatastorePathResolver | undefined> => {
+    resolverPromise ??= resolveDatastoreConfig(marker, undefined, repoDir)
+      .then((config) =>
+        new DefaultDatastorePathResolver(
+          repoDir,
+          config,
+        ) as DatastorePathResolver
+      )
+      .catch(() => undefined);
+    return resolverPromise;
+  };
+
+  const catalogDbPath = swampPath(repoDir, "_extension_catalog.db");
+  const catalog = new ExtensionCatalogStore(catalogDbPath);
+
+  modelRegistry.setLoader(() =>
+    loadUserModels(
+      repoDir,
+      marker,
+      denoRuntime,
+      sourceModelsDirs,
+      lazyResolver,
+      catalog,
+    )
+  );
+  vaultTypeRegistry.setLoader(() =>
+    loadUserVaults(
+      repoDir,
+      marker,
+      denoRuntime,
+      sourceVaultsDirs,
+      lazyResolver,
+      catalog,
+    )
+  );
+  driverTypeRegistry.setLoader(() =>
+    loadUserDrivers(
+      repoDir,
+      marker,
+      denoRuntime,
+      sourceDriversDirs,
+      lazyResolver,
+      catalog,
+    )
+  );
+  datastoreTypeRegistry.setLoader(() =>
+    loadUserDatastores(
+      repoDir,
+      marker,
+      denoRuntime,
+      sourceDatastoresDirs,
+      catalog,
+    )
+  );
+  reportRegistry.setLoader(() =>
+    loadUserReports(
+      repoDir,
+      marker,
+      denoRuntime,
+      sourceReportsDirs,
+      lazyResolver,
+      catalog,
+    )
+  );
+
+  await checkForMissingPulledExtensions(repoDir, marker, deferredWarnings);
+}
+
+/**
+ * Configures the global extension auto-resolver for a given repository.
+ * Exported so commands that switch repositories at runtime can reconfigure.
+ */
+export function configureExtensionAutoResolver(
+  repoDir: string,
+  marker: RepoMarkerData | null,
+  authCollectives: string[] | undefined,
+  outputMode: "log" | "json",
+): void {
+  const trustedCollectives = resolveTrustedCollectives(marker, authCollectives);
+  if (trustedCollectives.length === 0 || !marker) {
+    setAutoResolver(null);
+    return;
+  }
+  const serverUrl = Deno.env.get("SWAMP_CLUB_URL") ?? "https://swamp.club";
+  const extensionClient = new ExtensionApiClient(serverUrl);
+  const modelsDir = resolveModelsDir(marker);
+  const denoRuntime = new EmbeddedDenoRuntime();
+  setAutoResolver(
+    new ExtensionAutoResolver({
+      allowedCollectives: trustedCollectives,
+      extensionLookup: extensionClient,
+      extensionInstaller: createAutoResolveInstallerAdapter({
+        getExtension: (name) => extensionClient.getExtension(name),
+        downloadArchive: (name, version) =>
+          extensionClient.downloadArchive(name, version),
+        getChecksum: (name, version) =>
+          extensionClient.getChecksum(name, version),
+        lockfilePath: join(
+          resolve(repoDir, modelsDir),
+          "upstream_extensions.json",
+        ),
+        modelsDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledModels),
+        workflowsDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledWorkflows),
+        vaultsDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledVaults),
+        driversDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledDrivers),
+        datastoresDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledDatastores),
+        reportsDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledReports),
+        repoDir,
+        denoRuntime,
+      }),
+      output: createAutoResolveOutputAdapter(outputMode),
+    }),
+  );
+}
+
 export function commandNeedsLoaderSetup(args: string[]): boolean {
   const commandInfo = extractCommandInfo(args);
   return !NON_REPO_COMMANDS.has(commandInfo.command);
@@ -699,92 +838,10 @@ export async function runCli(args: string[]): Promise<void> {
   // by the time ensureLoaded() runs inside command .action() handlers).
   const deferredWarnings: DeferredWarning[] = [];
   if (commandNeedsLoaderSetup(args)) {
-    const denoRuntime = new EmbeddedDenoRuntime();
-    const sourceModelsDirs = collectDirsForKind(resolvedSources, "models");
-    const sourceVaultsDirs = collectDirsForKind(resolvedSources, "vaults");
-    const sourceDriversDirs = collectDirsForKind(resolvedSources, "drivers");
-    const sourceDatastoresDirs = collectDirsForKind(
-      resolvedSources,
-      "datastores",
-    );
-    const sourceReportsDirs = collectDirsForKind(resolvedSources, "reports");
-
-    // Lazy resolver factory — deferred until first loader runs.
-    // Cached after first construction so all loaders share one resolver.
-    let resolverPromise: Promise<DatastorePathResolver | undefined> | undefined;
-    const lazyResolver = (): Promise<DatastorePathResolver | undefined> => {
-      resolverPromise ??= resolveDatastoreConfig(marker, undefined, repoDir)
-        .then((config) =>
-          new DefaultDatastorePathResolver(
-            repoDir,
-            config,
-          ) as DatastorePathResolver
-        )
-        .catch(() => undefined);
-      return resolverPromise;
-    };
-
-    // Shared catalog for lazy per-bundle loading across all registry types.
-    const catalogDbPath = swampPath(repoDir, "_extension_catalog.db");
-    const catalog = new ExtensionCatalogStore(catalogDbPath);
-
-    modelRegistry.setLoader(() =>
-      loadUserModels(
-        repoDir,
-        marker,
-        denoRuntime,
-        sourceModelsDirs,
-        lazyResolver,
-        catalog,
-      )
-    );
-    vaultTypeRegistry.setLoader(() =>
-      loadUserVaults(
-        repoDir,
-        marker,
-        denoRuntime,
-        sourceVaultsDirs,
-        lazyResolver,
-        catalog,
-      )
-    );
-    driverTypeRegistry.setLoader(() =>
-      loadUserDrivers(
-        repoDir,
-        marker,
-        denoRuntime,
-        sourceDriversDirs,
-        lazyResolver,
-        catalog,
-      )
-    );
-    // Bootstrap: datastore loader must NOT receive the resolver — it loads
-    // datastore extensions that configure the resolver itself.
-    datastoreTypeRegistry.setLoader(() =>
-      loadUserDatastores(
-        repoDir,
-        marker,
-        denoRuntime,
-        sourceDatastoresDirs,
-        catalog,
-      )
-    );
-    reportRegistry.setLoader(() =>
-      loadUserReports(
-        repoDir,
-        marker,
-        denoRuntime,
-        sourceReportsDirs,
-        lazyResolver,
-        catalog,
-      )
-    );
-
-    // Warn if lockfile has entries but pulled extension files are missing.
-    // This runs eagerly (before logging init) so uses deferred warnings.
-    await checkForMissingPulledExtensions(
+    await configureExtensionLoaders(
       repoDir,
       marker,
+      resolvedSources,
       deferredWarnings,
     );
   }
@@ -800,40 +857,12 @@ export async function runCli(args: string[]): Promise<void> {
   }
 
   // Create auto-resolver for trusted collectives (merging membership collectives)
-  const trustedCollectives = resolveTrustedCollectives(marker, authCollectives);
-  if (trustedCollectives.length > 0 && marker) {
-    const outputMode = getOutputModeFromArgs(args);
-    const serverUrl = Deno.env.get("SWAMP_CLUB_URL") ?? "https://swamp.club";
-    const extensionClient = new ExtensionApiClient(serverUrl);
-    const modelsDir = resolveModelsDir(marker);
-    const denoRuntime = new EmbeddedDenoRuntime();
-    setAutoResolver(
-      new ExtensionAutoResolver({
-        allowedCollectives: trustedCollectives,
-        extensionLookup: extensionClient,
-        extensionInstaller: createAutoResolveInstallerAdapter({
-          getExtension: (name) => extensionClient.getExtension(name),
-          downloadArchive: (name, version) =>
-            extensionClient.downloadArchive(name, version),
-          getChecksum: (name, version) =>
-            extensionClient.getChecksum(name, version),
-          lockfilePath: join(
-            resolve(repoDir, modelsDir),
-            "upstream_extensions.json",
-          ),
-          modelsDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledModels),
-          workflowsDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledWorkflows),
-          vaultsDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledVaults),
-          driversDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledDrivers),
-          datastoresDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledDatastores),
-          reportsDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledReports),
-          repoDir,
-          denoRuntime,
-        }),
-        output: createAutoResolveOutputAdapter(outputMode),
-      }),
-    );
-  }
+  configureExtensionAutoResolver(
+    repoDir,
+    marker,
+    authCollectives,
+    getOutputModeFromArgs(args),
+  );
 
   const cli = new Command()
     .name("swamp")
@@ -918,7 +947,8 @@ export async function runCli(args: string[]): Promise<void> {
     .command("summarise", summariseCommand)
     .command("datastore", datastoreCommand)
     .command("report", reportCommand)
-    .command("serve", serveCommand);
+    .command("serve", serveCommand)
+    .command("open", openCommand);
 
   // Register help command last — needs reference to the fully-built CLI tree
   cli.command("help", createHelpCommand(cli));
