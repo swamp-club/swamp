@@ -534,6 +534,34 @@ Deno.test("SkillAssets.copySkillsTo copies swamp-extension-driver reference file
   });
 });
 
+Deno.test("SkillAssets includes swamp-getting-started skill", () => {
+  const assets = new SkillAssets();
+  const names = assets.getSkillNames();
+
+  assertEquals(names.includes("swamp-getting-started"), true);
+});
+
+Deno.test("SkillAssets.copySkillsTo copies swamp-getting-started reference files", async () => {
+  await withTempDir(async (dir) => {
+    const assets = new SkillAssets();
+    await assets.copySkillsTo(dir);
+
+    const skillPath = join(dir, "swamp-getting-started", "SKILL.md");
+    const tracksPath = join(
+      dir,
+      "swamp-getting-started",
+      "references",
+      "tracks.md",
+    );
+
+    const skillStat = await Deno.stat(skillPath);
+    assertEquals(skillStat.isFile, true);
+
+    const tracksStat = await Deno.stat(tracksPath);
+    assertEquals(tracksStat.isFile, true);
+  });
+});
+
 Deno.test("SkillAssets.copySkillsTo copies swamp-troubleshooting skill", async () => {
   await withTempDir(async (dir) => {
     const assets = new SkillAssets();

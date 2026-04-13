@@ -35,13 +35,19 @@ commands — only use what the CLI actually provides.
 ## Before Starting
 
 **Pre-check:** Before presenting the walkthrough, run
-`swamp model search --json`. If models already exist, the user does not need
-onboarding. Skip the entire walkthrough and say:
+`swamp model search --json`. If the command succeeds and returns models, the
+user does not need onboarding. Skip the entire walkthrough and say:
 
 > You already have models set up. You're past the getting-started stage — just
 > tell me what you'd like to work on and I'll use the right skill.
 
 Then stop. Do not proceed with the state machine.
+
+If the command fails (repo not initialized, corrupt config, swamp not
+installed), do not silently skip onboarding. Tell the user what went wrong and
+suggest running `swamp repo init` first. If the repo isn't initialized, delegate
+to the `swamp-repo` skill for setup, then return here to continue the
+walkthrough.
 
 **If no models exist**, present the 5-step checklist (Goals → Create → Run →
 Inspect → Graduate) so the user knows what to expect. Also tell the user:
@@ -85,27 +91,27 @@ delegate directly to the appropriate skill (`swamp-model`, `swamp-workflow`,
 Store the user's goal description — use it to name models and tailor examples
 throughout the remaining steps.
 
-**On Failure:** If the user is unsure, default to Track A (shell commands). It
+**On Failure:** If the user is unsure, default to a `command/shell` model. It
 works everywhere without credentials and demonstrates the full lifecycle.
 
 ## State 2: model_created
 
 Create the user's first model, tailored to their stated goal.
 
-**Gate:** State 1 passed (goals understood, track chosen).
+**Gate:** State 1 passed (goals understood, model type chosen).
 
-**Action:** Follow the track-specific steps in
+**Action:** Follow the resolution steps in
 [references/tracks.md](references/tracks.md) to create the model. Use the user's
 goal to pick a meaningful model name (e.g., "check disk space" →
 `check-disk-space`).
 
-The general pattern across all tracks:
+The general pattern regardless of model type:
 
 1. Find or install the right model type
 2. Create the model with `swamp model create <type> <name> --json`
 3. Edit the generated YAML to configure arguments matching the user's goal
 
-### Verify (all tracks)
+### Verify
 
 ```bash
 swamp model validate <name> --json
@@ -136,10 +142,11 @@ swamp model method run <name> <method>
 
 Where `<method>` is:
 
-- Track A: `execute`
-- Track B: the appropriate read-only method first (e.g., `sync`, `get`) — prefer
-  non-destructive methods for a first run
-- Track C: depends on the extension type
+- Shell models (`command/shell`): `execute`
+- Local typed models: the appropriate read-only method first (e.g., `sync`,
+  `get`) — prefer non-destructive methods for a first run
+- Extension models: depends on the extension type — check available methods with
+  `swamp model type describe <type> --json`
 
 **Verify:** The command completes with a `succeeded` status.
 
@@ -203,11 +210,11 @@ created, method run, output captured). Then:
    - **Iterate**: They can ask Claude to adjust, undo, or try a different
      approach at any time
 
-2. Suggest 2-3 concrete next steps based on their track and goal — not generic
-   skill names, but specific actions tied to what they just built (e.g., "store
-   your AWS credentials in a vault" not "help me create a vault"). Ask which
-   direction they want to go, then delegate to the appropriate skill with full
-   context about what they've already built.
+2. Suggest 2-3 concrete next steps based on their model type and goal — not
+   generic skill names, but specific actions tied to what they just built (e.g.,
+   "store your AWS credentials in a vault" not "help me create a vault"). Ask
+   which direction they want to go, then delegate to the appropriate skill with
+   full context about what they've already built.
 
 ## Delegation
 

@@ -610,10 +610,10 @@ essential context for working with this repository.
 
 ## Getting Started
 
-**IMPORTANT:** At the start of every conversation, check if the \`models/\`
-directory contains any model YAML files. If it is empty (no models exist yet),
-you MUST immediately invoke the \`swamp-getting-started\` skill before doing
-anything else. This walks new users through an interactive onboarding tutorial.
+**IMPORTANT:** At the start of every conversation, run
+\`swamp model search --json\`. If no models are returned (empty result), you MUST
+immediately invoke the \`swamp-getting-started\` skill before doing anything else.
+This walks new users through an interactive onboarding tutorial.
 
 If models already exist, start by using the \`swamp-model\` skill to work with
 swamp models.
