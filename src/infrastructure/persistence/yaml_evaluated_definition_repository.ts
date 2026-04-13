@@ -243,6 +243,7 @@ export class YamlEvaluatedDefinitionRepository {
     const data = definition.toData();
     // Ensure type metadata is always present in persisted YAML
     data.type = type.normalized;
+    await modelRegistry.ensureTypeLoaded(type);
     const modelDef = modelRegistry.get(type);
     data.typeVersion = modelDef?.version ?? data.typeVersion;
     // Remove undefined values since YAML can't stringify them
