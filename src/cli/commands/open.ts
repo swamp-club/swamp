@@ -131,8 +131,15 @@ async function loadRepoIntoState(
 
 export const openCommand = new Command()
   .name("open")
-  .description("Start a local web UI for browsing and running extensions")
-  .example("Start and open in browser", "swamp open")
+  .description(
+    "Start a local web UI for browsing extensions, workflows, vaults, and reports",
+  )
+  .example("Open the current repo", "swamp open")
+  .example(
+    "Browse without a repo (picker mode)",
+    "cd /tmp && swamp open",
+  )
+  .example("Point at a specific repo", "swamp open --repo-dir /path/to/repo")
   .example("Custom port", "swamp open --port 9192")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .option("--port <port:number>", "Port to listen on", { default: 9191 })
@@ -282,8 +289,14 @@ export const openCommand = new Command()
     const shutdown = () => {
       if (shuttingDown) return;
       shuttingDown = true;
+      if (isJson) {
+        console.log(JSON.stringify({ status: "stopping" }));
+      }
       logger.info("Shutting down...");
       ac.abort();
+      if (isJson) {
+        console.log(JSON.stringify({ status: "stopped" }));
+      }
     };
     Deno.addSignalListener("SIGINT", shutdown);
     Deno.addSignalListener("SIGTERM", shutdown);
