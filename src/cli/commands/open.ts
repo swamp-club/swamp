@@ -81,21 +81,11 @@ function forceExtensionCatalogRescan(repoDir: string): void {
 
 async function reloadExtensionRegistries(): Promise<void> {
   // Force the registries to re-run their loaders so newly pulled
-  // extensions are picked up without restarting the server. The private
-  // flags are reset via an unchecked cast — intentional for this POC.
-  for (
-    const reg of [
-      modelRegistry,
-      vaultTypeRegistry,
-      driverTypeRegistry,
-      reportRegistry,
-    ] as unknown as Array<
-      { extensionsLoaded: boolean; extensionLoadPromise: Promise<void> | null }
-    >
-  ) {
-    reg.extensionsLoaded = false;
-    reg.extensionLoadPromise = null;
-  }
+  // extensions are picked up without restarting the server.
+  modelRegistry.resetLoadedFlag();
+  vaultTypeRegistry.resetLoadedFlag();
+  driverTypeRegistry.resetLoadedFlag();
+  reportRegistry.resetLoadedFlag();
   await Promise.all([
     modelRegistry.ensureLoaded(),
     vaultTypeRegistry.ensureLoaded(),

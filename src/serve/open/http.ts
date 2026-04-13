@@ -46,10 +46,16 @@ import {
   type WorkflowRunDeps,
   workflowSearch,
   type WorkflowSearchDeps,
+  zodToJsonSchema,
 } from "../../libswamp/mod.ts";
 import { reportRegistry } from "../../domain/reports/report_registry.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
+import type {
+  JobRun,
+  StepRun,
+  WorkflowRun,
+} from "../../domain/workflows/workflow_run.ts";
 import { WorkflowExecutionService } from "../../domain/workflows/execution_service.ts";
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
@@ -65,7 +71,6 @@ import { SecretRedactor } from "../../domain/secrets/mod.ts";
 import type { ExtensionApiClient } from "../../infrastructure/http/extension_api_client.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
-import { zodToJsonSchema } from "../../libswamp/types/schema_helpers.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { runFileSink } from "../../infrastructure/logging/logger.ts";
@@ -739,18 +744,14 @@ function handleVaultTypeList(): Response {
     installed: true,
   }));
   // Lazy types — indexed but not imported
-  // deno-lint-ignore no-explicit-any
-  const lazy = ((vaultTypeRegistry as any).getAllLazy?.() ?? []).map(
-    // deno-lint-ignore no-explicit-any
-    (l: any) => ({
-      type: l.type,
-      name: l.type,
-      description: l.description ?? "",
-      isBuiltIn: false,
-      installed: true,
-      lazy: true,
-    }),
-  );
+  const lazy = vaultTypeRegistry.getAllLazy().map((l) => ({
+    type: l.type,
+    name: l.type,
+    description: l.description ?? "",
+    isBuiltIn: false,
+    installed: true,
+    lazy: true,
+  }));
   const seen = new Set(loaded.map((t) => t.type));
   for (const l of lazy) if (!seen.has(l.type)) loaded.push(l);
   return Response.json({ types: loaded });
@@ -997,6 +998,9 @@ async function handleExtensionDetail(
               "Authorization": `Bearer ${auth.apiKey}`,
               "Accept": "application/json",
             },
+            // CLAUDE.md requires outbound network calls to pass an
+            // AbortSignal with a timeout.
+            signal: AbortSignal.timeout(10_000),
           },
         );
         if (res.ok) {
@@ -1008,9 +1012,14 @@ async function handleExtensionDetail(
       }
     } catch { /* keep anonymous fallback */ }
 
+    // The ExtensionInfo type from the client only declares the minimum
+    // fields; the server actually returns a richer payload (labels,
+    // platforms, contentTypes, createdAt, updatedAt, author, …). Treat
+    // the response as a loose record so we can forward those fields
+    // to the UI without losing type safety on the known ones.
+    const rich = info as unknown as Record<string, unknown>;
     return Response.json({
-      // deno-lint-ignore no-explicit-any
-      ...(info as any),
+      ...rich,
       latestVersionDetail: latestDetail,
     });
   } catch (e) {
@@ -1420,19 +1429,19 @@ async function handleWorkflowGet(
   });
 }
 
-function workflowRunSummary(run: unknown) {
-  // deno-lint-ignore no-explicit-any
-  const r = run as any;
-  const started = r.startedAt?.getTime?.() ?? null;
-  const completed = r.completedAt?.getTime?.() ?? null;
+function workflowRunSummary(run: WorkflowRun) {
+  const started = run.startedAt?.getTime() ?? null;
+  const completed = run.completedAt?.getTime() ?? null;
   return {
-    id: r.id,
-    workflowName: r.workflowName,
-    status: r.status,
-    startedAt: r.startedAt?.toISOString?.() ?? null,
-    completedAt: r.completedAt?.toISOString?.() ?? null,
-    durationMs: started && completed ? completed - started : null,
-    jobCount: r.jobs?.length ?? 0,
+    id: run.id,
+    workflowName: run.workflowName,
+    status: run.status,
+    startedAt: run.startedAt?.toISOString() ?? null,
+    completedAt: run.completedAt?.toISOString() ?? null,
+    durationMs: started !== null && completed !== null
+      ? completed - started
+      : null,
+    jobCount: run.jobs.length,
   };
 }
 
@@ -1472,48 +1481,43 @@ async function handleWorkflowRunGet(
   const runs = await deps.repoContext.workflowRunRepo.findAllByWorkflowId(
     wf.id,
   );
-  // deno-lint-ignore no-explicit-any
-  const match = runs.find((r) => String((r as any).id) === runId);
+  const match = runs.find((r) => String(r.id) === runId);
   if (!match) {
     return Response.json({
       error: { message: `Run not found: ${runId}` },
     }, { status: 404 });
   }
-  // deno-lint-ignore no-explicit-any
-  const r = match as any;
-  const started = r.startedAt?.getTime?.() ?? null;
-  const completed = r.completedAt?.getTime?.() ?? null;
-  const jobs = (r.jobs ?? []).map((j: unknown) => {
-    // deno-lint-ignore no-explicit-any
-    const job = j as any;
-    const jStart = job.startedAt?.getTime?.() ?? null;
-    const jDone = job.completedAt?.getTime?.() ?? null;
+  const started = match.startedAt?.getTime() ?? null;
+  const completed = match.completedAt?.getTime() ?? null;
+  const jobs = match.jobs.map((job: JobRun) => {
+    const jStart = job.startedAt?.getTime() ?? null;
+    const jDone = job.completedAt?.getTime() ?? null;
     return {
       name: job.jobName,
       status: job.status,
-      durationMs: jStart && jDone ? jDone - jStart : null,
-      steps: (job.steps ?? []).map((s: unknown) => {
-        // deno-lint-ignore no-explicit-any
-        const step = s as any;
-        const sStart = step.startedAt?.getTime?.() ?? null;
-        const sDone = step.completedAt?.getTime?.() ?? null;
+      durationMs: jStart !== null && jDone !== null ? jDone - jStart : null,
+      steps: job.steps.map((step: StepRun) => {
+        const sStart = step.startedAt?.getTime() ?? null;
+        const sDone = step.completedAt?.getTime() ?? null;
         return {
           name: step.stepName,
           status: step.status,
           error: step.error,
-          durationMs: sStart && sDone ? sDone - sStart : null,
-          dataArtifacts: (step.dataArtifacts ?? []).map((a: unknown) => a),
+          durationMs: sStart !== null && sDone !== null ? sDone - sStart : null,
+          dataArtifacts: step.dataArtifacts,
         };
       }),
     };
   });
   return Response.json({
-    id: r.id,
-    workflowName: r.workflowName,
-    status: r.status,
-    startedAt: r.startedAt?.toISOString?.() ?? null,
-    completedAt: r.completedAt?.toISOString?.() ?? null,
-    durationMs: started && completed ? completed - started : null,
+    id: match.id,
+    workflowName: match.workflowName,
+    status: match.status,
+    startedAt: match.startedAt?.toISOString() ?? null,
+    completedAt: match.completedAt?.toISOString() ?? null,
+    durationMs: started !== null && completed !== null
+      ? completed - started
+      : null,
     jobs,
   });
 }

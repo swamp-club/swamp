@@ -283,6 +283,26 @@ function createTestModel(typeString: string): ModelDefinition {
   };
 }
 
+Deno.test("ModelRegistry.resetLoadedFlag re-runs the loader on next ensureLoaded", async () => {
+  const registry = new ModelRegistry();
+  let loadCount = 0;
+  registry.setLoader(() => {
+    loadCount++;
+    return Promise.resolve();
+  });
+
+  await registry.ensureLoaded();
+  assertEquals(loadCount, 1);
+
+  // Without reset, a second ensureLoaded is a no-op.
+  await registry.ensureLoaded();
+  assertEquals(loadCount, 1);
+
+  registry.resetLoadedFlag();
+  await registry.ensureLoaded();
+  assertEquals(loadCount, 2);
+});
+
 Deno.test("ModelRegistry.register adds model to registry", () => {
   const registry = new ModelRegistry();
   const model = createTestModel("swamp/echo");
