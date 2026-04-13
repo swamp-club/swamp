@@ -177,28 +177,24 @@ attributes:
 ### data.findBySpec(modelName, specName)
 
 Returns all data records for a model that match a given output spec name.
-Commonly used in `forEach` expressions to iterate over variable-length output.
+Commonly used in `task.inputs` to pass variable-length output into a step.
 
 **Workflow run scoping:** When called inside a workflow run, `findBySpec` only
 returns data produced during the current run. This prevents stale data from
-previous runs leaking into `forEach` iteration. Outside a workflow context, it
-returns all data globally. The same run-scoping applies to
-`context.readModelData()` and `context.queryData()` in extension model methods
-(see `design/data-query.md`).
+previous runs leaking into iteration. Outside a workflow context, it returns all
+data globally. The same run-scoping applies to `context.readModelData()` and
+`context.queryData()` in extension model methods (see `design/data-query.md`).
+
+**Async limitation:** `data.findBySpec()` is async and cannot be used directly in
+`forEach.in` (which is evaluated synchronously). To iterate over findBySpec
+results, resolve the call in a parent workflow's `task.inputs` and pass the array
+to a child workflow. See
+`.claude/skills/swamp-workflow/references/nested-workflows.md`.
 
 ```yaml
-# In a forEach step — only sees data from the current workflow run:
-steps:
-  - name: dl-${{ self.ep.attributes.title }}
-    forEach:
-      item: ep
-      in: ${{ data.findBySpec("dedup-model", "episode") }}
-    task:
-      type: model_method
-      modelIdOrName: downloader
-      methodName: download
-      inputs:
-        uri: ${{ self.ep.attributes.url }}
+# In task.inputs — resolves the async call before passing to the step:
+inputs:
+  episodes: ${{ data.findBySpec("dedup-model", "episode") }}
 ```
 
 ### data.findByTag(tagKey, tagValue)

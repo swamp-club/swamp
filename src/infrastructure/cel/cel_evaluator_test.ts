@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertThrows } from "@std/assert";
+import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import { CelEvaluator } from "./cel_evaluator.ts";
 import { InvalidExpressionError } from "../../domain/expressions/errors.ts";
 import { transformHyphenatedModelRefs } from "../../domain/expressions/expression_parser.ts";
@@ -923,4 +923,71 @@ Deno.test("CelEvaluator: directly-missing input throws InvalidExpressionError", 
     () => evaluator.evaluate("inputs.cidrBlock", { inputs: {} }),
     InvalidExpressionError,
   );
+});
+
+// --- Promise detection in sync evaluate (Issue #88) ---
+
+Deno.test("evaluate: throws InvalidExpressionError when data.latest returns a Promise", () => {
+  const evaluator = new CelEvaluator();
+  const context = {
+    data: {
+      latest: (_m: string, _d: string) =>
+        Promise.resolve({ attributes: { episodes: [] } }),
+    },
+  };
+
+  const error = assertThrows(
+    () => evaluator.evaluate('data.latest("dedup", "current")', context),
+    InvalidExpressionError,
+  );
+  assertStringIncludes(error.message, "unresolved Promise");
+  assertStringIncludes(error.message, "nested-workflows.md");
+});
+
+Deno.test("evaluate: throws InvalidExpressionError when data.findBySpec returns a Promise", () => {
+  const evaluator = new CelEvaluator();
+  const context = {
+    data: {
+      findBySpec: (_m: string, _s: string) => Promise.resolve([]),
+    },
+  };
+
+  const error = assertThrows(
+    () => evaluator.evaluate('data.findBySpec("model", "spec")', context),
+    InvalidExpressionError,
+  );
+  assertStringIncludes(error.message, "unresolved Promise");
+});
+
+Deno.test("evaluate: throws InvalidExpressionError when data.findByTag returns a Promise", () => {
+  const evaluator = new CelEvaluator();
+  const context = {
+    data: {
+      findByTag: (_k: string, _v: string) => Promise.resolve([]),
+    },
+  };
+
+  const error = assertThrows(
+    () => evaluator.evaluate('data.findByTag("key", "value")', context),
+    InvalidExpressionError,
+  );
+  assertStringIncludes(error.message, "unresolved Promise");
+});
+
+Deno.test("evaluate: sync data functions that return arrays still work", () => {
+  const evaluator = new CelEvaluator();
+  const context = {
+    data: {
+      findBySpec: (_m: string, _s: string) => [
+        { name: "a", attributes: { x: 1 } },
+      ],
+    },
+  };
+
+  const result = evaluator.evaluate(
+    'data.findBySpec("model", "spec")',
+    context,
+  );
+  assertEquals(Array.isArray(result), true);
+  assertEquals((result as unknown[]).length, 1);
 });

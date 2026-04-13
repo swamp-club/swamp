@@ -46,6 +46,7 @@ import { DataQueryService } from "../../domain/data/data_query_service.ts";
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import type { LibSwampContext } from "../context.ts";
 import { notFound, type SwampError } from "../errors.ts";
+import { InvalidExpressionError } from "../../domain/expressions/errors.ts";
 
 /** Evaluation result for a single workflow. */
 export interface WorkflowEvaluateItemData {
@@ -239,7 +240,26 @@ async function evaluateWorkflowInternal(
         continue;
       }
 
-      const items = deps.evaluateCel(inMatch[1], context);
+      let items: unknown;
+      try {
+        items = deps.evaluateCel(inMatch[1], context);
+      } catch (error) {
+        if (error instanceof InvalidExpressionError) {
+          throw new Error(
+            `forEach.in expression '$\{{ ${inMatch[1]} }}' returned an ` +
+              `unresolved Promise.\n\n` +
+              `forEach.in is evaluated synchronously and cannot await ` +
+              `async CEL functions (data.latest, data.findByTag, ` +
+              `data.findBySpec, data.query).\n\n` +
+              `Fix: move the async call into a parent workflow's ` +
+              `task.inputs (which IS awaited) and have the child ` +
+              `iterate over inputs.<name>. See:\n` +
+              `.claude/skills/swamp-workflow/references/` +
+              `nested-workflows.md#when-to-use-nested-workflows`,
+          );
+        }
+        throw error;
+      }
       const itemName = stepData.forEach.item;
       const nameHasExpression = /\$\{\{.+?\}\}/.test(stepData.name);
 

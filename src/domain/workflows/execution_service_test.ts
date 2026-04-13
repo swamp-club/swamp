@@ -17,7 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertNotEquals, assertRejects } from "@std/assert";
+import {
+  assertEquals,
+  assertNotEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import { join } from "@std/path";
 import {
   coerceToSuffix,
@@ -2682,4 +2687,73 @@ Deno.test("DefaultStepExecutor wires dataQueryService into MethodContext", async
       catalogStore.close();
     }
   });
+});
+
+// --- forEach.in async Promise detection (Issue #88) ---
+
+Deno.test({
+  name:
+    "expandForEachSteps: throws UserError when forEach.in uses async data function",
+  // The error path interrupts normal cleanup of internally-opened files
+  // (e.g. the CatalogStore WAL), so resource sanitization is disabled.
+  sanitizeResources: false,
+  sanitizeOps: false,
+  fn: async () => {
+    await withTempDir(async (tempDir) => {
+      const workflowRepo = new InMemoryWorkflowRepository();
+      const runRepo = new InMemoryWorkflowRunRepository();
+      const executor = new MockStepExecutor();
+
+      const workflow = Workflow.create({
+        name: "async-foreach",
+        jobs: [
+          Job.create({
+            name: "download",
+            steps: [
+              Step.create({
+                name: "process-${{ self.ep.name }}",
+                task: StepTask.model("test-model", "run"),
+                forEach: {
+                  item: "ep",
+                  in: '${{ data.findBySpec("producer", "result") }}',
+                },
+              }),
+            ],
+          }),
+        ],
+      });
+      await workflowRepo.save(workflow);
+
+      const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+      try {
+        const service = new WorkflowExecutionService(
+          workflowRepo,
+          runRepo,
+          tempDir,
+          executor,
+          undefined,
+          catalogStore,
+        );
+
+        // The ModelResolver wires up async data delegates (findBySpec returns
+        // a Promise). expandForEachSteps uses sync evaluate, which hits the
+        // Promise detection guard and throws InvalidExpressionError. The
+        // forEach catch-and-wrap turns it into a UserError.
+        const error = await assertRejects(
+          () => service.execute(workflow.name),
+        );
+
+        assertStringIncludes(
+          (error as Error).message,
+          "unresolved Promise",
+        );
+        assertStringIncludes(
+          (error as Error).message,
+          "nested-workflows.md",
+        );
+      } finally {
+        catalogStore.close();
+      }
+    });
+  },
 });

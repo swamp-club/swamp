@@ -73,6 +73,7 @@ import {
 } from "../expressions/model_resolver.ts";
 import { CelEvaluator } from "../../infrastructure/cel/cel_evaluator.ts";
 import { UserError } from "../errors.ts";
+import { InvalidExpressionError } from "../expressions/errors.ts";
 import {
   getRunLogger,
   runFileSink,
@@ -1550,7 +1551,26 @@ export class WorkflowExecutionService {
       }
 
       const celExpr = match[1];
-      const items = celEvaluator.evaluate(celExpr, context);
+      let items: unknown;
+      try {
+        items = celEvaluator.evaluate(celExpr, context);
+      } catch (error) {
+        if (error instanceof InvalidExpressionError) {
+          throw new UserError(
+            `forEach.in expression '$\{{ ${celExpr} }}' returned an ` +
+              `unresolved Promise.\n\n` +
+              `forEach.in is evaluated synchronously and cannot await ` +
+              `async CEL functions (data.latest, data.findByTag, ` +
+              `data.findBySpec, data.query).\n\n` +
+              `Fix: move the async call into a parent workflow's ` +
+              `task.inputs (which IS awaited) and have the child ` +
+              `iterate over inputs.<name>. See:\n` +
+              `.claude/skills/swamp-workflow/references/` +
+              `nested-workflows.md#when-to-use-nested-workflows`,
+          );
+        }
+        throw error;
+      }
 
       // Handle both arrays and objects
       const expandedSteps: ExpandedStep[] = [];
