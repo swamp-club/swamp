@@ -336,12 +336,27 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       const upgradeResult = upgradeService.upgrade(definition, modelDef);
       const currentDefinition = upgradeResult.definition;
 
-      // Persist upgraded definition if it was upgraded
+      // Persist upgraded definition if it was upgraded.
+      // IMPORTANT: The in-memory definition may have vault sentinel tokens
+      // (from runtime expression resolution). Sentinels are per-process random
+      // strings that become meaningless once the process exits. We must re-read
+      // the original definition from disk (which has vault CEL expressions
+      // intact), apply the upgrade to that copy, and persist it.
       if (upgradeResult.upgraded && context.definitionRepository) {
-        await context.definitionRepository.save(
+        const originalDefinition = await context.definitionRepository.findById(
           context.modelType,
-          currentDefinition,
+          definition.id,
         );
+        if (originalDefinition) {
+          const diskUpgrade = upgradeService.upgrade(
+            originalDefinition,
+            modelDef,
+          );
+          await context.definitionRepository.save(
+            context.modelType,
+            diskUpgrade.definition,
+          );
+        }
       }
 
       // Resolve vault sentinels in globalArguments before validation.

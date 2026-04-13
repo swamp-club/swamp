@@ -267,3 +267,28 @@ Deno.test("DefinitionUpgradeService - legacy numeric typeVersion coerced to unde
   assertEquals(result.definition.globalArguments.priority, "low");
   assertEquals(result.definition.typeVersion, "2025.06.01.1");
 });
+
+Deno.test("DefinitionUpgradeService: vault expression strings pass through unchanged", () => {
+  const service = new DefinitionUpgradeService();
+  const vaultExpr = '${{ vault.get("myvault", "my-api-key") }}';
+  const definition = Definition.create({
+    name: "test-def",
+    type: "test/upgradeable",
+    typeVersion: "2025.01.15.1",
+    globalArguments: { apiKey: vaultExpr, label: "prod" },
+  });
+
+  const modelDef = createModelDef("2025.06.01.1", [
+    {
+      toVersion: "2025.06.01.1",
+      description: "Add region field",
+      upgradeAttributes: (old) => ({ ...old, region: "us-east-1" }),
+    },
+  ]);
+
+  const result = service.upgrade(definition, modelDef);
+
+  assertEquals(result.upgraded, true);
+  assertEquals(result.definition.globalArguments.apiKey, vaultExpr);
+  assertEquals(result.definition.globalArguments.region, "us-east-1");
+});

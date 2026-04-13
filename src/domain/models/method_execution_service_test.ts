@@ -35,6 +35,7 @@ import { type DataId, generateDataId } from "../data/data_id.ts";
 import { Data } from "../data/data.ts";
 import { UserError } from "../errors.ts";
 import { getLogger } from "@logtape/logtape";
+import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 
 /**
  * Test model that mimics the echo model's write method.
@@ -2524,3 +2525,96 @@ Deno.test("executeWorkflow - check returning invalid result treated as failure",
     "invalid result",
   );
 });
+
+Deno.test(
+  "executeWorkflow: upgrade persists original vault expressions, not sentinel tokens",
+  async () => {
+    const service = new DefaultMethodExecutionService();
+
+    // Model at version 2 with an upgrade from version 1
+    const model: ModelDefinition = {
+      type: ModelType.create("test/vault-upgrade"),
+      version: "2026.04.12.2",
+      globalArguments: z.object({ apiKey: z.string() }),
+      resources: {
+        status: {
+          description: "Status",
+          schema: z.object({ ok: z.boolean() }),
+          lifetime: "infinite",
+          garbageCollection: 5,
+        },
+      },
+      methods: {
+        check: {
+          description: "Check",
+          arguments: z.object({}),
+          execute: async (_args, context) => {
+            const handle = await context.writeResource!(
+              "status",
+              "main",
+              { ok: true },
+            );
+            return { dataHandles: [handle] };
+          },
+        },
+      },
+      upgrades: [
+        {
+          toVersion: "2026.04.12.2",
+          description: "No-op upgrade",
+          upgradeAttributes: (old) => old,
+        },
+      ],
+    };
+
+    const vaultExpression = '${{ vault.get("myvault", "my-api-key") }}';
+
+    // Simulate post-runtime-resolution: the in-memory definition has sentinel
+    // tokens in place of vault expressions (as happens in run.ts after
+    // resolveRuntimeExpressionsInDefinition).
+    const secretBag = new VaultSecretBag();
+    const sentinel = secretBag.addSecret("sk-test-secret-12345");
+
+    const definition = Definition.create({
+      name: "test-vault-def",
+      type: "test/vault-upgrade",
+      typeVersion: "2026.04.12.1",
+      globalArguments: { apiKey: sentinel },
+    });
+
+    // The "on-disk" definition has the original vault expression.
+    const originalDefinition = Definition.create({
+      id: definition.id,
+      name: "test-vault-def",
+      type: "test/vault-upgrade",
+      typeVersion: "2026.04.12.1",
+      globalArguments: { apiKey: vaultExpression },
+    });
+
+    // Track what gets saved to the definition repository.
+    let savedDefinition: Definition | null = null;
+    const mockDefRepo: DefinitionRepository = {
+      ...createMockDefinitionRepo(),
+      findById: () => Promise.resolve(originalDefinition),
+      save: (_type, def) => {
+        savedDefinition = def;
+        return Promise.resolve();
+      },
+    };
+
+    const { context } = createTestContext({
+      modelType: model.type,
+      definitionRepository: mockDefRepo,
+      vaultSecrets: secretBag,
+    });
+
+    await service.executeWorkflow(definition, model, "check", context);
+
+    // The persisted definition must have the original vault expression,
+    // not the sentinel token.
+    assertEquals(savedDefinition !== null, true);
+    const saved = savedDefinition as unknown as Definition;
+    assertEquals(saved.globalArguments.apiKey, vaultExpression);
+    assertEquals(saved.typeVersion, "2026.04.12.2");
+  },
+);
