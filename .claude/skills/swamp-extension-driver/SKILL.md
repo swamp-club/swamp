@@ -233,18 +233,10 @@ findings to the user before proceeding.
 
 ## Publishing
 
-Publishing is the same for all extension types. Before pushing:
-
-1. **Get next version**:
-   `swamp extension version --manifest manifest.yaml --json`
-2. **Bump version** in `manifest.yaml` — use the `nextVersion` from above
-3. **Format & lint**: `swamp extension fmt manifest.yaml`
-4. **Dry-run**: `swamp extension push manifest.yaml --dry-run --json`
-5. **Push**: `swamp extension push manifest.yaml --yes --json`
-
-For the full manifest schema, CalVer versioning, safety rules, and
-troubleshooting, see the
-[publishing guide](../swamp-extension-model/references/publishing.md).
+Use the `swamp-extension-publish` skill to publish extensions to the registry.
+It provides a state-machine checklist that enforces all prerequisites
+(repository initialization, authentication, manifest validation, collective
+verification) before allowing a push.
 
 ## References
 

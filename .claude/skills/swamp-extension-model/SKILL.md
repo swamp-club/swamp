@@ -138,7 +138,7 @@ export const model = {
 
 Use `swamp extension version @myorg/my-model --json` to get the correct next
 version. See
-[references/publishing.md](references/publishing.md#determining-the-next-version)
+[publishing reference](../swamp-extension-publish/references/publishing.md#determining-the-next-version)
 for details.
 
 ## Version Upgrades
@@ -445,37 +445,10 @@ before proceeding to testing.
 
 ## Publishing Extensions
 
-Extensions are published to the swamp registry via a `manifest.yaml` and the
-`swamp extension push` command. Extensions can contain models, workflows,
-vaults, drivers, datastores, and reports.
-
-**Minimal manifest:**
-
-```yaml
-manifestVersion: 1
-name: "@myorg/my-model"
-version: "2026.02.26.1"
-models:
-  - my_model.ts
-```
-
-**Push commands:**
-
-```bash
-swamp extension push manifest.yaml --json           # Push to registry
-swamp extension push manifest.yaml --dry-run --json # Validate without pushing
-swamp extension push manifest.yaml -y --json        # Skip confirmation prompts
-```
-
-The manifest `name` collective must match your authenticated username. Content
-paths are relative to their respective directories (`extensions/models/`,
-`extensions/vaults/`, `extensions/drivers/`, `extensions/datastores/`). Local
-imports are auto-resolved. **All manifest paths must be relative and
-downward-only — paths containing `..` components or starting with `/` are
-rejected during push to prevent broken archives.**
-
-For the full manifest schema, safety rules, CalVer versioning, and
-troubleshooting, see [references/publishing.md](references/publishing.md).
+Use the `swamp-extension-publish` skill to publish extensions to the registry.
+It provides a state-machine checklist that enforces all prerequisites
+(repository initialization, authentication, manifest validation, collective
+verification) before allowing a push.
 
 ## Key Rules
 
@@ -489,7 +462,8 @@ troubleshooting, see [references/publishing.md](references/publishing.md).
 7. **Version upgrades**: When bumping `version`, always add an `upgrades` entry
 
 For import styles, helper scripts, collective naming rules, and version details,
-see [references/publishing.md](references/publishing.md).
+see the
+[publishing reference](../swamp-extension-publish/references/publishing.md).
 
 ## Verify
 
@@ -523,8 +497,8 @@ swamp model type describe @myorg/my-model --json  # Check schema
   complete model examples (CRUD lifecycle, data chaining, extensions, etc.)
 - **Scenarios**: See [references/scenarios.md](references/scenarios.md) for
   end-to-end scenarios (custom API, cloud CRUD, factory models)
-- **Publishing**: See [references/publishing.md](references/publishing.md) for
-  manifest schema, push workflow, safety rules, and CalVer versioning
+- **Publishing**: Use the `swamp-extension-publish` skill for the full
+  publishing workflow, manifest schema, safety rules, and CalVer versioning
 - **Smoke Testing**: See
   [references/smoke_testing.md](references/smoke_testing.md) for the pre-push
   smoke-test protocol, CRUD lifecycle testing, and common failure patterns

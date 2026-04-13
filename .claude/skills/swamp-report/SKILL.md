@@ -273,8 +273,9 @@ reports:
   - compliance_report.ts
 ```
 
-For the full publishing workflow, CalVer versioning, and safety rules, see the
-[publishing guide](../swamp-extension-model/references/publishing.md).
+For the full publishing workflow, use the `swamp-extension-publish` skill. It
+provides a state-machine checklist that enforces all prerequisites before
+allowing a push.
 
 ## CLI Flags
 

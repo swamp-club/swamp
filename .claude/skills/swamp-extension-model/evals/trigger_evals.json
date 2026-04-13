@@ -93,36 +93,36 @@
   {
     "query": "Make a manifest.yaml so I can push my extension",
     "should_trigger": true,
-    "note": "manifest.yaml and push extension are triggers"
+    "note": "manifest creation is shared between this skill and swamp-extension-publish"
   },
   {
     "query": "Publish my model to the registry",
-    "should_trigger": true,
-    "note": "publish extension and publish to registry are triggers"
+    "should_trigger": false,
+    "note": "Publishing → swamp-extension-publish"
   },
   {
     "query": "Help me push this extension to swamp-club",
-    "should_trigger": true,
-    "note": "push extension is a trigger"
+    "should_trigger": false,
+    "note": "Pushing extensions → swamp-extension-publish"
   },
   {
     "query": "I need to write a manifest for my model",
     "should_trigger": true,
-    "note": "write manifest and manifest are triggers"
+    "note": "manifest creation is part of model authoring"
   },
   {
     "query": "Prepare my extension for publishing",
-    "should_trigger": true,
-    "note": "prepare for publishing is a trigger"
+    "should_trigger": false,
+    "note": "Publishing workflow → swamp-extension-publish"
   },
   {
     "query": "How do I swamp extension push my model?",
-    "should_trigger": true,
-    "note": "extension push is a trigger"
+    "should_trigger": false,
+    "note": "Extension push → swamp-extension-publish"
   },
   {
     "query": "I want to release a new version of my extension",
-    "should_trigger": true,
-    "note": "release extension and bump version are triggers"
+    "should_trigger": false,
+    "note": "Releasing extensions → swamp-extension-publish"
   }
 ]

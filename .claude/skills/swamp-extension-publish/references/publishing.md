@@ -3,6 +3,22 @@
 Publish extension models, workflows, vaults, drivers, and datastores to the
 swamp registry so others can install and use them.
 
+## Repository Prerequisite
+
+The extension directory **must be an initialized swamp repository** before
+`swamp extension fmt` or `swamp extension push` will work. Both commands require
+a `.swamp.yaml` marker file (created by `swamp repo init`).
+
+If you see `Not a swamp repository` errors, run:
+
+```bash
+swamp repo init --json
+```
+
+This creates `.swamp.yaml` and the standard directory structure. For monorepos
+with multiple extensions, each subdirectory that needs to publish independently
+must have its own `swamp repo init`.
+
 ## Manifest Schema (v1)
 
 Create a `manifest.yaml` in your repository root (or any directory):
@@ -153,6 +169,8 @@ reports:
 
 ## Pre-Push Checklist
 
+0. **Verify swamp repository**: Confirm `.swamp.yaml` exists — run
+   `swamp repo init --json` if missing
 1. **Get next version**:
    `swamp extension version --manifest manifest.yaml --json`
 2. **Bump version** in `manifest.yaml` — use `nextVersion` from the output above
@@ -162,8 +180,9 @@ reports:
 
 ## Push Workflow
 
-> **Before you push:** Your extension must pass
-> `swamp extension fmt <manifest> --check`. The push command enforces this
+> **Before you push:** Your extension directory must be an initialized swamp
+> repository (`.swamp.yaml` must exist). Your extension must also pass
+> `swamp extension fmt <manifest> --check`. The push command enforces formatting
 > automatically — if your code has formatting or lint issues, the push will be
 > rejected. Run `swamp extension fmt <manifest>` to auto-fix before pushing.
 
@@ -317,6 +336,7 @@ swamp extension version --manifest manifest.yaml --json
 
 | Error                           | Fix                                                                     |
 | ------------------------------- | ----------------------------------------------------------------------- |
+| "Not a swamp repository"        | Run `swamp repo init --json` in the extension directory                 |
 | "Not authenticated"             | Run `swamp auth login` first                                            |
 | "collective does not match"     | Manifest `name` must use `@your-username/...`                           |
 | "CalVer format" error           | Use `YYYY.MM.DD.MICRO` (e.g., `2026.02.26.1`)                           |
