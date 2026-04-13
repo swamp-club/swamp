@@ -1,0 +1,295 @@
+// Swamp, an Automation Framework
+// Copyright (C) 2026 System Initiative, Inc.
+//
+// This file is part of Swamp.
+//
+// Swamp is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License version 3
+// as published by the Free Software Foundation, with the Swamp
+// Extension and Definition Exception (found in the "COPYING-EXCEPTION"
+// file).
+//
+// Swamp is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
+
+import { Command } from "@cliffy/command";
+import { join, resolve } from "@std/path";
+import { createContext, type GlobalOptions } from "../context.ts";
+import { requireInitializedRepoUnlocked } from "../repo_context.ts";
+import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
+import { modelRegistry } from "../../domain/models/model.ts";
+import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
+import { driverTypeRegistry } from "../../domain/drivers/driver_type_registry.ts";
+import { reportRegistry } from "../../domain/reports/report_registry.ts";
+import { ModelType } from "../../domain/models/model_type.ts";
+import { ExtensionApiClient } from "../../infrastructure/http/extension_api_client.ts";
+import { openBrowser } from "../../infrastructure/process/browser.ts";
+import {
+  handleOpenRequest,
+  type OpenServerState,
+} from "../../serve/open/http.ts";
+import {
+  createLibSwampContext,
+  createModelCreateDeps,
+  modelCreate,
+} from "../../libswamp/mod.ts";
+import { pullExtension } from "./extension_pull.ts";
+import { RepoPath } from "../../domain/repo/repo_path.ts";
+import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
+import { resolveModelsDir } from "../resolve_models_dir.ts";
+import {
+  SWAMP_SUBDIRS,
+  swampPath,
+} from "../../infrastructure/persistence/paths.ts";
+import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
+import {
+  configureExtensionAutoResolver,
+  configureExtensionLoaders,
+  type DeferredWarning,
+} from "../mod.ts";
+import { resolveSkillsDir } from "../../domain/repo/skill_dirs.ts";
+import { VERSION } from "./version.ts";
+
+// deno-lint-ignore no-explicit-any
+type AnyOptions = any;
+
+const logger = getSwampLogger(["serve", "open"]);
+const DEFAULT_SERVER_URL = "https://swamp.club";
+
+function forceExtensionCatalogRescan(repoDir: string): void {
+  try {
+    const dbPath = swampPath(repoDir, "_extension_catalog.db");
+    const catalog = new ExtensionCatalogStore(dbPath);
+    try {
+      catalog.invalidate("model");
+      catalog.invalidate("vault");
+      catalog.invalidate("driver");
+      catalog.invalidate("datastore");
+      catalog.invalidate("report");
+    } finally {
+      catalog.close();
+    }
+  } catch {
+    // Best-effort — the loader will bootstrap a fresh catalog if this fails.
+  }
+}
+
+async function reloadExtensionRegistries(): Promise<void> {
+  // Force the registries to re-run their loaders so newly pulled
+  // extensions are picked up without restarting the server. The private
+  // flags are reset via an unchecked cast — intentional for this POC.
+  for (
+    const reg of [
+      modelRegistry,
+      vaultTypeRegistry,
+      driverTypeRegistry,
+      reportRegistry,
+    ] as unknown as Array<
+      { extensionsLoaded: boolean; extensionLoadPromise: Promise<void> | null }
+    >
+  ) {
+    reg.extensionsLoaded = false;
+    reg.extensionLoadPromise = null;
+  }
+  await Promise.all([
+    modelRegistry.ensureLoaded(),
+    vaultTypeRegistry.ensureLoaded(),
+    driverTypeRegistry.ensureLoaded(),
+    reportRegistry.ensureLoaded(),
+  ]);
+}
+
+async function loadRepoIntoState(
+  state: OpenServerState,
+  repoDir: string,
+  outputMode: "log" | "json",
+): Promise<void> {
+  const result = await requireInitializedRepoUnlocked({
+    repoDir,
+    outputMode,
+  });
+  state.repoDir = result.repoDir;
+  state.repoContext = result.repoContext;
+  state.datastoreConfig = result.datastoreConfig;
+
+  // Reconfigure the extension loaders/auto-resolver for this repo — the CLI
+  // bootstrap wired them to whatever directory the binary was launched from,
+  // which may not be the repo the user picked in the UI.
+  const markerRepo = new RepoMarkerRepository();
+  const marker = await markerRepo.read(RepoPath.create(result.repoDir));
+  const deferred: DeferredWarning[] = [];
+  await configureExtensionLoaders(result.repoDir, marker, [], deferred);
+  configureExtensionAutoResolver(result.repoDir, marker, undefined, outputMode);
+  forceExtensionCatalogRescan(result.repoDir);
+  await reloadExtensionRegistries();
+}
+
+export const serveOpenCommand = new Command()
+  .name("open")
+  .description("Start a local web UI for browsing and running extensions")
+  .example("Start and open in browser", "swamp serve open")
+  .example("Custom port", "swamp serve open --port 9192")
+  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option("--port <port:number>", "Port to listen on", { default: 9191 })
+  .option("--no-open", "Do not auto-open the browser")
+  .action(async function (options: AnyOptions) {
+    const ctx = createContext(options as GlobalOptions, ["serve", "open"]);
+    const repoDir = options.repoDir as string ?? ".";
+    const port = options.port as number;
+    const isJson = ctx.outputMode === "json";
+
+    await Promise.all([
+      modelRegistry.ensureLoaded(),
+      vaultTypeRegistry.ensureLoaded(),
+      driverTypeRegistry.ensureLoaded(),
+      reportRegistry.ensureLoaded(),
+    ]);
+
+    const extClient = new ExtensionApiClient(
+      Deno.env.get("SWAMP_CLUB_URL") ?? DEFAULT_SERVER_URL,
+    );
+
+    const state: OpenServerState = {
+      repoDir: null,
+      repoContext: null,
+      datastoreConfig: null,
+      extClient,
+      version: VERSION,
+      initializeRepo: async (path: string) => {
+        await loadRepoIntoState(state, path, ctx.outputMode);
+      },
+      installExtension: async (name: string) => {
+        if (!state.repoDir) throw new Error("Repository not initialized");
+        const repoDir = state.repoDir;
+        const repoPath = RepoPath.create(repoDir);
+        const markerRepo = new RepoMarkerRepository();
+        const marker = await markerRepo.read(repoPath);
+        const modelsDir = resolveModelsDir(marker);
+        const absoluteModelsDir = resolve(repoDir, modelsDir);
+        const lockfilePath = join(
+          absoluteModelsDir,
+          "upstream_extensions.json",
+        );
+        await pullExtension(
+          { name, version: null },
+          {
+            getExtension: (n) => extClient.getExtension(n),
+            downloadArchive: (n, v) => extClient.downloadArchive(n, v),
+            getChecksum: (n, v) => extClient.getChecksum(n, v),
+            logger: ctx.logger,
+            lockfilePath,
+            modelsDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledModels),
+            workflowsDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledWorkflows),
+            vaultsDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledVaults),
+            driversDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledDrivers),
+            datastoresDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledDatastores),
+            reportsDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledReports),
+            skillsDir: resolveSkillsDir(repoDir, marker?.tool ?? "claude"),
+            repoDir,
+            // Force overwrite — the web UI has no stdin to answer the
+            // "overwrite existing files?" prompt, so we always install
+            // non-interactively and let the latest version win.
+            force: true,
+            outputMode: ctx.outputMode,
+            alreadyPulled: new Set(),
+            depth: 0,
+          },
+        );
+        await reloadExtensionRegistries();
+      },
+      createDefinition: async (type, name, globalArguments) => {
+        if (!state.repoDir) throw new Error("Repository not initialized");
+        const deps = await createModelCreateDeps(state.repoDir);
+        const libCtx = createLibSwampContext();
+        for await (
+          const event of modelCreate(libCtx, deps, {
+            typeArg: type,
+            name,
+            globalArguments,
+          })
+        ) {
+          if (event.kind === "completed") {
+            return {
+              id: event.data.id,
+              name: event.data.name,
+              type: event.data.type,
+            };
+          }
+          if (event.kind === "error") {
+            throw new Error(event.error.message);
+          }
+        }
+        throw new Error("Model create did not complete");
+      },
+      listDefinitionsByType: async (typeArg: string) => {
+        if (!state.repoContext) throw new Error("Repository not initialized");
+        const modelType = ModelType.create(typeArg);
+        const defs = await state.repoContext.definitionRepo.findAll(modelType);
+        return defs.map((d) => ({
+          id: d.id,
+          name: d.name,
+          type: modelType.normalized,
+        }));
+      },
+    };
+
+    try {
+      await loadRepoIntoState(state, repoDir, ctx.outputMode);
+      ctx.logger.info`Loaded repository at ${state.repoDir}`;
+    } catch (e) {
+      ctx.logger
+        .info`No initialized repository found — starting in picker mode (${
+        e instanceof Error ? e.message : String(e)
+      })`;
+    }
+
+    const ac = new AbortController();
+    const server = Deno.serve(
+      {
+        port,
+        hostname: "127.0.0.1",
+        signal: ac.signal,
+        onListen({ hostname, port: listenPort }) {
+          const url = `http://${hostname}:${listenPort}`;
+          if (isJson) {
+            console.log(JSON.stringify({
+              status: "listening",
+              host: hostname,
+              port: listenPort,
+              url,
+            }));
+          } else {
+            logger.info("swamp serve open listening on {url}", { url });
+          }
+          if (options.open !== false) {
+            openBrowser(url).catch((e) => {
+              logger.warn("Failed to open browser: {error}", {
+                error: e instanceof Error ? e.message : String(e),
+              });
+            });
+          }
+        },
+      },
+      (req) => handleOpenRequest(req, state),
+    );
+
+    let shuttingDown = false;
+    const shutdown = () => {
+      if (shuttingDown) return;
+      shuttingDown = true;
+      logger.info("Shutting down...");
+      ac.abort();
+    };
+    Deno.addSignalListener("SIGINT", shutdown);
+    Deno.addSignalListener("SIGTERM", shutdown);
+
+    await server.finished;
+    if (state.repoContext) {
+      state.repoContext.catalogStore.close();
+    }
+  });
