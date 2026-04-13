@@ -376,6 +376,9 @@ export class CelEvaluator {
 
       return coerceBigInts(result);
     } catch (error) {
+      // Re-throw InvalidExpressionError directly to avoid double-wrapping
+      // (the Promise detection above already throws this type).
+      if (error instanceof InvalidExpressionError) throw error;
       throw new InvalidExpressionError(
         error instanceof Error ? error.message : String(error),
         expression,

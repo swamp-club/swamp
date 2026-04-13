@@ -1555,7 +1555,10 @@ export class WorkflowExecutionService {
       try {
         items = celEvaluator.evaluate(celExpr, context);
       } catch (error) {
-        if (error instanceof InvalidExpressionError) {
+        if (
+          error instanceof InvalidExpressionError &&
+          error.message.includes("unresolved Promise")
+        ) {
           throw new UserError(
             `forEach.in expression '$\{{ ${celExpr} }}' returned an ` +
               `unresolved Promise.\n\n` +

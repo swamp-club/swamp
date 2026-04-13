@@ -47,6 +47,7 @@ import type { DatastorePathResolver } from "../../domain/datastore/datastore_pat
 import type { LibSwampContext } from "../context.ts";
 import { notFound, type SwampError } from "../errors.ts";
 import { InvalidExpressionError } from "../../domain/expressions/errors.ts";
+import { UserError } from "../../domain/errors.ts";
 
 /** Evaluation result for a single workflow. */
 export interface WorkflowEvaluateItemData {
@@ -244,8 +245,11 @@ async function evaluateWorkflowInternal(
       try {
         items = deps.evaluateCel(inMatch[1], context);
       } catch (error) {
-        if (error instanceof InvalidExpressionError) {
-          throw new Error(
+        if (
+          error instanceof InvalidExpressionError &&
+          error.message.includes("unresolved Promise")
+        ) {
+          throw new UserError(
             `forEach.in expression '$\{{ ${inMatch[1]} }}' returned an ` +
               `unresolved Promise.\n\n` +
               `forEach.in is evaluated synchronously and cannot await ` +
