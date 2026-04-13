@@ -58,7 +58,7 @@ import { VERSION } from "./version.ts";
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-const logger = getSwampLogger(["serve", "open"]);
+const logger = getSwampLogger(["open"]);
 const DEFAULT_SERVER_URL = "https://swamp.club";
 
 function forceExtensionCatalogRescan(repoDir: string): void {
@@ -129,16 +129,16 @@ async function loadRepoIntoState(
   await reloadExtensionRegistries();
 }
 
-export const serveOpenCommand = new Command()
+export const openCommand = new Command()
   .name("open")
   .description("Start a local web UI for browsing and running extensions")
-  .example("Start and open in browser", "swamp serve open")
-  .example("Custom port", "swamp serve open --port 9192")
+  .example("Start and open in browser", "swamp open")
+  .example("Custom port", "swamp open --port 9192")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
   .option("--port <port:number>", "Port to listen on", { default: 9191 })
   .option("--no-open", "Do not auto-open the browser")
   .action(async function (options: AnyOptions) {
-    const ctx = createContext(options as GlobalOptions, ["serve", "open"]);
+    const ctx = createContext(options as GlobalOptions, ["open"]);
     const repoDir = options.repoDir as string ?? ".";
     const port = options.port as number;
     const isJson = ctx.outputMode === "json";
@@ -264,7 +264,7 @@ export const serveOpenCommand = new Command()
               url,
             }));
           } else {
-            logger.info("swamp serve open listening on {url}", { url });
+            logger.info("swamp open listening on {url}", { url });
           }
           if (options.open !== false) {
             openBrowser(url).catch((e) => {

@@ -20,7 +20,6 @@
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepoUnlocked } from "../repo_context.ts";
-import { serveOpenCommand } from "./serve_open.ts";
 import { handleConnection } from "../../serve/connection.ts";
 import { executeWorkflowWithLocks } from "../../serve/deps.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
@@ -323,5 +322,4 @@ export const serveCommand = new Command()
     await server.finished;
 
     repoContext.catalogStore.close();
-  })
-  .command("open", serveOpenCommand);
+  });
