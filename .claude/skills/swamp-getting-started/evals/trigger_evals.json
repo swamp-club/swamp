@@ -1,0 +1,71 @@
+[
+  {
+    "query": "I'm new to swamp, help me get started",
+    "should_trigger": true
+  },
+  {
+    "query": "How do I start using swamp?",
+    "should_trigger": true
+  },
+  {
+    "query": "Getting started with swamp",
+    "should_trigger": true
+  },
+  {
+    "query": "Walk me through swamp for the first time",
+    "should_trigger": true
+  },
+  {
+    "query": "Just installed swamp, what do I do?",
+    "should_trigger": true
+  },
+  {
+    "query": "Show me a hello world in swamp",
+    "should_trigger": true
+  },
+  {
+    "query": "Swamp tutorial",
+    "should_trigger": true
+  },
+  {
+    "query": "Swamp quickstart",
+    "should_trigger": true
+  },
+  {
+    "query": "I want to learn swamp",
+    "should_trigger": true
+  },
+  {
+    "query": "What do I do first with swamp?",
+    "should_trigger": true
+  },
+  {
+    "query": "I'm a new user, where do I begin?",
+    "should_trigger": true
+  },
+  {
+    "query": "Create a model for me",
+    "should_trigger": false,
+    "note": "Model creation -> swamp-model"
+  },
+  {
+    "query": "How do I publish my extension?",
+    "should_trigger": false,
+    "note": "Publishing -> swamp-extension-publish"
+  },
+  {
+    "query": "Create a vault for my AWS secrets",
+    "should_trigger": false,
+    "note": "Vault management -> swamp-vault"
+  },
+  {
+    "query": "Run my workflow",
+    "should_trigger": false,
+    "note": "Workflow execution -> swamp-workflow"
+  },
+  {
+    "query": "Initialize a swamp repo",
+    "should_trigger": false,
+    "note": "Repo init -> swamp-repo"
+  }
+]
