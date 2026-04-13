@@ -135,12 +135,41 @@ function notInitializedResponse(): Response {
   );
 }
 
+/**
+ * Rejects requests whose Origin header points at anywhere other than the
+ * server itself. Defense in depth against DNS rebinding and a malicious
+ * website in the user's browser making cross-origin `fetch` calls against
+ * http://127.0.0.1:9191/api/*. The server already binds to 127.0.0.1 only,
+ * but the CORS check adds another layer for mutating methods and any route
+ * that can leak filesystem or repo data.
+ */
+function originAllowed(req: Request): boolean {
+  const origin = req.headers.get("origin");
+  // Same-origin requests (navigations, favicon fetches) have no Origin
+  // header — allow those through unconditionally.
+  if (!origin) return true;
+  try {
+    const requestUrl = new URL(req.url);
+    const originUrl = new URL(origin);
+    return originUrl.host === requestUrl.host;
+  } catch {
+    return false;
+  }
+}
+
 export async function handleOpenRequest(
   req: Request,
   state: OpenServerState,
 ): Promise<Response> {
   const url = new URL(req.url);
   const path = url.pathname;
+
+  if (!originAllowed(req)) {
+    return Response.json(
+      { error: { message: "Cross-origin request rejected" } },
+      { status: 403 },
+    );
+  }
 
   try {
     if (req.method === "GET" && (path === "/" || path === "/index.html")) {
@@ -575,13 +604,25 @@ async function handleRepoMetaPut(req: Request): Promise<Response> {
       { status: 400 },
     );
   }
+  // Bound the sidecar to reasonable sizes so a runaway client can't write
+  // megabyte-scale YAML into the repo metadata file.
+  const META_NAME_MAX = 200;
+  const META_DESC_MAX = 2000;
+  const META_TAG_MAX = 64;
+  const META_TAGS_MAX_COUNT = 64;
+
   const meta: RepoMeta = {};
-  if (body.name !== undefined && body.name !== "") meta.name = body.name;
-  if (body.description !== undefined && body.description !== "") {
-    meta.description = body.description;
+  if (typeof body.name === "string" && body.name !== "") {
+    meta.name = body.name.slice(0, META_NAME_MAX);
+  }
+  if (typeof body.description === "string" && body.description !== "") {
+    meta.description = body.description.slice(0, META_DESC_MAX);
   }
   if (Array.isArray(body.tags) && body.tags.length > 0) {
-    meta.tags = body.tags.map(String).filter((t) => t.length > 0);
+    meta.tags = body.tags
+      .slice(0, META_TAGS_MAX_COUNT)
+      .map((t) => String(t).slice(0, META_TAG_MAX))
+      .filter((t) => t.length > 0);
   }
   try {
     await writeRepoMeta(body.path, meta);

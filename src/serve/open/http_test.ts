@@ -124,6 +124,30 @@ Deno.test("handleOpenRequest: /api/fs/list returns directory listing", async () 
   }
 });
 
+Deno.test("handleOpenRequest: cross-origin request is rejected with 403", async () => {
+  const state = stubState();
+  const res = await handleOpenRequest(
+    new Request("http://127.0.0.1:9191/api/repo/status", {
+      headers: { origin: "http://evil.example.com" },
+    }),
+    state,
+  );
+  assertEquals(res.status, 403);
+  const body = await res.json();
+  assertEquals(body.error.message, "Cross-origin request rejected");
+});
+
+Deno.test("handleOpenRequest: same-origin request with Origin header passes", async () => {
+  const state = stubState();
+  const res = await handleOpenRequest(
+    new Request("http://127.0.0.1:9191/api/repo/status", {
+      headers: { origin: "http://127.0.0.1:9191" },
+    }),
+    state,
+  );
+  assertEquals(res.status, 200);
+});
+
 Deno.test("handleOpenRequest: /api/repo/meta requires absolute path", async () => {
   const state = stubState();
   const res = await handleOpenRequest(
