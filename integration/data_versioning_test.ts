@@ -326,6 +326,51 @@ Deno.test("Data Versioning: garbage collection preserves minimum versions", asyn
   });
 });
 
+Deno.test("Data Versioning: garbage collection dry-run reports counts without deleting", async () => {
+  await withTempDir(async (repoDir) => {
+    await setupRepoDir(repoDir);
+    const repo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      new CatalogStore(join(repoDir, "_catalog.db")),
+    );
+    const type = ModelType.create("test/model");
+    const modelId = crypto.randomUUID();
+    const owner = createOwner("test/model:gc-dryrun");
+
+    const data = Data.create({
+      name: "gc-dryrun-test",
+      contentType: "text/plain",
+      lifetime: "infinite",
+      garbageCollection: 3,
+      tags: { type: "test" },
+      ownerDefinition: owner,
+    });
+
+    // Write 7 versions — 4 over the retention count
+    for (let i = 1; i <= 7; i++) {
+      await repo.save(
+        type,
+        modelId,
+        data,
+        new TextEncoder().encode(`v${i}`),
+      );
+    }
+
+    const before = await repo.listVersions(type, modelId, "gc-dryrun-test");
+    assertEquals(before, [1, 2, 3, 4, 5, 6, 7]);
+
+    // Dry-run should report what would be pruned, but remove nothing
+    const gcResult = await repo.collectGarbage(type, modelId, { dryRun: true });
+    assertEquals(gcResult.versionsRemoved, 4);
+    // Bytes reclaimed should be nonzero since the files still exist to stat
+    assertEquals(gcResult.bytesReclaimed > 0, true);
+
+    const after = await repo.listVersions(type, modelId, "gc-dryrun-test");
+    assertEquals(after, [1, 2, 3, 4, 5, 6, 7]);
+  });
+});
+
 Deno.test("Data Versioning: multiple data items with different GC policies", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);

@@ -20,6 +20,7 @@
 import { getLogger } from "@logtape/logtape";
 import type { Data } from "./data.ts";
 import type { Lifetime } from "./data_metadata.ts";
+import { parseDataDuration } from "./duration.ts";
 import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import type { WorkflowRunRepository } from "../workflows/repositories.ts";
 import type { ModelType } from "../models/model_type.ts";
@@ -39,6 +40,17 @@ export interface ExpiredDataInfo {
   dataName: string;
   data: Data;
   reason: "duration-expired" | "workflow-deleted" | "job-deleted";
+}
+
+/**
+ * A (modelType, modelId) pair that would have versions pruned by version GC,
+ * with the counts computed via a dry-run against the repository.
+ */
+export interface VersionGcPreviewInfo {
+  type: ModelType;
+  modelId: string;
+  versionsWouldBeRemoved: number;
+  bytesWouldBeReclaimed: number;
 }
 
 /**
@@ -71,6 +83,13 @@ export interface DataLifecycleService {
    * Finds all expired data entries.
    */
   findExpiredData(): Promise<ExpiredDataInfo[]>;
+
+  /**
+   * Previews version-based garbage collection across all unique models without
+   * deleting anything. Returns one entry per (modelType, modelId) that has
+   * versions to prune.
+   */
+  previewVersionGarbage(): Promise<VersionGcPreviewInfo[]>;
 
   /**
    * Deletes expired data and applies version garbage collection.
@@ -127,7 +146,7 @@ export class DefaultDataLifecycleService implements DataLifecycleService {
 
     // Duration-based lifetime
     try {
-      const durationMs = this.parseDuration(lifetime);
+      const durationMs = parseDataDuration(lifetime);
       return new Date(createdAt.getTime() + durationMs);
     } catch (error) {
       logger.error("Failed to parse lifetime duration: {lifetime}", {
@@ -223,6 +242,39 @@ export class DefaultDataLifecycleService implements DataLifecycleService {
     return expired;
   }
 
+  async previewVersionGarbage(): Promise<VersionGcPreviewInfo[]> {
+    const previews: VersionGcPreviewInfo[] = [];
+    const allData = await this.dataRepo.findAllGlobal();
+    const seen = new Set<string>();
+    for (const { modelType, modelId } of allData) {
+      const key = `${modelType.toDirectoryPath()}/${modelId}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+
+      try {
+        const result = await this.dataRepo.collectGarbage(
+          modelType,
+          modelId,
+          { dryRun: true },
+        );
+        if (result.versionsRemoved > 0) {
+          previews.push({
+            type: modelType,
+            modelId,
+            versionsWouldBeRemoved: result.versionsRemoved,
+            bytesWouldBeReclaimed: result.bytesReclaimed,
+          });
+        }
+      } catch (error) {
+        logger.error(
+          "Error previewing version GC on {path}",
+          { path: key, error },
+        );
+      }
+    }
+    return previews;
+  }
+
   async deleteExpiredData(options?: {
     dryRun?: boolean;
   }): Promise<LifecycleGCResult> {
@@ -307,28 +359,29 @@ export class DefaultDataLifecycleService implements DataLifecycleService {
       });
     }
 
-    // Phase 2: Version-based garbage collection on all unique models
-    // Reuses the allData result from the single findAllGlobal() call
-    if (!dryRun) {
-      const seen = new Set<string>();
-      for (const { modelType, modelId } of allData) {
-        const key = `${modelType.toDirectoryPath()}/${modelId}`;
-        if (seen.has(key)) continue;
-        seen.add(key);
+    // Phase 2: Version-based garbage collection on all unique models.
+    // Reuses the allData result from the single findAllGlobal() call. Runs in
+    // both dry-run and real mode — the repository computes would-be counts
+    // without deleting when dryRun is true.
+    const seen = new Set<string>();
+    for (const { modelType, modelId } of allData) {
+      const key = `${modelType.toDirectoryPath()}/${modelId}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
 
-        try {
-          const result = await this.dataRepo.collectGarbage(
-            modelType,
-            modelId,
-          );
-          versionsDeleted += result.versionsRemoved;
-          bytesReclaimed += result.bytesReclaimed;
-        } catch (error) {
-          logger.error(
-            "Error running GC on {path}",
-            { path: `${modelType.toDirectoryPath()}/${modelId}`, error },
-          );
-        }
+      try {
+        const result = await this.dataRepo.collectGarbage(
+          modelType,
+          modelId,
+          { dryRun },
+        );
+        versionsDeleted += result.versionsRemoved;
+        bytesReclaimed += result.bytesReclaimed;
+      } catch (error) {
+        logger.error(
+          "Error running GC on {path}",
+          { path: `${modelType.toDirectoryPath()}/${modelId}`, error },
+        );
       }
     }
 
@@ -339,32 +392,5 @@ export class DefaultDataLifecycleService implements DataLifecycleService {
       dryRun,
       expiredEntries,
     };
-  }
-
-  private parseDuration(duration: string): number {
-    const match = duration.match(/^(\d+)(mo|y|h|m|d|w)$/);
-    if (!match) {
-      throw new Error(`Invalid duration format: ${duration}`);
-    }
-
-    const value = parseInt(match[1], 10);
-    const unit = match[2];
-
-    switch (unit) {
-      case "mo":
-        return value * 30 * 24 * 60 * 60 * 1000;
-      case "y":
-        return value * 365 * 24 * 60 * 60 * 1000;
-      case "h":
-        return value * 60 * 60 * 1000;
-      case "m":
-        return value * 60 * 1000;
-      case "d":
-        return value * 24 * 60 * 60 * 1000;
-      case "w":
-        return value * 7 * 24 * 60 * 60 * 1000;
-      default:
-        throw new Error(`Unknown duration unit: ${unit}`);
-    }
   }
 }

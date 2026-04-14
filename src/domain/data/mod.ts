@@ -19,6 +19,8 @@
 
 export { createDataId, type DataId, generateDataId } from "./data_id.ts";
 
+export { parseDataDuration } from "./duration.ts";
+
 export {
   type DataLifecycle,
   DataLifecycleSchema,

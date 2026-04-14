@@ -72,8 +72,10 @@ export const dataGcCommand = new Command()
     // Phase 1: Preview + Prompt (only in interactive mode without --force and not dry-run)
     if (cliCtx.outputMode === "log" && !options.force && !options.dryRun) {
       const preview = await dataGcPreview(ctx, deps);
-      if (preview.items.length === 0) {
-        console.log("No expired data found. Nothing to clean up.");
+      if (
+        preview.items.length === 0 && preview.versionGcItems.length === 0
+      ) {
+        console.log("Nothing to clean up.");
         return;
       }
 
