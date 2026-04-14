@@ -30,6 +30,7 @@ import {
   generateDataId,
   isReservedDataName,
   type OwnerDefinition,
+  parseDataDuration,
 } from "../../domain/data/mod.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import type { CatalogStore } from "./catalog_store.ts";
@@ -297,13 +298,18 @@ export interface UnifiedDataRepository {
   /**
    * Collects garbage according to each data's garbage collection policy.
    *
+   * When `options.dryRun` is true, no versions are deleted — the returned
+   * `versionsRemoved` and `bytesReclaimed` reflect what would be removed.
+   *
    * @param type - The model type
    * @param modelId - The model input ID
+   * @param options - Options for the operation
    * @returns The result of garbage collection
    */
   collectGarbage(
     type: ModelType,
     modelId: string,
+    options?: { dryRun?: boolean },
   ): Promise<GarbageCollectionResult>;
 
   /**
@@ -1493,7 +1499,9 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   async collectGarbage(
     type: ModelType,
     modelId: string,
+    options?: { dryRun?: boolean },
   ): Promise<GarbageCollectionResult> {
+    const dryRun = options?.dryRun ?? false;
     let versionsRemoved = 0;
     let bytesReclaimed = 0;
 
@@ -1514,7 +1522,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         }
       } else {
         // Keep versions within duration
-        const duration = this.parseDuration(gc);
+        const duration = parseDataDuration(gc);
         const cutoff = Date.now() - duration;
 
         for (const version of versions) {
@@ -1539,7 +1547,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         versionDir: this.getPath(type, modelId, data.name, version),
       }));
 
-      // Execute in parallel batches
+      // Execute in parallel batches. For dry-run we still stat each path to
+      // accumulate bytesReclaimed but skip the actual remove.
       const GC_BATCH_CONCURRENCY = 20;
       for (let i = 0; i < removalTasks.length; i += GC_BATCH_CONCURRENCY) {
         const batch = removalTasks.slice(i, i + GC_BATCH_CONCURRENCY);
@@ -1552,10 +1561,12 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
             } catch {
               // Ignore stat errors
             }
-            try {
-              await Deno.remove(versionDir, { recursive: true });
-            } catch (error) {
-              if (!(error instanceof Deno.errors.NotFound)) throw error;
+            if (!dryRun) {
+              try {
+                await Deno.remove(versionDir, { recursive: true });
+              } catch (error) {
+                if (!(error instanceof Deno.errors.NotFound)) throw error;
+              }
             }
             return bytes;
           }),
@@ -1571,8 +1582,9 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         }
       }
 
-      // Re-scan actual versions after parallel deletions to avoid stale marker
-      if (versionsToRemove.length > 0) {
+      // Re-scan actual versions after parallel deletions to avoid stale marker.
+      // Skip for dry-run — nothing was actually removed.
+      if (!dryRun && versionsToRemove.length > 0) {
         const currentVersions = await this.listVersions(
           type,
           modelId,
@@ -1757,33 +1769,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     return Array.from(hashArray)
       .map((b) => b.toString(16).padStart(2, "0"))
       .join("");
-  }
-
-  private parseDuration(duration: string): number {
-    const match = duration.match(/^(\d+)(mo|y|h|m|d|w)$/);
-    if (!match) {
-      throw new Error(`Invalid duration format: ${duration}`);
-    }
-
-    const value = parseInt(match[1], 10);
-    const unit = match[2];
-
-    switch (unit) {
-      case "mo":
-        return value * 30 * 24 * 60 * 60 * 1000;
-      case "y":
-        return value * 365 * 24 * 60 * 60 * 1000;
-      case "h":
-        return value * 60 * 60 * 1000;
-      case "m":
-        return value * 60 * 1000;
-      case "d":
-        return value * 24 * 60 * 60 * 1000;
-      case "w":
-        return value * 7 * 24 * 60 * 60 * 1000;
-      default:
-        throw new Error(`Unknown duration unit: ${unit}`);
-    }
   }
 }
 

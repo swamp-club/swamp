@@ -30,8 +30,23 @@ class MockDataRepository {
   > = () => Promise.resolve([]);
   listVersions = (): Promise<number[]> => Promise.resolve([]);
   removeLatestMarker = () => Promise.resolve();
-  collectGarbage = () =>
-    Promise.resolve({ versionsRemoved: 0, bytesReclaimed: 0 });
+  collectGarbageCalls: Array<{
+    type: ModelType;
+    modelId: string;
+    dryRun: boolean;
+  }> = [];
+  collectGarbage = (
+    type: ModelType,
+    modelId: string,
+    options?: { dryRun?: boolean },
+  ) => {
+    this.collectGarbageCalls.push({
+      type,
+      modelId,
+      dryRun: options?.dryRun ?? false,
+    });
+    return Promise.resolve({ versionsRemoved: 0, bytesReclaimed: 0 });
+  };
   deleteCalls: Array<{
     type: ModelType;
     modelId: string;
@@ -508,7 +523,140 @@ Deno.test("deleteExpiredData - dry run does not call delete()", async () => {
   assertEquals(mockRepo.deleteCalls.length, 0);
   assertEquals(result.dryRun, true);
   assertEquals(result.dataEntriesExpired, 1);
-  // No versions deleted or bytes reclaimed in dry run
+  // Expired-data byte stat is skipped in dry run, but Phase 2 runs
+  // against collectGarbage with dryRun=true (the mock returns 0/0).
   assertEquals(result.versionsDeleted, 0);
   assertEquals(result.bytesReclaimed, 0);
+});
+
+Deno.test("deleteExpiredData - dry run passes dryRun=true to collectGarbage", async () => {
+  const mockRepo = new MockDataRepository();
+  const modelType = ModelType.create("test/model");
+
+  mockRepo.findAllGlobal = () =>
+    Promise.resolve([
+      {
+        data: createMockData({ name: "d1", lifetime: "infinite" }),
+        modelType,
+        modelId: "m1",
+      },
+    ]);
+
+  const service = new DefaultDataLifecycleService(
+    mockRepo as never,
+    new MockWorkflowRunRepository() as never,
+  );
+
+  await service.deleteExpiredData({ dryRun: true });
+
+  // Phase 2 should have invoked collectGarbage with dryRun=true for the unique model
+  assertEquals(mockRepo.collectGarbageCalls.length, 1);
+  assertEquals(mockRepo.collectGarbageCalls[0].modelId, "m1");
+  assertEquals(mockRepo.collectGarbageCalls[0].dryRun, true);
+});
+
+Deno.test("deleteExpiredData - real run passes dryRun=false to collectGarbage", async () => {
+  const mockRepo = new MockDataRepository();
+  const modelType = ModelType.create("test/model");
+
+  mockRepo.findAllGlobal = () =>
+    Promise.resolve([
+      {
+        data: createMockData({ name: "d1", lifetime: "infinite" }),
+        modelType,
+        modelId: "m1",
+      },
+    ]);
+
+  const service = new DefaultDataLifecycleService(
+    mockRepo as never,
+    new MockWorkflowRunRepository() as never,
+  );
+
+  await service.deleteExpiredData();
+
+  assertEquals(mockRepo.collectGarbageCalls.length, 1);
+  assertEquals(mockRepo.collectGarbageCalls[0].dryRun, false);
+});
+
+Deno.test("previewVersionGarbage - returns one entry per unique model with pending prunes", async () => {
+  const mockRepo = new MockDataRepository();
+  const type1 = ModelType.create("test/model-a");
+  const type2 = ModelType.create("test/model-b");
+
+  mockRepo.findAllGlobal = () =>
+    Promise.resolve([
+      {
+        data: createMockData({ name: "d1", lifetime: "infinite" }),
+        modelType: type1,
+        modelId: "m1",
+      },
+      {
+        data: createMockData({ name: "d2", lifetime: "infinite" }),
+        modelType: type1,
+        modelId: "m1",
+      },
+      {
+        data: createMockData({ name: "d3", lifetime: "infinite" }),
+        modelType: type2,
+        modelId: "m2",
+      },
+    ]);
+  mockRepo.collectGarbage = ((
+    type: ModelType,
+    modelId: string,
+    options?: { dryRun?: boolean },
+  ) => {
+    mockRepo.collectGarbageCalls.push({
+      type,
+      modelId,
+      dryRun: options?.dryRun ?? false,
+    });
+    if (modelId === "m1") {
+      return Promise.resolve({ versionsRemoved: 5, bytesReclaimed: 1024 });
+    }
+    return Promise.resolve({ versionsRemoved: 0, bytesReclaimed: 0 });
+  }) as MockDataRepository["collectGarbage"];
+
+  const service = new DefaultDataLifecycleService(
+    mockRepo as never,
+    new MockWorkflowRunRepository() as never,
+  );
+
+  const previews = await service.previewVersionGarbage();
+
+  // Unique models iterated once each
+  assertEquals(mockRepo.collectGarbageCalls.length, 2);
+  // All calls must be dry-run
+  for (const call of mockRepo.collectGarbageCalls) {
+    assertEquals(call.dryRun, true);
+  }
+  // Only m1 has versions to prune
+  assertEquals(previews.length, 1);
+  assertEquals(previews[0].modelId, "m1");
+  assertEquals(previews[0].versionsWouldBeRemoved, 5);
+  assertEquals(previews[0].bytesWouldBeReclaimed, 1024);
+});
+
+Deno.test("previewVersionGarbage - returns empty when no prunes pending", async () => {
+  const mockRepo = new MockDataRepository();
+  const modelType = ModelType.create("test/model");
+
+  mockRepo.findAllGlobal = () =>
+    Promise.resolve([
+      {
+        data: createMockData({ name: "d1", lifetime: "infinite" }),
+        modelType,
+        modelId: "m1",
+      },
+    ]);
+
+  const service = new DefaultDataLifecycleService(
+    mockRepo as never,
+    new MockWorkflowRunRepository() as never,
+  );
+
+  const previews = await service.previewVersionGarbage();
+
+  assertEquals(previews.length, 0);
 });

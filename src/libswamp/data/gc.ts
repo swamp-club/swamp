@@ -21,6 +21,7 @@ import {
   DefaultDataLifecycleService,
   type ExpiredDataInfo,
   type LifecycleGCResult,
+  type VersionGcPreviewInfo,
 } from "../../domain/data/data_lifecycle_service.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
@@ -39,9 +40,18 @@ export interface DataGcPreviewItem {
   reason: string;
 }
 
+/** Preview item for a model that has versions to prune via version GC. */
+export interface VersionGcPreviewItem {
+  type: string;
+  modelId: string;
+  versionsWouldBeRemoved: number;
+  bytesWouldBeReclaimed: number;
+}
+
 /** Preview data returned before confirmation. */
 export interface DataGcPreview {
   items: DataGcPreviewItem[];
+  versionGcItems: VersionGcPreviewItem[];
 }
 
 /** Data structure for the data gc completed event. */
@@ -71,6 +81,7 @@ export interface DataGcInput {
 /** Dependencies for the data gc operation. */
 export interface DataGcDeps {
   findExpiredData: () => Promise<ExpiredDataInfo[]>;
+  previewVersionGarbage: () => Promise<VersionGcPreviewInfo[]>;
   deleteExpiredData: (opts: {
     dryRun: boolean;
   }) => Promise<LifecycleGCResult>;
@@ -99,6 +110,7 @@ export function createDataGcDeps(
   );
   return {
     findExpiredData: () => service.findExpiredData(),
+    previewVersionGarbage: () => service.previewVersionGarbage(),
     deleteExpiredData: (opts) => service.deleteExpiredData(opts),
   };
 }
@@ -108,14 +120,23 @@ export async function dataGcPreview(
   ctx: LibSwampContext,
   deps: DataGcDeps,
 ): Promise<DataGcPreview> {
-  ctx.logger.debug`Finding expired data`;
-  const expired = await deps.findExpiredData();
+  ctx.logger.debug`Finding expired data and previewing version GC`;
+  const [expired, versionGc] = await Promise.all([
+    deps.findExpiredData(),
+    deps.previewVersionGarbage(),
+  ]);
   return {
     items: expired.map((item) => ({
       type: item.type.toDirectoryPath(),
       modelId: item.modelId,
       dataName: item.dataName,
       reason: item.reason,
+    })),
+    versionGcItems: versionGc.map((item) => ({
+      type: item.type.toDirectoryPath(),
+      modelId: item.modelId,
+      versionsWouldBeRemoved: item.versionsWouldBeRemoved,
+      bytesWouldBeReclaimed: item.bytesWouldBeReclaimed,
     })),
   };
 }

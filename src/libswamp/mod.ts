@@ -723,6 +723,7 @@ export {
   type DataGcPreview,
   dataGcPreview,
   type DataGcPreviewItem,
+  type VersionGcPreviewItem,
 } from "./data/gc.ts";
 
 // Model create operations

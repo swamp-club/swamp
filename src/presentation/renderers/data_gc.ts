@@ -84,10 +84,17 @@ export function renderDataGcPreview(
   mode: OutputMode,
 ): void {
   if (mode === "json") {
+    const totalVersions = preview.versionGcItems.reduce(
+      (sum, item) => sum + item.versionsWouldBeRemoved,
+      0,
+    );
     console.log(JSON.stringify(
       {
         expiredDataCount: preview.items.length,
         expiredData: preview.items,
+        versionGcModelCount: preview.versionGcItems.length,
+        versionGcVersionCount: totalVersions,
+        versionGcData: preview.versionGcItems,
       },
       null,
       2,
@@ -95,6 +102,14 @@ export function renderDataGcPreview(
   } else {
     const logger = getSwampLogger(["data", "gc"]);
     logger.info`GC preview: ${preview.items.length} expired data items`;
+    if (preview.versionGcItems.length > 0) {
+      const totalVersions = preview.versionGcItems.reduce(
+        (sum, item) => sum + item.versionsWouldBeRemoved,
+        0,
+      );
+      logger
+        .info`version gc: ${preview.versionGcItems.length} models with ${totalVersions} excess versions`;
+    }
   }
 }
 

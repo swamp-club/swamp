@@ -30,6 +30,7 @@ import {
 function makeDeps(overrides: Partial<DataGcDeps> = {}): DataGcDeps {
   return {
     findExpiredData: () => Promise.resolve([]),
+    previewVersionGarbage: () => Promise.resolve([]),
     deleteExpiredData: () =>
       Promise.resolve({
         dataEntriesExpired: 0,
@@ -48,6 +49,39 @@ Deno.test("dataGcPreview: returns empty preview when no expired data", async () 
   const preview = await dataGcPreview(createLibSwampContext(), deps);
 
   assertEquals(preview.items.length, 0);
+  assertEquals(preview.versionGcItems.length, 0);
+});
+
+Deno.test("dataGcPreview: aggregates expired and version-gc items", async () => {
+  const deps = makeDeps({
+    findExpiredData: () =>
+      Promise.resolve([
+        {
+          type: { toDirectoryPath: () => "aws/s3-bucket" },
+          modelId: "m1",
+          dataName: "data1",
+          reason: "duration-expired",
+        },
+      ] as unknown as import("../../domain/data/data_lifecycle_service.ts").ExpiredDataInfo[]),
+    previewVersionGarbage: () =>
+      Promise.resolve([
+        {
+          type: { toDirectoryPath: () => "command/shell" },
+          modelId: "m2",
+          versionsWouldBeRemoved: 5,
+          bytesWouldBeReclaimed: 1024,
+        },
+      ] as unknown as import("../../domain/data/data_lifecycle_service.ts").VersionGcPreviewInfo[]),
+  });
+
+  const preview = await dataGcPreview(createLibSwampContext(), deps);
+
+  assertEquals(preview.items.length, 1);
+  assertEquals(preview.items[0].type, "aws/s3-bucket");
+  assertEquals(preview.versionGcItems.length, 1);
+  assertEquals(preview.versionGcItems[0].type, "command/shell");
+  assertEquals(preview.versionGcItems[0].versionsWouldBeRemoved, 5);
+  assertEquals(preview.versionGcItems[0].bytesWouldBeReclaimed, 1024);
 });
 
 Deno.test("dataGcPreview: returns preview items for expired data", async () => {
