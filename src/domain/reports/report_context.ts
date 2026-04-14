@@ -136,3 +136,68 @@ export type ReportContext =
   | MethodReportContext
   | ModelReportContext
   | WorkflowReportContext;
+
+/**
+ * Common dependencies shared across all MethodReportContext construction sites.
+ * These come from the runtime environment (repositories, logging, repo path).
+ */
+export interface CommonReportContextDeps {
+  repoDir: string;
+  logger: Logger;
+  dataRepository: UnifiedDataRepository;
+  definitionRepository: DefinitionRepository;
+  swampSha?: string;
+}
+
+/**
+ * Per-invocation data specific to a single method execution.
+ */
+export interface MethodReportInvocation {
+  modelType: ModelType;
+  modelId: string;
+  definition: {
+    id: string;
+    name: string;
+    version: number;
+    tags: Record<string, string>;
+  };
+  globalArgs: Record<string, unknown>;
+  methodArgs: Record<string, unknown>;
+  methodName: string;
+  executionStatus: "succeeded" | "failed";
+  errorMessage?: string;
+  dataHandles: DataHandle[];
+  outputSpecs?: OutputSpecInfo[];
+}
+
+/**
+ * Single factory for MethodReportContext construction. All production sites
+ * must route through this function — the architecture guard test in
+ * report_context_arch_test.ts enforces this.
+ *
+ * Note: `redactSensitiveArgs` is deliberately absent from both input types.
+ * It is injected after construction by the report execution service.
+ */
+export function buildMethodReportContext(
+  common: CommonReportContextDeps,
+  invocation: MethodReportInvocation,
+): MethodReportContext {
+  return {
+    scope: "method",
+    repoDir: common.repoDir,
+    logger: common.logger,
+    dataRepository: common.dataRepository,
+    definitionRepository: common.definitionRepository,
+    swampSha: common.swampSha,
+    modelType: invocation.modelType,
+    modelId: invocation.modelId,
+    definition: invocation.definition,
+    globalArgs: invocation.globalArgs,
+    methodArgs: invocation.methodArgs,
+    methodName: invocation.methodName,
+    executionStatus: invocation.executionStatus,
+    errorMessage: invocation.errorMessage,
+    dataHandles: invocation.dataHandles,
+    outputSpecs: invocation.outputSpecs,
+  };
+}

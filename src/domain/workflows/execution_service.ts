@@ -93,7 +93,7 @@ import {
   type ReportFilterOptions,
 } from "../reports/report_execution_service.ts";
 import { reportRegistry } from "../reports/report_registry.ts";
-import type { MethodReportContext } from "../reports/report_context.ts";
+import { buildMethodReportContext } from "../reports/report_context.ts";
 import { modelRegistry } from "../models/model.ts";
 import { getTracer, SpanStatusCode } from "../../infrastructure/tracing/mod.ts";
 import { resolveDriverConfig } from "../drivers/driver_resolution.ts";
@@ -724,28 +724,31 @@ export class DefaultStepExecutor implements StepExecutor {
         ];
 
         // Method-scope reports
-        const methodContext: MethodReportContext = {
-          scope: "method",
-          repoDir: ctx.repoDir,
-          logger: runLogger,
-          dataRepository: unifiedDataRepo,
-          definitionRepository: definitionRepo,
-          swampSha: ctx.swampSha,
-          modelType,
-          modelId: evaluatedDefinition.id,
-          definition: {
-            id: evaluatedDefinition.id,
-            name: evaluatedDefinition.name,
-            version: evaluatedDefinition.version,
-            tags: evaluatedDefinition.tags,
+        const methodContext = buildMethodReportContext(
+          {
+            repoDir: ctx.repoDir,
+            logger: runLogger,
+            dataRepository: unifiedDataRepo,
+            definitionRepository: definitionRepo,
+            swampSha: ctx.swampSha,
           },
-          globalArgs: reportGlobalArgs,
-          methodArgs: reportMethodArgs,
-          methodName: task.methodName,
-          executionStatus: "succeeded",
-          dataHandles,
-          outputSpecs: buildOutputSpecs(modelDef),
-        };
+          {
+            modelType,
+            modelId: evaluatedDefinition.id,
+            definition: {
+              id: evaluatedDefinition.id,
+              name: evaluatedDefinition.name,
+              version: evaluatedDefinition.version,
+              tags: evaluatedDefinition.tags,
+            },
+            globalArgs: reportGlobalArgs,
+            methodArgs: reportMethodArgs,
+            methodName: task.methodName,
+            executionStatus: "succeeded",
+            dataHandles,
+            outputSpecs: buildOutputSpecs(modelDef),
+          },
+        );
 
         await executeReports(
           reportRegistry,
@@ -823,29 +826,32 @@ export class DefaultStepExecutor implements StepExecutor {
         if (
           reportRegistry.getAll().length > 0 && ctx.reportFilterOptions
         ) {
-          const failedMethodContext: MethodReportContext = {
-            scope: "method",
-            repoDir: ctx.repoDir,
-            logger: runLogger,
-            dataRepository: unifiedDataRepo,
-            definitionRepository: definitionRepo,
-            swampSha: ctx.swampSha,
-            modelType,
-            modelId: evaluatedDefinition.id,
-            definition: {
-              id: evaluatedDefinition.id,
-              name: evaluatedDefinition.name,
-              version: evaluatedDefinition.version,
-              tags: evaluatedDefinition.tags,
+          const failedMethodContext = buildMethodReportContext(
+            {
+              repoDir: ctx.repoDir,
+              logger: runLogger,
+              dataRepository: unifiedDataRepo,
+              definitionRepository: definitionRepo,
+              swampSha: ctx.swampSha,
             },
-            globalArgs: reportGlobalArgs,
-            methodArgs: reportMethodArgs,
-            methodName: task.methodName,
-            executionStatus: "failed",
-            errorMessage,
-            dataHandles: [],
-            outputSpecs: buildOutputSpecs(modelDef),
-          };
+            {
+              modelType,
+              modelId: evaluatedDefinition.id,
+              definition: {
+                id: evaluatedDefinition.id,
+                name: evaluatedDefinition.name,
+                version: evaluatedDefinition.version,
+                tags: evaluatedDefinition.tags,
+              },
+              globalArgs: reportGlobalArgs,
+              methodArgs: reportMethodArgs,
+              methodName: task.methodName,
+              executionStatus: "failed",
+              errorMessage,
+              dataHandles: [],
+              outputSpecs: buildOutputSpecs(modelDef),
+            },
+          );
 
           const stepModelDef = modelRegistry.get(modelType);
           const stepModelTypeReports = [
