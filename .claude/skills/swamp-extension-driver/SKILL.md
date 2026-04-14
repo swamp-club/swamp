@@ -1,6 +1,15 @@
 ---
 name: swamp-extension-driver
-description: Create user-defined TypeScript execution drivers for swamp — implement ExecutionDriver to control where and how model methods run. Use when users want custom execution environments (remote servers, cloud functions, custom containers). Triggers on "custom driver", "extension driver", "execution driver", "ExecutionDriver", "extensions/drivers", "create driver", "new driver type", "driver plugin", "remote execution", "driver implementation".
+description: >
+  Create user-defined TypeScript execution drivers for swamp — implement the
+  ExecutionDriver interface to control where and how model methods run. Use
+  ONLY when the user wants to author, build, or implement a new driver in
+  extensions/drivers/. Do NOT use for running workflows on remote
+  infrastructure (that is swamp-workflow), running existing models (that is
+  swamp-model), or debugging driver issues (that is swamp-troubleshooting).
+  Triggers on "custom driver", "extension driver", "execution driver",
+  "ExecutionDriver", "extensions/drivers", "create driver", "new driver type",
+  "driver plugin", "driver implementation", "implement ExecutionDriver".
 ---
 
 # Swamp Extension Driver

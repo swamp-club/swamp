@@ -7,8 +7,9 @@ description: >
   inputs, running or executing methods, viewing outputs, or managing lifecycle
   (edit, delete). Do NOT use when the user wants to build, create, or implement
   a custom model type, Zod schema, or TypeScript model — that is
-  swamp-extension-model. Triggers on "swamp model", "model type", "model
-  schema", "create input", "type search", "type describe", "run method",
+  swamp-extension-model. Do NOT use for orchestrating or chaining models in
+  workflows — that is swamp-workflow. Triggers on "swamp model", "model type",
+  "model schema", "create input", "type search", "type describe", "run method",
   "execute method", "validation method", "transform method", "enrichment model",
   "model validate", "model delete", "model edit", "model output", "output logs",
   "output format", "CEL expression".

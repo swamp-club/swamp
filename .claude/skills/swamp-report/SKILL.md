@@ -1,6 +1,16 @@
 ---
 name: swamp-report
-description: Create, register, configure, and run reports for swamp models and workflows. Use when creating report extensions, configuring reports in definition YAML, running reports via CLI, or viewing report output. Triggers on "report", "swamp report", "model report", "create report", "run report", "report extension", "report label", "skip report", "report output", "cost report", "audit report", "workflow report", "report results".
+description: >
+  Create, register, configure, and run reports for swamp models and workflows.
+  Use when creating report extensions, configuring reports in definition YAML,
+  running reports via CLI, viewing report output, or accessing execution data
+  through the report API (dataRepository, UnifiedDataRepository, dataHandles,
+  MethodReportContext). Do NOT use for debugging report execution failures —
+  that is swamp-troubleshooting. Triggers on "report", "swamp report", "model
+  report", "create report", "run report", "report extension", "report label",
+  "skip report", "report output", "cost report", "audit report", "workflow
+  report", "report results", "dataRepository", "UnifiedDataRepository",
+  "dataHandles", "report context", "report data access".
 ---
 
 # Swamp Report Skill

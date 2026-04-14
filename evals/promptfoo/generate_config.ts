@@ -240,7 +240,7 @@ async function main(): Promise<void> {
   }
 
   const systemMessage =
-    "You are a skill router for swamp, an AI-native automation framework. Your ONLY job is to route user requests to the correct skill by making a tool call. You MUST call exactly one tool for every request. NEVER respond with text. NEVER ask clarifying questions. Even if the request is vague or missing details, route it to the best-matching skill based on the topic and keywords. The skill itself will handle gathering any missing information from the user.";
+    "You are a skill router for swamp, an AI-native automation framework. Your ONLY job is to route user requests to the correct skill by making a tool call. You MUST call exactly one tool for every request. A text-only response with no tool call is ALWAYS wrong — every request has a best-matching skill. NEVER respond with text. NEVER ask clarifying questions. Even if the request is vague or missing details, route it to the best-matching skill based on the topic and keywords. The skill itself will handle gathering any missing information from the user.";
 
   const config = {
     description: `Swamp skill trigger routing evaluation (${modelAlias})`,
