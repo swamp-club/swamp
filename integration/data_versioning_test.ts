@@ -541,10 +541,11 @@ Deno.test("Data Versioning: access specific version via data.version()", async (
 Deno.test("Data Versioning: listVersions returns all versions in order", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
+    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
     const dataRepo = new FileSystemUnifiedDataRepository(
       repoDir,
       undefined,
-      new CatalogStore(join(repoDir, "_catalog.db")),
+      catalog,
     );
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
@@ -563,7 +564,7 @@ Deno.test("Data Versioning: listVersions returns all versions in order", async (
       contentType: "application/json",
       lifetime: "infinite",
       garbageCollection: 100,
-      tags: { type: "audit" },
+      tags: { type: "audit", modelName: "list-versions-model" },
       ownerDefinition: owner,
     });
 
@@ -581,6 +582,7 @@ Deno.test("Data Versioning: listVersions returns all versions in order", async (
     const modelResolver = new ModelResolver(definitionRepo, {
       repoDir,
       dataRepo,
+      dataQueryService: new DataQueryService(catalog, dataRepo),
     });
     const context = await modelResolver.buildContext();
 

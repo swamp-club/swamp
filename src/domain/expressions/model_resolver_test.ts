@@ -201,7 +201,7 @@ Deno.test("data.version() reads specific version from disk", async () => {
       contentType: "application/json",
       lifetime: "infinite",
       garbageCollection: 10,
-      tags: { type: "resource" },
+      tags: { type: "resource", modelName: "versioned" },
       ownerDefinition: owner,
     });
 
@@ -214,7 +214,12 @@ Deno.test("data.version() reads specific version from disk", async () => {
       );
     }
 
-    const resolver = new ModelResolver(defRepo, { repoDir, dataRepo });
+    const dqs = new DataQueryService(catalogStore, dataRepo);
+    const resolver = new ModelResolver(defRepo, {
+      repoDir,
+      dataRepo,
+      dataQueryService: dqs,
+    });
     const ctx = await resolver.buildContext();
 
     assertExists(ctx.data);
@@ -252,7 +257,7 @@ Deno.test("data.listVersions() returns sorted version numbers", async () => {
       contentType: "text/plain",
       lifetime: "infinite",
       garbageCollection: 100,
-      tags: { type: "log" },
+      tags: { type: "log", modelName: "list-model" },
       ownerDefinition: owner,
     });
 
@@ -265,7 +270,12 @@ Deno.test("data.listVersions() returns sorted version numbers", async () => {
       );
     }
 
-    const resolver = new ModelResolver(defRepo, { repoDir, dataRepo });
+    const dqs = new DataQueryService(catalogStore, dataRepo);
+    const resolver = new ModelResolver(defRepo, {
+      repoDir,
+      dataRepo,
+      dataQueryService: dqs,
+    });
     const ctx = await resolver.buildContext();
 
     assertExists(ctx.data);

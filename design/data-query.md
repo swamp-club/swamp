@@ -1,8 +1,8 @@
 # Data Query
 
-Data query provides a unified interface for finding data artifacts across models
-using CEL predicates. Queries filter on artifact metadata (model name, spec name,
-tags, version, etc.) and optionally on JSON content.
+Data query is the general interface for finding data artifacts across models
+using CEL predicates. Queries filter on artifact metadata (model name, spec
+name, tags, version, etc.) and optionally on JSON content.
 
 The query interface is available in three places:
 
@@ -12,6 +12,42 @@ The query interface is available in three places:
   implementations
 
 All three accept the same CEL predicate syntax and operate on the same fields.
+
+## Query is the primitive; helpers are shortcuts
+
+Every `swamp data` read subcommand and every `data.*` CEL helper resolves
+against the same catalog that `data query` walks. The shortcuts exist because
+they read more clearly when your intent matches. **Prefer the shortcut when
+it fits** — `data.latest("m", "n")` is easier to understand than the
+equivalent predicate. Reach for `data query` / `data.query()` directly when
+you need a multi-field predicate, a projection, tag filters beyond a single
+key, or history access beyond a single version.
+
+### CLI shortcuts
+
+| Shortcut                              | Underlying query                                                                             |
+| ------------------------------------- | -------------------------------------------------------------------------------------------- |
+| `swamp data get <m> <n>`              | `swamp data query 'modelName == "<m>" && name == "<n>"' --select content`                    |
+| `swamp data get <m> <n> --version 2`  | `swamp data query 'modelName == "<m>" && name == "<n>" && version == 2' --select content`   |
+| `swamp data list <m>`                 | `swamp data query 'modelName == "<m>"'`                                                      |
+| `swamp data list <m> --type resource` | `swamp data query 'modelName == "<m>" && dataType == "resource"'`                            |
+| `swamp data list --workflow <w>`      | `swamp data query 'workflowName == "<w>"'`                                                   |
+| `swamp data list --run <id>`          | `swamp data query 'workflowRunId == "<id>"'`                                                 |
+| `swamp data versions <m> <n>`         | `swamp data query 'modelName == "<m>" && name == "<n>" && version >= 0' --select 'version'` |
+| `swamp data search --tag env=prod`    | `swamp data query 'tags.env == "prod"'`                                                      |
+
+### CEL shortcuts
+
+| Shortcut                      | Underlying query                                                           |
+| ----------------------------- | -------------------------------------------------------------------------- |
+| `data.latest("m", "n")`       | `data.query('modelName == "m" && name == "n"')[0]`                         |
+| `data.version("m", "n", 2)`   | `data.query('modelName == "m" && name == "n" && version == 2')[0]`         |
+| `data.listVersions("m", "n")` | `data.query('modelName == "m" && name == "n" && version >= 0', 'version')` |
+| `data.findByTag("k", "v")`    | `data.query('tags.k == "v"')`                                              |
+| `data.findBySpec("m", "s")`   | `data.query('modelName == "m" && specName == "s"')`                        |
+
+Results from any shortcut are structurally identical to the equivalent
+`data.query()` call — same `DataRecord[]` type, same fields, same semantics.
 
 ## DataRecord
 

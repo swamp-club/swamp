@@ -367,10 +367,11 @@ Deno.test("Vary: each varied data name has independent versioning", async () => 
 Deno.test("Vary: CEL data.version() with vary resolves specific version", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
+    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
     const dataRepo = new FileSystemUnifiedDataRepository(
       repoDir,
       undefined,
-      new CatalogStore(join(repoDir, "_catalog.db")),
+      catalog,
     );
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
@@ -387,7 +388,7 @@ Deno.test("Vary: CEL data.version() with vary resolves specific version", async 
       contentType: "application/json",
       lifetime: "infinite",
       garbageCollection: 10,
-      tags: { type: "resource" },
+      tags: { type: "resource", modelName: "scanner" },
       ownerDefinition: owner,
     });
 
@@ -408,6 +409,7 @@ Deno.test("Vary: CEL data.version() with vary resolves specific version", async 
     const modelResolver = new ModelResolver(definitionRepo, {
       repoDir,
       dataRepo,
+      dataQueryService: new DataQueryService(catalog, dataRepo),
     });
     const context = await modelResolver.buildContext();
 
@@ -432,10 +434,11 @@ Deno.test("Vary: CEL data.version() with vary resolves specific version", async 
 Deno.test("Vary: CEL data.listVersions() with vary lists correct versions", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
+    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
     const dataRepo = new FileSystemUnifiedDataRepository(
       repoDir,
       undefined,
-      new CatalogStore(join(repoDir, "_catalog.db")),
+      catalog,
     );
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
@@ -452,7 +455,7 @@ Deno.test("Vary: CEL data.listVersions() with vary lists correct versions", asyn
       contentType: "application/json",
       lifetime: "infinite",
       garbageCollection: 10,
-      tags: { type: "resource" },
+      tags: { type: "resource", modelName: "scanner" },
       ownerDefinition: owner,
     });
 
@@ -468,6 +471,7 @@ Deno.test("Vary: CEL data.listVersions() with vary lists correct versions", asyn
     const modelResolver = new ModelResolver(definitionRepo, {
       repoDir,
       dataRepo,
+      dataQueryService: new DataQueryService(catalog, dataRepo),
     });
     const context = await modelResolver.buildContext();
 

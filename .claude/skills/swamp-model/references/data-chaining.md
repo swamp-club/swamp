@@ -5,9 +5,14 @@ capturing output for use in other models. For JSON output, use `jq` in the
 command to extract specific fields, then access the result via
 `data.latest("model-name", "result").attributes.stdout`.
 
-> **Note:** `data.latest()` is the preferred accessor for all cross-model data.
-> The `model.*.resource` pattern is deprecated and will be removed in a future
-> release. Existing examples below show both patterns for reference.
+> **Note:** The `data.*` namespace is the current accessor for cross-model data.
+> `data.query()` is the underlying primitive; the shortcut helpers
+> (`data.latest`, `data.version`, `data.findByTag`, `data.findBySpec`,
+> `data.listVersions`) read more clearly when your intent matches, so prefer a
+> shortcut if it fits and reach for `data.query()` when you need a multi-field
+> predicate or a projection. The `model.*.resource` pattern is deprecated and
+> will be removed in a future release. Existing examples below show both
+> patterns for reference.
 
 ## command/shell Data Attributes
 

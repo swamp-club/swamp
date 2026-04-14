@@ -37,39 +37,37 @@
 
 ## Cross-Model Data References
 
-### Preferred: model.* Expressions
+### Use the `data.*` namespace
 
-Always prefer `model.*` expressions over `data.latest()` for referencing other
-models' data. The `model.*` expression provides:
-
-- In-memory updates during workflow execution
-- Type-safe attribute access
-- Clear dependency tracking
+Reference cross-model data with the `data.*` namespace. `data.query()` is the
+underlying primitive; the shortcut helpers (`data.latest`, `data.version`,
+`data.findByTag`, `data.findBySpec`, `data.listVersions`) read more clearly when
+your intent matches a shortcut — prefer them when they fit and reach for
+`data.query()` when you need a multi-field predicate or a projection. See
+[references/expressions.md](expressions.md) for the full shortcut mapping table.
 
 ```yaml
-# PREFERRED: Cross-model resource reference
+# Shortcut — single-model-and-name lookup reads clearly as data.latest()
 globalArguments:
-  vpcId: ${{ model.my-vpc.resource.vpc.main.attributes.VpcId }}
-  subnetId: ${{ model.public-subnet.resource.subnet.primary.attributes.SubnetId }}
+  vpcId: ${{ data.latest("my-vpc", "main").attributes.VpcId }}
+  subnetId: ${{ data.latest("public-subnet", "primary").attributes.SubnetId }}
 
-# For command/shell models
+# For command/shell models, the output spec is always named "result"
 globalArguments:
-  imageId: ${{ model.ami-lookup.resource.result.result.attributes.stdout }}
+  imageId: ${{ data.latest("ami-lookup", "result").attributes.stdout }}
 ```
 
-### When to Use data.latest()
+The `model.*.resource` / `model.*.file` patterns are deprecated and will be
+removed in a future release.
 
-Use `data.latest()` only when you need:
-
-- A snapshot from workflow start (not live updates)
-- Dynamic model name lookup
+### Specific versions and queries
 
 ```yaml
-# Snapshot at workflow start
-oldValue: ${{ data.latest("my-model", "state").attributes.value }}
-
-# Rollback scenario — get previous version
+# Specific version — reach for data.version() when you need history
 previousConfig: ${{ data.version("my-model", "config", 1).attributes.setting }}
+
+# Multi-field predicate — reach for data.query() when no shortcut fits
+prodFailures: ${{ data.query('modelName == "scanner" && tags.env == "prod" && attributes.status == "failed"') }}
 ```
 
 ## Data Discovery Patterns
@@ -116,10 +114,10 @@ jobs:
 
 ```yaml
 # Known instance name from factory model
-subnetA: ${{ model.subnet-scanner.resource.subnet.subnet-aaa.attributes.cidr }}
+subnetA: ${{ data.latest("subnet-scanner", "subnet-aaa").attributes.cidr }}
 
 # Single-instance model — use descriptive instance name
-vpcId: ${{ model.my-vpc.resource.vpc.main.attributes.VpcId }}
+vpcId: ${{ data.latest("my-vpc", "main").attributes.VpcId }}
 ```
 
 ## Version Management

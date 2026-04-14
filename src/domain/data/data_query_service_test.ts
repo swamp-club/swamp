@@ -37,6 +37,7 @@ function makeRow(overrides: Partial<CatalogRow> = {}): CatalogRow {
     data_name: "my-data",
     id: "00000000-0000-1000-8000-000000000001",
     version: 1,
+    is_latest: 1,
     model_name: "ingest",
     spec_name: "result",
     data_type: "resource",
@@ -416,5 +417,126 @@ Deno.test("DataQueryService: backfill triggers on unpopulated catalog", async ()
   assertEquals(results.length, 1);
   assertEquals(results[0].modelName, "ingest");
   assertEquals(catalog.isPopulated(), true);
+  catalog.close();
+});
+
+// ============================================================================
+// Implicit isLatest injection
+// ============================================================================
+
+function seedVersions(catalog: CatalogStore): void {
+  // Three versions of "my-data"; version 3 is the current latest.
+  catalog.upsert(
+    makeRow({ version: 1, is_latest: 0, id: "u1", size: 100 }),
+  );
+  catalog.upsert(
+    makeRow({ version: 2, is_latest: 0, id: "u2", size: 200 }),
+  );
+  catalog.upsert(
+    makeRow({ version: 3, is_latest: 1, id: "u3", size: 300 }),
+  );
+}
+
+Deno.test("DataQueryService: predicate without version or isLatest returns latest only", () => {
+  const { catalog, service } = setupTest();
+  seedVersions(catalog);
+
+  const results = service.querySync('modelName == "ingest"') as DataRecord[];
+  assertEquals(results.length, 1);
+  assertEquals(results[0].version, 3);
+  assertEquals(results[0].isLatest, true);
+  catalog.close();
+});
+
+Deno.test("DataQueryService: predicate referencing version opts into history", () => {
+  const { catalog, service } = setupTest();
+  seedVersions(catalog);
+
+  const all = service.querySync("version >= 0") as DataRecord[];
+  assertEquals(all.length, 3);
+  assertEquals(all.map((r) => r.version).sort(), [1, 2, 3]);
+
+  const exact = service.querySync("version == 2") as DataRecord[];
+  assertEquals(exact.length, 1);
+  assertEquals(exact[0].version, 2);
+  assertEquals(exact[0].isLatest, false);
+
+  const range = service.querySync("version > 1") as DataRecord[];
+  assertEquals(range.length, 2);
+  assertEquals(range.map((r) => r.version).sort(), [2, 3]);
+  catalog.close();
+});
+
+Deno.test("DataQueryService: isLatest in predicate composes with version filter", () => {
+  const { catalog, service } = setupTest();
+  seedVersions(catalog);
+
+  // "the latest row, but only if its version number is > 1"
+  const results = service.querySync(
+    "isLatest == true && version > 1",
+  ) as DataRecord[];
+  assertEquals(results.length, 1);
+  assertEquals(results[0].version, 3);
+  catalog.close();
+});
+
+Deno.test("DataQueryService: string literal containing 'version' does not opt into history", () => {
+  const { catalog, service } = setupTest();
+  // Two distinct data items so we can tell injection is working.
+  catalog.upsert(
+    makeRow({
+      data_name: "version-report",
+      version: 1,
+      is_latest: 0,
+      id: "vr1",
+    }),
+  );
+  catalog.upsert(
+    makeRow({
+      data_name: "version-report",
+      version: 2,
+      is_latest: 1,
+      id: "vr2",
+    }),
+  );
+
+  const results = service.querySync(
+    'name == "version-report"',
+  ) as DataRecord[];
+  assertEquals(results.length, 1);
+  assertEquals(results[0].version, 2);
+  catalog.close();
+});
+
+Deno.test("DataQueryService: explicit isLatest == false returns non-latest versions", () => {
+  const { catalog, service } = setupTest();
+  seedVersions(catalog);
+
+  const results = service.querySync("isLatest == false") as DataRecord[];
+  assertEquals(results.length, 2);
+  assertEquals(results.map((r) => r.version).sort(), [1, 2]);
+  catalog.close();
+});
+
+Deno.test("DataQueryService: select version projection with history opt-in", () => {
+  const { catalog, service } = setupTest();
+  seedVersions(catalog);
+
+  const versions = service.querySync("version >= 0", {
+    select: "version",
+  }) as number[];
+  assertEquals(versions.slice().sort((a, b) => a - b), [1, 2, 3]);
+  catalog.close();
+});
+
+Deno.test("DataQueryService: select version without history opt-in returns latest only", () => {
+  const { catalog, service } = setupTest();
+  seedVersions(catalog);
+
+  // Projection alone is NOT enough to opt into history.
+  const versions = service.querySync('modelName == "ingest"', {
+    select: "version",
+  }) as number[];
+  assertEquals(versions, [3]);
   catalog.close();
 });

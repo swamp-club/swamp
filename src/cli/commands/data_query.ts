@@ -28,7 +28,6 @@ import { createDataQueryRenderer } from "../../presentation/renderers/data_query
 import { renderInteractiveQuery } from "../../presentation/renderers/data_query_tui.tsx";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
-import { DataQueryService } from "../../domain/data/data_query_service.ts";
 import { UserError } from "../../domain/errors.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -41,7 +40,10 @@ export const dataQueryCommand = new Command()
   )
   .arguments("[predicate:string]")
   .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
-  .option("--limit <n:number>", "Maximum results", { default: 100 })
+  .option(
+    "--limit <n:number>",
+    "Maximum results (unlimited when omitted)",
+  )
   .option(
     "--select <expr:string>",
     "CEL expression to extract fields from matching records (e.g. data.name)",
@@ -73,10 +75,7 @@ export const dataQueryCommand = new Command()
       );
     }
 
-    const queryService = new DataQueryService(
-      repoContext.catalogStore,
-      repoContext.unifiedDataRepo,
-    );
+    const queryService = repoContext.dataQueryService;
 
     const deps: DataQueryDeps = {
       query: (pred, opts) => queryService.query(pred, opts),
@@ -113,7 +112,7 @@ export const dataQueryCommand = new Command()
       dataQuery(libCtx, deps, {
         predicate,
         select: options.select as string | undefined,
-        limit: (options.limit as number) ?? 100,
+        limit: options.limit as number | undefined,
       }),
       renderer.handlers(),
     );

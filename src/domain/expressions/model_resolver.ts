@@ -27,7 +27,6 @@ import type { Data } from "../data/data.ts";
 import type { DataRecord } from "../data/data_record.ts";
 import type { DataQueryService } from "../data/data_query_service.ts";
 import { isTextContentType } from "../data/content_type.ts";
-import { fromData } from "../data/data_record_mapper.ts";
 import { ModelNotFoundError } from "./errors.ts";
 import { VaultService } from "../vaults/vault_service.ts";
 import type { SecretRedactor } from "../secrets/mod.ts";
@@ -136,8 +135,9 @@ export interface ModelData {
  */
 export interface DataNamespace {
   /**
-   * Get a specific version of data. Remains file-system-based because
-   * the catalog only stores the latest version per item.
+   * Get a specific version of data. Delegates to catalog query with an
+   * explicit `version == N` predicate (which opts out of the implicit
+   * latest-only filter).
    */
   version(
     modelName: string,
@@ -146,7 +146,8 @@ export interface DataNamespace {
   ): Promise<DataRecord | null>;
 
   /**
-   * Get the latest version of data. Delegates to catalog query.
+   * Get the latest version of data. Delegates to catalog query — the
+   * implicit `isLatest == true` injection handles latest-only filtering.
    */
   latest(
     modelName: string,
@@ -154,7 +155,9 @@ export interface DataNamespace {
   ): Promise<DataRecord | null>;
 
   /**
-   * List all version numbers for a data item. Remains file-system-based.
+   * List all version numbers for a data item, ascending. Stays synchronous
+   * (via the sync catalog query path) so it can be used in sync CEL
+   * contexts that don't go through the async evaluator.
    */
   listVersions(modelName: string, dataName: string): number[];
 
@@ -531,46 +534,36 @@ export class ModelResolver {
       }
     }
 
-    // Create data namespace — most functions delegate to DataQueryService
-    const dataRepo = this.dataRepo;
+    // Create data namespace — every helper delegates to DataQueryService.
+    // The query service owns the implicit `isLatest == true` injection, so
+    // helpers compose predicates as if the catalog exposed history directly.
+    //
+    // Most helpers are async because the query path resolves vault
+    // references in result attributes. Callers in sync CEL contexts (e.g.
+    // `forEach.in`) must go through `CelEvaluator.evaluateAsync`, which
+    // cel-js natively propagates Promises through.
     context.data = {
-      // version() and listVersions() remain file-system-based because the
-      // catalog only stores the latest version per item.
       version: async (
         modelName: string,
         dataName: string,
         version: number,
       ): Promise<DataRecord | null> => {
-        if (!dataRepo) return null;
-        const allCoords = coordsMap.get(modelName);
-        if (!allCoords) return null;
-        for (const { modelType, modelId } of allCoords) {
-          const data = dataRepo.findByNameSync(
-            modelType,
-            modelId,
-            dataName,
-            version,
-          );
-          if (data) {
-            return await fromData(data, modelType, modelId, dataRepo, {
-              version,
-              modelName,
-              dataName,
-              vaultService: this.vaultService,
-            });
-          }
-        }
-        return null;
+        if (!this.dataQueryService) return null;
+        const predicate = `modelName == "${escapeCelString(modelName)}" ` +
+          `&& name == "${escapeCelString(dataName)}" && version == ${version}`;
+        const results = await this.dataQueryService.query(predicate, {
+          limit: 1,
+          loadAttributes: true,
+        }) as DataRecord[];
+        return results.length > 0 ? results[0] : null;
       },
       latest: async (
         modelName: string,
         dataName: string,
       ): Promise<DataRecord | null> => {
         if (!this.dataQueryService) return null;
-        const escaped = escapeCelString;
-        const predicate = `modelName == "${escaped(modelName)}" && name == "${
-          escaped(dataName)
-        }"`;
+        const predicate = `modelName == "${escapeCelString(modelName)}" ` +
+          `&& name == "${escapeCelString(dataName)}"`;
         const results = await this.dataQueryService.query(predicate, {
           limit: 1,
           loadAttributes: true,
@@ -578,26 +571,27 @@ export class ModelResolver {
         return results.length > 0 ? results[0] : null;
       },
       listVersions: (modelName: string, dataName: string): number[] => {
-        if (!dataRepo) return [];
-        const allCoords = coordsMap.get(modelName);
-        if (!allCoords) return [];
-        for (const { modelType, modelId } of allCoords) {
-          const versions = dataRepo.listVersionsSync(
-            modelType,
-            modelId,
-            dataName,
-          );
-          if (versions.length > 0) return versions;
-        }
-        return [];
+        if (!this.dataQueryService) return [];
+        // `version >= 0` is the history opt-in: it suppresses the implicit
+        // `isLatest == true` injection so every version of this data item
+        // is returned. The select projection extracts just the version
+        // numbers. querySync is used so this helper can be called from
+        // synchronous CEL contexts.
+        const predicate = `modelName == "${escapeCelString(modelName)}" ` +
+          `&& name == "${escapeCelString(dataName)}" && version >= 0`;
+        const results = this.dataQueryService.querySync(predicate, {
+          select: "version",
+        }) as number[];
+        return results.slice().sort((a, b) => a - b);
       },
       findByTag: async (
         tagKey: string,
         tagValue: string,
       ): Promise<DataRecord[]> => {
         if (!this.dataQueryService) return [];
-        const escaped = escapeCelString;
-        const predicate = `tags.${escaped(tagKey)} == "${escaped(tagValue)}"`;
+        const predicate = `tags.${escapeCelString(tagKey)} == "${
+          escapeCelString(tagValue)
+        }"`;
         const results = await this.dataQueryService.query(predicate, {
           loadAttributes: true,
         }) as DataRecord[];
@@ -608,10 +602,8 @@ export class ModelResolver {
         specName: string,
       ): Promise<DataRecord[]> => {
         if (!this.dataQueryService) return [];
-        const escaped = escapeCelString;
-        const predicate = `modelName == "${
-          escaped(specModelName)
-        }" && specName == "${escaped(specName)}"`;
+        const predicate = `modelName == "${escapeCelString(specModelName)}" ` +
+          `&& specName == "${escapeCelString(specName)}"`;
         const results = await this.dataQueryService.query(predicate, {
           loadAttributes: true,
         }) as DataRecord[];
@@ -784,6 +776,10 @@ export class ModelResolver {
       id: data.id,
       name: data.name,
       version: resolvedVersion,
+      // dataToRecord is the eager-population path: it always loads the
+      // latest version of each data item into context.model.*, so the
+      // record here is by construction the latest.
+      isLatest: true,
       createdAt: data.createdAt.toISOString(),
       attributes,
       tags: { ...data.tags },

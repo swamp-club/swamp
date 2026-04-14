@@ -37,8 +37,7 @@ attributes:
   message: ${{ model.foo.definition.attributes.message }}
 ```
 
-Or the data output of the same model (using the preferred `data.latest()`
-accessor):
+Or the data output of the same model:
 
 ```yaml
 id: 0bc79a8f-d9d2-4ec5-a37f-8d88bbb3ee27
@@ -48,6 +47,14 @@ tags: {}
 attributes:
   message: ${{ data.latest('foo', 'result').attributes.message }}
 ```
+
+`data.latest()` is a shortcut for the equivalent `data.query()` call. The
+general primitive is `data.query('<CEL predicate>')`, which takes any
+predicate over the full set of queryable fields. Reach for it when a
+shortcut doesn't express what you need — for example, a multi-field
+predicate, a projection, tag filters beyond a single key, or history access
+beyond a single version. See [data-query.md](./data-query.md) for the
+primitive, the full field set, and the shortcut mapping table.
 
 You can refer to your own model with `self`, for things like name, version,
 tags, and a model's other attributes.
@@ -91,12 +98,17 @@ dynamic configuration without modifying definition files.
 
 ## Data Versioning
 
-`data.latest()` is the **canonical accessor** for model data. It reads directly
-from disk on every call, so it always reflects the latest on-disk state with no
-cache staleness. The `model.*.resource` and `model.*.file` patterns are
-**deprecated** and will be removed in a future release.
+Data is immutable and versioned. The following CEL shortcuts cover the common
+read patterns; each is a convenience form of `data.query()` (see
+[data-query.md](./data-query.md) for the shortcut-to-query mapping). Prefer
+a shortcut when it matches your intent — `data.latest("m", "n")` reads more
+clearly than the equivalent predicate. Reach for `data.query()` directly when
+you need something the shortcuts don't express.
 
-Data is immutable and versioned. Use the following CEL functions to access data:
+These accessors read directly from disk on every call, so they always reflect
+the latest on-disk state with no cache staleness. The `model.*.resource` and
+`model.*.file` patterns are **deprecated** and will be removed in a future
+release.
 
 ### data.latest(modelName, dataName)
 
@@ -177,37 +189,59 @@ attributes:
 ### data.findBySpec(modelName, specName)
 
 Returns all data records for a model that match a given output spec name.
-Commonly used in `task.inputs` to pass variable-length output into a step.
-
-**Workflow run scoping:** When called inside a workflow run, `findBySpec` only
-returns data produced during the current run. This prevents stale data from
-previous runs leaking into iteration. Outside a workflow context, it returns all
-data globally. The same run-scoping applies to `context.readModelData()` and
-`context.queryData()` in extension model methods (see `design/data-query.md`).
-
-**Async limitation:** `data.findBySpec()` is async and cannot be used directly in
-`forEach.in` (which is evaluated synchronously). To iterate over findBySpec
-results, resolve the call in a parent workflow's `task.inputs` and pass the array
-to a child workflow. See
-`.claude/skills/swamp-workflow/references/nested-workflows.md`.
+Shortcut for `data.query('modelName == "..." && specName == "..."')`.
+Commonly used in `task.inputs` or `forEach.in` to iterate over variable-length
+output.
 
 ```yaml
-# In task.inputs — resolves the async call before passing to the step:
-inputs:
-  episodes: ${{ data.findBySpec("dedup-model", "episode") }}
+# Iterate over every episode produced by the dedup-model:
+- name: download-${{ self.ep.name }}
+  forEach:
+    item: ep
+    in: ${{ data.findBySpec("dedup-model", "episode") }}
+  task:
+    type: model_method
+    modelIdOrName: transmission
+    methodName: add
+    inputs:
+      uri: ${{ self.ep.magnet }}
 ```
+
+Results are **not** run-scoped — `findBySpec` returns every matching record
+in the catalog. Add a `workflowRunId` predicate via `data.query()` when you
+want to scope to the current run.
 
 ### data.findByTag(tagKey, tagValue)
 
-Returns all data records across all models with a matching tag. This function is
-**not** run-scoped — it always returns all matching data globally. Use it when
-you need cross-run data access.
+Returns all data records across all models with a matching tag. Shortcut for
+`data.query('tags.key == "value"')`. Not run-scoped — always returns all
+matching data globally.
 
 ```yaml
 # Find all data tagged with env=prod across all models:
 inputs:
   prodData: ${{ data.findByTag("env", "prod") }}
 ```
+
+### data.query(predicate, select?)
+
+`data.query()` is the underlying primitive. Use it when the shortcuts don't
+express what you need. It takes a CEL predicate over every queryable field
+(see [data-query.md](./data-query.md) for the full set) and an optional
+`select` projection. For example:
+
+```yaml
+# Every failed resource for a model tagged with env=prod:
+inputs:
+  failures: ${{ data.query('modelName == "scanner" && dataType == "resource" && tags.env == "prod" && attributes.status == "failed"') }}
+
+# Project specific fields out of every result across all models:
+inputs:
+  manifest: ${{ data.query('tags.role == "manifest"', '{"name": name, "version": version, "at": createdAt}') }}
+```
+
+`data.query()` results have the same `DataRecord[]` shape as the shortcuts
+— anything you can do with a shortcut result, you can do with a query result.
 
 ## Sensitive Data
 

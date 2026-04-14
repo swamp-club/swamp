@@ -60,7 +60,7 @@ export function useDebouncedQuery(
   select: string | undefined,
   queryDeps: DataQueryDeps,
   debounceMs: number = 150,
-  limit: number = 100,
+  limit?: number,
 ): QueryState {
   const [state, setState] = useState<QueryState>(INITIAL_STATE);
   const controllerRef = useRef<AbortController | null>(null);

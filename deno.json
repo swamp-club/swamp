@@ -18,6 +18,7 @@
     "eval-skill-triggers": "deno run --allow-read --allow-run --allow-env --allow-write --allow-net scripts/eval_skill_triggers_promptfoo.ts"
   },
   "imports": {
+    "@cliffy/table": "jsr:@cliffy/table@^1.0.0",
     "@std/assert": "jsr:@std/assert@^1.0.18",
     "@std/fmt": "jsr:@std/fmt@^1.0.9",
     "@std/cli": "jsr:@std/cli@^1.0.27",

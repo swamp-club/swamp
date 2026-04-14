@@ -46,8 +46,6 @@ import { DataQueryService } from "../../domain/data/data_query_service.ts";
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import type { LibSwampContext } from "../context.ts";
 import { notFound, type SwampError } from "../errors.ts";
-import { InvalidExpressionError } from "../../domain/expressions/errors.ts";
-import { UserError } from "../../domain/errors.ts";
 
 /** Evaluation result for a single workflow. */
 export interface WorkflowEvaluateItemData {
@@ -96,6 +94,14 @@ export interface WorkflowEvaluateDeps {
     expression: string,
     context: Record<string, unknown>,
   ) => unknown;
+  /**
+   * Async CEL evaluator used by the forEach.in expansion path so
+   * data.* helpers (which return Promises) resolve before iteration.
+   */
+  evaluateCelAsync: (
+    expression: string,
+    context: Record<string, unknown>,
+  ) => Promise<unknown>;
   saveEvaluatedWorkflow: (workflow: Workflow) => Promise<void>;
   getEvaluatedPath: (id: WorkflowId) => string;
 }
@@ -134,6 +140,8 @@ export function createWorkflowEvaluateDeps(
     buildExpressionContext: () => modelResolver.buildContext(),
     evaluateCel: (expression, context) =>
       celEvaluator.evaluate(expression, context),
+    evaluateCelAsync: (expression, context) =>
+      celEvaluator.evaluateAsync(expression, context),
     saveEvaluatedWorkflow: (workflow) => evaluatedWorkflowRepo.save(workflow),
     getEvaluatedPath: (id) => evaluatedWorkflowRepo.getPath(id),
   };
@@ -241,29 +249,10 @@ async function evaluateWorkflowInternal(
         continue;
       }
 
-      let items: unknown;
-      try {
-        items = deps.evaluateCel(inMatch[1], context);
-      } catch (error) {
-        if (
-          error instanceof InvalidExpressionError &&
-          error.message.includes("unresolved Promise")
-        ) {
-          throw new UserError(
-            `forEach.in expression '$\{{ ${inMatch[1]} }}' returned an ` +
-              `unresolved Promise.\n\n` +
-              `forEach.in is evaluated synchronously and cannot await ` +
-              `async CEL functions (data.latest, data.findByTag, ` +
-              `data.findBySpec, data.query).\n\n` +
-              `Fix: move the async call into a parent workflow's ` +
-              `task.inputs (which IS awaited) and have the child ` +
-              `iterate over inputs.<name>. See:\n` +
-              `.claude/skills/swamp-workflow/references/` +
-              `nested-workflows.md#when-to-use-nested-workflows`,
-          );
-        }
-        throw error;
-      }
+      // Async so data.* helpers that return Promises (latest, findByTag,
+      // findBySpec, query, etc.) resolve before we iterate. cel-js
+      // propagates Promises through its evaluator natively.
+      const items = await deps.evaluateCelAsync(inMatch[1], context);
       const itemName = stepData.forEach.item;
       const nameHasExpression = /\$\{\{.+?\}\}/.test(stepData.name);
 

@@ -93,7 +93,10 @@ export async function* dataQuery(
     (async function* () {
       yield { kind: "resolving" as const };
 
-      const limit = input.limit ?? 100;
+      // Unlimited by default — callers pass an explicit limit when they
+      // need a cap. `limited` in the completed event reflects whether
+      // the query service actually hit the supplied limit.
+      const limit = input.limit;
 
       try {
         const rawResults = await deps.query(input.predicate, {
@@ -101,7 +104,7 @@ export async function* dataQuery(
           select: input.select,
         });
         const total = rawResults.length;
-        const limited = total >= limit;
+        const limited = limit !== undefined && total >= limit;
 
         if (!input.select) {
           // No projection — results are DataRecord[]

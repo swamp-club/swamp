@@ -24,6 +24,7 @@ export const QUERY_FIELDS = new Set([
   "id",
   "name",
   "version",
+  "isLatest",
   "createdAt",
   "attributes",
   "tags",
@@ -44,6 +45,13 @@ export const QUERY_FIELDS = new Set([
   "stepName",
   "source",
 ]);
+
+/**
+ * Fields whose presence in a predicate causes the query service to skip
+ * the implicit `isLatest == true` injection. A caller that mentions either
+ * field is opting into explicit version/latest handling.
+ */
+export const HISTORY_OPT_IN_FIELDS = new Set(["version", "isLatest"]);
 
 /** CEL built-in identifiers that may appear as root `id` nodes. */
 export const CEL_BUILTINS = new Set([

@@ -66,6 +66,7 @@ import { YamlVaultConfigRepository } from "./yaml_vault_config_repository.ts";
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
 import { CatalogStore } from "./catalog_store.ts";
+import { DataQueryService } from "../../domain/data/data_query_service.ts";
 import { join } from "@std/path";
 
 // =============================================================================
@@ -239,6 +240,7 @@ export interface RepositoryContext {
   workflowRunRepo: YamlWorkflowRunRepository;
   vaultConfigRepo: YamlVaultConfigRepository;
   catalogStore: CatalogStore;
+  dataQueryService: DataQueryService;
 }
 
 /**
@@ -312,6 +314,11 @@ export function createRepositoryContext(
     dsPath(SWAMP_SUBDIRS.data),
     catalogStore,
   );
+
+  // Construct the query service alongside its dependencies so consumers
+  // never need to reach into the repo to rebuild it. This keeps the
+  // catalog handle as an infrastructure detail of the composition root.
+  const dataQueryService = new DataQueryService(catalogStore, unifiedDataRepo);
   const outputRepo = new YamlOutputRepository(
     repoDir,
     dsPath(SWAMP_SUBDIRS.outputs),
@@ -338,5 +345,6 @@ export function createRepositoryContext(
     workflowRunRepo,
     vaultConfigRepo,
     catalogStore,
+    dataQueryService,
   };
 }

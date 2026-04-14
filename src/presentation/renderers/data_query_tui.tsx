@@ -37,8 +37,7 @@ import {
   type CompletionItem,
 } from "../../domain/data/autocomplete_provider.ts";
 import { determineCursorContext } from "../../domain/data/cel_cursor_context.ts";
-import { renderQueryResultsMarkdown } from "./data_query.ts";
-import { renderMarkdownToTerminal } from "../markdown_renderer.ts";
+import { renderQueryResultsTerminal } from "./data_query.ts";
 
 /**
  * Dependencies for the interactive query TUI.
@@ -68,7 +67,7 @@ function buildCliCommand(
   if (pred.trim()) parts.push(`'${esc(pred.trim())}'`);
   if (sel.trim()) parts.push(`--select '${esc(sel.trim())}'`);
   const parsedLimit = parseInt(limit, 10);
-  if (parsedLimit && parsedLimit !== 100) {
+  if (parsedLimit > 0) {
     parts.push(`--limit ${parsedLimit}`);
   }
   return parts.join(" ");
@@ -95,8 +94,8 @@ function DataQueryTUI(
     cursorPos: 0,
   });
   const [limitInput, setLimitInput] = useState<InputState>({
-    text: "100",
-    cursorPos: 3,
+    text: "",
+    cursorPos: 0,
   });
   const [focusedInput, setFocusedInput] = useState<
     "predicate" | "select" | "limit"
@@ -109,8 +108,14 @@ function DataQueryTUI(
   const [resultsScrollOffset, setResultsScrollOffset] = useState(0);
   const [horizontalScrollOffset, setHorizontalScrollOffset] = useState(0);
 
-  // Parse limit — default to 100 if invalid
-  const parsedLimit = Math.max(1, parseInt(limitInput.text, 10) || 100);
+  // Parse limit — unlimited when the field is empty or invalid, which is
+  // the default. Users cap the result set by typing a positive integer.
+  const parsedLimit = (() => {
+    const trimmed = limitInput.text.trim();
+    if (!trimmed) return undefined;
+    const n = parseInt(trimmed, 10);
+    return Number.isFinite(n) && n > 0 ? n : undefined;
+  })();
 
   // Query execution
   const queryState = useDebouncedQuery(
@@ -183,20 +188,18 @@ function DataQueryTUI(
     }
     : undefined;
 
-  const renderedMarkdown = useMemo(
-    () => queryData ? renderQueryResultsMarkdown(queryData) : undefined,
+  // Directly build Cliffy-rendered terminal text for the default table and
+  // only fall back to the markdown pipeline for projected output. Routing
+  // the default table through `marked` scaled at ~3ms per row and
+  // stalled (or OOM'd) the event loop on 10K+ result sets.
+  const renderedTerminal = useMemo(
+    () => queryData ? renderQueryResultsTerminal(queryData) : undefined,
     [
       queryData?.total,
       queryData?.projected,
       queryData?.results,
       queryData?.limited,
     ],
-  );
-
-  const renderedTerminal = useMemo(
-    () =>
-      renderedMarkdown ? renderMarkdownToTerminal(renderedMarkdown) : undefined,
-    [renderedMarkdown],
   );
 
   // Keep track of last rendered output for scrollback on exit

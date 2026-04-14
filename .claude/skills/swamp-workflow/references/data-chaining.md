@@ -68,31 +68,40 @@ globalArguments:
 
 Use `dependsOn` to ensure step B runs after step A when B references A's output.
 
-## Choosing `data.latest()` vs `model.*` Expressions
+## Choosing Data Accessors vs `model.*` Expressions
 
 Model instance definitions use CEL expressions to reference other models' data.
-**`data.latest()` is the preferred (canonical) accessor.** The
-`model.*.resource` and `model.*.file` patterns are deprecated and will be
-removed in a future release.
+The `data.*` namespace is the current accessor; `model.*.resource` and
+`model.*.file` are deprecated and will be removed in a future release.
 
-| Expression                            | Sees current-run data?                 | Sees prior-run data? | Status         |
-| ------------------------------------- | -------------------------------------- | -------------------- | -------------- |
-| `data.latest("<name>", "<spec>")`     | **Yes** — sync disk read on every call | **Yes**              | **Preferred**  |
-| `data.version("<name>", "<spec>", N)` | **Yes** — sync disk read               | **Yes**              | **Preferred**  |
-| `model.<name>.resource.<spec>`        | **Yes** — eagerly populated            | **Yes**              | **Deprecated** |
+Inside the `data.*` namespace, `data.query()` is the primitive and the other
+helpers (`data.latest`, `data.version`, `data.findByTag`, `data.findBySpec`,
+`data.listVersions`) are shortcuts for common predicates. Prefer a shortcut when
+your intent matches — `data.latest("m", "n")` reads more clearly than the
+equivalent predicate. Reach for `data.query()` when you need a multi-field
+predicate, a projection, or history access.
+
+| Expression                            | Sees current-run data?       | Sees prior-run data? | Status         |
+| ------------------------------------- | ---------------------------- | -------------------- | -------------- |
+| `data.query('<predicate>')`           | **Yes** — sync catalog query | **Yes**              | **Primary**    |
+| `data.latest("<name>", "<spec>")`     | **Yes** — shortcut for query | **Yes**              | **Shortcut**   |
+| `data.version("<name>", "<spec>", N)` | **Yes** — shortcut for query | **Yes**              | **Shortcut**   |
+| `model.<name>.resource.<spec>`        | **Yes** — eagerly populated  | **Yes**              | **Deprecated** |
 
 ### When to use each
 
-**Use `data.latest()` / `data.version()`** for all cases:
+**Use a shortcut (`data.latest` / `data.version` / `data.findBySpec` / etc.)**
+when your access pattern fits a shortcut. This covers the majority of
+cross-model data reads: "give me the latest X/Y", "give me version 2 of X/Y",
+"give me every instance from spec S".
 
-- Intra-workflow chaining (step B reads step A's output in the same run)
-- Cross-workflow chaining (workflow B reads data from prior workflow A run)
-- Data always reflects the latest on-disk state (no stale cache)
-- Supports vary dimensions for environment isolation
+**Use `data.query()` directly** when you need a predicate beyond a single
+model+name pair — for example, "every failed resource tagged env=prod", "every
+record across workflows tagged role=manifest", or a projection that extracts
+just specific fields.
 
 **Avoid `model.*.resource` / `model.*.file`** — these patterns are deprecated
-and will emit a warning. They still work for backward compatibility but should
-be migrated to `data.latest()`.
+and will emit a warning. Migrate to `data.latest()` or `data.query()`.
 
 Use explicit `dependsOn` to control step ordering.
 
