@@ -6,8 +6,9 @@ description: >
   manifest.yaml. Use ONLY when the user wants to author, build, or implement a
   new TypeScript model in extensions/models/. Do NOT use for running or
   executing existing models (that is swamp-model), orchestrating models in
-  workflows (that is swamp-workflow), or debugging model errors (that is
-  swamp-troubleshooting). Triggers on "create model", "new model type",
+  workflows (that is swamp-workflow), debugging model errors (that is
+  swamp-troubleshooting), or publishing, pushing, or releasing extensions (that
+  is swamp-extension-publish). Triggers on "create model", "new model type",
   "custom model", "extension model", "user model", "typescript model", "extend
   swamp", "build integration", "zod schema", "model plugin", "deno model",
   "extensions/models", "model development", "implement model", "smoke test",
