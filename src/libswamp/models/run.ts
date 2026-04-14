@@ -27,9 +27,9 @@ import {
 } from "../../domain/reports/report_execution_service.ts";
 import { reportRegistry } from "../../domain/reports/report_registry.ts";
 import { BUILTIN_METHOD_REPORTS } from "../../domain/reports/builtin/mod.ts";
-import type {
-  MethodReportContext,
-  ModelReportContext,
+import {
+  buildMethodReportContext,
+  type ModelReportContext,
 } from "../../domain/reports/report_context.ts";
 import { buildOutputSpecs } from "../../domain/models/output_spec_builder.ts";
 import type { ReportResultView } from "./model_method_run_view.ts";
@@ -470,29 +470,32 @@ export async function* modelMethodRun(
           // Run method-summary report for failed executions so JSON consumers
           // see structured error output (not just the raw error event).
           if (!input.skipAllReports && reportRegistry.getAll().length > 0) {
-            const failedMethodContext: MethodReportContext = {
-              scope: "method",
-              repoDir: deps.repoDir,
-              logger: getRunLogger(definition.name, input.methodName),
-              dataRepository: deps.dataRepo,
-              definitionRepository: deps.definitionRepo,
-              swampSha: input.swampSha,
-              modelType,
-              modelId: evaluatedDefinition.id,
-              definition: {
-                id: evaluatedDefinition.id,
-                name: evaluatedDefinition.name,
-                version: evaluatedDefinition.version,
-                tags: evaluatedDefinition.tags,
+            const failedMethodContext = buildMethodReportContext(
+              {
+                repoDir: deps.repoDir,
+                logger: getRunLogger(definition.name, input.methodName),
+                dataRepository: deps.dataRepo,
+                definitionRepository: deps.definitionRepo,
+                swampSha: input.swampSha,
               },
-              globalArgs: reportGlobalArgs,
-              methodArgs: reportMethodArgs,
-              methodName: input.methodName,
-              executionStatus: "failed",
-              errorMessage,
-              dataHandles: [],
-              outputSpecs: buildOutputSpecs(modelDef),
-            };
+              {
+                modelType,
+                modelId: evaluatedDefinition.id,
+                definition: {
+                  id: evaluatedDefinition.id,
+                  name: evaluatedDefinition.name,
+                  version: evaluatedDefinition.version,
+                  tags: evaluatedDefinition.tags,
+                },
+                globalArgs: reportGlobalArgs,
+                methodArgs: reportMethodArgs,
+                methodName: input.methodName,
+                executionStatus: "failed",
+                errorMessage,
+                dataHandles: [],
+                outputSpecs: buildOutputSpecs(modelDef),
+              },
+            );
 
             const failedSummary = await executeReports(
               reportRegistry,
@@ -615,28 +618,31 @@ export async function* modelMethodRun(
           const dataHandles = execResult.dataHandles ?? [];
 
           // Run method-scope reports
-          const methodContext: MethodReportContext = {
-            scope: "method",
-            repoDir: deps.repoDir,
-            logger: getRunLogger(definition.name, input.methodName),
-            dataRepository: deps.dataRepo,
-            definitionRepository: deps.definitionRepo,
-            swampSha: input.swampSha,
-            modelType,
-            modelId: evaluatedDefinition.id,
-            definition: {
-              id: evaluatedDefinition.id,
-              name: evaluatedDefinition.name,
-              version: evaluatedDefinition.version,
-              tags: evaluatedDefinition.tags,
+          const methodContext = buildMethodReportContext(
+            {
+              repoDir: deps.repoDir,
+              logger: getRunLogger(definition.name, input.methodName),
+              dataRepository: deps.dataRepo,
+              definitionRepository: deps.definitionRepo,
+              swampSha: input.swampSha,
             },
-            globalArgs: reportGlobalArgs,
-            methodArgs: reportMethodArgs,
-            methodName: input.methodName,
-            executionStatus: "succeeded",
-            dataHandles,
-            outputSpecs: buildOutputSpecs(modelDef),
-          };
+            {
+              modelType,
+              modelId: evaluatedDefinition.id,
+              definition: {
+                id: evaluatedDefinition.id,
+                name: evaluatedDefinition.name,
+                version: evaluatedDefinition.version,
+                tags: evaluatedDefinition.tags,
+              },
+              globalArgs: reportGlobalArgs,
+              methodArgs: reportMethodArgs,
+              methodName: input.methodName,
+              executionStatus: "succeeded",
+              dataHandles,
+              outputSpecs: buildOutputSpecs(modelDef),
+            },
+          );
 
           const methodSummary = await executeReports(
             reportRegistry,
