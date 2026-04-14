@@ -59,13 +59,14 @@ dependencies:
 | `drivers`         | No*      | Driver file paths relative to `extensions/drivers/`                                              |
 | `datastores`      | No*      | Datastore file paths relative to `extensions/datastores/`                                        |
 | `reports`         | No*      | Report file paths relative to `extensions/reports/`                                              |
+| `skills`          | No*      | Skill directory names resolved from the tool's skill directory (e.g., `.claude/skills/`)         |
 | `additionalFiles` | No       | Extra files relative to the manifest location                                                    |
 | `platforms`       | No       | OS/architecture hints (e.g. `darwin-aarch64`, `linux-x86_64`)                                    |
 | `labels`          | No       | Categorization labels (e.g. `aws`, `kubernetes`, `security`)                                     |
 | `dependencies`    | No       | Other extensions this one depends on                                                             |
 
-*At least one of `models`, `workflows`, `vaults`, `drivers`, `datastores`, or
-`reports` must be present with entries.
+*At least one of `models`, `workflows`, `vaults`, `drivers`, `datastores`,
+`reports`, or `skills` must be present with entries.
 
 ### Name Rules
 
@@ -334,16 +335,16 @@ swamp extension version --manifest manifest.yaml --json
 
 ## Common Errors and Fixes
 
-| Error                           | Fix                                                                     |
-| ------------------------------- | ----------------------------------------------------------------------- |
-| "Not a swamp repository"        | Run `swamp repo init --json` in the extension directory                 |
-| "Not authenticated"             | Run `swamp auth login` first                                            |
-| "collective does not match"     | Manifest `name` must use `@your-username/...`                           |
-| "CalVer format" error           | Use `YYYY.MM.DD.MICRO` (e.g., `2026.02.26.1`)                           |
-| "at least one model, workflow…" | Add a `models`, `workflows`, `vaults`, `drivers`, or `datastores` array |
-| "Model file not found"          | Check path is relative to `extensions/models/`                          |
-| "Workflow file not found"       | Check path is relative to `workflows/`                                  |
-| "eval() or new Function()"      | Remove dynamic code execution from your models                          |
-| "Version already exists"        | Bump the MICRO component or let CLI auto-bump                           |
-| "Missing manifestVersion"       | Add `manifestVersion: 1` to your manifest                               |
-| "Bundle compilation failed"     | Fix TypeScript errors in your model files                               |
+| Error                           | Fix                                                                               |
+| ------------------------------- | --------------------------------------------------------------------------------- |
+| "Not a swamp repository"        | Run `swamp repo init --json` in the extension directory                           |
+| "Not authenticated"             | Run `swamp auth login` first                                                      |
+| "collective does not match"     | Manifest `name` must use `@your-username/...`                                     |
+| "CalVer format" error           | Use `YYYY.MM.DD.MICRO` (e.g., `2026.02.26.1`)                                     |
+| "at least one model, workflow…" | Add a `models`, `workflows`, `vaults`, `drivers`, `datastores`, or `skills` array |
+| "Model file not found"          | Check path is relative to `extensions/models/`                                    |
+| "Workflow file not found"       | Check path is relative to `workflows/`                                            |
+| "eval() or new Function()"      | Remove dynamic code execution from your models                                    |
+| "Version already exists"        | Bump the MICRO component or let CLI auto-bump                                     |
+| "Missing manifestVersion"       | Add `manifestVersion: 1` to your manifest                                         |
+| "Bundle compilation failed"     | Fix TypeScript errors in your model files                                         |

@@ -108,7 +108,7 @@ Confirm `manifest.yaml` exists and is structurally valid.
 
 - Missing `manifestVersion` → add `manifestVersion: 1`
 - Invalid name → use `@collective/extension-name` format
-- No content arrays → add at least one of `models`, `workflows`, etc.
+- No content arrays → add at least one of `models`, `workflows`, `skills`, etc.
 - Missing files → create the files or fix the paths
 
 See [references/publishing.md](references/publishing.md) for the full manifest

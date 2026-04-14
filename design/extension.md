@@ -45,8 +45,8 @@ what the extension contains and how it should be packaged.
 - `manifestVersion`: Must be `1` (the only supported version).
 - `name`: Scoped name (`@collective/name`).
 - `version`: CalVer version string.
-- At least one of `models`, `workflows`, `vaults`, `drivers`, `datastores`, or
-  `reports` must be present.
+- At least one of `models`, `workflows`, `vaults`, `drivers`, `datastores`,
+  `reports`, or `skills` must be present.
 
 ### Path Safety
 
@@ -66,6 +66,10 @@ containing `..` or starting with `/`.
 - `drivers`: Array of relative paths to TypeScript driver files.
 - `datastores`: Array of relative paths to TypeScript datastore files.
 - `reports`: Array of relative paths to TypeScript report files.
+- `skills`: Array of skill directory names resolved from the tool's skill
+  directory (e.g., `.claude/skills/`). Each directory must contain a `SKILL.md`
+  with YAML frontmatter declaring `name` and `description`. Skills are passive
+  markdown guidance documents — swamp never executes them.
 - `include`: Array of relative paths (from `modelsDir`) to TypeScript files that
   should be included in the archive alongside models but not bundled. Used for
   helper scripts that are executed via `Deno.Command` subprocess rather than

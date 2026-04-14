@@ -167,7 +167,7 @@ Deno.test("extension push with invalid manifest (no models or workflows) gives c
     assertEquals(code === 0, false);
     assertStringIncludes(
       stderr,
-      "at least one model, workflow, vault, driver, datastore, or report",
+      "at least one model, workflow, vault, driver, datastore, report, or skill",
     );
   } finally {
     await Deno.remove(tmpDir, { recursive: true });

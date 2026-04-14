@@ -488,6 +488,17 @@ swamp model type search --json              # Model should appear
 swamp model type describe @myorg/my-model --json  # Check schema
 ```
 
+## Bundling Skills with Extensions
+
+Extensions can include skills — markdown guidance documents that teach agents
+how to use the extension's models effectively. Skills are declared in
+`manifest.yaml` and extracted to the user's tool-specific skill directory on
+pull.
+
+See [references/skills.md](references/skills.md) for the full guide: directory
+structure, SKILL.md format, manifest declaration, validation rules, and
+publishing workflow.
+
 ## When to Use Other Skills
 
 | Need                       | Use Skill               |
@@ -527,3 +538,6 @@ swamp model type describe @myorg/my-model --json  # Check schema
   pre-push quality review checklist (credentials, logging, errors, idempotency)
 - **Docker execution**: See
   [references/docker-execution.md](references/docker-execution.md)
+- **Bundling Skills**: See [references/skills.md](references/skills.md) for
+  packaging skills with extensions (directory structure, frontmatter,
+  validation, manifest declaration)
