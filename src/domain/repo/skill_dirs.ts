@@ -33,6 +33,7 @@ export const SKILL_DIRS: Record<string, string> = {
   cursor: ".cursor/skills",
   opencode: ".agents/skills",
   codex: ".agents/skills",
+  copilot: ".agents/skills",
   kiro: ".kiro/skills",
 };
 

@@ -65,6 +65,7 @@ const INSTRUCTIONS_FILES: Partial<Record<AiTool, string>> = {
   cursor: ".cursor/rules/swamp.mdc",
   opencode: "AGENTS.md",
   codex: "AGENTS.md",
+  copilot: "AGENTS.md",
   kiro: ".kiro/steering/swamp-rules.md",
 };
 
@@ -73,6 +74,7 @@ const GITIGNORE_TOOL_ENTRIES: Partial<Record<AiTool, string>> = {
   cursor: "# Cursor skills (managed by swamp)\n.cursor/skills/",
   opencode: "# Agent skills (managed by swamp)\n.agents/skills/",
   codex: "# Agent skills (managed by swamp)\n.agents/skills/",
+  copilot: "# Agent skills (managed by swamp)\n.agents/skills/",
   kiro: "# Kiro skills (managed by swamp)\n.kiro/skills/",
 };
 
@@ -222,6 +224,7 @@ export class RepoService {
             : await this.createOpenCodePluginIfNotExists(repoPath);
           break;
         case "codex":
+        case "copilot":
           break;
         default:
           assertNever(tool);
@@ -312,6 +315,7 @@ export class RepoService {
           settingsUpdated = await this.updateOpenCodePlugin(repoPath);
           break;
         case "codex":
+        case "copilot":
           break;
         default:
           assertNever(tool);
@@ -382,7 +386,7 @@ export class RepoService {
     // For shared-file tools, always ensure the managed section exists
     // (merges into existing file or creates new one)
     if (this.usesSharedInstructionsFile(tool)) {
-      return this.ensureInstructionsSection(filePath);
+      return this.ensureInstructionsSection(filePath, tool);
     }
 
     // For tool-specific files, only create if missing
@@ -419,7 +423,7 @@ export class RepoService {
         this.generateInstructionsContent(tool),
       );
     }
-    return this.ensureInstructionsSection(filePath);
+    return this.ensureInstructionsSection(filePath, tool);
   }
 
   /**
@@ -430,8 +434,11 @@ export class RepoService {
    * - If file has legacy swamp content (no markers): migrates to marked section.
    * - If file has no swamp content: prepends managed section.
    */
-  private async ensureInstructionsSection(filePath: string): Promise<boolean> {
-    const newSection = this.buildInstructionsSection();
+  private async ensureInstructionsSection(
+    filePath: string,
+    tool: AiTool,
+  ): Promise<boolean> {
+    const newSection = this.buildInstructionsSection(tool);
 
     let existingContent: string | null = null;
     try {
@@ -560,6 +567,7 @@ export class RepoService {
       case "claude":
       case "opencode":
       case "codex":
+      case "copilot":
         return true;
       case "cursor":
       case "kiro":
@@ -574,49 +582,77 @@ export class RepoService {
   /**
    * Generates the raw instructions body without any frontmatter or markers.
    */
-  private generateInstructionsBody(): string {
+  private generateInstructionsBody(tool: AiTool): string {
+    const skillsDir = SKILL_DIRS[tool] ?? ".agents/skills";
+    const useSkillNames = tool === "claude";
+
+    const skillAction = (name: string, verb: string): string =>
+      useSkillNames
+        ? `${verb} the \`${name}\` skill`
+        : `Read \`${skillsDir}/${name}/SKILL.md\``;
+
+    const skillListEntry = (name: string, desc: string): string =>
+      useSkillNames
+        ? `- \`${name}\` - ${desc}`
+        : `- \`${skillsDir}/${name}/SKILL.md\` - ${desc}`;
+
+    const skillsIntro = useSkillNames
+      ? `**IMPORTANT:** Always load swamp skills, even when in plan mode. The skills provide
+essential context for working with this repository.`
+      : `**IMPORTANT:** Skills are detailed guides stored in \`${skillsDir}/\`. When a task
+matches a skill area below, read the corresponding \`SKILL.md\` file for guidance.`;
+
+    const gettingStarted = useSkillNames
+      ? `**IMPORTANT:** At the start of every conversation, run
+\`swamp model search --json\`. If no models are returned (empty result), you MUST
+immediately invoke the \`swamp-getting-started\` skill before doing anything else.
+This walks new users through an interactive onboarding tutorial.
+
+If models already exist, start by using the \`swamp-model\` skill to work with
+swamp models.`
+      : `**IMPORTANT:** At the start of every conversation, run
+\`swamp model search --json\`. If no models are returned (empty result), you MUST
+immediately read \`${skillsDir}/swamp-getting-started/SKILL.md\` and follow its
+instructions. This walks new users through an interactive onboarding tutorial.
+
+If models already exist, start by reading \`${skillsDir}/swamp-model/SKILL.md\`
+to work with swamp models.`;
+
     return `# Project
 
 This repository is managed with [swamp](https://github.com/systeminit/swamp).
 
 ## Rules
 
-1. **Search before you build.** When automating AWS, APIs, or any external service: (a) search local types with \`swamp model type search <query>\`, (b) search community extensions with \`swamp extension search <query>\`, (c) if a community extension exists, install it with \`swamp extension pull <package>\` instead of building from scratch, (d) only create a custom extension model in \`extensions/models/\` if nothing exists. Use the \`swamp-extension-model\` skill for guidance. The \`command/shell\` model is ONLY for ad-hoc one-off shell commands, NEVER for wrapping CLI tools or building integrations.
+1. **Search before you build.** When automating AWS, APIs, or any external service: (a) search local types with \`swamp model type search <query>\`, (b) search community extensions with \`swamp extension search <query>\`, (c) if a community extension exists, install it with \`swamp extension pull <package>\` instead of building from scratch, (d) only create a custom extension model in \`extensions/models/\` if nothing exists. ${skillAction("swamp-extension-model", "Use")} for guidance. The \`command/shell\` model is ONLY for ad-hoc one-off shell commands, NEVER for wrapping CLI tools or building integrations.
 2. **Extend, don't be clever.** When a model covers the domain but lacks the method you need, extend it with \`export const extension\` — don't bypass it with shell scripts, CLI tools, or multi-step hacks. One method, one purpose. Use \`swamp model type describe <type> --json\` to check available methods.
 3. **Use the data model.** Once data exists in a model (via \`lookup\`, \`start\`, \`sync\`, etc.), reference it with CEL expressions. Don't re-fetch data that's already available.
 4. **CEL expressions everywhere.** Wire models together with CEL expressions. Always prefer \`data.latest("<name>", "<dataName>").attributes.<field>\` over the deprecated \`model.<name>.resource.<spec>.<instance>.attributes.<field>\` pattern.
 5. **Verify before destructive operations.** Always \`swamp model get <name> --json\` and verify resource IDs before running delete/stop/destroy methods.
 6. **Prefer fan-out methods over loops.** When operating on multiple targets, use a single method that handles all targets internally (factory pattern) rather than looping N separate \`swamp model method run\` calls against the same model. Multiple parallel calls against the same model contend on the per-model lock, causing timeouts. A single fan-out method acquires the lock once and produces all outputs in one execution. Check \`swamp model type describe\` for methods that accept filters or produce multiple outputs.
 7. **Extension npm deps are bundled, not lockfile-tracked.** Swamp's bundler inlines all npm packages (except zod) into extension bundles at bundle time. \`deno.lock\` and \`package.json\` do NOT cover extension model dependencies — this is by design. Always pin explicit versions in \`npm:\` import specifiers (e.g., \`npm:lodash-es@4.17.21\`).
-8. **Reports for reusable data pipelines.** When the task involves building a repeatable pipeline to transform, aggregate, or analyze model output (security reports, cost analysis, compliance checks, summaries), create a report extension. Use the \`swamp-report\` skill for guidance.
+8. **Reports for reusable data pipelines.** When the task involves building a repeatable pipeline to transform, aggregate, or analyze model output (security reports, cost analysis, compliance checks, summaries), create a report extension. ${skillAction("swamp-report", "Use")} for guidance.
 
 ## Skills
 
-**IMPORTANT:** Always load swamp skills, even when in plan mode. The skills provide
-essential context for working with this repository.
+${skillsIntro}
 
-- \`swamp-model\` - Work with swamp models (creating, editing, validating)
-- \`swamp-workflow\` - Work with workflows (creating, editing, running)
-- \`swamp-vault\` - Manage secrets and credentials
-- \`swamp-data\` - Manage model data lifecycle
-- \`swamp-report\` - Create and run reports for models and workflows
-- \`swamp-repo\` - Repository management
-- \`swamp-extension-model\` - Create custom TypeScript models
-- \`swamp-extension-driver\` - Create custom execution drivers
-- \`swamp-extension-datastore\` - Create custom datastore backends
-- \`swamp-extension-vault\` - Create custom vault providers
-- \`swamp-issue\` - Submit bug reports and feature requests
-- \`swamp-troubleshooting\` - Debug and diagnose swamp issues
+${skillListEntry("swamp-model", "Work with swamp models (creating, editing, validating)")}
+${skillListEntry("swamp-workflow", "Work with workflows (creating, editing, running)")}
+${skillListEntry("swamp-vault", "Manage secrets and credentials")}
+${skillListEntry("swamp-data", "Manage model data lifecycle")}
+${skillListEntry("swamp-report", "Create and run reports for models and workflows")}
+${skillListEntry("swamp-repo", "Repository management")}
+${skillListEntry("swamp-extension-model", "Create custom TypeScript models")}
+${skillListEntry("swamp-extension-driver", "Create custom execution drivers")}
+${skillListEntry("swamp-extension-datastore", "Create custom datastore backends")}
+${skillListEntry("swamp-extension-vault", "Create custom vault providers")}
+${skillListEntry("swamp-issue", "Submit bug reports and feature requests")}
+${skillListEntry("swamp-troubleshooting", "Debug and diagnose swamp issues")}
 
 ## Getting Started
 
-**IMPORTANT:** At the start of every conversation, run
-\`swamp model search --json\`. If no models are returned (empty result), you MUST
-immediately invoke the \`swamp-getting-started\` skill before doing anything else.
-This walks new users through an interactive onboarding tutorial.
-
-If models already exist, start by using the \`swamp-model\` skill to work with
-swamp models.
+${gettingStarted}
 
 ## Commands
 
@@ -627,8 +663,8 @@ Use \`swamp --help\` to see available commands.
   /**
    * Wraps the instructions body in BEGIN/END markers for shared files.
    */
-  private buildInstructionsSection(): string {
-    const body = this.generateInstructionsBody();
+  private buildInstructionsSection(tool: AiTool): string {
+    const body = this.generateInstructionsBody(tool);
     return INSTRUCTIONS_SECTION_BEGIN + "\n" + body +
       INSTRUCTIONS_SECTION_END;
   }
@@ -638,7 +674,7 @@ Use \`swamp --help\` to see available commands.
    * Shared-file tools should use buildInstructionsSection() instead.
    */
   private generateInstructionsContent(tool: AiTool): string {
-    const body = this.generateInstructionsBody();
+    const body = this.generateInstructionsBody(tool);
 
     switch (tool) {
       case "cursor":
@@ -655,6 +691,7 @@ ${body}`;
       case "claude":
       case "opencode":
       case "codex":
+      case "copilot":
         return body;
       case "none":
         return body;

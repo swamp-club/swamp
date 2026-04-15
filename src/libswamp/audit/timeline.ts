@@ -74,7 +74,7 @@ export async function* auditTimeline(
       ctx.logger.debug`Fetching audit timeline`;
 
       // Check if the configured tool supports audit hooks
-      if (input.tool === "codex") {
+      if (input.tool === "codex" || input.tool === "copilot") {
         yield {
           kind: "completed",
           data: { status: "tool_not_supported", tool: input.tool },

@@ -32,6 +32,7 @@ export type AiTool =
   | "cursor"
   | "opencode"
   | "codex"
+  | "copilot"
   | "kiro"
   | "none";
 

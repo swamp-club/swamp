@@ -632,6 +632,46 @@ Deno.test("RepoService.init with codex creates .agents/skills/ and AGENTS.md", a
   });
 });
 
+Deno.test("RepoService.init with copilot creates .agents/skills/ and AGENTS.md", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    const result = await service.init(repoPath, { tool: "copilot" });
+
+    assertEquals(result.tool, "copilot");
+    assertEquals(result.instructionsFileCreated, true);
+    assertEquals(result.settingsCreated, false);
+    assertEquals(result.gitignoreAction, "created");
+
+    // Check skills copied to .agents/skills/
+    const skillsDir = join(tempDir, ".agents", "skills");
+    const stat = await Deno.stat(skillsDir);
+    assertEquals(stat.isDirectory, true);
+
+    // Check AGENTS.md created with section markers (shared file)
+    const agentsMdPath = join(tempDir, "AGENTS.md");
+    const content = await Deno.readTextFile(agentsMdPath);
+    assertStringIncludes(content, "swamp");
+    assertStringIncludes(content, "## Skills");
+
+    // Check no .claude/ settings created
+    const claudeSettingsPath = join(
+      tempDir,
+      ".claude",
+      "settings.local.json",
+    );
+    let settingsExist = false;
+    try {
+      await Deno.stat(claudeSettingsPath);
+      settingsExist = true;
+    } catch {
+      // expected
+    }
+    assertEquals(settingsExist, false);
+  });
+});
+
 Deno.test("RepoService.init stores tool in marker", async () => {
   await withTempDir(async (tempDir) => {
     const service = new RepoService("0.1.0");
@@ -711,6 +751,30 @@ Deno.test("RepoService.upgrade creates AGENTS.md when switching to codex", async
     const result = await upgradeService.upgrade(repoPath, { tool: "codex" });
 
     assertEquals(result.tool, "codex");
+
+    // Verify AGENTS.md created
+    const instructionsPath = join(tempDir, "AGENTS.md");
+    const instructionsStat = await Deno.stat(instructionsPath);
+    assertEquals(instructionsStat.isFile, true);
+    const content = await Deno.readTextFile(instructionsPath);
+    assertStringIncludes(content, "# Project");
+    assertStringIncludes(content, "swamp");
+  });
+});
+
+Deno.test("RepoService.upgrade creates AGENTS.md when switching to copilot", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    // Init with claude (default)
+    await service.init(repoPath);
+
+    // Upgrade with tool switch to copilot
+    const upgradeService = new RepoService("0.2.0");
+    const result = await upgradeService.upgrade(repoPath, { tool: "copilot" });
+
+    assertEquals(result.tool, "copilot");
 
     // Verify AGENTS.md created
     const instructionsPath = join(tempDir, "AGENTS.md");

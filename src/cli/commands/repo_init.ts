@@ -41,6 +41,7 @@ const aiToolType = new EnumType([
   "cursor",
   "opencode",
   "codex",
+  "copilot",
   "kiro",
   "none",
 ]);
