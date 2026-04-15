@@ -49,10 +49,12 @@ swamp model method run issue-<N> plan \
 
 Read `agent-constraints/planning-conventions.md` at the repo root for
 repo-specific planning requirements (documentation checks, test strategy,
-analysis conventions, UAT assessment). If it does not exist, generate the plan
-based on your codebase analysis and CLAUDE.md conventions.
+analysis conventions, and any additional assessments the repo defines). If it
+does not exist, generate the plan based on your codebase analysis and CLAUDE.md
+conventions.
 
 ## 8. Present the Plan
 
-Show the plan to the human, then run adversarial review (see
+Show the plan to the human, including any assessment findings required by the
+repo's planning conventions. Then run adversarial review (see
 [adversarial-review.md](adversarial-review.md)).

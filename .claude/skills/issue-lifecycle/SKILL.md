@@ -55,8 +55,8 @@ issue, and reproducing bugs.
 ### Phase 2: Planning (steps 6–9)
 
 Read [references/planning.md](references/planning.md) after triage is complete.
-Covers: generating the implementation plan, checking documentation impact,
-assessing UAT coverage gaps, and presenting to the human.
+Covers: generating the implementation plan, applying repo-specific planning
+conventions, and presenting to the human.
 
 ### Phase 3: Adversarial Review & Iteration
 

@@ -50,3 +50,51 @@ Then assess:
   Use the label `cli` for CLI UAT gaps or `adversarial` for adversarial test
   gaps.
 - Include UAT assessment findings when presenting the plan to the human.
+
+## Manual Documentation Assessment
+
+Evaluate whether the change requires updates to the user-facing documentation in
+the `systeminit/swamp-club` repo under `content/manual/`. That directory follows
+the Diátaxis framework:
+
+- **How-to guides** (`content/manual/how-to/`) — task-oriented guides (e.g.
+  creating and publishing extensions).
+- **Reference** (`content/manual/reference/`) — technical descriptions of CLI
+  commands, configuration, schemas, and APIs (e.g. CEL expressions, model
+  definitions, workflows, vaults, datastores).
+- **Explanation** (`content/manual/explanation/`) — conceptual overviews (e.g.
+  how swamp works, AI agent integration).
+- **Tutorials** (`content/manual/tutorials/`) — learning-oriented walkthroughs
+  (e.g. hello-world).
+
+First, check what documentation exists:
+
+```
+gh api repos/systeminit/swamp-club/contents/content/manual/reference --jq '.[].name'
+gh api repos/systeminit/swamp-club/contents/content/manual/how-to --jq '.[].name'
+gh api repos/systeminit/swamp-club/contents/content/manual/explanation --jq '.[].name'
+gh api repos/systeminit/swamp-club/contents/content/manual/tutorials --jq '.[].name'
+```
+
+Then assess:
+
+- If the change **is purely internal** (refactors, internal API changes, test
+  improvements) with no user-visible behavior change → no docs action needed.
+  State this when presenting the plan.
+- If the change **adds a new user-facing feature** (new CLI command, new flag,
+  new extension pattern, new configuration option) and no existing doc covers it
+  → flag this to the human.
+- If the change **modifies existing user-facing behavior** (changed CLI output,
+  renamed flags, altered configuration schema, changed defaults) and an existing
+  doc describes the old behavior → flag the stale doc to the human.
+- If the change **deprecates or removes a feature** documented in the manual →
+  flag the doc that needs updating or removal.
+- If the human agrees a documentation gap exists, file an issue in `swamp-club`:
+  ```
+  gh issue create --repo systeminit/swamp-club \
+    --title "Docs: <describe the documentation gap>" \
+    --body "<what changed, which manual page needs updating, suggested content>"
+  ```
+  Use the label `documentation` for doc gaps.
+- Include documentation assessment findings when presenting the plan to the
+  human.
