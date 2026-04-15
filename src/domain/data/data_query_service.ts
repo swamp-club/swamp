@@ -28,10 +28,13 @@ import type { DataRecord } from "./data_record.ts";
 import {
   type ASTNode,
   collectRootIdentifiers,
+  HISTORY_OPT_IN_FIELDS,
   referencesAttributes,
   referencesContent,
   validateFieldReferences,
 } from "./query_predicate.ts";
+import type { ModelType } from "../models/model_type.ts";
+import type { Data } from "./data.ts";
 import { fromRow } from "./data_record_mapper.ts";
 import type { VaultService } from "../vaults/vault_service.ts";
 import type { SecretRedactor } from "../secrets/mod.ts";
@@ -138,15 +141,31 @@ export class DataQueryService {
     predicate: string,
     options?: DataQueryOptions,
   ): DataRecord[] | unknown[] {
-    const limit = options?.limit ?? 100;
+    // No default limit — an unspecified limit returns every matching row.
+    // Callers that need a cap pass one explicitly.
+    const limit = options?.limit ?? Infinity;
 
-    // Parse and get callable evaluator
-    const parsed = this.queryEnv.parse(predicate);
-    const filterAst = parsed.ast as ASTNode;
-
-    // Validate field references in the filter predicate
-    const rootIds = collectRootIdentifiers(filterAst);
+    // Parse and validate the caller's predicate first. Parsing on the raw
+    // input means parse errors point at what the caller actually wrote.
+    const userParsed = this.queryEnv.parse(predicate);
+    const userAst = userParsed.ast as ASTNode;
+    const rootIds = collectRootIdentifiers(userAst);
     validateFieldReferences(rootIds);
+
+    // Implicit latest-only: unless the predicate references `version` or
+    // `isLatest` at root, restrict results to rows where is_latest is true.
+    // Callers opt into history by mentioning either field (e.g. `version ==
+    // 2`, `version >= 0`, `isLatest == false`). String literals like
+    // `name == "version-report"` do not trigger the opt-out because
+    // collectRootIdentifiers walks the AST rather than the source text.
+    const opensHistory = rootIds.some((id) => HISTORY_OPT_IN_FIELDS.has(id));
+    const effectivePredicate = opensHistory
+      ? predicate
+      : `(${predicate}) && isLatest == true`;
+    const parsed = opensHistory
+      ? userParsed
+      : this.queryEnv.parse(effectivePredicate);
+    const filterAst = parsed.ast as ASTNode;
 
     // Parse select expression if provided
     let selectParsed: ((ctx: Record<string, unknown>) => unknown) | undefined;
@@ -210,63 +229,119 @@ export class DataQueryService {
 
   private async backfillAsync(): Promise<void> {
     const allData = await this.dataRepo.findAllGlobal();
-    for (const { data, modelType, modelId } of allData) {
-      if (data.isRenamed || data.isDeleted) continue;
-      this.catalogStore.upsert({
-        type_normalized: modelType.normalized,
-        model_id: modelId,
-        data_name: data.name,
-        id: data.id,
-        version: data.version,
-        model_name: data.tags["modelName"] ?? "",
-        spec_name: data.tags["specName"] ?? "",
-        data_type: data.tags["type"] ?? "",
-        content_type: data.contentType,
-        lifetime: data.lifetime,
-        owner_type: data.ownerDefinition.ownerType,
-        streaming: data.streaming ? 1 : 0,
-        size: data.size ?? 0,
-        created_at: data.createdAt.toISOString(),
-        tags: JSON.stringify(data.tags),
-        owner_ref: data.ownerDefinition.ownerRef,
-        workflow_run_id: data.ownerDefinition.workflowRunId ?? "",
-        workflow_name: data.ownerDefinition.workflowName ?? "",
-        job_name: data.ownerDefinition.jobName ?? "",
-        step_name: data.ownerDefinition.stepName ?? "",
-        source: data.ownerDefinition.source ?? "",
-      });
+    // Gather every (row, isLatest) we want to write, THEN commit them to
+    // SQLite in one batch. Historical metadata.yaml reads are async and
+    // slow; interleaving them with individual SQLite writes would hold the
+    // database in a partially-populated state across many fsyncs and, on
+    // large repos, produces "database is locked" under contention.
+    const rows: CatalogRow[] = [];
+    for (const { data: latest, modelType, modelId } of allData) {
+      if (latest.isRenamed || latest.isDeleted) continue;
+      const versions = await this.dataRepo.listVersions(
+        modelType,
+        modelId,
+        latest.name,
+      );
+      if (versions.length === 0) continue;
+      const maxVersion = Math.max(...versions);
+      for (const version of versions) {
+        try {
+          const data = version === latest.version
+            ? latest
+            : await this.dataRepo.findByName(
+              modelType,
+              modelId,
+              latest.name,
+              version,
+            );
+          if (!data) continue;
+          if (data.isRenamed || data.isDeleted) continue;
+          rows.push(
+            this.toCatalogRow(data, modelType, modelId, version === maxVersion),
+          );
+        } catch (error) {
+          // Skip individual corrupted versions rather than abort the entire
+          // backfill — a half-populated catalog left behind would force
+          // every subsequent query to retry from scratch.
+          logger
+            .debug`Skipping ${modelType.normalized}/${modelId}/${latest.name}@${version} during backfill: ${
+            String(error)
+          }`;
+        }
+      }
     }
+    this.catalogStore.bulkReplaceAll(rows);
     this.catalogStore.markPopulated();
   }
 
   private backfillSync(): void {
     const allData = this.dataRepo.findAllGlobalSync();
-    for (const { data, modelType, modelId } of allData) {
-      if (data.isRenamed || data.isDeleted) continue;
-      this.catalogStore.upsert({
-        type_normalized: modelType.normalized,
-        model_id: modelId,
-        data_name: data.name,
-        id: data.id,
-        version: data.version,
-        model_name: data.tags["modelName"] ?? "",
-        spec_name: data.tags["specName"] ?? "",
-        data_type: data.tags["type"] ?? "",
-        content_type: data.contentType,
-        lifetime: data.lifetime,
-        owner_type: data.ownerDefinition.ownerType,
-        streaming: data.streaming ? 1 : 0,
-        size: data.size ?? 0,
-        created_at: data.createdAt.toISOString(),
-        tags: JSON.stringify(data.tags),
-        owner_ref: data.ownerDefinition.ownerRef,
-        workflow_run_id: data.ownerDefinition.workflowRunId ?? "",
-        workflow_name: data.ownerDefinition.workflowName ?? "",
-        job_name: data.ownerDefinition.jobName ?? "",
-        step_name: data.ownerDefinition.stepName ?? "",
-        source: data.ownerDefinition.source ?? "",
-      });
+    const rows: CatalogRow[] = [];
+    for (const { data: latest, modelType, modelId } of allData) {
+      if (latest.isRenamed || latest.isDeleted) continue;
+      const versions = this.dataRepo.listVersionsSync(
+        modelType,
+        modelId,
+        latest.name,
+      );
+      if (versions.length === 0) continue;
+      const maxVersion = Math.max(...versions);
+      for (const version of versions) {
+        try {
+          const data = version === latest.version
+            ? latest
+            : this.dataRepo.findByNameSync(
+              modelType,
+              modelId,
+              latest.name,
+              version,
+            );
+          if (!data) continue;
+          if (data.isRenamed || data.isDeleted) continue;
+          rows.push(
+            this.toCatalogRow(data, modelType, modelId, version === maxVersion),
+          );
+        } catch (error) {
+          logger
+            .debug`Skipping ${modelType.normalized}/${modelId}/${latest.name}@${version} during backfill: ${
+            String(error)
+          }`;
+        }
+      }
     }
+    this.catalogStore.bulkReplaceAll(rows);
     this.catalogStore.markPopulated();
+  }
+
+  private toCatalogRow(
+    data: Data,
+    modelType: ModelType,
+    modelId: string,
+    isLatest: boolean,
+  ): CatalogRow {
+    return {
+      type_normalized: modelType.normalized,
+      model_id: modelId,
+      data_name: data.name,
+      id: data.id,
+      version: data.version,
+      is_latest: isLatest ? 1 : 0,
+      model_name: data.tags["modelName"] ?? "",
+      spec_name: data.tags["specName"] ?? "",
+      data_type: data.tags["type"] ?? "",
+      content_type: data.contentType,
+      lifetime: data.lifetime,
+      owner_type: data.ownerDefinition.ownerType,
+      streaming: data.streaming ? 1 : 0,
+      size: data.size ?? 0,
+      created_at: data.createdAt.toISOString(),
+      tags: JSON.stringify(data.tags),
+      owner_ref: data.ownerDefinition.ownerRef,
+      workflow_run_id: data.ownerDefinition.workflowRunId ?? "",
+      workflow_name: data.ownerDefinition.workflowName ?? "",
+      job_name: data.ownerDefinition.jobName ?? "",
+      step_name: data.ownerDefinition.stepName ?? "",
+      source: data.ownerDefinition.source ?? "",
+    };
   }
 }

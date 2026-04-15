@@ -260,10 +260,11 @@ Deno.test("CEL Data Access: access latest resource via model.X.resource.specName
 Deno.test("CEL Data Access: access specific version via data.version()", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
+    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
     const dataRepo = new FileSystemUnifiedDataRepository(
       repoDir,
       undefined,
-      new CatalogStore(join(repoDir, "_catalog.db")),
+      catalog,
     );
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
@@ -282,7 +283,7 @@ Deno.test("CEL Data Access: access specific version via data.version()", async (
       contentType: "application/json",
       lifetime: "infinite",
       garbageCollection: 100,
-      tags: { type: "audit" },
+      tags: { type: "audit", modelName: "versioned_model" },
       ownerDefinition: owner,
     });
 
@@ -301,9 +302,11 @@ Deno.test("CEL Data Access: access specific version via data.version()", async (
     }
 
     // Build context
+    const dqs = new DataQueryService(catalog, dataRepo);
     const modelResolver = new ModelResolver(definitionRepo, {
       repoDir,
       dataRepo,
+      dataQueryService: dqs,
     });
     const context = await modelResolver.buildContext();
 
@@ -397,10 +400,11 @@ Deno.test("CEL Data Access: access data via data.latest()", async () => {
 Deno.test("CEL Data Access: list all versions via data.listVersions()", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
+    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
     const dataRepo = new FileSystemUnifiedDataRepository(
       repoDir,
       undefined,
-      new CatalogStore(join(repoDir, "_catalog.db")),
+      catalog,
     );
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
@@ -417,7 +421,7 @@ Deno.test("CEL Data Access: list all versions via data.listVersions()", async ()
       contentType: "text/plain",
       lifetime: "infinite",
       garbageCollection: 100,
-      tags: { type: "log" },
+      tags: { type: "log", modelName: "list_versions_model" },
       ownerDefinition: owner,
     });
 
@@ -431,9 +435,11 @@ Deno.test("CEL Data Access: list all versions via data.listVersions()", async ()
       );
     }
 
+    const dqs = new DataQueryService(catalog, dataRepo);
     const modelResolver = new ModelResolver(definitionRepo, {
       repoDir,
       dataRepo,
+      dataQueryService: dqs,
     });
     const context = await modelResolver.buildContext();
 

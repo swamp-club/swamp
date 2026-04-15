@@ -30,6 +30,7 @@ export interface DataRecord {
   id: string;
   name: string;
   version: number;
+  isLatest: boolean;
   createdAt: string;
   attributes: Record<string, unknown>;
   tags: Record<string, string>;

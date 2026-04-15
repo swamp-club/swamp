@@ -152,10 +152,11 @@ Deno.test("Integration: model.X.resource.specName accesses latest version of res
 Deno.test("Integration: data.version() retrieves specific version", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
+    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
     const dataRepo = new FileSystemUnifiedDataRepository(
       repoDir,
       undefined,
-      new CatalogStore(join(repoDir, "_catalog.db")),
+      catalog,
     );
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
@@ -177,7 +178,7 @@ Deno.test("Integration: data.version() retrieves specific version", async () => 
       contentType: "application/json",
       lifetime: "infinite",
       garbageCollection: 10,
-      tags: { type: "output" },
+      tags: { type: "output", modelName: "my-model" },
       ownerDefinition: owner,
     });
 
@@ -195,6 +196,7 @@ Deno.test("Integration: data.version() retrieves specific version", async () => 
     const modelResolver = new ModelResolver(definitionRepo, {
       repoDir,
       dataRepo,
+      dataQueryService: new DataQueryService(catalog, dataRepo),
     });
     const context = await modelResolver.buildContext();
 
@@ -340,10 +342,11 @@ Deno.test("Integration: data.latest() retrieves latest version", async () => {
 Deno.test("Integration: data.listVersions() returns sorted version numbers", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
+    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
     const dataRepo = new FileSystemUnifiedDataRepository(
       repoDir,
       undefined,
-      new CatalogStore(join(repoDir, "_catalog.db")),
+      catalog,
     );
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
@@ -361,7 +364,7 @@ Deno.test("Integration: data.listVersions() returns sorted version numbers", asy
       contentType: "application/json",
       lifetime: "infinite",
       garbageCollection: 100,
-      tags: { type: "log" },
+      tags: { type: "log", modelName: "my-model" },
       ownerDefinition: owner,
     });
 
@@ -378,6 +381,7 @@ Deno.test("Integration: data.listVersions() returns sorted version numbers", asy
     const modelResolver = new ModelResolver(definitionRepo, {
       repoDir,
       dataRepo,
+      dataQueryService: new DataQueryService(catalog, dataRepo),
     });
     const context = await modelResolver.buildContext();
 
@@ -537,10 +541,11 @@ Deno.test("Integration: data.findByTag() returns matching records", async () => 
 Deno.test("Integration: model can have multiple named data items with mixed types", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
+    const catalog = new CatalogStore(join(repoDir, "_catalog.db"));
     const dataRepo = new FileSystemUnifiedDataRepository(
       repoDir,
       undefined,
-      new CatalogStore(join(repoDir, "_catalog.db")),
+      catalog,
     );
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const type = ModelType.create("test/model");
@@ -560,7 +565,7 @@ Deno.test("Integration: model can have multiple named data items with mixed type
       contentType: "application/json",
       lifetime: "infinite",
       garbageCollection: 5,
-      tags: { type: "resource" },
+      tags: { type: "resource", modelName: "my-command" },
       ownerDefinition: owner,
     });
     await dataRepo.save(
@@ -576,7 +581,7 @@ Deno.test("Integration: model can have multiple named data items with mixed type
       contentType: "text/plain",
       lifetime: "infinite",
       garbageCollection: 5,
-      tags: { type: "file" },
+      tags: { type: "file", modelName: "my-command" },
       ownerDefinition: owner,
     });
     await dataRepo.save(
@@ -591,7 +596,7 @@ Deno.test("Integration: model can have multiple named data items with mixed type
       contentType: "text/plain",
       lifetime: "infinite",
       garbageCollection: 5,
-      tags: { type: "file" },
+      tags: { type: "file", modelName: "my-command" },
       ownerDefinition: owner,
     });
     await dataRepo.save(
@@ -604,6 +609,7 @@ Deno.test("Integration: model can have multiple named data items with mixed type
     const modelResolver = new ModelResolver(definitionRepo, {
       repoDir,
       dataRepo,
+      dataQueryService: new DataQueryService(catalog, dataRepo),
     });
     const context = await modelResolver.buildContext();
 

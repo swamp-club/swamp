@@ -68,6 +68,7 @@ function makeDeps(
         > extends Promise<infer T> ? T : never,
       ),
     evaluateCel: (expr: string) => expr,
+    evaluateCelAsync: (expr: string) => Promise.resolve(expr),
     saveEvaluatedWorkflow: () => Promise.resolve(),
     getEvaluatedPath: (id) =>
       `/tmp/.swamp/workflows-evaluated/workflow-${id}.yaml`,

@@ -17,12 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import {
-  assertEquals,
-  assertNotEquals,
-  assertRejects,
-  assertStringIncludes,
-} from "@std/assert";
+import { assertEquals, assertNotEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import {
   coerceToSuffix,
@@ -2689,13 +2684,12 @@ Deno.test("DefaultStepExecutor wires dataQueryService into MethodContext", async
   });
 });
 
-// --- forEach.in async Promise detection (Issue #88) ---
+// --- forEach.in async helper resolution (Issue #88) ---
 
 Deno.test({
-  name:
-    "expandForEachSteps: throws UserError when forEach.in uses async data function",
-  // The error path interrupts normal cleanup of internally-opened files
-  // (e.g. the CatalogStore WAL), so resource sanitization is disabled.
+  name: "expandForEachSteps: awaits async data helpers like data.findBySpec",
+  // CatalogStore opens WAL files internally; these are still held by the
+  // time the test returns so resource sanitization is disabled.
   sanitizeResources: false,
   sanitizeOps: false,
   fn: async () => {
@@ -2735,22 +2729,12 @@ Deno.test({
           catalogStore,
         );
 
-        // The ModelResolver wires up async data delegates (findBySpec returns
-        // a Promise). expandForEachSteps uses sync evaluate, which hits the
-        // Promise detection guard and throws InvalidExpressionError. The
-        // forEach catch-and-wrap turns it into a UserError.
-        const error = await assertRejects(
-          () => service.execute(workflow.name),
-        );
-
-        assertStringIncludes(
-          (error as Error).message,
-          "unresolved Promise",
-        );
-        assertStringIncludes(
-          (error as Error).message,
-          "nested-workflows.md",
-        );
+        // data.findBySpec returns a Promise; expandForEachSteps awaits it
+        // via CelEvaluator.evaluateAsync. With no seeded data the result
+        // is an empty array, the forEach expands to zero steps, and the
+        // job completes without producing the old "unresolved Promise"
+        // error that this test previously asserted.
+        await service.execute(workflow.name);
       } finally {
         catalogStore.close();
       }

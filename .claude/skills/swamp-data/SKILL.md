@@ -11,6 +11,33 @@ machine-readable output.
 **Verify CLI syntax:** If unsure about exact flags or subcommands, run
 `swamp help data` for the complete, up-to-date CLI schema.
 
+## Query is the primitive; get/list/search/versions are shortcuts
+
+`swamp data query` is the general data-access command — it takes any CEL
+predicate over artifact metadata and content, with optional projections via
+`--select`. The `get`, `list`, `search`, and `versions` subcommands are
+shortcuts for common queries. **Prefer the shortcut when your intent matches** —
+`swamp data get my-model state` reads more clearly than the equivalent
+predicate. Reach for `swamp data query` directly when you need a multi-field
+predicate, a projection, or history beyond a single version.
+
+### CLI shortcut mapping
+
+| Shortcut                              | Underlying query                                                                            |
+| ------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `swamp data get <m> <n>`              | `swamp data query 'modelName == "<m>" && name == "<n>"' --select content`                   |
+| `swamp data get <m> <n> --version 2`  | `swamp data query 'modelName == "<m>" && name == "<n>" && version == 2' --select content`   |
+| `swamp data list <m>`                 | `swamp data query 'modelName == "<m>"'`                                                     |
+| `swamp data list <m> --type resource` | `swamp data query 'modelName == "<m>" && dataType == "resource"'`                           |
+| `swamp data list --workflow <w>`      | `swamp data query 'workflowName == "<w>"'`                                                  |
+| `swamp data list --run <id>`          | `swamp data query 'workflowRunId == "<id>"'`                                                |
+| `swamp data versions <m> <n>`         | `swamp data query 'modelName == "<m>" && name == "<n>" && version >= 0' --select 'version'` |
+| `swamp data search --tag env=prod`    | `swamp data query 'tags.env == "prod"'`                                                     |
+
+The shortcut and the equivalent query run through the same catalog and return
+the same `DataRecord` shape. See the `swamp-data-query` skill for the full list
+of queryable fields and predicate operators.
+
 ## Quick Reference
 
 | Task                   | Command                                               |
@@ -51,11 +78,18 @@ swamp data query 'modelName == "scanner"' --select '{"name": name, "os": attribu
 
 # By content
 swamp data query 'attributes.status == "failed"' --select 'name'
+
+# History — all versions of a specific data item
+swamp data query 'modelName == "my-model" && name == "state" && version >= 0' --select 'version'
+
+# Interactive mode — TUI with live autocomplete, no predicate needed
+swamp data query
 ```
 
 ## List Model Data
 
-View all data items for a model, grouped by tag type.
+View all data items for a model, grouped by tag type. Shortcut for
+`swamp data query 'modelName == "<model>"'`.
 
 ```bash
 swamp data list my-model --json
@@ -69,7 +103,9 @@ full output shape.
 
 ## Get Specific Data
 
-Retrieve the latest version of a specific data item.
+Retrieve the latest version of a specific data item. Shortcut for
+`swamp data query 'modelName == "<model>" && name == "<name>"' --select content`
+(omit `--select content` to return metadata only).
 
 ```bash
 swamp data get my-model execution-log --json
@@ -103,7 +139,8 @@ swamp data get --workflow test-data-fetch output --version 2 --json
 
 ## View Version History
 
-See all versions of a specific data item.
+See all versions of a specific data item. Shortcut for
+`swamp data query 'modelName == "<model>" && name == "<name>" && version >= 0'`.
 
 ```bash
 swamp data versions my-model state --json
@@ -238,10 +275,8 @@ Data is stored in the `.swamp/data/` directory:
   examples from all data commands
 - **Examples**: See [references/examples.md](references/examples.md) for data
   query patterns, CEL expressions, and GC scenarios
+- **Expressions**: See [references/expressions.md](references/expressions.md)
+  for CEL expression patterns and the `data.*` namespace shortcut mapping
 - **Troubleshooting**: See
   [references/troubleshooting.md](references/troubleshooting.md) for common
   errors and fixes
-- **Data design**: See [design/models.md](design/models.md) for data lifecycle
-  details
-- **Expressions**: See [design/expressions.md](design/expressions.md) for CEL
-  syntax

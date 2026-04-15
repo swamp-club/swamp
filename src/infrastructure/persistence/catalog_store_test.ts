@@ -38,6 +38,7 @@ function makeRow(overrides: Partial<CatalogRow> = {}): CatalogRow {
     data_name: "my-data",
     id: "data-uuid-001",
     version: 1,
+    is_latest: 1,
     model_name: "test-model-name",
     spec_name: "result",
     data_type: "resource",
@@ -81,17 +82,113 @@ Deno.test("CatalogStore: upsert and iterate round-trip", () => {
   store.close();
 });
 
-Deno.test("CatalogStore: upsert overwrites existing row", () => {
+Deno.test("CatalogStore: upsert keeps separate rows for distinct versions", () => {
+  const dbPath = makeTempDbPath();
+  const store = new CatalogStore(dbPath);
+
+  store.upsert(makeRow({ version: 1, size: 100, is_latest: 0 }));
+  store.upsert(makeRow({ version: 2, size: 200, is_latest: 1 }));
+
+  const rows = [...store.iterate()];
+  assertEquals(rows.length, 2);
+  assertEquals(rows.map((r) => r.version).sort(), [1, 2]);
+  const latest = rows.find((r) => r.is_latest === 1)!;
+  assertEquals(latest.version, 2);
+  assertEquals(latest.size, 200);
+  store.close();
+});
+
+Deno.test("CatalogStore: upsert replaces row at same (type, model, name, version)", () => {
   const dbPath = makeTempDbPath();
   const store = new CatalogStore(dbPath);
 
   store.upsert(makeRow({ version: 1, size: 100 }));
-  store.upsert(makeRow({ version: 2, size: 200 }));
+  store.upsert(makeRow({ version: 1, size: 999 }));
 
   const rows = [...store.iterate()];
   assertEquals(rows.length, 1);
-  assertEquals(rows[0].version, 2);
-  assertEquals(rows[0].size, 200);
+  assertEquals(rows[0].size, 999);
+  store.close();
+});
+
+Deno.test("CatalogStore: upsertNewVersion clears is_latest on prior rows", () => {
+  const dbPath = makeTempDbPath();
+  const store = new CatalogStore(dbPath);
+
+  store.upsertNewVersion(makeRow({ version: 1 }));
+  store.upsertNewVersion(makeRow({ version: 2 }));
+  store.upsertNewVersion(makeRow({ version: 3 }));
+
+  const rows = [...store.iterate()];
+  assertEquals(rows.length, 3);
+  const latestRows = rows.filter((r) => r.is_latest === 1);
+  assertEquals(latestRows.length, 1);
+  assertEquals(latestRows[0].version, 3);
+  store.close();
+});
+
+Deno.test("CatalogStore: upsertNewVersion ignores is_latest on input row", () => {
+  const dbPath = makeTempDbPath();
+  const store = new CatalogStore(dbPath);
+
+  // Caller passes is_latest: 0 but the method always records the incoming
+  // row as latest and clears any prior latest.
+  store.upsertNewVersion(makeRow({ version: 1, is_latest: 0 }));
+
+  const rows = [...store.iterate()];
+  assertEquals(rows.length, 1);
+  assertEquals(rows[0].is_latest, 1);
+  store.close();
+});
+
+Deno.test("CatalogStore: upsertNewVersion does not touch unrelated data names", () => {
+  const dbPath = makeTempDbPath();
+  const store = new CatalogStore(dbPath);
+
+  store.upsertNewVersion(makeRow({ data_name: "alpha", version: 1 }));
+  store.upsertNewVersion(makeRow({ data_name: "beta", version: 1 }));
+  store.upsertNewVersion(makeRow({ data_name: "alpha", version: 2 }));
+
+  const rows = [...store.iterate()];
+  assertEquals(rows.length, 3);
+  const alphaLatest = rows.find(
+    (r) => r.data_name === "alpha" && r.is_latest === 1,
+  );
+  const betaLatest = rows.find(
+    (r) => r.data_name === "beta" && r.is_latest === 1,
+  );
+  assertEquals(alphaLatest?.version, 2);
+  assertEquals(betaLatest?.version, 1);
+  store.close();
+});
+
+Deno.test("CatalogStore: removeVersion deletes a single version row", () => {
+  const dbPath = makeTempDbPath();
+  const store = new CatalogStore(dbPath);
+
+  store.upsertNewVersion(makeRow({ version: 1 }));
+  store.upsertNewVersion(makeRow({ version: 2 }));
+  store.upsertNewVersion(makeRow({ version: 3 }));
+
+  store.removeVersion("test-model", "model-001", "my-data", 2);
+
+  const rows = [...store.iterate()];
+  assertEquals(rows.length, 2);
+  assertEquals(rows.map((r) => r.version).sort(), [1, 3]);
+  store.close();
+});
+
+Deno.test("CatalogStore: remove deletes every version of a data name", () => {
+  const dbPath = makeTempDbPath();
+  const store = new CatalogStore(dbPath);
+
+  store.upsertNewVersion(makeRow({ version: 1 }));
+  store.upsertNewVersion(makeRow({ version: 2 }));
+  store.upsertNewVersion(makeRow({ version: 3 }));
+
+  store.remove("test-model", "model-001", "my-data");
+
+  assertEquals(store.count(), 0);
   store.close();
 });
 

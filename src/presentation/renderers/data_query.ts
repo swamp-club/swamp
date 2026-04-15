@@ -27,6 +27,8 @@ import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { renderMarkdownToTerminal } from "../markdown_renderer.ts";
+import { Table } from "@cliffy/table";
+import { bold } from "@std/fmt/colors";
 
 function formatSize(bytes: number): string {
   if (bytes < 1024) return `${bytes}B`;
@@ -64,6 +66,12 @@ function markdownTable(
 
 /**
  * Renders the default DataRecord table (no --select).
+ *
+ * Builds the table directly with Cliffy's Table primitive and returns
+ * already-rendered terminal text. The earlier implementation returned
+ * markdown that was then parsed by `marked` + `marked-terminal`, which
+ * scaled at ~3ms per row — fine for the TUI's bounded result set, fatal
+ * for `--limit 100000` on a real catalog.
  */
 function renderDefaultTable(data: DataQueryData): string {
   if (data.results.length === 0) {
@@ -87,13 +95,19 @@ function renderDefaultTable(data: DataQueryData): string {
     formatSize(r.size),
   ]);
 
-  let md = markdownTable(headers, rows);
+  const table = new Table()
+    .header(headers.map((h) => bold(h)))
+    .body(rows)
+    .border(true)
+    .padding(1);
+
+  let out = table.toString();
   if (data.limited) {
-    md += `\n\n*Showing ${data.total} results (limit reached)*`;
+    out += `\n\nShowing ${data.total} results (limit reached)`;
   } else {
-    md += `\n\n${data.total} result${data.total === 1 ? "" : "s"}`;
+    out += `\n\n${data.total} result${data.total === 1 ? "" : "s"}`;
   }
-  return md;
+  return out;
 }
 
 /**
@@ -195,11 +209,30 @@ function renderJson(data: DataQueryData): void {
 }
 
 /**
- * Renders query results as a markdown string, suitable for terminal display.
- * Used by both the non-interactive renderer and the interactive TUI.
+ * Renders query results as a markdown string. Only used for the projected
+ * (`--select`) path; the default table path bypasses markdown entirely and
+ * builds ANSI output directly via {@link renderQueryResultsTerminal}.
  */
 export function renderQueryResultsMarkdown(data: DataQueryData): string {
   return data.projected ? renderProjected(data) : renderDefaultTable(data);
+}
+
+/**
+ * Renders query results as pre-formatted terminal text. The default
+ * (non-projected) path uses Cliffy's Table primitive directly; the
+ * projected path still flows through `marked` since its output shapes
+ * (scalar/map/list) are easier to express as markdown.
+ *
+ * Used by both the non-interactive CLI renderer and the interactive TUI.
+ * The default-table branch scales linearly in row count; the projected
+ * branch is bounded by the markdown parser and should only be used for
+ * small result sets.
+ */
+export function renderQueryResultsTerminal(data: DataQueryData): string {
+  if (data.projected) {
+    return renderMarkdownToTerminal(renderQueryResultsMarkdown(data));
+  }
+  return renderDefaultTable(data);
 }
 
 export function createDataQueryRenderer(
@@ -213,11 +246,9 @@ export function createDataQueryRenderer(
       completed: (event: DataQueryEvent & { kind: "completed" }) => {
         if (outputMode === "json") {
           renderJson(event.data);
-        } else {
-          writeOutput(
-            renderMarkdownToTerminal(renderQueryResultsMarkdown(event.data)),
-          );
+          return;
         }
+        writeOutput(renderQueryResultsTerminal(event.data));
       },
       error: (event: DataQueryEvent & { kind: "error" }) => {
         throw new UserError(event.error.message);

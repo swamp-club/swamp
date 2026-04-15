@@ -318,6 +318,38 @@ export class JobRun implements TriggerEvaluationContext {
   }
 
   /**
+   * Replaces a forEach step's template entry with pending StepRuns for each
+   * expanded step name. Called after forEach.in resolves at job start so
+   * the persisted job run reflects the actual set of steps that will run,
+   * rather than leaving the un-executed template alongside the expansions.
+   *
+   * If the template has already been replaced in a prior call (for example
+   * when an expanded step was lazily added via {@link addExpandedStep}),
+   * this method leaves existing entries in place and only inserts missing
+   * expanded names. When `expandedNames` is empty the template is removed
+   * outright — an empty forEach result means no steps run.
+   */
+  replaceExpandedSteps(
+    templateName: string,
+    expandedNames: readonly string[],
+  ): void {
+    const templateIndex = this._steps.findIndex(
+      (s) => s.stepName === templateName,
+    );
+    if (templateIndex === -1) return;
+    const existing = new Map(
+      this._steps.map((s, i) => [s.stepName, i] as const),
+    );
+    const insertions: StepRun[] = [];
+    for (const name of expandedNames) {
+      if (!existing.has(name)) {
+        insertions.push(StepRun.pending(name));
+      }
+    }
+    this._steps.splice(templateIndex, 1, ...insertions);
+  }
+
+  /**
    * Marks the job as running.
    */
   start(): void {

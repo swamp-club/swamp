@@ -115,6 +115,7 @@ export function fromRow(
       ModelType.create(row.type_normalized),
       row.model_id,
       row.data_name,
+      row.version,
     );
   }
 
@@ -136,6 +137,7 @@ export function fromRow(
     id: row.id,
     name: row.data_name,
     version: row.version,
+    isLatest: row.is_latest === 1,
     createdAt: row.created_at,
     attributes,
     tags,
@@ -160,8 +162,11 @@ export function fromRow(
 
 /**
  * Converts a Data entity to a DataRecord asynchronously.
- * Used by data.version() and data.listVersions() which remain file-system-based
- * because the catalog only stores the latest version per item.
+ * Used by helpers that hold a Data entity loaded outside the catalog path.
+ *
+ * Callers that know whether the version is currently the latest for its
+ * (type, model, name) triple should pass `isLatest`. When omitted, the
+ * record reports `isLatest: false`.
  */
 export async function fromData(
   data: Data,
@@ -172,6 +177,7 @@ export async function fromData(
     version?: number;
     modelName?: string;
     dataName?: string;
+    isLatest?: boolean;
   } = {},
 ): Promise<DataRecord | null> {
   const resolvedVersion = options.version ?? data.version;
@@ -202,6 +208,7 @@ export async function fromData(
     id: data.id,
     name: data.name,
     version: resolvedVersion,
+    isLatest: options.isLatest ?? false,
     createdAt: data.createdAt.toISOString(),
     attributes,
     tags: { ...data.tags },

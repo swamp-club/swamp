@@ -214,13 +214,15 @@ dryRun: true
 
 ## Cross-Model Data References
 
-### Preferred: data.latest() Expressions
+### Use the `data.*` namespace
 
-Always use `data.latest()` for referencing other models' data. It reads directly
-from disk on every call, so it always reflects the latest state:
+Use `data.*` expressions to reference other models' data. `data.query()` is the
+underlying primitive; the shortcut helpers read more clearly when your intent
+matches, so prefer a shortcut if it fits and reach for `data.query()` when you
+need a multi-field predicate or a projection.
 
 ```yaml
-# CORRECT: data.latest() — always reads fresh data from disk
+# Shortcut — reads most clearly for a single-model-and-name lookup
 globalArguments:
   vpcId: ${{ data.latest("my-vpc", "main").attributes.VpcId }}
 
@@ -229,16 +231,16 @@ globalArguments:
   vpcId: ${{ model.my-vpc.resource.vpc.main.attributes.VpcId }}
 ```
 
-### Why data.latest() is Preferred
+### Why `data.*` vs `model.*.resource`
 
-| Feature                   | `data.latest()` | `model.*.resource` |
-| ------------------------- | --------------- | ------------------ |
-| Always fresh (no cache)   | Yes (sync disk) | Yes (eager load)   |
-| Supports vary dimensions  | Yes             | No                 |
-| Clear dependency tracking | Yes             | Yes                |
-| Future-proof              | Yes (canonical) | No (deprecated)    |
+| Feature                   | `data.*` namespace | `model.*.resource` |
+| ------------------------- | ------------------ | ------------------ |
+| Always fresh (no cache)   | Yes (sync disk)    | Yes (eager load)   |
+| Supports vary dimensions  | Yes                | No                 |
+| Clear dependency tracking | Yes                | Yes                |
+| Future-proof              | Yes                | No (deprecated)    |
 
-### Other data.* Functions
+### data.* functions
 
 ```yaml
 # Specific version (rollback scenario)
@@ -252,7 +254,13 @@ allSubnets: ${{ data.findBySpec("scanner", "subnet") }}
 
 # Find by tag
 prodResources: ${{ data.findByTag("env", "prod") }}
+
+# Multi-field predicate — reach for data.query() when no shortcut fits
+prodFailures: ${{ data.query('modelName == "scanner" && tags.env == "prod" && attributes.status == "failed"') }}
 ```
+
+See the `swamp-data` skill's references/expressions.md for the full shortcut
+mapping table.
 
 ### Self-References
 

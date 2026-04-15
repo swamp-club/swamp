@@ -442,13 +442,23 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     this.baseDir = baseDir ?? swampPath(repoDir, SWAMP_SUBDIRS.data);
   }
 
+  /**
+   * Records `data` as the latest version for (type, modelId, data.name) in
+   * the catalog. Clears `is_latest` on any prior row atomically and inserts
+   * the new row with `is_latest=1` inside a single SQLite transaction.
+   *
+   * Every production write path that mutates a data item (save, append,
+   * rename, restore, delete-specific-version) calls this exactly once with
+   * the row that should become authoritative afterwards.
+   */
   private catalogUpsert(type: ModelType, modelId: string, data: Data): void {
-    this.catalogStore.upsert({
+    this.catalogStore.upsertNewVersion({
       type_normalized: type.normalized,
       model_id: modelId,
       data_name: data.name,
       id: data.id,
       version: data.version,
+      is_latest: 1,
       model_name: data.tags["modelName"] ?? "",
       spec_name: data.tags["specName"] ?? "",
       data_type: data.tags["type"] ?? "",
@@ -924,6 +934,16 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
           throw error;
         }
       }
+
+      // Drop the deleted version's catalog row before touching the latest
+      // marker — leaves the catalog in a valid state even if the follow-up
+      // latest update fails.
+      this.catalogStore.removeVersion(
+        type.normalized,
+        modelId,
+        dataName,
+        version,
+      );
 
       // Update latest symlink if needed
       const versions = await this.listVersions(type, modelId, dataName);
@@ -1585,6 +1605,16 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       // Re-scan actual versions after parallel deletions to avoid stale marker.
       // Skip for dry-run — nothing was actually removed.
       if (!dryRun && versionsToRemove.length > 0) {
+        // Drop catalog rows for the versions that were removed from disk.
+        for (const removedVersion of versionsToRemove) {
+          this.catalogStore.removeVersion(
+            type.normalized,
+            modelId,
+            data.name,
+            removedVersion,
+          );
+        }
+
         const currentVersions = await this.listVersions(
           type,
           modelId,

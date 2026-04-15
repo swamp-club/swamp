@@ -73,7 +73,6 @@ import {
 } from "../expressions/model_resolver.ts";
 import { CelEvaluator } from "../../infrastructure/cel/cel_evaluator.ts";
 import { UserError } from "../errors.ts";
-import { InvalidExpressionError } from "../expressions/errors.ts";
 import {
   getRunLogger,
   runFileSink,
@@ -595,6 +594,9 @@ export class DefaultStepExecutor implements StepExecutor {
               id: handle.dataId,
               name: handle.name,
               version: handle.version,
+              // The resource was just saved by the current step, so this
+              // record is authoritative for the data item.
+              isLatest: true,
               createdAt: new Date().toISOString(),
               attributes,
               tags: handle.tags,
@@ -1408,7 +1410,23 @@ export class WorkflowExecutionService {
       // Expand forEach steps if we have expression context
       let expandedStepsMap: Map<string, ExpandedStep[]> | undefined;
       if (expressionContext && !options.lastEvaluated) {
-        expandedStepsMap = this.expandForEachSteps(job, expressionContext);
+        expandedStepsMap = await this.expandForEachSteps(
+          job,
+          expressionContext,
+        );
+        // Rewrite the jobRun's step list to match the expansion. The
+        // template StepRun (the step as written in the workflow) never
+        // executes once forEach expands, so leaving it in place makes it
+        // show up in history as a perpetually-pending phantom. When the
+        // original step is *not* a forEach, the expansion map reports a
+        // single entry whose expandedName equals the template — that's a
+        // no-op for replaceExpandedSteps.
+        for (const step of job.steps) {
+          if (!step.forEach) continue;
+          const expanded = expandedStepsMap.get(step.name);
+          const names = expanded ? expanded.map((e) => e.expandedName) : [];
+          jobRun.replaceExpandedSteps(step.name, names);
+        }
       }
 
       // Build step graph nodes from explicit dependencies
@@ -1526,10 +1544,10 @@ export class WorkflowExecutionService {
    * @param context - Expression context for evaluating forEach.in
    * @returns Map of original step name to expanded steps (or single entry for non-forEach steps)
    */
-  private expandForEachSteps(
+  private async expandForEachSteps(
     job: Job,
     context: ExpressionContext,
-  ): Map<string, ExpandedStep[]> {
+  ): Promise<Map<string, ExpandedStep[]>> {
     const celEvaluator = new CelEvaluator();
     const result = new Map<string, ExpandedStep[]>();
 
@@ -1557,29 +1575,12 @@ export class WorkflowExecutionService {
       }
 
       const celExpr = match[1];
-      let items: unknown;
-      try {
-        items = celEvaluator.evaluate(celExpr, context);
-      } catch (error) {
-        if (
-          error instanceof InvalidExpressionError &&
-          error.message.includes("unresolved Promise")
-        ) {
-          throw new UserError(
-            `forEach.in expression '$\{{ ${celExpr} }}' returned an ` +
-              `unresolved Promise.\n\n` +
-              `forEach.in is evaluated synchronously and cannot await ` +
-              `async CEL functions (data.latest, data.findByTag, ` +
-              `data.findBySpec, data.query).\n\n` +
-              `Fix: move the async call into a parent workflow's ` +
-              `task.inputs (which IS awaited) and have the child ` +
-              `iterate over inputs.<name>. See:\n` +
-              `.claude/skills/swamp-workflow/references/` +
-              `nested-workflows.md#when-to-use-nested-workflows`,
-          );
-        }
-        throw error;
-      }
+      // Async evaluator so data.* helpers that return Promises (latest,
+      // findByTag, findBySpec, query, etc.) resolve here before we iterate.
+      // cel-js natively propagates Promises through operators and method
+      // calls; `await` on the Environment.evaluate result yields the
+      // resolved value.
+      const items = await celEvaluator.evaluateAsync(celExpr, context);
 
       // Handle both arrays and objects
       const expandedSteps: ExpandedStep[] = [];

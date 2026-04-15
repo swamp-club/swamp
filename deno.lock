@@ -4,6 +4,7 @@
     "jsr:@cliffy/command@1": "1.0.0",
     "jsr:@cliffy/flags@1.0.0": "1.0.0",
     "jsr:@cliffy/internal@1.0.0": "1.0.0",
+    "jsr:@cliffy/table@1": "1.0.0",
     "jsr:@cliffy/table@1.0.0": "1.0.0",
     "jsr:@logtape/logtape@^2.0.2": "2.0.4",
     "jsr:@logtape/pretty@^2.0.2": "2.0.2",
@@ -11,8 +12,10 @@
     "jsr:@std/assert@^1.0.18": "1.0.19",
     "jsr:@std/cli@^1.0.27": "1.0.27",
     "jsr:@std/fmt@^1.0.9": "1.0.9",
+    "jsr:@std/fs@*": "1.0.23",
     "jsr:@std/fs@^1.0.22": "1.0.23",
     "jsr:@std/internal@^1.0.12": "1.0.12",
+    "jsr:@std/path@*": "1.1.4",
     "jsr:@std/path@^1.1.4": "1.1.4",
     "jsr:@std/semver@^1.0.8": "1.0.8",
     "jsr:@std/text@^1.0.17": "1.0.17",
@@ -46,7 +49,7 @@
       "dependencies": [
         "jsr:@cliffy/flags",
         "jsr:@cliffy/internal",
-        "jsr:@cliffy/table",
+        "jsr:@cliffy/table@1.0.0",
         "jsr:@std/fmt",
         "jsr:@std/semver",
         "jsr:@std/text"
@@ -98,7 +101,7 @@
       "integrity": "3ecbae4ce4fee03b180fa710caff36bb5adb66631c46a6460aaad49515565a37",
       "dependencies": [
         "jsr:@std/internal",
-        "jsr:@std/path"
+        "jsr:@std/path@^1.1.4"
       ]
     },
     "@std/internal@1.0.12": {
@@ -1487,6 +1490,7 @@
   "workspace": {
     "dependencies": [
       "jsr:@cliffy/command@1",
+      "jsr:@cliffy/table@1",
       "jsr:@logtape/logtape@^2.0.2",
       "jsr:@logtape/pretty@^2.0.2",
       "jsr:@std/assert@^1.0.18",
