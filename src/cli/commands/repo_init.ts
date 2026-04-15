@@ -80,7 +80,7 @@ export const repoInitCommand = new Command()
   .type("aiTool", aiToolType)
   .option(
     "-t, --tool <tool:aiTool>",
-    "AI coding tool to configure for (claude, cursor, opencode, codex, kiro, none)",
+    "AI coding tool to configure for (claude, cursor, opencode, codex, copilot, kiro, none)",
     { default: "claude" },
   )
   .action(repoInitAction);
@@ -122,7 +122,7 @@ export const repoCommand = new Command()
   .type("aiTool", aiToolType)
   .option(
     "-t, --tool <tool:aiTool>",
-    "AI coding tool to configure for (claude, cursor, opencode, codex, kiro, none)",
+    "AI coding tool to configure for (claude, cursor, opencode, codex, copilot, kiro, none)",
     { default: "claude" },
   )
   .action(repoInitAction)
@@ -136,7 +136,7 @@ export const repoCommand = new Command()
       .type("aiTool", aiToolType)
       .option(
         "-t, --tool <tool:aiTool>",
-        "AI coding tool to configure for (claude, cursor, opencode, codex, kiro, none)",
+        "AI coding tool to configure for (claude, cursor, opencode, codex, copilot, kiro, none)",
         { default: "claude" },
       )
       .action(repoInitAction),
