@@ -42,6 +42,7 @@ export interface FetchedIssue {
   status: string;
   title: string;
   body: string;
+  author: string;
   comments: { author: string; body: string; createdAt: string }[];
   assignees: { userId: string; username: string }[];
 }
@@ -105,6 +106,7 @@ export class SwampClubClient {
           status?: string;
           title?: string;
           body?: string;
+          authorUsername?: string;
           comments?: {
             authorUsername?: string;
             author?: string;
@@ -125,6 +127,7 @@ export class SwampClubClient {
         status: issue.status ?? "open",
         title: issue.title ?? "",
         body: issue.body ?? "",
+        author: issue.authorUsername ?? "unknown",
         comments: (issue.comments ?? []).map((c) => ({
           author: c.authorUsername ?? c.author ?? "unknown",
           body: c.body ?? "",
