@@ -250,8 +250,22 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       ) as Record<string, unknown>
       : definition.globalArguments;
 
-    // Validate per-method arguments against the method's schema
-    const methodArgs = coerceMethodArgs(resolvedMethodArgs, method.arguments);
+    // Merge global args as fallback under per-method args (per design/models.md:
+    // "at execution time receives the merged set of global arguments and
+    // per-method arguments"). Per-method arguments take precedence.
+    // Exclude global args with unresolved ${{ ... }} expressions — those are
+    // guarded by a Proxy on context.globalArgs and should not be injected
+    // into per-method arguments where they could pass schema validation as
+    // plain strings.
+    const filteredGlobalArgs: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(resolvedGlobalArgs)) {
+      if (typeof value === "string" && containsExpression(value)) {
+        continue;
+      }
+      filteredGlobalArgs[key] = value;
+    }
+    const mergedArgs = { ...filteredGlobalArgs, ...resolvedMethodArgs };
+    const methodArgs = coerceMethodArgs(mergedArgs, method.arguments);
     const argsResult = method.arguments.safeParse(methodArgs);
 
     if (!argsResult.success) {
@@ -292,8 +306,14 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         tags: definition.tags,
       },
       // Store unresolved args (with sentinels) so the shell model can
-      // resolve vault secrets via env vars instead of command string injection
-      unresolvedMethodArgs: rawMethodArgs,
+      // resolve vault secrets via env vars instead of command string injection.
+      // Merge global args as fallback so vault sentinels from either source
+      // are available for env-var isolation. Reuse the same expression filter
+      // applied to the validated merge above.
+      unresolvedMethodArgs: {
+        ...filteredGlobalArgs,
+        ...rawMethodArgs,
+      },
     };
 
     // Execute the method with pre-validated args

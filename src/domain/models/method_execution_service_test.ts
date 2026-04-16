@@ -982,6 +982,92 @@ Deno.test("execute passes logger in context to method", async () => {
   assertEquals(typeof (capturedLogger as { info: unknown }).info, "function");
 });
 
+// ---------- globalArguments Fallback Tests ----------
+
+Deno.test("execute: globalArguments provide fallback when method arguments are empty", async () => {
+  const service = new DefaultMethodExecutionService();
+
+  let receivedMessage = "";
+  const model: ModelDefinition = {
+    type: ModelType.create("test/global-fallback"),
+    version: "1",
+    globalArguments: z.object({ message: z.string().min(1) }),
+    resources: {
+      "message": {
+        description: "Test message",
+        schema: z.object({ message: z.string(), timestamp: z.string() }),
+        lifetime: "ephemeral",
+        garbageCollection: 10,
+      },
+    },
+    methods: {
+      write: {
+        description: "Write a message",
+        arguments: z.object({ message: z.string().min(1) }),
+        execute: async (args: Record<string, unknown>, context) => {
+          receivedMessage = args.message as string;
+          const handle = await context.writeResource!("message", "message", {
+            message: args.message,
+            timestamp: new Date().toISOString(),
+          });
+          return { dataHandles: [handle] };
+        },
+      },
+    },
+  };
+
+  // globalArguments has "message" but methods.write.arguments is empty —
+  // simulates `swamp model create command/shell my-model --global-arg 'run=echo hello'`
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { message: "from-global" },
+    methods: { write: { arguments: {} } },
+  });
+
+  const { context } = createTestContext({ modelType: model.type });
+  const result = await service.execute(
+    definition,
+    model.methods.write,
+    context,
+  );
+
+  assertEquals(receivedMessage, "from-global");
+  assertEquals(result.dataHandles?.length, 1);
+});
+
+Deno.test("execute: per-method arguments override globalArguments", async () => {
+  const service = new DefaultMethodExecutionService();
+
+  let receivedMessage = "";
+  const model: ModelDefinition = {
+    type: ModelType.create("test/method-override"),
+    version: "1",
+    methods: {
+      write: {
+        description: "Write a message",
+        arguments: z.object({ message: z.string().min(1) }),
+        execute: (args: Record<string, unknown>) => {
+          receivedMessage = args.message as string;
+          return Promise.resolve({});
+        },
+      },
+    },
+  };
+
+  // Both globalArguments and method arguments have "message" —
+  // per-method should win
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { message: "from-global" },
+    methods: { write: { arguments: { message: "from-method" } } },
+  });
+
+  const { context } = createTestContext({ modelType: model.type });
+  await service.execute(definition, model.methods.write, context);
+
+  assertEquals(receivedMessage, "from-method");
+});
+
 // ---------- Zod Type Coercion Tests ----------
 
 Deno.test("execute coerces string boolean and number args before validation", async () => {
