@@ -41,7 +41,10 @@ import {
   createResourceWriter,
 } from "./data_writer.ts";
 import { coerceMethodArgs } from "./zod_type_coercion.ts";
-import { containsExpression } from "../expressions/expression_parser.ts";
+import {
+  containsExpression,
+  valueContainsExpression,
+} from "../expressions/expression_parser.ts";
 import type { Data } from "../data/data.ts";
 import type { DriverOutput } from "../drivers/execution_driver.ts";
 import { RawExecutionDriver } from "../drivers/raw_execution_driver.ts";
@@ -253,17 +256,27 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
     // Merge global args as fallback under per-method args (per design/models.md:
     // "at execution time receives the merged set of global arguments and
     // per-method arguments"). Per-method arguments take precedence.
-    // Exclude global args with unresolved ${{ ... }} expressions — those are
-    // guarded by a Proxy on context.globalArgs and should not be injected
-    // into per-method arguments where they could pass schema validation as
-    // plain strings.
+    // Exclude global args with unresolved ${{ ... }} expressions (recursively,
+    // including nested objects/arrays) — those are guarded by a Proxy on
+    // context.globalArgs and should not be injected into per-method arguments
+    // where they could pass schema validation as plain strings.
     const filteredGlobalArgs: Record<string, unknown> = {};
     for (const [key, value] of Object.entries(resolvedGlobalArgs)) {
-      if (typeof value === "string" && containsExpression(value)) {
+      if (valueContainsExpression(value)) {
         continue;
       }
       filteredGlobalArgs[key] = value;
     }
+    // Build a separate filter from raw (pre-vault-resolution) global args so
+    // vault sentinel tokens are preserved for unresolvedMethodArgs below.
+    const filteredRawGlobalArgs: Record<string, unknown> = {};
+    for (const [key, value] of Object.entries(definition.globalArguments)) {
+      if (valueContainsExpression(value)) {
+        continue;
+      }
+      filteredRawGlobalArgs[key] = value;
+    }
+
     const mergedArgs = { ...filteredGlobalArgs, ...resolvedMethodArgs };
     const methodArgs = coerceMethodArgs(mergedArgs, method.arguments);
     const argsResult = method.arguments.safeParse(methodArgs);
@@ -307,11 +320,12 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       },
       // Store unresolved args (with sentinels) so the shell model can
       // resolve vault secrets via env vars instead of command string injection.
-      // Merge global args as fallback so vault sentinels from either source
-      // are available for env-var isolation. Reuse the same expression filter
-      // applied to the validated merge above.
+      // Merge raw (pre-vault-resolution) global args as fallback so vault
+      // sentinel tokens from either source are preserved for env-var isolation.
+      // Filter out unresolved ${{ }} expressions (same policy as the method
+      // args merge above).
       unresolvedMethodArgs: {
-        ...filteredGlobalArgs,
+        ...filteredRawGlobalArgs,
         ...rawMethodArgs,
       },
     };
