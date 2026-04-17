@@ -114,6 +114,38 @@ export function renderAutoResolveNotFound(
 }
 
 /**
+ * Renders an error message when auto-resolution finds the extension
+ * on disk but refuses to re-install it (issue #121). The user likely
+ * has local edits preventing the type from registering; they must
+ * either fix the source or opt in to discarding edits via an explicit
+ * `extension pull --force`.
+ */
+export function renderAutoResolveAlreadyInstalled(
+  extension: string,
+  path: string,
+  mode: OutputMode,
+): void {
+  if (mode === "json") {
+    console.log(
+      JSON.stringify({
+        event: "auto_resolve",
+        status: "failed",
+        extension,
+        path,
+        reason: "already_installed",
+      }),
+    );
+  } else {
+    logger
+      .error`Extension ${extension} is already installed at ${path} but failed to load.`;
+    logger
+      .error`Local edits may be preventing it from registering — inspect the source and fix errors.`;
+    logger
+      .error`To reset to the registry version and discard local changes, run: swamp extension pull ${extension} --force`;
+  }
+}
+
+/**
  * Renders an error message when auto-resolution fails due to a network error.
  */
 export function renderAutoResolveNetworkError(

@@ -355,6 +355,24 @@ swamp extension trust auto-trust <on|off> # Enable/disable membership auto-trust
 3. **Search fallback** — if direct lookup fails, search the registry for
    matching extensions.
 
+### Safety: never overwrite on-disk extensions
+
+Auto-resolution will never overwrite an extension that is already installed
+on disk. If the type failed to register despite the extension being present,
+something is wrong locally (commonly a user's in-progress edit introducing
+a syntax error) and a silent force-pull would destroy that work. The
+resolver detects this case by combining two checks: the extension must be
+listed in `upstream_extensions.json` **and** its per-extension directory
+must exist under `.swamp/pulled-extensions/<name>/`. Both must hold for
+the resolver to refuse; if either is missing (e.g. the user removed the
+directory), a clean install proceeds.
+
+When the resolver refuses, the user sees the on-disk path and the exact
+command to reset to the registry version:
+`swamp extension pull <name> --force`. That command is the only way
+auto-installation state can overwrite a pulled extension — no other
+auto-resolve, validate, or run command will ever clobber local edits.
+
 ### Hot-Loading
 
 After installation, swamp re-runs model and vault discovery with

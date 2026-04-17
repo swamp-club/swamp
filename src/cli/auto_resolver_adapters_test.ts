@@ -192,6 +192,128 @@ Deno.test("auto_resolver_adapters: hotLoadVaults is a no-op when no pulled vault
   }
 });
 
+// Issue #121 regression tests: the auto-resolver adapter must refuse to
+// silently overwrite on-disk extensions. These tests lock in the behavior
+// that prevents the force-pull data-loss bug from returning.
+
+Deno.test("auto_resolver_adapters: isInstalled returns false when lockfile is missing", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    const lockfilePath = join(
+      tmpDir,
+      "extensions",
+      "models",
+      "upstream_extensions.json",
+    );
+    const adapter = createAutoResolveInstallerAdapter({
+      ...stubCallbacks,
+      lockfilePath,
+      repoDir: tmpDir,
+      denoRuntime: stubDenoRuntime,
+    });
+
+    assertEquals(await adapter.isInstalled("@fake/anything"), false);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("auto_resolver_adapters: isInstalled returns false on lockfile/filesystem drift", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    // Lockfile lists the extension, but the on-disk directory was
+    // manually removed. Returning true here would make the resolver
+    // surface a confusing "already installed but failed" error when
+    // the files are actually gone — a clean reinstall is correct.
+    const lockfilePath = await seedLockfile(tmpDir, {
+      "@fake/deleted-on-disk": [
+        ".swamp/pulled-extensions/@fake/deleted-on-disk/models/x.ts",
+      ],
+    });
+
+    const adapter = createAutoResolveInstallerAdapter({
+      ...stubCallbacks,
+      lockfilePath,
+      repoDir: tmpDir,
+      denoRuntime: stubDenoRuntime,
+    });
+
+    assertEquals(await adapter.isInstalled("@fake/deleted-on-disk"), false);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("auto_resolver_adapters: isInstalled returns true when lockfile AND dir both present", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    const lockfilePath = await seedLockfile(tmpDir, {
+      "@fake/on-disk": [
+        ".swamp/pulled-extensions/@fake/on-disk/models/x.ts",
+      ],
+    });
+    await ensureDir(
+      join(tmpDir, ".swamp/pulled-extensions/@fake/on-disk"),
+    );
+
+    const adapter = createAutoResolveInstallerAdapter({
+      ...stubCallbacks,
+      lockfilePath,
+      repoDir: tmpDir,
+      denoRuntime: stubDenoRuntime,
+    });
+
+    assertEquals(await adapter.isInstalled("@fake/on-disk"), true);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("auto_resolver_adapters: isInstalled returns false for extension not in lockfile", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    const lockfilePath = await seedLockfile(tmpDir, {
+      "@fake/other": [".swamp/pulled-extensions/@fake/other/models/x.ts"],
+    });
+
+    const adapter = createAutoResolveInstallerAdapter({
+      ...stubCallbacks,
+      lockfilePath,
+      repoDir: tmpDir,
+      denoRuntime: stubDenoRuntime,
+    });
+
+    assertEquals(await adapter.isInstalled("@fake/not-listed"), false);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("auto_resolver_adapters: installedPath returns the per-extension root", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    const lockfilePath = join(
+      tmpDir,
+      "extensions",
+      "models",
+      "upstream_extensions.json",
+    );
+    const adapter = createAutoResolveInstallerAdapter({
+      ...stubCallbacks,
+      lockfilePath,
+      repoDir: tmpDir,
+      denoRuntime: stubDenoRuntime,
+    });
+
+    assertEquals(
+      adapter.installedPath("@fake/ext"),
+      join(tmpDir, ".swamp", "pulled-extensions", "@fake/ext"),
+    );
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
 Deno.test("auto_resolver_adapters: hotLoadDatastores is a no-op when no pulled datastore dirs exist", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
   try {

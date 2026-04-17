@@ -22,12 +22,14 @@ import {
   SWAMP_SUBDIRS,
   swampPath,
 } from "../infrastructure/persistence/paths.ts";
+import { readUpstreamExtensions } from "../infrastructure/persistence/upstream_extensions.ts";
 import type { DenoRuntime } from "../domain/runtime/deno_runtime.ts";
 import type {
   AutoResolveOutputPort,
   ExtensionInstallerPort,
 } from "../domain/extensions/extension_auto_resolver.ts";
 import {
+  ConflictError,
   enumeratePulledExtensionDirs,
   type ExtensionRegistryInfo,
   installExtension,
@@ -38,6 +40,7 @@ import { UserDatastoreLoader } from "../domain/datastore/user_datastore_loader.t
 import type { DatastorePathResolver } from "../domain/datastore/datastore_path_resolver.ts";
 import type { OutputMode } from "../presentation/output/output.ts";
 import {
+  renderAutoResolveAlreadyInstalled,
   renderAutoResolveInstalled,
   renderAutoResolveInstalling,
   renderAutoResolveNetworkError,
@@ -76,24 +79,63 @@ export function createAutoResolveInstallerAdapter(
   } = config;
 
   return {
+    async isInstalled(extensionName: string) {
+      // Dual check: lockfile entry AND per-extension directory present on
+      // disk. Lockfile-only would miss the drift case where the user
+      // `rm -rf`'d the pulled dir; fs-only would miss the fact that a
+      // pre-existing directory could belong to a different extension.
+      // Both must hold for the service's "never overwrite" policy to
+      // apply — otherwise a clean install should proceed.
+      const upstream = await readUpstreamExtensions(lockfilePath);
+      if (!upstream[extensionName]) return false;
+      try {
+        const stat = await Deno.stat(
+          swampPath(repoDir, "pulled-extensions", extensionName),
+        );
+        return stat.isDirectory;
+      } catch {
+        return false;
+      }
+    },
+
+    installedPath(extensionName: string) {
+      return swampPath(repoDir, "pulled-extensions", extensionName);
+    },
+
     async install(extensionName: string) {
-      const result = await installExtension(
-        { name: extensionName, version: null },
-        {
-          getExtension,
-          downloadArchive,
-          getChecksum,
-          logger,
-          lockfilePath,
-          skillsDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledSkills),
-          repoDir,
-          force: true,
-          alreadyPulled: new Set(),
-          depth: 0,
-        },
-      );
-      if (!result) return null;
-      return { version: result.version };
+      // force: false so installExtension raises ConflictError rather than
+      // silently overwriting any existing files. The service's
+      // isInstalled check normally prevents reaching this point when the
+      // extension is already on disk; the ConflictError catch below is
+      // defence-in-depth for races between isInstalled and install that
+      // the per-type re-entrancy guard in the resolver cannot cover
+      // (e.g. two types resolving the same extension concurrently).
+      try {
+        const result = await installExtension(
+          { name: extensionName, version: null },
+          {
+            getExtension,
+            downloadArchive,
+            getChecksum,
+            logger,
+            lockfilePath,
+            skillsDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledSkills),
+            repoDir,
+            force: false,
+            alreadyPulled: new Set(),
+            depth: 0,
+          },
+        );
+        if (!result) return null;
+        return { version: result.version };
+      } catch (error) {
+        if (error instanceof ConflictError) {
+          logger
+            .debug`Auto-install of ${extensionName} hit conflicts: ${error.conflicts}`;
+          return null;
+        }
+        throw error;
+      }
     },
 
     // Hot-load walks every pulled extension's per-type subtree (via
@@ -186,6 +228,9 @@ export function createAutoResolveOutputAdapter(
     },
     networkError(type: string, error: string) {
       renderAutoResolveNetworkError(type, error, mode);
+    },
+    alreadyInstalledButFailed(extension: string, path: string) {
+      renderAutoResolveAlreadyInstalled(extension, path, mode);
     },
   };
 }

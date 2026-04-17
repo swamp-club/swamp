@@ -66,6 +66,19 @@ export interface ExtensionInstallResultInfo {
  * Decouples the domain service from the CLI install infrastructure.
  */
 export interface ExtensionInstallerPort {
+  /**
+   * Returns true when the extension is already present on disk. The domain
+   * service uses this to refuse silent re-installs that would overwrite
+   * local edits (issue #121).
+   */
+  isInstalled(extensionName: string): Promise<boolean>;
+  /**
+   * Returns the absolute path where the extension is (or would be)
+   * installed on disk. Paired with `isInstalled` so the domain service
+   * can surface the path in error messages without reaching into
+   * infrastructure.
+   */
+  installedPath(extensionName: string): string;
   install(extensionName: string): Promise<ExtensionInstallResultInfo | null>;
   hotLoadModels(): Promise<number>;
   hotLoadVaults(): Promise<void>;
@@ -86,6 +99,13 @@ export interface AutoResolveOutputPort {
   installed(extension: string, version: string, modelsRegistered: number): void;
   notFound(type: string): void;
   networkError(type: string, error: string): void;
+  /**
+   * Emitted when auto-resolution finds an extension on disk but refuses
+   * to re-install it because local edits may be preventing the type
+   * from registering. Gives the user the file path and the explicit
+   * opt-in command to reset to the registry version.
+   */
+  alreadyInstalledButFailed(extension: string, path: string): void;
 }
 
 /**
@@ -299,6 +319,19 @@ export class ExtensionAutoResolver {
 
     const version = extInfo.latestVersion;
     if (!version) return false;
+
+    // Issue #121: refuse to re-install an extension that already exists
+    // on disk. The type failing to register here means something is
+    // broken locally (e.g. user edits introduced a syntax error); a
+    // silent force-pull would overwrite those edits and destroy WIP.
+    // Surface an actionable error and let the user decide.
+    if (await extensionInstaller.isInstalled(extensionName)) {
+      output.alreadyInstalledButFailed(
+        extensionName,
+        extensionInstaller.installedPath(extensionName),
+      );
+      return false;
+    }
 
     output.installing(extensionName, version, extInfo.description);
 

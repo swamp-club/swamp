@@ -53,6 +53,9 @@ function createMockOutput(): AutoResolveOutputPort & { calls: string[] } {
     networkError(type: string, _err: string) {
       calls.push(`networkError:${type}`);
     },
+    alreadyInstalledButFailed(ext: string, path: string) {
+      calls.push(`alreadyInstalledButFailed:${ext}:${path}`);
+    },
   };
 }
 
@@ -86,10 +89,23 @@ function createMockLookup(
 function createMockInstaller(
   shouldSucceed = true,
   version = "2026.03.16.1",
-): ExtensionInstallerPort & { installCalls: string[] } {
+  alreadyInstalled = false,
+): ExtensionInstallerPort & {
+  installCalls: string[];
+  isInstalledCalls: string[];
+} {
   const installCalls: string[] = [];
+  const isInstalledCalls: string[] = [];
   return {
     installCalls,
+    isInstalledCalls,
+    isInstalled(extensionName: string) {
+      isInstalledCalls.push(extensionName);
+      return Promise.resolve(alreadyInstalled);
+    },
+    installedPath(extensionName: string) {
+      return `/fake/pulled-extensions/${extensionName}`;
+    },
     install(extensionName: string) {
       installCalls.push(extensionName);
       if (!shouldSucceed) return Promise.resolve(null);
@@ -298,6 +314,56 @@ Deno.test("ExtensionAutoResolver - handles non-@ prefixed types", async () => {
   const result = await resolver.resolve("swamp/echo/v2");
   assertEquals(result, true);
   assertEquals(installer.installCalls, ["@swamp/echo"]);
+});
+
+Deno.test("ExtensionAutoResolver - refuses to install when extension is already on disk", async () => {
+  const output = createMockOutput();
+  const installer = createMockInstaller(true, "2026.03.16.1", true);
+  const resolver = new ExtensionAutoResolver({
+    allowedCollectives: ["swamp"],
+    extensionLookup: createMockLookup({
+      "@swamp/aws": {
+        description: "AWS models",
+        latestVersion: "2026.03.16.1",
+      },
+    }),
+    extensionInstaller: installer,
+    output,
+  });
+
+  const result = await resolver.resolve("@swamp/aws/ec2/instance");
+  assertEquals(result, false);
+  // install must not have been called — silent overwrite would destroy edits
+  assertEquals(installer.installCalls, []);
+  // isInstalled was asked
+  assertEquals(installer.isInstalledCalls, ["@swamp/aws"]);
+  // user-visible output surfaced the "already installed but failed" event,
+  // not an install-started event
+  const kinds = output.calls.map((c) => c.split(":")[0]);
+  assertEquals(kinds.includes("installing"), false);
+  assertEquals(kinds.includes("alreadyInstalledButFailed"), true);
+});
+
+Deno.test("ExtensionAutoResolver - isInstalled is checked before install on the happy path", async () => {
+  const output = createMockOutput();
+  const installer = createMockInstaller();
+  const resolver = new ExtensionAutoResolver({
+    allowedCollectives: ["swamp"],
+    extensionLookup: createMockLookup({
+      "@swamp/aws": {
+        description: "AWS models",
+        latestVersion: "2026.03.16.1",
+      },
+    }),
+    extensionInstaller: installer,
+    output,
+  });
+
+  await resolver.resolve("@swamp/aws/ec2/instance");
+  // isInstalled must be consulted before the install proceeds — this is
+  // the regression guard for issue #121.
+  assertEquals(installer.isInstalledCalls, ["@swamp/aws"]);
+  assertEquals(installer.installCalls, ["@swamp/aws"]);
 });
 
 Deno.test("ExtensionAutoResolver - skips types without a collective", async () => {
