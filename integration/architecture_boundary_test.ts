@@ -131,7 +131,12 @@ function importsLayer(
 // Ratchet: current number of mutual dependencies between bounded contexts.
 // If someone breaks a cycle, the count decreases and the test still passes.
 // If someone introduces a new mutual dependency, the test fails.
-const KNOWN_MUTUAL_DEPENDENCIES = 13;
+//
+// extensions <-> models was added by #125 — bundle_freshness is a
+// cross-cutting extensions-domain service consumed by the models loader.
+// The reverse edge (extensions → models) already existed via
+// extension_auto_resolver and friends.
+const KNOWN_MUTUAL_DEPENDENCIES = 14;
 
 Deno.test(
   "no new mutual dependencies between bounded contexts (ratchet)",

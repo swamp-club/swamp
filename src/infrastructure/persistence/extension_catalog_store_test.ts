@@ -18,7 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { join } from "@std/path";
+import { DatabaseSync } from "node:sqlite";
+import { dirname, join } from "@std/path";
+import { ensureDirSync } from "@std/fs";
 import {
   ExtensionCatalogStore,
   type ExtensionTypeRow,
@@ -401,4 +403,70 @@ Deno.test("ExtensionCatalogStore: setLayoutVersion overwrites previous value", (
   store.setLayoutVersion("v2");
   assertEquals(store.getLayoutVersion(), "v2");
   store.close();
+});
+
+Deno.test("ExtensionCatalogStore: upsert and findByType round-trip source_fingerprint", () => {
+  const dbPath = makeTempDbPath();
+  const store = new ExtensionCatalogStore(dbPath);
+
+  store.upsert(makeRow({ source_fingerprint: "abc123deadbeef" }));
+  const found = store.findByType("@myorg/echo", "model");
+  assertEquals(found?.source_fingerprint, "abc123deadbeef");
+  store.close();
+});
+
+Deno.test("ExtensionCatalogStore: source_fingerprint defaults to empty string when omitted from upsert", () => {
+  const dbPath = makeTempDbPath();
+  const store = new ExtensionCatalogStore(dbPath);
+
+  // Row built without source_fingerprint — sibling loaders (reports,
+  // drivers, datastores, vaults) still omit it today.
+  store.upsert(makeRow());
+  const found = store.findByType("@myorg/echo", "model");
+  assertEquals(found?.source_fingerprint, "");
+  store.close();
+});
+
+Deno.test("ExtensionCatalogStore: migrates pre-#125 schema by adding source_fingerprint column", () => {
+  const dbPath = makeTempDbPath();
+  ensureDirSync(dirname(dbPath));
+
+  // Seed a DB with the pre-#125 schema — no source_fingerprint column.
+  const seed = new DatabaseSync(dbPath);
+  seed.exec(`
+    CREATE TABLE bundle_types (
+      source_path     TEXT NOT NULL PRIMARY KEY,
+      type_normalized TEXT NOT NULL,
+      kind            TEXT NOT NULL DEFAULT 'model',
+      bundle_path     TEXT NOT NULL,
+      version         TEXT NOT NULL DEFAULT '',
+      description     TEXT NOT NULL DEFAULT '',
+      extends_type    TEXT NOT NULL DEFAULT '',
+      source_mtime    TEXT NOT NULL DEFAULT ''
+    );
+    CREATE TABLE bundle_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    INSERT INTO bundle_types (
+      source_path, type_normalized, kind, bundle_path, version,
+      description, extends_type, source_mtime
+    ) VALUES (
+      '/old/row.ts', '@legacy/row', 'model', '/old/bundle.js',
+      '2026.01.01.1', '', '', '2026-01-01T00:00:00.000Z'
+    );
+  `);
+  seed.close();
+
+  // Opening through ExtensionCatalogStore must run the migration.
+  const store = new ExtensionCatalogStore(dbPath);
+
+  // Legacy row survives with empty source_fingerprint — forces a
+  // rebundle on the next findStaleFiles pass.
+  const legacy = store.findByType("@legacy/row", "model");
+  assertEquals(legacy?.source_fingerprint, "");
+
+  // Re-opening is a no-op — migration is idempotent.
+  store.close();
+  const store2 = new ExtensionCatalogStore(dbPath);
+  const again = store2.findByType("@legacy/row", "model");
+  assertEquals(again?.source_fingerprint, "");
+  store2.close();
 });

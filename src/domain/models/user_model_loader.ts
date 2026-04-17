@@ -29,7 +29,12 @@ import {
   sanitizeDataUrlError,
   uint8ArrayToBase64,
 } from "./bundle.ts";
-import { resolveLocalImports } from "./local_import_resolver.ts";
+import {
+  computeSourceFingerprint,
+  createFreshnessCache,
+  findStaleFiles as findStaleFilesShared,
+  type FreshnessCache,
+} from "../extensions/bundle_freshness.ts";
 import { ModelType } from "./model_type.ts";
 import { CalVer } from "./calver.ts";
 import {
@@ -579,7 +584,7 @@ export class UserModelLoader {
     });
 
     // Populate catalog from the now-loaded registry
-    this.populateCatalogFromRegistry(
+    await this.populateCatalogFromRegistry(
       catalog,
       modelsDir,
       options?.additionalDirs,
@@ -779,22 +784,25 @@ export class UserModelLoader {
    * Populates the catalog from the currently loaded registry.
    * Used on first run to bootstrap the catalog from a full import.
    */
-  private populateCatalogFromRegistry(
+  private async populateCatalogFromRegistry(
     catalog: ExtensionCatalogStore,
     modelsDir: string,
     additionalDirs?: string[],
-  ): void {
+  ): Promise<void> {
     // We can only populate entries that have bundle files on disk
     if (!this.repoDir) return;
 
     const bundleBaseDir = this.resolveBundlePath();
+    // One cache per populate pass so shared deps (e.g. files in a
+    // pulled extension's _lib/) are hashed once, not once per entry.
+    const cache = createFreshnessCache();
 
     // Scan all directories for .ts files and write catalog entries for
     // those that have corresponding cached bundles
     const dirs = [modelsDir, ...(additionalDirs ?? [])];
     for (const dir of dirs) {
       try {
-        this.populateCatalogFromDir(dir, bundleBaseDir, catalog);
+        await this.populateCatalogFromDir(dir, bundleBaseDir, catalog, cache);
       } catch {
         // Directory doesn't exist — skip
       }
@@ -802,13 +810,15 @@ export class UserModelLoader {
   }
 
   /**
-   * Synchronously populates catalog entries from a single directory.
+   * Populates catalog entries from a single directory. Async because
+   * source_fingerprint is computed via crypto.subtle.digest.
    */
-  private populateCatalogFromDir(
+  private async populateCatalogFromDir(
     dir: string,
     bundleBaseDir: string,
     catalog: ExtensionCatalogStore,
-  ): void {
+    cache: FreshnessCache,
+  ): Promise<void> {
     const files = this.discoverFilesSync(dir);
     const ns = this.repoDir ? bundleNamespace(dir, this.repoDir) : "";
     for (const relativePath of files) {
@@ -848,6 +858,12 @@ export class UserModelLoader {
           /export\s+const\s+(?:model|extension)\s*=\s*\{[\s\S]*?version\s*:\s*["']([^"']+)["']/,
         );
 
+        const sourceFingerprint = await computeSourceFingerprint(
+          absolutePath,
+          dir,
+          cache,
+        );
+
         catalog.upsert({
           type_normalized: typeNormalized,
           kind: extensionMatch ? "extension" : "model",
@@ -857,6 +873,7 @@ export class UserModelLoader {
           description: "",
           extends_type: extensionMatch ? typeNormalized : "",
           source_mtime: sourceStat.mtime?.toISOString() ?? "",
+          source_fingerprint: sourceFingerprint,
         });
       } catch {
         // Skip files that can't be read or don't have bundles
@@ -887,8 +904,10 @@ export class UserModelLoader {
   }
 
   /**
-   * Finds files that have changed since the catalog was last populated.
-   * Compares source file mtimes against catalog entries.
+   * Finds files that need rebundling since the catalog was last populated.
+   * Delegates to the shared content-fingerprint freshness check —
+   * mtime-based invalidation was unreliable under atomic-rename saves and
+   * mtime-preserving sync tools (issue #125).
    */
   private async findStaleFiles(
     modelsDir: string,
@@ -897,103 +916,12 @@ export class UserModelLoader {
   ): Promise<
     Array<{ absolutePath: string; relativePath: string; baseDir: string }>
   > {
-    const stale: Array<{
-      absolutePath: string;
-      relativePath: string;
-      baseDir: string;
-    }> = [];
-
-    const allDirs = [modelsDir, ...(additionalDirs ?? [])];
-
-    // Build a set of all known source paths from the catalog
-    const catalogEntries = [
-      ...catalog.findByKind("model"),
-      ...catalog.findByKind("extension"),
-    ];
-    const catalogBySource = new Map<string, ExtensionTypeRow>();
-    for (const entry of catalogEntries) {
-      catalogBySource.set(entry.source_path, entry);
-    }
-
-    const seenSources = new Set<string>();
-
-    for (const dir of allDirs) {
-      try {
-        await Deno.stat(dir);
-      } catch {
-        continue;
-      }
-
-      const files = await this.discoverFiles(dir);
-      for (const relativePath of files) {
-        const absolutePath = resolve(dir, relativePath);
-        seenSources.add(absolutePath);
-
-        const catalogEntry = catalogBySource.get(absolutePath);
-        if (!catalogEntry) {
-          // New file not in catalog
-          stale.push({ absolutePath, relativePath, baseDir: dir });
-          continue;
-        }
-
-        // Check entry point mtime
-        try {
-          const stat = await Deno.stat(absolutePath);
-          const sourceMtime = stat.mtime?.toISOString() ?? "";
-          if (sourceMtime !== catalogEntry.source_mtime) {
-            stale.push({ absolutePath, relativePath, baseDir: dir });
-            continue;
-          }
-
-          // Entry point is fresh — check transitive dependencies against
-          // the cached bundle file's mtime. This catches edits to imported
-          // .ts files that don't touch the entry point.
-          const bundlePath = this.getBundlePath(relativePath, dir);
-          if (bundlePath) {
-            try {
-              const bundleStat = await Deno.stat(bundlePath);
-              if (bundleStat.mtime) {
-                const { resolvedFiles } = await resolveLocalImports(
-                  [absolutePath],
-                  dir,
-                );
-                const depStats = await Promise.all(
-                  resolvedFiles.map((f) => Deno.stat(f)),
-                );
-                const newestDepMtime = depStats.reduce<Date | null>(
-                  (max, s) => {
-                    if (!s.mtime) return max;
-                    if (!max) return s.mtime;
-                    return s.mtime > max ? s.mtime : max;
-                  },
-                  null,
-                );
-                if (
-                  newestDepMtime && newestDepMtime >= bundleStat.mtime
-                ) {
-                  stale.push({ absolutePath, relativePath, baseDir: dir });
-                }
-              }
-            } catch {
-              // Bundle file missing or dep stat failed — mark as stale
-              // to trigger a rebundle.
-              stale.push({ absolutePath, relativePath, baseDir: dir });
-            }
-          }
-        } catch {
-          stale.push({ absolutePath, relativePath, baseDir: dir });
-        }
-      }
-    }
-
-    // Check for deleted files — remove from catalog
-    for (const [sourcePath] of catalogBySource) {
-      if (!seenSources.has(sourcePath)) {
-        catalog.removeBySourcePath(sourcePath);
-      }
-    }
-
-    return stale;
+    return await findStaleFilesShared({
+      modelsDir,
+      additionalDirs,
+      catalog,
+      discoverFiles: (dir) => this.discoverFiles(dir),
+    });
   }
 
   /**
@@ -1021,6 +949,10 @@ export class UserModelLoader {
 
     const stat = await Deno.stat(absolutePath);
     const sourceMtime = stat.mtime?.toISOString() ?? "";
+    const sourceFingerprint = await computeSourceFingerprint(
+      absolutePath,
+      baseDir,
+    );
 
     if (module.model) {
       const parsed = UserModelSchema.safeParse(module.model);
@@ -1039,6 +971,7 @@ export class UserModelLoader {
         description: "",
         extends_type: "",
         source_mtime: sourceMtime,
+        source_fingerprint: sourceFingerprint,
       });
 
       // Also register the full definition since we already imported it
@@ -1077,6 +1010,7 @@ export class UserModelLoader {
         description: "",
         extends_type: typeNormalized,
         source_mtime: sourceMtime,
+        source_fingerprint: sourceFingerprint,
       });
     }
   }
@@ -1138,37 +1072,31 @@ export class UserModelLoader {
         relativePath.replace(/\.ts$/, ".js"),
       );
 
-      // Check mtime-based cache against all local dependencies.
-      // If the bundle is newer than all source files, use it directly.
+      // Freshness is decided by the caller via
+      // bundle_freshness.findStaleFiles (content-fingerprint compare).
+      // We only care whether a bundle file exists on disk so we can
+      // fall back to it if rebundling fails with an expected error
+      // (bare specifiers without deno.json). No mtime check here —
+      // mtime-based freshness was unreliable under atomic-rename
+      // saves (#125).
       let bundleExists = false;
       try {
-        const bundleStat = await Deno.stat(bundlePath);
+        await Deno.stat(bundlePath);
         bundleExists = true;
-        if (bundleStat.mtime) {
-          const { resolvedFiles } = await resolveLocalImports(
-            [absolutePath],
-            boundaryDir,
-          );
-          const depStats = await Promise.all(
-            resolvedFiles.map((f) => Deno.stat(f)),
-          );
-          const newestSourceMtime = depStats.reduce<Date | null>(
-            (max, s) => {
-              if (!s.mtime) return max;
-              if (!max) return s.mtime;
-              return s.mtime > max ? s.mtime : max;
-            },
-            null,
-          );
-          if (newestSourceMtime && bundleStat.mtime >= newestSourceMtime) {
-            logger.debug`Using cached bundle for ${relativePath}`;
-            return await Deno.readTextFile(bundlePath);
-          }
-        }
       } catch {
-        // Freshness check failed (e.g. missing dependency file).
-        // Fall through to attempt a rebundle rather than using a
-        // potentially stale cache.
+        // No bundle on disk yet — first-run bootstrap.
+      }
+
+      // Fast-path for pulled extensions with bare specifiers and no
+      // repo-side deno.json. bundleExtension would always fail for them
+      // and we'd wastefully spawn Deno before falling back to the
+      // cached bundle anyway. Skipping the rebundle attempt cuts cold
+      // startup on large pulled trees (106 spawns → 0 on @swamp/aws/ec2).
+      // Freshness for user-editable extensions still runs through
+      // findStaleFiles — this branch only fires when both a bundle
+      // exists AND the source can't be locally rebundled.
+      if (bundleExists && isExpectedBundleFailure(absolutePath, this.repoDir)) {
+        return await Deno.readTextFile(bundlePath);
       }
 
       // Try to rebundle from source. If bundling fails (e.g. bare specifiers
