@@ -19,6 +19,8 @@ plans/
 test-repo/
 .vault-*/
 .claude/settings.local.json
+.claude/scheduled_tasks.lock
+.claude/scheduled_tasks.json
 CLAUDE.local.md
 .envrc
 resources/deno/
