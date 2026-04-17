@@ -20,11 +20,9 @@
 import { Command } from "@cliffy/command";
 import { setColorEnabled } from "@std/fmt/colors";
 import { isAbsolute, join, resolve } from "@std/path";
-import {
-  SWAMP_SUBDIRS,
-  swampPath,
-} from "../infrastructure/persistence/paths.ts";
+import { swampPath } from "../infrastructure/persistence/paths.ts";
 import { readUpstreamExtensions } from "../infrastructure/persistence/upstream_extensions.ts";
+import { enumeratePulledExtensionDirs } from "../libswamp/extensions/enumerate_pulled.ts";
 import { getLogger, parseLogLevel } from "@logtape/logtape";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import { VERSION, versionCommand } from "./commands/version.ts";
@@ -339,12 +337,6 @@ export function configureExtensionAutoResolver(
           resolve(repoDir, modelsDir),
           "upstream_extensions.json",
         ),
-        modelsDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledModels),
-        workflowsDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledWorkflows),
-        vaultsDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledVaults),
-        driversDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledDrivers),
-        datastoresDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledDatastores),
-        reportsDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledReports),
         repoDir,
         denoRuntime,
       }),
@@ -386,7 +378,12 @@ async function loadUserModels(
 
     const resolver = resolverFactory ? await resolverFactory() : undefined;
     const loader = new UserModelLoader(denoRuntime, repoDir, resolver);
-    const pulledDir = swampPath(repoDir, SWAMP_SUBDIRS.pulledModels);
+    const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
+    const pulledDirs = await enumeratePulledExtensionDirs(
+      lockfilePath,
+      repoDir,
+      "models",
+    );
 
     // Use bundle catalog for lazy per-bundle loading.
     // The catalog stays open for the process lifetime so the type loader
@@ -403,12 +400,15 @@ async function loadUserModels(
     // If catalog is populated, only rebundles changed files.
     // If not populated (first run), does a full import to bootstrap.
     // Always scans for staleness so users never see stale data.
-    // Load order: local > sources > pulled (sources override pulled)
+    // Load order: local > sources > pulled (sources override pulled).
+    // pulledDirs is one entry per installed extension — the loader walks
+    // each extension's subtree independently so file-name collisions across
+    // sibling extensions can't bleed into each other.
     const result = await loader.buildIndex(
       absoluteModelsDir,
       effectiveCatalog,
       {
-        additionalDirs: [...sourceDirs, pulledDir],
+        additionalDirs: [...sourceDirs, ...pulledDirs],
       },
     );
 
@@ -440,7 +440,16 @@ async function loadUserVaults(
 
     const resolver = resolverFactory ? await resolverFactory() : undefined;
     const loader = new UserVaultLoader(denoRuntime, repoDir, resolver);
-    const pulledDir = swampPath(repoDir, SWAMP_SUBDIRS.pulledVaults);
+    const modelsDir = resolveModelsDir(marker);
+    const lockfilePath = join(
+      isAbsolute(modelsDir) ? modelsDir : resolve(repoDir, modelsDir),
+      "upstream_extensions.json",
+    );
+    const pulledDirs = await enumeratePulledExtensionDirs(
+      lockfilePath,
+      repoDir,
+      "vaults",
+    );
 
     if (catalog) {
       vaultTypeRegistry.setTypeLoader(async (type) => {
@@ -448,7 +457,7 @@ async function loadUserVaults(
       });
 
       const result = await loader.buildIndex(absoluteVaultsDir, catalog, {
-        additionalDirs: [...sourceDirs, pulledDir],
+        additionalDirs: [...sourceDirs, ...pulledDirs],
       });
 
       for (const failure of result.failed) {
@@ -457,7 +466,7 @@ async function loadUserVaults(
       }
     } else {
       const result = await loader.loadVaults(absoluteVaultsDir, {
-        additionalDirs: [...sourceDirs, pulledDir],
+        additionalDirs: [...sourceDirs, ...pulledDirs],
         skipAlreadyRegistered: true,
       });
 
@@ -487,7 +496,16 @@ async function loadUserDrivers(
 
     const resolver = resolverFactory ? await resolverFactory() : undefined;
     const loader = new UserDriverLoader(denoRuntime, repoDir, resolver);
-    const pulledDir = swampPath(repoDir, SWAMP_SUBDIRS.pulledDrivers);
+    const modelsDir = resolveModelsDir(marker);
+    const lockfilePath = join(
+      isAbsolute(modelsDir) ? modelsDir : resolve(repoDir, modelsDir),
+      "upstream_extensions.json",
+    );
+    const pulledDirs = await enumeratePulledExtensionDirs(
+      lockfilePath,
+      repoDir,
+      "drivers",
+    );
 
     if (catalog) {
       driverTypeRegistry.setTypeLoader(async (type) => {
@@ -495,7 +513,7 @@ async function loadUserDrivers(
       });
 
       const result = await loader.buildIndex(absoluteDriversDir, catalog, {
-        additionalDirs: [...sourceDirs, pulledDir],
+        additionalDirs: [...sourceDirs, ...pulledDirs],
       });
 
       for (const failure of result.failed) {
@@ -504,7 +522,7 @@ async function loadUserDrivers(
       }
     } else {
       const result = await loader.loadDrivers(absoluteDriversDir, {
-        additionalDirs: [...sourceDirs, pulledDir],
+        additionalDirs: [...sourceDirs, ...pulledDirs],
         skipAlreadyRegistered: true,
       });
 
@@ -532,7 +550,16 @@ async function loadUserDatastores(
       : resolve(repoDir, datastoresDir);
 
     const loader = new UserDatastoreLoader(denoRuntime, repoDir);
-    const pulledDir = swampPath(repoDir, SWAMP_SUBDIRS.pulledDatastores);
+    const modelsDir = resolveModelsDir(marker);
+    const lockfilePath = join(
+      isAbsolute(modelsDir) ? modelsDir : resolve(repoDir, modelsDir),
+      "upstream_extensions.json",
+    );
+    const pulledDirs = await enumeratePulledExtensionDirs(
+      lockfilePath,
+      repoDir,
+      "datastores",
+    );
 
     if (catalog) {
       datastoreTypeRegistry.setTypeLoader(async (type) => {
@@ -543,7 +570,7 @@ async function loadUserDatastores(
         absoluteDatastoresDir,
         catalog,
         {
-          additionalDirs: [...sourceDirs, pulledDir],
+          additionalDirs: [...sourceDirs, ...pulledDirs],
         },
       );
 
@@ -553,7 +580,7 @@ async function loadUserDatastores(
       }
     } else {
       const result = await loader.loadDatastores(absoluteDatastoresDir, {
-        additionalDirs: [...sourceDirs, pulledDir],
+        additionalDirs: [...sourceDirs, ...pulledDirs],
         skipAlreadyRegistered: true,
       });
 
@@ -583,7 +610,16 @@ async function loadUserReports(
 
     const resolver = resolverFactory ? await resolverFactory() : undefined;
     const loader = new UserReportLoader(denoRuntime, repoDir, resolver);
-    const pulledDir = swampPath(repoDir, SWAMP_SUBDIRS.pulledReports);
+    const modelsDir = resolveModelsDir(marker);
+    const lockfilePath = join(
+      isAbsolute(modelsDir) ? modelsDir : resolve(repoDir, modelsDir),
+      "upstream_extensions.json",
+    );
+    const pulledDirs = await enumeratePulledExtensionDirs(
+      lockfilePath,
+      repoDir,
+      "reports",
+    );
 
     if (catalog) {
       reportRegistry.setTypeLoader(async (type) => {
@@ -591,7 +627,7 @@ async function loadUserReports(
       });
 
       const result = await loader.buildIndex(absoluteReportsDir, catalog, {
-        additionalDirs: [...sourceDirs, pulledDir],
+        additionalDirs: [...sourceDirs, ...pulledDirs],
       });
 
       for (const failure of result.failed) {
@@ -600,7 +636,7 @@ async function loadUserReports(
       }
     } else {
       const result = await loader.loadReports(absoluteReportsDir, {
-        additionalDirs: [...sourceDirs, pulledDir],
+        additionalDirs: [...sourceDirs, ...pulledDirs],
         skipAlreadyRegistered: true,
       });
 

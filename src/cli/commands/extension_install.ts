@@ -27,15 +27,11 @@ import {
 } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import {
-  SWAMP_SUBDIRS,
-  swampPath,
-} from "../../infrastructure/persistence/paths.ts";
-import {
   consumeStream,
   createLibSwampContext,
   extensionInstall,
-  requireCurrentExtensionLayout,
   resolveServerUrl,
+  warnLegacyExtensionLayout,
 } from "../../libswamp/mod.ts";
 import { UserError } from "../../domain/errors.ts";
 import { ExtensionApiClient } from "../../infrastructure/http/extension_api_client.ts";
@@ -82,26 +78,21 @@ export const extensionInstallCommand = new Command()
     const absoluteModelsDir = resolve(repoDir, modelsDir);
     const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
 
-    // 3. Check for legacy extension layout
-    await requireCurrentExtensionLayout(lockfilePath);
+    // 3. Warn (don't block) on legacy layout. extension install is the
+    // migration mechanism for missing-files state: it re-installs into
+    // the new per-extension layout automatically.
+    await warnLegacyExtensionLayout(
+      lockfilePath,
+      (msg) => cliCtx.logger.warn(msg),
+    );
 
-    // 4. Resolve pulled-extension dirs
-    const pulledModelsDir = swampPath(repoDir, SWAMP_SUBDIRS.pulledModels);
-    const pulledWorkflowsDir = swampPath(
-      repoDir,
-      SWAMP_SUBDIRS.pulledWorkflows,
-    );
-    const pulledVaultsDir = swampPath(repoDir, SWAMP_SUBDIRS.pulledVaults);
-    const pulledDriversDir = swampPath(repoDir, SWAMP_SUBDIRS.pulledDrivers);
-    const pulledDatastoresDir = swampPath(
-      repoDir,
-      SWAMP_SUBDIRS.pulledDatastores,
-    );
-    const pulledReportsDir = swampPath(repoDir, SWAMP_SUBDIRS.pulledReports);
+    // 4. Resolve skills destination (tool-aware). Per-extension
+    // models/workflows/vaults/drivers/datastores/reports destinations
+    // are derived inside installExtension from each extension's name.
     const tool = marker?.tool ?? "claude";
     const skillsDir = resolveSkillsDir(repoDir, tool);
 
-    // 4. Wire deps and execute
+    // 5. Wire deps and execute
     const serverUrl = resolveServerUrl();
     const client = new ExtensionApiClient(serverUrl);
 
@@ -118,12 +109,6 @@ export const extensionInstallCommand = new Command()
           getChecksum: (n, v) => client.getChecksum(n, v),
           logger: cliCtx.logger,
           lockfilePath,
-          modelsDir: pulledModelsDir,
-          workflowsDir: pulledWorkflowsDir,
-          vaultsDir: pulledVaultsDir,
-          driversDir: pulledDriversDir,
-          datastoresDir: pulledDatastoresDir,
-          reportsDir: pulledReportsDir,
           skillsDir,
           repoDir,
           force: true,

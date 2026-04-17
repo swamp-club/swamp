@@ -28,10 +28,6 @@ import {
 } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { UserError } from "../../domain/errors.ts";
-import {
-  SWAMP_SUBDIRS,
-  swampPath,
-} from "../../infrastructure/persistence/paths.ts";
 import { resolveSkillsDir } from "../../domain/repo/skill_dirs.ts";
 import {
   ConflictError,
@@ -42,9 +38,9 @@ import {
   type ExtensionPullDeps,
   type ExtensionRegistryInfo,
   parseExtensionRef,
-  requireCurrentExtensionLayout,
   resolveServerUrl,
   validateExtensionName,
+  warnLegacyExtensionLayout,
 } from "../../libswamp/mod.ts";
 import {
   createExtensionPullRenderer,
@@ -92,12 +88,7 @@ export interface PullContext {
   logger: Logger;
   /** Full path to the upstream_extensions.json lockfile. */
   lockfilePath: string;
-  modelsDir: string;
-  workflowsDir: string;
-  vaultsDir: string;
-  driversDir: string;
-  datastoresDir: string;
-  reportsDir: string;
+  /** Tool-aware skills destination (e.g. `.claude/skills/`). */
   skillsDir: string;
   repoDir: string;
   force: boolean;
@@ -120,12 +111,6 @@ export async function pullExtension(
     downloadArchive: ctx.downloadArchive,
     getChecksum: ctx.getChecksum,
     lockfilePath: ctx.lockfilePath,
-    modelsDir: ctx.modelsDir,
-    workflowsDir: ctx.workflowsDir,
-    vaultsDir: ctx.vaultsDir,
-    driversDir: ctx.driversDir,
-    datastoresDir: ctx.datastoresDir,
-    reportsDir: ctx.reportsDir,
     skillsDir: ctx.skillsDir,
     repoDir: ctx.repoDir,
     alreadyPulled: ctx.alreadyPulled,
@@ -198,24 +183,18 @@ export const extensionPullCommand = new Command()
     const absoluteModelsDir = resolve(repoDir, modelsDir);
     const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
 
-    // 5. Check for legacy extension layout
-    await requireCurrentExtensionLayout(lockfilePath);
-
-    // 6. Resolve pulled-extension dirs (.swamp/pulled-extensions/{type}/)
-    const pulledModelsDir = swampPath(repoDir, SWAMP_SUBDIRS.pulledModels);
-    const pulledWorkflowsDir = swampPath(
-      repoDir,
-      SWAMP_SUBDIRS.pulledWorkflows,
+    // 5. Warn if any extensions are still in a legacy layout. We don't
+    // block — the lockfile tolerates mixed generations and the new pull
+    // writes to the per-extension subtree regardless.
+    await warnLegacyExtensionLayout(
+      lockfilePath,
+      (msg) => ctx.logger.warn(msg),
     );
-    const pulledVaultsDir = swampPath(repoDir, SWAMP_SUBDIRS.pulledVaults);
-    const pulledDriversDir = swampPath(repoDir, SWAMP_SUBDIRS.pulledDrivers);
-    const pulledDatastoresDir = swampPath(
-      repoDir,
-      SWAMP_SUBDIRS.pulledDatastores,
-    );
-    const pulledReportsDir = swampPath(repoDir, SWAMP_SUBDIRS.pulledReports);
 
-    // 6b. Resolve skills destination (tool-aware)
+    // 6. Resolve skills destination (tool-aware). Per-extension
+    // models/workflows/vaults/drivers/datastores/reports destinations
+    // are derived inside installExtension from `ref.name` — the CLI
+    // doesn't need to compute them.
     const tool = marker?.tool ?? "claude";
     const skillsDir = resolveSkillsDir(repoDir, tool);
 
@@ -224,12 +203,6 @@ export const extensionPullCommand = new Command()
     const deps = createExtensionPullDeps(
       serverUrl,
       lockfilePath,
-      pulledModelsDir,
-      pulledWorkflowsDir,
-      pulledVaultsDir,
-      pulledDriversDir,
-      pulledDatastoresDir,
-      pulledReportsDir,
       skillsDir,
       repoDir,
     );
@@ -240,12 +213,6 @@ export const extensionPullCommand = new Command()
       getChecksum: deps.getChecksum,
       logger: ctx.logger,
       lockfilePath,
-      modelsDir: pulledModelsDir,
-      workflowsDir: pulledWorkflowsDir,
-      vaultsDir: pulledVaultsDir,
-      driversDir: pulledDriversDir,
-      datastoresDir: pulledDatastoresDir,
-      reportsDir: pulledReportsDir,
       skillsDir,
       repoDir,
       force: options.force ?? false,

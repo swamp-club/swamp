@@ -65,9 +65,13 @@ const logger = getLogger(["swamp", "models", "loader"]);
 /**
  * Bundle layout version. Stored in the catalog's bundle_meta table.
  * When this doesn't match, the catalog is invalidated to force a full
- * rescan — migrating from flat to namespaced bundle paths.
+ * rescan. Bump when bundle cache keys or source layout conventions
+ * change so stale entries don't leak across the migration boundary.
+ * History: "namespaced-v1" (per-source-dir hash) →
+ * "per-extension-v2" (each pulled extension owns its own bundle
+ * namespace via its per-extension models dir).
  */
-const BUNDLE_LAYOUT_VERSION = "namespaced-v1";
+const BUNDLE_LAYOUT_VERSION = "per-extension-v2";
 
 /**
  * Plain object result returned by user methods before conversion.

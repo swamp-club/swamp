@@ -18,7 +18,6 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { getLogger } from "@logtape/logtape";
-import { isAbsolute, resolve } from "@std/path";
 import {
   SWAMP_SUBDIRS,
   swampPath,
@@ -29,6 +28,7 @@ import type {
   ExtensionInstallerPort,
 } from "../domain/extensions/extension_auto_resolver.ts";
 import {
+  enumeratePulledExtensionDirs,
   type ExtensionRegistryInfo,
   installExtension,
 } from "../libswamp/mod.ts";
@@ -53,12 +53,6 @@ interface InstallerAdapterConfig {
   getChecksum: (name: string, version: string) => Promise<string | null>;
   /** Full path to the upstream_extensions.json lockfile. */
   lockfilePath: string;
-  modelsDir: string;
-  workflowsDir: string;
-  vaultsDir: string;
-  driversDir: string;
-  datastoresDir: string;
-  reportsDir: string;
   repoDir: string;
   denoRuntime: DenoRuntime;
   datastoreResolver?: DatastorePathResolver;
@@ -76,12 +70,6 @@ export function createAutoResolveInstallerAdapter(
     downloadArchive,
     getChecksum,
     lockfilePath,
-    modelsDir,
-    workflowsDir,
-    vaultsDir,
-    driversDir,
-    datastoresDir,
-    reportsDir,
     repoDir,
     denoRuntime,
     datastoreResolver,
@@ -97,12 +85,6 @@ export function createAutoResolveInstallerAdapter(
           getChecksum,
           logger,
           lockfilePath,
-          modelsDir,
-          workflowsDir,
-          vaultsDir,
-          driversDir,
-          datastoresDir,
-          reportsDir,
           skillsDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledSkills),
           repoDir,
           force: true,
@@ -114,44 +96,65 @@ export function createAutoResolveInstallerAdapter(
       return { version: result.version };
     },
 
+    // Hot-load walks every pulled extension's per-type subtree (via
+    // enumeratePulledExtensionDirs). Under issue 120's per-extension
+    // layout, each extension owns .swamp/pulled-extensions/<ext-name>/,
+    // so there is no single shared directory to pass to the loader.
+    // skipAlreadyRegistered lets the newly-installed extension's types
+    // register while already-loaded types stay put.
     async hotLoadModels() {
-      const absoluteModelsDir = isAbsolute(modelsDir)
-        ? modelsDir
-        : resolve(repoDir, modelsDir);
+      const pulledDirs = await enumeratePulledExtensionDirs(
+        lockfilePath,
+        repoDir,
+        "models",
+      );
+      if (pulledDirs.length === 0) return 0;
       const loader = new UserModelLoader(
         denoRuntime,
         repoDir,
         datastoreResolver,
       );
-      const result = await loader.loadModels(absoluteModelsDir, {
+      const [primary, ...rest] = pulledDirs;
+      const result = await loader.loadModels(primary, {
         skipAlreadyRegistered: true,
+        additionalDirs: rest,
       });
       return result.loaded.length;
     },
 
     async hotLoadVaults() {
-      const absoluteVaultsDir = isAbsolute(vaultsDir)
-        ? vaultsDir
-        : resolve(repoDir, vaultsDir);
+      const pulledDirs = await enumeratePulledExtensionDirs(
+        lockfilePath,
+        repoDir,
+        "vaults",
+      );
+      if (pulledDirs.length === 0) return;
       const loader = new UserVaultLoader(
         denoRuntime,
         repoDir,
         datastoreResolver,
       );
-      await loader.loadVaults(absoluteVaultsDir, {
+      const [primary, ...rest] = pulledDirs;
+      await loader.loadVaults(primary, {
         skipAlreadyRegistered: true,
+        additionalDirs: rest,
       });
     },
 
     async hotLoadDatastores() {
-      const absoluteDatastoresDir = isAbsolute(datastoresDir)
-        ? datastoresDir
-        : resolve(repoDir, datastoresDir);
+      const pulledDirs = await enumeratePulledExtensionDirs(
+        lockfilePath,
+        repoDir,
+        "datastores",
+      );
+      if (pulledDirs.length === 0) return;
       // Bootstrap: datastore loader must NOT receive the resolver —
       // it loads datastore extensions that configure the resolver.
       const loader = new UserDatastoreLoader(denoRuntime, repoDir);
-      await loader.loadDatastores(absoluteDatastoresDir, {
+      const [primary, ...rest] = pulledDirs;
+      await loader.loadDatastores(primary, {
         skipAlreadyRegistered: true,
+        additionalDirs: rest,
       });
     },
   };

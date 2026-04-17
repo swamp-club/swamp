@@ -41,10 +41,8 @@ import {
 import { UserError } from "../domain/errors.ts";
 import { VERSION } from "./commands/version.ts";
 import { resolveWorkflowsDir } from "./resolve_workflows_dir.ts";
-import {
-  SWAMP_SUBDIRS,
-  swampPath,
-} from "../infrastructure/persistence/paths.ts";
+import { resolveModelsDir } from "./resolve_models_dir.ts";
+import { enumeratePulledExtensionDirs } from "../libswamp/extensions/enumerate_pulled.ts";
 import { resolveDatastoreConfig } from "./resolve_datastore.ts";
 import { DefaultDatastorePathResolver } from "../infrastructure/persistence/default_datastore_path_resolver.ts";
 import type { DatastorePathResolver } from "../domain/datastore/datastore_path_resolver.ts";
@@ -251,7 +249,16 @@ export async function requireInitializedRepoReadOnly(
     workflowsDir,
     additionalWorkflowsDirs: [
       ...sourceWorkflowDirs,
-      swampPath(repoPath.value, SWAMP_SUBDIRS.pulledWorkflows),
+      ...(await enumeratePulledExtensionDirs(
+        join(
+          isAbsolute(resolveModelsDir(marker))
+            ? resolveModelsDir(marker)
+            : resolve(repoPath.value, resolveModelsDir(marker)),
+          "upstream_extensions.json",
+        ),
+        repoPath.value,
+        "workflows",
+      )),
     ],
     definitionsDir,
     yamlWorkflowsDir,
@@ -376,7 +383,16 @@ export function requireInitializedRepo(
       workflowsDir,
       additionalWorkflowsDirs: [
         ...sourceWorkflowDirs,
-        swampPath(repoPath.value, SWAMP_SUBDIRS.pulledWorkflows),
+        ...(await enumeratePulledExtensionDirs(
+          join(
+            isAbsolute(resolveModelsDir(marker))
+              ? resolveModelsDir(marker)
+              : resolve(repoPath.value, resolveModelsDir(marker)),
+            "upstream_extensions.json",
+          ),
+          repoPath.value,
+          "workflows",
+        )),
       ],
       definitionsDir,
       yamlWorkflowsDir,
@@ -475,7 +491,16 @@ export async function requireInitializedRepoUnlocked(
     workflowsDir,
     additionalWorkflowsDirs: [
       ...sourceWorkflowDirs,
-      swampPath(repoPath.value, SWAMP_SUBDIRS.pulledWorkflows),
+      ...(await enumeratePulledExtensionDirs(
+        join(
+          isAbsolute(resolveModelsDir(marker))
+            ? resolveModelsDir(marker)
+            : resolve(repoPath.value, resolveModelsDir(marker)),
+          "upstream_extensions.json",
+        ),
+        repoPath.value,
+        "workflows",
+      )),
     ],
     definitionsDir,
     yamlWorkflowsDir,

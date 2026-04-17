@@ -79,7 +79,18 @@ export interface InstallResult {
   dependencyResults: InstallResult[];
 }
 
-/** Context for the headless install function (internal, used by extension_update). */
+/**
+ * Context for the headless install function (internal, used by
+ * extension_update, extensionInstall, and extensionPull).
+ *
+ * Per-type destination dirs (models/workflows/vaults/drivers/
+ * datastores/reports) are deliberately NOT fields on this context —
+ * `installExtension` derives them itself as
+ * `.swamp/pulled-extensions/<ref.name>/<type>/` so filesystem state is
+ * strictly per-extension (issue 120). Only `skillsDir` remains because
+ * skills land in a tool-specific dir (`.claude/skills/`, etc.) that
+ * the caller owns.
+ */
 export interface InstallContext {
   getExtension: (name: string) => Promise<ExtensionRegistryInfo | null>;
   downloadArchive: (name: string, version: string) => Promise<Uint8Array>;
@@ -90,17 +101,21 @@ export interface InstallContext {
   logger?: Logger;
   /** Full path to the upstream_extensions.json lockfile. */
   lockfilePath: string;
-  modelsDir: string;
-  workflowsDir: string;
-  vaultsDir: string;
-  driversDir: string;
-  datastoresDir: string;
-  reportsDir: string;
+  /** Tool-aware skills destination (e.g. `.claude/skills/`). */
   skillsDir: string;
   repoDir: string;
   force: boolean;
   alreadyPulled: Set<string>;
   depth: number;
+  /**
+   * Optional lockfile-anchored integrity check. When set, installExtension
+   * verifies the downloaded archive's SHA-256 matches this value BEFORE
+   * extraction and throws a UserError on mismatch. Scoped strictly to the
+   * lockfile-restore path (extensionInstall, migration re-pull) — explicit
+   * `swamp extension pull` leaves this unset so the user opts into
+   * whatever bytes the registry currently serves.
+   */
+  expectedChecksum?: string;
 }
 
 /** Thrown when file conflicts are detected and force is false. */
@@ -134,12 +149,7 @@ export interface ExtensionPullDeps {
   getChecksum: (name: string, version: string) => Promise<string | null>;
   /** Full path to the upstream_extensions.json lockfile. */
   lockfilePath: string;
-  modelsDir: string;
-  workflowsDir: string;
-  vaultsDir: string;
-  driversDir: string;
-  datastoresDir: string;
-  reportsDir: string;
+  /** Tool-aware skills destination (e.g. `.claude/skills/`). */
   skillsDir: string;
   repoDir: string;
   alreadyPulled: Set<string>;
@@ -420,6 +430,11 @@ async function validateNoSymlinkEscape(
 
 /**
  * Detects files that already exist at target paths.
+ *
+ * Under the extension-first layout, every dir passed in is per-extension,
+ * so a non-empty return means this extension is being re-installed on top
+ * of itself (resolved by --force) — it never means a collision with a
+ * different extension.
  */
 export async function detectConflicts(
   extractDir: string,
@@ -435,6 +450,7 @@ export async function detectConflicts(
   datastoreBundlesDir?: string,
   reportsDir?: string,
   reportBundlesDir?: string,
+  filesDir?: string,
 ): Promise<string[]> {
   const conflicts: string[] = [];
 
@@ -552,12 +568,14 @@ export async function detectConflicts(
     }
   }
 
-  const filesSrc = join(extractDir, "files");
-  for (const file of await listFiles(filesSrc)) {
-    const relPath = relative(filesSrc, file);
-    const destPath = join(modelsDir, relPath);
-    if (await fileExists(destPath)) {
-      conflicts.push(relative(repoDir, destPath));
+  if (filesDir) {
+    const filesSrc = join(extractDir, "files");
+    for (const file of await listFiles(filesSrc)) {
+      const relPath = relative(filesSrc, file);
+      const destPath = join(filesDir, relPath);
+      if (await fileExists(destPath)) {
+        conflicts.push(relative(repoDir, destPath));
+      }
     }
   }
 
@@ -630,7 +648,7 @@ export async function installExtension(
   ref: ExtensionRef,
   ctx: InstallContext,
 ): Promise<InstallResult | undefined> {
-  const { logger, modelsDir, repoDir } = ctx;
+  const { logger, repoDir } = ctx;
 
   if (ctx.alreadyPulled.has(ref.name)) {
     return undefined;
@@ -671,6 +689,35 @@ export async function installExtension(
     integrityStatus = "verified";
   } else {
     integrityStatus = "unverified";
+  }
+
+  // Lockfile-anchored integrity check. When expectedChecksum is provided
+  // (lockfile-restore flows: extensionInstall, migration re-pull), verify
+  // the freshly-downloaded bytes match what was recorded when the user
+  // originally installed this version. This catches registry content drift
+  // between the user's original install and their upgrade/reinstall and
+  // lets us restore authentic per-extension content during migration.
+  if (ctx.expectedChecksum !== undefined) {
+    if (ctx.expectedChecksum !== localChecksum) {
+      throw new UserError(
+        `Checksum mismatch for ${ref.name}@${version} ` +
+          `(stored ${ctx.expectedChecksum}, fetched ${localChecksum}). ` +
+          `The registry content has changed since your original install. ` +
+          `Run 'swamp extension pull ${ref.name}' to accept the current ` +
+          `version, or 'swamp extension pull ${ref.name}@<pinned-version>' ` +
+          `to hold a specific release.`,
+      );
+    }
+    integrityStatus = "verified";
+    if (logger) {
+      logger.debug`Lockfile integrity verified for ${ref.name}@${version}`;
+    }
+  } else if (logger) {
+    // Pre-checksum-tracking lockfile entries (pre-f4dfc083) have no stored
+    // checksum; verification is skipped. Subsequent installs write a fresh
+    // checksum so future restores gain full integrity coverage.
+    logger
+      .debug`No stored checksum for ${ref.name}@${version}; skipping lockfile-anchored verification`;
   }
 
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_pull_" });
@@ -778,14 +825,25 @@ export async function installExtension(
       safetyWarnings.push(...safetyResult.warnings);
     }
 
-    const absoluteModelsDir = resolve(repoDir, modelsDir);
-    const absoluteWorkflowsDir = resolve(repoDir, ctx.workflowsDir);
-    const absoluteVaultsDir = resolve(repoDir, ctx.vaultsDir);
-    const absoluteDriversDir = resolve(repoDir, ctx.driversDir);
-    const absoluteDatastoresDir = resolve(repoDir, ctx.datastoresDir);
-    const absoluteReportsDir = resolve(repoDir, ctx.reportsDir);
-    // Namespace bundles by source directory hash to prevent cache collisions
-    // between local, pulled, and source extensions with the same filenames.
+    // Extension-first on-disk layout: each installed extension owns a
+    // dedicated subtree under .swamp/pulled-extensions/<ext-name>/. Prevents
+    // cross-extension filename collisions (e.g. _lib/aws.ts shared between
+    // @swamp/aws/ec2 and @swamp/aws/eks, or README.md across unrelated
+    // extensions). Skills remain at ctx.skillsDir — already per-skill.
+    const absoluteExtRoot = join(
+      swampPath(repoDir, "pulled-extensions"),
+      ref.name,
+    );
+    const absoluteModelsDir = join(absoluteExtRoot, "models");
+    const absoluteWorkflowsDir = join(absoluteExtRoot, "workflows");
+    const absoluteVaultsDir = join(absoluteExtRoot, "vaults");
+    const absoluteDriversDir = join(absoluteExtRoot, "drivers");
+    const absoluteDatastoresDir = join(absoluteExtRoot, "datastores");
+    const absoluteReportsDir = join(absoluteExtRoot, "reports");
+    const absoluteFilesDir = join(absoluteExtRoot, "files");
+    // Bundle cache is namespaced by source dir path. Because each extension
+    // now has a unique per-extension models dir, each extension gets its own
+    // bundle namespace automatically — no cross-extension bundle collisions.
     const bundlesDir = join(
       swampPath(repoDir, "bundles"),
       bundleNamespace(absoluteModelsDir, repoDir),
@@ -821,6 +879,7 @@ export async function installExtension(
       datastoreBundlesDir,
       absoluteReportsDir,
       reportBundlesDir,
+      absoluteFilesDir,
     );
 
     if (conflicts.length > 0 && !ctx.force) {
@@ -917,9 +976,10 @@ export async function installExtension(
     );
     extractedFiles.push(...reportBundlesExtracted);
 
+    await Deno.mkdir(absoluteFilesDir, { recursive: true });
     const filesExtracted = await copyDir(
       join(extractDir, "files"),
-      absoluteModelsDir,
+      absoluteFilesDir,
       repoDir,
     );
     extractedFiles.push(...filesExtracted);
@@ -976,6 +1036,34 @@ export async function installExtension(
       absoluteDatastoresDir,
       absoluteReportsDir,
     );
+
+    // Extract manifest.yaml into the per-extension root as a read-only
+    // copy. Makes each installed extension self-describing on disk so
+    // downstream consumers (e.g. findDependents in extension rm) can
+    // resolve the manifest without re-parsing the archive. Scoped to
+    // per-extension so the file cannot collide across extensions.
+    const manifestDestPath = join(absoluteExtRoot, "manifest.yaml");
+    const manifestWithHeader =
+      "# Read-only; regenerate via 'swamp extension pull'\n" + manifestContent;
+    await Deno.mkdir(absoluteExtRoot, { recursive: true });
+    // chmod 0o444 makes subsequent overwrites fail; remove the prior copy
+    // first so re-installs (--force) succeed. NotFound is expected on a
+    // first install.
+    try {
+      await Deno.remove(manifestDestPath);
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) {
+        throw error;
+      }
+    }
+    await Deno.writeTextFile(manifestDestPath, manifestWithHeader);
+    try {
+      await Deno.chmod(manifestDestPath, 0o444);
+    } catch {
+      // chmod is advisory on some filesystems/platforms (notably Windows);
+      // intent is documented via the file header, enforcement is best-effort.
+    }
+    extractedFiles.push(relative(repoDir, manifestDestPath));
 
     // Record include files from manifest for loader skip logic
     const includeFiles = manifest.include.length > 0
@@ -1072,12 +1160,6 @@ export async function* extensionPull(
         getChecksum: deps.getChecksum,
         logger: ctx.logger,
         lockfilePath: deps.lockfilePath,
-        modelsDir: deps.modelsDir,
-        workflowsDir: deps.workflowsDir,
-        vaultsDir: deps.vaultsDir,
-        driversDir: deps.driversDir,
-        datastoresDir: deps.datastoresDir,
-        reportsDir: deps.reportsDir,
         skillsDir: deps.skillsDir,
         repoDir: deps.repoDir,
         force: input.force,
@@ -1098,12 +1180,6 @@ export async function* extensionPull(
 export function createExtensionPullDeps(
   serverUrl: string,
   lockfilePath: string,
-  modelsDir: string,
-  workflowsDir: string,
-  vaultsDir: string,
-  driversDir: string,
-  datastoresDir: string,
-  reportsDir: string,
   skillsDir: string,
   repoDir: string,
 ): ExtensionPullDeps {
@@ -1113,12 +1189,6 @@ export function createExtensionPullDeps(
     downloadArchive: (name, version) => client.downloadArchive(name, version),
     getChecksum: (name, version) => client.getChecksum(name, version),
     lockfilePath,
-    modelsDir,
-    workflowsDir,
-    vaultsDir,
-    driversDir,
-    datastoresDir,
-    reportsDir,
     skillsDir,
     repoDir,
     alreadyPulled: new Set(),
@@ -1131,12 +1201,6 @@ export function createInstallContext(
   serverUrl: string,
   opts: {
     lockfilePath: string;
-    modelsDir: string;
-    workflowsDir: string;
-    vaultsDir: string;
-    driversDir: string;
-    datastoresDir: string;
-    reportsDir: string;
     skillsDir: string;
     repoDir: string;
     force: boolean;
@@ -1150,12 +1214,6 @@ export function createInstallContext(
     getChecksum: (name, version) => client.getChecksum(name, version),
     logger: opts.logger,
     lockfilePath: opts.lockfilePath,
-    modelsDir: opts.modelsDir,
-    workflowsDir: opts.workflowsDir,
-    vaultsDir: opts.vaultsDir,
-    driversDir: opts.driversDir,
-    datastoresDir: opts.datastoresDir,
-    reportsDir: opts.reportsDir,
     skillsDir: opts.skillsDir,
     repoDir: opts.repoDir,
     force: opts.force,

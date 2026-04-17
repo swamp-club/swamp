@@ -45,7 +45,10 @@ import { maybeAutoUpdateDatastoreExtension } from "../libswamp/extensions/datast
 import { FileExtensionUpdateCheckRepository } from "../infrastructure/persistence/extension_update_check_repository.ts";
 import { readUpstreamExtensions } from "../infrastructure/persistence/upstream_extensions.ts";
 import { ExtensionApiClient } from "../infrastructure/http/extension_api_client.ts";
-import { installExtension } from "../libswamp/mod.ts";
+import {
+  enumeratePulledExtensionDirs,
+  installExtension,
+} from "../libswamp/mod.ts";
 import { UserDatastoreLoader } from "../domain/datastore/user_datastore_loader.ts";
 import { EmbeddedDenoRuntime } from "../infrastructure/runtime/embedded_deno_runtime.ts";
 import { swampPath } from "../infrastructure/persistence/paths.ts";
@@ -108,12 +111,11 @@ async function maybeAutoUpdateSwampDatastore(
       },
       pullExtension: async (name, version) => {
         const resolvedRepoDir = resolve(repoDir);
-        const datastoresDir = swampPath(
-          resolvedRepoDir,
-          SWAMP_SUBDIRS.pulledDatastores,
-        );
 
-        // Pull the extension with the specific version
+        // Pull the extension with the specific version. installExtension
+        // derives per-extension destinations (models/workflows/vaults/
+        // drivers/datastores/reports) from `name`; only skillsDir is
+        // caller-owned because skills land in a tool-specific dir.
         await installExtension(
           { name, version },
           {
@@ -122,21 +124,6 @@ async function maybeAutoUpdateSwampDatastore(
             getChecksum: (n, v) => extensionClient.getChecksum(n, v),
             logger,
             lockfilePath,
-            modelsDir: swampPath(resolvedRepoDir, SWAMP_SUBDIRS.pulledModels),
-            workflowsDir: swampPath(
-              resolvedRepoDir,
-              SWAMP_SUBDIRS.pulledWorkflows,
-            ),
-            vaultsDir: swampPath(resolvedRepoDir, SWAMP_SUBDIRS.pulledVaults),
-            driversDir: swampPath(
-              resolvedRepoDir,
-              SWAMP_SUBDIRS.pulledDrivers,
-            ),
-            datastoresDir,
-            reportsDir: swampPath(
-              resolvedRepoDir,
-              SWAMP_SUBDIRS.pulledReports,
-            ),
             skillsDir: swampPath(
               resolvedRepoDir,
               SWAMP_SUBDIRS.pulledSkills,
@@ -148,12 +135,24 @@ async function maybeAutoUpdateSwampDatastore(
           },
         );
 
-        // Hot-reload the datastore type from the updated extension
-        const denoRuntime = new EmbeddedDenoRuntime();
-        const loader = new UserDatastoreLoader(denoRuntime, resolvedRepoDir);
-        await loader.loadDatastores(datastoresDir, {
-          skipAlreadyRegistered: false,
-        });
+        // Hot-reload the datastore type from the updated extension.
+        // Under the per-extension layout the loader walks each installed
+        // extension's datastores subdir via enumeratePulledExtensionDirs
+        // rather than a single shared dir.
+        const pulledDirs = await enumeratePulledExtensionDirs(
+          lockfilePath,
+          resolvedRepoDir,
+          "datastores",
+        );
+        if (pulledDirs.length > 0) {
+          const denoRuntime = new EmbeddedDenoRuntime();
+          const loader = new UserDatastoreLoader(denoRuntime, resolvedRepoDir);
+          const [primary, ...rest] = pulledDirs;
+          await loader.loadDatastores(primary, {
+            skipAlreadyRegistered: false,
+            additionalDirs: rest,
+          });
+        }
       },
       cacheRepository,
     });

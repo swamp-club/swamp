@@ -42,10 +42,7 @@ import { pullExtension } from "./extension_pull.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { resolveModelsDir } from "../resolve_models_dir.ts";
-import {
-  SWAMP_SUBDIRS,
-  swampPath,
-} from "../../infrastructure/persistence/paths.ts";
+import { swampPath } from "../../infrastructure/persistence/paths.ts";
 import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
 import {
   configureExtensionAutoResolver,
@@ -180,12 +177,6 @@ export const openCommand = new Command()
             getChecksum: (n, v) => extClient.getChecksum(n, v),
             logger: ctx.logger,
             lockfilePath,
-            modelsDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledModels),
-            workflowsDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledWorkflows),
-            vaultsDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledVaults),
-            driversDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledDrivers),
-            datastoresDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledDatastores),
-            reportsDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledReports),
             skillsDir: resolveSkillsDir(repoDir, marker?.tool ?? "claude"),
             repoDir,
             // Force overwrite — the web UI has no stdin to answer the

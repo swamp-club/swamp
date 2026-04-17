@@ -441,7 +441,8 @@ Push uses a three-phase protocol:
 
 When an extension is pulled, its metadata and the list of extracted files are
 recorded in `upstream_extensions.json` in the models directory. This file
-enables clean removal and conflict detection.
+enables clean removal, conflict detection, and **integrity-anchored restore**
+(see `checksum` field below).
 
 ### Structure
 
@@ -450,14 +451,33 @@ enables clean removal and conflict detection.
   "@keeb/ssh": {
     "version": "2026.02.26.1",
     "pulledAt": "2026-02-27T10:30:00.000Z",
+    "checksum": "sha256-…",
     "files": [
-      "extensions/models/ssh/connection.ts",
-      "extensions/models/ssh/helpers.ts",
-      "extensions/workflows/ssh-check.yaml"
+      ".swamp/pulled-extensions/@keeb/ssh/models/ssh/connection.ts",
+      ".swamp/pulled-extensions/@keeb/ssh/models/ssh/helpers.ts",
+      ".swamp/pulled-extensions/@keeb/ssh/workflows/ssh-check.yaml",
+      ".swamp/pulled-extensions/@keeb/ssh/manifest.yaml",
+      ".swamp/bundles/<hash>/ssh/connection.js"
     ]
   }
 }
 ```
+
+### Integrity Anchor
+
+Every lockfile entry records the SHA-256 of the extension archive at install
+time (`checksum`). On any lockfile-restore flow (`swamp extension install`,
+phase-two migration re-pull), the freshly-downloaded archive is verified
+byte-for-byte against this stored value. On mismatch, the restore fails
+loudly with a message offering the user a choice: accept current registry
+content (`swamp extension pull <name>`) or pin an older version. This turns
+the lockfile into an integrity manifest rather than just a version record —
+restores cannot silently accept drifted registry bytes. Entries predating
+checksum tracking (pre-commit `f4dfc083`) skip verification gracefully.
+
+Explicit `swamp extension pull <name>` is the user's opt-in path to accept
+whatever bytes the registry currently serves; integrity verification is
+scoped strictly to lockfile-restore flows.
 
 ### Concurrency Safety
 
@@ -465,30 +485,105 @@ All mutations to `upstream_extensions.json` use an advisory lockfile
 (`upstream_extensions.json.lock`) with retry logic (10 attempts, 100ms backoff)
 and atomic file writes to prevent corruption from concurrent operations.
 
-## File Extraction
+## File Extraction (Per-Extension Layout)
 
-When pulled, extension files are extracted to their destinations:
+Each installed extension owns a dedicated on-disk subtree at
+`.swamp/pulled-extensions/<ext-name>/`, where `<ext-name>` is the extension's
+scoped name (e.g. `@swamp/aws/ec2`). Inside that subtree, per-type directories
+mirror the archive structure:
 
-| Archive directory    | Destination                                                            |
-| -------------------- | ---------------------------------------------------------------------- |
-| `models/`            | `{modelsDir}` (from `.swamp.yaml`, default `extensions/models/`)       |
-| `bundles/`           | `.swamp/bundles/`                                                      |
-| `workflows/`         | `{workflowsDir}` (from `.swamp.yaml`, default `extensions/workflows/`) |
-| `vaults/`            | `{vaultsDir}` (from `.swamp.yaml`, default `extensions/vaults/`)       |
-| `vault-bundles/`     | `.swamp/vault-bundles/`                                                |
-| `drivers/`           | `{driversDir}` (from `.swamp.yaml`, default `extensions/drivers/`)     |
-| `driver-bundles/`    | `.swamp/driver-bundles/`                                               |
-| `datastores/`        | `{datastoresDir}` (from `.swamp.yaml`, default `extensions/datastores/`) |
-| `datastore-bundles/` | `.swamp/datastore-bundles/`                                            |
-| `reports/`           | `{reportsDir}` (from `.swamp.yaml`, default `extensions/reports/`)     |
-| `report-bundles/`    | `.swamp/report-bundles/`                                               |
-| `files/`             | `{modelsDir}`                                                          |
+| Archive directory    | Destination                                                  |
+| -------------------- | ------------------------------------------------------------ |
+| `manifest.yaml`      | `.swamp/pulled-extensions/<ext-name>/manifest.yaml` (ro)     |
+| `models/`            | `.swamp/pulled-extensions/<ext-name>/models/`                |
+| `workflows/`         | `.swamp/pulled-extensions/<ext-name>/workflows/`             |
+| `vaults/`            | `.swamp/pulled-extensions/<ext-name>/vaults/`                |
+| `drivers/`           | `.swamp/pulled-extensions/<ext-name>/drivers/`               |
+| `datastores/`        | `.swamp/pulled-extensions/<ext-name>/datastores/`            |
+| `reports/`           | `.swamp/pulled-extensions/<ext-name>/reports/`               |
+| `files/`             | `.swamp/pulled-extensions/<ext-name>/files/`                 |
+| `bundles/`           | `.swamp/bundles/<bundleNamespace(per-extension models dir)>/`  |
+| `vault-bundles/`     | `.swamp/vault-bundles/<bundleNamespace(…vaults dir)>/`       |
+| `driver-bundles/`    | `.swamp/driver-bundles/<bundleNamespace(…drivers dir)>/`     |
+| `datastore-bundles/` | `.swamp/datastore-bundles/<bundleNamespace(…datastores dir)>/` |
+| `report-bundles/`    | `.swamp/report-bundles/<bundleNamespace(…reports dir)>/`     |
+| `skills/`            | Tool-specific skills dir (e.g. `.claude/skills/<skill-name>/`) |
+
+### Why extension-first?
+
+Two sibling extensions from the same collective (e.g. `@swamp/aws/ec2` and
+`@swamp/aws/eks`) frequently ship files with identical basenames — shared
+helpers under `_lib/`, boilerplate like `README.md` and `LICENSE.txt`, and
+occasional type-coincidences like `cluster.ts`. In a type-first (flat) layout,
+these collide at extraction time: the second pull either errors with
+`ConflictError` or silently overwrites the first with `--force`. The silent
+overwrite is the dangerous case — `_lib/*` helpers are imported transitively
+by model bundles, so a swap of `_lib/aws.ts` between ec2 and eks produces
+incorrect runtime behavior with no type or load error.
+
+Extension-first layout eliminates this entirely: each extension's files live
+in a disjoint subtree keyed on its scoped name. The scoped name is already
+a value object the registry uses for identity, so promoting it to the
+filesystem aggregate root costs nothing beyond joining a path segment.
+
+### manifest.yaml colocation
+
+Each extension's archive manifest is extracted to
+`.swamp/pulled-extensions/<ext-name>/manifest.yaml` with file mode `0o444`
+(read-only) and prefixed with a `# Read-only; regenerate via 'swamp
+extension pull'` header. Colocation makes every installed extension
+self-describing on disk: `extension rm`'s dependent-resolution reads the
+tracked manifest directly rather than re-fetching or re-parsing the
+archive. The read-only mode is advisory on some filesystems (notably
+Windows); it is documented via the header, not enforced as a security
+boundary.
+
+### Bundle cache isolation
+
+`bundleNamespace(baseDir, repoDir)` hashes its input relative path. With
+per-extension models dirs, each extension's hash is unique, so every
+extension ends up in its own namespace under `.swamp/bundles/…` — bundle
+keys are disjoint per extension without any additional logic. For
+datastore-backed repos where `bundles/` is tiered to S3 (see
+`DEFAULT_DATASTORE_SUBDIRS`), this means team members' bundle caches are
+cleanly separated per extension.
 
 If files already exist at the destination and `--force` is not set, the user is
-prompted to confirm overwriting.
+prompted to confirm overwriting. Because every extension has its own subtree,
+the only path that triggers ConflictError today is re-installing the same
+extension on top of itself — cross-extension collisions cannot happen.
 
 macOS resource fork files (`._*`) are skipped during both push (via
 `COPYFILE_DISABLE=1`) and pull.
+
+## Layout Migration
+
+Existing repos that installed extensions under older layouts migrate via
+`swamp repo upgrade`. Three generations are recognised:
+
+- **gen-1 (pre-`.swamp/`):** files under `extensions/<type>/...`. `repo
+  upgrade` renames them to `.swamp/pulled-extensions/<type>/...` and rewrites
+  lockfile paths in place. Safe because the same bytes just move.
+- **gen-2 (flat under `.swamp/`):** files under
+  `.swamp/pulled-extensions/<type>/<file>`. Because filenames collide
+  across extensions in this layout, prior installs may have silently
+  overwritten each other, so rename cannot recover authentic content.
+  `repo upgrade` instead selectively deletes each gen-2 entry's tracked
+  files (leaving the lockfile unchanged); the next
+  `swamp extension install` re-pulls each affected extension into its new
+  per-extension subtree, with integrity verified against the lockfile's
+  stored checksum.
+- **current (per-extension):** files under
+  `.swamp/pulled-extensions/<ext-name>/<type>/...`. No migration needed.
+
+The lockfile tolerates mixed-generation state: each entry stands alone, and
+the warn-not-block guard at the CLI layer proceeds with a one-line
+reminder rather than hard-failing so that already-migrated extensions stay
+usable during a partial upgrade. The migration is **resumable**:
+`Deno.errors.NotFound` during selective delete is treated as success
+(expected on a retry after an interrupted prior pass); any other IO error
+aborts the upgrade before any further mutations, leaving the lockfile
+intact so retry starts from a consistent state.
 
 ## Removal
 

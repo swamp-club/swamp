@@ -20,10 +20,13 @@
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import {
   type AiTool,
+  type ExtensionLayoutMigrationSummary,
   type RepoInitResult,
   RepoService,
   type RepoUpgradeResult,
 } from "../../domain/repo/repo_service.ts";
+
+export type { ExtensionLayoutMigrationSummary };
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { validationFailed } from "../errors.ts";
@@ -137,6 +140,9 @@ export interface RepoUpgradeData {
   settingsUpdated: boolean;
   gitignoreAction: string;
   tool: string;
+  /** Structured migration summary, only present when extensions were
+   * actually moved or deleted during the upgrade. */
+  extensionMigration?: ExtensionLayoutMigrationSummary;
 }
 
 export type RepoUpgradeEvent =
@@ -212,6 +218,9 @@ export async function* repoUpgrade(
         settingsUpdated: result.settingsUpdated,
         gitignoreAction: result.gitignoreAction,
         tool: result.tool,
+        ...(result.extensionMigration
+          ? { extensionMigration: result.extensionMigration }
+          : {}),
       };
 
       yield { kind: "completed", data };

@@ -109,6 +109,36 @@ class LogRepoUpgradeRenderer implements Renderer<RepoUpgradeEvent> {
           "  Settings: " + (data.settingsUpdated ? "updated" : "unchanged"),
         );
         logger.info("  .gitignore: " + data.gitignoreAction);
+
+        // Surface the extension layout migration so users understand
+        // what happened to their pulled-extensions state. Without this,
+        // phase-two deletions are silent and users only discover the
+        // change via a warning on the next extension command.
+        if (data.extensionMigration) {
+          const m = data.extensionMigration;
+          logger.info("  Extension layout migration:");
+          if (m.phase1MovedCount > 0) {
+            logger.info(
+              `    Moved ${m.phase1MovedCount} legacy file(s) from ` +
+                `extensions/<type>/ to .swamp/pulled-extensions/<type>/`,
+            );
+          }
+          if (m.phase2DeletedPerExtension.length > 0) {
+            const total = m.phase2DeletedPerExtension.reduce(
+              (n, e) => n + e.fileCount,
+              0,
+            );
+            logger.info(
+              `    Removed ${total} flat-layout file(s) across ` +
+                `${m.phase2DeletedPerExtension.length} extension(s):`,
+            );
+            for (const { name, fileCount } of m.phase2DeletedPerExtension) {
+              logger.info(`      - ${name} (${fileCount} file(s))`);
+            }
+            logger
+              .info`    Run 'swamp extension install' to restore these extensions into the per-extension layout. The lockfile's stored checksum is verified on each re-pull.`;
+          }
+        }
       },
       error: (e) => {
         throw new UserError(e.error.message);

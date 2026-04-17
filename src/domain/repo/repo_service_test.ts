@@ -2171,3 +2171,293 @@ Deno.test("RepoService.upgrade with tool none skips skills and instructions", as
     assertEquals(result.settingsUpdated, false);
   });
 });
+
+// --- Extension layout phase-two migration (issue 120) ---
+//
+// These tests cover the gen-2 → per-extension migration path added in
+// issue 120: repo upgrade deletes gen-2 (flat-under-.swamp) tracked files
+// so the next `swamp extension install` can re-pull each extension into
+// a per-extension subtree. See migrateExtensionLayoutPhase2 for
+// invariants — selective delete, NotFound tolerance, abort-on-other-IO.
+
+async function seedLegacyPulledLayout(
+  tempDir: string,
+  opts: {
+    files: string[];
+    extensionName: string;
+    version: string;
+    lockfilePath: string;
+    includeSkipChecksum?: boolean;
+  },
+): Promise<void> {
+  // Seed files on disk under flat .swamp/pulled-extensions/<type>/<file>.
+  for (const rel of opts.files) {
+    const abs = join(tempDir, rel);
+    const parent = abs.slice(0, abs.lastIndexOf("/"));
+    await Deno.mkdir(parent, { recursive: true });
+    await Deno.writeTextFile(abs, `// seed for ${rel}`);
+  }
+
+  // Seed the lockfile with gen-2 file paths.
+  const parent = opts.lockfilePath.slice(0, opts.lockfilePath.lastIndexOf("/"));
+  await Deno.mkdir(parent, { recursive: true });
+  await Deno.writeTextFile(
+    opts.lockfilePath,
+    JSON.stringify(
+      {
+        [opts.extensionName]: {
+          version: opts.version,
+          pulledAt: "2026-01-01T00:00:00Z",
+          files: opts.files,
+          ...(opts.includeSkipChecksum ? {} : { checksum: "abc123" }),
+        },
+      },
+      null,
+      2,
+    ),
+  );
+}
+
+async function initRepoForUpgrade(tempDir: string): Promise<void> {
+  // Pre-init with the current version so the upgrade path has a marker
+  // to read. Use tool:"none" to keep the setup minimal.
+  const initService = new RepoService("0.1.0");
+  await initService.init(RepoPath.create(tempDir), { tool: "none" });
+}
+
+Deno.test("RepoService.upgrade phase 2: deletes gen-2 tracked files and lockfile is preserved", async () => {
+  await withTempDir(async (tempDir) => {
+    await initRepoForUpgrade(tempDir);
+    const lockfilePath = join(
+      tempDir,
+      "extensions",
+      "models",
+      "upstream_extensions.json",
+    );
+    const files = [
+      ".swamp/pulled-extensions/models/cluster.ts",
+      ".swamp/pulled-extensions/models/_lib/aws.ts",
+      ".swamp/pulled-extensions/files/README.md",
+    ];
+    await seedLegacyPulledLayout(tempDir, {
+      files,
+      extensionName: "@fake/ext",
+      version: "2026.01.01.1",
+      lockfilePath,
+    });
+
+    const lockfileBefore = await Deno.readTextFile(lockfilePath);
+
+    const service = new RepoService("0.2.0");
+    await service.upgrade(RepoPath.create(tempDir), { tool: "none" });
+
+    // Files removed on disk
+    for (const rel of files) {
+      const abs = join(tempDir, rel);
+      let exists = true;
+      try {
+        await Deno.stat(abs);
+      } catch (err) {
+        if (err instanceof Deno.errors.NotFound) exists = false;
+        else throw err;
+      }
+      assertEquals(exists, false, `${rel} should have been deleted`);
+    }
+
+    // Lockfile unchanged — re-install path uses these paths to detect
+    // missing files and trigger re-pull.
+    const lockfileAfter = await Deno.readTextFile(lockfilePath);
+    assertEquals(lockfileAfter, lockfileBefore);
+  });
+});
+
+Deno.test("RepoService.upgrade phase 2: NotFound tolerated on retry after partial delete", async () => {
+  await withTempDir(async (tempDir) => {
+    await initRepoForUpgrade(tempDir);
+    const lockfilePath = join(
+      tempDir,
+      "extensions",
+      "models",
+      "upstream_extensions.json",
+    );
+    const files = [
+      ".swamp/pulled-extensions/models/a.ts",
+      ".swamp/pulled-extensions/models/b.ts",
+      ".swamp/pulled-extensions/models/c.ts",
+    ];
+    await seedLegacyPulledLayout(tempDir, {
+      files,
+      extensionName: "@fake/ext",
+      version: "2026.01.01.1",
+      lockfilePath,
+    });
+
+    // Simulate an interrupted prior migration pass: pre-delete the first
+    // file so phase 2 encounters NotFound for it. The migration must
+    // continue and delete the remaining files without error.
+    await Deno.remove(join(tempDir, files[0]));
+
+    const service = new RepoService("0.2.0");
+    await service.upgrade(RepoPath.create(tempDir), { tool: "none" });
+
+    for (const rel of files) {
+      let exists = true;
+      try {
+        await Deno.stat(join(tempDir, rel));
+      } catch (err) {
+        if (err instanceof Deno.errors.NotFound) exists = false;
+        else throw err;
+      }
+      assertEquals(exists, false, `${rel} should be absent post-migration`);
+    }
+  });
+});
+
+Deno.test("RepoService.upgrade phase 2: second invocation is a no-op", async () => {
+  await withTempDir(async (tempDir) => {
+    await initRepoForUpgrade(tempDir);
+    const lockfilePath = join(
+      tempDir,
+      "extensions",
+      "models",
+      "upstream_extensions.json",
+    );
+    await seedLegacyPulledLayout(tempDir, {
+      files: [".swamp/pulled-extensions/models/foo.ts"],
+      extensionName: "@fake/ext",
+      version: "2026.01.01.1",
+      lockfilePath,
+    });
+
+    const service = new RepoService("0.2.0");
+    await service.upgrade(RepoPath.create(tempDir), { tool: "none" });
+    // All tracked gen-2 files are now gone. Second upgrade sees no gen-2
+    // disk state and no lockfile churn.
+    const lockfileAfterFirst = await Deno.readTextFile(lockfilePath);
+    await service.upgrade(RepoPath.create(tempDir), { tool: "none" });
+    const lockfileAfterSecond = await Deno.readTextFile(lockfilePath);
+    assertEquals(lockfileAfterSecond, lockfileAfterFirst);
+  });
+});
+
+Deno.test("RepoService.upgrade phase 2: fatal abort on non-NotFound IO error leaves lockfile intact", async () => {
+  await withTempDir(async (tempDir) => {
+    await initRepoForUpgrade(tempDir);
+    const lockfilePath = join(
+      tempDir,
+      "extensions",
+      "models",
+      "upstream_extensions.json",
+    );
+
+    // Seed a lockfile entry that points at a "file" path that is
+    // actually a non-empty directory on disk. Deno.remove on a
+    // non-empty directory without {recursive:true} fails with an IO
+    // error that is NOT Deno.errors.NotFound — the exact case phase 2
+    // must treat as fatal.
+    const pseudoFile = ".swamp/pulled-extensions/models/stubborn.ts";
+    const pseudoFileAbs = join(tempDir, pseudoFile);
+    await Deno.mkdir(pseudoFileAbs, { recursive: true });
+    // Populate it so Deno.remove can't quietly succeed.
+    await Deno.writeTextFile(
+      join(pseudoFileAbs, "child.txt"),
+      "makes the dir non-empty",
+    );
+
+    await Deno.mkdir(join(tempDir, "extensions/models"), { recursive: true });
+    await Deno.writeTextFile(
+      lockfilePath,
+      JSON.stringify(
+        {
+          "@stubborn/ext": {
+            version: "1.0.0",
+            pulledAt: "2026-01-01T00:00:00Z",
+            files: [pseudoFile],
+            checksum: "abc",
+          },
+        },
+        null,
+        2,
+      ),
+    );
+    const lockfileBefore = await Deno.readTextFile(lockfilePath);
+
+    const service = new RepoService("0.2.0");
+    await assertRejects(
+      () => service.upgrade(RepoPath.create(tempDir), { tool: "none" }),
+      Error,
+      "Could not remove",
+    );
+
+    // Coordination primitive — the lockfile — must be untouched so the
+    // retry after the user clears the blocker starts from a consistent
+    // state.
+    const lockfileAfter = await Deno.readTextFile(lockfilePath);
+    assertEquals(lockfileAfter, lockfileBefore);
+
+    // The pseudo-file "directory" must still be on disk (nothing was
+    // partially mutated beyond the one failed remove attempt).
+    const stat = await Deno.stat(pseudoFileAbs);
+    assertEquals(stat.isDirectory, true);
+  });
+});
+
+Deno.test("RepoService.upgrade phase 2: leaves per-extension (current) entries untouched", async () => {
+  await withTempDir(async (tempDir) => {
+    await initRepoForUpgrade(tempDir);
+    const lockfilePath = join(
+      tempDir,
+      "extensions",
+      "models",
+      "upstream_extensions.json",
+    );
+
+    // Mixed state: one extension already in current layout, one still
+    // in gen-2. Only the gen-2 one should get its files deleted.
+    const gen2File = ".swamp/pulled-extensions/models/flat.ts";
+    const currentFile =
+      ".swamp/pulled-extensions/@scope/ext/models/already-migrated.ts";
+
+    for (const rel of [gen2File, currentFile]) {
+      const abs = join(tempDir, rel);
+      const parent = abs.slice(0, abs.lastIndexOf("/"));
+      await Deno.mkdir(parent, { recursive: true });
+      await Deno.writeTextFile(abs, "// seed");
+    }
+
+    await Deno.mkdir(join(tempDir, "extensions/models"), { recursive: true });
+    await Deno.writeTextFile(
+      lockfilePath,
+      JSON.stringify(
+        {
+          "@flat/gen2": {
+            version: "1.0.0",
+            pulledAt: "2026-01-01T00:00:00Z",
+            files: [gen2File],
+            checksum: "abc",
+          },
+          "@scope/ext": {
+            version: "1.0.0",
+            pulledAt: "2026-01-01T00:00:00Z",
+            files: [currentFile],
+            checksum: "def",
+          },
+        },
+        null,
+        2,
+      ),
+    );
+
+    const service = new RepoService("0.2.0");
+    await service.upgrade(RepoPath.create(tempDir), { tool: "none" });
+
+    // gen2 file gone
+    await assertRejects(
+      () => Deno.stat(join(tempDir, gen2File)),
+      Deno.errors.NotFound,
+    );
+    // current-layout file retained
+    const stat = await Deno.stat(join(tempDir, currentFile));
+    assertEquals(stat.isFile, true);
+  });
+});

@@ -631,9 +631,21 @@ export {
 
 // Extension layout detection
 export {
+  classifyExtensionFile,
   detectLegacyExtensionLayout,
+  type ExtensionLayoutGeneration,
+  type LegacyFileEntry,
+  type LegacyLayoutSummary,
   requireCurrentExtensionLayout,
+  summariseLegacyLayout,
+  warnLegacyExtensionLayout,
 } from "./extensions/layout.ts";
+
+// Pulled-extension enumeration helper
+export {
+  enumeratePulledExtensionDirs,
+  type PulledExtensionType,
+} from "./extensions/enumerate_pulled.ts";
 
 // Extension install (restore from lockfile)
 export {
@@ -792,6 +804,7 @@ export {
 export {
   createRepoInitDeps,
   createRepoUpgradeDeps,
+  type ExtensionLayoutMigrationSummary,
   repoInit,
   type RepoInitData,
   type RepoInitDeps,

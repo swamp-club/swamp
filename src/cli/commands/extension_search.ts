@@ -27,10 +27,6 @@ import {
 import { requireInitializedRepo } from "../repo_context.ts";
 import { resolveModelsDir } from "../resolve_models_dir.ts";
 import {
-  SWAMP_SUBDIRS,
-  swampPath,
-} from "../../infrastructure/persistence/paths.ts";
-import {
   RepoMarkerRepository,
 } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
@@ -44,7 +40,7 @@ import {
   createLibSwampContext,
   extensionSearch,
   type ExtensionSearchDeps,
-  requireCurrentExtensionLayout,
+  warnLegacyExtensionLayout,
 } from "../../libswamp/mod.ts";
 import { createExtensionSearchRenderer } from "../../presentation/renderers/extension_search.tsx";
 import { resolveSkillsDir } from "../../domain/repo/skill_dirs.ts";
@@ -202,8 +198,12 @@ export const extensionSearchCommand = new Command()
         "upstream_extensions.json",
       );
 
-      // Check for legacy extension layout before pulling
-      await requireCurrentExtensionLayout(lockfilePath);
+      // Warn (don't block) on legacy layout. The pull that follows writes
+      // to the per-extension subtree regardless of existing layout state.
+      await warnLegacyExtensionLayout(
+        lockfilePath,
+        (msg) => ctx.logger.warn(msg),
+      );
 
       const pullCtx: PullContext = {
         getExtension: (name) => client.getExtension(name),
@@ -212,12 +212,6 @@ export const extensionSearchCommand = new Command()
         getChecksum: (name, version) => client.getChecksum(name, version),
         logger: ctx.logger,
         lockfilePath,
-        modelsDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledModels),
-        workflowsDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledWorkflows),
-        vaultsDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledVaults),
-        driversDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledDrivers),
-        datastoresDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledDatastores),
-        reportsDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledReports),
         skillsDir: resolveSkillsDir(repoDir, marker?.tool ?? "claude"),
         repoDir,
         force: false,

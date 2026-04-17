@@ -33,8 +33,8 @@ import {
   extensionRm,
   extensionRmPreview,
   parseExtensionRef,
-  requireCurrentExtensionLayout,
   validateExtensionName,
+  warnLegacyExtensionLayout,
 } from "../../libswamp/mod.ts";
 import {
   createExtensionRmRenderer,
@@ -89,8 +89,12 @@ export const extensionRemoveCommand = new Command()
     const absoluteModelsDir = resolve(repoDir, modelsDir);
     const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
 
-    // Check for legacy extension layout
-    await requireCurrentExtensionLayout(lockfilePath);
+    // Warn if any extensions are still in a legacy layout. rm follows
+    // the lockfile's tracked paths so it works against either generation.
+    await warnLegacyExtensionLayout(
+      lockfilePath,
+      (msg) => ctx.logger.warn(msg),
+    );
 
     // Create libswamp context, deps, renderer
     const libCtx = createLibSwampContext({ logger: ctx.logger });

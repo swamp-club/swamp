@@ -23,10 +23,6 @@ import { createContext, type GlobalOptions } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { resolveModelsDir } from "../resolve_models_dir.ts";
 import {
-  SWAMP_SUBDIRS,
-  swampPath,
-} from "../../infrastructure/persistence/paths.ts";
-import {
   RepoMarkerRepository,
 } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
@@ -40,7 +36,7 @@ import {
   createExtensionUpdateDeps,
   createLibSwampContext,
   extensionUpdate,
-  requireCurrentExtensionLayout,
+  warnLegacyExtensionLayout,
 } from "../../libswamp/mod.ts";
 import { createExtensionUpdateRenderer } from "../../presentation/renderers/extension_update.ts";
 import { resolveSkillsDir } from "../../domain/repo/skill_dirs.ts";
@@ -85,24 +81,19 @@ export const extensionUpdateCommand = new Command()
     const absoluteModelsDir = resolve(repoDir, modelsDir);
     const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
 
-    // Pulled-extension dirs for install
-    const pulledModelsDir = swampPath(repoDir, SWAMP_SUBDIRS.pulledModels);
-    const pulledWorkflowsDir = swampPath(
-      repoDir,
-      SWAMP_SUBDIRS.pulledWorkflows,
-    );
-    const pulledVaultsDir = swampPath(repoDir, SWAMP_SUBDIRS.pulledVaults);
-    const pulledDriversDir = swampPath(repoDir, SWAMP_SUBDIRS.pulledDrivers);
-    const pulledDatastoresDir = swampPath(
-      repoDir,
-      SWAMP_SUBDIRS.pulledDatastores,
-    );
-    const pulledReportsDir = swampPath(repoDir, SWAMP_SUBDIRS.pulledReports);
+    // Per-extension models/workflows/vaults/drivers/datastores/reports
+    // destinations are derived inside installExtension from the
+    // extension's scoped name. Only skillsDir is tool-dependent.
     const tool = marker?.tool ?? "claude";
     const skillsDir = resolveSkillsDir(repoDir, tool);
 
-    // 3. Check for legacy extension layout
-    await requireCurrentExtensionLayout(lockfilePath);
+    // 3. Warn (don't block) on legacy layout. update pulls new versions
+    // which write to the per-extension subtree, migrating each extension
+    // as it goes.
+    await warnLegacyExtensionLayout(
+      lockfilePath,
+      (msg) => cliCtx.logger.warn(msg),
+    );
 
     // 4. Parse extension name if given
     let extensionName: string | undefined;
@@ -122,12 +113,6 @@ export const extensionUpdateCommand = new Command()
         const installCtx = createInstallContext(serverUrl, {
           logger: cliCtx.logger,
           lockfilePath,
-          modelsDir: pulledModelsDir,
-          workflowsDir: pulledWorkflowsDir,
-          vaultsDir: pulledVaultsDir,
-          driversDir: pulledDriversDir,
-          datastoresDir: pulledDatastoresDir,
-          reportsDir: pulledReportsDir,
           skillsDir,
           repoDir,
           force: true,

@@ -26,7 +26,7 @@ import {
   createExtensionListDeps,
   createLibSwampContext,
   extensionList,
-  requireCurrentExtensionLayout,
+  warnLegacyExtensionLayout,
 } from "../../libswamp/mod.ts";
 import { resolveModelsDir } from "../resolve_models_dir.ts";
 import {
@@ -57,14 +57,18 @@ export const extensionListCommand = new Command()
       outputMode: cliCtx.outputMode,
     });
 
-    // Check for legacy extension layout
+    // Warn (don't block) if any extensions are still in a legacy layout.
+    // list reads the lockfile, which tolerates mixed-generation state.
     const repoPath = RepoPath.create(repoDir);
     const markerRepo = new RepoMarkerRepository();
     const marker = await markerRepo.read(repoPath);
     const modelsDir = resolveModelsDir(marker);
     const absoluteModelsDir = resolve(repoDir, modelsDir);
     const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
-    await requireCurrentExtensionLayout(lockfilePath);
+    await warnLegacyExtensionLayout(
+      lockfilePath,
+      (msg) => cliCtx.logger.warn(msg),
+    );
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
     const deps = await createExtensionListDeps(repoDir);

@@ -100,6 +100,14 @@ export async function* extensionInstall(
 
         try {
           const installCtx = deps.createInstallContext(name, version);
+          // Thread the lockfile's stored checksum through as an integrity
+          // anchor. installExtension verifies the freshly-downloaded archive
+          // matches byte-for-byte and fails loudly on registry drift.
+          // Pre-checksum-tracking entries (pre-f4dfc083) have no stored
+          // value and skip verification (handled in installExtension).
+          if (entry.checksum) {
+            installCtx.expectedChecksum = entry.checksum;
+          }
           const ref = parseExtensionRef(`${name}@${version}`);
           await installExtension(ref, installCtx);
           entries.push({ name, version, status: "installed" });
