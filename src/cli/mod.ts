@@ -22,7 +22,7 @@ import { setColorEnabled } from "@std/fmt/colors";
 import { isAbsolute, join, resolve } from "@std/path";
 import { swampPath } from "../infrastructure/persistence/paths.ts";
 import { readUpstreamExtensions } from "../infrastructure/persistence/upstream_extensions.ts";
-import { enumeratePulledExtensionDirs } from "../libswamp/extensions/enumerate_pulled.ts";
+import { enumeratePulledExtensionDirs } from "../libswamp/mod.ts";
 import { getLogger, parseLogLevel } from "@logtape/logtape";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import { VERSION, versionCommand } from "./commands/version.ts";

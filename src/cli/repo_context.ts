@@ -42,7 +42,7 @@ import { UserError } from "../domain/errors.ts";
 import { VERSION } from "./commands/version.ts";
 import { resolveWorkflowsDir } from "./resolve_workflows_dir.ts";
 import { resolveModelsDir } from "./resolve_models_dir.ts";
-import { enumeratePulledExtensionDirs } from "../libswamp/extensions/enumerate_pulled.ts";
+import { enumeratePulledExtensionDirs } from "../libswamp/mod.ts";
 import { resolveDatastoreConfig } from "./resolve_datastore.ts";
 import { DefaultDatastorePathResolver } from "../infrastructure/persistence/default_datastore_path_resolver.ts";
 import type { DatastorePathResolver } from "../domain/datastore/datastore_path_resolver.ts";

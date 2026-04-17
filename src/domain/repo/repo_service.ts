@@ -24,6 +24,7 @@ import {
   readUpstreamExtensions,
   type UpstreamExtensionsMap,
 } from "../../infrastructure/persistence/upstream_extensions.ts";
+import { PULLED_TYPE_DIRS } from "../../libswamp/extensions/layout.ts";
 import type { RepoPath } from "./repo_path.ts";
 import {
   SWAMP_DATA_DIR,
@@ -97,17 +98,17 @@ export interface RepoInitResult {
 /**
  * Summary of extension layout migration that ran during `repo upgrade`.
  *
- * - `phase1MovedCount`: gen-1 (`extensions/<type>/...`) files renamed to
- *   gen-2 (`.swamp/pulled-extensions/<type>/...`).
- * - `phase2DeletedPerExtension`: for each gen-2 entry detected, how many
- *   tracked files were removed from disk. The lockfile entries remain,
- *   so the next `swamp extension install` re-pulls each affected
- *   extension into the per-extension subtree with integrity verification
- *   against the lockfile's stored checksum.
+ * - `renamedFileCount`: files renamed from the pre-`.swamp/` layout
+ *   (`extensions/<type>/…`) to `.swamp/pulled-extensions/<type>/…`.
+ * - `deletedPerExtension`: per extension, how many outdated files were
+ *   removed from disk. The lockfile entries remain, so the next
+ *   `swamp extension install` re-pulls each affected extension into
+ *   the per-extension subtree with integrity verification against the
+ *   lockfile's stored checksum.
  */
 export interface ExtensionLayoutMigrationSummary {
-  phase1MovedCount: number;
-  phase2DeletedPerExtension: Array<{ name: string; fileCount: number }>;
+  renamedFileCount: number;
+  deletedPerExtension: Array<{ name: string; fileCount: number }>;
 }
 
 /**
@@ -1650,7 +1651,7 @@ export const SwampAudit: Plugin = async ({ directory }) => {
       return undefined;
     }
 
-    const phase1MovedCount = await this.migrateExtensionLayoutPhase1(
+    const renamedFileCount = await this.migrateExtensionLayoutPhase1(
       repoPath,
       lockfilePath,
       upstream,
@@ -1658,15 +1659,15 @@ export const SwampAudit: Plugin = async ({ directory }) => {
 
     // Re-read after phase 1 may have rewritten the lockfile.
     const upstreamAfterPhase1 = await readUpstreamExtensions(lockfilePath);
-    const phase2DeletedPerExtension = await this.migrateExtensionLayoutPhase2(
+    const deletedPerExtension = await this.migrateExtensionLayoutPhase2(
       repoPath,
       upstreamAfterPhase1,
     );
 
-    if (phase1MovedCount === 0 && phase2DeletedPerExtension.length === 0) {
+    if (renamedFileCount === 0 && deletedPerExtension.length === 0) {
       return undefined;
     }
-    return { phase1MovedCount, phase2DeletedPerExtension };
+    return { renamedFileCount, deletedPerExtension };
   }
 
   /**
@@ -1780,27 +1781,19 @@ export const SwampAudit: Plugin = async ({ directory }) => {
     upstream: UpstreamExtensionsMap,
   ): Promise<Array<{ name: string; fileCount: number }>> {
     const pulledPrefix = `${SWAMP_DATA_DIR}/pulled-extensions/`;
-    const pulledTypeDirs = new Set([
-      "models",
-      "workflows",
-      "vaults",
-      "drivers",
-      "datastores",
-      "reports",
-      "skills",
-      "files",
-    ]);
 
     // Identify gen-2 files per extension: under pulled-extensions/ with
     // a type dir as the first path segment (vs. @scope/name for the
-    // current layout).
+    // current layout). PULLED_TYPE_DIRS is shared with
+    // `classifyExtensionFile` in layout.ts — the two must agree on what
+    // counts as a gen-2 path.
     const gen2ByExtension = new Map<string, string[]>();
     for (const [name, entry] of Object.entries(upstream)) {
       if (!entry.files) continue;
       for (const file of entry.files) {
         if (!file.startsWith(pulledPrefix)) continue;
         const firstSegment = file.slice(pulledPrefix.length).split("/")[0];
-        if (pulledTypeDirs.has(firstSegment)) {
+        if (PULLED_TYPE_DIRS.has(firstSegment)) {
           const list = gen2ByExtension.get(name) ?? [];
           list.push(file);
           gen2ByExtension.set(name, list);
@@ -1851,7 +1844,7 @@ export const SwampAudit: Plugin = async ({ directory }) => {
     // for types where no files were installed, which pruneEmptyDirsUp
     // doesn't reach because nothing under them was tracked. Remove any
     // that are now empty so post-migration users don't see stale shells.
-    for (const type of pulledTypeDirs) {
+    for (const type of PULLED_TYPE_DIRS) {
       const typeDir = join(
         repoPath.value,
         SWAMP_DATA_DIR,

@@ -636,6 +636,7 @@ export {
   type ExtensionLayoutGeneration,
   type LegacyFileEntry,
   type LegacyLayoutSummary,
+  PULLED_TYPE_DIRS,
   requireCurrentExtensionLayout,
   summariseLegacyLayout,
   warnLegacyExtensionLayout,

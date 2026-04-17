@@ -39,8 +39,13 @@ export interface LegacyFileEntry {
   generation: "gen-1" | "gen-2";
 }
 
-/** Known pulled-type dir names under `.swamp/pulled-extensions/`. */
-const PULLED_TYPE_DIRS = new Set([
+/**
+ * Known pulled-type dir names under `.swamp/pulled-extensions/`. Used
+ * both by `classifyExtensionFile` (to detect gen-2 flat paths) and by
+ * the phase-two migration in `RepoService` (to decide which tracked
+ * files to delete). Keep this list in one place so the two never drift.
+ */
+export const PULLED_TYPE_DIRS: ReadonlySet<string> = new Set([
   "models",
   "workflows",
   "vaults",
