@@ -2451,6 +2451,119 @@ export const model = {
   }
 });
 
+Deno.test("UserModelLoader buildIndex rebundles when source content changes with preserved mtime (#125)", async () => {
+  // Issue #125 — under atomic-rename saves, rsync --times, and some editors
+  // the source file ends up with an mtime that does NOT strictly exceed the
+  // cached bundle's mtime, so the old mtime-based freshness check served a
+  // stale bundle. This test exercises exactly that sequence with Deno.utime
+  // (cross-platform equivalent of `touch -t`) and verifies the
+  // content-fingerprint freshness check catches it.
+  const ts = Date.now();
+  const typeId = `@user/preserved-mtime-${ts}`;
+  const v1 = `
+import { z } from "npm:zod@4";
+
+export const model = {
+  type: "${typeId}",
+  version: "2026.02.09.1",
+  methods: {
+    run: {
+      description: "Run",
+      arguments: z.object({}),
+      execute: async () => ({ dataHandles: [], marker: "V1" }),
+    },
+  },
+};
+`;
+  const v2 = `
+import { z } from "npm:zod@4";
+
+export const model = {
+  type: "${typeId}",
+  version: "2026.02.09.1",
+  methods: {
+    run: {
+      description: "Run",
+      arguments: z.object({}),
+      execute: async () => ({ dataHandles: [], marker: "V2" }),
+    },
+  },
+};
+`;
+
+  const repoDir = await Deno.makeTempDir({
+    prefix: "swamp_preserved_mtime_repo_",
+  });
+  const modelsDir = await Deno.makeTempDir({
+    prefix: "swamp_preserved_mtime_models_",
+  });
+  const dbPath = join(repoDir, ".swamp", "_extension_catalog.db");
+
+  try {
+    const sourcePath = join(modelsDir, "model.ts");
+    await Deno.writeTextFile(sourcePath, v1);
+
+    const catalog1 = new ExtensionCatalogStore(dbPath);
+    const loader1 = new UserModelLoader(testDenoRuntime, repoDir);
+    await loader1.buildIndex(modelsDir, catalog1);
+    catalog1.close();
+
+    const ns = bundleNamespace(modelsDir, repoDir);
+    const bundlePath = join(repoDir, ".swamp", "bundles", ns, "model.js");
+    const v1Bundle = await Deno.readTextFile(bundlePath);
+    assertEquals(
+      v1Bundle.includes("V1"),
+      true,
+      "V1 marker should be present in initial bundle",
+    );
+
+    // Capture the original source mtime before the edit.
+    const origMtime = (await Deno.stat(sourcePath)).mtime!;
+
+    // Advance wall clock so any mtime-based comparison would notice a
+    // rebundle moment, making the test deterministic.
+    await new Promise((r) => setTimeout(r, 1100));
+
+    // Swap content, then restore the original mtime — the #125 trigger.
+    await Deno.writeTextFile(sourcePath, v2);
+    await Deno.utime(sourcePath, origMtime, origMtime);
+
+    const srcStatAfterRestore = await Deno.stat(sourcePath);
+    const bundleStatBeforeRun2 = await Deno.stat(bundlePath);
+    assertEquals(
+      srcStatAfterRestore.mtime!.getTime() <=
+        bundleStatBeforeRun2.mtime!.getTime(),
+      true,
+      "Precondition — source mtime must be <= bundle mtime to exercise the bug",
+    );
+
+    const catalog2 = new ExtensionCatalogStore(dbPath);
+    const loader2 = new UserModelLoader(testDenoRuntime, repoDir);
+    const result = await loader2.buildIndex(modelsDir, catalog2);
+    catalog2.close();
+
+    const v2Bundle = await Deno.readTextFile(bundlePath);
+    assertNotEquals(
+      v1Bundle,
+      v2Bundle,
+      "Bundle must be regenerated when source content changes, even with preserved mtime",
+    );
+    assertEquals(
+      v2Bundle.includes("V2"),
+      true,
+      "V2 marker must be present in the regenerated bundle",
+    );
+    assertEquals(
+      result.loaded.length > 0,
+      true,
+      "model.ts must appear in the rebundled set",
+    );
+  } finally {
+    await Deno.remove(repoDir, { recursive: true });
+    await Deno.remove(modelsDir, { recursive: true });
+  }
+});
+
 Deno.test("UserModelLoader bundleWithCache preserves cached bundle on unexpected failure", async () => {
   const ts = Date.now();
   // Model that imports a nonexistent npm package — will fail to bundle.
@@ -2539,13 +2652,17 @@ export const model = {
   }
 });
 
-Deno.test("UserModelLoader bundleWithCache uses cache when source and bundle have equal mtimes", async () => {
+Deno.test("UserModelLoader buildIndex: unchanged content does not rebundle even with new mtime", async () => {
+  // Prior to #125 the freshness rule was mtime-only, so writing identical
+  // content with a new mtime would trigger a spurious rebundle. After the
+  // switch to content fingerprints, rewriting the source with the same
+  // bytes must NOT change the cached bundle even when mtime advances.
   const ts = Date.now();
   const modelCode = `
 import { z } from "npm:zod@4";
 
 export const model = {
-  type: "@user/equal-mtime-${ts}",
+  type: "@user/unchanged-content-${ts}",
   version: "2026.02.09.1",
   methods: {
     run: {
@@ -2558,46 +2675,52 @@ export const model = {
 `;
 
   const repoDir = await Deno.makeTempDir({
-    prefix: "swamp_equal_mtime_repo_",
+    prefix: "swamp_unchanged_content_repo_",
   });
   const modelsDir = await Deno.makeTempDir({
-    prefix: "swamp_equal_mtime_models_",
+    prefix: "swamp_unchanged_content_models_",
   });
+  const dbPath = join(repoDir, ".swamp", "_extension_catalog.db");
 
   try {
-    // Write model and load to produce cached bundle
     await Deno.writeTextFile(join(modelsDir, "model.ts"), modelCode);
+    const catalog1 = new ExtensionCatalogStore(dbPath);
     const loader1 = new UserModelLoader(testDenoRuntime, repoDir);
-    await loader1.loadModels(modelsDir);
+    await loader1.buildIndex(modelsDir, catalog1);
+    catalog1.close();
 
     const ns = bundleNamespace(modelsDir, repoDir);
     const bundlePath = join(repoDir, ".swamp", "bundles", ns, "model.js");
     const cachedBundle = await Deno.readTextFile(bundlePath);
+    const bundleMtimeBefore = (await Deno.stat(bundlePath)).mtime!.getTime();
 
-    // Set source and bundle to the exact same mtime
-    const sharedMtime = new Date("2026-01-01T00:00:00Z");
-    await Deno.utime(join(modelsDir, "model.ts"), sharedMtime, sharedMtime);
-    await Deno.utime(bundlePath, sharedMtime, sharedMtime);
+    // Rewrite the source with identical content but advance its mtime
+    // (simulates touch or save-without-changes).
+    await new Promise((r) => setTimeout(r, 1100));
+    await Deno.writeTextFile(join(modelsDir, "model.ts"), modelCode);
 
-    // Load again — should use cached bundle, not rebundle
+    const catalog2 = new ExtensionCatalogStore(dbPath);
     const loader2 = new UserModelLoader(testDenoRuntime, repoDir);
-    await loader2.loadModels(modelsDir);
+    const result = await loader2.buildIndex(modelsDir, catalog2);
+    catalog2.close();
 
     const bundleAfter = await Deno.readTextFile(bundlePath);
+    const bundleMtimeAfter = (await Deno.stat(bundlePath)).mtime!.getTime();
 
-    // Bundle content should be identical (cache was used, not rebundled)
     assertEquals(
       cachedBundle,
       bundleAfter,
-      "Bundle content should be unchanged when source and bundle have equal mtimes",
+      "Bundle content should be unchanged when source content is unchanged",
     );
-
-    // Bundle mtime should still be the shared time (not updated by a rebundle)
-    const bundleStatAfter = await Deno.stat(bundlePath);
     assertEquals(
-      bundleStatAfter.mtime?.getTime(),
-      sharedMtime.getTime(),
-      "Bundle mtime should be unchanged — cache was used, no rebundle occurred",
+      bundleMtimeAfter,
+      bundleMtimeBefore,
+      "Bundle mtime should be unchanged — no rebundle occurred",
+    );
+    assertEquals(
+      result.loaded.length,
+      0,
+      "No files should be flagged as stale when content is unchanged",
     );
   } finally {
     await Deno.remove(repoDir, { recursive: true });

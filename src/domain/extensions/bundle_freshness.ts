@@ -1,0 +1,249 @@
+// Swamp, an Automation Framework
+// Copyright (C) 2026 System Initiative, Inc.
+//
+// This file is part of Swamp.
+//
+// Swamp is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License version 3
+// as published by the Free Software Foundation, with the Swamp
+// Extension and Definition Exception (found in the "COPYING-EXCEPTION"
+// file).
+//
+// Swamp is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
+
+import { relative, resolve } from "@std/path";
+import { resolveLocalImports } from "../models/local_import_resolver.ts";
+
+/**
+ * Minimal row shape this module needs from the catalog. The concrete
+ * ExtensionTypeRow in the infrastructure layer extends this; keeping
+ * the dependency one-way (infrastructure knows the domain shape, not
+ * vice versa) respects the domain→infrastructure boundary rule.
+ */
+export interface FreshnessCatalogRow {
+  source_path: string;
+  source_fingerprint?: string;
+}
+
+/**
+ * Per-invocation cache that dedups file hashing and transitive dep
+ * resolution across multiple computeSourceFingerprint calls. Safe to
+ * share within a single buildIndex pass — filesystem contents don't
+ * change mid-pass. Discard after the pass finishes.
+ *
+ * Without this, a repo where N entry points share a common _lib/ of M
+ * files ends up reading and hashing each shared file up to N times;
+ * with it each path is read and hashed exactly once.
+ */
+export interface FreshnessCache {
+  fileHash: Map<string, Promise<string>>;
+  resolvedDeps: Map<string, Promise<string[]>>;
+}
+
+export function createFreshnessCache(): FreshnessCache {
+  return {
+    fileHash: new Map(),
+    resolvedDeps: new Map(),
+  };
+}
+
+/**
+ * A source file the caller must rebundle — its content no longer matches
+ * the catalog's stored fingerprint, or the file is new to the catalog.
+ */
+export interface StaleFile {
+  absolutePath: string;
+  relativePath: string;
+  baseDir: string;
+}
+
+/**
+ * Computes a content-based fingerprint covering an entry point and every
+ * local .ts file it transitively imports via relative paths.
+ *
+ * The fingerprint is sha-256 over a sorted list of
+ * `{relPath}:{sha256(content)}` entries — so it changes when either the
+ * content of any dep changes, or when the dep set changes (rename, add,
+ * remove). Non-local imports (npm/jsr/etc.) are excluded because
+ * resolveLocalImports stops at the boundary dir, matching the bundler's
+ * own dependency scope.
+ *
+ * On any read/hash failure the error surfaces — callers mark the file
+ * stale to force a fresh rebundle attempt.
+ */
+export async function computeSourceFingerprint(
+  absolutePath: string,
+  boundaryDir: string,
+  cache?: FreshnessCache,
+): Promise<string> {
+  const resolvedFiles = await resolveDeps(absolutePath, boundaryDir, cache);
+
+  const entries: string[] = [];
+  for (const file of resolvedFiles) {
+    const relPath = relative(boundaryDir, file);
+    const fileHash = await hashFile(file, cache);
+    entries.push(`${relPath}:${fileHash}`);
+  }
+  entries.sort();
+
+  const composed = new TextEncoder().encode(entries.join("\n"));
+  const digest = await crypto.subtle.digest("SHA-256", composed);
+  return toHex(digest);
+}
+
+async function resolveDeps(
+  entryPoint: string,
+  boundaryDir: string,
+  cache?: FreshnessCache,
+): Promise<string[]> {
+  if (cache) {
+    const existing = cache.resolvedDeps.get(entryPoint);
+    if (existing) return await existing;
+    const pending = resolveLocalImports([entryPoint], boundaryDir).then(
+      (r) => r.resolvedFiles,
+    );
+    cache.resolvedDeps.set(entryPoint, pending);
+    return await pending;
+  }
+  const { resolvedFiles } = await resolveLocalImports(
+    [entryPoint],
+    boundaryDir,
+  );
+  return resolvedFiles;
+}
+
+async function hashFile(
+  path: string,
+  cache?: FreshnessCache,
+): Promise<string> {
+  if (cache) {
+    const existing = cache.fileHash.get(path);
+    if (existing) return await existing;
+    const pending = (async () => {
+      const bytes = await Deno.readFile(path);
+      const digest = await crypto.subtle.digest("SHA-256", bytes);
+      return toHex(digest);
+    })();
+    cache.fileHash.set(path, pending);
+    return await pending;
+  }
+  const bytes = await Deno.readFile(path);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return toHex(digest);
+}
+
+function toHex(buffer: ArrayBuffer): string {
+  const view = new Uint8Array(buffer);
+  let out = "";
+  for (let i = 0; i < view.length; i++) {
+    out += view[i].toString(16).padStart(2, "0");
+  }
+  return out;
+}
+
+/**
+ * Minimal view of the catalog a freshness check needs.
+ * Lets loaders pass their ExtensionCatalogStore without coupling this
+ * module to every catalog method.
+ */
+export interface FreshnessCatalog {
+  findByKind(kind: "model" | "extension"): FreshnessCatalogRow[];
+  removeBySourcePath(sourcePath: string): void;
+}
+
+export interface FindStaleFilesParams {
+  /** The primary directory for local user extensions. */
+  modelsDir: string;
+  /** Additional directories — source dirs + pulled extension dirs. */
+  additionalDirs?: string[];
+  /** Catalog view for looking up stored fingerprints. */
+  catalog: FreshnessCatalog;
+  /** Discovers `.ts` files under a directory, returning repo-relative paths. */
+  discoverFiles: (dir: string) => Promise<string[]>;
+}
+
+/**
+ * Walks all source directories, compares each file's current fingerprint
+ * against the catalog-stored fingerprint, and returns the files that need
+ * rebundling. Also removes catalog entries whose source file has been
+ * deleted.
+ *
+ * A file is stale when —
+ *   1. It is new (no catalog entry), or
+ *   2. Its computed fingerprint differs from the catalog's, or
+ *   3. Fingerprint computation fails (e.g. dep disappeared mid-scan).
+ *
+ * Previously this was mtime-based. mtime is fragile — atomic-rename
+ * saves, rsync --times, and sub-millisecond edits can all leave the
+ * source mtime <= catalog mtime while the content has changed. Content
+ * fingerprint is strictly stronger.
+ */
+export async function findStaleFiles(
+  params: FindStaleFilesParams,
+): Promise<StaleFile[]> {
+  const { modelsDir, additionalDirs, catalog, discoverFiles } = params;
+  const stale: StaleFile[] = [];
+  const cache = createFreshnessCache();
+
+  const allDirs = [modelsDir, ...(additionalDirs ?? [])];
+
+  const catalogEntries = [
+    ...catalog.findByKind("model"),
+    ...catalog.findByKind("extension"),
+  ];
+  const catalogBySource = new Map<string, FreshnessCatalogRow>();
+  for (const entry of catalogEntries) {
+    catalogBySource.set(entry.source_path, entry);
+  }
+
+  const seenSources = new Set<string>();
+
+  for (const dir of allDirs) {
+    try {
+      await Deno.stat(dir);
+    } catch {
+      continue;
+    }
+
+    const files = await discoverFiles(dir);
+    for (const relativePath of files) {
+      const absolutePath = resolve(dir, relativePath);
+      seenSources.add(absolutePath);
+
+      const catalogEntry = catalogBySource.get(absolutePath);
+      if (!catalogEntry) {
+        stale.push({ absolutePath, relativePath, baseDir: dir });
+        continue;
+      }
+
+      try {
+        const fingerprint = await computeSourceFingerprint(
+          absolutePath,
+          dir,
+          cache,
+        );
+        if (fingerprint !== catalogEntry.source_fingerprint) {
+          stale.push({ absolutePath, relativePath, baseDir: dir });
+        }
+      } catch {
+        // Unreadable source or disappeared dep — force a rebundle so
+        // the caller either succeeds or surfaces the error to the user.
+        stale.push({ absolutePath, relativePath, baseDir: dir });
+      }
+    }
+  }
+
+  for (const [sourcePath] of catalogBySource) {
+    if (!seenSources.has(sourcePath)) {
+      catalog.removeBySourcePath(sourcePath);
+    }
+  }
+
+  return stale;
+}

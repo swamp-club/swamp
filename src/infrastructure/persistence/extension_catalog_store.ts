@@ -46,6 +46,15 @@ export interface ExtensionTypeRow {
   description: string;
   extends_type: string;
   source_mtime: string;
+  /**
+   * sha-256 fingerprint over the entry point + transitive local imports.
+   * Models loader uses this for freshness (issue #125 — mtime-only was
+   * fragile under atomic-rename saves and mtime-preserving sync tools).
+   * Optional while the sibling loaders (reports, drivers, datastores,
+   * vaults) still use mtime; they can omit it on upsert and the store
+   * coerces to "". Old catalog rows default to "" via the migration.
+   */
+  source_fingerprint?: string;
 }
 
 /**
@@ -84,6 +93,7 @@ export class ExtensionCatalogStore {
       try {
         this.db.exec("PRAGMA journal_mode=WAL");
         this.createSchema();
+        this.migrateSchema();
         return;
       } catch (error: unknown) {
         const isLock = error instanceof Error &&
@@ -107,14 +117,15 @@ export class ExtensionCatalogStore {
   private createSchema(): void {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS bundle_types (
-        source_path     TEXT NOT NULL PRIMARY KEY,
-        type_normalized TEXT NOT NULL,
-        kind            TEXT NOT NULL DEFAULT 'model',
-        bundle_path     TEXT NOT NULL,
-        version         TEXT NOT NULL DEFAULT '',
-        description     TEXT NOT NULL DEFAULT '',
-        extends_type    TEXT NOT NULL DEFAULT '',
-        source_mtime    TEXT NOT NULL DEFAULT ''
+        source_path        TEXT NOT NULL PRIMARY KEY,
+        type_normalized    TEXT NOT NULL,
+        kind               TEXT NOT NULL DEFAULT 'model',
+        bundle_path        TEXT NOT NULL,
+        version            TEXT NOT NULL DEFAULT '',
+        description        TEXT NOT NULL DEFAULT '',
+        extends_type       TEXT NOT NULL DEFAULT '',
+        source_mtime       TEXT NOT NULL DEFAULT '',
+        source_fingerprint TEXT NOT NULL DEFAULT ''
       );
 
       CREATE INDEX IF NOT EXISTS idx_bundle_types_kind
@@ -132,6 +143,28 @@ export class ExtensionCatalogStore {
   }
 
   /**
+   * Adds columns introduced after the initial schema to existing DBs.
+   * Probes via PRAGMA table_info before issuing ALTER TABLE so the
+   * migration runs on SQLite versions without ADD COLUMN IF NOT EXISTS
+   * support, and is idempotent across process restarts. Called from
+   * initializeWithRetry so it inherits the lock-retry + backoff logic.
+   */
+  private migrateSchema(): void {
+    const probe = this.db.prepare(
+      "SELECT COUNT(*) AS cnt FROM pragma_table_info('bundle_types') WHERE name = ?",
+    );
+    const hasColumn = (name: string): boolean => {
+      const row = probe.get(name) as { cnt: number } | undefined;
+      return (row?.cnt ?? 0) > 0;
+    };
+    if (!hasColumn("source_fingerprint")) {
+      this.db.exec(
+        "ALTER TABLE bundle_types ADD COLUMN source_fingerprint TEXT NOT NULL DEFAULT ''",
+      );
+    }
+  }
+
+  /**
    * Upserts a bundle type entry. Replaces any existing row with
    * the same source path (primary key).
    */
@@ -139,8 +172,9 @@ export class ExtensionCatalogStore {
     const stmt = this.db.prepare(`
       INSERT OR REPLACE INTO bundle_types (
         source_path, type_normalized, kind, bundle_path,
-        version, description, extends_type, source_mtime
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        version, description, extends_type, source_mtime,
+        source_fingerprint
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     stmt.run(
       row.source_path,
@@ -151,6 +185,7 @@ export class ExtensionCatalogStore {
       row.description,
       row.extends_type,
       row.source_mtime,
+      row.source_fingerprint ?? "",
     );
   }
 
