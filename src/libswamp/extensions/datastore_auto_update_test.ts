@@ -51,6 +51,7 @@ function createMockDeps(
         return Promise.resolve();
       },
     },
+    detectLocalEdits: overrides?.detectLocalEdits,
   };
 }
 
@@ -154,5 +155,47 @@ Deno.test("maybeAutoUpdateDatastoreExtension: checks again after 24h", async () 
     deps,
   );
   assertEquals(result?.updated, true);
+  assertEquals(deps.pulled, ["@swamp/s3-datastore@2026.03.30.1"]);
+});
+
+Deno.test("maybeAutoUpdateDatastoreExtension: proceeds when detectLocalEdits returns match", async () => {
+  const deps = createMockDeps({
+    detectLocalEdits: () => Promise.resolve("match"),
+  });
+  const result = await maybeAutoUpdateDatastoreExtension(
+    "@swamp/s3-datastore",
+    deps,
+  );
+  assertEquals(result?.updated, true);
+  assertEquals(result?.skipped, undefined);
+  assertEquals(deps.pulled, ["@swamp/s3-datastore@2026.03.30.1"]);
+});
+
+Deno.test("maybeAutoUpdateDatastoreExtension: refuses when detectLocalEdits returns mismatch", async () => {
+  const deps = createMockDeps({
+    detectLocalEdits: () => Promise.resolve("mismatch"),
+  });
+  const result = await maybeAutoUpdateDatastoreExtension(
+    "@swamp/s3-datastore",
+    deps,
+  );
+  assertEquals(result?.updated, false);
+  assertEquals(result?.skipped, "local_edits");
+  assertEquals(result?.previousVersion, "2026.03.15.1");
+  assertEquals(result?.newVersion, "2026.03.30.1");
+  // Must NOT invoke pullExtension — the whole point of the refusal.
+  assertEquals(deps.pulled.length, 0);
+});
+
+Deno.test("maybeAutoUpdateDatastoreExtension: grandfathers when detectLocalEdits returns no-anchor", async () => {
+  const deps = createMockDeps({
+    detectLocalEdits: () => Promise.resolve("no-anchor"),
+  });
+  const result = await maybeAutoUpdateDatastoreExtension(
+    "@swamp/s3-datastore",
+    deps,
+  );
+  assertEquals(result?.updated, true);
+  assertEquals(result?.skipped, undefined);
   assertEquals(deps.pulled, ["@swamp/s3-datastore@2026.03.30.1"]);
 });

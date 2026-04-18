@@ -29,6 +29,7 @@ import {
   swampPath,
 } from "../../infrastructure/persistence/paths.ts";
 import { computeChecksum } from "../../domain/models/checksum.ts";
+import { readInstalledExtensionDigest } from "../../infrastructure/persistence/installed_extension_digest_reader.ts";
 import { verifyChecksum } from "../../domain/update/integrity.ts";
 import { resolveLocalImports } from "../../domain/models/local_import_resolver.ts";
 import type { Logger } from "@logtape/logtape";
@@ -253,6 +254,7 @@ export async function updateUpstreamExtensions(
   options?: {
     include?: string[];
     checksum?: string;
+    filesChecksum?: string;
     serverUrl?: string;
   },
 ): Promise<void> {
@@ -283,6 +285,9 @@ export async function updateUpstreamExtensions(
         ? { include: options.include }
         : {}),
       ...(options?.checksum ? { checksum: options.checksum } : {}),
+      ...(options?.filesChecksum
+        ? { filesChecksum: options.filesChecksum }
+        : {}),
       ...(options?.serverUrl ? { serverUrl: options.serverUrl } : {}),
     };
 
@@ -1072,6 +1077,14 @@ export async function installExtension(
       )
       : undefined;
 
+    // Per-extension on-disk digest anchor. Computed AFTER every write that
+    // belongs to the install (copyDir + the read-only manifest.yaml copy)
+    // and BEFORE the lockfile write, so the digest captures exactly what
+    // the installer just produced. Auto-update consults this on the next
+    // version bump to refuse overwrites when the user has local edits
+    // (issue #126).
+    const filesChecksum = await readInstalledExtensionDigest(absoluteExtRoot);
+
     await updateUpstreamExtensions(
       ctx.lockfilePath,
       ref.name,
@@ -1080,6 +1093,7 @@ export async function installExtension(
       {
         include: includeFiles,
         checksum: localChecksum,
+        filesChecksum: filesChecksum ?? undefined,
         serverUrl: resolveServerUrl(),
       },
     );

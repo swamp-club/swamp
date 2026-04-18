@@ -25,6 +25,14 @@ export interface UpstreamExtensionEntry {
   include?: string[];
   /** SHA-256 checksum of the extension archive, for verification on re-install. */
   checksum?: string;
+  /**
+   * Rolled-up SHA-256 digest of the on-disk per-extension subtree at install
+   * time. Distinct from `checksum` (which hashes the archive bytes): this
+   * anchors the EXTRACTED files so auto-update can detect local edits
+   * before overwriting. Absent on pre-anchor lockfile entries (grandfather
+   * path) — consumers must tolerate the missing value.
+   */
+  filesChecksum?: string;
   /** Registry server URL used when pulling, for non-default registries. */
   serverUrl?: string;
 }

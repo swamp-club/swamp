@@ -17,8 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import {
+  buildLocalEditsWarning,
   parseDatastoreEnvVar,
   RENAMED_DATASTORE_TYPES,
   resolveDatastoreConfig,
@@ -350,5 +351,20 @@ Deno.test("isCustomDatastoreConfig: returns true for custom type", () => {
       datastorePath: "/tmp",
     }),
     true,
+  );
+});
+
+Deno.test("buildLocalEditsWarning: names the extension and the opt-in command", () => {
+  const msg = buildLocalEditsWarning("@swamp/s3-datastore", {
+    previousVersion: "2026.03.15.1",
+    newVersion: "2026.03.30.1",
+  });
+  assertStringIncludes(msg, "@swamp/s3-datastore");
+  assertStringIncludes(msg, "2026.03.15.1");
+  assertStringIncludes(msg, "2026.03.30.1");
+  assertStringIncludes(msg, ".swamp/pulled-extensions/@swamp/s3-datastore/");
+  assertStringIncludes(
+    msg,
+    "swamp extension pull @swamp/s3-datastore --force",
   );
 });

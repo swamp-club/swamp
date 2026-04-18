@@ -44,6 +44,7 @@ import { getAutoResolver } from "../domain/extensions/auto_resolver_context.ts";
 import { maybeAutoUpdateDatastoreExtension } from "../libswamp/extensions/datastore_auto_update.ts";
 import { FileExtensionUpdateCheckRepository } from "../infrastructure/persistence/extension_update_check_repository.ts";
 import { readUpstreamExtensions } from "../infrastructure/persistence/upstream_extensions.ts";
+import { readInstalledExtensionDigest } from "../infrastructure/persistence/installed_extension_digest_reader.ts";
 import { ExtensionApiClient } from "../infrastructure/http/extension_api_client.ts";
 import {
   enumeratePulledExtensionDirs,
@@ -109,6 +110,28 @@ async function maybeAutoUpdateSwampDatastore(
           return null;
         }
       },
+      detectLocalEdits: async (name) => {
+        // Compare the stored at-install digest with a fresh digest over
+        // the on-disk per-extension subtree. Infrastructure errors (lockfile
+        // missing, dir unreadable) degrade to "no-anchor" so auto-update
+        // never blocks a user command on a safety-check bug (issue #126).
+        try {
+          const upstream = await readUpstreamExtensions(lockfilePath);
+          const stored = upstream[name]?.filesChecksum;
+          if (!stored) return "no-anchor";
+          const extRoot = join(
+            resolve(repoDir),
+            ".swamp",
+            "pulled-extensions",
+            name,
+          );
+          const onDisk = await readInstalledExtensionDigest(extRoot);
+          if (onDisk === null) return "no-anchor";
+          return onDisk === stored ? "match" : "mismatch";
+        } catch {
+          return "no-anchor";
+        }
+      },
       pullExtension: async (name, version) => {
         const resolvedRepoDir = resolve(repoDir);
 
@@ -162,10 +185,32 @@ async function maybeAutoUpdateSwampDatastore(
         "Updated {name} {from} → {to}",
         { name: type, from: result.previousVersion, to: result.newVersion },
       );
+    } else if (result?.skipped === "local_edits") {
+      // Caller-layer surface for the auto-update refusal. The service
+      // returns a structured result (not an exception) specifically so
+      // this path bypasses the outer catch and reaches the user via
+      // logtape WARN. Mirrors the #121 auto-resolver refusal message.
+      logger.warn(buildLocalEditsWarning(type, result));
     }
   } catch {
     // Never block command execution for auto-update failures
   }
+}
+
+/**
+ * Renders the user-visible warning for an auto-update that was refused
+ * because local edits were detected. Exported so the message shape can be
+ * unit-tested without having to mock the full datastore-resolution stack.
+ */
+export function buildLocalEditsWarning(
+  type: string,
+  result: { previousVersion?: string; newVersion?: string },
+): string {
+  return (
+    `Not auto-updating ${type} ${result.previousVersion} → ${result.newVersion}: ` +
+    `local edits detected under .swamp/pulled-extensions/${type}/. ` +
+    `Run \`swamp extension pull ${type} --force\` to discard your edits and install the latest version.`
+  );
 }
 
 /**
