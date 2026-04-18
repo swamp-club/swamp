@@ -339,6 +339,9 @@ export function configureExtensionAutoResolver(
         ),
         repoDir,
         denoRuntime,
+        catalog: new ExtensionCatalogStore(
+          swampPath(repoDir, "_extension_catalog.db"),
+        ),
       }),
       output: createAutoResolveOutputAdapter(outputMode),
     }),
@@ -413,7 +416,13 @@ async function loadUserModels(
     );
 
     for (const failure of result.failed) {
-      logger.warn`Failed to load user model ${failure.file}: ${failure.error}`;
+      if (failure.error.startsWith("Cannot extend unregistered model type")) {
+        logger
+          .warn`User extension ${failure.file} targets unregistered base type — will retry once the base is loaded: ${failure.error}`;
+      } else {
+        logger
+          .warn`Failed to load user model ${failure.file}: ${failure.error}`;
+      }
     }
   } catch {
     // Not in a swamp repo or models dir doesn't exist — not an error

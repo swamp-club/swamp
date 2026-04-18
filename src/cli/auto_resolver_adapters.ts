@@ -38,6 +38,8 @@ import { UserModelLoader } from "../domain/models/user_model_loader.ts";
 import { UserVaultLoader } from "../domain/vaults/user_vault_loader.ts";
 import { UserDatastoreLoader } from "../domain/datastore/user_datastore_loader.ts";
 import type { DatastorePathResolver } from "../domain/datastore/datastore_path_resolver.ts";
+import type { ExtensionCatalogStore } from "../infrastructure/persistence/extension_catalog_store.ts";
+import { modelRegistry } from "../domain/models/model.ts";
 import type { OutputMode } from "../presentation/output/output.ts";
 import {
   renderAutoResolveAlreadyInstalled,
@@ -59,6 +61,12 @@ interface InstallerAdapterConfig {
   repoDir: string;
   denoRuntime: DenoRuntime;
   datastoreResolver?: DatastorePathResolver;
+  /**
+   * Shared extension catalog used by hotLoadModels to attach user
+   * extensions whose base type was just registered. Optional so
+   * existing callers that do not need the attach retry can omit it.
+   */
+  catalog?: ExtensionCatalogStore;
 }
 
 /**
@@ -76,6 +84,7 @@ export function createAutoResolveInstallerAdapter(
     repoDir,
     denoRuntime,
     datastoreResolver,
+    catalog,
   } = config;
 
   return {
@@ -161,6 +170,24 @@ export function createAutoResolveInstallerAdapter(
         skipAlreadyRegistered: true,
         additionalDirs: rest,
       });
+
+      // Attach any user extensions in extensions/models/ whose base type
+      // was just registered. loadModels Pass 1 fully-registers new bases
+      // via modelRegistry.register (not lazy), so ensureTypeLoaded would
+      // short-circuit and loadSingleType's extension-attach loop would
+      // never run. Walk the catalog's extension rows and attach any whose
+      // base is now fully loaded. Idempotent (issue 123).
+      if (catalog && result.loaded.length > 0) {
+        const pendingBases = new Set<string>();
+        for (const row of catalog.findByKind("extension")) {
+          if (row.extends_type) pendingBases.add(row.extends_type);
+        }
+        for (const type of pendingBases) {
+          if (!modelRegistry.get(type)) continue;
+          await loader.attachPendingExtensionsForType(type, catalog);
+        }
+      }
+
       return result.loaded.length;
     },
 

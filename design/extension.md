@@ -379,6 +379,13 @@ After installation, swamp re-runs model and vault discovery with
 `skipAlreadyRegistered` to load only the newly installed types. This avoids
 re-registering types that were already loaded at startup.
 
+User extensions under `extensions/models/` that `extend` a newly-installed
+base type are also re-attached during hot-loading. The installer walks
+catalog-recorded extension rows and calls the extension-attach primitive
+for each base that is now fully registered, so a user extension targeting
+`@swamp/aws/ec2/instance` becomes callable as soon as auto-resolve pulls
+`@swamp/aws` — no separate command needed.
+
 ### Re-Entrancy Guard
 
 A guard prevents infinite loops — if auto-resolution is already in progress for

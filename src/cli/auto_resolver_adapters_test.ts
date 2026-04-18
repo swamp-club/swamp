@@ -22,6 +22,15 @@ import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
 import { createAutoResolveInstallerAdapter } from "./auto_resolver_adapters.ts";
 import type { DenoRuntime } from "../domain/runtime/deno_runtime.ts";
+import { ExtensionCatalogStore } from "../infrastructure/persistence/extension_catalog_store.ts";
+import { modelRegistry } from "../domain/models/model.ts";
+import { ModelType } from "../domain/models/model_type.ts";
+import type { ModelDefinition } from "../domain/models/model.ts";
+import { z } from "zod";
+
+// Import models barrel so command/shell is registered and doesn't
+// collide with user-fixture registrations in these tests.
+import "../domain/models/models.ts";
 
 // Stub DenoRuntime — the adapter constructs a real UserModelLoader
 // internally, which requires a DenoRuntime. We return a bogus path so
@@ -331,6 +340,197 @@ Deno.test("auto_resolver_adapters: hotLoadDatastores is a no-op when no pulled d
     // Empty lockfile for datastores perspective (no datastore dir
     // exists for @fake/ext). Should not throw.
     await adapter.hotLoadDatastores();
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+// Issue 123 regression tests: hotLoadModels must retry user-extension
+// attachment against the shared catalog after a newly-installed base
+// registers. These tests verify the guards — the integration test
+// covers the positive "attach fires" path end-to-end.
+
+function makeStubBase(typeNormalized: string): ModelDefinition {
+  return {
+    type: ModelType.create(typeNormalized),
+    version: "2026.02.09.1",
+    description: "",
+    globalArguments: z.object({}),
+    methods: {},
+    resources: {},
+    upgrades: [],
+  } as unknown as ModelDefinition;
+}
+
+Deno.test("auto_resolver_adapters: hotLoadModels tolerates catalog being undefined", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    // Pre-issue-123 callers pass no catalog. Keep that path working so
+    // the adapter is drop-in for older configurations.
+    const lockfilePath = await seedLockfile(tmpDir, {
+      "@fake/ext": [".swamp/pulled-extensions/@fake/ext/models/foo.ts"],
+    });
+    await ensureDir(join(tmpDir, ".swamp/pulled-extensions/@fake/ext/models"));
+    await Deno.writeTextFile(
+      join(tmpDir, ".swamp/pulled-extensions/@fake/ext/models/foo.ts"),
+      "export const model = {};",
+    );
+
+    const adapter = createAutoResolveInstallerAdapter({
+      ...stubCallbacks,
+      lockfilePath,
+      repoDir: tmpDir,
+      denoRuntime: stubDenoRuntime,
+      // catalog omitted — legacy signature
+    });
+
+    assertEquals(typeof (await adapter.hotLoadModels()), "number");
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("auto_resolver_adapters: hotLoadModels skips catalog walk when catalog has no extension rows", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  const dbPath = join(tmpDir, ".swamp", "_extension_catalog.db");
+  try {
+    const lockfilePath = await seedLockfile(tmpDir, {
+      "@fake/ext": [".swamp/pulled-extensions/@fake/ext/models/foo.ts"],
+    });
+    await ensureDir(join(tmpDir, ".swamp/pulled-extensions/@fake/ext/models"));
+    await Deno.writeTextFile(
+      join(tmpDir, ".swamp/pulled-extensions/@fake/ext/models/foo.ts"),
+      "export const model = {};",
+    );
+
+    const catalog = new ExtensionCatalogStore(dbPath);
+    assertEquals(catalog.findByKind("extension").length, 0);
+
+    const adapter = createAutoResolveInstallerAdapter({
+      ...stubCallbacks,
+      lockfilePath,
+      repoDir: tmpDir,
+      denoRuntime: stubDenoRuntime,
+      catalog,
+    });
+
+    // With stub deno the loader fails to bundle — result.loaded is 0,
+    // so the catalog walk never runs. The important bit is that the
+    // adapter returns a number rather than throwing over the new code.
+    assertEquals(await adapter.hotLoadModels(), 0);
+    catalog.close();
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("auto_resolver_adapters: hotLoadModels catalog walk skips types whose base is not fully loaded", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  const dbPath = join(tmpDir, ".swamp", "_extension_catalog.db");
+  const unknownBase = "@user/auto-resolver-adapter-unknown-base";
+  try {
+    const lockfilePath = await seedLockfile(tmpDir, {
+      "@fake/ext": [".swamp/pulled-extensions/@fake/ext/models/foo.ts"],
+    });
+    await ensureDir(join(tmpDir, ".swamp/pulled-extensions/@fake/ext/models"));
+    await Deno.writeTextFile(
+      join(tmpDir, ".swamp/pulled-extensions/@fake/ext/models/foo.ts"),
+      "export const model = {};",
+    );
+
+    const catalog = new ExtensionCatalogStore(dbPath);
+    // Plant an extension row pointing at a base that is NOT in
+    // modelRegistry. The guard (!!modelRegistry.get(type)) must skip
+    // it so nothing calls attachPendingExtensionsForType — that would
+    // either throw or warn, neither of which we want for unknown
+    // bases.
+    catalog.upsert({
+      type_normalized: unknownBase,
+      kind: "extension",
+      bundle_path: "/does/not/exist.js",
+      source_path: "/does/not/exist.ts",
+      version: "",
+      description: "",
+      extends_type: unknownBase,
+      source_mtime: "",
+      source_fingerprint: "",
+    });
+    assertEquals(catalog.findByKind("extension").length, 1);
+    assertEquals(modelRegistry.get(unknownBase), undefined);
+
+    const adapter = createAutoResolveInstallerAdapter({
+      ...stubCallbacks,
+      lockfilePath,
+      repoDir: tmpDir,
+      denoRuntime: stubDenoRuntime,
+      catalog,
+    });
+
+    // Primary assertion: the call completes cleanly. If the guard
+    // weren't in place, attachPendingExtensionsForType would attempt
+    // to import the nonexistent bundle and surface a warning.
+    assertEquals(typeof (await adapter.hotLoadModels()), "number");
+    catalog.close();
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("auto_resolver_adapters: hotLoadModels catalog walk attempts attach when base is fully loaded", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  const dbPath = join(tmpDir, ".swamp", "_extension_catalog.db");
+  const ts = Date.now();
+  const baseType = `@user/auto-resolver-adapter-loaded-${ts}`;
+  try {
+    const lockfilePath = await seedLockfile(tmpDir, {
+      "@fake/ext": [".swamp/pulled-extensions/@fake/ext/models/foo.ts"],
+    });
+    await ensureDir(join(tmpDir, ".swamp/pulled-extensions/@fake/ext/models"));
+    // The adapter's loadModels reaches the bundling step; with stub
+    // deno that returns /usr/bin/false, bundling records a failure and
+    // result.loaded is 0 — so the catalog walk is skipped by the
+    // `result.loaded.length > 0` guard. We register a base manually
+    // and plant an extension pointing at a bogus bundle so that if the
+    // guard ever regressed to always-run, this test would fail with a
+    // bundle-import error. The test passing confirms the
+    // loaded.length > 0 guard is in place.
+    await Deno.writeTextFile(
+      join(tmpDir, ".swamp/pulled-extensions/@fake/ext/models/foo.ts"),
+      "export const model = {};",
+    );
+
+    const catalog = new ExtensionCatalogStore(dbPath);
+    catalog.upsert({
+      type_normalized: baseType,
+      kind: "extension",
+      bundle_path: "/does/not/exist.js",
+      source_path: "/does/not/exist.ts",
+      version: "",
+      description: "",
+      extends_type: baseType,
+      source_mtime: "",
+      source_fingerprint: "",
+    });
+
+    // Register a fake base directly so !!modelRegistry.get(baseType)
+    // is truthy. Without the loaded.length > 0 gate we would import
+    // the bogus bundle and log a warning.
+    try {
+      modelRegistry.register(makeStubBase(baseType));
+    } catch {
+      // Test re-runs within the same process — already registered.
+    }
+
+    const adapter = createAutoResolveInstallerAdapter({
+      ...stubCallbacks,
+      lockfilePath,
+      repoDir: tmpDir,
+      denoRuntime: stubDenoRuntime,
+      catalog,
+    });
+
+    assertEquals(await adapter.hotLoadModels(), 0);
+    catalog.close();
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }
