@@ -554,20 +554,43 @@ export class UserModelLoader {
         return result;
       }
 
-      // Some files are stale — rebundle and reimport just those
+      // Some files are stale — rebundle and reimport just those.
+      // Track type names registered by the model branch of
+      // rebundleAndUpdateCatalog so we can attach catalog-recorded
+      // extensions after the loop completes. Doing the attach inside the
+      // loop would be order-dependent: if a model file is processed
+      // before its extension file, the catalog row for the extension
+      // doesn't exist yet and the attach finds nothing. Post-loop, every
+      // extension row has been written.
+      const eagerlyRegisteredTypes = new Set<string>();
       for (const { absolutePath, relativePath, baseDir } of staleFiles) {
         try {
-          await this.rebundleAndUpdateCatalog(
+          const registeredType = await this.rebundleAndUpdateCatalog(
             absolutePath,
             relativePath,
             denoPath,
             baseDir,
             catalog,
           );
+          if (registeredType) {
+            eagerlyRegisteredTypes.add(registeredType);
+          }
           result.loaded.push(relativePath);
         } catch (error) {
           result.failed.push({ file: relativePath, error: String(error) });
         }
+      }
+
+      // Attach catalog-recorded extensions for any type that got
+      // eagerly-registered during the loop. rebundleAndUpdateCatalog's
+      // model branch calls modelRegistry.register() directly, which
+      // bypasses the loadSingleType/importAndExtendBundle flow that
+      // otherwise attaches extensions. Without this retry, user
+      // extensions targeting a base whose source file just rebundled
+      // (e.g. after `swamp extension pull --force`) would stay detached.
+      for (const type of eagerlyRegisteredTypes) {
+        if (!modelRegistry.get(type)) continue;
+        await this.attachPendingExtensionsForType(type, catalog);
       }
 
       // Register lazy entries from the now-updated catalog
@@ -723,6 +746,86 @@ export class UserModelLoader {
     };
 
     modelRegistry.promoteFromLazy(modelDef);
+  }
+
+  /**
+   * Attaches any catalog-recorded user extensions targeting the given base
+   * type. Idempotent: if every method an extension defines is already on
+   * the base, that extension is skipped silently.
+   *
+   * Precondition: the base type must be FULLY loaded in modelRegistry, not
+   * merely lazy. Per PR #1116, modelRegistry.get returns undefined for lazy
+   * entries, so callers guard with `!!modelRegistry.get(type)` before
+   * invoking this method. When the base is not fully loaded, this method
+   * no-ops (returns without attaching or throwing).
+   *
+   * This is the shared primitive used by call sites that register a base
+   * via modelRegistry.register() directly, bypassing the
+   * loadSingleType/importAndExtendBundle flow that would otherwise attach
+   * extensions. Today those sites are hotLoadModels (after auto-resolve
+   * installs a new extension) and buildIndex's stale-files loop (after
+   * rebundleAndUpdateCatalog eagerly-registers a model).
+   */
+  async attachPendingExtensionsForType(
+    typeNormalized: string,
+    catalog: ExtensionCatalogStore,
+  ): Promise<void> {
+    const base = modelRegistry.get(typeNormalized);
+    if (!base) return;
+
+    const extensions = catalog.findExtensionsForType(typeNormalized);
+    for (const entry of extensions) {
+      if (await this.allExtensionMethodsAttached(entry, base)) continue;
+      await this.importAndExtendBundle(entry);
+    }
+  }
+
+  /**
+   * Returns true when every method AND check name declared by the extension
+   * bundle is already present on the base. Used as the idempotency check so
+   * re-attach over a fully-extended base stays silent. Checks must be
+   * included in the comparison because ModelRegistry.extend throws on
+   * duplicate check names too (model.ts:918-927) — skipping on method
+   * overlap alone would silently miss a newly-added check. Failures to
+   * import or parse the bundle return false so importAndExtendBundle can
+   * surface the problem via its usual warn path.
+   */
+  private async allExtensionMethodsAttached(
+    entry: ExtensionTypeRow,
+    base: ModelDefinition,
+  ): Promise<boolean> {
+    let module: Record<string, unknown>;
+    try {
+      module = await this.importBundleByPath(entry.bundle_path);
+    } catch {
+      return false;
+    }
+    if (!module.extension) return false;
+
+    const parsed = UserExtensionSchema.safeParse(module.extension);
+    if (!parsed.success) return false;
+
+    const methodNames = new Set<string>();
+    for (const record of parsed.data.methods) {
+      for (const name of Object.keys(record)) {
+        methodNames.add(name);
+      }
+    }
+    const checkNames = new Set<string>();
+    for (const record of parsed.data.checks ?? []) {
+      for (const name of Object.keys(record)) {
+        checkNames.add(name);
+      }
+    }
+    if (methodNames.size === 0 && checkNames.size === 0) return true;
+
+    for (const name of methodNames) {
+      if (base.methods[name] === undefined) return false;
+    }
+    for (const name of checkNames) {
+      if (base.checks?.[name] === undefined) return false;
+    }
+    return true;
   }
 
   /**
@@ -927,16 +1030,25 @@ export class UserModelLoader {
   /**
    * Rebundles a single file and updates the catalog entry.
    */
+  /**
+   * Returns the normalized type of the file when the model branch executes,
+   * whether or not register() fires (a prior boot may have left the type
+   * registered). buildIndex uses this to know which types to attach pending
+   * extensions to AFTER the stale-files loop — see the post-loop block in
+   * buildIndex. Returns undefined for extension files (their attachment is
+   * deferred to loadSingleType via the catalog row written here) and for
+   * non-model/extension files.
+   */
   private async rebundleAndUpdateCatalog(
     absolutePath: string,
     relativePath: string,
     denoPath: string,
     baseDir: string,
     catalog: ExtensionCatalogStore,
-  ): Promise<void> {
+  ): Promise<string | undefined> {
     const source = await Deno.readTextFile(absolutePath);
     if (!/export\s+const\s+(model|extension)\s*[=:]/.test(source)) {
-      return; // Not a model/extension file
+      return undefined; // Not a model/extension file
     }
 
     const js = await this.bundleWithCache(
@@ -993,6 +1105,8 @@ export class UserModelLoader {
       if (!modelRegistry.has(modelDef.type)) {
         modelRegistry.register(modelDef);
       }
+
+      return typeNormalized;
     } else if (module.extension) {
       const parsed = UserExtensionSchema.safeParse(module.extension);
       if (!parsed.success) {
@@ -1013,6 +1127,8 @@ export class UserModelLoader {
         source_fingerprint: sourceFingerprint,
       });
     }
+
+    return undefined;
   }
 
   /**

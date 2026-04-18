@@ -2919,3 +2919,308 @@ export const model = {
     await Deno.remove(modelsDir, { recursive: true });
   }
 });
+
+// Tests for attachPendingExtensionsForType and the buildIndex post-loop
+// retry (issue 123). The primitive and its two call sites close the gap
+// between code paths that eagerly-register a base type and the
+// loadSingleType/importAndExtendBundle flow that would otherwise attach
+// extensions targeting it.
+
+function makePendingAttachFixture(typeSlug: string) {
+  const ts = Date.now();
+  const typeId = `@user/${typeSlug}-${ts}`;
+  const modelCode = `
+import { z } from "npm:zod@4";
+export const model = {
+  type: "${typeId}",
+  version: "2026.02.09.1",
+  methods: {
+    seed: {
+      description: "Seed",
+      arguments: z.object({}),
+      execute: async () => ({ dataHandles: [] }),
+    },
+  },
+};
+`;
+  const extCode = `
+import { z } from "npm:zod@4";
+export const extension = {
+  type: "${typeId}",
+  methods: [{
+    pending: {
+      description: "Pending attach",
+      arguments: z.object({}),
+      execute: async () => ({ dataHandles: [] }),
+    },
+  }],
+};
+`;
+  return { typeId, modelCode, extCode };
+}
+
+Deno.test("attachPendingExtensionsForType: attaches a single pending extension", async () => {
+  const { typeId, modelCode, extCode } = makePendingAttachFixture(
+    "apeft-single",
+  );
+
+  const repoDir = await Deno.makeTempDir({ prefix: "swamp_apeft_single_r_" });
+  const modelsDir = await Deno.makeTempDir({
+    prefix: "swamp_apeft_single_m_",
+  });
+  const dbPath = join(repoDir, ".swamp", "_extension_catalog.db");
+
+  try {
+    await Deno.writeTextFile(join(modelsDir, "base.ts"), modelCode);
+    await Deno.writeTextFile(join(modelsDir, "ext.ts"), extCode);
+
+    const catalog = new ExtensionCatalogStore(dbPath);
+    const loader = new UserModelLoader(testDenoRuntime, repoDir);
+    await loader.buildIndex(modelsDir, catalog);
+    const base = modelRegistry.get(typeId);
+    if (base) delete base.methods.pending;
+    assertEquals("pending" in modelRegistry.get(typeId)!.methods, false);
+
+    await loader.attachPendingExtensionsForType(typeId, catalog);
+
+    assertEquals("pending" in modelRegistry.get(typeId)!.methods, true);
+    catalog.close();
+  } finally {
+    await Deno.remove(repoDir, { recursive: true });
+    await Deno.remove(modelsDir, { recursive: true });
+  }
+});
+
+Deno.test("attachPendingExtensionsForType: attaches multiple extensions on same base", async () => {
+  const ts = Date.now();
+  const typeId = `@user/apeft-multi-${ts}`;
+  const modelCode = `
+import { z } from "npm:zod@4";
+export const model = {
+  type: "${typeId}",
+  version: "2026.02.09.1",
+  methods: {
+    seed: {
+      description: "Seed",
+      arguments: z.object({}),
+      execute: async () => ({ dataHandles: [] }),
+    },
+  },
+};
+`;
+  const extA = `
+import { z } from "npm:zod@4";
+export const extension = {
+  type: "${typeId}",
+  methods: [{
+    alpha: {
+      description: "A",
+      arguments: z.object({}),
+      execute: async () => ({ dataHandles: [] }),
+    },
+  }],
+};
+`;
+  const extB = `
+import { z } from "npm:zod@4";
+export const extension = {
+  type: "${typeId}",
+  methods: [{
+    beta: {
+      description: "B",
+      arguments: z.object({}),
+      execute: async () => ({ dataHandles: [] }),
+    },
+  }],
+};
+`;
+
+  const repoDir = await Deno.makeTempDir({ prefix: "swamp_apeft_multi_r_" });
+  const modelsDir = await Deno.makeTempDir({ prefix: "swamp_apeft_multi_m_" });
+  const dbPath = join(repoDir, ".swamp", "_extension_catalog.db");
+
+  try {
+    await Deno.writeTextFile(join(modelsDir, "base.ts"), modelCode);
+    await Deno.writeTextFile(join(modelsDir, "ext_a.ts"), extA);
+    await Deno.writeTextFile(join(modelsDir, "ext_b.ts"), extB);
+
+    const catalog = new ExtensionCatalogStore(dbPath);
+    const loader = new UserModelLoader(testDenoRuntime, repoDir);
+    await loader.buildIndex(modelsDir, catalog);
+
+    const base = modelRegistry.get(typeId);
+    if (base) {
+      delete base.methods.alpha;
+      delete base.methods.beta;
+    }
+
+    await loader.attachPendingExtensionsForType(typeId, catalog);
+
+    const attached = modelRegistry.get(typeId)!.methods;
+    assertEquals("alpha" in attached, true);
+    assertEquals("beta" in attached, true);
+    catalog.close();
+  } finally {
+    await Deno.remove(repoDir, { recursive: true });
+    await Deno.remove(modelsDir, { recursive: true });
+  }
+});
+
+Deno.test("attachPendingExtensionsForType: zero pending extensions is a no-op", async () => {
+  const ts = Date.now();
+  const typeId = `@user/apeft-zero-${ts}`;
+  const modelCode = `
+import { z } from "npm:zod@4";
+export const model = {
+  type: "${typeId}",
+  version: "2026.02.09.1",
+  methods: {
+    only: {
+      description: "Only",
+      arguments: z.object({}),
+      execute: async () => ({ dataHandles: [] }),
+    },
+  },
+};
+`;
+
+  const repoDir = await Deno.makeTempDir({ prefix: "swamp_apeft_zero_r_" });
+  const modelsDir = await Deno.makeTempDir({ prefix: "swamp_apeft_zero_m_" });
+  const dbPath = join(repoDir, ".swamp", "_extension_catalog.db");
+
+  try {
+    await Deno.writeTextFile(join(modelsDir, "base.ts"), modelCode);
+
+    const catalog = new ExtensionCatalogStore(dbPath);
+    const loader = new UserModelLoader(testDenoRuntime, repoDir);
+    await loader.buildIndex(modelsDir, catalog);
+
+    const before = Object.keys(modelRegistry.get(typeId)!.methods).sort();
+    await loader.attachPendingExtensionsForType(typeId, catalog);
+    const after = Object.keys(modelRegistry.get(typeId)!.methods).sort();
+    assertEquals(before, after);
+    catalog.close();
+  } finally {
+    await Deno.remove(repoDir, { recursive: true });
+    await Deno.remove(modelsDir, { recursive: true });
+  }
+});
+
+Deno.test("attachPendingExtensionsForType: is idempotent when all methods already attached", async () => {
+  const { typeId, modelCode, extCode } = makePendingAttachFixture("apeft-idem");
+
+  const repoDir = await Deno.makeTempDir({ prefix: "swamp_apeft_idem_r_" });
+  const modelsDir = await Deno.makeTempDir({ prefix: "swamp_apeft_idem_m_" });
+  const dbPath = join(repoDir, ".swamp", "_extension_catalog.db");
+
+  try {
+    await Deno.writeTextFile(join(modelsDir, "base.ts"), modelCode);
+    await Deno.writeTextFile(join(modelsDir, "ext.ts"), extCode);
+
+    const catalog = new ExtensionCatalogStore(dbPath);
+    const loader = new UserModelLoader(testDenoRuntime, repoDir);
+    await loader.buildIndex(modelsDir, catalog);
+    // loadModels Pass 2 inside buildIndex already attached "pending".
+    assertEquals("pending" in modelRegistry.get(typeId)!.methods, true);
+
+    await loader.attachPendingExtensionsForType(typeId, catalog);
+    assertEquals("pending" in modelRegistry.get(typeId)!.methods, true);
+    catalog.close();
+  } finally {
+    await Deno.remove(repoDir, { recursive: true });
+    await Deno.remove(modelsDir, { recursive: true });
+  }
+});
+
+Deno.test("attachPendingExtensionsForType: no-op when base is not registered", async () => {
+  const repoDir = await Deno.makeTempDir({ prefix: "swamp_apeft_miss_r_" });
+  const modelsDir = await Deno.makeTempDir({ prefix: "swamp_apeft_miss_m_" });
+  const dbPath = join(repoDir, ".swamp", "_extension_catalog.db");
+  try {
+    const catalog = new ExtensionCatalogStore(dbPath);
+    const loader = new UserModelLoader(testDenoRuntime, repoDir);
+    await loader.attachPendingExtensionsForType(
+      "@user/apeft-missing-base",
+      catalog,
+    );
+    catalog.close();
+  } finally {
+    await Deno.remove(repoDir, { recursive: true });
+    await Deno.remove(modelsDir, { recursive: true });
+  }
+});
+
+Deno.test("buildIndex post-loop attach: extension attaches after model file rebundles (order model-first)", async () => {
+  // The order that findStaleFiles returns files is filesystem-dependent.
+  // This test pins down the case where a stale model file is processed
+  // BEFORE its stale extension file — the in-loop attach would find no
+  // catalog row for the extension, but the post-loop attach succeeds
+  // because every catalog row exists by the time it runs.
+  const ts = Date.now();
+  const typeId = `@user/buildindex-order-${ts}`;
+  const modelCode = (marker: string) => `
+import { z } from "npm:zod@4";
+export const model = {
+  type: "${typeId}",
+  version: "2026.02.09.${marker === "V1" ? "1" : "2"}",
+  methods: {
+    seed: {
+      description: "Seed ${marker}",
+      arguments: z.object({}),
+      execute: async () => ({ dataHandles: [], marker: "${marker}" }),
+    },
+  },
+};
+`;
+  const extCode = (marker: string) => `
+import { z } from "npm:zod@4";
+export const extension = {
+  type: "${typeId}",
+  methods: [{
+    attached: {
+      description: "Attached ${marker}",
+      arguments: z.object({}),
+      execute: async () => ({ dataHandles: [] }),
+    },
+  }],
+};
+`;
+
+  const repoDir = await Deno.makeTempDir({ prefix: "swamp_bidx_repo_" });
+  // a_base.ts sorts before b_ext.ts so the stale-files walk hits the
+  // model first. This lets the test reproduce the order-dependent bug
+  // the post-loop attach was built to fix.
+  const modelsDir = await Deno.makeTempDir({ prefix: "swamp_bidx_models_" });
+  const dbPath = join(repoDir, ".swamp", "_extension_catalog.db");
+
+  try {
+    await Deno.writeTextFile(join(modelsDir, "a_base.ts"), modelCode("V1"));
+    await Deno.writeTextFile(join(modelsDir, "b_ext.ts"), extCode("V1"));
+
+    const catalog1 = new ExtensionCatalogStore(dbPath);
+    const loader1 = new UserModelLoader(testDenoRuntime, repoDir);
+    await loader1.buildIndex(modelsDir, catalog1);
+    catalog1.close();
+
+    await Deno.writeTextFile(join(modelsDir, "a_base.ts"), modelCode("V2"));
+    await Deno.writeTextFile(join(modelsDir, "b_ext.ts"), extCode("V2"));
+
+    const base = modelRegistry.get(typeId);
+    if (base) delete base.methods.attached;
+
+    const catalog2 = new ExtensionCatalogStore(dbPath);
+    const loader2 = new UserModelLoader(testDenoRuntime, repoDir);
+    await loader2.buildIndex(modelsDir, catalog2);
+    catalog2.close();
+
+    assertEquals(
+      "attached" in modelRegistry.get(typeId)!.methods,
+      true,
+      "Post-loop attach must re-attach the extension after the model " +
+        "branch of rebundleAndUpdateCatalog eagerly-registered the base",
+    );
+  } finally {
+    await Deno.remove(repoDir, { recursive: true });
+    await Deno.remove(modelsDir, { recursive: true });
+  }
+});
