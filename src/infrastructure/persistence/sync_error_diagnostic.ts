@@ -107,7 +107,10 @@ export function summarizeSyncError(
   if (requestId) fields.requestId = requestId;
   if (code) fields.code = code;
   if (name) fields.name = name;
-  if (rawMessage) fields.message = rawMessage;
+  // Exposed as `errorMessage` (not `message`) so that when `fields` is
+  // spread into LogTape calls the entry doesn't collide with LogTape's
+  // reserved `message` property on the log record.
+  if (rawMessage) fields.errorMessage = rawMessage;
 
   const detailParts: string[] = [];
   if (httpStatusCode !== undefined) detailParts.push(`HTTP ${httpStatusCode}`);
@@ -115,8 +118,13 @@ export function summarizeSyncError(
   if (code) detailParts.push(`code=${code}`);
   const details = detailParts.length > 0 ? ` (${detailParts.join(", ")})` : "";
 
-  const trailer = rawMessage && rawMessage !== name
-    ? `: ${truncate(rawMessage)}`
+  // Collapse any whitespace runs containing newlines so the rendered
+  // summary stays single-line. The full, unmodified message remains
+  // available on `fields.errorMessage` for consumers that want fidelity.
+  const singleLineMessage = rawMessage?.replace(/\s*\n+\s*/g, " ").trim();
+
+  const trailer = singleLineMessage && singleLineMessage !== name
+    ? `: ${truncate(singleLineMessage)}`
     : name
     ? `: ${name}`
     : "";

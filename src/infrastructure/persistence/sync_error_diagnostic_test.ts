@@ -32,7 +32,7 @@ Deno.test("summarizeSyncError: plain Error with message", () => {
     operation: "pull",
     label: "@swamp/s3-datastore",
     name: "Error",
-    message: "boom",
+    errorMessage: "boom",
   });
 });
 
@@ -61,7 +61,7 @@ Deno.test("summarizeSyncError: AWS-SDK-style opaque error with full $metadata", 
     requestId: "ABC",
     code: "AccessDenied",
     name: "UnknownError",
-    message: "UnknownError",
+    errorMessage: "UnknownError",
   });
 });
 
@@ -91,12 +91,12 @@ Deno.test("summarizeSyncError: string error", () => {
   const { summary, fields } = summarizeSyncError("pull", "@t/x", "oops");
   assertStringIncludes(summary, "@t/x pull failed");
   assertStringIncludes(summary, "oops");
-  assertEquals(fields.message, "oops");
+  assertEquals(fields.errorMessage, "oops");
 });
 
 Deno.test("summarizeSyncError: number error", () => {
   const { fields } = summarizeSyncError("pull", "@t/x", 42);
-  assertEquals(fields.message, "42");
+  assertEquals(fields.errorMessage, "42");
 });
 
 Deno.test("summarizeSyncError: null error — only operation+label present", () => {
@@ -118,7 +118,7 @@ Deno.test("summarizeSyncError: plain object error with no message", () => {
   assertStringIncludes(summary, "code=X");
   assertEquals(fields.httpStatusCode, 500);
   assertEquals(fields.code, "X");
-  assertEquals(fields.message, undefined);
+  assertEquals(fields.errorMessage, undefined);
 });
 
 Deno.test("summarizeSyncError: empty message treated as missing", () => {
@@ -126,16 +126,16 @@ Deno.test("summarizeSyncError: empty message treated as missing", () => {
   const { summary, fields } = summarizeSyncError("pull", "@t/x", err);
   // Falls back to the error name ("Error") as trailer.
   assertStringIncludes(summary, ": Error");
-  assertEquals(fields.message, undefined);
+  assertEquals(fields.errorMessage, undefined);
 });
 
 Deno.test("summarizeSyncError: long message truncated at 200 chars with ellipsis", () => {
   const long = "a".repeat(500);
   const err = new Error(long);
   const { summary, fields } = summarizeSyncError("pull", "@t/x", err);
-  // `fields.message` retains the full message for consumers that want it
+  // `fields.errorMessage` retains the full message for consumers that want it
   // (e.g. .cause-walking renderers); only the summary is truncated.
-  assertEquals(fields.message, long);
+  assertEquals(fields.errorMessage, long);
   // Summary contains exactly 200 'a's followed by ellipsis.
   assertStringIncludes(summary, "a".repeat(200) + "…");
   // Summary does NOT contain the 201st 'a' because it was truncated.
@@ -166,7 +166,7 @@ Deno.test("summarizeSyncError: throwing getters on read fields don't break extra
   assertEquals(fields.requestId, "R1");
   assertEquals(fields.code, "AccessDenied");
   // Throwing fields are treated as missing, not surfaced as errors.
-  assertEquals(fields.message, undefined);
+  assertEquals(fields.errorMessage, undefined);
   assertEquals(fields.name, undefined);
   // Summary still renders without the throwing fields.
   assertStringIncludes(summary, "@t/x pull failed");
@@ -183,7 +183,7 @@ Deno.test("summarizeSyncError: throwing $metadata getter is safe", () => {
     },
   });
   const { fields } = summarizeSyncError("pull", "@t/x", err);
-  assertEquals(fields.message, "real");
+  assertEquals(fields.errorMessage, "real");
   assertEquals(fields.code, "X");
   assertEquals(fields.httpStatusCode, undefined);
   assertEquals(fields.requestId, undefined);
@@ -195,17 +195,21 @@ Deno.test("summarizeSyncError: non-numeric httpStatusCode is ignored", () => {
   assertEquals(fields.httpStatusCode, undefined);
 });
 
-Deno.test("summarizeSyncError: summary is always single-line", () => {
-  const err = new Error("line1\nline2\nline3") as Error & { Code: string };
+Deno.test("summarizeSyncError: summary strips newlines so it stays single-line", () => {
+  const err = new Error("line1\nline2\n\n  line3") as Error & {
+    Code: string;
+  };
   err.Code = "X";
-  const { summary } = summarizeSyncError("pull", "@t/x", err);
-  // We don't strip newlines from the raw message (preserves fidelity in
-  // fields.message), but the rendered summary is used as an Error.message
-  // which most consumers treat as opaque text. Assert the preamble and
-  // structural delimiters are on the first line.
-  const firstLine = summary.split("\n")[0];
-  assertStringIncludes(firstLine, "@t/x pull failed");
-  assertStringIncludes(firstLine, "code=X");
+  const { summary, fields } = summarizeSyncError("pull", "@t/x", err);
+  // Summary collapses newline runs to single spaces so it survives line-
+  // oriented log sinks and JSON-encoded error renderers as one line.
+  assertEquals(summary.includes("\n"), false);
+  assertStringIncludes(summary, "@t/x pull failed");
+  assertStringIncludes(summary, "code=X");
+  assertStringIncludes(summary, "line1 line2 line3");
+  // Full, unmodified message remains on `errorMessage` for consumers
+  // that want fidelity (e.g. a later renderer walking .cause).
+  assertEquals(fields.errorMessage, "line1\nline2\n\n  line3");
 });
 
 Deno.test("summarizeSyncError: missing optional fields are absent from `fields`", () => {
