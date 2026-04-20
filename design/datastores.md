@@ -91,7 +91,10 @@ externalized, and validates the export against `UserDatastoreSchema` — a Zod
 schema requiring `type`, `name`, `description`, an optional `configSchema`, and
 a `createProvider` factory function. Files without a `datastore` export are
 silently skipped. Bundles are cached in `.swamp/datastore-bundles/` with
-mtime-based invalidation to avoid redundant compilation. If the source contains
+content-fingerprint invalidation (sha-256 over the entry point plus every
+local `.ts` dep) to avoid redundant compilation — mtime-based freshness was
+unreliable under atomic-rename saves, mtime-preserving sync tools, and
+sub-millisecond edits (issue #125). If the source contains
 bare specifiers (e.g., `from "zod"` instead of `from "npm:zod@4"`) and a cached
 bundle exists, the cached bundle is used since re-bundling would fail without
 the project's `deno.json` import map.

@@ -1024,6 +1024,7 @@ export class UserModelLoader {
       additionalDirs,
       catalog,
       discoverFiles: (dir) => this.discoverFiles(dir),
+      kinds: ["model", "extension"],
     });
   }
 

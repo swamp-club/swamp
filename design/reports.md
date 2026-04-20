@@ -144,8 +144,10 @@ validates the export against a Zod schema requiring:
 - `execute` — function
 
 Files without a `report` export are silently skipped (they may be utility
-modules). Bundles are cached in `.swamp/report-bundles/` with mtime-based
-invalidation.
+modules). Bundles are cached in `.swamp/report-bundles/` with
+content-fingerprint invalidation (sha-256 over the entry point plus every
+local `.ts` dep) — mtime-based freshness was unreliable under atomic-rename
+saves, mtime-preserving sync tools, and sub-millisecond edits (issue #125).
 
 See `src/domain/reports/user_report_loader.ts`.
 

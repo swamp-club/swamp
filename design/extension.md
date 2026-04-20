@@ -633,8 +633,9 @@ how many extensions are installed.
 
 **Extension Catalog**: A SQLite database at `.swamp/_extension_catalog.db`
 indexes all known bundle types. Each entry stores the type name, bundle path,
-source path, source mtime, version, and (for extensions) the base type it
-targets. The catalog lives at the `.swamp` root level because it is shared
+source path, source mtime, source fingerprint (sha-256 content hash), version,
+and (for extensions) the base type it targets. Freshness is decided by the
+content fingerprint; `source_mtime` is retained for observability only. The catalog lives at the `.swamp` root level because it is shared
 across all registry types (models, vaults, drivers, datastores, reports). It
 is completely independent of the data catalog (`_catalog.db`) used for data
 queries.
@@ -648,10 +649,14 @@ the model registry is wired up initially.
 1. On first `ensureLoaded()` call, the model registry's loader runs
    `buildIndex()` which:
    - Checks the catalog's `populated` flag
-   - If populated: scans source directories, compares entry-point mtimes
-     against catalog entries and checks transitive dependency mtimes against
-     cached bundle files, rebundles only changed files, then registers lazy
-     entries for all types from the catalog (no bundle imports)
+   - If populated: scans source directories, computes a sha-256 content
+     fingerprint over each entry point plus its transitive local `.ts`
+     dependencies, compares that against the catalog's stored fingerprint,
+     rebundles only changed files, then registers lazy entries for all types
+     from the catalog (no bundle imports). Fingerprint-based freshness
+     replaced mtime-based freshness in issue #125 — mtime was fragile under
+     atomic-rename saves, mtime-preserving sync tools, and sub-millisecond
+     edits.
    - If not populated (first run or DB deleted): falls back to the existing
      full-import path, then populates the catalog from the loaded registry
 

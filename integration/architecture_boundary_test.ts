@@ -136,7 +136,16 @@ function importsLayer(
 // cross-cutting extensions-domain service consumed by the models loader.
 // The reverse edge (extensions → models) already existed via
 // extension_auto_resolver and friends.
-const KNOWN_MUTUAL_DEPENDENCIES = 14;
+//
+// extensions <-> datastore was added by #128 — user_datastore_loader
+// now consumes bundle_freshness (extensions-domain) for content-fingerprint
+// cache invalidation. The reverse edge (extensions → datastore) already
+// existed via extension_auto_resolver. reports/drivers/vaults loaders
+// also gained unidirectional dependencies on extensions for the same
+// reason, but extensions does not import from reports/drivers so those
+// remain non-mutual. vaults ↔ extensions was already mutual pre-#128
+// via extension_auto_resolver ↔ user_vault_loader.
+const KNOWN_MUTUAL_DEPENDENCIES = 15;
 
 Deno.test(
   "no new mutual dependencies between bounded contexts (ratchet)",

@@ -186,7 +186,8 @@ swamp vault status --json
 - Discovery: Recursive, all `.ts` files
 - Excluded: Files ending in `_test.ts`, directories starting with `_`
 - Export: Files without `export const vault` are silently skipped
-- Caching: Bundles are cached in `.swamp/vault-bundles/` (mtime-based)
+- Caching: Bundles are cached in `.swamp/vault-bundles/` (content-fingerprint
+  based — sha-256 over the entry point plus every local `.ts` dep)
 
 ## Key Rules
 

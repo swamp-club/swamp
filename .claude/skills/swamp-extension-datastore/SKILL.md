@@ -175,7 +175,9 @@ swamp datastore status --json
 - Discovery: Recursive, all `.ts` files
 - Excluded: Files ending in `_test.ts`
 - Export: Files without `export const datastore` are silently skipped
-- Caching: Bundles are cached in `.swamp/datastore-bundles/` (mtime-based)
+- Caching: Bundles are cached in `.swamp/datastore-bundles/`
+  (content-fingerprint based — sha-256 over the entry point plus every local
+  `.ts` dep)
 
 ## Key Rules
 
