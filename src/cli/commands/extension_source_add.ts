@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  resolveRepoDir,
+} from "../context.ts";
 import {
   consumeStream,
   createLibSwampContext,
@@ -49,7 +53,10 @@ export const extensionSourceAddCommand = new Command()
     "swamp extension source add ~/code/my-vaults --only vaults",
   )
   .arguments("<path:string>")
-  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
   .option(
     "--only <types:string>",
     "Only load these extension types (comma-separated: models,vaults,drivers,datastores,reports,workflows)",
@@ -63,7 +70,7 @@ export const extensionSourceAddCommand = new Command()
     cliCtx.logger.debug`Adding extension source: ${path}`;
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createSourceAddDeps(options.repoDir ?? ".");
+    const deps = createSourceAddDeps(resolveRepoDir(options.repoDir));
 
     let only: ExtensionKind[] | undefined;
     if (options.only) {

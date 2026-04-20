@@ -19,7 +19,11 @@
 
 import { Command } from "@cliffy/command";
 import { isAbsolute, resolve } from "@std/path";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  resolveRepoDir,
+} from "../context.ts";
 import {
   requireInitializedRepo,
   resolveDatastoreForRepo,
@@ -53,7 +57,10 @@ const datastoreSetupFilesystemCommand = new Command()
     "Custom subdirectories",
     "swamp datastore setup filesystem --path /data --directories models,outputs",
   )
-  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
   .option("--path <path:string>", "Path for the datastore directory", {
     required: true,
   })
@@ -70,7 +77,7 @@ const datastoreSetupFilesystemCommand = new Command()
     ]);
 
     const { repoDir } = await requireInitializedRepo({
-      repoDir: options.repoDir ?? ".",
+      repoDir: resolveRepoDir(options.repoDir),
       outputMode: cliCtx.outputMode,
     });
 
@@ -105,7 +112,10 @@ const datastoreSetupExtensionCommand = new Command()
     `swamp datastore setup extension @swamp/s3-datastore --config '{"bucket":"my-bucket","region":"us-east-1"}'`,
   )
   .arguments("<type:string>")
-  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
   .option(
     "--config <config:string>",
     'JSON config object for the extension (e.g., \'{"bucket":"name","region":"us-east-1"}\')',
@@ -154,7 +164,7 @@ const datastoreSetupExtensionCommand = new Command()
     }
 
     const { repoDir, marker } = await resolveDatastoreForRepo(
-      options.repoDir ?? ".",
+      resolveRepoDir(options.repoDir),
     );
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });

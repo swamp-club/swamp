@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  resolveRepoDir,
+} from "../context.ts";
 import {
   acquireModelLocks,
   requireInitializedRepo,
@@ -43,7 +47,10 @@ export const modelEvaluateCommand = new Command()
   .example("Evaluate a model", "swamp model evaluate my-server")
   .example("Evaluate all models", "swamp model evaluate --all")
   .arguments("[model_id_or_name:string]")
-  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
   .option("--all", "Evaluate all model definitions")
   .action(
     async function (options: AnyOptions, modelIdOrName?: string) {
@@ -55,7 +62,7 @@ export const modelEvaluateCommand = new Command()
       // If --all flag or no argument, evaluate all definitions (global lock)
       if (options.all || !modelIdOrName) {
         const { repoDir, datastoreResolver } = await requireInitializedRepo({
-          repoDir: options.repoDir ?? ".",
+          repoDir: resolveRepoDir(options.repoDir),
           outputMode: cliCtx.outputMode,
         });
 
@@ -73,7 +80,7 @@ export const modelEvaluateCommand = new Command()
       // Single model evaluation — use per-model lock
       const { repoDir, repoContext, datastoreConfig, datastoreResolver } =
         await requireInitializedRepoUnlocked({
-          repoDir: options.repoDir ?? ".",
+          repoDir: resolveRepoDir(options.repoDir),
           outputMode: cliCtx.outputMode,
         });
 

@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  resolveRepoDir,
+} from "../context.ts";
 import {
   consumeStream,
   createLibSwampContext,
@@ -35,7 +39,10 @@ export const extensionTrustRmCommand = new Command()
   .description("Remove a collective from the trusted list")
   .example("Remove trusted collective", "swamp extension trust rm stack72")
   .arguments("<collective:string>")
-  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
   .action(async function (options: AnyOptions, collective: string) {
     const cliCtx = createContext(options as GlobalOptions, [
       "extension",
@@ -45,7 +52,7 @@ export const extensionTrustRmCommand = new Command()
     cliCtx.logger.debug`Removing trusted collective: ${collective}`;
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createTrustRmDeps(options.repoDir ?? ".");
+    const deps = createTrustRmDeps(resolveRepoDir(options.repoDir));
 
     const renderer = createTrustModifyRenderer(cliCtx.outputMode);
     await consumeStream(trustRm(ctx, deps, collective), renderer.handlers());

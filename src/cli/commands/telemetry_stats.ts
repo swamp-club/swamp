@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  resolveRepoDir,
+} from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import {
   consumeStream,
@@ -34,7 +38,10 @@ export const telemetryStatsCommand = new Command()
   .description("View telemetry usage statistics")
   .example("View usage statistics", "swamp telemetry stats")
   .example("Last 7 days", "swamp telemetry stats --days 7")
-  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
   .option("--days <days:number>", "Number of days to analyze", { default: 2 })
   .action(async function (options) {
     const cliCtx = createContext(options as GlobalOptions, [
@@ -44,7 +51,7 @@ export const telemetryStatsCommand = new Command()
     cliCtx.logger.debug`Fetching telemetry stats`;
 
     const { repoDir } = await requireInitializedRepoReadOnly({
-      repoDir: options.repoDir ?? ".",
+      repoDir: resolveRepoDir(options.repoDir),
       outputMode: cliCtx.outputMode,
     });
 

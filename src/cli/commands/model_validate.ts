@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  resolveRepoDir,
+} from "../context.ts";
 import {
   requireInitializedRepo,
   requireInitializedRepoReadOnly,
@@ -45,7 +49,10 @@ export const modelValidateCommand = new Command()
     "swamp model validate --label production",
   )
   .arguments("[model_id_or_name:string]")
-  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
   .option(
     "--label <label:string>",
     "Only run checks with this label",
@@ -68,11 +75,11 @@ export const modelValidateCommand = new Command()
 
       const { repoDir, datastoreResolver } = hasCheckOptions
         ? await requireInitializedRepo({
-          repoDir: options.repoDir ?? ".",
+          repoDir: resolveRepoDir(options.repoDir),
           outputMode: cliCtx.outputMode,
         })
         : await requireInitializedRepoReadOnly({
-          repoDir: options.repoDir ?? ".",
+          repoDir: resolveRepoDir(options.repoDir),
           outputMode: cliCtx.outputMode,
         });
 

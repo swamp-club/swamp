@@ -25,7 +25,11 @@ import {
   workflowHistoryGet,
 } from "../../libswamp/mod.ts";
 import { createWorkflowHistoryGetRenderer } from "../../presentation/renderers/workflow_history_get.ts";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  resolveRepoDir,
+} from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -36,7 +40,10 @@ export const workflowHistoryGetCommand = new Command()
   .description("Show the latest run for a workflow")
   .example("Show latest run", "swamp workflow history get deploy-pipeline")
   .arguments("<workflow_id_or_name:workflow_name>")
-  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
   // @ts-expect-error - Cliffy custom type returns unknown instead of string
   .action(async function (options: AnyOptions, workflowIdOrName: string) {
     const cliCtx = createContext(options as GlobalOptions, [
@@ -48,7 +55,7 @@ export const workflowHistoryGetCommand = new Command()
 
     const { repoDir, datastoreResolver } = await requireInitializedRepoReadOnly(
       {
-        repoDir: options.repoDir ?? ".",
+        repoDir: resolveRepoDir(options.repoDir),
         outputMode: cliCtx.outputMode,
       },
     );

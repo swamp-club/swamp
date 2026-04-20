@@ -28,7 +28,11 @@ import {
 } from "../../libswamp/mod.ts";
 import { createModelSearchRenderer } from "../../presentation/renderers/model_search.tsx";
 import { createModelEditRenderer } from "../../presentation/renderers/model_edit.ts";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  resolveRepoDir,
+} from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import { readStdin } from "../../infrastructure/io/stdin_reader.ts";
@@ -42,14 +46,17 @@ export const modelEditCommand = new Command()
   .example("Edit a model", "swamp model edit my-server")
   .example("Interactive search", "swamp model edit")
   .arguments("[model_id_or_name:model_name]")
-  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
   // @ts-expect-error - Cliffy custom type returns unknown instead of string
   .action(async function (options: AnyOptions, modelIdOrName?: string) {
     const cliCtx = createContext(options as GlobalOptions, ["model", "edit"]);
     cliCtx.logger.debug`Editing model: ${modelIdOrName ?? "(interactive)"}`;
 
     const { repoContext, repoDir } = await requireInitializedRepo({
-      repoDir: options.repoDir ?? ".",
+      repoDir: resolveRepoDir(options.repoDir),
       outputMode: cliCtx.outputMode,
     });
 

@@ -34,6 +34,7 @@ import {
   createContext,
   type GlobalOptions,
   interactiveOutputMode,
+  resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
@@ -75,7 +76,10 @@ export const modelOutputSearchCommand = new Command()
   .example("Browse all outputs", "swamp model output search")
   .example("Search by keyword", "swamp model output search deploy")
   .arguments("[query:string]")
-  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
   .action(async function (options: AnyOptions, query?: string) {
     const ctx = createContext(options as GlobalOptions, [
       "model",
@@ -87,7 +91,7 @@ export const modelOutputSearchCommand = new Command()
     ctx.logger.debug`Searching outputs with query: ${query ?? "(none)"}`;
 
     const { repoContext } = await requireInitializedRepoReadOnly({
-      repoDir: options.repoDir ?? ".",
+      repoDir: resolveRepoDir(options.repoDir),
       outputMode: effectiveMode,
     });
 
@@ -100,7 +104,7 @@ export const modelOutputSearchCommand = new Command()
         ),
     };
 
-    const repoDir = options.repoDir ?? ".";
+    const repoDir = resolveRepoDir(options.repoDir);
     const fetchPreview = effectiveMode === "log"
       ? await createOutputFetchPreview(repoDir)
       : undefined;

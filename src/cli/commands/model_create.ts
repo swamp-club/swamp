@@ -25,7 +25,11 @@ import {
   modelCreate,
 } from "../../libswamp/mod.ts";
 import { createModelCreateRenderer } from "../../presentation/renderers/model_create.ts";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  resolveRepoDir,
+} from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { parseKeyValueInputs } from "../input_parser.ts";
 import { modelValidateCommand } from "./model_validate.ts";
@@ -50,7 +54,10 @@ export const modelCreateCommand = new Command()
     "swamp model create aws-ec2 my-server --global-arg region=us-east-1",
   )
   .arguments("<type:model_type> <name:string>")
-  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
   .option(
     "--global-arg <arg:string>",
     "Set global argument (key=value, repeatable)",
@@ -63,7 +70,7 @@ export const modelCreateCommand = new Command()
       .debug`Creating model definition: type=${typeArg}, name=${name}`;
 
     const { repoDir } = await requireInitializedRepo({
-      repoDir: options.repoDir ?? ".",
+      repoDir: resolveRepoDir(options.repoDir),
       outputMode: cliCtx.outputMode,
     });
 
@@ -107,8 +114,9 @@ export const modelCommand = new Command()
       .description("Alias for model search")
       .hidden()
       .arguments("[query:string]")
-      .option("--repo-dir <dir:string>", "Repository directory", {
-        default: ".",
-      })
+      .option(
+        "--repo-dir <dir:string>",
+        "Repository directory (env: SWAMP_REPO_DIR)",
+      )
       .action(modelSearchAction),
   );

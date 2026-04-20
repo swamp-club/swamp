@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  resolveRepoDir,
+} from "../context.ts";
 import {
   acquireModelLocks,
   requireInitializedRepoUnlocked,
@@ -71,7 +75,10 @@ export const modelMethodRunCommand = new Command()
     "swamp model method run my-server deploy --input env=prod",
   )
   .arguments("<model_id_or_name:model_name> <method_name:string>")
-  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
   .option(
     "--last-evaluated",
     "Skip CEL evaluation, use previously evaluated definition",
@@ -136,7 +143,7 @@ export const modelMethodRunCommand = new Command()
       ]);
       const { repoDir, repoContext, datastoreConfig } =
         await requireInitializedRepoUnlocked({
-          repoDir: options.repoDir ?? ".",
+          repoDir: resolveRepoDir(options.repoDir),
           outputMode: ctx.outputMode,
         });
 

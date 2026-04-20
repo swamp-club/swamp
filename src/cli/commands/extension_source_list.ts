@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  resolveRepoDir,
+} from "../context.ts";
 import {
   consumeStream,
   createLibSwampContext,
@@ -34,7 +38,10 @@ export const extensionSourceListCommand = new Command()
   .name("list")
   .description("List configured extension sources")
   .example("List all sources", "swamp extension source list")
-  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
   .action(async function (options: AnyOptions) {
     const cliCtx = createContext(options as GlobalOptions, [
       "extension",
@@ -43,7 +50,7 @@ export const extensionSourceListCommand = new Command()
     ]);
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createSourceListDeps(options.repoDir ?? ".");
+    const deps = createSourceListDeps(resolveRepoDir(options.repoDir));
 
     const renderer = createSourceListRenderer(cliCtx.outputMode);
     await consumeStream(sourceList(ctx, deps), renderer.handlers());

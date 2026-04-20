@@ -19,7 +19,11 @@
 
 import { Command } from "@cliffy/command";
 import { join, resolve } from "@std/path";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  resolveRepoDir,
+} from "../context.ts";
 import { requireInitializedRepoUnlocked } from "../repo_context.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
@@ -130,12 +134,15 @@ export const openCommand = new Command()
   )
   .example("Point at a specific repo", "swamp open --repo-dir /path/to/repo")
   .example("Custom port", "swamp open --port 9192")
-  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
   .option("--port <port:number>", "Port to listen on", { default: 9191 })
   .option("--no-open", "Do not auto-open the browser")
   .action(async function (options: AnyOptions) {
     const ctx = createContext(options as GlobalOptions, ["open"]);
-    const repoDir = options.repoDir as string ?? ".";
+    const repoDir = resolveRepoDir(options.repoDir as string | undefined);
     const port = options.port as number;
     const isJson = ctx.outputMode === "json";
 

@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  resolveRepoDir,
+} from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import { AuditService } from "../../domain/audit/audit_service.ts";
 import { createBashCommandEntry } from "../../domain/audit/audit_command_entry.ts";
@@ -85,7 +89,10 @@ export const auditRecordCommand = new Command()
   .option("--tool <tool:string>", "AI tool providing hook input", {
     default: "claude",
   })
-  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
   .action(async function (options) {
     try {
       const tool = options.tool as HookTool;
@@ -116,11 +123,11 @@ export const auditRecordCommand = new Command()
       const entry = createBashCommandEntry(
         normalized.sessionId,
         normalized.command,
-        normalized.cwd || options.repoDir || ".",
+        normalized.cwd || resolveRepoDir(options.repoDir as string | undefined),
         failure,
       );
 
-      const repoDir = options.repoDir || ".";
+      const repoDir = resolveRepoDir(options.repoDir as string | undefined);
       const repository = new JsonlAuditRepository(repoDir);
       await repository.append(entry);
 
@@ -145,7 +152,10 @@ export const auditCommand = new Command()
   .example("View audit timeline", "swamp audit")
   .example("Last 4 hours", "swamp audit --hours 4")
   .example("Include all commands", "swamp audit --all")
-  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
   .option("--hours <hours:number>", "Number of hours to analyze", {
     default: 24,
   })
@@ -156,7 +166,7 @@ export const auditCommand = new Command()
     ctx.logger.debug`Fetching audit timeline`;
 
     const { repoDir } = await requireInitializedRepoReadOnly({
-      repoDir: options.repoDir ?? ".",
+      repoDir: resolveRepoDir(options.repoDir),
       outputMode: ctx.outputMode,
     });
 

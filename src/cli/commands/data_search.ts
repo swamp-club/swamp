@@ -36,6 +36,7 @@ import {
   createContext,
   type GlobalOptions,
   interactiveOutputMode,
+  resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
@@ -168,7 +169,10 @@ export const dataSearchCommand = new Command()
   .example("Search with query", "swamp data search cpu-metrics")
   .example("Search within a model", "swamp data search --model my-server")
   .arguments("[query:string]")
-  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
   .option(
     "--type <type:string>",
     "Filter by data type tag (log, file, resource, data, output)",
@@ -216,7 +220,7 @@ export const dataSearchCommand = new Command()
     ctx.logger.debug`Searching data with query: ${query ?? "(none)"}`;
 
     const { repoContext } = await requireInitializedRepoReadOnly({
-      repoDir: options.repoDir ?? ".",
+      repoDir: resolveRepoDir(options.repoDir),
       outputMode: effectiveMode,
     });
     const definitionRepo = repoContext.definitionRepo;
@@ -238,7 +242,7 @@ export const dataSearchCommand = new Command()
         findDefinitionByIdOrName(definitionRepo, idOrName),
     };
 
-    const repoDir = options.repoDir ?? ".";
+    const repoDir = resolveRepoDir(options.repoDir);
     const fetchPreview = effectiveMode === "log"
       ? createDataFetchPreview(dataRepo, repoDir)
       : undefined;

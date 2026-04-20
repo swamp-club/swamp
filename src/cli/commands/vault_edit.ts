@@ -28,7 +28,11 @@ import {
 } from "../../libswamp/mod.ts";
 import { createVaultSearchRenderer } from "../../presentation/renderers/vault_search.tsx";
 import { createVaultEditRenderer } from "../../presentation/renderers/vault_edit.ts";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  resolveRepoDir,
+} from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 
@@ -41,14 +45,17 @@ export const vaultEditCommand = new Command()
   .example("Edit a vault", "swamp vault edit my-vault")
   .example("Interactive search", "swamp vault edit")
   .arguments("[vault_name_or_id:string]")
-  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
   .option("-t, --type <type:string>", "Vault type (optional, narrows search)")
   .action(async function (options: AnyOptions, vaultNameOrId?: string) {
     const cliCtx = createContext(options as GlobalOptions, ["vault", "edit"]);
     cliCtx.logger.debug`Editing vault: ${vaultNameOrId ?? "(interactive)"}`;
 
     const { repoContext, repoDir } = await requireInitializedRepo({
-      repoDir: options.repoDir ?? ".",
+      repoDir: resolveRepoDir(options.repoDir),
       outputMode: cliCtx.outputMode,
     });
     const vaultType = options.type as string | undefined;

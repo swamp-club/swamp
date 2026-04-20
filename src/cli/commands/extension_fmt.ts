@@ -25,13 +25,17 @@ import {
   extensionFmt,
 } from "../../libswamp/mod.ts";
 import { createExtensionFmtRenderer } from "../../presentation/renderers/extension_fmt.ts";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  resolveRepoDir,
+} from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { resolveExtensionFiles } from "../resolve_extension_files.ts";
 import { UserError } from "../../domain/errors.ts";
 
 interface ExtensionFmtOptions extends GlobalOptions {
-  repoDir: string;
+  repoDir?: string;
   check?: boolean;
 }
 
@@ -47,14 +51,17 @@ export const extensionFmtCommand = new Command()
     "swamp extension fmt extensions/models/my-model/manifest.json --check",
   )
   .arguments("<manifest-path:string>")
-  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
   .option("--check", "Check only, do not auto-fix")
   .action(async function (options: ExtensionFmtOptions, manifestPath: string) {
     const cliCtx = createContext(options, ["extension", "fmt"]);
     cliCtx.logger.debug`Starting extension fmt`;
 
     // 1. Validate repo
-    const repoDir = options.repoDir ?? ".";
+    const repoDir = resolveRepoDir(options.repoDir);
     const { repoContext } = await requireInitializedRepo({
       repoDir,
       outputMode: cliCtx.outputMode,

@@ -19,7 +19,11 @@
 
 import { Command } from "@cliffy/command";
 import { join, resolve } from "@std/path";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  resolveRepoDir,
+} from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { resolveModelsDir } from "../resolve_models_dir.ts";
 import {
@@ -57,7 +61,10 @@ export const extensionUpdateCommand = new Command()
   .example("Update one extension", "swamp extension update @stack72/aws-ec2")
   .example("Check for updates", "swamp extension update --check")
   .arguments("[extension:string]")
-  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
   .option("--check", "Show what's outdated without pulling")
   .action(async function (options: AnyOptions, extensionArg?: string) {
     const cliCtx = createContext(options as GlobalOptions, [
@@ -67,7 +74,7 @@ export const extensionUpdateCommand = new Command()
     cliCtx.logger.debug`Starting extension update`;
 
     // 1. Validate repo
-    const repoDir = options.repoDir ?? ".";
+    const repoDir = resolveRepoDir(options.repoDir);
     await requireInitializedRepo({
       repoDir,
       outputMode: cliCtx.outputMode,

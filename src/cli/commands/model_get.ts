@@ -25,7 +25,11 @@ import {
   modelGet,
 } from "../../libswamp/mod.ts";
 import { createModelGetRenderer } from "../../presentation/renderers/model_get.ts";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  resolveRepoDir,
+} from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -37,14 +41,17 @@ export const modelGetCommand = new Command()
   .example("Show model details", "swamp model get my-server")
   .example("JSON output", "swamp model get my-server --json")
   .arguments("<model_id_or_name:model_name>")
-  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
   // @ts-expect-error - Cliffy custom type returns unknown instead of string
   .action(async function (options: AnyOptions, modelIdOrName: string) {
     const cliCtx = createContext(options as GlobalOptions, ["model", "get"]);
     cliCtx.logger.debug`Getting model: ${modelIdOrName}`;
 
     const { repoDir } = await requireInitializedRepoReadOnly({
-      repoDir: options.repoDir ?? ".",
+      repoDir: resolveRepoDir(options.repoDir),
       outputMode: cliCtx.outputMode,
     });
 

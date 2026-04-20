@@ -35,6 +35,7 @@ import {
   createContext,
   type GlobalOptions,
   interactiveOutputMode,
+  resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -101,7 +102,10 @@ export const workflowSearchCommand = new Command()
   .example("Browse all workflows", "swamp workflow search")
   .example("Search by keyword", "swamp workflow search deploy")
   .arguments("[query:string]")
-  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
   .action(async function (options: AnyOptions, query?: string) {
     const ctx = createContext(options as GlobalOptions, ["workflow", "search"]);
     const effectiveMode = interactiveOutputMode(ctx);
@@ -111,7 +115,7 @@ export const workflowSearchCommand = new Command()
     // Search is always read-only. Execution (if "r" is pressed) happens via
     // subprocess, so we don't need a write lock.
     const { repoContext } = await requireInitializedRepoReadOnly({
-      repoDir: options.repoDir ?? ".",
+      repoDir: resolveRepoDir(options.repoDir),
       outputMode: effectiveMode,
     });
     const repo = repoContext.workflowRepo;
@@ -141,7 +145,7 @@ export const workflowSearchCommand = new Command()
         // so the user gets the full interactive experience (input file selection,
         // progress tree, etc.)
         ctx.logger.debug`Running workflow: ${selected.name}`;
-        const repoDir = options.repoDir ?? ".";
+        const repoDir = resolveRepoDir(options.repoDir);
         const cmd = new Deno.Command(Deno.execPath(), {
           args: ["workflow", "run", selected.name, "--repo-dir", repoDir],
           stdin: "inherit",

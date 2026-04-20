@@ -20,7 +20,11 @@
 import { Command } from "@cliffy/command";
 import type { Logger } from "@logtape/logtape";
 import { join, resolve } from "@std/path";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  resolveRepoDir,
+} from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { resolveModelsDir } from "../resolve_models_dir.ts";
 import {
@@ -156,14 +160,17 @@ export const extensionPullCommand = new Command()
   .example("Pull an extension", "swamp extension pull @stack72/aws-ec2")
   .example("Force re-pull", "swamp extension pull @stack72/aws-ec2 --force")
   .arguments("<extension:string>")
-  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
   .option("--force", "Overwrite existing files without prompting")
   .action(async function (options: AnyOptions, extension: string) {
     const ctx = createContext(options as GlobalOptions, ["extension", "pull"]);
     ctx.logger.debug`Starting extension pull`;
 
     // 1. Validate repo
-    const repoDir = options.repoDir ?? ".";
+    const repoDir = resolveRepoDir(options.repoDir);
     await requireInitializedRepo({
       repoDir,
       outputMode: ctx.outputMode,

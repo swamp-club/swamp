@@ -25,7 +25,11 @@ import {
   dataRename,
 } from "../../libswamp/mod.ts";
 import { createDataRenameRenderer } from "../../presentation/renderers/data_rename.ts";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  resolveRepoDir,
+} from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 
 export const dataRenameCommand = new Command()
@@ -36,10 +40,13 @@ export const dataRenameCommand = new Command()
     "swamp data rename my-server old-name new-name",
   )
   .arguments("<model_id_or_name:string> <old_name:string> <new_name:string>")
-  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
   .action(
     async function (
-      options: { repoDir: string; json?: boolean },
+      options: { repoDir?: string; json?: boolean },
       modelIdOrName: string,
       oldName: string,
       newName: string,
@@ -50,7 +57,7 @@ export const dataRenameCommand = new Command()
       ]);
 
       const { repoDir, datastoreResolver } = await requireInitializedRepo({
-        repoDir: options.repoDir ?? ".",
+        repoDir: resolveRepoDir(options.repoDir),
         outputMode: cliCtx.outputMode,
       });
 

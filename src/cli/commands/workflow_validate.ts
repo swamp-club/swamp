@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  resolveRepoDir,
+} from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import {
   consumeStream,
@@ -37,14 +41,17 @@ export const workflowValidateCommand = new Command()
   .example("Validate a workflow", "swamp workflow validate deploy-pipeline")
   .example("Validate all workflows", "swamp workflow validate")
   .arguments("[workflow_id_or_name:string]")
-  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
   .action(async function (options: AnyOptions, workflowIdOrName?: string) {
     const cliCtx = createContext(options as GlobalOptions, [
       "workflow",
       "validate",
     ]);
     const { repoContext } = await requireInitializedRepoReadOnly({
-      repoDir: options.repoDir ?? ".",
+      repoDir: resolveRepoDir(options.repoDir),
       outputMode: cliCtx.outputMode,
     });
 

@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  resolveRepoDir,
+} from "../context.ts";
 import {
   consumeStream,
   createLibSwampContext,
@@ -39,7 +43,10 @@ export const extensionTrustAutoTrustCommand = new Command()
   .example("Enable auto-trust", "swamp extension trust auto-trust enable")
   .example("Disable auto-trust", "swamp extension trust auto-trust disable")
   .arguments("<enabled:string>")
-  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
   .action(async function (options: AnyOptions, enabled: string) {
     const cliCtx = createContext(options as GlobalOptions, [
       "extension",
@@ -63,7 +70,7 @@ export const extensionTrustAutoTrustCommand = new Command()
     cliCtx.logger.debug`Setting auto-trust: ${boolValue}`;
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createTrustAutoTrustDeps(options.repoDir ?? ".");
+    const deps = createTrustAutoTrustDeps(resolveRepoDir(options.repoDir));
 
     const renderer = createTrustAutoTrustRenderer(cliCtx.outputMode);
     await consumeStream(

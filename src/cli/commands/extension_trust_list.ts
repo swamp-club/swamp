@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  resolveRepoDir,
+} from "../context.ts";
 import {
   consumeStream,
   createLibSwampContext,
@@ -34,7 +38,10 @@ export const extensionTrustListCommand = new Command()
   .name("list")
   .description("List trusted collectives for extension auto-resolution")
   .example("List trusted collectives", "swamp extension trust list")
-  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
   .action(async function (options: AnyOptions) {
     const cliCtx = createContext(options as GlobalOptions, [
       "extension",
@@ -44,7 +51,7 @@ export const extensionTrustListCommand = new Command()
     cliCtx.logger.debug("Executing extension trust list command");
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createTrustListDeps(options.repoDir ?? ".");
+    const deps = createTrustListDeps(resolveRepoDir(options.repoDir));
 
     const renderer = createTrustListRenderer(cliCtx.outputMode);
     await consumeStream(trustList(ctx, deps), renderer.handlers());

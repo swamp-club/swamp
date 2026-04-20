@@ -26,7 +26,11 @@ import {
 } from "../../libswamp/mod.ts";
 import { createDataQueryRenderer } from "../../presentation/renderers/data_query.ts";
 import { renderInteractiveQuery } from "../../presentation/renderers/data_query_tui.tsx";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  resolveRepoDir,
+} from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 
@@ -39,7 +43,10 @@ export const dataQueryCommand = new Command()
     "Query data artifacts using CEL predicates (interactive TUI when no predicate given)",
   )
   .arguments("[predicate:string]")
-  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
   .option(
     "--limit <n:number>",
     "Maximum results (unlimited when omitted)",
@@ -65,7 +72,7 @@ export const dataQueryCommand = new Command()
     const ctx = createContext(options as GlobalOptions, ["data", "query"]);
 
     const { repoContext } = await requireInitializedRepoReadOnly({
-      repoDir: options.repoDir ?? ".",
+      repoDir: resolveRepoDir(options.repoDir),
       outputMode: ctx.outputMode,
     });
 

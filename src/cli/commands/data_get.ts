@@ -25,7 +25,11 @@ import {
   dataGet,
 } from "../../libswamp/mod.ts";
 import { createDataGetRenderer } from "../../presentation/renderers/data_get.ts";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  resolveRepoDir,
+} from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -45,7 +49,10 @@ export const dataGetCommand = new Command()
     "swamp data get my-server system-info --no-content",
   )
   .arguments("[model_id_or_name:model_name] [data_name:string]")
-  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
   .option("--version <version:number>", "Specific version (defaults to latest)")
   .option(
     "--workflow <name:string>",
@@ -70,7 +77,7 @@ export const dataGetCommand = new Command()
 
       const { repoDir, datastoreResolver } =
         await requireInitializedRepoReadOnly({
-          repoDir: options.repoDir ?? ".",
+          repoDir: resolveRepoDir(options.repoDir),
           outputMode: cliCtx.outputMode,
         });
 

@@ -30,7 +30,11 @@ import {
   renderDataGcCancelled,
   renderDataGcPreview,
 } from "../../presentation/renderers/data_gc.ts";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  resolveRepoDir,
+} from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 
 async function promptConfirmation(message: string): Promise<boolean> {
@@ -55,14 +59,17 @@ export const dataGcCommand = new Command()
   .description("Run garbage collection on data (lifecycle and versions)")
   .example("Preview what would be collected", "swamp data gc --dry-run")
   .example("Run garbage collection", "swamp data gc --force")
-  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
   .option("--dry-run", "Show what would be deleted without deleting")
   .option("-f, --force", "Skip confirmation prompt")
   .action(async function (options: AnyOptions) {
     const cliCtx = createContext(options as GlobalOptions, ["data", "gc"]);
 
     const { repoDir, datastoreResolver } = await requireInitializedRepo({
-      repoDir: options.repoDir ?? ".",
+      repoDir: resolveRepoDir(options.repoDir),
       outputMode: cliCtx.outputMode,
     });
 

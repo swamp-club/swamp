@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  resolveRepoDir,
+} from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import {
   consumeStream,
@@ -37,7 +41,10 @@ export const workflowHistoryLogsCommand = new Command()
   .example("Show run logs", "swamp workflow history logs deploy-pipeline")
   .example("Tail last 50 lines", "swamp workflow history logs abc123 --tail 50")
   .arguments("<run_id_or_workflow:string>")
-  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
   .option("--tail <lines:number>", "Show only the last N lines")
   .action(async function (
     options: AnyOptions,
@@ -51,7 +58,7 @@ export const workflowHistoryLogsCommand = new Command()
 
     const { repoDir, datastoreResolver } = await requireInitializedRepoReadOnly(
       {
-        repoDir: options.repoDir ?? ".",
+        repoDir: resolveRepoDir(options.repoDir),
         outputMode: cliCtx.outputMode,
       },
     );

@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  resolveRepoDir,
+} from "../context.ts";
 import {
   acquireModelLocks,
   requireInitializedRepo,
@@ -64,7 +68,10 @@ export const workflowRunCommand = new Command()
   )
   .example("Skip reports", "swamp workflow run deploy-pipeline --skip-reports")
   .arguments("<workflow_id_or_name:workflow_name>")
-  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
   .option(
     "--last-evaluated",
     "Skip CEL evaluation, use previously evaluated workflow and definitions",
@@ -122,7 +129,7 @@ export const workflowRunCommand = new Command()
 
     // First try unlocked to resolve workflow and model references
     const unlocked = await requireInitializedRepoUnlocked({
-      repoDir: options.repoDir ?? ".",
+      repoDir: resolveRepoDir(options.repoDir),
       outputMode: ctx.outputMode,
     });
     const workflowRepo = unlocked.repoContext.workflowRepo;
@@ -195,7 +202,7 @@ export const workflowRunCommand = new Command()
           logger
             .info`Workflow contains dynamic model references — using global lock`;
           const globalResult = await requireInitializedRepo({
-            repoDir: options.repoDir ?? ".",
+            repoDir: resolveRepoDir(options.repoDir),
             outputMode: ctx.outputMode,
           });
           repoDir = globalResult.repoDir;

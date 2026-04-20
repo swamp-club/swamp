@@ -35,6 +35,7 @@ import {
   createContext,
   type GlobalOptions,
   interactiveOutputMode,
+  resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
@@ -127,7 +128,7 @@ export async function workflowHistorySearchAction(
   ctx.logger.debug`Searching workflow history with query: ${query ?? "(none)"}`;
 
   const { repoContext } = await requireInitializedRepoReadOnly({
-    repoDir: options.repoDir ?? ".",
+    repoDir: resolveRepoDir(options.repoDir),
     outputMode: effectiveMode,
   });
   const workflowRepo = repoContext.workflowRepo;
@@ -185,5 +186,8 @@ export const workflowHistorySearchCommand = new Command()
   .example("Browse run history", "swamp workflow history search")
   .example("Search runs", "swamp workflow history search deploy")
   .arguments("[query:string]")
-  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
   .action(workflowHistorySearchAction);

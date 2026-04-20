@@ -32,6 +32,7 @@ import {
   createContext,
   type GlobalOptions,
   interactiveOutputMode,
+  resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
@@ -46,7 +47,10 @@ export const modelMethodHistorySearchCommand = new Command()
   .example("Browse all history", "swamp model method history search")
   .example("Search by keyword", "swamp model method history search deploy")
   .arguments("[query:string]")
-  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
   .action(async function (options: AnyOptions, query?: string) {
     const ctx = createContext(options as GlobalOptions, [
       "model",
@@ -59,7 +63,7 @@ export const modelMethodHistorySearchCommand = new Command()
     ctx.logger.debug`Searching method history with query: ${query ?? "(none)"}`;
 
     const { repoContext } = await requireInitializedRepoReadOnly({
-      repoDir: options.repoDir ?? ".",
+      repoDir: resolveRepoDir(options.repoDir),
       outputMode: effectiveMode,
     });
 
@@ -82,7 +86,9 @@ export const modelMethodHistorySearchCommand = new Command()
     if (selected) {
       ctx.logger.debug`Selected output: ${selected.id}`;
       const getRenderer = createModelOutputGetRenderer(effectiveMode);
-      const getDeps = await createModelOutputGetDeps(options.repoDir ?? ".");
+      const getDeps = await createModelOutputGetDeps(
+        resolveRepoDir(options.repoDir),
+      );
       await consumeStream(
         modelOutputGet(libCtx, getDeps, selected.id),
         getRenderer.handlers(),

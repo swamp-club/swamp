@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  resolveRepoDir,
+} from "../context.ts";
 import {
   consumeStream,
   createLibSwampContext,
@@ -38,7 +42,10 @@ export const extensionSourceRmCommand = new Command()
     'swamp extension source rm "~/code/swamp-extensions/model/aws/*"',
   )
   .arguments("<path:string>")
-  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
   .action(async function (options: AnyOptions, path: string) {
     const cliCtx = createContext(options as GlobalOptions, [
       "extension",
@@ -48,7 +55,7 @@ export const extensionSourceRmCommand = new Command()
     cliCtx.logger.debug`Removing extension source: ${path}`;
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createSourceRemoveDeps(options.repoDir ?? ".");
+    const deps = createSourceRemoveDeps(resolveRepoDir(options.repoDir));
 
     const renderer = createSourceModifyRenderer(cliCtx.outputMode);
     await consumeStream(

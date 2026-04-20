@@ -29,7 +29,11 @@ import {
   createModelDeleteRenderer,
   renderModelDeleteCancelled,
 } from "../../presentation/renderers/model_delete.ts";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  resolveRepoDir,
+} from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 
@@ -56,7 +60,10 @@ export const modelDeleteCommand = new Command()
   .example("Delete a model", "swamp model delete my-server")
   .example("Force delete", "swamp model delete my-server --force")
   .arguments("<model_id_or_name:model_name>")
-  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
   .option(
     "-f, --force",
     "Skip confirmation and allow deletion when data artifacts exist",
@@ -67,7 +74,7 @@ export const modelDeleteCommand = new Command()
     cliCtx.logger.debug`Deleting model: ${modelIdOrName}`;
 
     const { repoDir, datastoreResolver } = await requireInitializedRepo({
-      repoDir: options.repoDir ?? ".",
+      repoDir: resolveRepoDir(options.repoDir),
       outputMode: cliCtx.outputMode,
     });
 

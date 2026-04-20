@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  resolveRepoDir,
+} from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { createDefinitionId } from "../../domain/definitions/definition.ts";
@@ -46,7 +50,10 @@ export const reportGetCommand = new Command()
     "swamp report get cost-summary --workflow deploy-pipeline",
   )
   .arguments("<report_name:string>")
-  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
   .option("--model <name:string>", "Scope to a specific model")
   .option("--workflow <name:string>", "Scope to a specific workflow")
   .option(
@@ -58,7 +65,7 @@ export const reportGetCommand = new Command()
     const ctx = createContext(options as GlobalOptions, ["report", "get"]);
 
     const { repoContext } = await requireInitializedRepoReadOnly({
-      repoDir: options.repoDir ?? ".",
+      repoDir: resolveRepoDir(options.repoDir),
       outputMode: ctx.outputMode,
     });
 

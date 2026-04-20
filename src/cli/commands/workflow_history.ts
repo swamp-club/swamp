@@ -40,8 +40,9 @@ export const workflowHistoryCommand = new Command()
       .description("Alias for workflow history search")
       .hidden()
       .arguments("[query:string]")
-      .option("--repo-dir <dir:string>", "Repository directory", {
-        default: ".",
-      })
+      .option(
+        "--repo-dir <dir:string>",
+        "Repository directory (env: SWAMP_REPO_DIR)",
+      )
       .action(workflowHistorySearchAction),
   );

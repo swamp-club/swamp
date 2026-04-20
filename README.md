@@ -262,6 +262,22 @@ export SWAMP_DATASTORE=s3:my-bucket/my-prefix
 export SWAMP_DATASTORE=filesystem:/tmp/swamp-data
 ```
 
+## Repository Directory
+
+Every command runs against a swamp repository. By default this is the current
+working directory. Pass `--repo-dir` to point at a different repo per
+invocation, or set `SWAMP_REPO_DIR` to persist the override across a shell
+session or CI job:
+
+```bash
+swamp model search --repo-dir /path/to/repo
+export SWAMP_REPO_DIR=/path/to/repo
+swamp model search
+```
+
+Priority order (highest to lowest): `--repo-dir` flag → `SWAMP_REPO_DIR` env var
+→ current working directory.
+
 ## Log Level
 
 By default, swamp outputs at the `info` level. You can change this once rather

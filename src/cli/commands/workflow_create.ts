@@ -25,7 +25,11 @@ import {
   workflowCreate,
 } from "../../libswamp/mod.ts";
 import { createWorkflowCreateRenderer } from "../../presentation/renderers/workflow_create.ts";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  resolveRepoDir,
+} from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -35,7 +39,10 @@ export const workflowCreateCommand = new Command()
   .description("Create a new workflow")
   .example("Create a workflow", "swamp workflow create deploy-pipeline")
   .arguments("<name:string>")
-  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
   .action(async function (options: AnyOptions, name: string) {
     const cliCtx = createContext(options as GlobalOptions, [
       "workflow",
@@ -44,7 +51,7 @@ export const workflowCreateCommand = new Command()
     cliCtx.logger.debug`Creating workflow: name=${name}`;
 
     const { repoDir } = await requireInitializedRepo({
-      repoDir: options.repoDir ?? ".",
+      repoDir: resolveRepoDir(options.repoDir),
       outputMode: cliCtx.outputMode,
     });
 

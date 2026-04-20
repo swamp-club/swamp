@@ -102,7 +102,9 @@ export function getOutputModeFromArgs(args: string[]): OutputMode {
  * Pre-parses --repo-dir from raw CLI arguments before Cliffy option parsing.
  *
  * Supports both `--repo-dir <value>` and `--repo-dir=<value>` forms.
- * Returns the resolved absolute path, defaulting to cwd when not specified.
+ * Returns the resolved absolute path.
+ *
+ * Priority: --repo-dir flag > SWAMP_REPO_DIR env var > cwd.
  */
 export function getRepoDirFromArgs(args: string[]): string {
   for (let i = 0; i < args.length; i++) {
@@ -114,5 +116,29 @@ export function getRepoDirFromArgs(args: string[]): string {
       return resolve(arg.slice("--repo-dir=".length));
     }
   }
+  const envDir = Deno.env.get("SWAMP_REPO_DIR");
+  if (envDir && envDir.length > 0) {
+    return resolve(envDir);
+  }
   return Deno.cwd();
+}
+
+/**
+ * Resolves the repository directory for a command action, given the Cliffy
+ * parsed `--repo-dir` option value.
+ *
+ * Priority: --repo-dir flag > SWAMP_REPO_DIR env var > "." (cwd).
+ *
+ * Command option definitions must NOT set a Cliffy `default` for `--repo-dir`
+ * — otherwise Cliffy always populates the value and the env var is ignored.
+ */
+export function resolveRepoDir(cliValue: string | undefined): string {
+  if (cliValue !== undefined) {
+    return cliValue;
+  }
+  const envDir = Deno.env.get("SWAMP_REPO_DIR");
+  if (envDir && envDir.length > 0) {
+    return envDir;
+  }
+  return ".";
 }

@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  resolveRepoDir,
+} from "../context.ts";
 import {
   acquireModelLocks,
   requireInitializedRepo,
@@ -52,7 +56,10 @@ export const workflowEvaluateCommand = new Command()
     "swamp workflow evaluate deploy-pipeline --input env=prod",
   )
   .arguments("[workflow_id_or_name:string]")
-  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
   .option("--all", "Evaluate all workflow definitions")
   .option("--input <value:string>", "Input values (key=value or JSON)", {
     collect: true,
@@ -75,7 +82,7 @@ export const workflowEvaluateCommand = new Command()
       if (options.all || !workflowIdOrName) {
         const { repoDir, repoContext, datastoreResolver } =
           await requireInitializedRepo({
-            repoDir: options.repoDir ?? ".",
+            repoDir: resolveRepoDir(options.repoDir),
             outputMode: cliCtx.outputMode,
           });
 
@@ -96,7 +103,7 @@ export const workflowEvaluateCommand = new Command()
 
       // Single workflow evaluation — use per-model lock
       const unlocked = await requireInitializedRepoUnlocked({
-        repoDir: options.repoDir ?? ".",
+        repoDir: resolveRepoDir(options.repoDir),
         outputMode: cliCtx.outputMode,
       });
       const workflowRepo = unlocked.repoContext.workflowRepo;
@@ -178,7 +185,7 @@ export const workflowEvaluateCommand = new Command()
         logger
           .info`Workflow contains dynamic model references — using global lock`;
         const globalResult = await requireInitializedRepo({
-          repoDir: options.repoDir ?? ".",
+          repoDir: resolveRepoDir(options.repoDir),
           outputMode: cliCtx.outputMode,
         });
         repoDir = globalResult.repoDir;

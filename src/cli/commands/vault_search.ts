@@ -34,6 +34,7 @@ import {
   createContext,
   type GlobalOptions,
   interactiveOutputMode,
+  resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 
@@ -77,7 +78,7 @@ export async function vaultSearchAction(
   ctx.logger.debug`Searching vaults with query: ${query ?? "(none)"}`;
 
   const { repoContext } = await requireInitializedRepoReadOnly({
-    repoDir: options.repoDir ?? ".",
+    repoDir: resolveRepoDir(options.repoDir),
     outputMode: effectiveMode,
   });
 
@@ -85,7 +86,7 @@ export async function vaultSearchAction(
     findAllVaults: () => repoContext.vaultConfigRepo.findAll(),
   };
 
-  const repoDir = options.repoDir ?? ".";
+  const repoDir = resolveRepoDir(options.repoDir);
   const fetchPreview = effectiveMode === "log"
     ? createVaultFetchPreview(repoDir)
     : undefined;
@@ -123,5 +124,8 @@ export const vaultSearchCommand = new Command()
   .example("Browse all vaults", "swamp vault search")
   .example("Search by keyword", "swamp vault search aws")
   .arguments("[query:string]")
-  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
   .action(vaultSearchAction);

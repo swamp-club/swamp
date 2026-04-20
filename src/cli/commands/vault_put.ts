@@ -29,7 +29,12 @@ import {
   createVaultPutRenderer,
   renderVaultPutCancelled,
 } from "../../presentation/renderers/vault_put.ts";
-import { createContext, type GlobalOptions, isStdinTty } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  isStdinTty,
+  resolveRepoDir,
+} from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
@@ -137,7 +142,10 @@ Piping via stdin is recommended for scripts and CI to avoid exposing secrets in 
     "Overwrite existing secret",
     "swamp vault put my-vault API_KEY=new-value --force",
   )
-  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
   .option("-f, --force", "Skip confirmation prompt when overwriting")
   .action(async function (
     options: AnyOptions,
@@ -149,7 +157,7 @@ Piping via stdin is recommended for scripts and CI to avoid exposing secrets in 
     cliCtx.logger.debug`Storing secret in vault: ${vaultName}`;
 
     const { repoDir, repoContext } = await requireInitializedRepo({
-      repoDir: options.repoDir ?? ".",
+      repoDir: resolveRepoDir(options.repoDir),
       outputMode: cliCtx.outputMode,
     });
 

@@ -22,6 +22,7 @@ import {
   createContext,
   type GlobalOptions,
   interactiveOutputMode,
+  resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
@@ -164,7 +165,10 @@ export const reportSearchCommand = new Command()
   .example("Browse all reports", "swamp report search")
   .example("Search by keyword", "swamp report search cost")
   .arguments("[query:string]")
-  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
   .option("--model <name:string>", "Filter to a specific model")
   .option("--workflow <name:string>", "Filter to a specific workflow")
   .option(
@@ -184,7 +188,7 @@ export const reportSearchCommand = new Command()
     const effectiveMode = interactiveOutputMode(ctx);
 
     const { repoContext } = await requireInitializedRepoReadOnly({
-      repoDir: options.repoDir ?? ".",
+      repoDir: resolveRepoDir(options.repoDir),
       outputMode: effectiveMode,
     });
 

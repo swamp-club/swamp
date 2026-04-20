@@ -29,7 +29,11 @@ import {
   createVaultMigrateRenderer,
   renderVaultMigrateCancelled,
 } from "../../presentation/renderers/vault_migrate.ts";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  resolveRepoDir,
+} from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
@@ -70,7 +74,10 @@ Both the source and target vaults must be different types.`,
   )
   .option("-f, --force", "Skip confirmation prompt")
   .option("--dry-run", "Preview migration without making changes")
-  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
   .example(
     "Migrate to AWS Secrets Manager",
     'swamp vault migrate my-vault --to-type @swamp/aws-sm --config \'{"region":"us-east-1"}\'',
@@ -87,7 +94,7 @@ Both the source and target vaults must be different types.`,
     cliCtx.logger.debug`Migrating vault: ${vaultName}`;
 
     const { repoDir } = await requireInitializedRepo({
-      repoDir: options.repoDir ?? ".",
+      repoDir: resolveRepoDir(options.repoDir),
       outputMode: cliCtx.outputMode,
     });
 

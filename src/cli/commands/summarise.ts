@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  resolveRepoDir,
+} from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import { parseDuration } from "../../libswamp/mod.ts";
 import {
@@ -43,7 +47,10 @@ export const summariseCommand = new Command()
   .example("Show recent activity", "swamp summarise")
   .example("Activity from the last day", "swamp summarise --since 1d")
   .example("Activity from the last hour", "swamp summarise --since 1h")
-  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
   .option("--since <duration:string>", "Time window (e.g. 1h, 1d, 7d, 1w)", {
     default: "7d",
   })
@@ -52,7 +59,7 @@ export const summariseCommand = new Command()
     ctx.logger.debug`Generating activity summary`;
 
     const { repoContext } = await requireInitializedRepoReadOnly({
-      repoDir: options.repoDir ?? ".",
+      repoDir: resolveRepoDir(options.repoDir),
       outputMode: ctx.outputMode,
     });
 

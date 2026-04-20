@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  resolveRepoDir,
+} from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import { join, resolve } from "@std/path";
 import {
@@ -43,7 +47,10 @@ export const extensionListCommand = new Command()
   .alias("ls")
   .description("List upstream installed extensions")
   .example("List installed extensions", "swamp extension list")
-  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
   .action(async function (options: AnyOptions) {
     const cliCtx = createContext(options as GlobalOptions, [
       "extension",
@@ -51,7 +58,7 @@ export const extensionListCommand = new Command()
     ]);
     cliCtx.logger.debug`Starting extension list`;
 
-    const repoDir = options.repoDir ?? ".";
+    const repoDir = resolveRepoDir(options.repoDir);
     await requireInitializedRepoReadOnly({
       repoDir,
       outputMode: cliCtx.outputMode,

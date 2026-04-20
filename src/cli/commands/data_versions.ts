@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  resolveRepoDir,
+} from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import {
   consumeStream,
@@ -36,7 +40,10 @@ export const dataVersionsCommand = new Command()
   .description("List all versions of specific data")
   .example("List all versions", "swamp data versions my-server system-info")
   .arguments("<model_id_or_name:model_name> <data_name:string>")
-  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
   .action(
     // @ts-expect-error - Cliffy custom type returns unknown instead of string
     async function (
@@ -53,7 +60,7 @@ export const dataVersionsCommand = new Command()
 
       const { repoDir, datastoreResolver } =
         await requireInitializedRepoReadOnly({
-          repoDir: options.repoDir ?? ".",
+          repoDir: resolveRepoDir(options.repoDir),
           outputMode: cliCtx.outputMode,
         });
 

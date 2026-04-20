@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  resolveRepoDir,
+} from "../context.ts";
 import {
   createDatastoreLock,
   createModelLock,
@@ -48,7 +52,10 @@ type AnyOptions = any;
 const datastoreLockStatusCommand = new Command()
   .description("Show who holds the datastore lock")
   .example("Check lock status", "swamp datastore lock status")
-  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
   .action(async function (options: AnyOptions) {
     const cliCtx = createContext(options as GlobalOptions, [
       "datastore",
@@ -57,7 +64,7 @@ const datastoreLockStatusCommand = new Command()
     ]);
 
     const { datastoreConfig: config } = await resolveDatastoreForRepo(
-      options.repoDir ?? ".",
+      resolveRepoDir(options.repoDir),
     );
 
     const lock = await createDatastoreLock(config);
@@ -91,7 +98,10 @@ const datastoreLockReleaseCommand = new Command()
     "Release a model lock",
     "swamp datastore lock release --force --model aws-ec2/my-server",
   )
-  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
   .option("--force", "Required to confirm force release", { required: true })
   .option(
     "--model <model:string>",
@@ -112,7 +122,7 @@ const datastoreLockReleaseCommand = new Command()
     }
 
     const { datastoreConfig: config } = await resolveDatastoreForRepo(
-      options.repoDir ?? ".",
+      resolveRepoDir(options.repoDir),
     );
 
     const modelSpec = options.model as string | undefined;

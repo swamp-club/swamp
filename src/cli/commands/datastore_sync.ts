@@ -25,7 +25,11 @@ import {
   datastoreSync,
 } from "../../libswamp/mod.ts";
 import { createDatastoreSyncRenderer } from "../../presentation/renderers/datastore_sync.ts";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  resolveRepoDir,
+} from "../context.ts";
 import {
   requireInitializedRepo,
   requireInitializedRepoReadOnly,
@@ -42,7 +46,10 @@ export const datastoreSyncCommand = new Command()
   .example("Full sync", "swamp datastore sync")
   .example("Pull only", "swamp datastore sync --pull")
   .example("Push only", "swamp datastore sync --push")
-  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
   .option("--pull", "Pull-only mode (fetch all remote data to local cache)")
   .option("--push", "Push-only mode (upload all local cache data to S3)")
   .action(async function (options: AnyOptions) {
@@ -62,11 +69,11 @@ export const datastoreSyncCommand = new Command()
     // lock and triggering a coordinator push on flush.
     const { repoDir, datastoreResolver } = mode === "pull"
       ? await requireInitializedRepoReadOnly({
-        repoDir: options.repoDir ?? ".",
+        repoDir: resolveRepoDir(options.repoDir),
         outputMode: cliCtx.outputMode,
       })
       : await requireInitializedRepo({
-        repoDir: options.repoDir ?? ".",
+        repoDir: resolveRepoDir(options.repoDir),
         outputMode: cliCtx.outputMode,
       });
 

@@ -25,7 +25,11 @@ import {
   vaultCreate,
 } from "../../libswamp/mod.ts";
 import { createVaultCreateRenderer } from "../../presentation/renderers/vault_create.ts";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  resolveRepoDir,
+} from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 
@@ -59,7 +63,10 @@ export const vaultCreateCommand = new Command()
     `swamp vault create aws-secrets-manager my-vault --config '{"region":"us-east-1"}'`,
   )
   .arguments("<type:string> [name:string]")
-  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
   .option(
     "--config <json:string>",
     "Provider configuration as JSON",
@@ -75,7 +82,7 @@ export const vaultCreateCommand = new Command()
         "create",
       ]);
       const { repoDir } = await requireInitializedRepo({
-        repoDir: options.repoDir ?? ".",
+        repoDir: resolveRepoDir(options.repoDir),
         outputMode: cliCtx.outputMode,
       });
 

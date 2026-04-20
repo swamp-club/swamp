@@ -25,7 +25,11 @@ import {
   modelOutputGet,
 } from "../../libswamp/mod.ts";
 import { createModelOutputGetRenderer } from "../../presentation/renderers/model_output_get.ts";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  resolveRepoDir,
+} from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -37,7 +41,10 @@ export const modelOutputGetCommand = new Command()
   .example("Show output details by ID", "swamp model output get abc123")
   .example("Show latest output for a model", "swamp model output get my-server")
   .arguments("<output_id_or_model_name:string>")
-  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
   .action(async function (options: AnyOptions, outputIdOrModelName: string) {
     const cliCtx = createContext(options as GlobalOptions, [
       "model",
@@ -48,7 +55,7 @@ export const modelOutputGetCommand = new Command()
 
     const { repoDir, datastoreResolver } = await requireInitializedRepoReadOnly(
       {
-        repoDir: options.repoDir ?? ".",
+        repoDir: resolveRepoDir(options.repoDir),
         outputMode: cliCtx.outputMode,
       },
     );

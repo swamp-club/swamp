@@ -19,7 +19,11 @@
 
 import { Command } from "@cliffy/command";
 import { dirname, join, resolve } from "@std/path";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  resolveRepoDir,
+} from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { resolveExtensionFiles } from "../resolve_extension_files.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -45,7 +49,7 @@ import type {
 import type { CompilationError, SwampError } from "../../libswamp/mod.ts";
 
 interface ExtensionPushOptions extends GlobalOptions {
-  repoDir: string;
+  repoDir?: string;
   yes?: boolean;
   dryRun?: boolean;
   releaseNotes?: string;
@@ -168,7 +172,10 @@ export const extensionPushCommand = new Command()
     `swamp extension push extensions/models/my-model/manifest.json --release-notes "Added validate method"`,
   )
   .arguments("<manifest-path:string>")
-  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
   .option("-y, --yes", "Skip confirmation prompts")
   .option("--dry-run", "Build archive locally without pushing to registry")
   .option(
@@ -180,7 +187,7 @@ export const extensionPushCommand = new Command()
     cliCtx.logger.debug`Starting extension push`;
 
     // 1. Validate repo
-    const repoDir = options.repoDir ?? ".";
+    const repoDir = resolveRepoDir(options.repoDir);
     const { repoContext } = await requireInitializedRepo({
       repoDir,
       outputMode: cliCtx.outputMode,

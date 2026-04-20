@@ -19,7 +19,11 @@
 
 import { Command } from "@cliffy/command";
 import { join, resolve } from "@std/path";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  resolveRepoDir,
+} from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
 import { resolveModelsDir } from "../resolve_models_dir.ts";
 import {
@@ -48,7 +52,10 @@ export const extensionInstallCommand = new Command()
   )
   .example("Restore extensions from lockfile", "swamp extension install")
   .arguments("[unexpected:string]")
-  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
   .action(async function (options: AnyOptions, unexpected?: string) {
     if (unexpected) {
       throw new UserError(
@@ -64,7 +71,7 @@ export const extensionInstallCommand = new Command()
     cliCtx.logger.debug`Starting extension install`;
 
     // 1. Validate repo
-    const repoDir = options.repoDir ?? ".";
+    const repoDir = resolveRepoDir(options.repoDir);
     await requireInitializedRepo({
       repoDir,
       outputMode: cliCtx.outputMode,

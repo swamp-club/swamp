@@ -25,7 +25,11 @@ import {
   vaultGet,
 } from "../../libswamp/mod.ts";
 import { createVaultGetRenderer } from "../../presentation/renderers/vault_get.ts";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  resolveRepoDir,
+} from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 
@@ -37,7 +41,10 @@ export const vaultGetCommand = new Command()
   .description("Show details of a vault configuration")
   .example("Show vault details", "swamp vault get my-vault")
   .arguments("<vault_name_or_id:string> [extra:string]")
-  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
   .option("-t, --type <type:string>", "Vault type (optional, narrows search)")
   .action(
     async function (
@@ -57,7 +64,7 @@ export const vaultGetCommand = new Command()
       cliCtx.logger.debug`Getting vault: ${vaultNameOrId}`;
 
       const { repoDir } = await requireInitializedRepoReadOnly({
-        repoDir: options.repoDir ?? ".",
+        repoDir: resolveRepoDir(options.repoDir),
         outputMode: cliCtx.outputMode,
       });
       const vaultType = options.type as string | undefined;

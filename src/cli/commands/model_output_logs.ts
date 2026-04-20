@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  resolveRepoDir,
+} from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import {
   consumeStream,
@@ -37,7 +41,10 @@ export const modelOutputLogsCommand = new Command()
   .example("Show output logs", "swamp model output logs abc123")
   .example("Tail last 100 lines", "swamp model output logs abc123 --tail 100")
   .arguments("<output_id:string>")
-  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
   .option("--tail <n:number>", "Show only last N lines")
   .action(async function (options: AnyOptions, outputIdArg: string) {
     const cliCtx = createContext(options as GlobalOptions, [
@@ -49,7 +56,7 @@ export const modelOutputLogsCommand = new Command()
 
     const { repoDir, datastoreResolver } = await requireInitializedRepoReadOnly(
       {
-        repoDir: options.repoDir ?? ".",
+        repoDir: resolveRepoDir(options.repoDir),
         outputMode: cliCtx.outputMode,
       },
     );

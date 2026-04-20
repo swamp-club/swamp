@@ -25,7 +25,11 @@ import {
   modelMethodDescribe,
 } from "../../libswamp/mod.ts";
 import { createModelMethodDescribeRenderer } from "../../presentation/renderers/model_method_describe.ts";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  resolveRepoDir,
+} from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 
@@ -40,7 +44,10 @@ export const modelMethodDescribeCommand = new Command()
     "swamp model method describe my-server getSystemInfo",
   )
   .arguments("<model_id_or_name:model_name> <method_name:string>")
-  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
   .action(
     // @ts-expect-error - Cliffy custom type returns unknown instead of string
     async function (
@@ -55,7 +62,7 @@ export const modelMethodDescribeCommand = new Command()
       ]);
 
       const { repoDir } = await requireInitializedRepoReadOnly({
-        repoDir: options.repoDir ?? ".",
+        repoDir: resolveRepoDir(options.repoDir),
         outputMode: cliCtx.outputMode,
       });
 

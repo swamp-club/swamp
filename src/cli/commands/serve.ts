@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  resolveRepoDir,
+} from "../context.ts";
 import { requireInitializedRepoUnlocked } from "../repo_context.ts";
 import { handleConnection } from "../../serve/connection.ts";
 import { executeWorkflowWithLocks } from "../../serve/deps.ts";
@@ -40,7 +44,10 @@ export const serveCommand = new Command()
     "Bind to all interfaces",
     "swamp serve --host 0.0.0.0 --port 3000",
   )
-  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
   .option("--port <port:number>", "Port to listen on", { default: 9090 })
   .option("--host <host:string>", "Host to bind to", { default: "127.0.0.1" })
   .option("--no-schedule", "Disable scheduled workflow execution")
@@ -55,7 +62,7 @@ export const serveCommand = new Command()
   )
   .action(async function (options: AnyOptions) {
     const ctx = createContext(options as GlobalOptions, ["serve"]);
-    const repoDir = options.repoDir as string ?? ".";
+    const repoDir = resolveRepoDir(options.repoDir as string | undefined);
     const port = options.port as number;
     const host = options.host as string;
     const isJson = ctx.outputMode === "json";

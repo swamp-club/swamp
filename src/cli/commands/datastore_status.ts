@@ -25,7 +25,11 @@ import {
   datastoreStatus,
 } from "../../libswamp/mod.ts";
 import { createDatastoreStatusRenderer } from "../../presentation/renderers/datastore_status.ts";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  resolveRepoDir,
+} from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -37,7 +41,10 @@ type AnyOptions = any;
 export const datastoreStatusCommand = new Command()
   .description("Show datastore configuration and health")
   .example("Show datastore health", "swamp datastore status")
-  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
   .action(async function (options: AnyOptions) {
     const cliCtx = createContext(options as GlobalOptions, [
       "datastore",
@@ -46,7 +53,7 @@ export const datastoreStatusCommand = new Command()
     cliCtx.logger.debug("Executing datastore status command");
 
     const { datastoreResolver } = await requireInitializedRepoReadOnly({
-      repoDir: options.repoDir ?? ".",
+      repoDir: resolveRepoDir(options.repoDir),
       outputMode: cliCtx.outputMode,
     });
 

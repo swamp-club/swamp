@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  resolveRepoDir,
+} from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import {
   consumeStream,
@@ -38,7 +42,10 @@ export const dataListCommand = new Command()
   .example("Filter by type", "swamp data list my-server --type output")
   .example("List workflow run data", "swamp data list --workflow deploy")
   .arguments("[model_id_or_name:model_name]")
-  .option("--repo-dir <dir:string>", "Repository directory", { default: "." })
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
   .option(
     "--type <type:string>",
     "Filter by data type (log, file, resource, data)",
@@ -57,7 +64,7 @@ export const dataListCommand = new Command()
 
     const { repoDir, datastoreResolver } = await requireInitializedRepoReadOnly(
       {
-        repoDir: options.repoDir ?? ".",
+        repoDir: resolveRepoDir(options.repoDir),
         outputMode: cliCtx.outputMode,
       },
     );
