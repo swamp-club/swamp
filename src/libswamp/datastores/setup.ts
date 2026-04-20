@@ -34,6 +34,7 @@ import { collapseEnvVars } from "../../infrastructure/persistence/env_path.ts";
 import { FilesystemDatastoreVerifier } from "../../infrastructure/persistence/filesystem_datastore_verifier.ts";
 import { getSwampDataDir } from "../../infrastructure/persistence/paths.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
+import { summarizeSyncError } from "../../infrastructure/persistence/sync_error_diagnostic.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 
@@ -322,11 +323,12 @@ export async function* datastoreSetupExtension(
             await syncService.pushChanged();
             ctx.logger.debug`Push complete`;
           } catch (error) {
-            errors.push(
-              `Failed to push to remote: ${
-                error instanceof Error ? error.message : String(error)
-              }`,
+            const { summary } = summarizeSyncError(
+              "push",
+              input.type,
+              error,
             );
+            errors.push(summary);
           }
         }
 

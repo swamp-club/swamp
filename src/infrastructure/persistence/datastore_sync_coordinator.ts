@@ -35,6 +35,7 @@
 import type { DistributedLock } from "../../domain/datastore/distributed_lock.ts";
 import { getSwampLogger } from "../logging/logger.ts";
 import { getTracer, SpanStatusCode } from "../tracing/mod.ts";
+import { summarizeSyncError } from "./sync_error_diagnostic.ts";
 
 /**
  * Common interface for sync services compatible with the coordinator.
@@ -171,15 +172,10 @@ export async function registerDatastoreSyncNamed(
       }
       syncSpan.setStatus({ code: SpanStatusCode.OK });
     } catch (error) {
-      const msg = error instanceof Error ? error.message : String(error);
-      syncSpan.setStatus({ code: SpanStatusCode.ERROR, message: msg });
-      logger.error("Failed to pull changes from {label}: {error}", {
-        label,
-        error: msg,
-      });
-      throw new Error(
-        `${label} sync failed: could not pull changes: ${msg}`,
-      );
+      const { summary, fields } = summarizeSyncError("pull", label, error);
+      syncSpan.setStatus({ code: SpanStatusCode.ERROR, message: summary });
+      logger.error("{summary}", { summary, ...fields });
+      throw new Error(summary, { cause: error });
     } finally {
       syncSpan.end();
     }
@@ -233,14 +229,9 @@ export async function flushDatastoreSyncNamed(key: string): Promise<void> {
       }
       syncSpan.setStatus({ code: SpanStatusCode.OK });
     } catch (error) {
-      syncSpan.setStatus({
-        code: SpanStatusCode.ERROR,
-        message: error instanceof Error ? error.message : String(error),
-      });
-      logger.warn("Failed to push changes to {label}: {error}", {
-        label,
-        error: error instanceof Error ? error.message : String(error),
-      });
+      const { summary, fields } = summarizeSyncError("push", label, error);
+      syncSpan.setStatus({ code: SpanStatusCode.ERROR, message: summary });
+      logger.warn("{summary}", { summary, ...fields });
     } finally {
       syncSpan.end();
     }

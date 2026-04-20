@@ -52,6 +52,7 @@ import {
   registerDatastoreSync,
   registerDatastoreSyncNamed,
 } from "../infrastructure/persistence/datastore_sync_coordinator.ts";
+import { summarizeSyncError } from "../infrastructure/persistence/sync_error_diagnostic.ts";
 import { FileLock } from "../infrastructure/persistence/file_lock.ts";
 import {
   type DistributedLock,
@@ -797,13 +798,13 @@ export async function acquireModelLocks(
             logger.info`Push complete, no changes`;
           }
         } catch (error) {
-          const msg = error instanceof Error ? error.message : String(error);
-          logger.error("Failed to push changes to datastore: {error}", {
-            error: msg,
-          });
-          throw new Error(
-            `Datastore sync failed: could not push changes: ${msg}`,
+          const { summary, fields } = summarizeSyncError(
+            "push",
+            config.type,
+            error,
           );
+          logger.error("{summary}", { summary, ...fields });
+          throw new Error(summary, { cause: error });
         } finally {
           try {
             await pushLock.release();

@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { initializeLogging } from "../logging/logger.ts";
 import {
   flushDatastoreSync,
@@ -140,5 +140,62 @@ Deno.test("flushDatastoreSync flushes all entries", async () => {
   await flushDatastoreSync();
   assertEquals(globalLock.released, true);
   assertEquals(modelLock.released, true);
+  assertEquals(getRegisteredLockKeys().length, 0);
+});
+
+Deno.test("registerDatastoreSync enriches pullChanged failure with SDK metadata", async () => {
+  const opaqueError = Object.assign(new Error("UnknownError"), {
+    name: "UnknownError",
+    Code: "AccessDenied",
+    $metadata: { httpStatusCode: 403, requestId: "TEST-REQ-123" },
+  });
+
+  const failingService = {
+    pullChanged: () => {
+      throw opaqueError;
+    },
+    pushChanged: () => Promise.resolve(0),
+  };
+
+  const thrown = await assertRejects(
+    () =>
+      registerDatastoreSync({
+        service: failingService,
+        label: "@test/syncfail",
+      }),
+    Error,
+  );
+
+  // `.message` carries the enriched summary so downstream renderers
+  // (buildErrorJson, createJsonErrorSink) surface the rich information
+  // without any presentation-layer changes.
+  assertStringIncludes(thrown.message, "@test/syncfail pull failed");
+  assertStringIncludes(thrown.message, "HTTP 403");
+  assertStringIncludes(thrown.message, "requestId=TEST-REQ-123");
+  assertStringIncludes(thrown.message, "code=AccessDenied");
+
+  // `.cause` preserves the original error object so a later renderer
+  // improvement can walk the cause chain for any future consumer.
+  assertEquals(thrown.cause, opaqueError);
+});
+
+Deno.test("flushDatastoreSync swallows pushChanged failures (warn-only)", async () => {
+  const failingService = {
+    pullChanged: () => Promise.resolve(0),
+    pushChanged: () => {
+      throw Object.assign(new Error("UnknownError"), {
+        $metadata: { httpStatusCode: 500 },
+      });
+    },
+  };
+
+  await registerDatastoreSync({
+    service: failingService,
+    label: "@test/syncfail",
+  });
+
+  // Must NOT throw — the coordinator's push path is intentionally
+  // warn-and-swallow so a successful command doesn't fail on cleanup.
+  await flushDatastoreSync();
   assertEquals(getRegisteredLockKeys().length, 0);
 });
