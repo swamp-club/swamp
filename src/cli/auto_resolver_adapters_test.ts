@@ -413,6 +413,82 @@ Deno.test("auto_resolver_adapters: inspectInstallation returns intact when lockf
   }
 });
 
+// Regression for the bundle-cache false-positive: clearing
+// .swamp/bundles/ (or any sibling *-bundles cache) must not flip the
+// inspection to truncated. The lockfile lists bundles alongside source,
+// but bundles are regenerable build artifacts — their absence does not
+// indicate a broken install. See the follow-up to swamp-club#133.
+Deno.test("auto_resolver_adapters: inspectInstallation ignores absent bundle artifacts and stays intact", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    const sourceRel = ".swamp/pulled-extensions/@fake/with-bundles/models/x.ts";
+    const bundleRels = [
+      ".swamp/bundles/abc123/x.js",
+      ".swamp/vault-bundles/abc123/v.js",
+      ".swamp/driver-bundles/abc123/d.js",
+      ".swamp/datastore-bundles/abc123/ds.js",
+      ".swamp/report-bundles/abc123/r.js",
+    ];
+    const lockfilePath = await seedLockfile(tmpDir, {
+      "@fake/with-bundles": [sourceRel, ...bundleRels],
+    });
+    // Source on disk; every bundle deliberately absent.
+    await seedPulledTree(tmpDir, "@fake/with-bundles", [sourceRel]);
+
+    const adapter = createAutoResolveInstallerAdapter({
+      ...stubCallbacks,
+      lockfilePath,
+      repoDir: tmpDir,
+      denoRuntime: stubDenoRuntime,
+    });
+
+    const result = await adapter.inspectInstallation("@fake/with-bundles");
+    assertEquals(result, {
+      state: "intact",
+      path: join(
+        tmpDir,
+        ".swamp",
+        "pulled-extensions",
+        "@fake/with-bundles",
+      ),
+    });
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("auto_resolver_adapters: inspectInstallation reports truncated only for missing source, not missing bundles", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    const keptManifest = ".swamp/pulled-extensions/@fake/mixed/manifest.yaml";
+    const goneSource = ".swamp/pulled-extensions/@fake/mixed/models/x.ts";
+    const goneBundle = ".swamp/bundles/abc123/x.js";
+    const lockfilePath = await seedLockfile(tmpDir, {
+      "@fake/mixed": [keptManifest, goneSource, goneBundle],
+    });
+    // Manifest stays; source removed; bundle never written. Only the
+    // missing source file should appear in `missing` — the bundle is
+    // filtered out before the stat check.
+    await seedPulledTree(tmpDir, "@fake/mixed", [keptManifest]);
+
+    const adapter = createAutoResolveInstallerAdapter({
+      ...stubCallbacks,
+      lockfilePath,
+      repoDir: tmpDir,
+      denoRuntime: stubDenoRuntime,
+    });
+
+    const result = await adapter.inspectInstallation("@fake/mixed");
+    assertEquals(result, {
+      state: "truncated",
+      path: join(tmpDir, ".swamp", "pulled-extensions", "@fake/mixed"),
+      missing: [goneSource],
+    });
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
 Deno.test("auto_resolver_adapters: hotLoadDatastores is a no-op when no pulled datastore dirs exist", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
   try {

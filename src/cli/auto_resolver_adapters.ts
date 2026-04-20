@@ -55,6 +55,23 @@ import {
 
 const logger = getLogger(["swamp", "extensions", "auto-resolver"]);
 
+// Lockfile-relative prefixes for regenerable bundle output. Sourced from
+// SWAMP_SUBDIRS so a future bundle-dir addition only needs the key list
+// extended below to stay in sync. Forward slashes match how
+// installExtension writes lockfile paths (POSIX-normalized via
+// `relative()` in src/libswamp/extensions/pull.ts).
+const BUNDLE_ARTIFACT_PREFIXES: readonly string[] = [
+  SWAMP_SUBDIRS.bundles,
+  SWAMP_SUBDIRS.vaultBundles,
+  SWAMP_SUBDIRS.driverBundles,
+  SWAMP_SUBDIRS.datastoreBundles,
+  SWAMP_SUBDIRS.reportBundles,
+].map((subdir) => `.swamp/${subdir}/`);
+
+function isBundleArtifactPath(relPath: string): boolean {
+  return BUNDLE_ARTIFACT_PREFIXES.some((prefix) => relPath.startsWith(prefix));
+}
+
 interface InstallerAdapterConfig {
   getExtension: (name: string) => Promise<ExtensionRegistryInfo | null>;
   downloadArchive: (name: string, version: string) => Promise<Uint8Array>;
@@ -104,11 +121,19 @@ export function createAutoResolveInstallerAdapter(
       // - missing: no lockfile entry, or the per-extension directory is
       //   absent. A clean install should proceed.
       // - truncated: lockfile + directory both present, but one or more
-      //   listed files are absent on disk (swamp-club#133). The tree is
-      //   broken; surface a distinct error with `--force` recovery.
+      //   listed source files are absent on disk (swamp-club#133). The
+      //   tree is broken; surface a distinct error with `--force`
+      //   recovery.
       // - intact: everything lined up. If the type still failed to
       //   register, the cause is local (user edits) — issue #121's
       //   "never overwrite" guard applies.
+      //
+      // Bundle artifacts under .swamp/{bundles,vault-bundles,
+      // driver-bundles,datastore-bundles,report-bundles}/ are excluded
+      // from the truncation check because they are regenerable build
+      // output, not source. Clearing the bundle cache (a normal hygiene
+      // operation) must not flip the inspection to truncated and steal
+      // the user-WIP path from issue #121.
       const upstream = await readUpstreamExtensions(lockfilePath);
       const entry = upstream[extensionName];
       if (!entry) return { state: "missing" };
@@ -126,6 +151,7 @@ export function createAutoResolveInstallerAdapter(
       const files = entry.files ?? [];
       const missing: string[] = [];
       for (const relPath of files) {
+        if (isBundleArtifactPath(relPath)) continue;
         try {
           await Deno.stat(join(repoDir, relPath));
         } catch {

@@ -395,6 +395,15 @@ entry for an extension that cannot be stat'd on disk. The check stops
 at presence — it does not verify file contents, only that the paths the
 lockfile says should exist actually do.
 
+Paths under `.swamp/bundles/`, `.swamp/vault-bundles/`,
+`.swamp/driver-bundles/`, `.swamp/datastore-bundles/`, and
+`.swamp/report-bundles/` are excluded from this check. Those are
+regenerable build artifacts: clearing the bundle cache is a normal
+hygiene operation and must not flip an extension with intact source
+into the truncated branch (which would steal the user-WIP path from
+issue #121). Only source-tree files — the per-extension subtree under
+`.swamp/pulled-extensions/<name>/` — drive truncation.
+
 ### Hot-Loading
 
 After installation, swamp re-runs model and vault discovery with
