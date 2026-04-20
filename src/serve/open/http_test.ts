@@ -17,9 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { handleOpenRequest, type OpenServerState } from "./http.ts";
 import type { ExtensionApiClient } from "../../infrastructure/http/extension_api_client.ts";
+import { LocalEditsError } from "../../libswamp/mod.ts";
 
 function stubState(): OpenServerState {
   const extClient = {
@@ -161,4 +162,55 @@ Deno.test("handleOpenRequest: /api/repo/meta requires absolute path", async () =
   assertEquals(res.status, 400);
   const body = await res.json();
   assertEquals(body.error.message, "Absolute path required");
+});
+
+function stubLoadedState(
+  installExtension: (name: string) => Promise<void>,
+): OpenServerState {
+  const state = stubState();
+  // The /api/extensions/install route is gated by requireRepo, which only
+  // checks that these three fields are truthy. The install handler itself
+  // never reads repoContext or datastoreConfig — it calls
+  // state.installExtension — so stubbing with empty objects is sufficient.
+  state.repoDir = "/tmp/stub-repo";
+  state.repoContext = {} as OpenServerState["repoContext"];
+  state.datastoreConfig = {} as OpenServerState["datastoreConfig"];
+  state.installExtension = installExtension;
+  return state;
+}
+
+Deno.test("handleOpenRequest: POST /api/extensions/install maps LocalEditsError to 409", async () => {
+  const state = stubLoadedState(() =>
+    Promise.reject(new LocalEditsError("@test/ext"))
+  );
+  const res = await handleOpenRequest(
+    new Request("http://127.0.0.1:9191/api/extensions/install", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "@test/ext" }),
+    }),
+    state,
+  );
+  assertEquals(res.status, 409);
+  const body = await res.json();
+  assertStringIncludes(body.error.message, "@test/ext");
+  assertStringIncludes(
+    body.error.message,
+    "swamp extension pull @test/ext --force",
+  );
+});
+
+Deno.test("handleOpenRequest: POST /api/extensions/install maps unexpected errors to 500", async () => {
+  const state = stubLoadedState(() => Promise.reject(new Error("boom")));
+  const res = await handleOpenRequest(
+    new Request("http://127.0.0.1:9191/api/extensions/install", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ name: "@test/ext" }),
+    }),
+    state,
+  );
+  assertEquals(res.status, 500);
+  const body = await res.json();
+  assertEquals(body.error.message, "boom");
 });

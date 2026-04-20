@@ -31,6 +31,7 @@ import {
   extensionList,
   extensionSearch,
   type ExtensionSearchDeps,
+  LocalEditsError,
   modelDelete,
   modelMethodDescribe,
   modelMethodRun,
@@ -1085,6 +1086,15 @@ async function handleExtensionInstall(
   try {
     await state.installExtension(body.name);
   } catch (e) {
+    // LocalEditsError → 409 Conflict so the UI can distinguish a refusal
+    // (user must act: edit elsewhere or opt in via --force from the
+    // terminal) from an unexpected server error. swamp-club#129.
+    if (e instanceof LocalEditsError) {
+      return Response.json(
+        { error: { message: e.message } },
+        { status: 409 },
+      );
+    }
     return Response.json(
       { error: { message: e instanceof Error ? e.message : String(e) } },
       { status: 500 },

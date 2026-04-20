@@ -44,9 +44,9 @@ import { getAutoResolver } from "../domain/extensions/auto_resolver_context.ts";
 import { maybeAutoUpdateDatastoreExtension } from "../libswamp/extensions/datastore_auto_update.ts";
 import { FileExtensionUpdateCheckRepository } from "../infrastructure/persistence/extension_update_check_repository.ts";
 import { readUpstreamExtensions } from "../infrastructure/persistence/upstream_extensions.ts";
-import { readInstalledExtensionDigest } from "../infrastructure/persistence/installed_extension_digest_reader.ts";
 import { ExtensionApiClient } from "../infrastructure/http/extension_api_client.ts";
 import {
+  detectLocalEditsForExtension,
   enumeratePulledExtensionDirs,
   installExtension,
 } from "../libswamp/mod.ts";
@@ -110,28 +110,8 @@ async function maybeAutoUpdateSwampDatastore(
           return null;
         }
       },
-      detectLocalEdits: async (name) => {
-        // Compare the stored at-install digest with a fresh digest over
-        // the on-disk per-extension subtree. Infrastructure errors (lockfile
-        // missing, dir unreadable) degrade to "no-anchor" so auto-update
-        // never blocks a user command on a safety-check bug (issue #126).
-        try {
-          const upstream = await readUpstreamExtensions(lockfilePath);
-          const stored = upstream[name]?.filesChecksum;
-          if (!stored) return "no-anchor";
-          const extRoot = join(
-            resolve(repoDir),
-            ".swamp",
-            "pulled-extensions",
-            name,
-          );
-          const onDisk = await readInstalledExtensionDigest(extRoot);
-          if (onDisk === null) return "no-anchor";
-          return onDisk === stored ? "match" : "mismatch";
-        } catch {
-          return "no-anchor";
-        }
-      },
+      detectLocalEdits: (name) =>
+        detectLocalEditsForExtension(repoDir, name, lockfilePath),
       pullExtension: async (name, version) => {
         const resolvedRepoDir = resolve(repoDir);
 

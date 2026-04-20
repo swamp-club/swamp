@@ -36,6 +36,8 @@ import {
 import {
   createLibSwampContext,
   createModelCreateDeps,
+  detectLocalEditsForExtension,
+  LocalEditsError,
   modelCreate,
 } from "../../libswamp/mod.ts";
 import { pullExtension } from "./extension_pull.ts";
@@ -169,6 +171,22 @@ export const openCommand = new Command()
           absoluteModelsDir,
           "upstream_extensions.json",
         );
+        // Refuse to silently overwrite local edits. The web UI install path
+        // runs with force:true (no stdin for the "overwrite?" prompt), so
+        // the force-pull is the only thing protecting user edits from
+        // silent loss (swamp-club#129, sibling of #121/#126). The check
+        // covers only the top-level extension the user clicked; dependency
+        // re-install is already short-circuited in installExtension when a
+        // dep is present in upstream_extensions.json, so dependency edits
+        // are not at risk through this surface.
+        const editsStatus = await detectLocalEditsForExtension(
+          repoDir,
+          name,
+          lockfilePath,
+        );
+        if (editsStatus === "mismatch") {
+          throw new LocalEditsError(name);
+        }
         await pullExtension(
           { name, version: null },
           {
@@ -181,7 +199,7 @@ export const openCommand = new Command()
             repoDir,
             // Force overwrite — the web UI has no stdin to answer the
             // "overwrite existing files?" prompt, so we always install
-            // non-interactively and let the latest version win.
+            // non-interactively. Local-edits protection runs above.
             force: true,
             outputMode: ctx.outputMode,
             alreadyPulled: new Set(),

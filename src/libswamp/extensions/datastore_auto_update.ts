@@ -23,20 +23,9 @@ import {
   isExtensionCheckStale,
 } from "../../domain/extensions/extension_update_check_cache.ts";
 import { checkExtensionVersion } from "../../domain/extensions/extension_update_service.ts";
+import type { LocalEditsStatus } from "./local_edits.ts";
 
 const logger = getLogger(["swamp", "extensions", "auto-update"]);
-
-/**
- * Tri-state outcome from the local-edits check. Produced by the caller-
- * supplied `detectLocalEdits` dep.
- *
- * - `match` — on-disk digest equals the stored anchor; safe to overwrite.
- * - `mismatch` — on-disk digest diverges from the anchor; user has edited
- *   something and auto-update must refuse.
- * - `no-anchor` — no stored anchor for this extension (pre-upgrade lockfile
- *   entry); grandfather path, proceed as before.
- */
-export type LocalEditsStatus = "match" | "mismatch" | "no-anchor";
 
 /**
  * Reason an auto-update attempt was skipped. Distinct from silent errors

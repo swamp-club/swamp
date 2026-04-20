@@ -570,6 +570,11 @@ export {
   maybeAutoUpdateDatastoreExtension,
 } from "./extensions/datastore_auto_update.ts";
 export {
+  detectLocalEditsForExtension,
+  LocalEditsError,
+  type LocalEditsStatus,
+} from "./extensions/local_edits.ts";
+export {
   type ExtensionUpdateCheckMap,
   type ExtensionUpdateCheckRepository,
   isExtensionCheckStale,
