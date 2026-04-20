@@ -29,7 +29,12 @@ import {
   sanitizeDataUrlError,
   uint8ArrayToBase64,
 } from "../models/bundle.ts";
-import { resolveLocalImports } from "../models/local_import_resolver.ts";
+import {
+  computeSourceFingerprint,
+  createFreshnessCache,
+  findStaleFiles as findStaleFilesShared,
+  type FreshnessCache,
+} from "../extensions/bundle_freshness.ts";
 import type { DenoRuntime } from "../runtime/deno_runtime.ts";
 import type { ExecutionDriver } from "./execution_driver.ts";
 import { driverTypeRegistry } from "./driver_type_registry.ts";
@@ -251,40 +256,27 @@ export class UserDriverLoader {
         relativePath.replace(/\.ts$/, ".js"),
       );
 
-      // Check mtime-based cache against all local dependencies.
-      // If the bundle exists but freshness cannot be determined (e.g. a
-      // dependency file is missing because the extension was pushed with an
-      // older swamp that had a single-line import regex), fall back to the
-      // cached bundle rather than attempting a re-bundle that will also fail.
+      // Freshness is decided by the caller via
+      // bundle_freshness.findStaleFiles (content-fingerprint compare).
+      // We only care whether a bundle file exists on disk so we can
+      // fall back to it if rebundling fails with an expected error
+      // (bare specifiers without deno.json). No mtime check here —
+      // mtime-based freshness was unreliable under atomic-rename
+      // saves (#125).
       let bundleExists = false;
       try {
-        const bundleStat = await Deno.stat(bundlePath);
+        await Deno.stat(bundlePath);
         bundleExists = true;
-        if (bundleStat.mtime) {
-          const { resolvedFiles } = await resolveLocalImports(
-            [absolutePath],
-            boundaryDir,
-          );
-          const depStats = await Promise.all(
-            resolvedFiles.map((f) => Deno.stat(f)),
-          );
-          const newestSourceMtime = depStats.reduce<Date | null>(
-            (max, s) => {
-              if (!s.mtime) return max;
-              if (!max) return s.mtime;
-              return s.mtime > max ? s.mtime : max;
-            },
-            null,
-          );
-          if (newestSourceMtime && bundleStat.mtime >= newestSourceMtime) {
-            logger.debug`Using cached driver bundle for ${relativePath}`;
-            return await Deno.readTextFile(bundlePath);
-          }
-        }
       } catch {
-        // Freshness check failed (e.g. missing dependency file).
-        // Fall through to attempt a rebundle rather than using a
-        // potentially stale cache.
+        // No bundle on disk yet — first-run bootstrap.
+      }
+
+      // Fast-path for pulled extensions with bare specifiers and no
+      // repo-side deno.json. bundleExtension would always fail for them
+      // and we'd wastefully spawn Deno before falling back to the
+      // cached bundle anyway.
+      if (bundleExists && isExpectedBundleFailure(absolutePath, this.repoDir)) {
+        return await Deno.readTextFile(bundlePath);
       }
 
       // Try to rebundle from source. If bundling fails (e.g. bare specifiers
@@ -468,7 +460,7 @@ export class UserDriverLoader {
       skipAlreadyRegistered: true,
     });
 
-    this.populateCatalogFromRegistry(
+    await this.populateCatalogFromRegistry(
       catalog,
       driversDir,
       options?.additionalDirs,
@@ -551,19 +543,21 @@ export class UserDriverLoader {
   /**
    * Populates the catalog from the currently loaded registry.
    */
-  private populateCatalogFromRegistry(
+  private async populateCatalogFromRegistry(
     catalog: ExtensionCatalogStore,
     driversDir: string,
     additionalDirs?: string[],
-  ): void {
+  ): Promise<void> {
     if (!this.repoDir) return;
 
     const bundleBaseDir = this.resolveBundlePath();
+    // One cache per populate pass so shared deps are hashed once.
+    const cache = createFreshnessCache();
 
     const dirs = [driversDir, ...(additionalDirs ?? [])];
     for (const dir of dirs) {
       try {
-        this.populateCatalogFromDir(dir, bundleBaseDir, catalog);
+        await this.populateCatalogFromDir(dir, bundleBaseDir, catalog, cache);
       } catch {
         // Directory doesn't exist — skip
       }
@@ -571,13 +565,16 @@ export class UserDriverLoader {
   }
 
   /**
-   * Synchronously populates catalog entries from a single directory.
+   * Populates catalog entries from a single directory, recording a
+   * content-fingerprint for each entry so subsequent findStaleFiles
+   * passes can detect mtime-preserving edits (#125).
    */
-  private populateCatalogFromDir(
+  private async populateCatalogFromDir(
     dir: string,
     bundleBaseDir: string,
     catalog: ExtensionCatalogStore,
-  ): void {
+    cache: FreshnessCache,
+  ): Promise<void> {
     const files = this.discoverFilesSync(dir);
     const ns = this.repoDir ? bundleNamespace(dir, this.repoDir) : "";
     for (const relativePath of files) {
@@ -600,6 +597,12 @@ export class UserDriverLoader {
 
         const typeNormalized = typeMatch[1].toLowerCase();
 
+        const sourceFingerprint = await computeSourceFingerprint(
+          absolutePath,
+          dir,
+          cache,
+        );
+
         catalog.upsert({
           type_normalized: typeNormalized,
           kind: "driver",
@@ -609,6 +612,7 @@ export class UserDriverLoader {
           description: "",
           extends_type: "",
           source_mtime: sourceStat.mtime?.toISOString() ?? "",
+          source_fingerprint: sourceFingerprint,
         });
       } catch {
         // Skip files that can't be read or don't have bundles
@@ -639,7 +643,10 @@ export class UserDriverLoader {
   }
 
   /**
-   * Finds files that have changed since the catalog was last populated.
+   * Finds files that need rebundling since the catalog was last populated.
+   * Delegates to the shared content-fingerprint freshness check —
+   * mtime-based invalidation was unreliable under atomic-rename saves and
+   * mtime-preserving sync tools (issue #125).
    */
   private async findStaleFiles(
     driversDir: string,
@@ -648,96 +655,13 @@ export class UserDriverLoader {
   ): Promise<
     Array<{ absolutePath: string; relativePath: string; baseDir: string }>
   > {
-    const stale: Array<{
-      absolutePath: string;
-      relativePath: string;
-      baseDir: string;
-    }> = [];
-
-    const allDirs = [driversDir, ...(additionalDirs ?? [])];
-
-    const catalogEntries = catalog.findByKind("driver");
-    const catalogBySource = new Map<string, ExtensionTypeRow>();
-    for (const entry of catalogEntries) {
-      catalogBySource.set(entry.source_path, entry);
-    }
-
-    const seenSources = new Set<string>();
-
-    for (const dir of allDirs) {
-      try {
-        await Deno.stat(dir);
-      } catch {
-        continue;
-      }
-
-      const files = await this.discoverFiles(dir);
-      for (const relativePath of files) {
-        const absolutePath = resolve(dir, relativePath);
-        seenSources.add(absolutePath);
-
-        const catalogEntry = catalogBySource.get(absolutePath);
-        if (!catalogEntry) {
-          stale.push({ absolutePath, relativePath, baseDir: dir });
-          continue;
-        }
-
-        try {
-          const stat = await Deno.stat(absolutePath);
-          const sourceMtime = stat.mtime?.toISOString() ?? "";
-          if (sourceMtime !== catalogEntry.source_mtime) {
-            stale.push({ absolutePath, relativePath, baseDir: dir });
-            continue;
-          }
-
-          // Entry point is fresh — check transitive dependencies against
-          // the cached bundle file's mtime. This catches edits to imported
-          // .ts files that don't touch the entry point (#1094).
-          const bundlePath = this.getDriverBundlePath(relativePath, dir);
-          if (bundlePath) {
-            try {
-              const bundleStat = await Deno.stat(bundlePath);
-              if (bundleStat.mtime) {
-                const { resolvedFiles } = await resolveLocalImports(
-                  [absolutePath],
-                  dir,
-                );
-                const depStats = await Promise.all(
-                  resolvedFiles.map((f) => Deno.stat(f)),
-                );
-                const newestDepMtime = depStats.reduce<Date | null>(
-                  (max, s) => {
-                    if (!s.mtime) return max;
-                    if (!max) return s.mtime;
-                    return s.mtime > max ? s.mtime : max;
-                  },
-                  null,
-                );
-                if (
-                  newestDepMtime && newestDepMtime >= bundleStat.mtime
-                ) {
-                  stale.push({ absolutePath, relativePath, baseDir: dir });
-                }
-              }
-            } catch {
-              // Bundle file missing or dep stat failed — mark as stale
-              // to trigger a rebundle.
-              stale.push({ absolutePath, relativePath, baseDir: dir });
-            }
-          }
-        } catch {
-          stale.push({ absolutePath, relativePath, baseDir: dir });
-        }
-      }
-    }
-
-    for (const [sourcePath] of catalogBySource) {
-      if (!seenSources.has(sourcePath)) {
-        catalog.removeBySourcePath(sourcePath);
-      }
-    }
-
-    return stale;
+    return await findStaleFilesShared({
+      modelsDir: driversDir,
+      additionalDirs,
+      catalog,
+      discoverFiles: (dir) => this.discoverFiles(dir),
+      kinds: ["driver"],
+    });
   }
 
   /**
@@ -772,6 +696,10 @@ export class UserDriverLoader {
 
     const stat = await Deno.stat(absolutePath);
     const sourceMtime = stat.mtime?.toISOString() ?? "";
+    const sourceFingerprint = await computeSourceFingerprint(
+      absolutePath,
+      baseDir,
+    );
     const typeNormalized = parsed.data.type.toLowerCase();
     const bundlePath = this.getDriverBundlePath(relativePath, baseDir);
 
@@ -784,6 +712,7 @@ export class UserDriverLoader {
       description: parsed.data.description,
       extends_type: "",
       source_mtime: sourceMtime,
+      source_fingerprint: sourceFingerprint,
     });
 
     // Also register since we already imported

@@ -17,10 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertNotEquals } from "@std/assert";
 import { join } from "@std/path";
 import { UserVaultLoader } from "./user_vault_loader.ts";
 import { VaultTypeRegistry } from "./vault_type_registry.ts";
+import { bundleNamespace } from "../../infrastructure/persistence/paths.ts";
+import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
 import type { DenoRuntime } from "../runtime/deno_runtime.ts";
 
 /** Stub runtime that returns "deno" as the binary path. */
@@ -334,5 +336,177 @@ export const vault = {
     assertEquals(result.failed.length, 0);
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("UserVaultLoader buildIndex rebundles when source content changes with preserved mtime (#128)", async () => {
+  const ts = Date.now();
+  const vaultType = `@user/preserved-mtime-vault-${ts}`;
+  const v1 = `
+export const vault = {
+  type: "${vaultType}",
+  name: "V1_MARKER",
+  description: "V1_MARKER",
+  createProvider: (_name, _config) => ({
+    async get() { return "V1_MARKER"; },
+    async set() {},
+    async has() { return false; },
+    async list() { return []; },
+    async delete() {},
+  }),
+};
+`;
+  const v2 = `
+export const vault = {
+  type: "${vaultType}",
+  name: "V2_MARKER",
+  description: "V2_MARKER",
+  createProvider: (_name, _config) => ({
+    async get() { return "V2_MARKER"; },
+    async set() {},
+    async has() { return false; },
+    async list() { return []; },
+    async delete() {},
+  }),
+};
+`;
+
+  const repoDir = await Deno.makeTempDir({
+    prefix: "swamp_preserved_mtime_vault_repo_",
+  });
+  const vaultsDir = await Deno.makeTempDir({
+    prefix: "swamp_preserved_mtime_vaults_",
+  });
+  const dbPath = join(repoDir, ".swamp", "_extension_catalog.db");
+
+  try {
+    const sourcePath = join(vaultsDir, "vault.ts");
+    await Deno.writeTextFile(sourcePath, v1);
+
+    const catalog1 = new ExtensionCatalogStore(dbPath);
+    const loader1 = new UserVaultLoader(new StubDenoRuntime(), repoDir);
+    await loader1.buildIndex(vaultsDir, catalog1);
+    catalog1.close();
+
+    const ns = bundleNamespace(vaultsDir, repoDir);
+    const bundlePath = join(
+      repoDir,
+      ".swamp",
+      "vault-bundles",
+      ns,
+      "vault.js",
+    );
+    const v1Bundle = await Deno.readTextFile(bundlePath);
+    assertEquals(v1Bundle.includes("V1_MARKER"), true);
+
+    const origMtime = (await Deno.stat(sourcePath)).mtime!;
+
+    await new Promise((r) => setTimeout(r, 1100));
+
+    await Deno.writeTextFile(sourcePath, v2);
+    await Deno.utime(sourcePath, origMtime, origMtime);
+
+    const srcStat = await Deno.stat(sourcePath);
+    const bundleStat = await Deno.stat(bundlePath);
+    assertEquals(
+      srcStat.mtime!.getTime() <= bundleStat.mtime!.getTime(),
+      true,
+      "Precondition — source mtime must be <= bundle mtime to exercise the bug",
+    );
+
+    const catalog2 = new ExtensionCatalogStore(dbPath);
+    const loader2 = new UserVaultLoader(new StubDenoRuntime(), repoDir);
+    await loader2.buildIndex(vaultsDir, catalog2);
+    catalog2.close();
+
+    const v2Bundle = await Deno.readTextFile(bundlePath);
+    assertNotEquals(v1Bundle, v2Bundle);
+    assertEquals(
+      v2Bundle.includes("V2_MARKER"),
+      true,
+      "V2 marker must be present in the regenerated bundle",
+    );
+  } finally {
+    await Deno.remove(repoDir, { recursive: true });
+    await Deno.remove(vaultsDir, { recursive: true });
+  }
+});
+
+Deno.test("UserVaultLoader buildIndex rebundles when transitive dep content changes with preserved mtime (#128)", async () => {
+  const ts = Date.now();
+  const vaultType = `@user/preserved-mtime-vault-dep-${ts}`;
+  const entry = `
+import { marker } from "./_lib/marker.ts";
+export const vault = {
+  type: "${vaultType}",
+  name: "dep-transitive",
+  description: "dep-transitive",
+  createProvider: (_name, _config) => ({
+    async get() { return marker(); },
+    async set() {},
+    async has() { return false; },
+    async list() { return []; },
+    async delete() {},
+  }),
+};
+`;
+  const libV1 = `export const marker = () => "V1_DEP_MARKER";\n`;
+  const libV2 = `export const marker = () => "V2_DEP_MARKER";\n`;
+
+  const repoDir = await Deno.makeTempDir({
+    prefix: "swamp_preserved_mtime_vault_dep_repo_",
+  });
+  const vaultsDir = await Deno.makeTempDir({
+    prefix: "swamp_preserved_mtime_vault_dep_src_",
+  });
+  const dbPath = join(repoDir, ".swamp", "_extension_catalog.db");
+
+  try {
+    await Deno.mkdir(join(vaultsDir, "_lib"), { recursive: true });
+    const entryPath = join(vaultsDir, "vault.ts");
+    const libPath = join(vaultsDir, "_lib", "marker.ts");
+    await Deno.writeTextFile(entryPath, entry);
+    await Deno.writeTextFile(libPath, libV1);
+
+    const catalog1 = new ExtensionCatalogStore(dbPath);
+    const loader1 = new UserVaultLoader(new StubDenoRuntime(), repoDir);
+    await loader1.buildIndex(vaultsDir, catalog1);
+    catalog1.close();
+
+    const ns = bundleNamespace(vaultsDir, repoDir);
+    const bundlePath = join(
+      repoDir,
+      ".swamp",
+      "vault-bundles",
+      ns,
+      "vault.js",
+    );
+    const v1Bundle = await Deno.readTextFile(bundlePath);
+    assertEquals(v1Bundle.includes("V1_DEP_MARKER"), true);
+
+    const entryMtime = (await Deno.stat(entryPath)).mtime!;
+    const libMtime = (await Deno.stat(libPath)).mtime!;
+
+    await new Promise((r) => setTimeout(r, 1100));
+
+    await Deno.writeTextFile(libPath, libV2);
+    await Deno.utime(libPath, libMtime, libMtime);
+    await Deno.utime(entryPath, entryMtime, entryMtime);
+
+    const catalog2 = new ExtensionCatalogStore(dbPath);
+    const loader2 = new UserVaultLoader(new StubDenoRuntime(), repoDir);
+    await loader2.buildIndex(vaultsDir, catalog2);
+    catalog2.close();
+
+    const v2Bundle = await Deno.readTextFile(bundlePath);
+    assertNotEquals(v1Bundle, v2Bundle);
+    assertEquals(
+      v2Bundle.includes("V2_DEP_MARKER"),
+      true,
+      "V2 dep marker must be present in the regenerated bundle",
+    );
+  } finally {
+    await Deno.remove(repoDir, { recursive: true });
+    await Deno.remove(vaultsDir, { recursive: true });
   }
 });

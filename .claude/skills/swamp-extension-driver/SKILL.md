@@ -215,7 +215,8 @@ driver file — swamp silently skips files that fail to compile.
 - Discovery: Recursive, all `.ts` files
 - Excluded: Files ending in `_test.ts`
 - Export: Files without `export const driver` are silently skipped
-- Caching: Bundles are cached in `.swamp/driver-bundles/` (mtime-based)
+- Caching: Bundles are cached in `.swamp/driver-bundles/` (content-fingerprint
+  based — sha-256 over the entry point plus every local `.ts` dep)
 
 ## Key Rules
 

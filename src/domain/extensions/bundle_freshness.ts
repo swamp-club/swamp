@@ -21,6 +21,25 @@ import { relative, resolve } from "@std/path";
 import { resolveLocalImports } from "../models/local_import_resolver.ts";
 
 /**
+ * The extension-catalog kinds this helper can query. Declared
+ * domain-local so the freshness check does not import ExtensionKind
+ * from the infrastructure catalog store — matches the inline pattern
+ * of FreshnessCatalogRow below and preserves the
+ * domain→infrastructure boundary rule.
+ *
+ * Must stay in sync with the ExtensionKind union on ExtensionTypeRow;
+ * the infrastructure row type structurally satisfies this helper's
+ * FreshnessCatalog interface.
+ */
+export type FreshnessKind =
+  | "model"
+  | "extension"
+  | "vault"
+  | "driver"
+  | "datastore"
+  | "report";
+
+/**
  * Minimal row shape this module needs from the catalog. The concrete
  * ExtensionTypeRow in the infrastructure layer extends this; keeping
  * the dependency one-way (infrastructure knows the domain shape, not
@@ -153,7 +172,7 @@ function toHex(buffer: ArrayBuffer): string {
  * module to every catalog method.
  */
 export interface FreshnessCatalog {
-  findByKind(kind: "model" | "extension"): FreshnessCatalogRow[];
+  findByKind(kind: FreshnessKind): FreshnessCatalogRow[];
   removeBySourcePath(sourcePath: string): void;
 }
 
@@ -166,6 +185,14 @@ export interface FindStaleFilesParams {
   catalog: FreshnessCatalog;
   /** Discovers `.ts` files under a directory, returning repo-relative paths. */
   discoverFiles: (dir: string) => Promise<string[]>;
+  /**
+   * Catalog kinds to query. Each loader passes its own kind(s) so that
+   * findStaleFiles only considers rows it owns. The models loader
+   * passes ["model", "extension"] — models plus user-defined extensions
+   * that target base models. Sibling loaders pass singletons
+   * (["report"], ["driver"], etc.).
+   */
+  kinds: FreshnessKind[];
 }
 
 /**
@@ -187,16 +214,13 @@ export interface FindStaleFilesParams {
 export async function findStaleFiles(
   params: FindStaleFilesParams,
 ): Promise<StaleFile[]> {
-  const { modelsDir, additionalDirs, catalog, discoverFiles } = params;
+  const { modelsDir, additionalDirs, catalog, discoverFiles, kinds } = params;
   const stale: StaleFile[] = [];
   const cache = createFreshnessCache();
 
   const allDirs = [modelsDir, ...(additionalDirs ?? [])];
 
-  const catalogEntries = [
-    ...catalog.findByKind("model"),
-    ...catalog.findByKind("extension"),
-  ];
+  const catalogEntries = kinds.flatMap((k) => catalog.findByKind(k));
   const catalogBySource = new Map<string, FreshnessCatalogRow>();
   for (const entry of catalogEntries) {
     catalogBySource.set(entry.source_path, entry);

@@ -33,9 +33,15 @@
 
 **Symptom:** Changes to your vault code aren't taking effect.
 
-**Cause:** Bundles are cached in `.swamp/vault-bundles/` with mtime-based
-invalidation. If file timestamps are incorrect (e.g., after `git checkout`), the
-cache may serve stale code.
+**Cause:** Bundles are cached in `.swamp/vault-bundles/` with
+content-fingerprint (sha-256) invalidation, so edits should be detected
+regardless of mtime. If a bundle still looks stale, the cache file itself may be
+corrupt.
+
+**Note on first upgrade:** The first `swamp` command after upgrading from a
+pre-fingerprint binary rebundles every vault extension once — legacy catalog
+rows carry an empty fingerprint that forces one rebundle, then subsequent runs
+settle back to the normal cache-hit path.
 
 **Fix:** Delete the cached bundle:
 

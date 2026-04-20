@@ -470,3 +470,68 @@ Deno.test("ExtensionCatalogStore: migrates pre-#125 schema by adding source_fing
   assertEquals(again?.source_fingerprint, "");
   store2.close();
 });
+
+// --- per-kind migration tests (#128) ---
+//
+// The sibling loaders (report/driver/datastore/vault) ported to the
+// shared freshness helper in #128. Legacy catalog rows written by the
+// pre-port binary have `source_fingerprint = ""`; they must survive the
+// migration so the next findStaleFiles pass sees fingerprint mismatch
+// and rebundles exactly once. This matches the PR #1188 precedent for
+// the models loader above — accept+document one-time rebundle on
+// upgrade rather than silently backfill.
+
+for (
+  const kind of ["report", "driver", "datastore", "vault"] as const
+) {
+  Deno.test(
+    `ExtensionCatalogStore: migrates pre-#128 ${kind} row by adding empty source_fingerprint (#128)`,
+    () => {
+      const dbPath = makeTempDbPath();
+      ensureDirSync(dirname(dbPath));
+
+      // Seed a DB with the pre-#125 schema — no source_fingerprint
+      // column — carrying a row of the target kind.
+      const seed = new DatabaseSync(dbPath);
+      seed.exec(`
+        CREATE TABLE bundle_types (
+          source_path     TEXT NOT NULL PRIMARY KEY,
+          type_normalized TEXT NOT NULL,
+          kind            TEXT NOT NULL DEFAULT 'model',
+          bundle_path     TEXT NOT NULL,
+          version         TEXT NOT NULL DEFAULT '',
+          description     TEXT NOT NULL DEFAULT '',
+          extends_type    TEXT NOT NULL DEFAULT '',
+          source_mtime    TEXT NOT NULL DEFAULT ''
+        );
+        CREATE TABLE bundle_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        INSERT INTO bundle_types (
+          source_path, type_normalized, kind, bundle_path, version,
+          description, extends_type, source_mtime
+        ) VALUES (
+          '/old/${kind}.ts', '@legacy/${kind}-row', '${kind}',
+          '/old/${kind}.js', '', '', '', '2026-01-01T00:00:00.000Z'
+        );
+      `);
+      seed.close();
+
+      // Opening through ExtensionCatalogStore must run the migration.
+      const store = new ExtensionCatalogStore(dbPath);
+
+      // Legacy row of the target kind survives with empty
+      // source_fingerprint — forces a rebundle on the next
+      // findStaleFiles pass when this kind's loader delegates to the
+      // shared helper.
+      const legacy = store.findByType(`@legacy/${kind}-row`, kind);
+      assertEquals(legacy?.source_fingerprint, "");
+      assertEquals(legacy?.kind, kind);
+
+      // Re-opening is a no-op — migration is idempotent.
+      store.close();
+      const store2 = new ExtensionCatalogStore(dbPath);
+      const again = store2.findByType(`@legacy/${kind}-row`, kind);
+      assertEquals(again?.source_fingerprint, "");
+      store2.close();
+    },
+  );
+}

@@ -1,0 +1,211 @@
+// Swamp, an Automation Framework
+// Copyright (C) 2026 System Initiative, Inc.
+//
+// This file is part of Swamp.
+//
+// Swamp is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License version 3
+// as published by the Free Software Foundation, with the Swamp
+// Extension and Definition Exception (found in the "COPYING-EXCEPTION"
+// file).
+//
+// Swamp is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
+
+import { assertEquals, assertNotEquals } from "@std/assert";
+import { join } from "@std/path";
+import { UserReportLoader } from "./user_report_loader.ts";
+import { bundleNamespace } from "../../infrastructure/persistence/paths.ts";
+import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
+import type { DenoRuntime } from "../runtime/deno_runtime.ts";
+
+/** Test DenoRuntime that returns the current deno binary path. */
+const testDenoRuntime: DenoRuntime = {
+  ensureDeno: () => Promise.resolve(Deno.execPath()),
+};
+
+Deno.test("UserReportLoader buildIndex rebundles when source content changes with preserved mtime (#128)", async () => {
+  // Mirrors the models-loader regression at user_model_loader_test.ts —
+  // swap source content but restore the original mtime (the atomic-rename
+  // / rsync --times / sub-ms edit signature), then re-run buildIndex and
+  // verify the regenerated bundle carries the new content. With the old
+  // mtime-based freshness check the stale bundle would be served.
+  const ts = Date.now();
+  const name = `@user/preserved-mtime-report-${ts}`;
+  const v1 = `
+export const report = {
+  name: "${name}",
+  description: "V1_MARKER",
+  scope: "method",
+  execute: async (_ctx) => ({ markdown: "V1_MARKER", json: { marker: "V1" } }),
+};
+`;
+  const v2 = `
+export const report = {
+  name: "${name}",
+  description: "V2_MARKER",
+  scope: "method",
+  execute: async (_ctx) => ({ markdown: "V2_MARKER", json: { marker: "V2" } }),
+};
+`;
+
+  const repoDir = await Deno.makeTempDir({
+    prefix: "swamp_preserved_mtime_report_repo_",
+  });
+  const reportsDir = await Deno.makeTempDir({
+    prefix: "swamp_preserved_mtime_reports_",
+  });
+  const dbPath = join(repoDir, ".swamp", "_extension_catalog.db");
+
+  try {
+    const sourcePath = join(reportsDir, "report.ts");
+    await Deno.writeTextFile(sourcePath, v1);
+
+    const catalog1 = new ExtensionCatalogStore(dbPath);
+    const loader1 = new UserReportLoader(testDenoRuntime, repoDir);
+    await loader1.buildIndex(reportsDir, catalog1);
+    catalog1.close();
+
+    const ns = bundleNamespace(reportsDir, repoDir);
+    const bundlePath = join(
+      repoDir,
+      ".swamp",
+      "report-bundles",
+      ns,
+      "report.js",
+    );
+    const v1Bundle = await Deno.readTextFile(bundlePath);
+    assertEquals(
+      v1Bundle.includes("V1_MARKER"),
+      true,
+      "V1 marker should be present in the initial bundle",
+    );
+
+    const origMtime = (await Deno.stat(sourcePath)).mtime!;
+
+    // Advance wall clock so any mtime-based comparison would notice a
+    // rebundle moment, making the test deterministic.
+    await new Promise((r) => setTimeout(r, 1100));
+
+    // Swap content, then restore the original mtime — the #125 trigger.
+    await Deno.writeTextFile(sourcePath, v2);
+    await Deno.utime(sourcePath, origMtime, origMtime);
+
+    const srcStatAfterRestore = await Deno.stat(sourcePath);
+    const bundleStatBeforeRun2 = await Deno.stat(bundlePath);
+    assertEquals(
+      srcStatAfterRestore.mtime!.getTime() <=
+        bundleStatBeforeRun2.mtime!.getTime(),
+      true,
+      "Precondition — source mtime must be <= bundle mtime to exercise the bug",
+    );
+
+    // Drop the registry entry so the second buildIndex fully re-imports.
+    const catalog2 = new ExtensionCatalogStore(dbPath);
+    const loader2 = new UserReportLoader(testDenoRuntime, repoDir);
+    await loader2.buildIndex(reportsDir, catalog2);
+    catalog2.close();
+
+    const v2Bundle = await Deno.readTextFile(bundlePath);
+    assertNotEquals(
+      v1Bundle,
+      v2Bundle,
+      "Bundle must be regenerated when source content changes, even with preserved mtime",
+    );
+    assertEquals(
+      v2Bundle.includes("V2_MARKER"),
+      true,
+      "V2 marker must be present in the regenerated bundle",
+    );
+  } finally {
+    await Deno.remove(repoDir, { recursive: true });
+    await Deno.remove(reportsDir, { recursive: true });
+  }
+});
+
+Deno.test("UserReportLoader buildIndex rebundles when transitive dep content changes with preserved mtime (#128)", async () => {
+  // Transitive-dep variant — edit a _lib/*.ts helper, preserve the entry
+  // point's mtime, verify the fingerprint helper walks the dep graph and
+  // marks the entry point stale.
+  const ts = Date.now();
+  const name = `@user/preserved-mtime-report-dep-${ts}`;
+  const entry = `
+import { marker } from "./_lib/marker.ts";
+export const report = {
+  name: "${name}",
+  description: "dep-transitive",
+  scope: "method",
+  execute: async (_ctx) => ({ markdown: marker(), json: { marker: marker() } }),
+};
+`;
+  const libV1 = `export const marker = () => "V1_DEP_MARKER";\n`;
+  const libV2 = `export const marker = () => "V2_DEP_MARKER";\n`;
+
+  const repoDir = await Deno.makeTempDir({
+    prefix: "swamp_preserved_mtime_report_dep_repo_",
+  });
+  const reportsDir = await Deno.makeTempDir({
+    prefix: "swamp_preserved_mtime_report_dep_src_",
+  });
+  const dbPath = join(repoDir, ".swamp", "_extension_catalog.db");
+
+  try {
+    await Deno.mkdir(join(reportsDir, "_lib"), { recursive: true });
+    const entryPath = join(reportsDir, "report.ts");
+    const libPath = join(reportsDir, "_lib", "marker.ts");
+    await Deno.writeTextFile(entryPath, entry);
+    await Deno.writeTextFile(libPath, libV1);
+
+    const catalog1 = new ExtensionCatalogStore(dbPath);
+    const loader1 = new UserReportLoader(testDenoRuntime, repoDir);
+    await loader1.buildIndex(reportsDir, catalog1);
+    catalog1.close();
+
+    const ns = bundleNamespace(reportsDir, repoDir);
+    const bundlePath = join(
+      repoDir,
+      ".swamp",
+      "report-bundles",
+      ns,
+      "report.js",
+    );
+    const v1Bundle = await Deno.readTextFile(bundlePath);
+    assertEquals(v1Bundle.includes("V1_DEP_MARKER"), true);
+
+    // Capture both the entry and dep mtimes, edit the dep content, restore
+    // both mtimes so nothing on disk suggests a change except the bytes.
+    const entryMtime = (await Deno.stat(entryPath)).mtime!;
+    const libMtime = (await Deno.stat(libPath)).mtime!;
+
+    await new Promise((r) => setTimeout(r, 1100));
+
+    await Deno.writeTextFile(libPath, libV2);
+    await Deno.utime(libPath, libMtime, libMtime);
+    await Deno.utime(entryPath, entryMtime, entryMtime);
+
+    const catalog2 = new ExtensionCatalogStore(dbPath);
+    const loader2 = new UserReportLoader(testDenoRuntime, repoDir);
+    await loader2.buildIndex(reportsDir, catalog2);
+    catalog2.close();
+
+    const v2Bundle = await Deno.readTextFile(bundlePath);
+    assertNotEquals(
+      v1Bundle,
+      v2Bundle,
+      "Bundle must be regenerated when a transitive dep changes, even with preserved mtimes",
+    );
+    assertEquals(
+      v2Bundle.includes("V2_DEP_MARKER"),
+      true,
+      "V2 dep marker must be present in the regenerated bundle",
+    );
+  } finally {
+    await Deno.remove(repoDir, { recursive: true });
+    await Deno.remove(reportsDir, { recursive: true });
+  }
+});

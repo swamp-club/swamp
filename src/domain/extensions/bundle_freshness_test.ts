@@ -23,6 +23,7 @@ import {
   computeSourceFingerprint,
   findStaleFiles,
   type FreshnessCatalog,
+  type FreshnessKind,
 } from "./bundle_freshness.ts";
 import type { ExtensionTypeRow } from "../../infrastructure/persistence/extension_catalog_store.ts";
 
@@ -35,7 +36,7 @@ class FakeCatalog implements FreshnessCatalog {
     this.rows.push(row);
   }
 
-  findByKind(kind: "model" | "extension"): ExtensionTypeRow[] {
+  findByKind(kind: FreshnessKind): ExtensionTypeRow[] {
     return this.rows.filter((r) => r.kind === kind);
   }
 
@@ -193,6 +194,7 @@ Deno.test("findStaleFiles: empty catalog → every file is stale", async () => {
       modelsDir: dir,
       catalog,
       discoverFiles: discoverTsFiles,
+      kinds: ["model"],
     });
 
     assertEquals(stale.length, 2);
@@ -229,6 +231,7 @@ Deno.test("findStaleFiles: matching fingerprint → not stale", async () => {
       modelsDir: dir,
       catalog,
       discoverFiles: discoverTsFiles,
+      kinds: ["model"],
     });
     assertEquals(stale.length, 0);
   } finally {
@@ -259,6 +262,7 @@ Deno.test("findStaleFiles: mismatching fingerprint → stale", async () => {
       modelsDir: dir,
       catalog,
       discoverFiles: discoverTsFiles,
+      kinds: ["model"],
     });
     assertEquals(stale.length, 1);
     assertEquals(stale[0].relativePath, "a.ts");
@@ -297,6 +301,7 @@ Deno.test("findStaleFiles: catches mtime-preserving content change (#125)", asyn
       modelsDir: dir,
       catalog,
       discoverFiles: discoverTsFiles,
+      kinds: ["model"],
     });
     assertEquals(
       stale.length,
@@ -343,12 +348,113 @@ Deno.test("findStaleFiles: deleted file is removed from catalog", async () => {
       modelsDir: dir,
       catalog,
       discoverFiles: discoverTsFiles,
+      kinds: ["model"],
     });
 
     const remaining = catalog.snapshot().map((r) => r.source_path);
     assertEquals(remaining, [survivor]);
   } finally {
     await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("findStaleFiles: kinds filter scopes both the staleness check and deletion — rows of other kinds in unseen dirs are not touched (#128)", async () => {
+  const driverDir = await Deno.makeTempDir({
+    prefix: "swamp_bf_stale_kinds_driver_",
+  });
+  const vaultDir = await Deno.makeTempDir({
+    prefix: "swamp_bf_stale_kinds_vault_",
+  });
+  try {
+    // Current on-disk: driver dir has one file, vault dir has one file.
+    const driverFile = join(driverDir, "my_driver.ts");
+    const vaultFile = join(vaultDir, "my_vault.ts");
+    await Deno.writeTextFile(driverFile, "export const d = 1;");
+    await Deno.writeTextFile(vaultFile, "export const v = 1;");
+
+    const driverFp = await computeSourceFingerprint(driverFile, driverDir);
+    const vaultFp = await computeSourceFingerprint(vaultFile, vaultDir);
+
+    // Catalog has rows for BOTH kinds, plus a stale driver row whose
+    // source file has been deleted from disk.
+    const catalog = new FakeCatalog();
+    catalog.add({
+      source_path: driverFile,
+      type_normalized: "@user/d",
+      kind: "driver",
+      bundle_path: "/ignored",
+      version: "",
+      description: "",
+      extends_type: "",
+      source_mtime: "",
+      source_fingerprint: driverFp,
+    });
+    catalog.add({
+      source_path: join(driverDir, "gone.ts"),
+      type_normalized: "@user/gone",
+      kind: "driver",
+      bundle_path: "/ignored",
+      version: "",
+      description: "",
+      extends_type: "",
+      source_mtime: "",
+      source_fingerprint: "whatever",
+    });
+    catalog.add({
+      source_path: vaultFile,
+      type_normalized: "@user/v",
+      kind: "vault",
+      bundle_path: "/ignored",
+      version: "",
+      description: "",
+      extends_type: "",
+      source_mtime: "",
+      source_fingerprint: vaultFp,
+    });
+
+    // Scan driver dir with kinds: ["driver"] — only driver rows are
+    // compared, and only driver rows are deleted. The vault row for
+    // a file living outside driverDir must NOT be deleted.
+    const stale = await findStaleFiles({
+      modelsDir: driverDir,
+      catalog,
+      discoverFiles: discoverTsFiles,
+      kinds: ["driver"],
+    });
+
+    assertEquals(
+      stale.length,
+      0,
+      "driver row fingerprint matches — nothing should be stale",
+    );
+
+    const remaining = catalog.snapshot().map((r) => ({
+      path: r.source_path,
+      kind: r.kind,
+    })).sort((a, b) => a.path.localeCompare(b.path));
+
+    // The stale driver row (gone.ts) must be deleted.
+    // The vault row (in a dir outside the scan) must survive — this is
+    // the cross-kind isolation guarantee that lets sibling loaders
+    // share the catalog without stepping on each other.
+    assertEquals(
+      remaining.some((r) => r.kind === "driver" && r.path === driverFile),
+      true,
+      "driver survivor must remain",
+    );
+    assertEquals(
+      remaining.some((r) => r.kind === "driver" && r.path.endsWith("gone.ts")),
+      false,
+      "deleted driver row must be removed",
+    );
+    assertEquals(
+      remaining.some((r) => r.kind === "vault" && r.path === vaultFile),
+      true,
+      "vault row in a dir outside the driver scan must survive — kinds filter must NOT delete rows of other kinds",
+    );
+  } finally {
+    await Deno.remove(driverDir, { recursive: true });
+    await Deno.remove(vaultDir, { recursive: true });
   }
 });
 
@@ -362,6 +468,7 @@ Deno.test("findStaleFiles: missing source dir is silently skipped", async () => 
       modelsDir: dir,
       catalog,
       discoverFiles: discoverTsFiles,
+      kinds: ["model"],
     });
     assertEquals(stale, []);
   } catch (err) {

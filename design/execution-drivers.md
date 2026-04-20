@@ -196,7 +196,10 @@ See `src/domain/drivers/execution_driver.ts` for the full interface.
 externalized, and validates the export against `UserDriverSchema` — requiring
 `type`, `name`, `description`, an optional `configSchema`, and a `createDriver`
 factory function. Files without a `driver` export are silently skipped. Bundles
-are cached in `.swamp/driver-bundles/` with mtime-based invalidation.
+are cached in `.swamp/driver-bundles/` with content-fingerprint invalidation
+(sha-256 over the entry point plus every local `.ts` dep) — mtime-based
+freshness was unreliable under atomic-rename saves, mtime-preserving sync
+tools, and sub-millisecond edits (issue #125).
 
 ### Resolution with Custom Drivers
 
