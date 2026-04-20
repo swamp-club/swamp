@@ -201,11 +201,27 @@ Deno.test("auto_resolver_adapters: hotLoadVaults is a no-op when no pulled vault
   }
 });
 
-// Issue #121 regression tests: the auto-resolver adapter must refuse to
-// silently overwrite on-disk extensions. These tests lock in the behavior
-// that prevents the force-pull data-loss bug from returning.
+// inspectInstallation regression tests. Locks in the tri-state return
+// added for swamp-club#133 (truncated-tree detection) and preserves the
+// #121 coverage that the auto-resolver adapter must refuse to silently
+// overwrite on-disk extensions — intact trees still report back as
+// 'intact' so the resolver emits the "local edits" error instead of
+// reinstalling.
 
-Deno.test("auto_resolver_adapters: isInstalled returns false when lockfile is missing", async () => {
+async function seedPulledTree(
+  repoDir: string,
+  extensionName: string,
+  files: string[],
+): Promise<void> {
+  for (const rel of files) {
+    const absPath = join(repoDir, rel);
+    await ensureDir(join(absPath, ".."));
+    await Deno.writeTextFile(absPath, "// fixture\n");
+  }
+  await ensureDir(join(repoDir, ".swamp/pulled-extensions", extensionName));
+}
+
+Deno.test("auto_resolver_adapters: inspectInstallation returns missing when lockfile is missing", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
   try {
     const lockfilePath = join(
@@ -221,70 +237,19 @@ Deno.test("auto_resolver_adapters: isInstalled returns false when lockfile is mi
       denoRuntime: stubDenoRuntime,
     });
 
-    assertEquals(await adapter.isInstalled("@fake/anything"), false);
+    const result = await adapter.inspectInstallation("@fake/anything");
+    assertEquals(result, { state: "missing" });
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }
 });
 
-Deno.test("auto_resolver_adapters: isInstalled returns false on lockfile/filesystem drift", async () => {
-  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
-  try {
-    // Lockfile lists the extension, but the on-disk directory was
-    // manually removed. Returning true here would make the resolver
-    // surface a confusing "already installed but failed" error when
-    // the files are actually gone — a clean reinstall is correct.
-    const lockfilePath = await seedLockfile(tmpDir, {
-      "@fake/deleted-on-disk": [
-        ".swamp/pulled-extensions/@fake/deleted-on-disk/models/x.ts",
-      ],
-    });
-
-    const adapter = createAutoResolveInstallerAdapter({
-      ...stubCallbacks,
-      lockfilePath,
-      repoDir: tmpDir,
-      denoRuntime: stubDenoRuntime,
-    });
-
-    assertEquals(await adapter.isInstalled("@fake/deleted-on-disk"), false);
-  } finally {
-    await Deno.remove(tmpDir, { recursive: true });
-  }
-});
-
-Deno.test("auto_resolver_adapters: isInstalled returns true when lockfile AND dir both present", async () => {
-  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
-  try {
-    const lockfilePath = await seedLockfile(tmpDir, {
-      "@fake/on-disk": [
-        ".swamp/pulled-extensions/@fake/on-disk/models/x.ts",
-      ],
-    });
-    await ensureDir(
-      join(tmpDir, ".swamp/pulled-extensions/@fake/on-disk"),
-    );
-
-    const adapter = createAutoResolveInstallerAdapter({
-      ...stubCallbacks,
-      lockfilePath,
-      repoDir: tmpDir,
-      denoRuntime: stubDenoRuntime,
-    });
-
-    assertEquals(await adapter.isInstalled("@fake/on-disk"), true);
-  } finally {
-    await Deno.remove(tmpDir, { recursive: true });
-  }
-});
-
-Deno.test("auto_resolver_adapters: isInstalled returns false for extension not in lockfile", async () => {
+Deno.test("auto_resolver_adapters: inspectInstallation returns missing when extension not in lockfile", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
   try {
     const lockfilePath = await seedLockfile(tmpDir, {
       "@fake/other": [".swamp/pulled-extensions/@fake/other/models/x.ts"],
     });
-
     const adapter = createAutoResolveInstallerAdapter({
       ...stubCallbacks,
       lockfilePath,
@@ -292,21 +257,25 @@ Deno.test("auto_resolver_adapters: isInstalled returns false for extension not i
       denoRuntime: stubDenoRuntime,
     });
 
-    assertEquals(await adapter.isInstalled("@fake/not-listed"), false);
+    const result = await adapter.inspectInstallation("@fake/not-listed");
+    assertEquals(result, { state: "missing" });
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }
 });
 
-Deno.test("auto_resolver_adapters: installedPath returns the per-extension root", async () => {
+Deno.test("auto_resolver_adapters: inspectInstallation returns missing when directory is absent", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
   try {
-    const lockfilePath = join(
-      tmpDir,
-      "extensions",
-      "models",
-      "upstream_extensions.json",
-    );
+    // Lockfile lists the extension, but the on-disk directory was
+    // removed. Returning "intact" here would make the resolver surface
+    // a confusing "already installed but failed" error when the files
+    // are actually gone — a clean reinstall is correct.
+    const lockfilePath = await seedLockfile(tmpDir, {
+      "@fake/deleted-on-disk": [
+        ".swamp/pulled-extensions/@fake/deleted-on-disk/models/x.ts",
+      ],
+    });
     const adapter = createAutoResolveInstallerAdapter({
       ...stubCallbacks,
       lockfilePath,
@@ -314,10 +283,131 @@ Deno.test("auto_resolver_adapters: installedPath returns the per-extension root"
       denoRuntime: stubDenoRuntime,
     });
 
-    assertEquals(
-      adapter.installedPath("@fake/ext"),
-      join(tmpDir, ".swamp", "pulled-extensions", "@fake/ext"),
-    );
+    const result = await adapter.inspectInstallation("@fake/deleted-on-disk");
+    assertEquals(result, { state: "missing" });
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("auto_resolver_adapters: inspectInstallation returns intact when every declared file exists", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    const files = [
+      ".swamp/pulled-extensions/@fake/on-disk/models/x.ts",
+      ".swamp/pulled-extensions/@fake/on-disk/models/y.ts",
+      ".swamp/pulled-extensions/@fake/on-disk/manifest.yaml",
+    ];
+    const lockfilePath = await seedLockfile(tmpDir, {
+      "@fake/on-disk": files,
+    });
+    await seedPulledTree(tmpDir, "@fake/on-disk", files);
+
+    const adapter = createAutoResolveInstallerAdapter({
+      ...stubCallbacks,
+      lockfilePath,
+      repoDir: tmpDir,
+      denoRuntime: stubDenoRuntime,
+    });
+
+    const result = await adapter.inspectInstallation("@fake/on-disk");
+    assertEquals(result, {
+      state: "intact",
+      path: join(tmpDir, ".swamp", "pulled-extensions", "@fake/on-disk"),
+    });
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("auto_resolver_adapters: inspectInstallation returns truncated when one declared file is missing", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    const kept = [
+      ".swamp/pulled-extensions/@fake/partial/manifest.yaml",
+      ".swamp/pulled-extensions/@fake/partial/models/x.ts",
+    ];
+    const gone = ".swamp/pulled-extensions/@fake/partial/datastores/s3.ts";
+    const lockfilePath = await seedLockfile(tmpDir, {
+      "@fake/partial": [...kept, gone],
+    });
+    await seedPulledTree(tmpDir, "@fake/partial", kept);
+
+    const adapter = createAutoResolveInstallerAdapter({
+      ...stubCallbacks,
+      lockfilePath,
+      repoDir: tmpDir,
+      denoRuntime: stubDenoRuntime,
+    });
+
+    const result = await adapter.inspectInstallation("@fake/partial");
+    assertEquals(result, {
+      state: "truncated",
+      path: join(tmpDir, ".swamp", "pulled-extensions", "@fake/partial"),
+      missing: [gone],
+    });
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("auto_resolver_adapters: inspectInstallation collects every missing file", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    // Directory exists (so we get past the stat check) but every
+    // declared file is missing. The returned `missing` array must list
+    // all of them, not truncate to the first miss.
+    const declared = [
+      ".swamp/pulled-extensions/@fake/empty/manifest.yaml",
+      ".swamp/pulled-extensions/@fake/empty/models/a.ts",
+      ".swamp/pulled-extensions/@fake/empty/models/b.ts",
+      ".swamp/pulled-extensions/@fake/empty/datastores/s3.ts",
+    ];
+    const lockfilePath = await seedLockfile(tmpDir, {
+      "@fake/empty": declared,
+    });
+    await ensureDir(join(tmpDir, ".swamp/pulled-extensions/@fake/empty"));
+
+    const adapter = createAutoResolveInstallerAdapter({
+      ...stubCallbacks,
+      lockfilePath,
+      repoDir: tmpDir,
+      denoRuntime: stubDenoRuntime,
+    });
+
+    const result = await adapter.inspectInstallation("@fake/empty");
+    assertEquals(result, {
+      state: "truncated",
+      path: join(tmpDir, ".swamp", "pulled-extensions", "@fake/empty"),
+      missing: declared,
+    });
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("auto_resolver_adapters: inspectInstallation returns intact when lockfile entry has no files", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    // Edge case: an extension recorded with an empty file list. Nothing
+    // to verify, so the tree is vacuously intact.
+    const lockfilePath = await seedLockfile(tmpDir, {
+      "@fake/no-files": [],
+    });
+    await ensureDir(join(tmpDir, ".swamp/pulled-extensions/@fake/no-files"));
+
+    const adapter = createAutoResolveInstallerAdapter({
+      ...stubCallbacks,
+      lockfilePath,
+      repoDir: tmpDir,
+      denoRuntime: stubDenoRuntime,
+    });
+
+    const result = await adapter.inspectInstallation("@fake/no-files");
+    assertEquals(result, {
+      state: "intact",
+      path: join(tmpDir, ".swamp", "pulled-extensions", "@fake/no-files"),
+    });
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }

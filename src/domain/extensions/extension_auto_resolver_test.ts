@@ -23,6 +23,7 @@ import {
   ExtensionAutoResolver,
   type ExtensionInstallerPort,
   type ExtensionLookupPort,
+  type InstallationInspection,
   resolveDatastoreType,
   resolveModelType,
   resolveVaultType,
@@ -55,6 +56,11 @@ function createMockOutput(): AutoResolveOutputPort & { calls: string[] } {
     },
     alreadyInstalledButFailed(ext: string, path: string) {
       calls.push(`alreadyInstalledButFailed:${ext}:${path}`);
+    },
+    alreadyInstalledTruncated(ext: string, path: string, missing: string[]) {
+      calls.push(
+        `alreadyInstalledTruncated:${ext}:${path}:${missing.join(",")}`,
+      );
     },
   };
 }
@@ -89,22 +95,19 @@ function createMockLookup(
 function createMockInstaller(
   shouldSucceed = true,
   version = "2026.03.16.1",
-  alreadyInstalled = false,
+  inspection: InstallationInspection = { state: "missing" },
 ): ExtensionInstallerPort & {
   installCalls: string[];
-  isInstalledCalls: string[];
+  inspectCalls: string[];
 } {
   const installCalls: string[] = [];
-  const isInstalledCalls: string[] = [];
+  const inspectCalls: string[] = [];
   return {
     installCalls,
-    isInstalledCalls,
-    isInstalled(extensionName: string) {
-      isInstalledCalls.push(extensionName);
-      return Promise.resolve(alreadyInstalled);
-    },
-    installedPath(extensionName: string) {
-      return `/fake/pulled-extensions/${extensionName}`;
+    inspectCalls,
+    inspectInstallation(extensionName: string) {
+      inspectCalls.push(extensionName);
+      return Promise.resolve(inspection);
     },
     install(extensionName: string) {
       installCalls.push(extensionName);
@@ -316,9 +319,15 @@ Deno.test("ExtensionAutoResolver - handles non-@ prefixed types", async () => {
   assertEquals(installer.installCalls, ["@swamp/echo"]);
 });
 
-Deno.test("ExtensionAutoResolver - refuses to install when extension is already on disk", async () => {
+Deno.test("ExtensionAutoResolver - refuses to install when extension is intact on disk", async () => {
+  // Issue #121 regression guard: intact tree + type failed to register
+  // means local edits are the cause; a silent reinstall would destroy
+  // WIP. Must surface `alreadyInstalledButFailed` and skip install.
   const output = createMockOutput();
-  const installer = createMockInstaller(true, "2026.03.16.1", true);
+  const installer = createMockInstaller(true, "2026.03.16.1", {
+    state: "intact",
+    path: "/fake/pulled-extensions/@swamp/aws",
+  });
   const resolver = new ExtensionAutoResolver({
     allowedCollectives: ["swamp"],
     extensionLookup: createMockLookup({
@@ -333,18 +342,64 @@ Deno.test("ExtensionAutoResolver - refuses to install when extension is already 
 
   const result = await resolver.resolve("@swamp/aws/ec2/instance");
   assertEquals(result, false);
-  // install must not have been called — silent overwrite would destroy edits
   assertEquals(installer.installCalls, []);
-  // isInstalled was asked
-  assertEquals(installer.isInstalledCalls, ["@swamp/aws"]);
-  // user-visible output surfaced the "already installed but failed" event,
-  // not an install-started event
+  assertEquals(installer.inspectCalls, ["@swamp/aws"]);
   const kinds = output.calls.map((c) => c.split(":")[0]);
   assertEquals(kinds.includes("installing"), false);
   assertEquals(kinds.includes("alreadyInstalledButFailed"), true);
+  assertEquals(kinds.includes("alreadyInstalledTruncated"), false);
 });
 
-Deno.test("ExtensionAutoResolver - isInstalled is checked before install on the happy path", async () => {
+Deno.test("ExtensionAutoResolver - surfaces truncated error when tree is incomplete", async () => {
+  // swamp-club#133 regression guard: truncated tree + type failed to
+  // register means files listed in the lockfile are missing from disk.
+  // Must surface `alreadyInstalledTruncated` naming the missing files,
+  // not the generic "local edits" message, and must not reinstall.
+  const output = createMockOutput();
+  const installer = createMockInstaller(true, "2026.03.16.1", {
+    state: "truncated",
+    path: "/fake/pulled-extensions/@swamp/aws",
+    missing: [
+      ".swamp/pulled-extensions/@swamp/aws/manifest.yaml",
+      ".swamp/pulled-extensions/@swamp/aws/datastores/s3.ts",
+    ],
+  });
+  const resolver = new ExtensionAutoResolver({
+    allowedCollectives: ["swamp"],
+    extensionLookup: createMockLookup({
+      "@swamp/aws": {
+        description: "AWS models",
+        latestVersion: "2026.03.16.1",
+      },
+    }),
+    extensionInstaller: installer,
+    output,
+  });
+
+  const result = await resolver.resolve("@swamp/aws/ec2/instance");
+  assertEquals(result, false);
+  assertEquals(installer.installCalls, []);
+  assertEquals(installer.inspectCalls, ["@swamp/aws"]);
+  const truncatedCalls = output.calls.filter((c) =>
+    c.startsWith("alreadyInstalledTruncated:")
+  );
+  assertEquals(truncatedCalls.length, 1);
+  // The event must carry the full missing list, not a truncated prefix.
+  assertEquals(
+    truncatedCalls[0],
+    "alreadyInstalledTruncated:@swamp/aws:/fake/pulled-extensions/@swamp/aws:" +
+      ".swamp/pulled-extensions/@swamp/aws/manifest.yaml," +
+      ".swamp/pulled-extensions/@swamp/aws/datastores/s3.ts",
+  );
+  const kinds = output.calls.map((c) => c.split(":")[0]);
+  assertEquals(kinds.includes("installing"), false);
+  assertEquals(kinds.includes("alreadyInstalledButFailed"), false);
+});
+
+Deno.test("ExtensionAutoResolver - inspectInstallation is consulted before install on the happy path", async () => {
+  // Regression guard for #121: the resolver must consult the inspection
+  // port before proceeding to install. When the tree is missing,
+  // install proceeds normally.
   const output = createMockOutput();
   const installer = createMockInstaller();
   const resolver = new ExtensionAutoResolver({
@@ -360,9 +415,7 @@ Deno.test("ExtensionAutoResolver - isInstalled is checked before install on the 
   });
 
   await resolver.resolve("@swamp/aws/ec2/instance");
-  // isInstalled must be consulted before the install proceeds — this is
-  // the regression guard for issue #121.
-  assertEquals(installer.isInstalledCalls, ["@swamp/aws"]);
+  assertEquals(installer.inspectCalls, ["@swamp/aws"]);
   assertEquals(installer.installCalls, ["@swamp/aws"]);
 });
 

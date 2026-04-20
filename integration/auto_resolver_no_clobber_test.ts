@@ -121,8 +121,8 @@ Deno.test("integration: auto-resolver refuses to overwrite an existing pulled ex
       allowedCollectives: ["test"],
       extensionLookup: {
         getExtension: (name: string) =>
-          adapter.isInstalled(name).then((installed) =>
-            installed
+          adapter.inspectInstallation(name).then((inspection) =>
+            inspection.state !== "missing"
               ? Promise.resolve({
                 name,
                 description: "Test fixture",

@@ -146,6 +146,47 @@ export function renderAutoResolveAlreadyInstalled(
 }
 
 /**
+ * Renders an error when a pulled extension directory is present but
+ * incomplete — one or more files listed in the lockfile are missing on
+ * disk. Distinct from `renderAutoResolveAlreadyInstalled` (intact tree,
+ * user edits): here the tree itself is broken, so re-pulling with
+ * `--force` is the recovery. See swamp-club#133.
+ */
+export function renderAutoResolveTruncated(
+  extension: string,
+  path: string,
+  missing: string[],
+  mode: OutputMode,
+): void {
+  if (mode === "json") {
+    console.log(
+      JSON.stringify({
+        event: "auto_resolve",
+        status: "failed",
+        extension,
+        path,
+        reason: "truncated",
+        missing,
+      }),
+    );
+  } else {
+    const missingCount = missing.length;
+    // Build the full list string before interpolating so logtape quotes
+    // it once rather than quoting preview and suffix separately (which
+    // produces an odd `"a, b", ...` rendering).
+    const list = missing.length > 5
+      ? `${missing.slice(0, 5).join(", ")}, ... and ${missing.length - 5} more`
+      : missing.join(", ");
+    logger
+      .error`Extension ${extension} at ${path} is incomplete — missing ${missingCount} file(s): ${list}.`;
+    logger
+      .error`The pulled tree was partially removed or never fully extracted; it cannot be loaded in this state.`;
+    logger
+      .error`To re-fetch and repair, run: swamp extension pull ${extension} --force`;
+  }
+}
+
+/**
  * Renders an error message when auto-resolution fails due to a network error.
  */
 export function renderAutoResolveNetworkError(

@@ -360,18 +360,40 @@ swamp extension trust auto-trust <on|off> # Enable/disable membership auto-trust
 Auto-resolution will never overwrite an extension that is already installed
 on disk. If the type failed to register despite the extension being present,
 something is wrong locally (commonly a user's in-progress edit introducing
-a syntax error) and a silent force-pull would destroy that work. The
-resolver detects this case by combining two checks: the extension must be
-listed in `upstream_extensions.json` **and** its per-extension directory
-must exist under `.swamp/pulled-extensions/<name>/`. Both must hold for
-the resolver to refuse; if either is missing (e.g. the user removed the
-directory), a clean install proceeds.
+a syntax error) and a silent force-pull would destroy that work.
 
-When the resolver refuses, the user sees the on-disk path and the exact
-command to reset to the registry version:
-`swamp extension pull <name> --force`. That command is the only way
-auto-installation state can overwrite a pulled extension — no other
-auto-resolve, validate, or run command will ever clobber local edits.
+The resolver inspects the pulled tree and classifies it into one of three
+states, driving the auto-resolve decision:
+
+- **Missing** — no entry in `upstream_extensions.json`, or the
+  per-extension directory under `.swamp/pulled-extensions/<name>/` is
+  absent. A clean install proceeds.
+- **Intact** — the lockfile entry exists, the directory exists, and
+  every file the lockfile lists for this extension is present on disk.
+  If the type still failed to register, the cause is local. The resolver
+  surfaces `alreadyInstalledButFailed` with the install path and the
+  `--force` recovery command.
+- **Truncated** — the lockfile entry and directory both exist, but one
+  or more files the lockfile lists are missing from disk
+  (swamp-club#133). This is the "present but incomplete" state that
+  used to produce misleading `Unknown <kind> type` errors downstream.
+  The resolver now surfaces `alreadyInstalledTruncated` naming the
+  missing files, exits with an error, and does **not** attempt to
+  repair. In JSON mode the event shape is:
+  ```json
+  {"event":"auto_resolve","status":"failed","extension":"...","path":"...","reason":"truncated","missing":["..."]}
+  ```
+
+Both "intact-but-fails" and "truncated" surface the same
+`swamp extension pull <name> --force` recovery — that command is the
+only way auto-installation state can overwrite a pulled extension. No
+other auto-resolve, validate, or run command will ever clobber local
+edits or silently re-fetch a broken tree.
+
+The truncation predicate is file-level: any file listed in the lockfile
+entry for an extension that cannot be stat'd on disk. The check stops
+at presence — it does not verify file contents, only that the paths the
+lockfile says should exist actually do.
 
 ### Hot-Loading
 

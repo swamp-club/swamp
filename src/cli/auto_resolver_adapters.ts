@@ -24,9 +24,11 @@ import {
 } from "../infrastructure/persistence/paths.ts";
 import { readUpstreamExtensions } from "../infrastructure/persistence/upstream_extensions.ts";
 import type { DenoRuntime } from "../domain/runtime/deno_runtime.ts";
+import { join } from "@std/path";
 import type {
   AutoResolveOutputPort,
   ExtensionInstallerPort,
+  InstallationInspection,
 } from "../domain/extensions/extension_auto_resolver.ts";
 import {
   ConflictError,
@@ -48,6 +50,7 @@ import {
   renderAutoResolveNetworkError,
   renderAutoResolveNotFound,
   renderAutoResolveSearching,
+  renderAutoResolveTruncated,
 } from "../presentation/renderers/extension_auto_resolve.ts";
 
 const logger = getLogger(["swamp", "extensions", "auto-resolver"]);
@@ -88,37 +91,62 @@ export function createAutoResolveInstallerAdapter(
   } = config;
 
   return {
-    async isInstalled(extensionName: string) {
-      // Dual check: lockfile entry AND per-extension directory present on
-      // disk. Lockfile-only would miss the drift case where the user
-      // `rm -rf`'d the pulled dir; fs-only would miss the fact that a
-      // pre-existing directory could belong to a different extension.
-      // Both must hold for the service's "never overwrite" policy to
-      // apply — otherwise a clean install should proceed.
+    async inspectInstallation(
+      extensionName: string,
+    ): Promise<InstallationInspection> {
+      // Tri-state inspection: missing / intact / truncated.
+      //
+      // The lockfile is the source of truth for "which files should be
+      // present". `installExtension` writes the lockfile entry in lockstep
+      // with the file copy at the end of install, so the two stay
+      // paired — if they drift, that's a bug in install, not here.
+      //
+      // - missing: no lockfile entry, or the per-extension directory is
+      //   absent. A clean install should proceed.
+      // - truncated: lockfile + directory both present, but one or more
+      //   listed files are absent on disk (swamp-club#133). The tree is
+      //   broken; surface a distinct error with `--force` recovery.
+      // - intact: everything lined up. If the type still failed to
+      //   register, the cause is local (user edits) — issue #121's
+      //   "never overwrite" guard applies.
       const upstream = await readUpstreamExtensions(lockfilePath);
-      if (!upstream[extensionName]) return false;
+      const entry = upstream[extensionName];
+      if (!entry) return { state: "missing" };
+      const path = swampPath(repoDir, "pulled-extensions", extensionName);
       try {
-        const stat = await Deno.stat(
-          swampPath(repoDir, "pulled-extensions", extensionName),
-        );
-        return stat.isDirectory;
+        const stat = await Deno.stat(path);
+        if (!stat.isDirectory) return { state: "missing" };
       } catch {
-        return false;
+        return { state: "missing" };
       }
-    },
-
-    installedPath(extensionName: string) {
-      return swampPath(repoDir, "pulled-extensions", extensionName);
+      // Pre-anchor lockfile entries (grandfather path in
+      // UpstreamExtensionEntry) may omit `files`. Treat an absent or
+      // empty list as vacuously intact — there's nothing the lockfile
+      // claims should be on disk, so we can't detect truncation.
+      const files = entry.files ?? [];
+      const missing: string[] = [];
+      for (const relPath of files) {
+        try {
+          await Deno.stat(join(repoDir, relPath));
+        } catch {
+          missing.push(relPath);
+        }
+      }
+      if (missing.length > 0) {
+        return { state: "truncated", path, missing };
+      }
+      return { state: "intact", path };
     },
 
     async install(extensionName: string) {
       // force: false so installExtension raises ConflictError rather than
       // silently overwriting any existing files. The service's
-      // isInstalled check normally prevents reaching this point when the
-      // extension is already on disk; the ConflictError catch below is
-      // defence-in-depth for races between isInstalled and install that
-      // the per-type re-entrancy guard in the resolver cannot cover
-      // (e.g. two types resolving the same extension concurrently).
+      // inspectInstallation check normally prevents reaching this point
+      // when the extension is already on disk (intact or truncated); the
+      // ConflictError catch below is defence-in-depth for races between
+      // inspect and install that the per-type re-entrancy guard in the
+      // resolver cannot cover (e.g. two types resolving the same
+      // extension concurrently).
       try {
         const result = await installExtension(
           { name: extensionName, version: null },
@@ -258,6 +286,13 @@ export function createAutoResolveOutputAdapter(
     },
     alreadyInstalledButFailed(extension: string, path: string) {
       renderAutoResolveAlreadyInstalled(extension, path, mode);
+    },
+    alreadyInstalledTruncated(
+      extension: string,
+      path: string,
+      missing: string[],
+    ) {
+      renderAutoResolveTruncated(extension, path, missing, mode);
     },
   };
 }

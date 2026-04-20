@@ -62,23 +62,42 @@ export interface ExtensionInstallResultInfo {
 }
 
 /**
+ * Tri-state result describing the on-disk state of a pulled extension.
+ *
+ * - `missing`: no lockfile entry, or the per-extension directory does
+ *   not exist. The auto-resolver should proceed to install.
+ * - `intact`: lockfile entry exists, the directory exists, and every
+ *   file listed in the lockfile is present on disk. If the type still
+ *   failed to register, the cause is local (e.g. user edits with a
+ *   syntax error) — see `AutoResolveOutputPort.alreadyInstalledButFailed`.
+ * - `truncated`: lockfile entry + directory both exist, but one or more
+ *   files the lockfile lists are absent from disk. This is the
+ *   "present but incomplete" state that looks installed to a directory
+ *   stat but produces `Unknown <kind> type` errors downstream. See
+ *   swamp-club#133.
+ */
+export type InstallationInspection =
+  | { state: "missing" }
+  | { state: "intact"; path: string }
+  | { state: "truncated"; path: string; missing: string[] };
+
+/**
  * Port: interface for installing extensions and hot-loading them.
  * Decouples the domain service from the CLI install infrastructure.
  */
 export interface ExtensionInstallerPort {
   /**
-   * Returns true when the extension is already present on disk. The domain
-   * service uses this to refuse silent re-installs that would overwrite
-   * local edits (issue #121).
-   */
-  isInstalled(extensionName: string): Promise<boolean>;
-  /**
-   * Returns the absolute path where the extension is (or would be)
-   * installed on disk. Paired with `isInstalled` so the domain service
-   * can surface the path in error messages without reaching into
+   * Inspects the on-disk state of a pulled extension. The domain
+   * service uses the tri-state return to pick the right branch:
+   * install (missing), surface the "local edits" error (intact), or
+   * surface the "truncated tree" error (truncated). Carries the
+   * install path on the non-missing variants so the domain service
+   * can include it in error output without reaching into
    * infrastructure.
    */
-  installedPath(extensionName: string): string;
+  inspectInstallation(
+    extensionName: string,
+  ): Promise<InstallationInspection>;
   install(extensionName: string): Promise<ExtensionInstallResultInfo | null>;
   hotLoadModels(): Promise<number>;
   hotLoadVaults(): Promise<void>;
@@ -106,6 +125,19 @@ export interface AutoResolveOutputPort {
    * opt-in command to reset to the registry version.
    */
   alreadyInstalledButFailed(extension: string, path: string): void;
+  /**
+   * Emitted when auto-resolution finds a pulled extension directory
+   * that is incomplete — the lockfile says certain files should be
+   * present but they are missing on disk. Distinct from
+   * `alreadyInstalledButFailed` (which covers intact-but-fails-to-load):
+   * here the tree itself is broken, so the user needs to re-pull with
+   * `--force` to repair. See swamp-club#133.
+   */
+  alreadyInstalledTruncated(
+    extension: string,
+    path: string,
+    missing: string[],
+  ): void;
 }
 
 /**
@@ -320,18 +352,28 @@ export class ExtensionAutoResolver {
     const version = extInfo.latestVersion;
     if (!version) return false;
 
-    // Issue #121: refuse to re-install an extension that already exists
-    // on disk. The type failing to register here means something is
-    // broken locally (e.g. user edits introduced a syntax error); a
-    // silent force-pull would overwrite those edits and destroy WIP.
-    // Surface an actionable error and let the user decide.
-    if (await extensionInstaller.isInstalled(extensionName)) {
-      output.alreadyInstalledButFailed(
+    // Inspect the on-disk state before deciding to install. Issue #121
+    // introduced the "never overwrite on-disk extensions without --force"
+    // rule to protect user WIP; swamp-club#133 extended that rule to
+    // cover the truncated case (present but incomplete) with a distinct
+    // error because the misleading "Unknown <kind> type" fallback was
+    // hiding the real cause.
+    const inspection = await extensionInstaller.inspectInstallation(
+      extensionName,
+    );
+    if (inspection.state === "intact") {
+      output.alreadyInstalledButFailed(extensionName, inspection.path);
+      return false;
+    }
+    if (inspection.state === "truncated") {
+      output.alreadyInstalledTruncated(
         extensionName,
-        extensionInstaller.installedPath(extensionName),
+        inspection.path,
+        inspection.missing,
       );
       return false;
     }
+    // inspection.state === "missing" — proceed to install.
 
     output.installing(extensionName, version, extInfo.description);
 
