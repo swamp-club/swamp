@@ -297,9 +297,10 @@ export class ExtensionApiClient {
     apiKey?: string,
   ): Promise<string | null> {
     const encodedName = encodeURIComponent(name);
+    const encodedVersion = encodeURIComponent(version);
     const headers = apiKey ? this.authHeaders(apiKey) : {};
     const res = await this.fetch(
-      `/api/v1/extensions/${encodedName}@${version}/download`,
+      `/api/v1/extensions/${encodedName}@${encodedVersion}/download`,
       {
         method: "GET",
         redirect: "manual",
@@ -366,8 +367,9 @@ export class ExtensionApiClient {
     version: string,
   ): Promise<string | null> {
     const encodedName = encodeURIComponent(name);
+    const encodedVersion = encodeURIComponent(version);
     const res = await this.fetch(
-      `/api/v1/extensions/${encodedName}@${version}/checksum`,
+      `/api/v1/extensions/${encodedName}@${encodedVersion}/checksum`,
       {
         method: "GET",
       },

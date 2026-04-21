@@ -484,13 +484,25 @@ Deno.test("ExtensionApiClient.unyankExtension throws UserError on connection fai
   assertStringIncludes(error.message, "Could not connect");
 });
 
-Deno.test("ExtensionApiClient yank/unyank URL-encode version path segments", async () => {
-  let capturedYankUrl = "";
-  let capturedUnyankUrl = "";
+Deno.test("ExtensionApiClient version-scoped methods URL-encode version path segments", async () => {
+  const captured: Record<string, string> = {};
   const server = Deno.serve({ port: 0, onListen: () => {} }, (req) => {
     const url = new URL(req.url);
-    if (url.pathname.endsWith("/yank")) capturedYankUrl = req.url;
-    if (url.pathname.endsWith("/unyank")) capturedUnyankUrl = req.url;
+    if (url.pathname.endsWith("/yank")) captured.yank = req.url;
+    else if (url.pathname.endsWith("/unyank")) captured.unyank = req.url;
+    else if (url.pathname.endsWith("/download")) {
+      captured.download = req.url;
+      return new Response(null, {
+        status: 302,
+        headers: { location: "https://example.com/archive.tar.gz" },
+      });
+    } else if (url.pathname.endsWith("/checksum")) {
+      captured.checksum = req.url;
+      return new Response(
+        JSON.stringify({ checksum: "abc123" }),
+        { headers: { "content-type": "application/json" } },
+      );
+    }
     return new Response(
       JSON.stringify({ message: "ok" }),
       { headers: { "content-type": "application/json" } },
@@ -502,25 +514,32 @@ Deno.test("ExtensionApiClient yank/unyank URL-encode version path segments", asy
   // A version containing characters that would corrupt the URL if spliced raw:
   // `?` would start a query string, `#` would truncate the path, `/` would
   // create an extra path segment. Real CalVer inputs never contain these, but
-  // the adapter must encode defensively.
+  // every adapter that accepts a version must encode defensively.
   const hostileVersion = "2026.02.26.1?foo#bar/baz";
   const encoded = encodeURIComponent(hostileVersion);
+  const expectedBase = `/api/v1/extensions/%40test%2Fext@${encoded}`;
 
-  await client.yankExtension("@test/ext", hostileVersion, "reason", "key");
-  const yankUrl = new URL(capturedYankUrl);
-  assertEquals(
-    yankUrl.pathname,
-    `/api/v1/extensions/%40test%2Fext@${encoded}/yank`,
-  );
-  assertEquals(yankUrl.search, "");
+  try {
+    await client.yankExtension("@test/ext", hostileVersion, "reason", "key");
+    const yankUrl = new URL(captured.yank);
+    assertEquals(yankUrl.pathname, `${expectedBase}/yank`);
+    assertEquals(yankUrl.search, "");
 
-  await client.unyankExtension("@test/ext", hostileVersion, null, "key");
-  const unyankUrl = new URL(capturedUnyankUrl);
-  assertEquals(
-    unyankUrl.pathname,
-    `/api/v1/extensions/%40test%2Fext@${encoded}/unyank`,
-  );
-  assertEquals(unyankUrl.search, "");
+    await client.unyankExtension("@test/ext", hostileVersion, null, "key");
+    const unyankUrl = new URL(captured.unyank);
+    assertEquals(unyankUrl.pathname, `${expectedBase}/unyank`);
+    assertEquals(unyankUrl.search, "");
 
-  await server.shutdown();
+    await client.getDownloadUrl("@test/ext", hostileVersion, "key");
+    const downloadUrl = new URL(captured.download);
+    assertEquals(downloadUrl.pathname, `${expectedBase}/download`);
+    assertEquals(downloadUrl.search, "");
+
+    await client.getChecksum("@test/ext", hostileVersion);
+    const checksumUrl = new URL(captured.checksum);
+    assertEquals(checksumUrl.pathname, `${expectedBase}/checksum`);
+    assertEquals(checksumUrl.search, "");
+  } finally {
+    await server.shutdown();
+  }
 });
