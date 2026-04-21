@@ -37,7 +37,9 @@ class LogExtensionUnyankRenderer implements Renderer<ExtensionUnyankEvent> {
             version: e.data.version,
           });
         } else {
-          logger.info("Unyanked {name}", { name: e.data.name });
+          logger.info("Unyanked {name} (all versions)", {
+            name: e.data.name,
+          });
         }
         if (e.data.reason !== null) {
           logger.info("Reason: {reason}", { reason: e.data.reason });

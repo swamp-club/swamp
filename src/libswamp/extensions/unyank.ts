@@ -27,7 +27,13 @@ import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 const SCOPED_NAME_PATTERN = /^@[a-z0-9_-]+\/[a-z0-9_-]+(\/[a-z0-9_-]+)*$/;
 const DEFAULT_SERVER_URL = "https://swamp.club";
 
-/** Data structure for the extension unyank output. */
+/**
+ * Data structure for the extension unyank output.
+ *
+ * Note: `reason` is nullable (unlike the yank equivalent where reason is
+ * required). The unyank endpoint accepts an empty body, so callers may omit
+ * a reason. JSON consumers should handle `reason: null` explicitly.
+ */
 export interface ExtensionUnyankData {
   name: string;
   version: string | null;
