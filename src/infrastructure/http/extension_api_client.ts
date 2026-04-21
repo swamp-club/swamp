@@ -104,7 +104,13 @@ export interface YankResult {
   message: string;
 }
 
-/** Response from the unyank endpoint. */
+/**
+ * Response from the unyank endpoint.
+ *
+ * Note: unyank accepts an optional reason (unlike yank, where reason is
+ * required). Callers passing `null` for reason send an empty POST body; the
+ * server logs the unyank without a reason and still returns a message.
+ */
 export interface UnyankResult {
   message: string;
 }
@@ -388,8 +394,11 @@ export class ExtensionApiClient {
     apiKey: string,
   ): Promise<YankResult> {
     const encodedName = encodeURIComponent(name);
-    const path = version
-      ? `/api/v1/extensions/${encodedName}@${version}/yank`
+    const encodedVersion = version === null
+      ? null
+      : encodeURIComponent(version);
+    const path = encodedVersion
+      ? `/api/v1/extensions/${encodedName}@${encodedVersion}/yank`
       : `/api/v1/extensions/${encodedName}/yank`;
     const res = await this.fetch(path, {
       method: "POST",
@@ -416,8 +425,11 @@ export class ExtensionApiClient {
     apiKey: string,
   ): Promise<UnyankResult> {
     const encodedName = encodeURIComponent(name);
-    const path = version
-      ? `/api/v1/extensions/${encodedName}@${version}/unyank`
+    const encodedVersion = version === null
+      ? null
+      : encodeURIComponent(version);
+    const path = encodedVersion
+      ? `/api/v1/extensions/${encodedName}@${encodedVersion}/unyank`
       : `/api/v1/extensions/${encodedName}/unyank`;
 
     const init: RequestInit = reason === null

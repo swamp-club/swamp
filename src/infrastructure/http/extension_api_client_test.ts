@@ -483,3 +483,44 @@ Deno.test("ExtensionApiClient.unyankExtension throws UserError on connection fai
   );
   assertStringIncludes(error.message, "Could not connect");
 });
+
+Deno.test("ExtensionApiClient yank/unyank URL-encode version path segments", async () => {
+  let capturedYankUrl = "";
+  let capturedUnyankUrl = "";
+  const server = Deno.serve({ port: 0, onListen: () => {} }, (req) => {
+    const url = new URL(req.url);
+    if (url.pathname.endsWith("/yank")) capturedYankUrl = req.url;
+    if (url.pathname.endsWith("/unyank")) capturedUnyankUrl = req.url;
+    return new Response(
+      JSON.stringify({ message: "ok" }),
+      { headers: { "content-type": "application/json" } },
+    );
+  });
+  const addr = server.addr;
+  const client = new ExtensionApiClient(`http://localhost:${addr.port}`);
+
+  // A version containing characters that would corrupt the URL if spliced raw:
+  // `?` would start a query string, `#` would truncate the path, `/` would
+  // create an extra path segment. Real CalVer inputs never contain these, but
+  // the adapter must encode defensively.
+  const hostileVersion = "2026.02.26.1?foo#bar/baz";
+  const encoded = encodeURIComponent(hostileVersion);
+
+  await client.yankExtension("@test/ext", hostileVersion, "reason", "key");
+  const yankUrl = new URL(capturedYankUrl);
+  assertEquals(
+    yankUrl.pathname,
+    `/api/v1/extensions/%40test%2Fext@${encoded}/yank`,
+  );
+  assertEquals(yankUrl.search, "");
+
+  await client.unyankExtension("@test/ext", hostileVersion, null, "key");
+  const unyankUrl = new URL(capturedUnyankUrl);
+  assertEquals(
+    unyankUrl.pathname,
+    `/api/v1/extensions/%40test%2Fext@${encoded}/unyank`,
+  );
+  assertEquals(unyankUrl.search, "");
+
+  await server.shutdown();
+});
