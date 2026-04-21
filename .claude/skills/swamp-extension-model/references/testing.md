@@ -5,6 +5,10 @@ unit testing extension model `execute` functions without real infrastructure.
 
 Install: `deno add jsr:@systeminit/swamp-testing`
 
+> **If your `_test.ts` imports the model source directly and fails with TS7006
+> under strict mode**, see [typing.md](typing.md) for the
+> `satisfies ModelDefinition<...>` escape hatch.
+
 ## createModelTestContext Options
 
 | Option            | Default             | Description                               |

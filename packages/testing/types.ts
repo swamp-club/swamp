@@ -137,14 +137,19 @@ export interface MethodExecutionEvent {
  *
  * This is the extension-author-facing subset of swamp's internal MethodContext.
  * It contains only the fields that extension models typically interact with.
+ *
+ * `TGlobalArgs` lets authoring-time type inference narrow `globalArgs` to the
+ * model's inferred global-arguments schema. The default keeps bare
+ * `MethodContext` usages (including `createModelTestContext`) backward
+ * compatible with the pre-parameterised shape.
  */
-export interface MethodContext {
+export interface MethodContext<TGlobalArgs = Record<string, unknown>> {
   /** Cancellation signal for async operations. */
   signal: AbortSignal;
   /** The base directory for the repository. */
   repoDir: string;
   /** Pre-validated global arguments from the definition. */
-  globalArgs: Record<string, unknown>;
+  globalArgs: TGlobalArgs;
   /** Definition metadata for the current execution. */
   definition: DefinitionInfo;
   /** The name of the method being executed. */

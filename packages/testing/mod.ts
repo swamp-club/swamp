@@ -55,6 +55,25 @@ export type {
   OwnerDefinition,
 } from "./types.ts";
 
+// --- Model authoring (escape hatch for strict-mode extensions) ---
+//
+// These types let extension authors resolve TS7006 (implicit any on
+// execute parameters) when a test file imports the sibling model source
+// under strict mode. See the `swamp-extension-model` skill's
+// `references/typing.md` for the full rationale and worked example.
+
+export { defineModel } from "./model_definition_types.ts";
+
+export type {
+  CheckDefinition,
+  CheckResult,
+  FileOutputSpec,
+  MethodDefinition,
+  ModelDefinition,
+  ResourceOutputSpec,
+  VersionUpgrade,
+} from "./model_definition_types.ts";
+
 // --- Vaults ---
 
 export { createVaultTestContext } from "./vault_test_context.ts";

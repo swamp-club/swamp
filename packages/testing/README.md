@@ -212,6 +212,43 @@ Deno.test("report generates markdown", async () => {
 | `definitions`   | `[]`                | Pre-seed definitions                   |
 | `repoDir`       | `"/tmp/swamp-test"` | Repository directory path              |
 
+## Model authoring escape hatch
+
+In addition to test utilities, this package exports `ModelDefinition` (and
+`defineModel`) for extension authors who hit `TS7006` — implicit-`any` errors on
+`execute` parameters — when a sibling `_test.ts` file imports the model source
+under strict mode. The escape hatch is a one-line wrap of the model literal:
+
+```typescript
+import { z } from "npm:zod@4";
+import type { ModelDefinition } from "jsr:@systeminit/swamp-testing";
+
+const GlobalArgsSchema = z.object({ region: z.string() });
+
+export const model = {
+  type: "@myorg/my-model",
+  version: "2026.04.21.1",
+  globalArguments: GlobalArgsSchema,
+  methods: {
+    run: {
+      description: "Run the model",
+      arguments: z.object({ bucket: z.string() }),
+      execute: async (_args, context) => {
+        // context.globalArgs narrows to { region: string }
+        return { dataHandles: [] };
+      },
+    },
+  },
+} satisfies ModelDefinition<typeof GlobalArgsSchema>;
+```
+
+No change is required for models whose tests don't import the source — the
+unannotated default form in the swamp-extension-model skill still applies. See
+the
+[`references/typing.md`](https://github.com/systeminit/swamp/blob/main/.claude/skills/swamp-extension-model/references/typing.md)
+guide in the swamp-extension-model skill for the full rationale, worked example,
+and the `defineModel` function-form alternative.
+
 ## License
 
 AGPL-3.0-only — see
