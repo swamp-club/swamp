@@ -350,3 +350,136 @@ Deno.test("ExtensionApiClient.yankExtension throws UserError on connection failu
   );
   assertStringIncludes(error.message, "Could not connect");
 });
+
+Deno.test("ExtensionApiClient.unyankExtension sends POST with reason to version unyank endpoint", async () => {
+  let capturedUrl = "";
+  let capturedMethod = "";
+  let capturedBody = "";
+  let capturedAuth = "";
+  let capturedContentType = "";
+  const server = Deno.serve({ port: 0, onListen: () => {} }, async (req) => {
+    capturedUrl = req.url;
+    capturedMethod = req.method;
+    capturedAuth = req.headers.get("x-api-key") ?? "";
+    capturedContentType = req.headers.get("content-type") ?? "";
+    capturedBody = await req.text();
+    return new Response(
+      JSON.stringify({ message: "Unyanked @test/ext@2026.02.26.1" }),
+      { headers: { "content-type": "application/json" } },
+    );
+  });
+  const addr = server.addr;
+  const client = new ExtensionApiClient(`http://localhost:${addr.port}`);
+  const result = await client.unyankExtension(
+    "@test/ext",
+    "2026.02.26.1",
+    "Mistake yank",
+    "swamp_fake-key",
+  );
+  const url = new URL(capturedUrl);
+  assertEquals(capturedMethod, "POST");
+  assertEquals(
+    url.pathname,
+    "/api/v1/extensions/%40test%2Fext@2026.02.26.1/unyank",
+  );
+  assertEquals(capturedAuth, "swamp_fake-key");
+  assertEquals(capturedContentType, "application/json");
+  assertEquals(JSON.parse(capturedBody).reason, "Mistake yank");
+  assertStringIncludes(result.message, "Unyanked");
+  await server.shutdown();
+});
+
+Deno.test("ExtensionApiClient.unyankExtension sends POST to extension unyank endpoint when no version", async () => {
+  let capturedUrl = "";
+  const server = Deno.serve({ port: 0, onListen: () => {} }, (_req) => {
+    capturedUrl = _req.url;
+    return new Response(
+      JSON.stringify({ message: "Unyanked @test/ext" }),
+      { headers: { "content-type": "application/json" } },
+    );
+  });
+  const addr = server.addr;
+  const client = new ExtensionApiClient(`http://localhost:${addr.port}`);
+  await client.unyankExtension(
+    "@test/ext",
+    null,
+    "restoring name",
+    "swamp_fake-key",
+  );
+  const url = new URL(capturedUrl);
+  assertEquals(url.pathname, "/api/v1/extensions/%40test%2Fext/unyank");
+  await server.shutdown();
+});
+
+Deno.test("ExtensionApiClient.unyankExtension sends POST with no body and no Content-Type when reason is null", async () => {
+  let capturedBody = "";
+  let capturedContentType: string | null = "";
+  const server = Deno.serve({ port: 0, onListen: () => {} }, async (req) => {
+    capturedContentType = req.headers.get("content-type");
+    capturedBody = await req.text();
+    return new Response(
+      JSON.stringify({ message: "Unyanked @test/ext" }),
+      { headers: { "content-type": "application/json" } },
+    );
+  });
+  const addr = server.addr;
+  const client = new ExtensionApiClient(`http://localhost:${addr.port}`);
+  await client.unyankExtension(
+    "@test/ext",
+    null,
+    null,
+    "swamp_fake-key",
+  );
+  assertEquals(capturedBody, "");
+  assertEquals(capturedContentType, null);
+  await server.shutdown();
+});
+
+Deno.test("ExtensionApiClient.unyankExtension throws UserError on 409 not yanked", async () => {
+  const server = Deno.serve({ port: 0, onListen: () => {} }, (_req) => {
+    return new Response(
+      JSON.stringify({ error: "'@test/ext' is not yanked" }),
+      { status: 409, headers: { "content-type": "application/json" } },
+    );
+  });
+  const addr = server.addr;
+  const client = new ExtensionApiClient(`http://localhost:${addr.port}`);
+  const error = await assertRejects(
+    () => client.unyankExtension("@test/ext", null, null, "swamp_fake-key"),
+    UserError,
+  );
+  assertStringIncludes(error.message, "not yanked");
+  await server.shutdown();
+});
+
+Deno.test("ExtensionApiClient.unyankExtension throws UserError on 404 not found", async () => {
+  const server = Deno.serve({ port: 0, onListen: () => {} }, (_req) => {
+    return new Response(
+      JSON.stringify({ error: "Extension '@test/ext' not found" }),
+      { status: 404, headers: { "content-type": "application/json" } },
+    );
+  });
+  const addr = server.addr;
+  const client = new ExtensionApiClient(`http://localhost:${addr.port}`);
+  const error = await assertRejects(
+    () => client.unyankExtension("@test/ext", null, null, "swamp_fake-key"),
+    UserError,
+  );
+  assertStringIncludes(error.message, "not found");
+  await server.shutdown();
+});
+
+Deno.test("ExtensionApiClient.unyankExtension throws UserError on connection failure", async () => {
+  const client = new ExtensionApiClient("http://localhost:1");
+  const error = await assertRejects(
+    () =>
+      client.unyankExtension(
+        "@test/ext",
+        "2026.02.26.1",
+        "reason",
+        "fake-key",
+      ),
+    UserError,
+  );
+  assertStringIncludes(error.message, "Could not connect");
+});

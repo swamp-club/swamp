@@ -549,6 +549,16 @@ export {
   extensionYankPreview,
 } from "./extensions/yank.ts";
 export {
+  createExtensionUnyankDeps,
+  extensionUnyank,
+  type ExtensionUnyankData,
+  type ExtensionUnyankDeps,
+  type ExtensionUnyankEvent,
+  type ExtensionUnyankInput,
+  type ExtensionUnyankPreview,
+  extensionUnyankPreview,
+} from "./extensions/unyank.ts";
+export {
   createExtensionUpdateDeps,
   extensionUpdate,
   type ExtensionUpdateDeps,

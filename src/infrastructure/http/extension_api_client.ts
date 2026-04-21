@@ -104,6 +104,11 @@ export interface YankResult {
   message: string;
 }
 
+/** Response from the unyank endpoint. */
+export interface UnyankResult {
+  message: string;
+}
+
 /**
  * HTTP client for the swamp-club extension registry API.
  *
@@ -395,6 +400,38 @@ export class ExtensionApiClient {
       body: JSON.stringify({ reason }),
     });
 
+    await this.checkResponse(res);
+    return await res.json();
+  }
+
+  /**
+   * Unyank an extension or a specific version, restoring availability.
+   * When reason is null, the request is sent with no body — the server
+   * accepts an empty POST and logs the unyank without a reason.
+   */
+  async unyankExtension(
+    name: string,
+    version: string | null,
+    reason: string | null,
+    apiKey: string,
+  ): Promise<UnyankResult> {
+    const encodedName = encodeURIComponent(name);
+    const path = version
+      ? `/api/v1/extensions/${encodedName}@${version}/unyank`
+      : `/api/v1/extensions/${encodedName}/unyank`;
+
+    const init: RequestInit = reason === null
+      ? { method: "POST", headers: this.authHeaders(apiKey) }
+      : {
+        method: "POST",
+        headers: {
+          ...this.authHeaders(apiKey),
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ reason }),
+      };
+
+    const res = await this.fetch(path, init);
     await this.checkResponse(res);
     return await res.json();
   }

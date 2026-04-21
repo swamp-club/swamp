@@ -52,13 +52,15 @@ async function promptConfirmation(message: string): Promise<boolean> {
 
 export const extensionYankCommand = new Command()
   .name("yank")
-  .description("Yank an extension or specific version from the registry")
+  .description(
+    "Yank an extension or specific version from the registry. Use `swamp extension unyank` to reverse.",
+  )
   .example(
-    "Yank all versions",
+    "Yank every version (blocks all future pushes until unyanked)",
     `swamp extension yank @stack72/aws-ec2 --reason "security issue"`,
   )
   .example(
-    "Yank specific version",
+    "Yank one version (future versions can still be pushed)",
     `swamp extension yank @stack72/aws-ec2 2026.3.1 --reason "broken release"`,
   )
   .arguments("<extension:string> [version:string]")
@@ -100,12 +102,10 @@ export const extensionYankCommand = new Command()
 
     // Phase 2: Confirmation prompt (log mode only, unless --yes)
     if (cliCtx.outputMode === "log" && !options.yes) {
-      const target = preview.version
-        ? `${preview.extensionName}@${preview.version}`
-        : `${preview.extensionName} (all versions)`;
-      const confirmed = await promptConfirmation(
-        `Yank ${target}? This will remove it from the registry.`,
-      );
+      const prompt = preview.version
+        ? `Yank ${preview.extensionName}@${preview.version}? This will mark it yanked.`
+        : `Yank ALL versions of ${preview.extensionName}? Future pushes will be blocked until you run \`swamp extension unyank\`.`;
+      const confirmed = await promptConfirmation(prompt);
       if (!confirmed) {
         renderExtensionYankCancelled(cliCtx.outputMode);
         return;
