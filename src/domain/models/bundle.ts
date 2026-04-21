@@ -170,26 +170,36 @@ export interface BundleOptions {
 /**
  * Checks whether a TypeScript source file contains bare specifier imports
  * (e.g., `from "zod"`, `from "@aws-sdk/..."`) that require a deno.json
- * import map to resolve. Returns true if any non-relative, non-npm: import
- * is found.
+ * import map to resolve. Returns true if any bare specifier is found.
+ *
+ * The bundler recognizes these import kinds; all but "bare" reach
+ * `deno bundle` unchanged and are resolved by it without an import map:
+ *
+ * - relative (`./foo`, `../bar`) — resolved by path
+ * - npm: (`npm:zod@4`) — non-local, resolved and inlined by deno bundle
+ * - jsr: (`jsr:@std/assert@1`) — non-local, resolved and inlined by deno bundle
+ * - https: (`https://deno.land/std/...`) — non-local, resolved and inlined by deno bundle
+ * - node: (`node:fs`) — built-in, passed through unchanged
+ * - bare (`zod`, `@aws-sdk/...`) — requires a deno.json or package.json to resolve
  *
  * Used by runtime loaders to determine whether a cached bundle should be
- * preferred over re-bundling when no deno.json is available.
+ * preferred over re-bundling when no deno.json is available (pulled
+ * extensions with bare specifiers would always fail to rebundle locally).
  */
 export function sourceHasBareSpecifiers(source: string): boolean {
-  // Match import/export from statements with non-relative, non-npm: specifiers
   const importPattern = /(?:import|export)\s+[\s\S]*?from\s+["']([^"']+)["']/g;
   for (const match of source.matchAll(importPattern)) {
     const specifier = match[1];
-    // Skip relative imports (./foo, ../bar)
+    // Relative imports resolve by path — not bare.
     if (specifier.startsWith(".")) continue;
-    // Skip npm: prefixed imports (these resolve without an import map)
+    // Non-local specifiers resolve without an import map — not bare.
     if (specifier.startsWith("npm:")) continue;
-    // Skip jsr: prefixed imports
     if (specifier.startsWith("jsr:")) continue;
-    // Skip node: built-ins
+    if (specifier.startsWith("https:")) continue;
+    if (specifier.startsWith("http:")) continue;
+    // Node built-ins pass through unchanged — not bare.
     if (specifier.startsWith("node:")) continue;
-    // Anything else is a bare specifier that needs an import map
+    // Anything else is a bare specifier that needs an import map.
     return true;
   }
   return false;

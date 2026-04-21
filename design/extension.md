@@ -160,12 +160,25 @@ dependencies (e.g., native modules used via `Deno.Command` subprocess).
 ### Bundles
 
 Each model entry point is compiled using `deno bundle` with zod externalized.
-All other npm packages are inlined into the bundle, which ensures they work in
-the compiled binary where only swamp's own embedded dependency graph is
-available. Zod is externalized so extensions share the same zod instance as
-swamp (required for schema `instanceof` checks). Dynamic `import()` calls are
-not supported — all imports must be static top-level imports. Bundles are
-JavaScript files stored alongside their source counterparts under `bundles/`.
+All other non-local specifiers (`npm:`, `jsr:`, `https:`) are resolved and
+inlined into the bundle, which ensures they work in the compiled binary where
+only swamp's own embedded dependency graph is available. Zod is externalized so
+extensions share the same zod instance as swamp (required for schema
+`instanceof` checks). Dynamic `import()` calls are not supported — all imports
+must be static top-level imports. Bundles are JavaScript files stored alongside
+their source counterparts under `bundles/`.
+
+**First-class specifier kinds:** `npm:`, `jsr:`, and `https:` are peers —
+`deno bundle` resolves all three natively with identical treatment (all
+inlined, all cached by Deno's module cache, all subject to the same
+externalization rules for zod). No per-specifier-kind configuration is required.
+
+**Pin versions on all non-local specifiers** (`npm:`, `jsr:`, `https:`) for
+reproducibility. An unpinned specifier resolves to the registry's current
+"latest" at push time, which means the published bundle silently changes
+whenever the upstream package publishes a new version. See
+`.claude/skills/swamp-extension-publish/references/publishing.md` for
+author-facing guidance.
 
 #### Project-aware bundling
 
@@ -198,6 +211,11 @@ it, an unrelated `package.json` anywhere in the directory tree causes Deno to
 switch to `node_modules/` resolution mode, breaking `npm:` prefixed imports with
 errors like "Could not find a matching package for 'npm:@octokit/rest@22.0.1'
 in the node_modules directory."
+
+`jsr:` and `https:` specifiers work identically across all four rows — they
+don't require `deno.json` or `package.json` to resolve, so the project-config
+detection logic is irrelevant to them. They are fetched and cached by Deno's
+module cache on first use and reused offline thereafter.
 
 #### Zod externalization
 
@@ -279,7 +297,8 @@ starting from each entry point (model, vault, driver, datastore, or report).
 The resolver follows relative `import`/`export` statements (e.g.,
 `./helpers.ts`, `../shared.ts`) and includes all transitively imported files.
 Only files within the respective directory boundary are included. Non-local
-imports (npm packages) are skipped as they are resolved at runtime.
+imports (`npm:`, `jsr:`, `https:`) are skipped here — they are resolved and
+inlined at bundle time by `deno bundle`, not by the local-import resolver.
 
 ## Dependencies
 

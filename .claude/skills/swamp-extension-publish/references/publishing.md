@@ -92,13 +92,20 @@ dependencies:
 
 - `import { z } from "npm:zod@4";` is always required
 - Any Deno-compatible import (`npm:`, `jsr:`, `https://`) can be used — swamp
-  bundles all dependencies automatically
+  resolves and inlines all three kinds identically, with zod as the sole
+  externalization exception
 - Extensions with a `deno.json` or `package.json` can use bare specifiers (e.g.,
   `from "zod"`)
 - All imports must be static top-level imports — dynamic `import()` calls are
   rejected during push
-- Always pin npm versions — either inline (`npm:lodash-es@4.17.21`), via a
-  `deno.json` import map, or in `package.json` dependencies
+- Always pin versions on all non-local imports for reproducibility. An unpinned
+  specifier resolves to the registry's current "latest" at push time, so the
+  published bundle silently changes across pushes. Examples:
+  - `npm:lodash-es@4.17.21` (inline), or via `deno.json` import map, or in
+    `package.json` dependencies
+  - `jsr:@std/assert@1.0.0` (inline) or via `deno.json` import map
+  - `https://deno.land/std@0.224.0/async/delay.ts` (the version lives in the
+    URL)
 - Use `include` in the manifest for helper scripts executed via `Deno.Command`
   that shouldn't be bundled
 

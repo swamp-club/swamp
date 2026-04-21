@@ -345,6 +345,112 @@ Deno.test("sanitizeDataUrlError leaves short errors untouched", () => {
   assertEquals(sanitizeDataUrlError(error), error);
 });
 
+Deno.test("bundleExtension resolves and inlines jsr: specifiers", async () => {
+  // Network-dependent (matches the existing npm: bar). Guards the "first-class
+  // jsr:" contract: deno bundle must resolve jsr: without requiring an import
+  // map and inline the fetched source into the bundle.
+  const tsCode = `
+import { z } from "npm:zod@4";
+import { parse } from "jsr:@std/semver@1.0.8";
+
+const schema = z.object({ version: z.string() });
+
+export const model = {
+  type: "@test/jsr-inlining",
+  schema,
+  major: (v: string) => parse(v).major,
+};
+`;
+
+  await withTempFile(tsCode, async (path) => {
+    const js = await bundleExtension(path, DENO_PATH);
+
+    // No jsr: specifier should remain in the bundle — proves resolution, not
+    // pass-through.
+    assertEquals(
+      js.includes('from "jsr:'),
+      false,
+      "jsr: specifier should be resolved, not passed through",
+    );
+
+    // The inlined source carries a deno:https://jsr.io header comment. Its
+    // presence is the strongest signal jsr code is actually inlined.
+    assertEquals(
+      js.includes("deno:https://jsr.io/@std/semver"),
+      true,
+      "bundle should contain inlined jsr source with deno:https://jsr.io header",
+    );
+  });
+});
+
+Deno.test("bundleExtension resolves and inlines https: specifiers", async () => {
+  // Network-dependent. Parity proof: https: is treated identically to jsr:
+  // and npm: — resolved and inlined by deno bundle.
+  const tsCode = `
+import { z } from "npm:zod@4";
+import { delay } from "https://deno.land/std@0.224.0/async/delay.ts";
+
+export const model = {
+  type: "@test/https-inlining",
+  schema: z.object({}),
+  wait: async () => { await delay(1); },
+};
+`;
+
+  await withTempFile(tsCode, async (path) => {
+    const js = await bundleExtension(path, DENO_PATH);
+
+    assertEquals(
+      js.includes('from "https:'),
+      false,
+      "https: specifier should be resolved, not passed through",
+    );
+
+    assertEquals(
+      js.includes("deno:https://deno.land/std"),
+      true,
+      "bundle should contain inlined https source with deno:https://deno.land header",
+    );
+  });
+});
+
+Deno.test("rewriteZodImports leaves jsr: inlined content untouched", async () => {
+  // Regression: rewriteZodImports' regex is zod-specific and must not
+  // coincidentally match jsr: identifiers in inlined source. A combined
+  // npm:zod + jsr:@std/semver fixture pins this down.
+  const tsCode = `
+import { z } from "npm:zod@4";
+import { parse } from "jsr:@std/semver@1.0.8";
+
+export const schema = z.object({ version: z.string() });
+export const check = (v: string) => parse(v).major;
+`;
+
+  await withTempFile(tsCode, async (path) => {
+    const js = await bundleExtension(path, DENO_PATH);
+    const rewritten = rewriteZodImports(js);
+
+    // Zod was rewritten to globalThis.__swamp_zod.
+    assertEquals(
+      rewritten.includes("globalThis.__swamp_zod"),
+      true,
+      "rewriteZodImports should rewrite zod import",
+    );
+    assertEquals(
+      rewritten.includes('from "npm:zod'),
+      false,
+      "no npm:zod import should remain after rewrite",
+    );
+
+    // jsr: inlined content is still present and untouched.
+    assertEquals(
+      rewritten.includes("deno:https://jsr.io/@std/semver"),
+      true,
+      "jsr inlined source must survive the zod rewrite",
+    );
+  });
+});
+
 Deno.test("bundleExtension uses deno.json config when denoConfigPath provided", async () => {
   const dir = await Deno.makeTempDir({ prefix: "swamp_bundle_test_" });
   const tsPath = join(dir, "test_ext.ts");
@@ -419,6 +525,24 @@ Deno.test("sourceHasBareSpecifiers returns false for jsr: import", () => {
 Deno.test("sourceHasBareSpecifiers returns false for node: import", () => {
   assertEquals(
     sourceHasBareSpecifiers('import { readFile } from "node:fs";'),
+    false,
+  );
+});
+
+Deno.test("sourceHasBareSpecifiers returns false for https: import", () => {
+  assertEquals(
+    sourceHasBareSpecifiers(
+      'import { delay } from "https://deno.land/std@0.224.0/async/delay.ts";',
+    ),
+    false,
+  );
+});
+
+Deno.test("sourceHasBareSpecifiers returns false for http: import", () => {
+  assertEquals(
+    sourceHasBareSpecifiers(
+      'import { x } from "http://example.com/mod.ts";',
+    ),
     false,
   );
 });
