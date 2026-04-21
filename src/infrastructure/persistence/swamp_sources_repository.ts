@@ -253,13 +253,16 @@ async function contentPreScan(
       // Secondary skip for well-known dirs that the regex-based skip above
       // can't express cleanly. walk doesn't drop the dir itself; it emits
       // files underneath. Cheaper to filter on the path.
-      if (
-        [...PRE_SCAN_SKIP_DIRS].some((d) =>
+      let inSkipDir = false;
+      for (const d of PRE_SCAN_SKIP_DIRS) {
+        if (
           entry.path.includes(`/${d}/`) || entry.path.endsWith(`/${d}`)
-        )
-      ) {
-        continue;
+        ) {
+          inSkipDir = true;
+          break;
+        }
       }
+      if (inSkipDir) continue;
 
       if (entry.isFile && entry.name.endsWith(".ts")) {
         if (entry.name.endsWith("_test.ts")) continue;
@@ -289,6 +292,13 @@ async function contentPreScan(
       ) {
         if (found.has("workflows")) continue;
         try {
+          // Size cap mirrors the .ts branch above. Legitimate workflow
+          // YAML files are small; this guards against a source dir that
+          // happens to contain large YAML data fixtures (e.g. generated
+          // dumps) that would otherwise be read fully into memory before
+          // `parseYaml` could reject them.
+          const yamlStat = await Deno.stat(entry.path);
+          if (yamlStat.size > PRE_SCAN_MAX_BYTES) continue;
           const content = await Deno.readTextFile(entry.path);
           const raw = parseYaml(content);
           if (

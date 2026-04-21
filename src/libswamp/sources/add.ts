@@ -21,6 +21,7 @@ import type { LibSwampContext } from "../context.ts";
 import { alreadyExists, validationFailed } from "../errors.ts";
 import type { SourceModifyEvent } from "./source_events.ts";
 import {
+  EXTENSION_KINDS,
   type ExtensionKind,
   isGlobPattern,
   type SwampSource,
@@ -110,14 +111,7 @@ export async function* sourceAdd(
       }
       // Unexpanded glob → allow (pre-population workflow).
     } else {
-      const probed = only ?? [
-        "models",
-        "vaults",
-        "drivers",
-        "datastores",
-        "reports",
-        "workflows",
-      ];
+      const probed = only ?? EXTENSION_KINDS;
       yield {
         kind: "error",
         error: validationFailed(

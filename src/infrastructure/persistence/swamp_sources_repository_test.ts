@@ -428,6 +428,31 @@ Deno.test("resolveSourceExtensionDirs snapshot: non-standard layout via content 
   }
 });
 
+Deno.test("resolveSourceExtensionDirs: large YAML file is skipped during pre-scan (no OOM)", async () => {
+  // Guards the content pre-scan from OOM on source dirs that happen to
+  // hold large YAML data fixtures. Legitimate workflow YAML is small;
+  // anything over the 64 KiB cap is skipped without being read into
+  // memory or parsed.
+  const tmp = await Deno.makeTempDir({ prefix: "swamp_yaml_cap_" });
+  try {
+    const src = join(tmp, "pipeline");
+    await Deno.mkdir(src, { recursive: true });
+    // Build a 128 KiB YAML that WOULD parse as a workflow (has top-level
+    // jobs:) but should be skipped by the size guard.
+    const padding = "x: ".repeat(30_000);
+    await Deno.writeTextFile(
+      join(src, "big-fixture.yaml"),
+      `${padding}\njobs:\n  one:\n    steps: []\n`,
+    );
+    const result = await resolveSourceExtensionDirs([{ path: src }]);
+    // Because the large YAML was skipped, the source contributes no
+    // kinds — no workflow detected.
+    assertEquals(result[0].workflowsDir, undefined);
+  } finally {
+    await Deno.remove(tmp, { recursive: true });
+  }
+});
+
 // -----------------------------------------------------------------
 // Parity test: resolveExtensionKindsForSource must agree with
 // resolveSourceExtensionDirs about which kinds a source contributes.

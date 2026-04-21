@@ -40,20 +40,19 @@ type AnyOptions = any;
 export const extensionSourceAddCommand = new Command()
   .name("add")
   .description(
-    "Add a local extension source. Path may be a repo root with " +
-      "extensions/<kind>/ subdirs or a dir containing extension files directly.",
+    "Add a local extension source (standard or direct-content layout).",
   )
   .example(
-    "Repo root with extensions/<kind>/ subdirs",
-    "swamp extension source add ~/code/swamp-extensions/model/aws/ec2",
+    "Standard layout (path contains extensions/<kind>/ subdirs)",
+    "swamp extension source add ~/code/my-swamp-extensions",
   )
   .example(
     "Glob across sibling extension roots",
-    'swamp extension source add "~/code/swamp-extensions/model/aws/*"',
+    'swamp extension source add "~/code/my-swamp-extensions/*"',
   )
   .example(
-    "Directory containing extension files directly (any layout)",
-    "swamp extension source add ~/code/my-extensions/vault",
+    "Direct-content layout (path holds extension files directly)",
+    "swamp extension source add ~/code/my-vault-prototype",
   )
   .example(
     "Restrict to a single extension kind",

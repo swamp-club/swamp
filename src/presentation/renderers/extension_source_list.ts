@@ -57,8 +57,18 @@ class LogSourceListRenderer implements Renderer<SourceListEvent> {
 
           if (source.status === "path_not_found") {
             writeOutput(red("    path not found"));
+            writeOutput(
+              dim(
+                `    Run 'swamp extension source rm ${source.path}' or fix the path.`,
+              ),
+            );
           } else if (source.status === "no_extensions") {
             writeOutput(yellow("    no extensions found"));
+            writeOutput(
+              dim(
+                `    Add extension files to the path, or run 'swamp extension source rm ${source.path}'.`,
+              ),
+            );
           } else {
             if (source.resolvedKinds && source.resolvedKinds.length > 0) {
               writeOutput(

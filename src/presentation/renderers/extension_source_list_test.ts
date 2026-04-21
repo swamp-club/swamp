@@ -88,7 +88,7 @@ Deno.test("extension_source_list renderer: omits kinds line when resolvedKinds i
   assertEquals(joined.includes("kinds:"), false);
 });
 
-Deno.test("extension_source_list renderer: shows 'no extensions found' for no_extensions status", async () => {
+Deno.test("extension_source_list renderer: no_extensions status shows message + remediation hint", async () => {
   const renderer = createSourceListRenderer("log");
   const handlers = renderer.handlers();
   const lines = await captureLog(() => {
@@ -107,9 +107,11 @@ Deno.test("extension_source_list renderer: shows 'no extensions found' for no_ex
   });
   const joined = lines.join("\n");
   assertStringIncludes(joined, "no extensions found");
+  // Remediation hint so users know how to recover without consulting docs.
+  assertStringIncludes(joined, "swamp extension source rm /c");
 });
 
-Deno.test("extension_source_list renderer: shows 'path not found' for path_not_found status", async () => {
+Deno.test("extension_source_list renderer: path_not_found status shows message + remediation hint", async () => {
   const renderer = createSourceListRenderer("log");
   const handlers = renderer.handlers();
   const lines = await captureLog(() => {
@@ -128,6 +130,7 @@ Deno.test("extension_source_list renderer: shows 'path not found' for path_not_f
   });
   const joined = lines.join("\n");
   assertStringIncludes(joined, "path not found");
+  assertStringIncludes(joined, "swamp extension source rm /d");
 });
 
 Deno.test("extension_source_list renderer: JSON mode passes resolvedKinds through", async () => {
