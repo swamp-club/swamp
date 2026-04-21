@@ -40,6 +40,14 @@ export interface SourceListEntry {
   only?: ExtensionKind[];
   expandedPaths: string[];
   status: "valid" | "path_not_found" | "no_extensions";
+  /**
+   * Extension kinds this source contributes, determined by the same
+   * resolver used at load time. Populated when status is `valid`. Sorted
+   * by EXTENSION_KINDS declaration-order index so JSON output and test
+   * assertions are stable. Optional for backwards compatibility — JSON
+   * consumers that predate this field keep working.
+   */
+  resolvedKinds?: ExtensionKind[];
 }
 
 /** Data returned by the source list operation. */

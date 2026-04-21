@@ -129,3 +129,50 @@ export function parseSwampSources(yamlContent: string): SwampSourcesConfig {
 export function isGlobPattern(path: string): boolean {
   return /[*?{]/.test(path);
 }
+
+/**
+ * Mapping from extension kind to the `export const <name>` identifiers a
+ * loader will accept. Must stay in sync with each loader's pre-bundle regex
+ * (e.g. `UserModelLoader` checks for `model|extension`, `UserVaultLoader`
+ * checks for `vault`). The content pre-scan in
+ * `resolveExtensionKindsForSource` uses this map so pre-scan detection
+ * equals loader acceptance — avoid silent divergence.
+ *
+ * Workflows are YAML files, not TS modules, so this map has no entry for
+ * them — workflow detection is filename-based (`.yaml`/`.yml` with a
+ * top-level `jobs:` key).
+ */
+export const EXTENSION_EXPORT_NAMES: Record<
+  Exclude<ExtensionKind, "workflows">,
+  readonly string[]
+> = {
+  models: ["model", "extension"],
+  vaults: ["vault"],
+  drivers: ["driver"],
+  datastores: ["datastore"],
+  reports: ["report"],
+} as const;
+
+/**
+ * Examines a `.ts` file's source text and returns the extension kind it
+ * declares, or undefined if no known extension export is present. Uses the
+ * same `export\s+const\s+<name>\s*[=:]` shape the loaders use for their
+ * pre-bundle skip check so detection matches load-time acceptance.
+ *
+ * Returns the first matching kind encountered — files that declare more
+ * than one extension kind in a single module are malformed and outside the
+ * pre-scan's responsibility; the loader catches that downstream.
+ */
+export function detectKindFromSource(
+  sourceText: string,
+): Exclude<ExtensionKind, "workflows"> | undefined {
+  for (const [kind, names] of Object.entries(EXTENSION_EXPORT_NAMES)) {
+    for (const name of names) {
+      const pattern = new RegExp(`export\\s+const\\s+${name}\\s*[=:]`);
+      if (pattern.test(sourceText)) {
+        return kind as Exclude<ExtensionKind, "workflows">;
+      }
+    }
+  }
+  return undefined;
+}

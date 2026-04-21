@@ -392,7 +392,9 @@ Files are classified by export name: `export const model` defines new types,
 To test an extension without copying files into the consumer repo:
 
 ```bash
-# In the consumer repo, add the extension as a source
+# In the consumer repo, add the extension as a source.
+# The path can be a repo root with extensions/<kind>/ subdirs, OR a
+# directory whose files declare extension exports directly.
 swamp extension source add ~/code/my-extensions/model/aws/ec2
 
 # Verify it loads
@@ -401,6 +403,11 @@ swamp model type search ec2
 # When done, remove the source
 swamp extension source rm ~/code/my-extensions/model/aws/ec2
 ```
+
+`swamp extension source add` validates the path up-front — if it contributes no
+extensions, the add fails with a clear error naming the kinds it looked for. Use
+`swamp extension source list` to see the resolved kinds for each configured
+source.
 
 The source extension must have a `deno.json` with its dependencies (e.g.,
 `"zod": "npm:zod@4"`) for bundling to succeed.

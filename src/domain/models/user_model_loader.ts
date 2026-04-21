@@ -19,6 +19,7 @@
 
 import { z } from "zod";
 import { dirname, join, resolve, toFileUrl } from "@std/path";
+import { isZodSchemaLike } from "../zod_compat.ts";
 import { getLogger } from "@logtape/logtape";
 import {
   bundleExtension,
@@ -114,7 +115,9 @@ const MethodKindSchema = z.enum([
 const UserMethodSchema = z.object({
   description: z.string(),
   kind: MethodKindSchema.optional(),
-  arguments: z.custom<z.ZodTypeAny>((val) => val instanceof z.ZodType),
+  // Duck-typed schema check so user extensions can bring their own zod
+  // instance without failing the `instanceof` equality against swamp's zod.
+  arguments: z.custom<z.ZodTypeAny>(isZodSchemaLike),
   execute: z.custom<UserExecuteFn>((val) => typeof val === "function"),
 }).passthrough();
 
@@ -148,8 +151,7 @@ const UserModelSchema = z.object({
   version: z.string().refine(CalVer.isValid, {
     message: "version must be valid CalVer (YYYY.MM.DD.MICRO)",
   }),
-  globalArguments: z.custom<z.ZodTypeAny>((val) => val instanceof z.ZodType)
-    .optional(),
+  globalArguments: z.custom<z.ZodTypeAny>(isZodSchemaLike).optional(),
   resources: z.record(z.string(), ResourceOutputSpecSchema).optional(),
   files: z.record(z.string(), FileOutputSpecSchema).optional(),
   methods: z.record(z.string(), UserMethodSchema),

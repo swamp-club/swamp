@@ -18,13 +18,14 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { isAbsolute, resolve } from "@std/path";
-import { expandGlob } from "@std/fs";
+import { expandGlob, walk } from "@std/fs";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { getLogger } from "@logtape/logtape";
 import { expandEnvVars } from "./env_path.ts";
 import { swampSourcesPath } from "./paths.ts";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import {
+  detectKindFromSource,
   EXTENSION_KINDS,
   type ExtensionKind,
   isGlobPattern,
@@ -119,6 +120,196 @@ export async function expandSourcePaths(
 }
 
 /**
+ * Reads the source's own `.swamp.yaml` marker for directory overrides.
+ *
+ * The YAML is from an external repo, so we only extract fields we need
+ * and validate they are strings before using them. Returns null when the
+ * marker file is missing or unreadable — callers fall back to
+ * `extensions/<kind>/` defaults in that case.
+ *
+ * Shared by `resolveSourceExtensionDirs` and
+ * `resolveExtensionKindsForSource` so both agree on marker semantics.
+ * A single pre-fix snapshot in swamp_sources_repository_test.ts pins the
+ * behaviour of this extraction.
+ */
+async function readSourceMarker(
+  sourceDir: string,
+): Promise<RepoMarkerData | null> {
+  try {
+    const markerPath = resolve(sourceDir, ".swamp.yaml");
+    const content = await Deno.readTextFile(markerPath);
+    const raw = parseYaml(content);
+    if (!raw || typeof raw !== "object") return null;
+    const obj = raw as Record<string, unknown>;
+    return {
+      swampVersion: typeof obj.swampVersion === "string"
+        ? obj.swampVersion
+        : "",
+      initializedAt: typeof obj.initializedAt === "string"
+        ? obj.initializedAt
+        : "",
+      modelsDir: typeof obj.modelsDir === "string" ? obj.modelsDir : undefined,
+      workflowsDir: typeof obj.workflowsDir === "string"
+        ? obj.workflowsDir
+        : undefined,
+      vaultsDir: typeof obj.vaultsDir === "string" ? obj.vaultsDir : undefined,
+      driversDir: typeof obj.driversDir === "string"
+        ? obj.driversDir
+        : undefined,
+      datastoresDir: typeof obj.datastoresDir === "string"
+        ? obj.datastoresDir
+        : undefined,
+      reportsDir: typeof obj.reportsDir === "string"
+        ? obj.reportsDir
+        : undefined,
+    };
+  } catch {
+    return null;
+  }
+}
+
+/**
+ * Probes the standard `<sourceDir>/extensions/<kind>/` layout for a single
+ * source. Returns the kinds whose dir exists. Respects the marker's
+ * `<kind>Dir` override and the caller's `only` filter. Does NOT perform
+ * any content scanning — purely a directory-existence check.
+ *
+ * Returned in the `kindDirs` map using the ExtensionKind as key so callers
+ * can read both "which kinds resolved" and "what absolute dir each maps
+ * to" in one pass.
+ */
+async function probeStandardLayout(
+  sourceDir: string,
+  marker: RepoMarkerData | null,
+  only: ReadonlyArray<ExtensionKind>,
+): Promise<Map<ExtensionKind, string>> {
+  const out = new Map<ExtensionKind, string>();
+  for (const kind of only) {
+    const relDir = resolveKindDir(kind, marker);
+    const absDir = isAbsolute(relDir) ? relDir : resolve(sourceDir, relDir);
+    try {
+      const stat = await Deno.stat(absDir);
+      if (stat.isDirectory) {
+        out.set(kind, absDir);
+      }
+    } catch {
+      // Kind dir missing — skip.
+    }
+  }
+  return out;
+}
+
+/** Directories skipped during the content pre-scan: test helpers and
+ * unrelated package detritus that would never hold an extension file. */
+const PRE_SCAN_SKIP_DIRS = new Set([
+  "node_modules",
+  ".git",
+  ".swamp",
+  "dist",
+  "build",
+  "target",
+]);
+
+/** Maximum recursion depth for the content pre-scan. Keeps cold add/list
+ * bounded on large repos where the source path is something broad. */
+const PRE_SCAN_MAX_DEPTH = 4;
+
+/** Cap per-file read during the content pre-scan. Normal extension files
+ * sit far below this; a 64 KiB bound prevents blowups on pathological
+ * files with no `export` declaration. */
+const PRE_SCAN_MAX_BYTES = 64 * 1024;
+
+/**
+ * Walks `sourceDir` looking for files that signal extension content.
+ * Returns the set of kinds detected.
+ *
+ * For .ts files: reads up to PRE_SCAN_MAX_BYTES of the file and runs
+ * `detectKindFromSource`, which uses the same export-name regex the
+ * loaders use for their pre-bundle skip check — so pre-scan detection
+ * equals loader acceptance.
+ *
+ * For workflow files (.yaml / .yml): parses the YAML and checks for a
+ * top-level `jobs:` key. Regex shortcuts are unreliable because workflow
+ * YAML often puts `jobs:` after `name:` / `description:` headers.
+ *
+ * Skips `_*` prefixed dirs (helper modules — matches loader convention),
+ * node_modules / .git / .swamp / dist / build / target (unrelated
+ * detritus), and `_test.ts` files. Bounded by PRE_SCAN_MAX_DEPTH.
+ */
+async function contentPreScan(
+  sourceDir: string,
+): Promise<Set<ExtensionKind>> {
+  const found = new Set<ExtensionKind>();
+  try {
+    for await (
+      const entry of walk(sourceDir, {
+        maxDepth: PRE_SCAN_MAX_DEPTH,
+        includeDirs: false,
+        skip: [
+          /(^|\/)_[^/]+($|\/)/, // _-prefixed paths (helper modules, _test.ts)
+        ],
+      })
+    ) {
+      // Secondary skip for well-known dirs that the regex-based skip above
+      // can't express cleanly. walk doesn't drop the dir itself; it emits
+      // files underneath. Cheaper to filter on the path.
+      if (
+        [...PRE_SCAN_SKIP_DIRS].some((d) =>
+          entry.path.includes(`/${d}/`) || entry.path.endsWith(`/${d}`)
+        )
+      ) {
+        continue;
+      }
+
+      if (entry.isFile && entry.name.endsWith(".ts")) {
+        if (entry.name.endsWith("_test.ts")) continue;
+        try {
+          const stat = await Deno.stat(entry.path);
+          const len = Math.min(stat.size, PRE_SCAN_MAX_BYTES);
+          const file = await Deno.open(entry.path, { read: true });
+          try {
+            const buf = new Uint8Array(len);
+            await file.read(buf);
+            const text = new TextDecoder().decode(buf);
+            const kind = detectKindFromSource(text);
+            if (kind) {
+              found.add(kind);
+              // Short-circuit once every known kind has been seen.
+              if (found.size === EXTENSION_KINDS.length - 1) return found;
+            }
+          } finally {
+            file.close();
+          }
+        } catch {
+          // Unreadable file — skip.
+        }
+      } else if (
+        entry.isFile &&
+        (entry.name.endsWith(".yaml") || entry.name.endsWith(".yml"))
+      ) {
+        if (found.has("workflows")) continue;
+        try {
+          const content = await Deno.readTextFile(entry.path);
+          const raw = parseYaml(content);
+          if (
+            raw && typeof raw === "object" && !Array.isArray(raw) &&
+            "jobs" in (raw as Record<string, unknown>)
+          ) {
+            found.add("workflows");
+          }
+        } catch {
+          // Unparseable YAML — not a workflow.
+        }
+      }
+    }
+  } catch {
+    // walk throws if sourceDir is not a directory; callers already stat'd
+    // the path before calling us, so this branch is defensive.
+  }
+  return found;
+}
+
+/**
  * Resolves extension directories for each expanded source.
  *
  * For each source path:
@@ -126,6 +317,12 @@ export async function expandSourcePaths(
  * 2. Falls back to `extensions/<type>` defaults if no marker exists
  * 3. Filters by the `only` field if specified
  * 4. Validates that directories exist (warns but does not fail on missing)
+ *
+ * Since issue #139: when the standard `<path>/extensions/<kind>/` layout
+ * yields zero known kinds for a source, a content pre-scan walks the path
+ * and sets each detected kind's dir to the source path itself. Standard
+ * layout always wins over pre-scan when both are present (prevents
+ * double-loading in transitional repos).
  */
 export async function resolveSourceExtensionDirs(
   expandedSources: SwampSource[],
@@ -135,47 +332,7 @@ export async function resolveSourceExtensionDirs(
   for (const source of expandedSources) {
     const sourceDir = source.path;
     const resolved: ResolvedSourceDirs = { sourcePath: sourceDir };
-
-    // Try to read the source's own .swamp.yaml for directory overrides.
-    // The YAML is from an external repo, so we only extract fields we need
-    // and validate they are strings before using them.
-    let sourceMarker: RepoMarkerData | null = null;
-    try {
-      const markerPath = resolve(sourceDir, ".swamp.yaml");
-      const content = await Deno.readTextFile(markerPath);
-      const raw = parseYaml(content);
-      if (raw && typeof raw === "object") {
-        const obj = raw as Record<string, unknown>;
-        sourceMarker = {
-          swampVersion: typeof obj.swampVersion === "string"
-            ? obj.swampVersion
-            : "",
-          initializedAt: typeof obj.initializedAt === "string"
-            ? obj.initializedAt
-            : "",
-          modelsDir: typeof obj.modelsDir === "string"
-            ? obj.modelsDir
-            : undefined,
-          workflowsDir: typeof obj.workflowsDir === "string"
-            ? obj.workflowsDir
-            : undefined,
-          vaultsDir: typeof obj.vaultsDir === "string"
-            ? obj.vaultsDir
-            : undefined,
-          driversDir: typeof obj.driversDir === "string"
-            ? obj.driversDir
-            : undefined,
-          datastoresDir: typeof obj.datastoresDir === "string"
-            ? obj.datastoresDir
-            : undefined,
-          reportsDir: typeof obj.reportsDir === "string"
-            ? obj.reportsDir
-            : undefined,
-        };
-      }
-    } catch {
-      // No marker file — use defaults
-    }
+    const marker = await readSourceMarker(sourceDir);
 
     // Check if source dir itself exists
     try {
@@ -191,20 +348,23 @@ export async function resolveSourceExtensionDirs(
       continue;
     }
 
-    const kinds = source.only ?? EXTENSION_KINDS;
+    const only = source.only ?? EXTENSION_KINDS;
+    const standard = await probeStandardLayout(sourceDir, marker, only);
 
-    for (const kind of kinds) {
-      const relDir = resolveKindDir(kind, sourceMarker);
-      const absDir = isAbsolute(relDir) ? relDir : resolve(sourceDir, relDir);
-
-      // Only include if the directory actually exists
-      try {
-        const stat = await Deno.stat(absDir);
-        if (stat.isDirectory) {
-          setKindDir(resolved, kind, absDir);
+    if (standard.size > 0) {
+      for (const [kind, dir] of standard) {
+        setKindDir(resolved, kind, dir);
+      }
+    } else {
+      // Standard layout yielded zero known kinds — fall back to content
+      // pre-scan. Each detected kind's dir becomes the source path itself
+      // so the loader walks the full path and filters by export at the
+      // pre-bundle step.
+      const detected = await contentPreScan(sourceDir);
+      for (const kind of detected) {
+        if (only.includes(kind)) {
+          setKindDir(resolved, kind, sourceDir);
         }
-      } catch {
-        // Directory doesn't exist for this kind — skip silently
       }
     }
 
@@ -212,6 +372,58 @@ export async function resolveSourceExtensionDirs(
   }
 
   return results;
+}
+
+/**
+ * Returns the extension kinds a single source actually contributes,
+ * respecting globs, marker overrides, the `only` filter, and both
+ * supported layouts (standard `extensions/<kind>/` and non-standard
+ * content-detected). Sorted by EXTENSION_KINDS declaration order.
+ *
+ * Used by `sourceAdd` to fail fast when a concrete path contributes
+ * nothing, and by `sourceList` to populate `resolvedKinds` per entry.
+ *
+ * Semantics:
+ *   - A glob with zero expansions returns `[]` — add is allowed because
+ *     the user may populate the path later.
+ *   - A glob with ≥1 expansions unions kinds across expansions.
+ *   - A concrete path with zero kinds from both layouts returns `[]` —
+ *     callers reject it at add time.
+ */
+export async function resolveExtensionKindsForSource(
+  source: SwampSource,
+  repoDir: string,
+): Promise<ExtensionKind[]> {
+  const only = source.only ?? EXTENSION_KINDS;
+  const onlySet = new Set<ExtensionKind>(only);
+  const union = new Set<ExtensionKind>();
+
+  const expanded = await expandSourcePaths({ sources: [source] }, repoDir);
+
+  for (const ex of expanded) {
+    const marker = await readSourceMarker(ex.path);
+
+    let stat: Deno.FileInfo;
+    try {
+      stat = await Deno.stat(ex.path);
+    } catch {
+      continue;
+    }
+    if (!stat.isDirectory) continue;
+
+    const standard = await probeStandardLayout(ex.path, marker, only);
+    if (standard.size > 0) {
+      for (const kind of standard.keys()) union.add(kind);
+      continue;
+    }
+
+    const detected = await contentPreScan(ex.path);
+    for (const kind of detected) {
+      if (onlySet.has(kind)) union.add(kind);
+    }
+  }
+
+  return EXTENSION_KINDS.filter((k) => union.has(k));
 }
 
 /**

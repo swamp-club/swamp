@@ -59,10 +59,17 @@ class LogSourceListRenderer implements Renderer<SourceListEvent> {
             writeOutput(red("    path not found"));
           } else if (source.status === "no_extensions") {
             writeOutput(yellow("    no extensions found"));
-          } else if (source.expandedPaths.length > 1) {
-            writeOutput(
-              dim(`    ${source.expandedPaths.length} extension roots`),
-            );
+          } else {
+            if (source.resolvedKinds && source.resolvedKinds.length > 0) {
+              writeOutput(
+                dim(`    kinds: ${source.resolvedKinds.join(", ")}`),
+              );
+            }
+            if (source.expandedPaths.length > 1) {
+              writeOutput(
+                dim(`    ${source.expandedPaths.length} extension roots`),
+              );
+            }
           }
         }
       },

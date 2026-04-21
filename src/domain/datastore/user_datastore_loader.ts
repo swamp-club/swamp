@@ -19,6 +19,7 @@
 
 import { z } from "zod";
 import { dirname, join, resolve, toFileUrl } from "@std/path";
+import { isZodSchemaLike } from "../zod_compat.ts";
 import { getLogger } from "@logtape/logtape";
 import {
   bundleExtension,
@@ -68,8 +69,7 @@ const UserDatastoreSchema = z.object({
   ),
   name: z.string(),
   description: z.string(),
-  configSchema: z.custom<z.ZodTypeAny>((val) => val instanceof z.ZodType)
-    .optional(),
+  configSchema: z.custom<z.ZodTypeAny>(isZodSchemaLike).optional(),
   createProvider: z.custom<
     (config: Record<string, unknown>) => DatastoreProvider
   >((val) => typeof val === "function"),

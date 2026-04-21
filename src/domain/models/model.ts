@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { z } from "zod";
+import { isZodSchemaLike } from "../zod_compat.ts";
 import type { CloudControlClient } from "@aws-sdk/client-cloudcontrol";
 import type { Logger } from "@logtape/logtape";
 import { ModelType } from "./model_type.ts";
@@ -98,7 +99,8 @@ export interface FileOutputSpec {
  */
 export const ResourceOutputSpecSchema = z.object({
   description: z.string().optional(),
-  schema: z.custom<z.ZodTypeAny>((val) => val instanceof z.ZodType),
+  // Duck-typed so schemas from user-bundled zod instances validate.
+  schema: z.custom<z.ZodTypeAny>(isZodSchemaLike),
   lifetime: LifetimeSchema,
   garbageCollection: GarbageCollectionSchema,
   tags: z.record(z.string(), z.string()).optional(),

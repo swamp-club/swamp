@@ -19,6 +19,7 @@
 
 import { z } from "zod";
 import { dirname, join, resolve, toFileUrl } from "@std/path";
+import { isZodSchemaLike } from "../zod_compat.ts";
 import { getLogger } from "@logtape/logtape";
 import {
   bundleExtension,
@@ -69,8 +70,7 @@ const UserVaultSchema = z.object({
   ),
   name: z.string(),
   description: z.string(),
-  configSchema: z.custom<z.ZodTypeAny>((val) => val instanceof z.ZodType)
-    .optional(),
+  configSchema: z.custom<z.ZodTypeAny>(isZodSchemaLike).optional(),
   createProvider: z.custom<
     (name: string, config: Record<string, unknown>) => VaultProvider
   >((val) => typeof val === "function"),

@@ -274,8 +274,8 @@ multiple locations.
 ### `.swamp-sources.yaml`
 
 A gitignored file at the repo root. Each entry is a **source** — a path (or
-glob) pointing at one or more extension roots. Always added to `.gitignore` by
-`swamp repo init` and `swamp repo upgrade`.
+glob) pointing at a directory that contains extensions. Always added to
+`.gitignore` by `swamp repo init` and `swamp repo upgrade`.
 
 ```yaml
 sources:
@@ -287,8 +287,16 @@ sources:
 
 **Fields:**
 
-- `path` — filesystem path to an extension root. Supports `~`, `$VAR`, and glob
-  patterns (`*`, `**`). Each glob match is treated as a separate extension root.
+- `path` — filesystem path that contains extensions. Supports `~`, `$VAR`, and
+  glob patterns (`*`, `**`). Two layouts are accepted:
+  1. **Repo root**: a directory with `extensions/<kind>/` subdirectories. Most
+     common — matches how published extensions are structured.
+  2. **Direct content**: a directory whose files declare extension exports
+     (`export const model = …`, `export const vault = …`, etc.) or workflow
+     YAML. Useful when you want to point at a single-kind development tree or at
+     an `extensions/<kind>/` directory directly. When both layouts exist in the
+     same directory, the repo-root layout wins — the direct-content files at the
+     root are ignored to prevent double-loading.
 - `only` — optional filter limiting which extension types to load from this
   source: `models`, `vaults`, `drivers`, `datastores`, `reports`, `workflows`.
 
@@ -301,6 +309,9 @@ swamp extension source add ~/code/swamp-extensions/model/aws/ec2
 # Add with glob (all AWS extensions)
 swamp extension source add "~/code/swamp-extensions/model/aws/*"
 
+# Add a directory that contains extension files directly (no extensions/ tree)
+swamp extension source add ~/code/my-extensions/vault
+
 # Add with type filter
 swamp extension source add ~/code/my-vaults --only vaults
 
@@ -311,15 +322,19 @@ swamp extension source list
 swamp extension source rm "~/code/swamp-extensions/model/aws/*"
 ```
 
+`swamp extension source add` fails with a clear error if the path contributes no
+extensions, so misconfigured paths are caught at add time rather than silently
+ignored.
+
 ### Load Order
 
 1. **Local extensions** (`extensions/models/`, etc.)
 2. **Source extensions** (from `.swamp-sources.yaml`, in order listed)
 3. **Pulled extensions** (`.swamp/pulled-extensions/`)
 
-Sources override pulled extensions of the same type. This means you can pull
-`@swamp/aws/ec2` from the registry, then add a source pointing at your local
-development copy — your local version loads instead.
+Load order is unchanged. Sources override pulled extensions of the same type.
+This means you can pull `@swamp/aws/ec2` from the registry, then add a source
+pointing at your local development copy — your local version loads instead.
 
 ## When to Use Other Skills
 
