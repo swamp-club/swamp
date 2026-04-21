@@ -1523,7 +1523,8 @@
     "members": {
       "packages/testing": {
         "dependencies": [
-          "jsr:@std/assert@1.0.19"
+          "jsr:@std/assert@1.0.19",
+          "npm:zod@^4.3.6"
         ]
       }
     }

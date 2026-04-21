@@ -478,7 +478,10 @@ verification) before allowing a push.
 2. **Import**: `import { z } from "npm:zod@4";` is always required
 3. **Static imports only**: Dynamic `import()` is rejected during push
 4. **Pin npm versions**: Always pin — inline, via `deno.json`, or `package.json`
-5. **No type annotations**: Avoid TypeScript types in execute parameters
+5. **Execute parameters are unannotated by default.** If a sibling `_test.ts`
+   file imports the model source and `deno test` fails with TS7006, use the
+   `satisfies ModelDefinition<...>` escape hatch documented in
+   [references/typing.md](references/typing.md)
 6. **File naming**: Use snake_case (`my_model.ts`)
 7. **Version upgrades**: When bumping `version`, always add an `upgrades` entry
 

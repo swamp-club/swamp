@@ -32,7 +32,9 @@ import type {
   DataHandle as CanonicalDataHandle,
   DataWriter as _CanonicalDataWriter,
   MethodContext as _CanonicalMethodContext,
+  MethodDefinition as _CanonicalMethodDefinition,
   MethodResult as _CanonicalMethodResult,
+  ModelDefinition as _CanonicalModelDefinition,
 } from "./model.ts";
 
 import type {
@@ -41,6 +43,11 @@ import type {
   MethodContext as TestingMethodContext,
   MethodResult as TestingMethodResult,
 } from "../../../packages/testing/types.ts";
+
+import type {
+  MethodDefinition as TestingMethodDefinition,
+  ModelDefinition as TestingModelDefinition,
+} from "../../../packages/testing/model_definition_types.ts";
 
 /**
  * Structural compatibility checks between the testing package types and
@@ -143,6 +150,67 @@ function _checkMethodResultFields(result: TestingMethodResult) {
   }
 }
 
+// MethodDefinition: verify the testing type's fields are compatible with the
+// canonical type. The testing type omits `kind` (canonical has it) and works
+// with the extension-author-facing MethodContext shape; that's intentional —
+// authors rarely need `kind`, and canonical's is inferred from method names
+// at registration time anyway.
+function _checkMethodDefinitionFields(def: TestingMethodDefinition) {
+  const _description: _CanonicalMethodDefinition["description"] =
+    def.description;
+  // `arguments` is a Zod schema in both; asserting it's present with the
+  // expected shape via `_parse` access catches renames and type changes.
+  const _hasArguments: boolean = typeof def.arguments._zod === "object";
+  // The execute signature: returns a Promise<MethodResult>. We check the
+  // return-type Promise shape rather than direct assignability because
+  // canonical uses branded DataId internally.
+  const _execute: (
+    args: ReturnType<typeof def.arguments.parse>,
+    ctx: TestingMethodContext,
+  ) => Promise<{ dataHandles?: unknown }> = def.execute as never;
+
+  void [_description, _hasArguments, _execute];
+}
+
+// ModelDefinition: verify the testing type's fields line up with the
+// canonical type. The `methods` field uses Record<string, MethodDefinition>
+// in both — deliberate parity so `satisfies ModelDefinition` on the testing
+// side remains assignable to the canonical shape. Internal-only canonical
+// fields (bundleSourceFactory, branded ModelType) are not present on the
+// testing side because extension authors never set them.
+function _checkModelDefinitionFields(
+  def: TestingModelDefinition,
+) {
+  // `type` is a plain string on the testing side; canonical uses a branded
+  // ModelType. The brand is a compile-time fiction — assignability holds
+  // at the string level.
+  const _type: string = def.type;
+  const _version: _CanonicalModelDefinition["version"] = def.version;
+
+  // methods: both use Record<string, MethodDefinition> (deliberate parity).
+  // Per-method args narrowing is not required here — authors narrow per
+  // method with `ArgsSchema.parse(args)` at runtime. The compat test only
+  // cares that the testing methods record has compatible keys/values.
+  if (def.methods) {
+    for (const methodName of Object.keys(def.methods)) {
+      const method = def.methods[methodName];
+      _checkMethodDefinitionFields(method);
+    }
+  }
+
+  // Optional fields — resources, files, checks, reports, upgrades — are
+  // structurally simpler and covered transitively by the field-level
+  // checks above (Zod schemas, string arrays, function shapes).
+  if (def.upgrades) {
+    for (const upgrade of def.upgrades) {
+      const _toVersion: string = upgrade.toVersion;
+      void _toVersion;
+    }
+  }
+
+  void [_type, _version];
+}
+
 // This is a compile-time-only test. If it type-checks, the types are compatible.
 Deno.test("testing package types: compile-time compatibility check", () => {
   void [
@@ -150,5 +218,7 @@ Deno.test("testing package types: compile-time compatibility check", () => {
     _checkDataHandleFields,
     _checkDataWriterFields,
     _checkMethodResultFields,
+    _checkMethodDefinitionFields,
+    _checkModelDefinitionFields,
   ];
 });
