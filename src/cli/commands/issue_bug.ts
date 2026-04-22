@@ -28,7 +28,13 @@ import {
 } from "../../presentation/renderers/issue_create.ts";
 import { EditorService } from "../../infrastructure/editor/editor_service.ts";
 import { UserError } from "../../domain/errors.ts";
-import { resolveDestination, submitIssue } from "./issue_submit.ts";
+import {
+  dispatchExtensionRepositoryReport,
+  resolveDestination,
+  resolveExtensionOrRefuse,
+  submitIssue,
+  type UsableExtensionTarget,
+} from "./issue_submit.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -136,9 +142,26 @@ export const issueBugCommand = new Command()
       throw new UserError("--email and --extension cannot be used together.");
     }
 
-    // Resolve destination BEFORE collecting content so we don't waste the user's time
-    const destination = await resolveDestination(ctx, options.email);
-    if (destination.method === "abort") {
+    // Extension-aware pre-flight: resolve the target BEFORE auth so refusals
+    // and third-party repository handoffs don't spuriously fail on Lab auth
+    // (they never touch swamp-club).
+    let extensionTarget: UsableExtensionTarget | undefined;
+    if (options.extension) {
+      const resolved = await resolveExtensionOrRefuse(
+        ctx,
+        options.extension,
+        resolveRepoDir(options.repoDir),
+      );
+      if (resolved === null) return; // refusal rendered
+      extensionTarget = resolved;
+    }
+
+    // Lab auth is only needed for the plain path and the `@swamp/*` path.
+    // Third-party repository handoffs skip this step entirely.
+    const destination = !extensionTarget || extensionTarget.kind === "swamp-lab"
+      ? await resolveDestination(ctx, options.email)
+      : undefined;
+    if (destination?.method === "abort") {
       await submitIssue(ctx, destination, {
         type: "bug",
         title: "",
@@ -197,12 +220,22 @@ export const issueBugCommand = new Command()
 
     ctx.logger.debug`Submitting bug report with title: ${title}`;
 
-    await submitIssue(ctx, destination, {
+    if (extensionTarget?.kind === "repository") {
+      await dispatchExtensionRepositoryReport(ctx, extensionTarget, {
+        type: "bug",
+        title,
+        body,
+      });
+      return;
+    }
+
+    await submitIssue(ctx, destination!, {
       type: "bug",
       title,
       body,
-      extensionName: options.extension,
-      repoDir: options.extension ? resolveRepoDir(options.repoDir) : undefined,
+      swampLabTarget: extensionTarget?.kind === "swamp-lab"
+        ? extensionTarget
+        : undefined,
     });
 
     ctx.logger.debug("Bug report submitted successfully");

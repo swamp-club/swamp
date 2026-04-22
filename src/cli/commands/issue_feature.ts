@@ -28,7 +28,13 @@ import {
 } from "../../presentation/renderers/issue_create.ts";
 import { EditorService } from "../../infrastructure/editor/editor_service.ts";
 import { UserError } from "../../domain/errors.ts";
-import { resolveDestination, submitIssue } from "./issue_submit.ts";
+import {
+  dispatchExtensionRepositoryReport,
+  resolveDestination,
+  resolveExtensionOrRefuse,
+  submitIssue,
+  type UsableExtensionTarget,
+} from "./issue_submit.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -135,9 +141,21 @@ export const issueFeatureCommand = new Command()
       throw new UserError("--email and --extension cannot be used together.");
     }
 
-    // Resolve destination BEFORE collecting content so we don't waste the user's time
-    const destination = await resolveDestination(ctx, options.email);
-    if (destination.method === "abort") {
+    let extensionTarget: UsableExtensionTarget | undefined;
+    if (options.extension) {
+      const resolved = await resolveExtensionOrRefuse(
+        ctx,
+        options.extension,
+        resolveRepoDir(options.repoDir),
+      );
+      if (resolved === null) return;
+      extensionTarget = resolved;
+    }
+
+    const destination = !extensionTarget || extensionTarget.kind === "swamp-lab"
+      ? await resolveDestination(ctx, options.email)
+      : undefined;
+    if (destination?.method === "abort") {
       await submitIssue(ctx, destination, {
         type: "feature",
         title: "",
@@ -196,12 +214,22 @@ export const issueFeatureCommand = new Command()
 
     ctx.logger.debug`Submitting feature request with title: ${title}`;
 
-    await submitIssue(ctx, destination, {
+    if (extensionTarget?.kind === "repository") {
+      await dispatchExtensionRepositoryReport(ctx, extensionTarget, {
+        type: "feature",
+        title,
+        body,
+      });
+      return;
+    }
+
+    await submitIssue(ctx, destination!, {
       type: "feature",
       title,
       body,
-      extensionName: options.extension,
-      repoDir: options.extension ? resolveRepoDir(options.repoDir) : undefined,
+      swampLabTarget: extensionTarget?.kind === "swamp-lab"
+        ? extensionTarget
+        : undefined,
     });
 
     ctx.logger.debug("Feature request submitted successfully");

@@ -54,6 +54,12 @@ import {
 import { collectReporterContext } from "../../infrastructure/process/reporter_context_collector.ts";
 import { VERSION } from "./version.ts";
 
+/** Extension target after refusals have been rendered out — never "refused". */
+export type UsableExtensionTarget = Exclude<
+  ExtensionTarget,
+  { kind: "refused" }
+>;
+
 const SUPPORT_EMAIL = "support@systeminit.com";
 
 /** The resolved submission destination. */
@@ -93,10 +99,13 @@ export interface SubmitIssueInput {
   type: "bug" | "feature" | "security";
   title: string;
   body: string;
-  /** Extension name from `--extension`, triggers extension-scoped routing. */
-  extensionName?: string;
-  /** Repository directory used to resolve the pulled extension. */
-  repoDir?: string;
+  /**
+   * Pre-resolved `@swamp/*` target (from {@link resolveExtensionOrRefuse}).
+   * Only passed on the `@swamp/*` extension path — third-party targets
+   * use {@link dispatchExtensionRepositoryReport} directly and never
+   * reach submitIssue.
+   */
+  swampLabTarget?: Extract<UsableExtensionTarget, { kind: "swamp-lab" }>;
 }
 
 /** Build a mailto: URL with pre-filled subject and body using RFC 6068 percent-encoding. */
@@ -138,12 +147,74 @@ async function promptLoginOrEmail(): Promise<"login" | "email"> {
 }
 
 /**
- * Submit an issue to the already-resolved destination.
- * Called after title/body are collected.
+ * Extension pre-flight: resolves the target, renders any refusal, and
+ * returns a usable target for the caller to act on. Returns null when
+ * the refusal was rendered and the subcommand should exit.
  *
- * When `input.extensionName` is set, the extension target is resolved
- * first. Refusals and third-party repository handoffs never hit swamp-
- * club — they short-circuit the Lab submission path entirely.
+ * Call this BEFORE {@link resolveDestination} — refusals and repository
+ * handoffs don't need Lab auth, so auth-checking the user up-front would
+ * spuriously fail commands that were never going to touch the Lab.
+ */
+export async function resolveExtensionOrRefuse(
+  ctx: CommandContext,
+  extensionName: string,
+  repoDir: string,
+): Promise<UsableExtensionTarget | null> {
+  const target = await resolveExtensionTarget(repoDir, extensionName);
+  if (target.kind === "refused") {
+    renderExtensionRefusal(
+      {
+        extensionName: target.extensionName,
+        reason: target.reason,
+        guidance: target.guidance,
+      },
+      ctx.outputMode,
+    );
+    return null;
+  }
+  return target;
+}
+
+/**
+ * Dispatches a report to the publisher's declared repository via gh or
+ * browser handoff, then renders the completion event. Used by all three
+ * subcommands once the body has been collected.
+ */
+export async function dispatchExtensionRepositoryReport(
+  ctx: CommandContext,
+  target: Extract<UsableExtensionTarget, { kind: "repository" }>,
+  input: { type: "bug" | "feature" | "security"; title: string; body: string },
+): Promise<void> {
+  const reporterContext = collectReporterContext({
+    extensionName: target.extensionName,
+    extensionVersion: target.extensionVersion,
+    swampVersion: VERSION,
+  });
+  const result = await dispatchRepositoryReport(
+    target,
+    {
+      type: input.type,
+      title: input.title,
+      body: input.body,
+      reporterContext,
+      outputMode: ctx.outputMode,
+    },
+    { logger: ctx.logger },
+  );
+  renderExtensionRepositoryHandoff(
+    { result, extensionName: target.extensionName },
+    ctx.outputMode,
+  );
+}
+
+/**
+ * Submit an issue to the already-resolved destination. Called after
+ * title/body are collected for the plain (non-extension) path and for
+ * the `@swamp/*` extension path (both of which need Lab auth).
+ *
+ * For the plain path, `input.extensionName` is unset.
+ * For the `@swamp/*` path, `input.extensionName` is set and libswamp
+ * appends extension metadata to the body.
  */
 export async function submitIssue(
   ctx: CommandContext,
@@ -153,62 +224,9 @@ export async function submitIssue(
   const libCtx = createLibSwampContext({ logger: ctx.logger });
   const renderer = createIssueCreateRenderer(ctx.outputMode);
 
-  // Extension-scoped routing: resolve the target first.
-  // Refusals are INFORMATIONAL (exit 0), not errors.
-  let extensionTarget: ExtensionTarget | undefined;
-  if (input.extensionName) {
-    if (!input.repoDir) {
-      throw new UserError(
-        "--extension requires a repository directory. Run swamp from inside a swamp repo.",
-      );
-    }
-    extensionTarget = await resolveExtensionTarget(
-      input.repoDir,
-      input.extensionName,
-    );
-    if (extensionTarget.kind === "refused") {
-      renderExtensionRefusal(
-        {
-          extensionName: extensionTarget.extensionName,
-          reason: extensionTarget.reason,
-          guidance: extensionTarget.guidance,
-        },
-        ctx.outputMode,
-      );
-      return;
-    }
-  }
-
   if (destination.method === "abort") {
     libCtx.logger
       .info`Run "swamp auth login" first, then retry this command.`;
-    return;
-  }
-
-  // Third-party repository handoff — never touches swamp-club Lab.
-  if (extensionTarget?.kind === "repository") {
-    const reporterContext = collectReporterContext({
-      extensionName: extensionTarget.extensionName,
-      extensionVersion: extensionTarget.extensionVersion,
-      swampVersion: VERSION,
-    });
-    const result = await dispatchRepositoryReport(
-      extensionTarget,
-      {
-        type: input.type,
-        title: input.title,
-        body: input.body,
-        reporterContext,
-        outputMode: ctx.outputMode,
-      },
-      {
-        logger: ctx.logger,
-      },
-    );
-    renderExtensionRepositoryHandoff(
-      { result, extensionName: extensionTarget.extensionName },
-      ctx.outputMode,
-    );
     return;
   }
 
@@ -253,17 +271,17 @@ export async function submitIssue(
 
   // @swamp path: populate the extension metadata so libswamp assembles
   // the body with Extension: / Upstream repository: / Environment lines.
-  const labInput = extensionTarget?.kind === "swamp-lab"
+  const labInput = input.swampLabTarget
     ? {
       type: input.type,
       title: input.title,
       body: input.body,
-      extensionName: extensionTarget.extensionName,
-      extensionVersion: extensionTarget.extensionVersion,
-      repositoryUrl: extensionTarget.repositoryUrl,
+      extensionName: input.swampLabTarget.extensionName,
+      extensionVersion: input.swampLabTarget.extensionVersion,
+      repositoryUrl: input.swampLabTarget.repositoryUrl,
       reporterContext: collectReporterContext({
-        extensionName: extensionTarget.extensionName,
-        extensionVersion: extensionTarget.extensionVersion,
+        extensionName: input.swampLabTarget.extensionName,
+        extensionVersion: input.swampLabTarget.extensionVersion,
         swampVersion: VERSION,
       }),
     }

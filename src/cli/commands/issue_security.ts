@@ -28,7 +28,13 @@ import {
 } from "../../presentation/renderers/issue_create.ts";
 import { EditorService } from "../../infrastructure/editor/editor_service.ts";
 import { UserError } from "../../domain/errors.ts";
-import { resolveDestination, submitIssue } from "./issue_submit.ts";
+import {
+  dispatchExtensionRepositoryReport,
+  resolveDestination,
+  resolveExtensionOrRefuse,
+  submitIssue,
+  type UsableExtensionTarget,
+} from "./issue_submit.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -141,8 +147,21 @@ export const issueSecurityCommand = new Command()
       throw new UserError("--email and --extension cannot be used together.");
     }
 
-    const destination = await resolveDestination(ctx, options.email);
-    if (destination.method === "abort") {
+    let extensionTarget: UsableExtensionTarget | undefined;
+    if (options.extension) {
+      const resolved = await resolveExtensionOrRefuse(
+        ctx,
+        options.extension,
+        resolveRepoDir(options.repoDir),
+      );
+      if (resolved === null) return;
+      extensionTarget = resolved;
+    }
+
+    const destination = !extensionTarget || extensionTarget.kind === "swamp-lab"
+      ? await resolveDestination(ctx, options.email)
+      : undefined;
+    if (destination?.method === "abort") {
       await submitIssue(ctx, destination, {
         type: "security",
         title: "",
@@ -201,12 +220,22 @@ export const issueSecurityCommand = new Command()
 
     ctx.logger.debug`Submitting security report with title: ${title}`;
 
-    await submitIssue(ctx, destination, {
+    if (extensionTarget?.kind === "repository") {
+      await dispatchExtensionRepositoryReport(ctx, extensionTarget, {
+        type: "security",
+        title,
+        body,
+      });
+      return;
+    }
+
+    await submitIssue(ctx, destination!, {
       type: "security",
       title,
       body,
-      extensionName: options.extension,
-      repoDir: options.extension ? resolveRepoDir(options.repoDir) : undefined,
+      swampLabTarget: extensionTarget?.kind === "swamp-lab"
+        ? extensionTarget
+        : undefined,
     });
 
     ctx.logger.debug("Security report submitted successfully");
