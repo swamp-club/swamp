@@ -347,3 +347,267 @@ Deno.test("resolveExtensionFiles rejects absolute path in workflows", async () =
     );
   });
 });
+
+Deno.test("resolveExtensionFiles preserves additionalFiles paths (absolute)", async () => {
+  await withTempRepo(async (dir) => {
+    const modelsDir = join(dir, "extensions", "models");
+    await Deno.writeTextFile(
+      join(modelsDir, "m.ts"),
+      'export const name = "m";',
+    );
+    await Deno.mkdir(join(dir, "prompts", "nested"), { recursive: true });
+    await Deno.writeTextFile(join(dir, "prompts", "review.md"), "p");
+    await Deno.writeTextFile(join(dir, "prompts", "nested", "deep.md"), "n");
+    await Deno.writeTextFile(join(dir, "README.md"), "r");
+
+    const manifestPath = join(dir, "manifest.yaml");
+    await Deno.writeTextFile(
+      manifestPath,
+      stringifyYaml({
+        manifestVersion: 1,
+        name: "@test/myext",
+        version: "2026.03.03.1",
+        models: ["m.ts"],
+        additionalFiles: [
+          "prompts/review.md",
+          "prompts/nested/deep.md",
+          "README.md",
+        ],
+      }),
+    );
+
+    const result = await resolveExtensionFiles({
+      repoDir: dir,
+      manifestPath,
+      repoContext: stubRepoContext,
+      logger,
+    });
+
+    assertEquals(result.additionalFilePaths.length, 3);
+    assertEquals(
+      result.additionalFilePaths[0],
+      join(dir, "prompts", "review.md"),
+    );
+    assertEquals(
+      result.additionalFilePaths[1],
+      join(dir, "prompts", "nested", "deep.md"),
+    );
+    assertEquals(result.additionalFilePaths[2], join(dir, "README.md"));
+    assertEquals(result.manifest.additionalFiles.length, 3);
+  });
+});
+
+Deno.test("resolveExtensionFiles rejects duplicate additionalFiles entries", async () => {
+  await withTempRepo(async (dir) => {
+    const modelsDir = join(dir, "extensions", "models");
+    await Deno.writeTextFile(
+      join(modelsDir, "m.ts"),
+      'export const name = "m";',
+    );
+    await Deno.mkdir(join(dir, "prompts"), { recursive: true });
+    await Deno.writeTextFile(join(dir, "prompts", "review.md"), "p");
+
+    const manifestPath = join(dir, "manifest.yaml");
+    await Deno.writeTextFile(
+      manifestPath,
+      stringifyYaml({
+        manifestVersion: 1,
+        name: "@test/myext",
+        version: "2026.03.03.1",
+        models: ["m.ts"],
+        additionalFiles: ["prompts/review.md", "./prompts/review.md"],
+      }),
+    );
+
+    await assertRejects(
+      () =>
+        resolveExtensionFiles({
+          repoDir: dir,
+          manifestPath,
+          repoContext: stubRepoContext,
+          logger,
+        }),
+      UserError,
+      "Duplicate additionalFiles",
+    );
+  });
+});
+
+Deno.test("resolveExtensionFiles rejects case-folded duplicate additionalFiles", async () => {
+  await withTempRepo(async (dir) => {
+    const modelsDir = join(dir, "extensions", "models");
+    await Deno.writeTextFile(
+      join(modelsDir, "m.ts"),
+      'export const name = "m";',
+    );
+    await Deno.mkdir(join(dir, "prompts"), { recursive: true });
+    await Deno.writeTextFile(join(dir, "prompts", "review.md"), "p");
+
+    const manifestPath = join(dir, "manifest.yaml");
+    await Deno.writeTextFile(
+      manifestPath,
+      stringifyYaml({
+        manifestVersion: 1,
+        name: "@test/myext",
+        version: "2026.03.03.1",
+        models: ["m.ts"],
+        additionalFiles: ["prompts/review.md", "prompts/REVIEW.md"],
+      }),
+    );
+
+    await assertRejects(
+      () =>
+        resolveExtensionFiles({
+          repoDir: dir,
+          manifestPath,
+          repoContext: stubRepoContext,
+          logger,
+        }),
+      UserError,
+      "Duplicate additionalFiles",
+    );
+  });
+});
+
+Deno.test("resolveExtensionFiles rejects NFC/NFD unicode collisions", async () => {
+  await withTempRepo(async (dir) => {
+    const modelsDir = join(dir, "extensions", "models");
+    await Deno.writeTextFile(
+      join(modelsDir, "m.ts"),
+      'export const name = "m";',
+    );
+    await Deno.mkdir(join(dir, "prompts"), { recursive: true });
+    // "café" in NFC (1-char é) + NFD (e + combining acute)
+    const nfc = "café.md".normalize("NFC");
+    const nfd = "café.md".normalize("NFD");
+    await Deno.writeTextFile(join(dir, "prompts", nfc), "p");
+
+    const manifestPath = join(dir, "manifest.yaml");
+    await Deno.writeTextFile(
+      manifestPath,
+      stringifyYaml({
+        manifestVersion: 1,
+        name: "@test/myext",
+        version: "2026.03.03.1",
+        models: ["m.ts"],
+        additionalFiles: [`prompts/${nfc}`, `prompts/${nfd}`],
+      }),
+    );
+
+    await assertRejects(
+      () =>
+        resolveExtensionFiles({
+          repoDir: dir,
+          manifestPath,
+          repoContext: stubRepoContext,
+          logger,
+        }),
+      UserError,
+      "Duplicate additionalFiles",
+    );
+  });
+});
+
+Deno.test("resolveExtensionFiles rejects symlinks in additionalFiles", async () => {
+  await withTempRepo(async (dir) => {
+    const modelsDir = join(dir, "extensions", "models");
+    await Deno.writeTextFile(
+      join(modelsDir, "m.ts"),
+      'export const name = "m";',
+    );
+    await Deno.mkdir(join(dir, "prompts"), { recursive: true });
+    const target = join(dir, "target.md");
+    await Deno.writeTextFile(target, "real");
+    const link = join(dir, "prompts", "review.md");
+    await Deno.symlink(target, link);
+
+    const manifestPath = join(dir, "manifest.yaml");
+    await Deno.writeTextFile(
+      manifestPath,
+      stringifyYaml({
+        manifestVersion: 1,
+        name: "@test/myext",
+        version: "2026.03.03.1",
+        models: ["m.ts"],
+        additionalFiles: ["prompts/review.md"],
+      }),
+    );
+
+    await assertRejects(
+      () =>
+        resolveExtensionFiles({
+          repoDir: dir,
+          manifestPath,
+          repoContext: stubRepoContext,
+          logger,
+        }),
+      UserError,
+      "symlink",
+    );
+  });
+});
+
+Deno.test("resolveExtensionFiles accepts zero-byte additionalFiles", async () => {
+  await withTempRepo(async (dir) => {
+    const modelsDir = join(dir, "extensions", "models");
+    await Deno.writeTextFile(
+      join(modelsDir, "m.ts"),
+      'export const name = "m";',
+    );
+    await Deno.writeTextFile(join(dir, "empty.md"), "");
+
+    const manifestPath = join(dir, "manifest.yaml");
+    await Deno.writeTextFile(
+      manifestPath,
+      stringifyYaml({
+        manifestVersion: 1,
+        name: "@test/myext",
+        version: "2026.03.03.1",
+        models: ["m.ts"],
+        additionalFiles: ["empty.md"],
+      }),
+    );
+
+    const result = await resolveExtensionFiles({
+      repoDir: dir,
+      manifestPath,
+      repoContext: stubRepoContext,
+      logger,
+    });
+    assertEquals(result.additionalFilePaths.length, 1);
+  });
+});
+
+Deno.test("resolveExtensionFiles errors clearly when additionalFile missing", async () => {
+  await withTempRepo(async (dir) => {
+    const modelsDir = join(dir, "extensions", "models");
+    await Deno.writeTextFile(
+      join(modelsDir, "m.ts"),
+      'export const name = "m";',
+    );
+
+    const manifestPath = join(dir, "manifest.yaml");
+    await Deno.writeTextFile(
+      manifestPath,
+      stringifyYaml({
+        manifestVersion: 1,
+        name: "@test/myext",
+        version: "2026.03.03.1",
+        models: ["m.ts"],
+        additionalFiles: ["missing.md"],
+      }),
+    );
+
+    await assertRejects(
+      () =>
+        resolveExtensionFiles({
+          repoDir: dir,
+          manifestPath,
+          repoContext: stubRepoContext,
+          logger,
+        }),
+      UserError,
+      "not found",
+    );
+  });
+});

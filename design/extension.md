@@ -288,7 +288,52 @@ directory path to avoid collisions.
 ### Additional Files
 
 Files listed in `additionalFiles` are included under the `files/` directory
-preserving their relative paths.
+preserving their relative paths. A manifest entry `prompts/review.md` lands
+at `files/prompts/review.md` in the archive; pulled consumers find it at
+`.swamp/pulled-extensions/<name>/files/prompts/review.md`.
+
+Push rejects:
+
+- Duplicate entries (case-insensitive, NFC-normalized) — two entries that
+  would resolve to the same archive path fail with a clear error naming
+  both offenders.
+- Symlinks — to prevent archive bloat and path escapes, entries pointing
+  at symlinks are rejected. Copy the target file into the extension tree
+  instead.
+
+### Runtime access
+
+Model method `execute` functions and report functions receive a context
+with an `extensionFile(relPath)` helper that resolves a relative path
+from `additionalFiles` to an absolute filesystem path. The helper
+abstracts the source-vs-pulled layout divergence — the same code works
+whether the extension was added via `swamp extension source add` (files
+resolve relative to the manifest) or pulled from the registry (files
+resolve under `.swamp/pulled-extensions/<name>/files/`).
+
+```ts
+export const model = {
+  type: "@org/ext/demo",
+  version: "2026.04.22.1",
+  methods: {
+    run: {
+      arguments: z.object({}),
+      execute: async (_args, ctx) => {
+        const path = ctx.extensionFile("prompts/review.md");
+        const prompt = await Deno.readTextFile(path);
+        // ...
+      },
+    },
+  },
+};
+```
+
+The helper throws a typed `UserError` when the path is unsafe (contains
+`..`, starts with `/`), when the file is missing, or when called on a
+model that isn't shipped via an extension manifest. The missing-file
+error is mode-aware: pulled-mode archives get a re-publish hint;
+source-mode callers get the absolute path and a pointer at the manifest
+entry.
 
 ## Import Resolution
 

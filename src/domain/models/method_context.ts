@@ -22,6 +22,7 @@
 // exactly what it exercises. See method_context_arch_test.ts for enforcement.
 
 import type { MethodContext } from "./model.ts";
+import { resolveExtensionFile } from "../extensions/extension_file_resolver.ts";
 
 /**
  * Startup-scoped dependencies shared across every method invocation in a
@@ -70,6 +71,12 @@ export interface MethodInvocationContext {
   driverConfig?: MethodContext["driverConfig"];
   vaultSecrets?: MethodContext["vaultSecrets"];
   unresolvedMethodArgs?: MethodContext["unresolvedMethodArgs"];
+  /**
+   * Extension-files root for `ctx.extensionFile()`. Read from
+   * `ModelDefinition.extensionFilesRoot` at each call site. Undefined for
+   * built-in model types and for source-loaded dirs without a manifest.
+   */
+  extensionFilesRoot?: string;
 }
 
 /**
@@ -86,6 +93,7 @@ export function buildMethodContext(
   common: CommonMethodContextDeps,
   invocation: MethodInvocationContext,
 ): MethodContext {
+  const root = invocation.extensionFilesRoot;
   return {
     signal: invocation.signal,
     repoDir: invocation.repoDir,
@@ -118,5 +126,6 @@ export function buildMethodContext(
     driverConfig: invocation.driverConfig,
     vaultSecrets: invocation.vaultSecrets,
     unresolvedMethodArgs: invocation.unresolvedMethodArgs,
+    extensionFile: (relPath: string) => resolveExtensionFile(root, relPath),
   };
 }

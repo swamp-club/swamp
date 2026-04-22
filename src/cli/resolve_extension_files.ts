@@ -72,6 +72,21 @@ export interface ResolvedExtensionFiles {
   additionalFilePaths: string[];
 }
 
+/**
+ * Normalize an additionalFiles entry so equivalent paths compare equal:
+ * Unicode NFC form, forward slashes, collapse `./` segments, strip trailing
+ * slash, case-fold. The NFC step ensures macOS APFS (decomposed) and Linux
+ * ext4 (composed) don't mask true collisions.
+ */
+function normalizeAdditionalFileEntry(entry: string): string {
+  const nfc = entry.normalize("NFC");
+  const forwardSlashed = nfc.replace(/\\/g, "/");
+  const segments = forwardSlashed.split("/").filter((s) =>
+    s !== "." && s !== ""
+  );
+  return segments.join("/").toLowerCase();
+}
+
 export async function resolveExtensionFiles(
   ctx: ResolveExtensionFilesContext,
 ): Promise<ResolvedExtensionFiles> {
@@ -414,15 +429,36 @@ export async function resolveExtensionFiles(
     includeFilePaths.push(incPath);
   }
 
-  // 15. Validate additional files
+  // 15. Validate additional files: uniqueness, symlink rejection, existence.
   const additionalFilePaths: string[] = [];
+  const seenNormalized = new Map<string, string>();
   for (const af of manifest.additionalFiles) {
+    const normalized = normalizeAdditionalFileEntry(af);
+    const existing = seenNormalized.get(normalized);
+    if (existing !== undefined) {
+      throw new UserError(
+        `Duplicate additionalFiles entries: "${existing}" and "${af}" ` +
+          `resolve to the same archive path (case-insensitive, normalized). ` +
+          `Remove one or rename the file so basenames differ.`,
+      );
+    }
+    seenNormalized.set(normalized, af);
+
     const afPath = resolve(dirname(absoluteManifestPath), af);
+    let info: Deno.FileInfo;
     try {
-      await Deno.stat(afPath);
+      info = await Deno.lstat(afPath);
     } catch {
       throw new UserError(
         `Additional file not found: ${af} (expected at ${afPath})`,
+      );
+    }
+    if (info.isSymlink) {
+      throw new UserError(
+        `Additional file is a symlink: ${af} (at ${afPath}). ` +
+          `Symlinks in additionalFiles are rejected to prevent archive ` +
+          `bloat and path escapes — copy the target file into the ` +
+          `extension tree instead.`,
       );
     }
     additionalFilePaths.push(afPath);

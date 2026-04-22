@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { basename, dirname, join, relative } from "@std/path";
+import { dirname, join, relative } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { ModelType } from "../../domain/models/model_type.ts";
 import { validateContentCollectives } from "../../domain/extensions/extension_collective_validator.ts";
@@ -1111,10 +1111,23 @@ async function createArchive(
       await copySkillDir(absolutePath, destDir);
     }
 
-    // Copy additional files
-    for (const af of input.additionalFilePaths) {
-      const destPath = join(extDir, "files", basename(af));
-      await Deno.copyFile(af, destPath);
+    // Copy additional files, preserving the relative paths declared in the
+    // manifest. additionalFiles (relative) and additionalFilePaths (absolute)
+    // are parallel arrays maintained by resolve_extension_files.ts.
+    if (
+      input.manifest.additionalFiles.length !== input.additionalFilePaths.length
+    ) {
+      throw validationFailed(
+        "additionalFiles and additionalFilePaths length mismatch — " +
+          "this is a bug in extension file resolution.",
+      );
+    }
+    for (let i = 0; i < input.additionalFilePaths.length; i++) {
+      const absPath = input.additionalFilePaths[i];
+      const relPath = input.manifest.additionalFiles[i];
+      const destPath = join(extDir, "files", relPath);
+      await Deno.mkdir(dirname(destPath), { recursive: true });
+      await Deno.copyFile(absPath, destPath);
     }
 
     // Create tar.gz

@@ -520,6 +520,7 @@ export class DefaultStepExecutor implements StepExecutor {
             skipCheckNames: ctx.skipCheckNames,
             skipCheckLabels: ctx.skipCheckLabels,
             skipAllChecks: ctx.skipAllChecks,
+            extensionFilesRoot: modelDef.extensionFilesRoot,
             onEvent: ctx.emitEvent
               ? (event: MethodExecutionEvent) => {
                 if (event.type === "output") {
@@ -749,6 +750,7 @@ export class DefaultStepExecutor implements StepExecutor {
             executionStatus: "succeeded",
             dataHandles,
             outputSpecs: buildOutputSpecs(modelDef),
+            extensionFilesRoot: modelDef.extensionFilesRoot,
           },
         );
 
@@ -852,6 +854,7 @@ export class DefaultStepExecutor implements StepExecutor {
               errorMessage,
               dataHandles: [],
               outputSpecs: buildOutputSpecs(modelDef),
+              extensionFilesRoot: modelDef.extensionFilesRoot,
             },
           );
 

@@ -346,6 +346,15 @@ export interface MethodContext {
    * Used by the shell model to resolve vault secrets for shell safety.
    */
   unresolvedMethodArgs?: Record<string, unknown>;
+
+  /**
+   * Resolve a path to an asset declared in the extension's
+   * `additionalFiles` manifest field. Returns an absolute filesystem path.
+   * Throws if the model is not shipped as an extension, if `relPath` is
+   * unsafe, or if the file does not exist. Error messages are mode-aware
+   * (pulled vs source) to give actionable guidance.
+   */
+  extensionFile?: (relPath: string) => string;
 }
 
 /**
@@ -664,6 +673,15 @@ export interface ModelDefinition<
    * result so multiple executions of the same model in one process only bundle once.
    */
   bundleSourceFactory?: () => Promise<string>;
+
+  /**
+   * Absolute filesystem root from which `additionalFiles` entries resolve at
+   * runtime. Pulled mode: `.swamp/pulled-extensions/<name>/files`. Source
+   * mode: the manifest's directory. Undefined for built-in model types and
+   * for source-loaded directories without a `manifest.yaml`. The method
+   * context's `extensionFile()` helper closes over this value.
+   */
+  extensionFilesRoot?: string;
 }
 
 /**

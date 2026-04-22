@@ -436,6 +436,7 @@ export async function* modelMethodRun(
                     skipCheckLabels: input.skipCheckLabels,
                     skipAllChecks: input.skipAllChecks,
                     driver: input.driver,
+                    extensionFilesRoot: modelDef.extensionFilesRoot,
                     onEvent: (event: MethodExecutionEvent) => {
                       if (event.type === "output") {
                         push({
@@ -494,6 +495,7 @@ export async function* modelMethodRun(
                 errorMessage,
                 dataHandles: [],
                 outputSpecs: buildOutputSpecs(modelDef),
+                extensionFilesRoot: modelDef.extensionFilesRoot,
               },
             );
 
@@ -641,6 +643,7 @@ export async function* modelMethodRun(
               executionStatus: "succeeded",
               dataHandles,
               outputSpecs: buildOutputSpecs(modelDef),
+              extensionFilesRoot: modelDef.extensionFilesRoot,
             },
           );
 

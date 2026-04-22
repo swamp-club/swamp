@@ -282,6 +282,15 @@ export class UserModelLoader {
   private readonly denoRuntime: DenoRuntime;
   private readonly repoDir: string | null;
   private readonly datastoreResolver?: DatastorePathResolver;
+  /**
+   * Per-loader cache from an extension's manifest directory to its
+   * `additionalFiles` root. Pulled extensions always return
+   * `<manifestDir>/files`; source-loaded extensions return
+   * `<manifestDir>` (authors put assets next to the manifest). Caching
+   * here means multiple models in the same extension share a single
+   * walk-up and manifest stat.
+   */
+  private readonly extensionFilesRootCache = new Map<string, string>();
 
   /**
    * @param denoRuntime - Runtime manager for obtaining a deno binary path
@@ -427,6 +436,9 @@ export class UserModelLoader {
         }
 
         const modelDef = this.convertToModelDefinition(userModel);
+        modelDef.extensionFilesRoot = this.resolveExtensionFilesRoot(
+          absolutePath,
+        );
 
         // Defer self-contained bundling to first out-of-process execution (e.g. Docker).
         // Memoized so multiple executions in one process only bundle once.
@@ -729,6 +741,9 @@ export class UserModelLoader {
     }
 
     const modelDef = this.convertToModelDefinition(parsed.data);
+    modelDef.extensionFilesRoot = this.resolveExtensionFilesRoot(
+      entry.source_path,
+    );
 
     // Set up self-contained bundle factory for out-of-process execution
     const denoPath = await this.denoRuntime.ensureDeno();
@@ -1091,6 +1106,9 @@ export class UserModelLoader {
 
       // Also register the full definition since we already imported it
       const modelDef = this.convertToModelDefinition(parsed.data);
+      modelDef.extensionFilesRoot = this.resolveExtensionFilesRoot(
+        absolutePath,
+      );
       const denoPathForBundle = denoPath;
       let bundlePromise: Promise<string> | undefined;
       modelDef.bundleSourceFactory = () => {
@@ -1468,6 +1486,46 @@ export class UserModelLoader {
 
       return { dataHandles: userResult.dataHandles };
     };
+  }
+
+  /**
+   * Resolve the extension-files root for a model loaded from `sourcePath`.
+   * Walks up looking for `manifest.yaml`, stopping at filesystem root.
+   * Returns `<manifestDir>/files` for pulled extensions,
+   * `<manifestDir>` for source-loaded extensions, or undefined when no
+   * manifest is found (built-in types, direct-content source layout
+   * without a manifest, loose source dirs).
+   */
+  private resolveExtensionFilesRoot(
+    sourcePath: string,
+  ): string | undefined {
+    let currentDir = dirname(sourcePath);
+    // Walk up, stopping at root (dirname of root === root).
+    while (true) {
+      const cached = this.extensionFilesRootCache.get(currentDir);
+      if (cached !== undefined) return cached;
+
+      const manifestPath = join(currentDir, "manifest.yaml");
+      try {
+        Deno.lstatSync(manifestPath);
+        // Found. Pulled extensions live under .swamp/pulled-extensions/
+        // and extract additionalFiles into a `files/` subdir on pull;
+        // source-loaded extensions resolve relative to the manifest dir.
+        const normalized = currentDir.replace(/\\/g, "/");
+        const pulledMarker = `/${SWAMP_DATA_DIR}/pulled-extensions/`;
+        const root = normalized.includes(pulledMarker)
+          ? join(currentDir, "files")
+          : currentDir;
+        this.extensionFilesRootCache.set(currentDir, root);
+        return root;
+      } catch {
+        // Not here; walk up.
+      }
+
+      const parent = dirname(currentDir);
+      if (parent === currentDir) return undefined;
+      currentDir = parent;
+    }
   }
 
   /**

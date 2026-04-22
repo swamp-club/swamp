@@ -60,13 +60,52 @@ dependencies:
 | `datastores`      | No*      | Datastore file paths relative to `extensions/datastores/`                                        |
 | `reports`         | No*      | Report file paths relative to `extensions/reports/`                                              |
 | `skills`          | No*      | Skill directory names resolved from the tool's skill directory (e.g., `.claude/skills/`)         |
-| `additionalFiles` | No       | Extra files relative to the manifest location                                                    |
+| `additionalFiles` | No       | Extra files relative to the manifest location, directory structure preserved                     |
 | `platforms`       | No       | OS/architecture hints (e.g. `darwin-aarch64`, `linux-x86_64`)                                    |
 | `labels`          | No       | Categorization labels (e.g. `aws`, `kubernetes`, `security`)                                     |
 | `dependencies`    | No       | Other extensions this one depends on                                                             |
 
 *At least one of `models`, `workflows`, `vaults`, `drivers`, `datastores`,
 `reports`, or `skills` must be present with entries.
+
+### additionalFiles — directory structure and runtime access
+
+`additionalFiles` preserves directory structure through push/pull. An entry
+`prompts/review.md` lands in the archive at `files/prompts/review.md`, and
+pulled consumers find it at
+`.swamp/pulled-extensions/<name>/files/prompts/review.md`.
+
+Push rejects:
+
+- **Duplicate entries** (case-insensitive, NFC-normalized). Two entries that
+  would resolve to the same archive path fail with a clear error — fix the
+  manifest before re-running push.
+- **Symlinks**. Entries pointing at symlinks are rejected to prevent archive
+  bloat and path escapes. Copy the target file into the extension tree instead.
+
+At runtime, models and reports receive `ctx.extensionFile(relPath)` which
+returns the absolute path to a bundled asset. The helper works identically
+whether the extension is source-loaded or pulled, so the same code runs in both
+local development and production:
+
+```ts
+export const model = {
+  type: "@myorg/ext/demo",
+  version: "2026.04.22.1",
+  methods: {
+    run: {
+      arguments: z.object({}),
+      execute: async (_args, ctx) => {
+        const path = ctx.extensionFile("prompts/review.md");
+        return { dataHandles: [] };
+      },
+    },
+  },
+};
+```
+
+Use `ctx.extensionFile()` instead of hardcoding `.swamp/pulled-extensions/`
+paths — hardcoding breaks smoke tests run against a source-loaded extension.
 
 ### Name Rules
 

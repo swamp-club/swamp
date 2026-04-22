@@ -260,6 +260,38 @@ The execute function receives pre-validated `args` and a `context` object:
 - `context.readResource(instanceName, version?)` — Read stored JSON
 - `context.createFileWriter(specName, instanceName)` — Create file writer
 - `context.dataRepository` — Advanced data operations
+- `context.extensionFile(relPath)` — Resolve a path from the manifest's
+  `additionalFiles` to an absolute filesystem path. Works identically in
+  source-loaded and pulled modes. Throws if the path is unsafe, if the file is
+  missing, or if the model is not shipped via an extension manifest.
+
+### Reading bundled assets
+
+Models shipped via an extension manifest can declare runtime assets in
+`additionalFiles`:
+
+```yaml
+# manifest.yaml
+additionalFiles:
+  - prompts/review.md
+  - templates/summary.txt
+```
+
+Read them at runtime via `ctx.extensionFile()`:
+
+```ts
+execute: (async (_args, ctx) => {
+  const promptPath = ctx.extensionFile("prompts/review.md");
+  const prompt = await Deno.readTextFile(promptPath);
+  // ...
+});
+```
+
+Do **not** hardcode `.swamp/pulled-extensions/<name>/files/...` — that layout
+only exists for pulled extensions. Source-loaded extensions
+(`swamp extension source add`) resolve the same relative path against the
+manifest directory, which `ctx.extensionFile()` handles for you. Hardcoded paths
+pass smoke tests in source mode but break when consumers pull the extension.
 
 Return `{ dataHandles: [handle] }` from execute. Throw **before** writing data —
 failed executions should not persist incorrect data. The workflow engine catches

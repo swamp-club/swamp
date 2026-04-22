@@ -407,6 +407,7 @@ export class DefaultModelValidationService implements ModelValidationService {
                 return this;
               },
             } as unknown as MethodContext["logger"],
+            extensionFilesRoot: modelDef.extensionFilesRoot,
           },
         );
 
