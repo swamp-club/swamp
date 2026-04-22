@@ -263,11 +263,12 @@ swamp extension push manifest.yaml --yes --json
 
 ## When to Use Other Skills
 
-| Need                            | Use Skill                   |
-| ------------------------------- | --------------------------- |
-| Create custom models            | `swamp-extension-model`     |
-| Create custom vaults            | `swamp-extension-vault`     |
-| Create custom datastores        | `swamp-extension-datastore` |
-| Create custom execution drivers | `swamp-extension-driver`    |
-| Repository setup and management | `swamp-repo`                |
-| Create reports                  | `swamp-report`              |
+| Need                               | Use Skill                   |
+| ---------------------------------- | --------------------------- |
+| Create custom models               | `swamp-extension-model`     |
+| Create custom vaults               | `swamp-extension-vault`     |
+| Create custom datastores           | `swamp-extension-datastore` |
+| Create custom execution drivers    | `swamp-extension-driver`    |
+| Repository setup and management    | `swamp-repo`                |
+| Create reports                     | `swamp-report`              |
+| Quality scorecard & best practices | `swamp-extension-quality`   |
