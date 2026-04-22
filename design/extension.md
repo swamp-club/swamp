@@ -733,3 +733,60 @@ mechanism.
 Per-bundle lazy loading for vault, driver, datastore, and report registries
 will follow the same pattern using the shared `kind` column in the bundle
 catalog schema.
+
+## Reporting Issues Against Extensions
+
+Users can file reports against a specific extension with `--extension <name>`
+on the `swamp issue bug|feature|security` commands. The CLI routes the report
+according to the extension's collective and its declared `repository`:
+
+1. **`@swamp/*` extensions** — routed to the existing swamp-club Lab (the same
+   endpoint `swamp issue bug` already uses). Extension name, installed version,
+   and the reporter's environment are appended to the body under a
+   `## Environment` section. The title is not modified.
+
+2. **Third-party extensions with `repository` set** — routed to the declared
+   upstream repository. When the `gh` CLI is installed and authenticated
+   (`GH_TOKEN` or `gh auth login`), the report is created via `gh issue
+   create`. Otherwise the CLI opens the provider's new-issue URL in the
+   browser with title and body pre-filled (GitHub and GitLab supported;
+   other hosts open the repo root and the prepared body is printed to the
+   terminal for manual pasting).
+
+3. **Third-party extensions without `repository`** — refused cleanly with
+   guidance that points reporters at the extension's swamp-club page (where
+   publisher contact info lives) and tells publishers to add a `repository:`
+   field to their manifest. Exit code stays 0; the refusal is informational.
+
+### Security Routing
+
+For `swamp issue security --extension <name>` against a third-party GitHub
+repository, the CLI first checks whether the repository has enabled GitHub's
+Private Vulnerability Reporting (PVR) feature via `gh api
+repos/<owner>/<repo>/private-vulnerability-reporting`:
+
+- **PVR enabled** — open the GitHub advisory form
+  (`<repo>/security/advisories/new`). The form is structured and doesn't
+  accept URL prefill; the user fills it in manually.
+- **PVR disabled** — **refuse**. This is a load-bearing security guardrail:
+  the CLI never falls back to creating a public issue for a security report,
+  because that would silently publish the vulnerability. The refusal guidance
+  tells the reporter to contact the publisher privately and tells the
+  publisher to enable PVR at `<repo>/settings/security_analysis`.
+- **PVR check failed or gh unavailable** — open the advisory URL with a
+  fallback issue URL surfaced in the output. The user decides after seeing
+  what GitHub responds with.
+
+The asymmetry between GitHub (hard refusal when PVR is off) and GitLab
+(routes to the normal issue form with a "toggle confidential" warning) is
+intentional: GitLab's confidential-issues feature is universal and
+reliable, so the user always has a safe in-form path. GitHub's PVR is
+opt-in per repo, so the CLI refuses rather than trust the reporter to
+remember not to file publicly.
+
+### Publish-Time Nudge
+
+When `swamp extension push` runs against a manifest without a `repository`
+field, the CLI emits a non-blocking warning reminding the publisher that
+users will not be able to file issues via `--extension`. The warning never
+blocks the push — some publishers may deliberately omit `repository`.

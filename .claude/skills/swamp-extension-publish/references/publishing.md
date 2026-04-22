@@ -28,6 +28,7 @@ manifestVersion: 1
 name: "@myorg/my-extension"
 version: "2026.02.26.1"
 description: "Optional description of the extension"
+repository: "https://github.com/myorg/my-extension"
 models:
   - my_model.ts
   - utils/helper_model.ts
@@ -47,23 +48,24 @@ dependencies:
 
 ### Field Reference
 
-| Field             | Required | Description                                                                                      |
-| ----------------- | -------- | ------------------------------------------------------------------------------------------------ |
-| `manifestVersion` | Yes      | Must be `1`                                                                                      |
-| `name`            | Yes      | Scoped name: `@collective/name` or `@collective/name/sub/path` (lowercase, hyphens, underscores) |
-| `version`         | Yes      | CalVer format: `YYYY.MM.DD.MICRO`                                                                |
-| `description`     | No       | Human-readable description                                                                       |
-| `models`          | No*      | Model file paths relative to `extensions/models/`                                                |
-| `workflows`       | No*      | Workflow file paths relative to `workflows/`                                                     |
-| `vaults`          | No*      | Vault file paths relative to `extensions/vaults/`                                                |
-| `drivers`         | No*      | Driver file paths relative to `extensions/drivers/`                                              |
-| `datastores`      | No*      | Datastore file paths relative to `extensions/datastores/`                                        |
-| `reports`         | No*      | Report file paths relative to `extensions/reports/`                                              |
-| `skills`          | No*      | Skill directory names resolved from the tool's skill directory (e.g., `.claude/skills/`)         |
-| `additionalFiles` | No       | Extra files relative to the manifest location                                                    |
-| `platforms`       | No       | OS/architecture hints (e.g. `darwin-aarch64`, `linux-x86_64`)                                    |
-| `labels`          | No       | Categorization labels (e.g. `aws`, `kubernetes`, `security`)                                     |
-| `dependencies`    | No       | Other extensions this one depends on                                                             |
+| Field             | Required | Description                                                                                                                                       |
+| ----------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `manifestVersion` | Yes      | Must be `1`                                                                                                                                       |
+| `name`            | Yes      | Scoped name: `@collective/name` or `@collective/name/sub/path` (lowercase, hyphens, underscores)                                                  |
+| `version`         | Yes      | CalVer format: `YYYY.MM.DD.MICRO`                                                                                                                 |
+| `description`     | No       | Human-readable description                                                                                                                        |
+| `repository`      | No       | HTTPS URL of the upstream repository. Required for users to file issues via `swamp issue --extension` — `swamp extension push` warns when absent. |
+| `models`          | No*      | Model file paths relative to `extensions/models/`                                                                                                 |
+| `workflows`       | No*      | Workflow file paths relative to `workflows/`                                                                                                      |
+| `vaults`          | No*      | Vault file paths relative to `extensions/vaults/`                                                                                                 |
+| `drivers`         | No*      | Driver file paths relative to `extensions/drivers/`                                                                                               |
+| `datastores`      | No*      | Datastore file paths relative to `extensions/datastores/`                                                                                         |
+| `reports`         | No*      | Report file paths relative to `extensions/reports/`                                                                                               |
+| `skills`          | No*      | Skill directory names resolved from the tool's skill directory (e.g., `.claude/skills/`)                                                          |
+| `additionalFiles` | No       | Extra files relative to the manifest location                                                                                                     |
+| `platforms`       | No       | OS/architecture hints (e.g. `darwin-aarch64`, `linux-x86_64`)                                                                                     |
+| `labels`          | No       | Categorization labels (e.g. `aws`, `kubernetes`, `security`)                                                                                      |
+| `dependencies`    | No       | Other extensions this one depends on                                                                                                              |
 
 *At least one of `models`, `workflows`, `vaults`, `drivers`, `datastores`,
 `reports`, or `skills` must be present with entries.

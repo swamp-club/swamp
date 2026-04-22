@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  resolveRepoDir,
+} from "../context.ts";
 import {
   renderIssueCancelled,
 } from "../../presentation/renderers/issue_create.ts";
@@ -106,15 +110,31 @@ export const issueBugCommand = new Command()
   .name("bug")
   .description("Submit a bug report")
   .example("Submit a bug report", "swamp issue bug")
+  .example(
+    "Report a bug against a specific extension",
+    "swamp issue bug --extension @adam/cfgmgmt",
+  )
   .option("-t, --title <title:string>", "Bug title (skips editor for title)")
   .option(
     "-b, --body <body:string>",
     "Bug description (requires --title, skips editor entirely)",
   )
   .option("-e, --email", "Open email client with pre-filled bug report")
+  .option(
+    "-x, --extension <name:string>",
+    "Route the bug against a specific extension (e.g. @adam/cfgmgmt)",
+  )
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR) — only used with --extension",
+  )
   .action(async function (options: AnyOptions) {
     const ctx = createContext(options as GlobalOptions, ["issue", "bug"]);
     ctx.logger.debug`Submitting bug report`;
+
+    if (options.email && options.extension) {
+      throw new UserError("--email and --extension cannot be used together.");
+    }
 
     // Resolve destination BEFORE collecting content so we don't waste the user's time
     const destination = await resolveDestination(ctx, options.email);
@@ -181,6 +201,8 @@ export const issueBugCommand = new Command()
       type: "bug",
       title,
       body,
+      extensionName: options.extension,
+      repoDir: options.extension ? resolveRepoDir(options.repoDir) : undefined,
     });
 
     ctx.logger.debug("Bug report submitted successfully");

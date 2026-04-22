@@ -23,6 +23,10 @@
  * Split into two phases so the auth check happens BEFORE the editor opens:
  * 1. resolveDestination() — check auth, prompt if needed, return where to send
  * 2. submitIssue() — send the issue to the resolved destination
+ *
+ * When `--extension` is supplied, submitIssue additionally resolves the
+ * extension target (pulled/sourced/no-repo refusal vs @swamp-lab vs
+ * third-party repository) and dispatches accordingly.
  */
 
 import type { CommandContext } from "../context.ts";
@@ -34,12 +38,21 @@ import {
 } from "../../libswamp/mod.ts";
 import {
   createIssueCreateRenderer,
+  renderExtensionRefusal,
+  renderExtensionRepositoryHandoff,
 } from "../../presentation/renderers/issue_create.ts";
 import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
 import { SwampClubClient } from "../../infrastructure/http/swamp_club_client.ts";
 import { openBrowser } from "../../infrastructure/process/browser.ts";
 import { UserError } from "../../domain/errors.ts";
 import type { AuthCredentials } from "../../domain/auth/auth_credentials.ts";
+import {
+  dispatchRepositoryReport,
+  type ExtensionTarget,
+  resolveExtensionTarget,
+} from "./extension_report_dispatcher.ts";
+import { collectReporterContext } from "../../infrastructure/process/reporter_context_collector.ts";
+import { VERSION } from "./version.ts";
 
 const SUPPORT_EMAIL = "support@systeminit.com";
 
@@ -80,6 +93,10 @@ export interface SubmitIssueInput {
   type: "bug" | "feature" | "security";
   title: string;
   body: string;
+  /** Extension name from `--extension`, triggers extension-scoped routing. */
+  extensionName?: string;
+  /** Repository directory used to resolve the pulled extension. */
+  repoDir?: string;
 }
 
 /** Build a mailto: URL with pre-filled subject and body using RFC 6068 percent-encoding. */
@@ -123,6 +140,10 @@ async function promptLoginOrEmail(): Promise<"login" | "email"> {
 /**
  * Submit an issue to the already-resolved destination.
  * Called after title/body are collected.
+ *
+ * When `input.extensionName` is set, the extension target is resolved
+ * first. Refusals and third-party repository handoffs never hit swamp-
+ * club — they short-circuit the Lab submission path entirely.
  */
 export async function submitIssue(
   ctx: CommandContext,
@@ -132,9 +153,62 @@ export async function submitIssue(
   const libCtx = createLibSwampContext({ logger: ctx.logger });
   const renderer = createIssueCreateRenderer(ctx.outputMode);
 
+  // Extension-scoped routing: resolve the target first.
+  // Refusals are INFORMATIONAL (exit 0), not errors.
+  let extensionTarget: ExtensionTarget | undefined;
+  if (input.extensionName) {
+    if (!input.repoDir) {
+      throw new UserError(
+        "--extension requires a repository directory. Run swamp from inside a swamp repo.",
+      );
+    }
+    extensionTarget = await resolveExtensionTarget(
+      input.repoDir,
+      input.extensionName,
+    );
+    if (extensionTarget.kind === "refused") {
+      renderExtensionRefusal(
+        {
+          extensionName: extensionTarget.extensionName,
+          reason: extensionTarget.reason,
+          guidance: extensionTarget.guidance,
+        },
+        ctx.outputMode,
+      );
+      return;
+    }
+  }
+
   if (destination.method === "abort") {
     libCtx.logger
       .info`Run "swamp auth login" first, then retry this command.`;
+    return;
+  }
+
+  // Third-party repository handoff — never touches swamp-club Lab.
+  if (extensionTarget?.kind === "repository") {
+    const reporterContext = collectReporterContext({
+      extensionName: extensionTarget.extensionName,
+      extensionVersion: extensionTarget.extensionVersion,
+      swampVersion: VERSION,
+    });
+    const result = await dispatchRepositoryReport(
+      extensionTarget,
+      {
+        type: input.type,
+        title: input.title,
+        body: input.body,
+        reporterContext,
+        outputMode: ctx.outputMode,
+      },
+      {
+        logger: ctx.logger,
+      },
+    );
+    renderExtensionRepositoryHandoff(
+      { result, extensionName: extensionTarget.extensionName },
+      ctx.outputMode,
+    );
     return;
   }
 
@@ -162,7 +236,7 @@ export async function submitIssue(
     return;
   }
 
-  // Lab submission
+  // Lab submission (both plain and @swamp-extension paths).
   const client = new SwampClubClient(destination.credentials.serverUrl);
   const deps: IssueCreateDeps = {
     submitToLab: async (params) => {
@@ -177,8 +251,30 @@ export async function submitIssue(
     },
   };
 
+  // @swamp path: populate the extension metadata so libswamp assembles
+  // the body with Extension: / Upstream repository: / Environment lines.
+  const labInput = extensionTarget?.kind === "swamp-lab"
+    ? {
+      type: input.type,
+      title: input.title,
+      body: input.body,
+      extensionName: extensionTarget.extensionName,
+      extensionVersion: extensionTarget.extensionVersion,
+      repositoryUrl: extensionTarget.repositoryUrl,
+      reporterContext: collectReporterContext({
+        extensionName: extensionTarget.extensionName,
+        extensionVersion: extensionTarget.extensionVersion,
+        swampVersion: VERSION,
+      }),
+    }
+    : {
+      type: input.type,
+      title: input.title,
+      body: input.body,
+    };
+
   await consumeStream(
-    issueCreate(libCtx, deps, input),
+    issueCreate(libCtx, deps, labInput),
     renderer.handlers(),
   );
 }

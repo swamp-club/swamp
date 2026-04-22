@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  resolveRepoDir,
+} from "../context.ts";
 import {
   renderIssueCancelled,
 } from "../../presentation/renderers/issue_create.ts";
@@ -102,6 +106,10 @@ export const issueFeatureCommand = new Command()
   .name("feature")
   .description("Submit a feature request")
   .example("Submit a feature request", "swamp issue feature")
+  .example(
+    "Request a feature on a specific extension",
+    "swamp issue feature --extension @adam/cfgmgmt",
+  )
   .option(
     "-t, --title <title:string>",
     "Feature title (skips editor for title)",
@@ -111,9 +119,21 @@ export const issueFeatureCommand = new Command()
     "Feature description (requires --title, skips editor entirely)",
   )
   .option("-e, --email", "Open email client with pre-filled feature request")
+  .option(
+    "-x, --extension <name:string>",
+    "Route the feature against a specific extension (e.g. @adam/cfgmgmt)",
+  )
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR) — only used with --extension",
+  )
   .action(async function (options: AnyOptions) {
     const ctx = createContext(options as GlobalOptions, ["issue", "feature"]);
     ctx.logger.debug`Submitting feature request`;
+
+    if (options.email && options.extension) {
+      throw new UserError("--email and --extension cannot be used together.");
+    }
 
     // Resolve destination BEFORE collecting content so we don't waste the user's time
     const destination = await resolveDestination(ctx, options.email);
@@ -180,6 +200,8 @@ export const issueFeatureCommand = new Command()
       type: "feature",
       title,
       body,
+      extensionName: options.extension,
+      repoDir: options.extension ? resolveRepoDir(options.repoDir) : undefined,
     });
 
     ctx.logger.debug("Feature request submitted successfully");

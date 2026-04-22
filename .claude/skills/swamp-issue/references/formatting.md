@@ -37,33 +37,39 @@ Provide a summary of the implementation plan:
 
 ## Extension Issues
 
-When filing an issue for an official extension, prefix the title with the
-extension name:
+Prefer `--extension @collective/name` when filing against a specific extension.
+The CLI attaches the extension name, installed version, and a `## Environment`
+section to the body automatically — do **not** also prefix the title with the
+extension name, because it would be redundant.
+
+**Example bug (using `--extension`):**
+
+```bash
+swamp issue bug --extension @swamp/aws-ec2 \
+  --title "describe method returns empty attributes for stopped instances" \
+  --body "$(cat <<'EOF'
+The describe method returns an empty attributes map when an EC2 instance is
+in a stopped state, instead of the instance metadata.
+
+The fix would involve updating the attribute mapping in the describe method
+to handle stopped-state API responses, which return a subset of fields.
+EOF
+)"
+```
+
+**When `--extension` isn't an option** (e.g. the extension isn't pulled and
+won't be, or filing via `--email`), fall back to prefixing the title with the
+extension name so readers can still identify scope:
 
 **Format:** `@collective/extension-name: brief description`
 
-**Example bug:**
+**Example:**
 
 > **Title:**
 > `@swamp/aws-ec2: describe method returns empty attributes for stopped instances`
 >
-> This bug affects the `@swamp/aws-ec2` extension's `describe` method. When an
-> EC2 instance is in a stopped state, the method returns an empty attributes map
-> instead of the instance metadata.
+> The describe method returns an empty attributes map when an EC2 instance is in
+> a stopped state, instead of the instance metadata.
 >
 > The fix would involve updating the attribute mapping in the describe method to
 > handle stopped-state API responses, which return a subset of fields.
-
-**Example feature:**
-
-> **Title:** `@swamp/aws-s3: add support for bucket lifecycle rules`
->
-> This feature would add a `lifecycle` method to the `@swamp/aws-s3` extension
-> model. Changes would be needed in:
->
-> - New `lifecycle` method definition in the extension model
-> - S3 lifecycle rule API integration
-> - Output type definitions for lifecycle configuration
->
-> The approach would follow the existing pattern used by the `policy` method for
-> bucket policy management.
