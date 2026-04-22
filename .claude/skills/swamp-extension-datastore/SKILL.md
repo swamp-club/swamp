@@ -211,14 +211,15 @@ verification) before allowing a push.
 
 ## When to Use Other Skills
 
-| Need                                | Use Skill                |
-| ----------------------------------- | ------------------------ |
-| Use existing datastores             | `swamp-repo`             |
-| Create custom models                | `swamp-extension-model`  |
-| Create custom execution drivers     | `swamp-extension-driver` |
-| Repository setup and configuration  | `swamp-repo`             |
-| Manage secrets for datastore config | `swamp-vault`            |
-| Understand swamp internals          | `swamp-troubleshooting`  |
+| Need                                | Use Skill                 |
+| ----------------------------------- | ------------------------- |
+| Use existing datastores             | `swamp-repo`              |
+| Create custom models                | `swamp-extension-model`   |
+| Create custom execution drivers     | `swamp-extension-driver`  |
+| Repository setup and configuration  | `swamp-repo`              |
+| Manage secrets for datastore config | `swamp-vault`             |
+| Quality scorecard & best practices  | `swamp-extension-quality` |
+| Understand swamp internals          | `swamp-troubleshooting`   |
 
 ## References
 

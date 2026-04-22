@@ -229,6 +229,7 @@ verification) before allowing a push.
 | Create custom datastores           | `swamp-extension-datastore` |
 | Create custom execution drivers    | `swamp-extension-driver`    |
 | Repository setup and configuration | `swamp-repo`                |
+| Quality scorecard & best practices | `swamp-extension-quality`   |
 | Understand swamp internals         | `swamp-troubleshooting`     |
 
 ## References
