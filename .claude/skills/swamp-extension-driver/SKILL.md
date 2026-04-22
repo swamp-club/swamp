@@ -263,9 +263,10 @@ verification) before allowing a push.
 
 ## When to Use Other Skills
 
-| Need                       | Use Skill               |
-| -------------------------- | ----------------------- |
-| Use existing models        | `swamp-model`           |
-| Create custom models       | `swamp-extension-model` |
-| Repository structure       | `swamp-repo`            |
-| Understand swamp internals | `swamp-troubleshooting` |
+| Need                               | Use Skill                 |
+| ---------------------------------- | ------------------------- |
+| Use existing models                | `swamp-model`             |
+| Create custom models               | `swamp-extension-model`   |
+| Repository structure               | `swamp-repo`              |
+| Quality scorecard & best practices | `swamp-extension-quality` |
+| Understand swamp internals         | `swamp-troubleshooting`   |

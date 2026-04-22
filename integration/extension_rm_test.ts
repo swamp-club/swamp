@@ -184,10 +184,16 @@ Deno.test("extension pull then rm removes files and JSON entry", async () => {
       "files should be an array before rm",
     );
 
-    // Verify files exist on disk before removal
+    // Verify entries exist on disk before removal. Entries can be either
+    // files or directories — skills are tracked as a single directory root
+    // so `extension rm` can delete them in one shot (see pull.ts:992-1016).
     for (const file of files!) {
       const stat = await Deno.stat(`${tmpDir}/${file}`);
-      assertEquals(stat.isFile, true, `File should exist before rm: ${file}`);
+      assertEquals(
+        stat.isFile || stat.isDirectory,
+        true,
+        `Entry should exist before rm: ${file}`,
+      );
     }
 
     // Remove the extension
