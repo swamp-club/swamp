@@ -44,7 +44,7 @@ Deno.test("resolveExtensionFile: unsafe relPath with '..' throws", async () => {
     assertThrows(
       () => resolveExtensionFile(root, "../outside.md"),
       UserError,
-      "unsafe relative path",
+      "Unsafe relative path",
     );
     await Promise.resolve();
   });
@@ -55,7 +55,7 @@ Deno.test("resolveExtensionFile: absolute relPath throws", async () => {
     assertThrows(
       () => resolveExtensionFile(root, "/etc/passwd"),
       UserError,
-      "unsafe relative path",
+      "Unsafe relative path",
     );
     await Promise.resolve();
   });
@@ -66,7 +66,7 @@ Deno.test("resolveExtensionFile: source-mode missing file shows disk-path hint",
     const err = assertThrows(
       () => resolveExtensionFile(root, "missing.md"),
       UserError,
-      "extension file not found",
+      "Extension file not found",
     );
     // Source-mode message points at the absolute path and mentions disk/manifest.
     if (err instanceof Error) {
@@ -104,9 +104,9 @@ Deno.test("resolveExtensionFile: pulled-mode missing file suggests re-publish", 
       UserError,
       "re-publish",
     );
-    if (err instanceof Error && !err.message.includes("issue-146")) {
+    if (err instanceof Error && !err.message.includes("re-pull")) {
       throw new Error(
-        `expected pulled-mode error to reference issue-146 migration hint, got: ${err.message}`,
+        `expected pulled-mode error to reference re-pull migration hint, got: ${err.message}`,
       );
     }
   });

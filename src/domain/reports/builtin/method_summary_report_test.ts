@@ -48,6 +48,9 @@ function makeMethodContext(
     methodName: "deploy",
     executionStatus: "succeeded",
     dataHandles: [],
+    extensionFile: () => {
+      throw new Error("extensionFile not stubbed in this test");
+    },
     ...overrides,
   };
 }

@@ -135,6 +135,9 @@ function createMockContext(): MethodContext {
     dataRepository: createMockDataRepo(),
     definitionRepository: {} as MethodContext["definitionRepository"],
     logger: getLogger(["test"]),
+    extensionFile: () => {
+      throw new Error("extensionFile not stubbed in this test");
+    },
   } as MethodContext;
 }
 

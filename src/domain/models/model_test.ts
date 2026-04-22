@@ -231,6 +231,9 @@ function createTestContext(modelType: ModelType): {
     definitionRepository: createMockDefinitionRepo(),
     writeResource,
     createFileWriter,
+    extensionFile: () => {
+      throw new Error("extensionFile not stubbed in this test");
+    },
   };
   return { context, getResults };
 }

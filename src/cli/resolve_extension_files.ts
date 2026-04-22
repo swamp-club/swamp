@@ -439,7 +439,7 @@ export async function resolveExtensionFiles(
       throw new UserError(
         `Duplicate additionalFiles entries: "${existing}" and "${af}" ` +
           `resolve to the same archive path (case-insensitive, normalized). ` +
-          `Remove one or rename the file so basenames differ.`,
+          `Remove one entry from the manifest, or rename the file.`,
       );
     }
     seenNormalized.set(normalized, af);

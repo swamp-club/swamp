@@ -502,6 +502,9 @@ Deno.test("executeReports - varySuffix appends to data names", async () => {
     methodName: "run",
     executionStatus: "succeeded",
     dataHandles: [],
+    extensionFile: () => {
+      throw new Error("extensionFile not stubbed in this test");
+    },
   };
 
   const selection: ReportSelection = { require: ["test-report"] };
@@ -556,6 +559,9 @@ Deno.test("executeReports - varySuffix included as tag", async () => {
     methodName: "run",
     executionStatus: "succeeded",
     dataHandles: [],
+    extensionFile: () => {
+      throw new Error("extensionFile not stubbed in this test");
+    },
   };
 
   await executeReports(
@@ -604,6 +610,9 @@ Deno.test("executeReports - without varySuffix uses base name", async () => {
     methodName: "run",
     executionStatus: "succeeded",
     dataHandles: [],
+    extensionFile: () => {
+      throw new Error("extensionFile not stubbed in this test");
+    },
   };
 
   await executeReports(
@@ -651,6 +660,9 @@ Deno.test("executeReports - varySuffix with scoped report name sanitization", as
     methodName: "run",
     executionStatus: "succeeded",
     dataHandles: [],
+    extensionFile: () => {
+      throw new Error("extensionFile not stubbed in this test");
+    },
   };
 
   await executeReports(
@@ -700,6 +712,9 @@ Deno.test("executeReports - events include varySuffix data handles", async () =>
     methodName: "run",
     executionStatus: "succeeded",
     dataHandles: [],
+    extensionFile: () => {
+      throw new Error("extensionFile not stubbed in this test");
+    },
   };
 
   const completedHandles: DataHandle[][] = [];
@@ -850,6 +865,9 @@ Deno.test("buildRedactSensitiveArgs: redacts sensitive global args", async () =>
     methodName: "deploy",
     executionStatus: "succeeded",
     dataHandles: [],
+    extensionFile: () => {
+      throw new Error("extensionFile not stubbed in this test");
+    },
   };
 
   await executeReports(
@@ -905,6 +923,9 @@ Deno.test("buildRedactSensitiveArgs: redacts sensitive method args", async () =>
     methodName: "deploy",
     executionStatus: "succeeded",
     dataHandles: [],
+    extensionFile: () => {
+      throw new Error("extensionFile not stubbed in this test");
+    },
   };
 
   await executeReports(
@@ -980,6 +1001,9 @@ Deno.test("buildRedactSensitiveArgs: returns args unchanged for model without se
     methodName: "run",
     executionStatus: "succeeded",
     dataHandles: [],
+    extensionFile: () => {
+      throw new Error("extensionFile not stubbed in this test");
+    },
   };
 
   await executeReports(
@@ -1109,6 +1133,9 @@ function makeMethodContext(
     methodName: "run",
     executionStatus: "succeeded",
     dataHandles: [],
+    extensionFile: () => {
+      throw new Error("extensionFile not stubbed in this test");
+    },
   };
 }
 

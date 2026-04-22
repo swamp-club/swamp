@@ -47,16 +47,6 @@ interface BaseReportContext {
     args: Record<string, unknown>,
     argsKind: "global" | "method",
   ): Record<string, unknown>;
-
-  /**
-   * Resolve a path to an asset declared in the extension's
-   * `additionalFiles` manifest field. Same semantics as
-   * `MethodContext.extensionFile`. Populated for method- and model-scope
-   * reports whose model type ships via an extension manifest; undefined
-   * for workflow-scope reports (which span multiple models) and for
-   * reports on built-in model types.
-   */
-  extensionFile?: (relPath: string) => string;
 }
 
 /**
@@ -92,6 +82,14 @@ export interface MethodReportContext extends BaseReportContext {
   dataHandles: DataHandle[];
   /** Output spec schemas from the model type definition. */
   outputSpecs?: OutputSpecInfo[];
+  /**
+   * Resolve a path to an asset declared in the extension's
+   * `additionalFiles` manifest field. Same semantics as
+   * `MethodContext.extensionFile`. Always populated by
+   * `buildMethodReportContext`; throws a typed `UserError` at call time
+   * when the model is not shipped via an extension manifest.
+   */
+  extensionFile: (relPath: string) => string;
 }
 
 /**

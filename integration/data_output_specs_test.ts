@@ -139,6 +139,9 @@ Deno.test("Data output specs - shell model execution produces valid resource han
         writeResource,
         createFileWriter,
         signal: new AbortController().signal,
+        extensionFile: () => {
+          throw new Error("extensionFile not stubbed in this test");
+        },
       },
     );
 
@@ -229,6 +232,9 @@ Deno.test("Data output specs - undeclared resource spec fails at writeResource",
           definitionRepository: definitionRepo,
           writeResource,
           signal: new AbortController().signal,
+          extensionFile: () => {
+            throw new Error("extensionFile not stubbed in this test");
+          },
         },
       );
     } catch (error) {
@@ -304,6 +310,9 @@ Deno.test("Data output specs - undeclared file spec fails at createFileWriter", 
           definitionRepository: definitionRepo,
           createFileWriter,
           signal: new AbortController().signal,
+          extensionFile: () => {
+            throw new Error("extensionFile not stubbed in this test");
+          },
         },
       );
     } catch (error) {

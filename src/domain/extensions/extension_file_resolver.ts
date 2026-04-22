@@ -21,6 +21,11 @@ import { join } from "@std/path";
 import { UserError } from "../errors.ts";
 import { isSafeRelativePath } from "./extension_manifest.ts";
 
+// Hardcoded on purpose: importing SWAMP_DATA_DIR from infrastructure would
+// introduce a new domain→infrastructure dependency (see
+// integration/ddd_layer_rules_test.ts ratchet). The underlying constant is
+// stable (`.swamp`) and the pulled-extensions layout is a swamp-wide
+// convention, not an infrastructure detail.
 const PULLED_MARKER = "/.swamp/pulled-extensions/";
 
 /**
@@ -48,8 +53,8 @@ export function resolveExtensionFile(
   }
   if (!isSafeRelativePath(relPath)) {
     throw new UserError(
-      `ctx.extensionFile(): unsafe relative path "${relPath}". Paths ` +
-        `must be relative, must not start with "/", and must not ` +
+      `Unsafe relative path passed to ctx.extensionFile(): "${relPath}". ` +
+        `Paths must be relative, must not start with "/", and must not ` +
         `contain ".." segments.`,
     );
   }
@@ -60,14 +65,14 @@ export function resolveExtensionFile(
     const isPulled = root.includes(PULLED_MARKER);
     if (isPulled) {
       throw new UserError(
-        `extension file not found: "${relPath}". This can happen when ` +
+        `Extension file not found: "${relPath}". This can happen when ` +
           `the installed archive was packaged before directory ` +
-          `preservation (swamp issue-146); re-publish the extension and ` +
-          `re-pull to pick up the nested layout.`,
+          `preservation landed; re-publish the extension and re-pull to ` +
+          `pick up the nested layout.`,
       );
     }
     throw new UserError(
-      `extension file not found: ${absPath}. Check that the file exists ` +
+      `Extension file not found: ${absPath}. Check that the file exists ` +
         `on disk and matches the manifest's additionalFiles entry.`,
     );
   }

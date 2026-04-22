@@ -260,6 +260,9 @@ function createTestContext(
     definitionRepository: createMockDefinitionRepo(),
     writeResource,
     createFileWriter,
+    extensionFile: () => {
+      throw new Error("extensionFile not stubbed in this test");
+    },
     ...overrides,
   };
   return { context, getResults };

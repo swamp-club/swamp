@@ -354,7 +354,7 @@ export interface MethodContext {
    * unsafe, or if the file does not exist. Error messages are mode-aware
    * (pulled vs source) to give actionable guidance.
    */
-  extensionFile?: (relPath: string) => string;
+  extensionFile: (relPath: string) => string;
 }
 
 /**
