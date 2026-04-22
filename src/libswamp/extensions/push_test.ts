@@ -17,9 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
+import type { Logger } from "@logtape/logtape";
 import {
   extensionPush,
   type ExtensionPushExecuteDeps,
@@ -275,6 +276,56 @@ Deno.test("extensionPush: successful push yields completed", async () => {
     assertEquals(last.data.name, "@testuser/test-ext");
     assertEquals(last.data.extensionId, "ext-123");
   }
+});
+
+Deno.test("extensionPush: warns when manifest has no repository (non-blocking)", async () => {
+  const warnings: string[] = [];
+  const mockLogger = {
+    debug: () => {},
+    info: () => {},
+    warn: (line: string) => warnings.push(line),
+    error: () => {},
+    trace: () => {},
+    fatal: () => {},
+  } as unknown as Logger;
+  const testCtx = createLibSwampContext({ logger: mockLogger });
+  const deps = makeExecuteDeps();
+  const input = makeExecuteInput({
+    manifest: makeManifest({ repository: undefined }),
+  });
+
+  const events = await collect(extensionPush(testCtx, deps, input));
+  const last = events[events.length - 1];
+  assertEquals(last.kind, "completed"); // Warning does not block push.
+  assertEquals(warnings.length, 1);
+  assertStringIncludes(
+    warnings[0],
+    "doesn't declare a `repository` URL",
+  );
+  assertStringIncludes(warnings[0], "@testuser/test-ext");
+});
+
+Deno.test("extensionPush: no warning when manifest declares a repository", async () => {
+  const warnings: string[] = [];
+  const mockLogger = {
+    debug: () => {},
+    info: () => {},
+    warn: (line: string) => warnings.push(line),
+    error: () => {},
+    trace: () => {},
+    fatal: () => {},
+  } as unknown as Logger;
+  const testCtx = createLibSwampContext({ logger: mockLogger });
+  const deps = makeExecuteDeps();
+  const input = makeExecuteInput({
+    manifest: makeManifest({
+      repository: "https://github.com/testuser/test-ext",
+    }),
+  });
+
+  const events = await collect(extensionPush(testCtx, deps, input));
+  assertEquals(events[events.length - 1].kind, "completed");
+  assertEquals(warnings.length, 0);
 });
 
 Deno.test("extensionPush: not authenticated yields error", async () => {

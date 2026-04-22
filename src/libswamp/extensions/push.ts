@@ -690,6 +690,15 @@ export async function* extensionPush(
         return;
       }
 
+      if (!input.manifest.repository) {
+        ctx.logger.warn(
+          "Your extension manifest doesn't declare a `repository` URL. " +
+            `Users running \`swamp issue bug --extension ${input.manifest.name}\` ` +
+            "won't be able to file issues against it. " +
+            "Consider adding a `repository:` field to manifest.yaml.",
+        );
+      }
+
       const releaseNotes = input.releaseNotes ?? input.manifest.releaseNotes;
       const pushMetadata = {
         name: input.manifest.name,

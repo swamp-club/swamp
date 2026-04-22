@@ -18,13 +18,23 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  resolveRepoDir,
+} from "../context.ts";
 import {
   renderIssueCancelled,
 } from "../../presentation/renderers/issue_create.ts";
 import { EditorService } from "../../infrastructure/editor/editor_service.ts";
 import { UserError } from "../../domain/errors.ts";
-import { resolveDestination, submitIssue } from "./issue_submit.ts";
+import {
+  dispatchExtensionRepositoryReport,
+  resolveDestination,
+  resolveExtensionOrRefuse,
+  submitIssue,
+  type UsableExtensionTarget,
+} from "./issue_submit.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -106,19 +116,52 @@ export const issueBugCommand = new Command()
   .name("bug")
   .description("Submit a bug report")
   .example("Submit a bug report", "swamp issue bug")
+  .example(
+    "Report a bug against a specific extension",
+    "swamp issue bug --extension @adam/cfgmgmt",
+  )
   .option("-t, --title <title:string>", "Bug title (skips editor for title)")
   .option(
     "-b, --body <body:string>",
     "Bug description (requires --title, skips editor entirely)",
   )
   .option("-e, --email", "Open email client with pre-filled bug report")
+  .option(
+    "-x, --extension <name:string>",
+    "Route the bug against a specific extension (e.g. @adam/cfgmgmt)",
+  )
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR) — only used with --extension",
+  )
   .action(async function (options: AnyOptions) {
     const ctx = createContext(options as GlobalOptions, ["issue", "bug"]);
     ctx.logger.debug`Submitting bug report`;
 
-    // Resolve destination BEFORE collecting content so we don't waste the user's time
-    const destination = await resolveDestination(ctx, options.email);
-    if (destination.method === "abort") {
+    if (options.email && options.extension) {
+      throw new UserError("--email and --extension cannot be used together.");
+    }
+
+    // Extension-aware pre-flight: resolve the target BEFORE auth so refusals
+    // and third-party repository handoffs don't spuriously fail on Lab auth
+    // (they never touch swamp-club).
+    let extensionTarget: UsableExtensionTarget | undefined;
+    if (options.extension) {
+      const resolved = await resolveExtensionOrRefuse(
+        ctx,
+        options.extension,
+        resolveRepoDir(options.repoDir),
+      );
+      if (resolved === null) return; // refusal rendered
+      extensionTarget = resolved;
+    }
+
+    // Lab auth is only needed for the plain path and the `@swamp/*` path.
+    // Third-party repository handoffs skip this step entirely.
+    const destination = !extensionTarget || extensionTarget.kind === "swamp-lab"
+      ? await resolveDestination(ctx, options.email)
+      : undefined;
+    if (destination?.method === "abort") {
       await submitIssue(ctx, destination, {
         type: "bug",
         title: "",
@@ -177,10 +220,22 @@ export const issueBugCommand = new Command()
 
     ctx.logger.debug`Submitting bug report with title: ${title}`;
 
-    await submitIssue(ctx, destination, {
+    if (extensionTarget?.kind === "repository") {
+      await dispatchExtensionRepositoryReport(ctx, extensionTarget, {
+        type: "bug",
+        title,
+        body,
+      });
+      return;
+    }
+
+    await submitIssue(ctx, destination!, {
       type: "bug",
       title,
       body,
+      swampLabTarget: extensionTarget?.kind === "swamp-lab"
+        ? extensionTarget
+        : undefined,
     });
 
     ctx.logger.debug("Bug report submitted successfully");

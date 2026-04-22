@@ -18,13 +18,23 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  resolveRepoDir,
+} from "../context.ts";
 import {
   renderIssueCancelled,
 } from "../../presentation/renderers/issue_create.ts";
 import { EditorService } from "../../infrastructure/editor/editor_service.ts";
 import { UserError } from "../../domain/errors.ts";
-import { resolveDestination, submitIssue } from "./issue_submit.ts";
+import {
+  dispatchExtensionRepositoryReport,
+  resolveDestination,
+  resolveExtensionOrRefuse,
+  submitIssue,
+  type UsableExtensionTarget,
+} from "./issue_submit.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -102,6 +112,10 @@ export const issueFeatureCommand = new Command()
   .name("feature")
   .description("Submit a feature request")
   .example("Submit a feature request", "swamp issue feature")
+  .example(
+    "Request a feature on a specific extension",
+    "swamp issue feature --extension @adam/cfgmgmt",
+  )
   .option(
     "-t, --title <title:string>",
     "Feature title (skips editor for title)",
@@ -111,13 +125,37 @@ export const issueFeatureCommand = new Command()
     "Feature description (requires --title, skips editor entirely)",
   )
   .option("-e, --email", "Open email client with pre-filled feature request")
+  .option(
+    "-x, --extension <name:string>",
+    "Route the feature against a specific extension (e.g. @adam/cfgmgmt)",
+  )
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR) — only used with --extension",
+  )
   .action(async function (options: AnyOptions) {
     const ctx = createContext(options as GlobalOptions, ["issue", "feature"]);
     ctx.logger.debug`Submitting feature request`;
 
-    // Resolve destination BEFORE collecting content so we don't waste the user's time
-    const destination = await resolveDestination(ctx, options.email);
-    if (destination.method === "abort") {
+    if (options.email && options.extension) {
+      throw new UserError("--email and --extension cannot be used together.");
+    }
+
+    let extensionTarget: UsableExtensionTarget | undefined;
+    if (options.extension) {
+      const resolved = await resolveExtensionOrRefuse(
+        ctx,
+        options.extension,
+        resolveRepoDir(options.repoDir),
+      );
+      if (resolved === null) return;
+      extensionTarget = resolved;
+    }
+
+    const destination = !extensionTarget || extensionTarget.kind === "swamp-lab"
+      ? await resolveDestination(ctx, options.email)
+      : undefined;
+    if (destination?.method === "abort") {
       await submitIssue(ctx, destination, {
         type: "feature",
         title: "",
@@ -176,10 +214,22 @@ export const issueFeatureCommand = new Command()
 
     ctx.logger.debug`Submitting feature request with title: ${title}`;
 
-    await submitIssue(ctx, destination, {
+    if (extensionTarget?.kind === "repository") {
+      await dispatchExtensionRepositoryReport(ctx, extensionTarget, {
+        type: "feature",
+        title,
+        body,
+      });
+      return;
+    }
+
+    await submitIssue(ctx, destination!, {
       type: "feature",
       title,
       body,
+      swampLabTarget: extensionTarget?.kind === "swamp-lab"
+        ? extensionTarget
+        : undefined,
     });
 
     ctx.logger.debug("Feature request submitted successfully");
