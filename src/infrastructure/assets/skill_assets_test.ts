@@ -573,3 +573,40 @@ Deno.test("SkillAssets.copySkillsTo copies swamp-troubleshooting skill", async (
     assertEquals(skillStat.isFile, true);
   });
 });
+
+Deno.test("SkillAssets includes swamp-extension-quality skill", () => {
+  const assets = new SkillAssets();
+  const names = assets.getSkillNames();
+
+  assertEquals(names.includes("swamp-extension-quality"), true);
+});
+
+Deno.test("SkillAssets.copySkillsTo copies swamp-extension-quality reference files", async () => {
+  await withTempDir(async (dir) => {
+    const assets = new SkillAssets();
+    await assets.copySkillsTo(dir);
+
+    const skillPath = join(dir, "swamp-extension-quality", "SKILL.md");
+    const rubricPath = join(
+      dir,
+      "swamp-extension-quality",
+      "references",
+      "rubric.md",
+    );
+    const templatesPath = join(
+      dir,
+      "swamp-extension-quality",
+      "references",
+      "templates.md",
+    );
+
+    const skillStat = await Deno.stat(skillPath);
+    assertEquals(skillStat.isFile, true);
+
+    const rubricStat = await Deno.stat(rubricPath);
+    assertEquals(rubricStat.isFile, true);
+
+    const templatesStat = await Deno.stat(templatesPath);
+    assertEquals(templatesStat.isFile, true);
+  });
+});

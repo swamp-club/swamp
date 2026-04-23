@@ -286,6 +286,18 @@ const BUNDLED_SKILLS: SkillInfo[] = [
     relativePath: "swamp-getting-started/references/tracks.md",
     name: "swamp-getting-started",
   },
+  {
+    relativePath: "swamp-extension-quality/SKILL.md",
+    name: "swamp-extension-quality",
+  },
+  {
+    relativePath: "swamp-extension-quality/references/rubric.md",
+    name: "swamp-extension-quality",
+  },
+  {
+    relativePath: "swamp-extension-quality/references/templates.md",
+    name: "swamp-extension-quality",
+  },
 ];
 
 /**
