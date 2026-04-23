@@ -19,6 +19,7 @@
 
 import { dirname, join, resolve } from "@std/path";
 import { ensureDir } from "@std/fs";
+import { getLogger } from "@logtape/logtape";
 import { atomicWriteTextFile } from "../../infrastructure/persistence/atomic_write.ts";
 import {
   readUpstreamExtensions,
@@ -39,6 +40,8 @@ import {
 } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { SkillAssets } from "../../infrastructure/assets/skill_assets.ts";
 import { assertNever, UserError } from "../errors.ts";
+
+const logger = getLogger(["swamp", "repo", "service"]);
 
 export type { AiTool } from "../../infrastructure/persistence/repo_marker_repository.ts";
 
@@ -241,7 +244,8 @@ export class RepoService {
           const a = isAlreadyInit
             ? await this.updateKiroAgentConfig(repoPath)
             : await this.createKiroAgentConfigIfNotExists(repoPath);
-          settingsCreated = s || h || a;
+          const c = await this.ensureKiroCliDefaultAgent(repoPath);
+          settingsCreated = s || h || a || c;
           break;
         }
         case "opencode":
@@ -334,7 +338,8 @@ export class RepoService {
           const s = await this.updateKiroSettings(repoPath);
           const h = await this.updateKiroHooks(repoPath);
           const a = await this.updateKiroAgentConfig(repoPath);
-          settingsUpdated = s || h || a;
+          const c = await this.ensureKiroCliDefaultAgent(repoPath);
+          settingsUpdated = s || h || a || c;
           break;
         }
         case "opencode":
@@ -1412,7 +1417,10 @@ ${body}`;
     const config = {
       name: "swamp",
       description: "Swamp automation agent with audit tracking",
-      tools: ["*"],
+      // kiro-cli's agent schema only accepts explicit tool names from its
+      // built-in list. Using "*" silently fails parsing and kiro-cli falls
+      // back to the default agent, skipping the postToolUse audit hook.
+      tools: ["read", "write", "shell", "grep", "glob", "thinking", "todo"],
       resources: [
         "file://.kiro/steering/**/*.md",
         "skill://.kiro/skills/**/SKILL.md",
@@ -1465,6 +1473,64 @@ ${body}`;
       configPath,
       this.generateKiroAgentConfigContent(),
     );
+  }
+
+  /**
+   * Ensures `.kiro/settings/cli.json` selects the swamp agent as the workspace
+   * default. Without this, plain `kiro-cli chat` (no --agent flag) loads the
+   * built-in `kiro_default` agent and the swamp audit hook never fires.
+   *
+   * If the file doesn't exist, creates it with `{ "chat.defaultAgent": "swamp" }`.
+   * If it exists, merges the key — preserving any unrelated settings the user
+   * has set. If `chat.defaultAgent` is already set to a non-"swamp" value, the
+   * user's preference wins and we log a warning.
+   */
+  private async ensureKiroCliDefaultAgent(
+    repoPath: RepoPath,
+  ): Promise<boolean> {
+    const settingsDir = join(repoPath.value, ".kiro", "settings");
+    const settingsPath = join(settingsDir, "cli.json");
+
+    let existingSettings: Record<string, unknown> = {};
+    let settingsExisted = false;
+
+    try {
+      const content = await Deno.readTextFile(settingsPath);
+      existingSettings = JSON.parse(content);
+      settingsExisted = true;
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+    }
+
+    const currentDefault = existingSettings["chat.defaultAgent"];
+    if (
+      settingsExisted &&
+      typeof currentDefault === "string" &&
+      currentDefault !== "swamp"
+    ) {
+      logger.warn(
+        "Leaving existing chat.defaultAgent={current} in {path} — " +
+          "swamp audit hooks will not run under kiro-cli unless you " +
+          'either switch it to "swamp" or invoke `kiro-cli chat --agent swamp`.',
+        { current: currentDefault, path: settingsPath },
+      );
+      return false;
+    }
+
+    if (settingsExisted && currentDefault === "swamp") {
+      return false;
+    }
+
+    const newSettings = {
+      ...existingSettings,
+      "chat.defaultAgent": "swamp",
+    };
+    await ensureDir(settingsDir);
+    await atomicWriteTextFile(
+      settingsPath,
+      JSON.stringify(newSettings, null, 2) + "\n",
+    );
+    return true;
   }
 
   /**

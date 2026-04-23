@@ -200,6 +200,33 @@ Deno.test("normalizeHookInput kiro: skips non-execute_bash tools", () => {
   assertEquals(result, null);
 });
 
+Deno.test("normalizeHookInput kiro: normalizes kiro-cli runtime 'shell' tool name", () => {
+  const result = normalizeHookInput("kiro", {
+    cwd: "/workspace",
+    tool_name: "shell",
+    tool_input: { command: "docker ps" },
+    tool_response: { success: true },
+  });
+
+  assertEquals(result, {
+    command: "docker ps",
+    cwd: "/workspace",
+    isFailure: false,
+  });
+});
+
+Deno.test("normalizeHookInput kiro: normalizes 'execute_cmd' alias", () => {
+  const result = normalizeHookInput("kiro", {
+    cwd: "/workspace",
+    tool_name: "execute_cmd",
+    tool_input: { command: "ls -la" },
+    tool_response: { success: true },
+  });
+
+  assertEquals(result?.command, "ls -la");
+  assertEquals(result?.isFailure, false);
+});
+
 // ---- Kiro IDE (USER_PROMPT camelCase format) normalization ----
 
 Deno.test("normalizeHookInput kiro: normalizes Kiro IDE camelCase successful execute_bash", () => {
