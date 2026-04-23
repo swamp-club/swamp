@@ -56,6 +56,9 @@ swamp issue bug --email --title "Crash report" --body "Details..."
 }
 ```
 
+See [references/output_shapes.md](references/output_shapes.md) for all other
+shapes (email fallback, extension-scoped, refusals, security variants).
+
 ## Extension-Scoped Submission (`--extension @collective/name`)
 
 Routes reports to the extension's publisher. Requires the extension to be pulled
@@ -78,17 +81,9 @@ swamp issue bug --extension @adam/cfgmgmt --title "..." --body "..." --json
 swamp issue security --extension @adam/cfgmgmt --title "..." --body "..." --json
 ```
 
-**Output shapes (`--json`):**
-
-- `@swamp/*` →
-  `{ "method": "extension-lab", "number": 42, "extensionName": "@swamp/aws", ... }`
-- Third-party with `gh` →
-  `{ "status": "handoff", "method": "gh", "variant": "issue", "url": "...", "number": 42 }`
-- Third-party without `gh` →
-  `{ "status": "handoff", "method": "browser", "variant": "issue", "url": "...", "preparedTitle": "...", "preparedBody": "..." }`
-- Refused (not pulled / no repo / PVR disabled for security) →
-  `{ "status": "refused", "reason": "...", "guidance": "..." }`
-
+Output shapes differ by routing path (`extension-lab`, `gh` handoff, browser
+handoff, refusal). See
+[references/output_shapes.md](references/output_shapes.md) for full examples.
 Refusals exit **0**, not as errors — the CLI is honoring the user's intent when
 the target can't accept reports.
 
@@ -109,11 +104,26 @@ checks GitHub's Private Vulnerability Reporting (PVR) status first:
 
 1. Gather details from the user (bug reproduction steps, feature context, or
    vulnerability description).
-2. For extension-scoped reports, confirm the extension is pulled locally.
+2. For extension-scoped reports, confirm the extension is pulled locally with
+   `swamp extension list` — if missing, run `swamp extension pull <name>` first.
 3. Verify syntax with `swamp help issue`.
 4. Run the appropriate command.
 5. Verify with the returned issue number / URL (or relay the refusal guidance to
    the user).
+
+### Error Recovery
+
+Map the failure to the right fix rather than retrying blindly:
+
+| Failure signal                                  | Likely cause                | Fix                                                                                     |
+| ----------------------------------------------- | --------------------------- | --------------------------------------------------------------------------------------- |
+| Lab submission returns 401 / "unauthorized"     | Auth token expired          | Run `swamp auth login` and retry                                                        |
+| Lab submission times out or 5xx                 | swamp.club outage           | Retry with `--email` to fall back to email submission                                   |
+| `gh` handoff errors with auth failure           | `GH_TOKEN` unset or invalid | Run `gh auth login` (or export a valid `GH_TOKEN`); re-run — CLI will retry `gh`        |
+| `gh` not installed                              | Missing binary              | No action needed — CLI falls back to `method: "browser"` automatically                  |
+| `status: "refused"` with "extension not pulled" | Extension not local         | `swamp extension pull <name>`, then retry                                               |
+| `status: "refused"` with "no repository"        | Publisher declared no repo  | Do not retry; relay the guidance field to the user (points at publisher's profile page) |
+| `status: "refused"` on `security` command       | PVR disabled on target repo | Do not retry as a public issue; relay guidance to contact publisher privately           |
 
 ## Requirements
 
