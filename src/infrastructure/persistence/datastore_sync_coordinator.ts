@@ -235,6 +235,26 @@ export async function registerDatastoreSyncNamed(
   const entry: SyncEntry = { service, lock, label, syncTimeoutMs };
   entries.set(key, entry);
 
+  // Tracks what must be unwound if register fails. Critical: the outer
+  // runCli() error handler calls flushDatastoreSync() in its catch block
+  // (cli/mod.ts:1066) without try/catch, so an orphaned entry left here
+  // would cause the error handler to invoke push on the same hung service
+  // and throw again — shadowing the original error and doubling the
+  // user-visible timeout wait. See swamp#1216 review (double-timeout bug).
+  let lockAcquired = false;
+
+  const unwindOnFailure = async () => {
+    entries.delete(key);
+    if (lockAcquired && lock) {
+      try {
+        await lock.release();
+      } catch {
+        // Best effort — lock expires via TTL if release fails.
+      }
+    }
+    maybeRemoveSignalHandler();
+  };
+
   // Acquire distributed lock if provided
   if (lock) {
     const lockSpan = getTracer().startSpan("swamp.lock.acquire", {
@@ -242,12 +262,14 @@ export async function registerDatastoreSyncNamed(
     });
     try {
       await lock.acquire();
+      lockAcquired = true;
       lockSpan.setStatus({ code: SpanStatusCode.OK });
     } catch (error) {
       lockSpan.setStatus({
         code: SpanStatusCode.ERROR,
         message: error instanceof Error ? error.message : String(error),
       });
+      await unwindOnFailure();
       throw error;
     } finally {
       lockSpan.end();
@@ -286,6 +308,7 @@ export async function registerDatastoreSyncNamed(
     } catch (error) {
       const { summary, fields } = summarizeSyncError("pull", label, error);
       syncSpan.setStatus({ code: SpanStatusCode.ERROR, message: summary });
+      await unwindOnFailure();
       // SyncTimeoutError renders cleanly at the top level (UserError); do
       // not log here and do not rewrap (a generic Error wrapper would lose
       // the clean render and double the output with stack trace).

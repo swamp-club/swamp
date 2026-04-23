@@ -322,6 +322,83 @@ Deno.test("registerDatastoreSync: hanging pullChanged surfaces SyncTimeoutError"
   assertEquals(getRegisteredLockKeys().length, 0);
 });
 
+Deno.test("registerDatastoreSyncNamed: pull timeout cleans up entry and releases lock", async () => {
+  // Regression guard: if this fails, the runCli error handler at
+  // cli/mod.ts will hit the hung entry again via flushDatastoreSync,
+  // doubling the user-visible timeout wait and shadowing the original
+  // error (see swamp#1216 review — double-timeout bug).
+  const hanging = {
+    pullChanged: () => new Promise<number>(() => {}),
+    pushChanged: () => Promise.resolve(0),
+  };
+  const lock = new FakeLock();
+
+  await assertRejects(
+    () =>
+      registerDatastoreSyncNamed("entry-cleanup", {
+        service: hanging,
+        lock,
+        label: "@test/cleanup",
+        syncTimeoutMs: 100,
+      }),
+    SyncTimeoutError,
+  );
+
+  // Entry removed from the map — a subsequent flushDatastoreSync() in
+  // the outer error handler must not re-encounter this hung service.
+  assertEquals(getRegisteredLockKeys().includes("entry-cleanup"), false);
+  // Lock released so the next run isn't stranded.
+  assertEquals(lock.released, true);
+  assertEquals(lock.releaseCount, 1);
+
+  // And confirm: a flush right now is a clean no-op, not another hang.
+  await flushDatastoreSync();
+});
+
+Deno.test("registerDatastoreSyncNamed: lock acquire failure removes entry", async () => {
+  // Regression guard symmetrical to the pull cleanup test — if lock
+  // acquire fails, the entry must be removed so the outer error handler's
+  // flushDatastoreSync() call doesn't later invoke push on this service.
+  const service = {
+    pullChanged: () => Promise.resolve(0),
+    pushChanged: () => Promise.resolve(0),
+  };
+  const failingLock = {
+    async acquire() {
+      await Promise.resolve();
+      throw new Error("lock acquire blew up");
+    },
+    async release() {
+      await Promise.resolve();
+    },
+    withLock<T>(fn: () => Promise<T>) {
+      return fn();
+    },
+    async inspect() {
+      await Promise.resolve();
+      return null;
+    },
+    async forceRelease(_n: string) {
+      await Promise.resolve();
+      return false;
+    },
+  };
+
+  await assertRejects(
+    () =>
+      registerDatastoreSyncNamed("lock-fail", {
+        service,
+        lock: failingLock,
+        label: "@test/lockfail",
+      }),
+    Error,
+    "lock acquire blew up",
+  );
+
+  assertEquals(getRegisteredLockKeys().includes("lock-fail"), false);
+  await flushDatastoreSync();
+});
+
 Deno.test("flushDatastoreSync: normal settlement within timeout does not throw", async () => {
   const fastService = {
     pullChanged: () => Promise.resolve(0),
