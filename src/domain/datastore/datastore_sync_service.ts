@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { UserError } from "../errors.ts";
+
 /** Options accepted by sync service methods. */
 export interface DatastoreSyncOptions {
   /**
@@ -53,11 +55,16 @@ export type SyncDirection = "push" | "pull";
  * regardless of whether the underlying extension honored the `AbortSignal`.
  * The message includes the actionable escape hatch for the most common
  * root cause — a stuck datastore lock left behind by a prior crashed run.
+ *
+ * Extends `UserError` so the message renders clean (no stack trace) at
+ * the CLI error boundary — the message is already hand-crafted to be
+ * actionable, and a stack would bury the escape hatch.
  */
-export class SyncTimeoutError extends Error {
+export class SyncTimeoutError extends UserError {
   readonly label: string;
   readonly direction: SyncDirection;
   readonly timeoutMs: number;
+  override readonly cause?: unknown;
 
   constructor(
     label: string,
@@ -69,10 +76,13 @@ export class SyncTimeoutError extends Error {
       `${timeoutMs}ms. If a prior process crashed without releasing the ` +
       `lock, run 'swamp datastore lock release --force' (add ` +
       `--model <type>/<id> for a specific model lock).`;
-    super(msg, options);
+    super(msg);
     this.name = "SyncTimeoutError";
     this.label = label;
     this.direction = direction;
     this.timeoutMs = timeoutMs;
+    if (options?.cause !== undefined) {
+      this.cause = options.cause;
+    }
   }
 }

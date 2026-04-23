@@ -286,6 +286,12 @@ export async function registerDatastoreSyncNamed(
     } catch (error) {
       const { summary, fields } = summarizeSyncError("pull", label, error);
       syncSpan.setStatus({ code: SpanStatusCode.ERROR, message: summary });
+      // SyncTimeoutError renders cleanly at the top level (UserError); do
+      // not log here and do not rewrap (a generic Error wrapper would lose
+      // the clean render and double the output with stack trace).
+      if (error instanceof SyncTimeoutError) {
+        throw error;
+      }
       logger.error("{summary}", { summary, ...fields });
       throw new Error(summary, { cause: error });
     } finally {
@@ -378,8 +384,12 @@ export async function flushDatastoreSyncNamed(key: string): Promise<void> {
       // Asymmetric surface per issue #157: timeouts propagate so the user
       // sees a non-zero exit; other push errors warn-downgrade (preserves
       // historical behavior where a transient S3 blip doesn't kill a run).
+      //
+      // For timeouts we do NOT log here — the error propagates to the
+      // top-level renderError which renders the message (SyncTimeoutError
+      // extends UserError, so no stack). Logging here as well would double
+      // the output with slightly different wording.
       if (error instanceof SyncTimeoutError) {
-        logger.error("{summary}", { summary, ...fields });
         if (entry.lock) {
           try {
             await entry.lock.release();

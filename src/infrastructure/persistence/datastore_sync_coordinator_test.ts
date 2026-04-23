@@ -33,6 +33,7 @@ import {
   resolveSyncTimeoutMs,
 } from "../../domain/datastore/datastore_config.ts";
 import { SyncTimeoutError } from "../../domain/datastore/datastore_sync_service.ts";
+import { UserError } from "../../domain/errors.ts";
 
 // Initialize logging for tests
 await initializeLogging({});
@@ -205,6 +206,14 @@ Deno.test("flushDatastoreSync swallows pushChanged failures (warn-only)", async 
   assertEquals(getRegisteredLockKeys().length, 0);
 });
 
+Deno.test("SyncTimeoutError is a UserError so the CLI error boundary renders message only", () => {
+  // If this regresses, renderError's else-branch fires and dumps a stack
+  // trace that buries the actionable `swamp datastore lock release --force`
+  // hint — see swamp#1216 review feedback.
+  const err = new SyncTimeoutError("@test/x", "push", 1000);
+  assertEquals(err instanceof UserError, true);
+});
+
 Deno.test("flushDatastoreSync: hanging pushChanged surfaces SyncTimeoutError within window", async () => {
   const hangingService = {
     pullChanged: () => Promise.resolve(0),
@@ -295,6 +304,8 @@ Deno.test("registerDatastoreSync: hanging pullChanged surfaces SyncTimeoutError"
     pushChanged: () => Promise.resolve(0),
   };
 
+  // Pull-path timeouts throw SyncTimeoutError directly (not wrapped) so
+  // they render cleanly at the top-level CLI error boundary.
   const err = await assertRejects(
     () =>
       registerDatastoreSync({
@@ -302,14 +313,10 @@ Deno.test("registerDatastoreSync: hanging pullChanged surfaces SyncTimeoutError"
         label: "@test/hangpull",
         syncTimeoutMs: 120,
       }),
-    Error,
+    SyncTimeoutError,
   );
-  // The coordinator wraps pull errors in a summary Error with cause;
-  // the SyncTimeoutError is preserved on .cause.
-  assertEquals(err.cause instanceof SyncTimeoutError, true);
-  const cause = err.cause as SyncTimeoutError;
-  assertEquals(cause.direction, "pull");
-  assertEquals(cause.timeoutMs, 120);
+  assertEquals(err.direction, "pull");
+  assertEquals(err.timeoutMs, 120);
   // Register does not persist state on failure, but be defensive.
   await flushDatastoreSync();
   assertEquals(getRegisteredLockKeys().length, 0);
