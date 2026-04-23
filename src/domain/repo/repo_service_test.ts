@@ -1569,7 +1569,10 @@ Deno.test("RepoService.init with kiro creates .kiro/agents/swamp.json", async ()
     const content = await Deno.readTextFile(configPath);
     const config = JSON.parse(content);
     assertEquals(config.name, "swamp");
-    assertEquals(config.tools, ["*"]);
+    assertEquals(
+      config.tools,
+      ["read", "write", "shell", "grep", "glob", "thinking", "todo"],
+    );
     assertStringIncludes(
       JSON.stringify(config.toolsSettings.shell.allowedCommands),
       "swamp .*",
@@ -1602,6 +1605,74 @@ Deno.test("RepoService.upgrade with kiro updates agent config", async () => {
       JSON.stringify(config.hooks.postToolUse),
       "audit record --from-hook --tool kiro",
     );
+  });
+});
+
+// Kiro CLI workspace default agent tests (.kiro/settings/cli.json)
+
+Deno.test("RepoService.init with kiro produces hook, agent, and cli.json together", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    await service.init(repoPath, { tool: "kiro" });
+
+    // Hook file
+    const hookPath = join(tempDir, ".kiro", "hooks", "swamp-audit.kiro.hook");
+    await Deno.stat(hookPath);
+
+    // Agent config with explicit tools list (no "*")
+    const agentPath = join(tempDir, ".kiro", "agents", "swamp.json");
+    const agent = JSON.parse(await Deno.readTextFile(agentPath));
+    assertEquals(Array.isArray(agent.tools), true);
+    assertEquals((agent.tools as string[]).includes("*"), false);
+    assertEquals((agent.tools as string[]).includes("shell"), true);
+
+    // Workspace default-agent wiring
+    const cliPath = join(tempDir, ".kiro", "settings", "cli.json");
+    const cli = JSON.parse(await Deno.readTextFile(cliPath));
+    assertEquals(cli["chat.defaultAgent"], "swamp");
+  });
+});
+
+Deno.test("RepoService.init with kiro merges existing cli.json preserving unrelated keys", async () => {
+  await withTempDir(async (tempDir) => {
+    // Pre-create cli.json with an unrelated key
+    const settingsDir = join(tempDir, ".kiro", "settings");
+    await Deno.mkdir(settingsDir, { recursive: true });
+    const cliPath = join(settingsDir, "cli.json");
+    await Deno.writeTextFile(
+      cliPath,
+      JSON.stringify({ "some.unrelated.setting": 42 }, null, 2) + "\n",
+    );
+
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+    await service.init(repoPath, { tool: "kiro" });
+
+    const cli = JSON.parse(await Deno.readTextFile(cliPath));
+    assertEquals(cli["chat.defaultAgent"], "swamp");
+    assertEquals(cli["some.unrelated.setting"], 42);
+  });
+});
+
+Deno.test("RepoService.init with kiro leaves existing non-swamp defaultAgent alone", async () => {
+  await withTempDir(async (tempDir) => {
+    const settingsDir = join(tempDir, ".kiro", "settings");
+    await Deno.mkdir(settingsDir, { recursive: true });
+    const cliPath = join(settingsDir, "cli.json");
+    await Deno.writeTextFile(
+      cliPath,
+      JSON.stringify({ "chat.defaultAgent": "my-custom-agent" }, null, 2) +
+        "\n",
+    );
+
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+    await service.init(repoPath, { tool: "kiro" });
+
+    const cli = JSON.parse(await Deno.readTextFile(cliPath));
+    assertEquals(cli["chat.defaultAgent"], "my-custom-agent");
   });
 });
 
