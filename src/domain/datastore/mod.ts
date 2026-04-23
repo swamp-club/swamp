@@ -23,10 +23,13 @@ export {
   type DatastoreConfig,
   type DatastoreConfigData,
   DEFAULT_DATASTORE_SUBDIRS,
+  DEFAULT_SYNC_TIMEOUT_MS,
   type FilesystemDatastoreConfig,
   getDatastoreDirectories,
   isAlwaysLocal,
   isCustomDatastoreConfig,
+  resolveSyncTimeoutMs,
+  SYNC_TIMEOUT_ENV_VAR,
 } from "./datastore_config.ts";
 
 export {
@@ -43,7 +46,12 @@ export {
 
 export { type DatastorePathResolver } from "./datastore_path_resolver.ts";
 
-export { type DatastoreSyncService } from "./datastore_sync_service.ts";
+export {
+  type DatastoreSyncOptions,
+  type DatastoreSyncService,
+  type SyncDirection,
+  SyncTimeoutError,
+} from "./datastore_sync_service.ts";
 
 export { type DatastoreProvider } from "./datastore_provider.ts";
 

@@ -66,10 +66,15 @@ export interface DatastoreVerifier {
   verify(): Promise<DatastoreHealthResult>;
 }
 
+/** Options accepted by sync service methods. */
+export interface DatastoreSyncOptions {
+  signal?: AbortSignal;
+}
+
 /** Interface for datastore synchronization services. */
 export interface DatastoreSyncService {
-  pullChanged(): Promise<number | void>;
-  pushChanged(): Promise<number | void>;
+  pullChanged(options?: DatastoreSyncOptions): Promise<number | void>;
+  pushChanged(options?: DatastoreSyncOptions): Promise<number | void>;
 }
 
 /**

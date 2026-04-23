@@ -168,6 +168,25 @@ datastore:
     - "telemetry/**"
 ```
 
+### Sync Timeout
+
+Each direction of a remote sync (push / pull) is bounded by a hard deadline
+enforced in the coordinator, so a stuck or slow extension cannot hang the CLI
+indefinitely. The default is `DEFAULT_SYNC_TIMEOUT_MS` (5 minutes), overridable
+per-datastore on `CustomDatastoreConfig.syncTimeoutMs` or globally via the
+`SWAMP_DATASTORE_SYNC_TIMEOUT_MS` environment variable.
+
+The deadline fires a `SyncTimeoutError` regardless of whether the extension
+honored the `AbortSignal` passed to `pushChanged(options)` / `pullChanged(options)`.
+Timeouts propagate as a non-zero CLI exit so the user sees that data did not
+make it to the remote; other push errors still warn-downgrade (preserves
+historical behavior where a transient S3 blip does not kill a run).
+
+See `src/domain/datastore/datastore_config.ts` (`DEFAULT_SYNC_TIMEOUT_MS`,
+`SYNC_TIMEOUT_ENV_VAR`, `resolveSyncTimeoutMs`) and
+`src/infrastructure/persistence/datastore_sync_coordinator.ts`
+(`runBoundedSync`).
+
 ## Path Resolution
 
 Every file operation goes through a `DatastorePathResolver` that decides whether

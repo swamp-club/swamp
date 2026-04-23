@@ -28,6 +28,11 @@ import {
   registerDatastoreSyncNamed,
 } from "./datastore_sync_coordinator.ts";
 import type { DistributedLock } from "../../domain/datastore/distributed_lock.ts";
+import {
+  DEFAULT_SYNC_TIMEOUT_MS,
+  resolveSyncTimeoutMs,
+} from "../../domain/datastore/datastore_config.ts";
+import { SyncTimeoutError } from "../../domain/datastore/datastore_sync_service.ts";
 
 // Initialize logging for tests
 await initializeLogging({});
@@ -198,4 +203,243 @@ Deno.test("flushDatastoreSync swallows pushChanged failures (warn-only)", async 
   // warn-and-swallow so a successful command doesn't fail on cleanup.
   await flushDatastoreSync();
   assertEquals(getRegisteredLockKeys().length, 0);
+});
+
+Deno.test("flushDatastoreSync: hanging pushChanged surfaces SyncTimeoutError within window", async () => {
+  const hangingService = {
+    pullChanged: () => Promise.resolve(0),
+    pushChanged: () => new Promise<number>(() => {}), // never resolves
+  };
+
+  await registerDatastoreSync({
+    service: hangingService,
+    label: "@test/hang",
+    syncTimeoutMs: 120,
+  });
+
+  const started = Date.now();
+  const err = await assertRejects(
+    () => flushDatastoreSync(),
+    SyncTimeoutError,
+  );
+  const elapsed = Date.now() - started;
+
+  // Fires within configured window + modest slack — not indefinitely.
+  assertEquals(elapsed < 1_000, true, `timed out after ${elapsed}ms`);
+  assertEquals(err.label, "@test/hang");
+  assertEquals(err.direction, "push");
+  assertEquals(err.timeoutMs, 120);
+  // Actionable escape hatch in the message.
+  assertStringIncludes(err.message, "swamp datastore lock release --force");
+  // Coordinator state is clean after the throw.
+  assertEquals(getRegisteredLockKeys().length, 0);
+});
+
+Deno.test("flushDatastoreSync: signal-compliant extension aborts cooperatively", async () => {
+  let observedSignal: AbortSignal | undefined;
+  const cooperativeService = {
+    pullChanged: () => Promise.resolve(0),
+    pushChanged: (options?: { signal?: AbortSignal }) =>
+      new Promise<number>((_, reject) => {
+        observedSignal = options?.signal;
+        options?.signal?.addEventListener("abort", () => {
+          reject(
+            new DOMException("The operation was aborted.", "AbortError"),
+          );
+        }, { once: true });
+      }),
+  };
+
+  await registerDatastoreSync({
+    service: cooperativeService,
+    label: "@test/cooperative",
+    syncTimeoutMs: 120,
+  });
+
+  // Should surface SyncTimeoutError (from the AbortController.abort(reason)),
+  // not the cooperative extension's AbortError.
+  const err = await assertRejects(
+    () => flushDatastoreSync(),
+    SyncTimeoutError,
+  );
+  assertEquals(err.direction, "push");
+  assertEquals(observedSignal !== undefined, true);
+  assertEquals(observedSignal?.aborted, true);
+});
+
+Deno.test("flushDatastoreSync: releases lock even when push times out", async () => {
+  const hangingService = {
+    pullChanged: () => Promise.resolve(0),
+    pushChanged: () => new Promise<number>(() => {}),
+  };
+  const lock = new FakeLock();
+
+  await registerDatastoreSync({
+    service: hangingService,
+    lock,
+    label: "@test/hang-with-lock",
+    syncTimeoutMs: 100,
+  });
+
+  await assertRejects(() => flushDatastoreSync(), SyncTimeoutError);
+
+  // Lock MUST be released even on timeout — otherwise the next run
+  // walks into a stale lock, which is the bug we're fixing.
+  assertEquals(lock.released, true);
+  assertEquals(lock.releaseCount, 1);
+});
+
+Deno.test("registerDatastoreSync: hanging pullChanged surfaces SyncTimeoutError", async () => {
+  const hangingService = {
+    pullChanged: () => new Promise<number>(() => {}),
+    pushChanged: () => Promise.resolve(0),
+  };
+
+  const err = await assertRejects(
+    () =>
+      registerDatastoreSync({
+        service: hangingService,
+        label: "@test/hangpull",
+        syncTimeoutMs: 120,
+      }),
+    Error,
+  );
+  // The coordinator wraps pull errors in a summary Error with cause;
+  // the SyncTimeoutError is preserved on .cause.
+  assertEquals(err.cause instanceof SyncTimeoutError, true);
+  const cause = err.cause as SyncTimeoutError;
+  assertEquals(cause.direction, "pull");
+  assertEquals(cause.timeoutMs, 120);
+  // Register does not persist state on failure, but be defensive.
+  await flushDatastoreSync();
+  assertEquals(getRegisteredLockKeys().length, 0);
+});
+
+Deno.test("flushDatastoreSync: normal settlement within timeout does not throw", async () => {
+  const fastService = {
+    pullChanged: () => Promise.resolve(0),
+    pushChanged: () => Promise.resolve(3),
+  };
+
+  await registerDatastoreSync({
+    service: fastService,
+    label: "@test/fast",
+    syncTimeoutMs: 60_000,
+  });
+
+  await flushDatastoreSync();
+  assertEquals(getRegisteredLockKeys().length, 0);
+  // If the setTimeout wasn't cleared, Deno's test runner flags the leaked
+  // timer and this test fails — implicit coverage of cleanup.
+});
+
+Deno.test("resolveSyncTimeoutMs: config field overrides env and default", () => {
+  const cfg = {
+    type: "@test/store",
+    config: {},
+    datastorePath: "/tmp/x",
+    syncTimeoutMs: 555,
+  };
+  // Direct import rather than end-to-end coordinator test — proves the
+  // config→timeout resolver plumbing independently of runBoundedSync.
+  assertEquals(resolveSyncTimeoutMs(cfg), 555);
+});
+
+Deno.test("resolveSyncTimeoutMs: env var used when config field absent", () => {
+  const cfg = {
+    type: "@test/store",
+    config: {},
+    datastorePath: "/tmp/x",
+  };
+  Deno.env.set("SWAMP_DATASTORE_SYNC_TIMEOUT_MS", "4200");
+  try {
+    assertEquals(resolveSyncTimeoutMs(cfg), 4200);
+  } finally {
+    Deno.env.delete("SWAMP_DATASTORE_SYNC_TIMEOUT_MS");
+  }
+});
+
+Deno.test("resolveSyncTimeoutMs: invalid env falls back to default", () => {
+  const cfg = {
+    type: "@test/store",
+    config: {},
+    datastorePath: "/tmp/x",
+  };
+  Deno.env.set("SWAMP_DATASTORE_SYNC_TIMEOUT_MS", "not-a-number");
+  try {
+    assertEquals(resolveSyncTimeoutMs(cfg), DEFAULT_SYNC_TIMEOUT_MS);
+  } finally {
+    Deno.env.delete("SWAMP_DATASTORE_SYNC_TIMEOUT_MS");
+  }
+});
+
+Deno.test("flushDatastoreSync: one entry's timeout still flushes other entries", async () => {
+  // Regression guard: before the loop was wrapped in try/catch, a
+  // SyncTimeoutError from one entry would abort the for-loop and strand
+  // later entries with held locks — recreating the stuck-lock bug this
+  // coordinator is hardened against.
+  const hanging = {
+    pullChanged: () => Promise.resolve(0),
+    pushChanged: () => new Promise<number>(() => {}),
+  };
+  const fast = {
+    pullChanged: () => Promise.resolve(0),
+    pushChanged: () => Promise.resolve(0),
+  };
+  const lockA = new FakeLock();
+  const lockB = new FakeLock();
+  const lockC = new FakeLock();
+
+  await registerDatastoreSyncNamed("entry-a", {
+    service: hanging,
+    lock: lockA,
+    label: "@test/a-hangs",
+    syncTimeoutMs: 100,
+  });
+  await registerDatastoreSyncNamed("entry-b", {
+    service: fast,
+    lock: lockB,
+    label: "@test/b-fast",
+    syncTimeoutMs: 5_000,
+  });
+  await registerDatastoreSyncNamed("entry-c", {
+    service: fast,
+    lock: lockC,
+    label: "@test/c-fast",
+    syncTimeoutMs: 5_000,
+  });
+
+  await assertRejects(() => flushDatastoreSync(), SyncTimeoutError);
+
+  // All three locks MUST have been released — the timeout on entry A
+  // should not strand B and C.
+  assertEquals(lockA.released, true, "entry-a lock released");
+  assertEquals(lockB.released, true, "entry-b lock released");
+  assertEquals(lockC.released, true, "entry-c lock released");
+  assertEquals(getRegisteredLockKeys().length, 0);
+});
+
+Deno.test("flushDatastoreSync: config timeout is honored end-to-end", async () => {
+  const hangingService = {
+    pullChanged: () => Promise.resolve(0),
+    pushChanged: () => new Promise<number>(() => {}),
+  };
+  const cfg = {
+    type: "@test/integration",
+    config: {},
+    datastorePath: "/tmp/x",
+    syncTimeoutMs: 150,
+  };
+
+  await registerDatastoreSync({
+    service: hangingService,
+    label: cfg.type,
+    syncTimeoutMs: resolveSyncTimeoutMs(cfg),
+  });
+
+  const started = Date.now();
+  await assertRejects(() => flushDatastoreSync(), SyncTimeoutError);
+  const elapsed = Date.now() - started;
+  // Proves config → resolveSyncTimeoutMs → registerDatastoreSync → runBoundedSync.
+  assertEquals(elapsed < 1_000, true, `timed out after ${elapsed}ms`);
 });
