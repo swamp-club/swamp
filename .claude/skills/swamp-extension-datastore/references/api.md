@@ -20,9 +20,17 @@ interface DatastoreProvider {
   createVerifier(): DatastoreVerifier;
   createSyncService?(repoDir: string, cachePath: string): DatastoreSyncService;
   resolveDatastorePath(repoDir: string): string;
-  resolveCachePath?(repoDir: string): string;
+  resolveCachePath?(repoDir: string): string | undefined;
 }
 ```
+
+Although `resolveCachePath` is marked optional with `?`, the convention across
+all `@swamp/*` datastores is to define it and return `undefined` when no custom
+cache is desired. Omitting the method and returning `undefined` are
+runtime-equivalent — every consumer in swamp core uses
+`provider.resolveCachePath?.(repoDir) ?? <repoId-keyed default>`, so both cases
+fall back to `~/.swamp/repos/<repoId>`. Defining the method makes the intent
+explicit to readers.
 
 ### `createLock(datastorePath, options?)`
 
@@ -54,9 +62,10 @@ should be the local cache path.
 
 ### `resolveCachePath(repoDir)?`
 
-Optional. Returns a local cache path for remote datastores. When present, swamp
-uses this path for local caching and syncs to/from the remote backend via the
-sync service.
+Returns a local cache path for remote datastores, or `undefined` to accept
+core's `~/.swamp/repos/<repoId>` default. Convention details above. When a
+concrete path is returned, swamp uses it for local caching and syncs to/from the
+remote backend via the sync service.
 
 ## DistributedLock
 

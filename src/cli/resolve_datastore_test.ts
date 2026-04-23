@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import { join } from "@std/path";
 import {
   buildLocalEditsWarning,
   parseDatastoreEnvVar,
@@ -30,6 +31,7 @@ import {
 } from "../domain/datastore/datastore_config.ts";
 import { datastoreTypeRegistry } from "../domain/datastore/datastore_type_registry.ts";
 import type { DatastoreProvider } from "../domain/datastore/datastore_provider.ts";
+import { getSwampDataDir } from "../infrastructure/persistence/paths.ts";
 import type { RepoMarkerData } from "../infrastructure/persistence/repo_marker_repository.ts";
 import { z } from "zod";
 
@@ -310,6 +312,69 @@ Deno.test("resolveDatastoreConfig: YAML custom type with no config defaults to e
   const config = await resolveDatastoreConfig(marker, undefined, "/repo");
   const custom = config as CustomDatastoreConfig;
   assertEquals(custom.config, {});
+});
+
+// ============================================================================
+// resolveCachePath contract — lock single-path cache resolution (swamp-club#150)
+// ============================================================================
+
+// The #150 reporter claimed a missing `resolveCachePath` method and a method
+// returning `undefined` take different code paths in swamp core. They do not.
+// Every consumer uses `provider.resolveCachePath?.(x) ?? <fallback>` — the
+// codebase convention — which JavaScript evaluates identically for both
+// cases. See src/cli/resolve_datastore.ts and src/libswamp/datastores/setup.ts;
+// grep `resolveCachePath` to enumerate the call sites.
+//
+// These tests lock in the single-path runtime behavior: a provider that
+// returns `undefined` routes to core's repoId-keyed default, while a provider
+// that returns a concrete path uses that path. A future refactor that changes
+// the fallback or drops the `?.` must update these assertions deliberately.
+
+Deno.test("resolveCachePath: undefined return routes to repoId-keyed default", async () => {
+  const typeName = "test-cache-undefined";
+  if (!datastoreTypeRegistry.has(typeName)) {
+    datastoreTypeRegistry.register({
+      type: typeName,
+      name: `Test ${typeName}`,
+      description: `Test datastore type: ${typeName}`,
+      isBuiltIn: false,
+      createProvider: () =>
+        createStubProvider({
+          resolveCachePath: (_repoDir: string) => undefined,
+        }),
+    });
+  }
+  const config = await parseDatastoreEnvVar(
+    `${typeName}:{}`,
+    "repo-abc",
+    "/my/repo",
+  );
+  const custom = config as CustomDatastoreConfig;
+  assertEquals(custom.cachePath, join(getSwampDataDir(), "repos", "repo-abc"));
+});
+
+Deno.test("resolveCachePath: concrete return is used as-is", async () => {
+  const typeName = "test-cache-concrete";
+  if (!datastoreTypeRegistry.has(typeName)) {
+    datastoreTypeRegistry.register({
+      type: typeName,
+      name: `Test ${typeName}`,
+      description: `Test datastore type: ${typeName}`,
+      isBuiltIn: false,
+      createProvider: () =>
+        createStubProvider({
+          resolveCachePath: (repoDir: string) =>
+            `${repoDir}/.test-explicit-cache`,
+        }),
+    });
+  }
+  const config = await parseDatastoreEnvVar(
+    `${typeName}:{}`,
+    "repo-xyz",
+    "/my/repo",
+  );
+  const custom = config as CustomDatastoreConfig;
+  assertEquals(custom.cachePath, "/my/repo/.test-explicit-cache");
 });
 
 // ============================================================================

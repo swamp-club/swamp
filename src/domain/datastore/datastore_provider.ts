@@ -36,6 +36,19 @@ export interface DatastoreProvider {
   createSyncService?(repoDir: string, cachePath: string): DatastoreSyncService;
   /** Resolve the datastore path relative to the repository. */
   resolveDatastorePath(repoDir: string): string;
-  /** Optionally resolve a local cache path for remote datastores. */
+  /**
+   * Resolve a local cache path for remote datastores.
+   *
+   * Optional at the type level, but note the runtime equivalence: every
+   * consumer in swamp core invokes this as
+   * `provider.resolveCachePath?.(repoDir) ?? <repoId-keyed default>`, so
+   * omitting the method and defining it to return `undefined` both fall
+   * back to `~/.swamp/repos/<repoId>`.
+   *
+   * The convention across all `@swamp/*` datastores is to define the
+   * method and return `undefined` when no custom cache is desired, so the
+   * intent ("I want core's default") is explicit to readers rather than
+   * inferred from a missing property.
+   */
   resolveCachePath?(repoDir: string): string | undefined;
 }

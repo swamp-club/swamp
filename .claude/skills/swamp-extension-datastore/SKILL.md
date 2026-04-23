@@ -115,7 +115,10 @@ The `type` must match the pattern `@collective/name` or `collective/name` (e.g.,
 | `createVerifier`       | Yes      | Returns a `DatastoreVerifier` for health checks     |
 | `createSyncService`    | No       | Returns a `DatastoreSyncService` for remote sync    |
 | `resolveDatastorePath` | Yes      | Returns the absolute path for runtime data storage  |
-| `resolveCachePath`     | No       | Returns a local cache path for remote datastores    |
+| `resolveCachePath`     | No†      | Local cache path for remote datastores (see note)   |
+
+† Optional in the type, but define it — return `undefined` for core's default.
+See [references/api.md](references/api.md).
 
 For full interface signatures and type details, see
 [references/api.md](references/api.md).

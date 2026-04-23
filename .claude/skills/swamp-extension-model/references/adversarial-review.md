@@ -140,7 +140,9 @@ These apply to **all** extension types (models, drivers, vaults, datastores).
 - `withLock` must release the lock on both success and error paths.
 - `createVerifier` must return accurate health information with latency.
 - `resolveDatastorePath` must be deterministic for the same inputs.
-- Remote datastores must implement `resolveCachePath`.
+- Remote datastores should define `resolveCachePath` (return `undefined` for
+  core's repoId-keyed default). Optional in the type, but every `@swamp/*`
+  datastore follows this convention so the intent is explicit.
 
 ## What This Review Does NOT Check
 
