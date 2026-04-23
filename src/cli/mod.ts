@@ -1062,8 +1062,17 @@ export async function runCli(args: string[]): Promise<void> {
       }
     }
   } catch (error) {
-    // Release datastore lock even on failure (don't leave locks stuck)
-    await flushDatastoreSync();
+    // Release datastore lock even on failure (don't leave locks stuck).
+    // flushDatastoreSync() can now throw (SyncTimeoutError propagates on
+    // the push path — see swamp#1216), so we swallow errors here: the
+    // original command error must take precedence, and telemetry
+    // recording below must still run. Per-entry cleanup on
+    // flushDatastoreSync failure is handled inside the coordinator.
+    try {
+      await flushDatastoreSync();
+    } catch {
+      // Best effort — don't shadow the original error.
+    }
 
     // Record error invocation and flush before re-throwing
     if (telemetryCtx && error instanceof Error) {

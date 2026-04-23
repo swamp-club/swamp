@@ -63,6 +63,22 @@ export const DEFAULT_DATASTORE_SUBDIRS = [
 // after copying to cache, breaking subsequent extension loading.
 
 /**
+ * Default timeout (milliseconds) for a single direction of datastore sync.
+ *
+ * Each direction (push and pull) is bounded independently by this value —
+ * it is not a combined sync budget. The default is deliberately generous
+ * (5 minutes): the failure mode this bound was introduced for (see #157) is
+ * an ~8.5 minute hang, so 5 minutes prevents the upstream Deno TLS panic
+ * with ample margin while still covering legitimate slow-path pushes on
+ * large datastores over slow networks. This default is PROVISIONAL — tune
+ * down once production telemetry shows a realistic slow-path distribution.
+ */
+export const DEFAULT_SYNC_TIMEOUT_MS = 300_000;
+
+/** Env var that overrides `DEFAULT_SYNC_TIMEOUT_MS` at runtime. */
+export const SYNC_TIMEOUT_ENV_VAR = "SWAMP_DATASTORE_SYNC_TIMEOUT_MS";
+
+/**
  * Filesystem-based datastore configuration.
  * Data is stored at a specified filesystem path.
  */
@@ -87,6 +103,14 @@ export interface CustomDatastoreConfig {
   readonly cachePath?: string;
   readonly directories?: string[];
   readonly exclude?: string[];
+  /**
+   * Timeout (milliseconds) for a single direction of sync (push or pull).
+   * Each direction is bounded independently — this is not a combined
+   * budget. Defaults to `DEFAULT_SYNC_TIMEOUT_MS` (5 minutes), overridable
+   * via the `SWAMP_DATASTORE_SYNC_TIMEOUT_MS` env var. See
+   * `resolveSyncTimeoutMs`.
+   */
+  readonly syncTimeoutMs?: number;
 }
 
 /**
@@ -138,4 +162,27 @@ export function getDatastoreDirectories(
  */
 export function isAlwaysLocal(subdir: string): boolean {
   return (ALWAYS_LOCAL_SUBDIRS as readonly string[]).includes(subdir);
+}
+
+/**
+ * Resolve the effective sync timeout for a datastore config.
+ *
+ * Resolution order:
+ *   1. `config.syncTimeoutMs` (explicit per-datastore override)
+ *   2. `SWAMP_DATASTORE_SYNC_TIMEOUT_MS` env var (must parse as positive int)
+ *   3. `DEFAULT_SYNC_TIMEOUT_MS` (5 minutes)
+ *
+ * Invalid env values (non-numeric, zero, negative) are ignored with a silent
+ * fallback to the default — the coordinator does not crash on a bad env.
+ */
+export function resolveSyncTimeoutMs(config: DatastoreConfig): number {
+  if (isCustomDatastoreConfig(config) && config.syncTimeoutMs != null) {
+    if (config.syncTimeoutMs > 0) return config.syncTimeoutMs;
+  }
+  const envValue = Deno.env.get(SYNC_TIMEOUT_ENV_VAR);
+  if (envValue) {
+    const parsed = Number.parseInt(envValue, 10);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return DEFAULT_SYNC_TIMEOUT_MS;
 }

@@ -6,6 +6,7 @@
   - ["Not a swamp repository"](#not-a-swamp-repository)
   - [Config File Issues](#config-file-issues)
   - [Skills Not Loading](#skills-not-loading)
+  - [Stuck Datastore Lock](#stuck-datastore-lock)
 - [Recovery Procedures](#recovery-procedures)
 
 ## Common Errors
@@ -99,6 +100,54 @@ ls -la .claude/skills/
    ```bash
    swamp repo upgrade --json
    ```
+
+### Stuck Datastore Lock
+
+**Symptom**: `swamp` commands hang on `datastore·sync Pushing changes to ...`,
+or fail with `SyncTimeoutError: Datastore push/pull timed out after Nms`, or
+livelock on `Global lock held by <holder> appears stale ... — proceeding`
+followed by repeated attempts to acquire.
+
+**Cause**: A previous `swamp` process crashed or was killed before releasing the
+datastore lock. The lock file/object in S3 or the filesystem still names a
+holder that is no longer running.
+
+**Diagnose**:
+
+```bash
+swamp datastore lock status
+```
+
+Shows the holder (hostname, pid, acquiredAt, ttlMs). If the holder is on a
+host/runner that is no longer running, the lock is orphaned.
+
+**Solutions**:
+
+1. **Wait for TTL expiry**: Locks self-expire after `ttlMs` (30s default).
+   Non-interactive — just wait.
+
+2. **Force-release the global lock** (breakglass):
+
+   ```bash
+   swamp datastore lock release --force
+   ```
+
+   The `--force` flag is required. Bypasses `release()` and deletes the lock
+   directly. Use when a crashed process left a lock that hasn't expired yet.
+
+3. **Force-release a specific per-model lock**:
+
+   ```bash
+   swamp datastore lock release --force --model <type>/<id>
+   ```
+
+   Example: `swamp datastore lock release --force --model aws-ec2/my-server`.
+
+**Related knobs**:
+
+- `SWAMP_DATASTORE_SYNC_TIMEOUT_MS` — hard deadline per direction (push or pull)
+  in milliseconds. Default 300000 (5 minutes). Increase for very large
+  datastores on slow networks; decrease to fail faster in tight CI loops.
 
 ## Recovery Procedures
 
