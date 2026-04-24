@@ -107,6 +107,14 @@ swamp repo upgrade ./my-automation --json
 Run `swamp repo upgrade` after updating the swamp binary to ensure your
 repository has the latest skill files and configuration.
 
+If the upgrade detects extensions tracked at a legacy on-disk layout
+(`extensions/<type>/…` or `.swamp/pulled-extensions/<type>/…`), it re-pulls each
+one into the current per-extension subtree
+(`.swamp/pulled-extensions/<ext-name>/<type>/…`) and sweeps the old files
+automatically — no follow-up `swamp extension install` command is required. This
+step requires registry access; on failure, the legacy files are preserved and
+the error names the affected extensions.
+
 ## Start Web Interface
 
 Launch a local web server for browsing and managing the repository.

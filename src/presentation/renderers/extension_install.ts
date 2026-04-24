@@ -40,18 +40,33 @@ class LogExtensionInstallRenderer implements Renderer<ExtensionInstallEvent> {
           version: e.version,
         });
       },
+      migrating: (e) => {
+        logger.info(
+          "Migrating {name}@{version} to per-extension layout...",
+          {
+            name: e.name,
+            version: e.version,
+          },
+        );
+      },
       completed: (e) => {
-        const { installed, upToDate, failed } = e.data;
+        const { installed, migrated, upToDate, failed } = e.data;
         if (e.data.entries.length === 0) {
           logger.info("No extensions in lockfile.");
           return;
         }
-        if (installed === 0 && failed === 0) {
+        if (installed === 0 && migrated === 0 && failed === 0) {
           logger.info("All extensions up to date.");
           return;
         }
         if (installed > 0) {
           logger.info("Installed {count} extension(s).", { count: installed });
+        }
+        if (migrated > 0) {
+          logger.info(
+            "Migrated {count} extension(s) to the per-extension layout.",
+            { count: migrated },
+          );
         }
         if (upToDate > 0) {
           logger.info("{count} extension(s) already up to date.", {
@@ -84,6 +99,7 @@ class JsonExtensionInstallRenderer implements Renderer<ExtensionInstallEvent> {
     return {
       resolving: () => {},
       installing: () => {},
+      migrating: () => {},
       completed: (e) => {
         console.log(JSON.stringify(e.data, null, 2));
       },

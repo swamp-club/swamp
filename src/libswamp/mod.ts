@@ -820,7 +820,6 @@ export {
 export {
   createRepoInitDeps,
   createRepoUpgradeDeps,
-  type ExtensionLayoutMigrationSummary,
   repoInit,
   type RepoInitData,
   type RepoInitDeps,

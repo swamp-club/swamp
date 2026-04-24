@@ -30,7 +30,12 @@ import {
   createRepoInitRenderer,
   createRepoUpgradeRenderer,
 } from "../../presentation/renderers/repo_init.ts";
-import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  createContext,
+  type GlobalOptions,
+  resolveRepoDir,
+} from "../context.ts";
+import { createExtensionInstallDeps } from "../create_extension_install_deps.ts";
 import { VERSION } from "./version.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -100,6 +105,18 @@ export const repoUpgradeCommand = new Command()
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
     const deps = createRepoUpgradeDeps(VERSION);
+
+    // Build the extension install deps so the upgrade runs the install
+    // pass afterward. This is what completes any legacy-layout
+    // migration: `extensionInstall` detects entries at pre-current
+    // layouts, re-pulls them into the per-extension subtree, and sweeps
+    // the legacy files — a single command, no manual follow-up.
+    const repoDir = resolveRepoDir(pathArg);
+    const extensionInstallDeps = await createExtensionInstallDeps(
+      repoDir,
+      cliCtx.logger,
+    );
+
     const renderer = createRepoUpgradeRenderer(cliCtx.outputMode);
     await consumeStream(
       repoUpgrade(ctx, deps, {
@@ -107,6 +124,7 @@ export const repoUpgradeCommand = new Command()
         tool: options.tool as string | undefined,
         includeGitignore: options.includeGitignore as boolean | undefined,
         version: VERSION,
+        extensionInstallDeps,
       }),
       renderer.handlers(),
     );
