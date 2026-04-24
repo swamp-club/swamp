@@ -945,6 +945,7 @@ export {
 } from "./datastores/status.ts";
 export {
   createDatastoreSyncDeps,
+  type CreateDatastoreSyncDepsOptions,
   datastoreSync,
   type DatastoreSyncData,
   type DatastoreSyncDeps,

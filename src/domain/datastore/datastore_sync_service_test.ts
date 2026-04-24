@@ -30,15 +30,31 @@ Deno.test("SyncTimeoutError: message includes direction, label, and timeout", ()
 
 Deno.test("SyncTimeoutError: message lists all four remedies", () => {
   const err = new SyncTimeoutError("@swamp/s3-datastore", "pull", 300_000);
-  // Remedy 1: --timeout flag
-  assertStringIncludes(err.message, "--timeout");
-  // Remedy 2: env var
+  // Remedy 1: env var (universal — applies to implicit and explicit sync alike).
+  // Ordered first because most timeout firings happen on implicit sync after
+  // write commands, where --timeout is not available.
   assertStringIncludes(err.message, "SWAMP_DATASTORE_SYNC_TIMEOUT_MS");
+  // Remedy 2: --timeout flag, scoped to `swamp datastore sync` only.
+  assertStringIncludes(err.message, "--timeout");
   // Remedy 3: extension update (version-free wording — "the latest extension",
-  // not a specific version that would rot across releases)
+  // not a specific version that would rot across releases).
   assertStringIncludes(err.message, "latest extension");
-  // Remedy 4: stuck-lock release
+  // Remedy 4: stuck-lock release.
   assertStringIncludes(err.message, "swamp datastore lock release --force");
+});
+
+Deno.test("SyncTimeoutError: --timeout remedy is scoped to 'swamp datastore sync'", () => {
+  // The timeout fires from `flushDatastoreSync()` after every command, not
+  // just explicit `swamp datastore sync`. A user running e.g. `swamp model
+  // run` who hits the timeout will see `--timeout` in the remedies but the
+  // flag is not available on their command. The message must make the
+  // scope unambiguous so they do not fruitlessly try `swamp model run
+  // --timeout ...` and hit "unknown flag".
+  const err = new SyncTimeoutError("@swamp/s3-datastore", "push", 300_000);
+  assertStringIncludes(err.message, "swamp datastore sync");
+  // The env var hint must also mention that it covers implicit syncs —
+  // that is the real escape hatch for non-sync commands.
+  assertStringIncludes(err.message, "implicit");
 });
 
 Deno.test("SyncTimeoutError: extension-update hint does not hardcode a version", () => {
