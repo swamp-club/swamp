@@ -33,40 +33,27 @@ not use placeholder prefixes like `@local/` — they will be rejected during
 
 ## When to Create a Custom Model
 
-**Create an extension model when no built-in or community type exists for your
-use case.** Before creating one:
+Decide in this order:
 
-1. `swamp model type search <query>` — check local types
-2. `swamp extension search <query>` — check community extensions
-3. If a community extension exists, install it instead of building from scratch
-4. Only create a custom model if nothing exists
+1. `swamp model type search <query>` — built-in or installed type covers it? Use
+   it. Stop.
+2. `swamp extension search <query>` — community extension covers it? Install and
+   use. Trusted collectives (`@swamp/*`, `@si/*`, membership collectives)
+   auto-resolve on first use; check `swamp extension trust list`.
+3. Type exists but lacks a method you need? Add the method via
+   `export const extension` — see
+   [Extending Existing Model Types](#extending-existing-model-types). Do **not**
+   fall back to CLI wrappers when the domain model already exists.
+4. Nothing covers the task? Create a new extension model.
 
-Trusted collectives (`@swamp/*`, `@si/*`, membership collectives) auto-resolve
-on first use — no manual `extension pull` needed. Use
-`swamp extension trust list` to see trusted collectives.
+**Never** default to generic CLI types (`command/shell`) to wrap service
+integrations (S3, EC2, GitHub). Build a dedicated model for the service.
 
-If the task is transforming/analyzing existing model output into a report,
-create a report extension instead (see `swamp-report` skill). Extension models
-are for new data sources and integrations.
+**Reports vs. models:** transforming existing model output into a report is a
+report extension (see `swamp-report`). Extension models are for new data sources
+and integrations.
 
-**When a model type exists but is missing a method:**
-
-If the model type covers your domain but doesn't have the method you need:
-
-1. Confirm the type exists: `swamp model type describe <type> --json`
-2. Verify the method is missing from the output
-3. Add the method via `export const extension` — see
-   [Extending Existing Model Types](#extending-existing-model-types) below
-4. Do not fall back to CLI tools (`gh`, `aws`, `curl`) when the domain model
-   already exists
-
-**Important:** Do not default to generic CLI types (like `command/shell`) for
-specific service integrations. If the user wants to manage S3 buckets, EC2
-instances, or other resources, create a dedicated model for that service rather
-than wrapping CLI commands.
-
-**Verify CLI syntax:** If unsure about exact flags or subcommands, run
-`swamp help extension` for the complete, up-to-date CLI schema.
+**Verify CLI syntax:** run `swamp help extension` for the up-to-date schema.
 
 ## Quick Reference
 
@@ -132,6 +119,44 @@ export const model = {
   },
 };
 ```
+
+## Development Workflow
+
+End-to-end sequence from empty `extensions/models/` to published extension. Each
+step has a validation checkpoint — do not proceed until the check passes.
+
+1. **Confirm no existing type fits.** Run `swamp model type search <query>` and
+   `swamp extension search <query>`. Only continue when nothing covers the use
+   case. (See [When to Create a Custom Model](#when-to-create-a-custom-model).)
+2. **Author the model file.** Create `extensions/models/my_model.ts` using the
+   Quick Start as a template. Define Zod schemas for `globalArguments`,
+   `resources`, and per-method `arguments` before writing any `execute` logic.
+   **Checkpoint:** `deno check extensions/models/my_model.ts` passes.
+3. **Verify registration.** Run `swamp model type search --json` and confirm
+   your `@collective/name` appears. **Checkpoint:** the type resolves;
+   `swamp model type describe @collective/name --json` returns your schemas.
+4. **Smoke test end-to-end.** Run each method against live APIs with realistic
+   inputs. See [references/smoke_testing.md](references/smoke_testing.md) for
+   the full pattern (credentials via vault, nonce-based instance names,
+   cleanup). **Checkpoint:** every method succeeds; output resources match the
+   declared Zod schemas.
+5. **Write unit tests.** Colocate `my_model_test.ts` with the model. Exercise
+   schema validation, argument parsing, and any pure logic. **Checkpoint:**
+   `deno test extensions/models/my_model_test.ts` passes.
+6. **Adversarial review.** Load the self-review checklist from
+   [references/adversarial_review.md](references/adversarial_review.md) and
+   answer every question honestly. **Checkpoint:** no blocking findings remain.
+7. **Bump version + write manifest.** Run
+   `swamp extension version @collective/name --json` for the next CalVer, update
+   the model's `version` field, create `manifest.yaml`, and format with
+   `swamp extension fmt manifest.yaml`. **Checkpoint:**
+   `swamp extension fmt manifest.yaml --check` passes.
+8. **Dry-run then publish.** `swamp extension push manifest.yaml --dry-run`
+   first — it runs the full publish path without uploading. **Checkpoint:** no
+   errors. Then `swamp extension push manifest.yaml` to release.
+
+If any checkpoint fails, fix it before moving on. Skipping a checkpoint makes a
+later failure harder to diagnose.
 
 ## Model Structure
 
