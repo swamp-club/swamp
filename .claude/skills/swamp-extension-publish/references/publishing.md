@@ -224,8 +224,22 @@ reports:
    `swamp extension version --manifest manifest.yaml --json`
 2. **Bump version** in `manifest.yaml` — use `nextVersion` from the output above
 3. **Format & lint**: `swamp extension fmt manifest.yaml`
-4. **Dry-run push**: `swamp extension push manifest.yaml --dry-run --json`
-5. **Push**: `swamp extension push manifest.yaml --yes --json`
+4. **(Optional) Quality score**: `swamp extension quality manifest.yaml --json`
+   — see the `swamp-extension-quality` skill for the rubric. Packages and caches
+   the tarball at `.swamp/cache/packages/<hash>/`; the cache is reused by the
+   dry-run and push below if source hasn't changed.
+5. **Dry-run push**: `swamp extension push manifest.yaml --dry-run --json`
+6. **Push**: `swamp extension push manifest.yaml --yes --json`
+
+### Opportunistic package cache
+
+`swamp extension quality`, `swamp extension push --dry-run`, and
+`swamp extension push` all consult a content-hash-keyed cache at
+`.swamp/cache/packages/<hash>/`. The hash is derived from the manifest, every
+referenced source file, and the deno/package-json configuration — so any source
+change invalidates the entry by construction. The cache is a pure optimization:
+a cache miss falls back to fresh packaging. The cache is never load-bearing for
+correctness and can be deleted safely at any time.
 
 ## Push Workflow
 

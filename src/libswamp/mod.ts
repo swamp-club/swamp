@@ -559,6 +559,25 @@ export {
   extensionUnyankPreview,
 } from "./extensions/unyank.ts";
 export {
+  createExtensionQualityDeps,
+  extensionQuality,
+  type ExtensionQualityData,
+  type ExtensionQualityDeps,
+  type ExtensionQualityEvent,
+  type ExtensionQualityInput,
+} from "./extensions/quality.ts";
+export {
+  computePackageCacheHash,
+  defaultPackageCacheRoot,
+  ExtensionPackageCache,
+  type PackageCacheHashInput,
+} from "../domain/extensions/extension_package_cache.ts";
+export {
+  RUBRIC_VERSION,
+  type RubricFactor,
+  type RubricScore,
+} from "../domain/extensions/extension_rubric_scorer.ts";
+export {
   createExtensionUpdateDeps,
   extensionUpdate,
   type ExtensionUpdateDeps,

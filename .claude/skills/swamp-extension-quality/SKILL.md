@@ -102,6 +102,26 @@ and a concrete check.
 
 If any row fails, fix it before handing off to `swamp-extension-publish`.
 
+## Self-check your score locally
+
+The CLI exposes the 10 client-earnable factors as a standalone command:
+
+```
+swamp extension quality manifest.yaml
+swamp extension quality manifest.yaml --json
+```
+
+This packages the extension (reusing the push flow's packaging code), scores the
+tarball contents against the rubric, and prints per-factor pass/fail with
+remediation hints. The tarball is cached under `.swamp/cache/packages/<hash>/` —
+if you run `swamp extension push` against the same source afterwards, it
+transparently reuses the cached bytes so no work is duplicated.
+
+Running `quality` is optional. `push` does not depend on it; running it just
+surfaces rubric failures earlier and prepopulates the package cache.
+`verified-by-swamp` is the one factor the CLI cannot score — it is reserved for
+`@swamp` namespace or admin review and is granted server-side at publish time.
+
 ## Details when needed
 
 For the full per-factor mechanics, the grade thresholds, and a worked example of

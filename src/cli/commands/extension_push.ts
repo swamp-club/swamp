@@ -30,12 +30,16 @@ import { UserError } from "../../domain/errors.ts";
 import { sourceHasBareSpecifiers } from "../../domain/models/bundle.ts";
 import { CalVer } from "../../domain/models/calver.ts";
 import {
+  computePackageCacheHash,
   consumeStream,
   createExtensionPushExecuteDeps,
   createExtensionPushPrepareDeps,
   createLibSwampContext,
+  defaultPackageCacheRoot,
+  ExtensionPackageCache,
   extensionPush,
   extensionPushPrepare,
+  RUBRIC_VERSION,
 } from "../../libswamp/mod.ts";
 import {
   createExtensionPushRenderer,
@@ -266,6 +270,33 @@ export const extensionPushCommand = new Command()
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
     const prepareDeps = createExtensionPushPrepareDeps();
     const renderer = createExtensionPushRenderer(cliCtx.outputMode);
+    const cache = new ExtensionPackageCache(defaultPackageCacheRoot(repoDir));
+
+    // 3b. Opportunistic package cache lookup — if a prior `swamp
+    // extension quality` run packaged the same source, reuse those
+    // bytes. Cache miss falls back to packaging from scratch.
+    const cacheHashInput = {
+      manifest,
+      modelFilePaths: allModelFiles,
+      vaultFilePaths: allVaultFiles,
+      driverFilePaths: allDriverFiles,
+      datastoreFilePaths: allDatastoreFiles,
+      reportFilePaths: allReportFiles,
+      workflowFilePaths: workflowFiles.map((w) => w.sourcePath),
+      additionalFilePaths,
+      skillFilePaths: resolved.allSkillFiles,
+      includeFilePaths,
+      denoConfigPath,
+      packageJsonPath: undefined,
+    };
+    const cacheHash = await computePackageCacheHash(cacheHashInput);
+    const cached = await cache.get(cacheHash);
+    if (cached) {
+      cliCtx.logger
+        .debug`Reusing cached package ${
+        cacheHash.slice(0, 12)
+      } (${cached.archiveBytes.length} bytes)`;
+    }
 
     // 4. Run prepare phase
     let prepared;
@@ -297,6 +328,7 @@ export const extensionPushCommand = new Command()
         releaseNotes: options.releaseNotes,
         denoConfigPath,
         packageJsonDir,
+        cachedArchive: cached?.archiveBytes,
       });
     } catch (error) {
       // Handle structured errors from the prepare phase with rich rendering
@@ -381,6 +413,22 @@ export const extensionPushCommand = new Command()
         }
       } else {
         throw error;
+      }
+    }
+
+    // 4b. Populate the package cache on a miss. Writing here lets a
+    // subsequent `swamp extension quality` run against the same source
+    // reuse these bytes without repackaging.
+    if (!cached) {
+      try {
+        await cache.put(cacheHash, prepared.archiveBytes, {
+          extensionName: prepared.manifest.name,
+          extensionVersion: prepared.manifest.version,
+          rubricVersion: RUBRIC_VERSION,
+        });
+      } catch (cacheError) {
+        cliCtx.logger
+          .debug`Failed to write package cache (continuing): ${cacheError}`;
       }
     }
 
