@@ -143,7 +143,7 @@ export const modelMethodRunCommand = new Command()
         "method",
         "run",
       ]);
-      const { repoDir, repoContext, datastoreConfig } =
+      const { repoDir, repoContext, datastoreConfig, syncService } =
         await requireInitializedRepoUnlocked({
           repoDir: resolveRepoDir(options.repoDir),
           outputMode: ctx.outputMode,
@@ -246,12 +246,17 @@ export const modelMethodRunCommand = new Command()
       );
       let flushModelLocks: (() => Promise<void>) | null = null;
       if (preResult) {
-        const lockResult = await acquireModelLocks(datastoreConfig, [
-          {
-            modelType: preResult.type.normalized,
-            modelId: preResult.definition.id,
-          },
-        ], repoDir);
+        const lockResult = await acquireModelLocks(
+          datastoreConfig,
+          [
+            {
+              modelType: preResult.type.normalized,
+              modelId: preResult.definition.id,
+            },
+          ],
+          repoDir,
+          syncService,
+        );
         if (lockResult.synced) repoContext.catalogStore.invalidate();
         flushModelLocks = lockResult.flush;
       }

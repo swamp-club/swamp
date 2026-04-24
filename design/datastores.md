@@ -283,6 +283,35 @@ must never skip real work.
 The sidecar is client-local state. It is never uploaded, is excluded from the
 sync walker, and can always be deleted to force a full re-verification.
 
+#### `markDirty()` contract
+
+Swamp core writes into the cache directly — the persistence repositories
+(`FileSystemUnifiedDataRepository`, `YamlOutputRepository`,
+`YamlWorkflowRunRepository`, `YamlEvaluatedDefinitionRepository`) call
+`atomicWriteFile` / `atomicWriteTextFile` / `Deno.remove` against paths that
+the sync service walks. These writes bypass the extension's own write path, so
+the fast path's local-dirty flag would stay `false` and the next `pushChanged`
+would short-circuit past real work.
+
+The `markDirty()` method on `DatastoreSyncService` is the contract that closes
+this gap:
+
+- **Extension obligation.** Any sync service that caches a clean/dirty
+  watermark MUST flip it to dirty in `markDirty()` — same primitive as the
+  internal `pushFile`-equivalent. Sync services without a fast path MAY
+  no-op. `markDirty()` must be idempotent and cheap (not deduplicated by
+  core).
+- **Core obligation.** Repositories writing into the cache call `markDirty()`
+  at the start of every public mutation method (`save`, `append`, `delete`,
+  `rename`, `allocateVersion`, `finalizeVersion`, `removeLatestMarker`,
+  non-dry-run `collectGarbage`, and the equivalents on the three yaml
+  repositories). The call happens **before** any write begins so a crash
+  mid-write leaves the watermark dirty — `markDirty()` then slow-walk is
+  always recoverable; a lost dirty-flip is not.
+
+Filesystem datastores have no fast path and wire no sync service, so the
+markDirty plumbing is a no-op for them.
+
 **Sync is not a content-integrity tool.** The fingerprint detects index-level
 changes, not per-file corruption — a silently damaged cache file (bit rot,
 truncated write after a crash) can slip through the fast path if the index

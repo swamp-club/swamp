@@ -31,6 +31,7 @@ import {
 import { assertSafePath } from "./safe_path.ts";
 import type { OutputRepository } from "../../domain/models/repositories.ts";
 import type { DefinitionId } from "../../domain/definitions/definition.ts";
+import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
 import type { ModelType } from "../../domain/models/model_type.ts";
 import {
   createModelOutputId,
@@ -49,8 +50,16 @@ import { modelRegistry } from "../../domain/models/model.ts";
 export class YamlOutputRepository implements OutputRepository {
   private readonly baseDir: string;
 
-  constructor(private readonly repoDir: string, baseDir?: string) {
+  constructor(
+    private readonly repoDir: string,
+    baseDir?: string,
+    private readonly markDirty?: MarkDirtyHook,
+  ) {
     this.baseDir = baseDir ?? swampPath(repoDir, SWAMP_SUBDIRS.outputs);
+  }
+
+  private async notifyDirty(): Promise<void> {
+    if (this.markDirty) await this.markDirty();
   }
 
   async findById(
@@ -166,6 +175,8 @@ export class YamlOutputRepository implements OutputRepository {
     method: string,
     output: ModelOutput,
   ): Promise<void> {
+    await this.notifyDirty();
+
     const dir = this.getMethodDir(type, method);
     await assertSafePath(dir, this.baseDir);
     await ensureDir(dir);
@@ -187,6 +198,8 @@ export class YamlOutputRepository implements OutputRepository {
     method: string,
     id: ModelOutputId,
   ): Promise<void> {
+    await this.notifyDirty();
+
     // We need to find the file first since filename includes timestamp
     const dir = this.getMethodDir(type, method);
     try {

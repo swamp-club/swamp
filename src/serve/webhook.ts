@@ -25,6 +25,7 @@
 
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import type { DatastoreConfig } from "../domain/datastore/datastore_config.ts";
+import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
 import { UserError } from "../domain/errors.ts";
 import { executeWorkflowWithLocks } from "./deps.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
@@ -216,6 +217,8 @@ export interface WebhookServiceDeps {
   repoContext: RepositoryContext;
   datastoreConfig: DatastoreConfig;
   endpoints: WebhookEndpoint[];
+  /** Shared sync service; see `design/datastores.md` markDirty contract. */
+  syncService?: DatastoreSyncService;
 }
 
 /**
@@ -409,6 +412,7 @@ export class WebhookService {
             runId = event.runId;
           }
         },
+        this.deps.syncService,
       );
 
       this.emit({

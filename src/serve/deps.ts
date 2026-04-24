@@ -55,6 +55,7 @@ import { vaultTypeRegistry } from "../domain/vaults/vault_type_registry.ts";
 import { driverTypeRegistry } from "../domain/drivers/driver_type_registry.ts";
 import { reportRegistry } from "../domain/reports/report_registry.ts";
 import type { DatastoreConfig } from "../domain/datastore/datastore_config.ts";
+import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
 import { acquireModelLocks } from "../cli/repo_context.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 
@@ -179,6 +180,13 @@ export async function executeWorkflowWithLocks(
   input: WorkflowRunInput,
   signal: AbortSignal,
   onEvent: (event: WorkflowRunEvent) => void,
+  /**
+   * Sync service shared with the repo context's markDirty hook so the
+   * fast-path watermark read here sees the writes the hook flipped. See
+   * `design/datastores.md` for the contract; omit only for filesystem
+   * datastores where no service exists.
+   */
+  syncService?: DatastoreSyncService,
 ): Promise<void> {
   let flushLocks: (() => Promise<void>) | null = null;
 
@@ -216,6 +224,7 @@ export async function executeWorkflowWithLocks(
             datastoreConfig,
             resolvedModels,
             repoDir,
+            syncService,
           );
           if (lockResult.synced) repoContext.catalogStore.invalidate();
           flushLocks = lockResult.flush;

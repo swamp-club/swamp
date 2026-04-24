@@ -109,6 +109,7 @@ async function loadRepoIntoState(
   state.repoDir = result.repoDir;
   state.repoContext = result.repoContext;
   state.datastoreConfig = result.datastoreConfig;
+  state.syncService = result.syncService ?? null;
 
   // Reconfigure the extension loaders/auto-resolver for this repo — the CLI
   // bootstrap wired them to whatever directory the binary was launched from,
@@ -161,6 +162,7 @@ export const openCommand = new Command()
       repoDir: null,
       repoContext: null,
       datastoreConfig: null,
+      syncService: null,
       extClient,
       version: VERSION,
       initializeRepo: async (path: string) => {

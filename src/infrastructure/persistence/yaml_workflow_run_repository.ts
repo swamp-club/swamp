@@ -22,6 +22,7 @@ import { join } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import type { WorkflowRunRepository } from "../../domain/workflows/repositories.ts";
+import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
 import {
   SWAMP_SUBDIRS,
   swampPath,
@@ -58,8 +59,13 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     private readonly repoDir: string,
     private readonly eventBus?: EventBus,
     baseDir?: string,
+    private readonly markDirty?: MarkDirtyHook,
   ) {
     this.baseDir = baseDir ?? swampPath(repoDir, SWAMP_SUBDIRS.workflowRuns);
+  }
+
+  private async notifyDirty(): Promise<void> {
+    if (this.markDirty) await this.markDirty();
   }
 
   async findById(
@@ -175,6 +181,8 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   }
 
   async save(workflowId: WorkflowId, run: WorkflowRun): Promise<void> {
+    await this.notifyDirty();
+
     const dir = this.getRunsDir(workflowId);
     await assertSafePath(dir, this.baseDir);
     await ensureDir(dir);
@@ -259,6 +267,8 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     if (count === 0) {
       return 0;
     }
+
+    await this.notifyDirty();
 
     try {
       await Deno.remove(dir, { recursive: true });

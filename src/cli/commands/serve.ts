@@ -69,11 +69,15 @@ export const serveCommand = new Command()
 
     ctx.logger.info`Initializing repository at ${repoDir}`;
 
-    const { repoDir: resolvedRepoDir, repoContext, datastoreConfig } =
-      await requireInitializedRepoUnlocked({
-        repoDir,
-        outputMode: ctx.outputMode,
-      });
+    const {
+      repoDir: resolvedRepoDir,
+      repoContext,
+      datastoreConfig,
+      syncService,
+    } = await requireInitializedRepoUnlocked({
+      repoDir,
+      outputMode: ctx.outputMode,
+    });
 
     if (host !== "127.0.0.1" && host !== "localhost") {
       logger.warn(
@@ -85,6 +89,7 @@ export const serveCommand = new Command()
       repoDir: resolvedRepoDir,
       repoContext,
       datastoreConfig,
+      syncService,
     };
 
     const ac = new AbortController();
@@ -105,6 +110,7 @@ export const serveCommand = new Command()
             input,
             signal,
             onEvent,
+            syncService,
           ),
       });
 
@@ -163,6 +169,7 @@ export const serveCommand = new Command()
         repoContext,
         datastoreConfig,
         endpoints,
+        syncService,
       });
 
       webhookService.setEventHandler((event) => {

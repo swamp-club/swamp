@@ -33,6 +33,7 @@ import {
   parseDataDuration,
 } from "../../domain/data/mod.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
+import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
 import type { CatalogStore } from "./catalog_store.ts";
 
 const logger = getSwampLogger(["data", "repository"]);
@@ -438,8 +439,21 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     private readonly repoDir: string,
     baseDir: string | undefined,
     private readonly catalogStore: CatalogStore,
+    private readonly markDirty?: MarkDirtyHook,
   ) {
     this.baseDir = baseDir ?? swampPath(repoDir, SWAMP_SUBDIRS.data);
+  }
+
+  /**
+   * Signals the configured sync service that the cache has uncommitted work.
+   *
+   * Called at the start of every mutation that writes into (or removes from)
+   * the cache directory. The hook is no-op when no sync service is wired —
+   * e.g. filesystem datastores, or when constructing the repository outside
+   * a CLI sync lifecycle. See `design/datastores.md` for the contract.
+   */
+  private async notifyDirty(): Promise<void> {
+    if (this.markDirty) await this.markDirty();
   }
 
   /**
@@ -741,6 +755,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       );
     }
 
+    await this.notifyDirty();
+
     // Check if data with this name already exists
     const existing = await this.findByName(type, modelId, data.name);
     if (existing) {
@@ -807,6 +823,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     dataName: string,
     content: Uint8Array,
   ): Promise<void> {
+    await this.notifyDirty();
+
     const latestVersion = await this.getLatestVersion(type, modelId, dataName);
     if (latestVersion === null) {
       throw new Error(`No existing data found for "${dataName}"`);
@@ -924,6 +942,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     dataName: string,
     version?: number,
   ): Promise<void> {
+    await this.notifyDirty();
+
     if (version !== undefined) {
       // Delete specific version
       const versionDir = this.getPath(type, modelId, dataName, version);
@@ -989,6 +1009,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     modelId: string,
     dataName: string,
   ): Promise<void> {
+    await this.notifyDirty();
+
     const dataNameDir = this.getDataNameDir(type, modelId, dataName);
     const latestSymlink = join(dataNameDir, "latest");
 
@@ -1017,6 +1039,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       newVersion: number;
     }
   > {
+    await this.notifyDirty();
+
     // Read the latest version of old data
     const oldData = await this.findByName(type, modelId, oldName);
     if (!oldData) {
@@ -1173,6 +1197,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       );
     }
 
+    await this.notifyDirty();
+
     // Validate ownership if data with this name already exists
     const existing = await this.findByName(type, modelId, data.name);
     if (existing) {
@@ -1208,6 +1234,8 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     data: Data,
     version: number,
   ): Promise<{ size: number; checksum: string }> {
+    await this.notifyDirty();
+
     const contentPath = this.getContentPath(
       type,
       modelId,
@@ -1524,6 +1552,10 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     const dryRun = options?.dryRun ?? false;
     let versionsRemoved = 0;
     let bytesReclaimed = 0;
+
+    // Dry-run does not touch the cache; live runs remove version directories
+    // and rewrite the latest marker, both of which are cache writes.
+    if (!dryRun) await this.notifyDirty();
 
     const allData = await this.findAllForModel(type, modelId);
 

@@ -49,6 +49,7 @@ export { type DatastorePathResolver } from "./datastore_path_resolver.ts";
 export {
   type DatastoreSyncOptions,
   type DatastoreSyncService,
+  type MarkDirtyHook,
   type SyncDirection,
   SyncTimeoutError,
 } from "./datastore_sync_service.ts";

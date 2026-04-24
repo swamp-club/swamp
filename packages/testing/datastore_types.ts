@@ -75,6 +75,7 @@ export interface DatastoreSyncOptions {
 export interface DatastoreSyncService {
   pullChanged(options?: DatastoreSyncOptions): Promise<number | void>;
   pushChanged(options?: DatastoreSyncOptions): Promise<number | void>;
+  markDirty(options?: DatastoreSyncOptions): Promise<void>;
 }
 
 /**

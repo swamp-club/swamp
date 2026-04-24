@@ -83,6 +83,7 @@ import {
 import { acquireModelLocks } from "../../cli/repo_context.ts";
 import type { RepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
 import type { DatastoreConfig } from "../../domain/datastore/datastore_config.ts";
+import type { DatastoreSyncService } from "../../domain/datastore/datastore_sync_service.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { OPEN_UI_HTML } from "./ui.ts";
 import { FAVICON_SVG } from "./favicon.ts";
@@ -99,6 +100,8 @@ export interface OpenServerState {
   repoDir: string | null;
   repoContext: RepositoryContext | null;
   datastoreConfig: DatastoreConfig | null;
+  /** Shared sync service — see `design/datastores.md` markDirty contract. */
+  syncService: DatastoreSyncService | null;
   extClient: ExtensionApiClient;
   version: string;
   initializeRepo: (repoDir: string) => Promise<void>;
@@ -115,6 +118,7 @@ interface InitializedDeps {
   repoDir: string;
   repoContext: RepositoryContext;
   datastoreConfig: DatastoreConfig;
+  syncService: DatastoreSyncService | null;
   extClient: ExtensionApiClient;
 }
 
@@ -126,6 +130,7 @@ function requireRepo(state: OpenServerState): InitializedDeps | null {
     repoDir: state.repoDir,
     repoContext: state.repoContext,
     datastoreConfig: state.datastoreConfig,
+    syncService: state.syncService,
     extClient: state.extClient,
   };
 }
@@ -1756,12 +1761,17 @@ async function handleRun(
     }, { status: 404 });
   }
 
-  const lockResult = await acquireModelLocks(deps.datastoreConfig, [
-    {
-      modelType: preResult.type.normalized,
-      modelId: preResult.definition.id,
-    },
-  ], deps.repoDir);
+  const lockResult = await acquireModelLocks(
+    deps.datastoreConfig,
+    [
+      {
+        modelType: preResult.type.normalized,
+        modelId: preResult.definition.id,
+      },
+    ],
+    deps.repoDir,
+    deps.syncService ?? undefined,
+  );
   if (lockResult.synced) deps.repoContext.catalogStore.invalidate();
   const flushLocks = lockResult.flush;
 

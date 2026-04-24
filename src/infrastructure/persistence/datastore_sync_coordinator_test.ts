@@ -161,6 +161,7 @@ Deno.test("registerDatastoreSync enriches pullChanged failure with SDK metadata"
       throw opaqueError;
     },
     pushChanged: () => Promise.resolve(0),
+    markDirty: () => Promise.resolve(),
   };
 
   const thrown = await assertRejects(
@@ -193,6 +194,7 @@ Deno.test("flushDatastoreSync swallows pushChanged failures (warn-only)", async 
         $metadata: { httpStatusCode: 500 },
       });
     },
+    markDirty: () => Promise.resolve(),
   };
 
   await registerDatastoreSync({
@@ -218,6 +220,7 @@ Deno.test("flushDatastoreSync: hanging pushChanged surfaces SyncTimeoutError wit
   const hangingService = {
     pullChanged: () => Promise.resolve(0),
     pushChanged: () => new Promise<number>(() => {}), // never resolves
+    markDirty: () => Promise.resolve(),
   };
 
   await registerDatastoreSync({
@@ -257,6 +260,7 @@ Deno.test("flushDatastoreSync: signal-compliant extension aborts cooperatively",
           );
         }, { once: true });
       }),
+    markDirty: () => Promise.resolve(),
   };
 
   await registerDatastoreSync({
@@ -280,6 +284,7 @@ Deno.test("flushDatastoreSync: releases lock even when push times out", async ()
   const hangingService = {
     pullChanged: () => Promise.resolve(0),
     pushChanged: () => new Promise<number>(() => {}),
+    markDirty: () => Promise.resolve(),
   };
   const lock = new FakeLock();
 
@@ -302,6 +307,7 @@ Deno.test("registerDatastoreSync: hanging pullChanged surfaces SyncTimeoutError"
   const hangingService = {
     pullChanged: () => new Promise<number>(() => {}),
     pushChanged: () => Promise.resolve(0),
+    markDirty: () => Promise.resolve(),
   };
 
   // Pull-path timeouts throw SyncTimeoutError directly (not wrapped) so
@@ -330,6 +336,7 @@ Deno.test("registerDatastoreSyncNamed: pull timeout cleans up entry and releases
   const hanging = {
     pullChanged: () => new Promise<number>(() => {}),
     pushChanged: () => Promise.resolve(0),
+    markDirty: () => Promise.resolve(),
   };
   const lock = new FakeLock();
 
@@ -362,6 +369,7 @@ Deno.test("registerDatastoreSyncNamed: lock acquire failure removes entry", asyn
   const service = {
     pullChanged: () => Promise.resolve(0),
     pushChanged: () => Promise.resolve(0),
+    markDirty: () => Promise.resolve(),
   };
   const failingLock = {
     async acquire() {
@@ -403,6 +411,7 @@ Deno.test("flushDatastoreSync: normal settlement within timeout does not throw",
   const fastService = {
     pullChanged: () => Promise.resolve(0),
     pushChanged: () => Promise.resolve(3),
+    markDirty: () => Promise.resolve(),
   };
 
   await registerDatastoreSync({
@@ -465,10 +474,12 @@ Deno.test("flushDatastoreSync: one entry's timeout still flushes other entries",
   const hanging = {
     pullChanged: () => Promise.resolve(0),
     pushChanged: () => new Promise<number>(() => {}),
+    markDirty: () => Promise.resolve(),
   };
   const fast = {
     pullChanged: () => Promise.resolve(0),
     pushChanged: () => Promise.resolve(0),
+    markDirty: () => Promise.resolve(),
   };
   const lockA = new FakeLock();
   const lockB = new FakeLock();
@@ -507,6 +518,7 @@ Deno.test("flushDatastoreSync: config timeout is honored end-to-end", async () =
   const hangingService = {
     pullChanged: () => Promise.resolve(0),
     pushChanged: () => new Promise<number>(() => {}),
+    markDirty: () => Promise.resolve(),
   };
   const cfg = {
     type: "@test/integration",

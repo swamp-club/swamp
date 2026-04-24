@@ -25,6 +25,7 @@
 import { z } from "zod";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import type { DatastoreConfig } from "../domain/datastore/datastore_config.ts";
+import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
 import { createLibSwampContext, modelMethodRun } from "../libswamp/mod.ts";
 import { createModelMethodRunDeps, executeWorkflowWithLocks } from "./deps.ts";
 import { serializeEvent } from "./serializer.ts";
@@ -100,6 +101,12 @@ export interface ConnectionContext {
   repoDir: string;
   repoContext: RepositoryContext;
   datastoreConfig: DatastoreConfig;
+  /**
+   * Shared sync service instance. Same one the repo context's markDirty hook
+   * references — see `design/datastores.md`. Undefined for filesystem
+   * datastores or custom datastores without a cache.
+   */
+  syncService?: DatastoreSyncService;
 }
 
 export function handleConnection(
@@ -220,6 +227,7 @@ async function handleWorkflowRun(
         );
         send(socket, { type: "event", id: requestId, event: serialized });
       },
+      ctx.syncService,
     );
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
@@ -254,6 +262,7 @@ async function handleModelMethodRun(
           modelId: preResult.definition.id,
         }],
         ctx.repoDir,
+        ctx.syncService,
       );
       if (lockResult.synced) ctx.repoContext.catalogStore.invalidate();
       flushLocks = lockResult.flush;

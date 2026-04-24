@@ -64,6 +64,7 @@ import type { RepoIndexService } from "../../domain/repo/repo_index_service.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import { YamlVaultConfigRepository } from "./yaml_vault_config_repository.ts";
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
+import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
 import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
 import { CatalogStore } from "./catalog_store.ts";
 import { DataQueryService } from "../../domain/data/data_query_service.ts";
@@ -126,8 +127,10 @@ export function createDefinitionRepository(
  */
 export function createEvaluatedDefinitionRepository(
   repoDir: string,
+  baseDir?: string,
+  markDirty?: MarkDirtyHook,
 ): YamlEvaluatedDefinitionRepository {
-  return new YamlEvaluatedDefinitionRepository(repoDir);
+  return new YamlEvaluatedDefinitionRepository(repoDir, baseDir, markDirty);
 }
 
 /**
@@ -146,8 +149,14 @@ export function createUnifiedDataRepository(
   repoDir: string,
   catalogStore: CatalogStore,
   baseDir?: string,
+  markDirty?: MarkDirtyHook,
 ): FileSystemUnifiedDataRepository {
-  return new FileSystemUnifiedDataRepository(repoDir, baseDir, catalogStore);
+  return new FileSystemUnifiedDataRepository(
+    repoDir,
+    baseDir,
+    catalogStore,
+    markDirty,
+  );
 }
 
 /**
@@ -158,8 +167,12 @@ export function createUnifiedDataRepository(
  * @param repoDir - The repository directory path
  * @returns A new YamlOutputRepository instance
  */
-export function createOutputRepository(repoDir: string): YamlOutputRepository {
-  return new YamlOutputRepository(repoDir);
+export function createOutputRepository(
+  repoDir: string,
+  baseDir?: string,
+  markDirty?: MarkDirtyHook,
+): YamlOutputRepository {
+  return new YamlOutputRepository(repoDir, baseDir, markDirty);
 }
 
 /**
@@ -187,8 +200,10 @@ export function createWorkflowRepository(
 export function createWorkflowRunRepository(
   repoDir: string,
   eventBus?: EventBus,
+  baseDir?: string,
+  markDirty?: MarkDirtyHook,
 ): YamlWorkflowRunRepository {
-  return new YamlWorkflowRunRepository(repoDir, eventBus);
+  return new YamlWorkflowRunRepository(repoDir, eventBus, baseDir, markDirty);
 }
 
 /**
@@ -223,6 +238,14 @@ export interface RepositoryFactoryConfig {
   yamlWorkflowsDir?: string;
   vaultsDir?: string;
   datastoreResolver?: DatastorePathResolver;
+  /**
+   * Hook wired through to every datastore-tier repository so cache writes
+   * invalidate the sync service's fast-path watermark. Supplied by the CLI
+   * when a remote datastore with a sync service is active; absent for
+   * filesystem datastores. When absent, writes do not notify — which is
+   * correct for datastores without a fast-path. See `design/datastores.md`.
+   */
+  markDirty?: MarkDirtyHook;
 }
 
 /**
@@ -261,6 +284,7 @@ export function createRepositoryContext(
     yamlWorkflowsDir,
     vaultsDir,
     datastoreResolver,
+    markDirty,
   } = config;
 
   // Helper to resolve datastore-tier base directories
@@ -292,17 +316,21 @@ export function createRepositoryContext(
     extensionWorkflowRepo,
   );
 
-  // Datastore-tier repositories get resolved base directories
+  // Datastore-tier repositories get resolved base directories. markDirty
+  // is only wired when the caller supplies one — bare factory consumers
+  // (tests, filesystem datastores) pass undefined and writes do not notify.
   const workflowRunRepo = new YamlWorkflowRunRepository(
     repoDir,
     enableIndexing ? eventBus : undefined,
     dsPath(SWAMP_SUBDIRS.workflowRuns),
+    markDirty,
   );
 
   // Evaluated definition repository (derived data, no events)
   const evaluatedDefinitionRepo = new YamlEvaluatedDefinitionRepository(
     repoDir,
     dsPath(SWAMP_SUBDIRS.definitionsEvaluated),
+    markDirty,
   );
 
   // Create catalog store for data query
@@ -313,6 +341,7 @@ export function createRepositoryContext(
     repoDir,
     dsPath(SWAMP_SUBDIRS.data),
     catalogStore,
+    markDirty,
   );
 
   // Construct the query service alongside its dependencies so consumers
@@ -322,6 +351,7 @@ export function createRepositoryContext(
   const outputRepo = new YamlOutputRepository(
     repoDir,
     dsPath(SWAMP_SUBDIRS.outputs),
+    markDirty,
   );
 
   // Vault config repository with event bus

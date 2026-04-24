@@ -32,6 +32,7 @@ function stubState(): OpenServerState {
     repoDir: null,
     repoContext: null,
     datastoreConfig: null,
+    syncService: null,
     extClient,
     version: "test-version",
     initializeRepo: () => Promise.resolve(),
