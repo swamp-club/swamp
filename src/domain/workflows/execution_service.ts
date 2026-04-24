@@ -96,6 +96,11 @@ import { buildMethodReportContext } from "../reports/report_context.ts";
 import { modelRegistry } from "../models/model.ts";
 import { getTracer, SpanStatusCode } from "../../infrastructure/tracing/mod.ts";
 import { resolveDriverConfig } from "../drivers/driver_resolution.ts";
+import {
+  type RepoMarkerData,
+  RepoMarkerRepository,
+} from "../../infrastructure/persistence/repo_marker_repository.ts";
+import { RepoPath } from "../repo/repo_path.ts";
 /**
  * Context for step execution.
  */
@@ -1123,6 +1128,13 @@ export class WorkflowExecutionService {
   private readonly dataRepo: FileSystemUnifiedDataRepository;
   private readonly dataBaseDir?: string;
   private readonly catalogStore: CatalogStore;
+  private readonly markerRepo = new RepoMarkerRepository();
+  /**
+   * Memoized repo marker for this service instance. `undefined` = not yet
+   * loaded; `null` = loaded but file absent. Loaded once on first run() and
+   * reused across nested workflow invocations sharing the same service.
+   */
+  private repoMarker: RepoMarkerData | null | undefined;
 
   constructor(
     private readonly workflowRepo: WorkflowRepository,
@@ -1147,6 +1159,20 @@ export class WorkflowExecutionService {
       dataRepo: this.dataRepo,
       dataQueryService,
     });
+  }
+
+  /**
+   * Lazily loads and memoizes the `.swamp.yaml` repo marker. Called by
+   * `run()` so the file is read at most once per service instance, even
+   * across nested workflow invocations.
+   */
+  private async loadRepoMarker(): Promise<RepoMarkerData | null> {
+    if (this.repoMarker === undefined) {
+      this.repoMarker = await this.markerRepo.read(
+        RepoPath.create(this.repoDir),
+      );
+    }
+    return this.repoMarker;
   }
 
   /**
@@ -1181,6 +1207,10 @@ export class WorkflowExecutionService {
     });
 
     try {
+      // Load repo marker early so the `repo` tier of resolveDriverConfig
+      // (populated below at every step) uses the memoized value.
+      await this.loadRepoMarker();
+
       // Look up workflow
       let workflow = await this.lookupWorkflow(idOrName);
       if (!workflow) {
@@ -1815,6 +1845,11 @@ export class WorkflowExecutionService {
             { driver: step.driver, driverConfig: step.driverConfig },
             { driver: job.driver, driverConfig: job.driverConfig },
             { driver: workflow.driver, driverConfig: workflow.driverConfig },
+            undefined,
+            {
+              driver: this.repoMarker?.defaultDriver,
+              driverConfig: this.repoMarker?.defaultDriverConfig,
+            },
           ),
           emitEvent: push,
           reportFilterOptions: options.reportFilterOptions,

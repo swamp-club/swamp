@@ -37,10 +37,22 @@ Driver config is resolved from multiple sources (highest priority first):
 3. Workflow job `driver:` field
 4. Workflow-level `driver:` field
 5. Model definition `driver:` field
-6. Default: `raw`
+6. Repo-level `defaultDriver` / `defaultDriverConfig` in `.swamp.yaml`
+7. Default: `raw`
 
 The first non-undefined `driver` value wins. Its corresponding `driverConfig` is
 used as-is — configs are **not** merged across levels.
+
+The repo tier lets a repo declare a baseline driver once without setting
+`driver:` on every workflow. Example `.swamp.yaml`:
+
+```yaml
+swampVersion: "1.0.0"
+initializedAt: "2024-01-15T10:30:00.000Z"
+defaultDriver: docker
+defaultDriverConfig:
+  image: "alpine:latest"
+```
 
 ### CLI Override
 
@@ -204,9 +216,9 @@ tools, and sub-millisecond edits (issue #125).
 ### Resolution with Custom Drivers
 
 Custom driver types follow the same resolution priority as built-in types
-(CLI > step > job > workflow > definition > raw). The first non-undefined
-`driver` value wins. Custom types are referenced by their full scoped name
-(e.g., `driver: "@myorg/lambda"`).
+(CLI > step > job > workflow > definition > repo > raw). The first
+non-undefined `driver` value wins. Custom types are referenced by their full
+scoped name (e.g., `driver: "@myorg/lambda"`).
 
 ### Custom Driver Implementation Files
 

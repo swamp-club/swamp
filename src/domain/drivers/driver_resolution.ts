@@ -35,10 +35,11 @@ export interface ResolvedDriverConfig {
 
 /**
  * Resolves the effective driver and config using precedence:
- *   cli > step > job > workflow > definition > "raw"
+ *   cli > step > job > workflow > definition > repo > "raw"
  *
  * The first non-undefined `driver` value wins. Its corresponding
- * `driverConfig` is used as-is (no merging across levels).
+ * `driverConfig` is used as-is (no merging across levels). The `repo`
+ * tier reads from `.swamp.yaml` (`defaultDriver`, `defaultDriverConfig`).
  */
 export function resolveDriverConfig(
   cli?: DriverSource,
@@ -46,6 +47,7 @@ export function resolveDriverConfig(
   job?: DriverSource,
   workflow?: DriverSource,
   definition?: DriverSource,
+  repo?: DriverSource,
 ): ResolvedDriverConfig {
   const sources: (DriverSource | undefined)[] = [
     cli,
@@ -53,6 +55,7 @@ export function resolveDriverConfig(
     job,
     workflow,
     definition,
+    repo,
   ];
 
   for (const source of sources) {
