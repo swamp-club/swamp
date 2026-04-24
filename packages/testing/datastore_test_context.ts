@@ -36,7 +36,7 @@ export interface LockOperation {
 
 /** A recorded sync operation for inspection. */
 export interface SyncOperation {
-  method: "pullChanged" | "pushChanged";
+  method: "pullChanged" | "pushChanged" | "markDirty";
   timestamp: number;
 }
 
@@ -203,6 +203,10 @@ export function createDatastoreTestContext(
       },
       pushChanged(): Promise<void> {
         syncOperations.push({ method: "pushChanged", timestamp: Date.now() });
+        return Promise.resolve();
+      },
+      markDirty(): Promise<void> {
+        syncOperations.push({ method: "markDirty", timestamp: Date.now() });
         return Promise.resolve();
       },
     }

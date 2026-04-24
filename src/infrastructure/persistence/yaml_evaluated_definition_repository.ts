@@ -31,6 +31,7 @@ import {
   type DefinitionData,
   type DefinitionId,
 } from "../../domain/definitions/definition.ts";
+import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 
 /**
@@ -48,9 +49,14 @@ export class YamlEvaluatedDefinitionRepository {
   constructor(
     private readonly repoDir: string,
     baseDir?: string,
+    private readonly markDirty?: MarkDirtyHook,
   ) {
     this.baseDir = baseDir ??
       swampPath(repoDir, SWAMP_SUBDIRS.definitionsEvaluated);
+  }
+
+  private async notifyDirty(): Promise<void> {
+    if (this.markDirty) await this.markDirty();
   }
 
   /**
@@ -234,6 +240,8 @@ export class YamlEvaluatedDefinitionRepository {
    * @param definition - The evaluated definition to save
    */
   async save(type: ModelType, definition: Definition): Promise<void> {
+    await this.notifyDirty();
+
     const dir = this.getTypeDir(type);
     await assertSafePath(dir, this.baseDir);
     await ensureDir(dir);
@@ -259,6 +267,8 @@ export class YamlEvaluatedDefinitionRepository {
    * @param id - The definition ID
    */
   async delete(type: ModelType, id: DefinitionId): Promise<void> {
+    await this.notifyDirty();
+
     const path = this.getPath(type, id);
 
     try {
@@ -304,6 +314,8 @@ export class YamlEvaluatedDefinitionRepository {
    * Used when needing to regenerate all evaluations.
    */
   async clearAll(): Promise<void> {
+    await this.notifyDirty();
+
     const definitionsDir = this.baseDir;
     try {
       await Deno.remove(definitionsDir, { recursive: true });

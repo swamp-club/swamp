@@ -185,6 +185,7 @@ function createStubProvider(
         createSyncService: () => ({
           pullChanged: () => Promise.resolve(),
           pushChanged: () => Promise.resolve(),
+          markDirty: () => Promise.resolve(),
         }),
       }
       : {}),

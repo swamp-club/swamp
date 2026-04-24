@@ -363,3 +363,31 @@ Deno.test("YamlOutputRepository.getPath uses correct format", () => {
   assertStringIncludes(path, "2023-01-15T10-30-00-000Z");
   assertStringIncludes(path, ".yaml");
 });
+
+Deno.test("YamlOutputRepository invokes markDirty on mutations", async () => {
+  await withTempDir(async (dir) => {
+    const calls: string[] = [];
+    const markDirty = () => {
+      calls.push("markDirty");
+      return Promise.resolve();
+    };
+    const repo = new YamlOutputRepository(dir, undefined, markDirty);
+
+    const output = ModelOutput.create({
+      definitionId: createDefinitionId(crypto.randomUUID()),
+      methodName: "create",
+      provenance: defaultProvenance,
+    });
+
+    await repo.save(testType, "create", output);
+    assertEquals(calls.length, 1);
+
+    await repo.delete(testType, "create", output.id);
+    assertEquals(calls.length, 2);
+
+    // Reads do not notify.
+    await repo.findAll(testType);
+    await repo.findById(testType, "create", output.id);
+    assertEquals(calls.length, 2);
+  });
+});

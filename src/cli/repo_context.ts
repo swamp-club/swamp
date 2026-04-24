@@ -65,6 +65,7 @@ import {
   resolveSyncTimeoutMs,
 } from "../domain/datastore/datastore_config.ts";
 import type { DatastoreProvider } from "../domain/datastore/datastore_provider.ts";
+import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
 import { datastoreTypeRegistry } from "../domain/datastore/datastore_type_registry.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import { withSpan } from "../infrastructure/tracing/mod.ts";
@@ -314,13 +315,22 @@ export function requireInitializedRepo(
     // Track whether a remote sync happened so we can invalidate the catalog
     let needsCatalogInvalidation = false;
 
+    // Sync service is shared between the coordinator (pull/push) and the
+    // repositories (markDirty on cache writes). Hoisted so both wirings
+    // reference the same instance.
+    let syncService:
+      | ReturnType<
+        NonNullable<DatastoreProvider["createSyncService"]>
+      >
+      | undefined;
+
     // Verify datastore is accessible
     if (isCustomDatastoreConfig(datastoreConfig)) {
       const provider = await resolveCustomProvider(datastoreConfig);
       const lock = provider.createLock(datastoreConfig.datastorePath);
 
       // If the custom provider supports sync, register sync service too
-      const syncService = datastoreConfig.cachePath
+      syncService = datastoreConfig.cachePath
         ? provider.createSyncService?.(
           repoPath.value,
           datastoreConfig.cachePath,
@@ -401,6 +411,7 @@ export function requireInitializedRepo(
       yamlWorkflowsDir,
       vaultsDir,
       datastoreResolver,
+      markDirty: syncService ? () => syncService!.markDirty() : undefined,
       ...factoryConfig,
     });
 
@@ -435,7 +446,20 @@ export function requireInitializedRepo(
 export async function requireInitializedRepoUnlocked(
   options: RequireRepoOptions,
   factoryConfig?: Partial<Omit<RepositoryFactoryConfig, "repoDir">>,
-): Promise<RepoValidationContext & { datastoreConfig: DatastoreConfig }> {
+): Promise<
+  RepoValidationContext & {
+    datastoreConfig: DatastoreConfig;
+    /**
+     * Single sync service instance shared by this repo context's markDirty
+     * hook and any subsequent `acquireModelLocks` pull/push call. Undefined
+     * for filesystem datastores or custom datastores without a cache. Passed
+     * into `acquireModelLocks` so cache writes and the fast-path watermark
+     * read go through the same instance — implementations that cache the
+     * sidecar flag in memory stay coherent. See `design/datastores.md`.
+     */
+    syncService?: DatastoreSyncService;
+  }
+> {
   const { repoDir, datastoreConfig, marker } = await resolveDatastoreForRepo(
     options.repoDir,
   );
@@ -452,10 +476,17 @@ export async function requireInitializedRepoUnlocked(
     datastoreConfig,
   );
 
+  let syncService: DatastoreSyncService | undefined;
+
   // Verify datastore is accessible (same checks as requireInitializedRepo)
   if (isCustomDatastoreConfig(datastoreConfig)) {
     if (datastoreConfig.cachePath) {
       await ensureDir(datastoreConfig.cachePath);
+      const provider = await resolveCustomProvider(datastoreConfig);
+      syncService = provider.createSyncService?.(
+        repoPath.value,
+        datastoreConfig.cachePath,
+      );
     }
   } else if (datastoreConfig.type === "filesystem") {
     try {
@@ -509,6 +540,7 @@ export async function requireInitializedRepoUnlocked(
     yamlWorkflowsDir,
     vaultsDir,
     datastoreResolver,
+    markDirty: syncService ? () => syncService!.markDirty() : undefined,
     ...factoryConfig,
   });
 
@@ -517,6 +549,7 @@ export async function requireInitializedRepoUnlocked(
     repoContext,
     datastoreResolver,
     datastoreConfig,
+    syncService,
   };
 }
 
@@ -627,18 +660,26 @@ export async function acquireModelLocks(
   config: DatastoreConfig,
   models: Array<{ modelType: string; modelId: string }>,
   repoDir?: string,
+  /**
+   * Sync service to use for pull/push. Normally supplied by the caller
+   * (e.g. via `requireInitializedRepoUnlocked` or the serve context) so the
+   * same instance handles both the markDirty hook on cache writes and the
+   * fast-path watermark read here — implementations that cache the sidecar
+   * flag in memory stay coherent across the two call sites. Omit to let
+   * this function create one; doing so is only safe when no separate
+   * repo-context markDirty hook will race this instance.
+   */
+  syncService?: DatastoreSyncService,
 ): Promise<ModelLockResult> {
   const logger = getSwampLogger(["datastore", "lock"]);
   let synced = false;
 
   // For custom datastores, resolve the provider once and reuse it everywhere
   let customProvider: DatastoreProvider | undefined;
-  let customSyncService:
-    | ReturnType<NonNullable<DatastoreProvider["createSyncService"]>>
-    | undefined;
+  let customSyncService = syncService;
   if (isCustomDatastoreConfig(config)) {
     customProvider = await resolveCustomProvider(config);
-    if (config.cachePath) {
+    if (!customSyncService && config.cachePath) {
       customSyncService = customProvider.createSyncService?.(
         repoDir ?? ".",
         config.cachePath,
@@ -756,8 +797,10 @@ export async function acquireModelLocks(
         }
       }
 
-      // Restart the entire per-model lock acquisition from scratch
-      return acquireModelLocks(config, models, repoDir);
+      // Restart the entire per-model lock acquisition from scratch —
+      // propagate the shared sync service so the retry keeps single-instance
+      // semantics.
+      return acquireModelLocks(config, models, repoDir, customSyncService);
     }
 
     // For custom sync-capable datastores: pull after acquiring per-model lock

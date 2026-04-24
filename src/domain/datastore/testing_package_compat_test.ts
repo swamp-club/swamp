@@ -68,7 +68,9 @@ function _checkDatastoreSyncServiceFields(sync: TestingDatastoreSyncService) {
     .pullChanged();
   const _push: ReturnType<CanonicalDatastoreSyncService["pushChanged"]> = sync
     .pushChanged();
-  void [_pull, _push];
+  const _markDirty: ReturnType<CanonicalDatastoreSyncService["markDirty"]> =
+    sync.markDirty();
+  void [_pull, _push, _markDirty];
 }
 
 // DatastoreProvider: verify methods exist and return compatible types.

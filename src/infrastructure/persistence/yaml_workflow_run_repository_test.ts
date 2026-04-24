@@ -389,3 +389,38 @@ Deno.test("YamlWorkflowRunRepository.deleteAllByWorkflowId does not affect other
     assertEquals(runs2After.length, 1);
   });
 });
+
+Deno.test("YamlWorkflowRunRepository invokes markDirty on mutations", async () => {
+  await withTempDir(async (dir) => {
+    const calls: string[] = [];
+    const markDirty = () => {
+      calls.push("markDirty");
+      return Promise.resolve();
+    };
+    const repo = new YamlWorkflowRunRepository(
+      dir,
+      undefined,
+      undefined,
+      markDirty,
+    );
+
+    const workflow = createTestWorkflow();
+    const run = WorkflowRun.create(workflow);
+    run.start();
+
+    await repo.save(workflow.id, run);
+    assertEquals(calls.length, 1);
+
+    await repo.findById(workflow.id, run.id);
+    await repo.findAllByWorkflowId(workflow.id);
+    assertEquals(calls.length, 1);
+
+    await repo.deleteAllByWorkflowId(workflow.id);
+    assertEquals(calls.length, 2);
+
+    // deleteAllByWorkflowId on an empty workflow is a no-op and must not
+    // notify — nothing was written or removed.
+    await repo.deleteAllByWorkflowId(workflow.id);
+    assertEquals(calls.length, 2);
+  });
+});

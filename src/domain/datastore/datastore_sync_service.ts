@@ -43,10 +43,37 @@ export interface DatastoreSyncService {
   pullChanged(options?: DatastoreSyncOptions): Promise<number | void>;
   /** Push changed files from the local cache to the remote datastore. */
   pushChanged(options?: DatastoreSyncOptions): Promise<number | void>;
+  /**
+   * Signal that the local cache has uncommitted work.
+   *
+   * Must be called before (or immediately after) any write into the cache
+   * directory that does not go through a sync-service method, so the next
+   * `pushChanged` fast path cannot short-circuit past the write. Implementations
+   * that cache a clean/dirty watermark (e.g. the s3/gcs zero-diff fast path
+   * described in `design/datastores.md`) MUST invalidate the watermark here.
+   * Implementations without a fast path MAY no-op.
+   *
+   * Implementations must be idempotent and cheap — swamp core calls this at
+   * the start of every repository-layer mutation that writes into the cache,
+   * and calls are not deduplicated. Called before the write begins so a crash
+   * mid-write still leaves the watermark dirty.
+   */
+  markDirty(options?: DatastoreSyncOptions): Promise<void>;
 }
 
 /** Direction of a sync operation. */
 export type SyncDirection = "push" | "pull";
+
+/**
+ * Callback invoked by repositories before they write into the datastore cache.
+ *
+ * Thin indirection over {@link DatastoreSyncService.markDirty} so repositories
+ * do not need a handle on the full sync service (or to know whether one is
+ * registered at all). Undefined when the repository is wired against a
+ * datastore with no sync service (e.g. filesystem) — callers treat it as a
+ * no-op.
+ */
+export type MarkDirtyHook = () => Promise<void>;
 
 /**
  * Thrown when a datastore sync operation exceeds the configured timeout.

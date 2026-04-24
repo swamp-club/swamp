@@ -187,6 +187,7 @@ export const workflowRunCommand = new Command()
               unlocked.datastoreConfig,
               resolvedModels,
               unlocked.repoDir,
+              unlocked.syncService,
             );
             if (lockResult.synced) {
               unlocked.repoContext.catalogStore.invalidate();

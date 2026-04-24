@@ -78,11 +78,16 @@ export const modelEvaluateCommand = new Command()
       }
 
       // Single model evaluation — use per-model lock
-      const { repoDir, repoContext, datastoreConfig, datastoreResolver } =
-        await requireInitializedRepoUnlocked({
-          repoDir: resolveRepoDir(options.repoDir),
-          outputMode: cliCtx.outputMode,
-        });
+      const {
+        repoDir,
+        repoContext,
+        datastoreConfig,
+        datastoreResolver,
+        syncService,
+      } = await requireInitializedRepoUnlocked({
+        repoDir: resolveRepoDir(options.repoDir),
+        outputMode: cliCtx.outputMode,
+      });
 
       // Pre-lookup for lock target
       const lookupResult = await findDefinitionByIdOrName(
@@ -96,9 +101,14 @@ export const modelEvaluateCommand = new Command()
       const { definition, type } = lookupResult;
 
       // Acquire per-model lock (for S3, also pulls model-scoped files)
-      const lockResult = await acquireModelLocks(datastoreConfig, [
-        { modelType: type.normalized, modelId: definition.id },
-      ], repoDir);
+      const lockResult = await acquireModelLocks(
+        datastoreConfig,
+        [
+          { modelType: type.normalized, modelId: definition.id },
+        ],
+        repoDir,
+        syncService,
+      );
       if (lockResult.synced) repoContext.catalogStore.invalidate();
       const flushModelLocks = lockResult.flush;
 

@@ -493,3 +493,117 @@ Deno.test("findAllForModelSync returns empty for missing model", () => {
   const results = repo.findAllForModelSync(testType, "missing-model");
   assertEquals(results, []);
 });
+
+// Pins the markDirty contract from design/datastores.md: every public mutation
+// that writes into the cache must call the sync service's markDirty hook before
+// the write begins, so the fast-path sidecar cannot short-circuit past it.
+// Regression coverage for the datastore fast-path contract violation that
+// silently lost writes when the sidecar stayed clean.
+Deno.test("mutations call markDirty before writing", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const catalogStore = new CatalogStore(join(tmpDir, "_catalog.db"));
+    const calls: string[] = [];
+    const markDirty = () => {
+      calls.push("markDirty");
+      return Promise.resolve();
+    };
+    const repo = new FileSystemUnifiedDataRepository(
+      tmpDir,
+      undefined,
+      catalogStore,
+      markDirty,
+    );
+
+    // save
+    const data = makeData("mark-dirty-save");
+    await repo.save(
+      testType,
+      "model-1",
+      data,
+      new TextEncoder().encode("hello"),
+    );
+    assertEquals(calls.length, 1);
+
+    // allocateVersion + finalizeVersion
+    const data2 = makeData("mark-dirty-alloc");
+    const { version, contentPath } = await repo.allocateVersion(
+      testType,
+      "model-1",
+      data2,
+    );
+    assertEquals(calls.length, 2);
+    await Deno.writeFile(contentPath, new TextEncoder().encode("direct"));
+    await repo.finalizeVersion(testType, "model-1", data2, version);
+    assertEquals(calls.length, 3);
+
+    // rename
+    await repo.rename(testType, "model-1", "mark-dirty-save", "mark-dirty-ren");
+    // rename calls markDirty once at entry + once per internal save()
+    // (the new-name save). Both are cache writes, so both signals are
+    // legitimate. Pin ≥ 4 to assert at-least-once-per-mutation without
+    // overspecifying internal call count.
+    if (calls.length < 4) {
+      throw new Error(`rename did not call markDirty: ${calls.length}`);
+    }
+    const afterRename = calls.length;
+
+    // delete (specific version then all)
+    await repo.delete(testType, "model-1", "mark-dirty-ren", 1);
+    assertEquals(calls.length, afterRename + 1);
+    await repo.delete(testType, "model-1", "mark-dirty-ren");
+    assertEquals(calls.length, afterRename + 2);
+
+    // collectGarbage (live)
+    await repo.collectGarbage(testType, "model-1");
+    assertEquals(calls.length, afterRename + 3);
+
+    // collectGarbage (dry-run) must not notify — it does not touch the cache
+    const before = calls.length;
+    await repo.collectGarbage(testType, "model-1", { dryRun: true });
+    assertEquals(calls.length, before);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("markDirty is not called on read paths", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const catalogStore = new CatalogStore(join(tmpDir, "_catalog.db"));
+    const calls: string[] = [];
+    const markDirty = () => {
+      calls.push("markDirty");
+      return Promise.resolve();
+    };
+    const repo = new FileSystemUnifiedDataRepository(
+      tmpDir,
+      undefined,
+      catalogStore,
+      markDirty,
+    );
+
+    // Seed data with a write (counts as 1 call).
+    const data = makeData("read-probe");
+    await repo.save(
+      testType,
+      "model-1",
+      data,
+      new TextEncoder().encode("x"),
+    );
+    assertEquals(calls.length, 1);
+
+    // All reads below must not increment the count.
+    await repo.findAllGlobal();
+    await repo.findByName(testType, "model-1", "read-probe");
+    await repo.findAllForModel(testType, "model-1");
+    await repo.listVersions(testType, "model-1", "read-probe");
+    await repo.getContent(testType, "model-1", "read-probe");
+    repo.findAllForModelSync(testType, "model-1");
+    repo.findByNameSync(testType, "model-1", "read-probe");
+    repo.getContentSync(testType, "model-1", "read-probe");
+    assertEquals(calls.length, 1);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
