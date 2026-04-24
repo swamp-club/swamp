@@ -53,12 +53,16 @@ export type SyncDirection = "push" | "pull";
  *
  * Raised by the coordinator's hard `Promise.race` deadline, so it fires
  * regardless of whether the underlying extension honored the `AbortSignal`.
- * The message includes the actionable escape hatch for the most common
- * root cause — a stuck datastore lock left behind by a prior crashed run.
+ * The message lists every available remedy inline — tune the timeout via
+ * `--timeout` or the `SWAMP_DATASTORE_SYNC_TIMEOUT_MS` env var, update the
+ * datastore extension (the s3/gcs fingerprint fast path short-circuits
+ * zero-diff syncs), or release a stuck lock — so users get actionable
+ * next steps without needing to chase docs. Version-free wording keeps
+ * the message stable across extension releases.
  *
  * Extends `UserError` so the message renders clean (no stack trace) at
  * the CLI error boundary — the message is already hand-crafted to be
- * actionable, and a stack would bury the escape hatch.
+ * actionable, and a stack would bury the remedies.
  */
 export class SyncTimeoutError extends UserError {
   readonly label: string;
@@ -73,9 +77,17 @@ export class SyncTimeoutError extends UserError {
     options?: { cause?: unknown },
   ) {
     const msg = `Datastore ${direction} to "${label}" timed out after ` +
-      `${timeoutMs}ms. If a prior process crashed without releasing the ` +
-      `lock, run 'swamp datastore lock release --force' (add ` +
-      `--model <type>/<id> for a specific model lock).`;
+      `${timeoutMs}ms. Try one of:\n` +
+      `  • Rerun with --timeout <seconds> (e.g. --timeout 1800 for large ` +
+      `one-off syncs).\n` +
+      `  • Set SWAMP_DATASTORE_SYNC_TIMEOUT_MS for the duration of your ` +
+      `shell session.\n` +
+      `  • If you are on @swamp/s3-datastore or @swamp/gcs-datastore at ` +
+      `scale, update to the latest extension — the fingerprint fast path ` +
+      `short-circuits zero-diff syncs.\n` +
+      `  • If a prior process crashed without releasing the lock, run ` +
+      `'swamp datastore lock release --force' (add --model <type>/<id> ` +
+      `for a specific model lock).`;
     super(msg);
     this.name = "SyncTimeoutError";
     this.label = label;

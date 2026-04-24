@@ -168,14 +168,24 @@ export function isAlwaysLocal(subdir: string): boolean {
  * Resolve the effective sync timeout for a datastore config.
  *
  * Resolution order:
- *   1. `config.syncTimeoutMs` (explicit per-datastore override)
- *   2. `SWAMP_DATASTORE_SYNC_TIMEOUT_MS` env var (must parse as positive int)
- *   3. `DEFAULT_SYNC_TIMEOUT_MS` (5 minutes)
+ *   1. `overrideMs` (per-invocation override, e.g. from a CLI flag)
+ *   2. `config.syncTimeoutMs` (explicit per-datastore config)
+ *   3. `SWAMP_DATASTORE_SYNC_TIMEOUT_MS` env var (must parse as positive int)
+ *   4. `DEFAULT_SYNC_TIMEOUT_MS` (5 minutes)
+ *
+ * `overrideMs` is intended for the `swamp datastore sync --timeout` flag,
+ * which is validated at the CLI boundary (positive integer, capped). Any
+ * value reaching here must already be `> 0` — an out-of-band `<= 0`
+ * override is ignored and resolution falls through to the next source.
  *
  * Invalid env values (non-numeric, zero, negative) are ignored with a silent
  * fallback to the default — the coordinator does not crash on a bad env.
  */
-export function resolveSyncTimeoutMs(config: DatastoreConfig): number {
+export function resolveSyncTimeoutMs(
+  config: DatastoreConfig,
+  overrideMs?: number,
+): number {
+  if (overrideMs != null && overrideMs > 0) return overrideMs;
   if (isCustomDatastoreConfig(config) && config.syncTimeoutMs != null) {
     if (config.syncTimeoutMs > 0) return config.syncTimeoutMs;
   }

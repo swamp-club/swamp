@@ -63,10 +63,22 @@ export interface DatastoreSyncDeps {
   }>;
 }
 
+/** Options for wiring real infrastructure into DatastoreSyncDeps. */
+export interface CreateDatastoreSyncDepsOptions {
+  /**
+   * Per-invocation override for the sync timeout, in milliseconds. Wins
+   * over `CustomDatastoreConfig.syncTimeoutMs`, the env var, and the
+   * default — the CLI `--timeout` flag on `swamp datastore sync` threads
+   * its value through here. Validated at the CLI boundary; must be `> 0`.
+   */
+  readonly syncTimeoutMsOverride?: number;
+}
+
 /** Wires real infrastructure into DatastoreSyncDeps. */
 export async function createDatastoreSyncDeps(
   repoDir: string,
   datastoreResolver: DatastorePathResolver,
+  options: CreateDatastoreSyncDepsOptions = {},
 ): Promise<DatastoreSyncDeps> {
   await datastoreTypeRegistry.ensureLoaded();
   const config = datastoreResolver.config();
@@ -95,7 +107,10 @@ export async function createDatastoreSyncDeps(
       );
     }
     const syncService = provider.createSyncService(repoDir, config.cachePath);
-    const timeoutMs = resolveSyncTimeoutMs(config);
+    const timeoutMs = resolveSyncTimeoutMs(
+      config,
+      options.syncTimeoutMsOverride,
+    );
     const label = config.type;
     return {
       validateSyncSupport: () =>
