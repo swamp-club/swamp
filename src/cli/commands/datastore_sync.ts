@@ -34,9 +34,54 @@ import {
   requireInitializedRepo,
   requireInitializedRepoReadOnly,
 } from "../repo_context.ts";
+import { UserError } from "../../domain/errors.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
+
+/**
+ * Upper bound on the `--timeout` flag in seconds. Six hours is generous
+ * enough for realistic one-off scenarios (initial seeding from a slow link,
+ * bulk recovery after an outage, 100k-file repo moves) while still rejecting
+ * effectively-unbounded misconfigs (`--timeout 99999999`).
+ *
+ * The env var (`SWAMP_DATASTORE_SYNC_TIMEOUT_MS`) is intentionally
+ * uncapped because it is shell-session-scoped knob for operators who know
+ * what they want; the CLI flag is a one-off user-facing override and is
+ * worth guarding against fat-fingered values.
+ */
+const SYNC_TIMEOUT_CLI_MAX_SECONDS = 21_600;
+
+/**
+ * Validate and normalize the `--timeout` CLI flag. Cliffy parses
+ * `--timeout <seconds:integer>` as a number; we reject non-positive and
+ * out-of-range values here so the user sees a clean `UserError` at the
+ * CLI boundary rather than a confusing coordinator timeout surprise.
+ *
+ * Exported for unit tests; not part of the public CLI surface.
+ */
+export function parseTimeoutFlag(raw: unknown): number {
+  if (
+    typeof raw !== "number" || !Number.isFinite(raw) || !Number.isInteger(raw)
+  ) {
+    throw new UserError(
+      `--timeout must be a positive integer (seconds); got ${String(raw)}`,
+    );
+  }
+  if (raw <= 0) {
+    throw new UserError(
+      `--timeout must be greater than 0; got ${raw}`,
+    );
+  }
+  if (raw > SYNC_TIMEOUT_CLI_MAX_SECONDS) {
+    throw new UserError(
+      `--timeout must be at most ${SYNC_TIMEOUT_CLI_MAX_SECONDS} seconds ` +
+        `(6 hours); got ${raw}. For higher values, set the ` +
+        `SWAMP_DATASTORE_SYNC_TIMEOUT_MS env var instead.`,
+    );
+  }
+  return raw * 1000;
+}
 
 /**
  * Manual sync command for S3 datastores.
@@ -46,18 +91,29 @@ export const datastoreSyncCommand = new Command()
   .example("Full sync", "swamp datastore sync")
   .example("Pull only", "swamp datastore sync --pull")
   .example("Push only", "swamp datastore sync --push")
+  .example("Large one-off sync", "swamp datastore sync --timeout 1800")
   .option(
     "--repo-dir <dir:string>",
     "Repository directory (env: SWAMP_REPO_DIR)",
   )
   .option("--pull", "Pull-only mode (fetch all remote data to local cache)")
   .option("--push", "Push-only mode (upload all local cache data to S3)")
+  .option(
+    "--timeout <seconds:integer>",
+    "Override the per-direction sync timeout for this invocation (seconds, " +
+      "max 21600). Wins over SWAMP_DATASTORE_SYNC_TIMEOUT_MS and per-datastore " +
+      "config. Preferred escape hatch for one-off large syncs.",
+  )
   .action(async function (options: AnyOptions) {
     const cliCtx = createContext(options as GlobalOptions, [
       "datastore",
       "sync",
     ]);
     cliCtx.logger.debug("Executing datastore sync command");
+
+    const syncTimeoutMsOverride = options.timeout != null
+      ? parseTimeoutFlag(options.timeout)
+      : undefined;
 
     const mode = options.push
       ? "push" as const
@@ -78,7 +134,9 @@ export const datastoreSyncCommand = new Command()
       });
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = await createDatastoreSyncDeps(repoDir, datastoreResolver);
+    const deps = await createDatastoreSyncDeps(repoDir, datastoreResolver, {
+      syncTimeoutMsOverride,
+    });
     const renderer = createDatastoreSyncRenderer(cliCtx.outputMode);
     await consumeStream(
       datastoreSync(ctx, deps, { mode }),
