@@ -95,12 +95,29 @@ import { reportRegistry } from "../reports/report_registry.ts";
 import { buildMethodReportContext } from "../reports/report_context.ts";
 import { modelRegistry } from "../models/model.ts";
 import { getTracer, SpanStatusCode } from "../../infrastructure/tracing/mod.ts";
-import { resolveDriverConfig } from "../drivers/driver_resolution.ts";
+import {
+  type DriverSource,
+  resolveDriverConfig,
+} from "../drivers/driver_resolution.ts";
 import {
   type RepoMarkerData,
   RepoMarkerRepository,
 } from "../../infrastructure/persistence/repo_marker_repository.ts";
-import { RepoPath } from "../repo/repo_path.ts";
+import { createRepoMarkerLoader } from "../../infrastructure/persistence/repo_marker_loader.ts";
+
+/**
+ * Driver-resolution tiers available at step-construction time. The
+ * `definition` tier is omitted here because it requires the evaluated
+ * definition, which is only available inside the step executor.
+ */
+export interface DriverTiers {
+  cli?: DriverSource;
+  step?: DriverSource;
+  job?: DriverSource;
+  workflow?: DriverSource;
+  repo?: DriverSource;
+}
+
 /**
  * Context for step execution.
  */
@@ -131,10 +148,13 @@ export interface StepExecutionContext {
   runtimeTags?: Record<string, string>;
   /** Secret redactor for stripping vault secrets from persisted data and logs */
   secretRedactor?: SecretRedactor;
-  /** Execution driver override from workflow/CLI level */
-  driver?: string;
-  /** Execution driver config override from workflow/CLI level */
-  driverConfig?: Record<string, unknown>;
+  /**
+   * Unresolved driver tiers to merge with the `definition` tier inside
+   * the step executor. The `definition` tier can only be populated where
+   * the evaluated definition is in scope, so final resolution happens in
+   * `DefaultStepExecutor.executeModelMethod` rather than here.
+   */
+  driverTiers?: DriverTiers;
   /** Report filter options for per-step report execution */
   reportFilterOptions?: ReportFilterOptions;
   /** The git commit sha of the swamp repo at execution time */
@@ -487,6 +507,23 @@ export class DefaultStepExecutor implements StepExecutor {
         })
         : undefined;
 
+      // Resolve the final driver/driverConfig with all six tiers now that
+      // the evaluated definition is in scope. The pre-definition tiers
+      // (cli/step/job/workflow/repo) were captured at step-construction
+      // time; the definition tier slots in between workflow and repo.
+      const tiers = ctx.driverTiers;
+      const resolved = resolveDriverConfig(
+        tiers?.cli,
+        tiers?.step,
+        tiers?.job,
+        tiers?.workflow,
+        {
+          driver: evaluatedDefinition.driver,
+          driverConfig: evaluatedDefinition.driverConfig,
+        },
+        tiers?.repo,
+      );
+
       // Execute the method with EVALUATED definition
       // Logger handles both console and file persistence via RunFileSink
       // Data is persisted by DataWriter during execution — no double-save
@@ -520,8 +557,8 @@ export class DefaultStepExecutor implements StepExecutor {
             runtimeTags: ctx.runtimeTags,
             dataOutputOverrides: stepDataOutputOverrides,
             vaultSecrets: secretBag,
-            driver: ctx.driver ?? evaluatedDefinition.driver,
-            driverConfig: ctx.driverConfig ?? evaluatedDefinition.driverConfig,
+            driver: resolved.driver,
+            driverConfig: resolved.driverConfig,
             skipCheckNames: ctx.skipCheckNames,
             skipCheckLabels: ctx.skipCheckLabels,
             skipAllChecks: ctx.skipAllChecks,
@@ -1130,11 +1167,11 @@ export class WorkflowExecutionService {
   private readonly catalogStore: CatalogStore;
   private readonly markerRepo = new RepoMarkerRepository();
   /**
-   * Memoized repo marker for this service instance. `undefined` = not yet
-   * loaded; `null` = loaded but file absent. Loaded once on first run() and
-   * reused across nested workflow invocations sharing the same service.
+   * Promise-memoized loader for `.swamp.yaml`. Instance-scoped so a
+   * long-running serve process creates a fresh loader per request and
+   * picks up marker edits between requests.
    */
-  private repoMarker: RepoMarkerData | null | undefined;
+  private readonly loadRepoMarker: () => Promise<RepoMarkerData | null>;
 
   constructor(
     private readonly workflowRepo: WorkflowRepository,
@@ -1159,20 +1196,7 @@ export class WorkflowExecutionService {
       dataRepo: this.dataRepo,
       dataQueryService,
     });
-  }
-
-  /**
-   * Lazily loads and memoizes the `.swamp.yaml` repo marker. Called by
-   * `run()` so the file is read at most once per service instance, even
-   * across nested workflow invocations.
-   */
-  private async loadRepoMarker(): Promise<RepoMarkerData | null> {
-    if (this.repoMarker === undefined) {
-      this.repoMarker = await this.markerRepo.read(
-        RepoPath.create(this.repoDir),
-      );
-    }
-    return this.repoMarker;
+    this.loadRepoMarker = createRepoMarkerLoader(this.markerRepo, repoDir);
   }
 
   /**
@@ -1820,6 +1844,7 @@ export class WorkflowExecutionService {
       // Model method tasks delegate to the step executor.
       // withEventBridge lets the executor push events via callback
       // while we yield them into the parent stream.
+      const repoMarker = await this.loadRepoMarker();
       const output = yield* withEventBridge<
         WorkflowExecutionEvent,
         unknown
@@ -1840,17 +1865,19 @@ export class WorkflowExecutionService {
           workflowTags: options.workflowTags,
           runtimeTags: options.runtimeTags,
           secretRedactor: options.secretRedactor,
-          ...resolveDriverConfig(
-            { driver: options.driver },
-            { driver: step.driver, driverConfig: step.driverConfig },
-            { driver: job.driver, driverConfig: job.driverConfig },
-            { driver: workflow.driver, driverConfig: workflow.driverConfig },
-            undefined,
-            {
-              driver: this.repoMarker?.defaultDriver,
-              driverConfig: this.repoMarker?.defaultDriverConfig,
+          driverTiers: {
+            cli: { driver: options.driver },
+            step: { driver: step.driver, driverConfig: step.driverConfig },
+            job: { driver: job.driver, driverConfig: job.driverConfig },
+            workflow: {
+              driver: workflow.driver,
+              driverConfig: workflow.driverConfig,
             },
-          ),
+            repo: {
+              driver: repoMarker?.defaultDriver,
+              driverConfig: repoMarker?.defaultDriverConfig,
+            },
+          },
           emitEvent: push,
           reportFilterOptions: options.reportFilterOptions,
           swampSha: options.swampSha,

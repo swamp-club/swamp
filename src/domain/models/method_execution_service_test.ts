@@ -2707,3 +2707,47 @@ Deno.test(
     assertEquals(saved.typeVersion, "2026.04.12.2");
   },
 );
+
+Deno.test(
+  "pre-flight check receives resolved driver/driverConfig from MethodContext",
+  async () => {
+    const service = new DefaultMethodExecutionService();
+    let capturedDriver: string | undefined;
+    let capturedDriverConfig: Record<string, unknown> | undefined;
+    // Check returns pass: false so execution halts after capture — avoids
+    // needing a registered driver downstream; this test is scoped to the
+    // pre-flight propagation contract.
+    const model = createCheckModel({
+      "capture-driver": {
+        description: "Records driver seen by the check",
+        execute: (context) => {
+          capturedDriver = context.driver;
+          capturedDriverConfig = context.driverConfig;
+          return Promise.resolve({
+            pass: false,
+            errors: ["halt after capture"],
+          });
+        },
+      },
+    });
+
+    const definition = Definition.create({
+      name: "test-definition",
+      globalArguments: {},
+    });
+    const { context } = createTestContext({
+      modelType: model.type,
+      driver: "docker",
+      driverConfig: { image: "alpine:latest" },
+    });
+
+    await assertRejects(
+      () => service.executeWorkflow(definition, model, "create", context),
+      UserError,
+    );
+
+    // Check must see the resolved driver, not a raw default.
+    assertEquals(capturedDriver, "docker");
+    assertEquals(capturedDriverConfig, { image: "alpine:latest" });
+  },
+);

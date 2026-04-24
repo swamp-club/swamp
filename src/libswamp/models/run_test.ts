@@ -169,6 +169,7 @@ function createTestDeps(
     dataQueryService: {
       query: () => Promise.resolve([]),
     } as unknown as DataQueryService,
+    loadRepoMarker: () => Promise.resolve(null),
     createRunLog: () =>
       Promise.resolve({
         logFilePath: "/tmp/test.log",
@@ -389,4 +390,142 @@ Deno.test("methodExecutionFailed wraps error", () => {
   assertEquals(error.code, "method_execution_failed");
   assertEquals(error.message, "boom");
   assertEquals(error.cause?.message, "boom");
+});
+
+// --- Driver resolution tests ---
+
+type CapturedContext = {
+  driver?: string;
+  driverConfig?: Record<string, unknown>;
+};
+
+function createCapturingDeps(
+  name: string,
+  methodName: string,
+  modelDef: ModelDefinition,
+  options: {
+    markerDriver?: string;
+    markerDriverConfig?: Record<string, unknown>;
+    definitionDriver?: string;
+    definitionDriverConfig?: Record<string, unknown>;
+  } = {},
+): { deps: ModelMethodRunDeps; captured: CapturedContext } {
+  const captured: CapturedContext = {};
+  const definition = Definition.create({
+    name,
+    methods: {
+      [methodName]: {
+        arguments: { key: "value" },
+      },
+    },
+    driver: options.definitionDriver,
+    driverConfig: options.definitionDriverConfig,
+  });
+  const deps = createTestDeps(definition, modelDef);
+  // deno-lint-ignore no-explicit-any
+  (deps as any).createExecutionService = () => ({
+    executeWorkflow: (
+      _def: Definition,
+      _modelDef: ModelDefinition,
+      _method: string,
+      ctx: {
+        driver?: string;
+        driverConfig?: Record<string, unknown>;
+      },
+    ) => {
+      captured.driver = ctx.driver;
+      captured.driverConfig = ctx.driverConfig;
+      return Promise.resolve({ dataHandles: [] });
+    },
+  });
+  if (
+    options.markerDriver !== undefined ||
+    options.markerDriverConfig !== undefined
+  ) {
+    deps.loadRepoMarker = () =>
+      Promise.resolve({
+        swampVersion: "1.0.0",
+        initializedAt: "2024-01-15T10:30:00.000Z",
+        defaultDriver: options.markerDriver,
+        defaultDriverConfig: options.markerDriverConfig,
+      });
+  }
+  return { deps, captured };
+}
+
+Deno.test("modelMethodRun: resolves driver from .swamp.yaml defaultDriver when no higher tier sets it", async () => {
+  const modelDef = createTestModelDef("run");
+  const { deps, captured } = createCapturingDeps(
+    "test-model",
+    "run",
+    modelDef,
+    {
+      markerDriver: "docker",
+      markerDriverConfig: { image: "alpine:latest" },
+    },
+  );
+
+  const ctx = createLibSwampContext();
+  await collect(
+    modelMethodRun(ctx, deps, createTestInput("test-model", "run")),
+  );
+
+  assertEquals(captured.driver, "docker");
+  assertEquals(captured.driverConfig, { image: "alpine:latest" });
+});
+
+Deno.test("modelMethodRun: CLI driver overrides .swamp.yaml defaultDriver", async () => {
+  const modelDef = createTestModelDef("run");
+  const { deps, captured } = createCapturingDeps(
+    "test-model",
+    "run",
+    modelDef,
+    {
+      markerDriver: "docker",
+    },
+  );
+
+  const ctx = createLibSwampContext();
+  await collect(
+    modelMethodRun(ctx, deps, {
+      ...createTestInput("test-model", "run"),
+      driver: "raw",
+    }),
+  );
+
+  assertEquals(captured.driver, "raw");
+});
+
+Deno.test("modelMethodRun: falls back to 'raw' when no marker and no CLI override", async () => {
+  const modelDef = createTestModelDef("run");
+  const { deps, captured } = createCapturingDeps("test-model", "run", modelDef);
+
+  const ctx = createLibSwampContext();
+  await collect(
+    modelMethodRun(ctx, deps, createTestInput("test-model", "run")),
+  );
+
+  assertEquals(captured.driver, "raw");
+  assertEquals(captured.driverConfig, undefined);
+});
+
+Deno.test("modelMethodRun: definition.driver applies when no CLI or repo tier sets a driver", async () => {
+  const modelDef = createTestModelDef("run");
+  const { deps, captured } = createCapturingDeps(
+    "test-model",
+    "run",
+    modelDef,
+    {
+      definitionDriver: "docker",
+      definitionDriverConfig: { image: "ubuntu" },
+    },
+  );
+
+  const ctx = createLibSwampContext();
+  await collect(
+    modelMethodRun(ctx, deps, createTestInput("test-model", "run")),
+  );
+
+  assertEquals(captured.driver, "docker");
+  assertEquals(captured.driverConfig, { image: "ubuntu" });
 });

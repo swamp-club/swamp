@@ -54,6 +54,13 @@ defaultDriverConfig:
   image: "alpine:latest"
 ```
 
+The same priority chain applies uniformly to workflow runs
+(`swamp workflow run`) and direct model method runs
+(`swamp model method run`). A malformed `.swamp.yaml` aborts both paths
+at the start of the run with a YAML parse error — this is intentional,
+so configuration mistakes surface immediately rather than silently
+falling back to `raw`.
+
 ### CLI Override
 
 ```bash
