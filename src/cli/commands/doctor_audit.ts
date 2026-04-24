@@ -24,6 +24,7 @@ import {
   NoToolConfiguredError,
   type SpawnFn,
 } from "../../libswamp/mod.ts";
+import type { AiTool } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import {
   SWAMP_SUBDIRS,
   swampPath,
@@ -36,6 +37,25 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { resolveDatastoreForRepo } from "../repo_context.ts";
+
+/**
+ * Resolves the target AI tool for `doctor audit`. Priority: explicit
+ * `--tool` flag (after validation), then `.swamp.yaml`'s `tool` field.
+ * If neither is present, throws `NoToolConfiguredError`.
+ *
+ * Exported for testing.
+ */
+export function resolveTargetTool(
+  flagTool: string | undefined,
+  markerTool: AiTool | undefined,
+): AiTool {
+  const overrideTool = flagTool ? parseAiToolOrThrow(flagTool) : undefined;
+  const resolved = overrideTool ?? markerTool;
+  if (!resolved) {
+    throw new NoToolConfiguredError();
+  }
+  return resolved;
+}
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -111,14 +131,10 @@ export const doctorAuditCommand = new Command()
 
     const repoDir = resolveRepoDir(options.repoDir);
     const { marker } = await resolveDatastoreForRepo(repoDir);
-
-    const overrideTool = options.tool
-      ? parseAiToolOrThrow(options.tool as string)
-      : undefined;
-    const resolvedTool = overrideTool ?? marker?.tool;
-    if (!resolvedTool) {
-      throw new NoToolConfiguredError();
-    }
+    const resolvedTool = resolveTargetTool(
+      options.tool as string | undefined,
+      marker?.tool,
+    );
 
     const auditDir = swampPath(repoDir, SWAMP_SUBDIRS.audit);
     const controller = new AbortController();
