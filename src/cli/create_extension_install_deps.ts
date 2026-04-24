@@ -23,8 +23,10 @@ import { RepoPath } from "../domain/repo/repo_path.ts";
 import { resolveSkillsDir } from "../domain/repo/skill_dirs.ts";
 import { RepoMarkerRepository } from "../infrastructure/persistence/repo_marker_repository.ts";
 import { ExtensionApiClient } from "../infrastructure/http/extension_api_client.ts";
-import { resolveServerUrl } from "../libswamp/mod.ts";
-import type { ExtensionInstallDeps } from "../libswamp/extensions/install.ts";
+import {
+  type ExtensionInstallDeps,
+  resolveServerUrl,
+} from "../libswamp/mod.ts";
 import { resolveModelsDir } from "./resolve_models_dir.ts";
 
 /**

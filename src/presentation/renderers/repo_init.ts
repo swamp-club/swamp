@@ -19,6 +19,7 @@
 
 import type {
   EventHandlers,
+  ExtensionInstallData,
   ExtensionInstallEvent,
   RepoInitEvent,
   RepoUpgradeEvent,
@@ -128,13 +129,25 @@ class LogRepoUpgradeRenderer implements Renderer<RepoUpgradeEvent> {
 
 class JsonRepoUpgradeRenderer implements Renderer<RepoUpgradeEvent> {
   handlers(): EventHandlers<RepoUpgradeEvent> {
-    const installRenderer = createExtensionInstallRenderer("json");
-    const installHandlers = installRenderer.handlers();
+    // JSON mode must emit exactly ONE top-level JSON object per
+    // invocation — downstream parsers that read stdout as a single
+    // document break otherwise. Capture the install pass's summary
+    // and fold it into the upgrade's final `completed` object rather
+    // than delegating to JsonExtensionInstallRenderer (which would
+    // console.log its own JSON mid-stream).
+    let extensionInstall: ExtensionInstallData | undefined;
     return {
       upgrading: () => {},
-      extensions: (e) => dispatchInstallEvent(installHandlers, e.event),
+      extensions: (e) => {
+        if (e.event.kind === "completed") {
+          extensionInstall = e.event.data;
+        }
+      },
       completed: (e) => {
-        console.log(JSON.stringify(e.data, null, 2));
+        const payload = extensionInstall
+          ? { ...e.data, extensionInstall }
+          : e.data;
+        console.log(JSON.stringify(payload, null, 2));
       },
       error: (e) => {
         throw new UserError(e.error.message);
