@@ -69,6 +69,22 @@ gitlab.com (public SaaS only), codeberg.org, bitbucket.org. Self-hosted GitHub
 Enterprise, self-hosted GitLab, private Gitea, Azure DevOps, Bitbucket Server —
 none earn the 2-point verification factor. URL must be HTTPS.
 
+**Bare-specifier imports fail `swamp extension quality`.** The command runs
+hermetically — it strips the tarball's `deno.json`, so a bare `"zod"` import
+cannot resolve and the command throws
+`deno doc --json failed: Import "zod" not a dependency` **before** factor
+scoring begins. Fix: use `import { z } from "npm:zod@4"` in every entrypoint
+file. Adding `deno.json` to `additionalFiles:` does not help — it lands at
+`files/deno.json`, which the scorer does not promote. **Deno's default lint
+rules enable `no-import-prefix` whenever an `imports` map is present**, so
+`swamp extension fmt` / `swamp extension push` reject the inline form as soon as
+you add a `deno.json` with an `imports` section — the same `deno.json` the
+scorer strips. Break the deadlock one of two ways: disable the rule in your
+`deno.json` (`"lint": { "rules": { "exclude": ["no-import-prefix"] } }`), or
+suppress per-import with `// deno-lint-ignore no-import-prefix` above the zod
+import line. The deadlock goes away entirely once the scorer honours the
+tarball's `files/deno.json`.
+
 **`fast-check` is subtle.** A single missing return type on an exported function
 or a public export that leaks a private type costs the whole point. Run
 `deno doc --lint <entrypoints>` locally to catch this before publish.
@@ -122,6 +138,10 @@ surfaces rubric failures earlier and prepopulates the package cache.
 `verified-by-swamp` is the one factor the CLI cannot score — it is reserved for
 `@swamp` namespace or admin review and is granted server-side at publish time.
 
+If `swamp extension quality` throws a `deno doc` error instead of printing
+factor results, the entrypoint uses a bare specifier — see "Bare-specifier
+imports fail `swamp extension quality`" above for the fix.
+
 ## Details when needed
 
 For the full per-factor mechanics, the grade thresholds, and a worked example of
@@ -143,6 +163,9 @@ above. Do not speculate — look at the actual breakdown.
 
 Common patterns:
 
+- **`swamp extension quality` throws `Import "zod" not a dependency` instead of
+  showing factor results** → entrypoint uses bare `"zod"`; switch to
+  `"npm:zod@4"`. Adding `deno.json` to `additionalFiles:` does not resolve it.
 - **"Has README" shows 0/2 but the repo has a README** → not listed in
   `additionalFiles:`, so it is not in the tarball. Publish a new version with
   the manifest fixed.

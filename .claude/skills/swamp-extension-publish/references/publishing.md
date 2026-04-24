@@ -131,12 +131,28 @@ paths — hardcoding breaks smoke tests run against a source-loaded extension.
 
 ### Import Rules
 
-- `import { z } from "npm:zod@4";` is always required
-- Any Deno-compatible import (`npm:`, `jsr:`, `https://`) can be used — swamp
-  resolves and inlines all three kinds identically, with zod as the sole
-  externalization exception
-- Extensions with a `deno.json` or `package.json` can use bare specifiers (e.g.,
-  `from "zod"`)
+`import { z } from "npm:zod@4";` is the canonical zod import for entrypoint
+files. Two distinct constraints make this the right form:
+
+- **Hermeticity at score time.** The swamp-club scorer and the local
+  `swamp extension quality` command both run in a sandbox that strips the
+  tarball's `deno.json` and writes its own with `nodeModulesDir: "auto"` and no
+  imports map. Bare specifiers like `from "zod"` resolve at bundle time via the
+  repo's `deno.json` import map, but fail at score time — `deno doc --json`
+  cannot find the bare name and the command throws before factor scoring begins.
+  The inline `npm:` form is the only form that resolves under both the bundler's
+  permissive resolution AND the scorer's hermetic resolution.
+- **Zod externalization.** Zod is the sole import that is NOT inlined into the
+  published bundle. The extension must share swamp's zod instance so schema
+  `instanceof` checks work across the module boundary — that is why zod in
+  particular is called out as the canonical inline form, not merely a
+  consequence of hermeticity.
+
+Other Deno-compatible imports (`npm:`, `jsr:`, `https://`) are inlined into the
+bundle by the swamp packager. Bare specifiers backed by `deno.json` or
+`package.json` work for the bundler, but follow the hermeticity rule above for
+anything that needs to score: prefer the inline form in entrypoint files.
+
 - All imports must be static top-level imports — dynamic `import()` calls are
   rejected during push
 - Always pin versions on all non-local imports for reproducibility. An unpinned
