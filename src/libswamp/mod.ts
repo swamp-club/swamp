@@ -916,6 +916,25 @@ export {
   type SummariseInput,
 } from "./summary/summarise.ts";
 
+// Doctor (preflight diagnostics)
+export {
+  type AuditDoctorReport,
+  type CheckResult,
+  type CheckStatus,
+  NoToolConfiguredError,
+  type OverallStatus,
+  type PreflightCheck,
+  type PreflightCheckName,
+  type SpawnFn,
+} from "../domain/audit/doctor/check.ts";
+export {
+  auditDoctor,
+  type AuditDoctorDeps,
+  type AuditDoctorEvent,
+  DEFAULT_CHECK_ORDER,
+} from "../domain/audit/doctor/doctor_service.ts";
+export { todaysAuditFilePath } from "../domain/audit/audit_path.ts";
+
 // Datastore operations
 export {
   createDatastoreStatusDeps,

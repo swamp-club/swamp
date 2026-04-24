@@ -161,6 +161,10 @@ export const auditCommand = new Command()
   })
   .option("--all", "Show all commands including noise (ls, cat, etc.)")
   .option("--session <id:string>", "Filter by session ID")
+  .option(
+    "--include-diagnostic",
+    "Include rows written by `swamp doctor audit`'s smoke test (filtered by default)",
+  )
   .action(async function (options) {
     const ctx = createContext(options as GlobalOptions, ["audit"]);
     ctx.logger.debug`Fetching audit timeline`;
@@ -184,6 +188,7 @@ export const auditCommand = new Command()
         showAll: options.all ?? false,
         sessionId: options.session,
         tool: configuredTool,
+        includeDiagnostic: options.includeDiagnostic ?? false,
       }),
       renderer.handlers(),
     );

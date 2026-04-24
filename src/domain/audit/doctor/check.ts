@@ -1,0 +1,111 @@
+// Swamp, an Automation Framework
+// Copyright (C) 2026 System Initiative, Inc.
+//
+// This file is part of Swamp.
+//
+// Swamp is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License version 3
+// as published by the Free Software Foundation, with the Swamp
+// Extension and Definition Exception (found in the "COPYING-EXCEPTION"
+// file).
+//
+// Swamp is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
+
+import type { AiTool } from "../../repo/repo_service.ts";
+
+/**
+ * Types and ports for the `swamp doctor audit` preflight diagnostic.
+ *
+ * Each preflight check is an independent unit that inspects one aspect of
+ * the audit integration for the configured AI tool. Checks never short-
+ * circuit each other — a failure in one check does not prevent later
+ * checks from running.
+ */
+
+/** The canonical set of preflight check names. */
+export type PreflightCheckName =
+  | "binary-on-path"
+  | "swamp-binary-on-path"
+  | "agent-config-loadable"
+  | "default-agent-set"
+  | "recording-smoke-test";
+
+/** Outcome of a single preflight check. */
+export type CheckStatus = "pass" | "fail" | "skip";
+
+/** Result of running one preflight check. */
+export interface CheckResult {
+  name: PreflightCheckName;
+  status: CheckStatus;
+  /** Short human-readable summary of what the check observed. */
+  message: string;
+  /** Actionable remediation hint, populated on fail. */
+  hint?: string;
+  /** Structured payload for JSON consumers. */
+  details?: Record<string, unknown>;
+}
+
+/**
+ * Subprocess invocation port.
+ *
+ * The production implementation spawns the swamp binary to run
+ * `audit record --from-hook`. Tests inject fakes so unit tests never
+ * subprocess-out to a real swamp binary.
+ */
+export type SpawnFn = (
+  args: string[],
+  stdin: string,
+  env?: Record<string, string>,
+) => Promise<{ exitCode: number; stdout: string; stderr: string }>;
+
+/** Context passed to every preflight check. */
+export interface CheckContext {
+  /** Absolute path to the swamp-initialized repository. */
+  repoPath: string;
+  /** Absolute path to the `.swamp/audit` directory inside the repo. */
+  auditDir: string;
+  /** The AI tool whose integration is under test. */
+  tool: AiTool;
+  /** Cancellation signal for long-running checks. */
+  abortSignal: AbortSignal;
+  /** Spawn the swamp binary. Production wires the real binary; tests inject a fake. */
+  spawnSwamp: SpawnFn;
+}
+
+/** A single preflight check. */
+export interface PreflightCheck {
+  readonly name: PreflightCheckName;
+  readonly description: string;
+  /** Whether this check applies to the given AI tool. */
+  appliesTo(tool: AiTool): boolean;
+  /** Execute the check. Must not throw — return a `fail` result instead. */
+  run(ctx: CheckContext): Promise<CheckResult>;
+}
+
+/** Overall status of an audit-doctor report. */
+export type OverallStatus = "pass" | "warn" | "fail";
+
+/** The aggregated result of running every applicable preflight check. */
+export interface AuditDoctorReport {
+  tool: AiTool;
+  overallStatus: OverallStatus;
+  checks: CheckResult[];
+}
+
+/** Typed error emitted when neither `--tool` nor `.swamp.yaml` specify a tool. */
+export class NoToolConfiguredError extends Error {
+  constructor() {
+    super(
+      "No AI tool configured in .swamp.yaml and no --tool flag provided. " +
+        "Pass --tool <name> (claude | cursor | kiro | opencode | codex | " +
+        "copilot | none) or run `swamp init --tool <name>`.",
+    );
+    this.name = "NoToolConfiguredError";
+  }
+}

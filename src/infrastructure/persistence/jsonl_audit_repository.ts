@@ -26,6 +26,10 @@ import {
   bashCommandEntryFromData,
   bashCommandEntryToData,
 } from "../../domain/audit/audit_command_entry.ts";
+import {
+  AUDIT_FILENAME_PATTERN,
+  auditFilePathForTimestamp,
+} from "../../domain/audit/audit_path.ts";
 import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
 
 /**
@@ -53,9 +57,7 @@ export class JsonlAuditRepository implements AuditRepository {
       const auditDir = this.getAuditDir();
       await ensureDir(auditDir);
 
-      const date = entry.timestamp.split("T")[0];
-      const filename = `commands-${date}.jsonl`;
-      const path = join(auditDir, filename);
+      const path = auditFilePathForTimestamp(auditDir, entry.timestamp);
 
       const line = JSON.stringify(bashCommandEntryToData(entry)) + "\n";
 
@@ -97,9 +99,7 @@ export class JsonlAuditRepository implements AuditRepository {
       end.setUTCHours(23, 59, 59, 999);
 
       while (current <= end) {
-        const dateStr = current.toISOString().split("T")[0];
-        const filename = `commands-${dateStr}.jsonl`;
-        const path = join(auditDir, filename);
+        const path = auditFilePathForTimestamp(auditDir, current.toISOString());
 
         try {
           const content = await Deno.readTextFile(path);
@@ -122,7 +122,7 @@ export class JsonlAuditRepository implements AuditRepository {
         } catch (error) {
           if (!(error instanceof Deno.errors.NotFound)) {
             if (Deno.env.get("SWAMP_DEBUG")) {
-              console.error(`[Audit] Failed to read ${filename}:`, error);
+              console.error(`[Audit] Failed to read ${path}:`, error);
             }
           }
         }
@@ -157,9 +157,7 @@ export class JsonlAuditRepository implements AuditRepository {
           entry.name.startsWith("commands-") &&
           entry.name.endsWith(".jsonl")
         ) {
-          const dateMatch = entry.name.match(
-            /^commands-(\d{4}-\d{2}-\d{2})\.jsonl$/,
-          );
+          const dateMatch = entry.name.match(AUDIT_FILENAME_PATTERN);
           if (dateMatch) {
             const fileDate = dateMatch[1];
             if (fileDate < cutoffDateStr) {

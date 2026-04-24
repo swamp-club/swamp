@@ -93,7 +93,21 @@ export interface AuditTimelineOptions {
   hours: number;
   showAll: boolean;
   sessionId?: string;
+  /**
+   * When true, include rows written by `swamp doctor audit`'s smoke-test
+   * check. Default false — those rows are reserved diagnostic output and
+   * would otherwise pollute the user's timeline.
+   */
+  includeDiagnostic?: boolean;
 }
+
+/**
+ * Reserved command prefix for rows written by the doctor smoke-test.
+ * Kept in audit_service because it's filtered here; the corresponding
+ * payload in `doctor/synthetic_payloads.ts` imports it to guarantee the
+ * writer and reader agree on the sentinel.
+ */
+export const DIAGNOSTIC_COMMAND_PREFIX = "echo swamp-doctor-smoke-test";
 
 /**
  * Service that categorizes hook-captured bash commands
@@ -129,6 +143,14 @@ export class AuditService {
         if (!be.sessionId || be.sessionId !== options.sessionId) {
           continue;
         }
+      }
+
+      // Filter doctor smoke-test rows unless opted-in
+      if (
+        !options.includeDiagnostic &&
+        trimmedCommand.startsWith(DIAGNOSTIC_COMMAND_PREFIX)
+      ) {
+        continue;
       }
 
       const isSwampCommand = trimmedCommand.startsWith("swamp ") ||

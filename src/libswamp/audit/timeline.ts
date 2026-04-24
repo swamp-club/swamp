@@ -45,6 +45,8 @@ export interface AuditTimelineInput {
   showAll: boolean;
   sessionId?: string;
   tool: string;
+  /** Include rows written by `swamp doctor audit`'s smoke test. */
+  includeDiagnostic?: boolean;
 }
 
 /** Dependencies for the audit timeline operation. */
@@ -86,6 +88,7 @@ export async function* auditTimeline(
         hours: input.hours,
         showAll: input.showAll,
         sessionId: input.sessionId,
+        includeDiagnostic: input.includeDiagnostic,
       });
 
       if (

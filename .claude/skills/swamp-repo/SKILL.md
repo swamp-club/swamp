@@ -1,6 +1,6 @@
 ---
 name: swamp-repo
-description: Manage swamp repositories, datastores, and extension sources — initializing repos, upgrading swamp, syncing data, releasing stuck locks, loading extensions from external paths, and installing swamp in CI. Use when initializing repos, upgrading swamp, starting the webapp, configuring datastores, managing extension sources, or setting up swamp in CI/CD pipelines. Triggers on "repo", "repository", "init", "initialize", "swamp init", "setup swamp", "new swamp project", "upgrade swamp", "webapp", "swamp webapp", "repository structure", ".swamp folder", "datastore", "datastore setup", "datastore status", "datastore sync", "datastore lock", "s3 datastore", "filesystem datastore", "stuck lock", "lock release", "install swamp", "CI", "CI/CD", "GitHub Actions", "install in CI", "setup CI", "extension source", "extension sources", ".swamp-sources.yaml", "load extensions from", "local extension source", "add source", "source add", "source rm", "source list".
+description: Manage swamp repositories, datastores, and extension sources — initializing repos, upgrading swamp, syncing data, releasing stuck locks, loading extensions from external paths, installing swamp in CI, and verifying the audit integration is healthy with `swamp doctor audit`. Use when initializing repos, upgrading swamp, starting the webapp, configuring datastores, managing extension sources, setting up swamp in CI/CD pipelines, or diagnosing a broken audit integration. Triggers on "repo", "repository", "init", "initialize", "swamp init", "setup swamp", "new swamp project", "upgrade swamp", "webapp", "swamp webapp", "repository structure", ".swamp folder", "datastore", "datastore setup", "datastore status", "datastore sync", "datastore lock", "s3 datastore", "filesystem datastore", "stuck lock", "lock release", "install swamp", "CI", "CI/CD", "GitHub Actions", "install in CI", "setup CI", "extension source", "extension sources", ".swamp-sources.yaml", "load extensions from", "local extension source", "add source", "source add", "source rm", "source list", "doctor", "doctor audit", "verify audit", "audit integration", "preflight", "hook not firing", "audit log empty".
 ---
 
 # Swamp Repository Skill
@@ -82,6 +82,18 @@ swamp repo init ./my-automation --json
 - `.swamp.yaml` configuration file with version metadata
 - `CLAUDE.md` with agent instructions and skill references
 - `.gitignore` entries for `.swamp/` and `.swamp-sources.yaml`
+
+### Verify the audit integration
+
+Run `swamp doctor audit` after `init --tool <name>` and after upgrading the
+external AI tool. Catches upstream hook-payload drift before the audit log
+silently goes empty. Exits 1 on any check fail — safe to gate in CI.
+
+```bash
+swamp doctor audit
+swamp doctor audit --tool kiro
+swamp doctor audit --json
+```
 
 ## Upgrade a Repository
 

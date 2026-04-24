@@ -41,6 +41,7 @@ import { authCommand } from "./commands/auth.ts";
 import { extensionCommand } from "./commands/extension.ts";
 import { summariseCommand } from "./commands/summarise.ts";
 import { datastoreCommand } from "./commands/datastore.ts";
+import { doctorCommand } from "./commands/doctor.ts";
 import { reportCommand } from "./commands/report.ts";
 import { serveCommand } from "./commands/serve.ts";
 import { openCommand } from "./commands/open.ts";
@@ -991,6 +992,7 @@ export async function runCli(args: string[]): Promise<void> {
     .command("extension", extensionCommand)
     .command("summarise", summariseCommand)
     .command("datastore", datastoreCommand)
+    .command("doctor", doctorCommand)
     .command("report", reportCommand)
     .command("serve", serveCommand)
     .command("open", openCommand);
