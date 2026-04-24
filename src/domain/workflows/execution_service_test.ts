@@ -2741,3 +2741,162 @@ Deno.test({
     });
   },
 });
+
+Deno.test("resolves driver from .swamp.yaml defaultDriver when no higher tier sets it", async () => {
+  await withTempDir(async (tempDir) => {
+    await Deno.writeTextFile(
+      join(tempDir, ".swamp.yaml"),
+      `swampVersion: "1.0.0"
+initializedAt: "2024-01-15T10:30:00.000Z"
+defaultDriver: "docker"
+defaultDriverConfig:
+  image: "alpine:latest"
+`,
+    );
+
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+
+    const capturedContexts: StepExecutionContext[] = [];
+    const executor: StepExecutor = {
+      execute(_step: Step, ctx: StepExecutionContext): Promise<unknown> {
+        capturedContexts.push(ctx);
+        return Promise.resolve({ executed: true });
+      },
+    };
+
+    const workflow = createSimpleWorkflow();
+    await workflowRepo.save(workflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    try {
+      const service = new WorkflowExecutionService(
+        workflowRepo,
+        runRepo,
+        tempDir,
+        executor,
+        undefined,
+        catalogStore,
+      );
+
+      await service.execute(workflow.name);
+    } finally {
+      catalogStore.close();
+    }
+
+    assertEquals(capturedContexts.length, 1);
+    assertEquals(
+      capturedContexts[0].driverTiers?.repo?.driver,
+      "docker",
+    );
+    assertEquals(
+      capturedContexts[0].driverTiers?.repo?.driverConfig,
+      { image: "alpine:latest" },
+    );
+    // Higher tiers not populated — step executor will resolve to repo tier.
+    assertEquals(capturedContexts[0].driverTiers?.cli?.driver, undefined);
+    assertEquals(capturedContexts[0].driverTiers?.workflow?.driver, undefined);
+  });
+});
+
+Deno.test("CLI driver overrides .swamp.yaml defaultDriver", async () => {
+  await withTempDir(async (tempDir) => {
+    await Deno.writeTextFile(
+      join(tempDir, ".swamp.yaml"),
+      `swampVersion: "1.0.0"
+initializedAt: "2024-01-15T10:30:00.000Z"
+defaultDriver: "docker"
+`,
+    );
+
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+
+    const capturedContexts: StepExecutionContext[] = [];
+    const executor: StepExecutor = {
+      execute(_step: Step, ctx: StepExecutionContext): Promise<unknown> {
+        capturedContexts.push(ctx);
+        return Promise.resolve({ executed: true });
+      },
+    };
+
+    const workflow = createSimpleWorkflow();
+    await workflowRepo.save(workflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    try {
+      const service = new WorkflowExecutionService(
+        workflowRepo,
+        runRepo,
+        tempDir,
+        executor,
+        undefined,
+        catalogStore,
+      );
+
+      for await (
+        const _event of service.run(workflow.name, { driver: "raw" })
+      ) {
+        // drain events
+      }
+    } finally {
+      catalogStore.close();
+    }
+
+    assertEquals(capturedContexts.length, 1);
+    // CLI tier takes precedence; repo tier still carries its marker value.
+    assertEquals(capturedContexts[0].driverTiers?.cli?.driver, "raw");
+    assertEquals(capturedContexts[0].driverTiers?.repo?.driver, "docker");
+  });
+});
+
+Deno.test("falls back to 'raw' when .swamp.yaml has no defaultDriver", async () => {
+  await withTempDir(async (tempDir) => {
+    await Deno.writeTextFile(
+      join(tempDir, ".swamp.yaml"),
+      `swampVersion: "1.0.0"
+initializedAt: "2024-01-15T10:30:00.000Z"
+`,
+    );
+
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+
+    const capturedContexts: StepExecutionContext[] = [];
+    const executor: StepExecutor = {
+      execute(_step: Step, ctx: StepExecutionContext): Promise<unknown> {
+        capturedContexts.push(ctx);
+        return Promise.resolve({ executed: true });
+      },
+    };
+
+    const workflow = createSimpleWorkflow();
+    await workflowRepo.save(workflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    try {
+      const service = new WorkflowExecutionService(
+        workflowRepo,
+        runRepo,
+        tempDir,
+        executor,
+        undefined,
+        catalogStore,
+      );
+
+      await service.execute(workflow.name);
+    } finally {
+      catalogStore.close();
+    }
+
+    assertEquals(capturedContexts.length, 1);
+    // No marker defaultDriver and no CLI override — all tiers empty;
+    // step executor will fall back to "raw".
+    assertEquals(capturedContexts[0].driverTiers?.cli?.driver, undefined);
+    assertEquals(capturedContexts[0].driverTiers?.repo?.driver, undefined);
+    assertEquals(
+      capturedContexts[0].driverTiers?.repo?.driverConfig,
+      undefined,
+    );
+  });
+});

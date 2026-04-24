@@ -45,6 +45,8 @@ import type { VaultService } from "../../domain/vaults/vault_service.ts";
 import type { ExpressionEvaluationService } from "../../domain/expressions/expression_evaluation_service.ts";
 import type { SecretRedactor } from "../../domain/secrets/mod.ts";
 import type { DataQueryService } from "../../domain/data/data_query_service.ts";
+import type { RepoMarkerData } from "../../infrastructure/persistence/repo_marker_repository.ts";
+import { resolveDriverConfig } from "../../domain/drivers/driver_resolution.ts";
 import { buildMethodContext } from "../../domain/models/method_context.ts";
 import type {
   DataArtifactView,
@@ -159,6 +161,13 @@ export interface ModelMethodRunDeps {
   outputRepo: OutputRepository;
   /** Data query service — the driver derives context.queryData from this. */
   dataQueryService: DataQueryService;
+  /**
+   * Lazily loads the `.swamp.yaml` repo marker. Callers must memoize the
+   * promise so the file is read at most once per invocation; edits to
+   * `.swamp.yaml` between invocations are picked up because the dep is
+   * constructed per-request.
+   */
+  loadRepoMarker: () => Promise<RepoMarkerData | null>;
   createRunLog: (
     modelType: ModelType,
     methodName: string,
@@ -397,6 +406,25 @@ export async function* modelMethodRun(
         const vaultService = await deps.createVaultService();
         const executionService = deps.createExecutionService();
 
+        // Resolve the final driver/driverConfig using the full tier chain
+        // (cli > definition > repo > "raw"). No workflow/job/step tiers
+        // apply outside a workflow run.
+        const repoMarker = await deps.loadRepoMarker();
+        const resolvedDriver = resolveDriverConfig(
+          { driver: input.driver },
+          undefined,
+          undefined,
+          undefined,
+          {
+            driver: evaluatedDefinition.driver,
+            driverConfig: evaluatedDefinition.driverConfig,
+          },
+          {
+            driver: repoMarker?.defaultDriver,
+            driverConfig: repoMarker?.defaultDriverConfig,
+          },
+        );
+
         let execResult: MethodResult;
         try {
           execResult = yield* withEventBridge<
@@ -435,7 +463,8 @@ export async function* modelMethodRun(
                     skipCheckNames: input.skipCheckNames,
                     skipCheckLabels: input.skipCheckLabels,
                     skipAllChecks: input.skipAllChecks,
-                    driver: input.driver,
+                    driver: resolvedDriver.driver,
+                    driverConfig: resolvedDriver.driverConfig,
                     extensionFilesRoot: modelDef.extensionFilesRoot,
                     onEvent: (event: MethodExecutionEvent) => {
                       if (event.type === "output") {

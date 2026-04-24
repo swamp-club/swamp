@@ -36,6 +36,11 @@ Present the full checklist to the user so they know what to expect:
 > 7. **Dry run** — validate push without uploading
 > 8. **Push** — publish to registry (requires your explicit approval)
 >
+> Optional between steps 6 and 7: run `swamp extension quality manifest.yaml` to
+> see how the extension scores against the Swamp Club rubric. The packaged
+> tarball is cached and reused by the dry-run and push steps if you run it
+> there.
+>
 > Starting now. I'll report progress at each step.
 
 Then begin with State 1.
@@ -188,6 +193,27 @@ re-run `swamp extension fmt manifest.yaml`.
 
 See [references/publishing.md](references/publishing.md#extension-formatting)
 for details on what fmt checks.
+
+### Optional — quality self-check
+
+After State 6 (formatted) and before State 7 (dry_run_passed), the author can
+run a rubric score locally:
+
+```bash
+swamp extension quality manifest.yaml --json
+```
+
+This packages the extension, scores it against the 10 client-earnable Swamp Club
+quality factors (README, LICENSE, JSDoc coverage, repository URL, manifest
+completeness, slow-type diagnostics, …), and prints per- factor results with
+remediation hints. The packaged tarball is written to
+`.swamp/cache/packages/<hash>/` and is transparently reused by the dry run and
+push steps below when the source tree hasn't changed — so no work is duplicated.
+
+This step is purely optional. Skipping it does not block the push; users who
+want rubric feedback should run it before State 7. See the
+[`swamp-extension-quality`](../swamp-extension-quality/SKILL.md) skill for the
+full rubric breakdown and per-factor remediation guidance.
 
 ## State 7: dry_run_passed
 

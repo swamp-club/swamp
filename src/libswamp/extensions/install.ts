@@ -19,20 +19,34 @@
 
 import { join } from "@std/path";
 import { readUpstreamExtensions } from "../../infrastructure/persistence/upstream_extensions.ts";
+import { cleanupEmptyParentDirs } from "../../infrastructure/persistence/directory_cleanup.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import {
+  type ExtensionRef,
   type InstallContext,
   installExtension,
   parseExtensionRef,
 } from "./pull.ts";
+import { classifyExtensionFile } from "./layout.ts";
+
+/**
+ * Test seam for `extensionInstall`. Production always uses
+ * `installExtension` from pull.ts; tests inject a stub that simulates
+ * the side effects (writing to the per-extension subtree and updating
+ * the lockfile) without needing a real tar archive and registry.
+ */
+export type InstallExtensionFn = (
+  ref: ExtensionRef,
+  ctx: InstallContext,
+) => Promise<unknown>;
 
 /** Result of installing a single extension during bulk install. */
 export interface ExtensionInstallEntry {
   name: string;
   version: string;
-  status: "installed" | "up_to_date" | "failed";
+  status: "installed" | "migrated" | "up_to_date" | "failed";
   error?: string;
 }
 
@@ -40,6 +54,7 @@ export interface ExtensionInstallEntry {
 export interface ExtensionInstallData {
   entries: ExtensionInstallEntry[];
   installed: number;
+  migrated: number;
   upToDate: number;
   failed: number;
 }
@@ -47,6 +62,7 @@ export interface ExtensionInstallData {
 export type ExtensionInstallEvent =
   | { kind: "resolving" }
   | { kind: "installing"; name: string; version: string }
+  | { kind: "migrating"; name: string; version: string }
   | { kind: "completed"; data: ExtensionInstallData }
   | { kind: "error"; error: SwampError };
 
@@ -58,12 +74,28 @@ export interface ExtensionInstallDeps {
     name: string,
     version: string,
   ) => InstallContext;
+  /**
+   * Test seam. Defaults to the real `installExtension` from pull.ts;
+   * tests can inject a stub so they don't need a real tar archive and
+   * registry to exercise the success path.
+   */
+  installExtensionFn?: InstallExtensionFn;
 }
 
 /**
  * Reads upstream_extensions.json and re-pulls any extensions whose files
- * are missing from disk. Analogous to `npm install` restoring node_modules
- * from package-lock.json.
+ * are either missing from disk or still sit at a legacy on-disk layout
+ * (gen-1 `extensions/<type>/…` or gen-2 flat
+ * `.swamp/pulled-extensions/<type>/…`). Analogous to `npm install` but
+ * also performs layout migration on legacy repos — a single call brings
+ * the repo to the current per-extension subtree layout.
+ *
+ * For legacy-layout entries, the per-entry flow is: capture the original
+ * `files[]` list BEFORE install (installExtension rewrites the lockfile
+ * to current-layout paths on success, so the legacy list must be
+ * snapshotted first); call installExtension to write the new layout;
+ * then sweep the original legacy paths so the working tree no longer
+ * carries duplicates.
  */
 export async function* extensionInstall(
   _ctx: LibSwampContext,
@@ -78,25 +110,32 @@ export async function* extensionInstall(
       const upstream = await readUpstreamExtensions(deps.lockfilePath);
       const entries: ExtensionInstallEntry[] = [];
       let installed = 0;
+      let migrated = 0;
       let upToDate = 0;
       let failed = 0;
 
       for (const [name, entry] of Object.entries(upstream)) {
         const version = entry.version;
+        const originalFiles = entry.files ?? [];
 
-        // Check if any source files are missing
-        const isMissing = await hasAnyMissingFiles(
-          entry.files ?? [],
+        // Decide whether this entry needs work. An entry needs install
+        // when any of its files are absent from disk, OR when any are at
+        // a legacy layout (gen-1 or gen-2) and must be migrated to the
+        // current per-extension subtree.
+        const needs = await needsInstallOrMigration(
+          originalFiles,
           deps.repoDir,
         );
 
-        if (!isMissing) {
+        if (needs === "up_to_date") {
           entries.push({ name, version, status: "up_to_date" });
           upToDate++;
           continue;
         }
 
-        yield { kind: "installing", name, version };
+        yield needs === "migrate"
+          ? { kind: "migrating", name, version }
+          : { kind: "installing", name, version };
 
         try {
           const installCtx = deps.createInstallContext(name, version);
@@ -109,9 +148,22 @@ export async function* extensionInstall(
             installCtx.expectedChecksum = entry.checksum;
           }
           const ref = parseExtensionRef(`${name}@${version}`);
-          await installExtension(ref, installCtx);
-          entries.push({ name, version, status: "installed" });
-          installed++;
+          const install = deps.installExtensionFn ?? installExtension;
+          await install(ref, installCtx);
+
+          // For migrations, sweep the original legacy paths now that the
+          // current-layout files are on disk. installExtension has already
+          // rewritten entry.files in the lockfile to point at the new
+          // locations, so the legacy paths are "orphaned" and safe to
+          // remove.
+          if (needs === "migrate") {
+            await sweepLegacyPaths(originalFiles, deps.repoDir);
+            entries.push({ name, version, status: "migrated" });
+            migrated++;
+          } else {
+            entries.push({ name, version, status: "installed" });
+            installed++;
+          }
         } catch (error) {
           entries.push({
             name,
@@ -125,29 +177,74 @@ export async function* extensionInstall(
 
       yield {
         kind: "completed",
-        data: { entries, installed, upToDate, failed },
+        data: { entries, installed, migrated, upToDate, failed },
       };
     })(),
   );
 }
 
 /**
- * Checks if any of the given file paths are missing from disk.
+ * Decides whether an entry's on-disk state matches the current layout.
+ *
+ * - Returns `"install"` when any file is missing from disk.
+ * - Returns `"migrate"` when all files exist but at least one is at a
+ *   legacy layout (gen-1 or gen-2); install will re-pull into the
+ *   per-extension subtree and the caller sweeps the legacy paths.
+ * - Returns `"up_to_date"` when every file exists AND is already at the
+ *   current layout.
+ *
+ * Missing beats legacy: a missing file cannot be migrated without a
+ * re-pull, so the flow is the same either way.
  */
-async function hasAnyMissingFiles(
+export async function needsInstallOrMigration(
   files: string[],
   repoDir: string,
-): Promise<boolean> {
+): Promise<"install" | "migrate" | "up_to_date"> {
+  let hasLegacy = false;
   for (const file of files) {
     const absolutePath = join(repoDir, file);
     try {
       await Deno.stat(absolutePath);
     } catch (error) {
       if (error instanceof Deno.errors.NotFound) {
-        return true;
+        return "install";
       }
       throw error;
     }
+    const generation = classifyExtensionFile(file);
+    if (generation !== "current") {
+      hasLegacy = true;
+    }
   }
-  return false;
+  return hasLegacy ? "migrate" : "up_to_date";
+}
+
+/**
+ * Removes legacy-layout files left behind after a successful migration
+ * re-pull. Only paths classified as gen-1 or gen-2 are removed; current-
+ * layout paths are left alone. NotFound is tolerated (file already gone
+ * from an interrupted prior pass). Empty parent directories under the
+ * repo root are pruned.
+ *
+ * Exported for direct unit testing; production callers invoke it
+ * indirectly through `extensionInstall`.
+ */
+export async function sweepLegacyPaths(
+  originalFiles: string[],
+  repoDir: string,
+): Promise<void> {
+  for (const file of originalFiles) {
+    if (classifyExtensionFile(file) === "current") {
+      continue;
+    }
+    const absolutePath = join(repoDir, file);
+    try {
+      await Deno.remove(absolutePath);
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) {
+        throw error;
+      }
+    }
+    await cleanupEmptyParentDirs(absolutePath, repoDir);
+  }
 }

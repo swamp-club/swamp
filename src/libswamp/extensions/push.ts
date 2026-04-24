@@ -154,6 +154,15 @@ export interface ExtensionPushPrepareInput {
   releaseNotes?: string;
   denoConfigPath?: string;
   packageJsonDir?: string;
+  /**
+   * If provided, reuse these archive bytes instead of bundling and
+   * tarring from source. Callers supply this when a prior
+   * `swamp extension quality` run left a cached tarball whose source
+   * hash matches the current tree — letting push skip the expensive
+   * bundling step. The caller is responsible for validating that the
+   * cache key corresponds to the current source state.
+   */
+  cachedArchive?: Uint8Array;
 }
 
 /** Result of the prepare phase, containing everything needed for push. */
@@ -523,101 +532,41 @@ export async function extensionPushPrepare(
     }
   }
 
-  // 7. Resolve deno binary
-  const denoPath = await deps.ensureDenoPath();
-
-  // 8. Quality checks
-  const qualityResult = await deps.checkExtensionQuality(
-    qualityFiles,
-    denoPath,
-    input.denoConfigPath,
-  );
-  if (!qualityResult.passed) {
-    throw validationFailed(
-      "Extension has formatting or lint issues. Run 'swamp extension fmt <manifest-path>' to fix.",
-      { qualityErrors: qualityResult.issues },
-    );
+  // 7. Resolve deno binary (only needed when building a fresh archive)
+  const usingCachedArchive = input.cachedArchive !== undefined;
+  let denoPath = "";
+  if (!usingCachedArchive) {
+    denoPath = await deps.ensureDenoPath();
   }
 
-  // 9. Bundle each entry point type
-  const bundleOptions = input.denoConfigPath
-    ? { denoConfigPath: input.denoConfigPath }
-    : input.packageJsonDir
-    ? { packageJsonDir: input.packageJsonDir }
-    : undefined;
-
-  const bundles = new Map<string, string>();
-  const compilationErrors: CompilationError[] = [];
-
-  await bundleEntryPoints(
-    input.modelEntryPoints,
-    input.modelsDir,
-    bundles,
-    compilationErrors,
-    deps,
-    denoPath,
-    bundleOptions,
-    ctx,
-    "model",
-  );
-
-  const vaultBundles = new Map<string, string>();
-  await bundleEntryPoints(
-    input.vaultEntryPoints,
-    input.vaultsDir,
-    vaultBundles,
-    compilationErrors,
-    deps,
-    denoPath,
-    bundleOptions,
-    ctx,
-    "vault",
-  );
-
-  const driverBundles = new Map<string, string>();
-  await bundleEntryPoints(
-    input.driverEntryPoints,
-    input.driversDir,
-    driverBundles,
-    compilationErrors,
-    deps,
-    denoPath,
-    bundleOptions,
-    ctx,
-    "driver",
-  );
-
-  const datastoreBundles = new Map<string, string>();
-  await bundleEntryPoints(
-    input.datastoreEntryPoints,
-    input.datastoresDir,
-    datastoreBundles,
-    compilationErrors,
-    deps,
-    denoPath,
-    bundleOptions,
-    ctx,
-    "datastore",
-  );
-
-  const reportBundles = new Map<string, string>();
-  await bundleEntryPoints(
-    input.reportEntryPoints,
-    input.reportsDir,
-    reportBundles,
-    compilationErrors,
-    deps,
-    denoPath,
-    bundleOptions,
-    ctx,
-    "report",
-  );
-
-  if (compilationErrors.length > 0) {
-    throw validationFailed(
-      "Bundle compilation failed. Fix the errors above and try again.",
-      { compilationErrors },
+  // 8. Quality checks — skip on cache hit (the cached archive was
+  // written only after quality checks passed)
+  if (!usingCachedArchive) {
+    const qualityResult = await deps.checkExtensionQuality(
+      qualityFiles,
+      denoPath,
+      input.denoConfigPath,
     );
+    if (!qualityResult.passed) {
+      throw validationFailed(
+        "Extension has formatting or lint issues. Run 'swamp extension fmt <manifest-path>' to fix.",
+        { qualityErrors: qualityResult.issues },
+      );
+    }
+  }
+
+  // 9. Bundle entry points + build archive — skip on cache hit
+  let totalBundles: number;
+  let archiveBytes: Uint8Array;
+  if (usingCachedArchive) {
+    totalBundles = input.modelEntryPoints.length +
+      input.vaultEntryPoints.length + input.driverEntryPoints.length +
+      input.datastoreEntryPoints.length + input.reportEntryPoints.length;
+    archiveBytes = input.cachedArchive!;
+  } else {
+    const built = await bundleAndArchive(input, deps, denoPath, ctx);
+    totalBundles = built.totalBundles;
+    archiveBytes = built.archiveBytes;
   }
 
   // 10. Check version (skip in dry-run)
@@ -634,20 +583,6 @@ export async function extensionPushPrepare(
       );
     }
   }
-
-  // 11. Create archive
-  const archiveBytes = await createArchive(
-    input,
-    bundles,
-    vaultBundles,
-    driverBundles,
-    datastoreBundles,
-    reportBundles,
-    ctx,
-  );
-
-  const totalBundles = bundles.size + vaultBundles.size +
-    driverBundles.size + datastoreBundles.size + reportBundles.size;
 
   return {
     resolvedData,
@@ -910,6 +845,108 @@ function buildResolvedData(
     labels: input.manifest.labels,
     dependencies: input.manifest.dependencies,
   };
+}
+
+async function bundleAndArchive(
+  input: ExtensionPushPrepareInput,
+  deps: ExtensionPushPrepareDeps,
+  denoPath: string,
+  ctx: LibSwampContext,
+): Promise<{ archiveBytes: Uint8Array; totalBundles: number }> {
+  const bundleOptions = input.denoConfigPath
+    ? { denoConfigPath: input.denoConfigPath }
+    : input.packageJsonDir
+    ? { packageJsonDir: input.packageJsonDir }
+    : undefined;
+
+  const bundles = new Map<string, string>();
+  const compilationErrors: CompilationError[] = [];
+
+  await bundleEntryPoints(
+    input.modelEntryPoints,
+    input.modelsDir,
+    bundles,
+    compilationErrors,
+    deps,
+    denoPath,
+    bundleOptions,
+    ctx,
+    "model",
+  );
+
+  const vaultBundles = new Map<string, string>();
+  await bundleEntryPoints(
+    input.vaultEntryPoints,
+    input.vaultsDir,
+    vaultBundles,
+    compilationErrors,
+    deps,
+    denoPath,
+    bundleOptions,
+    ctx,
+    "vault",
+  );
+
+  const driverBundles = new Map<string, string>();
+  await bundleEntryPoints(
+    input.driverEntryPoints,
+    input.driversDir,
+    driverBundles,
+    compilationErrors,
+    deps,
+    denoPath,
+    bundleOptions,
+    ctx,
+    "driver",
+  );
+
+  const datastoreBundles = new Map<string, string>();
+  await bundleEntryPoints(
+    input.datastoreEntryPoints,
+    input.datastoresDir,
+    datastoreBundles,
+    compilationErrors,
+    deps,
+    denoPath,
+    bundleOptions,
+    ctx,
+    "datastore",
+  );
+
+  const reportBundles = new Map<string, string>();
+  await bundleEntryPoints(
+    input.reportEntryPoints,
+    input.reportsDir,
+    reportBundles,
+    compilationErrors,
+    deps,
+    denoPath,
+    bundleOptions,
+    ctx,
+    "report",
+  );
+
+  if (compilationErrors.length > 0) {
+    throw validationFailed(
+      "Bundle compilation failed. Fix the errors above and try again.",
+      { compilationErrors },
+    );
+  }
+
+  const totalBundles = bundles.size + vaultBundles.size +
+    driverBundles.size + datastoreBundles.size + reportBundles.size;
+
+  const archiveBytes = await createArchive(
+    input,
+    bundles,
+    vaultBundles,
+    driverBundles,
+    datastoreBundles,
+    reportBundles,
+    ctx,
+  );
+
+  return { archiveBytes, totalBundles };
 }
 
 async function bundleEntryPoints(

@@ -59,6 +59,12 @@ export interface RepoMarkerData {
   datastore?: DatastoreConfigData;
   trustedCollectives?: string[];
   trustMemberCollectives?: boolean;
+  /**
+   * Repo-level default execution driver, applied when no higher tier
+   * (cli / step / job / workflow / definition) sets a driver.
+   */
+  defaultDriver?: string;
+  defaultDriverConfig?: Record<string, unknown>;
 }
 
 /**

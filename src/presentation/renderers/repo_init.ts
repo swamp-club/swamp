@@ -19,6 +19,8 @@
 
 import type {
   EventHandlers,
+  ExtensionInstallData,
+  ExtensionInstallEvent,
   RepoInitEvent,
   RepoUpgradeEvent,
 } from "../../libswamp/mod.ts";
@@ -26,6 +28,7 @@ import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
+import { createExtensionInstallRenderer } from "./extension_install.ts";
 
 class LogRepoInitRenderer implements Renderer<RepoInitEvent> {
   handlers(): EventHandlers<RepoInitEvent> {
@@ -94,8 +97,15 @@ class JsonRepoInitRenderer implements Renderer<RepoInitEvent> {
 class LogRepoUpgradeRenderer implements Renderer<RepoUpgradeEvent> {
   handlers(): EventHandlers<RepoUpgradeEvent> {
     const logger = getSwampLogger(["repo", "upgrade"]);
+    // Delegate per-extension install/migration progress to the extension
+    // install renderer so output stays consistent with what users see
+    // when they run `swamp extension install` directly. The upgrade
+    // renderer is a thin layer around it.
+    const installRenderer = createExtensionInstallRenderer("log");
+    const installHandlers = installRenderer.handlers();
     return {
       upgrading: () => {},
+      extensions: (e) => dispatchInstallEvent(installHandlers, e.event),
       completed: (e) => {
         const data = e.data;
         logger
@@ -109,36 +119,6 @@ class LogRepoUpgradeRenderer implements Renderer<RepoUpgradeEvent> {
           "  Settings: " + (data.settingsUpdated ? "updated" : "unchanged"),
         );
         logger.info("  .gitignore: " + data.gitignoreAction);
-
-        // Surface the extension layout migration so users understand
-        // what happened to their pulled-extensions state. Without this,
-        // phase-two deletions are silent and users only discover the
-        // change via a warning on the next extension command.
-        if (data.extensionMigration) {
-          const m = data.extensionMigration;
-          logger.info("  Extension layout migration:");
-          if (m.renamedFileCount > 0) {
-            logger.info(
-              `    Moved ${m.renamedFileCount} legacy file(s) from ` +
-                `extensions/<type>/ to .swamp/pulled-extensions/<type>/`,
-            );
-          }
-          if (m.deletedPerExtension.length > 0) {
-            const total = m.deletedPerExtension.reduce(
-              (n, e) => n + e.fileCount,
-              0,
-            );
-            logger.info(
-              `    Removed ${total} outdated file(s) across ` +
-                `${m.deletedPerExtension.length} extension(s):`,
-            );
-            for (const { name, fileCount } of m.deletedPerExtension) {
-              logger.info(`      - ${name} (${fileCount} file(s))`);
-            }
-            logger
-              .info`    Run 'swamp extension install' to restore these extensions into the per-extension layout.`;
-          }
-        }
       },
       error: (e) => {
         throw new UserError(e.error.message);
@@ -149,15 +129,59 @@ class LogRepoUpgradeRenderer implements Renderer<RepoUpgradeEvent> {
 
 class JsonRepoUpgradeRenderer implements Renderer<RepoUpgradeEvent> {
   handlers(): EventHandlers<RepoUpgradeEvent> {
+    // JSON mode must emit exactly ONE top-level JSON object per
+    // invocation — downstream parsers that read stdout as a single
+    // document break otherwise. Capture the install pass's summary
+    // and fold it into the upgrade's final `completed` object rather
+    // than delegating to JsonExtensionInstallRenderer (which would
+    // console.log its own JSON mid-stream).
+    let extensionInstall: ExtensionInstallData | undefined;
     return {
       upgrading: () => {},
+      extensions: (e) => {
+        if (e.event.kind === "completed") {
+          extensionInstall = e.event.data;
+        }
+      },
       completed: (e) => {
-        console.log(JSON.stringify(e.data, null, 2));
+        const payload = extensionInstall
+          ? { ...e.data, extensionInstall }
+          : e.data;
+        console.log(JSON.stringify(payload, null, 2));
       },
       error: (e) => {
         throw new UserError(e.error.message);
       },
     };
+  }
+}
+
+/**
+ * Routes a single `ExtensionInstallEvent` to the matching handler on
+ * the delegate install renderer. Keeping the dispatch in one place
+ * ensures the log and JSON upgrade renderers stay in lockstep with any
+ * future event kinds added to `ExtensionInstallEvent`.
+ */
+function dispatchInstallEvent(
+  handlers: EventHandlers<ExtensionInstallEvent>,
+  event: ExtensionInstallEvent,
+): void {
+  switch (event.kind) {
+    case "resolving":
+      handlers.resolving?.(event);
+      return;
+    case "installing":
+      handlers.installing?.(event);
+      return;
+    case "migrating":
+      handlers.migrating?.(event);
+      return;
+    case "completed":
+      handlers.completed?.(event);
+      return;
+    case "error":
+      handlers.error?.(event);
+      return;
   }
 }
 

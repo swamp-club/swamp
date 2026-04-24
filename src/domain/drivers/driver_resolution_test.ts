@@ -142,3 +142,66 @@ Deno.test("resolveDriverConfig: uses driverConfig from winning level only", () =
   assertEquals(result.driver, "docker");
   assertEquals(result.driverConfig, { timeout: 30 });
 });
+
+Deno.test("resolveDriverConfig: repo driver wins over default", () => {
+  const result = resolveDriverConfig(
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    { driver: "docker", driverConfig: { image: "repo-image" } },
+  );
+  assertEquals(result.driver, "docker");
+  assertEquals(result.driverConfig, { image: "repo-image" });
+});
+
+Deno.test("resolveDriverConfig: definition driver wins over repo", () => {
+  const result = resolveDriverConfig(
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    { driver: "raw" },
+    { driver: "docker", driverConfig: { image: "repo-image" } },
+  );
+  assertEquals(result.driver, "raw");
+  assertEquals(result.driverConfig, undefined);
+});
+
+Deno.test("resolveDriverConfig: workflow driver wins over repo", () => {
+  const result = resolveDriverConfig(
+    undefined,
+    undefined,
+    undefined,
+    { driver: "raw" },
+    undefined,
+    { driver: "docker" },
+  );
+  assertEquals(result.driver, "raw");
+});
+
+Deno.test("resolveDriverConfig: cli driver wins over repo", () => {
+  const result = resolveDriverConfig(
+    { driver: "raw" },
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    { driver: "docker" },
+  );
+  assertEquals(result.driver, "raw");
+});
+
+Deno.test("resolveDriverConfig: repo skipped when driver field undefined but driverConfig set", () => {
+  const result = resolveDriverConfig(
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    { driverConfig: { image: "ignored" } },
+  );
+  assertEquals(result.driver, "raw");
+  assertEquals(result.driverConfig, undefined);
+});

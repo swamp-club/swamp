@@ -62,6 +62,7 @@ import {
   type CustomDatastoreConfig,
   type DatastoreConfig,
   isCustomDatastoreConfig,
+  resolveSyncTimeoutMs,
 } from "../domain/datastore/datastore_config.ts";
 import type { DatastoreProvider } from "../domain/datastore/datastore_provider.ts";
 import { datastoreTypeRegistry } from "../domain/datastore/datastore_type_registry.ts";
@@ -334,6 +335,7 @@ export function requireInitializedRepo(
         service: syncService,
         lock,
         label: datastoreConfig.type,
+        syncTimeoutMs: resolveSyncTimeoutMs(datastoreConfig),
       });
       // Invalidate catalog after pull so next query backfills from fresh data
       if (syncService) {

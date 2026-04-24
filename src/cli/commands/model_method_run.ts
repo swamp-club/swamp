@@ -49,6 +49,8 @@ import {
 } from "../../infrastructure/persistence/paths.ts";
 import { SecretRedactor } from "../../domain/secrets/mod.ts";
 import { DataQueryService } from "../../domain/data/data_query_service.ts";
+import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
+import { createRepoMarkerLoader } from "../../infrastructure/persistence/repo_marker_loader.ts";
 import { modelMethodHistoryCommand } from "./model_method_history.ts";
 import { modelMethodDescribeCommand } from "./model_method_describe.ts";
 import { unknownCommandErrorHandler } from "../unknown_command_handler.ts";
@@ -169,6 +171,11 @@ export const modelMethodRunCommand = new Command()
         reportRegistry.ensureLoaded(),
       ]);
 
+      const loadRepoMarker = createRepoMarkerLoader(
+        new RepoMarkerRepository(),
+        repoDir,
+      );
+
       const deps: ModelMethodRunDeps = {
         repoDir,
         lookupDefinition: (idOrName) =>
@@ -201,6 +208,7 @@ export const modelMethodRunCommand = new Command()
           repoContext.catalogStore,
           repoContext.unifiedDataRepo,
         ),
+        loadRepoMarker,
         createRunLog: async (modelType, method, definitionId) => {
           const redactor = new SecretRedactor();
           const timestamp = new Date().toISOString().replace(/[:.]/g, "-");

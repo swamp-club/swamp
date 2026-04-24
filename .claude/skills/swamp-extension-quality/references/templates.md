@@ -103,7 +103,7 @@ no private-type leaks), and the module-level doc signal for `has-readme`.
  * @module
  */
 
-import { z } from "zod";
+import { z } from "npm:zod@4";
 
 /** Accepted input shape for this model's operations. */
 export const argsSchema = z.object({
@@ -140,6 +140,10 @@ Rules this example demonstrates:
 - **All public types are themselves exported** (`Args`, `Result`, `argsSchema`)
   — so nothing exposed through the API refers to a private type.
 - **Module-level `@module` block at the top** — satisfies module-doc detection.
+- **Inline `npm:zod@4` specifier**, not bare `"zod"`. The scorer and
+  `swamp extension quality` run in a hermetic sandbox that strips the repo's
+  `deno.json` and writes its own with no imports map, so a bare specifier cannot
+  resolve at score time even when an import map maps it at bundle time.
 
 ## Pre-publish command sequence
 

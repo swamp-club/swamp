@@ -18,6 +18,14 @@ creep? Are there unnecessary changes?
 Are all failure modes identified? What about edge cases, race conditions,
 backwards compatibility? What could go wrong that isn't listed?
 
+Pay particular attention to **state that persists across failure
+boundaries**. If a function mutates module-scope state (a map, registry,
+cache, signal handler) before performing I/O that can throw, check every
+failure path unwinds that state — especially when an outer `catch` block
+re-reads the same state for cleanup. The failure mode is silent: the
+first error propagates, the cleanup hits orphaned state, and the
+cleanup's own failure shadows the original error.
+
 ## Testing
 
 Is the testing strategy sufficient? Are edge cases covered? Are there

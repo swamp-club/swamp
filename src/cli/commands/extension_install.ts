@@ -18,29 +18,20 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { join, resolve } from "@std/path";
 import {
   createContext,
   type GlobalOptions,
   resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
-import { resolveModelsDir } from "../resolve_models_dir.ts";
-import {
-  RepoMarkerRepository,
-} from "../../infrastructure/persistence/repo_marker_repository.ts";
-import { RepoPath } from "../../domain/repo/repo_path.ts";
 import {
   consumeStream,
   createLibSwampContext,
   extensionInstall,
-  resolveServerUrl,
-  warnLegacyExtensionLayout,
 } from "../../libswamp/mod.ts";
 import { UserError } from "../../domain/errors.ts";
-import { ExtensionApiClient } from "../../infrastructure/http/extension_api_client.ts";
 import { createExtensionInstallRenderer } from "../../presentation/renderers/extension_install.ts";
-import { resolveSkillsDir } from "../../domain/repo/skill_dirs.ts";
+import { createExtensionInstallDeps } from "../create_extension_install_deps.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -70,59 +61,19 @@ export const extensionInstallCommand = new Command()
     ]);
     cliCtx.logger.debug`Starting extension install`;
 
-    // 1. Validate repo
     const repoDir = resolveRepoDir(options.repoDir);
     await requireInitializedRepo({
       repoDir,
       outputMode: cliCtx.outputMode,
     });
 
-    // 2. Resolve lockfile path
-    const repoPath = RepoPath.create(repoDir);
-    const markerRepo = new RepoMarkerRepository();
-    const marker = await markerRepo.read(repoPath);
-    const modelsDir = resolveModelsDir(marker);
-    const absoluteModelsDir = resolve(repoDir, modelsDir);
-    const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
-
-    // 3. Warn (don't block) on legacy layout. extension install is the
-    // migration mechanism for missing-files state: it re-installs into
-    // the new per-extension layout automatically.
-    await warnLegacyExtensionLayout(
-      lockfilePath,
-      (msg) => cliCtx.logger.warn(msg),
-    );
-
-    // 4. Resolve skills destination (tool-aware). Per-extension
-    // models/workflows/vaults/drivers/datastores/reports destinations
-    // are derived inside installExtension from each extension's name.
-    const tool = marker?.tool ?? "claude";
-    const skillsDir = resolveSkillsDir(repoDir, tool);
-
-    // 5. Wire deps and execute
-    const serverUrl = resolveServerUrl();
-    const client = new ExtensionApiClient(serverUrl);
+    const deps = await createExtensionInstallDeps(repoDir, cliCtx.logger);
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
     const renderer = createExtensionInstallRenderer(cliCtx.outputMode);
 
     await consumeStream(
-      extensionInstall(ctx, {
-        lockfilePath,
-        repoDir,
-        createInstallContext: (_name, _version) => ({
-          getExtension: (n) => client.getExtension(n),
-          downloadArchive: (n, v) => client.downloadArchive(n, v),
-          getChecksum: (n, v) => client.getChecksum(n, v),
-          logger: cliCtx.logger,
-          lockfilePath,
-          skillsDir,
-          repoDir,
-          force: true,
-          alreadyPulled: new Set(),
-          depth: 0,
-        }),
-      }),
+      extensionInstall(ctx, deps),
       renderer.handlers(),
     );
 

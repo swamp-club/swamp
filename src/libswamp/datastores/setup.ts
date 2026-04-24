@@ -20,8 +20,10 @@
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
 import {
+  DEFAULT_SYNC_TIMEOUT_MS,
   type FilesystemDatastoreConfig,
   getDatastoreDirectories,
+  SYNC_TIMEOUT_ENV_VAR,
 } from "../../domain/datastore/datastore_config.ts";
 import {
   migrateDatastore,
@@ -35,6 +37,7 @@ import { FilesystemDatastoreVerifier } from "../../infrastructure/persistence/fi
 import { getSwampDataDir } from "../../infrastructure/persistence/paths.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { summarizeSyncError } from "../../infrastructure/persistence/sync_error_diagnostic.ts";
+import { runBoundedSync } from "../../infrastructure/persistence/datastore_sync_coordinator.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 
@@ -320,7 +323,20 @@ export async function* datastoreSetupExtension(
               input.repoDir,
               cachePath,
             );
-            await syncService.pushChanged();
+            // Setup runs outside the flush coordinator, so it does not
+            // pick up per-config syncTimeoutMs. Env override applies if
+            // set, else fall back to the default.
+            const envValue = Deno.env.get(SYNC_TIMEOUT_ENV_VAR);
+            const parsed = envValue ? Number.parseInt(envValue, 10) : NaN;
+            const timeoutMs = Number.isFinite(parsed) && parsed > 0
+              ? parsed
+              : DEFAULT_SYNC_TIMEOUT_MS;
+            await runBoundedSync(
+              input.type,
+              "push",
+              timeoutMs,
+              (signal) => syncService.pushChanged({ signal }),
+            );
             ctx.logger.debug`Push complete`;
           } catch (error) {
             const { summary } = summarizeSyncError(

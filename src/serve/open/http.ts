@@ -73,6 +73,7 @@ import type { ExtensionApiClient } from "../../infrastructure/http/extension_api
 import { ModelType } from "../../domain/models/model_type.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
+import { createRepoMarkerLoader } from "../../infrastructure/persistence/repo_marker_loader.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { runFileSink } from "../../infrastructure/logging/logger.ts";
 import {
@@ -1817,6 +1818,10 @@ async function handleRun(
 
 function buildRunDeps(deps: InitializedDeps): ModelMethodRunDeps {
   const { repoDir, repoContext } = deps;
+  const loadRepoMarker = createRepoMarkerLoader(
+    new RepoMarkerRepository(),
+    repoDir,
+  );
   return {
     repoDir,
     lookupDefinition: (idOrName) =>
@@ -1849,6 +1854,7 @@ function buildRunDeps(deps: InitializedDeps): ModelMethodRunDeps {
       repoContext.catalogStore,
       repoContext.unifiedDataRepo,
     ),
+    loadRepoMarker,
     createRunLog: async (modelType, method, definitionId) => {
       const redactor = new SecretRedactor();
       const timestamp = new Date().toISOString().replace(/[:.]/g, "-");

@@ -20,16 +20,18 @@
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import {
   type AiTool,
-  type ExtensionLayoutMigrationSummary,
   type RepoInitResult,
   RepoService,
   type RepoUpgradeResult,
 } from "../../domain/repo/repo_service.ts";
-
-export type { ExtensionLayoutMigrationSummary };
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { validationFailed } from "../errors.ts";
+import {
+  extensionInstall,
+  type ExtensionInstallDeps,
+  type ExtensionInstallEvent,
+} from "../extensions/install.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /**
@@ -140,13 +142,17 @@ export interface RepoUpgradeData {
   settingsUpdated: boolean;
   gitignoreAction: string;
   tool: string;
-  /** Structured migration summary, only present when extensions were
-   * actually moved or deleted during the upgrade. */
-  extensionMigration?: ExtensionLayoutMigrationSummary;
 }
 
+/**
+ * Events yielded by `repoUpgrade`. The `extensions` variant wraps each
+ * event from the extension install sub-stream so the renderer can
+ * delegate to the install renderer without a bespoke vocabulary for
+ * upgrade's installing/migrating progress.
+ */
 export type RepoUpgradeEvent =
   | { kind: "upgrading" }
+  | { kind: "extensions"; event: ExtensionInstallEvent }
   | { kind: "completed"; data: RepoUpgradeData }
   | { kind: "error"; error: SwampError };
 
@@ -156,6 +162,14 @@ export interface RepoUpgradeInput {
   tool?: string;
   includeGitignore?: boolean;
   version: string;
+  /**
+   * Dependencies for the extension install pass that runs after the
+   * core upgrade. When absent, the install pass is skipped — useful for
+   * callers that do not have registry access wired (e.g. some tests).
+   * Production callers always supply this; the CLI builds it from the
+   * repo marker and registry client.
+   */
+  extensionInstallDeps?: ExtensionInstallDeps;
 }
 
 /** Dependencies for the repo upgrade operation. */
@@ -174,7 +188,19 @@ export function createRepoUpgradeDeps(version: string): RepoUpgradeDeps {
   };
 }
 
-/** Upgrades an existing swamp repository. */
+/**
+ * Upgrades an existing swamp repository, including migrating any
+ * legacy-layout extensions to the current per-extension subtree
+ * layout.
+ *
+ * The upgrade runs in two phases: (1) the domain `upgrade()` call that
+ * refreshes the marker, skills, and tool-specific settings; (2) an
+ * `extensionInstall` pass that brings the on-disk extension state into
+ * alignment with the lockfile. Any entry tracked at a legacy (gen-1 or
+ * gen-2) path is re-pulled into the per-extension subtree and the
+ * legacy files are swept. On install failure, the legacy files are
+ * preserved and the caller gets a clear error with a recovery command.
+ */
 export async function* repoUpgrade(
   ctx: LibSwampContext,
   deps: RepoUpgradeDeps,
@@ -208,6 +234,61 @@ export async function* repoUpgrade(
 
       ctx.logger.debug`Repository upgraded: ${result.path}`;
 
+      // Run the extension install pass so any legacy-layout entries
+      // tracked in the lockfile get re-pulled into the per-extension
+      // subtree and their legacy files swept. `extensionInstall` is
+      // idempotent: on repos with no legacy layout and no missing
+      // files, it's a no-op.
+      if (input.extensionInstallDeps) {
+        const failures: Array<{ name: string; error: string }> = [];
+        try {
+          for await (
+            const event of extensionInstall(ctx, input.extensionInstallDeps)
+          ) {
+            yield { kind: "extensions", event };
+            if (event.kind === "completed") {
+              for (const entry of event.data.entries) {
+                if (entry.status === "failed") {
+                  failures.push({
+                    name: entry.name,
+                    error: entry.error ?? "unknown error",
+                  });
+                }
+              }
+            }
+          }
+        } catch (error) {
+          // extensionInstall catches per-entry failures internally;
+          // anything that reaches us here is an infrastructure error
+          // (corrupt lockfile JSON, permission error, filesystem issue).
+          // Surface it the same way deps.upgrade() failures are
+          // surfaced: a clean error event so the renderer throws a
+          // UserError rather than a raw stack trace.
+          yield {
+            kind: "error",
+            error: validationFailed(
+              error instanceof Error ? error.message : String(error),
+            ),
+          };
+          return;
+        }
+        if (failures.length > 0) {
+          const list = failures
+            .map((f) => `  - ${f.name}: ${f.error}`)
+            .join("\n");
+          yield {
+            kind: "error",
+            error: validationFailed(
+              `Extension migration failed for ${failures.length} ` +
+                `extension(s). Legacy files have been preserved. ` +
+                `Re-run 'swamp repo upgrade' once the issue is ` +
+                `resolved (usually registry access):\n${list}`,
+            ),
+          };
+          return;
+        }
+      }
+
       const data: RepoUpgradeData = {
         path: result.path,
         previousVersion: result.previousVersion,
@@ -218,9 +299,6 @@ export async function* repoUpgrade(
         settingsUpdated: result.settingsUpdated,
         gitignoreAction: result.gitignoreAction,
         tool: result.tool,
-        ...(result.extensionMigration
-          ? { extensionMigration: result.extensionMigration }
-          : {}),
       };
 
       yield { kind: "completed", data };

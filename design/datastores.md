@@ -168,6 +168,41 @@ datastore:
     - "telemetry/**"
 ```
 
+### Sync Timeout
+
+Each direction of a remote sync (push / pull) is bounded by a hard deadline
+enforced in the coordinator, so a stuck or slow extension cannot hang the CLI
+indefinitely. The effective timeout is resolved from the first source that
+yields a positive value:
+
+1. `swamp datastore sync --timeout <seconds>` — per-invocation override, capped
+   at 21,600 seconds (6 hours). Preferred escape hatch for one-off large syncs.
+2. `CustomDatastoreConfig.syncTimeoutMs` — per-datastore config in
+   `.swamp.yaml`. Applies to both explicit `swamp datastore sync` calls and
+   the implicit syncs triggered by write commands.
+3. `SWAMP_DATASTORE_SYNC_TIMEOUT_MS` — environment variable, uncapped. Useful
+   for shell-session-scoped overrides during long-haul migrations.
+4. `DEFAULT_SYNC_TIMEOUT_MS` — 5 minutes.
+
+The deadline fires a `SyncTimeoutError` regardless of whether the extension
+honored the `AbortSignal` passed to `pushChanged(options)` / `pullChanged(options)`.
+Timeouts propagate as a non-zero CLI exit so the user sees that data did not
+make it to the remote; other push errors still warn-downgrade (preserves
+historical behavior where a transient S3 blip does not kill a run).
+
+The `SyncTimeoutError` message lists every available remedy inline
+(`--timeout`, the env var, updating the datastore extension, releasing a stuck
+lock) so users get actionable next steps without chasing docs. The wording is
+version-free — it points at "the latest extension" rather than a specific
+version that would rot across releases.
+
+See `src/domain/datastore/datastore_config.ts` (`DEFAULT_SYNC_TIMEOUT_MS`,
+`SYNC_TIMEOUT_ENV_VAR`, `resolveSyncTimeoutMs`),
+`src/domain/datastore/datastore_sync_service.ts` (`SyncTimeoutError`),
+`src/cli/commands/datastore_sync.ts` (`--timeout` flag), and
+`src/infrastructure/persistence/datastore_sync_coordinator.ts`
+(`runBoundedSync`).
+
 ## Path Resolution
 
 Every file operation goes through a `DatastorePathResolver` that decides whether
@@ -217,6 +252,43 @@ concurrently with write operations. On filesystem datastores, reads see writes
 immediately (same directory). On S3 datastores, reads see whatever was last
 synced to the local cache by a write command; users can run
 `swamp datastore sync --pull` to refresh manually.
+
+### Zero-Diff Fast Path (Extension Guidance)
+
+At production scale, most sync invocations are "nothing to do" — the local
+cache already matches the remote index. Sync implementations that walk every
+index entry unconditionally become O(n) in wall time on invocations that
+should be O(1). Extension authors implementing `DatastoreSyncService` SHOULD
+provide a zero-diff fast path that returns `0` without per-entry work when it
+can prove the cache and remote are in sync.
+
+The recommended pattern is a **fingerprint + local-dirty watermark** stored
+in a small sidecar file under the cache directory:
+
+- **Remote fingerprint** — a cheap, backend-native change token for the remote
+  index. S3 uses the object ETag; GCS uses the `generation` number; any
+  monotonic identifier exposed by a metadata-only request (HEAD-equivalent,
+  not the full index body) works. Cache the last-observed fingerprint on disk.
+- **Local-dirty flag** — flipped `true` by every code path that writes to the
+  cache (e.g. the extension's `pushFile`-equivalent); cleared only after a
+  successful writeback or a verified zero-diff pull. Default must be `true`
+  on missing/corrupt sidecar so the slow path runs.
+
+On `pullChanged` and `pushChanged`, the fast path issues one metadata request
+against the remote index. If the returned fingerprint matches the sidecar and
+the local-dirty flag is `false`, return `0` immediately. On any mismatch,
+corruption, or uncertainty, fall through to the full walk — the fast path
+must never skip real work.
+
+The sidecar is client-local state. It is never uploaded, is excluded from the
+sync walker, and can always be deleted to force a full re-verification.
+
+**Sync is not a content-integrity tool.** The fingerprint detects index-level
+changes, not per-file corruption — a silently damaged cache file (bit rot,
+truncated write after a crash) can slip through the fast path if the index
+itself has not changed. Cache integrity is the verifier's job; use
+`DatastoreVerifier.verify()` when integrity needs to be re-established, or
+`rm -rf` the cache and re-pull.
 
 ### Index
 

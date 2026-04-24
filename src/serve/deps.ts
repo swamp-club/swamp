@@ -43,6 +43,8 @@ import { VaultService } from "../domain/vaults/vault_service.ts";
 import { ExpressionEvaluationService } from "../domain/expressions/expression_evaluation_service.ts";
 import { DataQueryService } from "../domain/data/data_query_service.ts";
 import { runFileSink } from "../infrastructure/logging/logger.ts";
+import { RepoMarkerRepository } from "../infrastructure/persistence/repo_marker_repository.ts";
+import { createRepoMarkerLoader } from "../infrastructure/persistence/repo_marker_loader.ts";
 import {
   SWAMP_SUBDIRS,
   swampPath,
@@ -99,6 +101,10 @@ export async function createModelMethodRunDeps(
     driverTypeRegistry.ensureLoaded(),
     reportRegistry.ensureLoaded(),
   ]);
+  const loadRepoMarker = createRepoMarkerLoader(
+    new RepoMarkerRepository(),
+    repoDir,
+  );
   return {
     repoDir,
     lookupDefinition: (idOrName) =>
@@ -131,6 +137,7 @@ export async function createModelMethodRunDeps(
       repoContext.catalogStore,
       repoContext.unifiedDataRepo,
     ),
+    loadRepoMarker,
     createRunLog: async (modelType, method, definitionId) => {
       const redactor = new SecretRedactor();
       const timestamp = new Date().toISOString().replace(/[:.]/g, "-");

@@ -17,9 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
+import {
+  isCustomDatastoreConfig,
+  resolveSyncTimeoutMs,
+} from "../../domain/datastore/datastore_config.ts";
 import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
+import { runBoundedSync } from "../../infrastructure/persistence/datastore_sync_coordinator.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 
@@ -59,10 +63,22 @@ export interface DatastoreSyncDeps {
   }>;
 }
 
+/** Options for wiring real infrastructure into DatastoreSyncDeps. */
+export interface CreateDatastoreSyncDepsOptions {
+  /**
+   * Per-invocation override for the sync timeout, in milliseconds. Wins
+   * over `CustomDatastoreConfig.syncTimeoutMs`, the env var, and the
+   * default — the CLI `--timeout` flag on `swamp datastore sync` threads
+   * its value through here. Validated at the CLI boundary; must be `> 0`.
+   */
+  readonly syncTimeoutMsOverride?: number;
+}
+
 /** Wires real infrastructure into DatastoreSyncDeps. */
 export async function createDatastoreSyncDeps(
   repoDir: string,
   datastoreResolver: DatastorePathResolver,
+  options: CreateDatastoreSyncDepsOptions = {},
 ): Promise<DatastoreSyncDeps> {
   await datastoreTypeRegistry.ensureLoaded();
   const config = datastoreResolver.config();
@@ -91,20 +107,45 @@ export async function createDatastoreSyncDeps(
       );
     }
     const syncService = provider.createSyncService(repoDir, config.cachePath);
+    const timeoutMs = resolveSyncTimeoutMs(
+      config,
+      options.syncTimeoutMsOverride,
+    );
+    const label = config.type;
     return {
       validateSyncSupport: () =>
         Promise.resolve({ supported: true, type: config.type }),
       pushSync: async () => {
-        const count = await syncService.pushChanged();
+        const count = await runBoundedSync(
+          label,
+          "push",
+          timeoutMs,
+          (signal) => syncService.pushChanged({ signal }),
+        );
         return { filesPushed: typeof count === "number" ? count : 0 };
       },
       pullSync: async () => {
-        const count = await syncService.pullChanged();
+        const count = await runBoundedSync(
+          label,
+          "pull",
+          timeoutMs,
+          (signal) => syncService.pullChanged({ signal }),
+        );
         return { filesPulled: typeof count === "number" ? count : 0 };
       },
       fullSync: async () => {
-        const pulled = await syncService.pullChanged();
-        const pushed = await syncService.pushChanged();
+        const pulled = await runBoundedSync(
+          label,
+          "pull",
+          timeoutMs,
+          (signal) => syncService.pullChanged({ signal }),
+        );
+        const pushed = await runBoundedSync(
+          label,
+          "push",
+          timeoutMs,
+          (signal) => syncService.pushChanged({ signal }),
+        );
         return {
           filesPulled: typeof pulled === "number" ? pulled : 0,
           filesPushed: typeof pushed === "number" ? pushed : 0,
