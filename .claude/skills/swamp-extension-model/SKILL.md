@@ -122,41 +122,22 @@ export const model = {
 
 ## Development Workflow
 
-End-to-end sequence from empty `extensions/models/` to published extension. Each
-step has a validation checkpoint — do not proceed until the check passes.
+From empty `extensions/models/` to published extension. Do not skip steps — each
+one's checkpoint catches a class of regression the next step can't.
 
-1. **Confirm no existing type fits.** Run `swamp model type search <query>` and
-   `swamp extension search <query>`. Only continue when nothing covers the use
-   case. (See [When to Create a Custom Model](#when-to-create-a-custom-model).)
-2. **Author the model file.** Create `extensions/models/my_model.ts` using the
-   Quick Start as a template. Define Zod schemas for `globalArguments`,
-   `resources`, and per-method `arguments` before writing any `execute` logic.
-   **Checkpoint:** `deno check extensions/models/my_model.ts` passes.
-3. **Verify registration.** Run `swamp model type search --json` and confirm
-   your `@collective/name` appears. **Checkpoint:** the type resolves;
-   `swamp model type describe @collective/name --json` returns your schemas.
-4. **Smoke test end-to-end.** Run each method against live APIs with realistic
-   inputs. See [references/smoke_testing.md](references/smoke_testing.md) for
-   the full pattern (credentials via vault, nonce-based instance names,
-   cleanup). **Checkpoint:** every method succeeds; output resources match the
-   declared Zod schemas.
-5. **Write unit tests.** Colocate `my_model_test.ts` with the model. Exercise
-   schema validation, argument parsing, and any pure logic. **Checkpoint:**
-   `deno test extensions/models/my_model_test.ts` passes.
-6. **Adversarial review.** Load the self-review checklist from
-   [references/adversarial_review.md](references/adversarial_review.md) and
-   answer every question honestly. **Checkpoint:** no blocking findings remain.
-7. **Bump version + write manifest.** Run
-   `swamp extension version @collective/name --json` for the next CalVer, update
-   the model's `version` field, create `manifest.yaml`, and format with
-   `swamp extension fmt manifest.yaml`. **Checkpoint:**
-   `swamp extension fmt manifest.yaml --check` passes.
-8. **Dry-run then publish.** `swamp extension push manifest.yaml --dry-run`
-   first — it runs the full publish path without uploading. **Checkpoint:** no
-   errors. Then `swamp extension push manifest.yaml` to release.
-
-If any checkpoint fails, fix it before moving on. Skipping a checkpoint makes a
-later failure harder to diagnose.
+1. **Confirm nothing covers it** —
+   [When to Create a Custom Model](#when-to-create-a-custom-model).
+2. **Author the model file** — copy [Quick Start](#quick-start); `deno check`.
+3. **Verify registration** — `swamp model type search --json` shows the type.
+4. **Smoke test** against live APIs —
+   [references/smoke_testing.md](references/smoke_testing.md).
+5. **Unit tests** — colocate `*_test.ts`; `deno test` passes.
+6. **Adversarial review** —
+   [references/adversarial_review.md](references/adversarial_review.md).
+7. **Version + manifest** — `swamp extension version`,
+   `swamp extension fmt manifest.yaml --check`.
+8. **Dry-run, then publish** — `swamp extension push manifest.yaml --dry-run`,
+   then without `--dry-run`.
 
 ## Model Structure
 
