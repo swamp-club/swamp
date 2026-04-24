@@ -64,8 +64,10 @@ class LogAuditDoctorRenderer implements AuditDoctorRenderer {
 
   handlers(): EventHandlers<AuditDoctorEvent> {
     return {
-      "check-started": (e) => {
-        writeOutput(`${dim("…")} ${e.name}`);
+      "check-started": () => {
+        // No-op. Checks run fast enough that an in-progress line is visual
+        // noise — users see the `✓/✗/–` line on check-completed and that's
+        // enough.
       },
       "check-completed": (e) => {
         const r = e.result;

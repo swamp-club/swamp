@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { UserError } from "../../errors.ts";
 import type { AiTool } from "../../repo/repo_service.ts";
 
 /**
@@ -98,8 +99,13 @@ export interface AuditDoctorReport {
   checks: CheckResult[];
 }
 
-/** Typed error emitted when neither `--tool` nor `.swamp.yaml` specify a tool. */
-export class NoToolConfiguredError extends Error {
+/**
+ * Typed error emitted when neither `--tool` nor `.swamp.yaml` specify a tool.
+ *
+ * Extends `UserError` so `renderError` in `main.ts` renders the hint cleanly
+ * (no stack trace) — this is expected first-run UX, not a bug.
+ */
+export class NoToolConfiguredError extends UserError {
   constructor() {
     super(
       "No AI tool configured in .swamp.yaml and no --tool flag provided. " +
