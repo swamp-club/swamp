@@ -165,6 +165,7 @@ Optional interface for remote datastore synchronization.
 interface DatastoreSyncService {
   pullChanged(): Promise<void>;
   pushChanged(): Promise<void>;
+  markDirty(): Promise<void>;
 }
 ```
 
@@ -177,3 +178,19 @@ read/write operations on remote datastores.
 
 Push changed files from the local cache to the remote datastore. Called after
 write operations complete.
+
+### `markDirty()`
+
+Signal that the local cache has uncommitted work. Swamp core calls this at the
+start of every repository-layer mutation that writes into the cache (e.g.
+`save`, `delete`, `rename`), **before** the write begins — a crash mid-write
+still leaves the watermark dirty.
+
+The method only matters for implementations that maintain a clean/dirty
+watermark to short-circuit zero-diff syncs (the recommended fast-path pattern —
+see `design/datastores.md`). Those implementations MUST flip the watermark to
+dirty here so the next `pushChanged` cannot skip past core's writes.
+Implementations that unconditionally walk the cache on every `pushChanged` have
+nothing to invalidate and can return `Promise.resolve()`.
+
+`markDirty()` must be idempotent and cheap — core does not deduplicate calls.

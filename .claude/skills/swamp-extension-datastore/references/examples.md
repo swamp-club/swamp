@@ -245,6 +245,13 @@ export const datastore = {
           // Upload changed files from cachePath to remote
           console.log(`Pushing from ${cachePath} to ${parsed.endpoint}`);
         },
+        markDirty: () => {
+          // Swamp core calls this before every cache write. If your
+          // pushChanged walks the cache unconditionally, there's nothing
+          // to invalidate — no-op. If you add a clean/dirty sidecar
+          // (fast-path pattern in design/datastores.md), flip it here.
+          return Promise.resolve();
+        },
       }),
 
       resolveDatastorePath: (repoDir: string) => {
