@@ -10,7 +10,7 @@ permissions:
 
 jobs:
   automove:
-    name: Move issue to swamp.club lab
+    name: Move issue to swamp-club.com lab
     runs-on: ubuntu-latest
     steps:
       - name: Move to lab and close GitHub issue
@@ -41,7 +41,7 @@ jobs:
             // Create the lab issue via the public submission endpoint. The
             // `source: "swamp"` tag attributes it to this repo in the Lab UI.
             const createRes = await fetch(
-              "https://swamp.club/api/v1/lab/issues",
+              "https://swamp-club.com/api/v1/lab/issues",
               {
                 method: "POST",
                 headers: {
@@ -61,7 +61,7 @@ jobs:
             if (!createRes.ok) {
               const text = await createRes.text().catch(() => "");
               core.setFailed(
-                `swamp.club create failed: ${createRes.status} ${text}`,
+                `swamp-club.com create failed: ${createRes.status} ${text}`,
               );
               return;
             }
@@ -79,7 +79,7 @@ jobs:
               labIssueNumber <= 0
             ) {
               core.setFailed(
-                `swamp.club create returned no lab issue number: ${
+                `swamp-club.com create returned no lab issue number: ${
                   JSON.stringify(data)
                 }`,
               );
@@ -87,7 +87,7 @@ jobs:
             }
 
             // We have a confirmed lab issue number — safe to comment and close.
-            const labUrl = `https://swamp.club/lab/${labIssueNumber}`;
+            const labUrl = `https://swamp-club.com/lab/${labIssueNumber}`;
 
             // Post the auto-responder comment linking to the lab issue.
             await github.rest.issues.createComment({

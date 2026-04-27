@@ -23,6 +23,7 @@ import { getSwampConfigDir } from "./paths.ts";
 import {
   type AuthCredentials,
   DEFAULT_SWAMP_CLUB_URL,
+  LEGACY_SWAMP_CLUB_URL,
 } from "../../domain/auth/auth_credentials.ts";
 
 const AUTH_FILE = "auth.json";
@@ -62,7 +63,16 @@ export class AuthRepository {
 
     try {
       const content = await Deno.readTextFile(this.getAuthPath());
-      return JSON.parse(content) as AuthCredentials;
+      const parsed = JSON.parse(content) as AuthCredentials;
+      // Domain migration: rewrite the legacy swamp.club URL to the new
+      // domain in-place so subsequent loads see the new value. Scoped to
+      // the exact legacy literal — custom servers and the new default
+      // are left alone.
+      if (parsed.serverUrl === LEGACY_SWAMP_CLUB_URL) {
+        parsed.serverUrl = DEFAULT_SWAMP_CLUB_URL;
+        await this.save(parsed);
+      }
+      return parsed;
     } catch (error) {
       if (error instanceof Deno.errors.NotFound) {
         return null;

@@ -425,8 +425,8 @@ Deno.test("isLocalhostUrl returns true for http://[::1]:3000", () => {
   assertEquals(isLocalhostUrl("http://[::1]:3000"), true);
 });
 
-Deno.test("isLocalhostUrl returns false for https://swamp.club", () => {
-  assertEquals(isLocalhostUrl("https://swamp.club"), false);
+Deno.test("isLocalhostUrl returns false for https://swamp-club.com", () => {
+  assertEquals(isLocalhostUrl("https://swamp-club.com"), false);
 });
 
 Deno.test("isLocalhostUrl returns false for https://example.com", () => {
@@ -457,13 +457,16 @@ Deno.test("resolveTelemetryEndpoint returns localhost endpoint when auth serverU
 });
 
 Deno.test("resolveTelemetryEndpoint returns default when auth serverUrl is remote", () => {
-  const result = resolveTelemetryEndpoint(undefined, "https://swamp.club");
-  assertEquals(result, "https://telemetry.swamp.club");
+  const result = resolveTelemetryEndpoint(
+    undefined,
+    "https://swamp-club.com",
+  );
+  assertEquals(result, "https://telemetry.swamp-club.com");
 });
 
 Deno.test("resolveTelemetryEndpoint returns default when auth serverUrl is null", () => {
   const result = resolveTelemetryEndpoint(undefined, null);
-  assertEquals(result, "https://telemetry.swamp.club");
+  assertEquals(result, "https://telemetry.swamp-club.com");
 });
 
 // --- isUpdateCheckDisabledByEnv tests ---

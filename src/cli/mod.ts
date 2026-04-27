@@ -83,6 +83,7 @@ import {
 import { RepoPath } from "../domain/repo/repo_path.ts";
 import { ExtensionAutoResolver } from "../domain/extensions/extension_auto_resolver.ts";
 import { ExtensionApiClient } from "../infrastructure/http/extension_api_client.ts";
+import { DEFAULT_SWAMP_CLUB_URL } from "../domain/auth/auth_credentials.ts";
 import { setAutoResolver } from "./auto_resolver_context.ts";
 import {
   createAutoResolveInstallerAdapter,
@@ -320,7 +321,7 @@ export function configureExtensionAutoResolver(
     setAutoResolver(null);
     return;
   }
-  const serverUrl = Deno.env.get("SWAMP_CLUB_URL") ?? "https://swamp.club";
+  const serverUrl = Deno.env.get("SWAMP_CLUB_URL") ?? DEFAULT_SWAMP_CLUB_URL;
   const extensionClient = new ExtensionApiClient(serverUrl);
   const modelsDir = resolveModelsDir(marker);
   const denoRuntime = new EmbeddedDenoRuntime();
@@ -717,7 +718,7 @@ async function checkForMissingPulledExtensions(
 }
 
 /** Default telemetry endpoint */
-const DEFAULT_TELEMETRY_ENDPOINT = "https://telemetry.swamp.club";
+const DEFAULT_TELEMETRY_ENDPOINT = "https://telemetry.swamp-club.com";
 
 /** Telemetry endpoint used when auth serverUrl is a localhost address */
 const LOCALHOST_TELEMETRY_ENDPOINT = "http://localhost:8080";

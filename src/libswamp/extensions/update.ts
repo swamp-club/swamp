@@ -30,10 +30,10 @@ import type { SwampError } from "../errors.ts";
 import { validationFailed } from "../errors.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
-const DEFAULT_SERVER_URL = "https://swamp.club";
+import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
 
 function resolveServerUrl(): string {
-  return Deno.env.get("SWAMP_CLUB_URL") ?? DEFAULT_SERVER_URL;
+  return Deno.env.get("SWAMP_CLUB_URL") ?? DEFAULT_SWAMP_CLUB_URL;
 }
 
 export type ExtensionUpdateEvent =

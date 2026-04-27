@@ -15,7 +15,7 @@ Come join the [swamp party on discord](https://discord.gg/swamp-club).
 ## Getting Started
 
 ```bash
-curl -fsSL https://swamp.club/install.sh | sh
+curl -fsSL https://swamp-club.com/install.sh | sh
 ```
 
 ### Quick Start

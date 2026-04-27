@@ -30,7 +30,7 @@ import type { ReporterContext } from "../../domain/extensions/reporter_context.t
 function makeDeps(overrides: Partial<IssueCreateDeps> = {}): IssueCreateDeps {
   return {
     submitToLab: () =>
-      Promise.resolve({ number: 1, serverUrl: "https://swamp.club" }),
+      Promise.resolve({ number: 1, serverUrl: "https://swamp-club.com" }),
     ...overrides,
   };
 }
@@ -70,7 +70,7 @@ Deno.test("issueCreate: submits bug to Lab and yields completed", async () => {
 Deno.test("issueCreate: submits feature to Lab", async () => {
   const deps = makeDeps({
     submitToLab: () =>
-      Promise.resolve({ number: 7, serverUrl: "https://swamp.club" }),
+      Promise.resolve({ number: 7, serverUrl: "https://swamp-club.com" }),
   });
 
   const events = await collect<IssueCreateEvent>(
@@ -96,7 +96,10 @@ Deno.test("issueCreate: passes title, body, and type to submitToLab", async () =
   const deps = makeDeps({
     submitToLab: (input) => {
       captured = input;
-      return Promise.resolve({ number: 42, serverUrl: "https://swamp.club" });
+      return Promise.resolve({
+        number: 42,
+        serverUrl: "https://swamp-club.com",
+      });
     },
   });
 
@@ -144,7 +147,10 @@ Deno.test("issueCreate: plain lab request body is byte-identical to caller body 
   const deps = makeDeps({
     submitToLab: (input) => {
       captured = { body: input.body };
-      return Promise.resolve({ number: 1, serverUrl: "https://swamp.club" });
+      return Promise.resolve({
+        number: 1,
+        serverUrl: "https://swamp-club.com",
+      });
     },
   });
 
@@ -164,7 +170,7 @@ Deno.test("issueCreate: plain lab request body is byte-identical to caller body 
 Deno.test("issueCreate: extension-lab variant set when extensionName present", async () => {
   const deps = makeDeps({
     submitToLab: () =>
-      Promise.resolve({ number: 9, serverUrl: "https://swamp.club" }),
+      Promise.resolve({ number: 9, serverUrl: "https://swamp-club.com" }),
   });
 
   const events = await collect<IssueCreateEvent>(
@@ -192,7 +198,10 @@ Deno.test("issueCreate: extension body contains Extension: line", async () => {
   const deps = makeDeps({
     submitToLab: (input) => {
       captured = { body: input.body };
-      return Promise.resolve({ number: 1, serverUrl: "https://swamp.club" });
+      return Promise.resolve({
+        number: 1,
+        serverUrl: "https://swamp-club.com",
+      });
     },
   });
 
@@ -216,7 +225,10 @@ Deno.test("issueCreate: extension body contains Upstream repository line when se
   const deps = makeDeps({
     submitToLab: (input) => {
       captured = { body: input.body };
-      return Promise.resolve({ number: 1, serverUrl: "https://swamp.club" });
+      return Promise.resolve({
+        number: 1,
+        serverUrl: "https://swamp-club.com",
+      });
     },
   });
 
@@ -241,7 +253,10 @@ Deno.test("issueCreate: extension body omits Upstream repository when unset", as
   const deps = makeDeps({
     submitToLab: (input) => {
       captured = { body: input.body };
-      return Promise.resolve({ number: 1, serverUrl: "https://swamp.club" });
+      return Promise.resolve({
+        number: 1,
+        serverUrl: "https://swamp-club.com",
+      });
     },
   });
 
@@ -263,7 +278,10 @@ Deno.test("issueCreate: extension body contains reporter-context Environment sec
   const deps = makeDeps({
     submitToLab: (input) => {
       captured = { body: input.body };
-      return Promise.resolve({ number: 1, serverUrl: "https://swamp.club" });
+      return Promise.resolve({
+        number: 1,
+        serverUrl: "https://swamp-club.com",
+      });
     },
   });
 
@@ -285,7 +303,10 @@ Deno.test("issueCreate: extension path does not modify title", async () => {
   const deps = makeDeps({
     submitToLab: (input) => {
       captured = { title: input.title };
-      return Promise.resolve({ number: 1, serverUrl: "https://swamp.club" });
+      return Promise.resolve({
+        number: 1,
+        serverUrl: "https://swamp-club.com",
+      });
     },
   });
 

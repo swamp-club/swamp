@@ -529,7 +529,7 @@ support are marked as "unverified" but still allowed.
 
 ## Registry
 
-Extensions are distributed through the swamp registry at `https://swamp.club`.
+Extensions are distributed through the swamp registry at `https://swamp-club.com`.
 
 ### Authentication
 

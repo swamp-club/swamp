@@ -18,11 +18,15 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /** Default swamp-club server URL, used when no override is configured. */
-export const DEFAULT_SWAMP_CLUB_URL = "https://swamp.club";
+export const DEFAULT_SWAMP_CLUB_URL = "https://swamp-club.com";
+
+/** Legacy default swamp-club URL, retained so stored credentials carrying the
+ * old domain can be transparently migrated on load. */
+export const LEGACY_SWAMP_CLUB_URL = "https://swamp.club";
 
 /** Stored authentication credentials for swamp-club API access. */
 export interface AuthCredentials {
-  /** The swamp-club server URL (e.g., "https://swamp.club") */
+  /** The swamp-club server URL (e.g., "https://swamp-club.com") */
   serverUrl: string;
   /** The API key prefixed with "swamp_" */
   apiKey: string;

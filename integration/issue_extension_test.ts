@@ -174,7 +174,7 @@ models:
     assertEquals(parsed.reason, "no-repository");
     assertStringIncludes(
       parsed.guidance,
-      "swamp.club/extensions/%40adam%2Fcfgmgmt",
+      "swamp-club.com/extensions/%40adam%2Fcfgmgmt",
     );
   } finally {
     await Deno.remove(repo, { recursive: true });

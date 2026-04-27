@@ -44,15 +44,14 @@ import {
 } from "../../libswamp/mod.ts";
 import { createExtensionSearchRenderer } from "../../presentation/renderers/extension_search.tsx";
 import { resolveSkillsDir } from "../../domain/repo/skill_dirs.ts";
-
-const DEFAULT_SERVER_URL = "https://swamp.club";
+import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
 
 /**
  * Resolves the registry server URL.
- * Priority: SWAMP_CLUB_URL env var > default "https://swamp.club"
+ * Priority: SWAMP_CLUB_URL env var > DEFAULT_SWAMP_CLUB_URL
  */
 function resolveServerUrl(): string {
-  return Deno.env.get("SWAMP_CLUB_URL") ?? DEFAULT_SERVER_URL;
+  return Deno.env.get("SWAMP_CLUB_URL") ?? DEFAULT_SWAMP_CLUB_URL;
 }
 
 // deno-lint-ignore no-explicit-any

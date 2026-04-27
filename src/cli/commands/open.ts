@@ -57,12 +57,12 @@ import {
 } from "../mod.ts";
 import { resolveSkillsDir } from "../../domain/repo/skill_dirs.ts";
 import { VERSION } from "./version.ts";
+import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
 const logger = getSwampLogger(["open"]);
-const DEFAULT_SERVER_URL = "https://swamp.club";
 
 function forceExtensionCatalogRescan(repoDir: string): void {
   try {
@@ -155,7 +155,7 @@ export const openCommand = new Command()
     ]);
 
     const extClient = new ExtensionApiClient(
-      Deno.env.get("SWAMP_CLUB_URL") ?? DEFAULT_SERVER_URL,
+      Deno.env.get("SWAMP_CLUB_URL") ?? DEFAULT_SWAMP_CLUB_URL,
     );
 
     const state: OpenServerState = {

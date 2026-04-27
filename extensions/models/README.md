@@ -170,7 +170,7 @@ match the classification.
 
 Each lab issue has a sequential, human-friendly number (`#1`, `#2`, ...) used in
 every lab URL — both the dashboard and the API. You can find an issue at
-`https://swamp.club/lab/<number>`.
+`https://swamp-club.com/lab/<number>`.
 
 Classification types (`triage`) match swamp-club's issue types:
 
@@ -195,7 +195,7 @@ Status transitions in swamp-club:
 ### Setup
 
 The model requires a swamp-club API key. The URL defaults to
-`https://swamp.club`.
+`https://swamp-club.com`.
 
 **Option 1: Environment variable (recommended)**
 
@@ -204,7 +204,7 @@ export SWAMP_API_KEY=swamp_your_key_here
 ```
 
 The model reads `SWAMP_API_KEY` automatically and connects to
-`https://swamp.club`.
+`https://swamp-club.com`.
 
 **Option 2: Point at a local dev server**
 

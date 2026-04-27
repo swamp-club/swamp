@@ -129,7 +129,7 @@ async function promptLoginOrEmail(): Promise<"login" | "email"> {
 
   await Deno.stdout.write(
     encoder.encode(
-      "\nYou're not logged in to swamp.club.\n\n" +
+      "\nYou're not logged in to swamp-club.com.\n\n" +
         "  1. Log in first (then retry this command)\n" +
         "  2. Send via email\n\n" +
         "Choose [1/2]: ",

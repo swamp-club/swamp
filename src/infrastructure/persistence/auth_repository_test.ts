@@ -18,11 +18,12 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertExists } from "@std/assert";
+import { join } from "@std/path";
 import { AuthRepository } from "./auth_repository.ts";
 import type { AuthCredentials } from "../../domain/auth/auth_credentials.ts";
 
 const TEST_CREDENTIALS: AuthCredentials = {
-  serverUrl: "https://swamp.club",
+  serverUrl: "https://swamp-club.com",
   apiKey: "swamp_testkey123",
   apiKeyId: "key-id-456",
   username: "testuser",
@@ -193,7 +194,7 @@ Deno.test("AuthRepository - load returns env var credentials when SWAMP_API_KEY 
 
     assertExists(loaded);
     assertEquals(loaded.apiKey, "swamp_env_key_123");
-    assertEquals(loaded.serverUrl, "https://swamp.club");
+    assertEquals(loaded.serverUrl, "https://swamp-club.com");
     assertEquals(loaded.apiKeyId, "");
     assertEquals(loaded.username, "");
   } finally {
@@ -251,6 +252,59 @@ Deno.test("AuthRepository - empty SWAMP_API_KEY is treated as unset", async () =
 
     const loaded = await repo.load();
     assertEquals(loaded, null);
+  } finally {
+    env.restore();
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+// ── Domain migration: legacy swamp.club → swamp-club.com ─────────────
+
+Deno.test("AuthRepository - load rewrites legacy https://swamp.club to new domain and persists", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  const env = saveEnv("XDG_CONFIG_HOME", "SWAMP_API_KEY");
+  try {
+    Deno.env.set("XDG_CONFIG_HOME", tmpDir);
+    Deno.env.delete("SWAMP_API_KEY");
+    const repo = new AuthRepository();
+
+    // Seed an auth.json carrying the legacy domain.
+    await repo.save({
+      ...TEST_CREDENTIALS,
+      serverUrl: "https://swamp.club",
+    });
+
+    const loaded = await repo.load();
+    assertExists(loaded);
+    assertEquals(loaded.serverUrl, "https://swamp-club.com");
+
+    // Migration must persist so subsequent loads see the new value
+    // without re-running the rewrite.
+    const raw = await Deno.readTextFile(join(tmpDir, "swamp", "auth.json"));
+    const onDisk = JSON.parse(raw) as AuthCredentials;
+    assertEquals(onDisk.serverUrl, "https://swamp-club.com");
+  } finally {
+    env.restore();
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("AuthRepository - load leaves custom server URLs untouched", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  const env = saveEnv("XDG_CONFIG_HOME", "SWAMP_API_KEY");
+  try {
+    Deno.env.set("XDG_CONFIG_HOME", tmpDir);
+    Deno.env.delete("SWAMP_API_KEY");
+    const repo = new AuthRepository();
+
+    await repo.save({
+      ...TEST_CREDENTIALS,
+      serverUrl: "https://staging.swamp.club",
+    });
+
+    const loaded = await repo.load();
+    assertExists(loaded);
+    assertEquals(loaded.serverUrl, "https://staging.swamp.club");
   } finally {
     env.restore();
     await Deno.remove(tmpDir, { recursive: true });

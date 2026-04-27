@@ -155,7 +155,7 @@ Deno.test("resolveExtensionTarget: no-repository refusal when manifest has no re
     assertStringIncludes(t.guidance, "does not declare a repository");
     assertStringIncludes(
       t.guidance,
-      "swamp.club/extensions/%40adam%2Fcfgmgmt",
+      "swamp-club.com/extensions/%40adam%2Fcfgmgmt",
     );
   } finally {
     await Deno.remove(repo, { recursive: true });

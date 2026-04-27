@@ -55,6 +55,7 @@ This Policy covers:
 | swamp             | software platform                                 |
 | Swamp Club        | software platform                                 |
 | swamp.club        | software platform                                 |
+| swamp-club.com    | software platform                                 |
 
 Some Marks may not be registered, but registration does not equal ownership of
 trademarks. This Policy covers our Marks whether they are registered or not.

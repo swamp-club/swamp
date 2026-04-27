@@ -60,7 +60,7 @@ function makeDeps(overrides: Partial<AuthLoginDeps> = {}): AuthLoginDeps {
 
 function makeInput(overrides: Partial<AuthLoginInput> = {}): AuthLoginInput {
   return {
-    serverUrl: "https://swamp.club",
+    serverUrl: "https://swamp-club.com",
     useBrowserFlow: false,
     ...overrides,
   };
@@ -101,7 +101,7 @@ Deno.test("authLogin: successful browser flow emits correct event sequence", asy
   >;
   assertEquals(completed.data.username, "testuser");
   assertEquals(completed.data.email, "test@example.com");
-  assertEquals(completed.data.serverUrl, "https://swamp.club");
+  assertEquals(completed.data.serverUrl, "https://swamp-club.com");
   assertEquals(completed.data.apiKey, "swamp_testapikey123456");
 
   assertEquals(savedCreds.username, "testuser");
@@ -161,7 +161,7 @@ Deno.test("authLogin: successful stdin flow with provided credentials", async ()
     { kind: "completed" }
   >;
   assertEquals(completed.data.username, "testuser");
-  assertEquals(completed.data.serverUrl, "https://swamp.club");
+  assertEquals(completed.data.serverUrl, "https://swamp-club.com");
 });
 
 Deno.test("authLogin: stdin flow reads credentials when not provided", async () => {

@@ -294,11 +294,10 @@ import { checkExtensionQuality } from "../../domain/extensions/extension_quality
 import { bundleExtension } from "../../domain/models/bundle.ts";
 import { extractContentMetadata } from "../../domain/extensions/extension_content_extractor.ts";
 import { EmbeddedDenoRuntime } from "../../infrastructure/runtime/embedded_deno_runtime.ts";
-
-const DEFAULT_SERVER_URL = "https://swamp.club";
+import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
 
 function resolveServerUrl(): string {
-  return Deno.env.get("SWAMP_CLUB_URL") ?? DEFAULT_SERVER_URL;
+  return Deno.env.get("SWAMP_CLUB_URL") ?? DEFAULT_SWAMP_CLUB_URL;
 }
 
 /** Wires real infrastructure into ExtensionPushPrepareDeps. */

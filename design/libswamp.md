@@ -702,11 +702,11 @@ Deno.test("whoami yields identity on success", async () => {
 
   assertEquals(events, [
     { kind: "loading_credentials" },
-    { kind: "contacting_server", serverUrl: "https://swamp.club" },
+    { kind: "contacting_server", serverUrl: "https://swamp-club.com" },
     {
       kind: "completed",
       identity: {
-        serverUrl: "https://swamp.club",
+        serverUrl: "https://swamp-club.com",
         id: "user-1",
         username: "adam",
         email: "adam@example.com",

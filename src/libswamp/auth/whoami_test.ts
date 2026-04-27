@@ -50,7 +50,7 @@ function makeDeps(overrides: {
 }
 
 const testCredentials: AuthCredentials = {
-  serverUrl: "https://swamp.club",
+  serverUrl: "https://swamp-club.com",
   apiKey: "swamp_test_key",
   apiKeyId: "key-1",
   username: "adam",
@@ -78,11 +78,11 @@ Deno.test("whoami yields loading_credentials -> contacting_server -> completed o
 
   assertEquals(events, [
     { kind: "loading_credentials" },
-    { kind: "contacting_server", serverUrl: "https://swamp.club" },
+    { kind: "contacting_server", serverUrl: "https://swamp-club.com" },
     {
       kind: "completed",
       identity: {
-        serverUrl: "https://swamp.club",
+        serverUrl: "https://swamp-club.com",
         id: "user-1",
         username: "adam",
         email: "adam@example.com",
@@ -119,7 +119,7 @@ Deno.test("whoami yields invalid_api_key error when server says not authenticate
   assertEquals(events[0], { kind: "loading_credentials" });
   assertEquals(events[1], {
     kind: "contacting_server",
-    serverUrl: "https://swamp.club",
+    serverUrl: "https://swamp-club.com",
   });
   const last = events[2] as Extract<AuthWhoamiEvent, { kind: "error" }>;
   assertEquals(last.kind, "error");
@@ -199,7 +199,7 @@ Deno.test("whoami does not persist credentials when saveCredentials is a no-op",
   const ctx = createLibSwampContext();
   let saveCalled = false;
   const envCredentials: AuthCredentials = {
-    serverUrl: "https://swamp.club",
+    serverUrl: "https://swamp-club.com",
     apiKey: "swamp_env_key",
     apiKeyId: "",
     username: "",

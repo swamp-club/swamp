@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { UserError } from "../errors.ts";
+import { DEFAULT_SWAMP_CLUB_URL } from "../auth/auth_credentials.ts";
 
 /** Supported third-party repository providers. */
 export type RepositoryProvider = "github" | "gitlab" | "other";
@@ -129,7 +130,9 @@ export function buildGitlabNewIssueUrl(
  * swamp-club/routes/extensions/[...name].tsx.
  */
 export function swampClubExtensionUrl(extensionName: string): string {
-  return `https://swamp.club/extensions/${encodeURIComponent(extensionName)}`;
+  return `${DEFAULT_SWAMP_CLUB_URL}/extensions/${
+    encodeURIComponent(extensionName)
+  }`;
 }
 
 /**

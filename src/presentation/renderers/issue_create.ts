@@ -43,7 +43,7 @@ class LogIssueCreateRenderer implements Renderer<IssueCreateEvent> {
           });
           if (data.type === "security") {
             logger.info(
-              "This security report is visible only to you and the admin team at swamp.club.",
+              "This security report is visible only to you and the admin team at swamp-club.com.",
             );
           }
         } else if (data.method === "extension-lab") {
@@ -60,7 +60,7 @@ class LogIssueCreateRenderer implements Renderer<IssueCreateEvent> {
           });
           if (data.type === "security") {
             logger.info(
-              "This security report is visible only to you and the admin team at swamp.club.",
+              "This security report is visible only to you and the admin team at swamp-club.com.",
             );
           }
         } else {

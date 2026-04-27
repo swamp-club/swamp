@@ -301,8 +301,15 @@ export async function loadAuthFile(): Promise<
       username?: string;
     };
     if (creds.apiKey) {
+      // Read-only domain migration: rewrite the legacy swamp.club URL to
+      // the new domain so callers transparently hit the right host. The
+      // CLI's AuthRepository persists the rewrite; here we don't own the
+      // file, so we just translate at the read site.
+      const serverUrl = creds.serverUrl === "https://swamp.club"
+        ? "https://swamp-club.com"
+        : creds.serverUrl ?? "https://swamp-club.com";
       return {
-        serverUrl: creds.serverUrl ?? "https://swamp.club",
+        serverUrl,
         apiKey: creds.apiKey,
         username: creds.username || undefined,
       };
@@ -339,7 +346,7 @@ export async function createSwampClubClient(
     }
   }
 
-  url = url ?? "https://swamp.club";
+  url = url ?? "https://swamp-club.com";
 
   if (!apiKey) {
     logger?.warning(

@@ -168,7 +168,7 @@ Deno.test("buildGitlabNewIssueUrl: strips trailing slash from repo URL", () => {
 Deno.test("swampClubExtensionUrl: percent-encodes the scoped name", () => {
   assertEquals(
     swampClubExtensionUrl("@adam/cfgmgmt"),
-    "https://swamp.club/extensions/%40adam%2Fcfgmgmt",
+    "https://swamp-club.com/extensions/%40adam%2Fcfgmgmt",
   );
 });
 

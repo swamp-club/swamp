@@ -36,8 +36,8 @@ import type { Logger } from "@logtape/logtape";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
+import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
 
-export const DEFAULT_SERVER_URL = "https://swamp.club";
 const SCOPED_NAME_PATTERN = /^@[a-z0-9_-]+\/[a-z0-9_-]+(\/[a-z0-9_-]+)*$/;
 const MAX_DEPENDENCY_DEPTH = 10;
 const LOCK_RETRY_COUNT = 10;
@@ -201,10 +201,10 @@ export function validateExtensionName(name: string): void {
 
 /**
  * Resolves the registry server URL.
- * Priority: SWAMP_CLUB_URL env var > default "https://swamp.club"
+ * Priority: SWAMP_CLUB_URL env var > DEFAULT_SWAMP_CLUB_URL
  */
 export function resolveServerUrl(): string {
-  return Deno.env.get("SWAMP_CLUB_URL") ?? DEFAULT_SERVER_URL;
+  return Deno.env.get("SWAMP_CLUB_URL") ?? DEFAULT_SWAMP_CLUB_URL;
 }
 
 /** Returns true if the filename is a macOS resource fork (AppleDouble) file. */

@@ -25,7 +25,7 @@ export const GlobalArgsSchema = z.object({
     "Swamp Club lab issue number (the issue must already exist in swamp-club)",
   ),
   swampClubUrl: z.string().optional().describe(
-    "Swamp Club API base URL (defaults to https://swamp.club)",
+    "Swamp Club API base URL (defaults to https://swamp-club.com)",
   ),
   swampClubApiKey: z.string().optional().describe(
     "Swamp Club API key (defaults to SWAMP_API_KEY env var)",

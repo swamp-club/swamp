@@ -95,7 +95,7 @@ function makePrepareDeps(
   return {
     loadCredentials: () =>
       Promise.resolve({
-        serverUrl: "https://test.swamp.club",
+        serverUrl: "https://test.swamp-club.com",
         apiKey: "swamp_test",
         username: "testuser",
       }),
@@ -125,7 +125,7 @@ function makeExecuteDeps(
   return {
     loadCredentials: () =>
       Promise.resolve({
-        serverUrl: "https://test.swamp.club",
+        serverUrl: "https://test.swamp-club.com",
         apiKey: "swamp_test",
       }),
     initiatePush: () =>

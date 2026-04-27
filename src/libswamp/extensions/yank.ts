@@ -24,8 +24,8 @@ import type { SwampError } from "../errors.ts";
 import { notAuthenticated, validationFailed } from "../errors.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
+import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
 const SCOPED_NAME_PATTERN = /^@[a-z0-9_-]+\/[a-z0-9_-]+(\/[a-z0-9_-]+)*$/;
-const DEFAULT_SERVER_URL = "https://swamp.club";
 
 /** Data structure for the extension yank output. */
 export interface ExtensionYankData {
@@ -92,7 +92,7 @@ export function createExtensionYankDeps(): ExtensionYankDeps {
 }
 
 function resolveServerUrl(): string {
-  return Deno.env.get("SWAMP_CLUB_URL") ?? DEFAULT_SERVER_URL;
+  return Deno.env.get("SWAMP_CLUB_URL") ?? DEFAULT_SWAMP_CLUB_URL;
 }
 
 /** Gathers preview info for the extension yank operation, validating inputs. */

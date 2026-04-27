@@ -45,6 +45,7 @@ import { maybeAutoUpdateDatastoreExtension } from "../libswamp/extensions/datast
 import { FileExtensionUpdateCheckRepository } from "../infrastructure/persistence/extension_update_check_repository.ts";
 import { readUpstreamExtensions } from "../infrastructure/persistence/upstream_extensions.ts";
 import { ExtensionApiClient } from "../infrastructure/http/extension_api_client.ts";
+import { DEFAULT_SWAMP_CLUB_URL } from "../domain/auth/auth_credentials.ts";
 import {
   detectLocalEditsForExtension,
   enumeratePulledExtensionDirs,
@@ -93,7 +94,7 @@ async function maybeAutoUpdateSwampDatastore(
       type,
       path: lockfilePath,
     });
-    const serverUrl = Deno.env.get("SWAMP_CLUB_URL") ?? "https://swamp.club";
+    const serverUrl = Deno.env.get("SWAMP_CLUB_URL") ?? DEFAULT_SWAMP_CLUB_URL;
     const extensionClient = new ExtensionApiClient(serverUrl);
     const cacheRepository = new FileExtensionUpdateCheckRepository(swampDir);
 
