@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
+import { ValidationError } from "@cliffy/command";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import { buildErrorJson, renderError } from "./error_output.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -73,13 +74,13 @@ Deno.test("renderError wraps non-Error values in Error", () => {
   }
 });
 
-Deno.test("renderError logs Cliffy missing argument error without stack trace", () => {
+Deno.test("renderError logs Cliffy ValidationError missing argument without stack trace", () => {
   const logs: string[] = [];
   const originalError = console.error;
   console.error = (...args: unknown[]) => logs.push(args.join(" "));
 
   try {
-    const error = new Error("Missing argument(s): extension");
+    const error = new ValidationError("Missing argument(s): extension");
     renderError(error);
 
     assertEquals(logs.length, 1);
@@ -87,6 +88,75 @@ Deno.test("renderError logs Cliffy missing argument error without stack trace", 
     // Should not contain stack trace lines
     assertEquals(logs[0].includes("    at "), false);
   } finally {
+    console.error = originalError;
+  }
+});
+
+Deno.test("renderError suppresses Cliffy Command dump on ValidationError (issue #171)", () => {
+  const logs: string[] = [];
+  const originalError = console.error;
+  console.error = (...args: unknown[]) => logs.push(args.join(" "));
+
+  try {
+    const error = new ValidationError(
+      'Unknown option "--inputs". Did you mean option "--input"?',
+    );
+    // Mimic Cliffy's real failure: ValidationError carries a `cmd` payload
+    // that points at the parsed Command tree (with circular refs).
+    const fakeCmd: Record<string, unknown> = {
+      settings: { name: "swamp", description: "AI Native Automation CLI" },
+    };
+    fakeCmd.cmd = fakeCmd;
+    Object.assign(error, { cmd: fakeCmd, exitCode: 2 });
+
+    renderError(error);
+
+    assertEquals(logs.length, 1);
+    assertStringIncludes(
+      logs[0],
+      'Unknown option "--inputs". Did you mean option "--input"?',
+    );
+    // The bug was a 300-line dump of Cliffy internals — none of these markers
+    // should leak into user-facing output.
+    assertEquals(logs[0].includes("Command {"), false);
+    assertEquals(logs[0].includes("settings:"), false);
+    assertEquals(logs[0].includes("[Circular"), false);
+    assertEquals(logs[0].includes("    at "), false);
+  } finally {
+    console.error = originalError;
+  }
+});
+
+Deno.test("renderError: json mode emits clean JSON for ValidationError (issue #171)", () => {
+  const stdoutLogs: string[] = [];
+  const originalLog = console.log;
+  const originalError = console.error;
+  console.log = (...args: unknown[]) => stdoutLogs.push(args.join(" "));
+  console.error = () => {};
+
+  try {
+    const error = new ValidationError(
+      'Unknown option "--inputs". Did you mean option "--input"?',
+    );
+    const fakeCmd: Record<string, unknown> = { settings: { name: "swamp" } };
+    fakeCmd.cmd = fakeCmd;
+    Object.assign(error, { cmd: fakeCmd, exitCode: 2 });
+
+    renderError(error, "json");
+
+    assertEquals(stdoutLogs.length, 1);
+    const parsed = JSON.parse(stdoutLogs[0]);
+    assertEquals(
+      parsed.error,
+      'Unknown option "--inputs". Did you mean option "--input"?',
+    );
+    // ValidationError should never produce a stack in JSON output.
+    assertEquals(parsed.stack, undefined);
+    // And the raw payload must not leak.
+    assertEquals(stdoutLogs[0].includes("Command {"), false);
+    assertEquals(stdoutLogs[0].includes("[Circular"), false);
+  } finally {
+    console.log = originalLog;
     console.error = originalError;
   }
 });
@@ -186,8 +256,10 @@ Deno.test("buildErrorJson: system Error includes stack", () => {
   assertStringIncludes(result.stack!, "at ");
 });
 
-Deno.test("buildErrorJson: Cliffy missing arg error has no stack", () => {
-  const result = buildErrorJson(new Error("Missing argument(s): extension"));
+Deno.test("buildErrorJson: Cliffy ValidationError has no stack", () => {
+  const result = buildErrorJson(
+    new ValidationError("Missing argument(s): extension"),
+  );
   assertEquals(result.error, "Missing argument(s): extension");
   assertEquals(result.stack, undefined);
 });

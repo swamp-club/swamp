@@ -17,20 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { ValidationError } from "@cliffy/command";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
 import type { OutputMode } from "./output.ts";
 
 const logger = getSwampLogger(["error"]);
-
-/**
- * Returns true if the error is a Cliffy missing-argument error.
- * These are plain Error objects with the message pattern "Missing argument(s): ..."
- * and should be rendered without a stack trace.
- */
-function isCliffyMissingArgError(err: Error): boolean {
-  return err.message.startsWith("Missing argument(s):");
-}
 
 /**
  * Builds the JSON error object for structured output.
@@ -40,7 +32,8 @@ function isCliffyMissingArgError(err: Error): boolean {
 export function buildErrorJson(err: Error): Record<string, string> {
   const data: Record<string, string> = { error: err.message };
   if (
-    !(err instanceof UserError) && !isCliffyMissingArgError(err) && err.stack
+    !(err instanceof UserError) && !(err instanceof ValidationError) &&
+    err.stack
   ) {
     const stackLines = err.stack.split("\n").filter((line) =>
       line.trim().startsWith("at ")
@@ -54,7 +47,7 @@ export function buildErrorJson(err: Error): Record<string, string> {
 
 /**
  * Renders an error via LogTape at fatal level.
- * UserError instances and Cliffy missing-argument errors log just the message (no stack trace).
+ * UserError instances and Cliffy ValidationErrors log just the message (no stack trace).
  * Other errors log the full Error object (including stack trace via Deno.inspect).
  *
  * In JSON mode, also writes the error as JSON to stdout so pipe consumers
@@ -68,7 +61,7 @@ export function renderError(error: unknown, outputMode?: OutputMode): void {
     console.log(JSON.stringify(buildErrorJson(err), null, 2));
   }
 
-  if (err instanceof UserError || isCliffyMissingArgError(err)) {
+  if (err instanceof UserError || err instanceof ValidationError) {
     logger.fatal("Error: {message}", { message: err.message });
   } else {
     logger.fatal("{error}", { error: err });
