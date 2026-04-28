@@ -132,7 +132,7 @@ Deno.test("emitExtensionLoadWarning: distinct errors for the same file are NOT d
   assertEquals(cap.lines.length, 3);
 });
 
-Deno.test("emitExtensionLoadWarning: quiet flag suppresses output entirely", () => {
+Deno.test("emitExtensionLoadWarning: quiet=true suppresses output entirely", () => {
   resetExtensionLoadWarnings();
   const cap = makeCapture();
 
@@ -142,6 +142,20 @@ Deno.test("emitExtensionLoadWarning: quiet flag suppresses output entirely", () 
   );
 
   assertEquals(cap.lines.length, 0);
+});
+
+Deno.test("emitExtensionLoadWarning: quiet=false overrides any process-level --quiet detection", () => {
+  resetExtensionLoadWarnings();
+  const cap = makeCapture();
+
+  // Explicit `false` is the test-seam contract: even if the test runner
+  // somehow received `--quiet`, callers asking for output get output.
+  emitExtensionLoadWarning(
+    { kind: "model", file: "/m.ts", error: "boom" },
+    { writer: cap.writer, quiet: false },
+  );
+
+  assertEquals(cap.lines.length, 2);
 });
 
 Deno.test("recordLoadFailures: emits one warning per failed entry", () => {

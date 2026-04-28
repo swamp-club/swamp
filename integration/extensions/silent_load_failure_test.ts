@@ -17,13 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Regression guard for swamp-club#177 — local extension models that fail
- * to load must produce visible feedback. Two distinct failure modes
- * (validation rejection through result.failed; regex mismatch through
- * populateCatalogFromDir) both surface via stderr `swamp-warning:`
- * lines. Working models in the same repo are unaffected.
- */
+// Regression guard for swamp-club#177.
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { ensureDir } from "@std/fs";

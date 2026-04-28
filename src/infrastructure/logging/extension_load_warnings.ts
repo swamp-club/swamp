@@ -72,17 +72,17 @@ function getState(): EmitterState {
 
 const HINT_BY_KIND: Record<ExtensionKind, string> = {
   model:
-    "extensions/models/ is auto-discovered — you do NOT need `swamp extension source add` for files in this directory.",
+    "extensions/models/ is auto-discovered — running `swamp extension source add` here is a no-op.",
   extension:
-    "extensions/models/ is auto-discovered — you do NOT need `swamp extension source add` for files in this directory.",
+    "extensions/models/ is auto-discovered — running `swamp extension source add` here is a no-op.",
   vault:
-    "extensions/vaults/ is auto-discovered — you do NOT need `swamp extension source add` for files in this directory.",
+    "extensions/vaults/ is auto-discovered — running `swamp extension source add` here is a no-op.",
   driver:
-    "extensions/drivers/ is auto-discovered — you do NOT need `swamp extension source add` for files in this directory.",
+    "extensions/drivers/ is auto-discovered — running `swamp extension source add` here is a no-op.",
   datastore:
-    "extensions/datastores/ is auto-discovered — you do NOT need `swamp extension source add` for files in this directory.",
+    "extensions/datastores/ is auto-discovered — running `swamp extension source add` here is a no-op.",
   report:
-    "extensions/reports/ is auto-discovered — you do NOT need `swamp extension source add` for files in this directory.",
+    "extensions/reports/ is auto-discovered — running `swamp extension source add` here is a no-op.",
 };
 
 function defaultWriter(line: string): void {
@@ -92,6 +92,22 @@ function defaultWriter(line: string): void {
 
 function dedupeKey(warning: ExtensionLoadWarning): string {
   return `${warning.kind}\0${warning.file}\0${warning.error}`;
+}
+
+/**
+ * Falls back to scanning Deno.args when the caller did not pass an
+ * explicit `quiet` option. Lets domain-layer callers (which never
+ * see Cliffy-parsed options) honour `swamp --quiet` without threading
+ * a parameter through every call chain.
+ *
+ * Reading Deno.args couples this module to the CLI flag shape but
+ * the alternative — a circular import from src/cli/ into
+ * src/infrastructure/ — is worse. `--quiet` and `-q` are stable.
+ */
+function isSilenced(options: EmitterOptions): boolean {
+  if (options.quiet === true) return true;
+  if (options.quiet === false) return false;
+  return Deno.args.includes("--quiet") || Deno.args.includes("-q");
 }
 
 /**
@@ -108,7 +124,7 @@ export function emitExtensionLoadWarning(
   warning: ExtensionLoadWarning,
   options: EmitterOptions = {},
 ): void {
-  if (options.quiet) return;
+  if (isSilenced(options)) return;
 
   const state = getState();
   const key = dedupeKey(warning);
