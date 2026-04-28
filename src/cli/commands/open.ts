@@ -26,6 +26,7 @@ import {
 } from "../context.ts";
 import { requireInitializedRepoUnlocked } from "../repo_context.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
+import { resetExtensionLoadWarnings } from "../../infrastructure/logging/extension_load_warnings.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
 import { driverTypeRegistry } from "../../domain/drivers/driver_type_registry.ts";
@@ -89,6 +90,9 @@ async function reloadExtensionRegistries(): Promise<void> {
   vaultTypeRegistry.resetLoadedFlag();
   driverTypeRegistry.resetLoadedFlag();
   reportRegistry.resetLoadedFlag();
+  // Clear emitter dedupe state so a re-run surfaces any failures fresh
+  // instead of suppressing them as "already seen this process."
+  resetExtensionLoadWarnings();
   await Promise.all([
     modelRegistry.ensureLoaded(),
     vaultTypeRegistry.ensureLoaded(),

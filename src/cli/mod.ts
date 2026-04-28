@@ -107,7 +107,8 @@ import { UpdateCheckCacheFileRepository } from "../infrastructure/update/update_
 import { HttpUpdateChecker } from "../infrastructure/update/http_update_checker.ts";
 import { Platform } from "../domain/update/platform.ts";
 import { renderUpdateNotification } from "../presentation/renderers/update_notification.ts";
-import { getOutputModeFromArgs } from "./context.ts";
+import { getOutputModeFromArgs, isQuietFromArgs } from "./context.ts";
+import { recordLoadFailures } from "../infrastructure/logging/extension_load_warnings.ts";
 import { flushDatastoreSync } from "../infrastructure/persistence/datastore_sync_coordinator.ts";
 import { withSpan } from "../infrastructure/tracing/mod.ts";
 import {
@@ -226,6 +227,7 @@ export async function configureExtensionLoaders(
   marker: RepoMarkerData | null,
   resolvedSources: ResolvedSourceDirs[],
   deferredWarnings: DeferredWarning[],
+  quiet = false,
 ): Promise<void> {
   const denoRuntime = new EmbeddedDenoRuntime();
   const sourceModelsDirs = collectDirsForKind(resolvedSources, "models");
@@ -261,6 +263,7 @@ export async function configureExtensionLoaders(
       sourceModelsDirs,
       lazyResolver,
       catalog,
+      quiet,
     )
   );
   vaultTypeRegistry.setLoader(() =>
@@ -271,6 +274,7 @@ export async function configureExtensionLoaders(
       sourceVaultsDirs,
       lazyResolver,
       catalog,
+      quiet,
     )
   );
   driverTypeRegistry.setLoader(() =>
@@ -281,6 +285,7 @@ export async function configureExtensionLoaders(
       sourceDriversDirs,
       lazyResolver,
       catalog,
+      quiet,
     )
   );
   datastoreTypeRegistry.setLoader(() =>
@@ -290,6 +295,7 @@ export async function configureExtensionLoaders(
       denoRuntime,
       sourceDatastoresDirs,
       catalog,
+      quiet,
     )
   );
   reportRegistry.setLoader(() =>
@@ -300,6 +306,7 @@ export async function configureExtensionLoaders(
       sourceReportsDirs,
       lazyResolver,
       catalog,
+      quiet,
     )
   );
 
@@ -373,6 +380,7 @@ async function loadUserModels(
   sourceDirs: string[] = [],
   resolverFactory?: () => Promise<DatastorePathResolver | undefined>,
   catalog?: ExtensionCatalogStore,
+  quiet = false,
 ): Promise<void> {
   try {
     const modelsDir = resolveModelsDir(marker);
@@ -417,15 +425,23 @@ async function loadUserModels(
       },
     );
 
+    const realFailures = {
+      failed: [] as Array<{ file: string; error: string }>,
+    };
     for (const failure of result.failed) {
       if (failure.error.startsWith("Cannot extend unregistered model type")) {
+        // Retryable: the base type is loaded lazily and this extension
+        // will re-attach via attachPendingExtensionsForType. Not a
+        // user-facing failure — keep it at log-only.
         logger
           .warn`User extension ${failure.file} targets unregistered base type — will retry once the base is loaded: ${failure.error}`;
       } else {
         logger
           .warn`Failed to load user model ${failure.file}: ${failure.error}`;
+        realFailures.failed.push(failure);
       }
     }
+    recordLoadFailures("model", realFailures, { quiet });
   } catch {
     // Not in a swamp repo or models dir doesn't exist — not an error
   }
@@ -442,6 +458,7 @@ async function loadUserVaults(
   sourceDirs: string[] = [],
   resolverFactory?: () => Promise<DatastorePathResolver | undefined>,
   catalog?: ExtensionCatalogStore,
+  quiet = false,
 ): Promise<void> {
   try {
     const vaultsDir = resolveVaultsDir(marker);
@@ -475,6 +492,7 @@ async function loadUserVaults(
         logger
           .warn`Failed to load user vault ${failure.file}: ${failure.error}`;
       }
+      recordLoadFailures("vault", result, { quiet });
     } else {
       const result = await loader.loadVaults(absoluteVaultsDir, {
         additionalDirs: [...sourceDirs, ...pulledDirs],
@@ -485,6 +503,7 @@ async function loadUserVaults(
         logger
           .warn`Failed to load user vault ${failure.file}: ${failure.error}`;
       }
+      recordLoadFailures("vault", result, { quiet });
     }
   } catch {
     // Not in a swamp repo or vaults dir doesn't exist — not an error
@@ -498,6 +517,7 @@ async function loadUserDrivers(
   sourceDirs: string[] = [],
   resolverFactory?: () => Promise<DatastorePathResolver | undefined>,
   catalog?: ExtensionCatalogStore,
+  quiet = false,
 ): Promise<void> {
   try {
     const driversDir = resolveDriversDir(marker);
@@ -531,6 +551,7 @@ async function loadUserDrivers(
         logger
           .warn`Failed to load user driver ${failure.file}: ${failure.error}`;
       }
+      recordLoadFailures("driver", result, { quiet });
     } else {
       const result = await loader.loadDrivers(absoluteDriversDir, {
         additionalDirs: [...sourceDirs, ...pulledDirs],
@@ -541,6 +562,7 @@ async function loadUserDrivers(
         logger
           .warn`Failed to load user driver ${failure.file}: ${failure.error}`;
       }
+      recordLoadFailures("driver", result, { quiet });
     }
   } catch {
     // Not in a swamp repo or drivers dir doesn't exist — not an error
@@ -553,6 +575,7 @@ async function loadUserDatastores(
   denoRuntime: EmbeddedDenoRuntime,
   sourceDirs: string[] = [],
   catalog?: ExtensionCatalogStore,
+  quiet = false,
 ): Promise<void> {
   try {
     const datastoresDir = resolveDatastoresDir(marker);
@@ -589,6 +612,7 @@ async function loadUserDatastores(
         logger
           .warn`Failed to load user datastore ${failure.file}: ${failure.error}`;
       }
+      recordLoadFailures("datastore", result, { quiet });
     } else {
       const result = await loader.loadDatastores(absoluteDatastoresDir, {
         additionalDirs: [...sourceDirs, ...pulledDirs],
@@ -599,6 +623,7 @@ async function loadUserDatastores(
         logger
           .warn`Failed to load user datastore ${failure.file}: ${failure.error}`;
       }
+      recordLoadFailures("datastore", result, { quiet });
     }
   } catch {
     // Not in a swamp repo or datastores dir doesn't exist — not an error
@@ -612,6 +637,7 @@ async function loadUserReports(
   sourceDirs: string[] = [],
   resolverFactory?: () => Promise<DatastorePathResolver | undefined>,
   catalog?: ExtensionCatalogStore,
+  quiet = false,
 ): Promise<void> {
   try {
     const reportsDir = resolveReportsDir(marker);
@@ -645,6 +671,7 @@ async function loadUserReports(
         logger
           .warn`Failed to load user report ${failure.file}: ${failure.error}`;
       }
+      recordLoadFailures("report", result, { quiet });
     } else {
       const result = await loader.loadReports(absoluteReportsDir, {
         additionalDirs: [...sourceDirs, ...pulledDirs],
@@ -655,6 +682,7 @@ async function loadUserReports(
         logger
           .warn`Failed to load user report ${failure.file}: ${failure.error}`;
       }
+      recordLoadFailures("report", result, { quiet });
     }
   } catch {
     // Not in a swamp repo or reports dir doesn't exist — not an error
@@ -890,6 +918,7 @@ export async function runCli(args: string[]): Promise<void> {
       marker,
       resolvedSources,
       deferredWarnings,
+      isQuietFromArgs(args),
     );
   }
 

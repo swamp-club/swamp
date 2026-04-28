@@ -99,6 +99,15 @@ export function getOutputModeFromArgs(args: string[]): OutputMode {
 }
 
 /**
+ * Pre-parses --quiet / -q from raw CLI arguments. Used by code paths that
+ * fire before Cliffy's globalAction has parsed options (e.g. extension
+ * load warnings emitted from lazy loaders inside ensureLoaded()).
+ */
+export function isQuietFromArgs(args: string[]): boolean {
+  return args.includes("--quiet") || args.includes("-q");
+}
+
+/**
  * Pre-parses --repo-dir from raw CLI arguments before Cliffy option parsing.
  *
  * Supports both `--repo-dir <value>` and `--repo-dir=<value>` forms.

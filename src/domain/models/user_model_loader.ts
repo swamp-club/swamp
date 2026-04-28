@@ -64,6 +64,7 @@ import {
   SWAMP_SUBDIRS,
 } from "../../infrastructure/persistence/paths.ts";
 import { assertSafePath } from "../../infrastructure/persistence/safe_path.ts";
+import { emitTypeExtractionFailure } from "../../infrastructure/logging/extension_load_warnings.ts";
 import type { DatastorePathResolver } from "../datastore/datastore_path_resolver.ts";
 
 const logger = getLogger(["swamp", "models", "loader"]);
@@ -969,7 +970,16 @@ export class UserModelLoader {
         const typeMatch = source.match(
           /export\s+const\s+(?:model|extension)\s*=\s*\{[\s\S]*?type\s*:\s*["']([^"']+)["']/,
         );
-        if (!typeMatch) continue;
+        if (!typeMatch) {
+          // The file has `export const model =` (or extension) but type
+          // is not a string literal we can extract — emit a warning
+          // instead of silently skipping.
+          emitTypeExtractionFailure(
+            absolutePath,
+            extensionMatch ? "extension" : "model",
+          );
+          continue;
+        }
 
         const typeNormalized = ModelType.create(typeMatch[1]).normalized;
 

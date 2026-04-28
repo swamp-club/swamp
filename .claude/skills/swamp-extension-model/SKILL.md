@@ -129,6 +129,11 @@ one's checkpoint catches a class of regression the next step can't.
    [When to Create a Custom Model](#when-to-create-a-custom-model).
 2. **Author the model file** — copy [Quick Start](#quick-start); `deno check`.
 3. **Verify registration** — `swamp model type search --json` shows the type.
+   Files in `extensions/models/` are auto-discovered on first use; you do
+   **not** need `swamp extension source add` for this directory. If the type
+   does not appear, check stderr for `swamp-warning:` lines naming the model
+   file — they identify validation or type-extraction failures that would
+   otherwise be silent.
 4. **Smoke test** against live APIs —
    [references/smoke_testing.md](references/smoke_testing.md).
 5. **Unit tests** — colocate `*_test.ts`; `deno test` passes.
@@ -422,8 +427,20 @@ Sources override pulled extensions of the same type — if you're developing a
 local copy of a pulled extension, add it as a source and your version loads
 instead.
 
+`extensions/models/` is the **default** local-discovery directory and never
+needs to be registered with `swamp extension source add`. The source-add flow
+exists for OTHER directories outside the repo (a sibling clone of an extension
+you're developing, a shared toolbox dir on the filesystem, etc.). Pointing
+`extension source add` at `extensions/models/` is a no-op at best and a
+confusing duplicate at worst.
+
 Files are classified by export name: `export const model` defines new types,
 `export const extension` adds methods to existing types.
+
+When a model file fails to load — bad `version`, missing required fields,
+non-literal `type` expression, syntax error — swamp emits a stderr line prefixed
+`swamp-warning:` naming the file and the error. Watch stderr if a type isn't
+appearing as expected.
 
 ### Testing Extensions from a Separate Repo
 

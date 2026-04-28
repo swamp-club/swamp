@@ -45,6 +45,7 @@ import {
   SWAMP_SUBDIRS,
 } from "../../infrastructure/persistence/paths.ts";
 import { assertSafePath } from "../../infrastructure/persistence/safe_path.ts";
+import { emitTypeExtractionFailure } from "../../infrastructure/logging/extension_load_warnings.ts";
 import type { DatastorePathResolver } from "../datastore/datastore_path_resolver.ts";
 import {
   type ExtensionCatalogStore,
@@ -594,7 +595,10 @@ export class UserVaultLoader {
         if (!/export\s+const\s+vault\s*[=:]/.test(source)) continue;
 
         const typeMatch = source.match(/type\s*:\s*["']([^"']+)["']/);
-        if (!typeMatch) continue;
+        if (!typeMatch) {
+          emitTypeExtractionFailure(absolutePath, "vault");
+          continue;
+        }
 
         const typeNormalized = typeMatch[1].toLowerCase();
 
