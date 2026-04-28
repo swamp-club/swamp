@@ -228,6 +228,29 @@ swamp source clean --json
 - Use `--version main` to get the latest unreleased code
 - Use `--version <tag>` to get a specific release
 
+## Local Extension Model Not Appearing in Type Search
+
+If a model file at `extensions/models/<name>.ts` doesn't show up in
+`swamp model type search`:
+
+1. **Check stderr.** Swamp emits one `swamp-warning:` line per failed extension
+   load, naming the file and the error. The line goes to stderr (not stdout) so
+   it stays out of `--json` output but is still visible. Common causes:
+   - Missing or invalid `version` field — must be CalVer (`YYYY.MM.DD.MICRO`).
+   - `type` is a variable instead of a string literal — the catalog extracts the
+     type via regex and only matches literal strings.
+   - Bundle failure (syntax error, unresolvable import).
+2. **Do NOT run `swamp extension source add extensions/models`.** That path is
+   auto-discovered by default; registering it as a source is a no-op that adds
+   confusion. The source-add flow is for directories _outside_ the repo.
+3. **Confirm `deno check` passes** on the file. Type errors that pass
+   `deno check` may still be rejected by swamp's stricter validation (e.g.
+   missing `version`).
+
+The discovery code lives in `src/cli/mod.ts` (`loadUserModels`) and
+`src/domain/models/user_model_loader.ts` (`UserModelLoader.buildIndex`). The
+stderr emitter is at `src/infrastructure/logging/extension_load_warnings.ts`.
+
 ## Source Extension Not Loading
 
 If a source extension isn't appearing in `swamp model type search`:

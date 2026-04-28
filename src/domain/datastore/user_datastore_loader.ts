@@ -45,6 +45,7 @@ import {
   SWAMP_SUBDIRS,
 } from "../../infrastructure/persistence/paths.ts";
 import { assertSafePath } from "../../infrastructure/persistence/safe_path.ts";
+import { emitTypeExtractionFailure } from "../../infrastructure/logging/extension_load_warnings.ts";
 import {
   type ExtensionCatalogStore,
   type ExtensionTypeRow,
@@ -586,7 +587,10 @@ export class UserDatastoreLoader {
         if (!/export\s+const\s+datastore\s*[=:]/.test(source)) continue;
 
         const typeMatch = source.match(/type\s*:\s*["']([^"']+)["']/);
-        if (!typeMatch) continue;
+        if (!typeMatch) {
+          emitTypeExtractionFailure(absolutePath, "datastore");
+          continue;
+        }
 
         const typeNormalized = typeMatch[1].toLowerCase();
 
