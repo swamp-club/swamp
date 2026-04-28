@@ -4,6 +4,8 @@ Detailed API documentation for extension model development.
 
 ## Table of Contents
 
+- [Resource & File Specs](#resource--file-specs)
+- [Reading Bundled Assets](#reading-bundled-assets)
 - [writeResource API](#writeresource-api)
 - [createFileWriter API](#createfilewriter-api)
 - [DataWriter Methods](#datawriter-methods)
@@ -13,6 +15,111 @@ Detailed API documentation for extension model development.
 - [Standard Tags](#standard-tags)
 - [Error Handling](#error-handling)
 - [Logging API](#logging-api)
+
+---
+
+## Resource & File Specs
+
+Models declare their data outputs using `resources` and/or `files` on the model
+export.
+
+### Resource Specs
+
+Resources are structured JSON data validated against a Zod schema:
+
+```typescript
+resources: {
+  "state": {
+    description: "Deployment state",
+    schema: z.object({
+      status: z.string(),
+      endpoint: z.string().url(),
+    }),
+    lifetime: "infinite",
+    garbageCollection: 10,
+  },
+},
+```
+
+**Spec naming:** Resource spec keys must not contain hyphens (`-`). Use
+camelCase or single words (e.g., `igw` not `internet-gateway`).
+
+**Sensitive fields:** Mark fields containing secrets with
+`z.meta({ sensitive: true })`. Values are stored in a vault and replaced with
+vault references before persistence:
+
+```typescript
+resources: {
+  "keypair": {
+    schema: z.object({
+      keyId: z.string(),
+      keyMaterial: z.string().meta({ sensitive: true }),
+    }),
+    lifetime: "infinite",
+    garbageCollection: 10,
+  },
+},
+```
+
+Set `sensitiveOutput: true` on the spec to treat all fields as sensitive. Set
+`vaultName` on the spec to override which vault stores the values.
+
+**Schema requirement:** If your resource will be referenced by other models via
+CEL expressions, declare the referenced properties explicitly in the Zod schema:
+
+```typescript
+// Wrong — expression validator can't resolve attributes.VpcId
+schema: z.object({}).passthrough(),
+
+// Correct — VpcId is declared so expressions can reference it
+schema: z.object({ VpcId: z.string() }).passthrough();
+```
+
+### File Specs
+
+Files are binary or text content (including logs):
+
+```typescript
+files: {
+  "log": {
+    description: "Execution log",
+    contentType: "text/plain",
+    lifetime: "7d",
+    garbageCollection: 5,
+    streaming: true,
+  },
+},
+```
+
+---
+
+## Reading Bundled Assets
+
+Models shipped via an extension manifest can declare runtime assets in
+`additionalFiles`:
+
+```yaml
+# manifest.yaml
+additionalFiles:
+  - prompts/review.md
+  - templates/summary.txt
+```
+
+Read them at runtime via `ctx.extensionFile()`:
+
+```ts
+execute: (async (_args, ctx) => {
+  const promptPath = ctx.extensionFile("prompts/review.md");
+  const prompt = await Deno.readTextFile(promptPath);
+  // ...
+});
+```
+
+Do **not** hardcode `.swamp/pulled-extensions/<name>/files/...` — that layout
+only exists for pulled extensions. Source-loaded extensions
+(`swamp extension source add`) resolve the same relative path against the
+manifest directory, which `ctx.extensionFile()` handles for you. Hardcoded paths
+pass smoke tests in source mode but break when consumers pull the extension.
 
 ---
 

@@ -1,15 +1,60 @@
 # Extension Adversarial Review
 
-After writing or significantly modifying extension code, review against each
-applicable dimension below before running tests or pushing. Present findings to
-the user before proceeding.
+After writing or **significantly modifying** extension code (anything beyond a
+typo, comment tweak, or trivial rename), review against each applicable
+dimension below **before running smoke tests or unit tests**. Present findings
+to the user before proceeding.
+
+This is step 4 of the Development Workflow in
+[../SKILL.md](../SKILL.md#development-workflow) and gates steps 5 (smoke test)
+and 6 (unit tests).
 
 ## When to Run
 
-- After writing new extension code, before unit tests
+- After writing new extension code, **before** smoke tests or unit tests
+  (workflow step 4 — see the
+  [Adversarial Review Gate](../SKILL.md#adversarial-review-gate))
 - After revising code in response to smoke test failures (review only changed
   dimensions)
 - Before publishing with `swamp extension push`
+
+## Output Format
+
+Produce a structured findings report with one line per applicable dimension.
+Each line is either `PASS` or `ISSUE FOUND` with detail. Use the dimensions that
+apply to your extension type (universal + the relevant type-specific section).
+Skip dimensions that do not apply (e.g. omit "API Contracts" for an extension
+that makes no external HTTP calls — note the omission explicitly).
+
+```markdown
+## Adversarial Review — <extension name>
+
+**Universal**
+
+- Credentials & Secrets: PASS
+- Logging Quality: PASS
+- Error Handling: ISSUE FOUND — `delete` swallows 404 with a broad `try/catch`;
+  should narrow to the specific status code.
+- Testing Completeness: PASS
+- Idempotency & Resilience: PASS
+- API Contracts: PASS
+- Resource Management: PASS
+
+**Models** (type-specific)
+
+- Schema strictness: PASS
+- Lifetime & GC: PASS
+- CRUD completeness: ISSUE FOUND — no `sync` method; drift detection is blocked.
+- Pre-flight checks: PASS
+- Instance names: PASS
+- Data access: PASS
+- Version upgrades: not applicable (initial version)
+```
+
+Each `ISSUE FOUND` line must be specific enough that the user can act on it
+without re-reading the code. After listing findings, decide whether each issue
+is a blocker (fix before testing) or a follow-up (acknowledge with the user and
+continue). Do not proceed to step 5 until the user has acknowledged the report.
 
 ## Universal Dimensions
 

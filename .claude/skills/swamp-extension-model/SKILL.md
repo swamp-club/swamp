@@ -134,15 +134,34 @@ one's checkpoint catches a class of regression the next step can't.
    does not appear, check stderr for `swamp-warning:` lines naming the model
    file — they identify validation or type-extraction failures that would
    otherwise be silent.
-4. **Smoke test** against live APIs —
+4. **Adversarial review** — pre-test quality gate. See
+   [Adversarial Review Gate](#adversarial-review-gate) below for the required
+   procedure and output format. This step MUST complete before steps 5 and 6.
+5. **Smoke test** against live APIs —
    [references/smoke_testing.md](references/smoke_testing.md).
-5. **Unit tests** — colocate `*_test.ts`; `deno test` passes.
-6. **Adversarial review** —
-   [references/adversarial_review.md](references/adversarial_review.md).
+6. **Unit tests** — colocate `*_test.ts`; `deno test` passes.
 7. **Version + manifest** — `swamp extension version`,
    `swamp extension fmt manifest.yaml --check`.
 8. **Dry-run, then publish** — `swamp extension push manifest.yaml --dry-run`,
    then without `--dry-run`.
+
+### Adversarial Review Gate
+
+> **STOP — do not skip.**
+>
+> After authoring or **significantly modifying** extension code, and BEFORE
+> running smoke tests or unit tests, you MUST:
+>
+> 1. Read [references/adversarial-review.md](references/adversarial-review.md)
+>    and self-review against every applicable dimension.
+> 2. Produce the structured findings report described in that file's "Output
+>    Format" section (one `PASS` or `ISSUE FOUND — <detail>` line per
+>    dimension).
+> 3. Present the report to the user and wait for acknowledgement before moving
+>    to step 5.
+>
+> The gate is advisory — no tool enforces it. Skipping under authoring momentum
+> is the failure mode it exists to prevent.
 
 ## Model Structure
 
@@ -187,75 +206,15 @@ All standard Zod types work in schemas. Swamp-specific modifiers:
 
 ## Resources & Files
 
-Models declare their data outputs using `resources` and/or `files`.
+Models declare their data outputs as `resources` (structured JSON validated
+against a Zod schema) and/or `files` (binary or text, including logs). Each spec
+sets `lifetime` and `garbageCollection`. Resource spec keys must not contain
+hyphens — use camelCase or single words (`igw`, not `internet-gateway`). Mark
+secret fields with `z.meta({ sensitive: true })` to route them to a vault.
 
-### Resource Specs
-
-Resources are structured JSON data validated against a Zod schema:
-
-```typescript
-resources: {
-  "state": {
-    description: "Deployment state",
-    schema: z.object({
-      status: z.string(),
-      endpoint: z.string().url(),
-    }),
-    lifetime: "infinite",
-    garbageCollection: 10,
-  },
-},
-```
-
-**Spec naming:** Resource spec keys must not contain hyphens (`-`). Use
-camelCase or single words (e.g., `igw` not `internet-gateway`).
-
-**Sensitive fields:** Mark fields containing secrets with
-`z.meta({ sensitive: true })`. Values are stored in a vault and replaced with
-vault references before persistence:
-
-```typescript
-resources: {
-  "keypair": {
-    schema: z.object({
-      keyId: z.string(),
-      keyMaterial: z.string().meta({ sensitive: true }),
-    }),
-    lifetime: "infinite",
-    garbageCollection: 10,
-  },
-},
-```
-
-Set `sensitiveOutput: true` on the spec to treat all fields as sensitive. Set
-`vaultName` on the spec to override which vault stores the values.
-
-**Schema requirement:** If your resource will be referenced by other models via
-CEL expressions, declare the referenced properties explicitly in the Zod schema:
-
-```typescript
-// Wrong — expression validator can't resolve attributes.VpcId
-schema: z.object({}).passthrough(),
-
-// Correct — VpcId is declared so expressions can reference it
-schema: z.object({ VpcId: z.string() }).passthrough(),
-```
-
-### File Specs
-
-Files are binary or text content (including logs):
-
-```typescript
-files: {
-  "log": {
-    description: "Execution log",
-    contentType: "text/plain",
-    lifetime: "7d",
-    garbageCollection: 5,
-    streaming: true,
-  },
-},
-```
+For full spec syntax (resource examples, file examples, sensitive-field rules,
+schema requirements for CEL references), see
+[references/api.md](references/api.md#resource--file-specs).
 
 ## Execute Function
 
@@ -279,30 +238,11 @@ The execute function receives pre-validated `args` and a `context` object:
 ### Reading bundled assets
 
 Models shipped via an extension manifest can declare runtime assets in
-`additionalFiles`:
-
-```yaml
-# manifest.yaml
-additionalFiles:
-  - prompts/review.md
-  - templates/summary.txt
-```
-
-Read them at runtime via `ctx.extensionFile()`:
-
-```ts
-execute: (async (_args, ctx) => {
-  const promptPath = ctx.extensionFile("prompts/review.md");
-  const prompt = await Deno.readTextFile(promptPath);
-  // ...
-});
-```
-
-Do **not** hardcode `.swamp/pulled-extensions/<name>/files/...` — that layout
-only exists for pulled extensions. Source-loaded extensions
-(`swamp extension source add`) resolve the same relative path against the
-manifest directory, which `ctx.extensionFile()` handles for you. Hardcoded paths
-pass smoke tests in source mode but break when consumers pull the extension.
+`additionalFiles` and read them at runtime with `ctx.extensionFile(relPath)`. Do
+**not** hardcode `.swamp/pulled-extensions/<name>/files/...` — source-loaded and
+pulled extensions resolve paths differently and `ctx.extensionFile()` handles
+both. See [references/api.md](references/api.md#reading-bundled-assets) for the
+manifest example, runtime usage, and failure mode.
 
 Return `{ dataHandles: [handle] }` from execute. Throw **before** writing data —
 failed executions should not persist incorrect data. The workflow engine catches
@@ -337,36 +277,18 @@ for complete factory model examples with CEL discovery patterns.
 
 ## CRUD Lifecycle Models
 
-Models that manage real resources typically have `create`, `update`, `delete`,
-and `sync` methods:
+Models that manage real resources typically expose `create`, `update`, `delete`,
+and `sync` methods. Unlike `get` (which requires the resource ID as an
+argument), `sync` reads the ID from already-stored state via
+`context.readResource()`, making it zero-arg and suitable for automated drift
+detection across many instances.
 
-- **`create`** — run a command/API call, store the result via `writeResource()`
-- **`update`** — read stored data via `context.readResource()`, modify the
-  resource, write updated state
-- **`delete`** — read stored data via `context.readResource()`, clean up the
-  resource, return `{ dataHandles: [] }`
-- **`sync`** — read stored resource ID via `context.readResource()`, call the
-  live provider API to get current state, write refreshed state via
-  `writeResource()` (or mark as `not_found` if the resource is gone)
-
-Unlike `get` (which requires the user to provide the resource ID as an
-argument), `sync` reads the ID from already-stored state, making it zero-arg.
-This makes `sync` suitable for automated drift detection — a workflow can call
-`sync` on every instance without knowing resource IDs up front.
-
-See [references/examples.md](references/examples.md#crud-lifecycle-model-vpc)
-for a complete VPC example with all four methods and
-[references/examples.md](references/examples.md#sync-method) for the standalone
-sync pattern with workflow examples.
-
-### Optional Patterns for Cloud/API Models
-
-Ask the user whether they want these when creating a new extension model:
-
-- **[Polling to completion](references/examples.md#polling-to-completion)** —
-  poll async APIs until the resource is fully provisioned
-- **[Idempotent creates](references/examples.md#idempotent-creates)** — check
-  for existing state before creating to avoid duplicates on re-runs
+For full method bodies, see
+[references/examples.md](references/examples.md#crud-lifecycle-model-vpc) (VPC
+example) and [references/examples.md](references/examples.md#sync-method) (sync
+pattern + workflow). When designing a new cloud/API model, ask the user whether
+to include [polling to completion](references/examples.md#polling-to-completion)
+and [idempotent creates](references/examples.md#idempotent-creates).
 
 ## Pre-flight Checks
 
@@ -427,45 +349,22 @@ Sources override pulled extensions of the same type — if you're developing a
 local copy of a pulled extension, add it as a source and your version loads
 instead.
 
-`extensions/models/` is the **default** local-discovery directory and never
-needs to be registered with `swamp extension source add`. The source-add flow
-exists for OTHER directories outside the repo (a sibling clone of an extension
-you're developing, a shared toolbox dir on the filesystem, etc.). Pointing
-`extension source add` at `extensions/models/` is a no-op at best and a
-confusing duplicate at worst.
-
 Files are classified by export name: `export const model` defines new types,
 `export const extension` adds methods to existing types.
 
-When a model file fails to load — bad `version`, missing required fields,
-non-literal `type` expression, syntax error — swamp emits a stderr line prefixed
-`swamp-warning:` naming the file and the error. Watch stderr if a type isn't
-appearing as expected.
+`swamp extension source add` is for OTHER directories — a sibling clone of an
+extension under development or a shared toolbox dir. Pointing it at
+`extensions/models/` is a no-op. The target path can be either a repo root (with
+`extensions/<kind>/` subdirs) or a directory whose files declare extension
+exports directly. The source extension must have a `deno.json` with its
+dependencies (e.g., `"zod": "npm:zod@4"`) for bundling to succeed. The command
+validates the path up-front and fails with a clear error if it contributes
+nothing.
 
-### Testing Extensions from a Separate Repo
-
-To test an extension without copying files into the consumer repo:
-
-```bash
-# In the consumer repo, add the extension as a source.
-# The path can be a repo root with extensions/<kind>/ subdirs, OR a
-# directory whose files declare extension exports directly.
-swamp extension source add ~/code/my-extensions/model/aws/ec2
-
-# Verify it loads
-swamp model type search ec2
-
-# When done, remove the source
-swamp extension source rm ~/code/my-extensions/model/aws/ec2
-```
-
-`swamp extension source add` validates the path up-front — if it contributes no
-extensions, the add fails with a clear error naming the kinds it looked for. Use
-`swamp extension source list` to see the resolved kinds for each configured
-source.
-
-The source extension must have a `deno.json` with its dependencies (e.g.,
-`"zod": "npm:zod@4"`) for bundling to succeed.
+When a model file fails to load (bad `version`, missing required fields,
+non-literal `type`, syntax error), swamp emits a stderr line prefixed
+`swamp-warning:` naming the file and the error — watch stderr if a type doesn't
+appear.
 
 ## Smoke Testing
 
@@ -511,14 +410,6 @@ See [references/testing.md](references/testing.md) for CRUD lifecycle testing
 with `storedResources`, injectable client patterns, log assertions, and
 cancellation testing.
 
-## Extension Adversarial Review
-
-After writing or significantly modifying extension code, and before running unit
-tests or smoke tests, read
-[references/adversarial-review.md](references/adversarial-review.md) and
-self-review against all applicable dimensions. Present findings to the user
-before proceeding to testing.
-
 ## Publishing Extensions
 
 Use the `swamp-extension-publish` skill to publish extensions to the registry.
@@ -552,17 +443,6 @@ After creating your model:
 swamp model type search --json              # Model should appear
 swamp model type describe @myorg/my-model --json  # Check schema
 ```
-
-## Bundling Skills with Extensions
-
-Extensions can include skills — markdown guidance documents that teach agents
-how to use the extension's models effectively. Skills are declared in
-`manifest.yaml` and extracted to the user's tool-specific skill directory on
-pull.
-
-See [references/skills.md](references/skills.md) for the full guide: directory
-structure, SKILL.md format, manifest declaration, validation rules, and
-publishing workflow.
 
 ## When to Use Other Skills
 
@@ -601,7 +481,7 @@ publishing workflow.
   upgrade patterns, user prompt workflow, and migration examples
 - **Adversarial Review**: See
   [references/adversarial-review.md](references/adversarial-review.md) for the
-  pre-push quality review checklist (credentials, logging, errors, idempotency)
+  pre-test quality review (dimensions + Output Format for findings report)
 - **Docker execution**: See
   [references/docker-execution.md](references/docker-execution.md)
 - **Bundling Skills**: See [references/skills.md](references/skills.md) for
