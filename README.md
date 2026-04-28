@@ -160,8 +160,8 @@ development process.
 **Here's how it works:**
 
 1. **You file an issue** —
-   [bug reports and feature requests](https://github.com/systeminit/swamp/issues)
-   are very welcome. Be as detailed as you like.
+   [bug reports and feature requests](https://swamp-club.com/lab) are very
+   welcome. Be as detailed as you like.
 2. **We triage it** — A maintainer triages the issue locally using Claude,
    confirms bugs by tracing through the codebase, and generates a detailed
    implementation plan. Plans are revised interactively until the approach is

@@ -8,8 +8,8 @@ running the most recent version.
 ## Reporting a Vulnerability
 
 For most bugs — including crashes, unexpected behavior, and general defects —
-please [file a public issue](https://github.com/systeminit/swamp/issues/new). We
-prefer open issues so the community can track progress and discuss.
+please [file a public issue](https://swamp-club.com/lab). We prefer open issues
+so the community can track progress and discuss.
 
 If the vulnerability involves **secret or credential exposure, data
 exfiltration, or any issue where public disclosure could put users at risk**,
