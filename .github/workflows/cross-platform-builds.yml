@@ -1,0 +1,39 @@
+name: Cross Platform Builds
+
+on:
+  workflow_dispatch:
+
+jobs:
+  build:
+    name: Cross Platform Build (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, macos-latest]
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v6
+
+      - name: Setup Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
+
+      - name: Run deno lint
+        run: deno lint
+
+      - name: Run deno fmt --check
+        run: deno fmt --check
+
+      - name: Run deno check
+        run: deno task check
+
+      - name: Run deno test
+        run: deno task test
+
+      - name: Compile binary
+        run: deno task compile
