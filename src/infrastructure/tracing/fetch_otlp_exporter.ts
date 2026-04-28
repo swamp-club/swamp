@@ -99,6 +99,8 @@ export class FetchOtlpExporter implements SpanExporter {
       if (!response.ok) {
         // Drain the body to avoid resource leaks, but don't throw.
         await response.arrayBuffer();
+      } else {
+        await response.body?.cancel();
       }
     } finally {
       clearTimeout(timer);
