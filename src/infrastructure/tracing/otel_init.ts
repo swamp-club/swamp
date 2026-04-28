@@ -38,7 +38,12 @@ export async function initTracing(): Promise<void> {
 
   // Dynamic imports — only loaded when tracing is actually enabled.
   const [
-    { BasicTracerProvider, BatchSpanProcessor, ConsoleSpanExporter },
+    {
+      BasicTracerProvider,
+      BatchSpanProcessor,
+      SimpleSpanProcessor,
+      ConsoleSpanExporter,
+    },
     { AsyncLocalStorageContextManager },
     { Resource },
     { ATTR_SERVICE_NAME, ATTR_SERVICE_VERSION },
@@ -50,6 +55,12 @@ export async function initTracing(): Promise<void> {
     import("@opentelemetry/semantic-conventions"),
     import("@opentelemetry/api"),
   ]);
+
+  // Short-lived CLI invocations may exit before BatchSpanProcessor's batching
+  // window completes (Deno.exit short-circuits finally blocks). Default to
+  // SimpleSpanProcessor for predictable per-span flush; allow opting back into
+  // BatchSpanProcessor via OTEL_BSP_USE=1 for long-running modes (`swamp serve`).
+  const useBatch = Deno.env.get("OTEL_BSP_USE") === "1";
 
   // Register AsyncLocalStorage-based context manager
   const contextManager = new AsyncLocalStorageContextManager();
@@ -64,10 +75,12 @@ export async function initTracing(): Promise<void> {
 
   const provider = new BasicTracerProvider({ resource });
 
+  const wrapProcessor = (
+    e: ConstructorParameters<typeof SimpleSpanProcessor>[0],
+  ) => useBatch ? new BatchSpanProcessor(e) : new SimpleSpanProcessor(e);
+
   if (exporterKind === "console") {
-    provider.addSpanProcessor(
-      new BatchSpanProcessor(new ConsoleSpanExporter()),
-    );
+    provider.addSpanProcessor(wrapProcessor(new ConsoleSpanExporter()));
   } else {
     // Fetch-based OTLP/HTTP exporter — uses Deno's native fetch instead of
     // Node.js http/https modules, which fail TLS in compiled binaries.
@@ -88,7 +101,7 @@ export async function initTracing(): Promise<void> {
       url: `${endpoint!.replace(/\/+$/, "")}/v1/traces`,
       headers,
     });
-    provider.addSpanProcessor(new BatchSpanProcessor(exporter));
+    provider.addSpanProcessor(wrapProcessor(exporter));
   }
 
   // Register as global tracer provider
