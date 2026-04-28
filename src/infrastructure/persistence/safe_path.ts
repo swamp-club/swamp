@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { dirname, join, resolve } from "@std/path";
+import { dirname, join, resolve, SEPARATOR } from "@std/path";
 
 /**
  * Error thrown when a path resolves outside its expected boundary,
@@ -109,7 +109,7 @@ export async function assertSafePath(
 
   if (
     resolvedPath !== resolvedBoundary &&
-    !resolvedPath.startsWith(resolvedBoundary + "/")
+    !resolvedPath.startsWith(resolvedBoundary + SEPARATOR)
   ) {
     throw new PathTraversalError(path, boundary, resolvedPath);
   }

@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertRejects } from "@std/assert";
-import { join } from "@std/path";
+import { dirname, join } from "@std/path";
 import { assertSafePath, PathTraversalError } from "./safe_path.ts";
 
 Deno.test("assertSafePath", async (t) => {
@@ -180,6 +180,54 @@ Deno.test("assertSafePath", async (t) => {
         await Deno.remove(symlinkPath);
       }
     });
+
+    await t.step(
+      "deeply nested child path is accepted (platform separator)",
+      async () => {
+        // Mirrors the bundle-cache path shape that fails on Windows when the
+        // separator check is hardcoded to "/". Uses `join` so the path is
+        // built with the platform's native separator.
+        const nested = join(boundary, "bundles", "abc12345", "model.js");
+        await Deno.mkdir(dirname(nested), { recursive: true });
+        await Deno.writeTextFile(nested, "// test");
+
+        try {
+          await assertSafePath(nested, boundary);
+        } finally {
+          await Deno.remove(nested);
+        }
+      },
+    );
+
+    await t.step(
+      "path lexically outside boundary throws (no symlinks)",
+      async () => {
+        const outsideFile = join(outsideDir, "secret.txt");
+        await assertRejects(
+          () => assertSafePath(outsideFile, boundary),
+          PathTraversalError,
+          "outside boundary",
+        );
+      },
+    );
+
+    await t.step(
+      "file whose name starts with '..' is accepted as a child",
+      async () => {
+        // Guards against a string-prefix-vs-segment bug class: a future
+        // refactor that checks `rel.startsWith("..")` would incorrectly
+        // reject these legitimate child filenames.
+        for (const name of ["..foo", "...config", "..hidden.txt"]) {
+          const filePath = join(boundary, name);
+          await Deno.writeTextFile(filePath, "");
+          try {
+            await assertSafePath(filePath, boundary);
+          } finally {
+            await Deno.remove(filePath);
+          }
+        }
+      },
+    );
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }
