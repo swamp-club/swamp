@@ -1,0 +1,9 @@
+# Pin line endings to LF for all text files. Without this, Windows
+# checkouts default to core.autocrlf=true, which converts LF -> CRLF
+# and trips deno fmt --check.
+* text=auto eol=lf
+
+# Explicit binary types (don't auto-detect)
+*.png binary
+*.jpg binary
+*.gz binary
