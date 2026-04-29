@@ -17,7 +17,14 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { basename, dirname, join, relative, resolve } from "@std/path";
+import {
+  basename,
+  dirname,
+  join,
+  relative,
+  resolve,
+  SEPARATOR,
+} from "@std/path";
 import { UserError } from "../../domain/errors.ts";
 import { parseExtensionManifest } from "../../domain/extensions/extension_manifest.ts";
 import { analyzeExtensionSafety } from "../../domain/extensions/extension_safety_analyzer.ts";
@@ -421,7 +428,7 @@ async function validateNoSymlinkEscape(
   if (stat.isSymlink) {
     const linkTarget = await Deno.readLink(path);
     const resolvedTarget = resolve(join(path, "..", linkTarget));
-    if (!resolvedTarget.startsWith(resolvedTmpDir + "/")) {
+    if (!resolvedTarget.startsWith(resolvedTmpDir + SEPARATOR)) {
       throw new UserError(
         `Archive contains a symlink that escapes the temp directory: ${path}`,
       );

@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { ensureDir } from "@std/fs";
-import { dirname, join, resolve } from "@std/path";
+import { dirname, join, resolve, SEPARATOR } from "@std/path";
 import type { SourceDownloader } from "../../domain/source/mod.ts";
 import { UserError } from "../../domain/errors.ts";
 
@@ -174,7 +174,7 @@ export class HttpSourceDownloader implements SourceDownloader {
         const resolvedTarget = resolve(dirname(targetPath), linkTarget);
         if (
           resolvedTarget === effectiveRoot ||
-          resolvedTarget.startsWith(effectiveRoot + "/")
+          resolvedTarget.startsWith(effectiveRoot + SEPARATOR)
         ) {
           await Deno.symlink(linkTarget, targetPath);
         }

@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { join, resolve } from "@std/path";
+import { join, resolve, SEPARATOR } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { atomicWriteFile, atomicWriteTextFile } from "./atomic_write.ts";
 import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
@@ -1752,7 +1752,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     const resolvedParent = resolve(expectedParent);
     if (
       resolvedPath !== resolvedParent &&
-      !resolvedPath.startsWith(resolvedParent + "/")
+      !resolvedPath.startsWith(resolvedParent + SEPARATOR)
     ) {
       throw new Error(
         `Path traversal detected: ${context} resolves outside expected directory`,

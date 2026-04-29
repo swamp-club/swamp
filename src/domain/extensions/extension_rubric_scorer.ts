@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { join, resolve } from "@std/path";
+import { join, resolve, SEPARATOR } from "@std/path";
 import type { ExtensionManifest } from "./extension_manifest.ts";
 
 /**
@@ -644,7 +644,7 @@ function collectEntrypoints(
         ? normalized
         : `${field}/${normalized}`;
       const entryAbs = resolve(root, prefixed);
-      if (entryAbs !== rootAbs && !entryAbs.startsWith(rootAbs + "/")) {
+      if (entryAbs !== rootAbs && !entryAbs.startsWith(rootAbs + SEPARATOR)) {
         throw new Error(`Entrypoint escapes extraction root: ${p}`);
       }
       eps.push(entryAbs);

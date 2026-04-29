@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { ensureDir, walk } from "@std/fs";
-import { join, resolve } from "@std/path";
+import { join, resolve, SEPARATOR } from "@std/path";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { assertSafePath } from "./safe_path.ts";
@@ -252,7 +252,7 @@ export class YamlVaultConfigRepository {
     const resolvedParent = resolve(expectedParent);
     if (
       resolvedPath !== resolvedParent &&
-      !resolvedPath.startsWith(resolvedParent + "/")
+      !resolvedPath.startsWith(resolvedParent + SEPARATOR)
     ) {
       throw new Error(
         `Path traversal detected: ${context} resolves outside expected directory`,
