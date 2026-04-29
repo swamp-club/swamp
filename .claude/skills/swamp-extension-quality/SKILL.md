@@ -39,19 +39,19 @@ signals layered on top of whatever the type-specific skill produced.
 
 ## The factor-to-action map (memorise this)
 
-| Factor                | Pts | Earn it by                                                                                         |
-| --------------------- | --- | -------------------------------------------------------------------------------------------------- |
-| `has-readme`          | 2   | List `README.md` under `additionalFiles:` in `manifest.yaml`                                       |
-| `readme-example`      | 1   | Include ≥1 fenced code block in the README                                                         |
-| `rich-readme`         | 1   | Make the README ≥500 characters AND have ≥2 fenced code blocks                                     |
-| `symbols-docs`        | 1   | JSDoc ≥80% of exported symbols across all entrypoints                                              |
-| `fast-check`          | 1   | Explicit return types on every export; no private-type references in public exports                |
-| `description`         | 1   | Fill `description:` in `manifest.yaml` with a non-empty string (not "TODO")                        |
-| `platforms-one`       | 1   | Set `platforms:` to a non-empty list OR leave empty (empty = "universal")                          |
-| `platforms-two`       | 1   | Set `platforms:` to ≥2 entries OR leave empty                                                      |
-| `has-license`         | 1   | Add a LICENSE file (`LICENSE`, `LICENSE.md`, `LICENSE.txt`, or `COPYING`) under `additionalFiles:` |
-| `repository-verified` | 2   | Set `repository:` to a public HTTPS URL on github.com, gitlab.com, codeberg.org, or bitbucket.org  |
-| `verified-by-swamp`   | 1   | Only earnable by the `@swamp` namespace or admin review — do not try to game it                    |
+| Factor                | Pts | Earn it by                                                                                                            |
+| --------------------- | --- | --------------------------------------------------------------------------------------------------------------------- |
+| `has-readme`          | 2   | List `README.md` under `additionalFiles:` in `manifest.yaml` (use a bare basename)                                    |
+| `readme-example`      | 1   | Include ≥1 fenced code block in the README                                                                            |
+| `rich-readme`         | 1   | Make the README ≥500 characters AND have ≥2 fenced code blocks                                                        |
+| `symbols-docs`        | 1   | JSDoc ≥80% of exported symbols across all entrypoints                                                                 |
+| `fast-check`          | 1   | Explicit return types on every export; no private-type references in public exports                                   |
+| `description`         | 1   | Fill `description:` in `manifest.yaml` with a non-empty string (not "TODO")                                           |
+| `platforms-one`       | 1   | Set `platforms:` to a non-empty list OR leave empty (empty = "universal")                                             |
+| `platforms-two`       | 1   | Set `platforms:` to ≥2 entries OR leave empty                                                                         |
+| `has-license`         | 1   | Add a LICENSE file (`LICENSE`, `LICENSE.md`, `LICENSE.txt`, or `COPYING`) under `additionalFiles:` as a bare basename |
+| `repository-verified` | 2   | Set `repository:` to a public HTTPS URL on github.com, gitlab.com, codeberg.org, or bitbucket.org                     |
+| `verified-by-swamp`   | 1   | Only earnable by the `@swamp` namespace or admin review — do not try to game it                                       |
 
 `verified-by-swamp` is the one third-party authors cannot earn; everything above
 it is fair game.
@@ -59,10 +59,19 @@ it is fair game.
 ## Essential mechanics authors get wrong
 
 **Files listed in `additionalFiles:` end up under `extension/files/` in the
-tarball**, not at the extension root. The analyzer checks both locations for
-README and LICENSE, so either works, but this trips up authors who assume the
-root is the only path. If a README is in the repo root but not in
-`additionalFiles:`, **it is not in the tarball at all** and earns zero.
+tarball**, not at the extension root. The analyzer checks the extension root and
+`extension/files/` for README and LICENSE — but only at that exact level. There
+is no recursion, so the entry must be a bare basename. Writing
+`additionalFiles: [docs/README.md]` lands the file at
+`extension/files/docs/README.md` and earns zero — change it to
+`additionalFiles: [README.md]` instead. If a README is in the repo root but not
+in `additionalFiles:`, it is not in the tarball at all and also earns zero.
+
+For per-extension-subdir layouts where the source files sit alongside the
+manifest, opt into `paths.base: manifest` so the bare-basename entry resolves
+correctly. See
+[references/templates.md](references/templates.md#per-extension-subdir-layout--opt-in-pathsbase-manifest)
+for the canonical example.
 
 **`repository:` must be on one of the allowlisted hosts** — github.com,
 gitlab.com (public SaaS only), codeberg.org, bitbucket.org. Self-hosted GitHub

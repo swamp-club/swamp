@@ -32,7 +32,11 @@ Earned when the tarball contains a README file. The analyzer looks at:
 2. `<logical root>/files/README.md` (same case variants)
 
 The second location is where files listed in `manifest.yaml`'s
-`additionalFiles:` field land.
+`additionalFiles:` field land. Both lookups are exact at this level — the
+analyzer does NOT recurse, so a nested entry like
+`additionalFiles: [docs/README.md]` lands at `<root>/files/docs/README.md` and
+earns zero. Use a bare basename and, if your source layout requires it, opt into
+`paths.base: manifest`.
 
 ### `readme-example` (1 pt)
 
@@ -121,6 +125,11 @@ Earned when **either**:
 - The extension's `license` field is a non-empty trimmed string (set via PATCH
   on the extension record), OR
 - The tarball contains a license file at `<root>/*` or `<root>/files/*`
+
+Both lookups are exact at this level — the analyzer does NOT recurse, so a
+nested entry like `additionalFiles: [legal/LICENSE]` lands at
+`<root>/files/legal/LICENSE` and earns zero. Use a bare basename and, if your
+source layout requires it, opt into `paths.base: manifest`.
 
 Recognized license filenames (case-sensitive matches):
 
