@@ -299,9 +299,23 @@ swamp workflow run my-workflow --last-evaluated  # Use pre-evaluated workflow
     }
   ],
   "duration": 5,
-  "path": "workflows/workflow-3fa85f64-5717-4562-b3fc-2c963f66afa6/workflow-7c9e6679-7425-40de-944b-e07fc1f90ae7-timestamp.yaml"
+  "path": "workflows/workflow-3fa85f64-5717-4562-b3fc-2c963f66afa6/workflow-7c9e6679-7425-40de-944b-e07fc1f90ae7-timestamp.yaml",
+  "dataProduced": {
+    "totalCount": 1,
+    "entries": [
+      { "modelName": "deploy-runner", "specName": "result", "count": 1 }
+    ]
+  }
 }
 ```
+
+The `dataProduced` block at the top of `--json` output (and the small
+table at the end of log-mode output) summarises every data record the
+run wrote, grouped by `(modelName, specName)`. **Read this before
+fanning out to `swamp data get` per record** — it tells you exactly
+which records exist and where to look. To fetch the contents of all
+of them in one shot, follow up with
+`swamp data list --workflow <name> --content --json`.
 
 ## Workflow History
 

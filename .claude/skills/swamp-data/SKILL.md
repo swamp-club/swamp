@@ -48,6 +48,7 @@ of queryable fields and predicate operators.
 | Query by tags          | `swamp data query 'tags.env == "prod"'`               |
 | Query by content       | `swamp data query 'attributes.status == "failed"'`    |
 | List model data        | `swamp data list <model> --json`                      |
+| List with content      | `swamp data list <model> --content --json`            |
 | List workflow data     | `swamp data list --workflow <name> --json`            |
 | Get specific data      | `swamp data get <model> <name> --json`                |
 | Get metadata only      | `swamp data get <model> <name> --no-content --json`   |
@@ -100,6 +101,19 @@ grouped by type tag, each with `id`, `name`, `version`, `size`, `createdAt`),
 and `total`. See
 [references/output-shapes.md](references/output-shapes.md#list-data) for the
 full output shape.
+
+### Inline content with `--content`
+
+Add `--content` to include each item's content alongside its metadata —
+JSON-typed content is parsed; everything else is returned as a string. This
+avoids the common `data list` → N × `data get` fan-out:
+
+```bash
+swamp data list my-model --content --json
+```
+
+Items larger than `--max-content-bytes` (default 1 MiB) are returned without
+content so the flag is safe on logs and large files.
 
 ## Get Specific Data
 

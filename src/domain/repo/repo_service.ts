@@ -636,6 +636,17 @@ This repository is managed with [swamp](https://github.com/systeminit/swamp).
       skillAction("swamp-report", "Use")
     } for guidance.
 
+## Hot-path commands
+
+Patterns that save many turns when applicable. Prefer them over the generic forms.
+
+- **Discover methods compactly**: \`swamp model type describe <type> --methods\` returns one line per method (name + description), no schemas. Use the full \`--json\` form only when you need argument shapes.
+- **Inspect model data in one call**: \`swamp data list <model> --content --json\` returns metadata AND parsed content per item. Skip the \`data list\` → N×\`data get\` fan-out.
+- **Read what a workflow produced**: \`swamp workflow run\` output ends with a \`dataProduced\` summary (top-level field in \`--json\`; small table in log mode). Read it before re-querying the data store — it tells you exactly which records the run wrote.
+- **Look for aggregator methods first**: when the question is "is X healthy?" or "what's the state of Y?", check whether the extension already exposes a single method that returns the answer. One call beats reconstructing it from primitives. Find them with \`--methods\`.
+- **Capture once, parse repeatedly**: don't re-run \`swamp X --json | python3 -c "..."\` pipelines because the parser failed. Redirect once to a file (\`> /tmp/out.json\`), then parse the file as many times as needed. Each retried CLI call is another round-trip.
+- **Flag names**: \`--input key=val\` on \`model method run\` and \`workflow run\`; \`--global-arg key=val\` on \`model create\`. The CLI suggests the right flag if you guess wrong.
+
 ## Skills
 
 ${skillsIntro}

@@ -49,6 +49,7 @@ Correct flow: `swamp model create <type> <name> --json` → set global args with
 | ------------------- | ---------------------------------------------------------------- |
 | Search model types  | `swamp model type search [query] --json`                         |
 | Describe a type     | `swamp model type describe <type> --json`                        |
+| List methods only   | `swamp model type describe <type> --methods`                     |
 | Create model input  | `swamp model create <type> <name> --json`                        |
 | Create with args    | `swamp model create <type> <name> --global-arg key=value --json` |
 | Search models       | `swamp model search [query] --json`                              |
@@ -116,6 +117,21 @@ Get the full schema and available methods for a type.
 ```bash
 swamp model type describe command/shell --json
 ```
+
+For just the method list (name + description, no schemas), use `--methods`.
+The output is roughly two orders of magnitude smaller and is the right
+starting point when you just want to know what a type can do:
+
+```bash
+swamp model type describe @john/k8s-namespace --methods
+# list                 — List all namespaces in the cluster
+# get                  — Get a single namespace's phase, finalizers, …
+# health               — Aggregated namespace health …
+```
+
+`--methods` also works with `--json` and emits
+`{ type, version, methods: [{ name, description }] }`. Reach for the full
+`--json` form only when you need argument schemas.
 
 **Output shape:**
 
