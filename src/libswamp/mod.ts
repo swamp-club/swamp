@@ -903,6 +903,14 @@ export {
   type IssueCreateEvent,
   type IssueCreateInput,
 } from "./issues/create.ts";
+export {
+  issueComment,
+  type IssueCommentData,
+  type IssueCommentDeps,
+  type IssueCommentEvent,
+  type IssueCommentInput,
+  MAX_RIPPLE_LENGTH,
+} from "./issues/comment.ts";
 
 // Audit operations
 export {

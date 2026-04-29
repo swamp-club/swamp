@@ -20,14 +20,18 @@
 import { Command } from "@cliffy/command";
 import { issueBugCommand } from "./issue_bug.ts";
 import { issueFeatureCommand } from "./issue_feature.ts";
+import { issueRippleCommand } from "./issue_ripple.ts";
 import { issueSecurityCommand } from "./issue_security.ts";
 
 export const issueCommand = new Command()
   .name("issue")
-  .description("Submit bug reports, feature requests, and security reports")
+  .description(
+    "Submit bug reports, feature requests, security reports, and ripples",
+  )
   .action(function () {
     this.showHelp();
   })
   .command("bug", issueBugCommand)
   .command("feature", issueFeatureCommand)
-  .command("security", issueSecurityCommand);
+  .command("security", issueSecurityCommand)
+  .command("ripple", issueRippleCommand);

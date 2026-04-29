@@ -17,7 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { EventHandlers, IssueCreateEvent } from "../../libswamp/mod.ts";
+import type {
+  EventHandlers,
+  IssueCommentEvent,
+  IssueCreateEvent,
+} from "../../libswamp/mod.ts";
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
@@ -107,7 +111,7 @@ export function createIssueCreateRenderer(
 
 /** Data structure for issue editor cancelled output. */
 export interface IssueCancelledData {
-  type: "bug" | "feature" | "security";
+  type: "bug" | "feature" | "security" | "ripple";
   reason: "empty" | "cancelled";
 }
 
@@ -119,11 +123,59 @@ export function renderIssueCancelled(
     console.log(JSON.stringify({ status: "cancelled", ...data }, null, 2));
   } else {
     const logger = getSwampLogger(["issue", "create"]);
+    const action = data.type === "ripple" ? "Ripple" : "Issue creation";
     if (data.reason === "empty") {
-      logger.info("Issue creation cancelled: no content provided");
+      logger.info(`${action} cancelled: no content provided`);
     } else {
-      logger.info("Issue creation cancelled");
+      logger.info(`${action} cancelled`);
     }
+  }
+}
+
+// ---- Ripple (comment) rendering ----
+
+class LogIssueCommentRenderer implements Renderer<IssueCommentEvent> {
+  handlers(): EventHandlers<IssueCommentEvent> {
+    const logger = getSwampLogger(["issue", "ripple"]);
+    return {
+      completed: (e) => {
+        const data = e.data;
+        logger.info(
+          "Posted ripple on issue #{number}",
+          { number: data.issueNumber },
+        );
+        logger.info("View at: {url}", {
+          url: `${data.serverUrl}/lab/${data.issueNumber}`,
+        });
+      },
+      error: (e) => {
+        throw new UserError(e.error.message);
+      },
+    };
+  }
+}
+
+class JsonIssueCommentRenderer implements Renderer<IssueCommentEvent> {
+  handlers(): EventHandlers<IssueCommentEvent> {
+    return {
+      completed: (e) => {
+        console.log(JSON.stringify(e.data, null, 2));
+      },
+      error: (e) => {
+        throw new UserError(e.error.message);
+      },
+    };
+  }
+}
+
+export function createIssueCommentRenderer(
+  mode: OutputMode,
+): Renderer<IssueCommentEvent> {
+  switch (mode) {
+    case "json":
+      return new JsonIssueCommentRenderer();
+    case "log":
+      return new LogIssueCommentRenderer();
   }
 }
 

@@ -196,6 +196,62 @@ export class SwampClubClient {
     return { number: data.issue.number, id: data.issue.id };
   }
 
+  /**
+   * Post a comment ("ripple") on an existing Lab issue.
+   * Authenticates using the x-api-key header.
+   *
+   * Surfaces server-side error shapes the Lab returns:
+   *   - 401 → not logged in
+   *   - 403 → comments locked or no access
+   *   - 404 → issue not found / not visible
+   *   - 422 → profanity check failed (response includes `flagged` array)
+   */
+  async submitComment(
+    apiKey: string,
+    issueNumber: number,
+    body: string,
+  ): Promise<{ id: string }> {
+    const res = await this.fetch(
+      `/api/v1/lab/issues/${issueNumber}/comments`,
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": apiKey,
+        },
+        body: JSON.stringify({ body }),
+      },
+    );
+
+    if (!res.ok) {
+      const text = await res.text();
+      // Try to surface profanity-flagged words from the 422 body so the
+      // user knows what to change without paging through raw JSON.
+      if (res.status === 422) {
+        try {
+          const parsed = JSON.parse(text);
+          if (
+            parsed?.error && Array.isArray(parsed.flagged) &&
+            parsed.flagged.length > 0
+          ) {
+            throw new UserError(
+              `${parsed.error}: ${parsed.flagged.join(", ")}`,
+            );
+          }
+        } catch (err) {
+          if (err instanceof UserError) throw err;
+          // fall through to the generic message below
+        }
+      }
+      throw new UserError(
+        `Failed to post ripple on issue #${issueNumber} (HTTP ${res.status}): ${text}`,
+      );
+    }
+
+    const data = await res.json();
+    return { id: data.id };
+  }
+
   private async fetch(
     path: string,
     init: RequestInit,

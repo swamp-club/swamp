@@ -1,6 +1,6 @@
 ---
 name: swamp-issue
-description: Submit issues to the swamp Lab or route them to the publisher's repository — file bug reports, feature requests, and security vulnerability reports against swamp itself or against a specific extension. Use when the user wants to report a bug, request a feature, disclose a vulnerability, or provide feedback about swamp. Triggers on "bug report", "feature request", "security report", "vulnerability", "report bug", "request feature", "file bug", "submit bug", "swamp bug", "swamp feature", "feedback", "report issue", "file issue", "report against extension", "extension bug".
+description: Submit issues to the swamp Lab or route them to the publisher's repository — file bug reports, feature requests, and security vulnerability reports against swamp itself or against a specific extension, and post follow-up ripples (comments) on existing Lab issues. Use when the user wants to report a bug, request a feature, disclose a vulnerability, comment on an existing issue, or provide feedback about swamp. Triggers on "bug report", "feature request", "security report", "vulnerability", "report bug", "request feature", "file bug", "submit bug", "swamp bug", "swamp feature", "feedback", "report issue", "file issue", "report against extension", "extension bug", "ripple", "comment on issue", "reply to issue", "follow up on issue", "add comment to issue".
 ---
 
 # Swamp Issue Submission Skill
@@ -14,19 +14,26 @@ With `--extension <name>`, reports are routed to the extension's publisher
 instead — either as a tagged swamp.club Lab issue (for `@swamp/*` extensions) or
 to the publisher's declared repository (for third-party extensions).
 
+To follow up on an existing Lab issue (e.g. add a related finding, link a
+sibling issue, or update reproduction steps discovered later), use
+`swamp issue ripple <number>` — this posts a comment ("ripple") on the issue.
+
 **Verify CLI syntax:** If unsure about exact flags or subcommands, run
 `swamp help issue` for the complete, up-to-date CLI schema.
 
 ## Commands
 
-All three commands support interactive mode (opens `$EDITOR` with a template)
-and non-interactive mode with `--title` and `--body` flags.
+`bug`, `feature`, and `security` support interactive mode (opens `$EDITOR` with
+a template) and non-interactive mode with `--title` and `--body` flags. `ripple`
+takes a positional issue number and either opens the editor or accepts `--body`
+directly.
 
-| Command                | Template sections                                             |
-| ---------------------- | ------------------------------------------------------------- |
-| `swamp issue bug`      | Title, description, steps to reproduce, environment           |
-| `swamp issue feature`  | Title, problem statement, proposed solution, alternatives     |
-| `swamp issue security` | Title, description, reproduction, affected components, impact |
+| Command                       | Template sections                                             |
+| ----------------------------- | ------------------------------------------------------------- |
+| `swamp issue bug`             | Title, description, steps to reproduce, environment           |
+| `swamp issue feature`         | Title, problem statement, proposed solution, alternatives     |
+| `swamp issue security`        | Title, description, reproduction, affected components, impact |
+| `swamp issue ripple <number>` | Free-form markdown body (no title)                            |
 
 **Basic non-interactive examples:**
 
@@ -35,6 +42,29 @@ swamp issue bug --title "CLI crashes on empty input" --body "When running..." --
 swamp issue feature --title "Add dark mode" --body "I'd like..." --json
 swamp issue security --title "..." --body "..." --json
 swamp issue bug --email --title "Crash report" --body "Details..."
+swamp issue ripple 184 --body "See also #183 for the related finding." --json
+```
+
+## Posting a Ripple
+
+`swamp issue ripple <number>` posts a comment (a "ripple" in swamp.club product
+terms) on an existing Lab issue. Useful when an agent or human discovers a
+related finding, workaround, or updated reproduction during follow-on work and
+wants to record it on the original issue.
+
+- Requires `swamp auth login` — there is no email fallback.
+- `--body` skips the editor; `--json` requires `--body`.
+- The body is plain markdown; the server enforces a 65,536-character limit and
+  rejects profanity.
+
+**Output shape** (with `--json`):
+
+```json
+{
+  "issueNumber": 184,
+  "commentId": "ripple_abc123",
+  "serverUrl": "https://swamp.club"
+}
 ```
 
 ## Plain Submission Flow (no `--extension`)
