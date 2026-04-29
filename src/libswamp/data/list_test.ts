@@ -149,6 +149,94 @@ Deno.test("dataList yields error when neither model nor workflow given", async (
   assertEquals(events[1].kind, "error");
 });
 
+Deno.test("dataList model-scoped --content inlines parsed JSON", async () => {
+  const deps = makeDeps({
+    getContent: () =>
+      Promise.resolve(
+        new TextEncoder().encode(JSON.stringify({ hello: "world", n: 42 })),
+      ),
+  });
+  const events = await collect<DataListEvent>(
+    dataList(createLibSwampContext(), deps, {
+      modelIdOrName: "my-model",
+      includeContent: true,
+    }),
+  );
+  const completed = events[1] as Extract<
+    DataListEvent,
+    { kind: "completed" }
+  >;
+  const data = completed.data as DataListData;
+  // Find the JSON-typed item ("data" group, name=output)
+  const dataGroup = data.groups.find((g) => g.type === "data");
+  const outputItem = dataGroup!.items.find((i) => i.name === "output");
+  assertEquals(outputItem!.content, { hello: "world", n: 42 });
+});
+
+Deno.test("dataList model-scoped --content returns text for non-JSON", async () => {
+  const deps = makeDeps({
+    getContent: () =>
+      Promise.resolve(new TextEncoder().encode("plain log line")),
+  });
+  const events = await collect<DataListEvent>(
+    dataList(createLibSwampContext(), deps, {
+      modelIdOrName: "my-model",
+      includeContent: true,
+    }),
+  );
+  const completed = events[1] as Extract<
+    DataListEvent,
+    { kind: "completed" }
+  >;
+  const data = completed.data as DataListData;
+  const logGroup = data.groups.find((g) => g.type === "log");
+  const logItem = logGroup!.items.find((i) => i.name === "run.log");
+  assertEquals(logItem!.content, "plain log line");
+});
+
+Deno.test("dataList model-scoped without --content omits content field", async () => {
+  const deps = makeDeps({
+    getContent: () => Promise.resolve(new TextEncoder().encode("never read")),
+  });
+  const events = await collect<DataListEvent>(
+    dataList(createLibSwampContext(), deps, { modelIdOrName: "my-model" }),
+  );
+  const completed = events[1] as Extract<
+    DataListEvent,
+    { kind: "completed" }
+  >;
+  const data = completed.data as DataListData;
+  for (const group of data.groups) {
+    for (const item of group.items) {
+      assertEquals(item.content, undefined);
+    }
+  }
+});
+
+Deno.test("dataList --content skips items larger than maxContentBytes", async () => {
+  const deps = makeDeps({
+    getContent: () =>
+      Promise.resolve(new TextEncoder().encode("this would be huge")),
+  });
+  const events = await collect<DataListEvent>(
+    dataList(createLibSwampContext(), deps, {
+      modelIdOrName: "my-model",
+      includeContent: true,
+      maxContentBytes: 10, // both fixture items are 100B/50B by their `size`
+    }),
+  );
+  const completed = events[1] as Extract<
+    DataListEvent,
+    { kind: "completed" }
+  >;
+  const data = completed.data as DataListData;
+  for (const group of data.groups) {
+    for (const item of group.items) {
+      assertEquals(item.content, undefined);
+    }
+  }
+});
+
 Deno.test("dataList yields error when model not found", async () => {
   const deps = makeDeps({
     lookupDefinition: () => Promise.resolve(null),

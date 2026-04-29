@@ -43,6 +43,9 @@ export interface DataListItem {
   streaming: boolean;
   size?: number;
   createdAt: string;
+  /** Populated when --content was requested. JSON-typed entries are parsed
+   * to their structured value; everything else is included as a string. */
+  content?: unknown;
 }
 
 /** Data grouped by tag type. */
@@ -92,6 +95,12 @@ export interface DataListInput {
   workflowName?: string;
   runId?: string;
   typeFilter?: string;
+  /** When true, include `content` on each returned item. Avoids the
+   * fan-out pattern of `data list` followed by N × `data get`. */
+  includeContent?: boolean;
+  /** Skip content for items larger than this many bytes (per item).
+   * Defaults to 1 MiB. */
+  maxContentBytes?: number;
 }
 
 /** Raw data entry from repository. */
@@ -151,6 +160,15 @@ export interface DataListDeps {
     workflowId: string,
     runId: string,
   ) => Promise<WorkflowDataEntry[]>;
+  /** Reads the raw bytes for a data record. Optional — only used when
+   * `--content` is requested. Mirrors the `getContent` shape on
+   * `DataGetDeps`. */
+  getContent?: (
+    type: ModelType,
+    definitionId: string,
+    name: string,
+    version: number,
+  ) => Promise<Uint8Array | null>;
 }
 
 /** Wires real infrastructure into DataListDeps. */
@@ -207,7 +225,47 @@ export function createDataListDeps(
       if (!fullRun) return [];
       return workflowDataService.findAllForWorkflowRun(fullRun);
     },
+    getContent: (type, definitionId, name, version) =>
+      dataRepo.getContent(type, definitionId, name, version),
   };
+}
+
+const DEFAULT_MAX_CONTENT_BYTES = 1024 * 1024;
+
+/** Reads + decodes content for one entry. Returns undefined if the entry
+ * exceeds `maxBytes`, has no content, or fails to read. JSON content is
+ * parsed; everything else is returned as a UTF-8 string. */
+async function fetchEntryContent(
+  deps: DataListDeps,
+  modelType: ModelType,
+  modelId: string,
+  name: string,
+  version: number,
+  contentType: string,
+  size: number | undefined,
+  maxBytes: number,
+): Promise<unknown> {
+  if (!deps.getContent) return undefined;
+  if (size !== undefined && size > maxBytes) return undefined;
+
+  let raw: Uint8Array | null;
+  try {
+    raw = await deps.getContent(modelType, modelId, name, version);
+  } catch {
+    return undefined;
+  }
+  if (!raw) return undefined;
+  if (raw.byteLength > maxBytes) return undefined;
+
+  const text = new TextDecoder().decode(raw);
+  if (contentType.includes("json")) {
+    try {
+      return JSON.parse(text);
+    } catch {
+      return text;
+    }
+  }
+  return text;
 }
 
 /** Standard type ordering for grouping. */
@@ -302,21 +360,39 @@ async function* workflowScopedList(
     ? workflowData.filter((d) => d.data.type === input.typeFilter)
     : workflowData;
 
-  const items: WorkflowDataListItem[] = filteredData.map((item) => ({
-    id: item.data.id,
-    name: item.data.name,
-    version: item.data.version,
-    contentType: item.data.contentType,
-    type: item.data.type,
-    streaming: item.data.streaming,
-    size: item.data.size,
-    createdAt: item.data.createdAt.toISOString(),
-    modelId: item.modelId,
-    modelName: item.modelName,
-    modelType: item.modelType.normalized,
-    jobName: item.jobName,
-    stepName: item.stepName,
-  }));
+  const maxBytes = input.maxContentBytes ?? DEFAULT_MAX_CONTENT_BYTES;
+  const items: WorkflowDataListItem[] = await Promise.all(
+    filteredData.map(async (item) => {
+      const content = input.includeContent
+        ? await fetchEntryContent(
+          deps,
+          item.modelType,
+          item.modelId,
+          item.data.name,
+          item.data.version,
+          item.data.contentType,
+          item.data.size,
+          maxBytes,
+        )
+        : undefined;
+      return {
+        id: item.data.id,
+        name: item.data.name,
+        version: item.data.version,
+        contentType: item.data.contentType,
+        type: item.data.type,
+        streaming: item.data.streaming,
+        size: item.data.size,
+        createdAt: item.data.createdAt.toISOString(),
+        modelId: item.modelId,
+        modelName: item.modelName,
+        modelType: item.modelType.normalized,
+        jobName: item.jobName,
+        stepName: item.stepName,
+        ...(content !== undefined ? { content } : {}),
+      };
+    }),
+  );
 
   const groups = groupByType(items);
 
@@ -353,16 +429,34 @@ async function* modelScopedList(
     ? allData.filter((d) => d.type === input.typeFilter)
     : allData;
 
-  const items: DataListItem[] = filteredData.map((data) => ({
-    id: data.id,
-    name: data.name,
-    version: data.version,
-    contentType: data.contentType,
-    type: data.type,
-    streaming: data.streaming,
-    size: data.size,
-    createdAt: data.createdAt.toISOString(),
-  }));
+  const maxBytes = input.maxContentBytes ?? DEFAULT_MAX_CONTENT_BYTES;
+  const items: DataListItem[] = await Promise.all(
+    filteredData.map(async (data) => {
+      const content = input.includeContent
+        ? await fetchEntryContent(
+          deps,
+          modelType,
+          definition.id,
+          data.name,
+          data.version,
+          data.contentType,
+          data.size,
+          maxBytes,
+        )
+        : undefined;
+      return {
+        id: data.id,
+        name: data.name,
+        version: data.version,
+        contentType: data.contentType,
+        type: data.type,
+        streaming: data.streaming,
+        size: data.size,
+        createdAt: data.createdAt.toISOString(),
+        ...(content !== undefined ? { content } : {}),
+      };
+    }),
+  );
 
   const groups = groupByType(items);
 

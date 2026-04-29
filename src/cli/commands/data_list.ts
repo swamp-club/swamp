@@ -58,6 +58,16 @@ export const dataListCommand = new Command()
     "--run <run_id:string>",
     "Specific workflow run ID (defaults to latest)",
   )
+  .option(
+    "--content",
+    "Include each item's content inline (JSON parsed when applicable). " +
+      "Avoids the data list → N×data get fan-out. Items larger than " +
+      "--max-content-bytes are returned without content.",
+  )
+  .option(
+    "--max-content-bytes <bytes:number>",
+    "Skip content for items larger than this (default: 1048576 = 1 MiB)",
+  )
   // @ts-expect-error - Cliffy custom type returns unknown instead of string
   .action(async function (options: AnyOptions, modelIdOrName?: string) {
     const cliCtx = createContext(options as GlobalOptions, ["data", "list"]);
@@ -79,6 +89,8 @@ export const dataListCommand = new Command()
         workflowName: options.workflow as string | undefined,
         runId: options.run as string | undefined,
         typeFilter: options.type as string | undefined,
+        includeContent: options.content as boolean | undefined,
+        maxContentBytes: options.maxContentBytes as number | undefined,
       }),
       renderer.handlers(),
     );
