@@ -312,8 +312,12 @@ export function composeScore(
   const rows: RubricFactor[] = [
     boolRow("has-readme", "Has README or module doc", 2, factors.hasReadme, {
       remediation:
-        "Add README.md under `additionalFiles:` in manifest.yaml, or add a " +
-        "module-level JSDoc comment at the top of every entrypoint file.",
+        "Add `README.md` to `additionalFiles:` as a bare basename — the " +
+        "entry is copied verbatim to `extension/files/<entry>` in the " +
+        "archive, so nested paths like `docs/README.md` won't earn the " +
+        "factor. For per-directory layouts (manifest beside README), opt " +
+        "in with `paths.base: manifest`. Or add a module-level JSDoc at " +
+        "the top of every entrypoint file.",
     }),
     boolRow(
       "readme-example",
@@ -367,7 +371,11 @@ export function composeScore(
       factors.hasLicenseFile,
       {
         remediation:
-          "Add LICENSE / LICENSE.md / LICENSE.txt / COPYING under `additionalFiles:`.",
+          "Add a LICENSE / LICENSE.md / LICENSE.txt / COPYING entry to " +
+          "`additionalFiles:` as a bare basename — entries are copied " +
+          "verbatim to `extension/files/<entry>` in the archive, so " +
+          "nested paths won't earn the factor. For per-directory layouts " +
+          "(manifest beside LICENSE), opt in with `paths.base: manifest`.",
       },
     ),
     boolRow(

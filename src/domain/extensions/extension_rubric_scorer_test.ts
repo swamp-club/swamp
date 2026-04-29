@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import type { ExtensionManifest } from "./extension_manifest.ts";
 import {
   composeScore,
@@ -439,6 +439,30 @@ Deno.test("composeScore: missing LICENSE file misses has-license", () => {
   );
   const f = score.factors.find((f) => f.id === "has-license")!;
   assertEquals(f.status, "missing");
+});
+
+Deno.test("composeScore: has-readme remediation names the archive path and bare-basename rule", () => {
+  const score = composeScore(
+    { ...factorsAllEarned(), hasReadme: false },
+    makeManifest(),
+  );
+  const f = score.factors.find((f) => f.id === "has-readme")!;
+  assertEquals(f.status, "missing");
+  const remediation = f.remediation ?? "";
+  assertStringIncludes(remediation, "extension/files/");
+  assertStringIncludes(remediation, "bare basename");
+});
+
+Deno.test("composeScore: has-license remediation names the archive path and bare-basename rule", () => {
+  const score = composeScore(
+    { ...factorsAllEarned(), hasLicenseFile: false },
+    makeManifest(),
+  );
+  const f = score.factors.find((f) => f.id === "has-license")!;
+  assertEquals(f.status, "missing");
+  const remediation = f.remediation ?? "";
+  assertStringIncludes(remediation, "extension/files/");
+  assertStringIncludes(remediation, "bare basename");
 });
 
 Deno.test("composeScore: symbols-docs below 80% fails", () => {
