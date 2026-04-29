@@ -27,6 +27,7 @@ import type { WorkflowRepository } from "../../domain/workflows/repositories.ts"
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
 import type { LibSwampContext } from "../context.ts";
 import { notFound, type SwampError, validationFailed } from "../errors.ts";
+import { findClosestMatch } from "../../domain/string_distance.ts";
 import type { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { resolveModelType } from "../../domain/extensions/extension_auto_resolver.ts";
@@ -111,16 +112,28 @@ function createModelMethodResolver(
 
       const method = modelDef.methods[methodName];
       if (!method) {
-        return { status: "method_not_found", modelType: modelType.normalized };
+        return {
+          status: "method_not_found",
+          modelType: modelType.normalized,
+          availableMethods: Object.keys(modelDef.methods),
+        };
       }
 
-      // Extract required fields from the method's Zod argument schema
+      // Extract required fields and per-argument types from the method's
+      // Zod schema. The types are surfaced in error messages so a missing
+      // input failure tells the agent both *what* is missing and *what
+      // type* to provide.
       const jsonSchema = zodToJsonSchema(method.arguments) as {
         required?: string[];
+        properties?: Record<string, { type?: string }>;
       };
       const requiredArgs = jsonSchema.required ?? [];
+      const argTypes: Record<string, string> = {};
+      for (const [name, prop] of Object.entries(jsonSchema.properties ?? {})) {
+        argTypes[name] = prop.type ?? "unknown";
+      }
 
-      return { status: "resolved", requiredArgs };
+      return { status: "resolved", requiredArgs, argTypes };
     },
   };
 }
@@ -205,6 +218,61 @@ async function* validateAll(
   };
 }
 
+/**
+ * Builds an enriched not-found error with actionable suggestions.
+ * Matters because the bench transcript shows agents burning many turns
+ * here — guessing at the right invocation when the workflow doesn't
+ * exist yet, or passing a file path instead of a name. A targeted
+ * error message turns flailing into a one-shot.
+ */
+async function buildWorkflowNotFoundError(
+  workflowIdOrName: string,
+  deps: WorkflowValidateDeps,
+): Promise<SwampError> {
+  // Common agent mistake: passing a file path to validate.
+  const looksLikeFilePath = workflowIdOrName.endsWith(".yaml") ||
+    workflowIdOrName.endsWith(".yml") ||
+    workflowIdOrName.includes("/");
+  if (looksLikeFilePath) {
+    return validationFailed(
+      `'${workflowIdOrName}' looks like a file path. ` +
+        `\`swamp workflow validate\` takes a workflow name or ID, not a file. ` +
+        `If the file isn't yet registered with swamp, run ` +
+        `\`swamp workflow create <name>\` first (this scaffolds a YAML and ` +
+        `assigns its UUID), edit the scaffold, then validate by name.`,
+      { entityType: "Workflow", idOrName: workflowIdOrName },
+    );
+  }
+
+  // Otherwise, suggest closest existing name and list a few examples.
+  const all = await deps.findAllWorkflows();
+  const names = all.map((w) => w.name);
+
+  if (names.length === 0) {
+    return validationFailed(
+      `Workflow '${workflowIdOrName}' not found. No workflows exist in this ` +
+        `repo. Create one with \`swamp workflow create ${workflowIdOrName}\`, ` +
+        `then edit the scaffold it produces.`,
+      { entityType: "Workflow", idOrName: workflowIdOrName },
+    );
+  }
+
+  const closest = findClosestMatch(workflowIdOrName, names);
+  let detail = `Workflow '${workflowIdOrName}' not found.`;
+  if (closest) {
+    detail += ` Did you mean '${closest}'?`;
+  }
+  const sample = names.slice(0, 8);
+  detail += ` Existing workflows: ${sample.join(", ")}` +
+    (names.length > 8 ? ` (+${names.length - 8} more)` : "") +
+    `. Run \`swamp workflow search\` for the full list.`;
+
+  return validationFailed(detail, {
+    entityType: "Workflow",
+    idOrName: workflowIdOrName,
+  });
+}
+
 /** Validates a single workflow. */
 async function* validateSingle(
   deps: WorkflowValidateDeps,
@@ -221,7 +289,7 @@ async function* validateSingle(
   if (!workflow) {
     yield {
       kind: "error",
-      error: notFound("Workflow", workflowIdOrName),
+      error: await buildWorkflowNotFoundError(workflowIdOrName, deps),
     };
     return;
   }

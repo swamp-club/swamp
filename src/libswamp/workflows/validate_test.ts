@@ -114,3 +114,54 @@ Deno.test("workflowValidate yields error when not found", async () => {
 
   assertEquals(events[1].kind, "error");
 });
+
+Deno.test("workflowValidate not-found error suggests closest match", async () => {
+  const deps = makeDeps({
+    findWorkflowByName: () => Promise.resolve(null),
+    findAllWorkflows: () =>
+      Promise.resolve([makeWorkflow("deploy-app"), makeWorkflow("test-app")]),
+  });
+  const events = await collect<WorkflowValidateEvent>(
+    workflowValidate(createLibSwampContext(), deps, {
+      workflowIdOrName: "deploy-aplp",
+    }),
+  );
+  const errEvent = events[1] as Extract<WorkflowValidateEvent, { kind: "error" }>;
+  assertEquals(errEvent.error.message.includes("Did you mean 'deploy-app'"), true);
+  assertEquals(
+    errEvent.error.message.includes("Existing workflows: deploy-app, test-app"),
+    true,
+  );
+});
+
+Deno.test("workflowValidate not-found error explains file-path mistake", async () => {
+  const deps = makeDeps({
+    findWorkflowByName: () => Promise.resolve(null),
+  });
+  const events = await collect<WorkflowValidateEvent>(
+    workflowValidate(createLibSwampContext(), deps, {
+      workflowIdOrName: "workflows/fix.yaml",
+    }),
+  );
+  const errEvent = events[1] as Extract<WorkflowValidateEvent, { kind: "error" }>;
+  assertEquals(errEvent.error.message.includes("looks like a file path"), true);
+  assertEquals(errEvent.error.message.includes("swamp workflow create"), true);
+});
+
+Deno.test("workflowValidate not-found error in empty repo is actionable", async () => {
+  const deps = makeDeps({
+    findWorkflowByName: () => Promise.resolve(null),
+    findAllWorkflows: () => Promise.resolve([]),
+  });
+  const events = await collect<WorkflowValidateEvent>(
+    workflowValidate(createLibSwampContext(), deps, {
+      workflowIdOrName: "fix-namespace",
+    }),
+  );
+  const errEvent = events[1] as Extract<WorkflowValidateEvent, { kind: "error" }>;
+  assertEquals(errEvent.error.message.includes("No workflows exist"), true);
+  assertEquals(
+    errEvent.error.message.includes("swamp workflow create fix-namespace"),
+    true,
+  );
+});

@@ -66,11 +66,25 @@ export class WorkflowValidationResult {
 
 /**
  * Result of resolving a method's required arguments.
+ *
+ * `argTypes` (on `resolved`) and `availableMethods` (on `method_not_found`)
+ * are optional so existing callers/tests don't have to update — but when
+ * present they let the validation service produce better error messages
+ * ("Missing required inputs: namespaceName (string)" instead of just
+ * "Missing required inputs: namespaceName").
  */
 export type MethodResolution =
-  | { status: "resolved"; requiredArgs: string[] }
+  | {
+    status: "resolved";
+    requiredArgs: string[];
+    argTypes?: Record<string, string>;
+  }
   | { status: "model_not_found" }
-  | { status: "method_not_found"; modelType: string }
+  | {
+    status: "method_not_found";
+    modelType: string;
+    availableMethods?: string[];
+  }
   | { status: "type_unresolvable"; modelType: string };
 
 /**
@@ -428,23 +442,44 @@ export class DefaultWorkflowValidationService
               " (model type not resolved, skipped)",
           ),
         ];
-      case "method_not_found":
+      case "method_not_found": {
+        const methods = resolution.availableMethods ?? [];
+        const available = methods.length > 0
+          ? ` Available methods on '${resolution.modelType}': ${
+            methods.join(", ")
+          }.`
+          : "";
         return [
           WorkflowValidationResult.fail(
             checkName,
-            `Method '${methodName}' not found on model type '${resolution.modelType}'`,
+            `Method '${methodName}' not found on model type ` +
+              `'${resolution.modelType}'.${available}`,
           ),
         ];
+      }
       case "resolved": {
         const inputKeys = new Set(Object.keys(inputs ?? {}));
         const missing = resolution.requiredArgs.filter((arg) =>
           !inputKeys.has(arg)
         );
         if (missing.length > 0) {
+          const argTypes = resolution.argTypes ?? {};
+          // Decorate each missing arg with its declared type when known,
+          // so the error tells the agent both what's missing and what
+          // to provide.
+          const missingWithTypes = missing
+            .map((arg) => {
+              const t = argTypes[arg];
+              return t ? `${arg} (${t})` : arg;
+            })
+            .join(", ");
           return [
             WorkflowValidationResult.fail(
               checkName,
-              `Missing required inputs: ${missing.join(", ")}`,
+              `Missing required inputs: ${missingWithTypes}. ` +
+                `Add an \`inputs:\` block under this step's task. See ` +
+                `\`swamp model type describe ${modelIdOrName} --method ${methodName}\` ` +
+                `for the full argument schema.`,
             ),
           ];
         }

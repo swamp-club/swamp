@@ -739,6 +739,82 @@ Deno.test("validateStepInputs: method not found on model produces failure", asyn
   assertEquals(inputResult?.error?.includes("not found"), true);
 });
 
+Deno.test("validateStepInputs: method-not-found error lists available methods when known", async () => {
+  const resolver = mockResolver({
+    "my-model.depoy": {
+      status: "method_not_found",
+      modelType: "test/model",
+      availableMethods: ["deploy", "rollback", "status"],
+    },
+  });
+  const svc = new DefaultWorkflowValidationService(resolver);
+
+  const workflow = Workflow.create({
+    name: "test",
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: [
+          Step.create({
+            name: "step1",
+            task: StepTask.model("my-model", "depoy"),
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await svc.validate(workflow);
+  const inputResult = results.find((r) => r.name.includes("Step inputs"));
+  assertEquals(inputResult?.passed, false);
+  // Error should list the available methods so the agent doesn't have
+  // to chase down `swamp model type describe X --methods`.
+  assertEquals(
+    inputResult?.error?.includes("Available methods on 'test/model'"),
+    true,
+  );
+  assertEquals(inputResult?.error?.includes("deploy, rollback, status"), true);
+});
+
+Deno.test("validateStepInputs: missing-input error includes types and a follow-up command", async () => {
+  const resolver = mockResolver({
+    "my-model.deploy": {
+      status: "resolved",
+      requiredArgs: ["environment", "version"],
+      argTypes: { environment: "string", version: "string" },
+    },
+  });
+  const svc = new DefaultWorkflowValidationService(resolver);
+
+  const workflow = Workflow.create({
+    name: "test",
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: [
+          Step.create({
+            name: "step1",
+            task: StepTask.model("my-model", "deploy", { environment: "prod" }),
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await svc.validate(workflow);
+  const inputResult = results.find((r) => r.name.includes("Step inputs"));
+  assertEquals(inputResult?.passed, false);
+  // Type annotation: "version (string)" not just "version".
+  assertEquals(inputResult?.error?.includes("version (string)"), true);
+  // Follow-up command pointer.
+  assertEquals(
+    inputResult?.error?.includes(
+      "swamp model type describe my-model --method deploy",
+    ),
+    true,
+  );
+});
+
 Deno.test("validateStepInputs: method with no required args and no inputs passes", async () => {
   const resolver = mockResolver({
     "my-model.run": { status: "resolved", requiredArgs: [] },
