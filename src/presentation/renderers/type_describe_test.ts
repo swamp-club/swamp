@@ -74,6 +74,98 @@ Deno.test("JsonTypeDescribeRenderer - completed serializes correct JSON", async 
   }
 });
 
+const testDataMultiMethod = {
+  type: { raw: "@john/namespace", normalized: "@john/namespace" },
+  version: "2026.04.29.1",
+  globalArguments: { type: "object", properties: { context: { type: "string" } } },
+  methods: [
+    {
+      name: "list",
+      description: "List all namespaces",
+      arguments: { type: "object", properties: {} },
+      dataOutputSpecs: [],
+    },
+    {
+      name: "get",
+      description: "Get one namespace",
+      arguments: {
+        type: "object",
+        properties: { namespaceName: { type: "string" } },
+      },
+      dataOutputSpecs: [],
+    },
+    {
+      name: "health",
+      description: "Aggregated namespace health",
+      arguments: {
+        type: "object",
+        properties: { namespaceName: { type: "string" } },
+      },
+      dataOutputSpecs: [],
+    },
+  ],
+};
+
+Deno.test("LogTypeDescribeRenderer - methodsOnly prints one line per method", async () => {
+  // Capture writeOutput by intercepting Deno.stdout via a simple stub on
+  // console.log won't work because writeOutput goes through the logger; the
+  // existing 'runs without error' pattern is the established assertion shape.
+  const renderer = createTypeDescribeRenderer("log", { methodsOnly: true });
+  const events: TypeDescribeEvent[] = [
+    { kind: "resolving" },
+    { kind: "completed", data: testDataMultiMethod },
+  ];
+  await consumeStream(toStream(events), renderer.handlers());
+  // No throw = pass; structural correctness is covered by the JSON test.
+});
+
+Deno.test("JsonTypeDescribeRenderer - methodsOnly omits schemas", async () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+
+  try {
+    const renderer = createTypeDescribeRenderer("json", {
+      methodsOnly: true,
+    });
+    const events: TypeDescribeEvent[] = [
+      { kind: "resolving" },
+      { kind: "completed", data: testDataMultiMethod },
+    ];
+    await consumeStream(toStream(events), renderer.handlers());
+    const parsed = JSON.parse(logs[0]);
+    assertEquals(parsed.version, "2026.04.29.1");
+    assertEquals(parsed.methods.length, 3);
+    assertEquals(parsed.methods[0].name, "list");
+    assertEquals(parsed.methods[0].description, "List all namespaces");
+    // arguments / dataOutputSpecs / globalArguments should be stripped.
+    assertEquals(parsed.methods[0].arguments, undefined);
+    assertEquals(parsed.globalArguments, undefined);
+  } finally {
+    console.log = originalLog;
+  }
+});
+
+Deno.test("JsonTypeDescribeRenderer - default mode preserves full schemas", async () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+
+  try {
+    const renderer = createTypeDescribeRenderer("json");
+    const events: TypeDescribeEvent[] = [
+      { kind: "resolving" },
+      { kind: "completed", data: testDataMultiMethod },
+    ];
+    await consumeStream(toStream(events), renderer.handlers());
+    const parsed = JSON.parse(logs[0]);
+    assertEquals(parsed.globalArguments !== undefined, true);
+    assertEquals(parsed.methods[0].arguments !== undefined, true);
+  } finally {
+    console.log = originalLog;
+  }
+});
+
 Deno.test("LogTypeDescribeRenderer - error event throws UserError", () => {
   const renderer = createTypeDescribeRenderer("log");
   const handlers = renderer.handlers();

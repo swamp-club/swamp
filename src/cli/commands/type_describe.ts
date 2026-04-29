@@ -38,8 +38,18 @@ type AnyOptions = any;
 export const typeDescribeCommand = new Command()
   .description("Describe a model type with schema details")
   .example("Describe a model type", "swamp type describe aws-ec2")
+  .example(
+    "List methods only (compact)",
+    "swamp type describe aws-ec2 --methods",
+  )
   .alias("get")
   .arguments("<type:model_type>")
+  .option(
+    "--methods",
+    "Print only the method list (one per line as 'name — description'). " +
+      "Skips global args, schemas, and resource specs. In --json mode, " +
+      "outputs { type, version, methods: [{ name, description }] }.",
+  )
   // @ts-expect-error - Cliffy custom type returns unknown instead of string
   .action(async function (options: AnyOptions, typeArg: string) {
     const cliCtx = createContext(options as GlobalOptions, [
@@ -55,7 +65,9 @@ export const typeDescribeCommand = new Command()
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
     const deps = createTypeDescribeDeps();
 
-    const renderer = createTypeDescribeRenderer(cliCtx.outputMode);
+    const renderer = createTypeDescribeRenderer(cliCtx.outputMode, {
+      methodsOnly: Boolean(options.methods),
+    });
     await consumeStream(
       typeDescribe(ctx, deps, modelType),
       renderer.handlers(),
