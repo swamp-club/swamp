@@ -602,20 +602,19 @@ essential context for working with this repository.`
 matches a skill area below, read the corresponding \`SKILL.md\` file for guidance.`;
 
     const gettingStarted = useSkillNames
-      ? `**IMPORTANT:** At the start of every conversation, run
-\`swamp model search --json\`. If no models are returned (empty result), you MUST
-immediately invoke the \`swamp-getting-started\` skill before doing anything else.
-This walks new users through an interactive onboarding tutorial.
+      ? `**IMPORTANT:** Start by running \`swamp model search --json\` to see
+what's in this repo, then use the \`swamp-model\` skill to work on the task.
 
-If models already exist, start by using the \`swamp-model\` skill to work with
-swamp models.`
-      : `**IMPORTANT:** At the start of every conversation, run
-\`swamp model search --json\`. If no models are returned (empty result), you MUST
-immediately read \`${skillsDir}/swamp-getting-started/SKILL.md\` and follow its
-instructions. This walks new users through an interactive onboarding tutorial.
+Invoke \`swamp-getting-started\` only when the user explicitly asks for
+onboarding ("I'm new to swamp", "walk me through it"). An empty model list is
+not a trigger — it's normal for fresh repos.`
+      : `**IMPORTANT:** Start by running \`swamp model search --json\` to see
+what's in this repo, then read \`${skillsDir}/swamp-model/SKILL.md\` to work on
+the task.
 
-If models already exist, start by reading \`${skillsDir}/swamp-model/SKILL.md\`
-to work with swamp models.`;
+Read \`${skillsDir}/swamp-getting-started/SKILL.md\` only when the user
+explicitly asks for onboarding ("I'm new to swamp", "walk me through it"). An
+empty model list is not a trigger — it's normal for fresh repos.`;
 
     return `# Project
 
