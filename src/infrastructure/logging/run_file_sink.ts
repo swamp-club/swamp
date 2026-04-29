@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { getTextFormatter, type LogRecord, type Sink } from "@logtape/logtape";
+import { dirname } from "@std/path";
 import type { SecretRedactor } from "../../domain/secrets/mod.ts";
 import { assertSafePath } from "../persistence/safe_path.ts";
 
@@ -85,8 +86,8 @@ export class RunFileSink {
     }
 
     // Ensure parent directory exists
-    const dir = filePath.substring(0, filePath.lastIndexOf("/"));
-    if (dir) {
+    const dir = dirname(filePath);
+    if (dir && dir !== ".") {
       await Deno.mkdir(dir, { recursive: true });
     }
 

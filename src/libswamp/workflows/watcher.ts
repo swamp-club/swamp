@@ -23,7 +23,7 @@
  * Uses Deno.watchFs with debouncing to coalesce rapid filesystem events.
  */
 
-import { join } from "@std/path";
+import { basename, join } from "@std/path";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
@@ -132,7 +132,7 @@ export class WorkflowWatcher {
     path: string,
     kind: Deno.FsEvent["kind"],
   ): Promise<void> {
-    const filename = path.split("/").pop() ?? "";
+    const filename = basename(path);
 
     if (kind === "remove") {
       // Extract workflow ID from filename pattern: workflow-{uuid}.yaml
