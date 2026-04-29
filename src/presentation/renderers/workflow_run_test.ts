@@ -24,7 +24,10 @@ import {
   type WorkflowRunEvent,
   type WorkflowRunView,
 } from "../../libswamp/mod.ts";
-import { createWorkflowRunRenderer } from "./workflow_run.ts";
+import {
+  createWorkflowRunRenderer,
+  summarizeDataProduced,
+} from "./workflow_run.ts";
 import { UserError } from "../../domain/errors.ts";
 
 await initializeLogging({});
@@ -296,6 +299,95 @@ Deno.test("JsonWorkflowRunRenderer - succeeded workflow sets workflowFailed() to
     ];
     await consumeStream(toStream(events), renderer.handlers());
     assertEquals(renderer.workflowFailed(), false);
+  } finally {
+    console.log = originalLog;
+  }
+});
+
+Deno.test("summarizeDataProduced - empty run returns zero count", () => {
+  const summary = summarizeDataProduced(makeRunData("succeeded"));
+  assertEquals(summary.totalCount, 0);
+  assertEquals(summary.entries.length, 0);
+});
+
+Deno.test("summarizeDataProduced - groups by (modelName, specName) tags", () => {
+  const run: WorkflowRunView = {
+    id: "run-1",
+    workflowId: "wf-1",
+    workflowName: "test-workflow",
+    status: "succeeded",
+    jobs: [{
+      name: "job-1",
+      status: "succeeded",
+      steps: [
+        {
+          name: "list-pods",
+          status: "succeeded",
+          dataArtifacts: [
+            {
+              dataId: "1",
+              name: "pod-a",
+              version: 1,
+              tags: { modelName: "ns-pod", specName: "pod" },
+            },
+            {
+              dataId: "2",
+              name: "pod-b",
+              version: 1,
+              tags: { modelName: "ns-pod", specName: "pod" },
+            },
+          ],
+        },
+        {
+          name: "list-services",
+          status: "succeeded",
+          dataArtifacts: [
+            {
+              dataId: "3",
+              name: "svc-a",
+              version: 1,
+              tags: { modelName: "ns-service", specName: "service" },
+            },
+          ],
+        },
+      ],
+    }],
+  };
+
+  const summary = summarizeDataProduced(run);
+  assertEquals(summary.totalCount, 3);
+  assertEquals(summary.entries.length, 2);
+  // Sorted alphabetically by modelName.
+  assertEquals(summary.entries[0].modelName, "ns-pod");
+  assertEquals(summary.entries[0].specName, "pod");
+  assertEquals(summary.entries[0].count, 2);
+  assertEquals(summary.entries[1].modelName, "ns-service");
+  assertEquals(summary.entries[1].count, 1);
+});
+
+Deno.test("summarizeDataProduced - artifacts without tags fall back to 'unknown'", () => {
+  const summary = summarizeDataProduced(makeRunDataWithArtifacts());
+  assertEquals(summary.totalCount, 1);
+  assertEquals(summary.entries[0].modelName, "unknown");
+  assertEquals(summary.entries[0].specName, "my-data");
+});
+
+Deno.test("JsonWorkflowRunRenderer - completed JSON includes dataProduced summary", async () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+
+  try {
+    const renderer = createWorkflowRunRenderer("json", {
+      workflowName: "test-workflow",
+    });
+    const events = fullEventStream(makeRunDataWithArtifacts());
+    await consumeStream(toStream(events), renderer.handlers());
+    assertEquals(logs.length, 1);
+    const parsed = JSON.parse(logs[0]);
+    assertNotEquals(parsed.dataProduced, undefined);
+    assertEquals(parsed.dataProduced.totalCount, 1);
+    assertEquals(parsed.dataProduced.entries.length, 1);
   } finally {
     console.log = originalLog;
   }
