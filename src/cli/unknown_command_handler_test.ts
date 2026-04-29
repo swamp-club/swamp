@@ -21,7 +21,9 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import { Command } from "@cliffy/command";
 import {
   buildUnknownCommandMessage,
+  buildUnknownOptionMessage,
   extractUnknownName,
+  extractUnknownOption,
   getSubcommandNames,
 } from "./unknown_command_handler.ts";
 
@@ -121,6 +123,83 @@ Deno.test("buildUnknownCommandMessage - method context suggestions", () => {
   const cmd = buildCommand("method", ["run", "history"]);
   const msg = buildUnknownCommandMessage("my-server", cmd);
   assertStringIncludes(msg, "swamp model method run my-server");
+});
+
+Deno.test("extractUnknownOption - extracts flag from Cliffy error", () => {
+  assertEquals(
+    extractUnknownOption('Unknown option "--arg".'),
+    "--arg",
+  );
+});
+
+Deno.test("extractUnknownOption - extracts flag with Did you mean suffix", () => {
+  assertEquals(
+    extractUnknownOption(
+      'Unknown option "--arg". Did you mean option "--log"?',
+    ),
+    "--arg",
+  );
+});
+
+Deno.test("extractUnknownOption - returns undefined for non-matching", () => {
+  assertEquals(
+    extractUnknownOption("Some other error message"),
+    undefined,
+  );
+});
+
+// Helper for option-suggestion tests: cliffy's Command lets us register
+// arbitrary flags via .option().
+function buildOptionCommand(name: string, flags: string[]): Command {
+  let cmd = new Command().name(name);
+  for (const flag of flags) {
+    cmd = cmd.option(`${flag} <value:string>`, `Test option ${flag}`);
+  }
+  return cmd;
+}
+
+Deno.test("buildUnknownOptionMessage - --arg suggests --input on model method run", () => {
+  const cmd = buildOptionCommand("run", [
+    "--input",
+    "--input-file",
+    "--driver",
+    "--log",
+  ]);
+  const msg = buildUnknownOptionMessage("--arg", cmd);
+  // Semantic alias must beat lexical (--log is fewer chars from --arg).
+  assertStringIncludes(msg, 'Did you mean "--input"');
+  // Must NOT pick the lexically-closer but semantically-wrong --log.
+  assertEquals(msg.includes('"--log"'), false);
+});
+
+Deno.test("buildUnknownOptionMessage - --arg suggests --global-arg on model create", () => {
+  const cmd = buildOptionCommand("create", ["--global-arg", "--repo-dir"]);
+  const msg = buildUnknownOptionMessage("--arg", cmd);
+  assertStringIncludes(msg, 'Did you mean "--global-arg"');
+});
+
+Deno.test("buildUnknownOptionMessage - --arg suggests both when both available", () => {
+  const cmd = buildOptionCommand("hypothetical", [
+    "--input",
+    "--global-arg",
+  ]);
+  const msg = buildUnknownOptionMessage("--arg", cmd);
+  assertStringIncludes(msg, "Did you mean one of:");
+  assertStringIncludes(msg, '"--input"');
+  assertStringIncludes(msg, '"--global-arg"');
+});
+
+Deno.test("buildUnknownOptionMessage - falls back to lexical match when no semantic alias", () => {
+  const cmd = buildOptionCommand("run", ["--input", "--driver"]);
+  const msg = buildUnknownOptionMessage("--driv", cmd);
+  assertStringIncludes(msg, 'Did you mean "--driver"');
+});
+
+Deno.test("buildUnknownOptionMessage - generic fallback when no match", () => {
+  const cmd = buildOptionCommand("run", ["--input"]);
+  const msg = buildUnknownOptionMessage("--xyzzy", cmd);
+  assertStringIncludes(msg, 'Unknown option "--xyzzy"');
+  assertStringIncludes(msg, "to see available options");
 });
 
 Deno.test("buildUnknownCommandMessage - vault context suggestions", () => {

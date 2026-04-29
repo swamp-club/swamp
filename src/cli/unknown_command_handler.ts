@@ -34,6 +34,98 @@ export function extractUnknownName(errorMessage: string): string | undefined {
 }
 
 /**
+ * Extracts the unknown option name from a Cliffy "Unknown option" error message.
+ *
+ * Cliffy formats these as: `Unknown option "--foo".` or
+ * `Unknown option "--foo". Did you mean option "--bar"?`
+ */
+export function extractUnknownOption(
+  errorMessage: string,
+): string | undefined {
+  const match = errorMessage.match(/^Unknown option "([^"]+)"/);
+  return match?.[1];
+}
+
+/**
+ * Maps common option-name guesses to the canonical swamp flag(s). Used to
+ * suggest the correct flag when a user types something semantically near
+ * the right name but lexically distant — e.g. `--arg` is closer to `--log`
+ * (3 chars) than `--input` (5 chars), so cliffy's edit-distance default
+ * picks the wrong one.
+ *
+ * Suggestions in this map are filtered down to those actually defined on
+ * the command before being shown.
+ */
+const SEMANTIC_OPTION_ALIASES: Record<string, readonly string[]> = {
+  "--arg": ["--input", "--global-arg"],
+  "--args": ["--input", "--global-arg"],
+  "--global-args": ["--global-arg"],
+  "--inputs": ["--input"],
+  "--param": ["--input", "--global-arg"],
+  "--params": ["--input", "--global-arg"],
+};
+
+/**
+ * Returns all option names defined on a command, including aliases, in
+ * `--flag` form. Hidden options are excluded so suggestions only point at
+ * documented flags.
+ */
+function getOptionFlagNames(cmd: Command): string[] {
+  const names: string[] = [];
+  for (const opt of cmd.getOptions(false)) {
+    names.push(`--${opt.name}`);
+    for (const alias of opt.aliases ?? []) {
+      // Cliffy aliases are stored without the leading dashes for long
+      // options and as single chars for short options.
+      names.push(alias.length === 1 ? `-${alias}` : `--${alias}`);
+    }
+  }
+  return names;
+}
+
+/**
+ * Builds a human-readable message for an unknown CLI option. Prefers a
+ * semantic alias match (e.g. `--arg` → `--input`) over cliffy's default
+ * edit-distance match, which is purely lexical.
+ */
+export function buildUnknownOptionMessage(
+  unknownOption: string,
+  cmd: Command,
+): string {
+  const available = getOptionFlagNames(cmd);
+  const commandPath = cmd.getPath();
+
+  const semanticCandidates = SEMANTIC_OPTION_ALIASES[unknownOption] ?? [];
+  const semanticMatches = semanticCandidates.filter((c) =>
+    available.includes(c)
+  );
+
+  // Fall back to closest lexical match if no semantic alias applies.
+  const lexicalMatch = semanticMatches.length === 0
+    ? findClosestMatch(unknownOption, available)
+    : undefined;
+
+  const suggestions = semanticMatches.length > 0
+    ? semanticMatches
+    : lexicalMatch
+    ? [lexicalMatch]
+    : [];
+
+  if (suggestions.length === 0) {
+    return `Unknown option "${unknownOption}".\n\n` +
+      `  Run "${commandPath} --help" to see available options.`;
+  }
+
+  const quoted = suggestions.map((s) => `"${s}"`);
+  const suggestionLine = quoted.length === 1
+    ? `Did you mean ${quoted[0]}?`
+    : `Did you mean one of: ${quoted.join(", ")}?`;
+
+  return `Unknown option "${unknownOption}". ${suggestionLine}\n\n` +
+    `  Run "${commandPath} --help" to see available options.`;
+}
+
+/**
  * Gets the names of all visible subcommands for a given command.
  * Passing `false` to `getCommands` filters out hidden commands.
  */
@@ -161,21 +253,32 @@ function buildContextSuggestions(
  * should provide improved error messages.
  */
 export function unknownCommandErrorHandler(error: Error, cmd: Command): void {
-  if (
-    error instanceof ValidationError &&
-    error.message.startsWith("Unknown command")
-  ) {
-    const unknownName = extractUnknownName(error.message);
-    if (unknownName) {
-      const message = buildUnknownCommandMessage(unknownName, cmd);
-      if (getOutputModeFromArgs(Deno.args) === "json") {
-        const jsonError = buildErrorJson(new Error(message));
-        // deno-lint-ignore no-console
-        console.log(JSON.stringify(jsonError, null, 2));
+  if (error instanceof ValidationError) {
+    if (error.message.startsWith("Unknown command")) {
+      const unknownName = extractUnknownName(error.message);
+      if (unknownName) {
+        emitFormattedError(
+          buildUnknownCommandMessage(unknownName, cmd),
+        );
       }
-      console.error(red(`error: ${message}`));
-      Deno.exit(2);
+    } else if (error.message.startsWith("Unknown option")) {
+      const unknownOption = extractUnknownOption(error.message);
+      if (unknownOption) {
+        emitFormattedError(
+          buildUnknownOptionMessage(unknownOption, cmd),
+        );
+      }
     }
   }
   throw error;
+}
+
+function emitFormattedError(message: string): never {
+  if (getOutputModeFromArgs(Deno.args) === "json") {
+    const jsonError = buildErrorJson(new Error(message));
+    // deno-lint-ignore no-console
+    console.log(JSON.stringify(jsonError, null, 2));
+  }
+  console.error(red(`error: ${message}`));
+  Deno.exit(2);
 }
