@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { ensureDir } from "@std/fs";
-import { join } from "@std/path";
+import { basename, join } from "@std/path";
 import { getLogger } from "@logtape/logtape";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
@@ -210,7 +210,7 @@ export class YamlWorkflowRepository implements WorkflowRepository {
       // Ignore - fall through to filename
     }
     // Extract filename without extension as fallback
-    const filename = path.split("/").pop() ?? path;
+    const filename = basename(path);
     return filename.replace(/\.yaml$/, "");
   }
 }
