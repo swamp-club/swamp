@@ -67,10 +67,13 @@ export const telemetryStatsCommand = new Command()
     cliCtx.logger.debug("Telemetry stats command completed");
   });
 
+import { telemetryFlushCommand } from "./telemetry_flush.ts";
+
 export const telemetryCommand = new Command()
   .name("telemetry")
   .description("Manage CLI telemetry")
   .action(function () {
     this.showHelp();
   })
-  .command("stats", telemetryStatsCommand);
+  .command("stats", telemetryStatsCommand)
+  .command("flush", telemetryFlushCommand);
