@@ -38,6 +38,9 @@ export interface TypeDescribeRenderOpts {
    * and resource specs. Saves the agent from grep/jq-piping `--json`
    * output just to learn the method surface. */
   methodsOnly?: boolean;
+  /** When set, render only the named method's description and argument
+   * schema. Mutually exclusive with `methodsOnly`. */
+  onlyMethod?: string;
 }
 
 function renderMethodsOnlyLog(data: TypeDescribeData): void {
@@ -54,6 +57,21 @@ function renderMethodsOnlyLog(data: TypeDescribeData): void {
   writeOutput(lines.join("\n"));
 }
 
+function findMethodOrThrow(
+  data: TypeDescribeData,
+  methodName: string,
+): TypeDescribeData["methods"][number] {
+  const method = data.methods.find((m) => m.name === methodName);
+  if (!method) {
+    const available = data.methods.map((m) => m.name).join(", ");
+    throw new UserError(
+      `Method "${methodName}" not found on type ${data.type.normalized}. ` +
+        `Available: ${available}`,
+    );
+  }
+  return method;
+}
+
 class LogTypeDescribeRenderer implements Renderer<TypeDescribeEvent> {
   constructor(private opts: TypeDescribeRenderOpts) {}
 
@@ -65,6 +83,14 @@ class LogTypeDescribeRenderer implements Renderer<TypeDescribeEvent> {
 
         if (this.opts.methodsOnly) {
           renderMethodsOnlyLog(data);
+          return;
+        }
+
+        if (this.opts.onlyMethod) {
+          const method = findMethodOrThrow(data, this.opts.onlyMethod);
+          // Reuse the existing per-method line formatter so the layout
+          // matches the full describe output.
+          writeOutput(formatMethodLines([method]).join("\n"));
           return;
         }
 
@@ -108,16 +134,26 @@ class JsonTypeDescribeRenderer implements Renderer<TypeDescribeEvent> {
     return {
       resolving: () => {},
       completed: (e) => {
-        const out = this.opts.methodsOnly
-          ? {
+        let out: unknown;
+        if (this.opts.methodsOnly) {
+          out = {
             type: e.data.type,
             version: e.data.version,
             methods: e.data.methods.map((m) => ({
               name: m.name,
               description: m.description,
             })),
-          }
-          : e.data;
+          };
+        } else if (this.opts.onlyMethod) {
+          const method = findMethodOrThrow(e.data, this.opts.onlyMethod);
+          out = {
+            type: e.data.type,
+            version: e.data.version,
+            method,
+          };
+        } else {
+          out = e.data;
+        }
         console.log(JSON.stringify(out, null, 2));
       },
       error: (e) => {

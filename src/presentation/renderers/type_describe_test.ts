@@ -166,6 +166,52 @@ Deno.test("JsonTypeDescribeRenderer - default mode preserves full schemas", asyn
   }
 });
 
+Deno.test("JsonTypeDescribeRenderer - onlyMethod returns single method shape", async () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+
+  try {
+    const renderer = createTypeDescribeRenderer("json", {
+      onlyMethod: "get",
+    });
+    const events: TypeDescribeEvent[] = [
+      { kind: "resolving" },
+      { kind: "completed", data: testDataMultiMethod },
+    ];
+    await consumeStream(toStream(events), renderer.handlers());
+    const parsed = JSON.parse(logs[0]);
+    assertEquals(parsed.method.name, "get");
+    assertEquals(parsed.method.description, "Get one namespace");
+    // Methods array should NOT be present — single-method shape is `method`.
+    assertEquals(parsed.methods, undefined);
+    assertEquals(parsed.globalArguments, undefined);
+  } finally {
+    console.log = originalLog;
+  }
+});
+
+Deno.test("JsonTypeDescribeRenderer - onlyMethod throws on unknown method", async () => {
+  const renderer = createTypeDescribeRenderer("json", {
+    onlyMethod: "doesNotExist",
+  });
+  const events: TypeDescribeEvent[] = [
+    { kind: "resolving" },
+    { kind: "completed", data: testDataMultiMethod },
+  ];
+  let caught: unknown;
+  try {
+    await consumeStream(toStream(events), renderer.handlers());
+  } catch (e) {
+    caught = e;
+  }
+  if (!(caught instanceof UserError)) {
+    throw new Error("expected UserError, got " + String(caught));
+  }
+  assertEquals(caught.message.includes("doesNotExist"), true);
+  assertEquals(caught.message.includes("Available:"), true);
+});
+
 Deno.test("LogTypeDescribeRenderer - error event throws UserError", () => {
   const renderer = createTypeDescribeRenderer("log");
   const handlers = renderer.handlers();
