@@ -611,3 +611,250 @@ Deno.test("resolveExtensionFiles errors clearly when additionalFile missing", as
     );
   });
 });
+
+// ── paths.base behavior ──────────────────────────────────────────────────
+
+Deno.test("resolveExtensionFiles default paths.base resolves models from typedDir", async () => {
+  await withTempRepo(async (dir) => {
+    const modelsDir = join(dir, "extensions", "models");
+    await Deno.writeTextFile(
+      join(modelsDir, "foo.ts"),
+      'export const name = "foo";',
+    );
+    const manifestPath = join(dir, "manifest.yaml");
+    await Deno.writeTextFile(
+      manifestPath,
+      stringifyYaml({
+        manifestVersion: 1,
+        name: "@test/typeddir",
+        version: "2026.04.29.1",
+        models: ["foo.ts"],
+      }),
+    );
+
+    const result = await resolveExtensionFiles({
+      repoDir: dir,
+      manifestPath,
+      repoContext: stubRepoContext,
+      logger,
+    });
+
+    assertEquals(result.manifest.paths.base, "typedDir");
+    assertEquals(result.modelsDir, modelsDir);
+    assertEquals(result.modelEntryPoints, [join(modelsDir, "foo.ts")]);
+  });
+});
+
+Deno.test("resolveExtensionFiles paths.base=manifest resolves models from manifest dir", async () => {
+  await withTempRepo(async (dir) => {
+    const subdir = join(dir, "extensions", "models", "myext");
+    await Deno.mkdir(subdir, { recursive: true });
+    await Deno.writeTextFile(
+      join(subdir, "foo.ts"),
+      'export const name = "foo";',
+    );
+    const manifestPath = join(subdir, "manifest.yaml");
+    await Deno.writeTextFile(
+      manifestPath,
+      stringifyYaml({
+        manifestVersion: 1,
+        name: "@test/manifestbase",
+        version: "2026.04.29.1",
+        paths: { base: "manifest" },
+        models: ["foo.ts"],
+      }),
+    );
+
+    const result = await resolveExtensionFiles({
+      repoDir: dir,
+      manifestPath,
+      repoContext: stubRepoContext,
+      logger,
+    });
+
+    assertEquals(result.manifest.paths.base, "manifest");
+    assertEquals(result.modelsDir, subdir);
+    assertEquals(result.modelEntryPoints, [join(subdir, "foo.ts")]);
+  });
+});
+
+Deno.test("resolveExtensionFiles paths.base=manifest fails clearly when entry not in manifest dir", async () => {
+  await withTempRepo(async (dir) => {
+    const subdir = join(dir, "extensions", "models", "myext");
+    await Deno.mkdir(subdir, { recursive: true });
+    // File exists at the typedDir base but NOT under manifest dir.
+    const modelsDir = join(dir, "extensions", "models");
+    await Deno.writeTextFile(
+      join(modelsDir, "stray.ts"),
+      'export const name = "stray";',
+    );
+    const manifestPath = join(subdir, "manifest.yaml");
+    await Deno.writeTextFile(
+      manifestPath,
+      stringifyYaml({
+        manifestVersion: 1,
+        name: "@test/strict",
+        version: "2026.04.29.1",
+        paths: { base: "manifest" },
+        models: ["stray.ts"],
+      }),
+    );
+
+    await assertRejects(
+      () =>
+        resolveExtensionFiles({
+          repoDir: dir,
+          manifestPath,
+          repoContext: stubRepoContext,
+          logger,
+        }),
+      UserError,
+      "stray.ts",
+    );
+  });
+});
+
+Deno.test("resolveExtensionFiles paths.base=manifest applies to vaults", async () => {
+  await withTempRepo(async (dir) => {
+    const subdir = join(dir, "extensions", "vaults", "myvault");
+    await Deno.mkdir(subdir, { recursive: true });
+    await Deno.writeTextFile(
+      join(subdir, "vault.ts"),
+      'export const name = "vault";',
+    );
+    const manifestPath = join(subdir, "manifest.yaml");
+    await Deno.writeTextFile(
+      manifestPath,
+      stringifyYaml({
+        manifestVersion: 1,
+        name: "@test/vault",
+        version: "2026.04.29.1",
+        paths: { base: "manifest" },
+        vaults: ["vault.ts"],
+      }),
+    );
+
+    const result = await resolveExtensionFiles({
+      repoDir: dir,
+      manifestPath,
+      repoContext: stubRepoContext,
+      logger,
+    });
+
+    assertEquals(result.vaultsDir, subdir);
+    assertEquals(result.vaultEntryPoints, [join(subdir, "vault.ts")]);
+  });
+});
+
+Deno.test("resolveExtensionFiles paths.base=manifest applies to include", async () => {
+  await withTempRepo(async (dir) => {
+    const subdir = join(dir, "extensions", "models", "myext");
+    await Deno.mkdir(subdir, { recursive: true });
+    await Deno.writeTextFile(
+      join(subdir, "model.ts"),
+      'export const name = "model";',
+    );
+    await Deno.writeTextFile(
+      join(subdir, "helper.ts"),
+      "export const helper = true;",
+    );
+    const manifestPath = join(subdir, "manifest.yaml");
+    await Deno.writeTextFile(
+      manifestPath,
+      stringifyYaml({
+        manifestVersion: 1,
+        name: "@test/inc",
+        version: "2026.04.29.1",
+        paths: { base: "manifest" },
+        models: ["model.ts"],
+        include: ["helper.ts"],
+      }),
+    );
+
+    const result = await resolveExtensionFiles({
+      repoDir: dir,
+      manifestPath,
+      repoContext: stubRepoContext,
+      logger,
+    });
+
+    assertEquals(result.includeFilePaths, [join(subdir, "helper.ts")]);
+  });
+});
+
+Deno.test("resolveExtensionFiles paths.base=manifest resolves transitive imports", async () => {
+  await withTempRepo(async (dir) => {
+    const subdir = join(dir, "extensions", "models", "myext");
+    await Deno.mkdir(subdir, { recursive: true });
+    await Deno.writeTextFile(
+      join(subdir, "entry.ts"),
+      "import { x } from './helper.ts';\nexport const value = x;",
+    );
+    await Deno.writeTextFile(
+      join(subdir, "helper.ts"),
+      "export const x = 1;",
+    );
+    const manifestPath = join(subdir, "manifest.yaml");
+    await Deno.writeTextFile(
+      manifestPath,
+      stringifyYaml({
+        manifestVersion: 1,
+        name: "@test/imp",
+        version: "2026.04.29.1",
+        paths: { base: "manifest" },
+        models: ["entry.ts"],
+      }),
+    );
+
+    const result = await resolveExtensionFiles({
+      repoDir: dir,
+      manifestPath,
+      repoContext: stubRepoContext,
+      logger,
+    });
+
+    // Both entry and helper should be in the resolved set, sorted.
+    assertEquals(result.allModelFiles.length, 2);
+    assertEquals(
+      result.allModelFiles.includes(join(subdir, "entry.ts")),
+      true,
+    );
+    assertEquals(
+      result.allModelFiles.includes(join(subdir, "helper.ts")),
+      true,
+    );
+  });
+});
+
+Deno.test("resolveExtensionFiles default paths.base preserves swamp-extensions per-extension-subtree shape", async () => {
+  // Reproduces the swamp-extensions layout: manifest at repo root,
+  // model code under `./extensions/models/`. Bare basenames in
+  // `models:` resolve via the configured modelsDir (typedDir mode).
+  await withTempRepo(async (extRoot) => {
+    const modelsDir = join(extRoot, "extensions", "models");
+    await Deno.writeTextFile(
+      join(modelsDir, "backups.ts"),
+      'export const name = "backups";',
+    );
+    const manifestPath = join(extRoot, "manifest.yaml");
+    await Deno.writeTextFile(
+      manifestPath,
+      stringifyYaml({
+        manifestVersion: 1,
+        name: "@swamp/extension-shape",
+        version: "2026.04.29.1",
+        models: ["backups.ts"],
+      }),
+    );
+
+    const result = await resolveExtensionFiles({
+      repoDir: extRoot,
+      manifestPath,
+      repoContext: stubRepoContext,
+      logger,
+    });
+
+    assertEquals(result.modelsDir, modelsDir);
+    assertEquals(result.modelEntryPoints, [join(modelsDir, "backups.ts")]);
+  });
+});

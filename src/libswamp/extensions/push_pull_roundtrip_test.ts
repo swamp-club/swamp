@@ -43,6 +43,7 @@ function makeManifest(
     version: "2026.04.22.1",
     description: "Round-trip fixture",
     repository: undefined,
+    paths: { base: "typedDir" },
     workflows: [],
     models: ["echo.ts"],
     vaults: [],
@@ -213,6 +214,105 @@ Deno.test(
         resolved,
         join(extFilesDir, "prompts", "nested", "deep.md"),
       );
+    } finally {
+      await Deno.remove(src, { recursive: true });
+      await Deno.remove(dst, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "round-trip: paths.base=manifest aligns archive layout, manifest entries, and scorer entrypoint discovery",
+  async () => {
+    const { parse: parseYaml } = await import("@std/yaml");
+    const { collectEntrypoints, findManifestRoot } = await import(
+      "../../domain/extensions/extension_rubric_scorer.ts"
+    );
+    const src = await Deno.makeTempDir({ prefix: "rt-pb-src-" });
+    const dst = await Deno.makeTempDir({ prefix: "rt-pb-dst-" });
+    try {
+      // Per-extension-subdir layout: manifest sits beside its source.
+      // No `extensions/models/` indirection — the model file is right
+      // next to manifest.yaml. paths.base=manifest is what makes this
+      // shape work end-to-end.
+      const extDir = join(src, "extensions", "models", "scorer-aligned");
+      await Deno.mkdir(extDir, { recursive: true });
+      await Deno.writeTextFile(
+        join(extDir, "echo.ts"),
+        'export const model = { type: "@t/aligned", version: "1.0.0" };',
+      );
+      await Deno.writeTextFile(join(extDir, "README.md"), "# README");
+
+      const manifest = makeManifest({
+        paths: { base: "manifest" },
+        models: ["echo.ts"],
+        additionalFiles: ["README.md"],
+      });
+
+      const input: ExtensionPushPrepareInput = {
+        manifest,
+        repoDir: src,
+        // Resolver under paths.base=manifest sets these to the manifest dir;
+        // the test fixture mirrors that contract directly.
+        modelsDir: extDir,
+        allModelFiles: [join(extDir, "echo.ts")],
+        modelEntryPoints: [join(extDir, "echo.ts")],
+        vaultsDir: extDir,
+        allVaultFiles: [],
+        vaultEntryPoints: [],
+        driversDir: extDir,
+        allDriverFiles: [],
+        driverEntryPoints: [],
+        datastoresDir: extDir,
+        allDatastoreFiles: [],
+        datastoreEntryPoints: [],
+        reportsDir: extDir,
+        allReportFiles: [],
+        reportEntryPoints: [],
+        workflowFiles: [],
+        skillDirs: [],
+        allSkillFiles: [],
+        includeFilePaths: [],
+        additionalFilePaths: [join(extDir, "README.md")],
+        dryRun: true,
+      };
+
+      const ctx = createLibSwampContext();
+      const prepared = await extensionPushPrepare(
+        ctx,
+        makePrepareDeps(),
+        input,
+      );
+
+      await untarArchiveTo(prepared.archiveBytes, dst);
+
+      // 1) Archive sub-paths mirror the manifest entries verbatim:
+      // bare basenames in `models:` resolve to bare basenames under
+      // `extension/models/`, not nested any deeper.
+      const extRoot = await findManifestRoot(dst);
+      await Deno.stat(join(extRoot, "models", "echo.ts"));
+      await Deno.stat(join(extRoot, "files", "README.md"));
+
+      // 2) On-wire manifest preserves WYSIWYG: paths.base round-trips,
+      // path string arrays are byte-equivalent to the source manifest.
+      const onWire = parseYaml(
+        await Deno.readTextFile(join(extRoot, "manifest.yaml")),
+      ) as Record<string, unknown>;
+      assertEquals(onWire.paths, { base: "manifest" });
+      assertEquals(onWire.models, ["echo.ts"]);
+      assertEquals(onWire.additionalFiles, ["README.md"]);
+
+      // 3) Scorer's collectEntrypoints finds every typed-key entry at
+      // the path it expects. This is the hard contract that broke
+      // under the v1 dual-base proposal — locking it here prevents
+      // any future divergence between manifest entries and archive
+      // sub-paths.
+      const entrypoints = collectEntrypoints(extRoot, extRoot, manifest);
+      assertEquals(entrypoints, [join(extRoot, "models", "echo.ts")]);
+      // Every entrypoint actually exists in the extracted archive.
+      for (const ep of entrypoints) {
+        await Deno.stat(ep);
+      }
     } finally {
       await Deno.remove(src, { recursive: true });
       await Deno.remove(dst, { recursive: true });

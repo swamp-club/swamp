@@ -50,18 +50,29 @@ export interface ResolveExtensionFilesContext {
 export interface ResolvedExtensionFiles {
   manifest: ExtensionManifest;
   absoluteManifestPath: string;
+  /**
+   * Effective base for `models` and `include`. Equals the configured
+   * `modelsDir` from the repo marker under `paths.base: typedDir`
+   * (default), and equals the manifest's own directory under
+   * `paths.base: manifest`. Push uses this base for the archive
+   * layout so archive sub-paths match the manifest entries verbatim.
+   */
   modelsDir: string;
   modelEntryPoints: string[];
   allModelFiles: string[];
+  /** Effective base for `vaults` — see {@link modelsDir}. */
   vaultsDir: string;
   vaultEntryPoints: string[];
   allVaultFiles: string[];
+  /** Effective base for `drivers` — see {@link modelsDir}. */
   driversDir: string;
   driverEntryPoints: string[];
   allDriverFiles: string[];
+  /** Effective base for `datastores` — see {@link modelsDir}. */
   datastoresDir: string;
   datastoreEntryPoints: string[];
   allDatastoreFiles: string[];
+  /** Effective base for `reports` — see {@link modelsDir}. */
   reportsDir: string;
   reportEntryPoints: string[];
   allReportFiles: string[];
@@ -135,15 +146,34 @@ export async function resolveExtensionFiles(
     }
   }
 
-  // 2. Resolve models dir and vaults dir
+  // 2. Resolve effective base for each typed-key category. Default mode
+  // (`paths.base: typedDir`) uses the configured directory from the repo
+  // marker — historical behavior, what every published manifest sees.
+  // Opt-in mode (`paths.base: manifest`) uses the manifest's own directory
+  // for typed keys plus `additionalFiles`, so authors with a per-extension-
+  // subdir layout can write bare basenames and the archive layout (which
+  // mirrors `relative(<typedDir>, file)` in push.ts) produces sub-paths
+  // matching the manifest entries verbatim.
   const repoPath = RepoPath.create(repoDir);
   const markerRepo = new RepoMarkerRepository();
   const marker = await markerRepo.read(repoPath);
-  const modelsDir = resolve(repoDir, resolveModelsDir(marker));
-  const vaultsDir = resolve(repoDir, resolveVaultsDir(marker));
-  const driversDir = resolve(repoDir, resolveDriversDir(marker));
-  const datastoresDir = resolve(repoDir, resolveDatastoresDir(marker));
-  const reportsDir = resolve(repoDir, resolveReportsDir(marker));
+  const manifestDir = dirname(absoluteManifestPath);
+  const useManifestBase = manifest.paths.base === "manifest";
+  const modelsDir = useManifestBase
+    ? manifestDir
+    : resolve(repoDir, resolveModelsDir(marker));
+  const vaultsDir = useManifestBase
+    ? manifestDir
+    : resolve(repoDir, resolveVaultsDir(marker));
+  const driversDir = useManifestBase
+    ? manifestDir
+    : resolve(repoDir, resolveDriversDir(marker));
+  const datastoresDir = useManifestBase
+    ? manifestDir
+    : resolve(repoDir, resolveDatastoresDir(marker));
+  const reportsDir = useManifestBase
+    ? manifestDir
+    : resolve(repoDir, resolveReportsDir(marker));
 
   // 3. Collect model files from manifest
   const modelEntryPoints: string[] = [];

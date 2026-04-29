@@ -233,6 +233,17 @@ driver file — swamp silently skips files that fail to compile.
 7. **Output types**: Drivers return `"pending"` outputs (data to be persisted by
    swamp) or `"persisted"` outputs (already written by in-process drivers)
 
+## Manifest path resolution
+
+Drivers, like every other extension type, support the optional `paths.base`
+manifest field. **Default behavior is unchanged** — omit the field and
+`drivers:` paths resolve relative to the configured `extensions/drivers/`
+directory exactly as before. Set `paths.base: manifest` only if you want a
+per-extension-subdir layout where the driver source, manifest, README, and
+LICENSE all sit alongside each other. See
+[swamp-extension-publish references/publishing.md](../swamp-extension-publish/references/publishing.md#path-resolution--pathsbase)
+for the canonical reference.
+
 ## Extension Adversarial Review
 
 After writing or significantly modifying driver code, and before running unit

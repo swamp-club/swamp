@@ -1010,7 +1010,10 @@ async function createArchive(
       await Deno.mkdir(join(extDir, dir), { recursive: true });
     }
 
-    // Write normalized manifest
+    // Re-emit the manifest from parsed fields. Path string arrays
+    // pass through verbatim — the on-wire manifest stays
+    // byte-equivalent to the author's intent (no path rewriting),
+    // so what the registry stores matches what was pushed.
     await Deno.writeTextFile(
       join(extDir, "manifest.yaml"),
       stringifyYaml({
@@ -1020,6 +1023,9 @@ async function createArchive(
         description: input.manifest.description ?? "",
         ...(input.manifest.repository
           ? { repository: input.manifest.repository }
+          : {}),
+        ...(input.manifest.paths.base !== "typedDir"
+          ? { paths: { base: input.manifest.paths.base } }
           : {}),
         models: input.manifest.models,
         workflows: input.manifest.workflows,

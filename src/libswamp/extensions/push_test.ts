@@ -41,6 +41,7 @@ function makeManifest(
     version: "2026.03.22.1",
     description: "Test extension",
     repository: undefined,
+    paths: { base: "typedDir" },
     workflows: [],
     models: ["echo.ts"],
     vaults: [],

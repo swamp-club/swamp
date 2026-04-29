@@ -55,14 +55,16 @@ dependencies:
 | `version`         | Yes      | CalVer format: `YYYY.MM.DD.MICRO`                                                                                                                 |
 | `description`     | No       | Human-readable description                                                                                                                        |
 | `repository`      | No       | HTTPS URL of the upstream repository. Required for users to file issues via `swamp issue --extension` — `swamp extension push` warns when absent. |
-| `models`          | No*      | Model file paths relative to `extensions/models/`                                                                                                 |
-| `workflows`       | No*      | Workflow file paths relative to `workflows/`                                                                                                      |
-| `vaults`          | No*      | Vault file paths relative to `extensions/vaults/`                                                                                                 |
-| `drivers`         | No*      | Driver file paths relative to `extensions/drivers/`                                                                                               |
-| `datastores`      | No*      | Datastore file paths relative to `extensions/datastores/`                                                                                         |
-| `reports`         | No*      | Report file paths relative to `extensions/reports/`                                                                                               |
-| `skills`          | No*      | Skill directory names resolved from the tool's skill directory (e.g., `.claude/skills/`)                                                          |
-| `additionalFiles` | No       | Extra files relative to the manifest location, directory structure preserved                                                                      |
+| `paths.base`      | No       | Path resolution mode for typed keys + `additionalFiles`. `typedDir` (default) or `manifest`. See "Path resolution".                               |
+| `models`          | No*      | Model file paths. Resolved via `paths.base`.                                                                                                      |
+| `workflows`       | No*      | Workflow file paths. Workflows use a multi-base lookup and ignore `paths.base`.                                                                   |
+| `vaults`          | No*      | Vault file paths. Resolved via `paths.base`.                                                                                                      |
+| `drivers`         | No*      | Driver file paths. Resolved via `paths.base`.                                                                                                     |
+| `datastores`      | No*      | Datastore file paths. Resolved via `paths.base`.                                                                                                  |
+| `reports`         | No*      | Report file paths. Resolved via `paths.base`.                                                                                                     |
+| `skills`          | No*      | Skill directory names resolved from the tool's skill directory (e.g., `.claude/skills/`). Skills ignore `paths.base`.                             |
+| `include`         | No       | Helper TypeScript files copied alongside models without bundling. Resolved via `paths.base`.                                                      |
+| `additionalFiles` | No       | Extra files (README, LICENSE, etc.) relative to the manifest's own directory.                                                                     |
 | `platforms`       | No       | OS/architecture hints (e.g. `darwin-aarch64`, `linux-x86_64`)                                                                                     |
 | `labels`          | No       | Categorization labels (e.g. `aws`, `kubernetes`, `security`)                                                                                      |
 | `dependencies`    | No       | Other extensions this one depends on                                                                                                              |
@@ -108,6 +110,96 @@ export const model = {
 
 Use `ctx.extensionFile()` instead of hardcoding `.swamp/pulled-extensions/`
 paths — hardcoding breaks smoke tests run against a source-loaded extension.
+
+### Path resolution — `paths.base`
+
+This is the canonical reference for path resolution semantics across all
+extension-type skills (model, vault, driver, datastore, report). Other skills
+link here.
+
+> **The default is the existing path resolution. Omit `paths.base` and nothing
+> about your manifest changes — historical behavior end to end.** The
+> implementation is a single ternary: when `paths.base: manifest` is set, the
+> resolver and archive layout switch to a manifest-relative base; otherwise they
+> use the configured typed dir as before. There is no implicit detection, no
+> fallback, no "best guess" — opt in to opt in.
+
+`paths.base` selects which directory typed-key entries (`models`, `vaults`,
+`drivers`, `datastores`, `reports`, `include`) and `additionalFiles` resolve
+against during push. Two modes:
+
+| Mode                 | Typed keys resolve relative to                        | `additionalFiles` resolves relative to |
+| -------------------- | ----------------------------------------------------- | -------------------------------------- |
+| `typedDir` (default) | Configured directory (`modelsDir`, `vaultsDir`, etc.) | Manifest's own directory               |
+| `manifest`           | Manifest's own directory                              | Manifest's own directory               |
+
+Existing manifests without an explicit `paths.base` keep their semantics
+unchanged — every published extension on the registry today is on the `typedDir`
+path and stays there. The opt-in is purely additive.
+
+Pick `manifest` for **per-extension-subdir layouts**: each extension lives in
+its own subdirectory under the configured typed dir, with manifest, source,
+README, and LICENSE all alongside each other. This is the layout the quality
+rubric rewards (README and LICENSE land at the archive root via
+`additionalFiles`) without requiring directory prefixes on `models:` or other
+typed entries.
+
+#### Side-by-side example
+
+Default (`paths.base: typedDir`) — manifest sits inside `modelsDir` or at a
+per-extension repo root with code under `./extensions/models/`:
+
+```
+extensions/models/manifest.yaml          # or:    my-ext/manifest.yaml
+extensions/models/echo.ts                #        my-ext/extensions/models/echo.ts
+extensions/models/utils/helper.ts        #        my-ext/extensions/models/utils/helper.ts
+```
+
+```yaml
+# manifest.yaml
+manifestVersion: 1
+name: "@me/my-ext"
+version: "2026.04.29.1"
+models:
+  - echo.ts
+  - utils/helper.ts
+additionalFiles:
+  - README.md # alongside manifest
+```
+
+Opt-in (`paths.base: manifest`) — each extension is a self-contained directory
+under `modelsDir`:
+
+```
+extensions/models/my-ext/manifest.yaml
+extensions/models/my-ext/echo.ts
+extensions/models/my-ext/utils/helper.ts
+extensions/models/my-ext/README.md
+```
+
+```yaml
+# manifest.yaml
+manifestVersion: 1
+name: "@me/my-ext"
+version: "2026.04.29.1"
+paths:
+  base: manifest
+models:
+  - echo.ts
+  - utils/helper.ts
+additionalFiles:
+  - README.md
+```
+
+#### What does NOT change with `paths.base: manifest`
+
+- The on-wire manifest in the archive is byte-equivalent to your source manifest
+  — no path rewriting, no normalization. WYSIWYG.
+- The archive layout under each typed dir mirrors your manifest entries
+  verbatim: `models: [echo.ts]` lands at `extension/models/echo.ts` in the
+  archive (not at `extension/models/my-ext/echo.ts`).
+- Workflows and skills keep their own multi-base lookup. `paths.base` does not
+  apply to those keys.
 
 ### Name Rules
 

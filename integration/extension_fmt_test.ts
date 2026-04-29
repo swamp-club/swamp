@@ -262,3 +262,43 @@ Deno.test("extension fmt --help shows usage", async () => {
   assertStringIncludes(stdout, "fmt");
   assertStringIncludes(stdout, "manifest-path");
 });
+
+Deno.test("extension fmt auto-fixes under paths.base=manifest", async () => {
+  const tmpDir = await initTempRepo();
+  try {
+    // Per-extension-subdir layout: manifest sits in a subdir alongside
+    // its source. paths.base=manifest tells the resolver to find
+    // entries beside the manifest, not under the configured modelsDir.
+    const extDir = join(tmpDir, "extensions", "models", "fmt-paths-base");
+    await Deno.mkdir(extDir, { recursive: true });
+    const modelPath = join(extDir, "model.ts");
+    await Deno.writeTextFile(modelPath, "export const x=1;export const y=2;");
+
+    const manifestPath = join(extDir, "manifest.yaml");
+    await Deno.writeTextFile(
+      manifestPath,
+      stringifyYaml({
+        manifestVersion: 1,
+        name: "@test/fmt-paths",
+        version: "2026.04.29.1",
+        paths: { base: "manifest" },
+        models: ["model.ts"],
+      }),
+    );
+
+    const { code, stderr, stdout } = await runCli([
+      "extension",
+      "fmt",
+      manifestPath,
+      "--repo-dir",
+      tmpDir,
+      "--no-color",
+    ]);
+    assertEquals(code, 0, `Expected success but got:\n${stderr}\n${stdout}`);
+
+    const fixed = await Deno.readTextFile(modelPath);
+    assertStringIncludes(fixed, "export const x = 1;");
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});

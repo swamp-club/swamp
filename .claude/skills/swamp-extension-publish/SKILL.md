@@ -104,8 +104,11 @@ Confirm `manifest.yaml` exists and is structurally valid.
 2. `name` is present and matches `@collective/name` format
 3. At least one content array (`models`, `workflows`, `vaults`, `drivers`,
    `datastores`, or `reports`) has entries
-4. All referenced files exist at their expected paths (models in
-   `extensions/models/`, workflows in `workflows/`, etc.)
+4. All referenced files exist at their expected paths. Default resolution is
+   unchanged: `models` resolve under `extensions/models/`, `workflows` under
+   `workflows/`, etc. — every existing manifest keeps its semantics. Only
+   manifests that explicitly opt in via `paths.base: manifest` resolve typed
+   entries beside the manifest itself.
 
 **Verify:** All 4 checks pass.
 
@@ -115,6 +118,10 @@ Confirm `manifest.yaml` exists and is structurally valid.
 - Invalid name → use `@collective/extension-name` format
 - No content arrays → add at least one of `models`, `workflows`, `skills`, etc.
 - Missing files → create the files or fix the paths
+- Files exist but resolver can't find them with bare basenames in a
+  per-extension-subdir layout → see "Path resolution" in
+  [references/publishing.md](references/publishing.md) for the
+  `paths.base: manifest` opt-in
 
 See [references/publishing.md](references/publishing.md) for the full manifest
 schema and field reference.

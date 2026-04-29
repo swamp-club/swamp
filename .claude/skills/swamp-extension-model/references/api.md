@@ -96,7 +96,9 @@ files: {
 ## Reading Bundled Assets
 
 Models shipped via an extension manifest can declare runtime assets in
-`additionalFiles`:
+`additionalFiles`. These paths resolve relative to the manifest's own directory
+in both modes — no migration needed for existing manifests (default mode is
+unchanged):
 
 ```yaml
 # manifest.yaml

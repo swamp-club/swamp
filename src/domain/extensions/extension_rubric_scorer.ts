@@ -605,7 +605,7 @@ export async function scoreExtensionTarball(
   }
 }
 
-async function findManifestRoot(extractDir: string): Promise<string> {
+export async function findManifestRoot(extractDir: string): Promise<string> {
   try {
     await Deno.stat(join(extractDir, "manifest.yaml"));
     return extractDir;
@@ -628,7 +628,7 @@ async function findManifestRoot(extractDir: string): Promise<string> {
 }
 
 /** Walk manifest fields for entrypoints; prefix each with its field directory. */
-function collectEntrypoints(
+export function collectEntrypoints(
   root: string,
   rootAbs: string,
   manifest: ExtensionManifest,

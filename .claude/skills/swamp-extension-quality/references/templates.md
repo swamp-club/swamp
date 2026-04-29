@@ -47,6 +47,49 @@ Fields to double-check before publishing:
 - `platforms:` is either empty or has ≥2 entries (a single explicit platform
   fails `platforms-two`)
 
+## Per-extension-subdir layout — opt-in `paths.base: manifest`
+
+The template above assumes the historical layout: manifest at the repository
+root or directly inside `extensions/models/`, source files under
+`extensions/models/`, README and LICENSE alongside the manifest. **That layout
+keeps working unchanged — there is no migration required for any existing
+extension.**
+
+If you prefer to keep each extension self-contained in its own subdirectory
+under `extensions/models/` (manifest, source, README, LICENSE all alongside each
+other), opt in with `paths.base: manifest`. The default is unchanged in the code
+(a single ternary picks between the configured typed dir and the manifest's own
+directory), so omitting the field is the same as writing `paths.base: typedDir`
+— historical behavior. See
+[swamp-extension-publish references/publishing.md](../../swamp-extension-publish/references/publishing.md#path-resolution--pathsbase)
+for the canonical reference.
+
+```yaml
+manifestVersion: 1
+name: "@mycollective/my-extension"
+version: "2026.04.22.1"
+description: "One clear sentence about what this extension does."
+repository: https://github.com/mycollective/my-extension
+
+paths:
+  base: manifest # opt-in; remove the field to keep the historical default
+
+models:
+  - my-model.ts # resolves alongside this manifest, not under extensions/models/
+additionalFiles:
+  - README.md # same — alongside the manifest
+  - LICENSE
+platforms:
+  - linux-x86_64
+  - darwin-aarch64
+```
+
+This shape keeps the file layout flat (manifest beside source beside README)
+without forcing directory prefixes on `models:`. It makes no difference to the
+rubric score itself — both layouts can earn full marks — but it removes the
+mental friction authors hit when restructuring to land README at the archive
+root.
+
 ## `README.md` — minimal substantive template
 
 Needs ≥500 characters total and ≥2 fenced code blocks. This template clears both
@@ -167,13 +210,13 @@ before pushing.
 
 ## Common mistakes and their fixes
 
-| Mistake                                                          | Consequence                                                        | Fix                                                         |
-| ---------------------------------------------------------------- | ------------------------------------------------------------------ | ----------------------------------------------------------- |
-| README in repo root but not in `additionalFiles:`                | `has-readme` 0/2, `readme-example` 0/1, `rich-readme` 0/1 = -4 pts | Add `README.md` to `additionalFiles:` in the manifest       |
-| LICENSE file in repo but not in `additionalFiles:`               | `has-license` 0/1 = -1 pt                                          | Add the LICENSE file to `additionalFiles:`                  |
-| Missing return type on one exported function                     | `fast-check` 0/1 = -1 pt                                           | Add explicit `: ReturnType` annotation                      |
-| Description set to `"TODO"`                                      | technically passes, wastes the signal                              | Write a real one-sentence description                       |
-| `repository:` URL is HTTP not HTTPS                              | `repository-verified` 0/2 = -2 pts                                 | Switch to `https://`                                        |
-| `repository:` on self-hosted GitLab or Gitea                     | `repository-verified` 0/2 = -2 pts                                 | Use a public mirror on github.com or gitlab.com if possible |
-| `platforms:` has exactly one entry                               | `platforms-two` 0/1 = -1 pt                                        | Either leave empty (universal) or list ≥2                   |
-| One exported helper without a JSDoc comment, out of five exports | `symbols-docs` 0/1 = -1 pt                                         | Add JSDoc to hit ≥80% coverage                              |
+| Mistake                                                          | Consequence                                                        | Fix                                                                                                                                                                                                              |
+| ---------------------------------------------------------------- | ------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| README in repo root but not in `additionalFiles:`                | `has-readme` 0/2, `readme-example` 0/1, `rich-readme` 0/1 = -4 pts | Add `README.md` to `additionalFiles:` in the manifest. For per-extension-subdir layouts, set `paths.base: manifest` so the README beside the manifest resolves with a bare basename (default mode is unchanged). |
+| LICENSE file in repo but not in `additionalFiles:`               | `has-license` 0/1 = -1 pt                                          | Add the LICENSE file to `additionalFiles:`. Same `paths.base: manifest` opt-in available if your LICENSE sits alongside a per-directory manifest.                                                                |
+| Missing return type on one exported function                     | `fast-check` 0/1 = -1 pt                                           | Add explicit `: ReturnType` annotation                                                                                                                                                                           |
+| Description set to `"TODO"`                                      | technically passes, wastes the signal                              | Write a real one-sentence description                                                                                                                                                                            |
+| `repository:` URL is HTTP not HTTPS                              | `repository-verified` 0/2 = -2 pts                                 | Switch to `https://`                                                                                                                                                                                             |
+| `repository:` on self-hosted GitLab or Gitea                     | `repository-verified` 0/2 = -2 pts                                 | Use a public mirror on github.com or gitlab.com if possible                                                                                                                                                      |
+| `platforms:` has exactly one entry                               | `platforms-two` 0/1 = -1 pt                                        | Either leave empty (universal) or list ≥2                                                                                                                                                                        |
+| One exported helper without a JSDoc comment, out of five exports | `symbols-docs` 0/1 = -1 pt                                         | Add JSDoc to hit ≥80% coverage                                                                                                                                                                                   |

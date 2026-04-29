@@ -438,3 +438,72 @@ models:
   const manifest = parseExtensionManifest(yaml);
   assertEquals(manifest.models, ["aws/ec2/instance.ts", "deploy_model.ts"]);
 });
+
+Deno.test("parseExtensionManifest defaults paths.base to typedDir", () => {
+  const yaml = `
+manifestVersion: 1
+name: "@myuser/myext"
+version: "2026.02.26.1"
+models:
+  - foo.ts
+`;
+  const manifest = parseExtensionManifest(yaml);
+  assertEquals(manifest.paths.base, "typedDir");
+});
+
+Deno.test("parseExtensionManifest accepts paths.base = manifest", () => {
+  const yaml = `
+manifestVersion: 1
+name: "@myuser/myext"
+version: "2026.02.26.1"
+paths:
+  base: manifest
+models:
+  - foo.ts
+`;
+  const manifest = parseExtensionManifest(yaml);
+  assertEquals(manifest.paths.base, "manifest");
+});
+
+Deno.test("parseExtensionManifest accepts paths.base = typedDir explicitly", () => {
+  const yaml = `
+manifestVersion: 1
+name: "@myuser/myext"
+version: "2026.02.26.1"
+paths:
+  base: typedDir
+models:
+  - foo.ts
+`;
+  const manifest = parseExtensionManifest(yaml);
+  assertEquals(manifest.paths.base, "typedDir");
+});
+
+Deno.test("parseExtensionManifest rejects unknown paths.base value", () => {
+  const yaml = `
+manifestVersion: 1
+name: "@myuser/myext"
+version: "2026.02.26.1"
+paths:
+  base: manifestDir
+models:
+  - foo.ts
+`;
+  const error = assertThrows(() => parseExtensionManifest(yaml));
+  assertStringIncludes((error as Error).message, "paths.base");
+});
+
+Deno.test("parseExtensionManifest rejects unknown key inside paths", () => {
+  const yaml = `
+manifestVersion: 1
+name: "@myuser/myext"
+version: "2026.02.26.1"
+paths:
+  base: manifest
+  extra: nope
+models:
+  - foo.ts
+`;
+  const error = assertThrows(() => parseExtensionManifest(yaml));
+  assertStringIncludes((error as Error).message, "paths");
+});

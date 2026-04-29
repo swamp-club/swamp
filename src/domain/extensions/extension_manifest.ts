@@ -41,6 +41,35 @@ const safePathString = z.string().refine(isSafeRelativePath, {
     "Path must be relative and must not contain '..' components or start with '/'",
 });
 
+/**
+ * Path resolution base. Selects the directory typed-key entries
+ * (`models`, `vaults`, `drivers`, `datastores`, `reports`, `include`)
+ * and `additionalFiles` resolve against during push, and the directory
+ * the archive layout mirrors via `relative(base, file)`.
+ *
+ * - `typedDir` (default): typed keys resolve relative to their
+ *   configured directory (`modelsDir`, `vaultsDir`, etc. from the repo
+ *   marker); `additionalFiles` resolves relative to the manifest's
+ *   own directory. This is the historical behavior — every published
+ *   manifest without an explicit `paths.base` keeps its semantics.
+ * - `manifest`: every typed key plus `additionalFiles` resolves
+ *   relative to the manifest's own directory. Use this for
+ *   per-extension-subdir layouts where manifest, source, README, and
+ *   LICENSE all live alongside each other.
+ *
+ * Workflows and skills keep their own multi-base resolution (workflows
+ * fall back from the indexer dir to the extension workflows dir;
+ * skills look up project-local then global). `paths.base` does not
+ * apply to those keys.
+ */
+const PathsBaseSchema = z.enum(["typedDir", "manifest"]);
+
+export type PathsBase = z.infer<typeof PathsBaseSchema>;
+
+const PathsConfigSchema = z.object({
+  base: PathsBaseSchema.optional(),
+}).strict();
+
 const ExtensionManifestSchemaV1 = z.object({
   manifestVersion: z.literal(1),
   name: z.string().refine(
@@ -55,6 +84,7 @@ const ExtensionManifestSchemaV1 = z.object({
   }),
   description: z.string().optional(),
   repository: z.string().url().optional(),
+  paths: PathsConfigSchema.optional(),
   workflows: z.array(safePathString).optional(),
   models: z.array(safePathString).optional(),
   vaults: z.array(safePathString).optional(),
@@ -94,6 +124,7 @@ export interface ExtensionManifest {
   version: string;
   description: string | undefined;
   repository: string | undefined;
+  paths: { base: PathsBase };
   workflows: string[];
   models: string[];
   vaults: string[];
@@ -154,6 +185,7 @@ export function parseExtensionManifest(content: string): ExtensionManifest {
     version: result.data.version,
     description: result.data.description,
     repository: result.data.repository,
+    paths: { base: result.data.paths?.base ?? "typedDir" },
     workflows: result.data.workflows ?? [],
     models: result.data.models ?? [],
     vaults: result.data.vaults ?? [],

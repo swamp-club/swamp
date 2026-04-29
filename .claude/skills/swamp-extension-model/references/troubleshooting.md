@@ -225,6 +225,16 @@ Models directory priority:
 | 2        | `.swamp.yaml` config | `modelsDir: "lib/models"`        |
 | 3        | Default              | `extensions/models`              |
 
+**The table above is the historical default and still applies to every existing
+manifest.** A manifest with no `paths` field — or with the explicit
+`paths.base: typedDir` — uses this priority chain to find the configured models
+directory. Only manifests that explicitly opt in with `paths.base: manifest`
+skip the table entirely and resolve typed keys (`models`, `vaults`, `drivers`,
+`datastores`, `reports`, `include`) relative to the manifest's own directory.
+Default behavior is unchanged. See
+[swamp-extension-publish references/publishing.md](../../swamp-extension-publish/references/publishing.md#path-resolution--pathsbase)
+for the canonical reference.
+
 ## Auto-Resolution Failures
 
 Extensions from trusted collectives (explicit `trustedCollectives` in

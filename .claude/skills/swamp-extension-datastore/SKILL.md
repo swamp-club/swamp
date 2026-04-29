@@ -236,3 +236,14 @@ verification) before allowing a push.
 - **Troubleshooting**: See
   [references/troubleshooting.md](references/troubleshooting.md) for common
   issues (type not found, config validation, stale bundles)
+
+## Manifest path resolution
+
+Datastores, like every other extension type, support the optional `paths.base`
+manifest field. **Default behavior is unchanged** — omit the field and
+`datastores:` paths resolve relative to the configured `extensions/datastores/`
+directory exactly as before. Set `paths.base: manifest` only if you want a
+per-extension-subdir layout where the datastore source, manifest, README, and
+LICENSE all sit alongside each other. See
+[swamp-extension-publish references/publishing.md](../swamp-extension-publish/references/publishing.md#path-resolution--pathsbase)
+for the canonical reference.

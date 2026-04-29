@@ -43,6 +43,7 @@ function makeManifest(
     version: "2026.01.01.0",
     description: "A test extension",
     repository: "https://github.com/example/test",
+    paths: { base: "typedDir" },
     workflows: [],
     models: [],
     vaults: [],

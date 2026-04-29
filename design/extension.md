@@ -59,23 +59,36 @@ containing `..` or starting with `/`.
 ### Optional Fields
 
 - `description`: Human-readable description of the extension.
+- `paths.base`: Path resolution mode for the typed keys below. `"typedDir"`
+  (default) resolves typed entries relative to their configured directory
+  (`modelsDir`, `vaultsDir`, etc.). `"manifest"` resolves every typed entry
+  plus `additionalFiles` relative to the manifest's own directory — pick
+  this for per-extension-subdir layouts where manifest, source, README,
+  and LICENSE all sit alongside each other. See "Path resolution" below.
 - `models`: Array of relative paths to TypeScript model files (e.g.,
-  `["aws/ec2/instance.ts"]`).
-- `workflows`: Array of relative paths to YAML workflow files.
-- `vaults`: Array of relative paths to TypeScript vault files.
-- `drivers`: Array of relative paths to TypeScript driver files.
+  `["aws/ec2/instance.ts"]`). Resolved via `paths.base`.
+- `workflows`: Array of relative paths to YAML workflow files. Workflows
+  use a multi-base lookup (indexer dir then extension workflows dir) and
+  are not affected by `paths.base`.
+- `vaults`: Array of relative paths to TypeScript vault files. Resolved
+  via `paths.base`.
+- `drivers`: Array of relative paths to TypeScript driver files. Resolved
+  via `paths.base`.
 - `datastores`: Array of relative paths to TypeScript datastore files.
-- `reports`: Array of relative paths to TypeScript report files.
+  Resolved via `paths.base`.
+- `reports`: Array of relative paths to TypeScript report files. Resolved
+  via `paths.base`.
 - `skills`: Array of skill directory names resolved from the tool's skill
   directory (e.g., `.claude/skills/`). Each directory must contain a `SKILL.md`
   with YAML frontmatter declaring `name` and `description`. Skills are passive
-  markdown guidance documents — swamp never executes them.
-- `include`: Array of relative paths (from `modelsDir`) to TypeScript files that
-  should be included in the archive alongside models but not bundled. Used for
-  helper scripts that are executed via `Deno.Command` subprocess rather than
-  imported directly.
-- `additionalFiles`: Array of paths to non-model files to include (README,
-  config, etc.).
+  markdown guidance documents — swamp never executes them. Skills are not
+  affected by `paths.base`.
+- `include`: Array of relative paths to TypeScript files that should be
+  included in the archive alongside models but not bundled. Used for
+  helper scripts that are executed via `Deno.Command` subprocess rather
+  than imported directly. Resolved via `paths.base`.
+- `additionalFiles`: Array of relative paths to non-model files (README,
+  config, etc.). Always resolved relative to the manifest's own directory.
 - `platforms`: Array of platform identifiers the extension supports (e.g.,
   `["darwin-aarch64", "linux-x86_64"]`). Informational only — displayed during
   pull.
@@ -107,6 +120,37 @@ tags:
   - ssh
   - networking
 ```
+
+### Path Resolution
+
+The `paths.base` field selects the directory typed-key entries
+(`models`, `vaults`, `drivers`, `datastores`, `reports`, `include`) plus
+`additionalFiles` resolve against during push. Two modes:
+
+- **`typedDir` (default)** — typed entries resolve relative to their
+  configured directory from the repo marker (`modelsDir`, `vaultsDir`,
+  etc., or environment overrides like `SWAMP_MODELS_DIR`).
+  `additionalFiles` resolves relative to the manifest's own directory.
+  This is the historical behavior; every existing manifest without an
+  explicit `paths.base` keeps these semantics.
+- **`manifest`** — every typed entry plus `additionalFiles` resolves
+  relative to the manifest's own directory. Pick this for
+  per-extension-subdir layouts where manifest, source, README, and
+  LICENSE all live alongside each other (e.g.
+  `extensions/models/myext/manifest.yaml` next to `myext/echo.ts` and
+  `myext/README.md`).
+
+Workflows and skills keep their bespoke multi-base lookup (workflows
+fall back from the indexer dir to the extension workflows dir; skills
+look up project-local then global). `paths.base` does not apply to
+those keys.
+
+The on-wire manifest in the archive preserves the field strings
+verbatim — no path rewriting, no normalization. WYSIWYG between what
+the author pushes and what the registry stores. The archive layout
+under each typed-key directory mirrors the entry strings: under
+`paths.base: manifest` with `models: [echo.ts]`, the archive contains
+`extension/models/echo.ts` directly.
 
 ## Archive Structure
 
@@ -140,13 +184,15 @@ extension.tar.gz
 ### Models
 
 Source TypeScript files are included preserving their relative directory
-structure from the models directory. Local imports are resolved recursively —
-if `connection.ts` imports `./helpers.ts`, both files are included.
+structure from the active base (the configured `modelsDir` under
+`paths.base: typedDir`, the manifest's own directory under
+`paths.base: manifest`). Local imports are resolved recursively — if
+`connection.ts` imports `./helpers.ts`, both files are included.
 
 Files listed in the manifest's `include` field are also copied to `models/` in
-the archive, preserving their relative paths from `modelsDir`. Include files are
-not bundled — they are raw TypeScript files intended to be executed as
-subprocesses or used as standalone utilities.
+the archive, preserving their relative paths from the active base. Include
+files are not bundled — they are raw TypeScript files intended to be executed
+as subprocesses or used as standalone utilities.
 
 ### Loader pre-check
 
