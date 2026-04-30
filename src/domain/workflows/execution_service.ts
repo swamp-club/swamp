@@ -78,28 +78,12 @@ import { merge } from "../../infrastructure/stream/merge.ts";
 import { withEventBridge } from "../../infrastructure/stream/event_bridge.ts";
 import type { ReportFilterOptions } from "../reports/report_execution_service.ts";
 import { getTracer, SpanStatusCode } from "../../infrastructure/tracing/mod.ts";
-import {
-  type DriverSource,
-  resolveDriverConfig,
-} from "../drivers/driver_resolution.ts";
+import { DriverPlan } from "../drivers/driver_plan.ts";
 import {
   type RepoMarkerData,
   RepoMarkerRepository,
 } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { createRepoMarkerLoader } from "../../infrastructure/persistence/repo_marker_loader.ts";
-
-/**
- * Driver-resolution tiers available at step-construction time. The
- * `definition` tier is omitted here because it requires the evaluated
- * definition, which is only available inside the step executor.
- */
-export interface DriverTiers {
-  cli?: DriverSource;
-  step?: DriverSource;
-  job?: DriverSource;
-  workflow?: DriverSource;
-  repo?: DriverSource;
-}
 
 /**
  * Context for step execution.
@@ -132,12 +116,12 @@ export interface StepExecutionContext {
   /** Secret redactor for stripping vault secrets from persisted data and logs */
   secretRedactor?: SecretRedactor;
   /**
-   * Unresolved driver tiers to merge with the `definition` tier inside
-   * the step executor. The `definition` tier can only be populated where
-   * the evaluated definition is in scope, so final resolution happens in
-   * `DefaultStepExecutor.executeModelMethod` rather than here.
+   * Two-stage driver-resolution plan. Pre-definition tiers
+   * (cli/step/job/workflow/repo) are filled in at step-construction
+   * time; the executor finalizes via `driverPlan.withDefinition({...})`
+   * once the evaluated definition is in scope.
    */
-  driverTiers?: DriverTiers;
+  driverPlan?: DriverPlan;
   /** Report filter options for per-step report execution */
   reportFilterOptions?: ReportFilterOptions;
   /** The git commit sha of the swamp repo at execution time */
@@ -489,22 +473,13 @@ export class DefaultStepExecutor implements StepExecutor {
         })
         : undefined;
 
-      // Resolve the final driver/driverConfig with all six tiers now that
-      // the evaluated definition is in scope. The pre-definition tiers
-      // (cli/step/job/workflow/repo) were captured at step-construction
-      // time; the definition tier slots in between workflow and repo.
-      const tiers = ctx.driverTiers;
-      const resolved = resolveDriverConfig(
-        tiers?.cli,
-        tiers?.step,
-        tiers?.job,
-        tiers?.workflow,
-        {
-          driver: evaluatedDefinition.driver,
-          driverConfig: evaluatedDefinition.driverConfig,
-        },
-        tiers?.repo,
-      );
+      // Finalize driver resolution by slotting the `definition` tier
+      // into the plan composed at step-construction time. When no plan
+      // was passed (legacy callers), fall back to "raw".
+      const resolved = ctx.driverPlan?.withDefinition({
+        driver: evaluatedDefinition.driver,
+        driverConfig: evaluatedDefinition.driverConfig,
+      }) ?? { driver: "raw" };
 
       // Execute the method with EVALUATED definition
       // Logger handles both console and file persistence via RunFileSink
@@ -1602,7 +1577,7 @@ export class WorkflowExecutionService {
           workflowTags: options.workflowTags,
           runtimeTags: options.runtimeTags,
           secretRedactor: options.secretRedactor,
-          driverTiers: {
+          driverPlan: new DriverPlan({
             cli: { driver: options.driver },
             step: { driver: step.driver, driverConfig: step.driverConfig },
             job: { driver: job.driver, driverConfig: job.driverConfig },
@@ -1614,7 +1589,7 @@ export class WorkflowExecutionService {
               driver: repoMarker?.defaultDriver,
               driverConfig: repoMarker?.defaultDriverConfig,
             },
-          },
+          }),
           emitEvent: push,
           reportFilterOptions: options.reportFilterOptions,
           swampSha: options.swampSha,

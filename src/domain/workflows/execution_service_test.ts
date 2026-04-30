@@ -2786,16 +2786,19 @@ defaultDriverConfig:
 
     assertEquals(capturedContexts.length, 1);
     assertEquals(
-      capturedContexts[0].driverTiers?.repo?.driver,
+      capturedContexts[0].driverPlan?.tiers.repo?.driver,
       "docker",
     );
     assertEquals(
-      capturedContexts[0].driverTiers?.repo?.driverConfig,
+      capturedContexts[0].driverPlan?.tiers.repo?.driverConfig,
       { image: "alpine:latest" },
     );
     // Higher tiers not populated — step executor will resolve to repo tier.
-    assertEquals(capturedContexts[0].driverTiers?.cli?.driver, undefined);
-    assertEquals(capturedContexts[0].driverTiers?.workflow?.driver, undefined);
+    assertEquals(capturedContexts[0].driverPlan?.tiers.cli?.driver, undefined);
+    assertEquals(
+      capturedContexts[0].driverPlan?.tiers.workflow?.driver,
+      undefined,
+    );
   });
 });
 
@@ -2845,8 +2848,8 @@ defaultDriver: "docker"
 
     assertEquals(capturedContexts.length, 1);
     // CLI tier takes precedence; repo tier still carries its marker value.
-    assertEquals(capturedContexts[0].driverTiers?.cli?.driver, "raw");
-    assertEquals(capturedContexts[0].driverTiers?.repo?.driver, "docker");
+    assertEquals(capturedContexts[0].driverPlan?.tiers.cli?.driver, "raw");
+    assertEquals(capturedContexts[0].driverPlan?.tiers.repo?.driver, "docker");
   });
 });
 
@@ -2892,10 +2895,10 @@ initializedAt: "2024-01-15T10:30:00.000Z"
     assertEquals(capturedContexts.length, 1);
     // No marker defaultDriver and no CLI override — all tiers empty;
     // step executor will fall back to "raw".
-    assertEquals(capturedContexts[0].driverTiers?.cli?.driver, undefined);
-    assertEquals(capturedContexts[0].driverTiers?.repo?.driver, undefined);
+    assertEquals(capturedContexts[0].driverPlan?.tiers.cli?.driver, undefined);
+    assertEquals(capturedContexts[0].driverPlan?.tiers.repo?.driver, undefined);
     assertEquals(
-      capturedContexts[0].driverTiers?.repo?.driverConfig,
+      capturedContexts[0].driverPlan?.tiers.repo?.driverConfig,
       undefined,
     );
   });
