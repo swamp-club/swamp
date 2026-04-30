@@ -292,6 +292,28 @@ tool: claude
   });
 });
 
+Deno.test("RepoMarkerRepository.read translates legacy `tool: none` into an empty tools array", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new RepoMarkerRepository();
+    const repoPath = RepoPath.create(dir);
+
+    const markerPath = join(dir, ".swamp.yaml");
+    const content = `swampVersion: "1.2.3"
+initializedAt: "2024-01-15T10:30:00.000Z"
+tool: none
+`;
+    await Deno.writeTextFile(markerPath, content);
+
+    const result = await repo.read(repoPath);
+
+    // Legacy `tool: none` is the "no tools enrolled" sentinel and should
+    // promote to `tools: []` (matching a fresh `--tool none` init), not
+    // `tools: ["none"]` (which leaks the sentinel into the array).
+    assertEquals(result!.tools, []);
+    assertEquals(result!.tool, undefined);
+  });
+});
+
 Deno.test("RepoMarkerRepository.read prefers `tools` when both fields are present", async () => {
   await withTempDir(async (dir) => {
     const repo = new RepoMarkerRepository();

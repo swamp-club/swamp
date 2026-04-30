@@ -76,11 +76,14 @@ export interface RepoMarkerData {
 
 /**
  * Promotes the legacy `tool` field to `tools` and strips the legacy field.
- * `tools` wins when both are present.
+ * `tools` wins when both are present. The legacy `tool: none` sentinel maps
+ * to the canonical `tools: []` (no tools enrolled), not `tools: ["none"]` —
+ * the former matches a fresh `--tool none` init and keeps the round-trip
+ * idempotent.
  */
 function normalizeMarker(data: RepoMarkerData): RepoMarkerData {
   if (data.tools === undefined && data.tool !== undefined) {
-    data.tools = [data.tool];
+    data.tools = data.tool === "none" ? [] : [data.tool];
   }
   delete data.tool;
   return data;
