@@ -19,7 +19,6 @@
 
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
-import { removeWithRetry } from "../../infrastructure/persistence/cleanup.ts";
 import { RepoService } from "./repo_service.ts";
 import { RepoPath } from "./repo_path.ts";
 import type { AiTool } from "../../infrastructure/persistence/repo_marker_repository.ts";
@@ -32,7 +31,13 @@ async function withTempDir(
   try {
     await fn(tempDir);
   } finally {
-    await removeWithRetry(tempDir, { recursive: true });
+    if (Deno.build.os === "windows") {
+      // Best-effort: EBUSY can fire when V8 hasn't GC'd native
+      // sqlite handles yet. Temp dir is ephemeral, OS reclaims.
+      await Deno.remove(tempDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tempDir, { recursive: true });
+    }
   }
 }
 

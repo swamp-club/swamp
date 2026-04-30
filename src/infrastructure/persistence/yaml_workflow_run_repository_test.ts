@@ -18,7 +18,6 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertNotEquals } from "@std/assert";
-import { removeWithRetry } from "./cleanup.ts";
 import { YamlWorkflowRunRepository } from "./yaml_workflow_run_repository.ts";
 import { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import { Workflow } from "../../domain/workflows/workflow.ts";
@@ -32,7 +31,13 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   try {
     await fn(tempDir);
   } finally {
-    await removeWithRetry(tempDir, { recursive: true });
+    if (Deno.build.os === "windows") {
+      // Best-effort: EBUSY can fire when V8 hasn't GC'd native
+      // sqlite handles yet. Temp dir is ephemeral, OS reclaims.
+      await Deno.remove(tempDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tempDir, { recursive: true });
+    }
   }
 }
 

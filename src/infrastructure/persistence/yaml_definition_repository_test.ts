@@ -20,7 +20,6 @@
 import { assertEquals, assertNotEquals } from "@std/assert";
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
-import { removeWithRetry } from "./cleanup.ts";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { YamlDefinitionRepository } from "./yaml_definition_repository.ts";
 import { Definition } from "../../domain/definitions/definition.ts";
@@ -31,7 +30,13 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   try {
     await fn(tempDir);
   } finally {
-    await removeWithRetry(tempDir, { recursive: true });
+    if (Deno.build.os === "windows") {
+      // Best-effort: EBUSY can fire when V8 hasn't GC'd native
+      // sqlite handles yet. Temp dir is ephemeral, OS reclaims.
+      await Deno.remove(tempDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tempDir, { recursive: true });
+    }
   }
 }
 
@@ -416,7 +421,7 @@ Deno.test("YamlDefinitionRepository.findAll rejects symlink pointing outside rep
       assertEquals(results.length, 1);
       assertEquals(results[0].name, "good-def");
     } finally {
-      await removeWithRetry(outsideDir, { recursive: true });
+      await Deno.remove(outsideDir, { recursive: true });
     }
   });
 });

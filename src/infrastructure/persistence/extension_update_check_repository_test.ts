@@ -18,7 +18,6 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { removeWithRetry } from "./cleanup.ts";
 import { FileExtensionUpdateCheckRepository } from "./extension_update_check_repository.ts";
 
 async function withTempDir(
@@ -30,7 +29,7 @@ async function withTempDir(
   try {
     await fn(dir);
   } finally {
-    await removeWithRetry(dir, { recursive: true }).catch(() => {});
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
   }
 }
 
