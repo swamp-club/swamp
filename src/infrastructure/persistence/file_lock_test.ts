@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertRejects } from "@std/assert";
+import { removeWithRetry } from "./cleanup.ts";
 import { FileLock } from "./file_lock.ts";
 import type { LockInfo } from "../../domain/datastore/distributed_lock.ts";
 import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
@@ -29,7 +30,7 @@ async function withTempDir(
   try {
     await fn(dir);
   } finally {
-    await Deno.remove(dir, { recursive: true }).catch(() => {});
+    await removeWithRetry(dir, { recursive: true }).catch(() => {});
   }
 }
 

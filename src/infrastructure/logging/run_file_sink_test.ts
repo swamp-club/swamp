@@ -20,13 +20,14 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { RunFileSink } from "./run_file_sink.ts";
 import { join } from "@std/path";
+import { removeWithRetry } from "../persistence/cleanup.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "run-file-sink-test-" });
   try {
     await fn(dir);
   } finally {
-    await Deno.remove(dir, { recursive: true });
+    await removeWithRetry(dir, { recursive: true });
   }
 }
 

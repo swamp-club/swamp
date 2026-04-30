@@ -19,6 +19,7 @@
 
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
+import { removeWithRetry } from "./cleanup.ts";
 import { JsonlAuditRepository } from "./jsonl_audit_repository.ts";
 import { createBashCommandEntry } from "../../domain/audit/audit_command_entry.ts";
 
@@ -27,7 +28,7 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   try {
     await fn(tempDir);
   } finally {
-    await Deno.remove(tempDir, { recursive: true });
+    await removeWithRetry(tempDir, { recursive: true });
   }
 }
 

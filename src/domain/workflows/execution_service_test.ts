@@ -19,6 +19,7 @@
 
 import { assertEquals, assertNotEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
+import { removeWithRetry } from "../../infrastructure/persistence/cleanup.ts";
 import {
   coerceToSuffix,
   DefaultStepExecutor,
@@ -51,7 +52,7 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   try {
     await fn(dir);
   } finally {
-    await Deno.remove(dir, { recursive: true });
+    await removeWithRetry(dir, { recursive: true });
   }
 }
 

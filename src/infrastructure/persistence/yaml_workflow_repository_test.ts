@@ -19,6 +19,7 @@
 
 import { assertEquals, assertNotEquals } from "@std/assert";
 import { join } from "@std/path";
+import { removeWithRetry } from "./cleanup.ts";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { YamlWorkflowRepository } from "./yaml_workflow_repository.ts";
 import { Workflow } from "../../domain/workflows/workflow.ts";
@@ -32,7 +33,7 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   try {
     await fn(tempDir);
   } finally {
-    await Deno.remove(tempDir, { recursive: true });
+    await removeWithRetry(tempDir, { recursive: true });
   }
 }
 

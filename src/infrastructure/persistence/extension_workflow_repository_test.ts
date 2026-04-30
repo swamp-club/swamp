@@ -20,6 +20,7 @@
 import { assertEquals, assertRejects } from "@std/assert";
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
+import { removeWithRetry } from "./cleanup.ts";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { ExtensionWorkflowRepository } from "./extension_workflow_repository.ts";
 import { Workflow } from "../../domain/workflows/workflow.ts";
@@ -34,7 +35,7 @@ async function withTempDir(
   try {
     await fn(dir);
   } finally {
-    await Deno.remove(dir, { recursive: true });
+    await removeWithRetry(dir, { recursive: true });
   }
 }
 

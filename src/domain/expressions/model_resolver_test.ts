@@ -20,6 +20,7 @@
 import { assertEquals, assertExists } from "@std/assert";
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
+import { removeWithRetry } from "../../infrastructure/persistence/cleanup.ts";
 import { ModelResolver } from "./model_resolver.ts";
 import { Definition } from "../definitions/definition.ts";
 import { Data } from "../data/data.ts";
@@ -34,7 +35,7 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   try {
     await fn(dir);
   } finally {
-    await Deno.remove(dir, { recursive: true });
+    await removeWithRetry(dir, { recursive: true });
   }
 }
 

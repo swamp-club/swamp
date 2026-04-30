@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertNotEquals } from "@std/assert";
+import { removeWithRetry } from "./cleanup.ts";
 import { YamlWorkflowRunRepository } from "./yaml_workflow_run_repository.ts";
 import { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import { Workflow } from "../../domain/workflows/workflow.ts";
@@ -31,7 +32,7 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   try {
     await fn(tempDir);
   } finally {
-    await Deno.remove(tempDir, { recursive: true });
+    await removeWithRetry(tempDir, { recursive: true });
   }
 }
 

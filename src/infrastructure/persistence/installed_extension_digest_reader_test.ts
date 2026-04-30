@@ -19,6 +19,7 @@
 
 import { assertEquals, assertNotEquals } from "@std/assert";
 import { join } from "@std/path";
+import { removeWithRetry } from "./cleanup.ts";
 import { readInstalledExtensionDigest } from "./installed_extension_digest_reader.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
@@ -26,7 +27,7 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   try {
     await fn(dir);
   } finally {
-    await Deno.remove(dir, { recursive: true });
+    await removeWithRetry(dir, { recursive: true });
   }
 }
 
