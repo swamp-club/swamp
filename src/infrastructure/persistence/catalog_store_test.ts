@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { dirname, join } from "@std/path";
+import { dirname, fromFileUrl, join } from "@std/path";
 import { DatabaseSync } from "node:sqlite";
 import {
   type CatalogRow,
@@ -443,7 +443,11 @@ Deno.test("CatalogStore: constructor retries under write lock contention", async
 
   // Start a subprocess — it will block in busy_timeout waiting for our lock.
   // Pass --config so the subprocess can resolve @std/fs and other imports.
-  const denoJsonPath = new URL("../../../deno.json", import.meta.url).pathname;
+  // Use fromFileUrl so Windows produces "D:\\..." instead of URL-pathname
+  // "/D:/..." which Deno.Command cannot resolve as --config on Windows.
+  const denoJsonPath = fromFileUrl(
+    new URL("../../../deno.json", import.meta.url),
+  );
   const proc = new Deno.Command(Deno.execPath(), {
     args: [
       "run",
