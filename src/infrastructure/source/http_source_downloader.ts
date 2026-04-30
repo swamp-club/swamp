@@ -176,7 +176,20 @@ export class HttpSourceDownloader implements SourceDownloader {
           resolvedTarget === effectiveRoot ||
           resolvedTarget.startsWith(effectiveRoot + SEPARATOR)
         ) {
-          await Deno.symlink(linkTarget, targetPath);
+          // Resolve the link type from the source side, where the
+          // target already exists. Required by Deno.symlink on Windows
+          // when the target may not yet be present at the destination
+          // (different walk orders produce different timing). Defaults
+          // to "file" for broken symlinks; the type argument is ignored
+          // on POSIX.
+          let linkType: "file" | "dir" = "file";
+          try {
+            const stat = await Deno.stat(sourcePath);
+            if (stat.isDirectory) linkType = "dir";
+          } catch {
+            // Broken symlink in source — keep default
+          }
+          await Deno.symlink(linkTarget, targetPath, { type: linkType });
         }
       } else if (entry.isDirectory) {
         await ensureDir(targetPath);
