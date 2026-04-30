@@ -21,7 +21,7 @@ import type { ModelType } from "./model_type.ts";
 import { modelRegistry } from "./model.ts";
 import type { Definition, DefinitionId } from "../definitions/definition.ts";
 import { createDefinitionId } from "../definitions/definition.ts";
-import type { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
+import type { DefinitionRepository } from "../definitions/repositories.ts";
 
 /**
  * UUID v4 regex pattern for detecting if an argument is a UUID.
@@ -109,7 +109,7 @@ export interface DefinitionLookupResult {
  * Finds a definition by ID, searching across all registered model types.
  */
 export async function findDefinitionByIdGlobal(
-  definitionRepo: YamlDefinitionRepository,
+  definitionRepo: DefinitionRepository,
   id: string,
 ): Promise<DefinitionLookupResult | null> {
   const definitionId = createDefinitionId(id) as DefinitionId;
@@ -129,7 +129,7 @@ export async function findDefinitionByIdGlobal(
  * Tries name lookup first (most common in workflows), then falls back to ID.
  */
 export async function findDefinitionByIdOrName(
-  definitionRepo: YamlDefinitionRepository,
+  definitionRepo: DefinitionRepository,
   idOrName: string,
 ): Promise<DefinitionLookupResult | null> {
   // Try by name first (most common case in workflows)

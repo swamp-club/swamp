@@ -37,6 +37,10 @@ import type {
   WorkflowRunRepository,
 } from "./repositories.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
+import type { DefinitionRepository } from "../definitions/repositories.ts";
+import type { OutputRepository } from "../models/repositories.ts";
+import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
+import type { MethodExecutionService } from "../models/method_execution_service.ts";
 import { YamlEvaluatedDefinitionRepository } from "../../infrastructure/persistence/yaml_evaluated_definition_repository.ts";
 import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
@@ -162,11 +166,95 @@ export interface StepExecutor {
 const MAX_WORKFLOW_NESTING_DEPTH = 10;
 
 /**
+ * Infrastructure dependencies the {@link DefaultStepExecutor} needs to
+ * run a model method. Inject this for tests so the executor can be
+ * exercised without disk, real vaults, or YAML on the filesystem.
+ *
+ * In production, callers either build deps explicitly via
+ * {@link DefaultStepExecutor.fromRepoDir} or rely on the no-arg
+ * constructor's lazy per-call construction (today's behaviour).
+ */
+export interface StepExecutorDeps {
+  definitionRepo: DefinitionRepository;
+  unifiedDataRepo: UnifiedDataRepository;
+  dataQueryService: DataQueryService;
+  outputRepo: OutputRepository;
+  evaluatedDefRepo: YamlEvaluatedDefinitionRepository;
+  methodExecutionService: MethodExecutionService;
+  vaultService: VaultService;
+  expressionEvaluator: ExpressionEvaluationService;
+}
+
+/**
  * Default step executor that handles model methods and workflow invocations.
  */
 export class DefaultStepExecutor implements StepExecutor {
   private readonly validationService = new DefaultModelValidationService();
   private readonly reportRunner = new MethodReportRunner();
+
+  constructor(private readonly injectedDeps?: StepExecutorDeps) {}
+
+  /**
+   * Build a fully-wired DefaultStepExecutor for production use. Performs
+   * the same construction the no-arg path does at execute() time, just
+   * once at the seam — so callers that have a repoDir at construction
+   * time can avoid per-call rebuild of repos and the vault service.
+   */
+  static async fromRepoDir(
+    repoDir: string,
+    opts: {
+      dataBaseDir?: string;
+      catalogStore: CatalogStore;
+    },
+  ): Promise<DefaultStepExecutor> {
+    return new DefaultStepExecutor(
+      await DefaultStepExecutor.buildDeps(repoDir, opts),
+    );
+  }
+
+  /**
+   * Construct deps either from the injected set (tests) or per-call
+   * from the StepExecutionContext (production no-arg path — today's
+   * behaviour preserved exactly).
+   */
+  private async resolveDeps(
+    ctx: StepExecutionContext,
+  ): Promise<StepExecutorDeps> {
+    if (this.injectedDeps) return this.injectedDeps;
+    return await DefaultStepExecutor.buildDeps(ctx.repoDir, {
+      dataBaseDir: ctx.dataBaseDir,
+      catalogStore: ctx.catalogStore,
+    });
+  }
+
+  private static async buildDeps(
+    repoDir: string,
+    opts: { dataBaseDir?: string; catalogStore: CatalogStore },
+  ): Promise<StepExecutorDeps> {
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const unifiedDataRepo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      opts.dataBaseDir,
+      opts.catalogStore,
+    );
+    const dataQueryService = new DataQueryService(
+      opts.catalogStore,
+      unifiedDataRepo,
+    );
+    return {
+      definitionRepo,
+      unifiedDataRepo,
+      dataQueryService,
+      outputRepo: new YamlOutputRepository(repoDir),
+      evaluatedDefRepo: new YamlEvaluatedDefinitionRepository(repoDir),
+      methodExecutionService: new DefaultMethodExecutionService(),
+      vaultService: await VaultService.fromRepository(repoDir),
+      expressionEvaluator: new ExpressionEvaluationService(
+        definitionRepo,
+        repoDir,
+      ),
+    };
+  }
 
   async execute(step: Step, ctx: StepExecutionContext): Promise<unknown> {
     const task = step.task.data;
@@ -190,19 +278,16 @@ export class DefaultStepExecutor implements StepExecutor {
     },
     ctx: StepExecutionContext,
   ): Promise<unknown> {
-    const definitionRepo = new YamlDefinitionRepository(ctx.repoDir);
-    const unifiedDataRepo = new FileSystemUnifiedDataRepository(
-      ctx.repoDir,
-      ctx.dataBaseDir,
-      ctx.catalogStore,
-    );
-    const dataQueryService = new DataQueryService(
-      ctx.catalogStore,
+    const {
+      definitionRepo,
       unifiedDataRepo,
-    );
-    const outputRepo = new YamlOutputRepository(ctx.repoDir);
-    const executionService = new DefaultMethodExecutionService();
-    const vaultService = await VaultService.fromRepository(ctx.repoDir);
+      dataQueryService,
+      outputRepo,
+      evaluatedDefRepo,
+      methodExecutionService: executionService,
+      vaultService,
+      expressionEvaluator,
+    } = await this.resolveDeps(ctx);
 
     // Look up the model definition by ID or name
     const lookupResult = await findDefinitionByIdOrName(
@@ -274,9 +359,6 @@ export class DefaultStepExecutor implements StepExecutor {
     if (ctx.useLastEvaluated) {
       // Load previously-evaluated definition from cache
       runLogger?.debug("Loading last evaluated definition");
-      const evaluatedDefRepo = new YamlEvaluatedDefinitionRepository(
-        ctx.repoDir,
-      );
       const lastEvaluated = await evaluatedDefRepo.findByName(
         modelType,
         originalDefinition.name,
@@ -312,12 +394,7 @@ export class DefaultStepExecutor implements StepExecutor {
 
       // Evaluate step task inputs and merge into context
       if (task.inputs) {
-        // Evaluate any expressions in the step task inputs
-        const evalService = new ExpressionEvaluationService(
-          new YamlDefinitionRepository(ctx.repoDir),
-          ctx.repoDir,
-        );
-        stepInputs = await evalService.evaluateData(
+        stepInputs = await expressionEvaluator.evaluateData(
           task.inputs,
           ctx.expressionContext,
         ) as Record<string, unknown>;
@@ -346,7 +423,6 @@ export class DefaultStepExecutor implements StepExecutor {
     }
 
     // Save evaluated definition (with vault expressions still raw) for --last-evaluated
-    const evaluatedDefRepo = new YamlEvaluatedDefinitionRepository(ctx.repoDir);
     await evaluatedDefRepo.save(modelType, evaluatedDefinition);
 
     // Capture pre-vault args for report context (so vault secrets stay as expressions)
@@ -357,11 +433,7 @@ export class DefaultStepExecutor implements StepExecutor {
 
     // Resolve runtime expressions (vault and env) at runtime (never persisted).
     // Vault secrets become sentinel tokens; the secretBag maps sentinels to raw values.
-    const evalService = new ExpressionEvaluationService(
-      new YamlDefinitionRepository(ctx.repoDir),
-      ctx.repoDir,
-    );
-    const runtimeResult = await evalService
+    const runtimeResult = await expressionEvaluator
       .resolveRuntimeExpressionsInDefinition(
         evaluatedDefinition,
         ctx.secretRedactor,
