@@ -2900,3 +2900,258 @@ initializedAt: "2024-01-15T10:30:00.000Z"
     );
   });
 });
+
+// =============================================================================
+// CONTRACT TESTS — pin behavioural invariants of WorkflowExecutionService
+// across the planned execution_service.ts refactor.
+//
+// These tests are framed as "CONTRACT:" rather than "tests of behaviour" so
+// future contributors know they exist to detect *behavioural drift* across
+// refactor commits, not to characterise a single feature. Failure means a
+// later commit changed an observable property the system depended on.
+//
+// Pairs with the integration-level harness at /tmp/swamp-verification/, which
+// pins contracts that require real filesystem repos (vault redaction, report
+// failure isolation, --last-evaluated parity).
+// =============================================================================
+
+/**
+ * Decorates a WorkflowRunRepository to record every `save` call. Used to
+ * pin the order of run-state persistence relative to workflow lifecycle.
+ */
+class TrackingRunRepository implements WorkflowRunRepository {
+  private readonly inner = new InMemoryWorkflowRunRepository();
+  readonly saves: Array<{ runId: string; status: string }> = [];
+
+  findById(
+    workflowId: WorkflowId,
+    runId: WorkflowRunId,
+  ): Promise<WorkflowRun | null> {
+    return this.inner.findById(workflowId, runId);
+  }
+
+  findAllByWorkflowId(workflowId: WorkflowId): Promise<WorkflowRun[]> {
+    return this.inner.findAllByWorkflowId(workflowId);
+  }
+
+  findLatestByWorkflowId(
+    workflowId: WorkflowId,
+  ): Promise<WorkflowRun | null> {
+    return this.inner.findLatestByWorkflowId(workflowId);
+  }
+
+  findAllGlobal(): Promise<{ run: WorkflowRun; workflowId: WorkflowId }[]> {
+    return this.inner.findAllGlobal();
+  }
+
+  save(workflowId: WorkflowId, run: WorkflowRun): Promise<void> {
+    this.saves.push({ runId: run.id, status: run.status });
+    return this.inner.save(workflowId, run);
+  }
+
+  nextId(): WorkflowRunId {
+    return this.inner.nextId();
+  }
+
+  getPath(workflowId: WorkflowId, runId: WorkflowRunId): string {
+    return this.inner.getPath(workflowId, runId);
+  }
+
+  deleteAllByWorkflowId(workflowId: WorkflowId): Promise<number> {
+    return this.inner.deleteAllByWorkflowId(workflowId);
+  }
+}
+
+Deno.test("CONTRACT: success run emits events in exact order", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new MockStepExecutor();
+
+    const workflow = createSimpleWorkflow();
+    await workflowRepo.save(workflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      catalogStore,
+    );
+
+    const events: string[] = [];
+    for await (const event of service.run(workflow.name)) {
+      events.push(event.kind);
+    }
+
+    assertEquals(events, [
+      "started",
+      "job_started",
+      "step_started",
+      "step_completed",
+      "job_completed",
+      "completed",
+    ]);
+  });
+});
+
+Deno.test("CONTRACT: step failure emits events in exact order", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new MockStepExecutor();
+    executor.shouldFail.add("step1");
+
+    const workflow = createSimpleWorkflow();
+    await workflowRepo.save(workflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      catalogStore,
+    );
+
+    const events: string[] = [];
+    let finalRun: WorkflowRun | undefined;
+    for await (const event of service.run(workflow.name)) {
+      events.push(event.kind);
+      if (event.kind === "completed") finalRun = event.run;
+    }
+
+    assertEquals(events, [
+      "started",
+      "job_started",
+      "step_started",
+      "step_failed",
+      "job_completed",
+      "completed",
+    ]);
+    // The workflow itself must reflect failure even though the lifecycle
+    // emits "completed" rather than a separate "failed" terminal event.
+    assertEquals(finalRun?.status, "failed");
+  });
+});
+
+Deno.test("CONTRACT: run is persisted at start, after each level, and at completion", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new TrackingRunRepository();
+    const executor = new MockStepExecutor();
+
+    // Two-level workflow: level 1 = "build", level 2 = "test" (depends on build).
+    const workflow = Workflow.create({
+      name: "two-level-pin",
+      jobs: [
+        Job.create({
+          name: "build",
+          steps: [
+            Step.create({
+              name: "compile",
+              task: StepTask.model("test-model", "run"),
+            }),
+          ],
+        }),
+        Job.create({
+          name: "test",
+          steps: [
+            Step.create({
+              name: "unit",
+              task: StepTask.model("test-model", "run"),
+            }),
+          ],
+          dependsOn: [
+            { job: "build", condition: TriggerCondition.succeeded() },
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      catalogStore,
+    );
+
+    await service.execute(workflow.name);
+
+    // Persistence contract for two-level workflow: 4 saves —
+    //   1. After run.start() (status: running, before any level)
+    //   2. After level 1 completes
+    //   3. After level 2 completes
+    //   4. After run.complete() (status: succeeded)
+    assertEquals(
+      runRepo.saves.length,
+      4,
+      `expected 4 saves, got ${runRepo.saves.length}: ${
+        JSON.stringify(runRepo.saves)
+      }`,
+    );
+    assertEquals(runRepo.saves[0].status, "running");
+    assertEquals(runRepo.saves[runRepo.saves.length - 1].status, "succeeded");
+    // All saves reference the same run id.
+    const ids = new Set(runRepo.saves.map((s) => s.runId));
+    assertEquals(ids.size, 1);
+  });
+});
+
+Deno.test("CONTRACT: dataArtifacts attached to thrown error are preserved on the failed step run", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+
+    // Custom executor that throws an error carrying dataArtifacts, mimicking
+    // DefaultStepExecutor's behaviour when a model writes data then fails
+    // (e.g. verdict=FAIL after data persistence).
+    const partialArtifacts = [
+      {
+        dataId: crypto.randomUUID(),
+        name: "partial-result",
+        version: 1,
+        tags: { source: "test" },
+      },
+    ];
+    const failingExecutor: StepExecutor = {
+      execute(_step: Step, _ctx: StepExecutionContext): Promise<unknown> {
+        const err = new Error("step failed after writing partial data") as
+          & Error
+          & { dataArtifacts?: typeof partialArtifacts };
+        err.dataArtifacts = partialArtifacts;
+        return Promise.reject(err);
+      },
+    };
+
+    const workflow = createSimpleWorkflow();
+    await workflowRepo.save(workflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      failingExecutor,
+      undefined,
+      catalogStore,
+    );
+
+    const run = await service.execute(workflow.name);
+
+    const stepRun = run.getJob("job1")?.getStep("step1");
+    assertEquals(stepRun?.status, "failed");
+    // The whole point: artifacts written before the throw must survive on
+    // the StepRun so they appear in `swamp data get --workflow` later.
+    assertEquals(stepRun?.dataArtifacts.length, 1);
+    assertEquals(stepRun?.dataArtifacts[0].name, "partial-result");
+    assertEquals(stepRun?.dataArtifacts[0].dataId, partialArtifacts[0].dataId);
+  });
+});
