@@ -57,6 +57,9 @@ import { detectEnvVarUsageInDefinition } from "../models/env_var_detector.ts";
 import { findDefinitionByIdOrName } from "../models/model_lookup.ts";
 import type { MethodExecutionEvent } from "../models/method_events.ts";
 import { ModelOutput } from "../models/model_output.ts";
+import type { Definition } from "../definitions/definition.ts";
+import type { ModelType } from "../models/model_type.ts";
+import type { MethodResult, ModelDefinition } from "../models/model.ts";
 import { ExpressionEvaluationService } from "../expressions/expression_evaluation_service.ts";
 import {
   buildEnvContext,
@@ -485,12 +488,10 @@ export class DefaultStepExecutor implements StepExecutor {
     }
     await outputRepo.save(modelType, task.methodName, output);
 
-    // Track data outputs for context refresh (specName → instanceName → record)
-    const resources: Record<string, Record<string, DataRecord>> = {};
-    const files: Record<string, Record<string, FileDataRecord>> = {};
-
     // Declared outside try so the catch block can record artifacts written
     // before a throw (e.g. model writes data then throws on verdict=FAIL).
+    // Each phase owns its mutations of this list; the orchestrator only
+    // creates and threads it.
     const savedArtifacts: Array<{
       dataId: string;
       name: string;
@@ -499,345 +500,541 @@ export class DefaultStepExecutor implements StepExecutor {
     }> = [];
 
     try {
-      runLogger.debug("Executing method {method}", {
-        method: task.methodName,
-      });
-      ctx.emitEvent?.({
-        kind: "method_executing",
-        jobId: ctx.jobName,
-        stepId: ctx.stepName,
-        modelName: originalDefinition.name,
-        methodName: task.methodName,
-      });
-
-      // Build workflow-specific tag overrides
-      // Use "source" instead of "type" to preserve the original data type
-      // (resource/file) while tracking provenance for cross-workflow resolution
-      const workflowTagOverrides: Record<string, string> = {
-        ...(ctx.workflowTags ?? {}),
-        source: "step-output",
-        workflow: ctx.workflowName,
-        workflowRunId: ctx.workflowRunId,
-        step: ctx.stepName,
-      };
-
-      // Convert step's dataOutputOverrides to the format expected by writer factories
-      const stepDataOutputOverrides = ctx.step?.dataOutputOverrides
-        ? Array.from(ctx.step.dataOutputOverrides).map((override) => {
-          let resolvedVarySuffix: string | undefined;
-          if (override.vary && override.vary.length > 0) {
-            const inputs = ctx.expressionContext?.inputs ?? {};
-            const varyValues = override.vary.map((key) => {
-              const val = inputs[key];
-              if (val === undefined || val === null) {
-                throw new UserError(
-                  `Vary dimension '${key}' not found in step inputs for spec '${override.specName}'`,
-                );
-              }
-              return coerceToSuffix(val);
-            });
-            resolvedVarySuffix = varyValues.join("-");
-          }
-          return {
-            specName: override.specName,
-            lifetime: override.lifetime,
-            garbageCollection: override.garbageCollection,
-            tags: override.tags,
-            resolvedVarySuffix,
-          };
-        })
-        : undefined;
-
-      // Finalize driver resolution by slotting the `definition` tier
-      // into the plan composed at step-construction time. When no plan
-      // was passed (legacy callers), fall back to "raw".
-      const resolved = ctx.driverPlan?.withDefinition({
-        driver: evaluatedDefinition.driver,
-        driverConfig: evaluatedDefinition.driverConfig,
-      }) ?? { driver: "raw" };
-
-      // Execute the method with EVALUATED definition
-      // Logger handles both console and file persistence via RunFileSink
-      // Data is persisted by DataWriter during execution — no double-save
-      const result = await executionService.executeWorkflow(
-        evaluatedDefinition,
+      const result = await this.invokeMethod({
+        task,
+        ctx,
+        executionService,
+        unifiedDataRepo,
+        definitionRepo,
+        dataQueryService,
+        vaultService,
+        modelType,
         modelDef,
-        task.methodName,
-        buildMethodContext(
-          {
-            dataRepository: unifiedDataRepo,
-            definitionRepository: definitionRepo,
-            vaultService,
-            redactor: ctx.secretRedactor,
-            dataQueryService,
-          },
-          {
-            signal: ctx.signal,
-            repoDir: ctx.repoDir,
-            modelType,
-            modelId: evaluatedDefinition.id,
-            globalArgs: evaluatedDefinition.globalArguments,
-            definition: {
-              id: evaluatedDefinition.id,
-              name: evaluatedDefinition.name,
-              version: evaluatedDefinition.version,
-              tags: evaluatedDefinition.tags,
-            },
-            methodName: task.methodName,
-            logger: runLogger,
-            tagOverrides: workflowTagOverrides,
-            runtimeTags: ctx.runtimeTags,
-            dataOutputOverrides: stepDataOutputOverrides,
-            vaultSecrets: secretBag,
-            driver: resolved.driver,
-            driverConfig: resolved.driverConfig,
-            skipCheckNames: ctx.skipCheckNames,
-            skipCheckLabels: ctx.skipCheckLabels,
-            skipAllChecks: ctx.skipAllChecks,
-            extensionFilesRoot: modelDef.extensionFilesRoot,
-            onEvent: ctx.emitEvent
-              ? (event: MethodExecutionEvent) => {
-                if (event.type === "output") {
-                  ctx.emitEvent!({
-                    kind: "method_output",
-                    jobId: ctx.jobName,
-                    stepId: ctx.stepName,
-                    modelName: originalDefinition.name,
-                    methodName: task.methodName,
-                    stream: event.stream,
-                    line: event.line,
-                  });
-                } else {
-                  ctx.emitEvent!({
-                    kind: "method_event",
-                    jobId: ctx.jobName,
-                    stepId: ctx.stepName,
-                    modelName: originalDefinition.name,
-                    methodName: task.methodName,
-                    event,
-                  });
-                }
-              }
-              : undefined,
-          },
-        ),
-      );
+        originalDefinition,
+        evaluatedDefinition,
+        runLogger,
+        secretBag,
+      });
 
-      // Extract artifact info from dataHandles (already persisted by DataWriter)
-      if (result.dataHandles && result.dataHandles.length > 0) {
-        for (const handle of result.dataHandles) {
-          const artifactRef = {
-            dataId: handle.dataId,
+      return await this.handleMethodSuccess({
+        task,
+        ctx,
+        outputRepo,
+        unifiedDataRepo,
+        definitionRepo,
+        modelType,
+        modelDef,
+        originalDefinition,
+        evaluatedDefinition,
+        runLogger,
+        reportGlobalArgs,
+        reportMethodArgs,
+        result,
+        output,
+        savedArtifacts,
+      });
+    } catch (error) {
+      await this.handleMethodFailure({
+        task,
+        ctx,
+        outputRepo,
+        unifiedDataRepo,
+        definitionRepo,
+        modelType,
+        modelDef,
+        originalDefinition,
+        evaluatedDefinition,
+        runLogger,
+        reportGlobalArgs,
+        reportMethodArgs,
+        error,
+        output,
+        savedArtifacts,
+      });
+      throw error;
+    }
+  }
+
+  /**
+   * Invoke the model method. Builds the per-call tag overrides,
+   * resolves the data-output overrides for vary, finalizes the
+   * driver plan, and dispatches to the method execution service.
+   * Returns the raw method execution result.
+   */
+  private async invokeMethod(args: {
+    task: {
+      modelIdOrName: string;
+      methodName: string;
+      inputs?: Record<string, unknown>;
+    };
+    ctx: StepExecutionContext;
+    executionService: MethodExecutionService;
+    unifiedDataRepo: UnifiedDataRepository;
+    definitionRepo: DefinitionRepository;
+    dataQueryService: DataQueryService;
+    vaultService: VaultService;
+    modelType: ModelType;
+    modelDef: ModelDefinition;
+    originalDefinition: Definition;
+    evaluatedDefinition: Definition;
+    runLogger: ReturnType<typeof getRunLogger>;
+    secretBag: ReturnType<
+      ExpressionEvaluationService["resolveRuntimeExpressionsInDefinition"]
+    > extends Promise<infer R> ? R extends { secretBag: infer S } ? S : never
+      : never;
+  }): Promise<MethodResult> {
+    const {
+      task,
+      ctx,
+      executionService,
+      unifiedDataRepo,
+      definitionRepo,
+      dataQueryService,
+      vaultService,
+      modelType,
+      modelDef,
+      originalDefinition,
+      evaluatedDefinition,
+      runLogger,
+      secretBag,
+    } = args;
+
+    runLogger.debug("Executing method {method}", { method: task.methodName });
+    ctx.emitEvent?.({
+      kind: "method_executing",
+      jobId: ctx.jobName,
+      stepId: ctx.stepName,
+      modelName: originalDefinition.name,
+      methodName: task.methodName,
+    });
+
+    // Build workflow-specific tag overrides. Use "source" instead of
+    // "type" to preserve the original data type (resource/file) while
+    // tracking provenance for cross-workflow resolution.
+    const workflowTagOverrides: Record<string, string> = {
+      ...(ctx.workflowTags ?? {}),
+      source: "step-output",
+      workflow: ctx.workflowName,
+      workflowRunId: ctx.workflowRunId,
+      step: ctx.stepName,
+    };
+
+    // Resolve vary suffixes per output spec from current step inputs.
+    const stepDataOutputOverrides = ctx.step?.dataOutputOverrides
+      ? Array.from(ctx.step.dataOutputOverrides).map((override) => {
+        let resolvedVarySuffix: string | undefined;
+        if (override.vary && override.vary.length > 0) {
+          const inputs = ctx.expressionContext?.inputs ?? {};
+          const varyValues = override.vary.map((key) => {
+            const val = inputs[key];
+            if (val === undefined || val === null) {
+              throw new UserError(
+                `Vary dimension '${key}' not found in step inputs for spec '${override.specName}'`,
+              );
+            }
+            return coerceToSuffix(val);
+          });
+          resolvedVarySuffix = varyValues.join("-");
+        }
+        return {
+          specName: override.specName,
+          lifetime: override.lifetime,
+          garbageCollection: override.garbageCollection,
+          tags: override.tags,
+          resolvedVarySuffix,
+        };
+      })
+      : undefined;
+
+    // Finalize driver resolution. When no plan was passed (legacy
+    // callers), fall back to "raw".
+    const resolved = ctx.driverPlan?.withDefinition({
+      driver: evaluatedDefinition.driver,
+      driverConfig: evaluatedDefinition.driverConfig,
+    }) ?? { driver: "raw" };
+
+    // Execute the method with the EVALUATED definition. The logger
+    // handles both console and file persistence via RunFileSink. Data
+    // is persisted by DataWriter during execution — no double-save.
+    return await executionService.executeWorkflow(
+      evaluatedDefinition,
+      modelDef,
+      task.methodName,
+      buildMethodContext(
+        {
+          dataRepository: unifiedDataRepo,
+          definitionRepository: definitionRepo,
+          vaultService,
+          redactor: ctx.secretRedactor,
+          dataQueryService,
+        },
+        {
+          signal: ctx.signal,
+          repoDir: ctx.repoDir,
+          modelType,
+          modelId: evaluatedDefinition.id,
+          globalArgs: evaluatedDefinition.globalArguments,
+          definition: {
+            id: evaluatedDefinition.id,
+            name: evaluatedDefinition.name,
+            version: evaluatedDefinition.version,
+            tags: evaluatedDefinition.tags,
+          },
+          methodName: task.methodName,
+          logger: runLogger,
+          tagOverrides: workflowTagOverrides,
+          runtimeTags: ctx.runtimeTags,
+          dataOutputOverrides: stepDataOutputOverrides,
+          vaultSecrets: secretBag,
+          driver: resolved.driver,
+          driverConfig: resolved.driverConfig,
+          skipCheckNames: ctx.skipCheckNames,
+          skipCheckLabels: ctx.skipCheckLabels,
+          skipAllChecks: ctx.skipAllChecks,
+          extensionFilesRoot: modelDef.extensionFilesRoot,
+          onEvent: ctx.emitEvent
+            ? (event: MethodExecutionEvent) => {
+              if (event.type === "output") {
+                ctx.emitEvent!({
+                  kind: "method_output",
+                  jobId: ctx.jobName,
+                  stepId: ctx.stepName,
+                  modelName: originalDefinition.name,
+                  methodName: task.methodName,
+                  stream: event.stream,
+                  line: event.line,
+                });
+              } else {
+                ctx.emitEvent!({
+                  kind: "method_event",
+                  jobId: ctx.jobName,
+                  stepId: ctx.stepName,
+                  modelName: originalDefinition.name,
+                  methodName: task.methodName,
+                  event,
+                });
+              }
+            }
+            : undefined,
+        },
+      ),
+    );
+  }
+
+  /**
+   * Success-path handler. Owns all mutations of `output` and
+   * `savedArtifacts` for the success case: appends method artifacts,
+   * appends report artifacts, marks the output as succeeded, persists.
+   * Returns the orchestrator's final result tuple.
+   */
+  private async handleMethodSuccess(args: {
+    task: {
+      modelIdOrName: string;
+      methodName: string;
+      inputs?: Record<string, unknown>;
+    };
+    ctx: StepExecutionContext;
+    outputRepo: OutputRepository;
+    unifiedDataRepo: UnifiedDataRepository;
+    definitionRepo: DefinitionRepository;
+    modelType: ModelType;
+    modelDef: ModelDefinition;
+    originalDefinition: Definition;
+    evaluatedDefinition: Definition;
+    runLogger: ReturnType<typeof getRunLogger>;
+    reportGlobalArgs: Record<string, unknown>;
+    reportMethodArgs: Record<string, unknown>;
+    result: MethodResult;
+    output: ModelOutput;
+    savedArtifacts: Array<{
+      dataId: string;
+      name: string;
+      version: number;
+      tags: Record<string, string>;
+    }>;
+  }): Promise<unknown> {
+    const {
+      task,
+      ctx,
+      outputRepo,
+      unifiedDataRepo,
+      definitionRepo,
+      modelType,
+      modelDef,
+      originalDefinition,
+      evaluatedDefinition,
+      runLogger,
+      reportGlobalArgs,
+      reportMethodArgs,
+      result,
+      output,
+      savedArtifacts,
+    } = args;
+
+    // Track data outputs for context refresh (specName → instanceName → record).
+    const resources: Record<string, Record<string, DataRecord>> = {};
+    const files: Record<string, Record<string, FileDataRecord>> = {};
+
+    // Append method artifacts to output and savedArtifacts; build the
+    // resources/files maps used by downstream steps' expression context.
+    if (result.dataHandles && result.dataHandles.length > 0) {
+      for (const handle of result.dataHandles) {
+        const artifactRef = {
+          dataId: handle.dataId,
+          name: handle.name,
+          version: handle.version,
+          tags: handle.tags,
+        };
+        output.addDataArtifact(artifactRef);
+        savedArtifacts.push(artifactRef);
+
+        const dataPath = unifiedDataRepo.getPath(
+          modelType,
+          evaluatedDefinition.id,
+          handle.name,
+          handle.version,
+        );
+        runLogger.debug("Data saved to {path}", { path: dataPath });
+
+        if (handle.kind === "resource") {
+          let attributes: Record<string, unknown> = {};
+          if (handle.metadata.contentType === "application/json") {
+            try {
+              const content = await unifiedDataRepo.getContent(
+                modelType,
+                evaluatedDefinition.id,
+                handle.name,
+                handle.version,
+              );
+              if (content) {
+                const text = new TextDecoder().decode(content);
+                attributes = JSON.parse(text) as Record<string, unknown>;
+              }
+            } catch {
+              // Not valid JSON, skip attributes
+            }
+          }
+          if (!resources[handle.specName]) {
+            resources[handle.specName] = {};
+          }
+          resources[handle.specName][handle.name] = {
+            id: handle.dataId,
             name: handle.name,
             version: handle.version,
+            // The resource was just saved by the current step, so this
+            // record is authoritative for the data item.
+            isLatest: true,
+            createdAt: new Date().toISOString(),
+            attributes,
             tags: handle.tags,
+            modelName: handle.tags["modelName"] ?? evaluatedDefinition.name,
+            modelType: modelType.normalized,
+            specName: handle.specName,
+            dataType: handle.tags["type"] ?? "resource",
+            contentType: handle.metadata.contentType,
+            lifetime: handle.metadata.lifetime,
+            ownerType: handle.metadata.ownerDefinition.ownerType,
+            streaming: handle.metadata.streaming,
+            size: handle.size,
+            content: "",
+            ownerRef: handle.metadata.ownerDefinition.ownerRef,
+            workflowRunId: handle.metadata.ownerDefinition.workflowRunId ?? "",
+            workflowName: handle.metadata.ownerDefinition.workflowName ?? "",
+            jobName: handle.metadata.ownerDefinition.jobName ?? "",
+            stepName: handle.metadata.ownerDefinition.stepName ?? "",
+            source: handle.metadata.ownerDefinition.source ?? "",
           };
-          output.addDataArtifact(artifactRef);
-          savedArtifacts.push(artifactRef);
-
-          const dataPath = unifiedDataRepo.getPath(
+        } else if (handle.kind === "file") {
+          const contentPath = unifiedDataRepo.getContentPath(
             modelType,
             evaluatedDefinition.id,
             handle.name,
             handle.version,
           );
-          runLogger.debug("Data saved to {path}", { path: dataPath });
-
-          // Build context data from handles (nested under specName → instanceName)
-          if (handle.kind === "resource") {
-            let attributes: Record<string, unknown> = {};
-            if (handle.metadata.contentType === "application/json") {
-              try {
-                const content = await unifiedDataRepo.getContent(
-                  modelType,
-                  evaluatedDefinition.id,
-                  handle.name,
-                  handle.version,
-                );
-                if (content) {
-                  const text = new TextDecoder().decode(content);
-                  attributes = JSON.parse(text) as Record<string, unknown>;
-                }
-              } catch {
-                // Not valid JSON, skip attributes
-              }
-            }
-            if (!resources[handle.specName]) {
-              resources[handle.specName] = {};
-            }
-            resources[handle.specName][handle.name] = {
+          try {
+            const stat = await Deno.stat(contentPath);
+            if (!files[handle.specName]) files[handle.specName] = {};
+            files[handle.specName][handle.name] = {
               id: handle.dataId,
-              name: handle.name,
               version: handle.version,
-              // The resource was just saved by the current step, so this
-              // record is authoritative for the data item.
-              isLatest: true,
               createdAt: new Date().toISOString(),
-              attributes,
-              tags: handle.tags,
-              modelName: handle.tags["modelName"] ?? evaluatedDefinition.name,
-              modelType: modelType.normalized,
-              specName: handle.specName,
-              dataType: handle.tags["type"] ?? "resource",
+              path: contentPath,
+              size: stat.size,
               contentType: handle.metadata.contentType,
-              lifetime: handle.metadata.lifetime,
-              ownerType: handle.metadata.ownerDefinition.ownerType,
-              streaming: handle.metadata.streaming,
-              size: handle.size,
-              content: "",
-              ownerRef: handle.metadata.ownerDefinition.ownerRef,
-              workflowRunId: handle.metadata.ownerDefinition.workflowRunId ??
-                "",
-              workflowName: handle.metadata.ownerDefinition.workflowName ?? "",
-              jobName: handle.metadata.ownerDefinition.jobName ?? "",
-              stepName: handle.metadata.ownerDefinition.stepName ?? "",
-              source: handle.metadata.ownerDefinition.source ?? "",
             };
-          } else if (handle.kind === "file") {
-            const contentPath = unifiedDataRepo.getContentPath(
-              modelType,
-              evaluatedDefinition.id,
-              handle.name,
-              handle.version,
-            );
-            try {
-              const stat = await Deno.stat(contentPath);
-              if (!files[handle.specName]) files[handle.specName] = {};
-              files[handle.specName][handle.name] = {
-                id: handle.dataId,
-                version: handle.version,
-                createdAt: new Date().toISOString(),
-                path: contentPath,
-                size: stat.size,
-                contentType: handle.metadata.contentType,
-              };
-            } catch {
-              // File not found, skip
-            }
+          } catch {
+            // File not found, skip
           }
         }
       }
+    }
 
-      // Mark output as succeeded and save
-      output.markSucceeded();
-      await outputRepo.save(modelType, task.methodName, output);
+    output.markSucceeded();
+    await outputRepo.save(modelType, task.methodName, output);
 
-      runLogger.with({ summary: true }).debug(
-        "Method {method} completed on {model}",
-        { method: task.methodName, model: originalDefinition.name },
-      );
+    runLogger.with({ summary: true }).debug(
+      "Method {method} completed on {model}",
+      { method: task.methodName, model: originalDefinition.name },
+    );
 
-      // --- Per-step reports (method + model scope) ---
-      if (ctx.reportFilterOptions) {
-        // forEach iteration → vary suffix used by report data writers.
-        const reportVarySuffix = ctx.forEachVariable?.value !== undefined
-          ? coerceToSuffix(ctx.forEachVariable.value)
-          : undefined;
+    // Per-step reports. Vary suffix derived from forEach variable.
+    if (ctx.reportFilterOptions) {
+      const reportVarySuffix = ctx.forEachVariable?.value !== undefined
+        ? coerceToSuffix(ctx.forEachVariable.value)
+        : undefined;
 
-        const reportArtifacts = await this.reportRunner.runFor({
-          status: "succeeded",
-          dataHandles: result.dataHandles ?? [],
-          modelType,
-          modelDef,
-          evaluatedDefinition,
-          originalDefinition,
-          methodName: task.methodName,
-          reportGlobalArgs,
-          reportMethodArgs,
-          reportFilterOptions: ctx.reportFilterOptions,
-          reportVarySuffix,
-          repoDir: ctx.repoDir,
-          swampSha: ctx.swampSha,
-          runLogger,
-          unifiedDataRepo,
-          definitionRepository: definitionRepo,
-          emitEvent: ctx.emitEvent,
-          jobName: ctx.jobName,
-          stepName: ctx.stepName,
-        });
-        // Track report data artifacts alongside method artifacts.
-        for (const artifact of reportArtifacts) {
-          output.addDataArtifact(artifact);
-          savedArtifacts.push(artifact);
-        }
-      }
-
-      return {
-        type: "model_method",
-        model: task.modelIdOrName,
-        method: task.methodName,
-        resources,
-        files,
-        dataArtifacts: savedArtifacts,
+      const reportArtifacts = await this.reportRunner.runFor({
+        status: "succeeded",
         dataHandles: result.dataHandles ?? [],
-      };
-    } catch (error) {
-      // Recover data handles written before the throw (e.g. model wrote data
-      // then threw on verdict=FAIL). The driver attaches them to the error.
-      const errorHandles = (error as Record<string, unknown>).dataHandles as
-        | import("../models/model.ts").DataHandle[]
-        | undefined;
-      if (errorHandles && errorHandles.length > 0) {
-        for (const handle of errorHandles) {
-          const artifactRef = {
-            dataId: handle.dataId,
-            name: handle.name,
-            version: handle.version,
-            tags: handle.tags,
-          };
-          output.addDataArtifact(artifactRef);
-          savedArtifacts.push(artifactRef);
-        }
-      }
-
-      // Mark output as failed and save
-      const errorMessage = error instanceof Error
-        ? error.message
-        : String(error);
-      const errorStack = error instanceof Error ? error.stack : undefined;
-      output.markFailed({ message: errorMessage, stack: errorStack });
-      await outputRepo.save(modelType, task.methodName, output);
-
-      runLogger.debug("Method {method} failed: {error}", {
-        method: task.methodName,
-        model: originalDefinition.name,
-        error: errorMessage,
+        modelType,
+        modelDef,
+        evaluatedDefinition,
+        originalDefinition,
+        methodName: task.methodName,
+        reportGlobalArgs,
+        reportMethodArgs,
+        reportFilterOptions: ctx.reportFilterOptions,
+        reportVarySuffix,
+        repoDir: ctx.repoDir,
+        swampSha: ctx.swampSha,
+        runLogger,
+        unifiedDataRepo,
+        definitionRepository: definitionRepo,
+        emitEvent: ctx.emitEvent,
+        jobName: ctx.jobName,
+        stepName: ctx.stepName,
       });
-
-      // Run method-summary report for failed executions so report consumers
-      // see structured error output (matching modelMethodRun failure
-      // behavior). The runner's internal try/catch ensures report errors
-      // don't mask the original execution error we're about to rethrow.
-      if (ctx.reportFilterOptions) {
-        await this.reportRunner.runFor({
-          status: "failed",
-          errorMessage,
-          dataHandles: [],
-          modelType,
-          modelDef,
-          evaluatedDefinition,
-          originalDefinition,
-          methodName: task.methodName,
-          reportGlobalArgs,
-          reportMethodArgs,
-          reportFilterOptions: ctx.reportFilterOptions,
-          repoDir: ctx.repoDir,
-          swampSha: ctx.swampSha,
-          runLogger,
-          unifiedDataRepo,
-          definitionRepository: definitionRepo,
-          emitEvent: ctx.emitEvent,
-          jobName: ctx.jobName,
-          stepName: ctx.stepName,
-        });
+      for (const artifact of reportArtifacts) {
+        output.addDataArtifact(artifact);
+        savedArtifacts.push(artifact);
       }
+    }
 
-      // Attach saved artifacts to the error so the outer step loop can
-      // record them in the step run even though the step failed.
-      if (savedArtifacts.length > 0) {
-        (error as Record<string, unknown>).dataArtifacts = savedArtifacts;
+    return {
+      type: "model_method",
+      model: task.modelIdOrName,
+      method: task.methodName,
+      resources,
+      files,
+      dataArtifacts: savedArtifacts,
+      dataHandles: result.dataHandles ?? [],
+    };
+  }
+
+  /**
+   * Failure-path handler. Owns all mutations of `output` and
+   * `savedArtifacts` for the failure case: recovers handles attached
+   * to the error (partial-write artifacts), marks the output as failed,
+   * persists, runs failure-path reports (errors swallowed by the runner),
+   * and attaches savedArtifacts to the error so the outer step loop
+   * records them on the step run. Caller is expected to rethrow.
+   */
+  private async handleMethodFailure(args: {
+    task: {
+      modelIdOrName: string;
+      methodName: string;
+      inputs?: Record<string, unknown>;
+    };
+    ctx: StepExecutionContext;
+    outputRepo: OutputRepository;
+    unifiedDataRepo: UnifiedDataRepository;
+    definitionRepo: DefinitionRepository;
+    modelType: ModelType;
+    modelDef: ModelDefinition;
+    originalDefinition: Definition;
+    evaluatedDefinition: Definition;
+    runLogger: ReturnType<typeof getRunLogger>;
+    reportGlobalArgs: Record<string, unknown>;
+    reportMethodArgs: Record<string, unknown>;
+    error: unknown;
+    output: ModelOutput;
+    savedArtifacts: Array<{
+      dataId: string;
+      name: string;
+      version: number;
+      tags: Record<string, string>;
+    }>;
+  }): Promise<void> {
+    const {
+      task,
+      ctx,
+      outputRepo,
+      unifiedDataRepo,
+      definitionRepo,
+      modelType,
+      modelDef,
+      originalDefinition,
+      evaluatedDefinition,
+      runLogger,
+      reportGlobalArgs,
+      reportMethodArgs,
+      error,
+      output,
+      savedArtifacts,
+    } = args;
+
+    // Recover data handles written before the throw (e.g. model wrote
+    // data then threw on verdict=FAIL). The driver attaches them to
+    // the error.
+    const errorHandles = (error as Record<string, unknown>).dataHandles as
+      | import("../models/model.ts").DataHandle[]
+      | undefined;
+    if (errorHandles && errorHandles.length > 0) {
+      for (const handle of errorHandles) {
+        const artifactRef = {
+          dataId: handle.dataId,
+          name: handle.name,
+          version: handle.version,
+          tags: handle.tags,
+        };
+        output.addDataArtifact(artifactRef);
+        savedArtifacts.push(artifactRef);
       }
-      throw error;
+    }
+
+    const errorMessage = error instanceof Error ? error.message : String(error);
+    const errorStack = error instanceof Error ? error.stack : undefined;
+    output.markFailed({ message: errorMessage, stack: errorStack });
+    await outputRepo.save(modelType, task.methodName, output);
+
+    runLogger.debug("Method {method} failed: {error}", {
+      method: task.methodName,
+      model: originalDefinition.name,
+      error: errorMessage,
+    });
+
+    // Run method-summary report for failed executions so report
+    // consumers see structured error output (matching modelMethodRun
+    // failure behavior). The runner's internal try/catch ensures
+    // report errors don't mask the original execution error.
+    if (ctx.reportFilterOptions) {
+      await this.reportRunner.runFor({
+        status: "failed",
+        errorMessage,
+        dataHandles: [],
+        modelType,
+        modelDef,
+        evaluatedDefinition,
+        originalDefinition,
+        methodName: task.methodName,
+        reportGlobalArgs,
+        reportMethodArgs,
+        reportFilterOptions: ctx.reportFilterOptions,
+        repoDir: ctx.repoDir,
+        swampSha: ctx.swampSha,
+        runLogger,
+        unifiedDataRepo,
+        definitionRepository: definitionRepo,
+        emitEvent: ctx.emitEvent,
+        jobName: ctx.jobName,
+        stepName: ctx.stepName,
+      });
+    }
+
+    // Attach saved artifacts to the error so the outer step loop can
+    // record them on the StepRun.
+    if (savedArtifacts.length > 0) {
+      (error as Record<string, unknown>).dataArtifacts = savedArtifacts;
     }
   }
 }
