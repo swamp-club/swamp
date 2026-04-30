@@ -31,18 +31,16 @@ import {
   hasStepOutputDependency,
 } from "../expressions/dependency_extractor.ts";
 import type { ExpressionContext } from "../expressions/model_resolver.ts";
+import type { CelExpressionEvaluator } from "../expressions/cel_runtime.ts";
 
 /**
- * Minimal CEL evaluator surface needed by the workflow + definition
- * evaluators. The infrastructure-side CelEvaluator implements this
- * structurally; the indirection keeps these domain evaluators free of
- * a direct infrastructure import.
+ * Result of evaluating a workflow's CEL expressions.
+ * `expressionsEvaluated` is exposed for callers that record it as a
+ * tracing-span attribute.
  */
-export interface CelExpressionEvaluator {
-  evaluateAsync(
-    expression: string,
-    context: Record<string, unknown>,
-  ): Promise<unknown>;
+export interface WorkflowEvaluationResult {
+  workflow: Workflow;
+  expressionsEvaluated: number;
 }
 
 /**
@@ -57,16 +55,6 @@ export interface CelExpressionEvaluator {
  * behaviour — workflows declare their evaluation order explicitly, so
  * a thrown CEL error is a real bug.
  */
-/**
- * Result of evaluating a workflow's CEL expressions.
- * `expressionsEvaluated` is exposed for callers that record it as a
- * tracing-span attribute.
- */
-export interface WorkflowEvaluationResult {
-  workflow: Workflow;
-  expressionsEvaluated: number;
-}
-
 export class WorkflowExpressionEvaluator {
   constructor(private readonly celEvaluator: CelExpressionEvaluator) {}
 

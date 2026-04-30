@@ -647,11 +647,15 @@ export class DefaultStepExecutor implements StepExecutor {
       : undefined;
 
     // Finalize driver resolution. When no plan was passed (legacy
-    // callers), fall back to "raw".
-    const resolved = ctx.driverPlan?.withDefinition({
+    // callers, e.g. tests constructing a StepExecutionContext directly),
+    // route through an empty plan so the definition tier is still
+    // honoured — matches the pre-DriverPlan behaviour where the
+    // definition was passed to resolveDriverConfig regardless of whether
+    // upper tiers were set.
+    const resolved = (ctx.driverPlan ?? new DriverPlan({})).withDefinition({
       driver: evaluatedDefinition.driver,
       driverConfig: evaluatedDefinition.driverConfig,
-    }) ?? { driver: "raw" };
+    });
 
     // Execute the method with the EVALUATED definition. The logger
     // handles both console and file persistence via RunFileSink. Data

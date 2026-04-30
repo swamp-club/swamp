@@ -21,23 +21,8 @@ import { getLogger } from "@logtape/logtape";
 import type { Job } from "./job.ts";
 import type { Step } from "./step.ts";
 import type { ExpressionContext } from "../expressions/model_resolver.ts";
+import type { CelExpressionEvaluator } from "../expressions/cel_runtime.ts";
 import { UserError } from "../errors.ts";
-
-/**
- * Minimal CEL evaluator surface needed by forEach expansion. Includes
- * both sync (for step-name templates) and async (for `forEach.in`,
- * which may call data.* helpers that return Promises).
- *
- * Defined locally to keep this module free of direct infrastructure
- * imports; the infrastructure CelEvaluator implements it structurally.
- */
-export interface CelEvaluatorRuntime {
-  evaluate(expression: string, context: Record<string, unknown>): unknown;
-  evaluateAsync(
-    expression: string,
-    context: Record<string, unknown>,
-  ): Promise<unknown>;
-}
 
 /**
  * One concrete step produced by forEach expansion.
@@ -73,7 +58,7 @@ export function resolveForEachStepName(
   template: string,
   hasExpression: boolean,
   stepContext: Record<string, unknown>,
-  celEvaluator: CelEvaluatorRuntime,
+  celEvaluator: CelExpressionEvaluator,
   fallbackSuffix: string,
 ): ResolvedStepName {
   if (hasExpression) {
@@ -108,7 +93,7 @@ export function resolveForEachStepName(
  * emission, no orchestration concerns.
  */
 export class ForEachExpansionService {
-  constructor(private readonly celEvaluator: CelEvaluatorRuntime) {}
+  constructor(private readonly celEvaluator: CelExpressionEvaluator) {}
 
   async expand(
     job: Job,
