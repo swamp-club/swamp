@@ -20,6 +20,7 @@
 import { DatabaseSync } from "node:sqlite";
 import { dirname } from "@std/path";
 import { ensureDirSync } from "@std/fs";
+import { swampPath } from "./paths.ts";
 
 /**
  * The kind of bundle entry — which registry type it belongs to.
@@ -406,4 +407,42 @@ export function sourceDirsFingerprint(
 ): string {
   const dirs = [primaryDir, ...(additionalDirs ?? [])];
   return dirs.sort().join("\n");
+}
+
+/**
+ * Invalidates every kind in the bundle catalog so the next
+ * `ensureLoaded()` runs the full discovery + validation pass instead
+ * of taking the lazy short-circuit. Used by commands that need a
+ * deterministic re-load regardless of prior catalog state — e.g.
+ * `swamp open` (after a repo switch) and `swamp doctor extensions`
+ * (so the diagnostic always re-validates).
+ *
+ * Invalidates only the five registry kinds that own a `populated:`
+ * flag in `bundle_meta` (model, vault, driver, datastore, report).
+ * The `extension` ExtensionKind is recorded on individual catalog
+ * rows but never gets its own populated flag — it is always
+ * re-discovered through the model populate path. See
+ * {@link ExtensionCatalogStore.markPopulated} for the canonical
+ * list of flag-owning kinds.
+ *
+ * Best-effort: a failure to open the database is swallowed so the
+ * caller's flow continues. The next loader pass will bootstrap a
+ * fresh catalog if the file is missing or corrupt.
+ */
+export function forceCatalogRescan(repoDir: string): void {
+  try {
+    const dbPath = swampPath(repoDir, "_extension_catalog.db");
+    const catalog = new ExtensionCatalogStore(dbPath);
+    try {
+      catalog.invalidate("model");
+      catalog.invalidate("vault");
+      catalog.invalidate("driver");
+      catalog.invalidate("datastore");
+      catalog.invalidate("report");
+    } finally {
+      catalog.close();
+    }
+  } catch {
+    // Best-effort — the loader will bootstrap a fresh catalog if this fails.
+  }
 }

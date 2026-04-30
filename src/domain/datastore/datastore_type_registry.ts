@@ -107,6 +107,16 @@ export class DatastoreTypeRegistry {
   }
 
   /**
+   * Clears the extension-loaded flag so the next call to
+   * {@link ensureLoaded} re-runs the configured loader. Used by commands
+   * that re-scan extensions at runtime (e.g. `swamp doctor extensions`).
+   */
+  resetLoadedFlag(): void {
+    this.extensionsLoaded = false;
+    this.extensionLoadPromise = null;
+  }
+
+  /**
    * Ensures a specific datastore type's bundle has been imported.
    * If the type is lazy, invokes the type loader to import just that bundle.
    * Concurrent callers for the same type share the same promise.

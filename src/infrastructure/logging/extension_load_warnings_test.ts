@@ -21,9 +21,15 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   emitExtensionLoadWarning,
   emitTypeExtractionFailure,
+  getExtensionLoadWarnings,
   recordLoadFailures,
   resetExtensionLoadWarnings,
 } from "./extension_load_warnings.ts";
+
+// Every test in this file MUST call resetExtensionLoadWarnings() at the
+// start so the always-on capture array does not bleed warnings between
+// cases. The dedupe set already cleared per-case before the array was
+// added; the array makes the requirement load-bearing.
 
 function makeCapture() {
   const lines: string[] = [];
@@ -144,6 +150,21 @@ Deno.test("emitExtensionLoadWarning: quiet=true suppresses output entirely", () 
   assertEquals(cap.lines.length, 0);
 });
 
+Deno.test("emitExtensionLoadWarning: quiet=true still captures into the warnings array", () => {
+  // The doctor command relies on this contract — capture is always-on
+  // so the diagnostic stays available even when stderr is muted.
+  resetExtensionLoadWarnings();
+
+  emitExtensionLoadWarning(
+    { kind: "model", file: "/m.ts", error: "boom" },
+    { quiet: true },
+  );
+
+  const warnings = getExtensionLoadWarnings();
+  assertEquals(warnings.length, 1);
+  assertEquals(warnings[0].file, "/m.ts");
+});
+
 Deno.test("emitExtensionLoadWarning: quiet=false overrides any process-level --quiet detection", () => {
   resetExtensionLoadWarnings();
   const cap = makeCapture();
@@ -215,4 +236,55 @@ Deno.test("resetExtensionLoadWarnings: clears dedupe and hint state", () => {
 
   // Two warning lines + two hint lines.
   assertEquals(cap.lines.length, 4);
+});
+
+Deno.test("getExtensionLoadWarnings: returns each unique warning once", () => {
+  resetExtensionLoadWarnings();
+
+  emitExtensionLoadWarning(
+    { kind: "model", file: "/a.ts", error: "e1" },
+    { quiet: true },
+  );
+  emitExtensionLoadWarning(
+    { kind: "extension", file: "/b.ts", error: "e2" },
+    { quiet: true },
+  );
+  // Duplicate of the first — should be deduped.
+  emitExtensionLoadWarning(
+    { kind: "model", file: "/a.ts", error: "e1" },
+    { quiet: true },
+  );
+
+  const warnings = getExtensionLoadWarnings();
+  assertEquals(warnings.length, 2);
+  assertEquals(warnings[0].kind, "model");
+  assertEquals(warnings[1].kind, "extension");
+});
+
+Deno.test("getExtensionLoadWarnings: returns a defensive copy (caller cannot mutate state)", () => {
+  resetExtensionLoadWarnings();
+
+  emitExtensionLoadWarning(
+    { kind: "model", file: "/a.ts", error: "e" },
+    { quiet: true },
+  );
+
+  const snapshot = getExtensionLoadWarnings() as Array<unknown>;
+  snapshot.push({ kind: "vault", file: "/x.ts", error: "tampered" });
+
+  // Internal state must not have grown.
+  assertEquals(getExtensionLoadWarnings().length, 1);
+});
+
+Deno.test("resetExtensionLoadWarnings: clears the captured warnings array", () => {
+  resetExtensionLoadWarnings();
+
+  emitExtensionLoadWarning(
+    { kind: "model", file: "/a.ts", error: "e" },
+    { quiet: true },
+  );
+  assertEquals(getExtensionLoadWarnings().length, 1);
+
+  resetExtensionLoadWarnings();
+  assertEquals(getExtensionLoadWarnings().length, 0);
 });

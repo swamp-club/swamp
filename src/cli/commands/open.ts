@@ -49,8 +49,7 @@ import { pullExtension } from "./extension_pull.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { resolveModelsDir } from "../resolve_models_dir.ts";
-import { swampPath } from "../../infrastructure/persistence/paths.ts";
-import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
+import { forceCatalogRescan } from "../../infrastructure/persistence/extension_catalog_store.ts";
 import {
   configureExtensionAutoResolver,
   configureExtensionLoaders,
@@ -64,24 +63,6 @@ import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
 type AnyOptions = any;
 
 const logger = getSwampLogger(["open"]);
-
-function forceExtensionCatalogRescan(repoDir: string): void {
-  try {
-    const dbPath = swampPath(repoDir, "_extension_catalog.db");
-    const catalog = new ExtensionCatalogStore(dbPath);
-    try {
-      catalog.invalidate("model");
-      catalog.invalidate("vault");
-      catalog.invalidate("driver");
-      catalog.invalidate("datastore");
-      catalog.invalidate("report");
-    } finally {
-      catalog.close();
-    }
-  } catch {
-    // Best-effort — the loader will bootstrap a fresh catalog if this fails.
-  }
-}
 
 async function reloadExtensionRegistries(): Promise<void> {
   // Force the registries to re-run their loaders so newly pulled
@@ -123,7 +104,7 @@ async function loadRepoIntoState(
   const deferred: DeferredWarning[] = [];
   await configureExtensionLoaders(result.repoDir, marker, [], deferred);
   configureExtensionAutoResolver(result.repoDir, marker, undefined, outputMode);
-  forceExtensionCatalogRescan(result.repoDir);
+  forceCatalogRescan(result.repoDir);
   await reloadExtensionRegistries();
 }
 

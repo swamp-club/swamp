@@ -19,6 +19,7 @@
 
 import { Command } from "@cliffy/command";
 import { doctorAuditCommand } from "./doctor_audit.ts";
+import { doctorExtensionsCommand } from "./doctor_extensions.ts";
 
 /**
  * Parent namespace for diagnostic subcommands.
@@ -40,4 +41,9 @@ export const doctorCommand = new Command()
     "Check the audit integration for a specific tool",
     "swamp doctor audit --tool kiro",
   )
-  .command("audit", doctorAuditCommand);
+  .example(
+    "Check that user-defined extensions in this repo load cleanly",
+    "swamp doctor extensions",
+  )
+  .command("audit", doctorAuditCommand)
+  .command("extensions", doctorExtensionsCommand);
