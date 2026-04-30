@@ -17,10 +17,14 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { getLogger } from "@logtape/logtape";
 import type { Workflow } from "./workflow.ts";
 import type { Job } from "./job.ts";
 import type { Step } from "./step.ts";
+import {
+  type ExpandedStep,
+  ForEachExpansionService,
+} from "./for_each_expansion_service.ts";
+import { coerceToSuffix } from "./data_suffix.ts";
 // deno-lint-ignore verbatim-module-syntax
 import { JobRun, WorkflowRun } from "./workflow_run.ts";
 import {
@@ -136,17 +140,6 @@ export interface StepExecutionContext {
   dataBaseDir?: string;
   /** Catalog store for write-through indexing */
   catalogStore: CatalogStore;
-}
-
-/**
- * Represents an expanded step from a forEach iteration.
- */
-interface ExpandedStep {
-  step: Step;
-  /** The expanded step name after evaluating expressions */
-  expandedName: string;
-  /** The forEach variable name and value */
-  forEachVar: { name: string; value: unknown };
 }
 
 /**
@@ -795,81 +788,6 @@ interface StepOptions {
 }
 
 /**
- * Result of resolving a forEach step name template.
- */
-export interface ResolvedStepName {
-  /** The resolved step name. */
-  name: string;
-  /** Whether any expression evaluation failed during resolution. */
-  hadEvalFailure: boolean;
-}
-
-/** Maximum length for a coerced suffix before truncation. */
-const MAX_SUFFIX_LENGTH = 64;
-
-/**
- * Safely converts an unknown value to a string suitable for use as a data
- * artifact name suffix. For objects, tries common identifier properties
- * (`key`, `name`, `id`) before falling back to a truncated JSON representation.
- */
-export function coerceToSuffix(val: unknown): string {
-  if (val === undefined || val === null) {
-    return "";
-  }
-  if (typeof val !== "object") {
-    return String(val);
-  }
-  const obj = val as Record<string, unknown>;
-  for (const prop of ["key", "name", "id"]) {
-    if (prop in obj && obj[prop] !== undefined && obj[prop] !== null) {
-      return String(obj[prop]);
-    }
-  }
-  const json = JSON.stringify(val);
-  if (json.length <= MAX_SUFFIX_LENGTH) {
-    return json;
-  }
-  return json.slice(0, MAX_SUFFIX_LENGTH);
-}
-
-/**
- * Resolves a forEach step name template by evaluating `${{ }}` expressions,
- * or falls back to appending a suffix when no expressions are present.
- *
- * When expression evaluation fails, the raw expression is preserved and the
- * fallbackSuffix is appended to ensure uniqueness across iterations.
- */
-export function resolveForEachStepName(
-  template: string,
-  hasExpression: boolean,
-  stepContext: Record<string, unknown>,
-  celEvaluator: CelEvaluator,
-  fallbackSuffix: string,
-): ResolvedStepName {
-  if (hasExpression) {
-    let hadEvalFailure = false;
-    const resolved = template.replace(
-      /\$\{\{\s*(.+?)\s*\}\}/g,
-      (_match, expr) => {
-        try {
-          return String(
-            celEvaluator.evaluate(expr as string, stepContext),
-          );
-        } catch {
-          hadEvalFailure = true;
-          return _match as string;
-        }
-      },
-    );
-    return {
-      name: hadEvalFailure ? `${resolved}-${fallbackSuffix}` : resolved,
-      hadEvalFailure,
-    };
-  }
-  return { name: `${template}-${fallbackSuffix}`, hadEvalFailure: false };
-}
-
-/**
  * Domain service for workflow execution.
  */
 export class WorkflowExecutionService {
@@ -1179,10 +1097,8 @@ export class WorkflowExecutionService {
       // Expand forEach steps if we have expression context
       let expandedStepsMap: Map<string, ExpandedStep[]> | undefined;
       if (expressionContext && !options.lastEvaluated) {
-        expandedStepsMap = await this.expandForEachSteps(
-          job,
-          expressionContext,
-        );
+        expandedStepsMap = await new ForEachExpansionService(new CelEvaluator())
+          .expand(job, expressionContext);
         // Rewrite the jobRun's step list to match the expansion. The
         // template StepRun (the step as written in the workflow) never
         // executes once forEach expands, so leaving it in place makes it
@@ -1302,160 +1218,6 @@ export class WorkflowExecutionService {
     } finally {
       jobSpan.end();
     }
-  }
-
-  /**
-   * Expands forEach steps into multiple concrete steps.
-   * For steps with forEach, evaluates the `in` expression and creates
-   * one expanded step per item in the result.
-   *
-   * @param job - The job containing steps
-   * @param context - Expression context for evaluating forEach.in
-   * @returns Map of original step name to expanded steps (or single entry for non-forEach steps)
-   */
-  private async expandForEachSteps(
-    job: Job,
-    context: ExpressionContext,
-  ): Promise<Map<string, ExpandedStep[]>> {
-    const celEvaluator = new CelEvaluator();
-    const result = new Map<string, ExpandedStep[]>();
-
-    for (const step of job.steps) {
-      if (!step.forEach) {
-        // No forEach - use original step as-is
-        result.set(step.name, [{
-          step,
-          expandedName: step.name,
-          forEachVar: { name: "", value: undefined },
-        }]);
-        continue;
-      }
-
-      // Evaluate the forEach.in expression
-      const inExpression = step.forEach.in;
-      const itemName = step.forEach.item;
-
-      // Extract the CEL expression (remove ${{ }})
-      const match = inExpression.match(/\$\{\{\s*(.+?)\s*\}\}/);
-      if (!match) {
-        throw new UserError(
-          `Invalid forEach.in expression: ${inExpression}. Must be in $\{{ }} format.`,
-        );
-      }
-
-      const celExpr = match[1];
-      // Async evaluator so data.* helpers that return Promises (latest,
-      // findByTag, findBySpec, query, etc.) resolve here before we iterate.
-      // cel-js natively propagates Promises through operators and method
-      // calls; `await` on the Environment.evaluate result yields the
-      // resolved value.
-      const items = await celEvaluator.evaluateAsync(celExpr, context);
-
-      // Handle both arrays and objects
-      const expandedSteps: ExpandedStep[] = [];
-
-      const nameHasExpression = /\$\{\{.+?\}\}/.test(step.name);
-
-      if (Array.isArray(items)) {
-        // Array iteration: self.{item} = item value
-        for (let index = 0; index < items.length; index++) {
-          const item = items[index];
-          // Evaluate the step name with the forEach context
-          const stepContext = {
-            ...context,
-            self: {
-              ...context.self,
-              [itemName]: item,
-            },
-          };
-
-          // Resolve step name expressions or fall back to a unique suffix.
-          // For the expression-failure path, always use index for uniqueness.
-          // For the no-expression path, use item value for primitives, index for objects.
-          const fallbackSuffix = nameHasExpression
-            ? String(index)
-            : (item !== null && typeof item === "object")
-            ? String(index)
-            : String(item);
-          if (
-            !nameHasExpression && item !== null && typeof item === "object"
-          ) {
-            getLogger(["swamp", "workflows"]).warn(
-              "forEach step '{stepName}' uses index-based naming because item is an object. " +
-                "Consider adding a ${{{{ self.{itemName}.<field> }}}} expression to the step name for better observability.",
-              { stepName: step.name, itemName },
-            );
-          }
-          const { name: expandedName, hadEvalFailure } = resolveForEachStepName(
-            step.name,
-            nameHasExpression,
-            stepContext,
-            celEvaluator,
-            fallbackSuffix,
-          );
-          if (hadEvalFailure) {
-            getLogger(["swamp", "workflows"]).warn(
-              "forEach step '{stepName}' has expression(s) that failed to evaluate for item at index {index}. " +
-                "Appending index to prevent duplicate names. " +
-                "Check that the expression references valid properties on self.{itemName}.",
-              { stepName: step.name, index, itemName },
-            );
-          }
-
-          expandedSteps.push({
-            step,
-            expandedName,
-            forEachVar: { name: itemName, value: item },
-          });
-        }
-      } else if (items && typeof items === "object") {
-        // Object iteration: self.{item} = { key, value }
-        for (const [key, value] of Object.entries(items)) {
-          const objItem = { key, value };
-
-          // Evaluate the step name with the forEach context
-          const stepContext = {
-            ...context,
-            self: {
-              ...context.self,
-              [itemName]: objItem,
-            },
-          };
-
-          // Resolve step name expressions or fall back to key suffix
-          const { name: expandedName, hadEvalFailure } = resolveForEachStepName(
-            step.name,
-            nameHasExpression,
-            stepContext,
-            celEvaluator,
-            key,
-          );
-          if (hadEvalFailure) {
-            getLogger(["swamp", "workflows"]).warn(
-              "forEach step '{stepName}' has expression(s) that failed to evaluate for key '{key}'. " +
-                "Appending key to prevent duplicate names. " +
-                "Check that the expression references valid properties on self.{itemName}.",
-              { stepName: step.name, key, itemName },
-            );
-          }
-
-          expandedSteps.push({
-            step,
-            expandedName,
-            forEachVar: { name: itemName, value: objItem },
-          });
-        }
-      } else {
-        throw new UserError(
-          `forEach.in must evaluate to an array or object, got: ${typeof items}`,
-        );
-      }
-
-      // If no items, still store empty array
-      result.set(step.name, expandedSteps);
-    }
-
-    return result;
   }
 
   /**

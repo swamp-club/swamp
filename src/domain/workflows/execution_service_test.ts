@@ -20,13 +20,13 @@
 import { assertEquals, assertNotEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import {
-  coerceToSuffix,
   DefaultStepExecutor,
-  resolveForEachStepName,
   type StepExecutionContext,
   type StepExecutor,
   WorkflowExecutionService,
 } from "./execution_service.ts";
+import { coerceToSuffix } from "./data_suffix.ts";
+import { resolveForEachStepName } from "./for_each_expansion_service.ts";
 import { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
 import { Workflow } from "./workflow.ts";
 import { Job } from "./job.ts";
