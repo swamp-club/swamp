@@ -642,24 +642,15 @@ Deno.test("executes independent jobs in parallel", async () => {
       catalogStore,
     );
 
-    const startTime = Date.now();
     const run = await service.execute(workflow.name);
-    const elapsed = Date.now() - startTime;
 
     assertEquals(run.status, "succeeded");
     assertEquals(executor.executedSteps.length, 3);
 
-    // Verify jobs ran in parallel: max concurrency should be 3
+    // `getMaxConcurrency() === 3` is the actual proof of parallelism —
+    // the executor saw 3 simultaneous in-flight invocations. A sequential
+    // run would never exceed 1.
     assertEquals(executor.getMaxConcurrency(), 3);
-
-    // If running sequentially, it would take ~150ms (3 * 50ms)
-    // Running in parallel should take ~50-100ms
-    // Allow generous margin but should be less than sequential time
-    assertEquals(
-      elapsed < 140,
-      true,
-      `Expected parallel execution to be faster than 140ms, got ${elapsed}ms`,
-    );
   });
 });
 
@@ -815,23 +806,15 @@ Deno.test("executes independent steps within a job in parallel", async () => {
       catalogStore,
     );
 
-    const startTime = Date.now();
     const run = await service.execute(workflow.name);
-    const elapsed = Date.now() - startTime;
 
     assertEquals(run.status, "succeeded");
     assertEquals(executor.executedSteps.length, 3);
 
-    // Verify steps ran in parallel: max concurrency should be 3
+    // `getMaxConcurrency() === 3` is the actual proof of parallelism —
+    // the executor saw 3 simultaneous in-flight invocations. A sequential
+    // run would never exceed 1.
     assertEquals(executor.getMaxConcurrency(), 3);
-
-    // If running sequentially, it would take ~150ms (3 * 50ms)
-    // Running in parallel should take ~50-100ms
-    assertEquals(
-      elapsed < 140,
-      true,
-      `Expected parallel execution to be faster than 140ms, got ${elapsed}ms`,
-    );
   });
 });
 
