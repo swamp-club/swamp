@@ -86,14 +86,10 @@ swamp repo init ./my-automation --json
 ### Verify the audit integration
 
 Run `swamp doctor audit` after `init --tool <name>` and after upgrading the
-external AI tool. Catches upstream hook-payload drift before the audit log
-silently goes empty. Exits 1 on any check fail — safe to gate in CI.
-
-```bash
-swamp doctor audit
-swamp doctor audit --tool kiro
-swamp doctor audit --json
-```
+external AI tool. Exits 1 on any check fail — safe to gate in CI. For the full
+diagnostic flow (preflight checks, output shapes, common failures, escalation to
+other tiers), see the `swamp-troubleshooting` skill's
+`references/health-checks.md`.
 
 ## Upgrade a Repository
 

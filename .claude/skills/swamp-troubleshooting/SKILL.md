@@ -1,284 +1,133 @@
 ---
 name: swamp-troubleshooting
 description: >
-  Navigate swamp source code to trace error origins, identify execution
-  flows, inspect internal data structures, and understand CLI behavior when
-  --help is insufficient. Use this skill whenever something is broken
-  ("error", "failing", "not working", "crash", "timeout", "bug", "fix",
-  "debug", "troubleshoot", "root cause", "stack trace", "isn't being found",
-  "giving me an error", "slow", "performance", "latency") OR when you need
-  to understand how swamp works
-  internally ("how does", "what happens when", "where is", "internals",
-  "under the hood"). Applies even when the query mentions a specific domain
-  (e.g., "vault expressions aren't resolving" or "how does extension push
-  work") — fetch swamp source to find the answer.
+  Diagnose swamp problems and verify swamp's health through a layered
+  diagnostic loop — health checks (`swamp doctor ...`), error
+  inspection, tracing, and source reading. Prefer this skill when the
+  user's primary intent is diagnosis or health verification, not when
+  they're performing the underlying operation. Use when something is
+  broken ("swamp error", "failing", "not working", "crash", "timeout",
+  "bug", "debug", "troubleshoot", "root cause", "slow", "performance",
+  "latency"); when verifying setup health ("is swamp working", "is my
+  repo healthy", "verify swamp setup", "sanity check", "smoke test",
+  "is everything wired up", "are hooks firing", "health check",
+  "diagnose swamp"), often after `swamp init` or `swamp repo upgrade`;
+  when a swamp component looks broken ("audit log empty", "audit not
+  recording", "AI tool not recording", "hooks not firing", "extension
+  not loading", "swamp-warning", "preflight"); or for swamp internals
+  ("how does swamp", "what happens when", "where is", "internals",
+  "under the hood").
 ---
 
-# Swamp Troubleshooting Skill
+# Swamp Troubleshooting
 
-Diagnose and troubleshoot swamp issues, or understand swamp internals, by
-fetching and reading the swamp source code. All commands support `--json` for
-machine-readable output.
+Diagnose swamp problems by working through four diagnostic tiers, cheapest
+first. Each tier answers a different kind of question; escalate only when the
+current tier doesn't resolve the issue.
 
 **Verify CLI syntax:** If unsure about exact flags or subcommands, run
-`swamp help source` for the complete, up-to-date CLI schema.
+`swamp help <command>` for the up-to-date schema. Every swamp command supports
+both `log` (default, human-readable) and `--json` (structured) output, and
+returns non-zero on user-facing failure.
 
-## Quick Reference
+## Diagnostic mindset
 
-| Task                | Command                                      |
-| ------------------- | -------------------------------------------- |
-| Check source status | `swamp source path --json`                   |
-| Fetch source        | `swamp source fetch --json`                  |
-| Fetch specific ver  | `swamp source fetch --version v1.0.0 --json` |
-| Fetch main branch   | `swamp source fetch --version main --json`   |
-| Clean source        | `swamp source clean --json`                  |
+- **Start cheap, escalate.** Don't fetch source when a doctor command would name
+  the problem in seconds.
+- **Read what's already on screen.** Stderr, exit codes, and `--json` output
+  carry most of the answer.
+- **Don't skip tiers.** Tracing without first reading the error is guessing;
+  fetching source without trying `--json` is overkill.
+- **One symptom, one tier.** If a symptom matches the table below, jump directly
+  to that tier — don't run the loop top to bottom.
 
-## When CLI Help Isn't Enough
+## The diagnostic loop
 
-If `swamp <command> --help` doesn't fully answer a question about how something
-works, fetch the source and read the implementation. Common areas where source
-context is needed:
+### Tier 1 — Health checks
 
-- **Auth**: How credentials are stored (`~/.config/swamp/auth.json`), API key
-  format (`swamp_` prefix), headless/CI setup — check `src/infrastructure/auth/`
-- **Extension push**: What the push flow does internally, how bundles are
-  packaged, registry interaction — check `src/cli/commands/extension*.ts` and
-  `src/domain/extensions/`
-- **Init**: What files and directories `swamp repo init` creates and why — check
-  `src/cli/commands/repo*.ts` and `src/domain/repo/`
-- **Data persistence**: How data is stored, versioned, and garbage collected —
-  check `src/infrastructure/persistence/`
+For symptoms tied to a known integration (audit pipeline, extension loading).
+The doctor commands name the failing piece directly and exit non-zero on
+failure. Cheapest tier, fastest signal.
 
-**General rule:** When a skill's CLI commands and documentation don't provide
-enough detail, use `swamp source fetch` to get the source and read the relevant
-files directly.
+→ See [references/health-checks.md](references/health-checks.md).
 
-## Troubleshooting Workflow
+### Tier 2 — Error inspection
 
-When a user reports a swamp issue:
+For specific command failures and unexpected output. Read stderr, switch to
+`--json`, check exit codes, grep for `swamp-warning:` lines. Most failures are
+loud — the error surface itself usually answers the question.
 
-### 1. Check Current Source Status
+→ See [references/error-inspection.md](references/error-inspection.md).
 
-```bash
-swamp source path --json
-```
+### Tier 3 — Tracing
 
-**Output shape (found):**
+For timing and flow questions: slow workflows, mysterious waits, "where is this
+spending its time?" Enable OpenTelemetry tracing and read the span hierarchy.
+Not for diagnosing errors — for understanding execution shape.
 
-```json
-{
-  "status": "found",
-  "version": "20260206.200442.0-sha.abc123",
-  "path": "/Users/user/.swamp/source",
-  "fileCount": 245,
-  "fetchedAt": "2026-02-06T20:04:42.000Z"
-}
-```
+→ See [references/tracing.md](references/tracing.md).
 
-**Output shape (not found):**
+### Tier 4 — Source reading
 
-```json
-{
-  "status": "not_found"
-}
-```
+For questions Tiers 1–3 can't answer, and for "how does X work internally?"
+questions where `swamp <command> --help` is insufficient. Fetch swamp's source
+with `swamp source fetch` and read the implementation. Most expensive tier —
+reach for it last.
 
-### 2. Fetch Source If Needed
+→ See [references/source-reading.md](references/source-reading.md).
 
-If source is missing or the version doesn't match the user's swamp version:
+## Symptom → tier index
 
-```bash
-swamp source fetch --json
-```
+| Symptom                                                  | Start at                                                  |
+| -------------------------------------------------------- | --------------------------------------------------------- |
+| Audit log empty / hooks not firing                       | Tier 1 → `swamp doctor audit`                             |
+| Extension model/vault/driver/datastore/report not loaded | Tier 1 → `swamp doctor extensions`                        |
+| `swamp-warning:` line on stderr                          | Tier 1 → `swamp doctor extensions`                        |
+| CI preflight needs to gate on integration health         | Tier 1 → either doctor with `--json`                      |
+| Command errored — message is clear                       | Tier 2 → read it, fix the named issue                     |
+| Command errored — message is vague or unhelpful          | Tier 2 → re-run with `--json`, then escalate              |
+| Item "not found" / "not in search results"               | Tier 2 → check stderr for `swamp-warning:`                |
+| Method failed `Pre-flight check failed: …`               | Tier 2 → see [references/checks.md](references/checks.md) |
+| Workflow / method / sync is slow                         | Tier 3 → enable tracing                                   |
+| "Where is this spending its time?"                       | Tier 3 → enable tracing                                   |
+| Need to understand internal behavior of a command        | Tier 4 → fetch source                                     |
+| Tier-1-clean integration that still misbehaves           | Tier 4 → fetch source                                     |
 
-This fetches source for the current CLI version. To fetch a specific version:
+## Diagnostic playbook
 
-```bash
-swamp source fetch --version 20260206.200442.0-sha.abc123 --json
-```
+For a typical investigation:
 
-**Output shape:**
+1. Match the symptom against the index above. If a tier is named, jump there.
+2. If no tier matches, run Tier 2 (error inspection) — read stderr and switch to
+   `--json` first.
+3. Capture what each tier ruled out before escalating, so the next tier has
+   context.
+4. Once the root cause is identified, state it clearly, suggest a fix or
+   workaround, and (if it's a bug) summarize for an issue report.
 
-```json
-{
-  "status": "fetched",
-  "version": "20260206.200442.0-sha.abc123",
-  "path": "/Users/user/.swamp/source",
-  "fileCount": 245,
-  "fetchedAt": "2026-02-06T20:04:42.000Z",
-  "previousVersion": "20260205.100000.0-sha.xyz789"
-}
-```
+## When to use other skills
 
-### 3. Read Source Files
+| Need                                  | Use Skill                                                         |
+| ------------------------------------- | ----------------------------------------------------------------- |
+| Run/create models                     | `swamp-model`                                                     |
+| Run/create workflows                  | `swamp-workflow`                                                  |
+| Manage secrets                        | `swamp-vault`                                                     |
+| Manage repository / install / upgrade | `swamp-repo`                                                      |
+| Author custom TypeScript models       | `swamp-extension-model`                                           |
+| Debug method preflight checks         | this skill, Tier 2 + [references/checks.md](references/checks.md) |
 
-Once source is fetched, read files from `~/.swamp/source/`:
+## References
 
-**Key directories:**
-
-- `src/cli/` - CLI commands and entry point
-- `src/domain/` - Domain logic (models, workflows, vaults, etc.)
-- `src/infrastructure/` - Infrastructure adapters (persistence, HTTP, etc.)
-- `src/presentation/` - Output rendering
-
-**Example: Read the CLI entry point**
-
-```
-Read ~/.swamp/source/src/cli/mod.ts
-```
-
-**Example: Read model service**
-
-```
-Read ~/.swamp/source/src/domain/models/model_service.ts
-```
-
-### 4. Enable Tracing (Performance Issues)
-
-If the issue is about slowness, timeouts, or understanding execution flow,
-enable OpenTelemetry tracing:
-
-```bash
-# Quick: print spans to stderr
-OTEL_TRACES_EXPORTER=console swamp workflow run my-workflow
-
-# Visual: send to local Jaeger (docker run -p 16686:16686 -p 4318:4318 jaegertracing/all-in-one)
-OTEL_EXPORTER_OTLP_ENDPOINT=http://localhost:4318 swamp workflow run my-workflow
-```
-
-Traces show the full execution hierarchy with timing for every operation — CLI
-command → workflow → job → step → method → driver. See
-[references/tracing.md](references/tracing.md) for setup, span names, and
-diagnosing common issues.
-
-### 5. Diagnose the Issue
-
-Based on the error message or symptoms:
-
-1. **Command not working**: Check `src/cli/commands/{command}.ts`
-2. **Model issues**: Check `src/domain/models/`
-3. **Workflow issues**: Check `src/domain/workflows/`
-4. **Vault/secret issues**: Check `src/domain/vaults/`
-5. **Data persistence issues**: Check `src/infrastructure/persistence/`
-6. **Output formatting issues**: Check `src/presentation/output/`
-7. **Pre-flight check failures**: See
-   [references/checks.md](references/checks.md) for skip flags, check selection
-   errors, extension conflicts, and required check behavior
-8. **Slow operations**: Enable tracing — see
-   [references/tracing.md](references/tracing.md)
-
-### 6. Explain and Suggest Fixes
-
-After diagnosing:
-
-1. Explain what the code is doing
-2. Identify the root cause
-3. Suggest a workaround if available
-4. If it's a bug, summarize the issue and potential fix
-
-## Source Directory Structure
-
-```
-~/.swamp/source/
-├── src/
-│   ├── cli/
-│   │   ├── commands/        # CLI command implementations
-│   │   ├── context.ts       # Command context and options
-│   │   └── mod.ts           # CLI entry point
-│   ├── domain/
-│   │   ├── errors.ts        # User-facing errors
-│   │   ├── models/          # Model types and services
-│   │   ├── workflows/       # Workflow execution
-│   │   ├── vaults/          # Secret management
-│   │   ├── data/            # Data lifecycle
-│   │   └── events/          # Domain events
-│   ├── infrastructure/
-│   │   ├── persistence/     # File-based storage
-│   │   ├── logging/         # LogTape configuration
-│   │   ├── tracing/         # OpenTelemetry tracing
-│   │   └── update/          # Self-update mechanism
-│   └── presentation/
-│       └── output/          # Terminal output rendering
-├── integration/             # Integration tests
-├── design/                  # Design documents
-└── deno.json                # Deno configuration
-```
-
-## Clean Up Source
-
-When done troubleshooting:
-
-```bash
-swamp source clean --json
-```
-
-**Output shape:**
-
-```json
-{
-  "status": "cleaned",
-  "path": "/Users/user/.swamp/source"
-}
-```
-
-## Version Matching
-
-- By default, `swamp source fetch` downloads source matching the current CLI
-  version
-- Use `--version main` to get the latest unreleased code
-- Use `--version <tag>` to get a specific release
-
-## Local Extension Model Not Appearing in Type Search
-
-If a model file at `extensions/models/<name>.ts` doesn't show up in
-`swamp model type search`:
-
-1. **Check stderr.** Swamp emits one `swamp-warning:` line per failed extension
-   load, naming the file and the error. The line goes to stderr (not stdout) so
-   it stays out of `--json` output but is still visible. Common causes:
-   - Missing or invalid `version` field — must be CalVer (`YYYY.MM.DD.MICRO`).
-   - `type` is a variable instead of a string literal — the catalog extracts the
-     type via regex and only matches literal strings.
-   - Bundle failure (syntax error, unresolvable import).
-2. **Do NOT run `swamp extension source add extensions/models`.** That path is
-   auto-discovered by default; registering it as a source is a no-op that adds
-   confusion. The source-add flow is for directories _outside_ the repo.
-3. **Confirm `deno check` passes** on the file. Type errors that pass
-   `deno check` may still be rejected by swamp's stricter validation (e.g.
-   missing `version`).
-
-The discovery code lives in `src/cli/mod.ts` (`loadUserModels`) and
-`src/domain/models/user_model_loader.ts` (`UserModelLoader.buildIndex`). The
-stderr emitter is at `src/infrastructure/logging/extension_load_warnings.ts`.
-
-## Source Extension Not Loading
-
-If a source extension isn't appearing in `swamp model type search`:
-
-1. **Check the source is registered**: `swamp extension source list` — look for
-   green checkmark. Red cross means the path doesn't exist.
-2. **Check the directory structure**: The source path must contain
-   `extensions/models/` (or the appropriate type directory).
-3. **Check for a `deno.json`**: Source extensions need a `deno.json` with
-   dependency mappings (e.g., `"zod": "npm:zod@4"`). Without it, bundling fails
-   with `"Import "zod" not a dependency"`.
-4. **Check the warning output**: Look for `"Using discovered deno config"`
-   warnings — this confirms the bundler found the source's config file.
-5. **Check the `only` filter**: If the source was added with `--only vaults`,
-   model types won't load from it.
-
-The source loading code lives in:
-
-- `src/infrastructure/persistence/swamp_sources_repository.ts` — file reading
-  and path resolution
-- `src/cli/mod.ts` — wiring sources into the loader pipeline
-
-## When to Use Other Skills
-
-| Need                    | Use Skill               |
-| ----------------------- | ----------------------- |
-| Run/create models       | `swamp-model`           |
-| Run/create workflows    | `swamp-workflow`        |
-| Manage secrets          | `swamp-vault`           |
-| Manage repository       | `swamp-repo`            |
-| Create extension models | `swamp-extension-model` |
+- [references/health-checks.md](references/health-checks.md) — Tier 1: doctor
+  commands (`swamp doctor audit`, `swamp doctor extensions`), exit codes, CI
+  usage.
+- [references/error-inspection.md](references/error-inspection.md) — Tier 2:
+  stderr habits, `--json` switching, `swamp-warning:` lines, recipes for
+  "extension not appearing" and "source extension not loading."
+- [references/tracing.md](references/tracing.md) — Tier 3: OpenTelemetry setup,
+  span hierarchy, diagnosing slow workflows / GC / sync.
+- [references/source-reading.md](references/source-reading.md) — Tier 4:
+  `swamp source fetch/path/clean`, source layout, where to look by symptom.
+- [references/checks.md](references/checks.md) — Per-method preflight check
+  troubleshooting (skip flags, check selection errors, conflicts) — separate
+  concept from Tier 1 doctor commands.
