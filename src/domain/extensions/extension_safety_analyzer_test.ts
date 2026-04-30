@@ -140,7 +140,7 @@ Deno.test("analyzeExtensionSafety errors on symlinks", async () => {
     const realFile = join(tmpDir, "real.ts");
     await Deno.writeTextFile(realFile, "export const x = 1;\n");
     const linkFile = join(tmpDir, "link.ts");
-    await Deno.symlink(realFile, linkFile);
+    await Deno.symlink(realFile, linkFile, { type: "file" });
 
     const result = await analyzeExtensionSafety([linkFile]);
     assertEquals(result.errors.length, 1);

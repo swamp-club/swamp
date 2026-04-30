@@ -48,7 +48,7 @@ Deno.test("assertSafePath", async (t) => {
       "symlink escaping boundary throws PathTraversalError",
       async () => {
         const symlinkPath = join(boundary, "evil-link");
-        await Deno.symlink(outsideDir, symlinkPath);
+        await Deno.symlink(outsideDir, symlinkPath, { type: "dir" });
 
         try {
           await assertRejects(
@@ -76,7 +76,7 @@ Deno.test("assertSafePath", async (t) => {
       "non-existent path where ancestor is symlink escaping boundary throws",
       async () => {
         const symlinkDir = join(boundary, "sneaky-dir");
-        await Deno.symlink(outsideDir, symlinkDir);
+        await Deno.symlink(outsideDir, symlinkDir, { type: "dir" });
 
         try {
           await assertRejects(
@@ -100,7 +100,7 @@ Deno.test("assertSafePath", async (t) => {
         const realDir = join(boundary, "real-data");
         await Deno.mkdir(realDir, { recursive: true });
         const internalLink = join(boundary, "link-to-real");
-        await Deno.symlink(realDir, internalLink);
+        await Deno.symlink(realDir, internalLink, { type: "dir" });
 
         try {
           // Should not throw — symlink stays within the boundary
@@ -117,7 +117,7 @@ Deno.test("assertSafePath", async (t) => {
         // This simulates the original attack: .swamp/outputs is a symlink
         const attackBoundary = join(tmpDir, "repo2", ".swamp", "outputs");
         await Deno.mkdir(join(tmpDir, "repo2", ".swamp"), { recursive: true });
-        await Deno.symlink(outsideDir, attackBoundary);
+        await Deno.symlink(outsideDir, attackBoundary, { type: "dir" });
 
         try {
           // The boundary itself is a symlink to outside — the path resolves
@@ -143,7 +143,7 @@ Deno.test("assertSafePath", async (t) => {
         // potentially-symlinked directory, not the directory itself.
         const attackDir = join(tmpDir, "repo3", ".swamp", "outputs");
         await Deno.mkdir(join(tmpDir, "repo3", ".swamp"), { recursive: true });
-        await Deno.symlink(outsideDir, attackDir);
+        await Deno.symlink(outsideDir, attackDir, { type: "dir" });
 
         try {
           // Using the symlinked dir itself as boundary — both sides resolve
@@ -166,7 +166,7 @@ Deno.test("assertSafePath", async (t) => {
 
     await t.step("PathTraversalError contains path details", async () => {
       const symlinkPath = join(boundary, "error-test-link");
-      await Deno.symlink(outsideDir, symlinkPath);
+      await Deno.symlink(outsideDir, symlinkPath, { type: "dir" });
 
       try {
         const filePath = join(symlinkPath, "secret.txt");

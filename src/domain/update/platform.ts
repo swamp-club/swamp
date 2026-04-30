@@ -22,7 +22,7 @@ import { UserError } from "../errors.ts";
 const ARTIFACT_BASE_URL =
   "https://artifacts.systeminit.com/swamp/stable/binary";
 
-const SUPPORTED_OS = new Set(["darwin", "linux"]);
+const SUPPORTED_OS = new Set(["darwin", "linux", "windows"]);
 const SUPPORTED_ARCH = new Set(["aarch64", "x86_64"]);
 
 /**

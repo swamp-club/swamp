@@ -335,6 +335,7 @@ Deno.test("extension push --dry-run archives multiple workflows with unique name
       await Deno.symlink(
         join(swampWfDir, `workflow-${id}.yaml`),
         join(dir, "workflow.yaml"),
+        { type: "file" },
       );
     }
 

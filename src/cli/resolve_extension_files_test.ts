@@ -519,7 +519,7 @@ Deno.test("resolveExtensionFiles rejects symlinks in additionalFiles", async () 
     const target = join(dir, "target.md");
     await Deno.writeTextFile(target, "real");
     const link = join(dir, "prompts", "review.md");
-    await Deno.symlink(target, link);
+    await Deno.symlink(target, link, { type: "file" });
 
     const manifestPath = join(dir, "manifest.yaml");
     await Deno.writeTextFile(

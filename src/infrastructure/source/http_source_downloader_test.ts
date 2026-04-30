@@ -94,7 +94,9 @@ Deno.test("downloadAndExtract preserves symlinks", async () => {
     const subDir = join(innerDir, "target-dir");
     await ensureDir(subDir);
     await Deno.writeTextFile(join(subDir, "content.txt"), "linked content");
-    await Deno.symlink("target-dir", join(innerDir, "link-to-dir"));
+    await Deno.symlink("target-dir", join(innerDir, "link-to-dir"), {
+      type: "dir",
+    });
 
     // Create tarball (with -h omitted so symlinks are preserved)
     const tarball = join(tempDir, "test.tar.gz");
@@ -259,7 +261,9 @@ Deno.test("downloadAndExtract skips symlinks escaping via relative path", async 
     await ensureDir(innerDir);
     await Deno.writeTextFile(join(innerDir, "safe.txt"), "safe");
     // Create a symlink that escapes via relative path
-    await Deno.symlink("../../etc/passwd", join(innerDir, "escape-link"));
+    await Deno.symlink("../../etc/passwd", join(innerDir, "escape-link"), {
+      type: "file",
+    });
 
     const tarball = join(tempDir, "test.tar.gz");
     const tar = new Deno.Command("tar", {
@@ -395,7 +399,9 @@ Deno.test("downloadAndExtract skips symlinks escaping via absolute path", async 
     await ensureDir(innerDir);
     await Deno.writeTextFile(join(innerDir, "safe.txt"), "safe");
     // Create a symlink with an absolute path outside the target
-    await Deno.symlink("/etc/passwd", join(innerDir, "abs-escape-link"));
+    await Deno.symlink("/etc/passwd", join(innerDir, "abs-escape-link"), {
+      type: "file",
+    });
 
     const tarball = join(tempDir, "test.tar.gz");
     const tar = new Deno.Command("tar", {

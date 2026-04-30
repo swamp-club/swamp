@@ -33,11 +33,17 @@ Deno.test("Platform.from creates linux x86_64 platform", () => {
   assertEquals(platform.arch, "x86_64");
 });
 
+Deno.test("Platform.from creates windows x86_64 platform", () => {
+  const platform = Platform.from("windows", "x86_64");
+  assertEquals(platform.os, "windows");
+  assertEquals(platform.arch, "x86_64");
+});
+
 Deno.test("Platform.from throws UserError for unsupported OS", () => {
   assertThrows(
-    () => Platform.from("windows", "x86_64"),
+    () => Platform.from("openbsd", "x86_64"),
     UserError,
-    "Unsupported operating system: windows",
+    "Unsupported operating system: openbsd",
   );
 });
 
