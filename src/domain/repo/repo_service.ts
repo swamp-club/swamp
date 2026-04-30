@@ -642,6 +642,12 @@ ${skillsIntro}
 
 ${
       skillListEntry(
+        "swamp-getting-started",
+        "Interactive onboarding for new swamp users",
+      )
+    }
+${
+      skillListEntry(
         "swamp-model",
         "Work with swamp models (creating, editing, validating)",
       )
@@ -654,6 +660,12 @@ ${
     }
 ${skillListEntry("swamp-vault", "Manage secrets and credentials")}
 ${skillListEntry("swamp-data", "Manage model data lifecycle")}
+${
+      skillListEntry(
+        "swamp-data-query",
+        "Query model data artifacts with CEL predicates",
+      )
+    }
 ${
       skillListEntry(
         "swamp-report",
@@ -670,8 +682,25 @@ ${
       )
     }
 ${skillListEntry("swamp-extension-vault", "Create custom vault providers")}
+${
+      skillListEntry(
+        "swamp-extension-publish",
+        "Publish extensions to the registry",
+      )
+    }
+${
+      skillListEntry(
+        "swamp-extension-quality",
+        "Improve extension quality scorecards",
+      )
+    }
 ${skillListEntry("swamp-issue", "Submit bug reports and feature requests")}
-${skillListEntry("swamp-troubleshooting", "Debug and diagnose swamp issues")}
+${
+      skillListEntry(
+        "swamp-troubleshooting",
+        "Diagnose swamp problems and verify swamp's health",
+      )
+    }
 
 ## Getting Started
 

@@ -1,8 +1,10 @@
-# OpenTelemetry Tracing
+# Tracing (Tier 3)
 
-Swamp has native OpenTelemetry tracing for diagnosing slow or failing
-operations. Tracing is opt-in via environment variables and has zero overhead
-when disabled.
+Reach for tracing when the question is about timing, flow, or where a slow
+operation is spending its time. Tier 1 (health checks) and Tier 2 (error
+inspection) handle most failures; tracing is for everything where the answer is
+"how long" or "what ran when." Tracing is opt-in via environment variables and
+has zero overhead when disabled.
 
 ## Quick Setup
 
@@ -135,3 +137,14 @@ trace, creating a unified trace across process boundaries.
 
 See https://swamp.club/manual/reference/opentelemetry for the full span
 hierarchy, instrumentation points, and attribute reference.
+
+## Escalating to other tiers
+
+If tracing shows the timing but not the cause:
+
+- **Span attributes hint at a known integration failure** → Tier 1:
+  [health-checks.md](health-checks.md).
+- **Span error messages need decoding, or `--json` output would say more** →
+  Tier 2: [error-inspection.md](error-inspection.md).
+- **The span is fast but the behavior is still wrong** → Tier 4:
+  [source-reading.md](source-reading.md) — read the implementation directly.

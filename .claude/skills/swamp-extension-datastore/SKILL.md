@@ -39,6 +39,7 @@ Custom datastores let you:
 | Search community    | `swamp extension search datastore --json`      |
 | Create datastore    | Create `extensions/datastores/my-store/mod.ts` |
 | Verify registration | `swamp datastore status --json`                |
+| Verify it loads     | `swamp doctor extensions --json`               |
 | Check config        | View `.swamp.yaml` datastore section           |
 | Push extension      | `swamp extension push manifest.yaml --json`    |
 | Dry-run push        | `swamp extension push manifest.yaml --dry-run` |

@@ -35,6 +35,10 @@ export interface SkillInfo {
 const BUNDLED_SKILLS: SkillInfo[] = [
   { relativePath: "swamp-data/SKILL.md", name: "swamp-data" },
   {
+    relativePath: "swamp-data/references/concepts.md",
+    name: "swamp-data",
+  },
+  {
     relativePath: "swamp-data/references/data-ownership.md",
     name: "swamp-data",
   },
@@ -44,6 +48,10 @@ const BUNDLED_SKILLS: SkillInfo[] = [
   },
   {
     relativePath: "swamp-data/references/expressions.md",
+    name: "swamp-data",
+  },
+  {
+    relativePath: "swamp-data/references/output-shapes.md",
     name: "swamp-data",
   },
   {
@@ -175,6 +183,18 @@ const BUNDLED_SKILLS: SkillInfo[] = [
     name: "swamp-extension-model",
   },
   {
+    relativePath: "swamp-extension-model/references/skills.md",
+    name: "swamp-extension-model",
+  },
+  {
+    relativePath: "swamp-extension-model/references/typing.md",
+    name: "swamp-extension-model",
+  },
+  {
+    relativePath: "swamp-extension-model/references/upgrades.md",
+    name: "swamp-extension-model",
+  },
+  {
     relativePath: "swamp-model/references/execution-drivers.md",
     name: "swamp-model",
   },
@@ -267,11 +287,31 @@ const BUNDLED_SKILLS: SkillInfo[] = [
     name: "swamp-issue",
   },
   {
+    relativePath: "swamp-issue/references/formatting.md",
+    name: "swamp-issue",
+  },
+  {
+    relativePath: "swamp-issue/references/output_shapes.md",
+    name: "swamp-issue",
+  },
+  {
     relativePath: "swamp-troubleshooting/SKILL.md",
     name: "swamp-troubleshooting",
   },
   {
     relativePath: "swamp-troubleshooting/references/checks.md",
+    name: "swamp-troubleshooting",
+  },
+  {
+    relativePath: "swamp-troubleshooting/references/error-inspection.md",
+    name: "swamp-troubleshooting",
+  },
+  {
+    relativePath: "swamp-troubleshooting/references/health-checks.md",
+    name: "swamp-troubleshooting",
+  },
+  {
+    relativePath: "swamp-troubleshooting/references/source-reading.md",
     name: "swamp-troubleshooting",
   },
   {

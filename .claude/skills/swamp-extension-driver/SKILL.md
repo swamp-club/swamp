@@ -24,6 +24,7 @@ startup.
 | Search community    | `swamp extension search driver --json`         |
 | Create driver file  | Create `extensions/drivers/my-driver/mod.ts`   |
 | Verify registration | `swamp model type search --json`               |
+| Verify it loads     | `swamp doctor extensions --json`               |
 | Push extension      | `swamp extension push manifest.yaml --json`    |
 | Dry-run push        | `swamp extension push manifest.yaml --dry-run` |
 
