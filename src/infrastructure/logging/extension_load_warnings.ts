@@ -53,6 +53,7 @@ export interface EmitterOptions {
 interface EmitterState {
   emitted: Set<string>;
   hintsEmittedFor: Set<ExtensionKind>;
+  warnings: ExtensionLoadWarning[];
 }
 
 const STATE_KEY = "__swampExtensionLoadWarningState";
@@ -65,6 +66,7 @@ function getState(): EmitterState {
     globalAny[STATE_KEY] = {
       emitted: new Set<string>(),
       hintsEmittedFor: new Set<ExtensionKind>(),
+      warnings: [],
     } satisfies EmitterState;
   }
   return globalAny[STATE_KEY];
@@ -117,19 +119,23 @@ function isSilenced(options: EmitterOptions): boolean {
  * common wrong-turn (registering an extension source for a path
  * that's already auto-discovered).
  *
- * Quiet mode short-circuits to a no-op so `swamp --quiet` stays
- * quiet without callers having to filter.
+ * Capture is always-on: every unique warning is also pushed onto the
+ * structured `warnings` array, regardless of quiet mode. `swamp doctor
+ * extensions` reads the array via {@link getExtensionLoadWarnings} so
+ * the diagnostic surface stays available even when stderr is muted.
+ * Quiet mode only suppresses the writer call.
  */
 export function emitExtensionLoadWarning(
   warning: ExtensionLoadWarning,
   options: EmitterOptions = {},
 ): void {
-  if (isSilenced(options)) return;
-
   const state = getState();
   const key = dedupeKey(warning);
   if (state.emitted.has(key)) return;
   state.emitted.add(key);
+  state.warnings.push(warning);
+
+  if (isSilenced(options)) return;
 
   const writer = options.writer ?? defaultWriter;
   writer(`swamp-warning: ${warning.file}: ${warning.error}`);
@@ -138,6 +144,18 @@ export function emitExtensionLoadWarning(
     state.hintsEmittedFor.add(warning.kind);
     writer(`  hint: ${HINT_BY_KIND[warning.kind]}`);
   }
+}
+
+/**
+ * Returns a defensive copy of the structured warnings captured so far.
+ * Read by `swamp doctor extensions` to render its per-registry report.
+ * Each unique (kind, file, error) tuple appears exactly once because
+ * the emitter dedupes before pushing.
+ */
+export function getExtensionLoadWarnings(): ReadonlyArray<
+  ExtensionLoadWarning
+> {
+  return [...getState().warnings];
 }
 
 /**
@@ -185,13 +203,16 @@ export function emitTypeExtractionFailure(
 }
 
 /**
- * Clears the emitter's process-scoped dedupe + hint-tracking state.
- * Long-running processes (swamp serve, swamp open) call this
- * alongside ModelRegistry.resetLoadedFlag() so a subsequent reload
- * re-emits warnings cleanly.
+ * Clears the emitter's process-scoped dedupe + hint-tracking state
+ * AND the structured warnings array. Long-running processes (swamp
+ * serve, swamp open) call this alongside ModelRegistry.resetLoadedFlag()
+ * so a subsequent reload re-emits warnings cleanly. `swamp doctor
+ * extensions` calls this before re-running loaders so its report
+ * reflects only the warnings produced by its own pass.
  */
 export function resetExtensionLoadWarnings(): void {
   const state = getState();
   state.emitted.clear();
   state.hintsEmittedFor.clear();
+  state.warnings.length = 0;
 }

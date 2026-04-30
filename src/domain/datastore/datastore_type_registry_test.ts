@@ -270,3 +270,23 @@ Deno.test("DatastoreTypeRegistry.ensureTypeLoaded: retries after transient failu
   assertEquals(callCount, 2);
   assertEquals(registry.get("@myorg/custom")?.name, "@myorg/custom store");
 });
+
+Deno.test("DatastoreTypeRegistry.resetLoadedFlag re-runs the loader on next ensureLoaded", async () => {
+  const registry = new DatastoreTypeRegistry();
+  let loadCount = 0;
+  registry.setLoader(() => {
+    loadCount++;
+    return Promise.resolve();
+  });
+
+  await registry.ensureLoaded();
+  assertEquals(loadCount, 1);
+
+  // Without reset, a second ensureLoaded is a no-op.
+  await registry.ensureLoaded();
+  assertEquals(loadCount, 1);
+
+  registry.resetLoadedFlag();
+  await registry.ensureLoaded();
+  assertEquals(loadCount, 2);
+});

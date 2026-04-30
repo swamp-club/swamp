@@ -691,6 +691,20 @@ export {
   type ExtensionInstallEvent,
 } from "./extensions/install.ts";
 
+// Extension load diagnostic (`swamp doctor extensions`)
+export {
+  DOCTOR_REGISTRY_ORDER,
+  doctorExtensions,
+  type DoctorExtensionsDeps,
+  type DoctorExtensionsEvent,
+  type DoctorExtensionsReport,
+  type DoctorOverallStatus,
+  type DoctorRegistryDeps,
+  type DoctorRegistryFailure,
+  type DoctorRegistryName,
+  type DoctorRegistryResult,
+} from "./extensions/doctor.ts";
+
 // Model edit operations
 export {
   createModelEditDeps,
