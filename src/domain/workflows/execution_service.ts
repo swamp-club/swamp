@@ -47,6 +47,10 @@ import { YamlOutputRepository } from "../../infrastructure/persistence/yaml_outp
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import type { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
 import { DataQueryService } from "../data/data_query_service.ts";
+import {
+  fromFileHandle,
+  fromResourceHandle,
+} from "../data/data_record_mapper.ts";
 import { resolveModelType } from "../extensions/extension_auto_resolver.ts";
 import { MethodReportRunner } from "./method_report_runner.ts";
 import { getAutoResolver } from "../extensions/auto_resolver_context.ts";
@@ -801,73 +805,26 @@ export class DefaultStepExecutor implements StepExecutor {
         runLogger.debug("Data saved to {path}", { path: dataPath });
 
         if (handle.kind === "resource") {
-          let attributes: Record<string, unknown> = {};
-          if (handle.metadata.contentType === "application/json") {
-            try {
-              const content = await unifiedDataRepo.getContent(
-                modelType,
-                evaluatedDefinition.id,
-                handle.name,
-                handle.version,
-              );
-              if (content) {
-                const text = new TextDecoder().decode(content);
-                attributes = JSON.parse(text) as Record<string, unknown>;
-              }
-            } catch {
-              // Not valid JSON, skip attributes
-            }
-          }
           if (!resources[handle.specName]) {
             resources[handle.specName] = {};
           }
-          resources[handle.specName][handle.name] = {
-            id: handle.dataId,
-            name: handle.name,
-            version: handle.version,
-            // The resource was just saved by the current step, so this
-            // record is authoritative for the data item.
-            isLatest: true,
-            createdAt: new Date().toISOString(),
-            attributes,
-            tags: handle.tags,
-            modelName: handle.tags["modelName"] ?? evaluatedDefinition.name,
-            modelType: modelType.normalized,
-            specName: handle.specName,
-            dataType: handle.tags["type"] ?? "resource",
-            contentType: handle.metadata.contentType,
-            lifetime: handle.metadata.lifetime,
-            ownerType: handle.metadata.ownerDefinition.ownerType,
-            streaming: handle.metadata.streaming,
-            size: handle.size,
-            content: "",
-            ownerRef: handle.metadata.ownerDefinition.ownerRef,
-            workflowRunId: handle.metadata.ownerDefinition.workflowRunId ?? "",
-            workflowName: handle.metadata.ownerDefinition.workflowName ?? "",
-            jobName: handle.metadata.ownerDefinition.jobName ?? "",
-            stepName: handle.metadata.ownerDefinition.stepName ?? "",
-            source: handle.metadata.ownerDefinition.source ?? "",
-          };
-        } else if (handle.kind === "file") {
-          const contentPath = unifiedDataRepo.getContentPath(
+          resources[handle.specName][handle.name] = await fromResourceHandle(
+            handle,
             modelType,
             evaluatedDefinition.id,
-            handle.name,
-            handle.version,
+            evaluatedDefinition.name,
+            unifiedDataRepo,
           );
-          try {
-            const stat = await Deno.stat(contentPath);
+        } else if (handle.kind === "file") {
+          const fileRecord = await fromFileHandle(
+            handle,
+            modelType,
+            evaluatedDefinition.id,
+            unifiedDataRepo,
+          );
+          if (fileRecord) {
             if (!files[handle.specName]) files[handle.specName] = {};
-            files[handle.specName][handle.name] = {
-              id: handle.dataId,
-              version: handle.version,
-              createdAt: new Date().toISOString(),
-              path: contentPath,
-              size: stat.size,
-              contentType: handle.metadata.contentType,
-            };
-          } catch {
-            // File not found, skip
+            files[handle.specName][handle.name] = fileRecord;
           }
         }
       }

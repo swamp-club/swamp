@@ -50,8 +50,10 @@ export function buildEnvContext(): Record<string, string> {
   return { ...Deno.env.toObject() };
 }
 
-// Re-export DataRecord from its canonical location.
-export type { DataRecord } from "../data/data_record.ts";
+// Re-export DataRecord and FileDataRecord from their canonical
+// location. Importing here too so this file can use them locally.
+import type { FileDataRecord } from "../data/data_record.ts";
+export type { DataRecord, FileDataRecord } from "../data/data_record.ts";
 
 /** Escapes a string for safe embedding in a CEL string literal. */
 function escapeCelString(s: string): string {
@@ -83,18 +85,8 @@ function deduplicateByName(records: DataRecord[]): DataRecord[] {
   return [...byKey.values()];
 }
 
-/**
- * File metadata record for CEL expressions.
- * Eagerly loaded into the model context.
- */
-export interface FileDataRecord {
-  id: string;
-  version: number;
-  createdAt: string;
-  path: string;
-  size: number;
-  contentType: string;
-}
+// FileDataRecord moved to ../data/data_record.ts. Re-exported below for
+// callers that import it from this module.
 
 /**
  * Data about a single model for CEL context.

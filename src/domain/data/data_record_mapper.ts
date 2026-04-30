@@ -18,12 +18,13 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { CatalogRow } from "../../infrastructure/persistence/catalog_store.ts";
-import type { DataRecord } from "./data_record.ts";
+import type { DataRecord, FileDataRecord } from "./data_record.ts";
 import type { Data } from "./data.ts";
 import { ModelType } from "../models/model_type.ts";
 import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import type { VaultService } from "../vaults/vault_service.ts";
 import type { SecretRedactor } from "../secrets/mod.ts";
+import type { DataHandle } from "../models/model.ts";
 import { isTextContentType } from "./content_type.ts";
 import { resolveVaultRefsInData } from "../models/data_writer.ts";
 
@@ -229,4 +230,112 @@ export async function fromData(
     stepName: data.ownerDefinition.stepName ?? "",
     source: data.ownerDefinition.source ?? "",
   };
+}
+
+/**
+ * Converts a DataHandle to a DataRecord for use in the workflow
+ * step's expressionContext.model[...].resource[...] view.
+ *
+ * Used in the success path of step execution where the handle has
+ * just been produced by the method's DataWriter. Differs from
+ * {@link fromData}:
+ * - `isLatest` is always true (the handle was just produced).
+ * - `attributes` is parsed from JSON content for `application/json`
+ *   only — other content types yield empty attributes. Downstream
+ *   CEL access patterns reference `attributes.<field>`; raw text
+ *   content is intentionally not eagerly loaded into the record.
+ * - `content` is always "" (parsing into attributes is sufficient
+ *   for downstream CEL).
+ * - `dataType` defaults to "resource" rather than "" because the
+ *   caller already knows the handle is a resource.
+ *
+ * Returns the constructed DataRecord. Never null — handles always
+ * carry their own metadata.
+ */
+export async function fromResourceHandle(
+  handle: DataHandle,
+  modelType: ModelType,
+  modelId: string,
+  fallbackModelName: string,
+  dataRepo: UnifiedDataRepository,
+): Promise<DataRecord> {
+  let attributes: Record<string, unknown> = {};
+  if (handle.metadata.contentType === "application/json") {
+    try {
+      const content = await dataRepo.getContent(
+        modelType,
+        modelId,
+        handle.name,
+        handle.version,
+      );
+      if (content) {
+        const text = new TextDecoder().decode(content);
+        attributes = JSON.parse(text) as Record<string, unknown>;
+      }
+    } catch {
+      // Not valid JSON, skip attributes
+    }
+  }
+
+  return {
+    id: handle.dataId,
+    name: handle.name,
+    version: handle.version,
+    isLatest: true,
+    createdAt: new Date().toISOString(),
+    attributes,
+    tags: handle.tags,
+    modelName: handle.tags["modelName"] ?? fallbackModelName,
+    modelType: modelType.normalized,
+    specName: handle.specName,
+    dataType: handle.tags["type"] ?? "resource",
+    contentType: handle.metadata.contentType,
+    lifetime: handle.metadata.lifetime,
+    ownerType: handle.metadata.ownerDefinition.ownerType,
+    streaming: handle.metadata.streaming,
+    size: handle.size,
+    content: "",
+    ownerRef: handle.metadata.ownerDefinition.ownerRef,
+    workflowRunId: handle.metadata.ownerDefinition.workflowRunId ?? "",
+    workflowName: handle.metadata.ownerDefinition.workflowName ?? "",
+    jobName: handle.metadata.ownerDefinition.jobName ?? "",
+    stepName: handle.metadata.ownerDefinition.stepName ?? "",
+    source: handle.metadata.ownerDefinition.source ?? "",
+  };
+}
+
+/**
+ * Converts a file-kind DataHandle to a FileDataRecord for use in
+ * the workflow step's expressionContext.model[...].file[...] view.
+ *
+ * Stats the on-disk content path to capture its size at record-build
+ * time. Returns null if the file is no longer present (rare — the
+ * DataWriter persisted it just before the handle was produced — but
+ * the I/O can race with concurrent cleanup).
+ */
+export async function fromFileHandle(
+  handle: DataHandle,
+  modelType: ModelType,
+  modelId: string,
+  dataRepo: UnifiedDataRepository,
+): Promise<FileDataRecord | null> {
+  const contentPath = dataRepo.getContentPath(
+    modelType,
+    modelId,
+    handle.name,
+    handle.version,
+  );
+  try {
+    const stat = await Deno.stat(contentPath);
+    return {
+      id: handle.dataId,
+      version: handle.version,
+      createdAt: new Date().toISOString(),
+      path: contentPath,
+      size: stat.size,
+      contentType: handle.metadata.contentType,
+    };
+  } catch {
+    return null;
+  }
 }

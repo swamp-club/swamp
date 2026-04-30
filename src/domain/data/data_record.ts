@@ -54,3 +54,17 @@ export interface DataRecord {
   stepName: string;
   source: string;
 }
+
+/**
+ * File metadata record for CEL expressions and ExpressionContext.
+ * Eagerly loaded into the model context when a step writes a file
+ * artifact, so downstream steps' CEL can reference its path/size/etc.
+ */
+export interface FileDataRecord {
+  id: string;
+  version: number;
+  createdAt: string;
+  path: string;
+  size: number;
+  contentType: string;
+}
