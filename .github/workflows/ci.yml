@@ -84,6 +84,21 @@ jobs:
       - name: Compile binary
         run: deno task compile
 
+      - name: Smoke test compiled binary
+        # Compiling proves the binary builds; running --version and --help
+        # proves it actually boots, registers the command tree, and exits
+        # cleanly. Catches runtime regressions (e.g. a top-level import
+        # that throws on load) that the compile step alone doesn't.
+        shell: bash
+        run: |
+          if [ "$RUNNER_OS" = "Windows" ]; then
+            binary="./swamp.exe"
+          else
+            binary="./swamp"
+          fi
+          "$binary" --version
+          "$binary" --help > /dev/null
+
   deps-audit:
     name: Dependency Audit
     runs-on: ubuntu-latest
