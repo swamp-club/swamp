@@ -50,7 +50,10 @@ Deno.test("architecture: no inline MethodReportContext literals outside factory 
       followSymlinks: false,
     })
   ) {
-    const rel = relative(REPO_ROOT, entry.path);
+    // Normalize to forward slashes so the ALLOWED_FILES set (which uses
+    // forward slashes) matches on Windows where `relative()` returns
+    // backslash-separated paths.
+    const rel = relative(REPO_ROOT, entry.path).replaceAll("\\", "/");
     if (rel.endsWith("_test.ts")) continue;
     if (ALLOWED_FILES.has(rel)) continue;
 
