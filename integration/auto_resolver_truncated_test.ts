@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assertEquals } from "@std/assert";
 import { ensureDir, walk } from "@std/fs";
 import { join, relative } from "@std/path";
 import {
@@ -61,158 +61,164 @@ async function snapshotTree(root: string): Promise<Map<string, string>> {
   return snapshot;
 }
 
-Deno.test({
-  name:
-    "integration: auto-resolver surfaces truncated error and leaves the tree untouched",
-  // JSON-encoded paths in event output don't survive a raw substring match
-  // when the host separator is `\` (the encoder doubles backslashes). The
-  // logic this test guards is platform-independent — Linux + macOS coverage
-  // is sufficient.
-  ignore: Deno.build.os === "windows",
-  fn: async () => {
-    const tmpDir = await Deno.makeTempDir({ prefix: "swamp_issue_133_" });
-    try {
-      const extensionName = "@test/truncated";
-      const extRoot = join(
-        tmpDir,
-        ".swamp",
-        "pulled-extensions",
-        extensionName,
-      );
-      await ensureDir(join(extRoot, "models"));
+Deno.test("integration: auto-resolver surfaces truncated error and leaves the tree untouched", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_issue_133_" });
+  try {
+    const extensionName = "@test/truncated";
+    const extRoot = join(
+      tmpDir,
+      ".swamp",
+      "pulled-extensions",
+      extensionName,
+    );
+    await ensureDir(join(extRoot, "models"));
 
-      // Two declared files. One survives; one is deleted below to produce
-      // the truncated state. The lockfile lists both, so the inspection
-      // sees "one missing" and returns { state: "truncated", missing: [..]}.
-      const keptRel = join(
-        ".swamp/pulled-extensions",
-        extensionName,
-        "manifest.yaml",
-      );
-      const goneRel = join(
-        ".swamp/pulled-extensions",
-        extensionName,
-        "models",
-        "deleted.ts",
-      );
-      const keptPath = join(tmpDir, keptRel);
-      const gonePath = join(tmpDir, goneRel);
+    // Two declared files. One survives; one is deleted below to produce
+    // the truncated state. The lockfile lists both, so the inspection
+    // sees "one missing" and returns { state: "truncated", missing: [..]}.
+    const keptRel = join(
+      ".swamp/pulled-extensions",
+      extensionName,
+      "manifest.yaml",
+    );
+    const goneRel = join(
+      ".swamp/pulled-extensions",
+      extensionName,
+      "models",
+      "deleted.ts",
+    );
+    const keptPath = join(tmpDir, keptRel);
+    const gonePath = join(tmpDir, goneRel);
 
-      await Deno.writeTextFile(
-        keptPath,
-        "manifestVersion: 1\nname: '@test/truncated'\nversion: 2026.01.01.1\n",
-      );
-      await Deno.writeTextFile(gonePath, "// will be deleted\n");
+    await Deno.writeTextFile(
+      keptPath,
+      "manifestVersion: 1\nname: '@test/truncated'\nversion: 2026.01.01.1\n",
+    );
+    await Deno.writeTextFile(gonePath, "// will be deleted\n");
 
-      const lockfilePath = join(
-        tmpDir,
-        "extensions",
-        "models",
-        "upstream_extensions.json",
-      );
-      await ensureDir(join(tmpDir, "extensions", "models"));
-      await Deno.writeTextFile(
-        lockfilePath,
-        JSON.stringify(
-          {
-            [extensionName]: {
-              version: "2026.01.01.1",
-              pulledAt: "2026-01-01T00:00:00Z",
-              files: [keptRel, goneRel],
-            },
+    const lockfilePath = join(
+      tmpDir,
+      "extensions",
+      "models",
+      "upstream_extensions.json",
+    );
+    await ensureDir(join(tmpDir, "extensions", "models"));
+    await Deno.writeTextFile(
+      lockfilePath,
+      JSON.stringify(
+        {
+          [extensionName]: {
+            version: "2026.01.01.1",
+            pulledAt: "2026-01-01T00:00:00Z",
+            files: [keptRel, goneRel],
           },
-          null,
-          2,
+        },
+        null,
+        2,
+      ),
+    );
+
+    // Produce the truncation: remove one of the declared files. The
+    // directory stays — this is the exact state the issue describes.
+    await Deno.remove(gonePath);
+
+    // Snapshot the pulled tree so we can assert zero-mutation after the
+    // resolve attempt. The fix is read-only; a regression that
+    // reintroduced filesystem mutation (e.g. auto-repair) would show up
+    // as a snapshot diff.
+    const before = await snapshotTree(extRoot);
+
+    // Capture json output so we can assert the new `truncated` event
+    // fires with the expected shape.
+    const emitted: string[] = [];
+    const originalLog = console.log;
+    console.log = (line: unknown) => {
+      if (typeof line === "string") emitted.push(line);
+    };
+
+    const adapter = createAutoResolveInstallerAdapter({
+      getExtension: (name: string) =>
+        name === extensionName
+          ? Promise.resolve({
+            name,
+            description: "Truncated fixture",
+            latestVersion: "2026.01.01.1",
+          })
+          : Promise.resolve(null),
+      downloadArchive: () =>
+        Promise.reject(
+          new Error(
+            "REGRESSION: install was attempted on a truncated extension",
+          ),
         ),
-      );
+      getChecksum: () => Promise.resolve(null),
+      lockfilePath,
+      repoDir: tmpDir,
+      denoRuntime: stubDenoRuntime,
+    });
 
-      // Produce the truncation: remove one of the declared files. The
-      // directory stays — this is the exact state the issue describes.
-      await Deno.remove(gonePath);
-
-      // Snapshot the pulled tree so we can assert zero-mutation after the
-      // resolve attempt. The fix is read-only; a regression that
-      // reintroduced filesystem mutation (e.g. auto-repair) would show up
-      // as a snapshot diff.
-      const before = await snapshotTree(extRoot);
-
-      // Capture json output so we can assert the new `truncated` event
-      // fires with the expected shape.
-      const emitted: string[] = [];
-      const originalLog = console.log;
-      console.log = (line: unknown) => {
-        if (typeof line === "string") emitted.push(line);
-      };
-
-      const adapter = createAutoResolveInstallerAdapter({
-        getExtension: (name: string) =>
-          name === extensionName
-            ? Promise.resolve({
+    let result: boolean;
+    try {
+      const output = createAutoResolveOutputAdapter("json");
+      const resolver = new ExtensionAutoResolver({
+        allowedCollectives: ["test"],
+        extensionLookup: {
+          getExtension: (name: string) =>
+            Promise.resolve({
               name,
               description: "Truncated fixture",
               latestVersion: "2026.01.01.1",
-            })
-            : Promise.resolve(null),
-        downloadArchive: () =>
-          Promise.reject(
-            new Error(
-              "REGRESSION: install was attempted on a truncated extension",
-            ),
-          ),
-        getChecksum: () => Promise.resolve(null),
-        lockfilePath,
-        repoDir: tmpDir,
-        denoRuntime: stubDenoRuntime,
+            }),
+          searchExtensions: () => Promise.resolve({ extensions: [] }),
+        },
+        extensionInstaller: adapter,
+        output,
       });
 
-      let result: boolean;
-      try {
-        const output = createAutoResolveOutputAdapter("json");
-        const resolver = new ExtensionAutoResolver({
-          allowedCollectives: ["test"],
-          extensionLookup: {
-            getExtension: (name: string) =>
-              Promise.resolve({
-                name,
-                description: "Truncated fixture",
-                latestVersion: "2026.01.01.1",
-              }),
-            searchExtensions: () => Promise.resolve({ extensions: [] }),
-          },
-          extensionInstaller: adapter,
-          output,
-        });
-
-        result = await resolver.resolve(`${extensionName}/some-type`);
-      } finally {
-        console.log = originalLog;
-      }
-
-      // Resolve reports failure — the type couldn't be registered.
-      assertEquals(result, false);
-
-      // JSON event for the truncated state fires, names the extension and
-      // path, and includes the missing file. Shape must stay compatible
-      // with scripting consumers that key off `reason: "truncated"`.
-      const truncatedLine = emitted.find((line) =>
-        line.includes('"reason":"truncated"')
-      );
-      if (!truncatedLine) {
-        throw new Error(
-          `expected a truncated auto_resolve event, got: ${emitted.join("\n")}`,
-        );
-      }
-      assertStringIncludes(truncatedLine, '"event":"auto_resolve"');
-      assertStringIncludes(truncatedLine, '"status":"failed"');
-      assertStringIncludes(truncatedLine, `"extension":"${extensionName}"`);
-      assertStringIncludes(truncatedLine, goneRel);
-
-      // The pulled tree on disk must be byte-identical to before — no
-      // auto-repair, no overwrite, no side effects.
-      const after = await snapshotTree(extRoot);
-      assertEquals(after, before);
+      result = await resolver.resolve(`${extensionName}/some-type`);
     } finally {
-      await Deno.remove(tmpDir, { recursive: true });
+      console.log = originalLog;
     }
-  },
+
+    // Resolve reports failure — the type couldn't be registered.
+    assertEquals(result, false);
+
+    // JSON event for the truncated state fires, names the extension and
+    // path, and includes the missing file. Shape must stay compatible
+    // with scripting consumers that key off `reason: "truncated"`.
+    //
+    // Asserting on a parsed object (not a substring of the raw line)
+    // means path values flow through host-native separators without
+    // tripping the test on backslash-encoded JSON literals on Windows.
+    const truncatedEvent = emitted
+      .map((line) => {
+        try {
+          return JSON.parse(line);
+        } catch {
+          return null;
+        }
+      })
+      .find((parsed) => parsed?.reason === "truncated");
+    if (!truncatedEvent) {
+      throw new Error(
+        `expected a truncated auto_resolve event, got: ${emitted.join("\n")}`,
+      );
+    }
+    assertEquals(truncatedEvent.event, "auto_resolve");
+    assertEquals(truncatedEvent.status, "failed");
+    assertEquals(truncatedEvent.extension, extensionName);
+    // `missing` carries paths; normalize separators on both sides so
+    // the assertion is host-agnostic.
+    const normalizedMissing = (truncatedEvent.missing as string[]).map((p) =>
+      p.replaceAll("\\", "/")
+    );
+    assertEquals(normalizedMissing, [goneRel.replaceAll("\\", "/")]);
+
+    // The pulled tree on disk must be byte-identical to before — no
+    // auto-repair, no overwrite, no side effects.
+    const after = await snapshotTree(extRoot);
+    assertEquals(after, before);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
 });
