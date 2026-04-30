@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { Definition } from "../definitions/definition.ts";
+import { Definition } from "../definitions/definition.ts";
 import type { Workflow, WorkflowInput } from "./workflow.ts";
 import { Workflow as WorkflowClass } from "./workflow.ts";
 import {
@@ -192,14 +192,7 @@ export class DefinitionExpressionEvaluator {
     }
 
     const evaluatedData = replaceExpressions(definitionData, evaluatedValues);
-    // Dynamic import preserved from the previous inline implementation
-    // — it dodges a circular initialization issue that older versions
-    // of definition.ts had with the workflows module. Investigate
-    // separately whether a top-level import is now safe.
-    const { Definition: DefClass } = await import(
-      "../definitions/definition.ts"
-    );
-    return DefClass.fromData(
+    return Definition.fromData(
       evaluatedData as ReturnType<typeof definition.toData>,
     );
   }
