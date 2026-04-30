@@ -93,7 +93,10 @@ async function runCliCommand(
   };
 }
 
-Deno.test("CLI: command/shell model executes simple shell commands", async () => {
+Deno.test({
+  name: "CLI: command/shell model executes simple shell commands",
+  ignore: Deno.build.os === "windows", // shell model invokes "sh -c" which does not exist on Windows
+}, async () => {
   await withTempDir(async (repoDir) => {
     await initializeTestRepo(repoDir);
 
@@ -181,7 +184,10 @@ Deno.test("CLI: command/shell model reports failure on non-zero exit code", asyn
   });
 });
 
-Deno.test("CLI: workflow with command/shell models and dependencies", async () => {
+Deno.test({
+  name: "CLI: workflow with command/shell models and dependencies",
+  ignore: Deno.build.os === "windows", // shell model invokes "sh -c" which does not exist on Windows
+}, async () => {
   await withTempDir(async (repoDir) => {
     await initializeTestRepo(repoDir);
 
@@ -280,7 +286,10 @@ Deno.test("CLI: workflow with command/shell models and dependencies", async () =
   });
 });
 
-Deno.test("CLI: command/shell model with cross-model expressions", async () => {
+Deno.test({
+  name: "CLI: command/shell model with cross-model expressions",
+  ignore: Deno.build.os === "windows", // shell model invokes "sh -c" which does not exist on Windows
+}, async () => {
   await withTempDir(async (repoDir) => {
     await initializeTestRepo(repoDir);
 
@@ -373,7 +382,10 @@ Deno.test("CLI: command/shell model with cross-model expressions", async () => {
   });
 });
 
-Deno.test("CLI: command/shell model with self-reference expressions", async () => {
+Deno.test({
+  name: "CLI: command/shell model with self-reference expressions",
+  ignore: Deno.build.os === "windows", // shell model invokes "sh -c" which does not exist on Windows
+}, async () => {
   await withTempDir(async (repoDir) => {
     await initializeTestRepo(repoDir);
 

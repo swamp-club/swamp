@@ -347,7 +347,10 @@ Deno.test("DockerExecutionDriver - bundle args include user volumes", () => {
 
 // --- Mode detection ---
 
-Deno.test("DockerExecutionDriver - request with bundle dispatches to bundle mode", async () => {
+Deno.test({
+  name: "DockerExecutionDriver - request with bundle dispatches to bundle mode",
+  ignore: Deno.build.os === "windows", // test creates host-side shell scripts (#!/bin/sh, chmod 0o755) that aren't executable on Windows
+}, async () => {
   const tmpDir = await Deno.makeTempDir();
   const scriptPath = `${tmpDir}/mock-docker`;
 
@@ -382,7 +385,10 @@ Deno.test("DockerExecutionDriver - request with bundle dispatches to bundle mode
   }
 });
 
-Deno.test("DockerExecutionDriver - request with run dispatches to command mode", async () => {
+Deno.test({
+  name: "DockerExecutionDriver - request with run dispatches to command mode",
+  ignore: Deno.build.os === "windows", // test creates host-side shell scripts (#!/bin/sh, chmod 0o755) that aren't executable on Windows
+}, async () => {
   const tmpDir = await Deno.makeTempDir();
   const scriptPath = `${tmpDir}/mock-docker`;
 
@@ -427,7 +433,11 @@ Deno.test("DockerExecutionDriver - request with neither bundle nor run returns e
   assertStringIncludes(result.error!, "run");
 });
 
-Deno.test("DockerExecutionDriver - request with both bundle and run prefers bundle", async () => {
+Deno.test({
+  name:
+    "DockerExecutionDriver - request with both bundle and run prefers bundle",
+  ignore: Deno.build.os === "windows", // test creates host-side shell scripts (#!/bin/sh, chmod 0o755) that aren't executable on Windows
+}, async () => {
   const tmpDir = await Deno.makeTempDir();
   const scriptPath = `${tmpDir}/mock-docker`;
 
@@ -461,7 +471,10 @@ Deno.test("DockerExecutionDriver - request with both bundle and run prefers bund
 
 // --- Command mode execute with mock scripts ---
 
-Deno.test("DockerExecutionDriver - execute success with mock script", async () => {
+Deno.test({
+  name: "DockerExecutionDriver - execute success with mock script",
+  ignore: Deno.build.os === "windows", // test creates host-side shell scripts (#!/bin/sh, chmod 0o755) that aren't executable on Windows
+}, async () => {
   const tmpDir = await Deno.makeTempDir();
   const scriptPath = `${tmpDir}/mock-docker`;
 
@@ -507,7 +520,10 @@ Deno.test("DockerExecutionDriver - execute success with mock script", async () =
   }
 });
 
-Deno.test("DockerExecutionDriver - execute failure returns error", async () => {
+Deno.test({
+  name: "DockerExecutionDriver - execute failure returns error",
+  ignore: Deno.build.os === "windows", // test creates host-side shell scripts (#!/bin/sh, chmod 0o755) that aren't executable on Windows
+}, async () => {
   const tmpDir = await Deno.makeTempDir();
   const scriptPath = `${tmpDir}/mock-docker`;
 
@@ -593,7 +609,10 @@ Deno.test("DockerExecutionDriver - non-existent command returns error", async ()
 
 // --- Bundle mode execute with mock scripts ---
 
-Deno.test("DockerExecutionDriver - bundle mode captures resources", async () => {
+Deno.test({
+  name: "DockerExecutionDriver - bundle mode captures resources",
+  ignore: Deno.build.os === "windows", // test creates host-side shell scripts (#!/bin/sh, chmod 0o755) that aren't executable on Windows
+}, async () => {
   const tmpDir = await Deno.makeTempDir();
   const scriptPath = `${tmpDir}/mock-docker`;
 
@@ -654,7 +673,10 @@ Deno.test("DockerExecutionDriver - bundle mode captures resources", async () => 
   }
 });
 
-Deno.test("DockerExecutionDriver - bundle mode captures stderr as logs", async () => {
+Deno.test({
+  name: "DockerExecutionDriver - bundle mode captures stderr as logs",
+  ignore: Deno.build.os === "windows", // test creates host-side shell scripts (#!/bin/sh, chmod 0o755) that aren't executable on Windows
+}, async () => {
   const tmpDir = await Deno.makeTempDir();
   const scriptPath = `${tmpDir}/mock-docker`;
 
@@ -687,7 +709,10 @@ Deno.test("DockerExecutionDriver - bundle mode captures stderr as logs", async (
   }
 });
 
-Deno.test("DockerExecutionDriver - bundle mode failure returns error", async () => {
+Deno.test({
+  name: "DockerExecutionDriver - bundle mode failure returns error",
+  ignore: Deno.build.os === "windows", // test creates host-side shell scripts (#!/bin/sh, chmod 0o755) that aren't executable on Windows
+}, async () => {
   const tmpDir = await Deno.makeTempDir();
   const scriptPath = `${tmpDir}/mock-docker`;
 
@@ -715,7 +740,10 @@ Deno.test("DockerExecutionDriver - bundle mode failure returns error", async () 
   }
 });
 
-Deno.test("DockerExecutionDriver - bundle mode invalid JSON stdout fallback", async () => {
+Deno.test({
+  name: "DockerExecutionDriver - bundle mode invalid JSON stdout fallback",
+  ignore: Deno.build.os === "windows", // test creates host-side shell scripts (#!/bin/sh, chmod 0o755) that aren't executable on Windows
+}, async () => {
   const tmpDir = await Deno.makeTempDir();
   const scriptPath = `${tmpDir}/mock-docker`;
 
