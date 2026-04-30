@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assertPathStringIncludes } from "./path_test_helpers.ts";
 import { join } from "@std/path";
 import {
   createModelOutputId,
@@ -93,12 +94,11 @@ Deno.test("YamlOutputRepository.save creates yaml file with correct path structu
 
     const path = repo.getPath(testType, "deploy", output);
     // Path should be: outputs/{type}/{method}/{definition-id}-{timestamp}.yaml
-    const normalizedPath = path.replaceAll("\\", "/");
-    assertStringIncludes(normalizedPath, "outputs");
-    assertStringIncludes(normalizedPath, testType.normalized);
-    assertStringIncludes(normalizedPath, "deploy");
-    assertStringIncludes(normalizedPath, definitionId);
-    assertStringIncludes(normalizedPath, ".yaml");
+    assertPathStringIncludes(path, "outputs");
+    assertPathStringIncludes(path, testType.normalized);
+    assertPathStringIncludes(path, "deploy");
+    assertPathStringIncludes(path, definitionId);
+    assertPathStringIncludes(path, ".yaml");
 
     const content = await Deno.readTextFile(path);
     assertStringIncludes(content, "methodName: deploy");
@@ -360,15 +360,15 @@ Deno.test("YamlOutputRepository.getPath uses correct format", () => {
     provenance: defaultProvenance,
   });
 
-  const path = repo.getPath(testType, "create", output).replaceAll("\\", "/");
+  const path = repo.getPath(testType, "create", output);
 
   // Path should include: outputs/{type}/{method}/{definition-id}-{timestamp}.yaml
-  assertStringIncludes(path, "outputs");
-  assertStringIncludes(path, testType.normalized);
-  assertStringIncludes(path, "create");
-  assertStringIncludes(path, "550e8400-e29b-41d4-a716-446655440000");
-  assertStringIncludes(path, "2023-01-15T10-30-00-000Z");
-  assertStringIncludes(path, ".yaml");
+  assertPathStringIncludes(path, "outputs");
+  assertPathStringIncludes(path, testType.normalized);
+  assertPathStringIncludes(path, "create");
+  assertPathStringIncludes(path, "550e8400-e29b-41d4-a716-446655440000");
+  assertPathStringIncludes(path, "2023-01-15T10-30-00-000Z");
+  assertPathStringIncludes(path, ".yaml");
 });
 
 Deno.test("YamlOutputRepository invokes markDirty on mutations", async () => {

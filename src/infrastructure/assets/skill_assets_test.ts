@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
+import { assertPathStringIncludes } from "../persistence/path_test_helpers.ts";
 import { join } from "@std/path";
 import { SkillAssets } from "./skill_assets.ts";
 
@@ -87,13 +88,10 @@ Deno.test("SkillAssets.readSkill returns null for non-existent skill", async () 
 
 Deno.test("SkillAssets.getSkillPath returns correct path", () => {
   const assets = new SkillAssets();
-  const path = assets.getSkillPath("swamp-model/SKILL.md").replaceAll(
-    "\\",
-    "/",
-  );
+  const path = assets.getSkillPath("swamp-model/SKILL.md");
 
-  assertEquals(path.endsWith("swamp-model/SKILL.md"), true);
-  assertEquals(path.includes(".claude/skills"), true);
+  assertPathStringIncludes(path, "swamp-model/SKILL.md");
+  assertPathStringIncludes(path, ".claude/skills");
 });
 
 Deno.test("SkillAssets.copySkillsTo copies files correctly", async () => {

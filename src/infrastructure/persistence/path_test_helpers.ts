@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertMatch, assertStringIncludes } from "@std/assert";
 
 /**
  * Test assertion that compares two filesystem paths irrespective of
@@ -69,4 +69,35 @@ export function assertPathArrayEquals(
     expected.map((s) => s.replaceAll("\\", "/")),
     msg,
   );
+}
+
+/**
+ * Substring variant of `assertPathEquals` — asserts that a path contains
+ * the given (forward-slash) substring, regardless of host separator.
+ * Equivalent to `assertStringIncludes(actual, expected)` after both sides
+ * are normalized to forward slashes.
+ */
+export function assertPathStringIncludes(
+  actual: string,
+  expected: string,
+  msg?: string,
+): void {
+  assertStringIncludes(
+    actual.replaceAll("\\", "/"),
+    expected.replaceAll("\\", "/"),
+    msg,
+  );
+}
+
+/**
+ * Regex variant of `assertPathEquals` — asserts that a path matches the
+ * given regex (authored with forward slashes), regardless of host
+ * separator.
+ */
+export function assertPathMatches(
+  actual: string,
+  expected: RegExp,
+  msg?: string,
+): void {
+  assertMatch(actual.replaceAll("\\", "/"), expected, msg);
 }

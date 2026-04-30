@@ -17,8 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertMatch } from "@std/assert";
-import { assertPathEquals } from "../../infrastructure/persistence/path_test_helpers.ts";
+import { assertEquals } from "@std/assert";
+import {
+  assertPathEquals,
+  assertPathMatches,
+} from "../../infrastructure/persistence/path_test_helpers.ts";
 import {
   AUDIT_FILENAME_PATTERN,
   auditFilename,
@@ -58,9 +61,8 @@ Deno.test("auditFilePathForTimestamp: joins audit directory with the filename", 
 });
 
 Deno.test("todaysAuditFilePath: returns a path matching today's audit filename pattern", () => {
-  const path = todaysAuditFilePath("/repo/.swamp/audit").replaceAll("\\", "/");
-  assertMatch(
-    path,
+  assertPathMatches(
+    todaysAuditFilePath("/repo/.swamp/audit"),
     /\/repo\/\.swamp\/audit\/commands-\d{4}-\d{2}-\d{2}\.jsonl$/,
   );
 });

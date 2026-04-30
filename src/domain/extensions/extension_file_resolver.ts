@@ -26,7 +26,11 @@ import { isSafeRelativePath } from "./extension_manifest.ts";
 // integration/ddd_layer_rules_test.ts ratchet). The underlying constant is
 // stable (`.swamp`) and the pulled-extensions layout is a swamp-wide
 // convention, not an infrastructure detail.
-const PULLED_MARKER = "/.swamp/pulled-extensions/";
+//
+// Anchored to a path boundary (start-of-string OR forward slash) so the
+// match works regardless of whether `root` begins with a separator. The
+// caller normalizes backslashes to forward slashes before testing.
+const PULLED_MARKER = /(^|\/)\.swamp\/pulled-extensions\//;
 
 /**
  * Resolve a relative `additionalFiles` path against an extension's files
@@ -63,7 +67,7 @@ export function resolveExtensionFile(
     Deno.lstatSync(absPath);
   } catch {
     // Normalize backslashes so the marker check matches on Windows too.
-    const isPulled = root.replaceAll("\\", "/").includes(PULLED_MARKER);
+    const isPulled = PULLED_MARKER.test(root.replaceAll("\\", "/"));
     if (isPulled) {
       throw new UserError(
         `Extension file not found: "${relPath}". This can happen when ` +

@@ -22,6 +22,7 @@
  */
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assertPathStringIncludes } from "../src/infrastructure/persistence/path_test_helpers.ts";
 import { join } from "@std/path";
 import { ensureDir } from "@std/fs";
 import { stringify as stringifyYaml } from "@std/yaml";
@@ -157,10 +158,7 @@ Deno.test("CLI: workflow create creates new workflow file", async () => {
     assertEquals(output.name, "my-workflow");
     assertEquals(typeof output.id, "string");
     assertEquals(output.id.length, 36); // UUID length
-    assertStringIncludes(
-      output.path.replaceAll("\\", "/"),
-      "workflows/workflow-",
-    );
+    assertPathStringIncludes(output.path, "workflows/workflow-");
   });
 });
 
