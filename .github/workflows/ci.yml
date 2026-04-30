@@ -49,9 +49,16 @@ jobs:
 
   test:
     name: Lint, Test, and Format Check
-    runs-on: ubuntu-latest
+    runs-on: ${{ matrix.os }}
     permissions:
       contents: read
+    strategy:
+      # Surface failures on every platform rather than aborting the whole
+      # matrix on the first failure — Linux signal stays clean if Windows
+      # flakes, and vice versa.
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
 
     steps:
       - name: Checkout code
