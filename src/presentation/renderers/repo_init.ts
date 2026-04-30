@@ -38,6 +38,44 @@ function formatToolsList(tools: readonly string[]): string {
   return tools.length === 0 ? "none" : tools.join(", ");
 }
 
+/**
+ * On-disk paths that swamp's scaffolding writes for each tool. Used to tell
+ * the user which files were left behind when a tool is dropped from the
+ * enrolled list.
+ *
+ * Some paths are shared (`.agents/skills/` for opencode/codex/copilot),
+ * so the renderer subtracts paths that are still in use by another
+ * remaining tool before warning the user — see {@link orphanedPathsFor}.
+ */
+const TOOL_CLEANUP_PATHS: Partial<Record<string, readonly string[]>> = {
+  claude: [".claude/"],
+  cursor: [".cursor/"],
+  kiro: [".kiro/", ".vscode/settings.local.json"],
+  opencode: [".opencode/", ".agents/skills/"],
+  codex: [".agents/skills/"],
+  copilot: [".agents/skills/"],
+};
+
+/**
+ * Returns the on-disk paths a dropped tool wrote that aren't still in use by
+ * another remaining tool. Empty when every path is shared (no orphans —
+ * suppress the note entirely so we don't tell the user to delete files
+ * still in use by another enrolled tool).
+ */
+function orphanedPathsFor(
+  dropped: string,
+  remaining: readonly string[],
+): string[] {
+  const droppedPaths = TOOL_CLEANUP_PATHS[dropped] ?? [`.${dropped}/`];
+  const stillUsedPaths = new Set<string>();
+  for (const tool of remaining) {
+    for (const path of TOOL_CLEANUP_PATHS[tool] ?? []) {
+      stillUsedPaths.add(path);
+    }
+  }
+  return droppedPaths.filter((p) => !stillUsedPaths.has(p));
+}
+
 class LogRepoInitRenderer implements Renderer<RepoInitEvent> {
   handlers(): EventHandlers<RepoInitEvent> {
     const logger = getSwampLogger(["repo", "init"]);
@@ -83,9 +121,15 @@ class LogRepoInitRenderer implements Renderer<RepoInitEvent> {
         })`;
         // Force-reinit may have dropped tools — surface so the user knows
         // their old scaffolding files remain on disk and can be removed.
+        // Suppress when every path is shared with a still-enrolled tool.
         for (const removed of data.removedTools) {
-          logger
-            .info`Note: ${removed} was dropped from the enrolled tool list. Files in .${removed}/ were not deleted — remove them by hand if desired.`;
+          const paths = orphanedPathsFor(removed, data.tools);
+          if (paths.length === 0) continue;
+          logger.info(
+            `Note: ${removed} was dropped from the enrolled tool list. ` +
+              `Files in ${paths.join(", ")} were not deleted — ` +
+              `remove them by hand if desired.`,
+          );
         }
       },
       error: (e) => {
@@ -136,10 +180,12 @@ class LogRepoUpgradeRenderer implements Renderer<RepoUpgradeEvent> {
           const after = formatToolsList(data.tools);
           logger.info(`  Tools: [${before}] → [${after}]`);
           for (const removed of data.removedTools) {
+            const paths = orphanedPathsFor(removed, data.tools);
+            if (paths.length === 0) continue;
             logger.info(
               `  Note: ${removed} was dropped from the enrolled tool list. ` +
-                `Files in .${removed}/ were not deleted — remove them by ` +
-                `hand if desired.`,
+                `Files in ${paths.join(", ")} were not deleted — ` +
+                `remove them by hand if desired.`,
             );
           }
           for (const entry of data.extensionsToReinstall) {

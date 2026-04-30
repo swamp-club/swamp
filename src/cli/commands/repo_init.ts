@@ -115,8 +115,9 @@ export async function repoInitAction(
 const TOOL_FLAG_DESCRIPTION =
   "AI coding tool to configure for. Repeat to enroll multiple tools " +
   "(e.g. `--tool claude --tool kiro`). Duplicates are collapsed. " +
-  "Use `--tool none` (alone) to skip tool scaffolding. " +
-  "Valid values: claude, cursor, opencode, codex, copilot, kiro, none.";
+  "Use `--tool none` (alone) to skip tool scaffolding. Defaults to " +
+  "`claude` when omitted. Valid values: claude, cursor, opencode, codex, " +
+  "copilot, kiro, none.";
 
 export const repoInitCommand = new Command()
   .description("Initialize a new swamp repository")

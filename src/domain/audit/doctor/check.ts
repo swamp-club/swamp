@@ -108,9 +108,12 @@ export interface AuditDoctorReport {
 export class NoToolConfiguredError extends UserError {
   constructor() {
     super(
-      "No AI tool configured in .swamp.yaml and no --tool flag provided. " +
-        "Pass --tool <name> (claude | cursor | kiro | opencode | codex | " +
-        "copilot | none) or run `swamp init --tool <name>`.",
+      "No AI tool enrolled in .swamp.yaml (`tools` is empty) and no " +
+        "--tool flag provided. Pass --tool <name> to audit a specific " +
+        "tool (claude | cursor | kiro | opencode | codex | copilot), or " +
+        "enroll a tool with `swamp repo upgrade --tool <name>` and try " +
+        "again. Repos initialized with `--tool none` are not auditable " +
+        "until a tool is enrolled.",
     );
     this.name = "NoToolConfiguredError";
   }
