@@ -102,6 +102,41 @@ Deno.test("repoInit: yields completed on successful init", async () => {
   assertEquals(completed.data.tool, "claude");
 });
 
+Deno.test('repoInit: legacy `tool` field returns "none" for empty tools (--tool none)', async () => {
+  const deps = makeInitDeps({
+    init: () =>
+      Promise.resolve({
+        path: "/repo",
+        version: "1.0.0",
+        initializedAt: "2026-01-01T00:00:00Z",
+        skillsCopied: [],
+        instructionsFileCreated: false,
+        settingsCreated: false,
+        gitignoreAction: "created",
+        tools: [],
+        removedTools: [],
+      }),
+  });
+
+  const events = await collect<RepoInitEvent>(
+    repoInit(createLibSwampContext(), deps, {
+      path: "/repo",
+      force: false,
+      tools: [],
+      version: "1.0.0",
+    }),
+  );
+
+  const completed = events[1] as Extract<
+    RepoInitEvent,
+    { kind: "completed" }
+  >;
+  // `--tool none` users see `tool: "none"` matching what they passed,
+  // preserving the legacy contract. Multi-tool returns `null` (next test).
+  assertEquals(completed.data.tools, []);
+  assertEquals(completed.data.tool, "none");
+});
+
 Deno.test("repoInit: legacy `tool` field returns null for multi-tool repos", async () => {
   const deps = makeInitDeps({
     init: () =>

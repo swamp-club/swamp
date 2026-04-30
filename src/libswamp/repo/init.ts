@@ -168,12 +168,18 @@ function resolveToolsInput(
 
 /**
  * Maps the canonical `tools` array onto the deprecated single-value `tool`
- * field. Returns the primary tool only when exactly one tool is enrolled;
- * `null` for empty or multi-tool repos so SDK consumers cannot silently
- * miss state.
+ * field for SDK backwards compat:
+ *
+ *  - `tools: []` (the `--tool none` case) → `"none"`, matching the legacy
+ *    sentinel value the user passed and preserving the prior contract.
+ *  - `tools: [X]` (single tool enrolled) → `X`, the primary tool.
+ *  - `tools: [X, Y, ...]` (multi-tool) → `null` so SDK consumers cannot
+ *    silently miss the second enrolled tool — they must read `tools`.
  */
 function legacyToolField(tools: AiTool[]): string | null {
-  return tools.length === 1 ? tools[0] : null;
+  if (tools.length === 0) return "none";
+  if (tools.length === 1) return tools[0];
+  return null;
 }
 
 // --- Repo Upgrade ---
