@@ -196,7 +196,9 @@ Deno.test("YamlDefinitionRepository.findAll discovers symlinked YAML files targe
     await Deno.writeTextFile(realFile, toCleanYaml(data));
 
     const typeDir = join(dir, "models", testType.toDirectoryPath());
-    await Deno.symlink(realFile, join(typeDir, `${secondDef.id}.yaml`));
+    await Deno.symlink(realFile, join(typeDir, `${secondDef.id}.yaml`), {
+      type: "file",
+    });
 
     const results = await repo.findAll(testType);
     assertEquals(results.length, 2);
@@ -227,7 +229,9 @@ Deno.test("YamlDefinitionRepository.findAllGlobal discovers symlinked YAML files
     await Deno.writeTextFile(realFile, toCleanYaml(data));
 
     const typeDir = join(dir, "models", testType.toDirectoryPath());
-    await Deno.symlink(realFile, join(typeDir, `${symDef.id}.yaml`));
+    await Deno.symlink(realFile, join(typeDir, `${symDef.id}.yaml`), {
+      type: "file",
+    });
 
     const results = await repo.findAllGlobal();
     assertEquals(results.length, 2);
@@ -256,7 +260,9 @@ Deno.test("YamlDefinitionRepository.findByNameGlobal discovers symlinked YAML fi
 
     const typeDir = join(dir, "models", testType.toDirectoryPath());
     await ensureDir(typeDir);
-    await Deno.symlink(realFile, join(typeDir, `${symDef.id}.yaml`));
+    await Deno.symlink(realFile, join(typeDir, `${symDef.id}.yaml`), {
+      type: "file",
+    });
 
     const result = await repo.findByNameGlobal("ext-find");
     assertNotEquals(result, null);
@@ -367,7 +373,9 @@ Deno.test("YamlDefinitionRepository.findAllGlobal resolves symlinked extension w
     // Symlink into models/ under directory that doesn't match full scoped type
     const typeDir = join(dir, "models", "kibana-dev");
     await ensureDir(typeDir);
-    await Deno.symlink(realFile, join(typeDir, `${def.id}.yaml`));
+    await Deno.symlink(realFile, join(typeDir, `${def.id}.yaml`), {
+      type: "file",
+    });
 
     const results = await repo.findAllGlobal();
     assertEquals(results.length, 1);
@@ -398,7 +406,9 @@ Deno.test("YamlDefinitionRepository.findAll rejects symlink pointing outside rep
       await Deno.writeTextFile(outsideFile, stringifyYaml(evilData));
 
       const typeDir = join(dir, "models", testType.toDirectoryPath());
-      await Deno.symlink(outsideFile, join(typeDir, "evil.yaml"));
+      await Deno.symlink(outsideFile, join(typeDir, "evil.yaml"), {
+        type: "file",
+      });
 
       // Should only return the good definition, skipping the evil symlink
       const results = await repo.findAll(testType);
