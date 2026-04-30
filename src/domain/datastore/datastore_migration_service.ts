@@ -121,8 +121,17 @@ async function copyDirectory(
         if (!isNaN(numeric)) {
           await Deno.writeTextFile(destPath, numeric.toString());
         } else {
-          // Copy the symlink as-is
-          await Deno.symlink(target, destPath);
+          // Copy the symlink as-is. Resolve the link type from the
+          // source side (where it exists) so Deno.symlink works on
+          // Windows; the type argument is ignored on POSIX.
+          let linkType: "file" | "dir" = "file";
+          try {
+            const stat = await Deno.stat(srcPath);
+            if (stat.isDirectory) linkType = "dir";
+          } catch {
+            // Broken symlink in source — keep default
+          }
+          await Deno.symlink(target, destPath, { type: linkType });
         }
         result.filesCopied++;
       } catch (error) {
