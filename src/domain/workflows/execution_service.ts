@@ -40,12 +40,11 @@ import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistenc
 import type { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
 import { DataQueryService } from "../data/data_query_service.ts";
 import { resolveModelType } from "../extensions/extension_auto_resolver.ts";
-import { BUILTIN_METHOD_REPORTS } from "../reports/builtin/mod.ts";
+import { MethodReportRunner } from "./method_report_runner.ts";
 import { getAutoResolver } from "../extensions/auto_resolver_context.ts";
 import { DefaultMethodExecutionService } from "../models/method_execution_service.ts";
 import { DefaultModelValidationService } from "../models/validation_service.ts";
 import { buildMethodContext } from "../models/method_context.ts";
-import { buildOutputSpecs } from "../models/output_spec_builder.ts";
 import { detectEnvVarUsageInDefinition } from "../models/env_var_detector.ts";
 import type { Definition } from "../definitions/definition.ts";
 import { findDefinitionByIdOrName } from "../models/model_lookup.ts";
@@ -86,14 +85,7 @@ import { SecretRedactor } from "../secrets/mod.ts";
 import { VaultService } from "../vaults/vault_service.ts";
 import { merge } from "../../infrastructure/stream/merge.ts";
 import { withEventBridge } from "../../infrastructure/stream/event_bridge.ts";
-import {
-  executeReports,
-  type ReportEventCallback,
-  type ReportFilterOptions,
-} from "../reports/report_execution_service.ts";
-import { reportRegistry } from "../reports/report_registry.ts";
-import { buildMethodReportContext } from "../reports/report_context.ts";
-import { modelRegistry } from "../models/model.ts";
+import type { ReportFilterOptions } from "../reports/report_execution_service.ts";
 import { getTracer, SpanStatusCode } from "../../infrastructure/tracing/mod.ts";
 import {
   type DriverSource,
@@ -206,6 +198,7 @@ const MAX_WORKFLOW_NESTING_DEPTH = 10;
  */
 export class DefaultStepExecutor implements StepExecutor {
   private readonly validationService = new DefaultModelValidationService();
+  private readonly reportRunner = new MethodReportRunner();
 
   async execute(step: Step, ctx: StepExecutionContext): Promise<unknown> {
     const task = step.task.data;
@@ -696,132 +689,38 @@ export class DefaultStepExecutor implements StepExecutor {
       );
 
       // --- Per-step reports (method + model scope) ---
-      if (
-        reportRegistry.getAll().length > 0 && ctx.reportFilterOptions
-      ) {
-        const dataHandles = result.dataHandles ?? [];
+      if (ctx.reportFilterOptions) {
+        // forEach iteration → vary suffix used by report data writers.
+        const reportVarySuffix = ctx.forEachVariable?.value !== undefined
+          ? coerceToSuffix(ctx.forEachVariable.value)
+          : undefined;
 
-        // Compute vary suffix from forEach variable
-        let reportVarySuffix: string | undefined;
-        if (ctx.forEachVariable?.value !== undefined) {
-          reportVarySuffix = coerceToSuffix(ctx.forEachVariable.value);
+        const reportArtifacts = await this.reportRunner.runFor({
+          status: "succeeded",
+          dataHandles: result.dataHandles ?? [],
+          modelType,
+          modelDef,
+          evaluatedDefinition,
+          originalDefinition,
+          methodName: task.methodName,
+          reportGlobalArgs,
+          reportMethodArgs,
+          reportFilterOptions: ctx.reportFilterOptions,
+          reportVarySuffix,
+          repoDir: ctx.repoDir,
+          swampSha: ctx.swampSha,
+          runLogger,
+          unifiedDataRepo,
+          definitionRepository: definitionRepo,
+          emitEvent: ctx.emitEvent,
+          jobName: ctx.jobName,
+          stepName: ctx.stepName,
+        });
+        // Track report data artifacts alongside method artifacts.
+        for (const artifact of reportArtifacts) {
+          output.addDataArtifact(artifact);
+          savedArtifacts.push(artifact);
         }
-
-        const reportEventCallbacks: ReportEventCallback = {
-          onReportStarted: (name, scope) => {
-            ctx.emitEvent?.({
-              kind: "report_started",
-              reportName: name,
-              scope,
-              jobId: ctx.jobName,
-              stepId: ctx.stepName,
-            });
-          },
-          onReportCompleted: (
-            name,
-            scope,
-            markdown,
-            json,
-            reportDataHandles,
-          ) => {
-            ctx.emitEvent?.({
-              kind: "report_completed",
-              reportName: name,
-              scope,
-              markdown,
-              json,
-              jobId: ctx.jobName,
-              stepId: ctx.stepName,
-            });
-            // Track report data artifacts alongside method artifacts
-            for (const handle of reportDataHandles) {
-              output.addDataArtifact({
-                dataId: handle.dataId,
-                name: handle.name,
-                version: handle.version,
-                tags: handle.tags,
-              });
-              savedArtifacts.push({
-                dataId: handle.dataId,
-                name: handle.name,
-                version: handle.version,
-                tags: handle.tags,
-              });
-            }
-          },
-          onReportFailed: (name, scope, error) => {
-            ctx.emitEvent?.({
-              kind: "report_failed",
-              reportName: name,
-              scope,
-              error,
-              jobId: ctx.jobName,
-              stepId: ctx.stepName,
-            });
-          },
-        };
-
-        // Look up model-type defaults for report filtering
-        const stepModelDef = modelRegistry.get(modelType);
-        const stepModelTypeReports = [
-          ...BUILTIN_METHOD_REPORTS,
-          ...(stepModelDef?.reports ?? []),
-        ];
-
-        // Method-scope reports
-        const methodContext = buildMethodReportContext(
-          {
-            repoDir: ctx.repoDir,
-            logger: runLogger,
-            dataRepository: unifiedDataRepo,
-            definitionRepository: definitionRepo,
-            swampSha: ctx.swampSha,
-          },
-          {
-            modelType,
-            modelId: evaluatedDefinition.id,
-            definition: {
-              id: evaluatedDefinition.id,
-              name: evaluatedDefinition.name,
-              version: evaluatedDefinition.version,
-              tags: evaluatedDefinition.tags,
-            },
-            globalArgs: reportGlobalArgs,
-            methodArgs: reportMethodArgs,
-            methodName: task.methodName,
-            executionStatus: "succeeded",
-            dataHandles,
-            outputSpecs: buildOutputSpecs(modelDef),
-            extensionFilesRoot: modelDef.extensionFilesRoot,
-          },
-        );
-
-        await executeReports(
-          reportRegistry,
-          methodContext,
-          modelType,
-          evaluatedDefinition.id,
-          originalDefinition.reportSelection,
-          ctx.reportFilterOptions,
-          reportEventCallbacks,
-          task.methodName,
-          stepModelTypeReports,
-          reportVarySuffix,
-        );
-
-        // Model-scope reports
-        await executeReports(
-          reportRegistry,
-          { ...methodContext, scope: "model" },
-          modelType,
-          evaluatedDefinition.id,
-          originalDefinition.reportSelection,
-          ctx.reportFilterOptions,
-          reportEventCallbacks,
-          task.methodName,
-          stepModelTypeReports,
-          reportVarySuffix,
-        );
       }
 
       return {
@@ -867,105 +766,31 @@ export class DefaultStepExecutor implements StepExecutor {
       });
 
       // Run method-summary report for failed executions so report consumers
-      // see structured error output (matching modelMethodRun failure behavior).
-      try {
-        if (
-          reportRegistry.getAll().length > 0 && ctx.reportFilterOptions
-        ) {
-          const failedMethodContext = buildMethodReportContext(
-            {
-              repoDir: ctx.repoDir,
-              logger: runLogger,
-              dataRepository: unifiedDataRepo,
-              definitionRepository: definitionRepo,
-              swampSha: ctx.swampSha,
-            },
-            {
-              modelType,
-              modelId: evaluatedDefinition.id,
-              definition: {
-                id: evaluatedDefinition.id,
-                name: evaluatedDefinition.name,
-                version: evaluatedDefinition.version,
-                tags: evaluatedDefinition.tags,
-              },
-              globalArgs: reportGlobalArgs,
-              methodArgs: reportMethodArgs,
-              methodName: task.methodName,
-              executionStatus: "failed",
-              errorMessage,
-              dataHandles: [],
-              outputSpecs: buildOutputSpecs(modelDef),
-              extensionFilesRoot: modelDef.extensionFilesRoot,
-            },
-          );
-
-          const stepModelDef = modelRegistry.get(modelType);
-          const stepModelTypeReports = [
-            ...BUILTIN_METHOD_REPORTS,
-            ...(stepModelDef?.reports ?? []),
-          ];
-
-          const reportEventCallbacks: ReportEventCallback = {
-            onReportStarted: (name, scope) => {
-              ctx.emitEvent?.({
-                kind: "report_started",
-                reportName: name,
-                scope,
-                jobId: ctx.jobName,
-                stepId: ctx.stepName,
-              });
-            },
-            onReportCompleted: (
-              name,
-              scope,
-              markdown,
-              json,
-            ) => {
-              ctx.emitEvent?.({
-                kind: "report_completed",
-                reportName: name,
-                scope,
-                markdown,
-                json,
-                jobId: ctx.jobName,
-                stepId: ctx.stepName,
-              });
-            },
-            onReportFailed: (name, scope, reportError) => {
-              ctx.emitEvent?.({
-                kind: "report_failed",
-                reportName: name,
-                scope,
-                error: reportError,
-                jobId: ctx.jobName,
-                stepId: ctx.stepName,
-              });
-            },
-          };
-
-          await executeReports(
-            reportRegistry,
-            failedMethodContext,
-            modelType,
-            evaluatedDefinition.id,
-            originalDefinition.reportSelection,
-            ctx.reportFilterOptions,
-            reportEventCallbacks,
-            task.methodName,
-            stepModelTypeReports,
-          );
-        }
-      } catch (reportError) {
-        // Don't mask the original execution error with a report error
-        runLogger.debug(
-          "Failed to run reports for failed method: {error}",
-          {
-            error: reportError instanceof Error
-              ? reportError.message
-              : String(reportError),
-          },
-        );
+      // see structured error output (matching modelMethodRun failure
+      // behavior). The runner's internal try/catch ensures report errors
+      // don't mask the original execution error we're about to rethrow.
+      if (ctx.reportFilterOptions) {
+        await this.reportRunner.runFor({
+          status: "failed",
+          errorMessage,
+          dataHandles: [],
+          modelType,
+          modelDef,
+          evaluatedDefinition,
+          originalDefinition,
+          methodName: task.methodName,
+          reportGlobalArgs,
+          reportMethodArgs,
+          reportFilterOptions: ctx.reportFilterOptions,
+          repoDir: ctx.repoDir,
+          swampSha: ctx.swampSha,
+          runLogger,
+          unifiedDataRepo,
+          definitionRepository: definitionRepo,
+          emitEvent: ctx.emitEvent,
+          jobName: ctx.jobName,
+          stepName: ctx.stepName,
+        });
       }
 
       // Attach saved artifacts to the error so the outer step loop can
