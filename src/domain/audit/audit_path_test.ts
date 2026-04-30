@@ -58,7 +58,7 @@ Deno.test("auditFilePathForTimestamp: joins audit directory with the filename", 
 });
 
 Deno.test("todaysAuditFilePath: returns a path matching today's audit filename pattern", () => {
-  const path = todaysAuditFilePath("/repo/.swamp/audit");
+  const path = todaysAuditFilePath("/repo/.swamp/audit").replaceAll("\\", "/");
   assertMatch(
     path,
     /\/repo\/\.swamp\/audit\/commands-\d{4}-\d{2}-\d{2}\.jsonl$/,

@@ -21,6 +21,7 @@ import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { extractContentMetadata } from "./extension_content_extractor.ts";
+import { assertPathEquals } from "../../infrastructure/persistence/path_test_helpers.ts";
 
 Deno.test("extractContentMetadata returns empty for no inputs", async () => {
   const result = await extractContentMetadata([], "/tmp/models", []);
@@ -565,7 +566,7 @@ Deno.test("extractContentMetadata preserves relative path for nested models", as
     );
 
     const result = await extractContentMetadata([modelFile], modelsDir, []);
-    assertEquals(result.models[0].fileName, "aws/ec2/instance.ts");
+    assertPathEquals(result.models[0].fileName, "aws/ec2/instance.ts");
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }

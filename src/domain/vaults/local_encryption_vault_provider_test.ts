@@ -440,31 +440,36 @@ Deno.test("LocalEncryptionVaultProvider - error handling", async (t) => {
   });
 });
 
-Deno.test("LocalEncryptionVaultProvider - file permissions", async (t) => {
-  await t.step(
-    "should create .enc files with 0o600 permissions",
-    async () => {
-      await withTempDir(async (dir) => {
-        await Deno.writeTextFile(
-          join(dir, "test_ssh_key"),
-          MOCK_SSH_PRIVATE_KEY,
-          { mode: 0o600 },
-        );
+Deno.test({
+  name: "LocalEncryptionVaultProvider - file permissions",
+  // POSIX file mode bits do not apply on Windows.
+  ignore: Deno.build.os === "windows",
+  fn: async (t) => {
+    await t.step(
+      "should create .enc files with 0o600 permissions",
+      async () => {
+        await withTempDir(async (dir) => {
+          await Deno.writeTextFile(
+            join(dir, "test_ssh_key"),
+            MOCK_SSH_PRIVATE_KEY,
+            { mode: 0o600 },
+          );
 
-        const vaultSecretsDir = secretsDir(dir, "perms-vault");
-        const config: LocalEncryptionConfig = {
-          ssh_key_path: join(dir, "test_ssh_key"),
-          base_dir: dir,
-        };
-        const vault = new LocalEncryptionVaultProvider("perms-vault", config);
+          const vaultSecretsDir = secretsDir(dir, "perms-vault");
+          const config: LocalEncryptionConfig = {
+            ssh_key_path: join(dir, "test_ssh_key"),
+            base_dir: dir,
+          };
+          const vault = new LocalEncryptionVaultProvider("perms-vault", config);
 
-        await vault.put("secret-key", "secret-value");
+          await vault.put("secret-key", "secret-value");
 
-        const stat = await Deno.stat(join(vaultSecretsDir, "secret-key.enc"));
-        assertEquals(stat.mode! & 0o777, 0o600);
-      });
-    },
-  );
+          const stat = await Deno.stat(join(vaultSecretsDir, "secret-key.enc"));
+          assertEquals(stat.mode! & 0o777, 0o600);
+        });
+      },
+    );
+  },
 });
 
 Deno.test("LocalEncryptionVaultProvider - security properties", async (t) => {

@@ -62,7 +62,8 @@ export function resolveExtensionFile(
   try {
     Deno.lstatSync(absPath);
   } catch {
-    const isPulled = root.includes(PULLED_MARKER);
+    // Normalize backslashes so the marker check matches on Windows too.
+    const isPulled = root.replaceAll("\\", "/").includes(PULLED_MARKER);
     if (isPulled) {
       throw new UserError(
         `Extension file not found: "${relPath}". This can happen when ` +

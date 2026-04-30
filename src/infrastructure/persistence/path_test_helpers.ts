@@ -53,3 +53,20 @@ export function assertPathEquals(
     assertEquals(actual, expected, msg);
   }
 }
+
+/**
+ * Array variant of `assertPathEquals` — normalizes every element of both
+ * arrays to forward slashes before comparison. Use when asserting on lists
+ * of paths produced by `@std/path/join` or similar.
+ */
+export function assertPathArrayEquals(
+  actual: string[],
+  expected: string[],
+  msg?: string,
+): void {
+  assertEquals(
+    actual.map((s) => s.replaceAll("\\", "/")),
+    expected.map((s) => s.replaceAll("\\", "/")),
+    msg,
+  );
+}

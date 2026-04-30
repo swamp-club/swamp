@@ -87,7 +87,10 @@ Deno.test("SkillAssets.readSkill returns null for non-existent skill", async () 
 
 Deno.test("SkillAssets.getSkillPath returns correct path", () => {
   const assets = new SkillAssets();
-  const path = assets.getSkillPath("swamp-model/SKILL.md");
+  const path = assets.getSkillPath("swamp-model/SKILL.md").replaceAll(
+    "\\",
+    "/",
+  );
 
   assertEquals(path.endsWith("swamp-model/SKILL.md"), true);
   assertEquals(path.includes(".claude/skills"), true);

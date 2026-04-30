@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertThrows } from "@std/assert";
+import { isAbsolute } from "@std/path";
 import { RepoPath } from "./repo_path.ts";
 import { assertPathEquals } from "../../infrastructure/persistence/path_test_helpers.ts";
 
@@ -29,15 +30,15 @@ Deno.test("RepoPath.create accepts absolute path", () => {
 
 Deno.test("RepoPath.create converts relative path to absolute", () => {
   const path = RepoPath.create("./my-repo");
-  // Should be absolute (starts with /)
-  assertEquals(path.value.startsWith("/"), true);
+  // Should be absolute
+  assertEquals(isAbsolute(path.value), true);
   // Should contain the relative path component
   assertEquals(path.value.includes("my-repo"), true);
 });
 
 Deno.test("RepoPath.create converts bare relative path to absolute", () => {
   const path = RepoPath.create("my-repo");
-  assertEquals(path.value.startsWith("/"), true);
+  assertEquals(isAbsolute(path.value), true);
   assertEquals(path.value.endsWith("my-repo"), true);
 });
 

@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
+import { assertPathArrayEquals } from "../../infrastructure/persistence/path_test_helpers.ts";
 import {
   type DependencyResolverContext,
   resolveWorkflowDependencies,
@@ -115,7 +116,7 @@ Deno.test("resolveWorkflowDependencies resolves model_method tasks", async () =>
   const ctx = makeMockContext(workflows, defs);
 
   const result = await resolveWorkflowDependencies(["deploy-wf"], ctx);
-  assertEquals(result.modelFiles, [
+  assertPathArrayEquals(result.modelFiles, [
     "/repo/extensions/models/@myuser/deploy/model.ts",
   ]);
   assertEquals(result.unresolvedModels, []);
@@ -167,7 +168,7 @@ Deno.test("resolveWorkflowDependencies handles nested workflow tasks", async () 
   const ctx = makeMockContext(workflows, defs);
 
   const result = await resolveWorkflowDependencies(["outer-wf"], ctx);
-  assertEquals(result.modelFiles, [
+  assertPathArrayEquals(result.modelFiles, [
     "/repo/extensions/models/@myuser/inner/model.ts",
   ]);
   assertEquals(result.workflowFiles.length, 2);

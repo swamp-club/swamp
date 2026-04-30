@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertRejects } from "@std/assert";
+import { dirname } from "@std/path";
 import { assertCompletes, assertErrors, collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
@@ -214,8 +215,7 @@ async function seedLockfileOnDisk(
   lockfilePath: string,
   entries: Record<string, string[]>,
 ): Promise<void> {
-  const parent = lockfilePath.slice(0, lockfilePath.lastIndexOf("/"));
-  await Deno.mkdir(parent, { recursive: true });
+  await Deno.mkdir(dirname(lockfilePath), { recursive: true });
   const map: Record<string, unknown> = {};
   for (const [name, files] of Object.entries(entries)) {
     map[name] = {
@@ -230,8 +230,7 @@ async function seedLockfileOnDisk(
 async function seedFile(repoDir: string, relPath: string): Promise<void> {
   const { join } = await import("@std/path");
   const abs = join(repoDir, relPath);
-  const parent = abs.slice(0, abs.lastIndexOf("/"));
-  await Deno.mkdir(parent, { recursive: true });
+  await Deno.mkdir(dirname(abs), { recursive: true });
   await Deno.writeTextFile(abs, `// seed for ${relPath}`);
 }
 

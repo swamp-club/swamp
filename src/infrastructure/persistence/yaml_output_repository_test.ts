@@ -93,11 +93,12 @@ Deno.test("YamlOutputRepository.save creates yaml file with correct path structu
 
     const path = repo.getPath(testType, "deploy", output);
     // Path should be: outputs/{type}/{method}/{definition-id}-{timestamp}.yaml
-    assertStringIncludes(path, "outputs");
-    assertStringIncludes(path, testType.normalized);
-    assertStringIncludes(path, "deploy");
-    assertStringIncludes(path, definitionId);
-    assertStringIncludes(path, ".yaml");
+    const normalizedPath = path.replaceAll("\\", "/");
+    assertStringIncludes(normalizedPath, "outputs");
+    assertStringIncludes(normalizedPath, testType.normalized);
+    assertStringIncludes(normalizedPath, "deploy");
+    assertStringIncludes(normalizedPath, definitionId);
+    assertStringIncludes(normalizedPath, ".yaml");
 
     const content = await Deno.readTextFile(path);
     assertStringIncludes(content, "methodName: deploy");
@@ -359,7 +360,7 @@ Deno.test("YamlOutputRepository.getPath uses correct format", () => {
     provenance: defaultProvenance,
   });
 
-  const path = repo.getPath(testType, "create", output);
+  const path = repo.getPath(testType, "create", output).replaceAll("\\", "/");
 
   // Path should include: outputs/{type}/{method}/{definition-id}-{timestamp}.yaml
   assertStringIncludes(path, "outputs");
