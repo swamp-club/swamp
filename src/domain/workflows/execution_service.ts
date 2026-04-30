@@ -1084,6 +1084,8 @@ export class WorkflowExecutionService {
    * picks up marker edits between requests.
    */
   private readonly loadRepoMarker: () => Promise<RepoMarkerData | null>;
+  /** Evaluator for sub-workflow input expressions. Per-instance, not per-call. */
+  private readonly expressionEvaluator: ExpressionEvaluationService;
 
   constructor(
     private readonly workflowRepo: WorkflowRepository,
@@ -1108,6 +1110,10 @@ export class WorkflowExecutionService {
       dataRepo: this.dataRepo,
       dataQueryService,
     });
+    this.expressionEvaluator = new ExpressionEvaluationService(
+      this.definitionRepo,
+      repoDir,
+    );
     this.loadRepoMarker = createRepoMarkerLoader(this.markerRepo, repoDir);
   }
 
@@ -1812,20 +1818,20 @@ export class WorkflowExecutionService {
       return;
     }
 
-    // Evaluate inputs using the expression context
+    // Evaluate inputs using the expression context. Reuse the
+    // per-instance evaluator (was previously constructed per call).
     let evaluatedInputs = task.inputs;
     if (task.inputs && expressionContext) {
-      const evalService = new ExpressionEvaluationService(
-        new YamlDefinitionRepository(this.repoDir),
-        this.repoDir,
-      );
-      evaluatedInputs = await evalService.evaluateData(
+      evaluatedInputs = await this.expressionEvaluator.evaluateData(
         task.inputs,
         expressionContext,
       ) as Record<string, unknown>;
     }
 
-    // Create a child WorkflowExecutionService with nesting context
+    // Create a child WorkflowExecutionService with nesting context.
+    // Share the parent's executor so child workflows reuse its
+    // (possibly injected) deps — without this, every level of nesting
+    // forces a fresh executor with its own per-call construction.
     const childAncestors = new Set(ancestors);
     childAncestors.add(workflow.name);
 
@@ -1833,7 +1839,7 @@ export class WorkflowExecutionService {
       this.workflowRepo,
       this.runRepo,
       this.repoDir,
-      undefined,
+      this.executor,
       this.dataBaseDir,
       this.catalogStore,
     );
