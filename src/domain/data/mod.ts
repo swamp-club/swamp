@@ -43,8 +43,6 @@ export {
   RESERVED_DATA_NAMES,
 } from "./data.ts";
 
-export { type UnifiedDataRepository } from "./repositories.ts";
-
 export {
   type WorkflowDataItem,
   WorkflowDataService,
