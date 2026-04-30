@@ -26,6 +26,7 @@ import {
   repoInit,
   repoUpgrade,
 } from "../../libswamp/mod.ts";
+import { UserError } from "../../domain/errors.ts";
 import {
   createRepoInitRenderer,
   createRepoUpgradeRenderer,
@@ -51,6 +52,40 @@ const aiToolType = new EnumType([
   "none",
 ]);
 
+/**
+ * Resolves a Cliffy `--tool` collect array into the `tools` list passed
+ * downstream. Returns `undefined` when the user did not pass `--tool` at all
+ * — the caller layer (RepoService.init defaults to ["claude"];
+ * RepoService.upgrade preserves marker.tools). Validates `none + other`
+ * combinations and dedupes repeated values.
+ *
+ * Exported for unit testing.
+ */
+export function resolveToolFlag(toolOption: unknown): string[] | undefined {
+  if (toolOption === undefined) return undefined;
+  const raw = Array.isArray(toolOption) ? toolOption as string[] : [];
+  if (raw.length === 0) return undefined;
+
+  const hasNone = raw.includes("none");
+  if (hasNone && raw.length > 1) {
+    throw new UserError(
+      "Cannot combine --tool none with other --tool values. " +
+        "Use --tool none alone to clear the enrolled tool list.",
+    );
+  }
+  if (hasNone) return [];
+
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const tool of raw) {
+    if (!seen.has(tool)) {
+      seen.add(tool);
+      result.push(tool);
+    }
+  }
+  return result;
+}
+
 // Exported for reuse by repoCommand default action
 export async function repoInitAction(
   options: AnyOptions,
@@ -59,6 +94,8 @@ export async function repoInitAction(
   const cliCtx = createContext(options as GlobalOptions, ["repo", "init"]);
   cliCtx.logger.debug`Initializing repository at: ${pathArg ?? "."}`;
 
+  const tools = resolveToolFlag(options.tool);
+
   const ctx = createLibSwampContext({ logger: cliCtx.logger });
   const deps = createRepoInitDeps(VERSION);
   const renderer = createRepoInitRenderer(cliCtx.outputMode);
@@ -66,7 +103,7 @@ export async function repoInitAction(
     repoInit(ctx, deps, {
       path: pathArg ?? ".",
       force: !!options.force,
-      tool: (options.tool as string) ?? "claude",
+      tools,
       version: VERSION,
     }),
     renderer.handlers(),
@@ -75,33 +112,52 @@ export async function repoInitAction(
   cliCtx.logger.debug("Repo init command completed");
 }
 
+const TOOL_FLAG_DESCRIPTION =
+  "AI coding tool to configure for. Repeat to enroll multiple tools " +
+  "(e.g. `--tool claude --tool kiro`). Duplicates are collapsed. " +
+  "Use `--tool none` (alone) to skip tool scaffolding. " +
+  "Valid values: claude, cursor, opencode, codex, copilot, kiro, none.";
+
 export const repoInitCommand = new Command()
   .description("Initialize a new swamp repository")
   .example("Initialize in current directory", "swamp repo init")
   .example("Initialize in a specific path", "swamp repo init ./my-project")
+  .example(
+    "Initialize for multiple AI tools",
+    "swamp repo init --tool claude --tool kiro",
+  )
   .example("Force reinitialize", "swamp repo init --force")
   .arguments("[path:string]")
   .option("-f, --force", "Reinitialize if already exists")
   .type("aiTool", aiToolType)
-  .option(
-    "-t, --tool <tool:aiTool>",
-    "AI coding tool to configure for (claude, cursor, opencode, codex, copilot, kiro, none)",
-    { default: "claude" },
-  )
+  .option("-t, --tool <tool:aiTool>", TOOL_FLAG_DESCRIPTION, { collect: true })
   .action(repoInitAction);
 
 export const repoUpgradeCommand = new Command()
   .description("Upgrade an existing swamp repository")
+  .example(
+    "Upgrade preserving the enrolled tools",
+    "swamp repo upgrade",
+  )
+  .example(
+    "Replace the enrolled tool list",
+    "swamp repo upgrade --tool claude --tool kiro",
+  )
   .arguments("[path:string]")
   .type("aiTool", aiToolType)
   .option(
     "-t, --tool <tool:aiTool>",
-    "Switch to a different AI coding tool",
+    "Replace the enrolled tool list. Repeat to enroll multiple tools " +
+      "(e.g. `--tool claude --tool kiro`). Omit to preserve the existing " +
+      "list and just bump the swamp version. `--tool none` clears.",
+    { collect: true },
   )
   .option("--include-gitignore", "Manage a swamp section in .gitignore")
   .action(async function (options: AnyOptions, pathArg?: string) {
     const cliCtx = createContext(options as GlobalOptions, ["repo", "upgrade"]);
     cliCtx.logger.debug`Upgrading repository at: ${pathArg ?? "."}`;
+
+    const tools = resolveToolFlag(options.tool);
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
     const deps = createRepoUpgradeDeps(VERSION);
@@ -121,7 +177,7 @@ export const repoUpgradeCommand = new Command()
     await consumeStream(
       repoUpgrade(ctx, deps, {
         path: pathArg ?? ".",
-        tool: options.tool as string | undefined,
+        tools,
         includeGitignore: options.includeGitignore as boolean | undefined,
         version: VERSION,
         extensionInstallDeps,
@@ -138,11 +194,7 @@ export const repoCommand = new Command()
   .arguments("[path:string]")
   .option("-f, --force", "Reinitialize if already exists")
   .type("aiTool", aiToolType)
-  .option(
-    "-t, --tool <tool:aiTool>",
-    "AI coding tool to configure for (claude, cursor, opencode, codex, copilot, kiro, none)",
-    { default: "claude" },
-  )
+  .option("-t, --tool <tool:aiTool>", TOOL_FLAG_DESCRIPTION, { collect: true })
   .action(repoInitAction)
   .command(
     "init",
@@ -154,8 +206,8 @@ export const repoCommand = new Command()
       .type("aiTool", aiToolType)
       .option(
         "-t, --tool <tool:aiTool>",
-        "AI coding tool to configure for (claude, cursor, opencode, codex, copilot, kiro, none)",
-        { default: "claude" },
+        TOOL_FLAG_DESCRIPTION,
+        { collect: true },
       )
       .action(repoInitAction),
   )

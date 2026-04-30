@@ -16,6 +16,37 @@ It should write a CLAUDE.md that describes the purpose of the repository as
 building automation with swamp, and describes when to use the linked skills. The
 agent should attempt to use swamp for most tasks.
 
+## Multi-tool Repos
+
+A swamp repo can be enrolled for multiple AI agent tools at once (Claude
+Code, Cursor, OpenCode, Codex, Copilot, Kiro). The marker file stores the
+full enrolled list as `tools: AiTool[]`. Each tool's scaffolding (skills
+directory, instructions file, settings/hooks) is written independently
+since the paths don't conflict.
+
+`swamp repo init --tool <X> [--tool <Y>...]` sets the enrolled tool list.
+`swamp repo upgrade --tool <X> [--tool <Y>...]` replaces it; plain
+`swamp repo upgrade` (no `--tool`) preserves `marker.tools` and re-syncs
+scaffolding for every enrolled tool. `--tool none` clears the list. Duplicate
+`--tool` values are deduped at the CLI; `--tool none` cannot be combined with
+other tool values.
+
+When the enrolled list shrinks, on-disk scaffolding for dropped tools is
+**not** deleted — the renderer surfaces a "files were not deleted" note so
+the user can clean up by hand. This avoids destructive surprises.
+
+The **primary tool** is `marker.tools[0]` (or `"claude"` as a fallback for
+unenrolled repos), resolved via `resolvePrimaryTool(marker)` in
+`src/domain/repo/primary_tool.ts`. Commands that still operate on a single
+tool — audit recording, extension skills directory resolution, doctor checks
+— consume it. The first-in-array rule means appending a tool keeps the
+existing primary stable.
+
+The `.swamp.yaml` marker uses lazy migration for backwards compat: the read
+normalizer in `RepoMarkerRepository.read()` promotes the legacy `tool:
+<single>` shape into `tools: [<single>]` and strips the legacy field. The
+next marker write persists the new shape.
+
 The compiled swamp binary should include everything it needs to initialize a
 repository, including the skill files, so that they can be written out by the
 cli.

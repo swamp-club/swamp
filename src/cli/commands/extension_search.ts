@@ -44,6 +44,7 @@ import {
 } from "../../libswamp/mod.ts";
 import { createExtensionSearchRenderer } from "../../presentation/renderers/extension_search.tsx";
 import { resolveSkillsDir } from "../../domain/repo/skill_dirs.ts";
+import { resolvePrimaryTool } from "../../domain/repo/primary_tool.ts";
 import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
 
 /**
@@ -211,7 +212,7 @@ export const extensionSearchCommand = new Command()
         getChecksum: (name, version) => client.getChecksum(name, version),
         logger: ctx.logger,
         lockfilePath,
-        skillsDir: resolveSkillsDir(repoDir, marker?.tool ?? "claude"),
+        skillsDir: resolveSkillsDir(repoDir, resolvePrimaryTool(marker)),
         repoDir,
         force: false,
         outputMode: ctx.outputMode,

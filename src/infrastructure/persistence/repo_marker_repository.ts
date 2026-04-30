@@ -38,6 +38,11 @@ export type AiTool =
 
 /**
  * Data structure for the .swamp.yaml marker file.
+ *
+ * `tools` is the canonical field listing every AI tool the repo is enrolled
+ * for. `tool` is the legacy single-tool field, kept here only so the read
+ * normalizer can recognise it; it is never populated on returned markers and
+ * never written by `write()`.
  */
 export interface RepoMarkerData {
   swampVersion: string;
@@ -53,6 +58,8 @@ export interface RepoMarkerData {
   telemetryEndpoint?: string;
   telemetryDisabled?: boolean;
   telemetryKeepFlushed?: boolean;
+  tools?: AiTool[];
+  /** @deprecated legacy single-tool field; promoted to `tools` on read. */
   tool?: AiTool;
   logLevel?: string;
   gitignoreManaged?: boolean;
@@ -65,6 +72,18 @@ export interface RepoMarkerData {
    */
   defaultDriver?: string;
   defaultDriverConfig?: Record<string, unknown>;
+}
+
+/**
+ * Promotes the legacy `tool` field to `tools` and strips the legacy field.
+ * `tools` wins when both are present.
+ */
+function normalizeMarker(data: RepoMarkerData): RepoMarkerData {
+  if (data.tools === undefined && data.tool !== undefined) {
+    data.tools = [data.tool];
+  }
+  delete data.tool;
+  return data;
 }
 
 /**
@@ -97,13 +116,17 @@ export class RepoMarkerRepository {
   /**
    * Reads the marker file from the given repository path.
    * Returns null if the file does not exist.
+   *
+   * Normalises the legacy single-tool shape (`tool: <name>`) into the
+   * canonical `tools: [<name>]` array and strips the legacy field so
+   * downstream callers only ever see `tools`.
    */
   async read(repoPath: RepoPath): Promise<RepoMarkerData | null> {
     const path = this.getMarkerPath(repoPath);
     try {
       const content = await Deno.readTextFile(path);
       const data = parseYaml(content) as RepoMarkerData;
-      return data;
+      return normalizeMarker(data);
     } catch (error) {
       if (error instanceof Deno.errors.NotFound) {
         return null;
@@ -114,11 +137,15 @@ export class RepoMarkerRepository {
 
   /**
    * Writes the marker file to the given repository path.
+   *
+   * Strips the legacy `tool` field so the on-disk shape only ever
+   * contains the canonical `tools` array.
    */
   async write(repoPath: RepoPath, data: RepoMarkerData): Promise<void> {
     const path = this.getMarkerPath(repoPath);
     // Remove undefined values since YAML can't stringify them
     const cleanData = JSON.parse(JSON.stringify(data));
+    delete cleanData.tool;
     const content = stringifyYaml(cleanData as Record<string, unknown>);
     await atomicWriteTextFile(path, content);
   }

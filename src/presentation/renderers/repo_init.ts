@@ -30,6 +30,14 @@ import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
 import { createExtensionInstallRenderer } from "./extension_install.ts";
 
+/**
+ * Renders a `tools` array for the human-readable status line. Empty list
+ * renders as `none` so output is never ambiguous.
+ */
+function formatToolsList(tools: readonly string[]): string {
+  return tools.length === 0 ? "none" : tools.join(", ");
+}
+
 class LogRepoInitRenderer implements Renderer<RepoInitEvent> {
   handlers(): EventHandlers<RepoInitEvent> {
     const logger = getSwampLogger(["repo", "init"]);
@@ -70,8 +78,15 @@ class LogRepoInitRenderer implements Renderer<RepoInitEvent> {
           "    ╚═══════════════════════════════════════════╝",
         );
         console.log("");
-        logger
-          .info`Initialized swamp repository at ${data.path} (tool: ${data.tool})`;
+        logger.info`Initialized swamp repository at ${data.path} (tools: ${
+          formatToolsList(data.tools)
+        })`;
+        // Force-reinit may have dropped tools — surface so the user knows
+        // their old scaffolding files remain on disk and can be removed.
+        for (const removed of data.removedTools) {
+          logger
+            .info`Note: ${removed} was dropped from the enrolled tool list. Files in .${removed}/ were not deleted — remove them by hand if desired.`;
+        }
       },
       error: (e) => {
         throw new UserError(e.error.message);
@@ -109,7 +124,35 @@ class LogRepoUpgradeRenderer implements Renderer<RepoUpgradeEvent> {
       completed: (e) => {
         const data = e.data;
         logger
-          .info`Upgraded swamp repository: ${data.previousVersion} → ${data.newVersion} (tool: ${data.tool})`;
+          .info`Upgraded swamp repository: ${data.previousVersion} → ${data.newVersion} (tools: ${
+          formatToolsList(data.tools)
+        })`;
+
+        // Surface a tools-changed diff line whenever the enrolled list
+        // shifted. Suppressed for plain `swamp repo upgrade` (no tool
+        // flag) so the common case doesn't get noisier.
+        if (data.addedTools.length > 0 || data.removedTools.length > 0) {
+          const before = formatToolsList(data.previousTools);
+          const after = formatToolsList(data.tools);
+          logger.info(`  Tools: [${before}] → [${after}]`);
+          for (const removed of data.removedTools) {
+            logger.info(
+              `  Note: ${removed} was dropped from the enrolled tool list. ` +
+                `Files in .${removed}/ were not deleted — remove them by ` +
+                `hand if desired.`,
+            );
+          }
+          for (const entry of data.extensionsToReinstall) {
+            const list = entry.names.join(", ");
+            logger.info(
+              `  ${entry.names.length} extension(s) installed for the ` +
+                `previous tool were NOT copied to ${entry.tool}. ` +
+                `Re-run \`swamp extension pull <name>\` to install ` +
+                `for ${entry.tool}: ${list}`,
+            );
+          }
+        }
+
         logger.info("  Skills updated: " + data.skillsUpdated.join(", "));
         logger.info(
           "  Instructions: " +

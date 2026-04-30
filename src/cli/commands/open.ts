@@ -56,6 +56,7 @@ import {
   type DeferredWarning,
 } from "../mod.ts";
 import { resolveSkillsDir } from "../../domain/repo/skill_dirs.ts";
+import { resolvePrimaryTool } from "../../domain/repo/primary_tool.ts";
 import { VERSION } from "./version.ts";
 import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
 
@@ -189,7 +190,7 @@ export const openCommand = new Command()
             getChecksum: (n, v) => extClient.getChecksum(n, v),
             logger: ctx.logger,
             lockfilePath,
-            skillsDir: resolveSkillsDir(repoDir, marker?.tool ?? "claude"),
+            skillsDir: resolveSkillsDir(repoDir, resolvePrimaryTool(marker)),
             repoDir,
             // Force overwrite — the web UI has no stdin to answer the
             // "overwrite existing files?" prompt, so we always install

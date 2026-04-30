@@ -34,6 +34,8 @@ import {
 } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { SkillAssets } from "../../infrastructure/assets/skill_assets.ts";
 import { assertNever, UserError } from "../errors.ts";
+import { resolvePrimaryTool } from "./primary_tool.ts";
+import { resolveSkillsDir, SKILL_DIRS } from "./skill_dirs.ts";
 
 const logger = getLogger(["swamp", "repo", "service"]);
 
@@ -58,8 +60,6 @@ const LEGACY_INSTRUCTIONS_SIGNATURE = "This repository is managed with [swamp]";
  */
 export type GitignoreAction = "created" | "updated" | "unchanged" | "skipped";
 
-import { SKILL_DIRS } from "./skill_dirs.ts";
-
 const INSTRUCTIONS_FILES: Partial<Record<AiTool, string>> = {
   claude: "CLAUDE.md",
   cursor: ".cursor/rules/swamp.mdc",
@@ -79,6 +79,41 @@ const GITIGNORE_TOOL_ENTRIES: Partial<Record<AiTool, string>> = {
 };
 
 /**
+ * Dedupes a tools list while preserving first-seen order, so set semantics
+ * on `marker.tools` are enforced at the domain boundary.
+ */
+function normalizeToolsList(tools: AiTool[]): AiTool[] {
+  const seen = new Set<AiTool>();
+  const result: AiTool[] = [];
+  for (const tool of tools) {
+    if (!seen.has(tool)) {
+      seen.add(tool);
+      result.push(tool);
+    }
+  }
+  return result;
+}
+
+/**
+ * Renders a tools list for human-readable error/diagnostic messages.
+ * Empty list renders as "none" so output is never ambiguous.
+ */
+function formatToolsList(tools: AiTool[]): string {
+  return tools.length === 0 ? "none" : tools.join(", ");
+}
+
+/**
+ * Pulled extensions present for one of the previously-enrolled tools that
+ * were NOT copied into a newly-added tool's skills directory. Surfaced so
+ * the renderer can advise the user to re-run `swamp extension pull <name>`
+ * for the new tool.
+ */
+export interface ExtensionsToReinstall {
+  tool: AiTool;
+  names: string[];
+}
+
+/**
  * Result of a repository initialization operation.
  */
 export interface RepoInitResult {
@@ -89,7 +124,12 @@ export interface RepoInitResult {
   instructionsFileCreated: boolean;
   settingsCreated: boolean;
   gitignoreAction: GitignoreAction;
-  tool: AiTool;
+  tools: AiTool[];
+  /**
+   * Tools previously enrolled (when `--force` reinit drops some) whose
+   * scaffolding files were left on disk. Empty for fresh inits.
+   */
+  removedTools: AiTool[];
 }
 
 /**
@@ -104,22 +144,31 @@ export interface RepoUpgradeResult {
   instructionsUpdated: boolean;
   settingsUpdated: boolean;
   gitignoreAction: GitignoreAction;
-  tool: AiTool;
+  /** Enrolled tools as recorded by `marker.tools` BEFORE this upgrade. */
+  previousTools: AiTool[];
+  tools: AiTool[];
+  addedTools: AiTool[];
+  removedTools: AiTool[];
+  extensionsToReinstall: ExtensionsToReinstall[];
 }
 
 /**
- * Options for initialization.
+ * Options for initialization. `tools` is the canonical input; defaults to
+ * `["claude"]` when omitted. An empty array means "no tool scaffolding".
  */
 export interface RepoInitOptions {
   force?: boolean;
-  tool?: AiTool;
+  tools?: AiTool[];
 }
 
 /**
- * Options for upgrade.
+ * Options for upgrade. `tools` semantics:
+ *  - undefined: preserve the existing `marker.tools` (no-op-tool-change path)
+ *  - []: clear (the `--tool none` case)
+ *  - [list]: replace
  */
 export interface RepoUpgradeOptions {
-  tool?: AiTool;
+  tools?: AiTool[];
   includeGitignore?: boolean;
 }
 
@@ -155,85 +204,53 @@ export class RepoService {
     repoPath: RepoPath,
     options: RepoInitOptions = {},
   ): Promise<RepoInitResult> {
-    const tool = options.tool ?? "claude";
+    const tools = normalizeToolsList(options.tools ?? ["claude"]);
     const isAlreadyInit = await this.isInitialized(repoPath);
 
-    if (isAlreadyInit && !options.force) {
+    let removedTools: AiTool[] = [];
+
+    if (isAlreadyInit) {
       const existingMarker = await this.markerRepo.read(repoPath);
-      const currentTool = existingMarker?.tool ?? "claude";
-      throw new UserError(
-        `Repository already initialized at ${repoPath.value} (tool: "${currentTool}"). ` +
-          "To switch tools, run: swamp repo upgrade -t <tool>. " +
-          "To reinitialize from scratch, run: swamp repo init --force -t <tool>",
-      );
+      const existingTools = existingMarker?.tools ?? [];
+
+      if (!options.force) {
+        throw new UserError(
+          `Repository already initialized at ${repoPath.value} ` +
+            `(tools: ${formatToolsList(existingTools)}). ` +
+            "To change the enrolled tools, run: swamp repo upgrade --tool <tool>. " +
+            "To reinitialize from scratch, run: swamp repo init --force --tool <tool>",
+        );
+      }
+
+      // --force replaces the tool list; surface the diff so the renderer can
+      // tell the user files for dropped tools were not deleted.
+      removedTools = existingTools.filter((t) => !tools.includes(t));
     }
 
     // Ensure the directory exists
     await ensureDir(repoPath.value);
 
-    // Create marker file with tool choice
+    // Create marker with the new tools list
     const markerData = this.markerRepo.createInitMarker(this.currentVersion);
-    markerData.tool = tool;
+    markerData.tools = tools;
 
     // Create data directory structure
     await this.createDataDirectoryStructure(repoPath);
 
-    // Copy skills and create tool-specific files (skipped for --tool none)
+    // Run scaffolding for each enrolled tool
     let skillsCopied: string[] = [];
     let instructionsFileCreated = false;
     let settingsCreated = false;
-
-    if (tool !== "none") {
-      // Copy skills to tool-appropriate directory
-      const skillsDir = join(repoPath.value, SKILL_DIRS[tool]!);
-      await this.skillAssets.copySkillsTo(skillsDir);
-      skillsCopied = this.skillAssets.getSkillNames();
-
-      // Create instructions file if it doesn't exist
-      instructionsFileCreated = await this
-        .createInstructionsFileIfNotExists(repoPath, tool);
-
-      // Create or update tool-specific settings
-      switch (tool) {
-        case "claude":
-          settingsCreated = isAlreadyInit
-            ? await this.updateClaudeSettings(repoPath)
-            : await this.createClaudeSettingsIfNotExists(repoPath);
-          break;
-        case "cursor":
-          settingsCreated = isAlreadyInit
-            ? await this.updateCursorHooks(repoPath)
-            : await this.createCursorHooksIfNotExists(repoPath);
-          break;
-        case "kiro": {
-          const s = isAlreadyInit
-            ? await this.updateKiroSettings(repoPath)
-            : await this.createKiroSettingsIfNotExists(repoPath);
-          const h = isAlreadyInit
-            ? await this.updateKiroHooks(repoPath)
-            : await this.createKiroHooksIfNotExists(repoPath);
-          const a = isAlreadyInit
-            ? await this.updateKiroAgentConfig(repoPath)
-            : await this.createKiroAgentConfigIfNotExists(repoPath);
-          const c = await this.ensureKiroCliDefaultAgent(repoPath);
-          settingsCreated = s || h || a || c;
-          break;
-        }
-        case "opencode":
-          settingsCreated = isAlreadyInit
-            ? await this.updateOpenCodePlugin(repoPath)
-            : await this.createOpenCodePluginIfNotExists(repoPath);
-          break;
-        case "codex":
-        case "copilot":
-          break;
-        default:
-          assertNever(tool);
-      }
+    for (const tool of tools) {
+      const r = await this.applyToolScaffolding(repoPath, tool, isAlreadyInit);
+      if (r.skillsCopied.length > 0) skillsCopied = r.skillsCopied;
+      instructionsFileCreated = instructionsFileCreated ||
+        r.instructionsFileChanged;
+      settingsCreated = settingsCreated || r.settingsChanged;
     }
 
-    // Always manage .gitignore on init
-    const gitignoreAction = await this.ensureGitignoreSection(repoPath, tool);
+    // Always manage .gitignore on init (single call with the full tools list)
+    const gitignoreAction = await this.ensureGitignoreSection(repoPath, tools);
     markerData.gitignoreManaged = true;
 
     await this.markerRepo.write(repoPath, markerData);
@@ -246,7 +263,8 @@ export class RepoService {
       instructionsFileCreated,
       settingsCreated,
       gitignoreAction,
-      tool,
+      tools,
+      removedTools,
     };
   }
 
@@ -269,59 +287,55 @@ export class RepoService {
       );
     }
 
-    // Determine tool: CLI override > stored marker > default "claude"
-    const tool = options.tool ?? existingMarker.tool ?? "claude";
+    const oldTools = existingMarker.tools ?? [];
+    // The OLD primary tool — resolved BEFORE any mutation. Used to walk for
+    // pulled extensions, since that's the directory they actually live in.
+    const oldPrimary = resolvePrimaryTool(existingMarker);
+    const oldPrimarySkillsDir = resolveSkillsDir(repoPath.value, oldPrimary);
+
+    // Determine the requested tools list:
+    //  - undefined: preserve the existing tools (no-op-tool-change path)
+    //  - else (incl. []): replace
+    const tools = options.tools === undefined
+      ? oldTools
+      : normalizeToolsList(options.tools);
     const previousVersion = existingMarker.swampVersion;
 
-    // Update marker with new version and tool
+    const addedTools = tools.filter((t) => !oldTools.includes(t));
+    const removedTools = oldTools.filter((t) => !tools.includes(t));
+
+    // For each newly-added tool, find pulled extensions in the OLD primary's
+    // skills dir that won't be present in the new tool's. Suppress when the
+    // dirs are equal (the .agents/skills/ shared-dir case).
+    const extensionsToReinstall: ExtensionsToReinstall[] = [];
+    if (addedTools.length > 0) {
+      const pulled = await this.listPulledExtensions(oldPrimarySkillsDir);
+      if (pulled.length > 0) {
+        for (const tool of addedTools) {
+          const newDir = resolveSkillsDir(repoPath.value, tool);
+          if (newDir !== oldPrimarySkillsDir) {
+            extensionsToReinstall.push({ tool, names: pulled });
+          }
+        }
+      }
+    }
+
+    // Update marker with new version and tool list
     const updatedMarker = this.markerRepo.createUpgradeMarker(
       existingMarker,
       this.currentVersion,
     );
-    updatedMarker.tool = tool;
+    updatedMarker.tools = tools;
 
-    // Update skills and tool-specific files (skipped for --tool none)
+    // Run scaffolding for each currently-enrolled tool
     let skillsUpdated: string[] = [];
     let instructionsUpdated = false;
     let settingsUpdated = false;
-
-    if (tool !== "none") {
-      // Update skills in tool-appropriate directory
-      const skillsDir = join(repoPath.value, SKILL_DIRS[tool]!);
-      await this.skillAssets.copySkillsTo(skillsDir);
-      skillsUpdated = this.skillAssets.getSkillNames();
-
-      // Update instructions file (managed by swamp, kept in sync on upgrade)
-      instructionsUpdated = await this.updateInstructionsFile(
-        repoPath,
-        tool,
-      );
-
-      // Update tool-specific settings
-      switch (tool) {
-        case "claude":
-          settingsUpdated = await this.updateClaudeSettings(repoPath);
-          break;
-        case "cursor":
-          settingsUpdated = await this.updateCursorHooks(repoPath);
-          break;
-        case "kiro": {
-          const s = await this.updateKiroSettings(repoPath);
-          const h = await this.updateKiroHooks(repoPath);
-          const a = await this.updateKiroAgentConfig(repoPath);
-          const c = await this.ensureKiroCliDefaultAgent(repoPath);
-          settingsUpdated = s || h || a || c;
-          break;
-        }
-        case "opencode":
-          settingsUpdated = await this.updateOpenCodePlugin(repoPath);
-          break;
-        case "codex":
-        case "copilot":
-          break;
-        default:
-          assertNever(tool);
-      }
+    for (const tool of tools) {
+      const r = await this.applyToolScaffolding(repoPath, tool, true);
+      if (r.skillsCopied.length > 0) skillsUpdated = r.skillsCopied;
+      instructionsUpdated = instructionsUpdated || r.instructionsFileChanged;
+      settingsUpdated = settingsUpdated || r.settingsChanged;
     }
 
     // Determine gitignore management: CLI flag > marker preference > default off
@@ -335,7 +349,7 @@ export class RepoService {
 
     let gitignoreAction: GitignoreAction;
     if (shouldManageGitignore) {
-      gitignoreAction = await this.ensureGitignoreSection(repoPath, tool);
+      gitignoreAction = await this.ensureGitignoreSection(repoPath, tools);
     } else {
       gitignoreAction = "skipped";
     }
@@ -361,8 +375,114 @@ export class RepoService {
       instructionsUpdated,
       settingsUpdated,
       gitignoreAction,
-      tool,
+      previousTools: oldTools,
+      tools,
+      addedTools,
+      removedTools,
+      extensionsToReinstall,
     };
+  }
+
+  /**
+   * Runs all per-tool scaffolding for a single tool: skills copy, instructions
+   * file, settings/hooks/configs. Idempotent across calls — when the same
+   * tool runs twice, the writers no-op or re-sync existing content.
+   *
+   * `alreadyExists` controls whether settings writers run their "create new"
+   * or "update existing" path; `true` for upgrades and force-reinit, `false`
+   * for fresh init.
+   */
+  private async applyToolScaffolding(
+    repoPath: RepoPath,
+    tool: AiTool,
+    alreadyExists: boolean,
+  ): Promise<{
+    skillsCopied: string[];
+    instructionsFileChanged: boolean;
+    settingsChanged: boolean;
+  }> {
+    if (tool === "none") {
+      return {
+        skillsCopied: [],
+        instructionsFileChanged: false,
+        settingsChanged: false,
+      };
+    }
+
+    // Copy skills to tool-appropriate directory
+    const skillsDir = join(repoPath.value, SKILL_DIRS[tool]!);
+    await this.skillAssets.copySkillsTo(skillsDir);
+    const skillsCopied = this.skillAssets.getSkillNames();
+
+    // Create or update instructions file
+    const instructionsFileChanged = alreadyExists
+      ? await this.updateInstructionsFile(repoPath, tool)
+      : await this.createInstructionsFileIfNotExists(repoPath, tool);
+
+    // Create or update tool-specific settings
+    let settingsChanged = false;
+    switch (tool) {
+      case "claude":
+        settingsChanged = alreadyExists
+          ? await this.updateClaudeSettings(repoPath)
+          : await this.createClaudeSettingsIfNotExists(repoPath);
+        break;
+      case "cursor":
+        settingsChanged = alreadyExists
+          ? await this.updateCursorHooks(repoPath)
+          : await this.createCursorHooksIfNotExists(repoPath);
+        break;
+      case "kiro": {
+        const s = alreadyExists
+          ? await this.updateKiroSettings(repoPath)
+          : await this.createKiroSettingsIfNotExists(repoPath);
+        const h = alreadyExists
+          ? await this.updateKiroHooks(repoPath)
+          : await this.createKiroHooksIfNotExists(repoPath);
+        const a = alreadyExists
+          ? await this.updateKiroAgentConfig(repoPath)
+          : await this.createKiroAgentConfigIfNotExists(repoPath);
+        const c = await this.ensureKiroCliDefaultAgent(repoPath);
+        settingsChanged = s || h || a || c;
+        break;
+      }
+      case "opencode":
+        settingsChanged = alreadyExists
+          ? await this.updateOpenCodePlugin(repoPath)
+          : await this.createOpenCodePluginIfNotExists(repoPath);
+        break;
+      case "codex":
+      case "copilot":
+        break;
+      default:
+        assertNever(tool);
+    }
+
+    return { skillsCopied, instructionsFileChanged, settingsChanged };
+  }
+
+  /**
+   * Lists pulled-extension subdirectory names in a skills directory —
+   * everything that's NOT a bundled scaffolding skill. Returns an empty list
+   * when the directory doesn't exist.
+   */
+  private async listPulledExtensions(skillsDir: string): Promise<string[]> {
+    const bundled = new Set(this.skillAssets.getSkillNames());
+    const result: string[] = [];
+    try {
+      for await (const entry of Deno.readDir(skillsDir)) {
+        if (entry.isDirectory && !bundled.has(entry.name)) {
+          result.push(entry.name);
+        }
+      }
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) {
+        return [];
+      }
+      throw error;
+    }
+    result.sort();
+    return result;
   }
 
   /**
@@ -733,10 +853,10 @@ ${body}`;
    */
   private async ensureGitignoreSection(
     repoPath: RepoPath,
-    tool: AiTool,
+    tools: AiTool[],
   ): Promise<GitignoreAction> {
     const gitignorePath = join(repoPath.value, GITIGNORE_FILENAME);
-    const newSection = this.buildGitignoreSection(tool);
+    const newSection = this.buildGitignoreSection(tools);
 
     let existingContent: string | null = null;
     try {
@@ -790,15 +910,18 @@ ${body}`;
   /**
    * Builds the full managed section including BEGIN/END markers.
    */
-  private buildGitignoreSection(tool: AiTool): string {
-    const body = this.generateGitignoreSectionBody(tool);
+  private buildGitignoreSection(tools: AiTool[]): string {
+    const body = this.generateGitignoreSectionBody(tools);
     return GITIGNORE_SECTION_BEGIN + "\n" + body + GITIGNORE_SECTION_END;
   }
 
   /**
    * Generates the content between markers (not including the markers).
+   * Emits one entry per enrolled tool, deduplicated so tools that share an
+   * ignore line (e.g. opencode/codex/copilot all use `.agents/skills/`) only
+   * produce a single entry.
    */
-  private generateGitignoreSectionBody(tool: AiTool): string {
+  private generateGitignoreSectionBody(tools: AiTool[]): string {
     const lines = [
       "",
       "# Runtime data (not needed in version control)",
@@ -808,9 +931,13 @@ ${body}`;
       ".swamp-sources.yaml",
     ];
 
-    const toolEntry = GITIGNORE_TOOL_ENTRIES[tool];
-    if (toolEntry) {
-      lines.push("", toolEntry);
+    const seenEntries = new Set<string>();
+    for (const tool of tools) {
+      const toolEntry = GITIGNORE_TOOL_ENTRIES[tool];
+      if (toolEntry && !seenEntries.has(toolEntry)) {
+        seenEntries.add(toolEntry);
+        lines.push("", toolEntry);
+      }
     }
 
     lines.push("");

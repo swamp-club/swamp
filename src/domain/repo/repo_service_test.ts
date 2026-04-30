@@ -21,7 +21,10 @@ import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import { RepoService } from "./repo_service.ts";
 import { RepoPath } from "./repo_path.ts";
-import type { AiTool } from "../../infrastructure/persistence/repo_marker_repository.ts";
+import {
+  type AiTool,
+  RepoMarkerRepository,
+} from "../../infrastructure/persistence/repo_marker_repository.ts";
 
 // Helper to create a temp directory for testing
 async function withTempDir(
@@ -44,7 +47,7 @@ Deno.test("RepoService.init creates marker file", async () => {
 
     assertEquals(result.version, "0.1.0");
     assertEquals(result.path, tempDir);
-    assertEquals(result.tool, "claude");
+    assertEquals(result.tools[0], "claude");
 
     // Check marker file exists
     const markerPath = join(tempDir, ".swamp.yaml");
@@ -532,9 +535,9 @@ Deno.test("RepoService.init with cursor creates .cursor/skills/ and .cursor/rule
     const service = new RepoService("0.1.0");
     const repoPath = RepoPath.create(tempDir);
 
-    const result = await service.init(repoPath, { tool: "cursor" });
+    const result = await service.init(repoPath, { tools: ["cursor"] });
 
-    assertEquals(result.tool, "cursor");
+    assertEquals(result.tools[0], "cursor");
     assertEquals(result.instructionsFileCreated, true);
     assertEquals(result.settingsCreated, true);
     assertEquals(result.gitignoreAction, "created");
@@ -581,9 +584,9 @@ Deno.test("RepoService.init with opencode creates .agents/skills/ and AGENTS.md"
     const service = new RepoService("0.1.0");
     const repoPath = RepoPath.create(tempDir);
 
-    const result = await service.init(repoPath, { tool: "opencode" });
+    const result = await service.init(repoPath, { tools: ["opencode"] });
 
-    assertEquals(result.tool, "opencode");
+    assertEquals(result.tools[0], "opencode");
     assertEquals(result.instructionsFileCreated, true);
     assertEquals(result.settingsCreated, true);
     assertEquals(result.gitignoreAction, "created");
@@ -613,9 +616,9 @@ Deno.test("RepoService.init with codex creates .agents/skills/ and AGENTS.md", a
     const service = new RepoService("0.1.0");
     const repoPath = RepoPath.create(tempDir);
 
-    const result = await service.init(repoPath, { tool: "codex" });
+    const result = await service.init(repoPath, { tools: ["codex"] });
 
-    assertEquals(result.tool, "codex");
+    assertEquals(result.tools[0], "codex");
     assertEquals(result.instructionsFileCreated, true);
     assertEquals(result.settingsCreated, false);
     assertEquals(result.gitignoreAction, "created");
@@ -637,9 +640,9 @@ Deno.test("RepoService.init with copilot creates .agents/skills/ and AGENTS.md",
     const service = new RepoService("0.1.0");
     const repoPath = RepoPath.create(tempDir);
 
-    const result = await service.init(repoPath, { tool: "copilot" });
+    const result = await service.init(repoPath, { tools: ["copilot"] });
 
-    assertEquals(result.tool, "copilot");
+    assertEquals(result.tools[0], "copilot");
     assertEquals(result.instructionsFileCreated, true);
     assertEquals(result.settingsCreated, false);
     assertEquals(result.gitignoreAction, "created");
@@ -677,10 +680,10 @@ Deno.test("RepoService.init stores tool in marker", async () => {
     const service = new RepoService("0.1.0");
     const repoPath = RepoPath.create(tempDir);
 
-    await service.init(repoPath, { tool: "cursor" });
+    await service.init(repoPath, { tools: ["cursor"] });
 
     const marker = await service.getMarker(repoPath);
-    assertEquals(marker!.tool, "cursor");
+    assertEquals(marker!.tools?.[0], "cursor");
   });
 });
 
@@ -690,13 +693,13 @@ Deno.test("RepoService.upgrade reads tool from marker", async () => {
     const repoPath = RepoPath.create(tempDir);
 
     // Init with cursor
-    await service.init(repoPath, { tool: "cursor" });
+    await service.init(repoPath, { tools: ["cursor"] });
 
     // Upgrade without specifying tool
     const upgradeService = new RepoService("0.2.0");
     const result = await upgradeService.upgrade(repoPath);
 
-    assertEquals(result.tool, "cursor");
+    assertEquals(result.tools[0], "cursor");
 
     // Verify skills updated in cursor dir
     const skillsDir = join(tempDir, ".cursor", "skills");
@@ -715,9 +718,11 @@ Deno.test("RepoService.upgrade allows switching tool via --tool", async () => {
 
     // Upgrade with tool switch to cursor
     const upgradeService = new RepoService("0.2.0");
-    const result = await upgradeService.upgrade(repoPath, { tool: "cursor" });
+    const result = await upgradeService.upgrade(repoPath, {
+      tools: ["cursor"],
+    });
 
-    assertEquals(result.tool, "cursor");
+    assertEquals(result.tools[0], "cursor");
 
     // Verify skills exist in cursor dir
     const skillsDir = join(tempDir, ".cursor", "skills");
@@ -726,7 +731,7 @@ Deno.test("RepoService.upgrade allows switching tool via --tool", async () => {
 
     // Verify marker updated with new tool
     const marker = await upgradeService.getMarker(repoPath);
-    assertEquals(marker!.tool, "cursor");
+    assertEquals(marker!.tools?.[0], "cursor");
 
     // Verify instructions file created for cursor
     const instructionsPath = join(tempDir, ".cursor", "rules", "swamp.mdc");
@@ -748,9 +753,9 @@ Deno.test("RepoService.upgrade creates AGENTS.md when switching to codex", async
 
     // Upgrade with tool switch to codex
     const upgradeService = new RepoService("0.2.0");
-    const result = await upgradeService.upgrade(repoPath, { tool: "codex" });
+    const result = await upgradeService.upgrade(repoPath, { tools: ["codex"] });
 
-    assertEquals(result.tool, "codex");
+    assertEquals(result.tools[0], "codex");
 
     // Verify AGENTS.md created
     const instructionsPath = join(tempDir, "AGENTS.md");
@@ -772,9 +777,11 @@ Deno.test("RepoService.upgrade creates AGENTS.md when switching to copilot", asy
 
     // Upgrade with tool switch to copilot
     const upgradeService = new RepoService("0.2.0");
-    const result = await upgradeService.upgrade(repoPath, { tool: "copilot" });
+    const result = await upgradeService.upgrade(repoPath, {
+      tools: ["copilot"],
+    });
 
-    assertEquals(result.tool, "copilot");
+    assertEquals(result.tools[0], "copilot");
 
     // Verify AGENTS.md created
     const instructionsPath = join(tempDir, "AGENTS.md");
@@ -863,7 +870,7 @@ Deno.test("RepoService.upgrade defaults to claude for pre-existing repos without
     const upgradeService = new RepoService("0.2.0");
     const result = await upgradeService.upgrade(repoPath);
 
-    assertEquals(result.tool, "claude");
+    assertEquals(result.tools[0], "claude");
   });
 });
 
@@ -872,7 +879,7 @@ Deno.test("RepoService.upgrade skips settings for non-claude tools", async () =>
     const service = new RepoService("0.1.0");
     const repoPath = RepoPath.create(tempDir);
 
-    await service.init(repoPath, { tool: "cursor" });
+    await service.init(repoPath, { tools: ["cursor"] });
 
     const upgradeService = new RepoService("0.2.0");
     const result = await upgradeService.upgrade(repoPath);
@@ -944,7 +951,7 @@ Deno.test("RepoService.init cursor instructions have MDC frontmatter", async () 
     const service = new RepoService("0.1.0");
     const repoPath = RepoPath.create(tempDir);
 
-    await service.init(repoPath, { tool: "cursor" });
+    await service.init(repoPath, { tools: ["cursor"] });
 
     const mdcPath = join(tempDir, ".cursor", "rules", "swamp.mdc");
     const content = await Deno.readTextFile(mdcPath);
@@ -974,7 +981,7 @@ Deno.test("RepoService.init includes tool-specific gitignore entries", async () 
       const service = new RepoService("0.1.0");
       const repoPath = RepoPath.create(tempDir);
 
-      await service.init(repoPath, { tool });
+      await service.init(repoPath, { tools: [tool] });
 
       const gitignorePath = join(tempDir, ".gitignore");
       const content = await Deno.readTextFile(gitignorePath);
@@ -1031,7 +1038,7 @@ Deno.test("RepoService.init replaces managed section on tool switch", async () =
     // Re-init with cursor (force)
     const result = await service.init(repoPath, {
       force: true,
-      tool: "cursor",
+      tools: ["cursor"],
     });
 
     assertEquals(result.gitignoreAction, "updated");
@@ -1057,7 +1064,9 @@ Deno.test("RepoService.upgrade updates managed section on tool switch", async ()
 
     // Upgrade with tool switch to cursor (marker has gitignoreManaged: true)
     const upgradeService = new RepoService("0.2.0");
-    const result = await upgradeService.upgrade(repoPath, { tool: "cursor" });
+    const result = await upgradeService.upgrade(repoPath, {
+      tools: ["cursor"],
+    });
 
     assertEquals(result.gitignoreAction, "updated");
     const content = await Deno.readTextFile(gitignorePath);
@@ -1259,9 +1268,9 @@ Deno.test("RepoService.init with kiro creates .kiro/skills/ and steering file wi
     const service = new RepoService("0.1.0");
     const repoPath = RepoPath.create(tempDir);
 
-    const result = await service.init(repoPath, { tool: "kiro" });
+    const result = await service.init(repoPath, { tools: ["kiro"] });
 
-    assertEquals(result.tool, "kiro");
+    assertEquals(result.tools[0], "kiro");
     assertEquals(result.instructionsFileCreated, true);
     assertEquals(result.settingsCreated, true);
 
@@ -1307,9 +1316,9 @@ Deno.test("RepoService.upgrade allows switching to kiro and creates steering fil
 
     // Upgrade with tool switch to kiro
     const upgradeService = new RepoService("0.2.0");
-    const result = await upgradeService.upgrade(repoPath, { tool: "kiro" });
+    const result = await upgradeService.upgrade(repoPath, { tools: ["kiro"] });
 
-    assertEquals(result.tool, "kiro");
+    assertEquals(result.tools[0], "kiro");
     assertEquals(result.settingsUpdated, true);
 
     // Verify skills exist in kiro dir
@@ -1319,7 +1328,7 @@ Deno.test("RepoService.upgrade allows switching to kiro and creates steering fil
 
     // Verify marker updated with new tool
     const marker = await upgradeService.getMarker(repoPath);
-    assertEquals(marker!.tool, "kiro");
+    assertEquals(marker!.tools?.[0], "kiro");
 
     // Verify steering file created
     const steeringPath = join(
@@ -1347,7 +1356,7 @@ Deno.test("RepoService.init with kiro does not create claude settings", async ()
     const service = new RepoService("0.1.0");
     const repoPath = RepoPath.create(tempDir);
 
-    await service.init(repoPath, { tool: "kiro" });
+    await service.init(repoPath, { tools: ["kiro"] });
 
     // Check no .claude/ settings created
     const claudeSettingsPath = join(
@@ -1371,7 +1380,7 @@ Deno.test("RepoService.init kiro gitignore contains .kiro/skills/", async () => 
     const service = new RepoService("0.1.0");
     const repoPath = RepoPath.create(tempDir);
 
-    await service.init(repoPath, { tool: "kiro" });
+    await service.init(repoPath, { tools: ["kiro"] });
 
     const gitignorePath = join(tempDir, ".gitignore");
     const content = await Deno.readTextFile(gitignorePath);
@@ -1388,9 +1397,9 @@ Deno.test("RepoService.init with cursor creates .cursor/hooks.json", async () =>
     const service = new RepoService("0.1.0");
     const repoPath = RepoPath.create(tempDir);
 
-    const result = await service.init(repoPath, { tool: "cursor" });
+    const result = await service.init(repoPath, { tools: ["cursor"] });
 
-    assertEquals(result.tool, "cursor");
+    assertEquals(result.tools[0], "cursor");
     assertEquals(result.settingsCreated, true);
 
     const hooksPath = join(tempDir, ".cursor", "hooks.json");
@@ -1414,7 +1423,7 @@ Deno.test("RepoService.init with cursor force reinit merges hooks", async () => 
     const repoPath = RepoPath.create(tempDir);
 
     // First init creates hooks
-    await service.init(repoPath, { tool: "cursor" });
+    await service.init(repoPath, { tools: ["cursor"] });
 
     // Add a custom hook to existing file
     const hooksPath = join(tempDir, ".cursor", "hooks.json");
@@ -1423,7 +1432,7 @@ Deno.test("RepoService.init with cursor force reinit merges hooks", async () => 
     await Deno.writeTextFile(hooksPath, JSON.stringify(existing, null, 2));
 
     // Force reinit should merge, not overwrite
-    await service.init(repoPath, { tool: "cursor", force: true });
+    await service.init(repoPath, { tools: ["cursor"], force: true });
 
     const content = JSON.parse(await Deno.readTextFile(hooksPath));
     // Both our hook and the custom hook should be present
@@ -1444,12 +1453,14 @@ Deno.test("RepoService.upgrade with cursor updates hooks", async () => {
     const service = new RepoService("0.1.0");
     const repoPath = RepoPath.create(tempDir);
 
-    await service.init(repoPath, { tool: "cursor" });
+    await service.init(repoPath, { tools: ["cursor"] });
 
     const upgradeService = new RepoService("0.2.0");
-    const result = await upgradeService.upgrade(repoPath, { tool: "cursor" });
+    const result = await upgradeService.upgrade(repoPath, {
+      tools: ["cursor"],
+    });
 
-    assertEquals(result.tool, "cursor");
+    assertEquals(result.tools[0], "cursor");
 
     const hooksPath = join(tempDir, ".cursor", "hooks.json");
     const content = await Deno.readTextFile(hooksPath);
@@ -1468,7 +1479,7 @@ Deno.test("RepoService.init with kiro creates .kiro/hooks/swamp-audit.kiro.hook"
     const service = new RepoService("0.1.0");
     const repoPath = RepoPath.create(tempDir);
 
-    const result = await service.init(repoPath, { tool: "kiro" });
+    const result = await service.init(repoPath, { tools: ["kiro"] });
 
     assertEquals(result.settingsCreated, true);
 
@@ -1501,12 +1512,12 @@ Deno.test("RepoService.upgrade with kiro updates hooks", async () => {
     const service = new RepoService("0.1.0");
     const repoPath = RepoPath.create(tempDir);
 
-    await service.init(repoPath, { tool: "kiro" });
+    await service.init(repoPath, { tools: ["kiro"] });
 
     const upgradeService = new RepoService("0.2.0");
-    const result = await upgradeService.upgrade(repoPath, { tool: "kiro" });
+    const result = await upgradeService.upgrade(repoPath, { tools: ["kiro"] });
 
-    assertEquals(result.tool, "kiro");
+    assertEquals(result.tools[0], "kiro");
 
     const hookPath = join(
       tempDir,
@@ -1528,14 +1539,14 @@ Deno.test("RepoService.upgrade with kiro removes old swamp-audit.json hook file"
     const service = new RepoService("0.1.0");
     const repoPath = RepoPath.create(tempDir);
 
-    await service.init(repoPath, { tool: "kiro" });
+    await service.init(repoPath, { tools: ["kiro"] });
 
     // Simulate an old hook file left from a previous version
     const oldHookPath = join(tempDir, ".kiro", "hooks", "swamp-audit.json");
     await Deno.writeTextFile(oldHookPath, "{}");
 
     const upgradeService = new RepoService("0.2.0");
-    await upgradeService.upgrade(repoPath, { tool: "kiro" });
+    await upgradeService.upgrade(repoPath, { tools: ["kiro"] });
 
     // Old .json hook file should be removed
     await assertRejects(
@@ -1563,7 +1574,7 @@ Deno.test("RepoService.init with kiro creates .kiro/agents/swamp.json", async ()
     const service = new RepoService("0.1.0");
     const repoPath = RepoPath.create(tempDir);
 
-    await service.init(repoPath, { tool: "kiro" });
+    await service.init(repoPath, { tools: ["kiro"] });
 
     const configPath = join(tempDir, ".kiro", "agents", "swamp.json");
     const content = await Deno.readTextFile(configPath);
@@ -1593,10 +1604,10 @@ Deno.test("RepoService.upgrade with kiro updates agent config", async () => {
     const service = new RepoService("0.1.0");
     const repoPath = RepoPath.create(tempDir);
 
-    await service.init(repoPath, { tool: "kiro" });
+    await service.init(repoPath, { tools: ["kiro"] });
 
     const upgradeService = new RepoService("0.2.0");
-    await upgradeService.upgrade(repoPath, { tool: "kiro" });
+    await upgradeService.upgrade(repoPath, { tools: ["kiro"] });
 
     const configPath = join(tempDir, ".kiro", "agents", "swamp.json");
     const content = await Deno.readTextFile(configPath);
@@ -1615,7 +1626,7 @@ Deno.test("RepoService.init with kiro produces hook, agent, and cli.json togethe
     const service = new RepoService("0.1.0");
     const repoPath = RepoPath.create(tempDir);
 
-    await service.init(repoPath, { tool: "kiro" });
+    await service.init(repoPath, { tools: ["kiro"] });
 
     // Hook file
     const hookPath = join(tempDir, ".kiro", "hooks", "swamp-audit.kiro.hook");
@@ -1648,7 +1659,7 @@ Deno.test("RepoService.init with kiro merges existing cli.json preserving unrela
 
     const service = new RepoService("0.1.0");
     const repoPath = RepoPath.create(tempDir);
-    await service.init(repoPath, { tool: "kiro" });
+    await service.init(repoPath, { tools: ["kiro"] });
 
     const cli = JSON.parse(await Deno.readTextFile(cliPath));
     assertEquals(cli["chat.defaultAgent"], "swamp");
@@ -1669,7 +1680,7 @@ Deno.test("RepoService.init with kiro leaves existing non-swamp defaultAgent alo
 
     const service = new RepoService("0.1.0");
     const repoPath = RepoPath.create(tempDir);
-    await service.init(repoPath, { tool: "kiro" });
+    await service.init(repoPath, { tools: ["kiro"] });
 
     const cli = JSON.parse(await Deno.readTextFile(cliPath));
     assertEquals(cli["chat.defaultAgent"], "my-custom-agent");
@@ -1683,9 +1694,9 @@ Deno.test("RepoService.init with opencode creates .opencode/plugins/swamp-audit.
     const service = new RepoService("0.1.0");
     const repoPath = RepoPath.create(tempDir);
 
-    const result = await service.init(repoPath, { tool: "opencode" });
+    const result = await service.init(repoPath, { tools: ["opencode"] });
 
-    assertEquals(result.tool, "opencode");
+    assertEquals(result.tools[0], "opencode");
     assertEquals(result.settingsCreated, true);
 
     const pluginPath = join(tempDir, ".opencode", "plugins", "swamp-audit.ts");
@@ -1703,12 +1714,14 @@ Deno.test("RepoService.upgrade with opencode updates plugin", async () => {
     const service = new RepoService("0.1.0");
     const repoPath = RepoPath.create(tempDir);
 
-    await service.init(repoPath, { tool: "opencode" });
+    await service.init(repoPath, { tools: ["opencode"] });
 
     const upgradeService = new RepoService("0.2.0");
-    const result = await upgradeService.upgrade(repoPath, { tool: "opencode" });
+    const result = await upgradeService.upgrade(repoPath, {
+      tools: ["opencode"],
+    });
 
-    assertEquals(result.tool, "opencode");
+    assertEquals(result.tools[0], "opencode");
 
     const pluginPath = join(tempDir, ".opencode", "plugins", "swamp-audit.ts");
     const content = await Deno.readTextFile(pluginPath);
@@ -1723,14 +1736,14 @@ Deno.test("RepoService.init with opencode force reinit overwrites plugin", async
     const repoPath = RepoPath.create(tempDir);
 
     // First init
-    await service.init(repoPath, { tool: "opencode" });
+    await service.init(repoPath, { tools: ["opencode"] });
 
     // Modify the plugin
     const pluginPath = join(tempDir, ".opencode", "plugins", "swamp-audit.ts");
     await Deno.writeTextFile(pluginPath, "// custom content");
 
     // Force reinit should overwrite the managed plugin
-    await service.init(repoPath, { tool: "opencode", force: true });
+    await service.init(repoPath, { tools: ["opencode"], force: true });
 
     const content = await Deno.readTextFile(pluginPath);
     assertStringIncludes(content, '"--from-hook"');
@@ -1941,14 +1954,16 @@ Deno.test("RepoService.upgrade cursor files are still fully overwritten (no mark
     const service = new RepoService("0.1.0");
     const repoPath = RepoPath.create(tempDir);
 
-    await service.init(repoPath, { tool: "cursor" });
+    await service.init(repoPath, { tools: ["cursor"] });
 
     // Replace cursor instructions with stale content
     const mdcPath = join(tempDir, ".cursor", "rules", "swamp.mdc");
     await Deno.writeTextFile(mdcPath, "---\nalwaysApply: true\n---\nold");
 
     const upgradeService = new RepoService("0.2.0");
-    const result = await upgradeService.upgrade(repoPath, { tool: "cursor" });
+    const result = await upgradeService.upgrade(repoPath, {
+      tools: ["cursor"],
+    });
 
     assertEquals(result.instructionsUpdated, true);
 
@@ -1969,7 +1984,7 @@ Deno.test("RepoService.upgrade kiro files are still fully overwritten (no marker
     const service = new RepoService("0.1.0");
     const repoPath = RepoPath.create(tempDir);
 
-    await service.init(repoPath, { tool: "kiro" });
+    await service.init(repoPath, { tools: ["kiro"] });
 
     // Replace kiro instructions with stale content
     const steeringPath = join(
@@ -1984,7 +1999,7 @@ Deno.test("RepoService.upgrade kiro files are still fully overwritten (no marker
     );
 
     const upgradeService = new RepoService("0.2.0");
-    const result = await upgradeService.upgrade(repoPath, { tool: "kiro" });
+    const result = await upgradeService.upgrade(repoPath, { tools: ["kiro"] });
 
     assertEquals(result.instructionsUpdated, true);
 
@@ -2005,7 +2020,7 @@ Deno.test("RepoService.init with opencode creates AGENTS.md with markers", async
     const service = new RepoService("0.1.0");
     const repoPath = RepoPath.create(tempDir);
 
-    await service.init(repoPath, { tool: "opencode" });
+    await service.init(repoPath, { tools: ["opencode"] });
 
     const agentsMdPath = join(tempDir, "AGENTS.md");
     const content = await Deno.readTextFile(agentsMdPath);
@@ -2180,18 +2195,18 @@ Deno.test("RepoService.init with tool none creates core structure but skips skil
     const service = new RepoService("0.1.0");
     const repoPath = RepoPath.create(tempDir);
 
-    const result = await service.init(repoPath, { tool: "none" });
+    const result = await service.init(repoPath, { tools: [] });
 
     // Core structure should exist
-    assertEquals(result.tool, "none");
+    assertEquals(result.tools, []);
     const swampDir = join(tempDir, ".swamp");
     const stat = await Deno.stat(swampDir);
     assertEquals(stat.isDirectory, true);
 
-    // .swamp.yaml should exist with tool: none
+    // .swamp.yaml should exist with empty tools array
     const markerPath = join(tempDir, ".swamp.yaml");
     const markerContent = await Deno.readTextFile(markerPath);
-    assertStringIncludes(markerContent, "tool: none");
+    assertStringIncludes(markerContent, "tools: []");
 
     // Models/workflows/vaults dirs should exist
     for (const dir of ["models", "workflows", "vaults"]) {
@@ -2230,15 +2245,217 @@ Deno.test("RepoService.upgrade with tool none skips skills and instructions", as
     const repoPath = RepoPath.create(tempDir);
 
     // Init with none first
-    await service.init(repoPath, { tool: "none" });
+    await service.init(repoPath, { tools: [] });
 
     // Upgrade
     const upgradeService = new RepoService("0.2.0");
-    const result = await upgradeService.upgrade(repoPath, { tool: "none" });
+    const result = await upgradeService.upgrade(repoPath, { tools: [] });
 
-    assertEquals(result.tool, "none");
+    assertEquals(result.tools, []);
     assertEquals(result.skillsUpdated, []);
     assertEquals(result.instructionsUpdated, false);
     assertEquals(result.settingsUpdated, false);
+  });
+});
+
+Deno.test("RepoService.init with multiple tools writes scaffolding for each", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    const result = await service.init(repoPath, {
+      tools: ["claude", "kiro"],
+    });
+
+    assertEquals(result.tools, ["claude", "kiro"]);
+
+    // Both tools' skill dirs should exist
+    const claudeStat = await Deno.stat(join(tempDir, ".claude", "skills"));
+    assertEquals(claudeStat.isDirectory, true);
+    const kiroStat = await Deno.stat(join(tempDir, ".kiro", "skills"));
+    assertEquals(kiroStat.isDirectory, true);
+
+    // Marker should list both
+    const markerRepo = new RepoMarkerRepository();
+    const marker = await markerRepo.read(repoPath);
+    assertEquals(marker!.tools, ["claude", "kiro"]);
+    assertEquals(marker!.tool, undefined);
+
+    // .gitignore should contain entries for both tools
+    const gitignore = await Deno.readTextFile(join(tempDir, ".gitignore"));
+    assertStringIncludes(gitignore, ".claude/");
+    assertStringIncludes(gitignore, ".kiro/skills/");
+  });
+});
+
+Deno.test("RepoService.init with duplicate --tool values dedupes", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    const result = await service.init(repoPath, {
+      tools: ["claude", "claude", "kiro"],
+    });
+
+    assertEquals(result.tools, ["claude", "kiro"]);
+  });
+});
+
+Deno.test("RepoService.init with shared-dir tools (opencode + codex) keeps a single managed gitignore section", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    await service.init(repoPath, { tools: ["opencode", "codex", "copilot"] });
+
+    const gitignore = await Deno.readTextFile(join(tempDir, ".gitignore"));
+    // Both tools share `.agents/skills/` — should appear exactly once
+    const matches = gitignore.match(/\.agents\/skills\//g) ?? [];
+    assertEquals(matches.length, 1);
+  });
+});
+
+Deno.test("RepoService.upgrade with no tool flag preserves marker.tools", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+    await service.init(repoPath, { tools: ["claude", "kiro"] });
+
+    const upgradeService = new RepoService("0.2.0");
+    const result = await upgradeService.upgrade(repoPath, {});
+
+    assertEquals(result.tools, ["claude", "kiro"]);
+    assertEquals(result.addedTools, []);
+    assertEquals(result.removedTools, []);
+    assertEquals(result.extensionsToReinstall, []);
+  });
+});
+
+Deno.test("RepoService.upgrade replacing the tool list computes the diff", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+    await service.init(repoPath, { tools: ["claude", "kiro"] });
+
+    const upgradeService = new RepoService("0.2.0");
+    const result = await upgradeService.upgrade(repoPath, {
+      tools: ["claude", "opencode"],
+    });
+
+    assertEquals(result.tools, ["claude", "opencode"]);
+    assertEquals(result.addedTools, ["opencode"]);
+    assertEquals(result.removedTools, ["kiro"]);
+  });
+});
+
+Deno.test("RepoService.upgrade clears the tool list when given an empty tools array", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+    await service.init(repoPath, { tools: ["claude", "kiro"] });
+
+    const upgradeService = new RepoService("0.2.0");
+    const result = await upgradeService.upgrade(repoPath, { tools: [] });
+
+    assertEquals(result.tools, []);
+    assertEquals(result.addedTools, []);
+    assertEquals(result.removedTools, ["claude", "kiro"]);
+  });
+});
+
+Deno.test("RepoService.upgrade adding a tool flags pulled extensions to reinstall", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+    await service.init(repoPath, { tools: ["claude"] });
+
+    // Simulate a pulled extension in the primary tool's skills dir
+    const pulledDir = join(tempDir, ".claude", "skills", "swamp-foo");
+    await Deno.mkdir(pulledDir, { recursive: true });
+    await Deno.writeTextFile(
+      join(pulledDir, "SKILL.md"),
+      "# pulled extension",
+    );
+
+    const upgradeService = new RepoService("0.2.0");
+    const result = await upgradeService.upgrade(repoPath, {
+      tools: ["claude", "kiro"],
+    });
+
+    assertEquals(result.addedTools, ["kiro"]);
+    assertEquals(result.extensionsToReinstall, [
+      { tool: "kiro", names: ["swamp-foo"] },
+    ]);
+  });
+});
+
+Deno.test("RepoService.upgrade walks the OLD primary skills dir when primary changes", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+    await service.init(repoPath, { tools: ["claude"] });
+
+    // Pulled extension lives under .claude/skills/, the OLD primary
+    const pulledDir = join(tempDir, ".claude", "skills", "swamp-foo");
+    await Deno.mkdir(pulledDir, { recursive: true });
+    await Deno.writeTextFile(
+      join(pulledDir, "SKILL.md"),
+      "# pulled extension",
+    );
+
+    // Replace claude entirely with kiro — primary becomes kiro after the
+    // upgrade, but the walk must still hit .claude/skills/ to find the
+    // existing pulled extension.
+    const upgradeService = new RepoService("0.2.0");
+    const result = await upgradeService.upgrade(repoPath, {
+      tools: ["kiro"],
+    });
+
+    assertEquals(result.addedTools, ["kiro"]);
+    assertEquals(result.removedTools, ["claude"]);
+    assertEquals(result.extensionsToReinstall, [
+      { tool: "kiro", names: ["swamp-foo"] },
+    ]);
+  });
+});
+
+Deno.test("RepoService.upgrade suppresses extensions warning for shared skills dir", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+    await service.init(repoPath, { tools: ["opencode"] });
+
+    const pulledDir = join(tempDir, ".agents", "skills", "swamp-foo");
+    await Deno.mkdir(pulledDir, { recursive: true });
+    await Deno.writeTextFile(
+      join(pulledDir, "SKILL.md"),
+      "# pulled extension",
+    );
+
+    // opencode and codex share `.agents/skills/`, so adding codex should
+    // not emit a reinstall warning — the extension is already there.
+    const upgradeService = new RepoService("0.2.0");
+    const result = await upgradeService.upgrade(repoPath, {
+      tools: ["opencode", "codex"],
+    });
+
+    assertEquals(result.addedTools, ["codex"]);
+    assertEquals(result.extensionsToReinstall, []);
+  });
+});
+
+Deno.test("RepoService.upgrade adding a tool with no pulled extensions emits no warning", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+    await service.init(repoPath, { tools: ["claude"] });
+
+    const upgradeService = new RepoService("0.2.0");
+    const result = await upgradeService.upgrade(repoPath, {
+      tools: ["claude", "kiro"],
+    });
+
+    assertEquals(result.addedTools, ["kiro"]);
+    assertEquals(result.extensionsToReinstall, []);
   });
 });

@@ -131,9 +131,12 @@ export const doctorAuditCommand = new Command()
 
     const repoDir = resolveRepoDir(options.repoDir);
     const { marker } = await resolveDatastoreForRepo(repoDir);
+    // Pass the primary enrolled tool (or undefined when no tools are
+    // enrolled) so resolveTargetTool throws NoToolConfiguredError only
+    // when neither the flag nor the marker provides a tool.
     const resolvedTool = resolveTargetTool(
       options.tool as string | undefined,
-      marker?.tool,
+      marker?.tools?.[0],
     );
 
     const auditDir = swampPath(repoDir, SWAMP_SUBDIRS.audit);

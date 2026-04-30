@@ -36,6 +36,13 @@ import {
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /**
  * Data structure for the repo init output.
+ *
+ * `tools` is the canonical multi-tool field. `tool` is the deprecated
+ * single-tool field — always present (never omitted), set to the primary
+ * tool when `tools.length === 1`, explicit `null` when `tools.length !== 1`,
+ * so SDK consumers cannot silently miss a multi-tool repo.
+ *
+ * @deprecated `tool` field — read `tools` instead.
  */
 export interface RepoInitData {
   path: string;
@@ -45,7 +52,10 @@ export interface RepoInitData {
   instructionsFileCreated: boolean;
   settingsCreated: boolean;
   gitignoreAction: string;
-  tool: string;
+  tools: string[];
+  removedTools: string[];
+  /** @deprecated Read `tools` instead. `null` when not single-tool. */
+  tool: string | null;
 }
 
 export type RepoInitEvent =
@@ -53,11 +63,19 @@ export type RepoInitEvent =
   | { kind: "completed"; data: RepoInitData }
   | { kind: "error"; error: SwampError };
 
-/** Input for the repo init operation. */
+/**
+ * Input for the repo init operation.
+ *
+ * Provide `tools` for multi-tool support; the deprecated `tool` is accepted
+ * for backwards compat (single-tool callers) and wraps to `[tool]`. When both
+ * are passed, `tools` wins.
+ */
 export interface RepoInitInput {
   path: string;
   force: boolean;
-  tool: string;
+  tools?: string[];
+  /** @deprecated Pass `tools` instead. */
+  tool?: string;
   version: string;
 }
 
@@ -65,7 +83,7 @@ export interface RepoInitInput {
 export interface RepoInitDeps {
   init: (
     repoPath: RepoPath,
-    options: { force?: boolean; tool?: AiTool },
+    options: { force?: boolean; tools?: AiTool[] },
   ) => Promise<RepoInitResult>;
 }
 
@@ -97,7 +115,7 @@ export async function* repoInit(
       try {
         result = await deps.init(repoPath, {
           force: input.force,
-          tool: input.tool as AiTool,
+          tools: resolveToolsInput(input.tools, input.tool),
         });
       } catch (error) {
         yield {
@@ -119,7 +137,9 @@ export async function* repoInit(
         instructionsFileCreated: result.instructionsFileCreated,
         settingsCreated: result.settingsCreated,
         gitignoreAction: result.gitignoreAction,
-        tool: result.tool,
+        tools: result.tools,
+        removedTools: result.removedTools,
+        tool: legacyToolField(result.tools),
       };
 
       yield { kind: "completed", data };
@@ -127,10 +147,49 @@ export async function* repoInit(
   );
 }
 
+/**
+ * Resolves the input tools list, accepting either the new `tools` field or
+ * the deprecated `tool` single-value field. `tools` wins when both are
+ * supplied. Returns `undefined` when neither is given so the caller can
+ * apply its own default (e.g. RepoService.init falls back to `["claude"]`).
+ */
+function resolveToolsInput(
+  tools: string[] | undefined,
+  tool: string | undefined,
+): AiTool[] | undefined {
+  if (tools !== undefined) {
+    return tools as AiTool[];
+  }
+  if (tool !== undefined) {
+    return [tool as AiTool];
+  }
+  return undefined;
+}
+
+/**
+ * Maps the canonical `tools` array onto the deprecated single-value `tool`
+ * field. Returns the primary tool only when exactly one tool is enrolled;
+ * `null` for empty or multi-tool repos so SDK consumers cannot silently
+ * miss state.
+ */
+function legacyToolField(tools: AiTool[]): string | null {
+  return tools.length === 1 ? tools[0] : null;
+}
+
 // --- Repo Upgrade ---
 
 /**
  * Data structure for the repo upgrade output.
+ *
+ * `tools` is the canonical multi-tool field; `addedTools` and `removedTools`
+ * describe the diff against the previous marker. `extensionsToReinstall`
+ * lists pulled extensions present in the previous primary tool's skills dir
+ * that did NOT propagate to a newly-added tool's dir, so the consumer can
+ * surface a "re-run `swamp extension pull <name>`" message. `tool` is the
+ * deprecated single-value field — always present, `null` when not
+ * single-tool.
+ *
+ * @deprecated `tool` field — read `tools` instead.
  */
 export interface RepoUpgradeData {
   path: string;
@@ -141,7 +200,14 @@ export interface RepoUpgradeData {
   instructionsUpdated: boolean;
   settingsUpdated: boolean;
   gitignoreAction: string;
-  tool: string;
+  /** Enrolled tools as recorded by `marker.tools` BEFORE this upgrade. */
+  previousTools: string[];
+  tools: string[];
+  addedTools: string[];
+  removedTools: string[];
+  extensionsToReinstall: { tool: string; names: string[] }[];
+  /** @deprecated Read `tools` instead. `null` when not single-tool. */
+  tool: string | null;
 }
 
 /**
@@ -156,9 +222,18 @@ export type RepoUpgradeEvent =
   | { kind: "completed"; data: RepoUpgradeData }
   | { kind: "error"; error: SwampError };
 
-/** Input for the repo upgrade operation. */
+/**
+ * Input for the repo upgrade operation.
+ *
+ * Provide `tools` to set the full enrolled tool list (replace semantics).
+ * The deprecated `tool` is accepted for backwards compat (single-tool
+ * callers) and wraps to `[tool]`; `tools` wins when both are passed. Pass
+ * neither to preserve `marker.tools` and just bump the swamp version.
+ */
 export interface RepoUpgradeInput {
   path: string;
+  tools?: string[];
+  /** @deprecated Pass `tools` instead. */
   tool?: string;
   includeGitignore?: boolean;
   version: string;
@@ -176,7 +251,7 @@ export interface RepoUpgradeInput {
 export interface RepoUpgradeDeps {
   upgrade: (
     repoPath: RepoPath,
-    options: { tool?: AiTool; includeGitignore?: boolean },
+    options: { tools?: AiTool[]; includeGitignore?: boolean },
   ) => Promise<RepoUpgradeResult>;
 }
 
@@ -219,7 +294,7 @@ export async function* repoUpgrade(
       let result: RepoUpgradeResult;
       try {
         result = await deps.upgrade(repoPath, {
-          tool: input.tool as AiTool | undefined,
+          tools: resolveToolsInput(input.tools, input.tool),
           includeGitignore: input.includeGitignore,
         });
       } catch (error) {
@@ -298,7 +373,12 @@ export async function* repoUpgrade(
         instructionsUpdated: result.instructionsUpdated,
         settingsUpdated: result.settingsUpdated,
         gitignoreAction: result.gitignoreAction,
-        tool: result.tool,
+        previousTools: result.previousTools,
+        tools: result.tools,
+        addedTools: result.addedTools,
+        removedTools: result.removedTools,
+        extensionsToReinstall: result.extensionsToReinstall,
+        tool: legacyToolField(result.tools),
       };
 
       yield { kind: "completed", data };

@@ -42,7 +42,8 @@ function makeInitDeps(
         instructionsFileCreated: true,
         settingsCreated: true,
         gitignoreAction: "created",
-        tool: "claude",
+        tools: ["claude"],
+        removedTools: [],
       }),
     ...overrides,
   };
@@ -62,7 +63,11 @@ function makeUpgradeDeps(
         instructionsUpdated: true,
         settingsUpdated: false,
         gitignoreAction: "updated",
-        tool: "claude",
+        previousTools: ["claude"],
+        tools: ["claude"],
+        addedTools: [],
+        removedTools: [],
+        extensionsToReinstall: [],
       }),
     ...overrides,
   };
@@ -75,7 +80,7 @@ Deno.test("repoInit: yields completed on successful init", async () => {
     repoInit(createLibSwampContext(), deps, {
       path: "/repo",
       force: false,
-      tool: "claude",
+      tools: ["claude"],
       version: "1.0.0",
     }),
   );
@@ -93,7 +98,104 @@ Deno.test("repoInit: yields completed on successful init", async () => {
   assertEquals(completed.data.instructionsFileCreated, true);
   assertEquals(completed.data.settingsCreated, true);
   assertEquals(completed.data.gitignoreAction, "created");
+  assertEquals(completed.data.tools, ["claude"]);
   assertEquals(completed.data.tool, "claude");
+});
+
+Deno.test("repoInit: legacy `tool` field returns null for multi-tool repos", async () => {
+  const deps = makeInitDeps({
+    init: () =>
+      Promise.resolve({
+        path: "/repo",
+        version: "1.0.0",
+        initializedAt: "2026-01-01T00:00:00Z",
+        skillsCopied: [],
+        instructionsFileCreated: true,
+        settingsCreated: true,
+        gitignoreAction: "created",
+        tools: ["claude", "kiro"],
+        removedTools: [],
+      }),
+  });
+
+  const events = await collect<RepoInitEvent>(
+    repoInit(createLibSwampContext(), deps, {
+      path: "/repo",
+      force: false,
+      tools: ["claude", "kiro"],
+      version: "1.0.0",
+    }),
+  );
+
+  const completed = events[1] as Extract<
+    RepoInitEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.data.tools, ["claude", "kiro"]);
+  assertEquals(completed.data.tool, null);
+});
+
+Deno.test("repoInit: legacy `tool` input wraps into the tools array", async () => {
+  let capturedOptions: { tools?: string[] } | undefined;
+  const deps = makeInitDeps({
+    init: (_repoPath, options) => {
+      capturedOptions = options;
+      return Promise.resolve({
+        path: "/repo",
+        version: "1.0.0",
+        initializedAt: "2026-01-01T00:00:00Z",
+        skillsCopied: [],
+        instructionsFileCreated: true,
+        settingsCreated: true,
+        gitignoreAction: "created",
+        tools: ["kiro"],
+        removedTools: [],
+      });
+    },
+  });
+
+  await collect<RepoInitEvent>(
+    repoInit(createLibSwampContext(), deps, {
+      path: "/repo",
+      force: false,
+      tool: "kiro",
+      version: "1.0.0",
+    }),
+  );
+
+  assertEquals(capturedOptions?.tools, ["kiro"]);
+});
+
+Deno.test("repoInit: when both `tools` and `tool` are passed, `tools` wins", async () => {
+  let capturedOptions: { tools?: string[] } | undefined;
+  const deps = makeInitDeps({
+    init: (_repoPath, options) => {
+      capturedOptions = options;
+      return Promise.resolve({
+        path: "/repo",
+        version: "1.0.0",
+        initializedAt: "2026-01-01T00:00:00Z",
+        skillsCopied: [],
+        instructionsFileCreated: true,
+        settingsCreated: true,
+        gitignoreAction: "created",
+        tools: ["claude", "kiro"],
+        removedTools: [],
+      });
+    },
+  });
+
+  await collect<RepoInitEvent>(
+    repoInit(createLibSwampContext(), deps, {
+      path: "/repo",
+      force: false,
+      tools: ["claude", "kiro"],
+      tool: "opencode",
+      version: "1.0.0",
+    }),
+  );
+
+  assertEquals(capturedOptions?.tools, ["claude", "kiro"]);
 });
 
 Deno.test("repoUpgrade: yields completed on successful upgrade", async () => {
@@ -120,5 +222,6 @@ Deno.test("repoUpgrade: yields completed on successful upgrade", async () => {
   assertEquals(completed.data.instructionsUpdated, true);
   assertEquals(completed.data.settingsUpdated, false);
   assertEquals(completed.data.gitignoreAction, "updated");
+  assertEquals(completed.data.tools, ["claude"]);
   assertEquals(completed.data.tool, "claude");
 });

@@ -32,6 +32,7 @@ import {
   normalizeHookInput,
 } from "../../domain/audit/hook_input.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
+import { resolvePrimaryTool } from "../../domain/repo/primary_tool.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import {
   auditTimeline,
@@ -177,7 +178,7 @@ export const auditCommand = new Command()
     // Check if the configured tool supports audit hooks
     const markerRepo = new RepoMarkerRepository();
     const marker = await markerRepo.read(RepoPath.create(repoDir));
-    const configuredTool = marker?.tool ?? "claude";
+    const configuredTool = resolvePrimaryTool(marker);
 
     const libCtx = createLibSwampContext({ logger: ctx.logger });
     const deps = createAuditTimelineDeps(repoDir);

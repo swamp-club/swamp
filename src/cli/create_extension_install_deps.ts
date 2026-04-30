@@ -21,6 +21,7 @@ import { join, resolve } from "@std/path";
 import type { Logger } from "@logtape/logtape";
 import { RepoPath } from "../domain/repo/repo_path.ts";
 import { resolveSkillsDir } from "../domain/repo/skill_dirs.ts";
+import { resolvePrimaryTool } from "../domain/repo/primary_tool.ts";
 import { RepoMarkerRepository } from "../infrastructure/persistence/repo_marker_repository.ts";
 import { ExtensionApiClient } from "../infrastructure/http/extension_api_client.ts";
 import {
@@ -53,7 +54,7 @@ export async function createExtensionInstallDeps(
   const modelsDir = resolveModelsDir(marker);
   const absoluteModelsDir = resolve(absoluteRepoDir, modelsDir);
   const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
-  const tool = marker?.tool ?? "claude";
+  const tool = resolvePrimaryTool(marker);
   const skillsDir = resolveSkillsDir(absoluteRepoDir, tool);
 
   const serverUrl = resolveServerUrl();

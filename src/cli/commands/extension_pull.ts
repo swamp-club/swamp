@@ -33,6 +33,7 @@ import {
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { UserError } from "../../domain/errors.ts";
 import { resolveSkillsDir } from "../../domain/repo/skill_dirs.ts";
+import { resolvePrimaryTool } from "../../domain/repo/primary_tool.ts";
 import {
   ConflictError,
   consumeStream,
@@ -202,7 +203,7 @@ export const extensionPullCommand = new Command()
     // models/workflows/vaults/drivers/datastores/reports destinations
     // are derived inside installExtension from `ref.name` — the CLI
     // doesn't need to compute them.
-    const tool = marker?.tool ?? "claude";
+    const tool = resolvePrimaryTool(marker);
     const skillsDir = resolveSkillsDir(repoDir, tool);
 
     // 7. Create deps via factory and pull

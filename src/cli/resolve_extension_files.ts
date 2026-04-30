@@ -39,6 +39,7 @@ import { resolveDriversDir } from "./resolve_drivers_dir.ts";
 import { resolveDatastoresDir } from "./resolve_datastores_dir.ts";
 import { resolveReportsDir } from "./resolve_reports_dir.ts";
 import { SKILL_DIRS } from "../domain/repo/skill_dirs.ts";
+import { resolvePrimaryTool } from "../domain/repo/primary_tool.ts";
 
 export interface ResolveExtensionFilesContext {
   repoDir: string;
@@ -383,7 +384,7 @@ export async function resolveExtensionFiles(
   const skillDirs: Array<{ name: string; absolutePath: string }> = [];
   const allSkillFiles: string[] = [];
   if (manifest.skills.length > 0) {
-    const tool = marker?.tool ?? "claude";
+    const tool = resolvePrimaryTool(marker);
     const projectSkillDir = SKILL_DIRS[tool]
       ? resolve(repoDir, SKILL_DIRS[tool])
       : null;

@@ -44,6 +44,7 @@ import {
 } from "../../libswamp/mod.ts";
 import { createExtensionUpdateRenderer } from "../../presentation/renderers/extension_update.ts";
 import { resolveSkillsDir } from "../../domain/repo/skill_dirs.ts";
+import { resolvePrimaryTool } from "../../domain/repo/primary_tool.ts";
 import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -90,7 +91,7 @@ export const extensionUpdateCommand = new Command()
     // Per-extension models/workflows/vaults/drivers/datastores/reports
     // destinations are derived inside installExtension from the
     // extension's scoped name. Only skillsDir is tool-dependent.
-    const tool = marker?.tool ?? "claude";
+    const tool = resolvePrimaryTool(marker);
     const skillsDir = resolveSkillsDir(repoDir, tool);
 
     // 3. Warn (don't block) on legacy layout. update pulls new versions

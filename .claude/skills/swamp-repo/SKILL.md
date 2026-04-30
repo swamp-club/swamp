@@ -1,6 +1,6 @@
 ---
 name: swamp-repo
-description: Manage swamp repositories, datastores, extension sources, and the audit integration — initializing repos, upgrading swamp, syncing data, releasing stuck locks, loading extensions from external paths, installing swamp in CI, and verifying the audit pipeline with `swamp doctor audit`. Use when initializing repos, upgrading swamp, starting the webapp, configuring datastores, managing extension sources, setting up CI/CD, or diagnosing broken audit hooks. Triggers on "repo", "repository", "init", "swamp init", "setup swamp", "upgrade swamp", "webapp", ".swamp folder", "datastore", "datastore status", "datastore sync", "datastore lock", "s3 datastore", "filesystem datastore", "stuck lock", "install swamp", "CI/CD", "GitHub Actions", "extension source", ".swamp-sources.yaml", "source add", "source rm", "source list", "doctor audit", "verify audit", "preflight", "audit log empty".
+description: Manage swamp repositories, datastores, extension sources, and the audit integration — initializing repos (single or multi-tool), upgrading swamp, syncing data, releasing stuck locks, loading extensions from external paths, installing swamp in CI, and verifying the audit pipeline with `swamp doctor audit`. Use when initializing repos, upgrading swamp, starting the webapp, configuring datastores, managing extension sources, setting up CI/CD, enrolling multiple AI tools (Claude Code, Kiro, Cursor, OpenCode, Codex, Copilot) in one repo, or diagnosing broken audit hooks. Triggers on "repo", "repository", "init", "swamp init", "setup swamp", "upgrade swamp", "webapp", ".swamp folder", "datastore", "datastore status", "datastore sync", "datastore lock", "s3 datastore", "filesystem datastore", "stuck lock", "install swamp", "CI/CD", "GitHub Actions", "extension source", ".swamp-sources.yaml", "source add", "source rm", "source list", "doctor audit", "verify audit", "preflight", "audit log empty", "multi-tool repo", "multiple tools", "multiple agents", "--tool", "enroll tool", "primary tool", "tools array", "marker.tools".
 ---
 
 # Swamp Repository Skill
@@ -65,6 +65,33 @@ swamp repo init --json
 swamp repo init ./my-automation --json
 ```
 
+### Multi-tool repos
+
+`--tool` is repeatable to enroll multiple AI agent tools (Claude Code, Kiro,
+Cursor, OpenCode, Codex, Copilot) in the same repo. Each tool's scaffolding
+(skills directory, instructions file, settings/hooks) is written independently
+since the paths don't overlap. The marker stores the full enrolled list as
+`tools: [...]`.
+
+```bash
+# Enroll one tool (default: claude)
+swamp repo init --json
+
+# Enroll multiple tools at once
+swamp repo init --tool claude --tool kiro --json
+
+# Skip tool scaffolding
+swamp repo init --tool none --json
+```
+
+The **primary tool** is the first entry in `marker.tools` — it's used by
+commands that still operate on a single tool (audit recording, extension skills
+directory resolution). Order is preserved; appending a tool keeps the existing
+primary stable.
+
+Duplicate `--tool` values are silently collapsed. `--tool none` cannot be
+combined with other `--tool` values.
+
 **Output shape:**
 
 ```json
@@ -118,6 +145,30 @@ swamp repo upgrade ./my-automation --json
 
 Run `swamp repo upgrade` after updating the swamp binary to ensure your
 repository has the latest skill files and configuration.
+
+`--tool` on `swamp repo upgrade` has **replace semantics** — the value(s) you
+pass become the full enrolled tool list. Plain `swamp repo upgrade` with no
+`--tool` flag preserves `marker.tools` and just bumps the version, re-syncing
+scaffolding for every enrolled tool.
+
+```bash
+# Just bump the version, preserve the enrolled tools
+swamp repo upgrade
+
+# Add kiro to a [claude] repo (must list the full intended set)
+swamp repo upgrade --tool claude --tool kiro
+
+# Drop kiro from a [claude, kiro] repo
+swamp repo upgrade --tool claude
+
+# Clear all enrolled tools (drops scaffolding files stay on disk)
+swamp repo upgrade --tool none
+```
+
+Dropping a tool from the list does **not** delete its on-disk files (`.kiro/`,
+etc.) — remove them by hand if desired. Adding a tool that didn't share a skills
+directory with the previous primary surfaces an `extensionsToReinstall` warning
+naming pulled extensions that need to be re-installed for the new tool.
 
 If the upgrade detects extensions tracked at a legacy on-disk layout
 (`extensions/<type>/…` or `.swamp/pulled-extensions/<type>/…`), it re-pulls each

@@ -19,7 +19,10 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
-import { RepoMarkerRepository } from "./repo_marker_repository.ts";
+import {
+  type RepoMarkerData,
+  RepoMarkerRepository,
+} from "./repo_marker_repository.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { SwampVersion } from "../../domain/repo/swamp_version.ts";
 
@@ -259,6 +262,136 @@ Deno.test("RepoMarkerRepository.write and read roundtrip with telemetryDisabled"
     const result = await repo.read(repoPath);
 
     assertEquals(result, original);
+  });
+});
+
+Deno.test("RepoMarkerRepository.read promotes legacy `tool` to `tools` and strips legacy field", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new RepoMarkerRepository();
+    const repoPath = RepoPath.create(dir);
+
+    const markerPath = join(dir, ".swamp.yaml");
+    const content = `swampVersion: "1.2.3"
+initializedAt: "2024-01-15T10:30:00.000Z"
+tool: claude
+`;
+    await Deno.writeTextFile(markerPath, content);
+
+    const result = await repo.read(repoPath);
+
+    assertEquals(result !== null, true);
+    assertEquals(result!.tools, ["claude"]);
+    assertEquals(result!.tool, undefined);
+  });
+});
+
+Deno.test("RepoMarkerRepository.read prefers `tools` when both fields are present", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new RepoMarkerRepository();
+    const repoPath = RepoPath.create(dir);
+
+    const markerPath = join(dir, ".swamp.yaml");
+    const content = `swampVersion: "1.2.3"
+initializedAt: "2024-01-15T10:30:00.000Z"
+tool: claude
+tools:
+  - kiro
+  - opencode
+`;
+    await Deno.writeTextFile(markerPath, content);
+
+    const result = await repo.read(repoPath);
+
+    assertEquals(result!.tools, ["kiro", "opencode"]);
+    assertEquals(result!.tool, undefined);
+  });
+});
+
+Deno.test("RepoMarkerRepository.read passes `tools` through unchanged", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new RepoMarkerRepository();
+    const repoPath = RepoPath.create(dir);
+
+    const markerPath = join(dir, ".swamp.yaml");
+    const content = `swampVersion: "1.2.3"
+initializedAt: "2024-01-15T10:30:00.000Z"
+tools:
+  - claude
+  - kiro
+`;
+    await Deno.writeTextFile(markerPath, content);
+
+    const result = await repo.read(repoPath);
+
+    assertEquals(result!.tools, ["claude", "kiro"]);
+    assertEquals(result!.tool, undefined);
+  });
+});
+
+Deno.test("RepoMarkerRepository.write drops legacy `tool` field", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new RepoMarkerRepository();
+    const repoPath = RepoPath.create(dir);
+
+    const data: RepoMarkerData = {
+      swampVersion: "1.0.0",
+      initializedAt: "2024-01-15T10:30:00.000Z",
+      tool: "claude",
+      tools: ["claude"],
+    };
+
+    await repo.write(repoPath, data);
+
+    const markerPath = join(dir, ".swamp.yaml");
+    const content = await Deno.readTextFile(markerPath);
+    assertStringIncludes(content, "tools:");
+    // No top-level `tool:` line
+    assertEquals(content.match(/^tool:/m), null);
+  });
+});
+
+Deno.test("RepoMarkerRepository round-trips a legacy marker into the canonical shape", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new RepoMarkerRepository();
+    const repoPath = RepoPath.create(dir);
+
+    const markerPath = join(dir, ".swamp.yaml");
+    const legacy = `swampVersion: "1.2.3"
+initializedAt: "2024-01-15T10:30:00.000Z"
+tool: kiro
+`;
+    await Deno.writeTextFile(markerPath, legacy);
+
+    const read = await repo.read(repoPath);
+    await repo.write(repoPath, read!);
+
+    const rewritten = await Deno.readTextFile(markerPath);
+    assertStringIncludes(rewritten, "tools:");
+    assertStringIncludes(rewritten, "kiro");
+    assertEquals(rewritten.match(/^tool:/m), null);
+
+    const reread = await repo.read(repoPath);
+    assertEquals(reread!.tools, ["kiro"]);
+    assertEquals(reread!.tool, undefined);
+  });
+});
+
+Deno.test("RepoMarkerRepository round-trips an empty `tools` array", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new RepoMarkerRepository();
+    const repoPath = RepoPath.create(dir);
+
+    const data: RepoMarkerData = {
+      swampVersion: "1.0.0",
+      initializedAt: "2024-01-15T10:30:00.000Z",
+      tools: [],
+    };
+
+    await repo.write(repoPath, data);
+    const result = await repo.read(repoPath);
+
+    assertEquals(result!.tools, []);
+    assertEquals(result!.tool, undefined);
   });
 });
 
