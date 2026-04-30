@@ -138,7 +138,13 @@ Deno.test("concurrent allocateVersion returns unique versions", async () => {
       }]`,
     );
   } finally {
-    await Deno.remove(tmpDir, { recursive: true });
+    if (Deno.build.os === "windows") {
+      // Best-effort: EBUSY can fire when V8 hasn't GC'd native
+      // sqlite handles yet. Temp dir is ephemeral, OS reclaims.
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
   }
 });
 
@@ -183,7 +189,13 @@ Deno.test("concurrent save returns unique versions with distinct content", async
       assertEquals(saved !== null, true, `Version ${version} content is null`);
     }
   } finally {
-    await Deno.remove(tmpDir, { recursive: true });
+    if (Deno.build.os === "windows") {
+      // Best-effort: EBUSY can fire when V8 hasn't GC'd native
+      // sqlite handles yet. Temp dir is ephemeral, OS reclaims.
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
   }
 });
 
@@ -205,7 +217,13 @@ Deno.test("save rejects reserved data name 'latest'", async () => {
       "reserved for internal use",
     );
   } finally {
-    await Deno.remove(tmpDir, { recursive: true });
+    if (Deno.build.os === "windows") {
+      // Best-effort: EBUSY can fire when V8 hasn't GC'd native
+      // sqlite handles yet. Temp dir is ephemeral, OS reclaims.
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
   }
 });
 
@@ -227,7 +245,13 @@ Deno.test("save rejects reserved data name case-insensitively", async () => {
       "reserved for internal use",
     );
   } finally {
-    await Deno.remove(tmpDir, { recursive: true });
+    if (Deno.build.os === "windows") {
+      // Best-effort: EBUSY can fire when V8 hasn't GC'd native
+      // sqlite handles yet. Temp dir is ephemeral, OS reclaims.
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
   }
 });
 
@@ -248,7 +272,13 @@ Deno.test("allocateVersion rejects reserved data name 'latest'", async () => {
       "reserved for internal use",
     );
   } finally {
-    await Deno.remove(tmpDir, { recursive: true });
+    if (Deno.build.os === "windows") {
+      // Best-effort: EBUSY can fire when V8 hasn't GC'd native
+      // sqlite handles yet. Temp dir is ephemeral, OS reclaims.
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
   }
 });
 
@@ -298,7 +328,13 @@ Deno.test("getLatestVersionSync reads latest symlink", async () => {
     );
     assertEquals(latest, 2);
   } finally {
-    await Deno.remove(tmpDir, { recursive: true });
+    if (Deno.build.os === "windows") {
+      // Best-effort: EBUSY can fire when V8 hasn't GC'd native
+      // sqlite handles yet. Temp dir is ephemeral, OS reclaims.
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
   }
 });
 
@@ -342,7 +378,13 @@ Deno.test("findByNameSync reads metadata", async () => {
     assertEquals(result.name, "sync-find");
     assertEquals(result.contentType, "application/json");
   } finally {
-    await Deno.remove(tmpDir, { recursive: true });
+    if (Deno.build.os === "windows") {
+      // Best-effort: EBUSY can fire when V8 hasn't GC'd native
+      // sqlite handles yet. Temp dir is ephemeral, OS reclaims.
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
   }
 });
 
@@ -386,7 +428,13 @@ Deno.test("listVersionsSync returns sorted version numbers", async () => {
     const versions = repo.listVersionsSync(testType, "model-1", "sync-list");
     assertEquals(versions, [1, 2, 3]);
   } finally {
-    await Deno.remove(tmpDir, { recursive: true });
+    if (Deno.build.os === "windows") {
+      // Best-effort: EBUSY can fire when V8 hasn't GC'd native
+      // sqlite handles yet. Temp dir is ephemeral, OS reclaims.
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
   }
 });
 
@@ -425,7 +473,13 @@ Deno.test("getContentSync reads content bytes", async () => {
     assertExists(result);
     assertEquals(new TextDecoder().decode(result), '{"hello":"world"}');
   } finally {
-    await Deno.remove(tmpDir, { recursive: true });
+    if (Deno.build.os === "windows") {
+      // Best-effort: EBUSY can fire when V8 hasn't GC'd native
+      // sqlite handles yet. Temp dir is ephemeral, OS reclaims.
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
   }
 });
 
@@ -477,7 +531,13 @@ Deno.test("findAllForModelSync returns all data items", async () => {
     const names = results.map((d) => d.name).sort();
     assertEquals(names, ["item-a", "item-b"]);
   } finally {
-    await Deno.remove(tmpDir, { recursive: true });
+    if (Deno.build.os === "windows") {
+      // Best-effort: EBUSY can fire when V8 hasn't GC'd native
+      // sqlite handles yet. Temp dir is ephemeral, OS reclaims.
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
   }
 });
 
@@ -563,7 +623,13 @@ Deno.test("mutations call markDirty before writing", async () => {
     await repo.collectGarbage(testType, "model-1", { dryRun: true });
     assertEquals(calls.length, before);
   } finally {
-    await Deno.remove(tmpDir, { recursive: true });
+    if (Deno.build.os === "windows") {
+      // Best-effort: EBUSY can fire when V8 hasn't GC'd native
+      // sqlite handles yet. Temp dir is ephemeral, OS reclaims.
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
   }
 });
 
@@ -604,6 +670,12 @@ Deno.test("markDirty is not called on read paths", async () => {
     repo.getContentSync(testType, "model-1", "read-probe");
     assertEquals(calls.length, 1);
   } finally {
-    await Deno.remove(tmpDir, { recursive: true });
+    if (Deno.build.os === "windows") {
+      // Best-effort: EBUSY can fire when V8 hasn't GC'd native
+      // sqlite handles yet. Temp dir is ephemeral, OS reclaims.
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
   }
 });
