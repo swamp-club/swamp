@@ -1616,7 +1616,7 @@ Deno.test("workflow expressions are evaluated before step execution (Bug A)", as
 
 // Regression test for issue #537 Bug B: --last-evaluated must still forward
 // task.inputs and provide an expression context.
-Deno.test("useLastEvaluated context carries task.inputs and expressionContext (Bug B)", async () => {
+Deno.test("lastEvaluated mode carries task.inputs and expressionContext (Bug B)", async () => {
   await withTempDir(async (tempDir) => {
     const workflowRepo = new InMemoryWorkflowRepository();
     const runRepo = new InMemoryWorkflowRunRepository();

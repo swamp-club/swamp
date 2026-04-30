@@ -113,8 +113,18 @@ export interface StepExecutionContext {
   step?: Step;
   /** Callback to emit events into the parent event stream */
   emitEvent?: (event: WorkflowExecutionEvent) => void;
-  /** When true, load previously-evaluated definitions instead of evaluating CEL */
-  useLastEvaluated?: boolean;
+  /**
+   * Evaluation mode for the step:
+   * - `"fresh"` (default): evaluate CEL expressions against the current
+   *   expression context, then cache the evaluated definition.
+   * - `"lastEvaluated"`: skip CEL evaluation; load the previously-cached
+   *   evaluated definition. Used when `--last-evaluated` is passed at
+   *   the CLI to re-run a workflow without re-evaluating expressions.
+   *
+   * Both modes still require `expressionContext` because runtime
+   * expressions (vault, env) and step-output tracking need it.
+   */
+  mode?: "fresh" | "lastEvaluated";
   /** forEach iteration variable (e.g., { env: "dev" } for self.env) */
   forEachVariable?: { name: string; value: unknown };
   /** Tags from the workflow definition, merged into data writer tag overrides */
@@ -356,7 +366,7 @@ export class DefaultStepExecutor implements StepExecutor {
     // Evaluate CEL expressions (vault left raw for persistence)
     let evaluatedDefinition = originalDefinition;
     let stepInputs: Record<string, unknown> = {};
-    if (ctx.useLastEvaluated) {
+    if (ctx.mode === "lastEvaluated") {
       // Load previously-evaluated definition from cache
       runLogger?.debug("Loading last evaluated definition");
       const lastEvaluated = await evaluatedDefRepo.findByName(
@@ -1406,7 +1416,7 @@ export class WorkflowExecutionService {
           expressionContext: stepExprContext,
           workflowRun: run,
           step,
-          useLastEvaluated: options.lastEvaluated,
+          mode: options.lastEvaluated ? "lastEvaluated" : "fresh",
           forEachVariable: forEachVar,
           workflowTags: options.workflowTags,
           runtimeTags: options.runtimeTags,
