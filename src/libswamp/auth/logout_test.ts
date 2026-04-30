@@ -84,23 +84,24 @@ Deno.test("authLogout: yields completed with loggedOut false when not authentica
 });
 
 Deno.test("createAuthLogoutDeps: loadCredentials returns env-var creds when SWAMP_API_KEY is set", async () => {
-  const originalKey = Deno.env.get("SWAMP_API_KEY");
-  const originalXdg = Deno.env.get("XDG_CONFIG_HOME");
   const tmpDir = await Deno.makeTempDir();
   try {
-    Deno.env.set("SWAMP_API_KEY", "swamp_test_env_key");
-    Deno.env.set("XDG_CONFIG_HOME", tmpDir);
-    const deps = createAuthLogoutDeps();
+    // Inject overrides instead of mutating Deno.env — `deno test --parallel`
+    // runs logout_test and whoami_test in different files concurrently and
+    // both touch SWAMP_API_KEY / XDG_CONFIG_HOME. Going through the deps
+    // options keeps this test hermetic.
+    const deps = createAuthLogoutDeps({
+      repo: {
+        configDir: `${tmpDir}/swamp`,
+        getApiKey: () => "swamp_test_env_key",
+      },
+    });
     const creds = await deps.loadCredentials();
     // With SWAMP_API_KEY set, loadCredentials returns env-var creds
     // (username is empty since env var doesn't provide it)
     assertEquals(creds !== null, true);
     assertEquals(creds!.username, "");
   } finally {
-    if (originalKey) Deno.env.set("SWAMP_API_KEY", originalKey);
-    else Deno.env.delete("SWAMP_API_KEY");
-    if (originalXdg) Deno.env.set("XDG_CONFIG_HOME", originalXdg);
-    else Deno.env.delete("XDG_CONFIG_HOME");
     await Deno.remove(tmpDir, { recursive: true });
   }
 });

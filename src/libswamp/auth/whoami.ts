@@ -23,7 +23,10 @@ import {
   getCollectives,
   SwampClubClient,
 } from "../../infrastructure/http/swamp_club_client.ts";
-import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
+import {
+  AuthRepository,
+  type AuthRepositoryOptions,
+} from "../../infrastructure/persistence/auth_repository.ts";
 import type { LibSwampContext } from "../context.ts";
 import {
   cancelled,
@@ -59,26 +62,35 @@ export interface AuthDeps {
   serverUrlOverride?: string;
 }
 
+/**
+ * Options for {@link createAuthDeps}. The `repo` field accepts the
+ * same overrides as `AuthRepository` itself — used by tests to bypass
+ * the shared `Deno.env` global, which races across files when
+ * `deno test --parallel` runs multiple auth-touching test files at once.
+ */
+export interface CreateAuthDepsOptions {
+  serverUrlOverride?: string;
+  repo?: AuthRepositoryOptions;
+}
+
 /** Wires real infrastructure into AuthDeps. */
-export function createAuthDeps(
-  options?: { serverUrlOverride?: string },
-): AuthDeps {
-  const repo = new AuthRepository();
+export function createAuthDeps(options: CreateAuthDepsOptions = {}): AuthDeps {
+  const repo = new AuthRepository(options.repo);
+  // When SWAMP_API_KEY is set, skip writing credentials to disk — env-var
+  // auth is ephemeral and shouldn't create/update auth.json. Checked
+  // lazily through the same getApiKey hook the repo uses, so test
+  // overrides flow through here too.
+  const getApiKey = options.repo?.getApiKey ??
+    (() => Deno.env.get("SWAMP_API_KEY"));
   return {
     loadCredentials: () => repo.load(),
-    // When SWAMP_API_KEY is set, skip writing credentials to disk — env-var
-    // auth is ephemeral and shouldn't create/update auth.json. Checked lazily
-    // to stay consistent with loadCredentials (which also reads env at call time
-    // via repo.load()).
     saveCredentials: (credentials) =>
-      Deno.env.get("SWAMP_API_KEY")
-        ? Promise.resolve()
-        : repo.save(credentials),
+      getApiKey() ? Promise.resolve() : repo.save(credentials),
     fetchWhoami: (serverUrl, apiKey, signal) => {
       const client = new SwampClubClient(serverUrl);
       return client.whoami(apiKey, signal);
     },
-    serverUrlOverride: options?.serverUrlOverride,
+    serverUrlOverride: options.serverUrlOverride,
   };
 }
 

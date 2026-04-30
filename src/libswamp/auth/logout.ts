@@ -17,7 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
+import {
+  AuthRepository,
+  type AuthRepositoryOptions,
+} from "../../infrastructure/persistence/auth_repository.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 
@@ -43,9 +46,22 @@ export interface AuthLogoutDeps {
   deleteCredentials: () => Promise<void>;
 }
 
+/**
+ * Options for {@link createAuthLogoutDeps}. The `repo` field accepts
+ * the same overrides as `AuthRepository` itself — used by tests to
+ * bypass the shared `Deno.env` global, which races across files when
+ * `deno test --parallel` runs multiple auth-touching test files at
+ * once.
+ */
+export interface CreateAuthLogoutDepsOptions {
+  repo?: AuthRepositoryOptions;
+}
+
 /** Wires real infrastructure into AuthLogoutDeps. */
-export function createAuthLogoutDeps(): AuthLogoutDeps {
-  const repo = new AuthRepository();
+export function createAuthLogoutDeps(
+  options: CreateAuthLogoutDepsOptions = {},
+): AuthLogoutDeps {
+  const repo = new AuthRepository(options.repo);
   return {
     loadCredentials: async () => {
       const creds = await repo.load();

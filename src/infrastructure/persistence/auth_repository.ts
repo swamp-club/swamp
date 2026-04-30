@@ -29,6 +29,27 @@ import {
 const AUTH_FILE = "auth.json";
 
 /**
+ * Optional overrides for `AuthRepository`. Used by tests to bypass the
+ * shared `Deno.env` global, which races across files when
+ * `deno test --parallel` runs multiple auth-touching test files at
+ * once. Production callers pass nothing and get env-reading defaults.
+ */
+export interface AuthRepositoryOptions {
+  /** Override the config dir; default is `getSwampConfigDir()`. */
+  configDir?: string;
+  /**
+   * Override the SWAMP_API_KEY lookup; default reads
+   * `Deno.env.get("SWAMP_API_KEY")` lazily at call time.
+   */
+  getApiKey?: () => string | undefined;
+  /**
+   * Override the SWAMP_CLUB_URL lookup; default reads
+   * `Deno.env.get("SWAMP_CLUB_URL")` lazily at call time.
+   */
+  getServerUrl?: () => string | undefined;
+}
+
+/**
  * Repository for managing swamp-club authentication credentials.
  * Stores API key and server info at ~/.config/swamp/auth.json
  * (or $XDG_CONFIG_HOME/swamp/auth.json).
@@ -36,8 +57,22 @@ const AUTH_FILE = "auth.json";
  * Precedence: SWAMP_API_KEY env var > auth.json file.
  */
 export class AuthRepository {
+  private readonly getConfigDir: () => string;
+  private readonly getApiKey: () => string | undefined;
+  private readonly getServerUrl: () => string | undefined;
+
+  constructor(options: AuthRepositoryOptions = {}) {
+    this.getConfigDir = options.configDir !== undefined
+      ? () => options.configDir!
+      : getSwampConfigDir;
+    this.getApiKey = options.getApiKey ??
+      (() => Deno.env.get("SWAMP_API_KEY"));
+    this.getServerUrl = options.getServerUrl ??
+      (() => Deno.env.get("SWAMP_CLUB_URL"));
+  }
+
   private getAuthPath(): string {
-    return join(getSwampConfigDir(), AUTH_FILE);
+    return join(this.getConfigDir(), AUTH_FILE);
   }
 
   /**
@@ -51,10 +86,10 @@ export class AuthRepository {
    *   a UserError since login/logout don't apply to env-var auth
    */
   async load(): Promise<AuthCredentials | null> {
-    const envApiKey = Deno.env.get("SWAMP_API_KEY");
+    const envApiKey = this.getApiKey();
     if (envApiKey) {
       return {
-        serverUrl: Deno.env.get("SWAMP_CLUB_URL") ?? DEFAULT_SWAMP_CLUB_URL,
+        serverUrl: this.getServerUrl() ?? DEFAULT_SWAMP_CLUB_URL,
         apiKey: envApiKey,
         apiKeyId: "",
         username: "",
@@ -83,8 +118,7 @@ export class AuthRepository {
 
   /** Write auth credentials to disk. Creates directory if needed. */
   async save(credentials: AuthCredentials): Promise<void> {
-    const configDir = getSwampConfigDir();
-    await Deno.mkdir(configDir, { recursive: true });
+    await Deno.mkdir(this.getConfigDir(), { recursive: true });
     await atomicWriteTextFile(
       this.getAuthPath(),
       JSON.stringify(credentials, null, 2) + "\n",
