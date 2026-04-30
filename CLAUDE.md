@@ -121,6 +121,16 @@ in `src/libswamp/`) may import from internal paths.
   use `--` before the file path)
 - Refactorings that change shared constants, paths, or cross-component contracts
   must include integration tests to verify components still work together
+- Tests must run on Linux, macOS, and Windows. Use `assertPathEquals` from
+  `src/infrastructure/persistence/path_test_helpers.ts` for path-string
+  comparisons — `assertEquals` against forward-slash literals fails on Windows.
+- Use `@std/path` (`dirname`, `basename`, `join`, `fromFileUrl`, `SEPARATOR`)
+  for all path operations. Never hand-roll with `lastIndexOf("/")`,
+  `split("/").pop()`, `URL.pathname`, or `"/"`-prefixed concatenation.
+- `Deno.symlink` requires `{ type: "file" | "dir" }` — Windows refuses symlinks
+  whose target doesn't exist at link-creation time without it.
+- `withTempDir` cleanup uses an inline Windows-only `.catch(() => {})` to absorb
+  EBUSY when V8 hasn't GC'd native handles — copy from any existing test file.
 
 IMPORTANT: CLI command tests require logging initialization and model barrel
 imports before they can run. See `src/cli/commands/data_get_test.ts` for the
