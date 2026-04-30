@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { join } from "@std/path";
+import { basename, join } from "@std/path";
 import {
   collectDirsForKind,
   expandSourcePaths,
@@ -125,8 +125,8 @@ Deno.test("expandSourcePaths: expands glob to matching directories", async () =>
     );
     assertEquals(result.length, 2);
     const paths = result.map((s) => s.path).sort();
-    assertEquals(paths[0].endsWith("/a"), true);
-    assertEquals(paths[1].endsWith("/b"), true);
+    assertEquals(basename(paths[0]), "a");
+    assertEquals(basename(paths[1]), "b");
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }
@@ -269,7 +269,10 @@ function snapshotResolved(
 ): Array<Record<string, string | undefined>> {
   const rel = (v: unknown): string | undefined => {
     if (typeof v !== "string") return undefined;
-    return v.startsWith(base) ? v.slice(base.length) : v;
+    const stripped = v.startsWith(base) ? v.slice(base.length) : v;
+    // Normalize Windows backslashes so the snapshot matches forward-slash
+    // expected literals — POSIX no-op.
+    return stripped.replaceAll("\\", "/");
   };
   return results.map((r) => {
     const out: Record<string, string | undefined> = {};
