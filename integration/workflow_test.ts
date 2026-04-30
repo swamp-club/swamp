@@ -157,7 +157,10 @@ Deno.test("CLI: workflow create creates new workflow file", async () => {
     assertEquals(output.name, "my-workflow");
     assertEquals(typeof output.id, "string");
     assertEquals(output.id.length, 36); // UUID length
-    assertStringIncludes(output.path, "workflows/workflow-");
+    assertStringIncludes(
+      output.path.replaceAll("\\", "/"),
+      "workflows/workflow-",
+    );
   });
 });
 

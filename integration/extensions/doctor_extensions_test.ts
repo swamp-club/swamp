@@ -27,7 +27,7 @@
 
 import { assertEquals } from "@std/assert";
 import { ensureDir } from "@std/fs";
-import { join } from "@std/path";
+import { basename, join } from "@std/path";
 import { initializeTestRepo, runCliCommand } from "../test_helpers.ts";
 
 // Valid model with a quoted `type` literal — loads cleanly. Fixture
@@ -365,11 +365,12 @@ Deno.test(
       assertEquals(secondParsed.overallStatus, "fail");
 
       // The second run must surface the same failure files as the first.
+      // Use basename() so the comparison works regardless of host separator.
       const firstFiles = firstParsed.registries.model.failures
-        .map((f) => f.file.split("/").pop()!)
+        .map((f) => basename(f.file))
         .sort();
       const secondFiles = secondParsed.registries.model.failures
-        .map((f) => f.file.split("/").pop()!)
+        .map((f) => basename(f.file))
         .sort();
       assertEquals(
         firstFiles,

@@ -918,33 +918,38 @@ Deno.test("LocalEncryptionVaultProvider - SSH key validation", async (t) => {
   );
 
   await t.step(
-    "should reject SSH key with insecure permissions (0644)",
-    async () => {
-      await withTempDir(async (dir) => {
-        await Deno.writeTextFile(
-          join(dir, "insecure_key"),
-          MOCK_SSH_PRIVATE_KEY,
-          {
-            mode: 0o644,
-          },
-        );
+    {
+      name: "should reject SSH key with insecure permissions (0644)",
+      // POSIX file mode is not enforced by NTFS, so the permission check
+      // doesn't fire on Windows.
+      ignore: Deno.build.os === "windows",
+      fn: async () => {
+        await withTempDir(async (dir) => {
+          await Deno.writeTextFile(
+            join(dir, "insecure_key"),
+            MOCK_SSH_PRIVATE_KEY,
+            {
+              mode: 0o644,
+            },
+          );
 
-        const config: LocalEncryptionConfig = {
-          ssh_key_path: join(dir, "insecure_key"),
-        };
-        const vault = new LocalEncryptionVaultProvider(
-          "insecure-perms-vault",
-          config,
-        );
+          const config: LocalEncryptionConfig = {
+            ssh_key_path: join(dir, "insecure_key"),
+          };
+          const vault = new LocalEncryptionVaultProvider(
+            "insecure-perms-vault",
+            config,
+          );
 
-        const error = await assertRejects(
-          () => vault.put("test-key", "test-value"),
-          Error,
-        );
+          const error = await assertRejects(
+            () => vault.put("test-key", "test-value"),
+            Error,
+          );
 
-        assertStringIncludes(error.message, "insecure permissions");
-        assertStringIncludes(error.message, "chmod 600");
-      });
+          assertStringIncludes(error.message, "insecure permissions");
+          assertStringIncludes(error.message, "chmod 600");
+        });
+      },
     },
   );
 

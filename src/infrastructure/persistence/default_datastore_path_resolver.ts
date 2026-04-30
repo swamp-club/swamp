@@ -82,7 +82,12 @@ export class DefaultDatastorePathResolver implements DatastorePathResolver {
     if (this.compiledExclude.length === 0) {
       return false;
     }
-    return isExcludedCompiled(relativePath, this.compiledExclude);
+    // Glob patterns are authored with forward slashes; normalize the host
+    // separator so Windows paths match POSIX-style patterns like `foo/**`.
+    return isExcludedCompiled(
+      relativePath.replaceAll("\\", "/"),
+      this.compiledExclude,
+    );
   }
 
   resolvePath(subdir: string, ...rest: string[]): string {

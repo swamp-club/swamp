@@ -426,23 +426,28 @@ Deno.test("shellModel.methods.execute throws on command failure", async () => {
   );
 });
 
-Deno.test("shellModel.methods.execute respects workingDir", async () => {
-  const args: ShellInputAttributes = {
-    run: "pwd",
-    workingDir: "/tmp",
-  };
+Deno.test({
+  name: "shellModel.methods.execute respects workingDir",
+  // Hardcoded POSIX path (`/tmp`) and shell builtin (`pwd`).
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    const args: ShellInputAttributes = {
+      run: "pwd",
+      workingDir: "/tmp",
+    };
 
-  const { context, getResults } = createTestContext();
-  await shellModel.methods.execute.execute(args, context);
+    const { context, getResults } = createTestContext();
+    await shellModel.methods.execute.execute(args, context);
 
-  // Use realPathSync to handle symlinks (e.g., /tmp -> /private/tmp on macOS)
-  const expectedPath = Deno.realPathSync("/tmp");
-  const attrs = getResultAttributes(getResults(), "result");
-  assertEquals(attrs?.exitCode, 0);
+    // Use realPathSync to handle symlinks (e.g., /tmp -> /private/tmp on macOS)
+    const expectedPath = Deno.realPathSync("/tmp");
+    const attrs = getResultAttributes(getResults(), "result");
+    assertEquals(attrs?.exitCode, 0);
 
-  // Check output contains the working directory
-  const logContent = getOutputLogContent(getResults());
-  assertStringIncludes(logContent, expectedPath);
+    // Check output contains the working directory
+    const logContent = getOutputLogContent(getResults());
+    assertStringIncludes(logContent, expectedPath);
+  },
 });
 
 Deno.test("shellModel.methods.execute respects env variables", async () => {

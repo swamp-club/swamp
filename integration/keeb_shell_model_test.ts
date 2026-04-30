@@ -93,50 +93,55 @@ async function runCliCommand(
   };
 }
 
-Deno.test("CLI: command/shell model executes simple shell commands", async () => {
-  await withTempDir(async (repoDir) => {
-    await initializeTestRepo(repoDir);
+Deno.test({
+  name: "CLI: command/shell model executes simple shell commands",
+  // Hardcoded POSIX paths (`/tmp`) and shell built-ins; covered on macOS+Linux.
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withTempDir(async (repoDir) => {
+      await initializeTestRepo(repoDir);
 
-    // Create a shell model that echoes a message
-    const definitionRepo = new YamlDefinitionRepository(repoDir);
-    const definition = Definition.create({
-      name: "simple-shell",
-      methods: {
-        execute: {
-          arguments: {
-            run: "echo 'Hello from shell'",
-            workingDir: "/tmp",
+      // Create a shell model that echoes a message
+      const definitionRepo = new YamlDefinitionRepository(repoDir);
+      const definition = Definition.create({
+        name: "simple-shell",
+        methods: {
+          execute: {
+            arguments: {
+              run: "echo 'Hello from shell'",
+              workingDir: "/tmp",
+            },
           },
         },
-      },
+      });
+      await definitionRepo.save(SHELL_MODEL_TYPE, definition);
+
+      // Execute the model
+      const result = await runCliCommand(
+        [
+          "model",
+          "method",
+          "run",
+          "simple-shell",
+          "execute",
+          "--repo-dir",
+          repoDir,
+          "--json",
+        ],
+        Deno.cwd(),
+      );
+
+      assertEquals(
+        result.code,
+        0,
+        `Command should succeed. stderr: ${result.stderr}`,
+      );
+
+      const output = JSON.parse(result.stdout);
+      assertEquals(output.modelName, "simple-shell");
+      assertEquals(output.dataArtifacts[0].attributes.exitCode, 0);
     });
-    await definitionRepo.save(SHELL_MODEL_TYPE, definition);
-
-    // Execute the model
-    const result = await runCliCommand(
-      [
-        "model",
-        "method",
-        "run",
-        "simple-shell",
-        "execute",
-        "--repo-dir",
-        repoDir,
-        "--json",
-      ],
-      Deno.cwd(),
-    );
-
-    assertEquals(
-      result.code,
-      0,
-      `Command should succeed. stderr: ${result.stderr}`,
-    );
-
-    const output = JSON.parse(result.stdout);
-    assertEquals(output.modelName, "simple-shell");
-    assertEquals(output.dataArtifacts[0].attributes.exitCode, 0);
-  });
+  },
 });
 
 Deno.test("CLI: command/shell model reports failure on non-zero exit code", async () => {
@@ -181,243 +186,256 @@ Deno.test("CLI: command/shell model reports failure on non-zero exit code", asyn
   });
 });
 
-Deno.test("CLI: workflow with command/shell models and dependencies", async () => {
-  await withTempDir(async (repoDir) => {
-    await initializeTestRepo(repoDir);
+Deno.test({
+  name: "CLI: workflow with command/shell models and dependencies",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withTempDir(async (repoDir) => {
+      await initializeTestRepo(repoDir);
 
-    const definitionRepo = new YamlDefinitionRepository(repoDir);
+      const definitionRepo = new YamlDefinitionRepository(repoDir);
 
-    // Create first model that creates a file
-    const downloadModel = Definition.create({
-      name: "download-data",
-      methods: {
-        execute: {
-          arguments: {
-            run: "echo 'Downloaded data' > /tmp/data.txt",
-            workingDir: "/tmp",
-          },
-        },
-      },
-    });
-    await definitionRepo.save(SHELL_MODEL_TYPE, downloadModel);
-
-    // Create second model that processes the file
-    const processModel = Definition.create({
-      name: "process-data",
-      methods: {
-        execute: {
-          arguments: {
-            run: "echo 'Processing: $(cat /tmp/data.txt)' > /tmp/processed.txt",
-            workingDir: "/tmp",
-          },
-        },
-      },
-    });
-    await definitionRepo.save(SHELL_MODEL_TYPE, processModel);
-
-    // Create workflow with dependencies
-    const workflowRepo = new YamlWorkflowRepository(repoDir);
-    const workflow = Workflow.create({
-      name: "shell-workflow",
-      description: "Test workflow with command/shell models",
-      jobs: [
-        Job.create({
-          name: "download",
-          description: "Download data",
-          steps: [
-            Step.create({
-              name: "download-step",
-              task: StepTask.model("download-data", "execute"),
-            }),
-          ],
-        }),
-        Job.create({
-          name: "process",
-          description: "Process data",
-          steps: [
-            Step.create({
-              name: "process-step",
-              task: StepTask.model("process-data", "execute"),
-            }),
-          ],
-          dependsOn: [
-            {
-              job: "download",
-              condition: TriggerCondition.succeeded(),
+      // Create first model that creates a file
+      const downloadModel = Definition.create({
+        name: "download-data",
+        methods: {
+          execute: {
+            arguments: {
+              run: "echo 'Downloaded data' > /tmp/data.txt",
+              workingDir: "/tmp",
             },
-          ],
-        }),
-      ],
+          },
+        },
+      });
+      await definitionRepo.save(SHELL_MODEL_TYPE, downloadModel);
+
+      // Create second model that processes the file
+      const processModel = Definition.create({
+        name: "process-data",
+        methods: {
+          execute: {
+            arguments: {
+              run:
+                "echo 'Processing: $(cat /tmp/data.txt)' > /tmp/processed.txt",
+              workingDir: "/tmp",
+            },
+          },
+        },
+      });
+      await definitionRepo.save(SHELL_MODEL_TYPE, processModel);
+
+      // Create workflow with dependencies
+      const workflowRepo = new YamlWorkflowRepository(repoDir);
+      const workflow = Workflow.create({
+        name: "shell-workflow",
+        description: "Test workflow with command/shell models",
+        jobs: [
+          Job.create({
+            name: "download",
+            description: "Download data",
+            steps: [
+              Step.create({
+                name: "download-step",
+                task: StepTask.model("download-data", "execute"),
+              }),
+            ],
+          }),
+          Job.create({
+            name: "process",
+            description: "Process data",
+            steps: [
+              Step.create({
+                name: "process-step",
+                task: StepTask.model("process-data", "execute"),
+              }),
+            ],
+            dependsOn: [
+              {
+                job: "download",
+                condition: TriggerCondition.succeeded(),
+              },
+            ],
+          }),
+        ],
+      });
+      await workflowRepo.save(workflow);
+
+      // Run the workflow
+      const result = await runCliCommand(
+        [
+          "workflow",
+          "run",
+          "shell-workflow",
+          "--repo-dir",
+          repoDir,
+          "--json",
+        ],
+        Deno.cwd(),
+      );
+
+      assertEquals(
+        result.code,
+        0,
+        `Command should succeed. stderr: ${result.stderr}`,
+      );
+
+      const output = JSON.parse(result.stdout);
+      assertEquals(output.status, "succeeded");
+      assertEquals(output.jobs.length, 2);
+      assertEquals(output.jobs[0].name, "download");
+      assertEquals(output.jobs[0].status, "succeeded");
+      assertEquals(output.jobs[1].name, "process");
+      assertEquals(output.jobs[1].status, "succeeded");
     });
-    await workflowRepo.save(workflow);
-
-    // Run the workflow
-    const result = await runCliCommand(
-      [
-        "workflow",
-        "run",
-        "shell-workflow",
-        "--repo-dir",
-        repoDir,
-        "--json",
-      ],
-      Deno.cwd(),
-    );
-
-    assertEquals(
-      result.code,
-      0,
-      `Command should succeed. stderr: ${result.stderr}`,
-    );
-
-    const output = JSON.parse(result.stdout);
-    assertEquals(output.status, "succeeded");
-    assertEquals(output.jobs.length, 2);
-    assertEquals(output.jobs[0].name, "download");
-    assertEquals(output.jobs[0].status, "succeeded");
-    assertEquals(output.jobs[1].name, "process");
-    assertEquals(output.jobs[1].status, "succeeded");
-  });
+  },
 });
 
-Deno.test("CLI: command/shell model with cross-model expressions", async () => {
-  await withTempDir(async (repoDir) => {
-    await initializeTestRepo(repoDir);
+Deno.test({
+  name: "CLI: command/shell model with cross-model expressions",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withTempDir(async (repoDir) => {
+      await initializeTestRepo(repoDir);
 
-    const definitionRepo = new YamlDefinitionRepository(repoDir);
+      const definitionRepo = new YamlDefinitionRepository(repoDir);
 
-    // Create source model (globalArguments also set so cross-model expressions can access them)
-    const sourceModel = Definition.create({
-      name: "source-shell",
-      globalArguments: {
-        run: "echo 'Source command executed'",
-        workingDir: "/tmp",
-      },
-      methods: {
-        execute: {
-          arguments: {
-            run: "echo 'Source command executed'",
-            workingDir: "/tmp",
+      // Create source model (globalArguments also set so cross-model expressions can access them)
+      const sourceModel = Definition.create({
+        name: "source-shell",
+        globalArguments: {
+          run: "echo 'Source command executed'",
+          workingDir: "/tmp",
+        },
+        methods: {
+          execute: {
+            arguments: {
+              run: "echo 'Source command executed'",
+              workingDir: "/tmp",
+            },
           },
         },
-      },
-    });
-    await definitionRepo.save(SHELL_MODEL_TYPE, sourceModel);
+      });
+      await definitionRepo.save(SHELL_MODEL_TYPE, sourceModel);
 
-    // Create dependent model that references the source model
-    const dependentModel = Definition.create({
-      name: "dependent-shell",
-      methods: {
-        execute: {
-          arguments: {
-            run:
-              "echo 'Referencing: ${{ model.source-shell.input.globalArguments.run }}'",
-            workingDir: "/tmp",
+      // Create dependent model that references the source model
+      const dependentModel = Definition.create({
+        name: "dependent-shell",
+        methods: {
+          execute: {
+            arguments: {
+              run:
+                "echo 'Referencing: ${{ model.source-shell.input.globalArguments.run }}'",
+              workingDir: "/tmp",
+            },
           },
         },
-      },
+      });
+      await definitionRepo.save(SHELL_MODEL_TYPE, dependentModel);
+
+      // Create workflow that runs both models
+      const workflowRepo = new YamlWorkflowRepository(repoDir);
+      const workflow = Workflow.create({
+        name: "cross-ref-workflow",
+        jobs: [
+          Job.create({
+            name: "run-models",
+            steps: [
+              Step.create({
+                name: "run-source",
+                task: StepTask.model("source-shell", "execute"),
+              }),
+              Step.create({
+                name: "run-dependent",
+                task: StepTask.model("dependent-shell", "execute"),
+                dependsOn: [
+                  {
+                    step: "run-source",
+                    condition: TriggerCondition.succeeded(),
+                  },
+                ],
+              }),
+            ],
+          }),
+        ],
+      });
+      await workflowRepo.save(workflow);
+
+      // Run the workflow
+      const result = await runCliCommand(
+        [
+          "workflow",
+          "run",
+          "cross-ref-workflow",
+          "--repo-dir",
+          repoDir,
+          "--json",
+        ],
+        Deno.cwd(),
+      );
+
+      assertEquals(
+        result.code,
+        0,
+        `Command should succeed. stderr: ${result.stderr}`,
+      );
+
+      const output = JSON.parse(result.stdout);
+      assertEquals(output.status, "succeeded");
+      assertEquals(output.jobs[0].steps[0].status, "succeeded");
+      assertEquals(output.jobs[0].steps[1].status, "succeeded");
     });
-    await definitionRepo.save(SHELL_MODEL_TYPE, dependentModel);
-
-    // Create workflow that runs both models
-    const workflowRepo = new YamlWorkflowRepository(repoDir);
-    const workflow = Workflow.create({
-      name: "cross-ref-workflow",
-      jobs: [
-        Job.create({
-          name: "run-models",
-          steps: [
-            Step.create({
-              name: "run-source",
-              task: StepTask.model("source-shell", "execute"),
-            }),
-            Step.create({
-              name: "run-dependent",
-              task: StepTask.model("dependent-shell", "execute"),
-              dependsOn: [
-                {
-                  step: "run-source",
-                  condition: TriggerCondition.succeeded(),
-                },
-              ],
-            }),
-          ],
-        }),
-      ],
-    });
-    await workflowRepo.save(workflow);
-
-    // Run the workflow
-    const result = await runCliCommand(
-      [
-        "workflow",
-        "run",
-        "cross-ref-workflow",
-        "--repo-dir",
-        repoDir,
-        "--json",
-      ],
-      Deno.cwd(),
-    );
-
-    assertEquals(
-      result.code,
-      0,
-      `Command should succeed. stderr: ${result.stderr}`,
-    );
-
-    const output = JSON.parse(result.stdout);
-    assertEquals(output.status, "succeeded");
-    assertEquals(output.jobs[0].steps[0].status, "succeeded");
-    assertEquals(output.jobs[0].steps[1].status, "succeeded");
-  });
+  },
 });
 
-Deno.test("CLI: command/shell model with self-reference expressions", async () => {
-  await withTempDir(async (repoDir) => {
-    await initializeTestRepo(repoDir);
+Deno.test({
+  name: "CLI: command/shell model with self-reference expressions",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withTempDir(async (repoDir) => {
+      await initializeTestRepo(repoDir);
 
-    const definitionRepo = new YamlDefinitionRepository(repoDir);
+      const definitionRepo = new YamlDefinitionRepository(repoDir);
 
-    // Create model that references its own name
-    const selfRefModel = Definition.create({
-      name: "self-ref-shell",
-      methods: {
-        execute: {
-          arguments: {
-            run: "echo 'My name is ${{ self.name }}'",
-            workingDir: "/tmp",
+      // Create model that references its own name
+      const selfRefModel = Definition.create({
+        name: "self-ref-shell",
+        methods: {
+          execute: {
+            arguments: {
+              run: "echo 'My name is ${{ self.name }}'",
+              workingDir: "/tmp",
+            },
           },
         },
-      },
+      });
+      await definitionRepo.save(SHELL_MODEL_TYPE, selfRefModel);
+
+      // Execute the model
+      const result = await runCliCommand(
+        [
+          "model",
+          "method",
+          "run",
+          "self-ref-shell",
+          "execute",
+          "--repo-dir",
+          repoDir,
+          "--json",
+        ],
+        Deno.cwd(),
+      );
+
+      assertEquals(
+        result.code,
+        0,
+        `Command should succeed. stderr: ${result.stderr}`,
+      );
+
+      const output = JSON.parse(result.stdout);
+      assertEquals(output.modelName, "self-ref-shell");
+      assertEquals(output.dataArtifacts[0].attributes.exitCode, 0);
     });
-    await definitionRepo.save(SHELL_MODEL_TYPE, selfRefModel);
-
-    // Execute the model
-    const result = await runCliCommand(
-      [
-        "model",
-        "method",
-        "run",
-        "self-ref-shell",
-        "execute",
-        "--repo-dir",
-        repoDir,
-        "--json",
-      ],
-      Deno.cwd(),
-    );
-
-    assertEquals(
-      result.code,
-      0,
-      `Command should succeed. stderr: ${result.stderr}`,
-    );
-
-    const output = JSON.parse(result.stdout);
-    assertEquals(output.modelName, "self-ref-shell");
-    assertEquals(output.dataArtifacts[0].attributes.exitCode, 0);
-  });
+  },
 });
 
 Deno.test("CLI: model method run succeeds when globalArguments has unresolvable cross-model resource expression", async () => {
