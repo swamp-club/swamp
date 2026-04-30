@@ -26,6 +26,7 @@ import {
   resolveRepoDir,
 } from "./context.ts";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
+import { assertPathEquals } from "../infrastructure/persistence/path_test_helpers.ts";
 
 // Initialize logging once before tests run
 await initializeLogging({});
@@ -108,7 +109,7 @@ Deno.test("getRepoDirFromArgs parses --repo-dir with space separator", () => {
     "--repo-dir",
     "/tmp/my-repo",
   ]);
-  assertEquals(result, "/tmp/my-repo");
+  assertPathEquals(result, "/tmp/my-repo");
 });
 
 Deno.test("getRepoDirFromArgs parses --repo-dir with equals separator", () => {
@@ -117,7 +118,7 @@ Deno.test("getRepoDirFromArgs parses --repo-dir with equals separator", () => {
     "run",
     "--repo-dir=/tmp/my-repo",
   ]);
-  assertEquals(result, "/tmp/my-repo");
+  assertPathEquals(result, "/tmp/my-repo");
 });
 
 Deno.test("getRepoDirFromArgs resolves relative paths to absolute", () => {
@@ -141,15 +142,15 @@ Deno.test("getRepoDirFromArgs finds flag among other args", () => {
     "my-model",
     "my-method",
   ]);
-  assertEquals(result, "/tmp/my-repo");
+  assertPathEquals(result, "/tmp/my-repo");
 });
 
 Deno.test("getRepoDirFromArgs uses SWAMP_REPO_DIR when flag absent", () => {
   const original = Deno.env.get("SWAMP_REPO_DIR");
   try {
     Deno.env.set("SWAMP_REPO_DIR", "/tmp/env-repo");
-    assertEquals(getRepoDirFromArgs([]), "/tmp/env-repo");
-    assertEquals(getRepoDirFromArgs(["model", "create"]), "/tmp/env-repo");
+    assertPathEquals(getRepoDirFromArgs([]), "/tmp/env-repo");
+    assertPathEquals(getRepoDirFromArgs(["model", "create"]), "/tmp/env-repo");
   } finally {
     if (original !== undefined) Deno.env.set("SWAMP_REPO_DIR", original);
     else Deno.env.delete("SWAMP_REPO_DIR");
@@ -161,7 +162,7 @@ Deno.test("getRepoDirFromArgs prefers --repo-dir flag over SWAMP_REPO_DIR", () =
   try {
     Deno.env.set("SWAMP_REPO_DIR", "/tmp/env-repo");
     const result = getRepoDirFromArgs(["--repo-dir", "/tmp/flag-repo"]);
-    assertEquals(result, "/tmp/flag-repo");
+    assertPathEquals(result, "/tmp/flag-repo");
   } finally {
     if (original !== undefined) Deno.env.set("SWAMP_REPO_DIR", original);
     else Deno.env.delete("SWAMP_REPO_DIR");
@@ -200,7 +201,7 @@ Deno.test("resolveRepoDir returns cli value when provided", () => {
   const original = Deno.env.get("SWAMP_REPO_DIR");
   try {
     Deno.env.set("SWAMP_REPO_DIR", "/tmp/env-repo");
-    assertEquals(resolveRepoDir("/tmp/flag-repo"), "/tmp/flag-repo");
+    assertPathEquals(resolveRepoDir("/tmp/flag-repo"), "/tmp/flag-repo");
     // explicit "." from flag should win over env var
     assertEquals(resolveRepoDir("."), ".");
   } finally {
@@ -213,7 +214,7 @@ Deno.test("resolveRepoDir returns SWAMP_REPO_DIR when cli value undefined", () =
   const original = Deno.env.get("SWAMP_REPO_DIR");
   try {
     Deno.env.set("SWAMP_REPO_DIR", "/tmp/env-repo");
-    assertEquals(resolveRepoDir(undefined), "/tmp/env-repo");
+    assertPathEquals(resolveRepoDir(undefined), "/tmp/env-repo");
   } finally {
     if (original !== undefined) Deno.env.set("SWAMP_REPO_DIR", original);
     else Deno.env.delete("SWAMP_REPO_DIR");

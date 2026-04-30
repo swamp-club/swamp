@@ -17,9 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
 import { workflowsDir } from "./watcher.ts";
+import { assertPathEquals } from "../../infrastructure/persistence/path_test_helpers.ts";
 
 Deno.test("workflowsDir: returns correct path", () => {
-  assertEquals(workflowsDir("/repo"), "/repo/workflows");
+  assertPathEquals(workflowsDir("/repo"), "/repo/workflows");
 });

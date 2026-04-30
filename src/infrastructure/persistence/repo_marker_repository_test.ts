@@ -22,6 +22,7 @@ import { join } from "@std/path";
 import { RepoMarkerRepository } from "./repo_marker_repository.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { SwampVersion } from "../../domain/repo/swamp_version.ts";
+import { assertPathEquals } from "./path_test_helpers.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-marker-test-" });
@@ -44,7 +45,7 @@ Deno.test("RepoMarkerRepository.getMarkerPath returns correct path", () => {
 
   const markerPath = repo.getMarkerPath(repoPath);
 
-  assertEquals(markerPath, "/some/repo/.swamp.yaml");
+  assertPathEquals(markerPath, "/some/repo/.swamp.yaml");
 });
 
 Deno.test("RepoMarkerRepository.exists returns false when marker does not exist", async () => {

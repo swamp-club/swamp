@@ -20,6 +20,7 @@
 import { assert, assertEquals, assertNotEquals } from "@std/assert";
 import { join } from "@std/path";
 import type { ExtensionManifest } from "./extension_manifest.ts";
+import { assertPathEquals } from "../../infrastructure/persistence/path_test_helpers.ts";
 import {
   computePackageCacheHash,
   defaultPackageCacheRoot,
@@ -223,5 +224,5 @@ Deno.test("ExtensionPackageCache: get returns null for corrupt metadata", async 
 
 Deno.test("defaultPackageCacheRoot: returns canonical path under .swamp", () => {
   const root = defaultPackageCacheRoot("/tmp/repo");
-  assertEquals(root, "/tmp/repo/.swamp/cache/packages");
+  assertPathEquals(root, "/tmp/repo/.swamp/cache/packages");
 });

@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertMatch } from "@std/assert";
+import { assertPathEquals } from "../../infrastructure/persistence/path_test_helpers.ts";
 import {
   AUDIT_FILENAME_PATTERN,
   auditFilename,
@@ -50,7 +51,7 @@ Deno.test("auditFilenameForTimestamp: composes filename from ISO timestamp", () 
 });
 
 Deno.test("auditFilePathForTimestamp: joins audit directory with the filename", () => {
-  assertEquals(
+  assertPathEquals(
     auditFilePathForTimestamp("/repo/.swamp/audit", "2026-04-24T10:00:00Z"),
     "/repo/.swamp/audit/commands-2026-04-24.jsonl",
   );

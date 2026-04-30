@@ -30,6 +30,7 @@ import {
   toAbsolutePath,
   toRelativePath,
 } from "./paths.ts";
+import { assertPathEquals } from "./path_test_helpers.ts";
 
 Deno.test("SWAMP_DATA_DIR is .swamp", () => {
   assertEquals(SWAMP_DATA_DIR, ".swamp");
@@ -40,22 +41,22 @@ Deno.test("SWAMP_MARKER_FILE is .swamp.yaml", () => {
 });
 
 Deno.test("swampPath joins segments correctly", () => {
-  assertEquals(
+  assertPathEquals(
     swampPath("/repo", "definitions", "aws/ec2", "my-vpc.yaml"),
     "/repo/.swamp/definitions/aws/ec2/my-vpc.yaml",
   );
 });
 
 Deno.test("swampPath with no segments returns data dir", () => {
-  assertEquals(swampPath("/repo"), "/repo/.swamp");
+  assertPathEquals(swampPath("/repo"), "/repo/.swamp");
 });
 
 Deno.test("swampPath with single segment", () => {
-  assertEquals(swampPath("/repo", "workflows"), "/repo/.swamp/workflows");
+  assertPathEquals(swampPath("/repo", "workflows"), "/repo/.swamp/workflows");
 });
 
 Deno.test("swampMarkerPath returns marker file path", () => {
-  assertEquals(swampMarkerPath("/repo"), "/repo/.swamp.yaml");
+  assertPathEquals(swampMarkerPath("/repo"), "/repo/.swamp.yaml");
 });
 
 Deno.test("SWAMP_SUBDIRS has all expected directories", () => {
@@ -77,11 +78,11 @@ Deno.test("SWAMP_SUBDIRS has all expected directories", () => {
 });
 
 Deno.test("swampPath with SWAMP_SUBDIRS constants", () => {
-  assertEquals(
+  assertPathEquals(
     swampPath("/repo", SWAMP_SUBDIRS.definitions),
     "/repo/.swamp/definitions",
   );
-  assertEquals(
+  assertPathEquals(
     swampPath("/repo", SWAMP_SUBDIRS.workflowRuns, "workflow-123"),
     "/repo/.swamp/workflow-runs/workflow-123",
   );
@@ -93,7 +94,7 @@ Deno.test("toRelativePath - converts absolute path inside repo to relative", () 
 
   const result = toRelativePath(repoDir, absolutePath);
 
-  assertEquals(result, ".swamp/outputs/aws/cli/run.log");
+  assertPathEquals(result, ".swamp/outputs/aws/cli/run.log");
 });
 
 Deno.test("toRelativePath - returns already relative path unchanged", () => {
@@ -120,7 +121,7 @@ Deno.test("toAbsolutePath - converts relative path to absolute", () => {
 
   const result = toAbsolutePath(repoDir, relativePath);
 
-  assertEquals(result, "/Users/john/repo/.swamp/outputs/aws/cli/run.log");
+  assertPathEquals(result, "/Users/john/repo/.swamp/outputs/aws/cli/run.log");
 });
 
 Deno.test("toAbsolutePath - returns already absolute path unchanged (backwards compat)", () => {
@@ -138,7 +139,7 @@ Deno.test("toAbsolutePath - handles different repo directory", () => {
 
   const result = toAbsolutePath(repoDir, relativePath);
 
-  assertEquals(
+  assertPathEquals(
     result,
     "/home/alice/projects/infra/.swamp/workflow-runs/my-workflow/run.yaml",
   );
@@ -151,14 +152,14 @@ Deno.test("toRelativePath and toAbsolutePath - round trip", () => {
   const relative = toRelativePath(repoDir, originalAbsolute);
   const backToAbsolute = toAbsolutePath(repoDir, relative);
 
-  assertEquals(backToAbsolute, originalAbsolute);
+  assertPathEquals(backToAbsolute, originalAbsolute);
 });
 
 Deno.test("getSwampConfigDir uses XDG_CONFIG_HOME when set", () => {
   const originalXdg = Deno.env.get("XDG_CONFIG_HOME");
   try {
     Deno.env.set("XDG_CONFIG_HOME", "/custom/config");
-    assertEquals(getSwampConfigDir(), "/custom/config/swamp");
+    assertPathEquals(getSwampConfigDir(), "/custom/config/swamp");
   } finally {
     if (originalXdg) Deno.env.set("XDG_CONFIG_HOME", originalXdg);
     else Deno.env.delete("XDG_CONFIG_HOME");
@@ -171,7 +172,7 @@ Deno.test("getSwampConfigDir falls back to HOME/.config/swamp", () => {
   try {
     Deno.env.delete("XDG_CONFIG_HOME");
     Deno.env.set("HOME", "/home/testuser");
-    assertEquals(getSwampConfigDir(), "/home/testuser/.config/swamp");
+    assertPathEquals(getSwampConfigDir(), "/home/testuser/.config/swamp");
   } finally {
     if (originalXdg) Deno.env.set("XDG_CONFIG_HOME", originalXdg);
     else Deno.env.delete("XDG_CONFIG_HOME");
@@ -203,7 +204,7 @@ Deno.test("getSwampDataDir uses HOME", () => {
   const originalHome = Deno.env.get("HOME");
   try {
     Deno.env.set("HOME", "/home/testuser");
-    assertEquals(getSwampDataDir(), "/home/testuser/.swamp");
+    assertPathEquals(getSwampDataDir(), "/home/testuser/.swamp");
   } finally {
     if (originalHome) Deno.env.set("HOME", originalHome);
     else Deno.env.delete("HOME");
@@ -216,7 +217,7 @@ Deno.test("getSwampDataDir falls back to USERPROFILE", () => {
   try {
     Deno.env.delete("HOME");
     Deno.env.set("USERPROFILE", "C:\\Users\\testuser");
-    assertEquals(getSwampDataDir(), "C:\\Users\\testuser/.swamp");
+    assertPathEquals(getSwampDataDir(), "C:\\Users\\testuser/.swamp");
   } finally {
     if (originalHome) Deno.env.set("HOME", originalHome);
     else Deno.env.delete("HOME");
