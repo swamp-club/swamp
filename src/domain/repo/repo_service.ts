@@ -679,7 +679,10 @@ ${gettingStarted}
 
 ## Commands
 
-Use \`swamp --help\` to see available commands.
+Use \`swamp --help\` to see available commands. For a machine-readable JSON
+schema of the CLI (commands, options, arguments) intended for agent
+consumption, run \`swamp help [<command>...]\` — e.g. \`swamp help\` returns
+the full tree, and \`swamp help model method run\` scopes to a subtree.
 `;
   }
 
