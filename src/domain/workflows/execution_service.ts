@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { getLogger } from "@logtape/logtape";
-import { Workflow, type WorkflowInput } from "./workflow.ts";
+import type { Workflow } from "./workflow.ts";
 import type { Job } from "./job.ts";
 import type { Step } from "./step.ts";
 // deno-lint-ignore verbatim-module-syntax
@@ -46,23 +46,10 @@ import { DefaultMethodExecutionService } from "../models/method_execution_servic
 import { DefaultModelValidationService } from "../models/validation_service.ts";
 import { buildMethodContext } from "../models/method_context.ts";
 import { detectEnvVarUsageInDefinition } from "../models/env_var_detector.ts";
-import type { Definition } from "../definitions/definition.ts";
 import { findDefinitionByIdOrName } from "../models/model_lookup.ts";
 import type { MethodExecutionEvent } from "../models/method_events.ts";
 import { ModelOutput } from "../models/model_output.ts";
-import {
-  extractExpressions,
-  isTaskInputsPath,
-  replaceExpressions,
-} from "../expressions/expression_parser.ts";
-import {
-  containsRuntimeExpression,
-  ExpressionEvaluationService,
-} from "../expressions/expression_evaluation_service.ts";
-import {
-  extractDependencies,
-  hasStepOutputDependency,
-} from "../expressions/dependency_extractor.ts";
+import { ExpressionEvaluationService } from "../expressions/expression_evaluation_service.ts";
 import {
   buildEnvContext,
   type DataRecord,
@@ -71,6 +58,10 @@ import {
   ModelResolver,
 } from "../expressions/model_resolver.ts";
 import { CelEvaluator } from "../../infrastructure/cel/cel_evaluator.ts";
+import {
+  DefinitionExpressionEvaluator,
+  WorkflowExpressionEvaluator,
+} from "./expression_evaluators.ts";
 import { UserError } from "../errors.ts";
 import {
   getRunLogger,
@@ -359,11 +350,9 @@ export class DefaultStepExecutor implements StepExecutor {
       const originalInputs = ctx.expressionContext.inputs ?? {};
       ctx.expressionContext.inputs = { ...originalInputs, ...stepInputs };
 
-      evaluatedDefinition = await this.evaluateDefinitionExpressions(
-        originalDefinition,
-        ctx.expressionContext,
-        ctx.repoDir,
-      );
+      evaluatedDefinition = await new DefinitionExpressionEvaluator(
+        new CelEvaluator(),
+      ).evaluate(originalDefinition, ctx.expressionContext);
     }
 
     // Forward all step inputs as method arguments.
@@ -801,80 +790,6 @@ export class DefaultStepExecutor implements StepExecutor {
       throw error;
     }
   }
-
-  /**
-   * Evaluates CEL expressions in a definition, leaving vault expressions raw.
-   * Vault expressions are resolved at runtime only.
-   */
-  private async evaluateDefinitionExpressions(
-    definition: Definition,
-    context: ExpressionContext,
-    _repoDir: string,
-  ): Promise<Definition> {
-    const celEvaluator = new CelEvaluator();
-    const definitionData = definition.toData();
-    const expressions = extractExpressions(definitionData);
-
-    if (expressions.length === 0) {
-      return definition;
-    }
-
-    // Evaluate CEL-only expressions; skip runtime expressions (vault, env)
-    const evaluatedValues = new Map<string, unknown>();
-    for (const expr of expressions) {
-      if (containsRuntimeExpression(expr.celExpression)) {
-        continue;
-      }
-
-      // Skip expressions referencing model resource/file data that isn't
-      // available in context (e.g., referenced model was never executed).
-      // Unlike inputs, model data is never conditionally accessed in CEL —
-      // member access on a missing model ref is always an error.
-      let hasMissingModelDep = false;
-      const deps = extractDependencies(expr.celExpression);
-      for (const dep of deps) {
-        if (dep.type === "resource" || dep.type === "file") {
-          const modelData = context.model[dep.modelRef];
-          if (
-            !modelData ||
-            (dep.type === "resource" && !modelData.resource) ||
-            (dep.type === "file" && !modelData.file)
-          ) {
-            hasMissingModelDep = true;
-            break;
-          }
-        }
-      }
-
-      if (hasMissingModelDep) {
-        continue;
-      }
-
-      try {
-        const value = await celEvaluator.evaluateAsync(
-          expr.celExpression,
-          context,
-        );
-        evaluatedValues.set(expr.raw, value);
-      } catch {
-        // Leave unresolved — CEL threw because an input referenced directly
-        // (not inside a conditional branch) is absent from context.
-        // The Proxy on globalArgs will surface a clear error if the method
-        // actually needs the unresolved value.
-      }
-    }
-
-    // Replace only CEL-only expressions with evaluated values
-    const evaluatedData = replaceExpressions(definitionData, evaluatedValues);
-
-    // Create new Definition from evaluated data
-    const { Definition: DefClass } = await import(
-      "../definitions/definition.ts"
-    );
-    return DefClass.fromData(
-      evaluatedData as ReturnType<typeof definition.toData>,
-    );
-  }
 }
 
 // Re-export from dedicated file for backward compatibility
@@ -1105,10 +1020,7 @@ export class WorkflowExecutionService {
           expressionContext.inputs = options.inputs;
         }
 
-        workflow = await this.evaluateWorkflow(
-          workflow,
-          expressionContext,
-        );
+        workflow = await this.evaluateWorkflow(workflow, expressionContext);
         const evaluatedWorkflowRepo = new YamlEvaluatedWorkflowRepository(
           this.repoDir,
         );
@@ -2010,10 +1922,8 @@ export class WorkflowExecutionService {
   }
 
   /**
-   * Evaluates CEL expressions in a workflow, leaving vault expressions raw.
-   * Vault expressions are resolved at runtime only.
-   * forEach-related expressions (self.* and forEach.in) are left raw for
-   * runtime expansion.
+   * Evaluates CEL expressions in a workflow via WorkflowExpressionEvaluator,
+   * carrying the tracing span this orchestrator opened around the call.
    */
   private async evaluateWorkflow(
     workflow: Workflow,
@@ -2024,68 +1934,15 @@ export class WorkflowExecutionService {
     });
 
     try {
-      const celEvaluator = new CelEvaluator();
-      const workflowData = workflow.toData();
-      const expressions = extractExpressions(workflowData);
-
-      if (expressions.length === 0) {
-        return workflow;
-      }
-
-      // Collect forEach.in expressions to skip during evaluation
-      const forEachInExpressions = new Set<string>();
-      for (const job of workflow.jobs) {
-        for (const step of job.steps) {
-          if (step.forEach) {
-            const match = step.forEach.in.match(/\$\{\{\s*(.+?)\s*\}\}/);
-            if (match) {
-              forEachInExpressions.add(step.forEach.in);
-            }
-          }
-        }
-      }
-
-      // Evaluate CEL-only expressions; skip runtime (vault, env), self.*, and forEach.in expressions
-      const evaluatedValues = new Map<string, unknown>();
-      for (const expr of expressions) {
-        if (containsRuntimeExpression(expr.celExpression)) {
-          continue;
-        }
-        // Skip self.* expressions — they reference forEach variables resolved at runtime
-        if (expr.celExpression.match(/\bself\./)) {
-          continue;
-        }
-        // Skip forEach.in expressions — they must remain as strings for forEach expansion
-        if (forEachInExpressions.has(expr.raw)) {
-          continue;
-        }
-        // Skip task.inputs expressions that depend on step outputs (resource, file, execution, data, file.contents).
-        // These are evaluated at step execution time when upstream step outputs are available.
-        if (
-          isTaskInputsPath(expr.path) &&
-          hasStepOutputDependency(expr.celExpression)
-        ) {
-          continue;
-        }
-
-        const value = await celEvaluator.evaluateAsync(
-          expr.celExpression,
-          context,
-        );
-        evaluatedValues.set(expr.raw, value);
-      }
-
-      // Replace only CEL-only expressions with evaluated values
-      const evaluatedData = replaceExpressions(workflowData, evaluatedValues);
-
-      // Create new Workflow from evaluated data
-      const result = Workflow.fromData(evaluatedData as WorkflowInput);
+      const result = await new WorkflowExpressionEvaluator(
+        new CelEvaluator(),
+      ).evaluate(workflow, context);
       evalSpan.setAttribute(
         "workflow.expressions_evaluated",
-        evaluatedValues.size,
+        result.expressionsEvaluated,
       );
       evalSpan.setStatus({ code: SpanStatusCode.OK });
-      return result;
+      return result.workflow;
     } catch (error) {
       evalSpan.setStatus({
         code: SpanStatusCode.ERROR,
