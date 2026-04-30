@@ -26,6 +26,9 @@ import {
   type ModelDefinition,
 } from "../../model.ts";
 import { executeProcess } from "../../../../infrastructure/process/process_executor.ts";
+import { selectShellStrategy } from "./shell_strategy.ts";
+
+const shellStrategy = selectShellStrategy();
 
 /**
  * Schema for shell model input attributes.
@@ -97,24 +100,26 @@ async function executeCommand(
   try {
     // Resolve vault secrets via environment variables to prevent shell injection.
     // The unresolved run field contains sentinel tokens for vault secrets.
-    // We replace sentinels with "${__SWAMP_VAULT_N}" env var references and
-    // pass the raw secret values through the process environment, so the shell
-    // never parses secret content as syntax.
+    // The strategy replaces sentinels with shell-appropriate env var references
+    // (`${VAR}` on POSIX, `$env:VAR` on PowerShell) and returns the raw secret
+    // values to inject via the process environment, so the shell never parses
+    // secret content as syntax.
     let shellCommand = args.run;
     let shellEnv = args.env ?? {};
     const secretBag = context.vaultSecrets;
     if (secretBag && !secretBag.isEmpty && context.unresolvedMethodArgs) {
       const unresolvedRun = context.unresolvedMethodArgs.run;
       if (typeof unresolvedRun === "string") {
-        const resolved = secretBag.resolveForShell(unresolvedRun);
+        const resolved = shellStrategy.resolveSecrets(unresolvedRun, secretBag);
         shellCommand = resolved.command;
         shellEnv = { ...shellEnv, ...resolved.env };
       }
     }
 
+    const invocation = shellStrategy.buildInvocation(shellCommand);
     const result = await executeProcess({
-      command: "sh",
-      args: ["-c", shellCommand],
+      command: invocation.command,
+      args: invocation.args,
       cwd: args.workingDir,
       env: Object.keys(shellEnv).length > 0 ? shellEnv : undefined,
       timeoutMs: args.timeout,
