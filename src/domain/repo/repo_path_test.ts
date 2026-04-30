@@ -19,11 +19,12 @@
 
 import { assertEquals, assertThrows } from "@std/assert";
 import { RepoPath } from "./repo_path.ts";
+import { assertPathEquals } from "../../infrastructure/persistence/path_test_helpers.ts";
 
 Deno.test("RepoPath.create accepts absolute path", () => {
   const path = RepoPath.create("/home/user/repo");
-  assertEquals(path.value, "/home/user/repo");
-  assertEquals(path.toString(), "/home/user/repo");
+  assertPathEquals(path.value, "/home/user/repo");
+  assertPathEquals(path.toString(), "/home/user/repo");
 });
 
 Deno.test("RepoPath.create converts relative path to absolute", () => {
@@ -42,7 +43,7 @@ Deno.test("RepoPath.create converts bare relative path to absolute", () => {
 
 Deno.test("RepoPath.create trims whitespace", () => {
   const path = RepoPath.create("  /home/user/repo  ");
-  assertEquals(path.value, "/home/user/repo");
+  assertPathEquals(path.value, "/home/user/repo");
 });
 
 Deno.test("RepoPath.create throws on empty string", () => {

@@ -34,6 +34,7 @@ import type { DatastoreProvider } from "../domain/datastore/datastore_provider.t
 import { getSwampDataDir } from "../infrastructure/persistence/paths.ts";
 import type { RepoMarkerData } from "../infrastructure/persistence/repo_marker_repository.ts";
 import { z } from "zod";
+import { assertPathEquals } from "../infrastructure/persistence/path_test_helpers.ts";
 
 /**
  * Creates a stub DatastoreProvider for testing custom datastore resolution.
@@ -85,7 +86,7 @@ Deno.test("parseDatastoreEnvVar: parses filesystem path", async () => {
   const config = await parseDatastoreEnvVar("filesystem:/data/my-project");
   assertEquals(config.type, "filesystem");
   if (!isCustomDatastoreConfig(config) && config.type === "filesystem") {
-    assertEquals(config.path, "/data/my-project");
+    assertPathEquals(config.path, "/data/my-project");
   }
 });
 
@@ -118,7 +119,7 @@ Deno.test("resolveDatastoreConfig: default is filesystem at .swamp/", async () =
   const config = await resolveDatastoreConfig(null, undefined, "/repo");
   assertEquals(config.type, "filesystem");
   if (!isCustomDatastoreConfig(config) && config.type === "filesystem") {
-    assertEquals(config.path, "/repo/.swamp");
+    assertPathEquals(config.path, "/repo/.swamp");
   }
 });
 
@@ -129,7 +130,7 @@ Deno.test("resolveDatastoreConfig: env var takes priority", async () => {
     const config = await resolveDatastoreConfig(null, undefined, "/repo");
     assertEquals(config.type, "filesystem");
     if (!isCustomDatastoreConfig(config) && config.type === "filesystem") {
-      assertEquals(config.path, "/custom/path");
+      assertPathEquals(config.path, "/custom/path");
     }
   } finally {
     if (originalEnv) {
@@ -154,7 +155,7 @@ Deno.test("resolveDatastoreConfig: CLI arg overrides marker", async () => {
   );
   assertEquals(config.type, "filesystem");
   if (!isCustomDatastoreConfig(config) && config.type === "filesystem") {
-    assertEquals(config.path, "/cli-path");
+    assertPathEquals(config.path, "/cli-path");
   }
 });
 
@@ -172,7 +173,7 @@ Deno.test("resolveDatastoreConfig: marker config used when no env/cli", async ()
   const config = await resolveDatastoreConfig(marker, undefined, "/repo");
   assertEquals(config.type, "filesystem");
   if (!isCustomDatastoreConfig(config) && config.type === "filesystem") {
-    assertEquals(config.path, "/marker-path");
+    assertPathEquals(config.path, "/marker-path");
     assertEquals(config.directories, ["data", "outputs"]);
   }
 });
@@ -217,8 +218,8 @@ Deno.test("parseDatastoreEnvVar: parses custom type with JSON config", async () 
   assertEquals(isCustomDatastoreConfig(config), true);
   const custom = config as CustomDatastoreConfig;
   assertEquals(custom.config, { region: "us-east-1" });
-  assertEquals(custom.datastorePath, "/my/repo/.custom-store");
-  assertEquals(custom.cachePath, "/my/repo/.custom-cache");
+  assertPathEquals(custom.datastorePath, "/my/repo/.custom-store");
+  assertPathEquals(custom.cachePath, "/my/repo/.custom-cache");
 });
 
 Deno.test("parseDatastoreEnvVar: parses custom type with empty config", async () => {
@@ -243,7 +244,7 @@ Deno.test("parseDatastoreEnvVar: custom type uses repoDir not repoId for path re
   );
   const custom = config as CustomDatastoreConfig;
   // Should use repoDir, not repoId
-  assertEquals(custom.datastorePath, "/actual/repo/dir/.custom-store");
+  assertPathEquals(custom.datastorePath, "/actual/repo/dir/.custom-store");
 });
 
 Deno.test("parseDatastoreEnvVar: custom type throws on invalid JSON", async () => {
@@ -282,8 +283,8 @@ Deno.test("resolveDatastoreConfig: YAML custom type produces CustomDatastoreConf
   assertEquals(isCustomDatastoreConfig(config), true);
   const custom = config as CustomDatastoreConfig;
   assertEquals(custom.config, { key: "value" });
-  assertEquals(custom.datastorePath, "/repo/.custom-store");
-  assertEquals(custom.cachePath, "/repo/.custom-cache");
+  assertPathEquals(custom.datastorePath, "/repo/.custom-store");
+  assertPathEquals(custom.cachePath, "/repo/.custom-cache");
   assertEquals(custom.directories, ["data"]);
 });
 
@@ -374,7 +375,7 @@ Deno.test("resolveCachePath: concrete return is used as-is", async () => {
     "/my/repo",
   );
   const custom = config as CustomDatastoreConfig;
-  assertEquals(custom.cachePath, "/my/repo/.test-explicit-cache");
+  assertPathEquals(custom.cachePath, "/my/repo/.test-explicit-cache");
 });
 
 // ============================================================================

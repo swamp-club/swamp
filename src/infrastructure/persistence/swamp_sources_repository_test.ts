@@ -29,6 +29,7 @@ import {
   writeSwampSources,
 } from "./swamp_sources_repository.ts";
 import type { ExtensionKind } from "../../domain/repo/swamp_sources.ts";
+import { assertPathEquals } from "./path_test_helpers.ts";
 
 Deno.test("readSwampSources: returns null when file does not exist", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_sources_test_" });
@@ -49,7 +50,7 @@ Deno.test("readSwampSources: parses valid sources file", async () => {
     );
     const result = await readSwampSources(tmpDir);
     assertEquals(result?.sources.length, 2);
-    assertEquals(result?.sources[0].path, "/tmp/ext-a");
+    assertPathEquals(result?.sources[0].path, "/tmp/ext-a");
     assertEquals(result?.sources[1].only, ["models"]);
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
@@ -64,7 +65,7 @@ Deno.test("writeSwampSources: creates file and readSwampSources reads it back", 
     });
     const result = await readSwampSources(tmpDir);
     assertEquals(result?.sources.length, 1);
-    assertEquals(result?.sources[0].path, "/tmp/my-ext");
+    assertPathEquals(result?.sources[0].path, "/tmp/my-ext");
     assertEquals(result?.sources[0].only, ["vaults"]);
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
@@ -103,7 +104,7 @@ Deno.test("expandSourcePaths: expands non-glob path as-is", async () => {
       tmpDir,
     );
     assertEquals(result.length, 1);
-    assertEquals(result[0].path, "/tmp/my-ext");
+    assertPathEquals(result[0].path, "/tmp/my-ext");
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }
@@ -199,7 +200,7 @@ Deno.test("resolveSourceExtensionDirs: handles missing source path gracefully", 
     { path: "/nonexistent/path" },
   ]);
   assertEquals(result.length, 1);
-  assertEquals(result[0].sourcePath, "/nonexistent/path");
+  assertPathEquals(result[0].sourcePath, "/nonexistent/path");
   assertEquals(result[0].modelsDir, undefined);
 });
 
@@ -372,7 +373,7 @@ Deno.test("resolveSourceExtensionDirs snapshot: non-existent path yields empty",
     { path: "/definitely/does/not/exist/v139" },
   ]);
   assertEquals(result.length, 1);
-  assertEquals(result[0].sourcePath, "/definitely/does/not/exist/v139");
+  assertPathEquals(result[0].sourcePath, "/definitely/does/not/exist/v139");
   assertEquals(result[0].modelsDir, undefined);
   assertEquals(result[0].vaultsDir, undefined);
   assertEquals(result[0].driversDir, undefined);
