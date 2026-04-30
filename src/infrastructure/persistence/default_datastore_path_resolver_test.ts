@@ -218,7 +218,7 @@ Deno.test("DefaultDatastorePathResolver - resolvePath routes bundles to S3 cache
   };
   const resolver = new DefaultDatastorePathResolver("/repo", config);
 
-  assertEquals(
+  assertPathEquals(
     resolver.resolvePath("bundles", "2e4ea9ae", "aws/logs.js"),
     "/home/user/.swamp/repos/abc/bundles/2e4ea9ae/aws/logs.js",
   );
