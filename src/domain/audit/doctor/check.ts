@@ -29,6 +29,17 @@ import type { AiTool } from "../../repo/repo_service.ts";
  * checks from running.
  */
 
+// TODO(windows-ga): add a sibling `swamp doctor vault` surface that runs
+// `checkFileNotBroadlyReadable` against each configured local-encryption
+// vault key file (and the auto-generated `.key` file) and reports what
+// the platform check covers vs. what it skips. On POSIX the disclosure
+// should list the `(stat.mode & 0o077) !== 0` rule. On Windows it should
+// list the broad principals checked (Everyone, Authenticated Users,
+// Anonymous Logon, BUILTIN\Users) and call out the bits we explicitly
+// don't evaluate (deny ACEs, full inheritance traversal, alternate data
+// streams, nested group membership). Keep it a separate command surface
+// — don't fold it into `doctor audit`.
+
 /** The canonical set of preflight check names. */
 export type PreflightCheckName =
   | "binary-on-path"
