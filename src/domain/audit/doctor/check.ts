@@ -69,11 +69,16 @@ export interface CheckResult {
  * The production implementation spawns the swamp binary to run
  * `audit record --from-hook`. Tests inject fakes so unit tests never
  * subprocess-out to a real swamp binary.
+ *
+ * `signal` lets the caller terminate an in-flight child when the doctor
+ * receives SIGINT. Without it, killing the doctor parent reparents the
+ * child to init/launchd instead of terminating it.
  */
 export type SpawnFn = (
   args: string[],
   stdin: string,
   env?: Record<string, string>,
+  signal?: AbortSignal,
 ) => Promise<{ exitCode: number; stdout: string; stderr: string }>;
 
 /** Context passed to every preflight check. */

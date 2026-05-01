@@ -70,13 +70,28 @@ export const recordingSmokeTestCheck: PreflightCheck = {
       };
     }
 
-    await ensureDir(ctx.auditDir);
+    try {
+      await ensureDir(ctx.auditDir);
+    } catch (error) {
+      if (error instanceof Deno.errors.PermissionDenied) {
+        return {
+          name: "recording-smoke-test",
+          status: "fail",
+          message: `audit directory is not writable: ${ctx.auditDir}`,
+          hint:
+            `The audit directory exists but the current user cannot write to it. Check ownership and permissions (e.g. \`ls -ld ${ctx.auditDir}\`) and \`chmod\`/\`chown\` it so the user running swamp can write to it.`,
+          details: { auditDir: ctx.auditDir, error: String(error) },
+        };
+      }
+      throw error;
+    }
 
     try {
       await ctx.spawnSwamp(
         ["audit", "record", "--from-hook", "--tool", ctx.tool],
         payload.stdin,
         payload.env,
+        ctx.abortSignal,
       );
     } catch (error) {
       return {

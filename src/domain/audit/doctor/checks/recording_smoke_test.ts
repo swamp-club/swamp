@@ -132,3 +132,52 @@ Deno.test("recordingSmokeTest: appliesTo returns true only for audit-hook tools"
   assertEquals(recordingSmokeTestCheck.appliesTo("copilot"), false);
   assertEquals(recordingSmokeTestCheck.appliesTo("none"), false);
 });
+
+Deno.test(
+  "recordingSmokeTest: passes the abort signal through to spawnSwamp",
+  async () => {
+    await withTempAuditDir(async (auditDir) => {
+      const controller = new AbortController();
+      let receivedSignal: AbortSignal | undefined;
+      const captureSpawn: SpawnFn = (_args, stdin, _env, signal) => {
+        receivedSignal = signal;
+        // Simulate a hook that drops the row, so the run still completes.
+        return makeFakeSpawnThatDropsRow()(_args, stdin);
+      };
+      const ctx: CheckContext = {
+        repoPath: auditDir.replace(/\.swamp\/audit$/, ""),
+        auditDir,
+        tool: "claude",
+        abortSignal: controller.signal,
+        spawnSwamp: captureSpawn,
+      };
+      await recordingSmokeTestCheck.run(ctx);
+      assertEquals(receivedSignal, controller.signal);
+    });
+  },
+);
+
+Deno.test(
+  "recordingSmokeTest: returns actionable fail when audit dir is not writable",
+  // Permission semantics differ on Windows; chmod 0500 is not enforced there.
+  { ignore: Deno.build.os === "windows" },
+  async () => {
+    const repo = await Deno.makeTempDir({ prefix: "doctor-smoke-readonly-" });
+    const auditDir = join(repo, ".swamp", "audit-locked");
+    await ensureDir(auditDir);
+    await Deno.chmod(auditDir, 0o500);
+    try {
+      // Force a child path inside the readonly dir so ensureDir must mkdir.
+      const childAuditDir = join(auditDir, "today");
+      const result = await recordingSmokeTestCheck.run(
+        makeCtx(childAuditDir, "claude", makeFakeSpawnThatDropsRow()),
+      );
+      assertEquals(result.status, "fail");
+      assertStringIncludes(result.message, "not writable");
+      assertStringIncludes(result.hint ?? "", "chmod");
+    } finally {
+      await Deno.chmod(auditDir, 0o700).catch(() => {});
+      await Deno.remove(repo, { recursive: true }).catch(() => {});
+    }
+  },
+);
