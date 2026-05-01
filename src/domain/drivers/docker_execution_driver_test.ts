@@ -610,9 +610,20 @@ Deno.test({
       // diagnostic instead of the timeout error). With setInterval, deno
       // sits idle until the driver's SIGTERM (or SIGKILL on Windows) kills
       // it silently.
+      //
+      // Defensive self-exit: on Windows, killing the launcher (.cmd shim)
+      // does NOT propagate to this deno child — there's no POSIX-style
+      // process group, so the driver's SIGTERM/SIGKILL never reaches us
+      // and the mock would otherwise hang forever. The driver's 200ms
+      // timeout fires its own timeout error well before this 5s self-exit,
+      // so on POSIX (where kill propagates) the self-exit never runs and
+      // existing behavior is preserved. On Windows (where kill doesn't
+      // propagate), the mock terminates after 5s, the driver's
+      // process.status resolves, and the already-set `timedOut` flag
+      // surfaces the expected "timed out" error.
       const command = await createMockDriverCommand(
         tmpDir,
-        `setInterval(() => {}, 60_000);\n`,
+        `setTimeout(() => Deno.exit(0), 5000);\nsetInterval(() => {}, 60_000);\n`,
       );
 
       const driver = new DockerExecutionDriver({
