@@ -197,6 +197,87 @@ Deno.test("executeProcess handles timeout with logger", async () => {
   }
 });
 
+// --- Stream-0 regression net: abort signal & SIGTERM-on-timeout ---
+
+Deno.test({
+  name:
+    "executeProcess: AbortSignal aborted mid-execution surfaces AbortError (streaming mode)",
+  // sleep(1) and SIGTERM via process.kill are POSIX-only contracts. The
+  // production code only attaches abort handling in streaming mode (when
+  // a logger is provided), so we exercise that path here.
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    const mockLogger = {
+      info: () => {},
+      warn: () => {},
+    } as unknown as import("@logtape/logtape").Logger;
+
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 100);
+
+    let caught: unknown;
+    try {
+      await executeProcess({
+        command: "sleep",
+        args: ["5"],
+        logger: mockLogger,
+        signal: controller.signal,
+      });
+    } catch (err) {
+      caught = err;
+    }
+
+    assertEquals(
+      caught !== undefined,
+      true,
+      "expected executeProcess to reject when signal aborts",
+    );
+    // The executor surfaces a DOMException with name "AbortError" when
+    // the abort signal was responsible for the kill.
+    const err = caught as { name?: string; message?: string };
+    assertEquals(
+      err.name,
+      "AbortError",
+      `expected AbortError; got name=${err.name} message=${err.message}`,
+    );
+  },
+});
+
+Deno.test({
+  name:
+    "executeProcess: timeout sends SIGTERM to child and surfaces timeout error",
+  // SIGTERM-on-timeout semantics: the child process is killed via SIGTERM
+  // (not SIGKILL) so signal-aware children can clean up. The executor
+  // surfaces a generic "timed out" Error after the kill — this pins both
+  // halves so a refactor that switches to SIGKILL or drops the kill
+  // entirely will fail.
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    // Use sh with a SIGTERM-trapping handler. If SIGTERM arrives, the
+    // trap runs and the child exits cleanly with code 143. If only
+    // SIGKILL arrives, the trap never runs.
+    let caught: unknown;
+    try {
+      await executeProcess({
+        command: "sh",
+        args: ["-c", "trap 'exit 143' TERM; sleep 5"],
+        timeoutMs: 200,
+      });
+    } catch (err) {
+      caught = err;
+    }
+
+    assertEquals(
+      caught !== undefined,
+      true,
+      "expected executeProcess to throw on timeout",
+    );
+    const err = caught as Error;
+    assertStringIncludes(err.message, "timed out");
+    assertStringIncludes(err.message, "200ms");
+  },
+});
+
 Deno.test("executeProcess redacts secrets from streamed stdout lines", async () => {
   const infoLines: string[] = [];
   const warnLines: string[] = [];

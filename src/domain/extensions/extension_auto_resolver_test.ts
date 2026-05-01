@@ -522,3 +522,66 @@ Deno.test("resolveDatastoreType - skips non-@ types", async () => {
   const result = await resolveDatastoreType("plain-type", resolver);
   assertEquals(result, false);
 });
+
+// --- Stream-0 regression net: candidate names preserve forward slashes ---
+
+Deno.test("ExtensionAutoResolver - buildCandidateNames preserves forward-slash separators", async () => {
+  // The private buildCandidateNames helper splits on `/` and stitches
+  // candidates back together with `/`. Stream C is leaving this code
+  // alone because the type-string IS the logical key — it's never a
+  // host filesystem path. This test pins the contract by observing the
+  // candidate names through the public resolve() entry point: a refactor
+  // that swaps `/` for `path.SEPARATOR` would surface as backslash-
+  // separated lookup names on Windows and fail this assertion.
+  const lookupCalls: string[] = [];
+  const lookup: ExtensionLookupPort = {
+    getExtension(name: string) {
+      lookupCalls.push(name);
+      return Promise.resolve(null);
+    },
+    searchExtensions() {
+      return Promise.resolve({ extensions: [] });
+    },
+  };
+
+  const resolver = new ExtensionAutoResolver({
+    allowedCollectives: ["user"],
+    extensionLookup: lookup,
+    extensionInstaller: createMockInstaller(),
+    output: createMockOutput(),
+  });
+
+  // Input is `@user/aws/ec2`; with collective "user" allowlisted, we
+  // expect the candidate progression `@user/aws` (single intermediate
+  // because dropping one more segment would land below the 2-segment
+  // floor).
+  await resolver.resolve("@user/aws/ec2");
+
+  // Every observed candidate must be forward-slash separated.
+  assertEquals(
+    lookupCalls.length > 0,
+    true,
+    `expected at least one candidate lookup; got: ${
+      JSON.stringify(lookupCalls)
+    }`,
+  );
+  for (const candidate of lookupCalls) {
+    assertEquals(
+      candidate.includes("\\"),
+      false,
+      `candidate must not contain backslash; got: ${candidate}`,
+    );
+    assertEquals(
+      candidate.startsWith("@"),
+      true,
+      `candidate must remain @-prefixed; got: ${candidate}`,
+    );
+  }
+  // Pin the specific candidate so a refactor that flattens or extends
+  // the segmentation rule will fail.
+  assertEquals(
+    lookupCalls.includes("@user/aws"),
+    true,
+    `expected @user/aws among candidates; got: ${JSON.stringify(lookupCalls)}`,
+  );
+});

@@ -539,3 +539,102 @@ Deno.test("flushDatastoreSync: config timeout is honored end-to-end", async () =
   // Proves config → resolveSyncTimeoutMs → registerDatastoreSync → runBoundedSync.
   assertEquals(elapsed < 1_000, true, `timed out after ${elapsed}ms`);
 });
+
+// --- Stream-0 regression net: SIGINT releases locks within 5s deadline ---
+
+Deno.test({
+  name:
+    "datastore sync SIGINT handler releases all held locks within the 5s force-exit deadline (POSIX)",
+  // The SIGINT handler in datastore_sync_coordinator.ts calls
+  // Deno.exit(130), which means we can't exercise it in-process — we
+  // must spawn a child Deno process, register a lock, raise SIGINT to
+  // self, and assert the child exited 130 within ~5.5s. The handler
+  // wraps releases in a 5s force-exit timeout (`setTimeout(...,
+  // 5_000)`); a refactor that drops or extends that bound will fail.
+  ignore: Deno.build.os === "windows",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  fn: async () => {
+    // Resolve the absolute path to datastore_sync_coordinator.ts so the
+    // child Deno can import it via a file:// URL.
+    const coordinatorUrl = new URL(
+      "./datastore_sync_coordinator.ts",
+      import.meta.url,
+    ).href;
+
+    const program = `
+      import {
+        registerDatastoreSyncNamed,
+      } from "${coordinatorUrl}";
+
+      const lock = {
+        acquired: false,
+        released: false,
+        async acquire() { this.acquired = true; },
+        async release() { this.released = true; },
+        async withLock(fn) { await this.acquire(); try { return await fn(); } finally { await this.release(); } },
+        async inspect() { return null; },
+        async forceRelease() { return false; },
+      };
+
+      await registerDatastoreSyncNamed("stream-0-fixture", { lock });
+
+      // Signal self after a short delay so the registration is fully in
+      // place when the handler fires.
+      setTimeout(() => {
+        Deno.kill(Deno.pid, "SIGINT");
+      }, 50);
+
+      // Block forever — the SIGINT handler's Deno.exit(130) is what
+      // ends this process.
+      await new Promise(() => {});
+    `;
+
+    const start = Date.now();
+    const cmd = new Deno.Command(Deno.execPath(), {
+      args: ["run", "-A", "-"],
+      stdin: "piped",
+      stdout: "piped",
+      stderr: "piped",
+    });
+    const child = cmd.spawn();
+    const writer = child.stdin.getWriter();
+    try {
+      await writer.write(new TextEncoder().encode(program));
+    } finally {
+      await writer.close();
+    }
+
+    const status = await Promise.race([
+      child.status,
+      new Promise<{ code: number; success: boolean; signal: null }>(
+        (_, reject) => {
+          setTimeout(
+            () => reject(new Error("child did not exit within 5.5s deadline")),
+            5_500,
+          );
+        },
+      ),
+    ]);
+    const elapsed = Date.now() - start;
+
+    // Drain pipes so the test sanitizer doesn't complain about open streams.
+    await child.stdout.cancel();
+    await child.stderr.cancel();
+
+    // The handler's contract: releases run, then Deno.exit(130). If the
+    // handler hung past the force-exit fallback, the inner setTimeout
+    // would still bring this in under 5s — so the 5.5s race is the
+    // outer guard.
+    assertEquals(
+      status.code,
+      130,
+      `expected SIGINT handler to exit 130; got ${status.code} after ${elapsed}ms`,
+    );
+    assertEquals(
+      elapsed < 5_500,
+      true,
+      `expected exit within 5.5s; took ${elapsed}ms`,
+    );
+  },
+});

@@ -157,3 +157,60 @@ Deno.test("ModelType.isReservedCollective returns false for non-reserved built-i
   assertEquals(ModelType.isReservedCollective("aws/ec2/vpc"), false);
   assertEquals(ModelType.isReservedCollective("docker/run"), false);
 });
+
+// --- Stream-0 regression net: logical-key path separators ---
+
+Deno.test("ModelType.toDirectoryPath: returns forward-slash separators on every OS", () => {
+  // ModelType normalizes to a logical key (e.g. "aws/ec2/vpc"). This is
+  // a content-addressable identifier, NOT a host filesystem path —
+  // every consumer (catalog DB, manifests, registry lookups) expects
+  // forward slashes. Stream C is leaving this code alone explicitly;
+  // the test pins the contract so a refactor that, say, swaps `/` for
+  // `path.SEPARATOR` will fail on Windows.
+  const inputs = [
+    "AWS::EC2::VPC",
+    "Microsoft.Resources.resourceGroup",
+    "docker run",
+    "@user/aws/ec2",
+    "swamp/echo",
+  ];
+  for (const input of inputs) {
+    const t = ModelType.create(input);
+    const normalized = t.normalized;
+    const directoryPath = t.toDirectoryPath();
+    const toNormalized = t.toNormalized();
+
+    assertEquals(
+      normalized.includes("\\"),
+      false,
+      `normalized must not contain backslash for ${input}; got ${normalized}`,
+    );
+    assertEquals(
+      directoryPath.includes("\\"),
+      false,
+      `toDirectoryPath must not contain backslash for ${input}; got ${directoryPath}`,
+    );
+    assertEquals(
+      toNormalized.includes("\\"),
+      false,
+      `toNormalized must not contain backslash for ${input}; got ${toNormalized}`,
+    );
+
+    // toDirectoryPath and toNormalized must agree: same logical key.
+    assertEquals(directoryPath, toNormalized);
+    assertEquals(directoryPath, normalized);
+  }
+});
+
+Deno.test("ModelType.create: multi-segment input always normalizes with forward slashes", () => {
+  // Belt-and-braces guard for Stream C. Even on Windows, where
+  // path.SEPARATOR is "\\", the logical key from ModelType.create must
+  // be forward-slash-separated.
+  const t1 = ModelType.create("AWS::EC2::VPC");
+  assertEquals(t1.normalized, "aws/ec2/vpc");
+  assertEquals(t1.normalized.split("/").length, 3);
+
+  const t2 = ModelType.create("@user/aws/ec2");
+  assertEquals(t2.normalized.includes("/"), true);
+  assertEquals(t2.normalized.includes("\\"), false);
+});

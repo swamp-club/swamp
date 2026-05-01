@@ -469,6 +469,47 @@ Deno.test({
         });
       },
     );
+
+    await t.step(
+      "should create vault directory with 0o700 permissions",
+      async () => {
+        // Stream-0 regression net: the vault directory created by put()
+        // must be 0o700 on POSIX so other users on the host cannot list
+        // or read encrypted secrets. Pins existing behavior before the
+        // Windows-readiness refactor — Stream A may move directory
+        // creation but must preserve POSIX perms.
+        await withTempDir(async (dir) => {
+          await Deno.writeTextFile(
+            join(dir, "test_ssh_key"),
+            MOCK_SSH_PRIVATE_KEY,
+            { mode: 0o600 },
+          );
+
+          const vaultSecretsDir = secretsDir(dir, "dir-perms-vault");
+          const config: LocalEncryptionConfig = {
+            ssh_key_path: join(dir, "test_ssh_key"),
+            base_dir: dir,
+          };
+          const vault = new LocalEncryptionVaultProvider(
+            "dir-perms-vault",
+            config,
+          );
+
+          // put() triggers ensureVaultDirectory()
+          await vault.put("trigger-key", "trigger-value");
+
+          const stat = await Deno.stat(vaultSecretsDir);
+          assertEquals(stat.isDirectory, true);
+          assertEquals(
+            stat.mode! & 0o777,
+            0o700,
+            `expected vault dir mode 0o700; got 0o${
+              (stat.mode! & 0o777).toString(8)
+            }`,
+          );
+        });
+      },
+    );
   },
 });
 
