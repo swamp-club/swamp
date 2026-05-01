@@ -126,6 +126,11 @@ export async function* extensionUpdate(
 
       if (installedNames.length === 0) {
         yield { kind: "no_extensions" };
+        yield {
+          kind: "completed",
+          data: buildUpdateResult([]),
+          mode: input.checkOnly ? "check" : "update",
+        };
         return;
       }
 

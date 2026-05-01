@@ -19,6 +19,7 @@
 
 import { assertEquals } from "@std/assert/equals";
 import { createLibSwampContext } from "../context.ts";
+import { result } from "../stream.ts";
 import { collect } from "../testing.ts";
 import {
   extensionUpdate,
@@ -42,7 +43,7 @@ function makeCtx() {
   return createLibSwampContext();
 }
 
-Deno.test("extensionUpdate: no extensions installed yields no_extensions", async () => {
+Deno.test("extensionUpdate: no extensions installed yields no_extensions then completed", async () => {
   const deps = makeDeps();
   const input: ExtensionUpdateInput = { checkOnly: false };
 
@@ -50,8 +51,23 @@ Deno.test("extensionUpdate: no extensions installed yields no_extensions", async
     extensionUpdate(makeCtx(), deps, input),
   );
 
-  assertEquals(events.length, 1);
+  assertEquals(events.length, 2);
   assertEquals(events[0].kind, "no_extensions");
+  assertEquals(events[1].kind, "completed");
+  if (events[1].kind === "completed") {
+    assertEquals(events[1].mode, "update");
+    assertEquals(events[1].data.extensions.length, 0);
+  }
+});
+
+Deno.test("extensionUpdate: result() resolves on empty installation", async () => {
+  const completed = await result<ExtensionUpdateEvent>(
+    extensionUpdate(makeCtx(), makeDeps(), { checkOnly: true }),
+  );
+
+  assertEquals(completed.kind, "completed");
+  assertEquals(completed.mode, "check");
+  assertEquals(completed.data.extensions.length, 0);
 });
 
 Deno.test("extensionUpdate: specific extension not installed yields error", async () => {

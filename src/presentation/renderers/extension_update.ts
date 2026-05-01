@@ -75,11 +75,7 @@ class LogExtensionUpdateRenderer implements Renderer<ExtensionUpdateEvent> {
 class JsonExtensionUpdateRenderer implements Renderer<ExtensionUpdateEvent> {
   handlers(): EventHandlers<ExtensionUpdateEvent> {
     return {
-      no_extensions: () => {
-        console.log(
-          JSON.stringify({ extensions: [], summary: { total: 0 } }, null, 2),
-        );
-      },
+      no_extensions: () => {},
       extension_not_installed: (e) => {
         console.log(
           JSON.stringify(
@@ -128,7 +124,6 @@ import type { Logger } from "@logtape/logtape";
 
 function renderCheckLog(result: ExtensionUpdateResult, logger: Logger): void {
   if (result.extensions.length === 0) {
-    logger.info("No upstream extensions installed.");
     return;
   }
 
@@ -177,6 +172,10 @@ function renderCheckLog(result: ExtensionUpdateResult, logger: Logger): void {
 }
 
 function renderUpdateLog(result: ExtensionUpdateResult, logger: Logger): void {
+  if (result.extensions.length === 0) {
+    return;
+  }
+
   for (const ext of result.extensions) {
     switch (ext.status) {
       case "updated":
