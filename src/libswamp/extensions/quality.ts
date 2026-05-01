@@ -29,6 +29,7 @@ import {
   type RubricScoreDeps,
   scoreExtensionTarball,
 } from "../../domain/extensions/extension_rubric_scorer.ts";
+import { extractTarGz } from "../../infrastructure/archive/tar_archive.ts";
 import { EmbeddedDenoRuntime } from "../../infrastructure/runtime/embedded_deno_runtime.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import type { LibSwampContext } from "../context.ts";
@@ -80,7 +81,7 @@ export function createExtensionQualityDeps(
     pushPrepareDeps,
     cache,
     ensureDenoPath: () => denoRuntime.ensureDeno(),
-    makeScoreDeps: (denoPath) => createRubricScoreDeps(denoPath),
+    makeScoreDeps: (denoPath) => createRubricScoreDeps(denoPath, extractTarGz),
   };
 }
 

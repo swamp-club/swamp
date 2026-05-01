@@ -68,14 +68,15 @@ function isTracingImport(filePath: string, importPath: string): boolean {
 // Ratchet counts: current number of known violations.
 // If someone fixes a violation, the count decreases and the test still passes.
 // If someone adds a new violation, the count increases and the test fails.
-// Bumped from 26 → 28 by Stream B (Windows-GA): cross-platform PATH and tar
-// helpers live in infrastructure/process and infrastructure/archive. Two
-// domain-side modules (`audit/doctor/checks/resolve_binary.ts` and
-// `extensions/extension_rubric_scorer.ts`) now reach in to share that logic
-// rather than each rolling its own POSIX-only shellout. The alternative —
-// duplicating the cross-platform branching in domain — would defeat the
-// centralization the refactor is trying to achieve.
-const KNOWN_DOMAIN_INFRA_VIOLATIONS = 28;
+//
+// Stream B (Windows-GA) introduced two new cross-platform helpers in
+// infrastructure (`process/resolve_command.ts` and `archive/tar_archive.ts`).
+// The domain-side consumers of each — `audit/doctor/checks/resolve_binary.ts`
+// and `extensions/extension_rubric_scorer.ts` — receive the helpers via
+// dependency injection (a `ResolveBinary` port and an `ExtractTarball`
+// port respectively, wired in by the CLI / libswamp layer at construction
+// time). Domain stays infrastructure-free; the ratchet stays at 26.
+const KNOWN_DOMAIN_INFRA_VIOLATIONS = 26;
 
 Deno.test(
   "domain layer must not add new infrastructure imports (ratchet)",

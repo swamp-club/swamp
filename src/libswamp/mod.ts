@@ -971,8 +971,9 @@ export {
   auditDoctor,
   type AuditDoctorDeps,
   type AuditDoctorEvent,
-  DEFAULT_CHECK_ORDER,
+  defaultCheckOrder,
 } from "../domain/audit/doctor/doctor_service.ts";
+export type { ResolveBinary } from "../domain/audit/doctor/checks/resolve_binary.ts";
 export { todaysAuditFilePath } from "../domain/audit/audit_path.ts";
 
 // Datastore operations

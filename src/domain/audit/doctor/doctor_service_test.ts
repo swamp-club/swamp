@@ -30,7 +30,7 @@ import {
   auditDoctor,
   type AuditDoctorDeps,
   type AuditDoctorEvent,
-  DEFAULT_CHECK_ORDER,
+  defaultCheckOrder,
 } from "./doctor_service.ts";
 
 const noopSpawn: SpawnFn = () =>
@@ -164,8 +164,9 @@ Deno.test(
   },
 );
 
-Deno.test("auditDoctor: DEFAULT_CHECK_ORDER is stable and covers all five names", () => {
-  const names = DEFAULT_CHECK_ORDER.map((c) => c.name);
+Deno.test("auditDoctor: defaultCheckOrder is stable and covers all five names", () => {
+  const order = defaultCheckOrder(() => Promise.resolve(null));
+  const names = order.map((c) => c.name);
   assertEquals(names, [
     "binary-on-path",
     "swamp-binary-on-path",

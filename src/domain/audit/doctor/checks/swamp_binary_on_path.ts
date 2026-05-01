@@ -20,7 +20,7 @@
 import { join } from "@std/path";
 import type { AiTool } from "../../../repo/repo_service.ts";
 import type { CheckContext, CheckResult, PreflightCheck } from "../check.ts";
-import { type ResolveBinary, resolveBinaryViaWhich } from "./resolve_binary.ts";
+import type { ResolveBinary } from "./resolve_binary.ts";
 
 /**
  * Verifies swamp itself is invocable from the hook. All four supported
@@ -89,10 +89,14 @@ async function checkKiroBakedPath(ctx: CheckContext): Promise<{
   }
 }
 
+/**
+ * `resolveBinary` is injected — domain owns the port, the CLI passes in
+ * `defaultCommandResolver()` from `infrastructure/process` at wiring time.
+ */
 export function makeSwampBinaryOnPathCheck(
-  opts: { resolveBinary?: ResolveBinary } = {},
+  opts: { resolveBinary: ResolveBinary },
 ): PreflightCheck {
-  const resolveBinary = opts.resolveBinary ?? resolveBinaryViaWhich;
+  const { resolveBinary } = opts;
   return {
     name: "swamp-binary-on-path",
     description:
@@ -140,5 +144,3 @@ export function makeSwampBinaryOnPathCheck(
     },
   };
 }
-
-export const swampBinaryOnPathCheck = makeSwampBinaryOnPathCheck();

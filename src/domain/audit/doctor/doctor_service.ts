@@ -28,10 +28,11 @@ import type {
   SpawnFn,
 } from "./check.ts";
 import { agentConfigLoadableCheck } from "./checks/agent_config_loadable.ts";
-import { binaryOnPathCheck } from "./checks/binary_on_path.ts";
+import { makeBinaryOnPathCheck } from "./checks/binary_on_path.ts";
 import { defaultAgentSetCheck } from "./checks/default_agent_set.ts";
 import { recordingSmokeTestCheck } from "./checks/recording_smoke.ts";
-import { swampBinaryOnPathCheck } from "./checks/swamp_binary_on_path.ts";
+import type { ResolveBinary } from "./checks/resolve_binary.ts";
+import { makeSwampBinaryOnPathCheck } from "./checks/swamp_binary_on_path.ts";
 
 /**
  * Streaming events from the doctor audit pipeline. The `error` variant is
@@ -52,6 +53,13 @@ export interface AuditDoctorDeps {
   tool: AiTool;
   spawnSwamp: SpawnFn;
   abortSignal: AbortSignal;
+  /**
+   * Cross-platform PATH resolver. The CLI layer wires in
+   * `defaultCommandResolver()` from `infrastructure/process`; tests pass a
+   * fake. Required when `checks` is not supplied (the default check order
+   * uses it for the binary-on-PATH checks).
+   */
+  resolveBinary?: ResolveBinary;
   /** Override the default check set (tests only). */
   checks?: readonly PreflightCheck[];
 }
@@ -60,19 +68,38 @@ export interface AuditDoctorDeps {
  * Canonical check run order. Fixed so the UI output is stable and so a
  * reviewer can see that later checks depend on earlier ones passing in
  * practice (e.g. smoke-test requires swamp on PATH).
+ *
+ * `resolveBinary` is injected so the domain layer doesn't import the
+ * cross-platform `which`/`where` helper from infrastructure — the CLI
+ * passes `defaultCommandResolver()` in.
  */
-export const DEFAULT_CHECK_ORDER: readonly PreflightCheck[] = [
-  binaryOnPathCheck,
-  swampBinaryOnPathCheck,
-  agentConfigLoadableCheck,
-  defaultAgentSetCheck,
-  recordingSmokeTestCheck,
-];
+export function defaultCheckOrder(
+  resolveBinary: ResolveBinary,
+): readonly PreflightCheck[] {
+  return [
+    makeBinaryOnPathCheck({ resolveBinary }),
+    makeSwampBinaryOnPathCheck({ resolveBinary }),
+    agentConfigLoadableCheck,
+    defaultAgentSetCheck,
+    recordingSmokeTestCheck,
+  ];
+}
 
 function overallStatus(checks: CheckResult[]): OverallStatus {
   if (checks.some((c) => c.status === "fail")) return "fail";
   if (checks.every((c) => c.status === "skip")) return "warn";
   return "pass";
+}
+
+function buildDefaultChecks(deps: AuditDoctorDeps): readonly PreflightCheck[] {
+  if (!deps.resolveBinary) {
+    throw new Error(
+      "auditDoctor: deps.resolveBinary is required when deps.checks is not " +
+        "supplied — pass `defaultCommandResolver().resolve` (from " +
+        "infrastructure/process/resolve_command.ts) at the CLI layer.",
+    );
+  }
+  return defaultCheckOrder(deps.resolveBinary);
 }
 
 /**
@@ -103,7 +130,7 @@ export async function* auditDoctor(
     return;
   }
 
-  const checks = deps.checks ?? DEFAULT_CHECK_ORDER;
+  const checks = deps.checks ?? buildDefaultChecks(deps);
   const results: CheckResult[] = [];
 
   for (const check of checks) {

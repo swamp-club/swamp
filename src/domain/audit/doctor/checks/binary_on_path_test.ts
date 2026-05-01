@@ -69,7 +69,9 @@ Deno.test("binaryOnPath: uses tool-specific binary name", async () => {
 });
 
 Deno.test("binaryOnPath: appliesTo returns true for all four audit tools, false otherwise", () => {
-  const check = makeBinaryOnPathCheck();
+  const check = makeBinaryOnPathCheck({
+    resolveBinary: () => Promise.resolve(null),
+  });
   assertEquals(check.appliesTo("claude"), true);
   assertEquals(check.appliesTo("cursor"), true);
   assertEquals(check.appliesTo("kiro"), true);

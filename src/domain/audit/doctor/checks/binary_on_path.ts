@@ -19,11 +19,7 @@
 
 import type { AiTool } from "../../../repo/repo_service.ts";
 import type { PreflightCheck } from "../check.ts";
-import {
-  binaryNameFor,
-  type ResolveBinary,
-  resolveBinaryViaWhich,
-} from "./resolve_binary.ts";
+import { binaryNameFor, type ResolveBinary } from "./resolve_binary.ts";
 
 const INSTALL_HINTS: Record<string, string> = {
   claude:
@@ -41,11 +37,14 @@ function appliesTo(tool: AiTool): boolean {
 /**
  * Verifies the AI tool's own binary is on PATH. Without it, the tool can't
  * run at all — no commands, no hooks, no audit rows.
+ *
+ * `resolveBinary` is injected — domain owns the port, the CLI passes in
+ * `defaultCommandResolver()` from `infrastructure/process` at wiring time.
  */
 export function makeBinaryOnPathCheck(
-  opts: { resolveBinary?: ResolveBinary } = {},
+  opts: { resolveBinary: ResolveBinary },
 ): PreflightCheck {
-  const resolveBinary = opts.resolveBinary ?? resolveBinaryViaWhich;
+  const { resolveBinary } = opts;
   return {
     name: "binary-on-path",
     description: "AI tool binary is resolvable on PATH",
@@ -71,5 +70,3 @@ export function makeBinaryOnPathCheck(
     },
   };
 }
-
-export const binaryOnPathCheck = makeBinaryOnPathCheck();

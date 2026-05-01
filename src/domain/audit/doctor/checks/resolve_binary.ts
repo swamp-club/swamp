@@ -17,19 +17,14 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { defaultCommandResolver } from "../../../../infrastructure/process/resolve_command.ts";
-
 /**
  * Cross-platform PATH binary resolution port.
  *
- * Production resolves via the shared `defaultCommandResolver` (which uses
- * `which` on POSIX and `where` on Windows); tests inject a fake.
+ * Domain declares the contract; the CLI layer wires in
+ * `defaultCommandResolver()` from `infrastructure/process` (POSIX `which`,
+ * Windows `where`) at construction time. Tests inject a fake directly.
  */
 export type ResolveBinary = (name: string) => Promise<string | null>;
-
-/** Default implementation using the cross-platform command resolver. */
-export const resolveBinaryViaWhich: ResolveBinary = (name) =>
-  defaultCommandResolver().resolve(name);
 
 /** The shell-command binary name for each audit-integrating tool. */
 export function binaryNameFor(tool: string): string {

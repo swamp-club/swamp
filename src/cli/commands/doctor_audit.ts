@@ -29,6 +29,7 @@ import {
   SWAMP_SUBDIRS,
   swampPath,
 } from "../../infrastructure/persistence/paths.ts";
+import { defaultCommandResolver } from "../../infrastructure/process/resolve_command.ts";
 import { createAuditDoctorRenderer } from "../../presentation/renderers/audit_doctor.ts";
 import { parseAiToolOrThrow } from "../ai_tool_parser.ts";
 import {
@@ -143,6 +144,7 @@ export const doctorAuditCommand = new Command()
     const controller = new AbortController();
     const renderer = createAuditDoctorRenderer(cliCtx.outputMode);
 
+    const commandResolver = defaultCommandResolver();
     await consumeStream(
       auditDoctor({
         repoPath: repoDir,
@@ -150,6 +152,7 @@ export const doctorAuditCommand = new Command()
         tool: resolvedTool,
         spawnSwamp: makeSwampSpawnFn(repoDir),
         abortSignal: controller.signal,
+        resolveBinary: (name) => commandResolver.resolve(name),
       }),
       renderer.handlers(),
     );
