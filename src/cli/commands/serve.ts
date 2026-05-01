@@ -29,6 +29,7 @@ import { executeWorkflowWithLocks } from "../../serve/deps.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { ScheduledExecutionService } from "../../libswamp/mod.ts";
 import { parseWebhookFlag, WebhookService } from "../../serve/webhook.ts";
+import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -318,19 +319,14 @@ export const serveCommand = new Command()
         console.log(JSON.stringify({ status: "stopped" }));
       }
     };
-    Deno.addSignalListener("SIGINT", () => {
-      shutdown().catch((e) =>
-        logger.error("Shutdown error: {error}", {
-          error: e instanceof Error ? e.message : String(e),
-        })
-      );
-    });
-    Deno.addSignalListener("SIGTERM", () => {
-      shutdown().catch((e) =>
-        logger.error("Shutdown error: {error}", {
-          error: e instanceof Error ? e.message : String(e),
-        })
-      );
+    registerShutdownHandler({
+      handler: () => {
+        shutdown().catch((e) =>
+          logger.error("Shutdown error: {error}", {
+            error: e instanceof Error ? e.message : String(e),
+          })
+        );
+      },
     });
 
     await server.finished;

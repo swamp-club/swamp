@@ -34,6 +34,7 @@ import { reportRegistry } from "../../domain/reports/report_registry.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import { ExtensionApiClient } from "../../infrastructure/http/extension_api_client.ts";
 import { openBrowser } from "../../infrastructure/process/browser.ts";
+import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
 import {
   handleOpenRequest,
   type OpenServerState,
@@ -292,8 +293,7 @@ export const openCommand = new Command()
         console.log(JSON.stringify({ status: "stopped" }));
       }
     };
-    Deno.addSignalListener("SIGINT", shutdown);
-    Deno.addSignalListener("SIGTERM", shutdown);
+    registerShutdownHandler({ handler: shutdown });
 
     await server.finished;
     if (state.repoContext) {

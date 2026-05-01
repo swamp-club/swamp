@@ -19,6 +19,7 @@
 
 import { parse as parseYaml } from "@std/yaml";
 import { UserError } from "../domain/errors.ts";
+import { homeDirectory } from "../infrastructure/persistence/paths.ts";
 
 // Re-export coerceInputTypes from domain layer for backward compatibility
 export { coerceInputTypes } from "../domain/inputs/input_coercion.ts";
@@ -70,9 +71,14 @@ async function resolveFileValue(
 ): Promise<string> {
   let resolvedPath = filePath;
   if (resolvedPath.startsWith("~/")) {
-    const home = Deno.env.get("HOME");
-    if (home) {
-      resolvedPath = home + resolvedPath.slice(1);
+    // Try HOME (POSIX) then USERPROFILE (Windows). When neither is set,
+    // intentionally fall through with the literal `~/...` path so the
+    // downstream `Deno.readTextFile` produces a "file not found" error
+    // referencing the unexpanded path. Stream 0 pins this behavior.
+    try {
+      resolvedPath = homeDirectory() + resolvedPath.slice(1);
+    } catch {
+      // No home directory available — leave the path literal.
     }
   }
   try {
