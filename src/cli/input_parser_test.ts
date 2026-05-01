@@ -139,6 +139,83 @@ Deno.test("parseKeyValueInputs: @file with dot notation", async () => {
   }
 });
 
+// --- Stream-0 regression net: tilde expansion semantics on POSIX ---
+
+Deno.test({
+  name: "parseKeyValueInputs: ~/file expands using HOME env var on POSIX",
+  // Tilde-to-HOME expansion is POSIX-specific; Windows uses USERPROFILE.
+  // Stream C will add the Windows path; this test pins POSIX.
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    const tempDir = await Deno.makeTempDir({ prefix: "swamp-tilde-home-" });
+    const originalHome = Deno.env.get("HOME");
+    try {
+      // Write a file inside the temp dir and stash the value through
+      // the @-file mechanism using "~/<basename>" so the production
+      // tilde-expansion code (`startsWith("~/")` in resolveFileValue)
+      // is exercised.
+      const fileName = "tilde-test.txt";
+      await Deno.writeTextFile(
+        `${tempDir}/${fileName}`,
+        "expanded-via-home",
+      );
+      Deno.env.set("HOME", tempDir);
+
+      const result = await parseKeyValueInputs([`token=@~/${fileName}`]);
+      assertEquals(result, { token: "expanded-via-home" });
+    } finally {
+      if (originalHome === undefined) {
+        Deno.env.delete("HOME");
+      } else {
+        Deno.env.set("HOME", originalHome);
+      }
+      await Deno.remove(tempDir, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "parseKeyValueInputs: ~/file is left literal when HOME is unset on POSIX",
+  // Pin the existing fallback: resolveFileValue only expands ~ when
+  // Deno.env.get("HOME") returns a value. With HOME unset, the literal
+  // path "~/missing.txt" is passed straight to Deno.readTextFile, which
+  // surfaces a "Input file not found" UserError. Stream C must preserve
+  // this exact fallback (same error message, same un-expanded path).
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    const originalHome = Deno.env.get("HOME");
+    try {
+      Deno.env.delete("HOME");
+      let caught: Error | undefined;
+      try {
+        await parseKeyValueInputs(["token=@~/definitely-missing.txt"]);
+      } catch (err) {
+        caught = err as Error;
+      }
+      assertEquals(
+        caught !== undefined,
+        true,
+        "expected UserError when HOME is unset and the literal path doesn't exist",
+      );
+      // The error message must reference the unexpanded path so a refactor
+      // that silently expands via USERPROFILE on POSIX would fail.
+      assertStringIncludes(
+        (caught as Error).message,
+        'Input file not found for key "token"',
+      );
+      assertStringIncludes(
+        (caught as Error).message,
+        "~/definitely-missing.txt",
+      );
+    } finally {
+      if (originalHome !== undefined) {
+        Deno.env.set("HOME", originalHome);
+      }
+    }
+  },
+});
+
 // --- deepMerge ---
 
 Deno.test("deepMerge: flat objects", () => {

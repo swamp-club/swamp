@@ -789,3 +789,127 @@ Deno.test({
     }
   },
 });
+
+// --- Stream-0 regression net: signal handling and stream interleaving ---
+
+Deno.test({
+  name:
+    "DockerExecutionDriver - SIGTERM-trapping child returns error with exit code 143 in stderr",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    const tmpDir = await Deno.makeTempDir();
+    const scriptPath = `${tmpDir}/mock-docker`;
+
+    // Mock script that traps SIGTERM, prints to stderr, then exits 143.
+    // We don't rely on the timeout path here — the driver simply observes a
+    // non-zero exit code (143 = 128 + SIGTERM) and surfaces it. This pins
+    // POSIX behavior so a refactor that drops/normalises signal handling on
+    // POSIX will fail loudly.
+    await Deno.writeTextFile(
+      scriptPath,
+      "#!/bin/sh\ntrap 'echo \"trapped SIGTERM\" >&2; exit 143' TERM\nkill -TERM $$\n# Give the trap a moment to fire before we fall through\nsleep 1\nexit 0\n",
+    );
+    await Deno.chmod(scriptPath, 0o755);
+
+    try {
+      const driver = new DockerExecutionDriver({
+        image: "alpine",
+        command: scriptPath,
+      });
+
+      const result = await driver.execute(createTestRequest());
+
+      assertEquals(result.status, "error");
+      // Either the captured stderr ("trapped SIGTERM") OR the synthesized
+      // fallback ("Container exited with code 143") must surface.
+      const errorMessage = result.error ?? "";
+      const mentionsTrap = errorMessage.includes("trapped SIGTERM");
+      const mentionsExit143 = errorMessage.includes("143");
+      assertEquals(
+        mentionsTrap || mentionsExit143,
+        true,
+        `expected error to surface SIGTERM trap or exit 143; got: ${errorMessage}`,
+      );
+      assertEquals(result.outputs.length, 0);
+    } finally {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "DockerExecutionDriver - interleaved stdout/stderr captured fully without loss",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    const tmpDir = await Deno.makeTempDir();
+    const scriptPath = `${tmpDir}/mock-docker`;
+
+    // Print 10 alternating lines to stdout and stderr. The shell script
+    // emits them in a deterministic interleaved order; the driver MUST
+    // capture every stdout and stderr line exactly once each, regardless
+    // of the order they arrive on the pipes. This guards against a
+    // refactor that drops a stream or buffers it incorrectly.
+    const scriptLines: string[] = [];
+    for (let i = 1; i <= 10; i++) {
+      scriptLines.push(`echo "out-${i}"`);
+      scriptLines.push(`echo "err-${i}" >&2`);
+    }
+    await Deno.writeTextFile(
+      scriptPath,
+      `#!/bin/sh\n${scriptLines.join("\n")}\n`,
+    );
+    await Deno.chmod(scriptPath, 0o755);
+
+    try {
+      const driver = new DockerExecutionDriver({
+        image: "alpine",
+        command: scriptPath,
+      });
+
+      const logLines: string[] = [];
+      const result = await driver.execute(createTestRequest(), {
+        onLog: (line) => logLines.push(line),
+      });
+
+      assertEquals(result.status, "success");
+
+      // Stderr lines flow into result.logs (and the onLog callback)
+      assertEquals(result.logs.length, 10);
+      assertEquals(logLines.length, 10);
+      for (let i = 1; i <= 10; i++) {
+        assertEquals(
+          result.logs.includes(`err-${i}`),
+          true,
+          `missing err-${i} from logs: ${JSON.stringify(result.logs)}`,
+        );
+      }
+
+      // Stdout lines are encoded into the output content
+      assertEquals(result.outputs.length, 1);
+      if (result.outputs[0].kind === "pending") {
+        const text = new TextDecoder().decode(result.outputs[0].content);
+        for (let i = 1; i <= 10; i++) {
+          assertStringIncludes(text, `out-${i}`);
+        }
+        // Sanity: each stdout line appears exactly once. Match the line
+        // anchored by a leading boundary and a trailing newline/end so
+        // out-1 doesn't get conflated with out-10.
+        const stdoutLines = text.split("\n").filter((l) => l.length > 0);
+        for (let i = 1; i <= 10; i++) {
+          const occurrences = stdoutLines.filter((l) => l === `out-${i}`)
+            .length;
+          assertEquals(
+            occurrences,
+            1,
+            `stdout line out-${i} appeared ${occurrences} times in: ${
+              JSON.stringify(stdoutLines)
+            }`,
+          );
+        }
+      }
+    } finally {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  },
+});
