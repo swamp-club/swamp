@@ -181,3 +181,30 @@ Deno.test(
     }
   },
 );
+
+Deno.test(
+  "recordingSmokeTest: returns actionable fail when audit dir already exists but is readonly",
+  // Permission semantics differ on Windows; chmod 0500 is not enforced there.
+  { ignore: Deno.build.os === "windows" },
+  async () => {
+    const repo = await Deno.makeTempDir({
+      prefix: "doctor-smoke-existing-readonly-",
+    });
+    const auditDir = join(repo, ".swamp", "audit");
+    await ensureDir(auditDir);
+    await Deno.chmod(auditDir, 0o500);
+    try {
+      // Repro of swamp-uat#161 scenario 4: audit dir exists, ensureDir is a
+      // silent no-op, write-probe must catch the unwritable state.
+      const result = await recordingSmokeTestCheck.run(
+        makeCtx(auditDir, "claude", makeFakeSpawnThatDropsRow()),
+      );
+      assertEquals(result.status, "fail");
+      assertStringIncludes(result.message, "not writable");
+      assertStringIncludes(result.hint ?? "", "chmod");
+    } finally {
+      await Deno.chmod(auditDir, 0o700).catch(() => {});
+      await Deno.remove(repo, { recursive: true }).catch(() => {});
+    }
+  },
+);
