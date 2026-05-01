@@ -21,7 +21,7 @@
  * Integration tests for command/shell models with workflow execution.
  */
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import { ensureDir } from "@std/fs";
 import { stringify as stringifyYaml } from "@std/yaml";
@@ -434,6 +434,13 @@ Deno.test({
       const output = JSON.parse(result.stdout);
       assertEquals(output.modelName, "self-ref-shell");
       assertEquals(output.dataArtifacts[0].attributes.exitCode, 0);
+      // Verify `${{ self.name }}` actually resolved — without this
+      // assertion the test would still pass if the templating regressed
+      // and the shell printed the literal `${{ self.name }}` string.
+      assertStringIncludes(
+        output.dataArtifacts[0].attributes.stdout,
+        "self-ref-shell",
+      );
     });
   },
 });
@@ -544,6 +551,13 @@ Deno.test({
       const output = JSON.parse(result.stdout);
       assertEquals(output.modelName, "self-ref-shell");
       assertEquals(output.dataArtifacts[0].attributes.exitCode, 0);
+      // Verify `${{ self.name }}` actually resolved — without this
+      // assertion the test would still pass if the templating regressed
+      // and PowerShell printed the literal `${{ self.name }}` string.
+      assertStringIncludes(
+        output.dataArtifacts[0].attributes.stdout,
+        "self-ref-shell",
+      );
     });
   },
 });

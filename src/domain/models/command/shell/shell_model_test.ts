@@ -802,21 +802,12 @@ windowsOnlyTest(
   },
 );
 
-windowsOnlyTest(
-  "shellModel.methods.execute (powershell): throws on command failure",
-  async () => {
-    // PowerShell has no `false` builtin; `exit 1` is the closest
-    // equivalent.
-    const args: ShellInputAttributes = { run: "exit 1" };
-
-    const { context } = createTestContext();
-    await assertRejects(
-      () => shellModel.methods.execute.execute(args, context),
-      Error,
-      "Command exited with code 1",
-    );
-  },
-);
+// No PowerShell sibling for "throws on command failure" — the POSIX
+// version distinguished `false` (separate program) from `exit 42` (shell
+// builtin). PowerShell has no `false` analogue, so the obvious
+// translation (`exit 1`) is functionally identical to the
+// "throws on non-zero exit code" case above. The exit-N path is already
+// covered; adding a second `exit N` test wouldn't exercise anything new.
 
 windowsOnlyTest(
   "shellModel.methods.execute (powershell): respects workingDir",
