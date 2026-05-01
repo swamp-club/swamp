@@ -38,11 +38,25 @@ import { getSwampLogger } from "../logging/logger.ts";
 
 /**
  * Check if a process with the given PID is no longer running.
- * Uses signal 0 (no-op) to test process existence.
- * Returns false (not dead) on any error other than NotFound,
- * so TTL-based detection remains the fallback.
+ *
+ * POSIX hosts use `Deno.kill(pid, "SIGCONT")` — SIGCONT is a no-op
+ * for an already-running process and produces a `NotFound` error
+ * when the PID is gone.
+ *
+ * Windows hosts shell out to `tasklist /FI "PID eq <pid>" /FO CSV
+ * /NH`, which prints a CSV row when the PID is alive and the literal
+ * `INFO: No tasks are running which match the specified criteria.`
+ * (to stdout) when it isn't. `tasklist.exe` ships with every
+ * Windows install since XP, so no extra dependency.
+ *
+ * Returns `false` (not dead) on any unexpected error — TTL-based
+ * detection remains the fallback so a busted probe never causes us
+ * to clobber a valid lock.
  */
 function isProcessDead(pid: number): boolean {
+  if (Deno.build.os === "windows") {
+    return isProcessDeadWindows(pid);
+  }
   try {
     Deno.kill(pid, "SIGCONT");
     return false; // Process exists
@@ -51,6 +65,31 @@ function isProcessDead(pid: number): boolean {
       return true; // Process does not exist
     }
     // PermissionDenied or other error — can't determine, fall back to TTL
+    return false;
+  }
+}
+
+function isProcessDeadWindows(pid: number): boolean {
+  try {
+    const result = new Deno.Command("tasklist", {
+      args: ["/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"],
+      stdout: "piped",
+      stderr: "null",
+    }).outputSync();
+    if (!result.success) {
+      // Non-zero exit from tasklist itself — fall back to TTL.
+      return false;
+    }
+    const stdout = new TextDecoder().decode(result.stdout).trim();
+    // `INFO:` to stdout means "no match" — process is gone.
+    // Empty stdout shouldn't happen under `/NH`, but treat it as gone too.
+    if (stdout.length === 0 || stdout.startsWith("INFO:")) {
+      return true;
+    }
+    // CSV row produced — process is alive.
+    return false;
+  } catch {
+    // tasklist not on PATH, or spawn failed — fall back to TTL.
     return false;
   }
 }

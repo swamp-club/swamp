@@ -198,41 +198,33 @@ Deno.test("FileLock - forceRelease returns false when no lock exists", async () 
   });
 });
 
-Deno.test({
-  name: "FileLock - stale lock from dead process is immediately acquired",
-  // PID liveness uses Deno.kill(pid, "SIGCONT"), which is POSIX-only;
-  // Windows has no equivalent signal probe, so dead-process detection
-  // falls back to TTL there. Tracked separately if we ever add a Windows
-  // implementation.
-  ignore: Deno.build.os === "windows",
-  fn: async () => {
-    await withTempDir(async (dir) => {
-      // Simulate a lock held by a non-existent process with a fresh timestamp
-      // (i.e., TTL has NOT expired, but the process is dead)
-      const staleLockInfo: LockInfo = {
-        holder: "dead@host",
-        hostname: "host",
-        pid: 2147483647, // Very high PID — extremely unlikely to exist
-        acquiredAt: new Date().toISOString(), // Fresh timestamp — TTL not expired
-        ttlMs: 60_000, // Long TTL
-      };
-      const lockPath = `${dir}/.datastore.lock`;
-      await Deno.writeTextFile(
-        lockPath,
-        JSON.stringify(staleLockInfo, null, 2),
-      );
+Deno.test("FileLock - stale lock from dead process is immediately acquired", async () => {
+  await withTempDir(async (dir) => {
+    // Simulate a lock held by a non-existent process with a fresh timestamp
+    // (i.e., TTL has NOT expired, but the process is dead)
+    const staleLockInfo: LockInfo = {
+      holder: "dead@host",
+      hostname: "host",
+      pid: 2147483647, // Very high PID — extremely unlikely to exist
+      acquiredAt: new Date().toISOString(), // Fresh timestamp — TTL not expired
+      ttlMs: 60_000, // Long TTL
+    };
+    const lockPath = `${dir}/.datastore.lock`;
+    await Deno.writeTextFile(
+      lockPath,
+      JSON.stringify(staleLockInfo, null, 2),
+    );
 
-      // New lock should detect the dead PID and acquire immediately
-      const lock = new FileLock(dir, { ttlMs: 5000, maxWaitMs: 2000 });
-      await lock.acquire();
+    // New lock should detect the dead PID and acquire immediately
+    const lock = new FileLock(dir, { ttlMs: 5000, maxWaitMs: 2000 });
+    await lock.acquire();
 
-      const info = await lock.inspect();
-      assertEquals(info !== null, true);
-      assertEquals(info!.pid, Deno.pid);
+    const info = await lock.inspect();
+    assertEquals(info !== null, true);
+    assertEquals(info!.pid, Deno.pid);
 
-      await lock.release();
-    });
-  },
+    await lock.release();
+  });
 });
 
 Deno.test("FileLock - lock held by live process is not stolen via PID check", async () => {
