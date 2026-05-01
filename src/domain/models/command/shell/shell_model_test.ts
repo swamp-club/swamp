@@ -35,18 +35,32 @@ import { getLogger } from "@logtape/logtape";
 import { SecretRedactor } from "../../../secrets/mod.ts";
 
 /**
- * Wraps `Deno.test` with a Windows skip. The `shellModel.methods.execute`
- * tests below shell out to POSIX-style commands (`echo`, `false`,
- * `>&2`, `$VAR`, pipes, `/tmp` paths). On native Windows hosts where
- * `selectShellStrategy()` returns `PowerShellStrategy`, those
- * invocations wouldn't run as written. PR 3 of the Windows shell
- * series will add PowerShell-aware variants and re-enable these.
+ * Skip on Windows. The matching `windowsOnlyTest` below covers the
+ * same behavior using PowerShell-flavored commands.
+ *
+ * Used for `shellModel.methods.execute` tests that shell out to
+ * POSIX-style commands (`echo`, `false`, `>&2`, `$VAR`, pipes,
+ * `/tmp` paths). On native Windows hosts `selectShellStrategy()`
+ * returns `PowerShellStrategy`, which wouldn't run those invocations
+ * as written.
  */
 function posixOnlyTest(
   name: string,
   fn: () => Promise<void> | void,
 ): void {
   Deno.test({ name, ignore: Deno.build.os === "windows", fn });
+}
+
+/**
+ * Skip on POSIX. The matching `posixOnlyTest` above covers the same
+ * behavior using `sh -c` semantics. This sibling exists so the
+ * Windows code path through `PowerShellStrategy` gets exercised in CI.
+ */
+function windowsOnlyTest(
+  name: string,
+  fn: () => Promise<void> | void,
+): void {
+  Deno.test({ name, ignore: Deno.build.os !== "windows", fn });
 }
 
 /**
@@ -721,6 +735,380 @@ posixOnlyTest(
     );
 
     // No data should be written for a failed command
+    assertEquals(getResults().length, 0);
+  },
+);
+
+// ─────────────────────────────────────────────────────────────────────
+// PowerShell variants
+// ─────────────────────────────────────────────────────────────────────
+//
+// Each `windowsOnlyTest` mirrors a `posixOnlyTest` above, exercising
+// the same `shellModel.methods.execute` behavior through a
+// PowerShell-flavored `run` argument. PR 2 routes
+// `Deno.build.os === "windows"` to `PowerShellStrategy`, so these
+// tests run against `powershell.exe -NoProfile -Command <cmd>`.
+
+windowsOnlyTest(
+  "shellModel.methods.execute (powershell): runs simple command",
+  async () => {
+    const args: ShellInputAttributes = { run: "Write-Output hello" };
+
+    const { context, getResults } = createTestContext();
+    await shellModel.methods.execute.execute(args, context);
+
+    const attrs = getResultAttributes(getResults(), "result");
+    assertEquals(attrs?.exitCode, 0);
+    assertEquals(attrs?.command, "Write-Output hello");
+    assertEquals(typeof attrs?.executedAt, "string");
+    assertEquals(typeof attrs?.durationMs, "number");
+
+    const logContent = getOutputLogContent(getResults());
+    assertStringIncludes(logContent, "hello");
+  },
+);
+
+windowsOnlyTest(
+  "shellModel.methods.execute (powershell): captures stderr",
+  async () => {
+    // `[Console]::Error.WriteLine` writes the raw string to stderr
+    // without PowerShell's structured error-record formatting.
+    const args: ShellInputAttributes = {
+      run: `[Console]::Error.WriteLine("error")`,
+    };
+
+    const { context, getResults } = createTestContext();
+    await shellModel.methods.execute.execute(args, context);
+
+    const attrs = getResultAttributes(getResults(), "result");
+    assertEquals(attrs?.exitCode, 0);
+
+    const logContent = getOutputLogContent(getResults());
+    assertStringIncludes(logContent, "error");
+  },
+);
+
+windowsOnlyTest(
+  "shellModel.methods.execute (powershell): throws on non-zero exit code",
+  async () => {
+    const args: ShellInputAttributes = { run: "exit 42" };
+
+    const { context } = createTestContext();
+    await assertRejects(
+      () => shellModel.methods.execute.execute(args, context),
+      Error,
+      "Command exited with code 42",
+    );
+  },
+);
+
+windowsOnlyTest(
+  "shellModel.methods.execute (powershell): throws on command failure",
+  async () => {
+    // PowerShell has no `false` builtin; `exit 1` is the closest
+    // equivalent.
+    const args: ShellInputAttributes = { run: "exit 1" };
+
+    const { context } = createTestContext();
+    await assertRejects(
+      () => shellModel.methods.execute.execute(args, context),
+      Error,
+      "Command exited with code 1",
+    );
+  },
+);
+
+windowsOnlyTest(
+  "shellModel.methods.execute (powershell): respects workingDir",
+  async () => {
+    // Use a real temp dir so the test works on any Windows host
+    // regardless of drive layout. Resolve both sides with realPath
+    // to handle symlinks/short-name canonicalisation.
+    const tmpDir = await Deno.makeTempDir();
+    try {
+      const args: ShellInputAttributes = {
+        run: "Write-Output $PWD.Path",
+        workingDir: tmpDir,
+      };
+
+      const { context, getResults } = createTestContext();
+      await shellModel.methods.execute.execute(args, context);
+
+      const attrs = getResultAttributes(getResults(), "result");
+      assertEquals(attrs?.exitCode, 0);
+
+      const expectedPath = await Deno.realPath(tmpDir);
+      const logContent = getOutputLogContent(getResults());
+      assertStringIncludes(logContent, expectedPath);
+    } finally {
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    }
+  },
+);
+
+windowsOnlyTest(
+  "shellModel.methods.execute (powershell): respects env variables",
+  async () => {
+    const args: ShellInputAttributes = {
+      run: "Write-Output $env:MY_TEST_VAR",
+      env: { MY_TEST_VAR: "test_value" },
+    };
+
+    const { context, getResults } = createTestContext();
+    await shellModel.methods.execute.execute(args, context);
+
+    const attrs = getResultAttributes(getResults(), "result");
+    assertEquals(attrs?.exitCode, 0);
+
+    const logContent = getOutputLogContent(getResults());
+    assertStringIncludes(logContent, "test_value");
+  },
+);
+
+windowsOnlyTest(
+  "shellModel.methods.execute (powershell): handles pipes",
+  async () => {
+    // PowerShell's `-replace` operator maps to the same shape the
+    // POSIX test uses (`tr 'h' 'H'`).
+    const args: ShellInputAttributes = {
+      run: "'hello world' -replace 'h', 'H'",
+    };
+
+    const { context, getResults } = createTestContext();
+    await shellModel.methods.execute.execute(args, context);
+
+    const attrs = getResultAttributes(getResults(), "result");
+    assertEquals(attrs?.exitCode, 0);
+
+    const logContent = getOutputLogContent(getResults());
+    assertStringIncludes(logContent, "Hello world");
+  },
+);
+
+windowsOnlyTest(
+  "shellModel.methods.execute (powershell): handles complex commands",
+  async () => {
+    // Mirror of `cd /tmp && pwd` against a real temp dir.
+    const tmpDir = await Deno.makeTempDir();
+    try {
+      const args: ShellInputAttributes = {
+        run: `Set-Location "${tmpDir}"; Write-Output $PWD.Path`,
+      };
+
+      const { context, getResults } = createTestContext();
+      await shellModel.methods.execute.execute(args, context);
+
+      const attrs = getResultAttributes(getResults(), "result");
+      assertEquals(attrs?.exitCode, 0);
+
+      const expectedPath = await Deno.realPath(tmpDir);
+      const logContent = getOutputLogContent(getResults());
+      assertStringIncludes(logContent, expectedPath);
+    } finally {
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    }
+  },
+);
+
+windowsOnlyTest(
+  "shellModel.methods.execute (powershell): throws on nonexistent command",
+  async () => {
+    const args: ShellInputAttributes = { run: "nonexistent_command_12345" };
+
+    const { context } = createTestContext();
+    await assertRejects(
+      () => shellModel.methods.execute.execute(args, context),
+      Error,
+    );
+  },
+);
+
+windowsOnlyTest(
+  "shellModel.methods.execute (powershell): records execution duration",
+  async () => {
+    const args: ShellInputAttributes = { run: "Start-Sleep -Milliseconds 100" };
+
+    const { context, getResults } = createTestContext();
+    await shellModel.methods.execute.execute(args, context);
+
+    const attrs = getResultAttributes(getResults(), "result");
+    const durationMs = attrs?.durationMs as number;
+    assertEquals(durationMs >= 100, true);
+  },
+);
+
+windowsOnlyTest(
+  "shellModel.methods.execute (powershell): returns dataHandles",
+  async () => {
+    const args: ShellInputAttributes = {
+      run: `Write-Output hello; [Console]::Error.WriteLine("error")`,
+    };
+
+    const { context, getResults } = createTestContext();
+    const result = await shellModel.methods.execute.execute(args, context);
+
+    assertEquals(result.dataHandles !== undefined, true);
+    assertEquals(result.dataHandles!.length >= 1, true);
+
+    const logContent = getOutputLogContent(getResults());
+    assertStringIncludes(logContent, "hello");
+    assertStringIncludes(logContent, "error");
+  },
+);
+
+windowsOnlyTest(
+  "shellModel.methods.execute (powershell): returns output for no output command",
+  async () => {
+    // A bare `exit 0` produces no stdout/stderr output.
+    const args: ShellInputAttributes = { run: "exit 0" };
+
+    const { context } = createTestContext();
+    const result = await shellModel.methods.execute.execute(args, context);
+
+    assertEquals(result.dataHandles !== undefined, true);
+  },
+);
+
+windowsOnlyTest(
+  "shellModel.methods.execute (powershell): redacts secrets from stdout in result attributes",
+  async () => {
+    const redactor = new SecretRedactor();
+    redactor.addSecret("super-secret-value");
+
+    const args: ShellInputAttributes = {
+      run: "Write-Output super-secret-value",
+    };
+    const { context, getResults } = createTestContext({ redactor });
+    await shellModel.methods.execute.execute(args, context);
+
+    const attrs = getResultAttributes(getResults(), "result");
+    assertNotEquals(attrs?.stdout, undefined);
+    assertStringIncludes(attrs?.stdout as string, "***");
+    assertEquals(
+      (attrs?.stdout as string).includes("super-secret-value"),
+      false,
+    );
+  },
+);
+
+windowsOnlyTest(
+  "shellModel.methods.execute (powershell): redacts secrets from stderr in result attributes",
+  async () => {
+    const redactor = new SecretRedactor();
+    redactor.addSecret("stderr-secret");
+
+    const args: ShellInputAttributes = {
+      run: `[Console]::Error.WriteLine("stderr-secret")`,
+    };
+    const { context, getResults } = createTestContext({ redactor });
+    await shellModel.methods.execute.execute(args, context);
+
+    const attrs = getResultAttributes(getResults(), "result");
+    assertNotEquals(attrs?.stderr, undefined);
+    assertStringIncludes(attrs?.stderr as string, "***");
+    assertEquals((attrs?.stderr as string).includes("stderr-secret"), false);
+  },
+);
+
+windowsOnlyTest(
+  "shellModel.methods.execute (powershell): redacts secrets from output log file",
+  async () => {
+    const redactor = new SecretRedactor();
+    redactor.addSecret("log-file-secret");
+
+    const args: ShellInputAttributes = {
+      run:
+        `Write-Output log-file-secret; [Console]::Error.WriteLine("log-file-secret")`,
+    };
+    const { context, getResults } = createTestContext({ redactor });
+    await shellModel.methods.execute.execute(args, context);
+
+    const logContent = getOutputLogContent(getResults());
+    assertStringIncludes(logContent, "***");
+    assertEquals(logContent.includes("log-file-secret"), false);
+  },
+);
+
+windowsOnlyTest(
+  "shellModel.methods.execute (powershell): redacts secrets from command in result attributes",
+  async () => {
+    const redactor = new SecretRedactor();
+    redactor.addSecret("command-secret");
+
+    const args: ShellInputAttributes = { run: "Write-Output command-secret" };
+    const { context, getResults } = createTestContext({ redactor });
+    await shellModel.methods.execute.execute(args, context);
+
+    const attrs = getResultAttributes(getResults(), "result");
+    assertNotEquals(attrs?.command, undefined);
+    assertStringIncludes(attrs?.command as string, "***");
+    assertEquals((attrs?.command as string).includes("command-secret"), false);
+  },
+);
+
+windowsOnlyTest(
+  "shellModel.methods.execute (powershell): redacts secrets from error messages on failure",
+  async () => {
+    const redactor = new SecretRedactor();
+    redactor.addSecret("error-secret");
+
+    const args: ShellInputAttributes = {
+      run: `[Console]::Error.WriteLine("error-secret"); exit 1`,
+    };
+    const { context } = createTestContext({ redactor });
+    await assertRejects(
+      () => shellModel.methods.execute.execute(args, context),
+      Error,
+      "Command exited with code 1",
+    );
+  },
+);
+
+windowsOnlyTest(
+  "shellModel.methods.execute (powershell): ignoreExitCode suppresses throw",
+  async () => {
+    const args: ShellInputAttributes = {
+      run: "exit 42",
+      ignoreExitCode: true,
+    };
+
+    const { context, getResults } = createTestContext();
+    const result = await shellModel.methods.execute.execute(args, context);
+
+    const attrs = getResultAttributes(getResults(), "result");
+    assertEquals(attrs?.exitCode, 42);
+    assertEquals(result.dataHandles !== undefined, true);
+  },
+);
+
+windowsOnlyTest(
+  "shellModel.methods.execute (powershell): exit code 0 returns normally",
+  async () => {
+    const args: ShellInputAttributes = { run: "exit 0" };
+
+    const { context, getResults } = createTestContext();
+    const result = await shellModel.methods.execute.execute(args, context);
+
+    const attrs = getResultAttributes(getResults(), "result");
+    assertEquals(attrs?.exitCode, 0);
+    assertEquals(result.dataHandles !== undefined, true);
+  },
+);
+
+windowsOnlyTest(
+  "shellModel.methods.execute (powershell): does not persist data on failure",
+  async () => {
+    const args: ShellInputAttributes = {
+      run: `Write-Output 'some output'; exit 1`,
+    };
+
+    const { context, getResults } = createTestContext();
+    await assertRejects(
+      () => shellModel.methods.execute.execute(args, context),
+      Error,
+      "Command exited with code 1",
+    );
+
     assertEquals(getResults().length, 0);
   },
 );

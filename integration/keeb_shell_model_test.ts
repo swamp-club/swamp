@@ -438,6 +438,116 @@ Deno.test({
   },
 });
 
+// ─────────────────────────────────────────────────────────────────────
+// PowerShell variants
+// ─────────────────────────────────────────────────────────────────────
+//
+// PR 2 of the Windows shell series (PR #1267) routes Windows hosts to
+// `PowerShellStrategy`. These siblings exercise the same CLI flow on
+// Windows using PowerShell-flavored commands.
+//
+// The two cross-step-file-I/O tests above ("workflow with command/shell
+// models and dependencies", "command/shell model with cross-model
+// expressions") stay POSIX-only — replicating their `/tmp/data.txt`
+// chaining on Windows is more involved than the test value justifies.
+
+Deno.test({
+  name: "CLI (powershell): command/shell model executes simple shell commands",
+  ignore: Deno.build.os !== "windows",
+  fn: async () => {
+    await withTempDir(async (repoDir) => {
+      await initializeTestRepo(repoDir);
+
+      const definitionRepo = new YamlDefinitionRepository(repoDir);
+      const definition = Definition.create({
+        name: "simple-shell",
+        methods: {
+          execute: {
+            arguments: {
+              run: "Write-Output 'Hello from shell'",
+              workingDir: repoDir,
+            },
+          },
+        },
+      });
+      await definitionRepo.save(SHELL_MODEL_TYPE, definition);
+
+      const result = await runCliCommand(
+        [
+          "model",
+          "method",
+          "run",
+          "simple-shell",
+          "execute",
+          "--repo-dir",
+          repoDir,
+          "--json",
+        ],
+        Deno.cwd(),
+      );
+
+      assertEquals(
+        result.code,
+        0,
+        `Command should succeed. stderr: ${result.stderr}`,
+      );
+
+      const output = JSON.parse(result.stdout);
+      assertEquals(output.modelName, "simple-shell");
+      assertEquals(output.dataArtifacts[0].attributes.exitCode, 0);
+    });
+  },
+});
+
+Deno.test({
+  name: "CLI (powershell): command/shell model with self-reference expressions",
+  ignore: Deno.build.os !== "windows",
+  fn: async () => {
+    await withTempDir(async (repoDir) => {
+      await initializeTestRepo(repoDir);
+
+      const definitionRepo = new YamlDefinitionRepository(repoDir);
+
+      const selfRefModel = Definition.create({
+        name: "self-ref-shell",
+        methods: {
+          execute: {
+            arguments: {
+              run: "Write-Output 'My name is ${{ self.name }}'",
+              workingDir: repoDir,
+            },
+          },
+        },
+      });
+      await definitionRepo.save(SHELL_MODEL_TYPE, selfRefModel);
+
+      const result = await runCliCommand(
+        [
+          "model",
+          "method",
+          "run",
+          "self-ref-shell",
+          "execute",
+          "--repo-dir",
+          repoDir,
+          "--json",
+        ],
+        Deno.cwd(),
+      );
+
+      assertEquals(
+        result.code,
+        0,
+        `Command should succeed. stderr: ${result.stderr}`,
+      );
+
+      const output = JSON.parse(result.stdout);
+      assertEquals(output.modelName, "self-ref-shell");
+      assertEquals(output.dataArtifacts[0].attributes.exitCode, 0);
+    });
+  },
+});
+
 Deno.test("CLI: model method run succeeds when globalArguments has unresolvable cross-model resource expression", async () => {
   await withTempDir(async (repoDir) => {
     await initializeTestRepo(repoDir);
