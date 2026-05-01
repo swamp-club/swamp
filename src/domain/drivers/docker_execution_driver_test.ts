@@ -603,9 +603,16 @@ Deno.test({
 
     try {
       // Mock blocks forever; the driver's timeout should fire and kill it.
+      // We use `setInterval` rather than `await new Promise(() => {})` so the
+      // event loop has scheduled work — deno would otherwise terminate a
+      // never-resolved top-level await with a "Top-level await promise never
+      // resolved" diagnostic on stderr (causing the driver to surface that
+      // diagnostic instead of the timeout error). With setInterval, deno
+      // sits idle until the driver's SIGTERM (or SIGKILL on Windows) kills
+      // it silently.
       const command = await createMockDriverCommand(
         tmpDir,
-        `await new Promise<void>(() => {});\n`,
+        `setInterval(() => {}, 60_000);\n`,
       );
 
       const driver = new DockerExecutionDriver({
