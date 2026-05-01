@@ -50,6 +50,10 @@ class LogExtensionOutdatedRenderer implements Renderer<ExtensionOutdatedEvent> {
 
         const maxName = Math.max(...exts.map((x) => x.name.length));
 
+        // not_found and failed render as warnings to match
+        // `extension update --check` parity. They do NOT fail the exit
+        // code (only update_available does) — see the command-level
+        // exit-code logic and design/extension.md for the rationale.
         for (const ext of exts) {
           const paddedName = ext.name.padEnd(maxName);
           switch (ext.status) {
@@ -60,15 +64,15 @@ class LogExtensionOutdatedRenderer implements Renderer<ExtensionOutdatedEvent> {
               });
               break;
             case "not_found":
-              logger.info("{line}", {
+              logger.warn("{line}", {
                 line:
-                  `${paddedName}  v${ext.installedVersion}  (not found in registry — informational, does not fail exit code)`,
+                  `${paddedName}  v${ext.installedVersion}  (not found in registry)`,
               });
               break;
             case "failed":
-              logger.info("{line}", {
+              logger.warn("{line}", {
                 line:
-                  `${paddedName}  v${ext.installedVersion}  (check failed: ${ext.error} — informational, does not fail exit code)`,
+                  `${paddedName}  v${ext.installedVersion}  (check failed: ${ext.error})`,
               });
               break;
               // up_to_date and updated are filtered before reaching the

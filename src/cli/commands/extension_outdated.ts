@@ -24,7 +24,7 @@ import {
   type GlobalOptions,
   resolveRepoDir,
 } from "../context.ts";
-import { requireInitializedRepo } from "../repo_context.ts";
+import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import { resolveModelsDir } from "../resolve_models_dir.ts";
 import {
   RepoMarkerRepository,
@@ -105,7 +105,7 @@ export const extensionOutdatedCommand = new Command()
     cliCtx.logger.debug`Starting extension outdated`;
 
     const repoDir = resolveRepoDir(options.repoDir);
-    await requireInitializedRepo({
+    await requireInitializedRepoReadOnly({
       repoDir,
       outputMode: cliCtx.outputMode,
     });

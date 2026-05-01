@@ -89,12 +89,14 @@ export const extensionListCommand = new Command()
   )
   .option(
     "--check-updates",
-    "Force registry check for newer versions (default: on when stdout is a terminal)",
+    "Check the registry for newer versions and show a 'latest' column. " +
+      "Runs by default when stdout is a terminal; pass this flag to force on " +
+      "(e.g. when using --json in CI).",
     { conflicts: ["no-check-updates"] },
   )
   .option(
     "--no-check-updates",
-    "Skip registry check (default: off when piped or --json)",
+    "Skip the registry check for newer versions, showing only installed data.",
   )
   .action(async function (options: AnyOptions) {
     const cliCtx = createContext(options as GlobalOptions, [
