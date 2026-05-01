@@ -149,6 +149,18 @@ function overallStatus(
 }
 
 /**
+ * Normalises a path to use forward-slash separators regardless of the
+ * platform `relative()` and `walk()` produced. The tracked-set entries
+ * in the lockfile and the helpers in `layout.ts` (PULLED_PREFIX,
+ * extractTopLevelRoot) all assume forward slashes; orphan detection
+ * needs the same normalisation on its walked paths so set membership
+ * works on Windows where native paths use backslashes.
+ */
+function toForwardSlashes(p: string): string {
+  return p.replaceAll("\\", "/");
+}
+
+/**
  * Walks every per-extension root referenced by a lockfile entry and
  * returns paths on disk that are NOT in the entry's `tracked` set.
  *
@@ -156,6 +168,9 @@ function overallStatus(
  * `files[]` list via `extractTopLevelRoot` (skips skills, legacy
  * paths, and unknown locations) and walk each root recursively. Any
  * file path under a walked root that isn't in `tracked` is an orphan.
+ *
+ * All path-set membership comparisons are done in forward-slash form
+ * so the same lockfile entries match on both POSIX and Windows.
  *
  * Empty lockfile / missing entries / no recognisable roots → no walk,
  * no orphans. Walk errors (e.g. missing root dir) are tolerated and
@@ -167,21 +182,25 @@ async function detectOrphanFiles(
   skillsDir: string,
 ): Promise<DoctorOrphanFile[]> {
   const orphans: DoctorOrphanFile[] = [];
+  const normalizedSkillsDir = toForwardSlashes(skillsDir);
 
   for (const [extensionName, entry] of Object.entries(upstreamMap)) {
-    const trackedFiles = entry.files ?? [];
+    const trackedFiles = (entry.files ?? []).map(toForwardSlashes);
     if (trackedFiles.length === 0) continue;
 
     const tracked = new Set(trackedFiles);
     const roots = new Set<string>();
     for (const file of trackedFiles) {
-      const root = extractTopLevelRoot(file, skillsDir);
+      const root = extractTopLevelRoot(file, normalizedSkillsDir);
       if (root !== null) {
         roots.add(root);
       }
     }
 
     for (const root of roots) {
+      // join() uses the platform separator; walk() returns platform-
+      // native paths. We normalise to forward-slash AFTER computing
+      // `relative()` so the tracked-set comparison is platform-stable.
       const absoluteRoot = join(repoDir, root);
       try {
         for await (
@@ -190,7 +209,9 @@ async function detectOrphanFiles(
             includeSymlinks: false,
           })
         ) {
-          const relPath = relative(repoDir, walkEntry.path);
+          const relPath = toForwardSlashes(
+            relative(repoDir, walkEntry.path),
+          );
           if (!tracked.has(relPath)) {
             orphans.push({ extensionName, path: relPath });
           }
