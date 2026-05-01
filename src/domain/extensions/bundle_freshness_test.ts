@@ -476,3 +476,183 @@ Deno.test("findStaleFiles: missing source dir is silently skipped", async () => 
     if (!(err instanceof Deno.errors.NotFound)) throw err;
   }
 });
+
+// -- Issue #208: total fingerprint --------------------------------------
+// `swamp model type search` regressed to ~8s because broken transitive
+// deps caused computeSourceFingerprint to throw, which findStaleFiles
+// caught as "permanently stale" and re-attempted bundling on every
+// invocation. The fix makes computeSourceFingerprint total: an
+// unreadable dep produces a stable sentinel entry instead of throwing,
+// so a stable broken state yields a stable fingerprint.
+
+Deno.test("computeSourceFingerprint: broken transitive symlink does not throw", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp_bf_fp_broken_dep_" });
+  try {
+    const entry = join(dir, "entry.ts");
+    const broken = join(dir, "broken.ts");
+    await Deno.writeTextFile(
+      entry,
+      "import { x } from './broken.ts';\nexport const e = x;",
+    );
+    await Deno.symlink("/nonexistent/path/broken.ts", broken, { type: "file" });
+
+    const fp = await computeSourceFingerprint(entry, dir);
+    assertEquals(fp.length, 64);
+    assertEquals(/^[0-9a-f]{64}$/.test(fp), true);
+
+    // Stable across repeated calls.
+    const again = await computeSourceFingerprint(entry, dir);
+    assertEquals(fp, again);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("computeSourceFingerprint: absence of dep is captured in fingerprint", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp_bf_fp_absence_" });
+  try {
+    const entry = join(dir, "entry.ts");
+    const dep = join(dir, "dep.ts");
+    await Deno.writeTextFile(
+      entry,
+      "import { x } from './dep.ts';\nexport const e = x;",
+    );
+    await Deno.writeTextFile(dep, "export const x = 1;");
+    const allPresent = await computeSourceFingerprint(entry, dir);
+
+    // Replace the readable dep with a broken symlink. Same path, same
+    // import — different readability state. Fingerprint must differ.
+    await Deno.remove(dep);
+    await Deno.symlink("/nonexistent/path/dep.ts", dep, { type: "file" });
+    const oneBroken = await computeSourceFingerprint(entry, dir);
+
+    assertNotEquals(
+      allPresent,
+      oneBroken,
+      "Fingerprint must distinguish 'all deps readable' from 'one dep unreadable' — otherwise dep restoration wouldn't trigger a rebundle",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("computeSourceFingerprint: MISSING sentinel cannot collide with a real hash", () => {
+  // The sentinel is substituted for unreadable deps in the
+  // {relPath}:{hash} entry list. A real sha-256 hex hash is exactly 64
+  // hex chars. "MISSING" is 7 chars and contains non-hex letters, so
+  // no real hash can produce the same per-file entry as a sentinel.
+  // Without this invariant a broken-dep file could spoof a healthy
+  // fingerprint.
+  assertEquals(/^[0-9a-f]{64}$/.test("MISSING"), false);
+});
+
+Deno.test("findStaleFiles: broken transitive dep — stale once, then stable (#208 regression)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp_bf_stale_broken_" });
+  try {
+    const entry = join(dir, "entry.ts");
+    const dep = join(dir, "dep.ts");
+    await Deno.writeTextFile(
+      entry,
+      "import { x } from './dep.ts';\nexport const e = x;",
+    );
+    await Deno.writeTextFile(dep, "export const x = 1;");
+
+    // Step 1: all readable. Compute fingerprint F1, store in catalog.
+    const f1 = await computeSourceFingerprint(entry, dir);
+    const catalog = new FakeCatalog();
+    catalog.add({
+      source_path: entry,
+      type_normalized: "@user/entry",
+      kind: "model",
+      bundle_path: "/ignored",
+      version: "",
+      description: "",
+      extends_type: "",
+      source_mtime: "",
+      source_fingerprint: f1,
+    });
+
+    // Step 2: break the transitive dep. findStaleFiles must mark the
+    // entry stale on this pass — the dep change is a real fingerprint
+    // change and the rebundle path needs to fire to refresh the row.
+    await Deno.remove(dep);
+    await Deno.symlink("/nonexistent/path/dep.ts", dep, { type: "file" });
+
+    const firstPass = await findStaleFiles({
+      modelsDir: dir,
+      catalog,
+      discoverFiles: discoverTsFiles,
+      kinds: ["model"],
+    });
+    assertEquals(
+      firstPass.length,
+      1,
+      "first pass after dep breaks must mark entry stale",
+    );
+    assertEquals(firstPass[0].relativePath, "entry.ts");
+
+    // Step 3: simulate the rebundle path updating the catalog row to
+    // the new sentinel-bearing fingerprint F2.
+    const f2 = await computeSourceFingerprint(entry, dir);
+    assertNotEquals(f1, f2);
+    catalog.removeBySourcePath(entry);
+    catalog.add({
+      source_path: entry,
+      type_normalized: "@user/entry",
+      kind: "model",
+      bundle_path: "/ignored",
+      version: "",
+      description: "",
+      extends_type: "",
+      source_mtime: "",
+      source_fingerprint: f2,
+    });
+
+    // Step 4: subsequent passes — the regression's load-bearing claim.
+    // With the row reflecting the broken state, findStaleFiles must
+    // NOT mark the entry stale. Pre-fix, fingerprint computation threw
+    // and the file was marked stale on every invocation, triggering
+    // bundle spawns and the 8s wall time reported in #208.
+    const secondPass = await findStaleFiles({
+      modelsDir: dir,
+      catalog,
+      discoverFiles: discoverTsFiles,
+      kinds: ["model"],
+    });
+    assertEquals(
+      secondPass.length,
+      0,
+      "subsequent passes must not mark a file with stably-broken transitive dep as stale (#208)",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("computeSourceFingerprint: restoring a broken dep changes the fingerprint", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp_bf_fp_restore_" });
+  try {
+    const entry = join(dir, "entry.ts");
+    const dep = join(dir, "dep.ts");
+    await Deno.writeTextFile(
+      entry,
+      "import { x } from './dep.ts';\nexport const e = x;",
+    );
+    await Deno.symlink("/nonexistent/path/dep.ts", dep, { type: "file" });
+
+    const broken = await computeSourceFingerprint(entry, dir);
+
+    // Restore the dep as a real file with content.
+    await Deno.remove(dep);
+    await Deno.writeTextFile(dep, "export const x = 42;");
+    const restored = await computeSourceFingerprint(entry, dir);
+
+    assertNotEquals(
+      broken,
+      restored,
+      "Repairing a broken dep must change the fingerprint so the rebundle path fires",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});

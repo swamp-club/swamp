@@ -83,6 +83,17 @@ export interface StaleFile {
 }
 
 /**
+ * Sentinel emitted in place of a real sha-256 hex hash when a transitive
+ * dep cannot be read (broken symlink, deleted file, FilesystemLoop). The
+ * fingerprint then encodes "this dep is currently unreadable" as part of
+ * the source state, so a stable broken state produces a stable
+ * fingerprint instead of marking the entry permanently stale (#208).
+ * Cannot collide with a real hash — "MISSING" contains non-hex
+ * characters.
+ */
+const UNREADABLE_DEP_SENTINEL = "MISSING";
+
+/**
  * Computes a content-based fingerprint covering an entry point and every
  * local .ts file it transitively imports via relative paths.
  *
@@ -93,8 +104,10 @@ export interface StaleFile {
  * resolveLocalImports stops at the boundary dir, matching the bundler's
  * own dependency scope.
  *
- * On any read/hash failure the error surfaces — callers mark the file
- * stale to force a fresh rebundle attempt.
+ * Unreadable deps (broken symlinks, deleted files, FilesystemLoop)
+ * produce an UNREADABLE_DEP_SENTINEL entry instead of throwing — so a
+ * stable broken state yields a stable fingerprint, and repairing the
+ * dep correctly invalidates it (#208).
  */
 export async function computeSourceFingerprint(
   absolutePath: string,
@@ -106,7 +119,12 @@ export async function computeSourceFingerprint(
   const entries: string[] = [];
   for (const file of resolvedFiles) {
     const relPath = relative(boundaryDir, file);
-    const fileHash = await hashFile(file, cache);
+    let fileHash: string;
+    try {
+      fileHash = await hashFile(file, cache);
+    } catch {
+      fileHash = UNREADABLE_DEP_SENTINEL;
+    }
     entries.push(`${relPath}:${fileHash}`);
   }
   entries.sort();
@@ -256,8 +274,12 @@ export async function findStaleFiles(
           stale.push({ absolutePath, relativePath, baseDir: dir });
         }
       } catch {
-        // Unreadable source or disappeared dep — force a rebundle so
-        // the caller either succeeds or surfaces the error to the user.
+        // Defensive backstop only. computeSourceFingerprint is total
+        // since #208 — unreadable transitive deps produce a sentinel
+        // entry rather than throwing. Anything reaching this catch is
+        // an unforeseen failure (Deno API change, crypto.subtle panic,
+        // boundary-dir stat race). Force a rebundle so the error
+        // surfaces to the user.
         stale.push({ absolutePath, relativePath, baseDir: dir });
       }
     }

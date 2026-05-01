@@ -901,7 +901,14 @@ the model registry is wired up initially.
      from the catalog (no bundle imports). Fingerprint-based freshness
      replaced mtime-based freshness in issue #125 — mtime was fragile under
      atomic-rename saves, mtime-preserving sync tools, and sub-millisecond
-     edits.
+     edits. The fingerprint is **total**: when a transitive dep is currently
+     unreadable (broken symlink, deleted file, FilesystemLoop), its hash
+     entry is replaced with a stable sentinel rather than throwing — so a
+     stable broken state produces a stable fingerprint and the entry is not
+     marked permanently stale (#208). Repairing the dep flips the sentinel
+     back to a real hash and triggers a rebundle correctly. This property
+     holds uniformly across all five extension kinds (models, drivers,
+     vaults, datastores, reports) since they share the freshness service.
    - If not populated (first run or DB deleted): falls back to the existing
      full-import path, then populates the catalog from the loaded registry
 
