@@ -469,6 +469,137 @@ Deno.test("needsInstallOrMigration: missing file beats legacy classification", a
 });
 
 Deno.test(
+  "needsInstallOrMigration: skill dir under tool-specific skillsDir does not trigger migrate",
+  async () => {
+    // Pre-fix bug: skill paths classified as gen-1 (any non-`.swamp/`
+    // path was gen-1) made every skill-bearing extension trigger migrate
+    // → re-pull → sweep destroyed the skill. Post-fix: skill paths are
+    // filtered before classification.
+    const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+    try {
+      const currentPath = join(
+        tmpDir,
+        ".swamp/pulled-extensions/@me/ext/models/main.ts",
+      );
+      await ensureDir(
+        join(tmpDir, ".swamp/pulled-extensions/@me/ext/models"),
+      );
+      await Deno.writeTextFile(currentPath, "// current");
+
+      const skillDir = join(tmpDir, ".claude/skills/foo");
+      await ensureDir(skillDir);
+      await Deno.writeTextFile(join(skillDir, "SKILL.md"), "# foo");
+
+      const result = await needsInstallOrMigration(
+        [
+          ".swamp/pulled-extensions/@me/ext/models/main.ts",
+          ".claude/skills/foo",
+        ],
+        tmpDir,
+        ".claude/skills",
+      );
+      assertEquals(result, "up_to_date");
+    } finally {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "needsInstallOrMigration: skill dir at tool=none fallback does not trigger migrate",
+  async () => {
+    // Without skillsDir filtering, the path
+    // `.swamp/pulled-extensions/skills/<name>` is structurally
+    // indistinguishable from a gen-2 model file path and would be
+    // misclassified. The skillsDir filter pins it down as a skill.
+    const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+    try {
+      const currentPath = join(
+        tmpDir,
+        ".swamp/pulled-extensions/@me/ext/models/main.ts",
+      );
+      await ensureDir(
+        join(tmpDir, ".swamp/pulled-extensions/@me/ext/models"),
+      );
+      await Deno.writeTextFile(currentPath, "// current");
+
+      const skillDir = join(tmpDir, ".swamp/pulled-extensions/skills/foo");
+      await ensureDir(skillDir);
+      await Deno.writeTextFile(join(skillDir, "SKILL.md"), "# foo");
+
+      const result = await needsInstallOrMigration(
+        [
+          ".swamp/pulled-extensions/@me/ext/models/main.ts",
+          ".swamp/pulled-extensions/skills/foo",
+        ],
+        tmpDir,
+        ".swamp/pulled-extensions/skills",
+      );
+      assertEquals(result, "up_to_date");
+    } finally {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "needsInstallOrMigration: missing skill dir still triggers install (auto-recovery)",
+  async () => {
+    // Users who lost their skill dir to a prior buggy migration must
+    // self-heal on the next install/upgrade. The skill path stat-check
+    // runs BEFORE the skillsDir filter — a missing skill returns
+    // "install" so the next pass re-pulls.
+    const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+    try {
+      const currentPath = join(
+        tmpDir,
+        ".swamp/pulled-extensions/@me/ext/models/main.ts",
+      );
+      await ensureDir(
+        join(tmpDir, ".swamp/pulled-extensions/@me/ext/models"),
+      );
+      await Deno.writeTextFile(currentPath, "// current");
+
+      // Skill dir intentionally NOT created on disk.
+      const result = await needsInstallOrMigration(
+        [
+          ".swamp/pulled-extensions/@me/ext/models/main.ts",
+          ".claude/skills/foo",
+        ],
+        tmpDir,
+        ".claude/skills",
+      );
+      assertEquals(result, "install");
+    } finally {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "needsInstallOrMigration: no skillsDir param still catches gen-1 paths (back-compat)",
+  async () => {
+    // ADV-6 guard: optional skillsDir must default to "no filter" so
+    // direct libswamp consumers without skillsDir wired keep their
+    // current legacy-detection behaviour.
+    const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+    try {
+      const path = join(tmpDir, "extensions/models/legacy.ts");
+      await ensureDir(join(tmpDir, "extensions/models"));
+      await Deno.writeTextFile(path, "// legacy");
+
+      const result = await needsInstallOrMigration(
+        ["extensions/models/legacy.ts"],
+        tmpDir,
+      );
+      assertEquals(result, "migrate");
+    } finally {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
   "extensionInstall: gen-1 entry migrates, sweeps legacy files, sets status=migrated",
   async () => {
     const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
@@ -673,6 +804,218 @@ Deno.test(
   },
 );
 
+/**
+ * Stub `installExtensionFn` that simulates a real install with both
+ * per-extension model files AND a skill directory. Writes the model
+ * file under the per-extension subtree, writes the skill dir at the
+ * caller-provided `skillsDirAbs`, and rewrites the lockfile entry's
+ * files[] to include both. Used by the issue-#207 migration regression
+ * tests to verify the freshly-restored skill dir survives the
+ * post-migration sweep.
+ */
+function makeSuccessfulInstallWithSkill(
+  tmpDir: string,
+  lockfilePath: string,
+  skillsDirRelative: string,
+): InstallExtensionFn {
+  return async (ref) => {
+    const extRoot = join(
+      tmpDir,
+      ".swamp",
+      "pulled-extensions",
+      ref.name,
+      "models",
+    );
+    await ensureDir(extRoot);
+    await Deno.writeTextFile(join(extRoot, "main.ts"), "// reinstalled");
+
+    const skillDirAbs = join(tmpDir, skillsDirRelative, "good-planning");
+    await ensureDir(skillDirAbs);
+    await Deno.writeTextFile(
+      join(skillDirAbs, "SKILL.md"),
+      "# good-planning",
+    );
+
+    const upstream = await readUpstreamExtensions(lockfilePath);
+    upstream[ref.name] = {
+      ...upstream[ref.name],
+      files: [
+        `.swamp/pulled-extensions/${ref.name}/models/main.ts`,
+        `${skillsDirRelative}/good-planning`,
+      ],
+      filesChecksum: "fake-anchor",
+    };
+    await Deno.writeTextFile(
+      lockfilePath,
+      JSON.stringify(upstream, null, 2),
+    );
+    return undefined;
+  };
+}
+
+Deno.test(
+  "extensionInstall: tool=claude migration preserves the skill dir (issue #207)",
+  async () => {
+    // Issue #207 reproduction at the integration boundary. Lockfile
+    // mixes a gen-2 model path (forces migrate) with a `.claude/skills/`
+    // skill dir entry. Pre-fix: sweepLegacyPaths recursively deleted
+    // the freshly-restored skill dir. Post-fix: the skillsDir filter
+    // excludes the skill from both the migrate trigger and the sweep,
+    // so it survives.
+    const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+    try {
+      // Seed the gen-2 path on disk so needsInstallOrMigration sees it
+      // present (otherwise it would short-circuit to "install").
+      const gen2Path = join(
+        tmpDir,
+        ".swamp/pulled-extensions/models/legacy.ts",
+      );
+      await ensureDir(join(tmpDir, ".swamp/pulled-extensions/models"));
+      await Deno.writeTextFile(gen2Path, "// legacy");
+
+      // Skill dir already on disk from a prior pull; the entry tracks
+      // it. The migration must not destroy it.
+      const skillDir = join(tmpDir, ".claude/skills/good-planning");
+      await ensureDir(skillDir);
+      await Deno.writeTextFile(join(skillDir, "SKILL.md"), "# original");
+
+      const lockfilePath = join(tmpDir, "upstream_extensions.json");
+      await Deno.writeTextFile(
+        lockfilePath,
+        JSON.stringify({
+          "@magistr/good-planning": {
+            version: "2026.05.01.1",
+            pulledAt: "2026-05-01T00:00:00Z",
+            files: [
+              ".swamp/pulled-extensions/models/legacy.ts",
+              ".claude/skills/good-planning",
+            ],
+          },
+        }),
+      );
+
+      const ctx = createLibSwampContext({});
+      const events = await collectEvents(
+        extensionInstall(ctx, {
+          lockfilePath,
+          repoDir: tmpDir,
+          skillsDirRelative: ".claude/skills",
+          createInstallContext: () =>
+            makeStubInstallContext(tmpDir, lockfilePath),
+          installExtensionFn: makeSuccessfulInstallWithSkill(
+            tmpDir,
+            lockfilePath,
+            ".claude/skills",
+          ),
+        }),
+      );
+
+      // Migration ran (gen-2 path forced it).
+      const completed = events.find((e) => e.kind === "completed");
+      assertEquals(completed?.kind, "completed");
+      if (completed?.kind === "completed") {
+        assertEquals(completed.data.migrated, 1);
+        assertEquals(completed.data.entries[0].status, "migrated");
+      }
+
+      // gen-2 path swept.
+      let gen2Exists = true;
+      try {
+        await Deno.stat(gen2Path);
+      } catch (e) {
+        if (e instanceof Deno.errors.NotFound) gen2Exists = false;
+      }
+      assertEquals(gen2Exists, false, "gen-2 path should be swept");
+
+      // Skill dir survives — the load-bearing assertion for #207.
+      const stat = await Deno.stat(skillDir);
+      assertEquals(
+        stat.isDirectory,
+        true,
+        "skill dir must survive migration",
+      );
+      const skillFile = await Deno.stat(join(skillDir, "SKILL.md"));
+      assertEquals(skillFile.isFile, true, "SKILL.md must survive migration");
+    } finally {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "extensionInstall: tool=none fallback migration preserves the skill dir (issue #207)",
+  async () => {
+    // The `tool=none` fallback puts skills at
+    // `.swamp/pulled-extensions/skills/<name>` — structurally identical
+    // to a gen-2 path. Without skillsDir threaded into the deps, the
+    // skill would be classified gen-2 and recursively swept after
+    // re-install. The skillsDir filter pins it down.
+    const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+    try {
+      const gen2Path = join(
+        tmpDir,
+        ".swamp/pulled-extensions/models/legacy.ts",
+      );
+      await ensureDir(join(tmpDir, ".swamp/pulled-extensions/models"));
+      await Deno.writeTextFile(gen2Path, "// legacy");
+
+      const skillDir = join(
+        tmpDir,
+        ".swamp/pulled-extensions/skills/good-planning",
+      );
+      await ensureDir(skillDir);
+      await Deno.writeTextFile(join(skillDir, "SKILL.md"), "# original");
+
+      const lockfilePath = join(tmpDir, "upstream_extensions.json");
+      await Deno.writeTextFile(
+        lockfilePath,
+        JSON.stringify({
+          "@magistr/good-planning": {
+            version: "2026.05.01.1",
+            pulledAt: "2026-05-01T00:00:00Z",
+            files: [
+              ".swamp/pulled-extensions/models/legacy.ts",
+              ".swamp/pulled-extensions/skills/good-planning",
+            ],
+          },
+        }),
+      );
+
+      const ctx = createLibSwampContext({});
+      const events = await collectEvents(
+        extensionInstall(ctx, {
+          lockfilePath,
+          repoDir: tmpDir,
+          skillsDirRelative: ".swamp/pulled-extensions/skills",
+          createInstallContext: () =>
+            makeStubInstallContext(tmpDir, lockfilePath),
+          installExtensionFn: makeSuccessfulInstallWithSkill(
+            tmpDir,
+            lockfilePath,
+            ".swamp/pulled-extensions/skills",
+          ),
+        }),
+      );
+
+      const completed = events.find((e) => e.kind === "completed");
+      assertEquals(completed?.kind, "completed");
+      if (completed?.kind === "completed") {
+        assertEquals(completed.data.migrated, 1);
+        assertEquals(completed.data.entries[0].status, "migrated");
+      }
+
+      const stat = await Deno.stat(skillDir);
+      assertEquals(
+        stat.isDirectory,
+        true,
+        "tool=none skill dir must survive migration",
+      );
+    } finally {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  },
+);
+
 Deno.test(
   "sweepLegacyPaths: removes gen-1 and gen-2 paths, leaves current-layout paths",
   async () => {
@@ -804,6 +1147,117 @@ Deno.test(
         if (e instanceof Deno.errors.NotFound) exists = false;
       }
       assertEquals(exists, false, "skills/foo should be removed recursively");
+    } finally {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "sweepLegacyPaths: leaves tool-specific skill dir intact when skillsDir is provided",
+  async () => {
+    // Regression guard for issue #207: with skillsDir threaded through,
+    // the freshly-installed `.claude/skills/<name>` dir survives the
+    // post-migration sweep even though the original lockfile entry
+    // tracked it.
+    const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+    try {
+      const skillDir = join(tmpDir, ".claude/skills/good-planning");
+      await ensureDir(skillDir);
+      await Deno.writeTextFile(join(skillDir, "SKILL.md"), "# good-planning");
+
+      const gen1 = join(tmpDir, "extensions/models/legacy.ts");
+      await ensureDir(join(tmpDir, "extensions/models"));
+      await Deno.writeTextFile(gen1, "// legacy");
+
+      await sweepLegacyPaths(
+        ["extensions/models/legacy.ts", ".claude/skills/good-planning"],
+        tmpDir,
+        ".claude/skills",
+      );
+
+      // gen-1 path swept.
+      let gen1Exists = true;
+      try {
+        await Deno.stat(gen1);
+      } catch (e) {
+        if (e instanceof Deno.errors.NotFound) gen1Exists = false;
+      }
+      assertEquals(gen1Exists, false, "gen-1 path should be swept");
+
+      // Skill dir intact.
+      const stat = await Deno.stat(skillDir);
+      assertEquals(stat.isDirectory, true, "skill dir should survive sweep");
+      const skillFile = await Deno.stat(join(skillDir, "SKILL.md"));
+      assertEquals(skillFile.isFile, true, "SKILL.md should survive sweep");
+    } finally {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "sweepLegacyPaths: leaves tool=none skill dir intact when skillsDir is provided",
+  async () => {
+    // The `tool=none` fallback puts skills at
+    // `.swamp/pulled-extensions/skills/<name>`, structurally identical to
+    // a gen-2 path. Without skillsDir filtering they would be swept.
+    const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+    try {
+      const skillDir = join(
+        tmpDir,
+        ".swamp/pulled-extensions/skills/good-planning",
+      );
+      await ensureDir(skillDir);
+      await Deno.writeTextFile(join(skillDir, "SKILL.md"), "# good-planning");
+
+      await sweepLegacyPaths(
+        [".swamp/pulled-extensions/skills/good-planning"],
+        tmpDir,
+        ".swamp/pulled-extensions/skills",
+      );
+
+      const stat = await Deno.stat(skillDir);
+      assertEquals(
+        stat.isDirectory,
+        true,
+        "tool=none skill dir should survive sweep",
+      );
+    } finally {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "sweepLegacyPaths: no skillsDir param still sweeps gen-2 dir entries (back-compat)",
+  async () => {
+    // ADV-6 guard: optional skillsDir defaults to "no filter" so the
+    // pre-existing recursive-remove behaviour for legacy skill-style
+    // directory entries continues to work for callers that don't wire
+    // skillsDir.
+    const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+    try {
+      const dirPath = join(tmpDir, ".swamp/pulled-extensions/skills/foo");
+      await ensureDir(dirPath);
+      await Deno.writeTextFile(join(dirPath, "nested.ts"), "// nested");
+
+      await sweepLegacyPaths(
+        [".swamp/pulled-extensions/skills/foo"],
+        tmpDir,
+      );
+
+      let exists = true;
+      try {
+        await Deno.stat(dirPath);
+      } catch (e) {
+        if (e instanceof Deno.errors.NotFound) exists = false;
+      }
+      assertEquals(
+        exists,
+        false,
+        "skills/foo should still be removed when skillsDir is omitted",
+      );
     } finally {
       await Deno.remove(tmpDir, { recursive: true });
     }

@@ -855,6 +855,22 @@ usable during a partial upgrade. The migration is **resumable**:
 aborts the upgrade before any further mutations, leaving the lockfile
 intact so retry starts from a consistent state.
 
+Skill directory entries (tracked as a single dir path in `entry.files[]`,
+e.g. `.claude/skills/<name>`, `.cursor/skills/<name>`, or
+`.swamp/pulled-extensions/skills/<name>` for the `tool=none` fallback)
+are **always** treated as current-layout regardless of physical location.
+The install flow filters them via the skillsDir wired through
+`ExtensionInstallDeps` before classification runs, so they neither
+trigger migration on their own nor get touched by the post-migration
+sweep — without that filter, the `tool=none` fallback shape would be
+indistinguishable from a gen-2 path and the freshly-restored skill dir
+would be destructively removed. The path-only `classifyExtensionFile`
+helper on its own only flags paths matching the documented gen-1 shape
+(`extensions/<known-type>/...` where `<known-type>` is in
+`PULLED_TYPE_DIRS`); arbitrary non-`.swamp/` paths and any path the
+classifier doesn't recognise fall through to current-layout and are
+ignored by migration rather than swept.
+
 ## Removal
 
 Installed extensions can be removed with `extension rm`. Removal deletes all

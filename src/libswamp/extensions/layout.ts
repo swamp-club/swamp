@@ -57,23 +57,39 @@ export const PULLED_TYPE_DIRS: ReadonlySet<string> = new Set([
 ]);
 
 const PULLED_PREFIX = `${SWAMP_DATA_DIR}/pulled-extensions/`;
+const GEN1_PREFIX = "extensions/";
 
 /**
  * Classifies a single lockfile file path.
  *
- * - Returns `"gen-1"` when the path lives outside `.swamp/` (pre-`.swamp/`
- *   layout, e.g. `extensions/models/foo.ts`).
+ * - Returns `"gen-1"` when the path matches the published gen-1 shape:
+ *   `extensions/<known-type>/...` where `<known-type>` is in
+ *   `PULLED_TYPE_DIRS`. Tightened from "any path outside `.swamp/`" so
+ *   tool-specific skill dirs (`.claude/skills/<name>`,
+ *   `.cursor/skills/<name>`, etc.) and other non-`.swamp/` paths are not
+ *   misclassified as legacy and routed through migration's destructive
+ *   sweep.
  * - Returns `"gen-2"` when the path lives under
  *   `.swamp/pulled-extensions/<type>/...` where `<type>` is a known
  *   pulled-type dir — the "flat" layout where filenames collide across
  *   extensions.
  * - Returns `"current"` for the per-extension subtree
- *   (`.swamp/pulled-extensions/@<scope>/...`) and for paths outside
- *   `pulled-extensions/` entirely (bundles, etc.).
+ *   (`.swamp/pulled-extensions/@<scope>/...`), for paths outside
+ *   `pulled-extensions/` entirely (bundles, etc.), and for any
+ *   non-`.swamp/` path that does not match the gen-1 shape.
+ *
+ * Note: this classifier is path-only and cannot tell a `tool=none` skill
+ * directory entry (`.swamp/pulled-extensions/skills/<name>`) apart from a
+ * gen-2 model file path. The install flow filters skill dir entries via
+ * `isSkillDirEntry` before reaching the classifier — see
+ * `needsInstallOrMigration` and `sweepLegacyPaths` in `install.ts`.
  */
 export function classifyExtensionFile(file: string): ExtensionLayoutGeneration {
-  if (!file.startsWith(`${SWAMP_DATA_DIR}/`)) {
-    return "gen-1";
+  if (file.startsWith(GEN1_PREFIX)) {
+    const firstSegment = file.slice(GEN1_PREFIX.length).split("/")[0];
+    if (PULLED_TYPE_DIRS.has(firstSegment)) {
+      return "gen-1";
+    }
   }
   if (!file.startsWith(PULLED_PREFIX)) {
     return "current";
@@ -83,6 +99,39 @@ export function classifyExtensionFile(file: string): ExtensionLayoutGeneration {
     return "gen-2";
   }
   return "current";
+}
+
+/**
+ * Returns true when a tracked file path is a skill directory entry —
+ * either the skillsDir root itself or a path under it.
+ *
+ * Skills are tracked in `entry.files[]` as a single directory path (set
+ * by `installExtension` in `pull.ts`), so this check compares against
+ * the directory boundary. The skillsDir is repo-and-tool-specific
+ * (`.claude/skills`, `.cursor/skills`, `.swamp/pulled-extensions/skills`
+ * for `tool=none`, etc.) and must be repo-relative — `entry.files[]`
+ * paths are repo-relative; the caller passes it in.
+ *
+ * Both sides are normalised to forward slashes before comparison so
+ * the check works on Windows (where `@std/path` `relative()` returns
+ * backslash-separated paths) without requiring callers to normalise.
+ *
+ * Used by the install flow to short-circuit skill paths before legacy
+ * classification — without this filter, the `tool=none` fallback at
+ * `.swamp/pulled-extensions/skills/<name>` is structurally identical to
+ * a gen-2 path and would otherwise be swept destructively after
+ * migration.
+ */
+export function isSkillDirEntry(
+  file: string,
+  skillsDir: string | undefined,
+): boolean {
+  if (!skillsDir) return false;
+  const trimmed = skillsDir.replaceAll("\\", "/").replace(/\/$/, "");
+  if (trimmed.length === 0) return false;
+  const normalizedFile = file.replaceAll("\\", "/");
+  return normalizedFile === trimmed ||
+    normalizedFile.startsWith(`${trimmed}/`);
 }
 
 /**
@@ -127,13 +176,7 @@ export function extractTopLevelRoot(
   // Skills are tracked as directory paths (the dir root, not its
   // contents). We can't detect orphan files within a skill dir
   // because the inner files aren't in entry.files[].
-  const normalizedSkillsDir = skillsDir.endsWith("/")
-    ? skillsDir
-    : `${skillsDir}/`;
-  if (
-    filePath === skillsDir.replace(/\/$/, "") ||
-    filePath.startsWith(normalizedSkillsDir)
-  ) {
+  if (isSkillDirEntry(filePath, skillsDir)) {
     return null;
   }
 

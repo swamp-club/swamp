@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { join, resolve } from "@std/path";
+import { join, relative, resolve } from "@std/path";
 import type { Logger } from "@logtape/logtape";
 import { RepoPath } from "../domain/repo/repo_path.ts";
 import { resolveSkillsDir } from "../domain/repo/skill_dirs.ts";
@@ -55,7 +55,15 @@ export async function createExtensionInstallDeps(
   const absoluteModelsDir = resolve(absoluteRepoDir, modelsDir);
   const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
   const tool = resolvePrimaryTool(marker);
-  const skillsDir = resolveSkillsDir(absoluteRepoDir, tool);
+  const absoluteSkillsDir = resolveSkillsDir(absoluteRepoDir, tool);
+  // `entry.files[]` paths in the lockfile are relative to the repo
+  // root, so the skill-dir filter in needsInstallOrMigration /
+  // sweepLegacyPaths must compare against a repo-relative skillsDir.
+  // The InstallContext's `skillsDir` stays absolute — pull.ts joins it
+  // with the destination dir and that path is independent of the
+  // lockfile's relative-path convention. Two fields with the same
+  // logical role but different conventions; keep them named distinctly.
+  const skillsDirRelative = relative(absoluteRepoDir, absoluteSkillsDir);
 
   const serverUrl = resolveServerUrl();
   const client = new ExtensionApiClient(serverUrl);
@@ -63,13 +71,14 @@ export async function createExtensionInstallDeps(
   return {
     lockfilePath,
     repoDir: absoluteRepoDir,
+    skillsDirRelative,
     createInstallContext: (_name, _version) => ({
       getExtension: (n) => client.getExtension(n),
       downloadArchive: (n, v) => client.downloadArchive(n, v),
       getChecksum: (n, v) => client.getChecksum(n, v),
       logger,
       lockfilePath,
-      skillsDir,
+      skillsDir: absoluteSkillsDir,
       repoDir: absoluteRepoDir,
       force: true,
       alreadyPulled: new Set(),

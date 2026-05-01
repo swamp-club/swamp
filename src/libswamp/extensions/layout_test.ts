@@ -23,6 +23,7 @@ import {
   classifyExtensionFile,
   detectLegacyExtensionLayout,
   extractTopLevelRoot,
+  isSkillDirEntry,
   requireCurrentExtensionLayout,
   summariseLegacyLayout,
   warnLegacyExtensionLayout,
@@ -79,6 +80,91 @@ Deno.test("classifyExtensionFile: .swamp paths outside pulled-extensions are cur
     classifyExtensionFile(".swamp/bundles/abc123/@scope/name/foo.js"),
     "current",
   );
+});
+
+Deno.test("classifyExtensionFile: tool-specific skill dir paths are current", () => {
+  // Pre-fix bug: any non-`.swamp/` path classified as gen-1 → migration's
+  // sweep recursively deleted skill dirs after re-install.
+  assertEquals(
+    classifyExtensionFile(".claude/skills/good-planning"),
+    "current",
+  );
+  assertEquals(
+    classifyExtensionFile(".claude/skills/good-planning/SKILL.md"),
+    "current",
+  );
+  assertEquals(
+    classifyExtensionFile(".cursor/skills/foo"),
+    "current",
+  );
+  assertEquals(
+    classifyExtensionFile(".kiro/skills/foo"),
+    "current",
+  );
+  assertEquals(
+    classifyExtensionFile(".agents/skills/foo"),
+    "current",
+  );
+});
+
+Deno.test("classifyExtensionFile: arbitrary non-extensions/ paths are current", () => {
+  // Tightened classifier no longer flags hand-rolled or unknown paths as
+  // gen-1; only the documented gen-1 shape (extensions/<known-type>/...)
+  // counts.
+  assertEquals(
+    classifyExtensionFile("random/path/file.ts"),
+    "current",
+  );
+  assertEquals(
+    classifyExtensionFile("extensions/unknown-type/foo.ts"),
+    "current",
+  );
+});
+
+Deno.test("classifyExtensionFile: extensions/<known-type>/ paths still gen-1", () => {
+  for (
+    const type of ["models", "workflows", "vaults", "drivers", "datastores"]
+  ) {
+    assertEquals(
+      classifyExtensionFile(`extensions/${type}/foo.ts`),
+      "gen-1",
+      `${type} should still classify as gen-1`,
+    );
+  }
+});
+
+Deno.test("isSkillDirEntry: matches the dir root and contents", () => {
+  assertEquals(isSkillDirEntry(".claude/skills/foo", ".claude/skills"), true);
+  assertEquals(
+    isSkillDirEntry(".claude/skills/foo/SKILL.md", ".claude/skills"),
+    true,
+  );
+  assertEquals(
+    isSkillDirEntry(".claude/skills/foo", ".claude/skills/"),
+    true,
+  );
+  assertEquals(
+    isSkillDirEntry(
+      ".swamp/pulled-extensions/skills/foo",
+      ".swamp/pulled-extensions/skills",
+    ),
+    true,
+  );
+});
+
+Deno.test("isSkillDirEntry: returns false for non-skill paths", () => {
+  assertEquals(
+    isSkillDirEntry("extensions/models/foo.ts", ".claude/skills"),
+    false,
+  );
+  assertEquals(
+    isSkillDirEntry(".claude/skillsfoo", ".claude/skills"),
+    false,
+  );
+});
+
+Deno.test("isSkillDirEntry: returns false when skillsDir is undefined", () => {
+  assertEquals(isSkillDirEntry(".claude/skills/foo", undefined), false);
 });
 
 Deno.test("detectLegacyExtensionLayout: returns empty for current layout", async () => {
@@ -430,3 +516,22 @@ Deno.test("extractTopLevelRoot: handles trailing-slash skillsDir", () => {
     null,
   );
 });
+
+Deno.test(
+  "extractTopLevelRoot: hand-rolled non-extensions path returns null",
+  () => {
+    // Regression guard: after the classifier was tightened so non-`.swamp/`
+    // non-`extensions/<type>/...` paths classify as `current`, the early
+    // return inside extractTopLevelRoot no longer fires for them. Confirm
+    // they still bottom out at the trailing `return null` rather than
+    // leaking into a misidentified per-extension or bundle root.
+    assertEquals(
+      extractTopLevelRoot("random/file.ts", SKILLS_DIR),
+      null,
+    );
+    assertEquals(
+      extractTopLevelRoot("extensions/unknown-type/foo.ts", SKILLS_DIR),
+      null,
+    );
+  },
+);
