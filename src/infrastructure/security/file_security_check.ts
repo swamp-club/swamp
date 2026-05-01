@@ -23,15 +23,17 @@
  * On POSIX, replicates the long-standing `(stat.mode & 0o077) !== 0` rule —
  * any group or other access bit fails the check.
  *
- * On Windows, NTFS does not honour POSIX modes, so we shell out to PowerShell
- * `Get-Acl` and walk each ACE looking for **Allow** rules that grant readable
- * rights (Read / ReadAndExecute / FullControl) to a small set of broad
- * principals (Everyone, Authenticated Users, Anonymous Logon, BUILTIN\Users,
- * and their SID forms).
+ * On Windows, NTFS does not honour POSIX modes, so we shell out to `icacls`
+ * and walk each ACE looking for entries that grant readable rights to a small
+ * set of broad principals (Everyone, Authenticated Users, Anonymous Logon,
+ * BUILTIN\Users). We use `icacls` rather than PowerShell `Get-Acl` because
+ * GitHub Actions windows-latest runners cannot reliably auto-load the
+ * `Microsoft.PowerShell.Security` module that hosts `Get-Acl`, but `icacls`
+ * is a native Win32 binary that is always present.
  *
  * What this Windows check intentionally does NOT do:
  * - It does not walk the inheritance chain or evaluate effective access.
- * - It does not honour Deny ACEs (an explicit Deny that overrides the broad
+ * - It does not honour Deny ACEs (an explicit Deny that overrides a broad
  *   Allow will still be flagged here).
  * - It does not inspect alternate data streams.
  * - It does not resolve nested group memberships.
@@ -47,8 +49,9 @@ export type SecurityCheckResult = { ok: true } | {
 
 /**
  * Broad principals on Windows whose Read-style access marks a file as
- * unsafe for sensitive material. Both the localised name and the SID
- * form are recognised so the check works on locale variants of Windows.
+ * unsafe for sensitive material. icacls renders both the localised name
+ * and (when the SID cannot be resolved) the SID itself, so we match
+ * either form.
  */
 const BROAD_WINDOWS_PRINCIPALS: ReadonlyArray<{ name: string; sid: string }> = [
   { name: "Everyone", sid: "S-1-1-0" },
@@ -58,26 +61,24 @@ const BROAD_WINDOWS_PRINCIPALS: ReadonlyArray<{ name: string; sid: string }> = [
 ];
 
 /**
- * Read-granting FileSystemRights tokens. PowerShell renders this property
- * as a comma-separated list (e.g. "Read, Synchronize"), so we substring
- * match across the rendered string rather than parse the bitmask.
+ * icacls permission tokens that grant read-or-better access. These appear
+ * inside parentheses on each ACE line, e.g. `(R)`, `(RX)`, `(F)`, `(M)`.
+ * - F  = Full control
+ * - M  = Modify (implies Read)
+ * - RX = Read and Execute
+ * - R  = Read
+ * GR/GE/GA are generic-rights aliases icacls also emits when SDDL was used
+ * to set the ACL — we treat those equivalently.
  */
-const READ_GRANTING_RIGHTS = [
-  "FullControl",
-  "ReadAndExecute",
-  "Read",
+const READ_GRANTING_TOKENS = [
+  "(F)",
+  "(M)",
+  "(RX)",
+  "(R)",
+  "(GR)",
+  "(GE)",
+  "(GA)",
 ] as const;
-
-/**
- * One entry in a `(Get-Acl).Access` array. Only the fields we read are
- * declared; PowerShell emits more (e.g. `IsInherited`, `InheritanceFlags`)
- * but they don't influence this check.
- */
-interface AclAccessEntry {
-  FileSystemRights?: string | number;
-  AccessControlType?: string | number;
-  IdentityReference?: { Value?: string } | string;
-}
 
 /**
  * Verifies that the file at `path` is not broadly readable.
@@ -113,10 +114,9 @@ async function checkPosixMode(path: string): Promise<SecurityCheckResult> {
 }
 
 async function checkWindowsAcl(path: string): Promise<SecurityCheckResult> {
-  // We pass the path through PowerShell single-quote escaping. PowerShell
-  // single-quoted strings escape an embedded `'` as `''`. We refuse paths
-  // that contain other characters PowerShell can't safely round-trip
-  // through Get-Acl (NUL, CR/LF) — fail closed.
+  // icacls accepts the path as a positional argument. We refuse paths with
+  // NUL/CR/LF defensively — these would corrupt our line-based parse and
+  // can't reach a real file via Win32 path syntax anyway.
   if (path.includes("\0") || path.includes("\r") || path.includes("\n")) {
     return {
       ok: false,
@@ -124,17 +124,11 @@ async function checkWindowsAcl(path: string): Promise<SecurityCheckResult> {
         `Could not verify ACL for '${path}': path contains unsupported characters`,
     };
   }
-  const escapedPath = path.replaceAll("'", "''");
 
   let output: { code: number; stdout: string; stderr: string };
   try {
-    const cmd = new Deno.Command("powershell", {
-      args: [
-        "-NoProfile",
-        "-NonInteractive",
-        "-Command",
-        `(Get-Acl -LiteralPath '${escapedPath}').Access | ConvertTo-Json -Compress`,
-      ],
+    const cmd = new Deno.Command("icacls", {
+      args: [path],
       stdin: "null",
       stdout: "piped",
       stderr: "piped",
@@ -158,43 +152,22 @@ async function checkWindowsAcl(path: string): Promise<SecurityCheckResult> {
     return {
       ok: false,
       reason:
-        `Could not verify ACL for '${path}': PowerShell Get-Acl exited with code ${output.code}: ${
-          output.stderr.trim() || "<no stderr>"
+        `Could not verify ACL for '${path}': icacls exited with code ${output.code}: ${
+          output.stderr.trim() || output.stdout.trim() || "<no output>"
         }`,
     };
   }
 
-  const trimmed = output.stdout.trim();
-  // Empty stdout means there are no ACEs — surprising, but treat as a
-  // verification failure rather than silently passing.
-  if (trimmed.length === 0) {
+  const aces = parseIcaclsOutput(output.stdout, path);
+  if (aces.length === 0) {
     return {
       ok: false,
       reason:
-        `Could not verify ACL for '${path}': PowerShell Get-Acl returned no access entries`,
+        `Could not verify ACL for '${path}': icacls returned no access entries`,
     };
   }
 
-  let parsed: unknown;
-  try {
-    parsed = JSON.parse(trimmed);
-  } catch (error) {
-    return {
-      ok: false,
-      reason:
-        `Could not verify ACL for '${path}': failed to parse Get-Acl JSON output: ${
-          error instanceof Error ? error.message : String(error)
-        }`,
-    };
-  }
-
-  // ConvertTo-Json renders a single-element array as the bare object.
-  // Normalise to an array so the walk is uniform.
-  const entries: AclAccessEntry[] = Array.isArray(parsed)
-    ? (parsed as AclAccessEntry[])
-    : [parsed as AclAccessEntry];
-
-  for (const ace of entries) {
+  for (const ace of aces) {
     const broad = matchBroadAce(ace);
     if (broad !== null) {
       return {
@@ -212,51 +185,105 @@ async function checkWindowsAcl(path: string): Promise<SecurityCheckResult> {
 }
 
 /**
+ * Parsed icacls ACE. Exported for direct unit testing of the parser on
+ * non-Windows hosts; production code only consumes it via
+ * `checkFileNotBroadlyReadable`.
+ *
+ * @internal
+ */
+export interface IcaclsAce {
+  /** Principal as printed by icacls, e.g. "Everyone" or "BUILTIN\\Users". */
+  principal: string;
+  /** Raw rights string, e.g. "(R)" or "(OI)(CI)(F)". */
+  rights: string;
+}
+
+/**
+ * Parses `icacls <path>` output into a list of ACEs.
+ *
+ * icacls output looks like (one ACE may span multiple lines if rights are
+ * inheritance-flagged):
+ *
+ *   C:\path\to\file Everyone:(R)
+ *                   BUILTIN\Users:(RX)
+ *                   BUILTIN\Administrators:(F)
+ *                   DOMAIN\user:(F)
+ *
+ *   Successfully processed 1 files; Failed processing 0 files
+ *
+ * The first ACE on the first line is preceded by the file path (which may
+ * contain spaces). On continuation lines the file path is replaced by
+ * leading whitespace. The trailing summary line ("Successfully processed
+ * ...") is not an ACE.
+ *
+ * We split each ACE on the LAST `:` so that principals like
+ * `BUILTIN\Users` (no colon) and `DOMAIN\user` (no colon) parse correctly,
+ * and so a path like `C:\foo` on the leading line doesn't confuse us — we
+ * strip the path prefix before splitting.
+ *
+ * @internal — exported only so unit tests can exercise the parser on
+ * non-Windows hosts. Production code calls `checkFileNotBroadlyReadable`.
+ */
+export function parseIcaclsOutput(stdout: string, path: string): IcaclsAce[] {
+  const aces: IcaclsAce[] = [];
+  // Normalise EOL — icacls emits CRLF on Windows but we may run under
+  // tests that mock the binary on POSIX.
+  const lines = stdout.split(/\r?\n/);
+  for (const rawLine of lines) {
+    // Strip the leading path prefix if present. icacls prints the file
+    // path verbatim on the first ACE line; we strip it whether it's the
+    // exact path passed in (case-insensitive) or just leading whitespace.
+    let line = rawLine;
+    if (line.startsWith(path)) {
+      line = line.slice(path.length);
+    } else if (line.toLowerCase().startsWith(path.toLowerCase())) {
+      // icacls may normalise the path's case — handle that.
+      line = line.slice(path.length);
+    }
+    line = line.trim();
+    if (line.length === 0) continue;
+    // Skip the trailing summary line. The English form starts with
+    // "Successfully processed", but localised Windows can return other
+    // strings — the discriminator we lean on is the absence of any
+    // "(...)" rights token.
+    if (!line.includes("(") || !line.includes(")")) continue;
+
+    // Split on the LAST `:` so principals containing `:` (which is rare
+    // but possible) don't trip us; in practice icacls separates
+    // principal:rights with a single `:` and rights are wrapped in
+    // parentheses, so the colon immediately before "(" is the separator.
+    const colonIdx = line.lastIndexOf(":(");
+    if (colonIdx < 0) continue;
+    const principal = line.slice(0, colonIdx).trim();
+    const rights = line.slice(colonIdx + 1).trim();
+    if (principal.length === 0 || rights.length === 0) continue;
+
+    aces.push({ principal, rights });
+  }
+  return aces;
+}
+
+/**
  * Returns the matched broad principal name when an ACE grants readable
  * rights to a broad principal, or null when the ACE is acceptable.
+ *
+ * @internal — exported only so unit tests can exercise the matcher on
+ * non-Windows hosts.
  */
-function matchBroadAce(ace: AclAccessEntry): string | null {
-  // AccessControlType: "Allow" (0) or "Deny" (1). PowerShell stringifies
-  // it for non-compressed JSON but with -Compress it can render as the
-  // numeric enum value. Accept both.
-  const aceTypeRaw = ace.AccessControlType;
-  const isAllow = aceTypeRaw === "Allow" || aceTypeRaw === 0;
-  if (!isAllow) return null;
-
-  const identity = extractIdentity(ace.IdentityReference);
-  if (identity === null) return null;
-
+export function matchBroadAce(ace: IcaclsAce): string | null {
   const matched = BROAD_WINDOWS_PRINCIPALS.find((p) =>
-    identity.localeCompare(p.name, undefined, { sensitivity: "accent" }) ===
-      0 ||
-    identity === p.sid
+    ace.principal.localeCompare(p.name, undefined, {
+        sensitivity: "accent",
+      }) === 0 ||
+    ace.principal === p.sid
   );
   if (!matched) return null;
 
-  // Rights: PowerShell may render either a comma-joined name string
-  // ("Read, Synchronize") or, with -Compress, sometimes the integer
-  // bitmask. We only flag on the string form's broad-read tokens; if
-  // the value is a number we conservatively flag any non-zero value as
-  // a Read-or-better grant from a broad principal.
-  const rights = ace.FileSystemRights;
-  if (typeof rights === "string") {
-    if (READ_GRANTING_RIGHTS.some((r) => rights.includes(r))) {
-      return matched.name;
-    }
-    return null;
-  }
-  if (typeof rights === "number") {
-    return rights !== 0 ? matched.name : null;
-  }
-  return null;
-}
-
-function extractIdentity(
-  identity: AclAccessEntry["IdentityReference"],
-): string | null {
-  if (typeof identity === "string") return identity;
-  if (identity && typeof identity === "object" && "Value" in identity) {
-    return identity.Value ?? null;
+  // Substring-match across the rights string. icacls may emit
+  // inheritance flags inline (e.g. "(OI)(CI)(R)") so we don't anchor on
+  // the start/end of the string.
+  if (READ_GRANTING_TOKENS.some((t) => ace.rights.includes(t))) {
+    return matched.name;
   }
   return null;
 }

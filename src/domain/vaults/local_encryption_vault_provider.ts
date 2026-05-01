@@ -367,10 +367,10 @@ export class LocalEncryptionVaultProvider implements VaultProvider {
 
   /**
    * Validates that an SSH key file is not broadly readable. On POSIX this
-   * enforces `0o600` (no group/other bits). On Windows it checks the NTFS
-   * ACL for any Allow entry granting Read or higher to broad principals
-   * (Everyone, Authenticated Users, etc.). The detailed scope of the
-   * Windows check lives in `file_security_check.ts`.
+   * enforces `0o600` (no group/other bits). On Windows it shells out to
+   * `icacls` and rejects any ACE granting Read or higher to broad
+   * principals (Everyone, Authenticated Users, etc.). The detailed scope
+   * of the Windows check lives in `file_security_check.ts`.
    */
   private async validateSshKeyPermissions(path: string): Promise<void> {
     const result = await checkFileNotBroadlyReadable(path);
