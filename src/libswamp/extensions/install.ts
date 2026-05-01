@@ -27,6 +27,7 @@ import {
   type ExtensionRef,
   type InstallContext,
   installExtension,
+  type InstallResult,
   parseExtensionRef,
 } from "./pull.ts";
 import { classifyExtensionFile } from "./layout.ts";
@@ -36,11 +37,17 @@ import { classifyExtensionFile } from "./layout.ts";
  * `installExtension` from pull.ts; tests inject a stub that simulates
  * the side effects (writing to the per-extension subtree and updating
  * the lockfile) without needing a real tar archive and registry.
+ *
+ * Returns the same shape as `installExtension`: an `InstallResult` on
+ * a fresh install, or `undefined` when the extension was already pulled
+ * earlier in the same call chain (the alreadyPulled short-circuit).
+ * The result's `pruned` field carries the paths actually removed during
+ * orphan cleanup so callers can surface that to the user.
  */
 export type InstallExtensionFn = (
   ref: ExtensionRef,
   ctx: InstallContext,
-) => Promise<unknown>;
+) => Promise<InstallResult | undefined>;
 
 /** Result of installing a single extension during bulk install. */
 export interface ExtensionInstallEntry {
@@ -63,6 +70,12 @@ export type ExtensionInstallEvent =
   | { kind: "resolving" }
   | { kind: "installing"; name: string; version: string }
   | { kind: "migrating"; name: string; version: string }
+  | {
+    kind: "orphans-pruned";
+    name: string;
+    version: string;
+    paths: string[];
+  }
   | { kind: "completed"; data: ExtensionInstallData }
   | { kind: "error"; error: SwampError };
 
@@ -149,7 +162,7 @@ export async function* extensionInstall(
           }
           const ref = parseExtensionRef(`${name}@${version}`);
           const install = deps.installExtensionFn ?? installExtension;
-          await install(ref, installCtx);
+          const result = await install(ref, installCtx);
 
           // For migrations, sweep the original legacy paths now that the
           // current-layout files are on disk. installExtension has already
@@ -163,6 +176,21 @@ export async function* extensionInstall(
           } else {
             entries.push({ name, version, status: "installed" });
             installed++;
+          }
+
+          // Surface orphan removals to the user. Source-of-truth list
+          // is `result.pruned` (paths actually removed by
+          // pruneOrphanFiles inside installExtension), not the diff
+          // we'd compute here. When the test seam returns undefined or
+          // the install was a no-op (alreadyPulled), there's nothing
+          // to emit.
+          if (result && result.pruned.length > 0) {
+            yield {
+              kind: "orphans-pruned",
+              name,
+              version,
+              paths: result.pruned,
+            };
           }
         } catch (error) {
           entries.push({
@@ -226,6 +254,10 @@ export async function needsInstallOrMigration(
  * from an interrupted prior pass). Empty parent directories under the
  * repo root are pruned.
  *
+ * Uses recursive removal so directory entries (e.g. legacy skill dirs
+ * tracked by their root, with nested files inside) are handled — a plain
+ * Deno.remove fails on non-empty directories.
+ *
  * Exported for direct unit testing; production callers invoke it
  * indirectly through `extensionInstall`.
  */
@@ -239,7 +271,7 @@ export async function sweepLegacyPaths(
     }
     const absolutePath = join(repoDir, file);
     try {
-      await Deno.remove(absolutePath);
+      await Deno.remove(absolutePath, { recursive: true });
     } catch (error) {
       if (!(error instanceof Deno.errors.NotFound)) {
         throw error;

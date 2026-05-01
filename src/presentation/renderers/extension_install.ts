@@ -49,6 +49,19 @@ class LogExtensionInstallRenderer implements Renderer<ExtensionInstallEvent> {
           },
         );
       },
+      "orphans-pruned": (e) => {
+        logger.info(
+          "Removed {count} file(s) no longer in {name}@{version}:",
+          {
+            count: e.paths.length,
+            name: e.name,
+            version: e.version,
+          },
+        );
+        for (const p of e.paths) {
+          logger.info("  {path}", { path: p });
+        }
+      },
       completed: (e) => {
         const { installed, migrated, upToDate, failed } = e.data;
         if (e.data.entries.length === 0) {
@@ -100,6 +113,18 @@ class JsonExtensionInstallRenderer implements Renderer<ExtensionInstallEvent> {
       resolving: () => {},
       installing: () => {},
       migrating: () => {},
+      "orphans-pruned": (e) => {
+        console.log(JSON.stringify(
+          {
+            status: "orphans_pruned",
+            name: e.name,
+            version: e.version,
+            paths: e.paths,
+          },
+          null,
+          2,
+        ));
+      },
       completed: (e) => {
         console.log(JSON.stringify(e.data, null, 2));
       },

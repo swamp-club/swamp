@@ -17,7 +17,47 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { dirname } from "@std/path";
+import { dirname, join } from "@std/path";
+
+/**
+ * Removes a list of repo-relative paths and reports which were actually
+ * removed. Used by `installExtension` to prune source files, bundle
+ * files, and skill directories declared in a prior version's lockfile
+ * entry but absent in the current version's `extractedFiles`.
+ *
+ * Behavior:
+ * - Each path is resolved against `repoDir` and removed with
+ *   `{ recursive: true }` so non-empty entries (skill directory roots
+ *   tracked as a single path) are handled correctly.
+ * - `Deno.errors.NotFound` is tolerated — the path is already gone, so
+ *   it is NOT included in the returned list (the caller should report
+ *   ground truth, not intent).
+ * - Empty parent directories up to `repoDir` are pruned after each
+ *   removal via `cleanupEmptyParentDirs`.
+ * - Any other error propagates immediately.
+ *
+ * @returns the repo-relative paths that were actually removed
+ */
+export async function pruneOrphanFiles(
+  orphanPaths: string[],
+  repoDir: string,
+): Promise<string[]> {
+  const removed: string[] = [];
+  for (const file of orphanPaths) {
+    const absolutePath = join(repoDir, file);
+    try {
+      await Deno.remove(absolutePath, { recursive: true });
+      removed.push(file);
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) {
+        continue;
+      }
+      throw error;
+    }
+    await cleanupEmptyParentDirs(absolutePath, repoDir);
+  }
+  return removed;
+}
 
 /**
  * Removes empty parent directories up to but not including the stopAt directory.

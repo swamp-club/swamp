@@ -27,6 +27,7 @@ import {
   needsInstallOrMigration,
   sweepLegacyPaths,
 } from "./install.ts";
+import { pruneOrphanFiles } from "../../infrastructure/persistence/directory_cleanup.ts";
 import { createLibSwampContext } from "../context.ts";
 import type { InstallContext } from "./pull.ts";
 import { readUpstreamExtensions } from "../../infrastructure/persistence/upstream_extensions.ts";
@@ -336,11 +337,68 @@ function makeSuccessfulInstall(
       lockfilePath,
       JSON.stringify(upstream, null, 2),
     );
+    return undefined;
   };
 }
 
 function makeFailingInstall(): InstallExtensionFn {
   return () => Promise.reject(new Error("simulated download failure"));
+}
+
+/**
+ * Stub that simulates a successful install AND surfaces a `pruned`
+ * list on its InstallResult — the shape real `installExtension`
+ * returns when prior-version files were dropped between versions.
+ * Lets us verify that `extensionInstall` propagates the prune list
+ * to the orphans-pruned event without needing a real archive.
+ */
+function makeInstallWithPruned(
+  tmpDir: string,
+  lockfilePath: string,
+  prunedPaths: string[],
+): InstallExtensionFn {
+  return async (ref) => {
+    const extRoot = join(
+      tmpDir,
+      ".swamp",
+      "pulled-extensions",
+      ref.name,
+      "models",
+    );
+    await ensureDir(extRoot);
+    await Deno.writeTextFile(join(extRoot, "main.ts"), "// reinstalled");
+
+    const upstream = await readUpstreamExtensions(lockfilePath);
+    upstream[ref.name] = {
+      ...upstream[ref.name],
+      files: [`.swamp/pulled-extensions/${ref.name}/models/main.ts`],
+      filesChecksum: "fake-anchor",
+    };
+    await Deno.writeTextFile(
+      lockfilePath,
+      JSON.stringify(upstream, null, 2),
+    );
+
+    return {
+      name: ref.name,
+      version: "2.0.0",
+      description: undefined,
+      extractedFiles: [
+        `.swamp/pulled-extensions/${ref.name}/models/main.ts`,
+      ],
+      integrityStatus: "verified",
+      repository: undefined,
+      platforms: [],
+      safetyWarnings: [],
+      conflicts: [],
+      missingSourceFiles: [],
+      hasSkills: false,
+      hasSkillScripts: false,
+      skillFiles: [],
+      dependencyResults: [],
+      pruned: prunedPaths,
+    };
+  };
 }
 
 Deno.test("needsInstallOrMigration: current layout returns up_to_date", async () => {
@@ -711,6 +769,297 @@ Deno.test(
         ["extensions/models/ghost.ts"],
         tmpDir,
       );
+    } finally {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "sweepLegacyPaths: removes a non-empty directory entry recursively",
+  async () => {
+    const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+    try {
+      // gen-2 path — `.swamp/pulled-extensions/<known-type>/...` —
+      // pointing at a non-empty directory. Plain Deno.remove fails on
+      // non-empty directories; sweep must use { recursive: true } to
+      // handle skill-style directory entries that survive into legacy
+      // lockfile state.
+      const dirPath = join(
+        tmpDir,
+        ".swamp/pulled-extensions/skills/foo",
+      );
+      await ensureDir(dirPath);
+      await Deno.writeTextFile(join(dirPath, "nested.ts"), "// nested");
+
+      await sweepLegacyPaths(
+        [".swamp/pulled-extensions/skills/foo"],
+        tmpDir,
+      );
+
+      let exists = true;
+      try {
+        await Deno.stat(dirPath);
+      } catch (e) {
+        if (e instanceof Deno.errors.NotFound) exists = false;
+      }
+      assertEquals(exists, false, "skills/foo should be removed recursively");
+    } finally {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "pruneOrphanFiles: returns the paths actually removed (file case)",
+  async () => {
+    const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+    try {
+      const a = join(tmpDir, ".swamp/pulled-extensions/@x/y/models/a.ts");
+      const b = join(tmpDir, ".swamp/pulled-extensions/@x/y/models/b.ts");
+      await ensureDir(join(tmpDir, ".swamp/pulled-extensions/@x/y/models"));
+      await Deno.writeTextFile(a, "// a");
+      await Deno.writeTextFile(b, "// b");
+
+      const removed = await pruneOrphanFiles(
+        [
+          ".swamp/pulled-extensions/@x/y/models/a.ts",
+          ".swamp/pulled-extensions/@x/y/models/b.ts",
+        ],
+        tmpDir,
+      );
+
+      assertEquals(removed.length, 2);
+      assertEquals(
+        removed.includes(".swamp/pulled-extensions/@x/y/models/a.ts"),
+        true,
+      );
+      assertEquals(
+        removed.includes(".swamp/pulled-extensions/@x/y/models/b.ts"),
+        true,
+      );
+
+      for (const p of [a, b]) {
+        let exists = true;
+        try {
+          await Deno.stat(p);
+        } catch (e) {
+          if (e instanceof Deno.errors.NotFound) exists = false;
+        }
+        assertEquals(exists, false, `${p} should be removed`);
+      }
+    } finally {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "pruneOrphanFiles: removes a non-empty directory recursively (skill case)",
+  async () => {
+    const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+    try {
+      // Skills are tracked as directory paths in entry.files[]; the
+      // diff against extractedFiles can hand us a directory entry that
+      // is non-empty. recursive:true is mandatory here.
+      const skillDir = join(tmpDir, ".claude/skills/foo");
+      await ensureDir(skillDir);
+      await Deno.writeTextFile(join(skillDir, "SKILL.md"), "# foo");
+      await ensureDir(join(skillDir, "scripts"));
+      await Deno.writeTextFile(
+        join(skillDir, "scripts", "do.sh"),
+        "#!/bin/sh\n",
+      );
+
+      const removed = await pruneOrphanFiles(
+        [".claude/skills/foo"],
+        tmpDir,
+      );
+
+      assertEquals(removed, [".claude/skills/foo"]);
+
+      let exists = true;
+      try {
+        await Deno.stat(skillDir);
+      } catch (e) {
+        if (e instanceof Deno.errors.NotFound) exists = false;
+      }
+      assertEquals(exists, false, "skill dir should be removed recursively");
+    } finally {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "pruneOrphanFiles: NotFound paths are tolerated and NOT in the return list",
+  async () => {
+    const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+    try {
+      // Mix: one path exists, one does not. Ground-truth contract: the
+      // NotFound path must be excluded from the returned list.
+      const real = join(
+        tmpDir,
+        ".swamp/pulled-extensions/@x/y/models/real.ts",
+      );
+      await ensureDir(join(tmpDir, ".swamp/pulled-extensions/@x/y/models"));
+      await Deno.writeTextFile(real, "// real");
+
+      const removed = await pruneOrphanFiles(
+        [
+          ".swamp/pulled-extensions/@x/y/models/real.ts",
+          ".swamp/pulled-extensions/@x/y/models/ghost.ts",
+        ],
+        tmpDir,
+      );
+
+      assertEquals(removed, [
+        ".swamp/pulled-extensions/@x/y/models/real.ts",
+      ]);
+    } finally {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "pruneOrphanFiles: prunes empty parent directories under repoDir",
+  async () => {
+    const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+    try {
+      // Solo file in a nested dir — after removal, the parent should
+      // also be pruned via cleanupEmptyParentDirs.
+      const nestedDir = join(
+        tmpDir,
+        ".swamp/pulled-extensions/@x/y/models/nested",
+      );
+      await ensureDir(nestedDir);
+      await Deno.writeTextFile(join(nestedDir, "solo.ts"), "// solo");
+
+      await pruneOrphanFiles(
+        [".swamp/pulled-extensions/@x/y/models/nested/solo.ts"],
+        tmpDir,
+      );
+
+      let exists = true;
+      try {
+        await Deno.stat(nestedDir);
+      } catch (e) {
+        if (e instanceof Deno.errors.NotFound) exists = false;
+      }
+      assertEquals(exists, false, "empty nested/ dir should be pruned");
+    } finally {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "pruneOrphanFiles: empty input list returns empty result",
+  async () => {
+    const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+    try {
+      const removed = await pruneOrphanFiles([], tmpDir);
+      assertEquals(removed, []);
+    } finally {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "extensionInstall: orphans-pruned event fires when result.pruned is non-empty",
+  async () => {
+    const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+    try {
+      const lockfilePath = join(tmpDir, "upstream_extensions.json");
+      // Seed the lockfile so the entry isn't up-to-date — install is
+      // triggered, the stub runs, and the orphans-pruned event has data.
+      await Deno.writeTextFile(
+        lockfilePath,
+        JSON.stringify({
+          "@me/ext": {
+            version: "1.0.0",
+            pulledAt: "2026-01-01T00:00:00Z",
+            files: [
+              ".swamp/pulled-extensions/@me/ext/models/missing.ts",
+            ],
+          },
+        }),
+      );
+
+      const ctx = createLibSwampContext({});
+      const events = await collectEvents(
+        extensionInstall(ctx, {
+          lockfilePath,
+          repoDir: tmpDir,
+          createInstallContext: () =>
+            makeStubInstallContext(tmpDir, lockfilePath),
+          installExtensionFn: makeInstallWithPruned(
+            tmpDir,
+            lockfilePath,
+            [
+              ".swamp/pulled-extensions/@me/ext/models/orphan.ts",
+              ".swamp/bundles/abc/orphan.js",
+            ],
+          ),
+        }),
+      );
+
+      const orphansPruned = events.find((e) => e.kind === "orphans-pruned");
+      if (orphansPruned?.kind !== "orphans-pruned") {
+        throw new Error(
+          `expected orphans-pruned event, got: ${
+            events.map((e) => e.kind).join(", ")
+          }`,
+        );
+      }
+      assertEquals(orphansPruned.name, "@me/ext");
+      assertEquals(orphansPruned.version, "1.0.0");
+      assertEquals(orphansPruned.paths.length, 2);
+      assertEquals(
+        orphansPruned.paths.includes(
+          ".swamp/pulled-extensions/@me/ext/models/orphan.ts",
+        ),
+        true,
+      );
+    } finally {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "extensionInstall: NO orphans-pruned event when result.pruned is empty",
+  async () => {
+    const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+    try {
+      const lockfilePath = join(tmpDir, "upstream_extensions.json");
+      await Deno.writeTextFile(
+        lockfilePath,
+        JSON.stringify({
+          "@me/ext": {
+            version: "1.0.0",
+            pulledAt: "2026-01-01T00:00:00Z",
+            files: [".swamp/pulled-extensions/@me/ext/models/missing.ts"],
+          },
+        }),
+      );
+
+      const ctx = createLibSwampContext({});
+      const events = await collectEvents(
+        extensionInstall(ctx, {
+          lockfilePath,
+          repoDir: tmpDir,
+          createInstallContext: () =>
+            makeStubInstallContext(tmpDir, lockfilePath),
+          // Empty pruned list — no event should fire.
+          installExtensionFn: makeInstallWithPruned(tmpDir, lockfilePath, []),
+        }),
+      );
+
+      const orphansPruned = events.find((e) => e.kind === "orphans-pruned");
+      assertEquals(orphansPruned, undefined);
     } finally {
       await Deno.remove(tmpDir, { recursive: true });
     }

@@ -197,6 +197,15 @@ class LogExtensionPullRenderer implements ExtensionPullRenderer {
   handlers(): EventHandlers<ExtensionPullEvent> {
     return {
       installing: () => {},
+      "orphans-pruned": (e) => {
+        this.#logger
+          .info`Removed ${
+          String(e.paths.length)
+        } file(s) no longer in ${e.name}@${e.version}:`;
+        for (const p of e.paths) {
+          this.#logger.info`  ${p}`;
+        }
+      },
       completed: (e) => {
         renderInstallResultLog(e.data);
       },
@@ -219,6 +228,18 @@ class JsonExtensionPullRenderer implements ExtensionPullRenderer {
   handlers(): EventHandlers<ExtensionPullEvent> {
     return {
       installing: () => {},
+      "orphans-pruned": (e) => {
+        console.log(JSON.stringify(
+          {
+            status: "orphans_pruned",
+            name: e.name,
+            version: e.version,
+            paths: e.paths,
+          },
+          null,
+          2,
+        ));
+      },
       completed: (e) => {
         renderInstallResultJson(e.data);
       },

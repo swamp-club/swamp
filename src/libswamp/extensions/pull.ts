@@ -30,7 +30,11 @@ import { parseExtensionManifest } from "../../domain/extensions/extension_manife
 import { analyzeExtensionSafety } from "../../domain/extensions/extension_safety_analyzer.ts";
 import { ExtensionApiClient } from "../../infrastructure/http/extension_api_client.ts";
 import { atomicWriteTextFile } from "../../infrastructure/persistence/atomic_write.ts";
-import type { UpstreamExtensionsMap } from "../../infrastructure/persistence/upstream_extensions.ts";
+import { pruneOrphanFiles } from "../../infrastructure/persistence/directory_cleanup.ts";
+import {
+  readUpstreamExtensions,
+  type UpstreamExtensionsMap,
+} from "../../infrastructure/persistence/upstream_extensions.ts";
 import {
   bundleNamespace,
   swampPath,
@@ -85,6 +89,16 @@ export interface InstallResult {
   hasSkillScripts: boolean;
   skillFiles: string[];
   dependencyResults: InstallResult[];
+  /**
+   * Repo-relative paths that were declared in the prior version's
+   * lockfile entry but absent from the current version's
+   * `extractedFiles`, and which were actually removed from disk by
+   * `pruneOrphanFiles` during this install. Empty for first-installs
+   * (no prior entry) and re-installs of the same version (no diff).
+   * Reflects ground truth — paths skipped due to NotFound are NOT
+   * included.
+   */
+  pruned: string[];
 }
 
 /**
@@ -141,6 +155,12 @@ export class ConflictError extends UserError {
 
 export type ExtensionPullEvent =
   | { kind: "installing" }
+  | {
+    kind: "orphans-pruned";
+    name: string;
+    version: string;
+    paths: string[];
+  }
   | { kind: "completed"; data: InstallResult }
   | { kind: "error"; error: SwampError };
 
@@ -651,6 +671,27 @@ async function collectTsFiles(dir: string): Promise<string[]> {
 }
 
 /**
+ * Computes which paths from a prior version's lockfile entry are
+ * orphans relative to a new version's extracted file set — i.e. paths
+ * declared by the old version but absent from the new one. Pure
+ * function; the caller hands the result to `pruneOrphanFiles` to
+ * remove them from disk.
+ *
+ * Both lists are repo-relative paths. Uses a Set for O(N) lookup
+ * instead of O(N²) `.includes()`.
+ *
+ * Exported for direct unit testing — production callers go through
+ * `installExtension`.
+ */
+export function computeOrphanDiff(
+  oldFiles: ReadonlyArray<string>,
+  extractedFiles: ReadonlyArray<string>,
+): string[] {
+  const newFilesSet = new Set(extractedFiles);
+  return oldFiles.filter((f) => !newFilesSet.has(f));
+}
+
+/**
  * Core install logic: download, verify, extract, copy, track.
  * No rendering — returns structured data for callers to present.
  * Throws ConflictError when !force and conflicts exist.
@@ -673,6 +714,13 @@ export async function installExtension(
   }
 
   ctx.alreadyPulled.add(ref.name);
+
+  // Snapshot the prior lockfile entry's `files[]` BEFORE extraction.
+  // Used after extraction to compute the orphan diff (paths declared
+  // by the prior version but absent from the new version) and prune
+  // them. Empty when this is a first-install (no prior entry).
+  const upstreamMapBefore = await readUpstreamExtensions(ctx.lockfilePath);
+  const oldFiles = upstreamMapBefore[ref.name]?.files ?? [];
 
   const extInfo = await ctx.getExtension(ref.name);
   if (!extInfo) {
@@ -1092,6 +1140,18 @@ export async function installExtension(
     // (issue #126).
     const filesChecksum = await readInstalledExtensionDigest(absoluteExtRoot);
 
+    // Prune orphans: paths declared by the prior version's lockfile
+    // entry that are NOT in the new version's extractedFiles[]. Done
+    // BEFORE updateUpstreamExtensions writes the new entry so a kill
+    // mid-prune leaves the lockfile pointing at the OLD version — the
+    // next install retries the diff. The inverse ordering (write then
+    // prune) would orphan paths the lockfile can't see if the prune
+    // never runs.
+    const orphanDiff = computeOrphanDiff(oldFiles, extractedFiles);
+    const pruned = orphanDiff.length > 0
+      ? await pruneOrphanFiles(orphanDiff, repoDir)
+      : [];
+
     await updateUpstreamExtensions(
       ctx.lockfilePath,
       ref.name,
@@ -1153,6 +1213,7 @@ export async function installExtension(
       hasSkillScripts,
       skillFiles,
       dependencyResults,
+      pruned,
     };
   } finally {
     try {
@@ -1191,6 +1252,14 @@ export async function* extensionPull(
       // Let ConflictError propagate — CLI catches it for the two-phase prompt flow
       const result = await installExtension(input.ref, installCtx);
       if (result) {
+        if (result.pruned.length > 0) {
+          yield {
+            kind: "orphans-pruned" as const,
+            name: result.name,
+            version: result.version,
+            paths: result.pruned,
+          };
+        }
         yield { kind: "completed" as const, data: result };
       }
     })(),

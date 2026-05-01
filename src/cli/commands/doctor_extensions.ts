@@ -38,6 +38,7 @@
 // already warmed get re-loaded.
 
 import { Command } from "@cliffy/command";
+import { isAbsolute, join, relative, resolve } from "@std/path";
 import {
   consumeStream,
   doctorExtensions,
@@ -47,6 +48,7 @@ import {
   getExtensionLoadWarnings,
   resetExtensionLoadWarnings,
 } from "../../infrastructure/logging/extension_load_warnings.ts";
+import { readUpstreamExtensions } from "../../infrastructure/persistence/upstream_extensions.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
 import { driverTypeRegistry } from "../../domain/drivers/driver_type_registry.ts";
@@ -60,6 +62,11 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { resolveDatastoreForRepo } from "../repo_context.ts";
+import { resolveModelsDir } from "../resolve_models_dir.ts";
+import { resolveSkillsDir } from "../../domain/repo/skill_dirs.ts";
+import { RepoPath } from "../../domain/repo/repo_path.ts";
+import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
+import { resolvePrimaryTool } from "../../domain/repo/primary_tool.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -125,6 +132,22 @@ export const doctorExtensionsCommand = new Command()
       },
     ];
 
+    // Resolve lockfile and skills paths so the orphan-detection phase
+    // can walk the per-extension roots referenced by the lockfile.
+    const repoPath = RepoPath.create(repoDir);
+    const markerRepo = new RepoMarkerRepository();
+    const marker = await markerRepo.read(repoPath);
+    const modelsDir = resolveModelsDir(marker);
+    const absoluteModelsDir = isAbsolute(modelsDir)
+      ? modelsDir
+      : resolve(repoDir, modelsDir);
+    const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
+    const tool = resolvePrimaryTool(marker);
+    const absoluteSkillsDir = resolveSkillsDir(repoDir, tool);
+    // detectOrphanFiles wants a repo-relative skills dir so it can
+    // compare against entry.files[] paths (which are repo-relative).
+    const repoRelativeSkillsDir = relative(repoDir, absoluteSkillsDir);
+
     const controller = new AbortController();
     const renderer = createDoctorExtensionsRenderer(cliCtx.outputMode);
 
@@ -133,6 +156,9 @@ export const doctorExtensionsCommand = new Command()
         registries,
         getWarnings: getExtensionLoadWarnings,
         resetState: resetExtensionLoadWarnings,
+        readUpstreamExtensions: () => readUpstreamExtensions(lockfilePath),
+        repoDir,
+        skillsDir: repoRelativeSkillsDir,
         abortSignal: controller.signal,
       }),
       renderer.handlers(),

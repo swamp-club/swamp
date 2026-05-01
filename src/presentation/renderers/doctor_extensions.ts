@@ -84,6 +84,39 @@ class LogDoctorExtensionsRenderer implements DoctorExtensionsRenderer {
       },
       completed: (e) => {
         this.overallStatus = e.report.overallStatus;
+        // Filesystem orphan warnings are independent of pass/fail — if
+        // anything is found, surface it before the summary so users see
+        // both halves of the diagnostic.
+        if (e.report.orphanFiles.length > 0) {
+          writeOutput(
+            `\n${yellow("⚠")} ${
+              bold(
+                `Found ${e.report.orphanFiles.length} orphan file(s) (warnings, not failures):`,
+              )
+            }`,
+          );
+          // Group by extensionName so the user sees which extension
+          // each orphan belongs to.
+          const byExt = new Map<string, string[]>();
+          for (const orphan of e.report.orphanFiles) {
+            const list = byExt.get(orphan.extensionName) ?? [];
+            list.push(orphan.path);
+            byExt.set(orphan.extensionName, list);
+          }
+          for (const [extName, paths] of byExt) {
+            writeOutput(`    ${dim(extName)}`);
+            for (const p of paths) {
+              writeOutput(`      ${yellow("•")} ${p}`);
+            }
+          }
+          writeOutput(
+            dim(
+              "    These will be removed on the next " +
+                "`swamp extension pull <name> --force` or " +
+                "`swamp extension update`.",
+            ),
+          );
+        }
         const passCount = Object.values(e.report.registries)
           .filter((r) => r.status === "pass").length;
         const failCount = Object.values(e.report.registries)
@@ -124,7 +157,11 @@ class JsonDoctorExtensionsRenderer implements DoctorExtensionsRenderer {
         }
         console.log(
           JSON.stringify(
-            { overallStatus: e.report.overallStatus, registries },
+            {
+              overallStatus: e.report.overallStatus,
+              registries,
+              orphanFiles: e.report.orphanFiles,
+            },
             null,
             2,
           ),

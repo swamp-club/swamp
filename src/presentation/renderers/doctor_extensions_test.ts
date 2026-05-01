@@ -64,6 +64,7 @@ function buildPassReport(): DoctorExtensionsReport {
       datastore: passResult("datastore"),
       report: passResult("report"),
     },
+    orphanFiles: [],
   };
 }
 
@@ -79,6 +80,7 @@ function buildFailReport(): DoctorExtensionsReport {
       datastore: passResult("datastore"),
       report: passResult("report"),
     },
+    orphanFiles: [],
   };
 }
 
@@ -162,6 +164,7 @@ Deno.test("doctor_extensions json renderer: stable key ordering", async () => {
         vault: passResult("vault"),
         model: passResult("model"),
       },
+      orphanFiles: [],
     };
     await handlers.completed({ kind: "completed", report: reversed });
   });
@@ -205,3 +208,96 @@ Deno.test("doctor_extensions log renderer: no implicit fold — renders every ro
   // overallStatus only updates on `completed`.
   assertEquals(r.overallStatus, "pass");
 });
+
+Deno.test(
+  "doctor_extensions json renderer: orphanFiles surfaces in JSON output",
+  async () => {
+    const out = await captureStdout(async () => {
+      const r = createDoctorExtensionsRenderer("json");
+      const handlers = r.handlers();
+      const report: DoctorExtensionsReport = {
+        overallStatus: "pass",
+        registries: {
+          model: passResult("model"),
+          vault: passResult("vault"),
+          driver: passResult("driver"),
+          datastore: passResult("datastore"),
+          report: passResult("report"),
+        },
+        orphanFiles: [
+          {
+            extensionName: "@hivemq/harvester",
+            path: ".swamp/pulled-extensions/@hivemq/harvester/models/orphan.ts",
+          },
+        ],
+      };
+      await handlers.completed({ kind: "completed", report });
+    });
+
+    const parsed = JSON.parse(out);
+    assertEquals(parsed.overallStatus, "pass");
+    assertEquals(parsed.orphanFiles.length, 1);
+    assertEquals(parsed.orphanFiles[0].extensionName, "@hivemq/harvester");
+    assertEquals(
+      parsed.orphanFiles[0].path,
+      ".swamp/pulled-extensions/@hivemq/harvester/models/orphan.ts",
+    );
+  },
+);
+
+Deno.test(
+  "doctor_extensions log renderer: orphans render as warnings, not failures",
+  async () => {
+    const out = await captureStdout(async () => {
+      const r = createDoctorExtensionsRenderer("log");
+      const handlers = r.handlers();
+      const report: DoctorExtensionsReport = {
+        overallStatus: "pass",
+        registries: {
+          model: passResult("model"),
+          vault: passResult("vault"),
+          driver: passResult("driver"),
+          datastore: passResult("datastore"),
+          report: passResult("report"),
+        },
+        orphanFiles: [
+          {
+            extensionName: "@x/y",
+            path: ".swamp/pulled-extensions/@x/y/models/orphan.ts",
+          },
+        ],
+      };
+      // Drive the kind-completed events first so the registry headers
+      // get rendered, then completed.
+      for (
+        const reg of [
+          "model",
+          "vault",
+          "driver",
+          "datastore",
+          "report",
+        ] as const
+      ) {
+        await handlers["kind-completed"]({
+          kind: "kind-completed",
+          result: passResult(reg),
+        });
+      }
+      await handlers.completed({ kind: "completed", report });
+    });
+
+    // Warnings section appears with the orphan path.
+    if (!out.includes("orphan.ts")) {
+      throw new Error(`expected orphan path in output, got: ${out}`);
+    }
+    if (!out.includes("warnings, not failures")) {
+      throw new Error(
+        `expected 'warnings, not failures' framing in output, got: ${out}`,
+      );
+    }
+    // Overall status remains PASS.
+    if (!out.includes("OVERALL: PASS")) {
+      throw new Error(`expected OVERALL: PASS, got: ${out}`);
+    }
+  },
+);

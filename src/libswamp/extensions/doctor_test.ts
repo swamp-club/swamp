@@ -45,6 +45,8 @@ function buildDeps(
   options: {
     warnings?: ReadonlyArray<ExtensionLoadWarning>;
     throwForRegistry?: DoctorRegistryName;
+    repoDir?: string;
+    skillsDir?: string;
   } = {},
 ): {
   deps: DoctorExtensionsDeps;
@@ -73,6 +75,9 @@ function buildDeps(
     resetState: () => {
       events.push({ fn: "resetState" });
     },
+    readUpstreamExtensions: () => Promise.resolve({}),
+    repoDir: options.repoDir ?? "/tmp/swamp-test-repo",
+    skillsDir: options.skillsDir ?? ".claude/skills",
     abortSignal: new AbortController().signal,
   };
 
@@ -237,3 +242,222 @@ Deno.test("doctorExtensions: completed report has all five registry keys even on
   const keys = Object.keys(completed.report.registries).sort();
   assertEquals(keys, ["datastore", "driver", "model", "report", "vault"]);
 });
+
+import { ensureDir } from "@std/fs";
+import { join } from "@std/path";
+import type { UpstreamExtensionsMap } from "../../infrastructure/persistence/upstream_extensions.ts";
+
+Deno.test(
+  "doctorExtensions: detects an orphan file under a per-extension subtree",
+  async () => {
+    const tmpDir = await Deno.makeTempDir({ prefix: "swamp_doctor_orphan_" });
+    try {
+      // Seed a tracked file plus an UNtracked sibling — the sibling
+      // is the orphan we expect doctor to flag.
+      const extDir = join(
+        tmpDir,
+        ".swamp/pulled-extensions/@x/y/models",
+      );
+      await ensureDir(extDir);
+      await Deno.writeTextFile(join(extDir, "tracked.ts"), "// tracked");
+      await Deno.writeTextFile(join(extDir, "orphan.ts"), "// orphan");
+
+      const { deps } = buildDeps({
+        repoDir: tmpDir,
+        skillsDir: ".claude/skills",
+      });
+      const upstream: UpstreamExtensionsMap = {
+        "@x/y": {
+          version: "1.0.0",
+          pulledAt: "2026-01-01T00:00:00Z",
+          files: [".swamp/pulled-extensions/@x/y/models/tracked.ts"],
+        },
+      };
+      deps.readUpstreamExtensions = () => Promise.resolve(upstream);
+
+      const events = await collect(doctorExtensions(deps));
+      const completed = events.find((e) => e.kind === "completed");
+      if (completed?.kind !== "completed") {
+        throw new Error("expected completed event");
+      }
+
+      assertEquals(completed.report.orphanFiles.length, 1);
+      assertEquals(completed.report.orphanFiles[0].extensionName, "@x/y");
+      assertEquals(
+        completed.report.orphanFiles[0].path,
+        ".swamp/pulled-extensions/@x/y/models/orphan.ts",
+      );
+    } finally {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "doctorExtensions: orphans do NOT change overallStatus from pass to fail",
+  async () => {
+    const tmpDir = await Deno.makeTempDir({ prefix: "swamp_doctor_orphan_" });
+    try {
+      const extDir = join(
+        tmpDir,
+        ".swamp/pulled-extensions/@x/y/models",
+      );
+      await ensureDir(extDir);
+      await Deno.writeTextFile(join(extDir, "tracked.ts"), "// tracked");
+      await Deno.writeTextFile(join(extDir, "stray.ts"), "// stray");
+
+      const { deps } = buildDeps({
+        repoDir: tmpDir,
+        skillsDir: ".claude/skills",
+      });
+      const upstream: UpstreamExtensionsMap = {
+        "@x/y": {
+          version: "1.0.0",
+          pulledAt: "2026-01-01T00:00:00Z",
+          files: [".swamp/pulled-extensions/@x/y/models/tracked.ts"],
+        },
+      };
+      deps.readUpstreamExtensions = () => Promise.resolve(upstream);
+
+      const events = await collect(doctorExtensions(deps));
+      const completed = events.find((e) => e.kind === "completed");
+      if (completed?.kind !== "completed") {
+        throw new Error("expected completed event");
+      }
+
+      // Even though there's an orphan, overallStatus stays "pass" —
+      // orphans are warnings, not failures.
+      assertEquals(completed.report.orphanFiles.length, 1);
+      assertEquals(completed.report.overallStatus, "pass");
+    } finally {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "doctorExtensions: missing lockfile yields no orphans (no-op walk)",
+  async () => {
+    const tmpDir = await Deno.makeTempDir({ prefix: "swamp_doctor_orphan_" });
+    try {
+      const { deps } = buildDeps({
+        repoDir: tmpDir,
+        skillsDir: ".claude/skills",
+      });
+      // Default readUpstreamExtensions returns {} — the no-lockfile case.
+      const events = await collect(doctorExtensions(deps));
+      const completed = events.find((e) => e.kind === "completed");
+      if (completed?.kind !== "completed") {
+        throw new Error("expected completed event");
+      }
+      assertEquals(completed.report.orphanFiles, []);
+    } finally {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "doctorExtensions: skill-dir entries do NOT produce orphan walks",
+  async () => {
+    // Skills are tracked as directory paths only; we cannot
+    // meaningfully orphan-detect within a skill dir. extractTopLevelRoot
+    // returns null for skill paths, so the walk skips them.
+    const tmpDir = await Deno.makeTempDir({ prefix: "swamp_doctor_orphan_" });
+    try {
+      const skillDir = join(tmpDir, ".claude/skills/foo");
+      await ensureDir(skillDir);
+      await Deno.writeTextFile(join(skillDir, "SKILL.md"), "# foo");
+      await Deno.writeTextFile(
+        join(skillDir, "untracked-script.sh"),
+        "#!/bin/sh\n",
+      );
+
+      const { deps } = buildDeps({
+        repoDir: tmpDir,
+        skillsDir: ".claude/skills",
+      });
+      const upstream: UpstreamExtensionsMap = {
+        "@x/y": {
+          version: "1.0.0",
+          pulledAt: "2026-01-01T00:00:00Z",
+          files: [".claude/skills/foo"],
+        },
+      };
+      deps.readUpstreamExtensions = () => Promise.resolve(upstream);
+
+      const events = await collect(doctorExtensions(deps));
+      const completed = events.find((e) => e.kind === "completed");
+      if (completed?.kind !== "completed") {
+        throw new Error("expected completed event");
+      }
+      // Inner files of a skill dir are NOT walked — no orphan reported.
+      assertEquals(completed.report.orphanFiles, []);
+    } finally {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "doctorExtensions: detects an orphan inside a bundle namespace",
+  async () => {
+    // The orphan path that closes the #201 catalog loop: a stray bundle
+    // file under .swamp/bundles/<hash>/ that was dropped between
+    // versions but never removed from disk. The doctor scan must walk
+    // the bundle namespace as a separate root from the per-extension
+    // subtree, since bundles live in a different tree.
+    const tmpDir = await Deno.makeTempDir({ prefix: "swamp_doctor_orphan_" });
+    try {
+      // Tracked: a model file under pulled-extensions AND its bundle
+      // under bundles/abc/. Untracked: a stray bundle file in the same
+      // namespace from a prior version.
+      const extDir = join(tmpDir, ".swamp/pulled-extensions/@x/y/models");
+      const bundleDir = join(tmpDir, ".swamp/bundles/abc");
+      await ensureDir(extDir);
+      await ensureDir(bundleDir);
+      await Deno.writeTextFile(join(extDir, "current.ts"), "// current");
+      await Deno.writeTextFile(
+        join(bundleDir, "current.js"),
+        "// current bundle",
+      );
+      await Deno.writeTextFile(
+        join(bundleDir, "stray_old_bundle.js"),
+        "// orphan",
+      );
+
+      const { deps } = buildDeps({
+        repoDir: tmpDir,
+        skillsDir: ".claude/skills",
+      });
+      const upstream: UpstreamExtensionsMap = {
+        "@x/y": {
+          version: "2.0.0",
+          pulledAt: "2026-01-01T00:00:00Z",
+          files: [
+            ".swamp/pulled-extensions/@x/y/models/current.ts",
+            ".swamp/bundles/abc/current.js",
+          ],
+        },
+      };
+      deps.readUpstreamExtensions = () => Promise.resolve(upstream);
+
+      const events = await collect(doctorExtensions(deps));
+      const completed = events.find((e) => e.kind === "completed");
+      if (completed?.kind !== "completed") {
+        throw new Error("expected completed event");
+      }
+
+      // Exactly one orphan: the stray bundle file. The pulled-extensions
+      // subtree is clean (only current.ts).
+      assertEquals(completed.report.orphanFiles.length, 1);
+      assertEquals(completed.report.orphanFiles[0].extensionName, "@x/y");
+      assertEquals(
+        completed.report.orphanFiles[0].path,
+        ".swamp/bundles/abc/stray_old_bundle.js",
+      );
+    } finally {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  },
+);

@@ -124,7 +124,7 @@ export const extensionUpdateCommand = new Command()
           repoDir,
           force: true,
         });
-        await installExtension({ name, version }, installCtx);
+        return await installExtension({ name, version }, installCtx);
       },
     });
 

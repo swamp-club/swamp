@@ -33,7 +33,7 @@ function makeDeps(
   return {
     readUpstreamExtensions: () => Promise.resolve({}),
     getExtension: () => Promise.resolve(null),
-    installExtension: () => Promise.resolve(),
+    installExtension: () => Promise.resolve(undefined),
     ...overrides,
   };
 }
@@ -137,7 +137,7 @@ Deno.test("extensionUpdate: update mode successfully updates", async () => {
     getExtension: () => Promise.resolve({ latestVersion: "2026.03.01.1" }),
     installExtension: (name, version) => {
       installed.push(`${name}@${version}`);
-      return Promise.resolve();
+      return Promise.resolve(undefined);
     },
   });
   const input: ExtensionUpdateInput = { checkOnly: false };
@@ -204,3 +204,89 @@ Deno.test("extensionUpdate: registry fetch failure records not_found", async () 
     assertEquals(completed.data.summary.failed, 1);
   }
 });
+
+import type { InstallResult } from "./pull.ts";
+
+function buildInstallResult(
+  name: string,
+  version: string,
+  pruned: string[],
+): InstallResult {
+  return {
+    name,
+    version,
+    description: undefined,
+    extractedFiles: [`.swamp/pulled-extensions/${name}/models/main.ts`],
+    integrityStatus: "verified",
+    repository: undefined,
+    platforms: [],
+    safetyWarnings: [],
+    conflicts: [],
+    missingSourceFiles: [],
+    hasSkills: false,
+    hasSkillScripts: false,
+    skillFiles: [],
+    dependencyResults: [],
+    pruned,
+  };
+}
+
+Deno.test(
+  "extensionUpdate: emits orphans-pruned event when installExtension returns pruned paths",
+  async () => {
+    const deps = makeDeps({
+      readUpstreamExtensions: () =>
+        Promise.resolve({ "@ns/a": { version: "2026.01.01.1" } }),
+      getExtension: () => Promise.resolve({ latestVersion: "2026.03.01.1" }),
+      installExtension: (name, version) =>
+        Promise.resolve(
+          buildInstallResult(name, version, [
+            ".swamp/pulled-extensions/@ns/a/models/old_helper.ts",
+          ]),
+        ),
+    });
+    const input: ExtensionUpdateInput = { checkOnly: false };
+
+    const events = await collect<ExtensionUpdateEvent>(
+      extensionUpdate(makeCtx(), deps, input),
+    );
+
+    const orphansPruned = events.find((e) => e.kind === "orphans-pruned");
+    if (orphansPruned?.kind !== "orphans-pruned") {
+      throw new Error(
+        `expected orphans-pruned event, got: ${
+          events.map((e) => e.kind).join(", ")
+        }`,
+      );
+    }
+    assertEquals(orphansPruned.name, "@ns/a");
+    assertEquals(orphansPruned.from, "2026.01.01.1");
+    assertEquals(orphansPruned.to, "2026.03.01.1");
+    assertEquals(orphansPruned.paths, [
+      ".swamp/pulled-extensions/@ns/a/models/old_helper.ts",
+    ]);
+  },
+);
+
+Deno.test(
+  "extensionUpdate: NO orphans-pruned event when result has empty pruned list",
+  async () => {
+    const deps = makeDeps({
+      readUpstreamExtensions: () =>
+        Promise.resolve({ "@ns/a": { version: "2026.01.01.1" } }),
+      getExtension: () => Promise.resolve({ latestVersion: "2026.03.01.1" }),
+      installExtension: (name, version) =>
+        Promise.resolve(buildInstallResult(name, version, [])),
+    });
+    const input: ExtensionUpdateInput = { checkOnly: false };
+
+    const events = await collect<ExtensionUpdateEvent>(
+      extensionUpdate(makeCtx(), deps, input),
+    );
+
+    assertEquals(
+      events.find((e) => e.kind === "orphans-pruned"),
+      undefined,
+    );
+  },
+);

@@ -86,6 +86,95 @@ export function classifyExtensionFile(file: string): ExtensionLayoutGeneration {
 }
 
 /**
+ * Returns the per-extension root subtree that owns a tracked file path,
+ * or `null` when the path does not anchor to a root that
+ * `doctor extensions` should walk for orphan detection.
+ *
+ * Returns null for:
+ * - skill paths (`<skillsDir>/<skill>/`) — skills are tracked as
+ *   directory paths only, so files inside aren't individually tracked
+ *   and we cannot meaningfully orphan-detect within a skill dir.
+ * - legacy paths (gen-1, gen-2) — the extensionInstall migration path
+ *   handles these; doctor's orphan walk is for current-layout only.
+ *
+ * Otherwise returns the longest path-segment prefix that identifies a
+ * single per-extension subtree:
+ * - `.swamp/pulled-extensions/<@scope>/<name>/...` →
+ *   `.swamp/pulled-extensions/<@scope>/<name>`
+ * - `.swamp/pulled-extensions/<flat-name>/...` →
+ *   `.swamp/pulled-extensions/<flat-name>`
+ * - bundle namespaces (`bundles/<hash>/...`,
+ *   `vault-bundles/<hash>/...`, `driver-bundles/<hash>/...`,
+ *   `datastore-bundles/<hash>/...`, `report-bundles/<hash>/...`) →
+ *   `<kind>/<hash>`
+ *
+ * The skillsDir is repo-and-tool-specific (`.claude/skills/`,
+ * `.cursor/skills/`, etc.); the caller must pass it in.
+ *
+ * @param filePath Repo-relative path from `entry.files[]`
+ * @param skillsDir Repo-relative tool-specific skills directory
+ */
+export function extractTopLevelRoot(
+  filePath: string,
+  skillsDir: string,
+): string | null {
+  // Legacy paths are out of scope for orphan detection; the migrate
+  // flow in extensionInstall handles those.
+  if (classifyExtensionFile(filePath) !== "current") {
+    return null;
+  }
+
+  // Skills are tracked as directory paths (the dir root, not its
+  // contents). We can't detect orphan files within a skill dir
+  // because the inner files aren't in entry.files[].
+  const normalizedSkillsDir = skillsDir.endsWith("/")
+    ? skillsDir
+    : `${skillsDir}/`;
+  if (
+    filePath === skillsDir.replace(/\/$/, "") ||
+    filePath.startsWith(normalizedSkillsDir)
+  ) {
+    return null;
+  }
+
+  // Per-extension subtree: pulled-extensions/<scope>/<name>/...
+  // (current-layout always begins with .swamp/pulled-extensions/).
+  if (filePath.startsWith(PULLED_PREFIX)) {
+    const rest = filePath.slice(PULLED_PREFIX.length);
+    const segments = rest.split("/");
+    if (segments.length === 0 || segments[0].length === 0) return null;
+    // Two segments for scoped names (@scope/name); one for flat.
+    if (segments[0].startsWith("@")) {
+      if (segments.length < 2) return null;
+      return `${PULLED_PREFIX}${segments[0]}/${segments[1]}`;
+    }
+    return `${PULLED_PREFIX}${segments[0]}`;
+  }
+
+  // Bundle namespaces: <kind>/<hash>/...
+  const BUNDLE_KINDS = [
+    "bundles",
+    "vault-bundles",
+    "driver-bundles",
+    "datastore-bundles",
+    "report-bundles",
+  ];
+  for (const kind of BUNDLE_KINDS) {
+    const prefix = `${SWAMP_DATA_DIR}/${kind}/`;
+    if (filePath.startsWith(prefix)) {
+      const rest = filePath.slice(prefix.length);
+      const segments = rest.split("/");
+      if (segments.length === 0 || segments[0].length === 0) return null;
+      return `${prefix}${segments[0]}`;
+    }
+  }
+
+  // Anything else current-layout but not under a known root — no
+  // orphan walk possible.
+  return null;
+}
+
+/**
  * Detects whether a repository has pulled extensions in any legacy layout.
  *
  * Reads `upstream_extensions.json` and classifies each tracked file.

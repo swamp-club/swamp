@@ -44,6 +44,20 @@ class LogExtensionUpdateRenderer implements Renderer<ExtensionUpdateEvent> {
       updating: (e) => {
         logger.info`Updating ${e.name}: v${e.from} -> v${e.to}`;
       },
+      "orphans-pruned": (e) => {
+        logger.info(
+          "Removed {count} file(s) no longer in {name} (v{from} -> v{to}):",
+          {
+            count: e.paths.length,
+            name: e.name,
+            from: e.from,
+            to: e.to,
+          },
+        );
+        for (const p of e.paths) {
+          logger.info("  {path}", { path: p });
+        }
+      },
       completed: (e) => {
         if (e.mode === "check") {
           renderCheckLog(e.data, logger);
@@ -80,6 +94,21 @@ class JsonExtensionUpdateRenderer implements Renderer<ExtensionUpdateEvent> {
         console.log(
           JSON.stringify(
             { status: "updating", name: e.name, from: e.from, to: e.to },
+            null,
+            2,
+          ),
+        );
+      },
+      "orphans-pruned": (e) => {
+        console.log(
+          JSON.stringify(
+            {
+              status: "orphans_pruned",
+              name: e.name,
+              from: e.from,
+              to: e.to,
+              paths: e.paths,
+            },
             null,
             2,
           ),

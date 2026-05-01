@@ -17,8 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { walk } from "@std/fs";
+import { join, relative } from "@std/path";
 import type { ExtensionLoadWarning } from "../../infrastructure/logging/extension_load_warnings.ts";
+import type { UpstreamExtensionsMap } from "../../infrastructure/persistence/upstream_extensions.ts";
 import type { SwampError } from "../errors.ts";
+import { extractTopLevelRoot } from "./layout.ts";
 
 /**
  * Public registry name for the doctor report. The infrastructure-layer
@@ -60,11 +64,32 @@ export interface DoctorRegistryResult {
 /** Final overall status — `pass` when every registry passed. */
 export type DoctorOverallStatus = "pass" | "fail";
 
+/**
+ * A single orphan finding: a file or directory present under an
+ * extension's tracked roots but NOT in the current lockfile entry's
+ * files[]. Surfaces in the report's `orphanFiles` warnings list.
+ */
+export interface DoctorOrphanFile {
+  extensionName: string;
+  /** Repo-relative path. */
+  path: string;
+}
+
 /** Final report shape — used by the renderer's JSON mode. */
 export interface DoctorExtensionsReport {
   overallStatus: DoctorOverallStatus;
   /** Map of registry name → its result. All five keys always present. */
   registries: Record<DoctorRegistryName, DoctorRegistryResult>;
+  /**
+   * Filesystem-orphan findings — paths present under tracked roots but
+   * absent from the current lockfile's files[] list. Reported as
+   * WARNINGS, not failures: `overallStatus` is unchanged by orphan
+   * presence so existing CI gates that key on `overallStatus === "fail"`
+   * keep working through the transition. A future release may promote
+   * orphans to failure once routine install/pull/update calls have
+   * drained pre-existing dirt from the ecosystem.
+   */
+  orphanFiles: DoctorOrphanFile[];
 }
 
 /**
@@ -100,6 +125,20 @@ export interface DoctorExtensionsDeps {
   getWarnings: () => ReadonlyArray<ExtensionLoadWarning>;
   /** Clears the captured warnings array + dedupe state. */
   resetState: () => void;
+  /**
+   * Reads upstream_extensions.json so the orphan-detection phase can
+   * walk every per-extension root. Missing lockfile yields {} (the
+   * orphan walk becomes a no-op).
+   */
+  readUpstreamExtensions: () => Promise<UpstreamExtensionsMap>;
+  /** Repo root used to resolve repo-relative paths for filesystem walks. */
+  repoDir: string;
+  /**
+   * Tool-aware skills directory (e.g. `.claude/skills`). Repo-relative.
+   * Skill paths are tracked as directory paths only, so the orphan walk
+   * skips them — extractTopLevelRoot needs this to recognise skill paths.
+   */
+  skillsDir: string;
   abortSignal: AbortSignal;
 }
 
@@ -107,6 +146,63 @@ function overallStatus(
   results: ReadonlyArray<DoctorRegistryResult>,
 ): DoctorOverallStatus {
   return results.some((r) => r.status === "fail") ? "fail" : "pass";
+}
+
+/**
+ * Walks every per-extension root referenced by a lockfile entry and
+ * returns paths on disk that are NOT in the entry's `tracked` set.
+ *
+ * For each entry, derive the unique top-level roots from its
+ * `files[]` list via `extractTopLevelRoot` (skips skills, legacy
+ * paths, and unknown locations) and walk each root recursively. Any
+ * file path under a walked root that isn't in `tracked` is an orphan.
+ *
+ * Empty lockfile / missing entries / no recognisable roots → no walk,
+ * no orphans. Walk errors (e.g. missing root dir) are tolerated and
+ * yield no orphans for that root.
+ */
+async function detectOrphanFiles(
+  upstreamMap: UpstreamExtensionsMap,
+  repoDir: string,
+  skillsDir: string,
+): Promise<DoctorOrphanFile[]> {
+  const orphans: DoctorOrphanFile[] = [];
+
+  for (const [extensionName, entry] of Object.entries(upstreamMap)) {
+    const trackedFiles = entry.files ?? [];
+    if (trackedFiles.length === 0) continue;
+
+    const tracked = new Set(trackedFiles);
+    const roots = new Set<string>();
+    for (const file of trackedFiles) {
+      const root = extractTopLevelRoot(file, skillsDir);
+      if (root !== null) {
+        roots.add(root);
+      }
+    }
+
+    for (const root of roots) {
+      const absoluteRoot = join(repoDir, root);
+      try {
+        for await (
+          const walkEntry of walk(absoluteRoot, {
+            includeDirs: false,
+            includeSymlinks: false,
+          })
+        ) {
+          const relPath = relative(repoDir, walkEntry.path);
+          if (!tracked.has(relPath)) {
+            orphans.push({ extensionName, path: relPath });
+          }
+        }
+      } catch (error) {
+        if (error instanceof Deno.errors.NotFound) continue;
+        throw error;
+      }
+    }
+  }
+
+  return orphans;
 }
 
 /**
@@ -133,10 +229,22 @@ function partitionForRegistry(
 
 /**
  * Runs `ensureLoaded()` across all five user-facing extension
- * registries and reports per-registry pass/fail. The first steps of
- * the generator are a state reset + a `resetLoadedFlag()` on every
- * registry so the diagnostic forces a full re-load even when the CLI
- * bootstrap already warmed the registries earlier in the process.
+ * registries AND walks every per-extension root for orphan files.
+ *
+ * Two distinct concerns share this entry point:
+ * 1. Loader validation — does each registry's loader run cleanly
+ *    against the on-disk extensions? Failures fold into per-registry
+ *    `failures` and DO flip `overallStatus` to `"fail"`.
+ * 2. Filesystem orphan detection — are there files under each
+ *    extension's tracked roots that aren't declared by the lockfile?
+ *    Findings surface in `report.orphanFiles` as WARNINGS and do NOT
+ *    flip `overallStatus`. CI gates on `overallStatus === "fail"`
+ *    keep working through the transition.
+ *
+ * The first steps of the generator are a state reset + a
+ * `resetLoadedFlag()` on every registry so the diagnostic forces a
+ * full re-load even when the CLI bootstrap already warmed the
+ * registries earlier in the process.
  *
  * Order of operations is the load-bearing invariant: callers must
  * NOT pre-reset state — the service owns that ordering.
@@ -203,8 +311,25 @@ export async function* doctorExtensions(
     results.map((r) => [r.registry, r]),
   ) as Record<DoctorRegistryName, DoctorRegistryResult>;
 
+  // Filesystem orphan detection — independent of loader validation.
+  // Always runs (unless aborted) so users get a warning even when
+  // every loader passes. Errors are not folded into `overallStatus`.
+  let orphanFiles: DoctorOrphanFile[] = [];
+  if (!deps.abortSignal.aborted) {
+    const upstreamMap = await deps.readUpstreamExtensions();
+    orphanFiles = await detectOrphanFiles(
+      upstreamMap,
+      deps.repoDir,
+      deps.skillsDir,
+    );
+  }
+
   yield {
     kind: "completed",
-    report: { overallStatus: overallStatus(results), registries },
+    report: {
+      overallStatus: overallStatus(results),
+      registries,
+      orphanFiles,
+    },
   };
 }

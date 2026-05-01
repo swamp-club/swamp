@@ -28,6 +28,7 @@ import { readUpstreamExtensions } from "../../infrastructure/persistence/upstrea
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { validationFailed } from "../errors.ts";
+import type { InstallResult } from "./pull.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
@@ -41,6 +42,13 @@ export type ExtensionUpdateEvent =
   | { kind: "extension_not_installed"; name: string }
   | { kind: "checking"; name: string }
   | { kind: "updating"; name: string; from: string; to: string }
+  | {
+    kind: "orphans-pruned";
+    name: string;
+    from: string;
+    to: string;
+    paths: string[];
+  }
   | { kind: "completed"; data: ExtensionUpdateResult; mode: "check" | "update" }
   | { kind: "error"; error: SwampError };
 
@@ -62,15 +70,26 @@ export interface ExtensionUpdateDeps {
   getExtension: (
     name: string,
   ) => Promise<{ latestVersion: string | null } | null>;
-  /** Install/update a specific extension to a version. */
-  installExtension: (name: string, version: string) => Promise<void>;
+  /**
+   * Install/update a specific extension to a version. Returns the
+   * `InstallResult` so the update path can surface the pruned orphan
+   * list to the user, or `undefined` when the install short-circuited
+   * (alreadyPulled in the same call chain). Errors propagate as throws.
+   */
+  installExtension: (
+    name: string,
+    version: string,
+  ) => Promise<InstallResult | undefined>;
 }
 
 /** Wires real infrastructure into ExtensionUpdateDeps. */
 export function createExtensionUpdateDeps(options: {
   lockfilePath: string;
   serverUrl?: string;
-  installExtension: (name: string, version: string) => Promise<void>;
+  installExtension: (
+    name: string,
+    version: string,
+  ) => Promise<InstallResult | undefined>;
 }): ExtensionUpdateDeps {
   const extensionClient = new ExtensionApiClient(
     options.serverUrl ?? resolveServerUrl(),
@@ -172,7 +191,19 @@ export async function* extensionUpdate(
           };
 
           try {
-            await deps.installExtension(s.name, s.latestVersion);
+            const result = await deps.installExtension(
+              s.name,
+              s.latestVersion,
+            );
+            if (result && result.pruned.length > 0) {
+              yield {
+                kind: "orphans-pruned",
+                name: s.name,
+                from: s.installedVersion,
+                to: s.latestVersion,
+                paths: result.pruned,
+              };
+            }
             finalStatuses.push({
               status: "updated",
               name: s.name,

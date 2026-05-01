@@ -22,6 +22,7 @@ import { join } from "@std/path";
 import {
   classifyExtensionFile,
   detectLegacyExtensionLayout,
+  extractTopLevelRoot,
   requireCurrentExtensionLayout,
   summariseLegacyLayout,
   warnLegacyExtensionLayout,
@@ -334,4 +335,98 @@ Deno.test("requireCurrentExtensionLayout: passes on current layout", async () =>
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }
+});
+
+const SKILLS_DIR = ".claude/skills";
+
+Deno.test("extractTopLevelRoot: per-extension scoped subtree", () => {
+  assertEquals(
+    extractTopLevelRoot(
+      ".swamp/pulled-extensions/@hivemq/harvester/models/foo.ts",
+      SKILLS_DIR,
+    ),
+    ".swamp/pulled-extensions/@hivemq/harvester",
+  );
+});
+
+Deno.test("extractTopLevelRoot: per-extension flat (unscoped) subtree", () => {
+  assertEquals(
+    extractTopLevelRoot(
+      ".swamp/pulled-extensions/myext/models/foo.ts",
+      SKILLS_DIR,
+    ),
+    ".swamp/pulled-extensions/myext",
+  );
+});
+
+Deno.test("extractTopLevelRoot: bundle namespace", () => {
+  assertEquals(
+    extractTopLevelRoot(
+      ".swamp/bundles/abc123/foo.js",
+      SKILLS_DIR,
+    ),
+    ".swamp/bundles/abc123",
+  );
+});
+
+Deno.test("extractTopLevelRoot: each bundle kind", () => {
+  for (
+    const kind of [
+      "bundles",
+      "vault-bundles",
+      "driver-bundles",
+      "datastore-bundles",
+      "report-bundles",
+    ]
+  ) {
+    assertEquals(
+      extractTopLevelRoot(
+        `.swamp/${kind}/hash123/foo.js`,
+        SKILLS_DIR,
+      ),
+      `.swamp/${kind}/hash123`,
+    );
+  }
+});
+
+Deno.test("extractTopLevelRoot: skill dir returns null", () => {
+  assertEquals(
+    extractTopLevelRoot(".claude/skills/foo", SKILLS_DIR),
+    null,
+  );
+  assertEquals(
+    extractTopLevelRoot(".claude/skills/foo/SKILL.md", SKILLS_DIR),
+    null,
+  );
+});
+
+Deno.test("extractTopLevelRoot: gen-1 path returns null", () => {
+  assertEquals(
+    extractTopLevelRoot("extensions/models/legacy.ts", SKILLS_DIR),
+    null,
+  );
+});
+
+Deno.test("extractTopLevelRoot: gen-2 path returns null", () => {
+  assertEquals(
+    extractTopLevelRoot(
+      ".swamp/pulled-extensions/models/flat.ts",
+      SKILLS_DIR,
+    ),
+    null,
+  );
+});
+
+Deno.test("extractTopLevelRoot: unknown current-layout path returns null", () => {
+  assertEquals(
+    extractTopLevelRoot(".swamp/some-other-place/foo.ts", SKILLS_DIR),
+    null,
+  );
+});
+
+Deno.test("extractTopLevelRoot: handles trailing-slash skillsDir", () => {
+  assertEquals(
+    extractTopLevelRoot(".claude/skills/foo/SKILL.md", ".claude/skills/"),
+    null,
+  );
 });
