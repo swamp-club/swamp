@@ -21,6 +21,7 @@ import { join } from "@std/path";
 import { ensureDir } from "@std/fs";
 import { getLogger } from "@logtape/logtape";
 import { atomicWriteTextFile } from "../../infrastructure/persistence/atomic_write.ts";
+import { defaultCommandResolver } from "../../infrastructure/process/resolve_command.ts";
 import type { RepoPath } from "./repo_path.ts";
 import {
   SWAMP_SUBDIRS,
@@ -1451,8 +1452,8 @@ ${body}`;
    * Uses the absolute path to the swamp binary because kiro-cli does not
    * perform PATH resolution when executing hook commands.
    */
-  private generateKiroHookContent(): string {
-    const swampBin = this.resolveSwampBinaryPath();
+  private async generateKiroHookContent(): Promise<string> {
+    const swampBin = await this.resolveSwampBinaryPath();
     const hook = {
       name: "Swamp Audit",
       description: "Records agent tool usage for swamp audit tracking",
@@ -1471,28 +1472,15 @@ ${body}`;
    * Resolves the absolute path to the swamp binary.
    * Falls back to bare "swamp" if resolution fails.
    */
-  private resolveSwampBinaryPath(): string {
-    try {
-      const cmd = new Deno.Command("which", {
-        args: ["swamp"],
-        stdout: "piped",
-        stderr: "null",
-      });
-      const { success, stdout } = cmd.outputSync();
-      if (success) {
-        const path = new TextDecoder().decode(stdout).trim();
-        if (path) return path;
-      }
-    } catch {
-      // which not available or failed
-    }
-    return "swamp";
+  private async resolveSwampBinaryPath(): Promise<string> {
+    const path = await defaultCommandResolver().resolve("swamp");
+    return path ?? "swamp";
   }
 
   /**
    * Creates .kiro/hooks/swamp-audit.kiro.hook if it doesn't already exist.
    */
-  private createKiroHooksIfNotExists(
+  private async createKiroHooksIfNotExists(
     repoPath: RepoPath,
   ): Promise<boolean> {
     const hookPath = join(
@@ -1501,9 +1489,9 @@ ${body}`;
       "hooks",
       "swamp-audit.kiro.hook",
     );
-    return this.createFileIfNotExists(
+    return await this.createFileIfNotExists(
       hookPath,
-      this.generateKiroHookContent(),
+      await this.generateKiroHookContent(),
     );
   }
 
@@ -1530,7 +1518,10 @@ ${body}`;
       "hooks",
       "swamp-audit.kiro.hook",
     );
-    return this.overwriteIfChanged(hookPath, this.generateKiroHookContent());
+    return this.overwriteIfChanged(
+      hookPath,
+      await this.generateKiroHookContent(),
+    );
   }
 
   /**
@@ -1538,8 +1529,8 @@ ${body}`;
    * This provides kiro-cli with trusted commands, audit hooks, and resource
    * references that the IDE gets from .vscode/settings.local.json and .kiro/hooks/.
    */
-  private generateKiroAgentConfigContent(): string {
-    const swampBin = this.resolveSwampBinaryPath();
+  private async generateKiroAgentConfigContent(): Promise<string> {
+    const swampBin = await this.resolveSwampBinaryPath();
     const config = {
       name: "swamp",
       description: "Swamp automation agent with audit tracking",
@@ -1570,7 +1561,7 @@ ${body}`;
   /**
    * Creates .kiro/agents/swamp.json if it doesn't already exist.
    */
-  private createKiroAgentConfigIfNotExists(
+  private async createKiroAgentConfigIfNotExists(
     repoPath: RepoPath,
   ): Promise<boolean> {
     const configPath = join(
@@ -1579,25 +1570,25 @@ ${body}`;
       "agents",
       "swamp.json",
     );
-    return this.createFileIfNotExists(
+    return await this.createFileIfNotExists(
       configPath,
-      this.generateKiroAgentConfigContent(),
+      await this.generateKiroAgentConfigContent(),
     );
   }
 
   /**
    * Updates .kiro/agents/swamp.json, overwriting with latest content.
    */
-  private updateKiroAgentConfig(repoPath: RepoPath): Promise<boolean> {
+  private async updateKiroAgentConfig(repoPath: RepoPath): Promise<boolean> {
     const configPath = join(
       repoPath.value,
       ".kiro",
       "agents",
       "swamp.json",
     );
-    return this.overwriteIfChanged(
+    return await this.overwriteIfChanged(
       configPath,
-      this.generateKiroAgentConfigContent(),
+      await this.generateKiroAgentConfigContent(),
     );
   }
 

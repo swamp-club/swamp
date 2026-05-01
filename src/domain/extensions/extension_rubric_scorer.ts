@@ -19,6 +19,7 @@
 
 import { join, resolve, SEPARATOR } from "@std/path";
 import type { ExtensionManifest } from "./extension_manifest.ts";
+import { extractTarGz } from "../../infrastructure/archive/tar_archive.ts";
 
 /**
  * Client-side scorer for the Swamp Club extension quality rubric.
@@ -553,18 +554,15 @@ export async function scoreExtensionTarball(
     await Deno.writeFile(tarballPath, tarballBytes);
     await Deno.mkdir(extractDir);
 
-    // Extract with the system `tar`. The CLI built this tarball itself,
-    // so we skip the server-side Zip-Slip / type checks — we trust our
-    // own output.
-    const tarCmd = new Deno.Command("tar", {
-      args: ["-xzf", tarballPath, "-C", extractDir],
-      stdout: "piped",
-      stderr: "piped",
-    });
-    const tarOut = await tarCmd.output();
-    if (!tarOut.success) {
-      const err = new TextDecoder().decode(tarOut.stderr);
-      throw new Error(`Failed to extract tarball for scoring: ${err}`);
+    // Extract via the Deno-native helper. The CLI built this tarball
+    // itself, so we skip the server-side Zip-Slip / type checks — we trust
+    // our own output.
+    try {
+      const tarFile = await Deno.open(tarballPath, { read: true });
+      await extractTarGz(tarFile.readable, extractDir);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new Error(`Failed to extract tarball for scoring: ${message}`);
     }
 
     // Locate the directory that holds manifest.yaml. Swamp CLI's

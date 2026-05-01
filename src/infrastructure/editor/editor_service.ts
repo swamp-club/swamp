@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { defaultCommandResolver } from "../process/resolve_command.ts";
+
 /**
  * Result of opening a file in an editor.
  */
@@ -148,17 +150,8 @@ export class EditorService {
    * Checks if a command is available in the system PATH.
    */
   private async isCommandAvailable(cmd: string): Promise<boolean> {
-    try {
-      const command = new Deno.Command("which", {
-        args: [cmd],
-        stdout: "null",
-        stderr: "null",
-      });
-      const { success } = await command.output();
-      return success;
-    } catch {
-      return false;
-    }
+    const path = await defaultCommandResolver().resolve(cmd);
+    return path !== null;
   }
 
   /**

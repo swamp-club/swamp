@@ -40,6 +40,10 @@ import {
   swampPath,
 } from "../../infrastructure/persistence/paths.ts";
 import { computeChecksum } from "../../domain/models/checksum.ts";
+import {
+  extractTarGz,
+  listTarGzEntries,
+} from "../../infrastructure/archive/tar_archive.ts";
 import { readInstalledExtensionDigest } from "../../infrastructure/persistence/installed_extension_digest_reader.ts";
 import { verifyChecksum } from "../../domain/update/integrity.ts";
 import { resolveLocalImports } from "../../domain/models/local_import_resolver.ts";
@@ -785,20 +789,14 @@ export async function installExtension(
     const archivePath = join(tmpDir, "extension.tar.gz");
     await Deno.writeFile(archivePath, archiveBytes);
 
-    const listCommand = new Deno.Command("tar", {
-      args: ["-tzf", archivePath],
-      stdout: "piped",
-      stderr: "piped",
-    });
-    const listOutput = await listCommand.output();
-    if (!listOutput.success) {
-      const stderr = new TextDecoder().decode(listOutput.stderr);
-      throw new UserError(`Failed to list archive contents: ${stderr}`);
+    let archiveEntries: string[];
+    try {
+      const listFile = await Deno.open(archivePath, { read: true });
+      archiveEntries = await listTarGzEntries(listFile.readable);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new UserError(`Failed to list archive contents: ${message}`);
     }
-    const archiveEntries = new TextDecoder()
-      .decode(listOutput.stdout)
-      .split("\n")
-      .filter((e) => e.length > 0);
     for (const entry of archiveEntries) {
       if (entry.includes("..") || entry.startsWith("/")) {
         throw new UserError(
@@ -807,16 +805,16 @@ export async function installExtension(
       }
     }
 
-    const tarCommand = new Deno.Command("tar", {
-      args: ["-xzf", archivePath, "-C", tmpDir],
-      stdout: "piped",
-      stderr: "piped",
-      env: { COPYFILE_DISABLE: "1" },
-    });
-    const tarOutput = await tarCommand.output();
-    if (!tarOutput.success) {
-      const stderr = new TextDecoder().decode(tarOutput.stderr);
-      throw new UserError(`Failed to extract archive: ${stderr}`);
+    try {
+      const extractFile = await Deno.open(archivePath, { read: true });
+      // The Deno-native extractor doesn't shell out to BSD tar, so the macOS
+      // `COPYFILE_DISABLE=1` env var that suppressed AppleDouble files in
+      // the previous implementation is no longer needed: AppleDouble entries
+      // are filtered out at extraction time as a defensive measure.
+      await extractTarGz(extractFile.readable, tmpDir);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw new UserError(`Failed to extract archive: ${message}`);
     }
 
     const extractDir = join(tmpDir, "extension");

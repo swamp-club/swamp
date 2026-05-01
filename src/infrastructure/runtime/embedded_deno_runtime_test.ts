@@ -19,6 +19,10 @@
 
 import { assertEquals } from "@std/assert";
 import { EmbeddedDenoRuntime } from "./embedded_deno_runtime.ts";
+import {
+  type CommandLookupRunner,
+  defaultCommandResolver,
+} from "../process/resolve_command.ts";
 
 Deno.test("EmbeddedDenoRuntime returns system deno in dev mode", async () => {
   // When running from source (not compiled), Deno.build.standalone is falsy
@@ -37,4 +41,34 @@ Deno.test("EmbeddedDenoRuntime caches the deno path", async () => {
 
   // Should return the same path both times (cached)
   assertEquals(first, second);
+});
+
+// Stream-0 deferred regression: when the standalone-mode failure path falls
+// back to a system `deno`, the resolver may receive multi-line output (e.g.
+// `which -a deno` or `where deno` listing several entries). The first line
+// must win — we want a single concrete path, not a newline-glued mash.
+Deno.test("EmbeddedDenoRuntime.findSystemDeno: returns first line of multi-line which output", async () => {
+  const fakeRunner: CommandLookupRunner = (_tool, _name) =>
+    Promise.resolve({
+      success: true,
+      stdout: new TextEncoder().encode(
+        "/usr/local/bin/deno\n/opt/homebrew/bin/deno\n/usr/bin/deno\n",
+      ),
+    });
+
+  const runtime = new EmbeddedDenoRuntime(defaultCommandResolver(fakeRunner));
+  const path = await runtime.findSystemDeno();
+  assertEquals(path, "/usr/local/bin/deno");
+});
+
+Deno.test("EmbeddedDenoRuntime.findSystemDeno: returns null when resolver finds nothing", async () => {
+  const fakeRunner: CommandLookupRunner = (_tool, _name) =>
+    Promise.resolve({
+      success: false,
+      stdout: new Uint8Array(),
+    });
+
+  const runtime = new EmbeddedDenoRuntime(defaultCommandResolver(fakeRunner));
+  const path = await runtime.findSystemDeno();
+  assertEquals(path, null);
 });

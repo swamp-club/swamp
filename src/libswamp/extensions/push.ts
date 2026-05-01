@@ -19,6 +19,7 @@
 
 import { dirname, join, relative } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
+import { createTarGz } from "../../infrastructure/archive/tar_archive.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import { validateContentCollectives } from "../../domain/extensions/extension_collective_validator.ts";
 import type {
@@ -1181,18 +1182,16 @@ async function createArchive(
       await Deno.copyFile(absPath, destPath);
     }
 
-    // Create tar.gz
+    // Create tar.gz. The Deno-native archiver walks the staged tree
+    // explicitly, so the previous BSD-tar `COPYFILE_DISABLE=1` env var (which
+    // suppressed macOS resource forks) is no longer needed: AppleDouble
+    // siblings are filtered defensively in the archiver itself.
     const tarPath = join(tmpDir, "extension.tar.gz");
-    const tarCommand = new Deno.Command("tar", {
-      args: ["-czf", tarPath, "-C", tmpDir, "extension"],
-      stdout: "piped",
-      stderr: "piped",
-      env: { GZIP: "-9", COPYFILE_DISABLE: "1" },
-    });
-    const tarOutput = await tarCommand.output();
-    if (!tarOutput.success) {
-      const stderr = new TextDecoder().decode(tarOutput.stderr);
-      throw validationFailed(`Failed to create archive: ${stderr}`);
+    try {
+      await createTarGz(extDir, tarPath);
+    } catch (error: unknown) {
+      const message = error instanceof Error ? error.message : String(error);
+      throw validationFailed(`Failed to create archive: ${message}`);
     }
 
     const archiveBytes = await Deno.readFile(tarPath);

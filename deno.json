@@ -24,6 +24,8 @@
     "@std/cli": "jsr:@std/cli@^1.0.27",
     "@std/fs": "jsr:@std/fs@^1.0.22",
     "@std/path": "jsr:@std/path@^1.1.4",
+    "@std/streams": "jsr:@std/streams@^1.0.17",
+    "@std/tar": "jsr:@std/tar@^0.1.10",
     "@std/yaml": "jsr:@std/yaml@^1.0.11",
     "zod": "npm:zod@^4.3.6",
     "@cliffy/command": "jsr:@cliffy/command@1",

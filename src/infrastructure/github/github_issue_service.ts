@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { UserError } from "../../domain/errors.ts";
+import { defaultCommandResolver } from "../process/resolve_command.ts";
 
 /**
  * Result of creating a GitHub issue.
@@ -54,13 +55,8 @@ export class GitHubIssueService {
    * Returns true if available, false otherwise.
    */
   async isAvailable(): Promise<boolean> {
-    const whichCommand = new Deno.Command("which", {
-      args: ["gh"],
-      stdout: "null",
-      stderr: "null",
-    });
-    const { success: ghInstalled } = await whichCommand.output();
-    if (!ghInstalled) {
+    const ghPath = await defaultCommandResolver().resolve("gh");
+    if (!ghPath) {
       return false;
     }
 

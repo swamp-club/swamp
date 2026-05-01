@@ -21,6 +21,7 @@ import { ensureDir } from "@std/fs";
 import { dirname, join, resolve, SEPARATOR } from "@std/path";
 import type { SourceDownloader } from "../../domain/source/mod.ts";
 import { UserError } from "../../domain/errors.ts";
+import { extractTarGz } from "../archive/tar_archive.ts";
 
 /**
  * HTTP adapter for downloading swamp source archives from GitHub.
@@ -109,15 +110,12 @@ export class HttpSourceDownloader implements SourceDownloader {
       const extractDir = join(tempDir, "extracted");
       await ensureDir(extractDir);
 
-      const extract = new Deno.Command("tar", {
-        args: ["-xzf", tarballPath, "-C", extractDir],
-        stdout: "piped",
-        stderr: "piped",
-      });
-      const extractResult = await extract.output();
-      if (!extractResult.success) {
-        const stderr = new TextDecoder().decode(extractResult.stderr);
-        throw new UserError(`Failed to extract source archive: ${stderr}`);
+      try {
+        const tarFile = await Deno.open(tarballPath, { read: true });
+        await extractTarGz(tarFile.readable, extractDir);
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new UserError(`Failed to extract source archive: ${message}`);
       }
 
       // GitHub archives have a top-level directory like "swamp-main" or "swamp-v1.2.3"

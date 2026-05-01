@@ -21,6 +21,10 @@ import { join } from "@std/path";
 import { getLogger } from "@logtape/logtape";
 import type { DenoRuntime } from "../../domain/runtime/deno_runtime.ts";
 import { DenoVersion } from "../../domain/runtime/deno_version.ts";
+import {
+  type CommandResolver,
+  defaultCommandResolver,
+} from "../process/resolve_command.ts";
 
 const logger = getLogger(["swamp", "runtime", "deno"]);
 
@@ -44,6 +48,16 @@ const DENO_BINARY_NAME = Deno.build.os === "windows" ? "deno.exe" : "deno";
 export class EmbeddedDenoRuntime implements DenoRuntime {
   private cachedPath: string | null = null;
   private extractionPromise: Promise<string> | null = null;
+  private readonly commandResolver: CommandResolver;
+
+  /**
+   * @param commandResolver Override the system PATH resolver. Tests inject a
+   *   fake to exercise the standalone-mode fallback path without depending on
+   *   the host's installed `deno`.
+   */
+  constructor(commandResolver: CommandResolver = defaultCommandResolver()) {
+    this.commandResolver = commandResolver;
+  }
 
   async ensureDeno(): Promise<string> {
     if (this.cachedPath) {
@@ -181,25 +195,13 @@ export class EmbeddedDenoRuntime implements DenoRuntime {
   /**
    * Searches PATH for a system-installed deno binary.
    * Used as a fallback when the embedded binary fails its health check.
+   *
+   * Public so unit tests can exercise the multi-line `which`/`where` parser
+   * via the injected `CommandResolver` without having to drive the full
+   * standalone-mode failure path.
    */
-  private async findSystemDeno(): Promise<string | null> {
-    const which = Deno.build.os === "windows" ? "where" : "which";
-    try {
-      const result = await new Deno.Command(which, {
-        args: ["deno"],
-        stdout: "piped",
-        stderr: "null",
-      }).output();
-      if (result.success) {
-        const path = new TextDecoder().decode(result.stdout).trim().split(
-          "\n",
-        )[0].trim();
-        if (path) return path;
-      }
-    } catch {
-      // which/where not available
-    }
-    return null;
+  findSystemDeno(): Promise<string | null> {
+    return this.commandResolver.resolve("deno");
   }
 
   private async readEmbeddedVersion(): Promise<DenoVersion> {

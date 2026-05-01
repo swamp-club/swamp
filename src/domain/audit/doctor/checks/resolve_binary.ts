@@ -17,31 +17,19 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { defaultCommandResolver } from "../../../../infrastructure/process/resolve_command.ts";
+
 /**
- * POSIX PATH binary resolution port.
+ * Cross-platform PATH binary resolution port.
  *
- * Production uses `which` via `Deno.Command`; tests inject a fake.
- * Scoped to POSIX (macOS/Linux) — swamp's supported platforms as of v1.
- * Windows support deferred until a user asks.
+ * Production resolves via the shared `defaultCommandResolver` (which uses
+ * `which` on POSIX and `where` on Windows); tests inject a fake.
  */
 export type ResolveBinary = (name: string) => Promise<string | null>;
 
-/** Default implementation using POSIX `which`. */
-export const resolveBinaryViaWhich: ResolveBinary = async (name) => {
-  try {
-    const cmd = new Deno.Command("which", {
-      args: [name],
-      stdout: "piped",
-      stderr: "null",
-    });
-    const { success, stdout } = await cmd.output();
-    if (!success) return null;
-    const path = new TextDecoder().decode(stdout).trim();
-    return path || null;
-  } catch {
-    return null;
-  }
-};
+/** Default implementation using the cross-platform command resolver. */
+export const resolveBinaryViaWhich: ResolveBinary = (name) =>
+  defaultCommandResolver().resolve(name);
 
 /** The shell-command binary name for each audit-integrating tool. */
 export function binaryNameFor(tool: string): string {

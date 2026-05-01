@@ -26,13 +26,19 @@ import {
   verifyChecksum,
 } from "../../domain/update/integrity.ts";
 import { computeChecksum } from "../../domain/models/checksum.ts";
+import { extractTarGz } from "../archive/tar_archive.ts";
 
 /**
  * Remove macOS quarantine extended attribute (best-effort).
  * Files downloaded via fetch() get tagged with com.apple.quarantine,
  * and Gatekeeper will SIGKILL unsigned binaries that have it.
+ *
+ * Only meaningful on darwin — `xattr` is not present on Linux or Windows,
+ * and the quarantine attribute is a macOS-specific concept. Calls on other
+ * platforms become a no-op.
  */
 async function removeQuarantine(path: string): Promise<void> {
+  if (Deno.build.os !== "darwin") return;
   try {
     const cmd = new Deno.Command("xattr", {
       args: ["-d", "com.apple.quarantine", path],
@@ -213,15 +219,12 @@ export class HttpUpdateChecker implements UpdateChecker {
       verifyChecksum(expectedChecksum, actualChecksum);
 
       // Extract the tarball
-      const extract = new Deno.Command("tar", {
-        args: ["-xzf", tarballPath, "-C", tempDir],
-        stdout: "piped",
-        stderr: "piped",
-      });
-      const extractResult = await extract.output();
-      if (!extractResult.success) {
-        const stderr = new TextDecoder().decode(extractResult.stderr);
-        throw new UserError(`Failed to extract update: ${stderr}`);
+      try {
+        const tarFile = await Deno.open(tarballPath, { read: true });
+        await extractTarGz(tarFile.readable, tempDir);
+      } catch (error: unknown) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new UserError(`Failed to extract update: ${message}`);
       }
 
       // Find the extracted binary
@@ -243,7 +246,12 @@ export class HttpUpdateChecker implements UpdateChecker {
 
       // Replace the current binary (unlink-then-rename to avoid ETXTBSY on Linux)
       await replaceBinary(extractedBinary, binaryPath);
-      await Deno.chmod(binaryPath, 0o755);
+
+      // chmod is meaningless on Windows (file permissions live in the ACL,
+      // not POSIX mode bits). Only set the executable bit on POSIX hosts.
+      if (Deno.build.os !== "windows") {
+        await Deno.chmod(binaryPath, 0o755);
+      }
 
       // Also clear quarantine on the final path (in case copyFile propagates it)
       if (Deno.build.os === "darwin") {
