@@ -596,34 +596,31 @@ Deno.test("DockerExecutionDriver - empty run arg returns error", async () => {
 
 Deno.test({
   name: "DockerExecutionDriver - timeout produces error result",
+  // Skipped on Windows: this test requires the driver's SIGTERM to reach the
+  // mock and terminate it. POSIX delivers SIGTERM through the shell shim to
+  // the deno child via the process group; Windows has no equivalent — killing
+  // a `.cmd` parent does not propagate to its descendants. Without that
+  // propagation the mock outlives the test and hangs CI. Re-enabling on
+  // Windows requires either a Job Object–based kill (not exposed by Deno) or
+  // a different mock pattern that detects parent death (e.g. polling
+  // `process.ppid` or stdin closure). Tracked as a follow-up to Stream A.
+  ignore: Deno.build.os === "windows",
   sanitizeResources: false,
   sanitizeOps: false,
   fn: async () => {
     const tmpDir = await Deno.makeTempDir();
 
     try {
-      // Mock blocks forever; the driver's timeout should fire and kill it.
-      // We use `setInterval` rather than `await new Promise(() => {})` so the
-      // event loop has scheduled work — deno would otherwise terminate a
-      // never-resolved top-level await with a "Top-level await promise never
-      // resolved" diagnostic on stderr (causing the driver to surface that
-      // diagnostic instead of the timeout error). With setInterval, deno
-      // sits idle until the driver's SIGTERM (or SIGKILL on Windows) kills
-      // it silently.
-      //
-      // Defensive self-exit: on Windows, killing the launcher (.cmd shim)
-      // does NOT propagate to this deno child — there's no POSIX-style
-      // process group, so the driver's SIGTERM/SIGKILL never reaches us
-      // and the mock would otherwise hang forever. The driver's 200ms
-      // timeout fires its own timeout error well before this 5s self-exit,
-      // so on POSIX (where kill propagates) the self-exit never runs and
-      // existing behavior is preserved. On Windows (where kill doesn't
-      // propagate), the mock terminates after 5s, the driver's
-      // process.status resolves, and the already-set `timedOut` flag
-      // surfaces the expected "timed out" error.
+      // Mock blocks forever; the driver's timeout should fire and kill it via
+      // SIGTERM. We use `setInterval` rather than `await new Promise(() => {})`
+      // so the event loop has scheduled work — deno would otherwise terminate
+      // a never-resolved top-level await with a "Top-level await promise never
+      // resolved" diagnostic on stderr (which the driver would surface instead
+      // of the timeout error). With setInterval, deno sits idle until SIGTERM
+      // arrives and exits silently.
       const command = await createMockDriverCommand(
         tmpDir,
-        `setTimeout(() => Deno.exit(0), 5000);\nsetInterval(() => {}, 60_000);\n`,
+        `setInterval(() => {}, 60_000);\n`,
       );
 
       const driver = new DockerExecutionDriver({
