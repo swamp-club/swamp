@@ -27,8 +27,12 @@ jobs:
         with:
           filters: |
             skills:
+              # Skill Review evaluates skill content quality. Trigger only on
+              # actual skill bundle changes, the review script itself, or the
+              # eval harness. CLAUDE.md is intentionally excluded — repo-wide
+              # convention changes shouldn't fire a content gate that scores
+              # files they don't touch.
               - '.claude/skills/**'
-              - 'CLAUDE.md'
               - 'scripts/review_skills.ts'
               - 'evals/promptfoo/**'
             code:
