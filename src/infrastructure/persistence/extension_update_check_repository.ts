@@ -22,6 +22,7 @@ import type {
   ExtensionUpdateCheckMap,
   ExtensionUpdateCheckRepository,
 } from "../../domain/extensions/extension_update_check_cache.ts";
+import { atomicWriteTextFile } from "./atomic_write.ts";
 
 const CACHE_FILENAME = "extension-update-checks.json";
 
@@ -47,7 +48,7 @@ export class FileExtensionUpdateCheckRepository
   }
 
   async write(data: ExtensionUpdateCheckMap): Promise<void> {
-    await Deno.writeTextFile(
+    await atomicWriteTextFile(
       this.filePath,
       JSON.stringify(data, null, 2) + "\n",
     );
