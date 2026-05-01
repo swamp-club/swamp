@@ -196,11 +196,14 @@ export class EmbeddedDenoRuntime implements DenoRuntime {
    * Searches PATH for a system-installed deno binary.
    * Used as a fallback when the embedded binary fails its health check.
    *
-   * Public so unit tests can exercise the multi-line `which`/`where` parser
-   * via the injected `CommandResolver` without having to drive the full
-   * standalone-mode failure path.
+   * The multi-line `which`/`where` parsing semantics live in
+   * `CommandResolver` and are covered by `resolve_command_test.ts`. The
+   * `commandResolver` constructor argument is the injection seam if tests
+   * ever need to drive this path through a public method (currently
+   * `ensureDeno()` only invokes it when `Deno.build.standalone === true`,
+   * which is not flippable from a test).
    */
-  findSystemDeno(): Promise<string | null> {
+  private findSystemDeno(): Promise<string | null> {
     return this.commandResolver.resolve("deno");
   }
 
