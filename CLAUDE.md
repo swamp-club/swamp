@@ -127,14 +127,6 @@ in `src/libswamp/`) may import from internal paths.
 - Use `@std/path` (`dirname`, `basename`, `join`, `fromFileUrl`, `SEPARATOR`)
   for all path operations. Never hand-roll with `lastIndexOf("/")`,
   `split("/").pop()`, `URL.pathname`, or `"/"`-prefixed concatenation.
-- The above applies to **filesystem paths**. Forward slashes are intentional and
-  required as a separator in logical keys — model specs (`owner/name`,
-  `aws/ec2/vpc`), datastore lock keys, URL pathnames, and lockfile/manifest
-  entries — and these must remain forward slashes on every OS, including
-  Windows. Do not migrate `split("/")` or `lastIndexOf("/")` in
-  identifier-parsing code to `@std/path`. Stream 0's regression tests in
-  `model_type_test.ts` and `extension_auto_resolver_test.ts` enforce
-  forward-slash preservation; if a refactor breaks them, that is the signal.
 - `Deno.symlink` requires `{ type: "file" | "dir" }` — Windows refuses symlinks
   whose target doesn't exist at link-creation time without it.
 - `withTempDir` cleanup uses an inline Windows-only `.catch(() => {})` to absorb
