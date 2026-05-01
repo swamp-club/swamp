@@ -20,12 +20,22 @@
 import { assertEquals } from "@std/assert";
 import { selectShellStrategy } from "./shell_strategy.ts";
 import { PosixShellStrategy } from "./posix_shell_strategy.ts";
+import { PowerShellStrategy } from "./powershell_strategy.ts";
 
-Deno.test("selectShellStrategy: returns PosixShellStrategy on every platform", () => {
-  // PR 1 ships only the seam — selection is uniform across hosts.
-  // The next PR will route `Deno.build.os === "windows"` to a real
-  // PowerShellStrategy and update this test to assert the host-driven
-  // dispatch.
-  const strategy = selectShellStrategy();
-  assertEquals(strategy instanceof PosixShellStrategy, true);
+Deno.test({
+  name: "selectShellStrategy: picks PosixShellStrategy on POSIX hosts",
+  ignore: Deno.build.os === "windows",
+  fn: () => {
+    const strategy = selectShellStrategy();
+    assertEquals(strategy instanceof PosixShellStrategy, true);
+  },
+});
+
+Deno.test({
+  name: "selectShellStrategy: picks PowerShellStrategy on native Windows",
+  ignore: Deno.build.os !== "windows",
+  fn: () => {
+    const strategy = selectShellStrategy();
+    assertEquals(strategy instanceof PowerShellStrategy, true);
+  },
 });

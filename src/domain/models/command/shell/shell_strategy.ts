@@ -19,21 +19,23 @@
 
 import type { VaultSecretBag } from "../../../vaults/vault_secret_bag.ts";
 import { PosixShellStrategy } from "./posix_shell_strategy.ts";
+import { PowerShellStrategy } from "./powershell_strategy.ts";
 
 /**
  * Per-host abstraction over the shell that runs `command/shell` model
- * invocations.
+ * invocations. Selection is host-OS driven:
  *
- * Today every platform selects `PosixShellStrategy` (`sh -c <cmd>`) —
- * including native Windows, where the GitHub Actions runner image
- * bundles Git Bash and most dev machines have it as well. This PR
- * introduces only the seam; the next PR adds a `PowerShellStrategy`
- * and switches selection on native Windows hosts so the .exe doesn't
- * depend on Git Bash being installed.
+ *   - POSIX (Linux, macOS, WSL) → `PosixShellStrategy` (`sh -c <cmd>`)
+ *   - Native Windows .exe       → `PowerShellStrategy`
+ *     (`powershell.exe -NoProfile -Command <cmd>`)
  *
  * Each strategy owns the executable + args used to wrap a user-authored
  * command string, and the secret-bag resolution that fits the shell's
  * variable expansion and quoting rules.
+ *
+ * Users authoring POSIX scripts who want them to run on Windows should
+ * run swamp under WSL2 — inside WSL the host OS is `linux` and
+ * `PosixShellStrategy` is selected automatically.
  */
 export interface ShellStrategy {
   /**
@@ -63,9 +65,11 @@ export interface ShellStrategy {
 /**
  * Pick the shell strategy for the current host OS.
  *
- * Always returns `PosixShellStrategy` today. The next PR will route
- * `Deno.build.os === "windows"` to a real PowerShell strategy.
+ * Cached by module-load — host OS doesn't change at runtime.
  */
 export function selectShellStrategy(): ShellStrategy {
+  if (Deno.build.os === "windows") {
+    return new PowerShellStrategy();
+  }
   return new PosixShellStrategy();
 }

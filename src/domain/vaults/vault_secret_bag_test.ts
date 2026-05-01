@@ -202,4 +202,71 @@ Deno.test("VaultSecretBag", async (t) => {
       );
     },
   );
+
+  await t.step(
+    "resolveForPowerShell: replaces sentinel with $env: reference",
+    () => {
+      const bag = new VaultSecretBag();
+      const sentinel = bag.addSecret("my-password");
+      const result = bag.resolveForPowerShell(`Write-Output ${sentinel}`);
+      assertEquals(result.command, 'Write-Output "$env:__SWAMP_VAULT_0"');
+      assertEquals(result.env, { __SWAMP_VAULT_0: "my-password" });
+    },
+  );
+
+  await t.step("resolveForPowerShell: handles multiple secrets", () => {
+    const bag = new VaultSecretBag();
+    const s1 = bag.addSecret("user");
+    const s2 = bag.addSecret("pass");
+    const cmd = `Connect-Service -User ${s1} -Pass ${s2}`;
+    const result = bag.resolveForPowerShell(cmd);
+    assertEquals(
+      result.command,
+      'Connect-Service -User "$env:__SWAMP_VAULT_0" -Pass "$env:__SWAMP_VAULT_1"',
+    );
+    assertEquals(result.env, {
+      __SWAMP_VAULT_0: "user",
+      __SWAMP_VAULT_1: "pass",
+    });
+  });
+
+  await t.step(
+    "resolveForPowerShell: inside double quotes uses bare $env: reference",
+    () => {
+      // PowerShell interpolates `$env:VAR` inside double quotes natively;
+      // adding extra quotes would yield broken syntax.
+      const bag = new VaultSecretBag();
+      const sentinel = bag.addSecret("token");
+      const cmd = `Write-Output "auth: ${sentinel}"`;
+      const result = bag.resolveForPowerShell(cmd);
+      assertEquals(
+        result.command,
+        'Write-Output "auth: $env:__SWAMP_VAULT_0"',
+      );
+    },
+  );
+
+  await t.step(
+    "resolveForPowerShell: skips secrets not in command",
+    () => {
+      const bag = new VaultSecretBag();
+      bag.addSecret("unused");
+      const sentinel = bag.addSecret("present");
+      const cmd = `Write-Output ${sentinel}`;
+      const result = bag.resolveForPowerShell(cmd);
+      // The unused secret never gets a __SWAMP_VAULT_N slot.
+      assertEquals(result.command, 'Write-Output "$env:__SWAMP_VAULT_0"');
+      assertEquals(result.env, { __SWAMP_VAULT_0: "present" });
+    },
+  );
+
+  await t.step(
+    "resolveForPowerShell: no secrets returns original command",
+    () => {
+      const bag = new VaultSecretBag();
+      const result = bag.resolveForPowerShell("Write-Output hello");
+      assertEquals(result.command, "Write-Output hello");
+      assertEquals(result.env, {});
+    },
+  );
 });

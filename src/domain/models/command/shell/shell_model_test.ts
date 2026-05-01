@@ -35,6 +35,21 @@ import { getLogger } from "@logtape/logtape";
 import { SecretRedactor } from "../../../secrets/mod.ts";
 
 /**
+ * Wraps `Deno.test` with a Windows skip. The `shellModel.methods.execute`
+ * tests below shell out to POSIX-style commands (`echo`, `false`,
+ * `>&2`, `$VAR`, pipes, `/tmp` paths). On native Windows hosts where
+ * `selectShellStrategy()` returns `PowerShellStrategy`, those
+ * invocations wouldn't run as written. PR 3 of the Windows shell
+ * series will add PowerShell-aware variants and re-enable these.
+ */
+function posixOnlyTest(
+  name: string,
+  fn: () => Promise<void> | void,
+): void {
+  Deno.test({ name, ignore: Deno.build.os === "windows", fn });
+}
+
+/**
  * Stored result from mock data writer.
  */
 interface MockWriterResult {
@@ -372,7 +387,7 @@ Deno.test("shellModel has execute method", () => {
 });
 
 // Execute method tests
-Deno.test("shellModel.methods.execute runs simple command", async () => {
+posixOnlyTest("shellModel.methods.execute runs simple command", async () => {
   const args: ShellInputAttributes = { run: "echo hello" };
 
   const { context, getResults } = createTestContext();
@@ -390,7 +405,7 @@ Deno.test("shellModel.methods.execute runs simple command", async () => {
   assertStringIncludes(logContent, "hello");
 });
 
-Deno.test("shellModel.methods.execute captures stderr", async () => {
+posixOnlyTest("shellModel.methods.execute captures stderr", async () => {
   const args: ShellInputAttributes = { run: "echo error >&2" };
 
   const { context, getResults } = createTestContext();
@@ -404,27 +419,33 @@ Deno.test("shellModel.methods.execute captures stderr", async () => {
   assertStringIncludes(logContent, "error");
 });
 
-Deno.test("shellModel.methods.execute throws on non-zero exit code", async () => {
-  const args: ShellInputAttributes = { run: "exit 42" };
+posixOnlyTest(
+  "shellModel.methods.execute throws on non-zero exit code",
+  async () => {
+    const args: ShellInputAttributes = { run: "exit 42" };
 
-  const { context } = createTestContext();
-  await assertRejects(
-    () => shellModel.methods.execute.execute(args, context),
-    Error,
-    "Command exited with code 42",
-  );
-});
+    const { context } = createTestContext();
+    await assertRejects(
+      () => shellModel.methods.execute.execute(args, context),
+      Error,
+      "Command exited with code 42",
+    );
+  },
+);
 
-Deno.test("shellModel.methods.execute throws on command failure", async () => {
-  const args: ShellInputAttributes = { run: "false" };
+posixOnlyTest(
+  "shellModel.methods.execute throws on command failure",
+  async () => {
+    const args: ShellInputAttributes = { run: "false" };
 
-  const { context } = createTestContext();
-  await assertRejects(
-    () => shellModel.methods.execute.execute(args, context),
-    Error,
-    "Command exited with code 1",
-  );
-});
+    const { context } = createTestContext();
+    await assertRejects(
+      () => shellModel.methods.execute.execute(args, context),
+      Error,
+      "Command exited with code 1",
+    );
+  },
+);
 
 Deno.test({
   name: "shellModel.methods.execute respects workingDir",
@@ -450,7 +471,7 @@ Deno.test({
   },
 });
 
-Deno.test("shellModel.methods.execute respects env variables", async () => {
+posixOnlyTest("shellModel.methods.execute respects env variables", async () => {
   const args: ShellInputAttributes = {
     run: "echo $MY_TEST_VAR",
     env: { MY_TEST_VAR: "test_value" },
@@ -467,7 +488,7 @@ Deno.test("shellModel.methods.execute respects env variables", async () => {
   assertStringIncludes(logContent, "test_value");
 });
 
-Deno.test("shellModel.methods.execute handles pipes", async () => {
+posixOnlyTest("shellModel.methods.execute handles pipes", async () => {
   const args: ShellInputAttributes = { run: "echo 'hello world' | tr 'h' 'H'" };
 
   const { context, getResults } = createTestContext();
@@ -481,19 +502,22 @@ Deno.test("shellModel.methods.execute handles pipes", async () => {
   assertStringIncludes(logContent, "Hello world");
 });
 
-Deno.test("shellModel.methods.execute handles complex commands", async () => {
-  const args: ShellInputAttributes = { run: "cd /tmp && pwd" };
+posixOnlyTest(
+  "shellModel.methods.execute handles complex commands",
+  async () => {
+    const args: ShellInputAttributes = { run: "cd /tmp && pwd" };
 
-  const { context, getResults } = createTestContext();
-  await shellModel.methods.execute.execute(args, context);
+    const { context, getResults } = createTestContext();
+    await shellModel.methods.execute.execute(args, context);
 
-  const attrs = getResultAttributes(getResults(), "result");
-  assertEquals(attrs?.exitCode, 0);
+    const attrs = getResultAttributes(getResults(), "result");
+    assertEquals(attrs?.exitCode, 0);
 
-  // Check output contains /tmp (cd /tmp && pwd outputs the logical path)
-  const logContent = getOutputLogContent(getResults());
-  assertStringIncludes(logContent, "/tmp");
-});
+    // Check output contains /tmp (cd /tmp && pwd outputs the logical path)
+    const logContent = getOutputLogContent(getResults());
+    assertStringIncludes(logContent, "/tmp");
+  },
+);
 
 Deno.test("ShellInputAttributesSchema rejects invalid attributes", () => {
   const result = ShellInputAttributesSchema.safeParse({ notRun: "value" });
@@ -505,29 +529,35 @@ Deno.test("ShellInputAttributesSchema rejects empty run command via schema", () 
   assertEquals(result.success, false);
 });
 
-Deno.test("shellModel.methods.execute throws on nonexistent command", async () => {
-  const args: ShellInputAttributes = { run: "nonexistent_command_12345" };
+posixOnlyTest(
+  "shellModel.methods.execute throws on nonexistent command",
+  async () => {
+    const args: ShellInputAttributes = { run: "nonexistent_command_12345" };
 
-  const { context } = createTestContext();
-  await assertRejects(
-    () => shellModel.methods.execute.execute(args, context),
-    Error,
-  );
-});
+    const { context } = createTestContext();
+    await assertRejects(
+      () => shellModel.methods.execute.execute(args, context),
+      Error,
+    );
+  },
+);
 
-Deno.test("shellModel.methods.execute records execution duration", async () => {
-  const args: ShellInputAttributes = { run: "sleep 0.1" };
+posixOnlyTest(
+  "shellModel.methods.execute records execution duration",
+  async () => {
+    const args: ShellInputAttributes = { run: "sleep 0.1" };
 
-  const { context, getResults } = createTestContext();
-  await shellModel.methods.execute.execute(args, context);
+    const { context, getResults } = createTestContext();
+    await shellModel.methods.execute.execute(args, context);
 
-  const attrs = getResultAttributes(getResults(), "result");
-  const durationMs = attrs?.durationMs as number;
-  // Should be at least 100ms (sleep 0.1 seconds)
-  assertEquals(durationMs >= 100, true);
-});
+    const attrs = getResultAttributes(getResults(), "result");
+    const durationMs = attrs?.durationMs as number;
+    // Should be at least 100ms (sleep 0.1 seconds)
+    assertEquals(durationMs >= 100, true);
+  },
+);
 
-Deno.test("shellModel.methods.execute returns dataHandles", async () => {
+posixOnlyTest("shellModel.methods.execute returns dataHandles", async () => {
   const args: ShellInputAttributes = { run: "echo hello && echo error >&2" };
 
   const { context, getResults } = createTestContext();
@@ -543,124 +573,154 @@ Deno.test("shellModel.methods.execute returns dataHandles", async () => {
   assertStringIncludes(logContent, "error");
 });
 
-Deno.test("shellModel.methods.execute returns output for no output command", async () => {
-  const args: ShellInputAttributes = { run: "true" }; // Command with no output
+posixOnlyTest(
+  "shellModel.methods.execute returns output for no output command",
+  async () => {
+    const args: ShellInputAttributes = { run: "true" }; // Command with no output
 
-  const { context } = createTestContext();
-  const result = await shellModel.methods.execute.execute(args, context);
+    const { context } = createTestContext();
+    const result = await shellModel.methods.execute.execute(args, context);
 
-  // Should still have data handles
-  assertEquals(result.dataHandles !== undefined, true);
-});
+    // Should still have data handles
+    assertEquals(result.dataHandles !== undefined, true);
+  },
+);
 
 // Secret redaction tests
-Deno.test("shellModel.methods.execute redacts secrets from stdout in result attributes", async () => {
-  const redactor = new SecretRedactor();
-  redactor.addSecret("super-secret-value");
+posixOnlyTest(
+  "shellModel.methods.execute redacts secrets from stdout in result attributes",
+  async () => {
+    const redactor = new SecretRedactor();
+    redactor.addSecret("super-secret-value");
 
-  const args: ShellInputAttributes = { run: "echo super-secret-value" };
-  const { context, getResults } = createTestContext({ redactor });
-  await shellModel.methods.execute.execute(args, context);
+    const args: ShellInputAttributes = { run: "echo super-secret-value" };
+    const { context, getResults } = createTestContext({ redactor });
+    await shellModel.methods.execute.execute(args, context);
 
-  const attrs = getResultAttributes(getResults(), "result");
-  assertNotEquals(attrs?.stdout, undefined);
-  assertStringIncludes(attrs?.stdout as string, "***");
-  assertEquals((attrs?.stdout as string).includes("super-secret-value"), false);
-});
+    const attrs = getResultAttributes(getResults(), "result");
+    assertNotEquals(attrs?.stdout, undefined);
+    assertStringIncludes(attrs?.stdout as string, "***");
+    assertEquals(
+      (attrs?.stdout as string).includes("super-secret-value"),
+      false,
+    );
+  },
+);
 
-Deno.test("shellModel.methods.execute redacts secrets from stderr in result attributes", async () => {
-  const redactor = new SecretRedactor();
-  redactor.addSecret("stderr-secret");
+posixOnlyTest(
+  "shellModel.methods.execute redacts secrets from stderr in result attributes",
+  async () => {
+    const redactor = new SecretRedactor();
+    redactor.addSecret("stderr-secret");
 
-  const args: ShellInputAttributes = { run: "echo stderr-secret >&2" };
-  const { context, getResults } = createTestContext({ redactor });
-  await shellModel.methods.execute.execute(args, context);
+    const args: ShellInputAttributes = { run: "echo stderr-secret >&2" };
+    const { context, getResults } = createTestContext({ redactor });
+    await shellModel.methods.execute.execute(args, context);
 
-  const attrs = getResultAttributes(getResults(), "result");
-  assertNotEquals(attrs?.stderr, undefined);
-  assertStringIncludes(attrs?.stderr as string, "***");
-  assertEquals((attrs?.stderr as string).includes("stderr-secret"), false);
-});
+    const attrs = getResultAttributes(getResults(), "result");
+    assertNotEquals(attrs?.stderr, undefined);
+    assertStringIncludes(attrs?.stderr as string, "***");
+    assertEquals((attrs?.stderr as string).includes("stderr-secret"), false);
+  },
+);
 
-Deno.test("shellModel.methods.execute redacts secrets from output log file", async () => {
-  const redactor = new SecretRedactor();
-  redactor.addSecret("log-file-secret");
+posixOnlyTest(
+  "shellModel.methods.execute redacts secrets from output log file",
+  async () => {
+    const redactor = new SecretRedactor();
+    redactor.addSecret("log-file-secret");
 
-  const args: ShellInputAttributes = {
-    run: "echo log-file-secret && echo log-file-secret >&2",
-  };
-  const { context, getResults } = createTestContext({ redactor });
-  await shellModel.methods.execute.execute(args, context);
+    const args: ShellInputAttributes = {
+      run: "echo log-file-secret && echo log-file-secret >&2",
+    };
+    const { context, getResults } = createTestContext({ redactor });
+    await shellModel.methods.execute.execute(args, context);
 
-  const logContent = getOutputLogContent(getResults());
-  assertStringIncludes(logContent, "***");
-  assertEquals(logContent.includes("log-file-secret"), false);
-});
+    const logContent = getOutputLogContent(getResults());
+    assertStringIncludes(logContent, "***");
+    assertEquals(logContent.includes("log-file-secret"), false);
+  },
+);
 
-Deno.test("shellModel.methods.execute redacts secrets from command in result attributes", async () => {
-  const redactor = new SecretRedactor();
-  redactor.addSecret("command-secret");
+posixOnlyTest(
+  "shellModel.methods.execute redacts secrets from command in result attributes",
+  async () => {
+    const redactor = new SecretRedactor();
+    redactor.addSecret("command-secret");
 
-  const args: ShellInputAttributes = { run: "echo command-secret" };
-  const { context, getResults } = createTestContext({ redactor });
-  await shellModel.methods.execute.execute(args, context);
+    const args: ShellInputAttributes = { run: "echo command-secret" };
+    const { context, getResults } = createTestContext({ redactor });
+    await shellModel.methods.execute.execute(args, context);
 
-  const attrs = getResultAttributes(getResults(), "result");
-  assertNotEquals(attrs?.command, undefined);
-  assertStringIncludes(attrs?.command as string, "***");
-  assertEquals((attrs?.command as string).includes("command-secret"), false);
-});
+    const attrs = getResultAttributes(getResults(), "result");
+    assertNotEquals(attrs?.command, undefined);
+    assertStringIncludes(attrs?.command as string, "***");
+    assertEquals((attrs?.command as string).includes("command-secret"), false);
+  },
+);
 
-Deno.test("shellModel.methods.execute redacts secrets from error messages on failure", async () => {
-  const redactor = new SecretRedactor();
-  redactor.addSecret("error-secret");
+posixOnlyTest(
+  "shellModel.methods.execute redacts secrets from error messages on failure",
+  async () => {
+    const redactor = new SecretRedactor();
+    redactor.addSecret("error-secret");
 
-  // Use a command that will produce an error containing the secret
-  const args: ShellInputAttributes = {
-    run: "echo error-secret >&2 && exit 1",
-  };
-  const { context } = createTestContext({ redactor });
-  await assertRejects(
-    () => shellModel.methods.execute.execute(args, context),
-    Error,
-    "Command exited with code 1",
-  );
-});
+    // Use a command that will produce an error containing the secret
+    const args: ShellInputAttributes = {
+      run: "echo error-secret >&2 && exit 1",
+    };
+    const { context } = createTestContext({ redactor });
+    await assertRejects(
+      () => shellModel.methods.execute.execute(args, context),
+      Error,
+      "Command exited with code 1",
+    );
+  },
+);
 
-Deno.test("shellModel.methods.execute ignoreExitCode suppresses throw", async () => {
-  const args: ShellInputAttributes = { run: "exit 42", ignoreExitCode: true };
+posixOnlyTest(
+  "shellModel.methods.execute ignoreExitCode suppresses throw",
+  async () => {
+    const args: ShellInputAttributes = { run: "exit 42", ignoreExitCode: true };
 
-  const { context, getResults } = createTestContext();
-  const result = await shellModel.methods.execute.execute(args, context);
+    const { context, getResults } = createTestContext();
+    const result = await shellModel.methods.execute.execute(args, context);
 
-  const attrs = getResultAttributes(getResults(), "result");
-  assertEquals(attrs?.exitCode, 42);
-  assertEquals(result.dataHandles !== undefined, true);
-});
+    const attrs = getResultAttributes(getResults(), "result");
+    assertEquals(attrs?.exitCode, 42);
+    assertEquals(result.dataHandles !== undefined, true);
+  },
+);
 
-Deno.test("shellModel.methods.execute exit code 0 returns normally", async () => {
-  const args: ShellInputAttributes = { run: "true" };
+posixOnlyTest(
+  "shellModel.methods.execute exit code 0 returns normally",
+  async () => {
+    const args: ShellInputAttributes = { run: "true" };
 
-  const { context, getResults } = createTestContext();
-  const result = await shellModel.methods.execute.execute(args, context);
+    const { context, getResults } = createTestContext();
+    const result = await shellModel.methods.execute.execute(args, context);
 
-  const attrs = getResultAttributes(getResults(), "result");
-  assertEquals(attrs?.exitCode, 0);
-  assertEquals(result.dataHandles !== undefined, true);
-});
+    const attrs = getResultAttributes(getResults(), "result");
+    assertEquals(attrs?.exitCode, 0);
+    assertEquals(result.dataHandles !== undefined, true);
+  },
+);
 
-Deno.test("shellModel.methods.execute does not persist data on failure", async () => {
-  const args: ShellInputAttributes = {
-    run: "echo 'some output' && exit 1",
-  };
+posixOnlyTest(
+  "shellModel.methods.execute does not persist data on failure",
+  async () => {
+    const args: ShellInputAttributes = {
+      run: "echo 'some output' && exit 1",
+    };
 
-  const { context, getResults } = createTestContext();
-  await assertRejects(
-    () => shellModel.methods.execute.execute(args, context),
-    Error,
-    "Command exited with code 1",
-  );
+    const { context, getResults } = createTestContext();
+    await assertRejects(
+      () => shellModel.methods.execute.execute(args, context),
+      Error,
+      "Command exited with code 1",
+    );
 
-  // No data should be written for a failed command
-  assertEquals(getResults().length, 0);
-});
+    // No data should be written for a failed command
+    assertEquals(getResults().length, 0);
+  },
+);

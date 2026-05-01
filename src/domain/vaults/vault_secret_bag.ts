@@ -141,4 +141,49 @@ export class VaultSecretBag {
     }
     return { command: result, env };
   }
+
+  /**
+   * PowerShell sibling of `resolveForShell`. Replaces sentinel tokens
+   * with `$env:VAR` references using PowerShell's environment-variable
+   * syntax, and returns the env var map.
+   *
+   * As with the POSIX path, secret values are passed through the
+   * process environment rather than substituted into the command
+   * string, so metacharacters in the value can't be parsed as syntax.
+   *
+   * The replacement is quoting-context-aware:
+   * - If the sentinel is inside existing double quotes, uses bare
+   *   `$env:VAR` — PowerShell interpolates env vars inside double
+   *   quotes natively, no extra wrapping needed.
+   * - If the sentinel is outside quotes, uses `"$env:VAR"` to defend
+   *   against PowerShell's whitespace-splitting behavior when the
+   *   resolved value is passed to a native (non-cmdlet) command.
+   *
+   * Quote tracking reuses the POSIX `isInsideDoubleQuotes` helper.
+   * PowerShell's escape character is a backtick rather than a
+   * backslash, so commands authored with PowerShell-specific escape
+   * sequences inside single quotes could mis-classify their context;
+   * users hitting that corner case can avoid it by keeping vault
+   * sentinels outside single-quoted regions, the same advice that
+   * applies to the POSIX resolver.
+   */
+  resolveForPowerShell(
+    command: string,
+  ): { command: string; env: Record<string, string> } {
+    const env: Record<string, string> = {};
+    let result = command;
+    let envIdx = 0;
+    for (const [sentinel, value] of this.secrets) {
+      const pos = result.indexOf(sentinel);
+      if (pos !== -1) {
+        const envName = `__SWAMP_VAULT_${envIdx++}`;
+        const ref = isInsideDoubleQuotes(result, pos)
+          ? `$env:${envName}`
+          : `"$env:${envName}"`;
+        result = result.split(sentinel).join(ref);
+        env[envName] = value;
+      }
+    }
+    return { command: result, env };
+  }
 }
