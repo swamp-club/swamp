@@ -25,6 +25,7 @@ import {
   swampPath,
 } from "../../infrastructure/persistence/paths.ts";
 import { assertSafePath } from "../../infrastructure/persistence/safe_path.ts";
+import { checkFileNotBroadlyReadable } from "../../infrastructure/security/file_security_check.ts";
 
 /**
  * Configuration options for local encryption vault.
@@ -365,20 +366,19 @@ export class LocalEncryptionVaultProvider implements VaultProvider {
   }
 
   /**
-   * Validates that an SSH key file has restrictive permissions (no group/other access).
-   * Skipped on Windows where POSIX permissions are not available.
+   * Validates that an SSH key file is not broadly readable. On POSIX this
+   * enforces `0o600` (no group/other bits). On Windows it checks the NTFS
+   * ACL for any Allow entry granting Read or higher to broad principals
+   * (Everyone, Authenticated Users, etc.). The detailed scope of the
+   * Windows check lives in `file_security_check.ts`.
    */
   private async validateSshKeyPermissions(path: string): Promise<void> {
-    if (Deno.build.os === "windows") return;
-    const stat = await Deno.stat(path);
-    if (stat.mode === null) return;
-    if ((stat.mode & 0o077) !== 0) {
-      const octal = "0o" + (stat.mode & 0o777).toString(8);
-      throw new Error(
-        `SSH key '${path}' has insecure permissions (${octal}). ` +
-          `Expected permissions no wider than 0o600. ` +
-          `Run 'chmod 600 ${path}' to fix.`,
-      );
+    const result = await checkFileNotBroadlyReadable(path);
+    if (!result.ok) {
+      // Prefix the reason with "SSH key " so the message remains compatible
+      // with the historical `SSH key '<path>' has insecure permissions ...`
+      // format that other code and tests expect.
+      throw new Error(`SSH key ${result.reason}`);
     }
   }
 

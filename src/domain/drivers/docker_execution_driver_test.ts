@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
+import { join } from "@std/path";
 import {
   DockerDriverConfigSchema,
   DockerExecutionDriver,
@@ -42,6 +43,43 @@ function createTestRequest(
     },
     ...overrides,
   };
+}
+
+/**
+ * Creates a mock "docker" command for tests by writing a TypeScript mock
+ * file plus a tiny platform-specific launcher (`.cmd` on Windows, a `chmod
+ * +x` shell script on POSIX). Both launchers `deno run` the same TypeScript
+ * source, so test logic stays portable across platforms.
+ *
+ * Returns the absolute launcher path; pass it as the docker driver's
+ * `command` field to substitute the mock for the real binary.
+ */
+async function createMockDriverCommand(
+  tmpDir: string,
+  mockTsBody: string,
+): Promise<string> {
+  const mockTsPath = join(tmpDir, "mock.ts");
+  await Deno.writeTextFile(mockTsPath, mockTsBody);
+
+  const denoBin = Deno.execPath();
+
+  if (Deno.build.os === "windows") {
+    const launcherPath = join(tmpDir, "mock-docker.cmd");
+    // %* forwards all docker args; the mock TS itself ignores them.
+    const launcherBody =
+      `@echo off\r\n"${denoBin}" run --quiet --allow-all "${mockTsPath}" %*\r\n`;
+    await Deno.writeTextFile(launcherPath, launcherBody);
+    return launcherPath;
+  }
+
+  const launcherPath = join(tmpDir, "mock-docker");
+  // exec replaces the shell so SIGTERM/SIGKILL from the driver hit the
+  // deno child directly rather than the shell wrapper.
+  const launcherBody =
+    `#!/bin/sh\nexec "${denoBin}" run --quiet --allow-all "${mockTsPath}" "$@"\n`;
+  await Deno.writeTextFile(launcherPath, launcherBody);
+  await Deno.chmod(launcherPath, 0o755);
+  return launcherPath;
 }
 
 // --- Config validation ---
@@ -347,79 +385,73 @@ Deno.test("DockerExecutionDriver - bundle args include user volumes", () => {
 
 // --- Mode detection ---
 
-Deno.test({
-  name: "DockerExecutionDriver - request with bundle dispatches to bundle mode",
-  // Mock-script tests rely on `#!/bin/sh` shebangs and chmod +x,
-  // neither of which is available on Windows.
-  ignore: Deno.build.os === "windows",
-  fn: async () => {
-    const tmpDir = await Deno.makeTempDir();
-    const scriptPath = `${tmpDir}/mock-docker`;
+Deno.test("DockerExecutionDriver - request with bundle dispatches to bundle mode", async () => {
+  const tmpDir = await Deno.makeTempDir();
 
-    // Mock script that outputs valid bundle JSON
-    await Deno.writeTextFile(
-      scriptPath,
-      '#!/bin/sh\necho \'{"resources":[{"specName":"info","name":"info","data":{"hostname":"container"}}],"files":[]}\'\n',
+  try {
+    // Mock prints a valid bundle JSON payload to stdout
+    const command = await createMockDriverCommand(
+      tmpDir,
+      `console.log(JSON.stringify({\n  resources: [{ specName: "info", name: "info", data: { hostname: "container" } }],\n  files: [],\n}));\n`,
     );
-    await Deno.chmod(scriptPath, 0o755);
 
-    try {
-      const driver = new DockerExecutionDriver({
-        image: "denoland/deno:alpine",
-        command: scriptPath,
-      });
+    const driver = new DockerExecutionDriver({
+      image: "denoland/deno:alpine",
+      command,
+    });
 
-      const bundle = new TextEncoder().encode("export const model = {};");
-      const result = await driver.execute(
-        createTestRequest({ methodArgs: {}, bundle }),
-      );
+    const bundle = new TextEncoder().encode("export const model = {};");
+    const result = await driver.execute(
+      createTestRequest({ methodArgs: {}, bundle }),
+    );
 
-      assertEquals(result.status, "success");
-      assertEquals(result.outputs.length, 1);
-      if (result.outputs[0].kind === "pending") {
-        assertEquals(result.outputs[0].specName, "info");
-        assertEquals(result.outputs[0].type, "resource");
-        const text = new TextDecoder().decode(result.outputs[0].content);
-        assertStringIncludes(text, "container");
-      }
-    } finally {
+    assertEquals(result.status, "success");
+    assertEquals(result.outputs.length, 1);
+    if (result.outputs[0].kind === "pending") {
+      assertEquals(result.outputs[0].specName, "info");
+      assertEquals(result.outputs[0].type, "resource");
+      const text = new TextDecoder().decode(result.outputs[0].content);
+      assertStringIncludes(text, "container");
+    }
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
       await Deno.remove(tmpDir, { recursive: true });
     }
-  },
+  }
 });
 
-Deno.test({
-  name: "DockerExecutionDriver - request with run dispatches to command mode",
-  ignore: Deno.build.os === "windows",
-  fn: async () => {
-    const tmpDir = await Deno.makeTempDir();
-    const scriptPath = `${tmpDir}/mock-docker`;
+Deno.test("DockerExecutionDriver - request with run dispatches to command mode", async () => {
+  const tmpDir = await Deno.makeTempDir();
 
-    await Deno.writeTextFile(
-      scriptPath,
-      '#!/bin/sh\necho \'{"id":"abc123"}\'\n',
+  try {
+    const command = await createMockDriverCommand(
+      tmpDir,
+      `console.log(JSON.stringify({ id: "abc123" }));\n`,
     );
-    await Deno.chmod(scriptPath, 0o755);
 
-    try {
-      const driver = new DockerExecutionDriver({
-        image: "alpine",
-        command: scriptPath,
-      });
+    const driver = new DockerExecutionDriver({
+      image: "alpine",
+      command,
+    });
 
-      const result = await driver.execute(createTestRequest());
+    const result = await driver.execute(createTestRequest());
 
-      assertEquals(result.status, "success");
-      assertEquals(result.outputs.length, 1);
-      if (result.outputs[0].kind === "pending") {
-        assertEquals(result.outputs[0].type, "resource");
-        const text = new TextDecoder().decode(result.outputs[0].content);
-        assertStringIncludes(text, "abc123");
-      }
-    } finally {
+    assertEquals(result.status, "success");
+    assertEquals(result.outputs.length, 1);
+    if (result.outputs[0].kind === "pending") {
+      assertEquals(result.outputs[0].type, "resource");
+      const text = new TextDecoder().decode(result.outputs[0].content);
+      assertStringIncludes(text, "abc123");
+    }
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
       await Deno.remove(tmpDir, { recursive: true });
     }
-  },
+  }
 });
 
 Deno.test("DockerExecutionDriver - request with neither bundle nor run returns error", async () => {
@@ -437,123 +469,115 @@ Deno.test("DockerExecutionDriver - request with neither bundle nor run returns e
   assertStringIncludes(result.error!, "run");
 });
 
-Deno.test({
-  name:
-    "DockerExecutionDriver - request with both bundle and run prefers bundle",
-  ignore: Deno.build.os === "windows",
-  fn: async () => {
-    const tmpDir = await Deno.makeTempDir();
-    const scriptPath = `${tmpDir}/mock-docker`;
+Deno.test("DockerExecutionDriver - request with both bundle and run prefers bundle", async () => {
+  const tmpDir = await Deno.makeTempDir();
 
-    // Output bundle-style JSON
-    await Deno.writeTextFile(
-      scriptPath,
-      '#!/bin/sh\necho \'{"resources":[{"specName":"test","name":"test","data":{"from":"bundle"}}],"files":[]}\'\n',
+  try {
+    const command = await createMockDriverCommand(
+      tmpDir,
+      `console.log(JSON.stringify({\n  resources: [{ specName: "test", name: "test", data: { from: "bundle" } }],\n  files: [],\n}));\n`,
     );
-    await Deno.chmod(scriptPath, 0o755);
 
-    try {
-      const driver = new DockerExecutionDriver({
-        image: "denoland/deno:alpine",
-        command: scriptPath,
-      });
+    const driver = new DockerExecutionDriver({
+      image: "denoland/deno:alpine",
+      command,
+    });
 
-      const bundle = new TextEncoder().encode("export const model = {};");
-      const result = await driver.execute(
-        createTestRequest({ methodArgs: { run: "echo hello" }, bundle }),
-      );
+    const bundle = new TextEncoder().encode("export const model = {};");
+    const result = await driver.execute(
+      createTestRequest({ methodArgs: { run: "echo hello" }, bundle }),
+    );
 
-      assertEquals(result.status, "success");
-      // Bundle mode produces parsed outputs
-      if (result.outputs[0]?.kind === "pending") {
-        assertEquals(result.outputs[0].specName, "test");
-      }
-    } finally {
+    assertEquals(result.status, "success");
+    // Bundle mode produces parsed outputs
+    if (result.outputs[0]?.kind === "pending") {
+      assertEquals(result.outputs[0].specName, "test");
+    }
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
       await Deno.remove(tmpDir, { recursive: true });
     }
-  },
+  }
 });
 
 // --- Command mode execute with mock scripts ---
 
-Deno.test({
-  name: "DockerExecutionDriver - execute success with mock script",
-  ignore: Deno.build.os === "windows",
-  fn: async () => {
-    const tmpDir = await Deno.makeTempDir();
-    const scriptPath = `${tmpDir}/mock-docker`;
+Deno.test("DockerExecutionDriver - execute success with mock script", async () => {
+  const tmpDir = await Deno.makeTempDir();
 
-    await Deno.writeTextFile(
-      scriptPath,
-      '#!/bin/sh\necho "log: starting container" >&2\necho "log: running command" >&2\necho \'{"id":"abc123","status":"created"}\'\n',
+  try {
+    const command = await createMockDriverCommand(
+      tmpDir,
+      `console.error("log: starting container");\nconsole.error("log: running command");\nconsole.log(JSON.stringify({ id: "abc123", status: "created" }));\n`,
     );
-    await Deno.chmod(scriptPath, 0o755);
 
-    try {
-      const driver = new DockerExecutionDriver({
-        image: "alpine",
-        command: scriptPath,
-      });
+    const driver = new DockerExecutionDriver({
+      image: "alpine",
+      command,
+    });
 
-      const logLines: string[] = [];
-      const result = await driver.execute(createTestRequest(), {
-        onLog: (line) => logLines.push(line),
-      });
+    const logLines: string[] = [];
+    const result = await driver.execute(createTestRequest(), {
+      onLog: (line) => logLines.push(line),
+    });
 
-      assertEquals(result.status, "success");
-      assertEquals(result.logs.length, 2);
-      assertStringIncludes(result.logs[0], "starting container");
-      assertStringIncludes(result.logs[1], "running command");
+    assertEquals(result.status, "success");
+    assertEquals(result.logs.length, 2);
+    assertStringIncludes(result.logs[0], "starting container");
+    assertStringIncludes(result.logs[1], "running command");
 
-      assertEquals(logLines.length, 2);
+    assertEquals(logLines.length, 2);
 
-      assertEquals(result.outputs.length, 1);
-      assertEquals(result.outputs[0].kind, "pending");
-      if (result.outputs[0].kind === "pending") {
-        assertEquals(result.outputs[0].type, "resource");
-        assertEquals(result.outputs[0].specName, "create");
-        const text = new TextDecoder().decode(result.outputs[0].content);
-        assertStringIncludes(text, "abc123");
+    assertEquals(result.outputs.length, 1);
+    assertEquals(result.outputs[0].kind, "pending");
+    if (result.outputs[0].kind === "pending") {
+      assertEquals(result.outputs[0].type, "resource");
+      assertEquals(result.outputs[0].specName, "create");
+      const text = new TextDecoder().decode(result.outputs[0].content);
+      assertStringIncludes(text, "abc123");
 
-        assertEquals(result.outputs[0].metadata?.exitCode, 0);
-        assertEquals(result.outputs[0].metadata?.command, "echo hello");
-        assertEquals(typeof result.outputs[0].metadata?.durationMs, "number");
-        assertEquals(typeof result.outputs[0].metadata?.stderr, "string");
-      }
-    } finally {
+      assertEquals(result.outputs[0].metadata?.exitCode, 0);
+      assertEquals(result.outputs[0].metadata?.command, "echo hello");
+      assertEquals(typeof result.outputs[0].metadata?.durationMs, "number");
+      assertEquals(typeof result.outputs[0].metadata?.stderr, "string");
+    }
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
       await Deno.remove(tmpDir, { recursive: true });
     }
-  },
+  }
 });
 
-Deno.test({
-  name: "DockerExecutionDriver - execute failure returns error",
-  ignore: Deno.build.os === "windows",
-  fn: async () => {
-    const tmpDir = await Deno.makeTempDir();
-    const scriptPath = `${tmpDir}/mock-docker`;
+Deno.test("DockerExecutionDriver - execute failure returns error", async () => {
+  const tmpDir = await Deno.makeTempDir();
 
-    await Deno.writeTextFile(
-      scriptPath,
-      '#!/bin/sh\necho "Error: container failed to start" >&2\nexit 1\n',
+  try {
+    const command = await createMockDriverCommand(
+      tmpDir,
+      `console.error("Error: container failed to start");\nDeno.exit(1);\n`,
     );
-    await Deno.chmod(scriptPath, 0o755);
 
-    try {
-      const driver = new DockerExecutionDriver({
-        image: "alpine",
-        command: scriptPath,
-      });
+    const driver = new DockerExecutionDriver({
+      image: "alpine",
+      command,
+    });
 
-      const result = await driver.execute(createTestRequest());
+    const result = await driver.execute(createTestRequest());
 
-      assertEquals(result.status, "error");
-      assertStringIncludes(result.error!, "container failed to start");
-      assertEquals(result.outputs.length, 0);
-    } finally {
+    assertEquals(result.status, "error");
+    assertStringIncludes(result.error!, "container failed to start");
+    assertEquals(result.outputs.length, 0);
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
       await Deno.remove(tmpDir, { recursive: true });
     }
-  },
+  }
 });
 
 Deno.test("DockerExecutionDriver - empty run arg returns error", async () => {
@@ -572,23 +596,21 @@ Deno.test("DockerExecutionDriver - empty run arg returns error", async () => {
 
 Deno.test({
   name: "DockerExecutionDriver - timeout produces error result",
-  ignore: Deno.build.os === "windows",
   sanitizeResources: false,
   sanitizeOps: false,
   fn: async () => {
     const tmpDir = await Deno.makeTempDir();
-    const scriptPath = `${tmpDir}/mock-docker`;
-
-    await Deno.writeTextFile(
-      scriptPath,
-      "#!/bin/sh\nexec sleep 60\n",
-    );
-    await Deno.chmod(scriptPath, 0o755);
 
     try {
+      // Mock blocks forever; the driver's timeout should fire and kill it.
+      const command = await createMockDriverCommand(
+        tmpDir,
+        `await new Promise<void>(() => {});\n`,
+      );
+
       const driver = new DockerExecutionDriver({
         image: "alpine",
-        command: scriptPath,
+        command,
         timeout: 200,
       });
 
@@ -598,7 +620,11 @@ Deno.test({
       assertStringIncludes(result.error!, "timed out");
       assertStringIncludes(result.error!, "200ms");
     } finally {
-      await Deno.remove(tmpDir, { recursive: true });
+      if (Deno.build.os === "windows") {
+        await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+      } else {
+        await Deno.remove(tmpDir, { recursive: true });
+      }
     }
   },
 });
@@ -617,13 +643,10 @@ Deno.test("DockerExecutionDriver - non-existent command returns error", async ()
 
 // --- Bundle mode execute with mock scripts ---
 
-Deno.test({
-  name: "DockerExecutionDriver - bundle mode captures resources",
-  ignore: Deno.build.os === "windows",
-  fn: async () => {
-    const tmpDir = await Deno.makeTempDir();
-    const scriptPath = `${tmpDir}/mock-docker`;
+Deno.test("DockerExecutionDriver - bundle mode captures resources", async () => {
+  const tmpDir = await Deno.makeTempDir();
 
+  try {
     // Mock outputs JSON with resources and files
     const output = JSON.stringify({
       resources: [
@@ -634,160 +657,155 @@ Deno.test({
       ],
     });
 
-    await Deno.writeTextFile(
-      scriptPath,
-      `#!/bin/sh\necho '${output}'\n`,
+    const command = await createMockDriverCommand(
+      tmpDir,
+      `console.log(${JSON.stringify(output)});\n`,
     );
-    await Deno.chmod(scriptPath, 0o755);
 
-    try {
-      const driver = new DockerExecutionDriver({
-        image: "denoland/deno:alpine",
-        command: scriptPath,
-      });
+    const driver = new DockerExecutionDriver({
+      image: "denoland/deno:alpine",
+      command,
+    });
 
-      const bundle = new TextEncoder().encode("export const model = {};");
-      const result = await driver.execute(
-        createTestRequest({ methodArgs: {}, bundle }),
-      );
+    const bundle = new TextEncoder().encode("export const model = {};");
+    const result = await driver.execute(
+      createTestRequest({ methodArgs: {}, bundle }),
+    );
 
-      assertEquals(result.status, "success");
-      assertEquals(result.outputs.length, 2);
+    assertEquals(result.status, "success");
+    assertEquals(result.outputs.length, 2);
 
-      // First output: resource
-      const resOutput = result.outputs[0];
-      assertEquals(resOutput.kind, "pending");
-      if (resOutput.kind === "pending") {
-        assertEquals(resOutput.type, "resource");
-        assertEquals(resOutput.specName, "info");
-        assertEquals(resOutput.name, "system-info");
-        const data = JSON.parse(new TextDecoder().decode(resOutput.content));
-        assertEquals(data.cpu, 4);
-        assertEquals(data.mem, "8GB");
-      }
+    // First output: resource
+    const resOutput = result.outputs[0];
+    assertEquals(resOutput.kind, "pending");
+    if (resOutput.kind === "pending") {
+      assertEquals(resOutput.type, "resource");
+      assertEquals(resOutput.specName, "info");
+      assertEquals(resOutput.name, "system-info");
+      const data = JSON.parse(new TextDecoder().decode(resOutput.content));
+      assertEquals(data.cpu, 4);
+      assertEquals(data.mem, "8GB");
+    }
 
-      // Second output: file (base64 decoded)
-      const fileOutput = result.outputs[1];
-      assertEquals(fileOutput.kind, "pending");
-      if (fileOutput.kind === "pending") {
-        assertEquals(fileOutput.type, "file");
-        assertEquals(fileOutput.specName, "log");
-        assertEquals(fileOutput.name, "exec-log");
-        const text = new TextDecoder().decode(fileOutput.content);
-        assertEquals(text, "log line 1\n");
-      }
-    } finally {
+    // Second output: file (base64 decoded)
+    const fileOutput = result.outputs[1];
+    assertEquals(fileOutput.kind, "pending");
+    if (fileOutput.kind === "pending") {
+      assertEquals(fileOutput.type, "file");
+      assertEquals(fileOutput.specName, "log");
+      assertEquals(fileOutput.name, "exec-log");
+      const text = new TextDecoder().decode(fileOutput.content);
+      assertEquals(text, "log line 1\n");
+    }
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
       await Deno.remove(tmpDir, { recursive: true });
     }
-  },
+  }
 });
 
-Deno.test({
-  name: "DockerExecutionDriver - bundle mode captures stderr as logs",
-  ignore: Deno.build.os === "windows",
-  fn: async () => {
-    const tmpDir = await Deno.makeTempDir();
-    const scriptPath = `${tmpDir}/mock-docker`;
+Deno.test("DockerExecutionDriver - bundle mode captures stderr as logs", async () => {
+  const tmpDir = await Deno.makeTempDir();
 
-    await Deno.writeTextFile(
-      scriptPath,
-      '#!/bin/sh\necho "[INFO] loading model" >&2\necho "[INFO] executing method" >&2\necho \'{"resources":[],"files":[]}\'\n',
+  try {
+    const command = await createMockDriverCommand(
+      tmpDir,
+      `console.error("[INFO] loading model");\nconsole.error("[INFO] executing method");\nconsole.log(JSON.stringify({ resources: [], files: [] }));\n`,
     );
-    await Deno.chmod(scriptPath, 0o755);
 
-    try {
-      const driver = new DockerExecutionDriver({
-        image: "denoland/deno:alpine",
-        command: scriptPath,
-      });
+    const driver = new DockerExecutionDriver({
+      image: "denoland/deno:alpine",
+      command,
+    });
 
-      const logLines: string[] = [];
-      const bundle = new TextEncoder().encode("export const model = {};");
-      const result = await driver.execute(
-        createTestRequest({ methodArgs: {}, bundle }),
-        { onLog: (line) => logLines.push(line) },
-      );
+    const logLines: string[] = [];
+    const bundle = new TextEncoder().encode("export const model = {};");
+    const result = await driver.execute(
+      createTestRequest({ methodArgs: {}, bundle }),
+      { onLog: (line) => logLines.push(line) },
+    );
 
-      assertEquals(result.status, "success");
-      assertEquals(result.logs.length, 2);
-      assertStringIncludes(result.logs[0], "loading model");
-      assertStringIncludes(result.logs[1], "executing method");
-      assertEquals(logLines.length, 2);
-    } finally {
+    assertEquals(result.status, "success");
+    assertEquals(result.logs.length, 2);
+    assertStringIncludes(result.logs[0], "loading model");
+    assertStringIncludes(result.logs[1], "executing method");
+    assertEquals(logLines.length, 2);
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
       await Deno.remove(tmpDir, { recursive: true });
     }
-  },
+  }
 });
 
-Deno.test({
-  name: "DockerExecutionDriver - bundle mode failure returns error",
-  ignore: Deno.build.os === "windows",
-  fn: async () => {
-    const tmpDir = await Deno.makeTempDir();
-    const scriptPath = `${tmpDir}/mock-docker`;
+Deno.test("DockerExecutionDriver - bundle mode failure returns error", async () => {
+  const tmpDir = await Deno.makeTempDir();
 
-    await Deno.writeTextFile(
-      scriptPath,
-      '#!/bin/sh\necho "Execution error: method not found" >&2\nexit 1\n',
+  try {
+    const command = await createMockDriverCommand(
+      tmpDir,
+      `console.error("Execution error: method not found");\nDeno.exit(1);\n`,
     );
-    await Deno.chmod(scriptPath, 0o755);
 
-    try {
-      const driver = new DockerExecutionDriver({
-        image: "denoland/deno:alpine",
-        command: scriptPath,
-      });
+    const driver = new DockerExecutionDriver({
+      image: "denoland/deno:alpine",
+      command,
+    });
 
-      const bundle = new TextEncoder().encode("export const model = {};");
-      const result = await driver.execute(
-        createTestRequest({ methodArgs: {}, bundle }),
-      );
+    const bundle = new TextEncoder().encode("export const model = {};");
+    const result = await driver.execute(
+      createTestRequest({ methodArgs: {}, bundle }),
+    );
 
-      assertEquals(result.status, "error");
-      assertStringIncludes(result.error!, "method not found");
-    } finally {
+    assertEquals(result.status, "error");
+    assertStringIncludes(result.error!, "method not found");
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
       await Deno.remove(tmpDir, { recursive: true });
     }
-  },
+  }
 });
 
-Deno.test({
-  name: "DockerExecutionDriver - bundle mode invalid JSON stdout fallback",
-  ignore: Deno.build.os === "windows",
-  fn: async () => {
-    const tmpDir = await Deno.makeTempDir();
-    const scriptPath = `${tmpDir}/mock-docker`;
+Deno.test("DockerExecutionDriver - bundle mode invalid JSON stdout fallback", async () => {
+  const tmpDir = await Deno.makeTempDir();
 
+  try {
     // Output invalid JSON — should be returned as raw resource
-    await Deno.writeTextFile(
-      scriptPath,
-      '#!/bin/sh\necho "not json output"\n',
+    const command = await createMockDriverCommand(
+      tmpDir,
+      `console.log("not json output");\n`,
     );
-    await Deno.chmod(scriptPath, 0o755);
 
-    try {
-      const driver = new DockerExecutionDriver({
-        image: "denoland/deno:alpine",
-        command: scriptPath,
-      });
+    const driver = new DockerExecutionDriver({
+      image: "denoland/deno:alpine",
+      command,
+    });
 
-      const bundle = new TextEncoder().encode("export const model = {};");
-      const result = await driver.execute(
-        createTestRequest({ methodArgs: {}, bundle }),
-      );
+    const bundle = new TextEncoder().encode("export const model = {};");
+    const result = await driver.execute(
+      createTestRequest({ methodArgs: {}, bundle }),
+    );
 
-      assertEquals(result.status, "success");
-      assertEquals(result.outputs.length, 1);
-      if (result.outputs[0].kind === "pending") {
-        assertEquals(result.outputs[0].type, "resource");
-        assertEquals(result.outputs[0].specName, "output");
-        const text = new TextDecoder().decode(result.outputs[0].content);
-        assertStringIncludes(text, "not json output");
-      }
-    } finally {
+    assertEquals(result.status, "success");
+    assertEquals(result.outputs.length, 1);
+    if (result.outputs[0].kind === "pending") {
+      assertEquals(result.outputs[0].type, "resource");
+      assertEquals(result.outputs[0].specName, "output");
+      const text = new TextDecoder().decode(result.outputs[0].content);
+      assertStringIncludes(text, "not json output");
+    }
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
       await Deno.remove(tmpDir, { recursive: true });
     }
-  },
+  }
 });
 
 // --- Stream-0 regression net: signal handling and stream interleaving ---

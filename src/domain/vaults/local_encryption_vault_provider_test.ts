@@ -24,6 +24,21 @@ import {
   LocalEncryptionVaultProvider,
 } from "./local_encryption_vault_provider.ts";
 
+/**
+ * Windows-only helper: grants Everyone Read access to a file via icacls.
+ * Returns the icacls process exit code so callers can assert success.
+ */
+async function grantEveryoneReadAcl(path: string): Promise<number> {
+  const cmd = new Deno.Command("icacls", {
+    args: [path, "/grant", "Everyone:(R)"],
+    stdin: "null",
+    stdout: "null",
+    stderr: "null",
+  });
+  const result = await cmd.output();
+  return result.code;
+}
+
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-local-vault-test-" });
   try {
@@ -441,7 +456,7 @@ Deno.test("LocalEncryptionVaultProvider - error handling", async (t) => {
 });
 
 Deno.test({
-  name: "LocalEncryptionVaultProvider - file permissions",
+  name: "LocalEncryptionVaultProvider - file permissions (POSIX)",
   // POSIX file mode bits do not apply on Windows.
   ignore: Deno.build.os === "windows",
   fn: async (t) => {
@@ -510,6 +525,41 @@ Deno.test({
         });
       },
     );
+  },
+});
+
+Deno.test({
+  name:
+    "LocalEncryptionVaultProvider - file permissions (Windows ACL): rejects SSH key broadly readable to Everyone",
+  // POSIX modes mean nothing on NTFS; the Windows path uses Get-Acl.
+  ignore: Deno.build.os !== "windows",
+  fn: async () => {
+    await withTempDir(async (dir) => {
+      const keyPath = join(dir, "test_ssh_key");
+      await Deno.writeTextFile(keyPath, MOCK_SSH_PRIVATE_KEY);
+
+      // Grant Everyone Read access to simulate a leaked ACL on the key.
+      const grantCode = await grantEveryoneReadAcl(keyPath);
+      assertEquals(grantCode, 0, "icacls grant Everyone:(R) failed");
+
+      const config: LocalEncryptionConfig = {
+        ssh_key_path: keyPath,
+        base_dir: dir,
+      };
+      const vault = new LocalEncryptionVaultProvider(
+        "windows-acl-vault",
+        config,
+      );
+
+      const error = await assertRejects(
+        () => vault.put("test-key", "test-value"),
+        Error,
+      );
+
+      assertStringIncludes(error.message, "SSH key");
+      assertStringIncludes(error.message, "insecure ACL");
+      assertStringIncludes(error.message, "Everyone");
+    });
   },
 });
 
@@ -989,6 +1039,41 @@ Deno.test("LocalEncryptionVaultProvider - SSH key validation", async (t) => {
 
           assertStringIncludes(error.message, "insecure permissions");
           assertStringIncludes(error.message, "chmod 600");
+        });
+      },
+    },
+  );
+
+  await t.step(
+    {
+      name:
+        "should reject SSH key with broad NTFS ACL (Windows: Everyone:Read)",
+      // Companion to the POSIX 0644 step: drives the same vault code path
+      // through the Windows ACL branch of checkFileNotBroadlyReadable.
+      ignore: Deno.build.os !== "windows",
+      fn: async () => {
+        await withTempDir(async (dir) => {
+          const keyPath = join(dir, "windows_insecure_key");
+          await Deno.writeTextFile(keyPath, MOCK_SSH_PRIVATE_KEY);
+
+          const grantCode = await grantEveryoneReadAcl(keyPath);
+          assertEquals(grantCode, 0, "icacls grant failed");
+
+          const config: LocalEncryptionConfig = {
+            ssh_key_path: keyPath,
+          };
+          const vault = new LocalEncryptionVaultProvider(
+            "windows-insecure-acl-vault",
+            config,
+          );
+
+          const error = await assertRejects(
+            () => vault.put("test-key", "test-value"),
+            Error,
+          );
+
+          assertStringIncludes(error.message, "insecure ACL");
+          assertStringIncludes(error.message, "Everyone");
         });
       },
     },
