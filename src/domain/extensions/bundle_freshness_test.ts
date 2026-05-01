@@ -24,16 +24,34 @@ import {
   findStaleFiles,
   type FreshnessCatalog,
   type FreshnessKind,
+  markCatalogValidationFailed,
+  type ValidationFailureCatalog,
 } from "./bundle_freshness.ts";
 import type { ExtensionTypeRow } from "../../infrastructure/persistence/extension_catalog_store.ts";
 
 // -- Test fixture -------------------------------------------------------
 
-class FakeCatalog implements FreshnessCatalog {
+class FakeCatalog implements FreshnessCatalog, ValidationFailureCatalog {
   private rows: ExtensionTypeRow[] = [];
 
   add(row: ExtensionTypeRow): void {
     this.rows.push(row);
+  }
+
+  upsert(row: {
+    source_path: string;
+    type_normalized: string;
+    kind: FreshnessKind;
+    bundle_path: string;
+    version: string;
+    description: string;
+    extends_type: string;
+    source_mtime: string;
+    source_fingerprint: string;
+    validation_failed: boolean;
+  }): void {
+    this.rows = this.rows.filter((r) => r.source_path !== row.source_path);
+    this.rows.push(row as unknown as ExtensionTypeRow);
   }
 
   findByKind(kind: FreshnessKind): ExtensionTypeRow[] {
@@ -654,5 +672,197 @@ Deno.test("computeSourceFingerprint: restoring a broken dep changes the fingerpr
     );
   } finally {
     await Deno.remove(dir, { recursive: true });
+  }
+});
+
+// -- markCatalogValidationFailed (swamp-club#209) -----------------------
+
+class FakeValidationFailureCatalog implements ValidationFailureCatalog {
+  public readonly upserts: Array<Record<string, unknown>> = [];
+
+  upsert(row: {
+    source_path: string;
+    type_normalized: string;
+    kind: FreshnessKind;
+    bundle_path: string;
+    version: string;
+    description: string;
+    extends_type: string;
+    source_mtime: string;
+    source_fingerprint: string;
+    validation_failed: boolean;
+  }): void {
+    this.upserts.push({ ...row });
+  }
+}
+
+Deno.test("markCatalogValidationFailed: upserts a row with every field populated", () => {
+  const catalog = new FakeValidationFailureCatalog();
+
+  markCatalogValidationFailed({
+    catalog,
+    sourcePath: "/repo/extensions/models/echo/echo.ts",
+    kind: "model",
+    bundlePath: "/repo/.swamp/bundles/echo.js",
+    sourceMtime: "2026-05-01T12:00:00.000Z",
+    sourceFingerprint: "abc123",
+  });
+
+  assertEquals(catalog.upserts.length, 1);
+  const row = catalog.upserts[0];
+  assertEquals(row.source_path, "/repo/extensions/models/echo/echo.ts");
+  assertEquals(row.type_normalized, "");
+  assertEquals(row.kind, "model");
+  assertEquals(row.bundle_path, "/repo/.swamp/bundles/echo.js");
+  assertEquals(row.version, "");
+  assertEquals(row.description, "");
+  assertEquals(row.extends_type, "");
+  assertEquals(row.source_mtime, "2026-05-01T12:00:00.000Z");
+  assertEquals(row.source_fingerprint, "abc123");
+  assertEquals(row.validation_failed, true);
+});
+
+Deno.test("markCatalogValidationFailed: idempotent — repeated calls produce identical rows", () => {
+  const catalog = new FakeValidationFailureCatalog();
+
+  const params = {
+    catalog,
+    sourcePath: "/r/v.ts",
+    kind: "vault" as FreshnessKind,
+    bundlePath: "/r/v.js",
+    sourceMtime: "2026-05-01T12:00:00.000Z",
+    sourceFingerprint: "fingerprint-x",
+  };
+
+  markCatalogValidationFailed(params);
+  markCatalogValidationFailed(params);
+
+  assertEquals(catalog.upserts.length, 2);
+  assertEquals(catalog.upserts[0], catalog.upserts[1]);
+});
+
+Deno.test("findStaleFiles + markCatalogValidationFailed: stable broken source converges to not-stale (swamp-club#209)", async () => {
+  // The actual bug-fix invariant. Without markCatalogValidationFailed,
+  // the catalog row's stored fingerprint stays pinned at the last-good
+  // value after a schema break, so findStaleFiles keeps returning the
+  // file as stale on every pass. With it, the new fingerprint is
+  // recorded and findStaleFiles converges to "not stale" — the
+  // rebundle loop terminates on a stable broken source.
+  const dir = await Deno.makeTempDir({ prefix: "swamp_bf_209_converge_" });
+  try {
+    const file = join(dir, "model.ts");
+    const sourceContent = "export const broken = { not: 'a model' };\n";
+    await Deno.writeTextFile(file, sourceContent);
+
+    // Compute the would-be source fingerprint as the loader does.
+    const fingerprint = await computeSourceFingerprint(file, dir);
+
+    // Simulate what rebundleAndUpdateCatalog now does on safeParse
+    // failure: record a validation-failed row with the new fingerprint.
+    const catalog = new FakeCatalog();
+    markCatalogValidationFailed({
+      catalog,
+      sourcePath: file,
+      kind: "model",
+      bundlePath: join(dir, "model.js"),
+      sourceMtime: "2026-05-01T12:00:00.000Z",
+      sourceFingerprint: fingerprint,
+    });
+
+    // findStaleFiles must NOT return this file — its fingerprint
+    // matches the stored value, so it is fresh-but-broken, not stale.
+    const stale = await findStaleFiles({
+      modelsDir: dir,
+      catalog,
+      discoverFiles: discoverTsFiles,
+      kinds: ["model"],
+    });
+    assertEquals(
+      stale.length,
+      0,
+      "Stable broken source must converge to not-stale on the very next " +
+        "findStaleFiles pass",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("findStaleFiles + markCatalogValidationFailed: editing a broken source produces a new fingerprint and re-stales", async () => {
+  // Recovery path. After the broken-state row is in place, editing
+  // the source to ANY different content (broken or valid) produces a
+  // new fingerprint that does not match the stored value, so
+  // findStaleFiles correctly marks the file stale and the loader's
+  // rebundle pass fires.
+  const dir = await Deno.makeTempDir({ prefix: "swamp_bf_209_recover_" });
+  try {
+    const file = join(dir, "model.ts");
+    await Deno.writeTextFile(file, "export const broken = 1;\n");
+    const brokenFp = await computeSourceFingerprint(file, dir);
+
+    const catalog = new FakeCatalog();
+    markCatalogValidationFailed({
+      catalog,
+      sourcePath: file,
+      kind: "model",
+      bundlePath: join(dir, "model.js"),
+      sourceMtime: "2026-05-01T12:00:00.000Z",
+      sourceFingerprint: brokenFp,
+    });
+
+    // Stable broken — not stale.
+    let stale = await findStaleFiles({
+      modelsDir: dir,
+      catalog,
+      discoverFiles: discoverTsFiles,
+      kinds: ["model"],
+    });
+    assertEquals(stale.length, 0);
+
+    // Edit to different content (the recovery path).
+    await Deno.writeTextFile(file, "export const recovered = 42;\n");
+    stale = await findStaleFiles({
+      modelsDir: dir,
+      catalog,
+      discoverFiles: discoverTsFiles,
+      kinds: ["model"],
+    });
+    assertEquals(
+      stale.length,
+      1,
+      "Editing the source after a broken-state row must re-stale the file " +
+        "so the rebundle pass can repair the row",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("markCatalogValidationFailed: works for every supported kind", () => {
+  const catalog = new FakeValidationFailureCatalog();
+  const kinds: FreshnessKind[] = [
+    "model",
+    "extension",
+    "vault",
+    "driver",
+    "datastore",
+    "report",
+  ];
+
+  for (const kind of kinds) {
+    markCatalogValidationFailed({
+      catalog,
+      sourcePath: `/r/${kind}.ts`,
+      kind,
+      bundlePath: `/r/${kind}.js`,
+      sourceMtime: "2026-05-01T12:00:00.000Z",
+      sourceFingerprint: "fp",
+    });
+  }
+
+  assertEquals(catalog.upserts.length, kinds.length);
+  for (let i = 0; i < kinds.length; i++) {
+    assertEquals(catalog.upserts[i].kind, kinds[i]);
+    assertEquals(catalog.upserts[i].validation_failed, true);
   }
 });

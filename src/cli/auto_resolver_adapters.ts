@@ -234,6 +234,9 @@ export function createAutoResolveInstallerAdapter(
       if (catalog && result.loaded.length > 0) {
         const pendingBases = new Set<string>();
         for (const row of catalog.findByKind("extension")) {
+          // Validation-failed rows (swamp-club#209) have empty
+          // extends_type so they fall out of this set naturally — the
+          // explicit emptiness check below already filters them.
           if (row.extends_type) pendingBases.add(row.extends_type);
         }
         for (const type of pendingBases) {

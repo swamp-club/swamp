@@ -925,6 +925,22 @@ the model registry is wired up initially.
      back to a real hash and triggers a rebundle correctly. This property
      holds uniformly across all five extension kinds (models, drivers,
      vaults, datastores, reports) since they share the freshness service.
+     Symmetrically, when an extension's source bundles and imports cleanly
+     but fails schema validation (e.g. a required field was removed), the
+     catalog row is upserted with the new fingerprint and a
+     `validation_failed = true` marker (#209). Freshness comparison still
+     works via fingerprint equality — the broken row is visible to
+     `findStaleFiles` so a stable broken source produces a stable
+     not-stale state. Registration paths filter on `validation_failed`,
+     so the broken extension is correctly absent from the registry until
+     the source is fixed. Editing the source to a different shape
+     produces a new fingerprint, marks the file stale, triggers a
+     rebundle, and flips the row back to `validation_failed = false`.
+     This fix is scoped to the steady-state `rebundleAndUpdateCatalog`
+     hot path — the cold-start parses (initial `loadModels` Pass 1, the
+     by-name `loadSingleType`, and the extension-attach predicate)
+     retain their existing failure semantics because they are not in
+     the read-only steady-state loop.
    - If not populated (first run or DB deleted): falls back to the existing
      full-import path, then populates the catalog from the loaded registry
 

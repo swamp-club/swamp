@@ -293,3 +293,82 @@ export async function findStaleFiles(
 
   return stale;
 }
+
+/**
+ * Minimal write-side catalog view the validation-failure helper needs.
+ * Same one-way domain→infrastructure boundary as FreshnessCatalog.
+ */
+export interface ValidationFailureCatalog {
+  upsert(row: {
+    source_path: string;
+    type_normalized: string;
+    kind: FreshnessKind;
+    bundle_path: string;
+    version: string;
+    description: string;
+    extends_type: string;
+    source_mtime: string;
+    source_fingerprint: string;
+    validation_failed: boolean;
+  }): void;
+}
+
+export interface MarkCatalogValidationFailedParams {
+  catalog: ValidationFailureCatalog;
+  sourcePath: string;
+  kind: FreshnessKind;
+  bundlePath: string;
+  sourceMtime: string;
+  sourceFingerprint: string;
+}
+
+/**
+ * Records the dual of findStaleFiles: when an extension's source bundles
+ * and imports cleanly but fails schema validation, write the catalog row
+ * with the new fingerprint and validation_failed=true. Without this,
+ * findStaleFiles keeps marking the file stale on every pass — the
+ * `safeParse`-throws-before-upsert pattern in each loader's
+ * rebundleAndUpdateCatalog leaves the row's fingerprint pinned at the
+ * last-good state, so every command spawns a redundant deno bundle and
+ * emits the same warning (swamp-club#209).
+ *
+ * Storing the new fingerprint terminates the loop: the next
+ * findStaleFiles pass compares the computed fingerprint against the
+ * stored one, finds them equal, and treats the file as fresh. The row's
+ * empty type_normalized + validation_failed=true keeps the broken
+ * extension out of the registry — registration call sites filter on
+ * the flag.
+ *
+ * Symmetric to the UNREADABLE_DEP_SENTINEL fix in #208: that one made
+ * computeSourceFingerprint total for unreadable transitive deps; this
+ * one makes the catalog write total for schema-invalid sources. Both
+ * encode "stable broken state" into the freshness contract.
+ *
+ * Does NOT throw — callers re-throw the original validation error so
+ * the existing per-edit warning behavior is preserved.
+ */
+export function markCatalogValidationFailed(
+  params: MarkCatalogValidationFailedParams,
+): void {
+  const {
+    catalog,
+    sourcePath,
+    kind,
+    bundlePath,
+    sourceMtime,
+    sourceFingerprint,
+  } = params;
+
+  catalog.upsert({
+    source_path: sourcePath,
+    type_normalized: "",
+    kind,
+    bundle_path: bundlePath,
+    version: "",
+    description: "",
+    extends_type: "",
+    source_mtime: sourceMtime,
+    source_fingerprint: sourceFingerprint,
+    validation_failed: true,
+  });
+}

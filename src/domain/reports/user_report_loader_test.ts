@@ -20,6 +20,7 @@
 import { assertEquals, assertNotEquals } from "@std/assert";
 import { join } from "@std/path";
 import { UserReportLoader } from "./user_report_loader.ts";
+import { reportRegistry } from "./report_registry.ts";
 import { bundleNamespace } from "../../infrastructure/persistence/paths.ts";
 import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
 import type { DenoRuntime } from "../runtime/deno_runtime.ts";
@@ -204,6 +205,59 @@ export const report = {
       true,
       "V2 dep marker must be present in the regenerated bundle",
     );
+  } finally {
+    await Deno.remove(repoDir, { recursive: true });
+    await Deno.remove(reportsDir, { recursive: true });
+  }
+});
+
+Deno.test("UserReportLoader: registerLazyFromCatalog skips validation_failed rows (swamp-club#209)", async () => {
+  const repoDir = await Deno.makeTempDir({
+    prefix: "swamp_issue209_report_repo_",
+  });
+  const reportsDir = await Deno.makeTempDir({
+    prefix: "swamp_issue209_report_dir_",
+  });
+  const dbPath = join(repoDir, ".swamp", "_extension_catalog.db");
+
+  try {
+    const ts = Date.now();
+    const reportName = `issue209-report-${ts}`;
+    const validReport = `
+export const report = {
+  name: "${reportName}",
+  description: "Healthy report",
+  scope: "model",
+  execute: async (_ctx) => {
+    return { rows: [] };
+  },
+};
+`;
+    await Deno.writeTextFile(join(reportsDir, "valid.ts"), validReport);
+
+    const catalog = new ExtensionCatalogStore(dbPath);
+    const loader = new UserReportLoader(testDenoRuntime, repoDir);
+    await loader.buildIndex(reportsDir, catalog);
+
+    catalog.upsert({
+      source_path: join(reportsDir, "broken.ts"),
+      type_normalized: "",
+      kind: "report",
+      bundle_path: join(repoDir, ".swamp", "report-bundles", "broken.js"),
+      version: "",
+      description: "",
+      extends_type: "",
+      source_mtime: "2026-05-01T12:00:00.000Z",
+      source_fingerprint: "deadbeef-broken",
+      validation_failed: true,
+    });
+
+    const loader2 = new UserReportLoader(testDenoRuntime, repoDir);
+    await loader2.buildIndex(reportsDir, catalog);
+
+    assertEquals(reportRegistry.has(reportName), true);
+    assertEquals(reportRegistry.has(""), false);
+    catalog.close();
   } finally {
     await Deno.remove(repoDir, { recursive: true });
     await Deno.remove(reportsDir, { recursive: true });

@@ -535,3 +535,108 @@ for (
     },
   );
 }
+
+// --- validation_failed column tests (swamp-club#209) ---
+//
+// The column tracks the third freshness state introduced by
+// markCatalogValidationFailed: bundle+import succeeded, schema
+// validation failed. Storing the new fingerprint terminates the
+// rebundle loop on a stable broken source; registration paths skip
+// validation_failed=true rows.
+
+Deno.test("ExtensionCatalogStore: upsert and findByType round-trip validation_failed", () => {
+  const dbPath = makeTempDbPath();
+  const store = new ExtensionCatalogStore(dbPath);
+
+  store.upsert(makeRow({ validation_failed: true }));
+  const found = store.findByType("@myorg/echo", "model");
+  assertEquals(found?.validation_failed, true);
+  store.close();
+});
+
+Deno.test("ExtensionCatalogStore: validation_failed defaults to false when omitted from upsert", () => {
+  const dbPath = makeTempDbPath();
+  const store = new ExtensionCatalogStore(dbPath);
+
+  store.upsert(makeRow());
+  const found = store.findByType("@myorg/echo", "model");
+  assertEquals(found?.validation_failed, false);
+  store.close();
+});
+
+Deno.test("ExtensionCatalogStore: findByKind returns rows regardless of validation_failed", () => {
+  // ADV-1 invariant guard: findStaleFiles relies on findByKind seeing
+  // broken rows so a stable broken fingerprint terminates the rebundle
+  // loop. Filtering must NOT happen at the store layer — only at
+  // registration call sites.
+  const dbPath = makeTempDbPath();
+  const store = new ExtensionCatalogStore(dbPath);
+
+  store.upsert(makeRow({
+    type_normalized: "@myorg/healthy",
+    source_path: "/repo/extensions/models/healthy.ts",
+    validation_failed: false,
+  }));
+  store.upsert(makeRow({
+    type_normalized: "",
+    source_path: "/repo/extensions/models/broken.ts",
+    validation_failed: true,
+  }));
+
+  const rows = store.findByKind("model");
+  assertEquals(rows.length, 2);
+  const failed = rows.find((r) =>
+    r.source_path === "/repo/extensions/models/broken.ts"
+  );
+  const healthy = rows.find((r) =>
+    r.source_path === "/repo/extensions/models/healthy.ts"
+  );
+  assertEquals(failed?.validation_failed, true);
+  assertEquals(healthy?.validation_failed, false);
+  store.close();
+});
+
+Deno.test("ExtensionCatalogStore: migrates pre-#209 schema by adding validation_failed column", () => {
+  const dbPath = makeTempDbPath();
+  ensureDirSync(dirname(dbPath));
+
+  // Seed a DB with the pre-#209 schema — has source_fingerprint but no
+  // validation_failed column.
+  const seed = new DatabaseSync(dbPath);
+  seed.exec(`
+    CREATE TABLE bundle_types (
+      source_path        TEXT NOT NULL PRIMARY KEY,
+      type_normalized    TEXT NOT NULL,
+      kind               TEXT NOT NULL DEFAULT 'model',
+      bundle_path        TEXT NOT NULL,
+      version            TEXT NOT NULL DEFAULT '',
+      description        TEXT NOT NULL DEFAULT '',
+      extends_type       TEXT NOT NULL DEFAULT '',
+      source_mtime       TEXT NOT NULL DEFAULT '',
+      source_fingerprint TEXT NOT NULL DEFAULT ''
+    );
+    CREATE TABLE bundle_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    INSERT INTO bundle_types (
+      source_path, type_normalized, kind, bundle_path, version,
+      description, extends_type, source_mtime, source_fingerprint
+    ) VALUES (
+      '/old/row.ts', '@legacy/row', 'model', '/old/bundle.js',
+      '2026.01.01.1', '', '', '2026-01-01T00:00:00.000Z', 'deadbeef'
+    );
+  `);
+  seed.close();
+
+  // Opening through ExtensionCatalogStore must run the migration.
+  const store = new ExtensionCatalogStore(dbPath);
+
+  const legacy = store.findByType("@legacy/row", "model");
+  assertEquals(legacy?.validation_failed, false);
+  assertEquals(legacy?.source_fingerprint, "deadbeef");
+
+  // Re-opening is a no-op — migration is idempotent.
+  store.close();
+  const store2 = new ExtensionCatalogStore(dbPath);
+  const again = store2.findByType("@legacy/row", "model");
+  assertEquals(again?.validation_failed, false);
+  store2.close();
+});

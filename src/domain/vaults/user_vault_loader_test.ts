@@ -20,7 +20,7 @@
 import { assertEquals, assertNotEquals } from "@std/assert";
 import { join } from "@std/path";
 import { UserVaultLoader } from "./user_vault_loader.ts";
-import { VaultTypeRegistry } from "./vault_type_registry.ts";
+import { VaultTypeRegistry, vaultTypeRegistry } from "./vault_type_registry.ts";
 import { bundleNamespace } from "../../infrastructure/persistence/paths.ts";
 import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
 import type { DenoRuntime } from "../runtime/deno_runtime.ts";
@@ -505,6 +505,76 @@ export const vault = {
       true,
       "V2 dep marker must be present in the regenerated bundle",
     );
+  } finally {
+    await Deno.remove(repoDir, { recursive: true });
+    await Deno.remove(vaultsDir, { recursive: true });
+  }
+});
+
+Deno.test("UserVaultLoader: registerLazyFromCatalog skips validation_failed rows (swamp-club#209)", async () => {
+  // Seed the catalog with a validation-failed sentinel row and verify
+  // it never reaches the registry. The ADV-1 invariant — findByKind
+  // returns the row regardless — is guarded at the catalog-store
+  // level; this test guards the per-loader filter.
+  const repoDir = await Deno.makeTempDir({
+    prefix: "swamp_issue209_vault_repo_",
+  });
+  const vaultsDir = await Deno.makeTempDir({
+    prefix: "swamp_issue209_vault_dir_",
+  });
+  const dbPath = join(repoDir, ".swamp", "_extension_catalog.db");
+
+  try {
+    const ts = Date.now();
+    const validVault = `
+import { z } from "npm:zod";
+
+export const vault = {
+  type: "@test/issue209-vault-${ts}",
+  name: "Test Vault",
+  description: "Healthy vault",
+  configSchema: z.object({}),
+  createProvider: (_name: string, _cfg: Record<string, unknown>) => ({
+    get: async () => "x",
+    put: async () => {},
+    list: async () => [],
+    delete: async () => {},
+  }),
+};
+`;
+    await Deno.writeTextFile(join(vaultsDir, "valid.ts"), validVault);
+
+    // Cold-start populates the catalog with the valid vault.
+    const catalog = new ExtensionCatalogStore(dbPath);
+    const loader = new UserVaultLoader(new StubDenoRuntime(), repoDir);
+    await loader.buildIndex(vaultsDir, catalog);
+
+    // Inject a validation-failed row keyed by a different source path.
+    catalog.upsert({
+      source_path: join(vaultsDir, "broken.ts"),
+      type_normalized: "",
+      kind: "vault",
+      bundle_path: join(repoDir, ".swamp", "vault-bundles", "broken.js"),
+      version: "",
+      description: "",
+      extends_type: "",
+      source_mtime: "2026-05-01T12:00:00.000Z",
+      source_fingerprint: "deadbeef-broken",
+      validation_failed: true,
+    });
+
+    // Re-run buildIndex. registerLazyFromCatalog must skip the broken
+    // row even though findByKind returns it.
+    const loader2 = new UserVaultLoader(new StubDenoRuntime(), repoDir);
+    await loader2.buildIndex(vaultsDir, catalog);
+
+    // Valid type appears; broken sentinel does not. Use the singleton
+    // registry the loader writes into.
+    assertEquals(vaultTypeRegistry.has(`@test/issue209-vault-${ts}`), true);
+    // Empty-string type can never be a real registered name, but
+    // assert anyway to pin the invariant.
+    assertEquals(vaultTypeRegistry.has(""), false);
+    catalog.close();
   } finally {
     await Deno.remove(repoDir, { recursive: true });
     await Deno.remove(vaultsDir, { recursive: true });

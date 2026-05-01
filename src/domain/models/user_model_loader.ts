@@ -35,6 +35,7 @@ import {
   createFreshnessCache,
   findStaleFiles as findStaleFilesShared,
   type FreshnessCache,
+  markCatalogValidationFailed,
 } from "../extensions/bundle_freshness.ts";
 import { ModelType } from "./model_type.ts";
 import { CalVer } from "./calver.ts";
@@ -892,6 +893,11 @@ export class UserModelLoader {
   private registerLazyFromCatalog(catalog: ExtensionCatalogStore): void {
     const entries = catalog.findByKind("model");
     for (const entry of entries) {
+      // Skip validation-failed rows: their source content is fresh (the
+      // fingerprint stops findStaleFiles from re-bundling) but the
+      // module's schema is invalid, so the type is not safe to register
+      // (swamp-club#209).
+      if (entry.validation_failed) continue;
       modelRegistry.registerLazy({
         type: ModelType.create(entry.type_normalized),
         bundlePath: entry.bundle_path,
@@ -1095,12 +1101,20 @@ export class UserModelLoader {
     );
 
     if (module.model) {
+      const bundlePath = this.getBundlePath(relativePath, baseDir);
       const parsed = UserModelSchema.safeParse(module.model);
       if (!parsed.success) {
+        markCatalogValidationFailed({
+          catalog,
+          sourcePath: absolutePath,
+          kind: "model",
+          bundlePath,
+          sourceMtime,
+          sourceFingerprint,
+        });
         throw new Error(formatUserModelError(parsed.error));
       }
       const typeNormalized = ModelType.create(parsed.data.type).normalized;
-      const bundlePath = this.getBundlePath(relativePath, baseDir);
 
       catalog.upsert({
         type_normalized: typeNormalized,
@@ -1139,12 +1153,20 @@ export class UserModelLoader {
 
       return typeNormalized;
     } else if (module.extension) {
+      const bundlePath = this.getBundlePath(relativePath, baseDir);
       const parsed = UserExtensionSchema.safeParse(module.extension);
       if (!parsed.success) {
+        markCatalogValidationFailed({
+          catalog,
+          sourcePath: absolutePath,
+          kind: "extension",
+          bundlePath,
+          sourceMtime,
+          sourceFingerprint,
+        });
         throw new Error(parsed.error.message);
       }
       const typeNormalized = ModelType.create(parsed.data.type).normalized;
-      const bundlePath = this.getBundlePath(relativePath, baseDir);
 
       catalog.upsert({
         type_normalized: typeNormalized,

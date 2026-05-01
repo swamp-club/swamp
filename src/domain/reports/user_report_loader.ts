@@ -34,6 +34,7 @@ import {
   createFreshnessCache,
   findStaleFiles as findStaleFilesShared,
   type FreshnessCache,
+  markCatalogValidationFailed,
 } from "../extensions/bundle_freshness.ts";
 import type { DenoRuntime } from "../runtime/deno_runtime.ts";
 import type { ReportContext } from "./report_context.ts";
@@ -380,6 +381,9 @@ export class UserReportLoader {
   private registerLazyFromCatalog(catalog: ExtensionCatalogStore): void {
     const entries = catalog.findByKind("report");
     for (const entry of entries) {
+      // Skip validation-failed rows (swamp-club#209) — see equivalent
+      // guard in user_model_loader.ts:registerLazyFromCatalog.
+      if (entry.validation_failed) continue;
       reportRegistry.registerLazy({
         type: entry.type_normalized,
         bundlePath: entry.bundle_path,
@@ -542,19 +546,32 @@ export class UserReportLoader {
 
     if (!module.report) return;
 
-    const parsed = UserReportSchema.safeParse(module.report);
-    if (!parsed.success) {
-      throw new Error(this.formatValidationError(parsed.error));
-    }
-
+    // Compute mtime+fingerprint BEFORE schema validation so we can
+    // record a validation-failed catalog row if the parse throws —
+    // otherwise findStaleFiles re-bundles every pass on a stable
+    // broken source (swamp-club#209).
     const stat = await Deno.stat(absolutePath);
     const sourceMtime = stat.mtime?.toISOString() ?? "";
     const sourceFingerprint = await computeSourceFingerprint(
       absolutePath,
       baseDir,
     );
-    const typeNormalized = parsed.data.name.toLowerCase();
     const bundlePath = this.getReportBundlePath(relativePath, baseDir);
+
+    const parsed = UserReportSchema.safeParse(module.report);
+    if (!parsed.success) {
+      markCatalogValidationFailed({
+        catalog,
+        sourcePath: absolutePath,
+        kind: "report",
+        bundlePath,
+        sourceMtime,
+        sourceFingerprint,
+      });
+      throw new Error(this.formatValidationError(parsed.error));
+    }
+
+    const typeNormalized = parsed.data.name.toLowerCase();
 
     catalog.upsert({
       type_normalized: typeNormalized,

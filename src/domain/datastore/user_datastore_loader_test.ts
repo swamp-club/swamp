@@ -20,7 +20,10 @@
 import { assertEquals, assertNotEquals } from "@std/assert";
 import { join } from "@std/path";
 import { UserDatastoreLoader } from "./user_datastore_loader.ts";
-import { DatastoreTypeRegistry } from "./datastore_type_registry.ts";
+import {
+  DatastoreTypeRegistry,
+  datastoreTypeRegistry,
+} from "./datastore_type_registry.ts";
 import { bundleNamespace } from "../../infrastructure/persistence/paths.ts";
 import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
 import type { DenoRuntime } from "../runtime/deno_runtime.ts";
@@ -471,6 +474,67 @@ export const datastore = {
       true,
       "V2 dep marker must be present in the regenerated bundle",
     );
+  } finally {
+    await Deno.remove(repoDir, { recursive: true });
+    await Deno.remove(datastoresDir, { recursive: true });
+  }
+});
+
+Deno.test("UserDatastoreLoader: registerLazyFromCatalog skips validation_failed rows (swamp-club#209)", async () => {
+  const repoDir = await Deno.makeTempDir({
+    prefix: "swamp_issue209_ds_repo_",
+  });
+  const datastoresDir = await Deno.makeTempDir({
+    prefix: "swamp_issue209_ds_dir_",
+  });
+  const dbPath = join(repoDir, ".swamp", "_extension_catalog.db");
+
+  try {
+    const ts = Date.now();
+    const validDatastore = `
+import { z } from "npm:zod";
+
+export const datastore = {
+  type: "@test/issue209-ds-${ts}",
+  name: "Test Datastore",
+  description: "Healthy datastore",
+  configSchema: z.object({}),
+  createProvider: (_name, _cfg) => ({
+    async write() {},
+    async read() { return null; },
+    async list() { return []; },
+    async delete() {},
+  }),
+};
+`;
+    await Deno.writeTextFile(join(datastoresDir, "valid.ts"), validDatastore);
+
+    const catalog = new ExtensionCatalogStore(dbPath);
+    const loader = new UserDatastoreLoader(new StubDenoRuntime(), repoDir);
+    await loader.buildIndex(datastoresDir, catalog);
+
+    catalog.upsert({
+      source_path: join(datastoresDir, "broken.ts"),
+      type_normalized: "",
+      kind: "datastore",
+      bundle_path: join(repoDir, ".swamp", "datastore-bundles", "broken.js"),
+      version: "",
+      description: "",
+      extends_type: "",
+      source_mtime: "2026-05-01T12:00:00.000Z",
+      source_fingerprint: "deadbeef-broken",
+      validation_failed: true,
+    });
+
+    const loader2 = new UserDatastoreLoader(new StubDenoRuntime(), repoDir);
+    await loader2.buildIndex(datastoresDir, catalog);
+
+    assertEquals(
+      datastoreTypeRegistry.has(`@test/issue209-ds-${ts}`),
+      true,
+    );
+    assertEquals(datastoreTypeRegistry.has(""), false);
+    catalog.close();
   } finally {
     await Deno.remove(repoDir, { recursive: true });
     await Deno.remove(datastoresDir, { recursive: true });

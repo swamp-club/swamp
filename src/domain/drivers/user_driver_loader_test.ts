@@ -20,6 +20,7 @@
 import { assertEquals, assertNotEquals } from "@std/assert";
 import { join } from "@std/path";
 import { UserDriverLoader } from "./user_driver_loader.ts";
+import { driverTypeRegistry } from "./driver_type_registry.ts";
 import { bundleNamespace } from "../../infrastructure/persistence/paths.ts";
 import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
 import type { DenoRuntime } from "../runtime/deno_runtime.ts";
@@ -188,6 +189,60 @@ export const driver = {
       true,
       "V2 dep marker must be present in the regenerated bundle",
     );
+  } finally {
+    await Deno.remove(repoDir, { recursive: true });
+    await Deno.remove(driversDir, { recursive: true });
+  }
+});
+
+Deno.test("UserDriverLoader: registerLazyFromCatalog skips validation_failed rows (swamp-club#209)", async () => {
+  const repoDir = await Deno.makeTempDir({
+    prefix: "swamp_issue209_driver_repo_",
+  });
+  const driversDir = await Deno.makeTempDir({
+    prefix: "swamp_issue209_driver_dir_",
+  });
+  const dbPath = join(repoDir, ".swamp", "_extension_catalog.db");
+
+  try {
+    const ts = Date.now();
+    const validDriver = `
+export const driver = {
+  type: "@test/issue209-driver-${ts}",
+  name: "Test Driver",
+  description: "Healthy driver",
+  createDriver: (_config) => ({
+    async executeMethod() {
+      return { dataHandles: [] };
+    },
+  }),
+};
+`;
+    await Deno.writeTextFile(join(driversDir, "valid.ts"), validDriver);
+
+    const catalog = new ExtensionCatalogStore(dbPath);
+    const loader = new UserDriverLoader(testDenoRuntime, repoDir);
+    await loader.buildIndex(driversDir, catalog);
+
+    catalog.upsert({
+      source_path: join(driversDir, "broken.ts"),
+      type_normalized: "",
+      kind: "driver",
+      bundle_path: join(repoDir, ".swamp", "driver-bundles", "broken.js"),
+      version: "",
+      description: "",
+      extends_type: "",
+      source_mtime: "2026-05-01T12:00:00.000Z",
+      source_fingerprint: "deadbeef-broken",
+      validation_failed: true,
+    });
+
+    const loader2 = new UserDriverLoader(testDenoRuntime, repoDir);
+    await loader2.buildIndex(driversDir, catalog);
+
+    assertEquals(driverTypeRegistry.has(`@test/issue209-driver-${ts}`), true);
+    assertEquals(driverTypeRegistry.has(""), false);
+    catalog.close();
   } finally {
     await Deno.remove(repoDir, { recursive: true });
     await Deno.remove(driversDir, { recursive: true });

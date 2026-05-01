@@ -35,6 +35,7 @@ import {
   createFreshnessCache,
   findStaleFiles as findStaleFilesShared,
   type FreshnessCache,
+  markCatalogValidationFailed,
 } from "../extensions/bundle_freshness.ts";
 import type { DenoRuntime } from "../runtime/deno_runtime.ts";
 import type { ExecutionDriver } from "./execution_driver.ts";
@@ -532,6 +533,9 @@ export class UserDriverLoader {
   private registerLazyFromCatalog(catalog: ExtensionCatalogStore): void {
     const entries = catalog.findByKind("driver");
     for (const entry of entries) {
+      // Skip validation-failed rows (swamp-club#209) — see equivalent
+      // guard in user_model_loader.ts:registerLazyFromCatalog.
+      if (entry.validation_failed) continue;
       driverTypeRegistry.registerLazy({
         type: entry.type_normalized,
         bundlePath: entry.bundle_path,
@@ -693,19 +697,32 @@ export class UserDriverLoader {
 
     if (!module.driver) return;
 
-    const parsed = UserDriverSchema.safeParse(module.driver);
-    if (!parsed.success) {
-      throw new Error(this.formatValidationError(parsed.error));
-    }
-
+    // Compute mtime+fingerprint BEFORE schema validation so we can
+    // record a validation-failed catalog row if the parse throws —
+    // otherwise findStaleFiles re-bundles every pass on a stable
+    // broken source (swamp-club#209).
     const stat = await Deno.stat(absolutePath);
     const sourceMtime = stat.mtime?.toISOString() ?? "";
     const sourceFingerprint = await computeSourceFingerprint(
       absolutePath,
       baseDir,
     );
-    const typeNormalized = parsed.data.type.toLowerCase();
     const bundlePath = this.getDriverBundlePath(relativePath, baseDir);
+
+    const parsed = UserDriverSchema.safeParse(module.driver);
+    if (!parsed.success) {
+      markCatalogValidationFailed({
+        catalog,
+        sourcePath: absolutePath,
+        kind: "driver",
+        bundlePath,
+        sourceMtime,
+        sourceFingerprint,
+      });
+      throw new Error(this.formatValidationError(parsed.error));
+    }
+
+    const typeNormalized = parsed.data.type.toLowerCase();
 
     catalog.upsert({
       type_normalized: typeNormalized,

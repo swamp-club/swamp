@@ -56,6 +56,17 @@ export interface ExtensionTypeRow {
    * coerces to "". Old catalog rows default to "" via the migration.
    */
   source_fingerprint?: string;
+  /**
+   * True when bundle+import succeeded but schema validation failed
+   * (swamp-club#209). The fingerprint and bundle path are still stored
+   * so freshness comparison terminates on a stable broken source —
+   * registration paths filter on this flag to keep broken types out of
+   * the registry. findByKind/findByType deliberately do NOT filter on
+   * this column so freshness (findStaleFiles) can see broken rows.
+   * Defaults to false on upsert; old catalog rows default to false via
+   * the migration.
+   */
+  validation_failed?: boolean;
 }
 
 /**
@@ -126,7 +137,8 @@ export class ExtensionCatalogStore {
         description        TEXT NOT NULL DEFAULT '',
         extends_type       TEXT NOT NULL DEFAULT '',
         source_mtime       TEXT NOT NULL DEFAULT '',
-        source_fingerprint TEXT NOT NULL DEFAULT ''
+        source_fingerprint TEXT NOT NULL DEFAULT '',
+        validation_failed  INTEGER NOT NULL DEFAULT 0
       );
 
       CREATE INDEX IF NOT EXISTS idx_bundle_types_kind
@@ -163,6 +175,11 @@ export class ExtensionCatalogStore {
         "ALTER TABLE bundle_types ADD COLUMN source_fingerprint TEXT NOT NULL DEFAULT ''",
       );
     }
+    if (!hasColumn("validation_failed")) {
+      this.db.exec(
+        "ALTER TABLE bundle_types ADD COLUMN validation_failed INTEGER NOT NULL DEFAULT 0",
+      );
+    }
   }
 
   /**
@@ -174,8 +191,8 @@ export class ExtensionCatalogStore {
       INSERT OR REPLACE INTO bundle_types (
         source_path, type_normalized, kind, bundle_path,
         version, description, extends_type, source_mtime,
-        source_fingerprint
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        source_fingerprint, validation_failed
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     stmt.run(
       row.source_path,
@@ -187,6 +204,7 @@ export class ExtensionCatalogStore {
       row.extends_type,
       row.source_mtime,
       row.source_fingerprint ?? "",
+      row.validation_failed ? 1 : 0,
     );
   }
 
@@ -214,17 +232,55 @@ export class ExtensionCatalogStore {
   }
 
   /**
+   * Coerces a raw SQLite row into a typed ExtensionTypeRow. Maps the
+   * INTEGER 0/1 `validation_failed` column to a boolean — SQLite has no
+   * native boolean type, so the column is stored as INTEGER but consumers
+   * expect a boolean.
+   *
+   * findByKind and findByType deliberately do NOT filter on
+   * validation_failed: findStaleFiles needs to see broken rows so the
+   * fingerprint match terminates the rebundle loop (swamp-club#209).
+   * Registration call sites filter on the coerced boolean instead.
+   */
+  private mapRow(raw: Record<string, unknown>): ExtensionTypeRow {
+    return {
+      source_path: raw.source_path as string,
+      type_normalized: raw.type_normalized as string,
+      kind: raw.kind as ExtensionKind,
+      bundle_path: raw.bundle_path as string,
+      version: raw.version as string,
+      description: raw.description as string,
+      extends_type: raw.extends_type as string,
+      source_mtime: raw.source_mtime as string,
+      source_fingerprint: raw.source_fingerprint as string,
+      validation_failed: raw.validation_failed === 1,
+    };
+  }
+
+  /**
    * Returns all entries for a given kind (e.g. all "model" entries).
+   *
+   * Includes validation-failed rows; consumers that should not register
+   * broken types must filter on `row.validation_failed` themselves.
+   * findStaleFiles relies on this inclusion to terminate the rebundle
+   * loop on schema-invalid sources (swamp-club#209).
    */
   findByKind(kind: ExtensionKind): ExtensionTypeRow[] {
     const stmt = this.db.prepare(
       "SELECT * FROM bundle_types WHERE kind = ? ORDER BY type_normalized",
     );
-    return stmt.all(kind) as unknown as ExtensionTypeRow[];
+    return (stmt.all(kind) as Record<string, unknown>[]).map((r) =>
+      this.mapRow(r)
+    );
   }
 
   /**
    * Returns the entry for a specific type and kind, or undefined.
+   *
+   * Validation-failed rows have empty `type_normalized` so they can
+   * never match a real type lookup here — the protection against
+   * surfacing broken types via this path is structural, not via a
+   * filter clause.
    */
   findByType(
     typeNormalized: string,
@@ -233,21 +289,27 @@ export class ExtensionCatalogStore {
     const stmt = this.db.prepare(
       "SELECT * FROM bundle_types WHERE type_normalized = ? AND kind = ?",
     );
-    return stmt.get(typeNormalized, kind) as unknown as
-      | ExtensionTypeRow
+    const row = stmt.get(typeNormalized, kind) as
+      | Record<string, unknown>
       | undefined;
+    return row ? this.mapRow(row) : undefined;
   }
 
   /**
    * Returns all extension entries that target a given base type.
    * Used by ensureTypeLoaded() to find extensions that add methods
    * to a base model type.
+   *
+   * Validation-failed rows have empty `extends_type` so they fall out
+   * of this query naturally.
    */
   findExtensionsForType(baseType: string): ExtensionTypeRow[] {
     const stmt = this.db.prepare(
       "SELECT * FROM bundle_types WHERE extends_type = ? AND kind = 'extension' ORDER BY type_normalized",
     );
-    return stmt.all(baseType) as unknown as ExtensionTypeRow[];
+    return (stmt.all(baseType) as Record<string, unknown>[]).map((r) =>
+      this.mapRow(r)
+    );
   }
 
   /**
