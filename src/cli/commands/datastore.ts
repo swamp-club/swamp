@@ -23,11 +23,11 @@ import { datastoreSetupCommand } from "./datastore_setup.ts";
 import { datastoreSyncCommand } from "./datastore_sync.ts";
 import { datastoreLockCommand } from "./datastore_lock.ts";
 
-/**
- * Parent command group for datastore operations.
- */
 export const datastoreCommand = new Command()
   .description("Manage datastore configuration")
+  .action(function () {
+    this.showHelp();
+  })
   .command("status", datastoreStatusCommand)
   .command("setup", datastoreSetupCommand)
   .command("sync", datastoreSyncCommand)

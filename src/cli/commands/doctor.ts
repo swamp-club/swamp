@@ -21,14 +21,6 @@ import { Command } from "@cliffy/command";
 import { doctorAuditCommand } from "./doctor_audit.ts";
 import { doctorExtensionsCommand } from "./doctor_extensions.ts";
 
-/**
- * Parent namespace for diagnostic subcommands.
- *
- * `doctor` has no `.action()` — Cliffy falls back to printing help when the
- * user runs `swamp doctor` with no subcommand. Future diagnostics (e.g.
- * `doctor datastore`, `doctor vault`) register as sibling `.command(...)`
- * entries.
- */
 export const doctorCommand = new Command()
   .description(
     "Run diagnostics that verify swamp's integrations are healthy.",
@@ -45,5 +37,8 @@ export const doctorCommand = new Command()
     "Check that user-defined extensions in this repo load cleanly",
     "swamp doctor extensions",
   )
+  .action(function () {
+    this.showHelp();
+  })
   .command("audit", doctorAuditCommand)
   .command("extensions", doctorExtensionsCommand);
