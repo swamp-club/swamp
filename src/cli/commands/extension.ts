@@ -27,6 +27,7 @@ import { extensionRemoveCommand } from "./extension_rm.ts";
 import { extensionListCommand } from "./extension_list.ts";
 import { extensionSearchCommand } from "./extension_search.ts";
 import { extensionUpdateCommand } from "./extension_update.ts";
+import { extensionOutdatedCommand } from "./extension_outdated.ts";
 import { extensionVersionCommand } from "./extension_version.ts";
 import { extensionYankCommand } from "./extension_yank.ts";
 import { extensionUnyankCommand } from "./extension_unyank.ts";
@@ -50,6 +51,7 @@ export const extensionCommand = new Command()
   .command("list", extensionListCommand)
   .command("search", extensionSearchCommand)
   .command("update", extensionUpdateCommand)
+  .command("outdated", extensionOutdatedCommand)
   .command("version", extensionVersionCommand)
   .command("yank", extensionYankCommand)
   .command("unyank", extensionUnyankCommand)

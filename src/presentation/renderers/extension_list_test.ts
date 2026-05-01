@@ -79,3 +79,80 @@ Deno.test("ExtensionListRenderer - error throws UserError", () => {
     "boom",
   );
 });
+
+Deno.test("JsonExtensionListRenderer - emits enrichment fields when present", async () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+
+  try {
+    const renderer = createExtensionListRenderer("json");
+    await renderer.handlers().completed({
+      kind: "completed",
+      data: {
+        extensions: [
+          {
+            name: "@ns/ext",
+            version: "2026.01.01.1",
+            pulledAt: "2026-01-01",
+            files: [],
+            latestVersion: "2026.02.01.1",
+            updateStatus: "update_available",
+          },
+          {
+            name: "@ns/offline",
+            version: "2026.01.01.1",
+            pulledAt: "2026-01-01",
+            files: [],
+            latestVersion: null,
+            updateStatus: "unknown_offline",
+          },
+        ],
+      },
+    });
+    assertEquals(logs.length, 1);
+    const parsed = JSON.parse(logs[0]);
+    assertEquals(parsed.extensions[0].latestVersion, "2026.02.01.1");
+    assertEquals(parsed.extensions[0].updateStatus, "update_available");
+    assertEquals(parsed.extensions[1].latestVersion, null);
+    assertEquals(parsed.extensions[1].updateStatus, "unknown_offline");
+  } finally {
+    console.log = originalLog;
+  }
+});
+
+Deno.test("JsonExtensionListRenderer - omits enrichment fields when absent", async () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+
+  try {
+    const renderer = createExtensionListRenderer("json");
+    await renderer.handlers().completed({
+      kind: "completed",
+      data: {
+        extensions: [
+          {
+            name: "@ns/ext",
+            version: "2026.01.01.1",
+            pulledAt: "2026-01-01",
+            files: [],
+          },
+        ],
+      },
+    });
+    const parsed = JSON.parse(logs[0]);
+    assertEquals(
+      "latestVersion" in parsed.extensions[0],
+      false,
+      "latestVersion should not appear when enrichment was not run",
+    );
+    assertEquals(
+      "updateStatus" in parsed.extensions[0],
+      false,
+      "updateStatus should not appear when enrichment was not run",
+    );
+  } finally {
+    console.log = originalLog;
+  }
+});

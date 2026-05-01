@@ -67,3 +67,34 @@ Deno.test("FileExtensionUpdateCheckRepository: read returns empty map for corrup
     assertEquals(data, {});
   });
 });
+
+Deno.test("FileExtensionUpdateCheckRepository: write is atomic (no partial-write visibility)", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new FileExtensionUpdateCheckRepository(dir);
+    const initial = {
+      "@swamp/initial": {
+        checkedAt: "2026-03-30T12:00:00.000Z",
+        latestVersion: "2026.03.30.1",
+      },
+    };
+    await repo.write(initial);
+
+    // Concurrent writers must not corrupt the file: reads always see
+    // a consistent committed map (either the initial value or one of
+    // the writers' values), never a partial JSON document.
+    const writers = Array.from({ length: 8 }, (_, i) => ({
+      [`@swamp/writer-${i}`]: {
+        checkedAt: "2026-04-01T00:00:00.000Z",
+        latestVersion: `2026.04.01.${i}`,
+      },
+    }));
+    await Promise.all(writers.map((data) => repo.write(data)));
+
+    // Final read must succeed (atomic rename guarantees a complete file).
+    const final = await repo.read();
+    // One of the writers' maps wins (last-writer-wins on the whole map);
+    // the file is never garbage.
+    assertEquals(typeof final, "object");
+    assertEquals(Object.keys(final).length, 1);
+  });
+});

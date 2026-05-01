@@ -35,6 +35,110 @@ published version and compute the next CalVer version. Accepts an extension
 name directly or `--manifest <path>` to read the name from a manifest file.
 Does not require a swamp repository — works from any directory.
 
+## Freshness
+
+Two opt-in user-facing surfaces report whether installed extensions are
+behind the registry's latest version. There is no passive on-load
+warning — extension freshness is surfaced only when the user explicitly
+asks for it.
+
+### `swamp extension list`
+
+Augments the installed-extensions table with a "latest" column when
+stdout is a terminal. Outdated rows are marked `(update available)`;
+rows where the registry could not be reached are marked
+`(offline — last check failed)`. Two flags control the behavior:
+
+- `--check-updates` forces enrichment on regardless of stdout type
+  (useful in CI when the user explicitly wants the side-by-side view
+  in JSON output).
+- `--no-check-updates` forces enrichment off.
+
+Default behavior: enrichment runs when stdout is a terminal AND output
+mode is `log`. JSON output and piped invocations skip enrichment by
+default to keep scripted use of `extension list` cheap and offline.
+
+JSON output: when enrichment ran, each entry carries optional
+`latestVersion` and `updateStatus` fields. `updateStatus` is one of
+`up_to_date`, `update_available`, or `unknown_offline`. Consumers can
+distinguish "didn't try" (fields absent) from "tried and failed"
+(`updateStatus: "unknown_offline"`, `latestVersion: null`).
+
+### `swamp extension outdated`
+
+A dedicated subcommand intended for CI gates and scheduled checks.
+Renders all non-up_to_date statuses (update_available, not_found,
+failed) so users see them, but the EXIT CODE depends only on
+update_available presence:
+
+- Exit 1 if at least one extension has status `update_available`.
+- Exit 0 otherwise (including when only `not_found` or `failed` are
+  present).
+
+This deliberate semantic means a CI gate
+`swamp extension outdated && deploy` fails only on a clear
+newer-version-exists signal, not on transient registry errors. The
+exit-code semantic is a public contract: broadening it later (to also
+fail on not_found/failed) would silently break pipelines built on the
+strict semantic.
+
+### Cache and registry behavior
+
+Both surfaces share a 24-hour on-disk cache stored at
+`.swamp/extension-update-checks.json`. The TTL matches the
+`CHECK_INTERVAL_MS` constant in `src/domain/update/update_check_cache.ts`
+already used by datastore auto-update. Within the 24h window,
+freshness data is served from cache without contacting the registry.
+
+On registry failure for a stale entry, the cache is stamped with
+`latestVersion: installedVersion` to suppress retries for the next
+24h. This is a deliberate trade-off: during that 24h window, a
+stamped entry will read as `up_to_date` even though the latest
+version is genuinely unknown — the alternative (every command
+hammering an unreachable registry) is worse for advisory data. The
+in-memory enriched entry returned by the list composer additionally
+carries `updateStatus: "unknown_offline"` so the user can distinguish
+"freshly failed" from "cache-fresh up_to_date" within the same
+invocation. After 24h, the cache entry expires and the next command
+re-attempts the registry call.
+
+The cache file itself is written atomically via `atomicWriteTextFile`,
+so concurrent writers cannot corrupt the file. The repository uses
+read-modify-write on the whole map, so under parallel invocations one
+writer's individual mutations may be lost (last-writer-wins on the
+whole map). For a 24h advisory cache where each entry is
+self-contained, lost mutations simply re-occur on the next stale
+check — never file corruption. A per-extension keyed file or kvstore
+would eliminate the trade-off and is a future improvement.
+
+### Why no passive on-load warning
+
+The original feature request (issue #199) proposed a per-extension
+warning emitted on every command that resolves an extension bundle.
+After research into how comparable tools handle this, swamp ships
+the explicit-only design instead:
+
+- Terraform, OpenTofu, and Ansible all explicitly chose against
+  passive nags for plugin/provider staleness, treating it as user
+  opt-in. OpenTofu re-litigated the design (issue #2032, closed
+  not-planned) citing CI-breakage concerns.
+- Pulumi ships a passive nag (for the CLI itself, not plugins) and
+  has documented user pain at length: per-invocation noise (issue
+  #5576), wrong severity level (issue #10578), unactionable warnings
+  when package managers haven't caught up (issue #2426).
+- No surveyed tool has shipped a generally-loved per-extension
+  passive warning. gh's extension version checker is the closest
+  attempt and is the documented cautionary tale (issue #10235:
+  blocking PostRun call hangs commands for minutes).
+
+If real demand for a passive surface emerges, the path forward is
+documented but not implemented: an end-of-command, single-line,
+aggregated, info-level (not warn) advisory with 24h display
+cooldown, TTY gating, env-var suppression
+(`SWAMP_NO_UPDATE_NOTIFIER`), and non-blocking time-budgeted
+registry calls. Per-extension warnings at the start of every command
+are explicitly out.
+
 ## Manifest
 
 Every extension is defined by a `manifest.yaml` file. The manifest declares
