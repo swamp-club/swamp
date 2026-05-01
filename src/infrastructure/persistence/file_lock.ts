@@ -39,19 +39,11 @@ import { getSwampLogger } from "../logging/logger.ts";
 /**
  * Check if a process with the given PID is no longer running.
  *
- * POSIX hosts use `Deno.kill(pid, "SIGCONT")` — SIGCONT is a no-op
- * for an already-running process and produces a `NotFound` error
- * when the PID is gone.
- *
- * Windows hosts shell out to `tasklist /FI "PID eq <pid>" /FO CSV
- * /NH`, which prints a CSV row when the PID is alive and the literal
- * `INFO: No tasks are running which match the specified criteria.`
- * (to stdout) when it isn't. `tasklist.exe` ships with every
- * Windows install since XP, so no extra dependency.
- *
- * Returns `false` (not dead) on any unexpected error — TTL-based
- * detection remains the fallback so a busted probe never causes us
- * to clobber a valid lock.
+ * POSIX hosts use `Deno.kill(pid, "SIGCONT")` — a no-op for live
+ * processes, `NotFound` when the PID is gone. Windows shells out to
+ * `tasklist`. Returns `false` (not dead) on any unexpected error so
+ * TTL-based detection remains the fallback and a busted probe never
+ * clobbers a valid lock.
  */
 function isProcessDead(pid: number): boolean {
   if (Deno.build.os === "windows") {
@@ -80,14 +72,15 @@ function isProcessDeadWindows(pid: number): boolean {
       // Non-zero exit from tasklist itself — fall back to TTL.
       return false;
     }
-    const stdout = new TextDecoder().decode(result.stdout).trim();
-    // `INFO:` to stdout means "no match" — process is gone.
-    // Empty stdout shouldn't happen under `/NH`, but treat it as gone too.
-    if (stdout.length === 0 || stdout.startsWith("INFO:")) {
-      return true;
-    }
-    // CSV row produced — process is alive.
-    return false;
+    const stdout = new TextDecoder().decode(result.stdout);
+    // tasklist always exits 0 — alive vs dead is signalled by output content.
+    // The CSV row (with /NH) always quotes the PID in the second column:
+    //   "swamp.exe","1234","Console","1","123,456 K"
+    // The "no match" message is localized on non-English Windows
+    // (`INFO:` / `信息:` / `情報:` / `INFORMATIONEN:` …) but never
+    // contains a bare-quoted PID, so substring-matching `"<pid>"` is
+    // locale-agnostic.
+    return !stdout.includes(`"${pid}"`);
   } catch {
     // tasklist not on PATH, or spawn failed — fall back to TTL.
     return false;
