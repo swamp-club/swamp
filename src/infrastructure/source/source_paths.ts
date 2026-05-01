@@ -18,24 +18,14 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { join } from "@std/path";
-
-/**
- * Get the home directory path.
- */
-function getHomeDir(): string {
-  const home = Deno.env.get("HOME");
-  if (!home) {
-    throw new Error("HOME environment variable is not set");
-  }
-  return home;
-}
+import { homeDirectory } from "../persistence/paths.ts";
 
 /**
  * Get the swamp source directory path.
  * Located at ~/.swamp/source/
  */
 export function getSwampSourceDir(): string {
-  return join(getHomeDir(), ".swamp", "source");
+  return join(homeDirectory(), ".swamp", "source");
 }
 
 /**

@@ -46,6 +46,10 @@ import {
 import type { DistributedLock } from "../../domain/datastore/distributed_lock.ts";
 import { getSwampLogger } from "../logging/logger.ts";
 import { getTracer, SpanStatusCode } from "../tracing/mod.ts";
+import {
+  registerShutdownHandler,
+  type ShutdownHandlerHandle,
+} from "../process/shutdown_handlers.ts";
 import { summarizeSyncError } from "./sync_error_diagnostic.ts";
 
 /** Options for registering a datastore sync lifecycle. */
@@ -81,38 +85,39 @@ const PROGRESS_LOG_INTERVAL_MS = 30_000;
 
 /** Map of all registered lock entries, keyed by lock name. */
 const entries: Map<string, SyncEntry> = new Map();
-let signalHandler: (() => void) | null = null;
+let shutdownHandle: ShutdownHandlerHandle | null = null;
 
 /**
- * Installs or updates the SIGINT handler to release all held locks.
+ * Installs the SIGINT handler to release all held locks. SIGINT-only by
+ * design: this fast-path handler runs on Ctrl-C and `Deno.exit(130)`s
+ * after a 5s force-exit deadline. Long-form POSIX signals (SIGTERM,
+ * SIGHUP) are handled by command-level shutdown logic, not here.
  */
 function installSignalHandler(): void {
-  if (signalHandler) return;
+  if (shutdownHandle) return;
 
-  signalHandler = () => {
-    const forceExit = setTimeout(() => Deno.exit(130), 5_000);
-    const releases = [...entries.values()]
-      .filter((e) => e.lock)
-      .map((e) => e.lock!.release().catch(() => {}));
-    Promise.all(releases).finally(() => {
-      clearTimeout(forceExit);
-      Deno.exit(130);
-    });
-  };
-  Deno.addSignalListener("SIGINT", signalHandler);
+  shutdownHandle = registerShutdownHandler({
+    handler: () => {
+      const forceExit = setTimeout(() => Deno.exit(130), 5_000);
+      const releases = [...entries.values()]
+        .filter((e) => e.lock)
+        .map((e) => e.lock!.release().catch(() => {}));
+      Promise.all(releases).finally(() => {
+        clearTimeout(forceExit);
+        Deno.exit(130);
+      });
+    },
+    includePosixSignals: false,
+  });
 }
 
 /**
  * Removes the SIGINT handler if no entries remain.
  */
 function maybeRemoveSignalHandler(): void {
-  if (entries.size > 0 || !signalHandler) return;
-  try {
-    Deno.removeSignalListener("SIGINT", signalHandler);
-  } catch {
-    // May already be removed
-  }
-  signalHandler = null;
+  if (entries.size > 0 || !shutdownHandle) return;
+  shutdownHandle.dispose();
+  shutdownHandle = null;
 }
 
 /**

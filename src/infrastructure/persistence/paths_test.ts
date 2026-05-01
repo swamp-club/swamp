@@ -22,6 +22,7 @@ import {
   bundleNamespace,
   getSwampConfigDir,
   getSwampDataDir,
+  homeDirectory,
   SWAMP_DATA_DIR,
   SWAMP_MARKER_FILE,
   SWAMP_SUBDIRS,
@@ -242,6 +243,61 @@ Deno.test("getSwampDataDir throws when neither HOME nor USERPROFILE set", () => 
     else Deno.env.delete("HOME");
     if (originalProfile) Deno.env.set("USERPROFILE", originalProfile);
     else Deno.env.delete("USERPROFILE");
+  }
+});
+
+Deno.test("homeDirectory: returns HOME when set", () => {
+  const originalHome = Deno.env.get("HOME");
+  const originalProfile = Deno.env.get("USERPROFILE");
+  try {
+    Deno.env.set("HOME", "/home/testuser");
+    // Set USERPROFILE too — HOME must take precedence on every OS so
+    // POSIX behavior is consistent regardless of stray Windows-style env
+    // vars in the inherited environment.
+    Deno.env.set("USERPROFILE", "C:\\Users\\other");
+    assertEquals(homeDirectory(), "/home/testuser");
+  } finally {
+    if (originalHome !== undefined) Deno.env.set("HOME", originalHome);
+    else Deno.env.delete("HOME");
+    if (originalProfile !== undefined) {
+      Deno.env.set("USERPROFILE", originalProfile);
+    } else Deno.env.delete("USERPROFILE");
+  }
+});
+
+Deno.test("homeDirectory: falls back to USERPROFILE when HOME is unset", () => {
+  const originalHome = Deno.env.get("HOME");
+  const originalProfile = Deno.env.get("USERPROFILE");
+  try {
+    Deno.env.delete("HOME");
+    Deno.env.set("USERPROFILE", "C:\\Users\\testuser");
+    assertEquals(homeDirectory(), "C:\\Users\\testuser");
+  } finally {
+    if (originalHome !== undefined) Deno.env.set("HOME", originalHome);
+    else Deno.env.delete("HOME");
+    if (originalProfile !== undefined) {
+      Deno.env.set("USERPROFILE", originalProfile);
+    } else Deno.env.delete("USERPROFILE");
+  }
+});
+
+Deno.test("homeDirectory: throws when neither HOME nor USERPROFILE is set", () => {
+  const originalHome = Deno.env.get("HOME");
+  const originalProfile = Deno.env.get("USERPROFILE");
+  try {
+    Deno.env.delete("HOME");
+    Deno.env.delete("USERPROFILE");
+    assertThrows(
+      () => homeDirectory(),
+      Error,
+      "Cannot determine home directory: neither HOME nor USERPROFILE is set",
+    );
+  } finally {
+    if (originalHome !== undefined) Deno.env.set("HOME", originalHome);
+    else Deno.env.delete("HOME");
+    if (originalProfile !== undefined) {
+      Deno.env.set("USERPROFILE", originalProfile);
+    } else Deno.env.delete("USERPROFILE");
   }
 });
 

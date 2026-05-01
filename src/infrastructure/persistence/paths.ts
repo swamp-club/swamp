@@ -192,6 +192,28 @@ export function toAbsolutePath(repoDir: string, relativePath: string): string {
 }
 
 /**
+ * Returns the current user's home directory in a cross-platform way.
+ *
+ * Reads `HOME` first (POSIX) and falls back to `USERPROFILE` (Windows).
+ * Throws when neither is set so callers fail loudly rather than building
+ * paths from `undefined`. Sites that intentionally tolerate a missing
+ * home (e.g., the `~/file` literal-pass-through in the input parser)
+ * must catch this error explicitly.
+ *
+ * @returns The absolute path to the user's home directory
+ * @throws Error when neither HOME nor USERPROFILE is set
+ */
+export function homeDirectory(): string {
+  const home = Deno.env.get("HOME") ?? Deno.env.get("USERPROFILE");
+  if (!home) {
+    throw new Error(
+      "Cannot determine home directory: neither HOME nor USERPROFILE is set",
+    );
+  }
+  return home;
+}
+
+/**
  * Returns the user-level swamp data directory (`~/.swamp/`).
  *
  * This directory stores operational data like installed binaries and
