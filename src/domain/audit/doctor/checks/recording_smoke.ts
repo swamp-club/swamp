@@ -70,8 +70,17 @@ export const recordingSmokeTestCheck: PreflightCheck = {
       };
     }
 
+    // ensureDir is a no-op when the directory already exists, so it does not
+    // surface a writability problem on its own. Follow it with an active
+    // write-probe so an existing-but-readonly audit dir is caught here rather
+    // than masquerading as hook normalizer drift further down.
     try {
       await ensureDir(ctx.auditDir);
+      const probe = await Deno.makeTempFile({
+        dir: ctx.auditDir,
+        prefix: ".doctor-write-probe-",
+      });
+      await Deno.remove(probe);
     } catch (error) {
       if (error instanceof Deno.errors.PermissionDenied) {
         return {
