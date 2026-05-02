@@ -3334,3 +3334,96 @@ export const model = {
     await Deno.remove(modelsDir, { recursive: true });
   }
 });
+
+Deno.test("UserModelLoader buildIndex: missing cached bundle is detected and recreated (swamp-club#212)", async () => {
+  // Reproduces the swamp-club#212 user repro end-to-end:
+  //   1. buildIndex populates catalog + writes bundle.
+  //   2. The bundle file is deleted out-of-band (manual rm, partial GC, etc.).
+  //   3. Re-running buildIndex previously failed with `NotFound` at
+  //      importBundleByPath because findStaleFiles only compared source
+  //      content fingerprint and never noticed the bundle was gone.
+  // The freshness gate now stats `bundle_path` for every fingerprint-fresh
+  // row and falls through to rebundleAndUpdateCatalog when the file is
+  // missing. This test asserts no ENOENT and that the bundle is on disk
+  // again after the second buildIndex.
+  //
+  // Note on Deno's per-process import cache: re-importing the same file
+  // URL within a single test process serves the cached module, so this
+  // test can't assert anything about the *contents* of the recovered
+  // module — only that recovery happened (no throw + bundle restored).
+  // Production runs are fresh subprocesses without that cache, which is
+  // why the bug manifests there.
+  const ts = Date.now();
+  const typeId = `@user/missing-bundle-${ts}`;
+  const modelCode = `
+import { z } from "npm:zod@4";
+
+export const model = {
+  type: "${typeId}",
+  version: "2026.05.02.1",
+  methods: {
+    run: {
+      description: "Run",
+      arguments: z.object({}),
+      execute: async () => ({ dataHandles: [] }),
+    },
+  },
+};
+`;
+
+  const repoDir = await Deno.makeTempDir({
+    prefix: "swamp_212_repo_",
+  });
+  const modelsDir = await Deno.makeTempDir({
+    prefix: "swamp_212_models_",
+  });
+  const dbPath = join(repoDir, ".swamp", "_extension_catalog.db");
+
+  try {
+    await Deno.writeTextFile(join(modelsDir, "model.ts"), modelCode);
+
+    // Cold-start populates the catalog and writes the bundle.
+    const catalog1 = new ExtensionCatalogStore(dbPath);
+    const loader1 = new UserModelLoader(testDenoRuntime, repoDir);
+    await loader1.buildIndex(modelsDir, catalog1);
+    catalog1.close();
+
+    const ns = bundleNamespace(modelsDir, repoDir);
+    const bundlePath = join(repoDir, ".swamp", "bundles", ns, "model.js");
+    assertEquals(
+      await Deno.stat(bundlePath).then(() => true).catch(() => false),
+      true,
+      "Cold-start must write the bundle to disk",
+    );
+
+    // Simulate the user's rm.
+    await Deno.remove(bundlePath);
+
+    // Second buildIndex must NOT throw NotFound — the freshness gate
+    // detects the missing bundle and triggers rebundleAndUpdateCatalog.
+    const catalog2 = new ExtensionCatalogStore(dbPath);
+    const loader2 = new UserModelLoader(testDenoRuntime, repoDir);
+    const result = await loader2.buildIndex(modelsDir, catalog2);
+    catalog2.close();
+
+    // Bundle is restored on disk and the rebundle landed in `loaded`.
+    assertEquals(
+      await Deno.stat(bundlePath).then(() => true).catch(() => false),
+      true,
+      "Bundle file must be recreated after the missing-bundle recovery",
+    );
+    assertEquals(
+      result.loaded.length > 0,
+      true,
+      "Stale-files loop must report the recovered file as loaded",
+    );
+    assertEquals(
+      result.failed.length,
+      0,
+      "Recovery must complete without surfacing failures",
+    );
+  } finally {
+    await Deno.remove(repoDir, { recursive: true });
+    await Deno.remove(modelsDir, { recursive: true });
+  }
+});

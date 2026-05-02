@@ -731,7 +731,10 @@ export class UserModelLoader {
     if (modelRegistry.get(entry.type_normalized)) return; // Already loaded
 
     // Import directly via file URL for the cached bundle
-    const module = await this.importBundleByPath(entry.bundle_path);
+    const module = await this.importBundleByPath({
+      bundlePath: entry.bundle_path,
+      sourcePath: entry.source_path,
+    });
 
     if (!module.model) {
       throw new Error(`Bundle has no model export: ${entry.bundle_path}`);
@@ -815,7 +818,10 @@ export class UserModelLoader {
   ): Promise<boolean> {
     let module: Record<string, unknown>;
     try {
-      module = await this.importBundleByPath(entry.bundle_path);
+      module = await this.importBundleByPath({
+        bundlePath: entry.bundle_path,
+        sourcePath: entry.source_path,
+      });
     } catch {
       return false;
     }
@@ -852,7 +858,10 @@ export class UserModelLoader {
    * Logs warnings for any failures during extension processing.
    */
   private async importAndExtendBundle(entry: ExtensionTypeRow): Promise<void> {
-    const module = await this.importBundleByPath(entry.bundle_path);
+    const module = await this.importBundleByPath({
+      bundlePath: entry.bundle_path,
+      sourcePath: entry.source_path,
+    });
 
     if (!module.extension) {
       throw new Error(`Bundle has no extension export: ${entry.bundle_path}`);
@@ -870,18 +879,56 @@ export class UserModelLoader {
   /**
    * Imports a cached bundle directly by its file path.
    * Fixes zod imports and CJS/ESM interop before importing.
+   *
+   * Recovers from a missing bundle file (manual rm, partial GC, failed
+   * previous bundle attempt, concurrent rm) by rebundling from source —
+   * defense-in-depth alongside the freshness-gate check in
+   * bundle_freshness.findStaleFiles. This catch covers paths that bypass
+   * freshness, notably attachPendingExtensionsForType (called from
+   * hotLoadModels after `swamp extension pull`) which iterates catalog
+   * rows directly. swamp-club#212.
+   *
+   * Caller contract: this method is called at most once per `bundlePath`
+   * per process. Deno caches imports by URL, so a second call for the same
+   * path in one process would serve a pre-rebundle module from cache.
    */
   private async importBundleByPath(
-    bundlePath: string,
+    paths: { bundlePath: string; sourcePath: string },
   ): Promise<Record<string, unknown>> {
-    // Fix zod imports and CJS/ESM interop in the cached file on disk
-    let js = await Deno.readTextFile(bundlePath);
+    let js: string;
+    try {
+      js = await Deno.readTextFile(paths.bundlePath);
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) throw error;
+      js = await this.recoverMissingBundle(paths);
+    }
     const fixed = fixCjsEsmInterop(rewriteZodImports(js));
     if (fixed !== js) {
       js = fixed;
-      await Deno.writeTextFile(bundlePath, js);
+      await Deno.writeTextFile(paths.bundlePath, js);
     }
-    return await import(toFileUrl(bundlePath).href);
+    return await import(toFileUrl(paths.bundlePath).href);
+  }
+
+  /**
+   * Rebundles from source and writes to bundlePath. Used by the
+   * importBundleByPath ENOENT fallback. Errors propagate — if rebundle
+   * itself fails, the caller sees the rebundle failure rather than the
+   * original ENOENT, which is more actionable.
+   */
+  private async recoverMissingBundle(
+    paths: { bundlePath: string; sourcePath: string },
+  ): Promise<string> {
+    const denoPath = await this.denoRuntime.ensureDeno();
+    const denoConfigPath = this.findNearestDenoConfig(paths.sourcePath);
+    const js = await bundleExtension(paths.sourcePath, denoPath, {
+      denoConfigPath,
+    });
+    await Deno.mkdir(dirname(paths.bundlePath), { recursive: true });
+    await Deno.writeTextFile(paths.bundlePath, js);
+    logger
+      .warn`Recovered missing bundle for ${paths.sourcePath} on demand`;
+    return js;
   }
 
   /**

@@ -237,7 +237,7 @@ Deno.test("findStaleFiles: matching fingerprint → not stale", async () => {
       source_path: file,
       type_normalized: "@user/a",
       kind: "model",
-      bundle_path: "/ignored",
+      bundle_path: "",
       version: "",
       description: "",
       extends_type: "",
@@ -268,7 +268,7 @@ Deno.test("findStaleFiles: mismatching fingerprint → stale", async () => {
       source_path: file,
       type_normalized: "@user/a",
       kind: "model",
-      bundle_path: "/ignored",
+      bundle_path: "",
       version: "",
       description: "",
       extends_type: "",
@@ -302,7 +302,7 @@ Deno.test("findStaleFiles: catches mtime-preserving content change (#125)", asyn
       source_path: file,
       type_normalized: "@user/a",
       kind: "model",
-      bundle_path: "/ignored",
+      bundle_path: "",
       version: "",
       description: "",
       extends_type: "",
@@ -343,7 +343,7 @@ Deno.test("findStaleFiles: deleted file is removed from catalog", async () => {
       source_path: survivor,
       type_normalized: "@user/s",
       kind: "model",
-      bundle_path: "/ignored",
+      bundle_path: "",
       version: "",
       description: "",
       extends_type: "",
@@ -354,7 +354,7 @@ Deno.test("findStaleFiles: deleted file is removed from catalog", async () => {
       source_path: deletedPath,
       type_normalized: "@user/d",
       kind: "model",
-      bundle_path: "/ignored",
+      bundle_path: "",
       version: "",
       description: "",
       extends_type: "",
@@ -400,7 +400,7 @@ Deno.test("findStaleFiles: kinds filter scopes both the staleness check and dele
       source_path: driverFile,
       type_normalized: "@user/d",
       kind: "driver",
-      bundle_path: "/ignored",
+      bundle_path: "",
       version: "",
       description: "",
       extends_type: "",
@@ -411,7 +411,7 @@ Deno.test("findStaleFiles: kinds filter scopes both the staleness check and dele
       source_path: join(driverDir, "gone.ts"),
       type_normalized: "@user/gone",
       kind: "driver",
-      bundle_path: "/ignored",
+      bundle_path: "",
       version: "",
       description: "",
       extends_type: "",
@@ -422,7 +422,7 @@ Deno.test("findStaleFiles: kinds filter scopes both the staleness check and dele
       source_path: vaultFile,
       type_normalized: "@user/v",
       kind: "vault",
-      bundle_path: "/ignored",
+      bundle_path: "",
       version: "",
       description: "",
       extends_type: "",
@@ -492,6 +492,150 @@ Deno.test("findStaleFiles: missing source dir is silently skipped", async () => 
   } catch (err) {
     // Cleanup already happened — swallow.
     if (!(err instanceof Deno.errors.NotFound)) throw err;
+  }
+});
+
+// -- swamp-club#212: bundle-existence gate -----------------------------
+// findStaleFiles previously decided freshness purely from source content
+// fingerprint. If the cached bundle file at bundle_path was deleted out
+// from under us (manual rm, partial GC, failed previous bundle attempt)
+// while source content stayed unchanged, the catalog row was reported
+// fresh and a downstream importBundleByPath ENOENT'd. The gate now also
+// checks that the bundle file physically exists.
+
+Deno.test("findStaleFiles: matching fingerprint + missing bundle → stale (#212)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp_bf_212_missing_" });
+  try {
+    const file = join(dir, "a.ts");
+    await Deno.writeTextFile(file, "export const a = 1;");
+    const fp = await computeSourceFingerprint(file, dir);
+
+    const catalog = new FakeCatalog();
+    catalog.add({
+      source_path: file,
+      type_normalized: "@user/a",
+      kind: "model",
+      bundle_path: join(dir, "definitely-not-here.js"),
+      version: "",
+      description: "",
+      extends_type: "",
+      source_mtime: "",
+      source_fingerprint: fp,
+    });
+
+    const stale = await findStaleFiles({
+      modelsDir: dir,
+      catalog,
+      discoverFiles: discoverTsFiles,
+      kinds: ["model"],
+    });
+    assertEquals(stale.length, 1);
+    assertEquals(stale[0].relativePath, "a.ts");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("findStaleFiles: matching fingerprint + missing bundle + validation_failed → not stale (#212 vs #209)", async () => {
+  // validation_failed rows must skip the bundle-existence check —
+  // rebundling them is the inverse of the loop swamp-club#209 sealed.
+  const dir = await Deno.makeTempDir({ prefix: "swamp_bf_212_validfail_" });
+  try {
+    const file = join(dir, "broken.ts");
+    await Deno.writeTextFile(file, "export const broken = 1;");
+    const fp = await computeSourceFingerprint(file, dir);
+
+    const catalog = new FakeCatalog();
+    catalog.add({
+      source_path: file,
+      type_normalized: "",
+      kind: "model",
+      bundle_path: join(dir, "definitely-not-here.js"),
+      version: "",
+      description: "",
+      extends_type: "",
+      source_mtime: "",
+      source_fingerprint: fp,
+      validation_failed: true,
+    });
+
+    const stale = await findStaleFiles({
+      modelsDir: dir,
+      catalog,
+      discoverFiles: discoverTsFiles,
+      kinds: ["model"],
+    });
+    assertEquals(stale.length, 0);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("findStaleFiles: matching fingerprint + bundle exists → not stale (#212)", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp_bf_212_present_" });
+  try {
+    const file = join(dir, "a.ts");
+    const bundle = join(dir, "a.js");
+    await Deno.writeTextFile(file, "export const a = 1;");
+    await Deno.writeTextFile(bundle, "/* fake compiled bundle */");
+    const fp = await computeSourceFingerprint(file, dir);
+
+    const catalog = new FakeCatalog();
+    catalog.add({
+      source_path: file,
+      type_normalized: "@user/a",
+      kind: "model",
+      bundle_path: bundle,
+      version: "",
+      description: "",
+      extends_type: "",
+      source_mtime: "",
+      source_fingerprint: fp,
+    });
+
+    const stale = await findStaleFiles({
+      modelsDir: dir,
+      catalog,
+      discoverFiles: discoverTsFiles,
+      kinds: ["model"],
+    });
+    assertEquals(stale.length, 0);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
+Deno.test("findStaleFiles: empty bundle_path → bundle-existence check skipped (#212)", async () => {
+  // Legacy/test rows without a bundle_path must not regress to
+  // permanently-stale just because the new gate has nothing to stat.
+  const dir = await Deno.makeTempDir({ prefix: "swamp_bf_212_empty_path_" });
+  try {
+    const file = join(dir, "a.ts");
+    await Deno.writeTextFile(file, "export const a = 1;");
+    const fp = await computeSourceFingerprint(file, dir);
+
+    const catalog = new FakeCatalog();
+    catalog.add({
+      source_path: file,
+      type_normalized: "@user/a",
+      kind: "model",
+      bundle_path: "",
+      version: "",
+      description: "",
+      extends_type: "",
+      source_mtime: "",
+      source_fingerprint: fp,
+    });
+
+    const stale = await findStaleFiles({
+      modelsDir: dir,
+      catalog,
+      discoverFiles: discoverTsFiles,
+      kinds: ["model"],
+    });
+    assertEquals(stale.length, 0);
+  } finally {
+    await Deno.remove(dir, { recursive: true });
   }
 });
 
@@ -582,7 +726,7 @@ Deno.test("findStaleFiles: broken transitive dep — stale once, then stable (#2
       source_path: entry,
       type_normalized: "@user/entry",
       kind: "model",
-      bundle_path: "/ignored",
+      bundle_path: "",
       version: "",
       description: "",
       extends_type: "",
@@ -618,7 +762,7 @@ Deno.test("findStaleFiles: broken transitive dep — stale once, then stable (#2
       source_path: entry,
       type_normalized: "@user/entry",
       kind: "model",
-      bundle_path: "/ignored",
+      bundle_path: "",
       version: "",
       description: "",
       extends_type: "",
