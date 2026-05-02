@@ -17,8 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { getLogger } from "@logtape/logtape";
 import { relative, resolve } from "@std/path";
 import { resolveLocalImports } from "../models/local_import_resolver.ts";
+
+const logger = getLogger(["swamp", "extensions", "bundle-freshness"]);
 
 /**
  * The extension-catalog kinds this helper can query. Declared
@@ -48,6 +51,8 @@ export type FreshnessKind =
 export interface FreshnessCatalogRow {
   source_path: string;
   source_fingerprint?: string;
+  bundle_path?: string;
+  validation_failed?: boolean;
 }
 
 /**
@@ -175,6 +180,15 @@ async function hashFile(
   return toHex(digest);
 }
 
+async function bundleExists(bundlePath: string): Promise<boolean> {
+  try {
+    await Deno.stat(bundlePath);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 function toHex(buffer: ArrayBuffer): string {
   const view = new Uint8Array(buffer);
   let out = "";
@@ -271,6 +285,26 @@ export async function findStaleFiles(
           cache,
         );
         if (fingerprint !== catalogEntry.source_fingerprint) {
+          stale.push({ absolutePath, relativePath, baseDir: dir });
+          continue;
+        }
+
+        // Source content is unchanged, but the cached bundle may have been
+        // deleted out from under us (manual rm, partial GC, failed previous
+        // bundle attempt). Without this check the catalog row stays "fresh"
+        // and a downstream importBundleByPath ENOENTs (swamp-club#212).
+        //
+        // validation_failed rows are skipped: rebundling them is a no-op
+        // cycle — bundle still fails schema validation, markCatalogValidationFailed
+        // re-pins the same fingerprint, every command spawns deno bundle.
+        // That is the inverse of the loop swamp-club#209 sealed.
+        if (
+          catalogEntry.bundle_path &&
+          !catalogEntry.validation_failed &&
+          !(await bundleExists(catalogEntry.bundle_path))
+        ) {
+          logger
+            .warn`Rebundling ${relativePath}: cached bundle missing from disk`;
           stale.push({ absolutePath, relativePath, baseDir: dir });
         }
       } catch {
