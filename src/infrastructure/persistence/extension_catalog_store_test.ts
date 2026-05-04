@@ -21,6 +21,7 @@ import { assertEquals } from "@std/assert";
 import { DatabaseSync } from "node:sqlite";
 import { dirname, join } from "@std/path";
 import { ensureDirSync } from "@std/fs";
+import { canonicalizePath } from "./canonicalize_path.ts";
 import {
   ExtensionCatalogStore,
   type ExtensionTypeRow,
@@ -815,8 +816,16 @@ Deno.test("ExtensionCatalogStore: migrates post-#1286 schema by backfilling stat
   const store = new ExtensionCatalogStore(dbPath);
   const rows = store.findByKind("model");
   assertEquals(rows.length, 2);
-  const healthy = rows.find((r) => r.source_path === healthyPath);
-  const broken = rows.find((r) => r.source_path === brokenPath);
+  // Match against the canonical form — the W1a migration's sub-step 4
+  // canonicalized every row's source_path. On Windows the seeded
+  // healthy/brokenPath are backslash-form; the stored row is
+  // lowercase + forward-slash.
+  const healthy = rows.find((r) =>
+    r.source_path === canonicalizePath(healthyPath)
+  );
+  const broken = rows.find((r) =>
+    r.source_path === canonicalizePath(brokenPath)
+  );
   assertEquals(healthy?.state, "Indexed");
   assertEquals(broken?.state, "ValidationFailed");
   store.close();
@@ -863,12 +872,18 @@ Deno.test("ExtensionCatalogStore: W1a migration backfills extension_name for pul
   // Read identity columns directly via SQL — the catalog deliberately
   // does not surface extension_name/extension_version on
   // ExtensionTypeRow per W1a Option A; W1b's ExtensionRepository owns
-  // the read path.
+  // the read path. Look up by canonical source_path because the W1a
+  // migration's sub-step 4 canonicalized every row's path; on Windows
+  // the seeded `sourcePath` is backslash-form and won't match the
+  // stored canonical (lowercase + forward-slash) form.
   const probe = (store as unknown as {
     db: DatabaseSync;
   }).db.prepare(
     "SELECT extension_name, extension_version FROM bundle_types WHERE source_path = ?",
-  ).get(sourcePath) as { extension_name: string; extension_version: string };
+  ).get(canonicalizePath(sourcePath)) as {
+    extension_name: string;
+    extension_version: string;
+  };
   assertEquals(probe.extension_name, "@scope/foo");
   assertEquals(probe.extension_version, "");
   store.close();
@@ -908,7 +923,10 @@ Deno.test("ExtensionCatalogStore: W1a migration backfills @local/<repo> for rows
     db: DatabaseSync;
   }).db.prepare(
     "SELECT extension_name, extension_version FROM bundle_types WHERE source_path = ?",
-  ).get(sourcePath) as { extension_name: string; extension_version: string };
+  ).get(canonicalizePath(sourcePath)) as {
+    extension_name: string;
+    extension_version: string;
+  };
   // basename(repoRoot) is the temp dir's basename — we only assert the
   // @local/ prefix and the literal "0.0.0" version since the dir name
   // varies across runs.
@@ -1052,10 +1070,21 @@ Deno.test("ExtensionCatalogStore: W1a migration backfills mixed pulled + local +
     state: string;
   }>;
 
+  // The W1a migration's sub-step 4 canonicalized every row's
+  // source_path. On Windows the seeded paths above are backslash-form;
+  // the stored rows are lowercase + forward-slash. Look up against the
+  // canonical form so this test passes on both platforms.
+  const cPulledHealthy = canonicalizePath(pulledHealthy);
+  const cPulledBroken = canonicalizePath(pulledBroken);
+  const cPulledOtherExt = canonicalizePath(pulledOtherExt);
+  const cLocalPath = canonicalizePath(localPath);
+  const cSourceMountedPath = canonicalizePath(sourceMountedPath);
+  const cUnmatchedPath = canonicalizePath(unmatchedPath);
+
   // Unmatched row was dropped at sub-step 7. Five remain.
   assertEquals(rows.length, 5);
   assertEquals(
-    rows.find((r) => r.source_path === unmatchedPath),
+    rows.find((r) => r.source_path === cUnmatchedPath),
     undefined,
     "unmatched-path row must be dropped by the DELETE step",
   );
@@ -1063,37 +1092,40 @@ Deno.test("ExtensionCatalogStore: W1a migration backfills mixed pulled + local +
   const byPath = new Map(rows.map((r) => [r.source_path, r]));
 
   // Pulled rows: extension_name parsed from path, version intentionally ''.
-  assertEquals(byPath.get(pulledHealthy)?.extension_name, "@scope/alpha");
-  assertEquals(byPath.get(pulledHealthy)?.extension_version, "");
-  assertEquals(byPath.get(pulledHealthy)?.state, "Indexed");
+  assertEquals(byPath.get(cPulledHealthy)?.extension_name, "@scope/alpha");
+  assertEquals(byPath.get(cPulledHealthy)?.extension_version, "");
+  assertEquals(byPath.get(cPulledHealthy)?.state, "Indexed");
 
-  assertEquals(byPath.get(pulledBroken)?.extension_name, "@scope/alpha");
-  assertEquals(byPath.get(pulledBroken)?.extension_version, "");
+  assertEquals(byPath.get(cPulledBroken)?.extension_name, "@scope/alpha");
+  assertEquals(byPath.get(cPulledBroken)?.extension_version, "");
   // validation_failed=1 backfilled to state='ValidationFailed'.
-  assertEquals(byPath.get(pulledBroken)?.state, "ValidationFailed");
+  assertEquals(byPath.get(cPulledBroken)?.state, "ValidationFailed");
 
-  assertEquals(byPath.get(pulledOtherExt)?.extension_name, "@scope/beta");
-  assertEquals(byPath.get(pulledOtherExt)?.extension_version, "");
-  assertEquals(byPath.get(pulledOtherExt)?.state, "Indexed");
+  assertEquals(byPath.get(cPulledOtherExt)?.extension_name, "@scope/beta");
+  assertEquals(byPath.get(cPulledOtherExt)?.extension_version, "");
+  assertEquals(byPath.get(cPulledOtherExt)?.state, "Indexed");
 
-  // Local row: @local/<basename(repoRoot)> at 0.0.0.
+  // Local row: @local/<basename(repoRoot)> at 0.0.0. Use @std/path
+  // basename so this works on both POSIX and Windows native repoRoot
+  // values. The migration's deriveExtensionIdentity uses basename on
+  // a canonicalized repoRoot internally — same semantic.
   const expectedLocalName = `@local/${
-    repoRoot.split("/").filter((s) => s.length > 0).pop()
+    canonicalizePath(repoRoot).split("/").filter((s) => s.length > 0).pop()
   }`;
-  assertEquals(byPath.get(localPath)?.extension_name, expectedLocalName);
-  assertEquals(byPath.get(localPath)?.extension_version, "0.0.0");
-  assertEquals(byPath.get(localPath)?.state, "Indexed");
+  assertEquals(byPath.get(cLocalPath)?.extension_name, expectedLocalName);
+  assertEquals(byPath.get(cLocalPath)?.extension_version, "0.0.0");
+  assertEquals(byPath.get(cLocalPath)?.state, "Indexed");
 
   // Source-mounted row: same @local/<repoRoot> aggregate as locals
   // (per the design doc — "@local/<repo-name> covers every Source
   // under every extensions/<kind>/ tree" regardless of where the
   // source dir lives).
   assertEquals(
-    byPath.get(sourceMountedPath)?.extension_name,
+    byPath.get(cSourceMountedPath)?.extension_name,
     expectedLocalName,
   );
-  assertEquals(byPath.get(sourceMountedPath)?.extension_version, "0.0.0");
-  assertEquals(byPath.get(sourceMountedPath)?.state, "Indexed");
+  assertEquals(byPath.get(cSourceMountedPath)?.extension_version, "0.0.0");
+  assertEquals(byPath.get(cSourceMountedPath)?.state, "Indexed");
 
   store.close();
 });
