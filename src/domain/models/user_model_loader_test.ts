@@ -28,6 +28,7 @@ import { modelRegistry } from "./model.ts";
 import { bundleNamespace } from "../../infrastructure/persistence/paths.ts";
 import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
 import { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
+import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 
 /** W1b/(a-2): construct an ExtensionRepository wrapping a test catalog. */
 function makeRepoForCatalog(
@@ -36,7 +37,10 @@ function makeRepoForCatalog(
 ): ExtensionRepository {
   return new ExtensionRepository({
     catalog,
-    getLockedVersion: () => null,
+    lockfileRepository: new LockfileRepository(
+      "/test/repo/upstream_extensions.json",
+      {},
+    ),
     repoRoot,
   });
 }

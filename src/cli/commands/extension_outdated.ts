@@ -118,7 +118,7 @@ export const extensionOutdatedCommand = new Command()
     const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createExtensionUpdateDeps({
+    const deps = await createExtensionUpdateDeps({
       lockfilePath,
       serverUrl: resolveServerUrl(),
       // outdated is read-only — installation is wired but never invoked

@@ -26,103 +26,148 @@ import {
   type ExtensionRmDeps,
   type ExtensionRmEvent,
   extensionRmPreview,
-  type UpstreamMap,
 } from "./rm.ts";
+import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
+import type { UpstreamExtensionsMap } from "../../infrastructure/persistence/upstream_extensions.ts";
 import { UserError } from "../../domain/errors.ts";
 
 function fakeCtx() {
   return createLibSwampContext();
 }
 
-function fakeDeps(
-  overrides: Partial<ExtensionRmDeps> = {},
-): ExtensionRmDeps {
-  const defaultUpstream: UpstreamMap = {
-    "@test/ext": {
-      version: "1.0.0",
-      pulledAt: "2026-01-01T00:00:00Z",
-      files: ["models/ext/model.yaml", "models/ext/model.ts"],
+const DEFAULT_UPSTREAM: UpstreamExtensionsMap = {
+  "@test/ext": {
+    version: "1.0.0",
+    pulledAt: "2026-01-01T00:00:00Z",
+    files: ["models/ext/model.yaml", "models/ext/model.ts"],
+  },
+};
+
+/**
+ * Spins up a real temp lockfile pre-seeded with `upstream`, returns a
+ * LockfileRepository whose writeEntry/removeEntry hit that real file.
+ * Caller cleans up via the returned `cleanup` fn.
+ */
+async function withFakeLockfile(
+  upstream: UpstreamExtensionsMap,
+): Promise<
+  { lockfileRepository: LockfileRepository; cleanup: () => Promise<void> }
+> {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_rm_test_" });
+  const lockfilePath = `${tmpDir}/upstream_extensions.json`;
+  if (Object.keys(upstream).length > 0) {
+    await Deno.writeTextFile(lockfilePath, JSON.stringify(upstream, null, 2));
+  }
+  const lockfileRepository = await LockfileRepository.create(lockfilePath);
+  return {
+    lockfileRepository,
+    cleanup: async () => {
+      if (Deno.build.os === "windows") {
+        await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+      } else {
+        await Deno.remove(tmpDir, { recursive: true });
+      }
     },
   };
+}
+
+async function fakeDeps(
+  overrides: Partial<ExtensionRmDeps> & {
+    upstream?: UpstreamExtensionsMap;
+  } = {},
+): Promise<{ deps: ExtensionRmDeps; cleanup: () => Promise<void> }> {
+  const { upstream, ...rest } = overrides;
+  const { lockfileRepository, cleanup } = await withFakeLockfile(
+    upstream ?? DEFAULT_UPSTREAM,
+  );
 
   return {
-    readUpstreamExtensions: () => Promise.resolve(defaultUpstream),
-    findDependents: () => Promise.resolve([]),
-    removeFile: () => Promise.resolve(),
-    readDirEntries: () => Promise.resolve([]),
-    removeDir: () => Promise.resolve(),
-    removeUpstreamExtension: () => Promise.resolve(),
-    lockfilePath: "/fake/models/upstream_extensions.json",
-    repoDir: "/fake/repo",
-    ...overrides,
+    deps: {
+      findDependents: () => Promise.resolve([]),
+      removeFile: () => Promise.resolve(),
+      readDirEntries: () => Promise.resolve([]),
+      removeDir: () => Promise.resolve(),
+      lockfileRepository,
+      repoDir: "/fake/repo",
+      ...rest,
+    },
+    cleanup,
   };
 }
 
 Deno.test("extensionRmPreview: returns preview for installed extension", async () => {
   const ctx = fakeCtx();
-  const deps = fakeDeps();
+  const { deps, cleanup } = await fakeDeps();
+  try {
+    const preview = await extensionRmPreview(ctx, deps, {
+      extensionName: "@test/ext",
+    });
 
-  const preview = await extensionRmPreview(ctx, deps, {
-    extensionName: "@test/ext",
-  });
-
-  assertEquals(preview.name, "@test/ext");
-  assertEquals(preview.version, "1.0.0");
-  assertEquals(preview.fileCount, 2);
-  assertEquals(preview.dependents, []);
+    assertEquals(preview.name, "@test/ext");
+    assertEquals(preview.version, "1.0.0");
+    assertEquals(preview.fileCount, 2);
+    assertEquals(preview.dependents, []);
+  } finally {
+    await cleanup();
+  }
 });
 
 Deno.test("extensionRmPreview: includes dependents", async () => {
   const ctx = fakeCtx();
-  const deps = fakeDeps({
+  const { deps, cleanup } = await fakeDeps({
     findDependents: () => Promise.resolve(["@test/other"]),
   });
+  try {
+    const preview = await extensionRmPreview(ctx, deps, {
+      extensionName: "@test/ext",
+    });
 
-  const preview = await extensionRmPreview(ctx, deps, {
-    extensionName: "@test/ext",
-  });
-
-  assertEquals(preview.dependents, ["@test/other"]);
+    assertEquals(preview.dependents, ["@test/other"]);
+  } finally {
+    await cleanup();
+  }
 });
 
 Deno.test("extensionRmPreview: throws not_found for missing extension", async () => {
   const ctx = fakeCtx();
-  const deps = fakeDeps({
-    readUpstreamExtensions: () => Promise.resolve({}),
-  });
-
-  await assertRejects(
-    () => extensionRmPreview(ctx, deps, { extensionName: "@test/missing" }),
-    UserError,
-    "is not installed",
-  );
+  const { deps, cleanup } = await fakeDeps({ upstream: {} });
+  try {
+    await assertRejects(
+      () => extensionRmPreview(ctx, deps, { extensionName: "@test/missing" }),
+      UserError,
+      "is not installed",
+    );
+  } finally {
+    await cleanup();
+  }
 });
 
 Deno.test("extensionRmPreview: throws validation_failed when no file tracking", async () => {
   const ctx = fakeCtx();
-  const deps = fakeDeps({
-    readUpstreamExtensions: () =>
-      Promise.resolve({
-        "@test/ext": {
-          version: "1.0.0",
-          pulledAt: "2026-01-01T00:00:00Z",
-        },
-      }),
+  const { deps, cleanup } = await fakeDeps({
+    upstream: {
+      "@test/ext": {
+        version: "1.0.0",
+        pulledAt: "2026-01-01T00:00:00Z",
+      },
+    },
   });
-
-  await assertRejects(
-    () => extensionRmPreview(ctx, deps, { extensionName: "@test/ext" }),
-    UserError,
-    "file tracking",
-  );
+  try {
+    await assertRejects(
+      () => extensionRmPreview(ctx, deps, { extensionName: "@test/ext" }),
+      UserError,
+      "file tracking",
+    );
+  } finally {
+    await cleanup();
+  }
 });
 
 Deno.test("extensionRm: deletes files and yields completed", async () => {
   const removedFiles: string[] = [];
-  let upstreamRemoved = false;
 
   const ctx = fakeCtx();
-  const deps = fakeDeps({
+  const { deps, cleanup } = await fakeDeps({
     removeFile: (path: string) => {
       removedFiles.push(path);
       return Promise.resolve();
@@ -137,76 +182,84 @@ Deno.test("extensionRm: deletes files and yields completed", async () => {
           isSymlink: false,
         },
       ]),
-    removeUpstreamExtension: () => {
-      upstreamRemoved = true;
-      return Promise.resolve();
-    },
   });
-
-  await assertCompletes<ExtensionRmEvent>(
-    extensionRm(ctx, deps, { extensionName: "@test/ext" }),
-    {
-      kind: "completed",
-      data: {
-        name: "@test/ext",
-        version: "1.0.0",
-        filesDeleted: 2,
-        filesSkipped: 0,
-        dirsRemoved: 0,
+  try {
+    await assertCompletes<ExtensionRmEvent>(
+      extensionRm(ctx, deps, { extensionName: "@test/ext" }),
+      {
+        kind: "completed",
+        data: {
+          name: "@test/ext",
+          version: "1.0.0",
+          filesDeleted: 2,
+          filesSkipped: 0,
+          dirsRemoved: 0,
+        },
       },
-    },
-  );
+    );
 
-  assertEquals(removedFiles.length, 2);
-  assertEquals(upstreamRemoved, true);
+    assertEquals(removedFiles.length, 2);
+    // After completion the entry must be gone (writeEntry / removeEntry
+    // update the cache in lockstep with disk).
+    assertEquals(deps.lockfileRepository.getEntry("@test/ext"), null);
+  } finally {
+    await cleanup();
+  }
 });
 
 Deno.test("extensionRm: counts skipped files when NotFound", async () => {
   const ctx = fakeCtx();
-  const deps = fakeDeps({
+  const { deps, cleanup } = await fakeDeps({
     removeFile: () => {
       throw new Deno.errors.NotFound("not found");
     },
   });
-
-  await assertCompletes<ExtensionRmEvent>(
-    extensionRm(ctx, deps, { extensionName: "@test/ext" }),
-    {
-      kind: "completed",
-      data: {
-        name: "@test/ext",
-        version: "1.0.0",
-        filesDeleted: 0,
-        filesSkipped: 2,
-        dirsRemoved: 0,
+  try {
+    await assertCompletes<ExtensionRmEvent>(
+      extensionRm(ctx, deps, { extensionName: "@test/ext" }),
+      {
+        kind: "completed",
+        data: {
+          name: "@test/ext",
+          version: "1.0.0",
+          filesDeleted: 0,
+          filesSkipped: 2,
+          dirsRemoved: 0,
+        },
       },
-    },
-  );
+    );
+  } finally {
+    await cleanup();
+  }
 });
 
 Deno.test("extensionRm: yields error for missing extension", async () => {
   const ctx = fakeCtx();
-  const deps = fakeDeps({
-    readUpstreamExtensions: () => Promise.resolve({}),
-  });
-
-  await assertErrors<ExtensionRmEvent>(
-    extensionRm(ctx, deps, { extensionName: "@test/missing" }),
-    "not_found",
-  );
+  const { deps, cleanup } = await fakeDeps({ upstream: {} });
+  try {
+    await assertErrors<ExtensionRmEvent>(
+      extensionRm(ctx, deps, { extensionName: "@test/missing" }),
+      "not_found",
+    );
+  } finally {
+    await cleanup();
+  }
 });
 
 Deno.test("extensionRm: events include deleting then completed", async () => {
   const ctx = fakeCtx();
-  const deps = fakeDeps();
+  const { deps, cleanup } = await fakeDeps();
+  try {
+    const events = await collect(
+      extensionRm(ctx, deps, { extensionName: "@test/ext" }),
+    );
 
-  const events = await collect(
-    extensionRm(ctx, deps, { extensionName: "@test/ext" }),
-  );
-
-  assertEquals(events.length, 2);
-  assertEquals(events[0].kind, "deleting");
-  assertEquals(events[1].kind, "completed");
+    assertEquals(events.length, 2);
+    assertEquals(events[0].kind, "deleting");
+    assertEquals(events[1].kind, "completed");
+  } finally {
+    await cleanup();
+  }
 });
 
 // --- issue 120 regression coverage ---
@@ -270,7 +323,7 @@ Deno.test("extensionRm: removing one sibling leaves the other intact under a sha
     });
 
     const ctx = createLibSwampContext({});
-    const deps = createExtensionRmDeps(tmpDir, lockfilePath);
+    const deps = await createExtensionRmDeps(tmpDir, lockfilePath);
     const events = await collect(
       extensionRm(ctx, deps, { extensionName: "@swamp/aws/ec2" }),
     );
@@ -372,7 +425,7 @@ Deno.test("extensionRmPreview: resolves dependents via the tracked per-extension
     });
 
     const ctx = createLibSwampContext({});
-    const deps = createExtensionRmDeps(tmpDir, lockfilePath);
+    const deps = await createExtensionRmDeps(tmpDir, lockfilePath);
     const preview = await extensionRmPreview(ctx, deps, {
       extensionName: "@fake/base",
     });

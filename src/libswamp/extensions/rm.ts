@@ -18,27 +18,15 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { dirname, join, resolve } from "@std/path";
-import { readUpstreamExtensions } from "../../infrastructure/persistence/upstream_extensions.ts";
+import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
+import type { UpstreamExtensionsMap } from "../../infrastructure/persistence/upstream_extensions.ts";
 import { parseExtensionManifest } from "../../domain/extensions/extension_manifest.ts";
-import { atomicWriteTextFile } from "../../infrastructure/persistence/atomic_write.ts";
 import { UserError } from "../../domain/errors.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { notFound } from "../errors.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
-const LOCK_RETRY_COUNT = 10;
-const LOCK_RETRY_DELAY_MS = 100;
-
-/** Upstream extension entry for rm operations. */
-export interface UpstreamEntry {
-  version: string;
-  pulledAt: string;
-  files?: string[];
-}
-
-/** Map of extension name to upstream entry. */
-export type UpstreamMap = Record<string, UpstreamEntry>;
 
 /** Preview data returned before confirmation. */
 export interface ExtensionRmPreview {
@@ -69,21 +57,20 @@ export interface ExtensionRmInput {
 
 /** Dependencies for the extension rm operation. */
 export interface ExtensionRmDeps {
-  readUpstreamExtensions: (lockfilePath: string) => Promise<UpstreamMap>;
   findDependents: (
     repoDir: string,
-    upstreamData: UpstreamMap,
+    upstreamData: UpstreamExtensionsMap,
     targetName: string,
   ) => Promise<string[]>;
   removeFile: (path: string) => Promise<void>;
   readDirEntries: (path: string) => Promise<Deno.DirEntry[]>;
   removeDir: (path: string) => Promise<void>;
-  removeUpstreamExtension: (
-    lockfilePath: string,
-    name: string,
-  ) => Promise<void>;
-  /** Full path to the upstream_extensions.json lockfile. */
-  lockfilePath: string;
+  /**
+   * Lockfile repository owning read+write of upstream_extensions.json.
+   * Captures a snapshot at construction (per its own JSDoc); construct
+   * fresh deps per rm operation via {@link createExtensionRmDeps}.
+   */
+  lockfileRepository: LockfileRepository;
   repoDir: string;
 }
 
@@ -93,7 +80,7 @@ export interface ExtensionRmDeps {
  */
 export async function findDependents(
   repoDir: string,
-  upstreamData: UpstreamMap,
+  upstreamData: UpstreamExtensionsMap,
   targetName: string,
 ): Promise<string[]> {
   const dependents: string[] = [];
@@ -155,73 +142,6 @@ async function pruneEmptyDirs(
   return removed;
 }
 
-/**
- * Acquires an advisory lockfile. Retries with short backoff.
- * Returns a cleanup function to release the lock.
- */
-async function acquireLock(lockPath: string): Promise<Deno.FsFile> {
-  for (let attempt = 0; attempt < LOCK_RETRY_COUNT; attempt++) {
-    try {
-      const file = await Deno.open(lockPath, {
-        create: true,
-        createNew: true,
-        write: true,
-      });
-      return file;
-    } catch (error) {
-      if (error instanceof Deno.errors.AlreadyExists) {
-        if (attempt < LOCK_RETRY_COUNT - 1) {
-          await new Promise((r) => setTimeout(r, LOCK_RETRY_DELAY_MS));
-          continue;
-        }
-        throw new Error(
-          "Could not acquire lock on upstream_extensions.json. Another operation may be in progress.",
-        );
-      }
-      throw error;
-    }
-  }
-  throw new Error("Could not acquire lock on upstream_extensions.json.");
-}
-
-/**
- * Removes an extension entry from upstream_extensions.json, using a lockfile
- * for concurrency safety and atomicWriteTextFile for crash safety.
- *
- * @param lockfilePath Full path to the upstream_extensions.json file.
- */
-export async function removeUpstreamExtension(
-  lockfilePath: string,
-  name: string,
-): Promise<void> {
-  const jsonPath = lockfilePath;
-  const lockPath = `${jsonPath}.lock`;
-
-  const lockFile = await acquireLock(lockPath);
-  try {
-    let data: UpstreamMap = {};
-    try {
-      const content = await Deno.readTextFile(jsonPath);
-      data = JSON.parse(content) as UpstreamMap;
-    } catch (error) {
-      if (!(error instanceof Deno.errors.NotFound)) {
-        throw error;
-      }
-    }
-
-    delete data[name];
-
-    await atomicWriteTextFile(jsonPath, JSON.stringify(data, null, 2) + "\n");
-  } finally {
-    lockFile.close();
-    try {
-      await Deno.remove(lockPath);
-    } catch {
-      // Best-effort cleanup
-    }
-  }
-}
-
 /** Gathers preview info for the extension rm operation. */
 export async function extensionRmPreview(
   ctx: LibSwampContext,
@@ -230,7 +150,7 @@ export async function extensionRmPreview(
 ): Promise<ExtensionRmPreview> {
   ctx.logger.debug`Looking up extension: ${input.extensionName}`;
 
-  const upstreamData = await deps.readUpstreamExtensions(deps.lockfilePath);
+  const upstreamData = deps.lockfileRepository.getAllEntries();
   const entry = upstreamData[input.extensionName];
 
   if (!entry) {
@@ -271,8 +191,7 @@ export async function* extensionRm(
     (async function* () {
       yield { kind: "deleting" };
 
-      const upstreamData = await deps.readUpstreamExtensions(deps.lockfilePath);
-      const entry = upstreamData[input.extensionName];
+      const entry = deps.lockfileRepository.getEntry(input.extensionName);
 
       if (!entry || !entry.files) {
         yield {
@@ -307,10 +226,7 @@ export async function* extensionRm(
 
       const dirsRemoved = await pruneEmptyDirs(parentDirs, deps.repoDir, deps);
 
-      await deps.removeUpstreamExtension(
-        deps.lockfilePath,
-        input.extensionName,
-      );
+      await deps.lockfileRepository.removeEntry(input.extensionName);
 
       yield {
         kind: "completed",
@@ -326,13 +242,18 @@ export async function* extensionRm(
   );
 }
 
-/** Wires real infrastructure into ExtensionRmDeps. */
-export function createExtensionRmDeps(
+/**
+ * Wires real infrastructure into ExtensionRmDeps. Constructs a fresh
+ * {@link LockfileRepository} that captures a snapshot at this moment;
+ * the returned deps object is single-use per the
+ * {@link ExtensionRmDeps.lockfileRepository} JSDoc.
+ */
+export async function createExtensionRmDeps(
   repoDir: string,
   lockfilePath: string,
-): ExtensionRmDeps {
+): Promise<ExtensionRmDeps> {
+  const lockfileRepository = await LockfileRepository.create(lockfilePath);
   return {
-    readUpstreamExtensions,
     findDependents,
     removeFile: async (path: string) => {
       const stat = await Deno.stat(path);
@@ -346,8 +267,7 @@ export function createExtensionRmDeps(
       return entries;
     },
     removeDir: (path: string) => Deno.remove(path),
-    removeUpstreamExtension,
-    lockfilePath,
+    lockfileRepository,
     repoDir,
   };
 }

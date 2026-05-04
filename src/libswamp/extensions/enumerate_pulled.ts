@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { join } from "@std/path";
-import { readUpstreamExtensions } from "../../infrastructure/persistence/upstream_extensions.ts";
+import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import { swampPath } from "../../infrastructure/persistence/paths.ts";
 
 /** Types that can appear under a per-extension subtree. */
@@ -51,7 +51,8 @@ export async function enumeratePulledExtensionDirs(
   repoDir: string,
   type: PulledExtensionType,
 ): Promise<string[]> {
-  const upstream = await readUpstreamExtensions(lockfilePath);
+  const repo = await LockfileRepository.create(lockfilePath);
+  const upstream = repo.getAllEntries();
   const pulledRoot = swampPath(repoDir, "pulled-extensions");
   const dirs: string[] = [];
 

@@ -29,12 +29,8 @@ import { UserError } from "../../domain/errors.ts";
 import { parseExtensionManifest } from "../../domain/extensions/extension_manifest.ts";
 import { analyzeExtensionSafety } from "../../domain/extensions/extension_safety_analyzer.ts";
 import { ExtensionApiClient } from "../../infrastructure/http/extension_api_client.ts";
-import { atomicWriteTextFile } from "../../infrastructure/persistence/atomic_write.ts";
 import { pruneOrphanFiles } from "../../infrastructure/persistence/directory_cleanup.ts";
-import {
-  readUpstreamExtensions,
-  type UpstreamExtensionsMap,
-} from "../../infrastructure/persistence/upstream_extensions.ts";
+import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import {
   bundleNamespace,
   swampPath,
@@ -55,8 +51,6 @@ import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
 
 const SCOPED_NAME_PATTERN = /^@[a-z0-9_-]+\/[a-z0-9_-]+(\/[a-z0-9_-]+)*$/;
 const MAX_DEPENDENCY_DEPTH = 10;
-const LOCK_RETRY_COUNT = 10;
-const LOCK_RETRY_DELAY_MS = 100;
 
 /** Parsed extension reference from CLI argument. */
 export interface ExtensionRef {
@@ -125,8 +119,23 @@ export interface InstallContext {
     version: string,
   ) => Promise<string | null>;
   logger?: Logger;
-  /** Full path to the upstream_extensions.json lockfile. */
-  lockfilePath: string;
+  /**
+   * Lockfile repository owning read+write of upstream_extensions.json.
+   *
+   * **Single-use semantics.** The repository captures a snapshot at
+   * construction time (per its own JSDoc); reads serve from that snapshot.
+   * A given InstallContext therefore embeds a snapshot taken at the moment
+   * the context was constructed. DO NOT reuse the same context across
+   * multiple install operations — a sibling process or a prior
+   * installExtension() call may have written between constructions, and
+   * the snapshot would be stale relative to disk. Construct a fresh
+   * context per install via `createInstallContext` /
+   * `createExtensionPullDeps`. Today's installExtension() reads the
+   * snapshot exactly once at install time (line ~726, formerly
+   * upstreamMapBefore via readUpstreamExtensions); the migration
+   * preserves that timing.
+   */
+  lockfileRepository: LockfileRepository;
   /** Tool-aware skills destination (e.g. `.claude/skills/`). */
   skillsDir: string;
   repoDir: string;
@@ -179,8 +188,12 @@ export interface ExtensionPullDeps {
   getExtension: (name: string) => Promise<ExtensionRegistryInfo | null>;
   downloadArchive: (name: string, version: string) => Promise<Uint8Array>;
   getChecksum: (name: string, version: string) => Promise<string | null>;
-  /** Full path to the upstream_extensions.json lockfile. */
-  lockfilePath: string;
+  /**
+   * Lockfile repository owning read+write of upstream_extensions.json.
+   * See {@link InstallContext.lockfileRepository} for snapshot semantics
+   * and the single-use rule.
+   */
+  lockfileRepository: LockfileRepository;
   /** Tool-aware skills destination (e.g. `.claude/skills/`). */
   skillsDir: string;
   repoDir: string;
@@ -241,134 +254,6 @@ export function resolveServerUrl(): string {
 /** Returns true if the filename is a macOS resource fork (AppleDouble) file. */
 function isMacOsResourceFork(name: string): boolean {
   return name.startsWith("._");
-}
-
-/**
- * Acquires an advisory lockfile. Retries with short backoff.
- */
-async function acquireLock(lockPath: string): Promise<Deno.FsFile> {
-  for (let attempt = 0; attempt < LOCK_RETRY_COUNT; attempt++) {
-    try {
-      const file = await Deno.open(lockPath, {
-        create: true,
-        createNew: true,
-        write: true,
-      });
-      return file;
-    } catch (error) {
-      if (error instanceof Deno.errors.AlreadyExists) {
-        if (attempt < LOCK_RETRY_COUNT - 1) {
-          await new Promise((r) => setTimeout(r, LOCK_RETRY_DELAY_MS));
-          continue;
-        }
-        throw new UserError(
-          "Could not acquire lock on upstream_extensions.json. Another pull may be in progress. Please retry.",
-        );
-      }
-      throw error;
-    }
-  }
-  throw new UserError("Could not acquire lock on upstream_extensions.json.");
-}
-
-/**
- * Updates upstream_extensions.json with a new entry, using a lockfile
- * for concurrency safety and atomicWriteTextFile for crash safety.
- *
- * @param lockfilePath Full path to the upstream_extensions.json file.
- */
-export async function updateUpstreamExtensions(
-  lockfilePath: string,
-  name: string,
-  version: string,
-  files: string[],
-  options?: {
-    include?: string[];
-    checksum?: string;
-    filesChecksum?: string;
-    serverUrl?: string;
-  },
-): Promise<void> {
-  const jsonPath = lockfilePath;
-  const lockPath = `${jsonPath}.lock`;
-
-  // Ensure parent directory exists (lockfile may be in extensions/models/
-  // which doesn't exist in a fresh repo that only has .swamp/)
-  await Deno.mkdir(dirname(jsonPath), { recursive: true });
-
-  const lockFile = await acquireLock(lockPath);
-  try {
-    let data: UpstreamExtensionsMap = {};
-    try {
-      const content = await Deno.readTextFile(jsonPath);
-      data = JSON.parse(content) as UpstreamExtensionsMap;
-    } catch (error) {
-      if (!(error instanceof Deno.errors.NotFound)) {
-        throw error;
-      }
-    }
-
-    data[name] = {
-      version,
-      pulledAt: new Date().toISOString(),
-      files,
-      ...(options?.include && options.include.length > 0
-        ? { include: options.include }
-        : {}),
-      ...(options?.checksum ? { checksum: options.checksum } : {}),
-      ...(options?.filesChecksum
-        ? { filesChecksum: options.filesChecksum }
-        : {}),
-      ...(options?.serverUrl ? { serverUrl: options.serverUrl } : {}),
-    };
-
-    await atomicWriteTextFile(jsonPath, JSON.stringify(data, null, 2) + "\n");
-  } finally {
-    lockFile.close();
-    try {
-      await Deno.remove(lockPath);
-    } catch {
-      // Best-effort cleanup
-    }
-  }
-}
-
-/**
- * Removes an extension entry from upstream_extensions.json, using a lockfile
- * for concurrency safety and atomicWriteTextFile for crash safety.
- *
- * @param lockfilePath Full path to the upstream_extensions.json file.
- */
-export async function removeUpstreamExtension(
-  lockfilePath: string,
-  name: string,
-): Promise<void> {
-  const jsonPath = lockfilePath;
-  const lockPath = `${jsonPath}.lock`;
-
-  const lockFile = await acquireLock(lockPath);
-  try {
-    let data: UpstreamExtensionsMap = {};
-    try {
-      const content = await Deno.readTextFile(jsonPath);
-      data = JSON.parse(content) as UpstreamExtensionsMap;
-    } catch (error) {
-      if (!(error instanceof Deno.errors.NotFound)) {
-        throw error;
-      }
-    }
-
-    delete data[name];
-
-    await atomicWriteTextFile(jsonPath, JSON.stringify(data, null, 2) + "\n");
-  } finally {
-    lockFile.close();
-    try {
-      await Deno.remove(lockPath);
-    } catch {
-      // Best-effort cleanup
-    }
-  }
 }
 
 /**
@@ -722,9 +607,11 @@ export async function installExtension(
   // Snapshot the prior lockfile entry's `files[]` BEFORE extraction.
   // Used after extraction to compute the orphan diff (paths declared
   // by the prior version but absent from the new version) and prune
-  // them. Empty when this is a first-install (no prior entry).
-  const upstreamMapBefore = await readUpstreamExtensions(ctx.lockfilePath);
-  const oldFiles = upstreamMapBefore[ref.name]?.files ?? [];
+  // them. Empty when this is a first-install (no prior entry). The
+  // lockfile snapshot was captured at InstallContext construction
+  // (per createInstallContext / createExtensionPullDeps); callers MUST
+  // construct a fresh context per install (see InstallContext JSDoc).
+  const oldFiles = ctx.lockfileRepository.getEntry(ref.name)?.files ?? [];
 
   const extInfo = await ctx.getExtension(ref.name);
   if (!extInfo) {
@@ -1140,18 +1027,16 @@ export async function installExtension(
 
     // Prune orphans: paths declared by the prior version's lockfile
     // entry that are NOT in the new version's extractedFiles[]. Done
-    // BEFORE updateUpstreamExtensions writes the new entry so a kill
-    // mid-prune leaves the lockfile pointing at the OLD version — the
-    // next install retries the diff. The inverse ordering (write then
-    // prune) would orphan paths the lockfile can't see if the prune
-    // never runs.
+    // BEFORE writeEntry persists the new entry so a kill mid-prune
+    // leaves the lockfile pointing at the OLD version — the next install
+    // retries the diff. The inverse ordering (write then prune) would
+    // orphan paths the lockfile can't see if the prune never runs.
     const orphanDiff = computeOrphanDiff(oldFiles, extractedFiles);
     const pruned = orphanDiff.length > 0
       ? await pruneOrphanFiles(orphanDiff, repoDir)
       : [];
 
-    await updateUpstreamExtensions(
-      ctx.lockfilePath,
+    await ctx.lockfileRepository.writeEntry(
       ref.name,
       version,
       extractedFiles,
@@ -1170,18 +1055,11 @@ export async function installExtension(
           continue;
         }
 
-        let isInstalled = false;
-        try {
-          const upstreamContent = await Deno.readTextFile(ctx.lockfilePath);
-          const upstream = JSON.parse(
-            upstreamContent,
-          ) as UpstreamExtensionsMap;
-          if (upstream[dep]) {
-            isInstalled = true;
-          }
-        } catch {
-          // File may not exist yet
-        }
+        // ctx.lockfileRepository reflects writes the parent install has
+        // made — writeEntry updates the cache on every commit, and child
+        // installs in this loop reuse the same repository instance, so
+        // their writes are visible too.
+        const isInstalled = ctx.lockfileRepository.getEntry(dep) !== null;
 
         if (!isInstalled) {
           const depRef = parseExtensionRef(dep);
@@ -1239,7 +1117,7 @@ export async function* extensionPull(
         downloadArchive: deps.downloadArchive,
         getChecksum: deps.getChecksum,
         logger: ctx.logger,
-        lockfilePath: deps.lockfilePath,
+        lockfileRepository: deps.lockfileRepository,
         skillsDir: deps.skillsDir,
         repoDir: deps.repoDir,
         force: input.force,
@@ -1264,19 +1142,26 @@ export async function* extensionPull(
   );
 }
 
-/** Wires real infrastructure into ExtensionPullDeps. */
-export function createExtensionPullDeps(
+/**
+ * Wires real infrastructure into ExtensionPullDeps. Constructs a fresh
+ * {@link LockfileRepository} that captures a snapshot at this moment —
+ * the returned deps object is therefore single-use per the
+ * {@link InstallContext.lockfileRepository} JSDoc. Construct fresh deps
+ * per install operation; do not reuse across multiple installs.
+ */
+export async function createExtensionPullDeps(
   serverUrl: string,
   lockfilePath: string,
   skillsDir: string,
   repoDir: string,
-): ExtensionPullDeps {
+): Promise<ExtensionPullDeps> {
   const client = new ExtensionApiClient(serverUrl);
+  const lockfileRepository = await LockfileRepository.create(lockfilePath);
   return {
     getExtension: (name) => client.getExtension(name),
     downloadArchive: (name, version) => client.downloadArchive(name, version),
     getChecksum: (name, version) => client.getChecksum(name, version),
-    lockfilePath,
+    lockfileRepository,
     skillsDir,
     repoDir,
     alreadyPulled: new Set(),
@@ -1284,8 +1169,14 @@ export function createExtensionPullDeps(
   };
 }
 
-/** Creates an InstallContext from an ExtensionApiClient (for extension_update compatibility). */
-export function createInstallContext(
+/**
+ * Creates an InstallContext from an ExtensionApiClient (for
+ * extension_update compatibility). Like {@link createExtensionPullDeps},
+ * constructs a fresh snapshot-captured {@link LockfileRepository}; the
+ * returned context is single-use per the
+ * {@link InstallContext.lockfileRepository} JSDoc.
+ */
+export async function createInstallContext(
   serverUrl: string,
   opts: {
     lockfilePath: string;
@@ -1294,14 +1185,15 @@ export function createInstallContext(
     force: boolean;
     logger?: Logger;
   },
-): InstallContext {
+): Promise<InstallContext> {
   const client = new ExtensionApiClient(serverUrl);
+  const lockfileRepository = await LockfileRepository.create(opts.lockfilePath);
   return {
     getExtension: (name) => client.getExtension(name),
     downloadArchive: (name, version) => client.downloadArchive(name, version),
     getChecksum: (name, version) => client.getChecksum(name, version),
     logger: opts.logger,
-    lockfilePath: opts.lockfilePath,
+    lockfileRepository,
     skillsDir: opts.skillsDir,
     repoDir: opts.repoDir,
     force: opts.force,

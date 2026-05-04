@@ -21,8 +21,8 @@ import { assertEquals, assertThrows } from "@std/assert";
 import { assertStringIncludes } from "@std/assert/string-includes";
 import {
   detectConflicts,
+  LockfileRepository,
   parseExtensionRef,
-  updateUpstreamExtensions,
 } from "./extension_pull.ts";
 import type { UpstreamExtensionEntry } from "../../infrastructure/persistence/upstream_extensions.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -56,7 +56,7 @@ Deno.test("parseExtensionRef throws on empty version after @", () => {
   assertStringIncludes(error.message, "Version cannot be empty");
 });
 
-Deno.test("updateUpstreamExtensions persists files array", async () => {
+Deno.test("LockfileRepository.writeEntry persists files array", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
   try {
     const lockfilePath = join(tmpDir, "upstream_extensions.json");
@@ -64,11 +64,10 @@ Deno.test("updateUpstreamExtensions persists files array", async () => {
       "extensions/models/foo/bar.yaml",
       "extensions/models/foo/baz.ts",
     ];
-    await updateUpstreamExtensions(lockfilePath, "@test/ext", "1.0.0", files);
+    const repo = await LockfileRepository.create(lockfilePath);
+    await repo.writeEntry("@test/ext", "1.0.0", files);
 
-    const content = await Deno.readTextFile(
-      join(tmpDir, "upstream_extensions.json"),
-    );
+    const content = await Deno.readTextFile(lockfilePath);
     const data = JSON.parse(content) as Record<string, UpstreamExtensionEntry>;
 
     assertEquals(data["@test/ext"].version, "1.0.0");
@@ -79,22 +78,18 @@ Deno.test("updateUpstreamExtensions persists files array", async () => {
   }
 });
 
-Deno.test("updateUpstreamExtensions preserves existing entries", async () => {
+Deno.test("LockfileRepository.writeEntry preserves existing entries", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
   try {
     const lockfilePath = join(tmpDir, "upstream_extensions.json");
-    // Write first extension
-    await updateUpstreamExtensions(lockfilePath, "@test/first", "1.0.0", [
-      "a.yaml",
-    ]);
-    // Write second extension
-    await updateUpstreamExtensions(lockfilePath, "@test/second", "2.0.0", [
-      "b.yaml",
-    ]);
+    const repoFirst = await LockfileRepository.create(lockfilePath);
+    await repoFirst.writeEntry("@test/first", "1.0.0", ["a.yaml"]);
+    // Sibling instance simulates a second process; re-reads disk under
+    // lock so the merged write picks up the prior entry.
+    const repoSecond = await LockfileRepository.create(lockfilePath);
+    await repoSecond.writeEntry("@test/second", "2.0.0", ["b.yaml"]);
 
-    const content = await Deno.readTextFile(
-      join(tmpDir, "upstream_extensions.json"),
-    );
+    const content = await Deno.readTextFile(lockfilePath);
     const data = JSON.parse(content) as Record<string, UpstreamExtensionEntry>;
 
     assertEquals(data["@test/first"].version, "1.0.0");
@@ -106,15 +101,14 @@ Deno.test("updateUpstreamExtensions preserves existing entries", async () => {
   }
 });
 
-Deno.test("updateUpstreamExtensions handles empty files array", async () => {
+Deno.test("LockfileRepository.writeEntry handles empty files array", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
   try {
     const lockfilePath = join(tmpDir, "upstream_extensions.json");
-    await updateUpstreamExtensions(lockfilePath, "@test/empty", "1.0.0", []);
+    const repo = await LockfileRepository.create(lockfilePath);
+    await repo.writeEntry("@test/empty", "1.0.0", []);
 
-    const content = await Deno.readTextFile(
-      join(tmpDir, "upstream_extensions.json"),
-    );
+    const content = await Deno.readTextFile(lockfilePath);
     const data = JSON.parse(content) as Record<string, UpstreamExtensionEntry>;
 
     assertEquals(data["@test/empty"].files, []);

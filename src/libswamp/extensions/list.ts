@@ -22,7 +22,7 @@ import { RepoPath } from "../../domain/repo/repo_path.ts";
 import {
   RepoMarkerRepository,
 } from "../../infrastructure/persistence/repo_marker_repository.ts";
-import { readUpstreamExtensions } from "../../infrastructure/persistence/upstream_extensions.ts";
+import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 
@@ -45,16 +45,13 @@ export type ExtensionListEvent =
   | { kind: "completed"; data: ExtensionListData }
   | { kind: "error"; error: SwampError };
 
-/** Upstream extension entry as stored on disk. */
-interface UpstreamEntry {
-  version: string;
-  pulledAt?: string;
-  files?: string[];
-}
-
 /** Dependencies for the extension list operation. */
 export interface ExtensionListDeps {
-  readUpstreamExtensions: () => Promise<Record<string, UpstreamEntry>>;
+  /**
+   * Lockfile repository pre-constructed by the caller. Captures a
+   * snapshot of upstream_extensions.json at construction.
+   */
+  lockfileRepository: LockfileRepository;
 }
 
 /** Wires real infrastructure into ExtensionListDeps. */
@@ -69,7 +66,7 @@ export async function createExtensionListDeps(
   const absoluteModelsDir = resolve(repoDir, modelsDir);
   const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
   return {
-    readUpstreamExtensions: () => readUpstreamExtensions(lockfilePath),
+    lockfileRepository: await LockfileRepository.create(lockfilePath),
   };
 }
 
@@ -84,7 +81,7 @@ export async function* extensionList(
     (async function* () {
       yield { kind: "resolving" };
 
-      const upstreamData = await deps.readUpstreamExtensions();
+      const upstreamData = deps.lockfileRepository.getAllEntries();
 
       const entries: ExtensionListEntry[] = Object.entries(upstreamData)
         .map(([name, entry]) => ({

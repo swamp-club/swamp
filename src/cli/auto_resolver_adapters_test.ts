@@ -24,6 +24,7 @@ import { createAutoResolveInstallerAdapter } from "./auto_resolver_adapters.ts";
 import type { DenoRuntime } from "../domain/runtime/deno_runtime.ts";
 import { ExtensionCatalogStore } from "../infrastructure/persistence/extension_catalog_store.ts";
 import { ExtensionRepository } from "../infrastructure/persistence/extension_repository.ts";
+import { LockfileRepository } from "../infrastructure/persistence/lockfile_repository.ts";
 import { modelRegistry } from "../domain/models/model.ts";
 import { ModelType } from "../domain/models/model_type.ts";
 import type { ModelDefinition } from "../domain/models/model.ts";
@@ -56,7 +57,10 @@ function makeRepoForCatalog(
 ): ExtensionRepository {
   return new ExtensionRepository({
     catalog,
-    getLockedVersion: () => null,
+    lockfileRepository: new LockfileRepository(
+      "/test/repo/upstream_extensions.json",
+      {},
+    ),
     repoRoot,
   });
 }

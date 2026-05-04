@@ -21,7 +21,6 @@ import { Command } from "@cliffy/command";
 import { setColorEnabled } from "@std/fmt/colors";
 import { isAbsolute, join, resolve } from "@std/path";
 import { swampPath } from "../infrastructure/persistence/paths.ts";
-import { readUpstreamExtensions } from "../infrastructure/persistence/upstream_extensions.ts";
 import { enumeratePulledExtensionDirs } from "../libswamp/mod.ts";
 import { getLogger, parseLogLevel } from "@logtape/logtape";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
@@ -60,6 +59,7 @@ import {
 import { UserModelLoader } from "../domain/models/user_model_loader.ts";
 import { ExtensionCatalogStore } from "../infrastructure/persistence/extension_catalog_store.ts";
 import { ExtensionRepository } from "../infrastructure/persistence/extension_repository.ts";
+import { LockfileRepository } from "../infrastructure/persistence/lockfile_repository.ts";
 import { UserVaultLoader } from "../domain/vaults/user_vault_loader.ts";
 import { UserDriverLoader } from "../domain/drivers/user_driver_loader.ts";
 import { UserDatastoreLoader } from "../domain/datastore/user_datastore_loader.ts";
@@ -267,10 +267,10 @@ export async function configureExtensionLoaders(
     isAbsolute(repoModelsDir) ? repoModelsDir : resolve(repoDir, repoModelsDir),
     "upstream_extensions.json",
   );
-  const upstream = await readUpstreamExtensions(lockfilePath);
+  const lockfileRepository = await LockfileRepository.create(lockfilePath);
   const repository = new ExtensionRepository({
     catalog,
-    getLockedVersion: (name) => upstream[name]?.version ?? null,
+    lockfileRepository,
     repoRoot: repoDir,
   });
 
@@ -377,7 +377,10 @@ export function configureExtensionAutoResolver(
           catalog: new ExtensionCatalogStore(
             swampPath(repoDir, "_extension_catalog.db"),
           ),
-          getLockedVersion: () => null,
+          lockfileRepository: new LockfileRepository(
+            join(resolve(repoDir, modelsDir), "upstream_extensions.json"),
+            {},
+          ),
           repoRoot: repoDir,
         }),
       }),
@@ -426,7 +429,10 @@ async function loadUserModels(
       catalog: new ExtensionCatalogStore(
         swampPath(repoDir, "_extension_catalog.db"),
       ),
-      getLockedVersion: () => null,
+      lockfileRepository: new LockfileRepository(
+        join(absoluteModelsDir, "upstream_extensions.json"),
+        {},
+      ),
       repoRoot: repoDir,
     });
 
@@ -759,7 +765,8 @@ async function checkForMissingPulledExtensions(
       : resolve(repoDir, modelsDir);
     const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
 
-    const upstream = await readUpstreamExtensions(lockfilePath);
+    const lockfileRepository = await LockfileRepository.create(lockfilePath);
+    const upstream = lockfileRepository.getAllEntries();
     const extensionNames = Object.keys(upstream);
     if (extensionNames.length === 0) return;
 

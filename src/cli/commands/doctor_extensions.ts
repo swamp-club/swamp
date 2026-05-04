@@ -48,7 +48,6 @@ import {
   getExtensionLoadWarnings,
   resetExtensionLoadWarnings,
 } from "../../infrastructure/logging/extension_load_warnings.ts";
-import { readUpstreamExtensions } from "../../infrastructure/persistence/upstream_extensions.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
 import { driverTypeRegistry } from "../../domain/drivers/driver_type_registry.ts";
@@ -56,6 +55,7 @@ import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_reg
 import { reportRegistry } from "../../domain/reports/report_registry.ts";
 import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
 import { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
+import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import { swampPath } from "../../infrastructure/persistence/paths.ts";
 import { createDoctorExtensionsRenderer } from "../../presentation/renderers/doctor_extensions.ts";
 import {
@@ -119,12 +119,12 @@ export const doctorExtensionsCommand = new Command()
     // command in the same repo.
     // W1b: forceCatalogRescan(repoDir) → repository.invalidateAll().
     try {
-      const upstream = await readUpstreamExtensions(lockfilePath);
+      const lockfileRepository = await LockfileRepository.create(lockfilePath);
       const rescanRepo = new ExtensionRepository({
         catalog: new ExtensionCatalogStore(
           swampPath(repoDir, "_extension_catalog.db"),
         ),
-        getLockedVersion: (name) => upstream[name]?.version ?? null,
+        lockfileRepository,
         repoRoot: repoDir,
       });
       try {
@@ -177,12 +177,13 @@ export const doctorExtensionsCommand = new Command()
     const controller = new AbortController();
     const renderer = createDoctorExtensionsRenderer(cliCtx.outputMode);
 
+    const doctorLockfileRepo = await LockfileRepository.create(lockfilePath);
     await consumeStream(
       doctorExtensions({
         registries,
         getWarnings: getExtensionLoadWarnings,
         resetState: resetExtensionLoadWarnings,
-        readUpstreamExtensions: () => readUpstreamExtensions(lockfilePath),
+        lockfileRepository: doctorLockfileRepo,
         repoDir,
         skillsDir: repoRelativeSkillsDir,
         abortSignal: controller.signal,

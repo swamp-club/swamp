@@ -43,13 +43,13 @@ import { resolveDatastoreType } from "../domain/extensions/extension_auto_resolv
 import { getAutoResolver } from "../domain/extensions/auto_resolver_context.ts";
 import { maybeAutoUpdateDatastoreExtension } from "../libswamp/extensions/datastore_auto_update.ts";
 import { FileExtensionUpdateCheckRepository } from "../infrastructure/persistence/extension_update_check_repository.ts";
-import { readUpstreamExtensions } from "../infrastructure/persistence/upstream_extensions.ts";
 import { ExtensionApiClient } from "../infrastructure/http/extension_api_client.ts";
 import { DEFAULT_SWAMP_CLUB_URL } from "../domain/auth/auth_credentials.ts";
 import {
   detectLocalEditsForExtension,
   enumeratePulledExtensionDirs,
   installExtension,
+  LockfileRepository,
 } from "../libswamp/mod.ts";
 import { UserDatastoreLoader } from "../domain/datastore/user_datastore_loader.ts";
 import { EmbeddedDenoRuntime } from "../infrastructure/runtime/embedded_deno_runtime.ts";
@@ -100,8 +100,8 @@ async function maybeAutoUpdateSwampDatastore(
 
     const result = await maybeAutoUpdateDatastoreExtension(type, {
       getInstalledVersion: async (name) => {
-        const upstream = await readUpstreamExtensions(lockfilePath);
-        return upstream[name]?.version ?? null;
+        const installedRepo = await LockfileRepository.create(lockfilePath);
+        return installedRepo.getLockedVersion(name);
       },
       getLatestVersion: async (name) => {
         try {
@@ -120,6 +120,11 @@ async function maybeAutoUpdateSwampDatastore(
         // derives per-extension destinations (models/workflows/vaults/
         // drivers/datastores/reports) from `name`; only skillsDir is
         // caller-owned because skills land in a tool-specific dir.
+        // Construct a fresh LockfileRepository per install to capture
+        // a current snapshot — the InstallContext is single-use.
+        const lockfileRepository = await LockfileRepository.create(
+          lockfilePath,
+        );
         await installExtension(
           { name, version },
           {
@@ -127,7 +132,7 @@ async function maybeAutoUpdateSwampDatastore(
             downloadArchive: (n, v) => extensionClient.downloadArchive(n, v),
             getChecksum: (n, v) => extensionClient.getChecksum(n, v),
             logger,
-            lockfilePath,
+            lockfileRepository,
             skillsDir: swampPath(
               resolvedRepoDir,
               SWAMP_SUBDIRS.pulledSkills,

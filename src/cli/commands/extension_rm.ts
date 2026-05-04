@@ -105,7 +105,7 @@ export const extensionRemoveCommand = new Command()
 
     // Create libswamp context, deps, renderer
     const libCtx = createLibSwampContext({ logger: ctx.logger });
-    const deps = createExtensionRmDeps(repoDir, lockfilePath);
+    const deps = await createExtensionRmDeps(repoDir, lockfilePath);
     const renderer = createExtensionRmRenderer(ctx.outputMode);
     const input = { extensionName: ref.name };
 

@@ -29,6 +29,8 @@
 
 import { ExtensionCatalogStore } from "../extension_catalog_store.ts";
 import { ExtensionRepository } from "../extension_repository.ts";
+import { LockfileRepository } from "../lockfile_repository.ts";
+import type { UpstreamExtensionsMap } from "../upstream_extensions.ts";
 
 /**
  * Constructs an ExtensionRepository wrapping a fresh
@@ -43,31 +45,45 @@ import { ExtensionRepository } from "../extension_repository.ts";
  * @param repoRoot The canonical repo root the repository should use
  *   when resolving extensionRoot for pulled vs local origins.
  *   Defaults to a sentinel value tests can use unconditionally.
- * @param getLockedVersion Lockfile-fallback closure. Defaults to
- *   `() => null` (no lockfile entries available — orphan-DELETE
- *   semantics). Tests for the lockfile fallback override this.
+ * @param lockedVersions Lockfile-fallback fixture map keyed by
+ *   extension name. Defaults to `{}` (no lockfile entries available —
+ *   orphan-DELETE semantics). Tests for the lockfile fallback override
+ *   this. Internally constructed into a {@link LockfileRepository}
+ *   with a sentinel path so reads serve from the in-memory cache.
  */
 export function makeStubRepository(args: {
   dbPath: string;
   repoRoot?: string;
-  getLockedVersion?: (name: string) => string | null;
+  lockedVersions?: UpstreamExtensionsMap;
 }): { repository: ExtensionRepository; catalog: ExtensionCatalogStore } {
   const catalog = new ExtensionCatalogStore(args.dbPath);
+  const lockfileRepository = new LockfileRepository(
+    "/test/repo/upstream_extensions.json",
+    args.lockedVersions ?? {},
+  );
   const repository = new ExtensionRepository({
     catalog,
-    getLockedVersion: args.getLockedVersion ?? (() => null),
+    lockfileRepository,
     repoRoot: args.repoRoot ?? "/test/repo",
   });
   return { repository, catalog };
 }
 
 /**
- * Synchronous convenience for tests that want a closure-style lockfile.
- * Pass a plain object mapping extension name to version; the returned
- * function looks up by name and returns null for misses.
+ * Synchronous convenience for tests that want a fixture lockfile keyed
+ * by name → version. Maps the name→version object into the full
+ * UpstreamExtensionsMap shape (synthesizing a placeholder pulledAt) so
+ * callers don't have to spell out the full entry shape per test.
  */
-export function fixedLockedVersionLookup(
+export function fixedLockedVersions(
   versions: Readonly<Record<string, string>>,
-): (name: string) => string | null {
-  return (name) => versions[name] ?? null;
+): UpstreamExtensionsMap {
+  const map: UpstreamExtensionsMap = {};
+  for (const [name, version] of Object.entries(versions)) {
+    map[name] = {
+      version,
+      pulledAt: "1970-01-01T00:00:00.000Z",
+    };
+  }
+  return map;
 }

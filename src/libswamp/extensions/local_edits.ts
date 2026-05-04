@@ -20,7 +20,7 @@
 import { join, resolve } from "@std/path";
 import { UserError } from "../../domain/errors.ts";
 import { readInstalledExtensionDigest } from "../../infrastructure/persistence/installed_extension_digest_reader.ts";
-import { readUpstreamExtensions } from "../../infrastructure/persistence/upstream_extensions.ts";
+import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 
 /**
  * Tri-state outcome of the local-edits check.
@@ -47,8 +47,8 @@ export async function detectLocalEditsForExtension(
   lockfilePath: string,
 ): Promise<LocalEditsStatus> {
   try {
-    const upstream = await readUpstreamExtensions(lockfilePath);
-    const stored = upstream[name]?.filesChecksum;
+    const repo = await LockfileRepository.create(lockfilePath);
+    const stored = repo.getEntry(name)?.filesChecksum;
     if (!stored) return "no-anchor";
     const extRoot = join(
       resolve(repoDir),

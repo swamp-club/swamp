@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { join } from "@std/path";
-import { readUpstreamExtensions } from "../../infrastructure/persistence/upstream_extensions.ts";
+import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import { cleanupEmptyParentDirs } from "../../infrastructure/persistence/directory_cleanup.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
@@ -103,10 +103,17 @@ export interface ExtensionInstallDeps {
    * removed.
    */
   skillsDirRelative?: string;
+  /**
+   * Async factory that constructs a fresh {@link InstallContext} for
+   * each install entry. The async return type matters: each context
+   * captures a snapshot of the lockfile via {@link LockfileRepository}
+   * at construction (per the InstallContext.lockfileRepository JSDoc),
+   * and that capture is itself an async file read.
+   */
   createInstallContext: (
     name: string,
     version: string,
-  ) => InstallContext;
+  ) => Promise<InstallContext>;
   /**
    * Test seam. Defaults to the real `installExtension` from pull.ts;
    * tests can inject a stub so they don't need a real tar archive and
@@ -140,7 +147,10 @@ export async function* extensionInstall(
     (async function* () {
       yield { kind: "resolving" };
 
-      const upstream = await readUpstreamExtensions(deps.lockfilePath);
+      const lockfileRepository = await LockfileRepository.create(
+        deps.lockfilePath,
+      );
+      const upstream = lockfileRepository.getAllEntries();
       const entries: ExtensionInstallEntry[] = [];
       let installed = 0;
       let migrated = 0;
@@ -172,7 +182,7 @@ export async function* extensionInstall(
           : { kind: "installing", name, version };
 
         try {
-          const installCtx = deps.createInstallContext(name, version);
+          const installCtx = await deps.createInstallContext(name, version);
           // Thread the lockfile's stored checksum through as an integrity
           // anchor. installExtension verifies the freshly-downloaded archive
           // matches byte-for-byte and fails loudly on registry drift.

@@ -24,7 +24,7 @@ import {
   type ExtensionUpdateStatus,
 } from "../../domain/extensions/extension_update_service.ts";
 import { ExtensionApiClient } from "../../infrastructure/http/extension_api_client.ts";
-import { readUpstreamExtensions } from "../../infrastructure/persistence/upstream_extensions.ts";
+import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { validationFailed } from "../errors.ts";
@@ -62,10 +62,12 @@ export interface ExtensionUpdateInput {
 
 /** Dependencies for the extension update operation. */
 export interface ExtensionUpdateDeps {
-  /** Read installed upstream extensions. Returns map of name -> { version }. */
-  readUpstreamExtensions: () => Promise<
-    Record<string, { version: string }>
-  >;
+  /**
+   * Lockfile repository — the snapshot of installed extensions to
+   * evaluate for updates. Captures upstream_extensions.json at
+   * construction.
+   */
+  lockfileRepository: LockfileRepository;
   /** Get extension info from registry (latest version). */
   getExtension: (
     name: string,
@@ -83,19 +85,19 @@ export interface ExtensionUpdateDeps {
 }
 
 /** Wires real infrastructure into ExtensionUpdateDeps. */
-export function createExtensionUpdateDeps(options: {
+export async function createExtensionUpdateDeps(options: {
   lockfilePath: string;
   serverUrl?: string;
   installExtension: (
     name: string,
     version: string,
   ) => Promise<InstallResult | undefined>;
-}): ExtensionUpdateDeps {
+}): Promise<ExtensionUpdateDeps> {
   const extensionClient = new ExtensionApiClient(
     options.serverUrl ?? resolveServerUrl(),
   );
   return {
-    readUpstreamExtensions: () => readUpstreamExtensions(options.lockfilePath),
+    lockfileRepository: await LockfileRepository.create(options.lockfilePath),
     getExtension: async (name) => {
       try {
         const info = await extensionClient.getExtension(name);
@@ -121,7 +123,7 @@ export async function* extensionUpdate(
     (async function* () {
       ctx.logger.debug`Executing extension update`;
 
-      const upstream = await deps.readUpstreamExtensions();
+      const upstream = deps.lockfileRepository.getAllEntries();
       const installedNames = Object.keys(upstream);
 
       if (installedNames.length === 0) {

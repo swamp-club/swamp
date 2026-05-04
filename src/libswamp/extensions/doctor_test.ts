@@ -20,6 +20,7 @@
 import { assertEquals } from "@std/assert";
 import type { ExtensionLoadWarning } from "../../infrastructure/logging/extension_load_warnings.ts";
 import { resetExtensionLoadWarnings } from "../../infrastructure/logging/extension_load_warnings.ts";
+import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import {
   DOCTOR_REGISTRY_ORDER,
   doctorExtensions,
@@ -75,7 +76,10 @@ function buildDeps(
     resetState: () => {
       events.push({ fn: "resetState" });
     },
-    readUpstreamExtensions: () => Promise.resolve({}),
+    lockfileRepository: new LockfileRepository(
+      "/test/repo/upstream_extensions.json",
+      {},
+    ),
     repoDir: options.repoDir ?? "/tmp/swamp-test-repo",
     skillsDir: options.skillsDir ?? ".claude/skills",
     abortSignal: new AbortController().signal,
@@ -273,7 +277,10 @@ Deno.test(
           files: [".swamp/pulled-extensions/@x/y/models/tracked.ts"],
         },
       };
-      deps.readUpstreamExtensions = () => Promise.resolve(upstream);
+      deps.lockfileRepository = new LockfileRepository(
+        "/test/repo/upstream_extensions.json",
+        upstream,
+      );
 
       const events = await collect(doctorExtensions(deps));
       const completed = events.find((e) => e.kind === "completed");
@@ -317,7 +324,10 @@ Deno.test(
           files: [".swamp/pulled-extensions/@x/y/models/tracked.ts"],
         },
       };
-      deps.readUpstreamExtensions = () => Promise.resolve(upstream);
+      deps.lockfileRepository = new LockfileRepository(
+        "/test/repo/upstream_extensions.json",
+        upstream,
+      );
 
       const events = await collect(doctorExtensions(deps));
       const completed = events.find((e) => e.kind === "completed");
@@ -384,7 +394,10 @@ Deno.test(
           files: [".claude/skills/foo"],
         },
       };
-      deps.readUpstreamExtensions = () => Promise.resolve(upstream);
+      deps.lockfileRepository = new LockfileRepository(
+        "/test/repo/upstream_extensions.json",
+        upstream,
+      );
 
       const events = await collect(doctorExtensions(deps));
       const completed = events.find((e) => e.kind === "completed");
@@ -440,7 +453,10 @@ Deno.test(
           ],
         },
       };
-      deps.readUpstreamExtensions = () => Promise.resolve(upstream);
+      deps.lockfileRepository = new LockfileRepository(
+        "/test/repo/upstream_extensions.json",
+        upstream,
+      );
 
       const events = await collect(doctorExtensions(deps));
       const completed = events.find((e) => e.kind === "completed");

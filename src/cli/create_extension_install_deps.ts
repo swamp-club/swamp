@@ -26,6 +26,7 @@ import { RepoMarkerRepository } from "../infrastructure/persistence/repo_marker_
 import { ExtensionApiClient } from "../infrastructure/http/extension_api_client.ts";
 import {
   type ExtensionInstallDeps,
+  LockfileRepository,
   resolveServerUrl,
 } from "../libswamp/mod.ts";
 import { resolveModelsDir } from "./resolve_models_dir.ts";
@@ -72,12 +73,12 @@ export async function createExtensionInstallDeps(
     lockfilePath,
     repoDir: absoluteRepoDir,
     skillsDirRelative,
-    createInstallContext: (_name, _version) => ({
+    createInstallContext: async (_name, _version) => ({
       getExtension: (n) => client.getExtension(n),
       downloadArchive: (n, v) => client.downloadArchive(n, v),
       getChecksum: (n, v) => client.getChecksum(n, v),
       logger,
-      lockfilePath,
+      lockfileRepository: await LockfileRepository.create(lockfilePath),
       skillsDir: absoluteSkillsDir,
       repoDir: absoluteRepoDir,
       force: true,

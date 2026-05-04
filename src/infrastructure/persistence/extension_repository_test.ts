@@ -30,9 +30,10 @@ import type { ExtensionRepository } from "./extension_repository.ts";
 import { ExtensionCatalogStore } from "./extension_catalog_store.ts";
 import { DuplicateTypeError } from "./duplicate_type_error.ts";
 import {
-  fixedLockedVersionLookup,
+  fixedLockedVersions,
   makeStubRepository,
 } from "./test_helpers/stub_extension_repository.ts";
+import type { UpstreamExtensionsMap } from "./upstream_extensions.ts";
 import {
   type Extension,
   makeExtension,
@@ -67,13 +68,13 @@ function withRepository(
     catalog: ExtensionCatalogStore,
     repoRoot: string,
   ) => void,
-  opts?: { getLockedVersion?: (name: string) => string | null },
+  opts?: { lockedVersions?: UpstreamExtensionsMap },
 ): void {
   const { repoRoot, dbPath } = makeTempLayout();
   const { repository, catalog } = makeStubRepository({
     dbPath,
     repoRoot,
-    getLockedVersion: opts?.getLockedVersion,
+    lockedVersions: opts?.lockedVersions,
   });
   try {
     fn(repository, catalog, repoRoot);
@@ -381,7 +382,7 @@ Deno.test("ExtensionRepository: lockfile fallback resolves empty version, writes
     const exts2 = repo.loadAll();
     assertEquals(exts2.length, 1);
     assertEquals(exts2[0].version, "1.0.0");
-  }, { getLockedVersion: fixedLockedVersionLookup({ "@scope/foo": "1.0.0" }) });
+  }, { lockedVersions: fixedLockedVersions({ "@scope/foo": "1.0.0" }) });
 });
 
 // ===== Test #9: lockfile fallback orphan path =====
@@ -411,7 +412,7 @@ Deno.test("ExtensionRepository: lockfile fallback orphan-DELETEs a pulled row wh
     assertEquals(exts.length, 0);
     // The row was DELETEd as an orphan.
     assertEquals(cat.findAll().length, 0);
-  }, { getLockedVersion: () => null });
+  }, { lockedVersions: {} });
 });
 
 // ===== Test #10: cold-start guard parity over all 5 kinds =====
@@ -543,7 +544,7 @@ Deno.test("ExtensionRepository: two pulled rows for same name resolve to same ve
     // Both source paths must appear in the error message.
     assertStringIncludes(thrown.message, "models/instance.ts");
     assertStringIncludes(thrown.message, "models/extra/instance.ts");
-  }, { getLockedVersion: fixedLockedVersionLookup({ "@scope/foo": "2.0.0" }) });
+  }, { lockedVersions: fixedLockedVersions({ "@scope/foo": "2.0.0" }) });
 });
 
 // ===== Supporting tests =====

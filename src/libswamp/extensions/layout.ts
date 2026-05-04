@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { SWAMP_DATA_DIR } from "../../infrastructure/persistence/paths.ts";
-import { readUpstreamExtensions } from "../../infrastructure/persistence/upstream_extensions.ts";
+import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 
 /**
  * Generation of an on-disk extension layout.
@@ -229,7 +229,8 @@ export function extractTopLevelRoot(
 export async function detectLegacyExtensionLayout(
   lockfilePath: string,
 ): Promise<LegacyFileEntry[]> {
-  const upstream = await readUpstreamExtensions(lockfilePath);
+  const repo = await LockfileRepository.create(lockfilePath);
+  const upstream = repo.getAllEntries();
   const legacy: LegacyFileEntry[] = [];
 
   for (const [name, entry] of Object.entries(upstream)) {

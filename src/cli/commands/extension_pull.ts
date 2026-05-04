@@ -42,6 +42,7 @@ import {
   extensionPull,
   type ExtensionPullDeps,
   type ExtensionRegistryInfo,
+  type LockfileRepository,
   parseExtensionRef,
   resolveServerUrl,
   validateExtensionName,
@@ -62,9 +63,8 @@ export {
   type InstallContext,
   installExtension,
   type InstallResult,
+  LockfileRepository,
   parseExtensionRef,
-  removeUpstreamExtension,
-  updateUpstreamExtensions,
   validateExtensionName,
 } from "../../libswamp/mod.ts";
 
@@ -91,8 +91,11 @@ export interface PullContext {
   downloadArchive: (name: string, version: string) => Promise<Uint8Array>;
   getChecksum: (name: string, version: string) => Promise<string | null>;
   logger: Logger;
-  /** Full path to the upstream_extensions.json lockfile. */
-  lockfilePath: string;
+  /**
+   * Lockfile repository owning read+write of upstream_extensions.json.
+   * Captures a snapshot at construction; construct fresh per pull.
+   */
+  lockfileRepository: LockfileRepository;
   /** Tool-aware skills destination (e.g. `.claude/skills/`). */
   skillsDir: string;
   repoDir: string;
@@ -115,7 +118,7 @@ export async function pullExtension(
     getExtension: ctx.getExtension,
     downloadArchive: ctx.downloadArchive,
     getChecksum: ctx.getChecksum,
-    lockfilePath: ctx.lockfilePath,
+    lockfileRepository: ctx.lockfileRepository,
     skillsDir: ctx.skillsDir,
     repoDir: ctx.repoDir,
     alreadyPulled: ctx.alreadyPulled,
@@ -208,7 +211,7 @@ export const extensionPullCommand = new Command()
 
     // 7. Create deps via factory and pull
     const serverUrl = resolveServerUrl();
-    const deps = createExtensionPullDeps(
+    const deps = await createExtensionPullDeps(
       serverUrl,
       lockfilePath,
       skillsDir,
@@ -220,7 +223,7 @@ export const extensionPullCommand = new Command()
       downloadArchive: deps.downloadArchive,
       getChecksum: deps.getChecksum,
       logger: ctx.logger,
-      lockfilePath,
+      lockfileRepository: deps.lockfileRepository,
       skillsDir,
       repoDir,
       force: options.force ?? false,

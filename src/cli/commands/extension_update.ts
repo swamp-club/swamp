@@ -113,11 +113,15 @@ export const extensionUpdateCommand = new Command()
     const serverUrl = resolveServerUrl();
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createExtensionUpdateDeps({
+    const deps = await createExtensionUpdateDeps({
       lockfilePath,
       serverUrl,
       installExtension: async (name: string, version: string) => {
-        const installCtx = createInstallContext(serverUrl, {
+        // Construct a fresh InstallContext per upgrade — captures a
+        // current snapshot of the lockfile per the
+        // InstallContext.lockfileRepository single-use rule. Reusing one
+        // context across multiple installs would expose stale state.
+        const installCtx = await createInstallContext(serverUrl, {
           logger: cliCtx.logger,
           lockfilePath,
           skillsDir,

@@ -30,6 +30,7 @@ import {
 import { pruneOrphanFiles } from "../../infrastructure/persistence/directory_cleanup.ts";
 import { createLibSwampContext } from "../context.ts";
 import type { InstallContext } from "./pull.ts";
+import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import { readUpstreamExtensions } from "../../infrastructure/persistence/upstream_extensions.ts";
 
 async function collectEvents(
@@ -55,7 +56,7 @@ Deno.test("extensionInstall: empty lockfile yields all up to date", async () => 
         lockfilePath,
         repoDir: tmpDir,
         createInstallContext: () => {
-          throw new Error("should not be called");
+          return Promise.reject(new Error("should not be called"));
         },
       }),
     );
@@ -107,7 +108,9 @@ Deno.test("extensionInstall: skips extensions with all files present", async () 
         lockfilePath,
         repoDir: tmpDir,
         createInstallContext: () => {
-          throw new Error("should not be called for up-to-date");
+          return Promise.reject(
+            new Error("should not be called for up-to-date"),
+          );
         },
       }),
     );
@@ -146,7 +149,7 @@ Deno.test("extensionInstall: detects missing files and calls install", async () 
       extensionInstall(ctx, {
         lockfilePath,
         repoDir: tmpDir,
-        createInstallContext: (_name, _version) => {
+        createInstallContext: async (_name, _version) => {
           installCalled = true;
           // Return a minimal context that won't actually pull
           // (installExtension will fail, which we catch)
@@ -154,7 +157,7 @@ Deno.test("extensionInstall: detects missing files and calls install", async () 
             getExtension: () => Promise.resolve(null),
             downloadArchive: () => Promise.reject(new Error("test stub")),
             getChecksum: () => Promise.resolve(null),
-            lockfilePath,
+            lockfileRepository: await LockfileRepository.create(lockfilePath),
             skillsDir: join(tmpDir, ".swamp/pulled-extensions/skills"),
             repoDir: tmpDir,
             force: true,
@@ -198,7 +201,7 @@ Deno.test("extensionInstall: missing lockfile yields empty result", async () => 
         lockfilePath,
         repoDir: tmpDir,
         createInstallContext: () => {
-          throw new Error("should not be called");
+          return Promise.reject(new Error("should not be called"));
         },
       }),
     );
@@ -241,7 +244,7 @@ Deno.test("extensionInstall: lockfile-anchored checksum mismatch fails with drif
       extensionInstall(ctx, {
         lockfilePath,
         repoDir: tmpDir,
-        createInstallContext: () => ({
+        createInstallContext: async () => ({
           getExtension: () =>
             Promise.resolve({
               name: "@fake/ext",
@@ -251,7 +254,7 @@ Deno.test("extensionInstall: lockfile-anchored checksum mismatch fails with drif
           downloadArchive: () =>
             Promise.resolve(new TextEncoder().encode("drifted content")),
           getChecksum: () => Promise.resolve(null),
-          lockfilePath,
+          lockfileRepository: await LockfileRepository.create(lockfilePath),
           skillsDir: "unused",
           repoDir: tmpDir,
           force: true,
@@ -286,16 +289,16 @@ Deno.test("extensionInstall: lockfile-anchored checksum mismatch fails with drif
  * `installExtensionFn`. Fields the stub reads are populated; the rest
  * are placeholders.
  */
-function makeStubInstallContext(
+async function makeStubInstallContext(
   tmpDir: string,
   lockfilePath: string,
-): InstallContext {
+): Promise<InstallContext> {
   return {
     // deno-lint-ignore no-explicit-any
     getExtension: () => Promise.resolve(null as any),
     downloadArchive: () => Promise.reject(new Error("unused")),
     getChecksum: () => Promise.resolve(null),
-    lockfilePath,
+    lockfileRepository: await LockfileRepository.create(lockfilePath),
     skillsDir: join(tmpDir, ".swamp/pulled-extensions/skills"),
     repoDir: tmpDir,
     force: true,

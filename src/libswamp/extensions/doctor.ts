@@ -20,6 +20,7 @@
 import { walk } from "@std/fs";
 import { join, relative } from "@std/path";
 import type { ExtensionLoadWarning } from "../../infrastructure/logging/extension_load_warnings.ts";
+import type { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import type { UpstreamExtensionsMap } from "../../infrastructure/persistence/upstream_extensions.ts";
 import type { SwampError } from "../errors.ts";
 import { extractTopLevelRoot } from "./layout.ts";
@@ -126,11 +127,12 @@ export interface DoctorExtensionsDeps {
   /** Clears the captured warnings array + dedupe state. */
   resetState: () => void;
   /**
-   * Reads upstream_extensions.json so the orphan-detection phase can
-   * walk every per-extension root. Missing lockfile yields {} (the
+   * Lockfile repository — captures upstream_extensions.json at
+   * construction so the orphan-detection phase can walk every
+   * per-extension root. Missing lockfile yields an empty cache (the
    * orphan walk becomes a no-op).
    */
-  readUpstreamExtensions: () => Promise<UpstreamExtensionsMap>;
+  lockfileRepository: LockfileRepository;
   /** Repo root used to resolve repo-relative paths for filesystem walks. */
   repoDir: string;
   /**
@@ -337,7 +339,7 @@ export async function* doctorExtensions(
   // every loader passes. Errors are not folded into `overallStatus`.
   let orphanFiles: DoctorOrphanFile[] = [];
   if (!deps.abortSignal.aborted) {
-    const upstreamMap = await deps.readUpstreamExtensions();
+    const upstreamMap = deps.lockfileRepository.getAllEntries();
     orphanFiles = await detectOrphanFiles(
       upstreamMap,
       deps.repoDir,

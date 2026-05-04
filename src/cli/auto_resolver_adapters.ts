@@ -22,7 +22,6 @@ import {
   SWAMP_SUBDIRS,
   swampPath,
 } from "../infrastructure/persistence/paths.ts";
-import { readUpstreamExtensions } from "../infrastructure/persistence/upstream_extensions.ts";
 import type { DenoRuntime } from "../domain/runtime/deno_runtime.ts";
 import { join } from "@std/path";
 import type {
@@ -35,6 +34,7 @@ import {
   enumeratePulledExtensionDirs,
   type ExtensionRegistryInfo,
   installExtension,
+  LockfileRepository,
 } from "../libswamp/mod.ts";
 import { UserModelLoader } from "../domain/models/user_model_loader.ts";
 import { UserVaultLoader } from "../domain/vaults/user_vault_loader.ts";
@@ -136,8 +136,8 @@ export function createAutoResolveInstallerAdapter(
       // output, not source. Clearing the bundle cache (a normal hygiene
       // operation) must not flip the inspection to truncated and steal
       // the user-WIP path from issue #121.
-      const upstream = await readUpstreamExtensions(lockfilePath);
-      const entry = upstream[extensionName];
+      const inspectLockfileRepo = await LockfileRepository.create(lockfilePath);
+      const entry = inspectLockfileRepo.getEntry(extensionName);
       if (!entry) return { state: "missing" };
       const path = swampPath(repoDir, "pulled-extensions", extensionName);
       try {
@@ -176,6 +176,12 @@ export function createAutoResolveInstallerAdapter(
       // resolver cannot cover (e.g. two types resolving the same
       // extension concurrently).
       try {
+        // Construct a fresh LockfileRepository per install to capture a
+        // current snapshot — the InstallContext is single-use per its
+        // JSDoc.
+        const lockfileRepository = await LockfileRepository.create(
+          lockfilePath,
+        );
         const result = await installExtension(
           { name: extensionName, version: null },
           {
@@ -183,7 +189,7 @@ export function createAutoResolveInstallerAdapter(
             downloadArchive,
             getChecksum,
             logger,
-            lockfilePath,
+            lockfileRepository,
             skillsDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledSkills),
             repoDir,
             force: false,

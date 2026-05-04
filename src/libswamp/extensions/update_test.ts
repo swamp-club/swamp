@@ -27,15 +27,38 @@ import {
   type ExtensionUpdateEvent,
   type ExtensionUpdateInput,
 } from "./update.ts";
+import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
+import type { UpstreamExtensionsMap } from "../../infrastructure/persistence/upstream_extensions.ts";
+
+/**
+ * Builds a fixture UpstreamExtensionsMap from a shorthand
+ * `{ name: version }` map, synthesizing a placeholder pulledAt so each
+ * test doesn't have to spell out the full entry shape.
+ */
+function shorthandUpstream(
+  versions: Readonly<Record<string, string>>,
+): UpstreamExtensionsMap {
+  const map: UpstreamExtensionsMap = {};
+  for (const [name, version] of Object.entries(versions)) {
+    map[name] = { version, pulledAt: "1970-01-01T00:00:00.000Z" };
+  }
+  return map;
+}
 
 function makeDeps(
-  overrides: Partial<ExtensionUpdateDeps> = {},
+  overrides: Partial<ExtensionUpdateDeps> & {
+    upstream?: Record<string, string>;
+  } = {},
 ): ExtensionUpdateDeps {
+  const { upstream, ...rest } = overrides;
   return {
-    readUpstreamExtensions: () => Promise.resolve({}),
+    lockfileRepository: new LockfileRepository(
+      "/test/repo/upstream_extensions.json",
+      shorthandUpstream(upstream ?? {}),
+    ),
     getExtension: () => Promise.resolve(null),
     installExtension: () => Promise.resolve(undefined),
-    ...overrides,
+    ...rest,
   };
 }
 
@@ -71,10 +94,7 @@ Deno.test("extensionUpdate: result() resolves on empty installation", async () =
 });
 
 Deno.test("extensionUpdate: specific extension not installed yields error", async () => {
-  const deps = makeDeps({
-    readUpstreamExtensions: () =>
-      Promise.resolve({ "@ns/other": { version: "2026.01.01.1" } }),
-  });
+  const deps = makeDeps({ upstream: { "@ns/other": "2026.01.01.1" } });
   const input: ExtensionUpdateInput = {
     extensionName: "@ns/missing",
     checkOnly: false,
@@ -94,11 +114,10 @@ Deno.test("extensionUpdate: specific extension not installed yields error", asyn
 
 Deno.test("extensionUpdate: check mode with updates available", async () => {
   const deps = makeDeps({
-    readUpstreamExtensions: () =>
-      Promise.resolve({
-        "@ns/a": { version: "2026.01.01.1" },
-        "@ns/b": { version: "2026.02.01.1" },
-      }),
+    upstream: {
+      "@ns/a": "2026.01.01.1",
+      "@ns/b": "2026.02.01.1",
+    },
     getExtension: (name) => {
       if (name === "@ns/a") {
         return Promise.resolve({ latestVersion: "2026.03.01.1" });
@@ -127,8 +146,7 @@ Deno.test("extensionUpdate: check mode with updates available", async () => {
 
 Deno.test("extensionUpdate: check mode all up to date", async () => {
   const deps = makeDeps({
-    readUpstreamExtensions: () =>
-      Promise.resolve({ "@ns/a": { version: "2026.02.01.1" } }),
+    upstream: { "@ns/a": "2026.02.01.1" },
     getExtension: () => Promise.resolve({ latestVersion: "2026.02.01.1" }),
   });
   const input: ExtensionUpdateInput = { checkOnly: true };
@@ -148,8 +166,7 @@ Deno.test("extensionUpdate: check mode all up to date", async () => {
 Deno.test("extensionUpdate: update mode successfully updates", async () => {
   const installed: string[] = [];
   const deps = makeDeps({
-    readUpstreamExtensions: () =>
-      Promise.resolve({ "@ns/a": { version: "2026.01.01.1" } }),
+    upstream: { "@ns/a": "2026.01.01.1" },
     getExtension: () => Promise.resolve({ latestVersion: "2026.03.01.1" }),
     installExtension: (name, version) => {
       installed.push(`${name}@${version}`);
@@ -181,8 +198,7 @@ Deno.test("extensionUpdate: update mode successfully updates", async () => {
 
 Deno.test("extensionUpdate: update mode with install failure", async () => {
   const deps = makeDeps({
-    readUpstreamExtensions: () =>
-      Promise.resolve({ "@ns/a": { version: "2026.01.01.1" } }),
+    upstream: { "@ns/a": "2026.01.01.1" },
     getExtension: () => Promise.resolve({ latestVersion: "2026.03.01.1" }),
     installExtension: () => {
       return Promise.reject(new Error("Network timeout"));
@@ -204,8 +220,7 @@ Deno.test("extensionUpdate: update mode with install failure", async () => {
 
 Deno.test("extensionUpdate: registry fetch failure records not_found", async () => {
   const deps = makeDeps({
-    readUpstreamExtensions: () =>
-      Promise.resolve({ "@ns/a": { version: "2026.01.01.1" } }),
+    upstream: { "@ns/a": "2026.01.01.1" },
     getExtension: () => Promise.resolve(null),
   });
   const input: ExtensionUpdateInput = { checkOnly: true };
@@ -251,8 +266,7 @@ Deno.test(
   "extensionUpdate: emits orphans-pruned event when installExtension returns pruned paths",
   async () => {
     const deps = makeDeps({
-      readUpstreamExtensions: () =>
-        Promise.resolve({ "@ns/a": { version: "2026.01.01.1" } }),
+      upstream: { "@ns/a": "2026.01.01.1" },
       getExtension: () => Promise.resolve({ latestVersion: "2026.03.01.1" }),
       installExtension: (name, version) =>
         Promise.resolve(
@@ -288,8 +302,7 @@ Deno.test(
   "extensionUpdate: NO orphans-pruned event when result has empty pruned list",
   async () => {
     const deps = makeDeps({
-      readUpstreamExtensions: () =>
-        Promise.resolve({ "@ns/a": { version: "2026.01.01.1" } }),
+      upstream: { "@ns/a": "2026.01.01.1" },
       getExtension: () => Promise.resolve({ latestVersion: "2026.03.01.1" }),
       installExtension: (name, version) =>
         Promise.resolve(buildInstallResult(name, version, [])),

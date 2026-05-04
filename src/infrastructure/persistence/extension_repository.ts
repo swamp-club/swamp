@@ -26,6 +26,7 @@ import type {
   ExtensionTypeRow,
 } from "./extension_catalog_store.ts";
 import { DuplicateTypeError } from "./duplicate_type_error.ts";
+import type { LockfileRepository } from "./lockfile_repository.ts";
 import {
   type Extension,
   type ExtensionOrigin,
@@ -81,18 +82,20 @@ export interface InvalidationGuardResult {
  * catalog deliberately have empty `extension_version` because the
  * pulled-extensions on-disk tree encodes only the name. Version is
  * owned by `upstream_extensions.json` (the lockfile) and consulted at
- * read time. The repository takes a synchronous `getLockedVersion`
- * closure injected at construction; callers pre-read the lockfile via
- * {@link readUpstreamExtensions} and pass a closure over the result.
+ * read time. The repository takes a {@link LockfileRepository} injected
+ * at construction and asks it for the locked version on every fallback
+ * lookup.
  *
- * **Snapshot frozen at construction.** The lockfile snapshot inside
- * `getLockedVersion` is taken once when the caller pre-reads the
- * lockfile. A long-lived repository instance does not refresh — re-
- * construction is the recommended mechanism. The race window between
- * lockfile read and write-back (process A reads v1, process B upgrades
- * to v2 + rewrites lockfile, process A writes back v1) is acknowledged
- * but deferred to W3's `ReconcileFromDisk` for convergence; SQLite's
- * `busy_timeout` serializes the write itself.
+ * **Snapshot frozen at construction.** The lockfile snapshot lives one
+ * layer out, inside the {@link LockfileRepository}. That repository is
+ * itself constructed-with-snapshot per its own JSDoc; callers who need
+ * a fresh snapshot construct a new {@link LockfileRepository} and pass
+ * it to a new {@link ExtensionRepository}. Long-lived instances do NOT
+ * auto-refresh — re-construction is the recommended mechanism. The race
+ * window between lockfile read and write-back (process A reads v1,
+ * process B upgrades to v2 + rewrites lockfile, process A writes back
+ * v1) is acknowledged but deferred to W3's `ReconcileFromDisk` for
+ * convergence; SQLite's `busy_timeout` serializes the write itself.
  *
  * **Composition over inheritance.** The repository wraps an
  * {@link ExtensionCatalogStore} via composition, NOT inheritance, so
@@ -124,7 +127,7 @@ export class ExtensionRepository {
    */
   readonly legacyStore: ExtensionCatalogStore;
 
-  private readonly getLockedVersion: (name: string) => string | null;
+  private readonly lockfileRepository: LockfileRepository;
   private readonly repoRoot: string;
   /**
    * Tracks rows we've already info-logged for the empty-version
@@ -137,11 +140,11 @@ export class ExtensionRepository {
 
   constructor(args: {
     catalog: ExtensionCatalogStore;
-    getLockedVersion: (name: string) => string | null;
+    lockfileRepository: LockfileRepository;
     repoRoot: string;
   }) {
     this.legacyStore = args.catalog;
-    this.getLockedVersion = args.getLockedVersion;
+    this.lockfileRepository = args.lockfileRepository;
     this.repoRoot = canonicalizePath(args.repoRoot);
     this.fallbackLoggedSourcePaths = new Set();
   }
@@ -400,7 +403,7 @@ export class ExtensionRepository {
 
     if (name !== null && (!version || version.length === 0)) {
       // Pulled row: name populated, version empty. Consult the lockfile.
-      const locked = this.getLockedVersion(name);
+      const locked = this.lockfileRepository.getLockedVersion(name);
       if (locked === null) {
         logger
           .warn`Dropping orphan pulled row at ${row.source_path}: lockfile has no entry for ${name}.`;
@@ -618,13 +621,4 @@ function sourceToRow(
     extension_name: extension.name,
     extension_version: extension.version,
   };
-}
-
-/**
- * Convenience constructor for the empty-locked-version case (no
- * lockfile present). Returns a closure that always returns null.
- * Caller pattern: `getLockedVersion: emptyLockedVersionLookup()`.
- */
-export function emptyLockedVersionLookup(): (name: string) => string | null {
-  return () => null;
 }

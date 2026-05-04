@@ -25,21 +25,23 @@ import {
   type ExtensionListDeps,
   type ExtensionListEvent,
 } from "./list.ts";
+import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
+import type { UpstreamExtensionsMap } from "../../infrastructure/persistence/upstream_extensions.ts";
 
-function makeDeps(
-  overrides?: Partial<ExtensionListDeps>,
-): ExtensionListDeps {
+function makeDeps(upstream?: UpstreamExtensionsMap): ExtensionListDeps {
+  const cache: UpstreamExtensionsMap = upstream ?? {
+    "@ns/beta": { version: "1.0.0", pulledAt: "2026-01-02" },
+    "@ns/alpha": {
+      version: "2.0.0",
+      pulledAt: "2026-01-01",
+      files: ["a.ts"],
+    },
+  };
   return {
-    readUpstreamExtensions: () =>
-      Promise.resolve({
-        "@ns/beta": { version: "1.0.0", pulledAt: "2026-01-02" },
-        "@ns/alpha": {
-          version: "2.0.0",
-          pulledAt: "2026-01-01",
-          files: ["a.ts"],
-        },
-      }),
-    ...overrides,
+    lockfileRepository: new LockfileRepository(
+      "/test/repo/upstream_extensions.json",
+      cache,
+    ),
   };
 }
 
@@ -62,9 +64,7 @@ Deno.test("extensionList yields sorted extensions", async () => {
 });
 
 Deno.test("extensionList yields empty list when no extensions", async () => {
-  const deps = makeDeps({
-    readUpstreamExtensions: () => Promise.resolve({}),
-  });
+  const deps = makeDeps({});
   const events = await collect<ExtensionListEvent>(
     extensionList(createLibSwampContext(), deps),
   );

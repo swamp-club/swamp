@@ -27,6 +27,7 @@ import {
 import { bundleNamespace } from "../../infrastructure/persistence/paths.ts";
 import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
 import { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
+import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import type { DenoRuntime } from "../runtime/deno_runtime.ts";
 
 /** Stub runtime that returns "deno" as the binary path. */
@@ -43,7 +44,10 @@ function makeRepoForCatalog(
 ): ExtensionRepository {
   return new ExtensionRepository({
     catalog,
-    getLockedVersion: () => null,
+    lockfileRepository: new LockfileRepository(
+      "/test/repo/upstream_extensions.json",
+      {},
+    ),
     repoRoot,
   });
 }

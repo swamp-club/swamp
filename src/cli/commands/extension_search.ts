@@ -34,7 +34,11 @@ import { UserError } from "../../domain/errors.ts";
 import {
   ExtensionApiClient,
 } from "../../infrastructure/http/extension_api_client.ts";
-import { type PullContext, pullExtension } from "./extension_pull.ts";
+import {
+  LockfileRepository,
+  type PullContext,
+  pullExtension,
+} from "./extension_pull.ts";
 import {
   consumeStream,
   createLibSwampContext,
@@ -205,13 +209,14 @@ export const extensionSearchCommand = new Command()
         (msg) => ctx.logger.warn(msg),
       );
 
+      const lockfileRepository = await LockfileRepository.create(lockfilePath);
       const pullCtx: PullContext = {
         getExtension: (name) => client.getExtension(name),
         downloadArchive: (name, version) =>
           client.downloadArchive(name, version),
         getChecksum: (name, version) => client.getChecksum(name, version),
         logger: ctx.logger,
-        lockfilePath,
+        lockfileRepository,
         skillsDir: resolveSkillsDir(repoDir, resolvePrimaryTool(marker)),
         repoDir,
         force: false,

@@ -19,33 +19,26 @@
 
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
-import {
-  removeUpstreamExtension,
-  updateUpstreamExtensions,
-} from "./extension_pull.ts";
+import { LockfileRepository } from "./extension_pull.ts";
 import {
   readUpstreamExtensions,
   type UpstreamExtensionEntry,
 } from "../../infrastructure/persistence/upstream_extensions.ts";
 
-Deno.test("removeUpstreamExtension removes entry and preserves others", async () => {
+Deno.test("LockfileRepository.removeEntry removes entry and preserves others", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
   try {
     const lockfilePath = join(tmpDir, "upstream_extensions.json");
-    // Set up two extensions
-    await updateUpstreamExtensions(lockfilePath, "@test/first", "1.0.0", [
-      "a.yaml",
-    ]);
-    await updateUpstreamExtensions(lockfilePath, "@test/second", "2.0.0", [
-      "b.yaml",
-    ]);
+    const repoFirst = await LockfileRepository.create(lockfilePath);
+    await repoFirst.writeEntry("@test/first", "1.0.0", ["a.yaml"]);
+    const repoSecond = await LockfileRepository.create(lockfilePath);
+    await repoSecond.writeEntry("@test/second", "2.0.0", ["b.yaml"]);
 
-    // Remove the first one
-    await removeUpstreamExtension(lockfilePath, "@test/first");
+    // Remove the first one via a fresh instance.
+    const repoRm = await LockfileRepository.create(lockfilePath);
+    await repoRm.removeEntry("@test/first");
 
-    const content = await Deno.readTextFile(
-      join(tmpDir, "upstream_extensions.json"),
-    );
+    const content = await Deno.readTextFile(lockfilePath);
     const data = JSON.parse(content) as Record<string, UpstreamExtensionEntry>;
 
     assertEquals(data["@test/first"], undefined);
@@ -56,20 +49,17 @@ Deno.test("removeUpstreamExtension removes entry and preserves others", async ()
   }
 });
 
-Deno.test("removeUpstreamExtension handles non-existent extension gracefully", async () => {
+Deno.test("LockfileRepository.removeEntry handles non-existent extension gracefully", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
   try {
     const lockfilePath = join(tmpDir, "upstream_extensions.json");
-    await updateUpstreamExtensions(lockfilePath, "@test/first", "1.0.0", [
-      "a.yaml",
-    ]);
+    const repo = await LockfileRepository.create(lockfilePath);
+    await repo.writeEntry("@test/first", "1.0.0", ["a.yaml"]);
 
-    // Removing a non-existent entry should not throw
-    await removeUpstreamExtension(lockfilePath, "@test/nonexistent");
+    // Removing a non-existent entry should not throw.
+    await repo.removeEntry("@test/nonexistent");
 
-    const content = await Deno.readTextFile(
-      join(tmpDir, "upstream_extensions.json"),
-    );
+    const content = await Deno.readTextFile(lockfilePath);
     const data = JSON.parse(content) as Record<string, UpstreamExtensionEntry>;
 
     assertEquals(data["@test/first"].version, "1.0.0");
@@ -78,16 +68,15 @@ Deno.test("removeUpstreamExtension handles non-existent extension gracefully", a
   }
 });
 
-Deno.test("removeUpstreamExtension handles missing JSON file", async () => {
+Deno.test("LockfileRepository.removeEntry handles missing JSON file", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
   try {
     const lockfilePath = join(tmpDir, "upstream_extensions.json");
-    // Should not throw even when file doesn't exist
-    await removeUpstreamExtension(lockfilePath, "@test/nonexistent");
+    const repo = await LockfileRepository.create(lockfilePath);
+    // Should not throw even when file doesn't exist.
+    await repo.removeEntry("@test/nonexistent");
 
-    const content = await Deno.readTextFile(
-      join(tmpDir, "upstream_extensions.json"),
-    );
+    const content = await Deno.readTextFile(lockfilePath);
     const data = JSON.parse(content) as Record<string, UpstreamExtensionEntry>;
 
     assertEquals(Object.keys(data).length, 0);
@@ -100,7 +89,8 @@ Deno.test("readUpstreamExtensions reads existing entries", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
   try {
     const lockfilePath = join(tmpDir, "upstream_extensions.json");
-    await updateUpstreamExtensions(lockfilePath, "@test/ext", "1.0.0", [
+    const repo = await LockfileRepository.create(lockfilePath);
+    await repo.writeEntry("@test/ext", "1.0.0", [
       "extensions/models/foo.yaml",
     ]);
 

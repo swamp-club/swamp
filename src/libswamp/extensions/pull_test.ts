@@ -23,9 +23,9 @@ import { join } from "@std/path";
 import {
   computeOrphanDiff,
   parseExtensionRef,
-  updateUpstreamExtensions,
   validateExtensionName,
 } from "./pull.ts";
+import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import { UserError } from "../../domain/errors.ts";
 
 Deno.test("parseExtensionRef: parses name without version", () => {
@@ -81,13 +81,12 @@ Deno.test("validateExtensionName: rejects invalid names", () => {
   );
 });
 
-Deno.test("updateUpstreamExtensions: writes and updates entries", async () => {
+Deno.test("LockfileRepository.writeEntry: writes and updates entries", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
   try {
     const lockfilePath = join(tmpDir, "upstream_extensions.json");
-    await updateUpstreamExtensions(lockfilePath, "@test/first", "1.0.0", [
-      "a.yaml",
-    ]);
+    const repo = await LockfileRepository.create(lockfilePath);
+    await repo.writeEntry("@test/first", "1.0.0", ["a.yaml"]);
 
     const content = await Deno.readTextFile(lockfilePath);
     const data = JSON.parse(content);

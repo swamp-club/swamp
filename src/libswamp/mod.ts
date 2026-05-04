@@ -648,7 +648,6 @@ export {
   type InstallResult,
   parseExtensionRef,
   resolveServerUrl,
-  updateUpstreamExtensions,
   validateExtensionName,
 } from "./extensions/pull.ts";
 export {
@@ -660,8 +659,10 @@ export {
   type ExtensionRmInput,
   type ExtensionRmPreview,
   extensionRmPreview,
-  removeUpstreamExtension,
 } from "./extensions/rm.ts";
+
+// Lockfile repository — sole gateway for upstream_extensions.json.
+export { LockfileRepository } from "../infrastructure/persistence/lockfile_repository.ts";
 
 // Extension layout detection
 export {
