@@ -384,7 +384,13 @@ export class ExtensionCatalogStore {
    * row.
    */
   private backfillExtensionIdentity(): void {
-    const repoRoot = inferRepoRootFromDbPath(this.dbPath);
+    // canonicalizePath both sides — sub-step 4 already canonicalized
+    // every row's source_path, but inferRepoRootFromDbPath returns the
+    // raw dbPath form which is native (backslashes, mixed case) on
+    // Windows. deriveExtensionIdentity's docstring requires both inputs
+    // pre-canonicalized so prefix matching is stable across mixed-case
+    // filesystems; running canonicalizePath here makes the contract hold.
+    const repoRoot = canonicalizePath(inferRepoRootFromDbPath(this.dbPath));
     const rows = this.db
       .prepare(
         "SELECT rowid AS rid, source_path FROM bundle_types WHERE extension_name = ''",
