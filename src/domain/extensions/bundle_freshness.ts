@@ -52,7 +52,21 @@ export interface FreshnessCatalogRow {
   source_path: string;
   source_fingerprint?: string;
   bundle_path?: string;
+  /**
+   * Vestigial after W1a (issue swamp-club#211) — the row migrated to
+   * the `state` field below. Preserved on the type for back-compat
+   * with tests that still assert on it; production code reads
+   * `state === 'ValidationFailed'` via {@link findStaleFiles}.
+   */
   validation_failed?: boolean;
+  /**
+   * RowState tag (W1a). `findStaleFiles` checks
+   * `state === 'ValidationFailed'` to skip rebundling rows that are
+   * known schema-broken — the swamp-club#209 rebundle-loop guard.
+   * Optional so legacy fixtures that omit it default to 'Indexed'
+   * via {@link mapRow}.
+   */
+  state?: string;
 }
 
 /**
@@ -294,13 +308,17 @@ export async function findStaleFiles(
         // bundle attempt). Without this check the catalog row stays "fresh"
         // and a downstream importBundleByPath ENOENTs (swamp-club#212).
         //
-        // validation_failed rows are skipped: rebundling them is a no-op
+        // ValidationFailed rows are skipped: rebundling them is a no-op
         // cycle — bundle still fails schema validation, markCatalogValidationFailed
         // re-pins the same fingerprint, every command spawns deno bundle.
-        // That is the inverse of the loop swamp-club#209 sealed.
+        // That is the inverse of the loop swamp-club#209 sealed. The W1a
+        // migration absorbed the legacy `validation_failed` boolean into
+        // the `state` column; this reader migrated together with the
+        // writer (markCatalogValidationFailed) so the W1a→W1b window
+        // never has a writer/reader schism on this guard.
         if (
           catalogEntry.bundle_path &&
-          !catalogEntry.validation_failed &&
+          catalogEntry.state !== "ValidationFailed" &&
           !(await bundleExists(catalogEntry.bundle_path))
         ) {
           logger
@@ -343,7 +361,7 @@ export interface ValidationFailureCatalog {
     extends_type: string;
     source_mtime: string;
     source_fingerprint: string;
-    validation_failed: boolean;
+    state?: string;
   }): void;
 }
 
@@ -359,7 +377,7 @@ export interface MarkCatalogValidationFailedParams {
 /**
  * Records the dual of findStaleFiles: when an extension's source bundles
  * and imports cleanly but fails schema validation, write the catalog row
- * with the new fingerprint and validation_failed=true. Without this,
+ * with the new fingerprint and `state: 'ValidationFailed'`. Without this,
  * findStaleFiles keeps marking the file stale on every pass — the
  * `safeParse`-throws-before-upsert pattern in each loader's
  * rebundleAndUpdateCatalog leaves the row's fingerprint pinned at the
@@ -369,9 +387,15 @@ export interface MarkCatalogValidationFailedParams {
  * Storing the new fingerprint terminates the loop: the next
  * findStaleFiles pass compares the computed fingerprint against the
  * stored one, finds them equal, and treats the file as fresh. The row's
- * empty type_normalized + validation_failed=true keeps the broken
+ * empty type_normalized + state='ValidationFailed' keeps the broken
  * extension out of the registry — registration call sites filter on
- * the flag.
+ * the state.
+ *
+ * The W1a migration absorbs the legacy `validation_failed` boolean into
+ * this state column (issue swamp-club#211). Writers (this helper) and
+ * readers (the loaders + findStaleFiles' bundle-missing branch)
+ * migrate together so the column is genuinely vestigial during the
+ * W1a → W1b release window. The column itself drops in W1b.
  *
  * Symmetric to the UNREADABLE_DEP_SENTINEL fix in #208: that one made
  * computeSourceFingerprint total for unreadable transitive deps; this
@@ -403,6 +427,6 @@ export function markCatalogValidationFailed(
     extends_type: "",
     source_mtime: sourceMtime,
     source_fingerprint: sourceFingerprint,
-    validation_failed: true,
+    state: "ValidationFailed",
   });
 }

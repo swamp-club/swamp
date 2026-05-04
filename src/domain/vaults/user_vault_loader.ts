@@ -534,9 +534,10 @@ export class UserVaultLoader {
   private registerLazyFromCatalog(catalog: ExtensionCatalogStore): void {
     const entries = catalog.findByKind("vault");
     for (const entry of entries) {
-      // Skip validation-failed rows (swamp-club#209) — see equivalent
-      // guard in user_model_loader.ts:registerLazyFromCatalog.
-      if (entry.validation_failed) continue;
+      // Skip ValidationFailed rows (swamp-club#209) — see equivalent
+      // guard in user_model_loader.ts:registerLazyFromCatalog. Migrated
+      // to read `state` instead of `validation_failed` per W1a.
+      if (entry.state === "ValidationFailed") continue;
       vaultTypeRegistry.registerLazy({
         type: entry.type_normalized,
         bundlePath: entry.bundle_path,

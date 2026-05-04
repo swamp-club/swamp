@@ -21,14 +21,26 @@ import { assertEquals } from "@std/assert";
 import { DatabaseSync } from "node:sqlite";
 import { dirname, join } from "@std/path";
 import { ensureDirSync } from "@std/fs";
+import { canonicalizePath } from "./canonicalize_path.ts";
 import {
   ExtensionCatalogStore,
   type ExtensionTypeRow,
 } from "./extension_catalog_store.ts";
 
+/**
+ * Returns a dbPath at `<tmpRepo>/.swamp/_extension_catalog.db` so the
+ * catalog's `inferRepoRootFromDbPath()` (which expects a real swamp
+ * layout) produces `<tmpRepo>` — letting tests seed rows whose
+ * source_paths actually match the W1a migration's path heuristic
+ * (`<repoRoot>/extensions/<kind>/...` or
+ * `<repoRoot>/.swamp/pulled-extensions/<name>/<kind>/...`).
+ */
 function makeTempDbPath(): string {
-  const dir = Deno.makeTempDirSync({ prefix: "swamp-ext-catalog-test-" });
-  return join(dir, "_extension_catalog.db");
+  const repoRoot = Deno.makeTempDirSync({
+    prefix: "swamp-ext-catalog-test-",
+  });
+  ensureDirSync(join(repoRoot, ".swamp"));
+  return join(repoRoot, ".swamp", "_extension_catalog.db");
 }
 
 function makeRow(overrides: Partial<ExtensionTypeRow> = {}): ExtensionTypeRow {
@@ -432,6 +444,21 @@ Deno.test("ExtensionCatalogStore: migrates pre-#125 schema by adding source_fing
   ensureDirSync(dirname(dbPath));
 
   // Seed a DB with the pre-#125 schema — no source_fingerprint column.
+  // Source path lives under <repoRoot>/.swamp/pulled-extensions/... so
+  // the W1a data-migration backfills extension_name and the row
+  // survives the post-condition verify. Without a layout-matching path
+  // the row would be dropped (correct W1a behaviour, but defeats this
+  // test's purpose of checking source_fingerprint is added).
+  const repoRoot = dirname(dirname(dbPath));
+  const sourcePath = join(
+    repoRoot,
+    ".swamp",
+    "pulled-extensions",
+    "@legacy",
+    "pre-125",
+    "models",
+    "row.ts",
+  );
   const seed = new DatabaseSync(dbPath);
   seed.exec(`
     CREATE TABLE bundle_types (
@@ -445,14 +472,22 @@ Deno.test("ExtensionCatalogStore: migrates pre-#125 schema by adding source_fing
       source_mtime    TEXT NOT NULL DEFAULT ''
     );
     CREATE TABLE bundle_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-    INSERT INTO bundle_types (
+  `);
+  seed.prepare(
+    `INSERT INTO bundle_types (
       source_path, type_normalized, kind, bundle_path, version,
       description, extends_type, source_mtime
-    ) VALUES (
-      '/old/row.ts', '@legacy/row', 'model', '/old/bundle.js',
-      '2026.01.01.1', '', '', '2026-01-01T00:00:00.000Z'
-    );
-  `);
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    sourcePath,
+    "@legacy/row",
+    "model",
+    "/old/bundle.js",
+    "2026.01.01.1",
+    "",
+    "",
+    "2026-01-01T00:00:00.000Z",
+  );
   seed.close();
 
   // Opening through ExtensionCatalogStore must run the migration.
@@ -490,6 +525,20 @@ for (
       const dbPath = makeTempDbPath();
       ensureDirSync(dirname(dbPath));
 
+      // Source path under <repoRoot>/.swamp/pulled-extensions/... so the
+      // W1a backfill produces a non-empty extension_name and the row
+      // survives.
+      const repoRoot = dirname(dirname(dbPath));
+      const sourcePath = join(
+        repoRoot,
+        ".swamp",
+        "pulled-extensions",
+        "@legacy",
+        `${kind}-row`,
+        `${kind}s`,
+        `${kind}.ts`,
+      );
+
       // Seed a DB with the pre-#125 schema — no source_fingerprint
       // column — carrying a row of the target kind.
       const seed = new DatabaseSync(dbPath);
@@ -505,14 +554,22 @@ for (
           source_mtime    TEXT NOT NULL DEFAULT ''
         );
         CREATE TABLE bundle_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-        INSERT INTO bundle_types (
+      `);
+      seed.prepare(
+        `INSERT INTO bundle_types (
           source_path, type_normalized, kind, bundle_path, version,
           description, extends_type, source_mtime
-        ) VALUES (
-          '/old/${kind}.ts', '@legacy/${kind}-row', '${kind}',
-          '/old/${kind}.js', '', '', '', '2026-01-01T00:00:00.000Z'
-        );
-      `);
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+      ).run(
+        sourcePath,
+        `@legacy/${kind}-row`,
+        kind,
+        `/old/${kind}.js`,
+        "",
+        "",
+        "",
+        "2026-01-01T00:00:00.000Z",
+      );
       seed.close();
 
       // Opening through ExtensionCatalogStore must run the migration.
@@ -536,63 +593,63 @@ for (
   );
 }
 
-// --- validation_failed column tests (swamp-club#209) ---
+// --- RowState column tests (swamp-club#211, W1a) ---
 //
-// The column tracks the third freshness state introduced by
-// markCatalogValidationFailed: bundle+import succeeded, schema
-// validation failed. Storing the new fingerprint terminates the
-// rebundle loop on a stable broken source; registration paths skip
-// validation_failed=true rows.
+// The state column subsumes the legacy validation_failed boolean and
+// will eventually carry the full 7-tag RowState discriminant from W1b.
+// W1a writes 'Indexed' (default for healthy rows) and 'ValidationFailed'
+// (set by markCatalogValidationFailed). Registration paths filter on
+// state === 'ValidationFailed'.
 
-Deno.test("ExtensionCatalogStore: upsert and findByType round-trip validation_failed", () => {
+Deno.test("ExtensionCatalogStore: upsert and findByType round-trip state", () => {
   const dbPath = makeTempDbPath();
   const store = new ExtensionCatalogStore(dbPath);
 
-  store.upsert(makeRow({ validation_failed: true }));
+  store.upsert(makeRow({ state: "ValidationFailed" }));
   const found = store.findByType("@myorg/echo", "model");
-  assertEquals(found?.validation_failed, true);
+  assertEquals(found?.state, "ValidationFailed");
   store.close();
 });
 
-Deno.test("ExtensionCatalogStore: validation_failed defaults to false when omitted from upsert", () => {
+Deno.test("ExtensionCatalogStore: state defaults to 'Indexed' when omitted from upsert", () => {
   const dbPath = makeTempDbPath();
   const store = new ExtensionCatalogStore(dbPath);
 
   store.upsert(makeRow());
   const found = store.findByType("@myorg/echo", "model");
-  assertEquals(found?.validation_failed, false);
+  assertEquals(found?.state, "Indexed");
   store.close();
 });
 
-Deno.test("ExtensionCatalogStore: findByKind returns rows regardless of validation_failed", () => {
+Deno.test("ExtensionCatalogStore: findByKind returns rows regardless of state", () => {
   // ADV-1 invariant guard: findStaleFiles relies on findByKind seeing
-  // broken rows so a stable broken fingerprint terminates the rebundle
-  // loop. Filtering must NOT happen at the store layer — only at
-  // registration call sites.
+  // ValidationFailed rows so the stable broken fingerprint terminates
+  // the rebundle loop (swamp-club#209). Filtering must NOT happen at
+  // the store layer — only at registration call sites.
   const dbPath = makeTempDbPath();
   const store = new ExtensionCatalogStore(dbPath);
 
+  const repoRoot = dirname(dirname(dbPath));
+  const healthyPath = join(repoRoot, "extensions", "models", "healthy.ts");
+  const brokenPath = join(repoRoot, "extensions", "models", "broken.ts");
+
   store.upsert(makeRow({
     type_normalized: "@myorg/healthy",
-    source_path: "/repo/extensions/models/healthy.ts",
-    validation_failed: false,
+    source_path: healthyPath,
+    state: "Indexed",
   }));
   store.upsert(makeRow({
     type_normalized: "",
-    source_path: "/repo/extensions/models/broken.ts",
-    validation_failed: true,
+    source_path: brokenPath,
+    state: "ValidationFailed",
   }));
 
   const rows = store.findByKind("model");
   assertEquals(rows.length, 2);
-  const failed = rows.find((r) =>
-    r.source_path === "/repo/extensions/models/broken.ts"
-  );
-  const healthy = rows.find((r) =>
-    r.source_path === "/repo/extensions/models/healthy.ts"
-  );
-  assertEquals(failed?.validation_failed, true);
-  assertEquals(healthy?.validation_failed, false);
+  const failed = rows.find((r) => r.source_path === brokenPath);
+  const healthy = rows.find((r) => r.source_path === healthyPath);
+  assertEquals(failed?.state, "ValidationFailed");
+  assertEquals(healthy?.state, "Indexed");
   store.close();
 });
 
@@ -600,8 +657,22 @@ Deno.test("ExtensionCatalogStore: migrates pre-#209 schema by adding validation_
   const dbPath = makeTempDbPath();
   ensureDirSync(dirname(dbPath));
 
-  // Seed a DB with the pre-#209 schema — has source_fingerprint but no
-  // validation_failed column.
+  // Source path under <repoRoot>/.swamp/pulled-extensions/... so the
+  // W1a data-migration backfill produces a non-empty extension_name
+  // and the row survives. Pre-#209 schema has source_fingerprint but
+  // no validation_failed column; the migration adds both validation_failed
+  // (vestigial after W1a) and the W1a state/extension_name/extension_version
+  // columns.
+  const repoRoot = dirname(dirname(dbPath));
+  const sourcePath = join(
+    repoRoot,
+    ".swamp",
+    "pulled-extensions",
+    "@legacy",
+    "pre-209",
+    "models",
+    "row.ts",
+  );
   const seed = new DatabaseSync(dbPath);
   seed.exec(`
     CREATE TABLE bundle_types (
@@ -616,27 +687,596 @@ Deno.test("ExtensionCatalogStore: migrates pre-#209 schema by adding validation_
       source_fingerprint TEXT NOT NULL DEFAULT ''
     );
     CREATE TABLE bundle_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-    INSERT INTO bundle_types (
+  `);
+  seed.prepare(
+    `INSERT INTO bundle_types (
       source_path, type_normalized, kind, bundle_path, version,
       description, extends_type, source_mtime, source_fingerprint
-    ) VALUES (
-      '/old/row.ts', '@legacy/row', 'model', '/old/bundle.js',
-      '2026.01.01.1', '', '', '2026-01-01T00:00:00.000Z', 'deadbeef'
-    );
-  `);
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    sourcePath,
+    "@legacy/row",
+    "model",
+    "/old/bundle.js",
+    "2026.01.01.1",
+    "",
+    "",
+    "2026-01-01T00:00:00.000Z",
+    "deadbeef",
+  );
   seed.close();
 
   // Opening through ExtensionCatalogStore must run the migration.
   const store = new ExtensionCatalogStore(dbPath);
 
   const legacy = store.findByType("@legacy/row", "model");
+  // Pre-#209 row didn't have validation_failed; W1a's ALTER TABLE adds
+  // the column with DEFAULT 0, surfaced as false on the row.
   assertEquals(legacy?.validation_failed, false);
   assertEquals(legacy?.source_fingerprint, "deadbeef");
+  // W1a's state column defaults to 'Indexed' for rows without
+  // validation_failed=1.
+  assertEquals(legacy?.state, "Indexed");
 
   // Re-opening is a no-op — migration is idempotent.
   store.close();
   const store2 = new ExtensionCatalogStore(dbPath);
   const again = store2.findByType("@legacy/row", "model");
   assertEquals(again?.validation_failed, false);
+  assertEquals(again?.state, "Indexed");
   store2.close();
+});
+
+// --- per-extension-aggregate-v3 migration tests (swamp-club#211, W1a) ---
+//
+// Cover the W1a data-migration: state backfill from validation_failed,
+// extension_name backfill via deriveExtensionIdentity, post-condition
+// verify with cold-start rebuild fallback, ON CONFLICT preservation
+// canary (the load-bearing test the architect specified for the v6
+// post-bump rescan story).
+
+Deno.test("ExtensionCatalogStore: migrates post-#1286 schema by backfilling state from validation_failed", () => {
+  const dbPath = makeTempDbPath();
+  ensureDirSync(dirname(dbPath));
+
+  // Source paths under <repoRoot>/.swamp/pulled-extensions/... so the
+  // W1a backfill produces non-empty extension_name and the rows survive.
+  const repoRoot = dirname(dirname(dbPath));
+  const healthyPath = join(
+    repoRoot,
+    ".swamp",
+    "pulled-extensions",
+    "@legacy",
+    "post-1286",
+    "models",
+    "healthy.ts",
+  );
+  const brokenPath = join(
+    repoRoot,
+    ".swamp",
+    "pulled-extensions",
+    "@legacy",
+    "post-1286",
+    "models",
+    "broken.ts",
+  );
+
+  // Seed a DB with the post-#1286 schema (has source_fingerprint AND
+  // validation_failed) carrying one healthy row + one row marked broken
+  // by the legacy markCatalogValidationFailed flow.
+  const seed = new DatabaseSync(dbPath);
+  seed.exec(`
+    CREATE TABLE bundle_types (
+      source_path        TEXT NOT NULL PRIMARY KEY,
+      type_normalized    TEXT NOT NULL,
+      kind               TEXT NOT NULL DEFAULT 'model',
+      bundle_path        TEXT NOT NULL,
+      version            TEXT NOT NULL DEFAULT '',
+      description        TEXT NOT NULL DEFAULT '',
+      extends_type       TEXT NOT NULL DEFAULT '',
+      source_mtime       TEXT NOT NULL DEFAULT '',
+      source_fingerprint TEXT NOT NULL DEFAULT '',
+      validation_failed  INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE bundle_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+  `);
+  const insert = seed.prepare(
+    `INSERT INTO bundle_types (
+      source_path, type_normalized, kind, bundle_path, version,
+      description, extends_type, source_mtime, source_fingerprint,
+      validation_failed
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+  );
+  insert.run(
+    healthyPath,
+    "@legacy/healthy",
+    "model",
+    "/old/healthy.js",
+    "2026.01.01.1",
+    "",
+    "",
+    "2026-01-01T00:00:00.000Z",
+    "feedface",
+    0,
+  );
+  insert.run(
+    brokenPath,
+    "",
+    "model",
+    "/old/broken.js",
+    "",
+    "",
+    "",
+    "2026-01-01T00:00:00.000Z",
+    "cafebabe",
+    1,
+  );
+  seed.close();
+
+  const store = new ExtensionCatalogStore(dbPath);
+  const rows = store.findByKind("model");
+  assertEquals(rows.length, 2);
+  // Match against the canonical form — the W1a migration's sub-step 4
+  // canonicalized every row's source_path. On Windows the seeded
+  // healthy/brokenPath are backslash-form; the stored row is
+  // lowercase + forward-slash.
+  const healthy = rows.find((r) =>
+    r.source_path === canonicalizePath(healthyPath)
+  );
+  const broken = rows.find((r) =>
+    r.source_path === canonicalizePath(brokenPath)
+  );
+  assertEquals(healthy?.state, "Indexed");
+  assertEquals(broken?.state, "ValidationFailed");
+  store.close();
+});
+
+Deno.test("ExtensionCatalogStore: W1a migration backfills extension_name for pulled rows (extension_version intentionally empty per Option A)", () => {
+  const dbPath = makeTempDbPath();
+  ensureDirSync(dirname(dbPath));
+  const repoRoot = dirname(dirname(dbPath));
+  const sourcePath = join(
+    repoRoot,
+    ".swamp",
+    "pulled-extensions",
+    "@scope",
+    "foo",
+    "models",
+    "x.ts",
+  );
+
+  const seed = new DatabaseSync(dbPath);
+  seed.exec(`
+    CREATE TABLE bundle_types (
+      source_path        TEXT NOT NULL PRIMARY KEY,
+      type_normalized    TEXT NOT NULL,
+      kind               TEXT NOT NULL DEFAULT 'model',
+      bundle_path        TEXT NOT NULL,
+      version            TEXT NOT NULL DEFAULT '',
+      description        TEXT NOT NULL DEFAULT '',
+      extends_type       TEXT NOT NULL DEFAULT '',
+      source_mtime       TEXT NOT NULL DEFAULT '',
+      source_fingerprint TEXT NOT NULL DEFAULT '',
+      validation_failed  INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE bundle_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+  `);
+  seed.prepare(
+    `INSERT INTO bundle_types (
+      source_path, type_normalized, kind, bundle_path
+    ) VALUES (?, ?, ?, ?)`,
+  ).run(sourcePath, "@scope/foo/x", "model", "/bundle/x.js");
+  seed.close();
+
+  const store = new ExtensionCatalogStore(dbPath);
+  // Read identity columns directly via SQL — the catalog deliberately
+  // does not surface extension_name/extension_version on
+  // ExtensionTypeRow per W1a Option A; W1b's ExtensionRepository owns
+  // the read path. Look up by canonical source_path because the W1a
+  // migration's sub-step 4 canonicalized every row's path; on Windows
+  // the seeded `sourcePath` is backslash-form and won't match the
+  // stored canonical (lowercase + forward-slash) form.
+  const probe = (store as unknown as {
+    db: DatabaseSync;
+  }).db.prepare(
+    "SELECT extension_name, extension_version FROM bundle_types WHERE source_path = ?",
+  ).get(canonicalizePath(sourcePath)) as {
+    extension_name: string;
+    extension_version: string;
+  };
+  assertEquals(probe.extension_name, "@scope/foo");
+  assertEquals(probe.extension_version, "");
+  store.close();
+});
+
+Deno.test("ExtensionCatalogStore: W1a migration backfills @local/<repo> for rows under extensions/<kind>/ (version 0.0.0)", () => {
+  const dbPath = makeTempDbPath();
+  ensureDirSync(dirname(dbPath));
+  const repoRoot = dirname(dirname(dbPath));
+  const sourcePath = join(repoRoot, "extensions", "models", "echo.ts");
+
+  const seed = new DatabaseSync(dbPath);
+  seed.exec(`
+    CREATE TABLE bundle_types (
+      source_path        TEXT NOT NULL PRIMARY KEY,
+      type_normalized    TEXT NOT NULL,
+      kind               TEXT NOT NULL DEFAULT 'model',
+      bundle_path        TEXT NOT NULL,
+      version            TEXT NOT NULL DEFAULT '',
+      description        TEXT NOT NULL DEFAULT '',
+      extends_type       TEXT NOT NULL DEFAULT '',
+      source_mtime       TEXT NOT NULL DEFAULT '',
+      source_fingerprint TEXT NOT NULL DEFAULT '',
+      validation_failed  INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE bundle_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+  `);
+  seed.prepare(
+    `INSERT INTO bundle_types (
+      source_path, type_normalized, kind, bundle_path
+    ) VALUES (?, ?, ?, ?)`,
+  ).run(sourcePath, "@org/echo", "model", "/bundle/echo.js");
+  seed.close();
+
+  const store = new ExtensionCatalogStore(dbPath);
+  const probe = (store as unknown as {
+    db: DatabaseSync;
+  }).db.prepare(
+    "SELECT extension_name, extension_version FROM bundle_types WHERE source_path = ?",
+  ).get(canonicalizePath(sourcePath)) as {
+    extension_name: string;
+    extension_version: string;
+  };
+  // basename(repoRoot) is the temp dir's basename — we only assert the
+  // @local/ prefix and the literal "0.0.0" version since the dir name
+  // varies across runs.
+  assertEquals(probe.extension_name.startsWith("@local/"), true);
+  assertEquals(probe.extension_version, "0.0.0");
+  store.close();
+});
+
+Deno.test("ExtensionCatalogStore: W1a migration drops rows whose path doesn't match the heuristic (and post-condition verify rebuild path)", () => {
+  const dbPath = makeTempDbPath();
+  ensureDirSync(dirname(dbPath));
+
+  const seed = new DatabaseSync(dbPath);
+  seed.exec(`
+    CREATE TABLE bundle_types (
+      source_path        TEXT NOT NULL PRIMARY KEY,
+      type_normalized    TEXT NOT NULL,
+      kind               TEXT NOT NULL DEFAULT 'model',
+      bundle_path        TEXT NOT NULL,
+      version            TEXT NOT NULL DEFAULT '',
+      description        TEXT NOT NULL DEFAULT '',
+      extends_type       TEXT NOT NULL DEFAULT '',
+      source_mtime       TEXT NOT NULL DEFAULT '',
+      source_fingerprint TEXT NOT NULL DEFAULT '',
+      validation_failed  INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE bundle_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+    INSERT INTO bundle_meta (key, value) VALUES ('populated:model', 'true');
+  `);
+  // Seed with an unrecognized path layout — neither pulled nor local.
+  seed.prepare(
+    `INSERT INTO bundle_types (
+      source_path, type_normalized, kind, bundle_path
+    ) VALUES (?, ?, ?, ?)`,
+  ).run("/some/random/path/x.ts", "@unknown/x", "model", "/bundle/x.js");
+  seed.close();
+
+  const store = new ExtensionCatalogStore(dbPath);
+  // Migration's data-phase: row had unrecognized layout → backfill
+  // returns null → row left with empty extension_name → DELETE step
+  // drops it → post-condition passes (no rows with empty
+  // extension_name remain). The cold-start rebuild path (which
+  // would also clear bundle_meta `populated:*` keys) does NOT fire
+  // here because the post-condition succeeds.
+  assertEquals(store.count(), 0);
+  // populated:model survives — only the cold-start rebuild path
+  // clears it, and the post-condition succeeded.
+  assertEquals(store.isPopulated("model"), true);
+  store.close();
+});
+
+Deno.test("ExtensionCatalogStore: W1a migration backfills mixed pulled + local + unmatched rows in a single pass", () => {
+  // The whole-pipeline test: a pre-#1286 catalog containing every
+  // origin type the W1a heuristic must classify simultaneously. Pulled
+  // rows get extension_name backfilled with version='' (Option A);
+  // local rows get @local/<repo>/0.0.0; unmatched rows are dropped at
+  // the DELETE step. validation_failed=1 → state='ValidationFailed' on
+  // the broken pulled row. Verifies all branches of
+  // deriveExtensionIdentity compose correctly inside one transaction.
+  const dbPath = makeTempDbPath();
+  ensureDirSync(dirname(dbPath));
+  const repoRoot = dirname(dirname(dbPath));
+
+  const pulledHealthy = join(
+    repoRoot,
+    ".swamp",
+    "pulled-extensions",
+    "@scope",
+    "alpha",
+    "models",
+    "ok.ts",
+  );
+  const pulledBroken = join(
+    repoRoot,
+    ".swamp",
+    "pulled-extensions",
+    "@scope",
+    "alpha",
+    "models",
+    "broken.ts",
+  );
+  const pulledOtherExt = join(
+    repoRoot,
+    ".swamp",
+    "pulled-extensions",
+    "@scope",
+    "beta",
+    "vaults",
+    "secret.ts",
+  );
+  const localPath = join(repoRoot, "extensions", "models", "echo.ts");
+  const sourceMountedPath = "/external/srcdir/extensions/drivers/raw.ts";
+  const unmatchedPath = "/some/legacy/path/orphan.ts";
+
+  const seed = new DatabaseSync(dbPath);
+  seed.exec(`
+    CREATE TABLE bundle_types (
+      source_path        TEXT NOT NULL PRIMARY KEY,
+      type_normalized    TEXT NOT NULL,
+      kind               TEXT NOT NULL DEFAULT 'model',
+      bundle_path        TEXT NOT NULL,
+      version            TEXT NOT NULL DEFAULT '',
+      description        TEXT NOT NULL DEFAULT '',
+      extends_type       TEXT NOT NULL DEFAULT '',
+      source_mtime       TEXT NOT NULL DEFAULT '',
+      source_fingerprint TEXT NOT NULL DEFAULT '',
+      validation_failed  INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE TABLE bundle_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+  `);
+  const insert = seed.prepare(
+    `INSERT INTO bundle_types (
+      source_path, type_normalized, kind, bundle_path,
+      validation_failed
+    ) VALUES (?, ?, ?, ?, ?)`,
+  );
+  insert.run(pulledHealthy, "@scope/alpha/ok", "model", "/b/ok.js", 0);
+  insert.run(pulledBroken, "", "model", "/b/broken.js", 1);
+  insert.run(
+    pulledOtherExt,
+    "@scope/beta/secret",
+    "vault",
+    "/b/secret.js",
+    0,
+  );
+  insert.run(localPath, "@org/echo", "model", "/b/echo.js", 0);
+  insert.run(sourceMountedPath, "@org/raw", "driver", "/b/raw.js", 0);
+  insert.run(unmatchedPath, "@legacy/orphan", "model", "/b/orphan.js", 0);
+  seed.close();
+
+  const store = new ExtensionCatalogStore(dbPath);
+  // Read identity columns directly via SQL — ExtensionTypeRow doesn't
+  // surface extension_name/extension_version per W1a Option A.
+  const rows = (store as unknown as { db: DatabaseSync }).db.prepare(
+    `SELECT source_path, extension_name, extension_version, state
+       FROM bundle_types ORDER BY source_path`,
+  ).all() as Array<{
+    source_path: string;
+    extension_name: string;
+    extension_version: string;
+    state: string;
+  }>;
+
+  // The W1a migration's sub-step 4 canonicalized every row's
+  // source_path. On Windows the seeded paths above are backslash-form;
+  // the stored rows are lowercase + forward-slash. Look up against the
+  // canonical form so this test passes on both platforms.
+  const cPulledHealthy = canonicalizePath(pulledHealthy);
+  const cPulledBroken = canonicalizePath(pulledBroken);
+  const cPulledOtherExt = canonicalizePath(pulledOtherExt);
+  const cLocalPath = canonicalizePath(localPath);
+  const cSourceMountedPath = canonicalizePath(sourceMountedPath);
+  const cUnmatchedPath = canonicalizePath(unmatchedPath);
+
+  // Unmatched row was dropped at sub-step 7. Five remain.
+  assertEquals(rows.length, 5);
+  assertEquals(
+    rows.find((r) => r.source_path === cUnmatchedPath),
+    undefined,
+    "unmatched-path row must be dropped by the DELETE step",
+  );
+
+  const byPath = new Map(rows.map((r) => [r.source_path, r]));
+
+  // Pulled rows: extension_name parsed from path, version intentionally ''.
+  assertEquals(byPath.get(cPulledHealthy)?.extension_name, "@scope/alpha");
+  assertEquals(byPath.get(cPulledHealthy)?.extension_version, "");
+  assertEquals(byPath.get(cPulledHealthy)?.state, "Indexed");
+
+  assertEquals(byPath.get(cPulledBroken)?.extension_name, "@scope/alpha");
+  assertEquals(byPath.get(cPulledBroken)?.extension_version, "");
+  // validation_failed=1 backfilled to state='ValidationFailed'.
+  assertEquals(byPath.get(cPulledBroken)?.state, "ValidationFailed");
+
+  assertEquals(byPath.get(cPulledOtherExt)?.extension_name, "@scope/beta");
+  assertEquals(byPath.get(cPulledOtherExt)?.extension_version, "");
+  assertEquals(byPath.get(cPulledOtherExt)?.state, "Indexed");
+
+  // Local row: @local/<basename(repoRoot)> at 0.0.0. Use @std/path
+  // basename so this works on both POSIX and Windows native repoRoot
+  // values. The migration's deriveExtensionIdentity uses basename on
+  // a canonicalized repoRoot internally — same semantic.
+  const expectedLocalName = `@local/${
+    canonicalizePath(repoRoot).split("/").filter((s) => s.length > 0).pop()
+  }`;
+  assertEquals(byPath.get(cLocalPath)?.extension_name, expectedLocalName);
+  assertEquals(byPath.get(cLocalPath)?.extension_version, "0.0.0");
+  assertEquals(byPath.get(cLocalPath)?.state, "Indexed");
+
+  // Source-mounted row: same @local/<repoRoot> aggregate as locals
+  // (per the design doc — "@local/<repo-name> covers every Source
+  // under every extensions/<kind>/ tree" regardless of where the
+  // source dir lives).
+  assertEquals(
+    byPath.get(cSourceMountedPath)?.extension_name,
+    expectedLocalName,
+  );
+  assertEquals(byPath.get(cSourceMountedPath)?.extension_version, "0.0.0");
+  assertEquals(byPath.get(cSourceMountedPath)?.state, "Indexed");
+
+  store.close();
+});
+
+// --- Cold-start rebuild path ---
+//
+// The recovery path that fires when the data-migration's post-condition
+// verify throws (e.g. a backfill heuristic gap that leaves rows with
+// empty extension_name AFTER sub-step 7's DELETE — a bug class the
+// current heuristic doesn't produce, but which a future migration
+// change could). The path is the only line of defense against a silent
+// backfill bug; we test the rebuild's own contract directly via the
+// private-method cast pattern already used elsewhere in this file.
+// The catch-handler in `runDataMigrationTransaction` that triggers the
+// rebuild is three trivial lines (try/catch around verify; log; call
+// runColdStartRebuild) — testing the rebuild itself + reading the
+// catch handler is sufficient.
+
+Deno.test("ExtensionCatalogStore: runColdStartRebuild empties bundle_types, clears populated:* keys, marks migration applied", () => {
+  const dbPath = makeTempDbPath();
+  const store = new ExtensionCatalogStore(dbPath);
+  const repoRoot = dirname(dirname(dbPath));
+
+  // Seed the catalog with rows + populated flags so the rebuild has
+  // something to clear. Use realistic paths so the construction-time
+  // migration accepted them; this is the post-W1a steady state.
+  const sourcePath = join(
+    repoRoot,
+    ".swamp",
+    "pulled-extensions",
+    "@scope",
+    "foo",
+    "models",
+    "x.ts",
+  );
+  store.upsert({
+    source_path: sourcePath,
+    type_normalized: "@scope/foo/x",
+    kind: "model",
+    bundle_path: "/b/x.js",
+    version: "1.0.0",
+    description: "",
+    extends_type: "",
+    source_mtime: "",
+  });
+  store.markPopulated("model");
+  store.markPopulated("vault");
+  assertEquals(store.count(), 1);
+  assertEquals(store.isPopulated("model"), true);
+  assertEquals(store.isPopulated("vault"), true);
+
+  // Drive the rebuild directly. The catch-handler in
+  // runDataMigrationTransaction wraps this in
+  //   try { ... } catch (error) { ROLLBACK; logger.warn; rebuild(); }
+  // — a trivial three-liner. Testing the rebuild's own contract is
+  // what catches a regression in the recovery semantics.
+  (store as unknown as { runColdStartRebuild: () => void })
+    .runColdStartRebuild();
+
+  // Post-rebuild invariants:
+  //   1. bundle_types is empty (DELETE FROM bundle_types).
+  //   2. populated:* keys cleared (so loaders re-discover from disk).
+  //   3. migration_applied marker set (so subsequent restarts skip
+  //      the data-migration phase — the catalog is at v3 even though
+  //      it's empty).
+  assertEquals(store.count(), 0);
+  assertEquals(store.isPopulated("model"), false);
+  assertEquals(store.isPopulated("vault"), false);
+  const markerProbe = (store as unknown as { db: DatabaseSync }).db.prepare(
+    `SELECT value FROM bundle_meta
+         WHERE key = 'migration_applied:per-extension-aggregate-v3'`,
+  ).get() as { value: string } | undefined;
+  assertEquals(markerProbe?.value, "true");
+
+  store.close();
+
+  // Re-opening must be a no-op: marker is set, data-phase is skipped,
+  // catalog stays empty. Loaders re-populate from disk on first access
+  // (out of scope for this unit test).
+  const store2 = new ExtensionCatalogStore(dbPath);
+  assertEquals(store2.count(), 0);
+  assertEquals(store2.isPopulated("model"), false);
+  store2.close();
+});
+
+// --- ON CONFLICT preservation canary (resolves ADV-V3-1) ---
+//
+// The load-bearing test the architect called out: after the W1a
+// migration backfills extension_name/extension_version, the model
+// loader's BUNDLE_LAYOUT_VERSION-bump-triggered rescan upserts every
+// row. Under the previous INSERT OR REPLACE pattern, the upsert reset
+// extension_name/extension_version to DEFAULT '' on every row,
+// silently undoing the migration on first run after deploy. The new
+// ON CONFLICT(source_path) DO UPDATE SET pattern intentionally
+// excludes the identity columns from the SET list. This test fails
+// loudly if a future change reverts to INSERT OR REPLACE or adds the
+// identity columns to the SET list.
+
+Deno.test("ExtensionCatalogStore: upsert preserves migration-backfilled extension_name/extension_version on UPDATE (ADV-V3-1 canary)", () => {
+  const dbPath = makeTempDbPath();
+  const store = new ExtensionCatalogStore(dbPath);
+
+  // Manually INSERT a row with backfilled identity, simulating the
+  // post-W1a-migration state.
+  const sourcePath = "/test/repo/extensions/models/echo.ts";
+  (store as unknown as { db: DatabaseSync }).db.prepare(
+    `INSERT INTO bundle_types (
+      source_path, type_normalized, kind, bundle_path,
+      extension_name, extension_version, state
+    ) VALUES (?, ?, ?, ?, ?, ?, ?)`,
+  ).run(
+    sourcePath,
+    "@myorg/echo",
+    "model",
+    "/bundle/echo-v1.js",
+    "@scope/echo",
+    "1.2.3",
+    "Indexed",
+  );
+
+  // Simulate a loader rescan upserting the same source_path with new
+  // bundle_path, version, etc. (the model loader re-bundles after a
+  // BUNDLE_LAYOUT_VERSION bump and upserts every row).
+  store.upsert(makeRow({
+    source_path: sourcePath,
+    type_normalized: "@myorg/echo",
+    kind: "model",
+    bundle_path: "/bundle/echo-v2.js",
+    version: "2026.05.04.1",
+  }));
+
+  // Identity columns: UNCHANGED. This is the canary — under
+  // INSERT OR REPLACE these would have been reset to ''.
+  const probe = (store as unknown as { db: DatabaseSync }).db.prepare(
+    `SELECT extension_name, extension_version, state, bundle_path, version
+       FROM bundle_types WHERE source_path = ?`,
+  ).get(sourcePath) as {
+    extension_name: string;
+    extension_version: string;
+    state: string;
+    bundle_path: string;
+    version: string;
+  };
+  assertEquals(probe.extension_name, "@scope/echo");
+  assertEquals(probe.extension_version, "1.2.3");
+  // Legacy columns DO change on UPDATE — these are in the SET list.
+  assertEquals(probe.bundle_path, "/bundle/echo-v2.js");
+  assertEquals(probe.version, "2026.05.04.1");
+  // state is in the SET list and defaults to 'Indexed' when callers
+  // omit it (which the loader's upsert always does — only
+  // markCatalogValidationFailed sets state explicitly).
+  assertEquals(probe.state, "Indexed");
+  store.close();
 });
