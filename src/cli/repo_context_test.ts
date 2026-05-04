@@ -30,6 +30,7 @@ import {
   resolveDatastoreForRepo,
 } from "./repo_context.ts";
 import { flushDatastoreSync } from "../infrastructure/persistence/datastore_sync_coordinator.ts";
+import { isCustomDatastoreConfig } from "../domain/datastore/datastore_config.ts";
 import { RepoPath } from "../domain/repo/repo_path.ts";
 import { RepoService } from "../domain/repo/repo_service.ts";
 import { UserError } from "../domain/errors.ts";
@@ -471,6 +472,76 @@ Deno.test("acquireModelLocks - deduplicates same model", async () => {
     await lockResult.flush();
   });
 });
+
+Deno.test(
+  "acquireModelLocks - force-releases stale global lock instead of infinite-looping",
+  async () => {
+    // Regression test for swamp-club#218. Before the fix, a stale global
+    // lock observed during per-model lock acquisition was bypassed but
+    // never deleted. The post-acquire TOCTOU re-check then re-detected
+    // the same stale lock and recursed forever. With the fix,
+    // acquireModelLocks force-releases the stale lock so subsequent
+    // inspects return null and the per-model loop completes normally.
+    await withTempDir(async (dir) => {
+      await initializeRepo(dir);
+
+      const { datastoreConfig } = await resolveDatastoreForRepo(dir);
+      if (isCustomDatastoreConfig(datastoreConfig)) {
+        throw new Error("expected filesystem datastore for this test");
+      }
+
+      // Plant a stale global lock: acquiredAt 10 minutes ago, ttlMs 30s.
+      // The presence of `nonce` is what enables forceRelease to work.
+      const lockPath = join(datastoreConfig.path, ".datastore.lock");
+      const tenMinutesAgo = new Date(Date.now() - 10 * 60 * 1000)
+        .toISOString();
+      await Deno.writeTextFile(
+        lockPath,
+        JSON.stringify({
+          holder: "ghost@dead-machine",
+          hostname: "dead-machine",
+          pid: 999999,
+          acquiredAt: tenMinutesAgo,
+          ttlMs: 30_000,
+          nonce: "test-stale-nonce-218",
+        }),
+      );
+
+      // Race acquireModelLocks against a 10s deadline. Without the fix
+      // the call deadlocks (recurses forever) and this throws.
+      const acquirePromise = acquireModelLocks(datastoreConfig, [
+        { modelType: "x", modelId: "y" },
+      ], dir);
+      const timeoutHandle = { id: 0 as number | undefined };
+      const timeoutPromise = new Promise<never>((_, reject) => {
+        timeoutHandle.id = setTimeout(
+          () =>
+            reject(
+              new Error(
+                "acquireModelLocks did not return within 10s",
+              ),
+            ),
+          10_000,
+        );
+      });
+      let lockResult;
+      try {
+        lockResult = await Promise.race([acquirePromise, timeoutPromise]);
+      } finally {
+        if (timeoutHandle.id !== undefined) clearTimeout(timeoutHandle.id);
+      }
+
+      // Stale lock file should be gone.
+      await assertRejects(
+        () => Deno.stat(lockPath),
+        Deno.errors.NotFound,
+      );
+
+      // Clean up the per-model lock acquired by the call.
+      await lockResult.flush();
+    });
+  },
+);
 
 // ============================================================================
 // skipImplicitSync Tests (lab #220)
