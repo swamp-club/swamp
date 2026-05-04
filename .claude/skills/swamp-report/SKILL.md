@@ -90,9 +90,9 @@ export const report = {
 
 ### Name Conventions
 
-Report names follow the `@collective/name` pattern with optional nested path
-segments (e.g., `@myorg/cost-report` or `@myorg/aws/cost-report`). This matches
-the same naming convention used by models, drivers, vaults, and datastores.
+Report names follow `@collective/name` (e.g. `@myorg/cost-report`,
+`@myorg/aws/cost-report`) — same convention as models, drivers, vaults, and
+datastores.
 
 ### Report Scopes
 
@@ -102,21 +102,10 @@ the same naming convention used by models, drivers, vaults, and datastores.
 | `model`    | `ModelReportContext`    | After all method-scope reports  |
 | `workflow` | `WorkflowReportContext` | After a workflow run completes  |
 
-**Method context** includes: `modelType`, `modelId`, `definition`, `globalArgs`,
-`methodName`, `executionStatus`, `dataHandles`.
-
-**Workflow context** includes: `workflowId`, `workflowRunId`, `workflowName`,
-`workflowStatus`, `stepExecutions[]` (each with `jobName`, `stepName`,
-`modelName`, `modelType`, `methodName`, `status`, `dataHandles`).
-
-All contexts include: `repoDir`, `logger`, `dataRepository`,
-`definitionRepository`.
-
 Reports are generic — they receive a `ReportContext` and decide at runtime how
-to handle their inputs. They don't declare which model types they support.
-
-See [references/report-types.md](references/report-types.md) for full type
-definitions.
+to handle their inputs. They don't declare which model types they support. See
+[references/report-types.md](references/report-types.md) for context field
+listings and full type definitions.
 
 ### Redacting Sensitive Arguments
 
@@ -241,31 +230,13 @@ reports:
     - "@myorg/cost-report" # skip for all models in this workflow
 ```
 
-### Filtering Semantics
+### Filtering Semantics and Precedence
 
-For **method/model scope** reports, the candidate set is:
-
-- Model-type defaults (`ModelDefinition.reports`)
-- Plus definition YAML `require`
-- Minus definition YAML `skip` (always wins)
-- Minus CLI skip flags (unless report is in `require`)
-- Narrowed by CLI inclusion flags (`--report`, `--report-label`)
-
-For **workflow scope** reports, the candidate set is:
-
-- Workflow YAML `require` (no model-type defaults apply)
-- Minus workflow YAML `skip`
-- Minus CLI skip flags (unless in `require`)
-- Narrowed by CLI inclusion flags
-
-### Precedence Rules
-
-- `skip` always wins — even over `require` for the same report name
-- `require` makes reports immune to `--skip-reports`, `--skip-report <name>`,
-  and `--skip-report-label <label>` CLI flags
-- Method scoping (`methods: [...]`) restricts a required report to specific
-  methods — it won't run for unlisted methods
-- CLI inclusion filters (`--report`, `--report-label`) narrow to a subset
+The candidate set is built from model-type defaults plus `require`, minus
+`skip`, with CLI flags applied last. `skip` always wins over `require`, and
+`require` makes a report immune to CLI skip flags. See
+[references/filtering.md](references/filtering.md) for the full set composition
+and precedence rules.
 
 ## Publishing Reports
 
@@ -329,16 +300,14 @@ swamp data get my-model report-cost-estimate --json
 
 ## Output
 
-**Log mode** (default): Renders report markdown with terminal formatting.
-Displays a separator line, the rendered markdown content, and a pass/fail
-summary. The built-in `@swamp/method-summary` markdown is compact for human
-readability: narrative + retrieval hint only.
+**Log mode** (default): renders report markdown with terminal formatting plus a
+pass/fail summary. The built-in `@swamp/method-summary` markdown is compact —
+narrative + retrieval hint only.
 
-**JSON mode** (`--json`): Full structured detail for agents. The built-in
-`@swamp/method-summary` JSON includes narrative, output schema (field names and
-types from the model's output specs), and all data pointers grouped by spec. Use
-`swamp report get <name> --model <model> --json` to retrieve this after
-execution.
+**JSON mode** (`--json`): full structured detail for agents. The built-in
+`@swamp/method-summary` JSON includes narrative, output schema, and data
+pointers grouped by spec. Retrieve with
+`swamp report get <name> --model <model> --json`.
 
 JSON output shape:
 
@@ -377,5 +346,7 @@ Failed reports appear as `{ "_error": "error message" }`.
 - **Report API**: See [references/report-types.md](references/report-types.md)
   for full `ReportDefinition`, `ReportContext`, `ReportRegistry`, and
   `ReportSelection` type definitions
+- **Filtering**: See [references/filtering.md](references/filtering.md) for the
+  full filtering semantics and precedence rules
 - **Testing**: See [references/testing.md](references/testing.md) for unit
   testing report execute functions with `@systeminit/swamp-testing`
