@@ -256,10 +256,13 @@ Deno.test("datastoreSetupExtension: completes with valid config", async () => {
     datastoreSetupExtension(createLibSwampContext(), deps, input),
   );
 
-  assertEquals(events.length, 3);
+  // Event sequence with sync-service-equipped extension:
+  // validating → migrating → hydrating → completed
+  assertEquals(events.length, 4);
   assertEquals(events[0].kind, "validating");
   assertEquals(events[1].kind, "migrating");
-  const completed = events[2] as Extract<
+  assertEquals(events[2].kind, "hydrating");
+  const completed = events[3] as Extract<
     DatastoreSetupEvent,
     { kind: "completed" }
   >;
@@ -279,9 +282,13 @@ Deno.test("datastoreSetupExtension: completes with skip migration", async () => 
     datastoreSetupExtension(createLibSwampContext(), deps, input),
   );
 
-  assertEquals(events.length, 2);
+  // Event sequence on skip-migration with sync service:
+  // validating → hydrating → completed (migration legs skipped, but
+  // hydration still runs because the extension exposes a sync service).
+  assertEquals(events.length, 3);
   assertEquals(events[0].kind, "validating");
-  const completed = events[1] as Extract<
+  assertEquals(events[1].kind, "hydrating");
+  const completed = events[2] as Extract<
     DatastoreSetupEvent,
     { kind: "completed" }
   >;
@@ -513,4 +520,36 @@ Deno.test("datastoreSetupExtension: extension without sync service skips push an
   assertEquals(completed.kind, "completed");
   assertEquals(completed.data.filesPulled, 0);
   assertEquals(completed.data.errors, []);
+});
+
+Deno.test("datastoreSetupExtension: ensures cachePath exists before hydration pull", async () => {
+  // Defensive guard: setup owns its preconditions rather than relying on
+  // sync service internals. Some extension implementations may not call
+  // ensureDir inside pullChanged; the skip-migration path must create
+  // the cache directory itself before pulling.
+  ensureTestExtensionType("test-ext-ensuredir", { pullResult: 5 });
+  const ensureDirCalls: string[] = [];
+  const deps = makeDeps({
+    ensureDir: (path: string) => {
+      ensureDirCalls.push(path);
+      return Promise.resolve();
+    },
+  });
+  const input = makeExtensionInput({
+    type: "test-ext-ensuredir",
+    skipMigration: true,
+  });
+
+  await collect<DatastoreSetupEvent>(
+    datastoreSetupExtension(createLibSwampContext(), deps, input),
+  );
+
+  // The stub provider's resolveCachePath returns `${repoDir}/.custom-cache`.
+  assertEquals(
+    ensureDirCalls.includes(`${input.repoDir}/.custom-cache`),
+    true,
+    `expected ensureDir to be called for the cache path before pull; got ${
+      JSON.stringify(ensureDirCalls)
+    }`,
+  );
 });

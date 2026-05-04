@@ -352,13 +352,11 @@ export function requireInitializedRepo(
         await ensureDir(datastoreConfig.cachePath);
       }
 
-      // When skipImplicitSync is set, register only the lock — no sync
-      // service. The implicit pull at startup and push at flush are both
-      // skipped; the caller (e.g. `swamp datastore sync`) owns sync I/O
-      // explicitly. The repository factory below still receives the
-      // syncService for its markDirty hooks, but cache writes from the
-      // explicit sync command don't go through repositories so this is
-      // a no-op in practice.
+      // See `RequireRepoOptions.skipImplicitSync` JSDoc. When set, the
+      // sync service is not registered with the coordinator (no implicit
+      // pull/push); the repository factory still receives it for
+      // markDirty hooks, harmlessly so for explicit-sync callers that
+      // don't write through repositories.
       const registerService = options.skipImplicitSync
         ? undefined
         : syncService;

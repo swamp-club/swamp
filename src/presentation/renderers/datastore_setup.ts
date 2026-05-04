@@ -39,6 +39,9 @@ class LogDatastoreSetupRenderer implements Renderer<DatastoreSetupEvent> {
       migrating: () => {
         logger.info`Migrating data...`;
       },
+      hydrating: () => {
+        logger.info`Hydrating cache from remote...`;
+      },
       completed: (e) => {
         const data = e.data;
         const lines = [
@@ -53,7 +56,13 @@ class LogDatastoreSetupRenderer implements Renderer<DatastoreSetupEvent> {
             formatBytes(data.bytesCopied)
           })`,
         );
-        if (data.filesPulled > 0) {
+        // Always surface the hydration count for extension datastores
+        // (filesystem datastores have no separate cache to hydrate, so
+        // filesPulled is structurally always 0 there and the line is
+        // meaningless). Showing 0 for extensions confirms hydration ran
+        // and lets the user distinguish "ran and found nothing" from
+        // "was skipped entirely".
+        if (data.type !== "filesystem") {
           lines.push(`  Hydrated: ${data.filesPulled} pulled`);
         }
         lines.push(`  Dirs:     ${data.directoriesMigrated.join(", ")}`);
@@ -80,6 +89,7 @@ class JsonDatastoreSetupRenderer implements Renderer<DatastoreSetupEvent> {
     return {
       validating: () => {},
       migrating: () => {},
+      hydrating: () => {},
       completed: (e) => {
         console.log(JSON.stringify(e.data, null, 2));
       },

@@ -62,6 +62,7 @@ export interface DatastoreSetupData {
 export type DatastoreSetupEvent =
   | { kind: "validating" }
   | { kind: "migrating" }
+  | { kind: "hydrating" }
   | { kind: "completed"; data: DatastoreSetupData }
   | { kind: "error"; error: SwampError };
 
@@ -380,6 +381,12 @@ export async function* datastoreSetupExtension(
       // files we just migrated are already in the remote index when
       // pullChanged walks it (size match → no redundant download).
       if (syncService && errors.length === 0) {
+        // Belt-and-suspenders: ensure the cache directory exists before
+        // pull. The non-skip path creates it implicitly via migrateData;
+        // the skip path doesn't, so a sync service that doesn't ensureDir
+        // internally would ENOENT on the first pulled file write.
+        await deps.ensureDir(cachePath);
+        yield { kind: "hydrating" };
         ctx.logger.debug`Hydrating cache from remote datastore...`;
         try {
           const pulled = await runBoundedSync(

@@ -68,7 +68,10 @@ const datastoreSetupFilesystemCommand = new Command()
     "--directories <dirs:string[]>",
     "Subdirectories to store in the datastore (comma-separated)",
   )
-  .option("--skip-migration", "Skip migrating existing data")
+  .option(
+    "--skip-migration",
+    "Skip copying existing .swamp/ data into the target path",
+  )
   .action(async function (options: AnyOptions) {
     const cliCtx = createContext(options as GlobalOptions, [
       "datastore",
@@ -121,7 +124,10 @@ const datastoreSetupExtensionCommand = new Command()
     'JSON config object for the extension (e.g., \'{"bucket":"name","region":"us-east-1"}\')',
     { required: true },
   )
-  .option("--skip-migration", "Skip migrating existing data")
+  .option(
+    "--skip-migration",
+    "Skip pushing local .swamp/ data to the remote (does not skip remote→local cache hydration, which always runs)",
+  )
   .action(async function (options: AnyOptions, type: string) {
     const cliCtx = createContext(options as GlobalOptions, [
       "datastore",
