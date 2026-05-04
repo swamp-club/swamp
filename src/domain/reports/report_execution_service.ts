@@ -23,7 +23,7 @@ import type { ReportRef, ReportSelection } from "./report_selection.ts";
 import type { ReportRegistry } from "./report_registry.ts";
 import type { DataHandle } from "../models/model.ts";
 import type { ModelType } from "../models/model_type.ts";
-import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
+import type { UnifiedDataRepository } from "../data/repositories.ts";
 import { DefaultDataWriter } from "../models/data_writer.ts";
 import { modelRegistry } from "../models/model.ts";
 import {

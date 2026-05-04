@@ -20,7 +20,7 @@
 import type { Logger } from "@logtape/logtape";
 import type { ModelType } from "../models/model_type.ts";
 import type { DataHandle } from "../models/model.ts";
-import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
+import type { UnifiedDataRepository } from "../data/repositories.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
 import { resolveExtensionFile } from "../extensions/extension_file_resolver.ts";
 

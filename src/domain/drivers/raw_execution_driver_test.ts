@@ -30,7 +30,7 @@ import type {
   ModelDefinition,
 } from "../models/model.ts";
 import { z } from "zod";
-import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
+import type { UnifiedDataRepository } from "../data/repositories.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
 import { type DataId, generateDataId } from "../data/data_id.ts";
 import { getLogger } from "@logtape/logtape";

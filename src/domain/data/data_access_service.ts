@@ -19,7 +19,7 @@
 
 import type { DefinitionRepository } from "../definitions/repositories.ts";
 import type { ModelType } from "../models/model_type.ts";
-import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
+import type { UnifiedDataRepository } from "./repositories.ts";
 import type { VaultService } from "../vaults/vault_service.ts";
 import type { SecretRedactor } from "../secrets/mod.ts";
 import type { Data } from "./data.ts";

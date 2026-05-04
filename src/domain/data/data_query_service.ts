@@ -23,7 +23,7 @@ import type {
   CatalogRow,
   CatalogStore,
 } from "../../infrastructure/persistence/catalog_store.ts";
-import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
+import type { UnifiedDataRepository } from "./repositories.ts";
 import type { DataRecord } from "./data_record.ts";
 import {
   type ASTNode,

@@ -1078,7 +1078,7 @@ Deno.test("validateModel loads lazy types before resolving cross-model reference
 // ---------- Check Validation Tests ----------
 
 import type { CheckValidationContext } from "./validation_service.ts";
-import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
+import type { UnifiedDataRepository } from "../data/repositories.ts";
 import { generateDataId } from "../data/data_id.ts";
 import { createDefinitionId } from "../definitions/definition.ts";
 

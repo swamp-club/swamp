@@ -21,7 +21,7 @@ import { getLogger } from "@logtape/logtape";
 import type { Data } from "./data.ts";
 import type { Lifetime } from "./data_metadata.ts";
 import { parseDataDuration } from "./duration.ts";
-import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
+import type { UnifiedDataRepository } from "./repositories.ts";
 import type { WorkflowRunRepository } from "../workflows/repositories.ts";
 import type { ModelType } from "../models/model_type.ts";
 import {

@@ -24,7 +24,7 @@ import { modelRegistry } from "../models/model.ts";
 import type { Definition } from "../definitions/definition.ts";
 import type { DataArtifactRef } from "../models/model_output.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
-import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
+import type { UnifiedDataRepository } from "../data/repositories.ts";
 import { buildOutputSpecs } from "../models/output_spec_builder.ts";
 import {
   executeReports,

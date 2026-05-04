@@ -22,7 +22,7 @@ import type { ModelType } from "../models/model_type.ts";
 import type { Definition, InputsSchema } from "../definitions/definition.ts";
 import type { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
 import type { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
-import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
+import type { UnifiedDataRepository } from "../data/repositories.ts";
 import type { Data } from "../data/data.ts";
 import type { DataRecord } from "../data/data_record.ts";
 import type { DataQueryService } from "../data/data_query_service.ts";

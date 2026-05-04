@@ -24,7 +24,7 @@ import { ModelType } from "../models/model_type.ts";
 import { Definition } from "../definitions/definition.ts";
 import { computeDefinitionHash } from "../models/model_output.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
-import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
+import type { UnifiedDataRepository } from "./repositories.ts";
 import type { VaultService } from "../vaults/vault_service.ts";
 
 // Import models barrel to trigger self-registration

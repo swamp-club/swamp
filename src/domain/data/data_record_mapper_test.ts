@@ -20,7 +20,7 @@
 import { assertEquals } from "@std/assert";
 import { fromData, fromRow } from "./data_record_mapper.ts";
 import type { CatalogRow } from "../../infrastructure/persistence/catalog_store.ts";
-import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
+import type { UnifiedDataRepository } from "./repositories.ts";
 import { Data } from "./data.ts";
 import { ModelType } from "../models/model_type.ts";
 

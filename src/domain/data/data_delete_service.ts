@@ -17,8 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
-import type { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
+import type { UnifiedDataRepository } from "./repositories.ts";
+import type { DefinitionRepository } from "../definitions/repositories.ts";
 import { findDefinitionByIdOrName } from "../models/model_lookup.ts";
 
 /**
@@ -60,7 +60,7 @@ export interface DeletePreview {
 export class DataDeleteService {
   constructor(
     private readonly dataRepo: UnifiedDataRepository,
-    private readonly definitionRepo: YamlDefinitionRepository,
+    private readonly definitionRepo: DefinitionRepository,
   ) {}
 
   async delete(

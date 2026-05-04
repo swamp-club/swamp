@@ -21,7 +21,7 @@ import type { CatalogRow } from "../../infrastructure/persistence/catalog_store.
 import type { DataRecord, FileDataRecord } from "./data_record.ts";
 import type { Data } from "./data.ts";
 import { ModelType } from "../models/model_type.ts";
-import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
+import type { UnifiedDataRepository } from "./repositories.ts";
 import type { VaultService } from "../vaults/vault_service.ts";
 import type { SecretRedactor } from "../secrets/mod.ts";
 import type { DataHandle } from "../models/model.ts";

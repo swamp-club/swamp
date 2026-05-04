@@ -29,7 +29,7 @@ import {
 } from "./data_writer.ts";
 import { ModelType } from "./model_type.ts";
 import type { ResourceOutputSpec } from "./model.ts";
-import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
+import type { UnifiedDataRepository } from "../data/repositories.ts";
 import { generateDataId } from "../data/data_id.ts";
 import { VaultService } from "../vaults/vault_service.ts";
 

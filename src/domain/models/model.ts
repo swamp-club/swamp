@@ -38,7 +38,7 @@ import {
   LifetimeSchema,
   type OwnerDefinition,
 } from "../data/mod.ts";
-import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
+import type { UnifiedDataRepository } from "../data/repositories.ts";
 import type { OutputRepository } from "./repositories.ts";
 import type { DataRecord } from "../data/data_record.ts";
 

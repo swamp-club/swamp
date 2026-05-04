@@ -21,7 +21,7 @@ import { z } from "zod";
 import { getLogger } from "@logtape/logtape";
 import { Data, isReservedDataName } from "../data/mod.ts";
 import type { DataId, OwnerDefinition } from "../data/mod.ts";
-import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
+import type { UnifiedDataRepository } from "../data/repositories.ts";
 import type { ModelType } from "./model_type.ts";
 import type { MethodExecutionEvent } from "./method_events.ts";
 import type {
