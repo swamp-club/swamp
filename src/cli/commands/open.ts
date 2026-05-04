@@ -50,7 +50,11 @@ import { pullExtension } from "./extension_pull.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { resolveModelsDir } from "../resolve_models_dir.ts";
-import { forceCatalogRescan } from "../../infrastructure/persistence/extension_catalog_store.ts";
+import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
+import { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
+import { readUpstreamExtensions } from "../../infrastructure/persistence/upstream_extensions.ts";
+import { swampPath } from "../../infrastructure/persistence/paths.ts";
+import { isAbsolute } from "@std/path";
 import {
   configureExtensionAutoResolver,
   configureExtensionLoaders,
@@ -106,7 +110,37 @@ async function loadRepoIntoState(
   const deferred: DeferredWarning[] = [];
   await configureExtensionLoaders(result.repoDir, marker, [], deferred);
   configureExtensionAutoResolver(result.repoDir, marker, undefined, outputMode);
-  forceCatalogRescan(result.repoDir);
+
+  // W1b: forceCatalogRescan(repoDir) → repository.invalidateAll(). The
+  // lockfile is read upfront so the empty-version fallback path has
+  // entries available; readUpstreamExtensions returns {} on NotFound,
+  // making the closure return null for every name (correct for a
+  // missing lockfile). Best-effort: any failure to invalidate is
+  // logged and swallowed so the open path doesn't crash on a missing
+  // or corrupt catalog DB.
+  try {
+    const modelsDir = resolveModelsDir(marker);
+    const absoluteModelsDir = isAbsolute(modelsDir)
+      ? modelsDir
+      : resolve(result.repoDir, modelsDir);
+    const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
+    const upstream = await readUpstreamExtensions(lockfilePath);
+    const rescanRepo = new ExtensionRepository({
+      catalog: new ExtensionCatalogStore(
+        swampPath(result.repoDir, "_extension_catalog.db"),
+      ),
+      getLockedVersion: (name) => upstream[name]?.version ?? null,
+      repoRoot: result.repoDir,
+    });
+    try {
+      rescanRepo.invalidateAll();
+    } finally {
+      rescanRepo.legacyStore.close();
+    }
+  } catch {
+    // Best-effort — the loader will bootstrap a fresh catalog if this fails.
+  }
+
   await reloadExtensionRegistries();
 }
 

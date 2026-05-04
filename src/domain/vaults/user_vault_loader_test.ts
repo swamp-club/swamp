@@ -23,6 +23,7 @@ import { UserVaultLoader } from "./user_vault_loader.ts";
 import { VaultTypeRegistry, vaultTypeRegistry } from "./vault_type_registry.ts";
 import { bundleNamespace } from "../../infrastructure/persistence/paths.ts";
 import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
+import { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
 import type { DenoRuntime } from "../runtime/deno_runtime.ts";
 
 /** Stub runtime that returns "deno" as the binary path. */
@@ -30,6 +31,18 @@ class StubDenoRuntime implements DenoRuntime {
   ensureDeno(): Promise<string> {
     return Promise.resolve("deno");
   }
+}
+
+/** W1b/(a-2): construct an ExtensionRepository wrapping a test catalog. */
+function makeRepoForCatalog(
+  catalog: ExtensionCatalogStore,
+  repoRoot: string,
+): ExtensionRepository {
+  return new ExtensionRepository({
+    catalog,
+    getLockedVersion: () => null,
+    repoRoot,
+  });
 }
 
 Deno.test("UserVaultLoader - returns empty result for nonexistent directory", async () => {
@@ -384,8 +397,15 @@ export const vault = {
     await Deno.writeTextFile(sourcePath, v1);
 
     const catalog1 = new ExtensionCatalogStore(dbPath);
-    const loader1 = new UserVaultLoader(new StubDenoRuntime(), repoDir);
-    await loader1.buildIndex(vaultsDir, catalog1);
+
+    const repository1 = makeRepoForCatalog(catalog1, repoDir);
+    const loader1 = new UserVaultLoader(
+      new StubDenoRuntime(),
+      repoDir,
+      undefined,
+      repository1,
+    );
+    await loader1.buildIndex(vaultsDir);
     catalog1.close();
 
     const ns = bundleNamespace(vaultsDir, repoDir);
@@ -415,8 +435,15 @@ export const vault = {
     );
 
     const catalog2 = new ExtensionCatalogStore(dbPath);
-    const loader2 = new UserVaultLoader(new StubDenoRuntime(), repoDir);
-    await loader2.buildIndex(vaultsDir, catalog2);
+
+    const repository2 = makeRepoForCatalog(catalog2, repoDir);
+    const loader2 = new UserVaultLoader(
+      new StubDenoRuntime(),
+      repoDir,
+      undefined,
+      repository2,
+    );
+    await loader2.buildIndex(vaultsDir);
     catalog2.close();
 
     const v2Bundle = await Deno.readTextFile(bundlePath);
@@ -469,8 +496,15 @@ export const vault = {
     await Deno.writeTextFile(libPath, libV1);
 
     const catalog1 = new ExtensionCatalogStore(dbPath);
-    const loader1 = new UserVaultLoader(new StubDenoRuntime(), repoDir);
-    await loader1.buildIndex(vaultsDir, catalog1);
+
+    const repository1 = makeRepoForCatalog(catalog1, repoDir);
+    const loader1 = new UserVaultLoader(
+      new StubDenoRuntime(),
+      repoDir,
+      undefined,
+      repository1,
+    );
+    await loader1.buildIndex(vaultsDir);
     catalog1.close();
 
     const ns = bundleNamespace(vaultsDir, repoDir);
@@ -494,8 +528,15 @@ export const vault = {
     await Deno.utime(entryPath, entryMtime, entryMtime);
 
     const catalog2 = new ExtensionCatalogStore(dbPath);
-    const loader2 = new UserVaultLoader(new StubDenoRuntime(), repoDir);
-    await loader2.buildIndex(vaultsDir, catalog2);
+
+    const repository2 = makeRepoForCatalog(catalog2, repoDir);
+    const loader2 = new UserVaultLoader(
+      new StubDenoRuntime(),
+      repoDir,
+      undefined,
+      repository2,
+    );
+    await loader2.buildIndex(vaultsDir);
     catalog2.close();
 
     const v2Bundle = await Deno.readTextFile(bundlePath);
@@ -546,8 +587,14 @@ export const vault = {
 
     // Cold-start populates the catalog with the valid vault.
     const catalog = new ExtensionCatalogStore(dbPath);
-    const loader = new UserVaultLoader(new StubDenoRuntime(), repoDir);
-    await loader.buildIndex(vaultsDir, catalog);
+    const repository = makeRepoForCatalog(catalog, repoDir);
+    const loader = new UserVaultLoader(
+      new StubDenoRuntime(),
+      repoDir,
+      undefined,
+      repository,
+    );
+    await loader.buildIndex(vaultsDir);
 
     // Inject a validation-failed row keyed by a different source path.
     catalog.upsert({
@@ -560,13 +607,18 @@ export const vault = {
       extends_type: "",
       source_mtime: "2026-05-01T12:00:00.000Z",
       source_fingerprint: "deadbeef-broken",
-      validation_failed: true,
+      // W1b: validation_failed dropped — state="ValidationFailed" is the signal.
     });
 
     // Re-run buildIndex. registerLazyFromCatalog must skip the broken
     // row even though findByKind returns it.
-    const loader2 = new UserVaultLoader(new StubDenoRuntime(), repoDir);
-    await loader2.buildIndex(vaultsDir, catalog);
+    const loader2 = new UserVaultLoader(
+      new StubDenoRuntime(),
+      repoDir,
+      undefined,
+      repository,
+    );
+    await loader2.buildIndex(vaultsDir);
 
     // Valid type appears; broken sentinel does not. Use the singleton
     // registry the loader writes into.

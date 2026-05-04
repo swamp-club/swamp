@@ -49,10 +49,12 @@ import { assertSafePath } from "../../infrastructure/persistence/safe_path.ts";
 import { emitTypeExtractionFailure } from "../../infrastructure/logging/extension_load_warnings.ts";
 import type { DatastorePathResolver } from "../datastore/datastore_path_resolver.ts";
 import {
+  BUNDLE_LAYOUT_VERSION,
   type ExtensionCatalogStore,
   type ExtensionTypeRow,
   sourceDirsFingerprint,
 } from "../../infrastructure/persistence/extension_catalog_store.ts";
+import type { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
 
 const logger = getLogger(["swamp", "reports", "loader"]);
 
@@ -102,6 +104,7 @@ export class UserReportLoader {
   private readonly denoRuntime: DenoRuntime;
   private readonly repoDir: string | null;
   private readonly datastoreResolver?: DatastorePathResolver;
+  private readonly repository?: ExtensionRepository;
 
   /**
    * @param denoRuntime - Runtime manager for obtaining a deno binary path
@@ -109,15 +112,28 @@ export class UserReportLoader {
    *                   (pass null to skip bundle caching)
    * @param datastoreResolver - Optional resolver for routing bundle paths
    *                            through the configured datastore tier
+   * @param repository - W1b ExtensionRepository wrapping the catalog. Held
+   *                     as a long-lived field per ADV-V2-1 option (a-2).
    */
   constructor(
     denoRuntime: DenoRuntime,
     repoDir: string | null = null,
     datastoreResolver?: DatastorePathResolver,
+    repository?: ExtensionRepository,
   ) {
     this.denoRuntime = denoRuntime;
     this.repoDir = repoDir;
     this.datastoreResolver = datastoreResolver;
+    this.repository = repository;
+  }
+
+  private requireRepository(method: string): ExtensionRepository {
+    if (!this.repository) {
+      throw new Error(
+        `UserReportLoader.${method} requires an ExtensionRepository to be passed at construction time (W1b/(a-2) wiring).`,
+      );
+    }
+    return this.repository;
   }
 
   /**
@@ -249,29 +265,30 @@ export class UserReportLoader {
    */
   async buildIndex(
     reportsDir: string,
-    catalog: ExtensionCatalogStore,
     options?: { additionalDirs?: string[] },
   ): Promise<ReportLoadResult> {
+    const repository = this.requireRepository("buildIndex");
+    const catalog = repository.legacyStore;
     const result: ReportLoadResult = { loaded: [], failed: [] };
 
     installZodGlobal();
     const denoPath = await this.denoRuntime.ensureDeno();
 
-    // Force a full rescan if the set of extension source directories has
-    // changed (e.g. user ran `swamp extension source add`). Without this,
-    // the catalog's "populated" flag causes buildIndex to skip the full
-    // import path, so reports from newly added sources are never discovered
-    // (#1107).
+    // Cold-start invalidation guards — full coverage under (a-2).
+    const currentBasePath = this.resolveBundlePath();
     const currentSourceFingerprint = sourceDirsFingerprint(
       reportsDir,
       options?.additionalDirs,
     );
-    if (
-      catalog.isPopulated("report") &&
-      catalog.getSourceDirsFingerprint("report") !== currentSourceFingerprint
-    ) {
+    const guard = repository.invalidationGuards({
+      kind: "report",
+      expectedLayoutVersion: BUNDLE_LAYOUT_VERSION,
+      expectedDatastoreBasePath: currentBasePath,
+      expectedSourceDirsFingerprint: currentSourceFingerprint,
+    });
+    if (guard.shouldInvalidate && guard.reason !== "not-populated") {
       logger
-        .warn`Extension source dirs changed — invalidating report catalog for full rescan`;
+        .warn`Catalog invalidated for "report" rescan: ${guard.reason}`;
       catalog.invalidate("report");
     }
 
@@ -318,6 +335,8 @@ export class UserReportLoader {
       options?.additionalDirs,
     );
     catalog.markPopulated("report");
+    catalog.setLayoutVersion(BUNDLE_LAYOUT_VERSION);
+    catalog.setDatastoreBasePath(currentBasePath, "report");
     catalog.setSourceDirsFingerprint(currentSourceFingerprint, "report");
 
     return fullResult;
@@ -328,10 +347,8 @@ export class UserReportLoader {
    * Looks up the bundle path from the catalog, imports the bundle,
    * and registers the type.
    */
-  async loadSingleType(
-    typeNormalized: string,
-    catalog: ExtensionCatalogStore,
-  ): Promise<void> {
+  async loadSingleType(typeNormalized: string): Promise<void> {
+    const catalog = this.requireRepository("loadSingleType").legacyStore;
     installZodGlobal();
 
     const entry = catalog.findByType(typeNormalized, "report");

@@ -54,10 +54,12 @@ import {
   type VersionUpgrade,
 } from "./model.ts";
 import {
+  BUNDLE_LAYOUT_VERSION,
   type ExtensionCatalogStore,
   type ExtensionTypeRow,
   sourceDirsFingerprint,
 } from "../../infrastructure/persistence/extension_catalog_store.ts";
+import type { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
 import type { DenoRuntime } from "../runtime/deno_runtime.ts";
 import {
   bundleNamespace,
@@ -79,7 +81,9 @@ const logger = getLogger(["swamp", "models", "loader"]);
  * "per-extension-v2" (each pulled extension owns its own bundle
  * namespace via its per-extension models dir).
  */
-const BUNDLE_LAYOUT_VERSION = "per-extension-aggregate-v3";
+// BUNDLE_LAYOUT_VERSION is now hoisted to extension_catalog_store.ts so
+// all 5 loaders share one source of truth (W1b — closes the audit's
+// 4-vs-1 cold-start guard gap). Imported below.
 
 /**
  * Plain object result returned by user methods before conversion.
@@ -284,6 +288,7 @@ export class UserModelLoader {
   private readonly denoRuntime: DenoRuntime;
   private readonly repoDir: string | null;
   private readonly datastoreResolver?: DatastorePathResolver;
+  private readonly repository?: ExtensionRepository;
   /**
    * Per-loader cache from an extension's manifest directory to its
    * `additionalFiles` root. Pulled extensions always return
@@ -300,15 +305,43 @@ export class UserModelLoader {
    *                   (pass null to skip bundle caching)
    * @param datastoreResolver - Optional resolver for routing bundle paths
    *                            through the configured datastore tier
+   * @param repository - W1b ExtensionRepository wrapping the catalog. Held
+   *                     as a long-lived field per ADV-V2-1's option (a-2);
+   *                     buildIndex / loadSingleType /
+   *                     attachPendingExtensionsForType drop their per-call
+   *                     catalog/repository params and read from this field.
+   *                     Optional during the W1b transition to keep
+   *                     loadModels() (which doesn't touch the catalog)
+   *                     constructable in test paths that haven't migrated.
+   *                     Required for buildIndex / loadSingleType /
+   *                     attachPendingExtensionsForType — those throw if
+   *                     the repository wasn't supplied.
    */
   constructor(
     denoRuntime: DenoRuntime,
     repoDir: string | null = null,
     datastoreResolver?: DatastorePathResolver,
+    repository?: ExtensionRepository,
   ) {
     this.denoRuntime = denoRuntime;
     this.repoDir = repoDir;
     this.datastoreResolver = datastoreResolver;
+    this.repository = repository;
+  }
+
+  /**
+   * Returns the held repository. Throws a clear error if the loader was
+   * constructed without one and a catalog-touching method was invoked.
+   * The optional-but-required-for-some-methods shape preserves test
+   * paths that only exercise loadModels().
+   */
+  private requireRepository(method: string): ExtensionRepository {
+    if (!this.repository) {
+      throw new Error(
+        `UserModelLoader.${method} requires an ExtensionRepository to be passed at construction time (W1b/(a-2) wiring).`,
+      );
+    }
+    return this.repository;
   }
 
   /**
@@ -498,60 +531,38 @@ export class UserModelLoader {
    * Types are registered as lazy entries that will be imported on demand.
    *
    * @param modelsDir - Primary directory containing model/extension files
-   * @param catalog - The bundle catalog store
    * @param options - Additional directories to scan
    */
   async buildIndex(
     modelsDir: string,
-    catalog: ExtensionCatalogStore,
     options?: { additionalDirs?: string[] },
   ): Promise<LoadResult> {
+    const repository = this.requireRepository("buildIndex");
+    const catalog = repository.legacyStore;
     const result: LoadResult = { loaded: [], extended: [], failed: [] };
 
     installZodGlobal();
     const denoPath = await this.denoRuntime.ensureDeno();
 
-    // Force a full rescan if the bundle layout version has changed.
-    // This ensures repos with old flat-layout catalog entries get migrated
-    // to the namespaced layout, fixing any #1065 cache poisoning.
-    if (
-      catalog.isPopulated("model") &&
-      catalog.getLayoutVersion() !== BUNDLE_LAYOUT_VERSION
-    ) {
-      logger
-        .warn`Bundle layout changed — invalidating catalog for full rescan`;
-      catalog.invalidate("model");
-    }
-
-    // Force a full rescan if the datastore base path has changed.
-    // After a datastore migration (e.g. filesystem -> S3), stored bundle
-    // paths in the catalog point to the old location. Invalidating forces
-    // a rescan that writes the correct datastore-resolved paths (#1100).
+    // Cold-start invalidation guards: layout-version, datastore-base-path,
+    // and per-kind source-dirs-fingerprint, plus the populated-flag
+    // check. Replaces the three hand-rolled guard blocks (and the legacy
+    // global source_dirs_fingerprint key — W1b migrates this loader to
+    // the per-kind key by passing kind="model" through invalidationGuards).
     const currentBasePath = this.resolveBundlePath();
-    if (
-      catalog.isPopulated("model") &&
-      catalog.getDatastoreBasePath() !== currentBasePath
-    ) {
-      logger
-        .warn`Datastore base path changed — invalidating catalog for full rescan`;
-      catalog.invalidate("model");
-    }
-
-    // Force a full rescan if the set of extension source directories has
-    // changed (e.g. user ran `swamp extension source add`). Without this,
-    // the catalog's "populated" flag causes buildIndex to skip the full
-    // import path, so models from newly added sources are never discovered
-    // (#1107).
     const currentSourceFingerprint = sourceDirsFingerprint(
       modelsDir,
       options?.additionalDirs,
     );
-    if (
-      catalog.isPopulated("model") &&
-      catalog.getSourceDirsFingerprint() !== currentSourceFingerprint
-    ) {
+    const guard = repository.invalidationGuards({
+      kind: "model",
+      expectedLayoutVersion: BUNDLE_LAYOUT_VERSION,
+      expectedDatastoreBasePath: currentBasePath,
+      expectedSourceDirsFingerprint: currentSourceFingerprint,
+    });
+    if (guard.shouldInvalidate && guard.reason !== "not-populated") {
       logger
-        .warn`Extension source dirs changed — invalidating catalog for full rescan`;
+        .warn`Catalog invalidated for "model" rescan: ${guard.reason}`;
       catalog.invalidate("model");
     }
 
@@ -606,7 +617,7 @@ export class UserModelLoader {
       // (e.g. after `swamp extension pull --force`) would stay detached.
       for (const type of eagerlyRegisteredTypes) {
         if (!modelRegistry.get(type)) continue;
-        await this.attachPendingExtensionsForType(type, catalog);
+        await this.attachPendingExtensionsForType(type);
       }
 
       // Register lazy entries from the now-updated catalog
@@ -630,8 +641,13 @@ export class UserModelLoader {
     );
     catalog.markPopulated("model");
     catalog.setLayoutVersion(BUNDLE_LAYOUT_VERSION);
-    catalog.setDatastoreBasePath(currentBasePath);
-    catalog.setSourceDirsFingerprint(currentSourceFingerprint);
+    catalog.setDatastoreBasePath(currentBasePath, "model");
+    // Per-kind fingerprint key (W1b migration from the legacy global
+    // key per ADV-9 / plan step 11). The legacy global codepath in
+    // ExtensionCatalogStore.getSourceDirsFingerprint(undefined) stays
+    // for one-version backward-compat with catalogs written before this
+    // PR — a follow-up issue removes it after a release window.
+    catalog.setSourceDirsFingerprint(currentSourceFingerprint, "model");
 
     // Migrate old flat-layout bundle files into namespaced subdirectories.
     if (this.repoDir) {
@@ -699,12 +715,9 @@ export class UserModelLoader {
    * imports only those bundles, and registers/extends the type.
    *
    * @param typeNormalized - The normalized type name to load
-   * @param catalog - The bundle catalog store
    */
-  async loadSingleType(
-    typeNormalized: string,
-    catalog: ExtensionCatalogStore,
-  ): Promise<void> {
+  async loadSingleType(typeNormalized: string): Promise<void> {
+    const catalog = this.requireRepository("loadSingleType").legacyStore;
     installZodGlobal();
 
     // Load the base type bundle
@@ -790,8 +803,9 @@ export class UserModelLoader {
    */
   async attachPendingExtensionsForType(
     typeNormalized: string,
-    catalog: ExtensionCatalogStore,
   ): Promise<void> {
+    const catalog = this.requireRepository("attachPendingExtensionsForType")
+      .legacyStore;
     const base = modelRegistry.get(typeNormalized);
     if (!base) return;
 

@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals } from "@std/assert";
 import { DatabaseSync } from "node:sqlite";
 import { dirname, join } from "@std/path";
 import { ensureDirSync } from "@std/fs";
@@ -710,19 +710,17 @@ Deno.test("ExtensionCatalogStore: migrates pre-#209 schema by adding validation_
   const store = new ExtensionCatalogStore(dbPath);
 
   const legacy = store.findByType("@legacy/row", "model");
-  // Pre-#209 row didn't have validation_failed; W1a's ALTER TABLE adds
-  // the column with DEFAULT 0, surfaced as false on the row.
-  assertEquals(legacy?.validation_failed, false);
+  // Pre-#209 row didn't have validation_failed; W1a's ALTER TABLE
+  // added the column with DEFAULT 0, then W1b's recreate-table dance
+  // dropped it again. The state column survives at its 'Indexed'
+  // default for rows that weren't validation_failed=1.
   assertEquals(legacy?.source_fingerprint, "deadbeef");
-  // W1a's state column defaults to 'Indexed' for rows without
-  // validation_failed=1.
   assertEquals(legacy?.state, "Indexed");
 
   // Re-opening is a no-op — migration is idempotent.
   store.close();
   const store2 = new ExtensionCatalogStore(dbPath);
   const again = store2.findByType("@legacy/row", "model");
-  assertEquals(again?.validation_failed, false);
   assertEquals(again?.state, "Indexed");
   store2.close();
 });
@@ -1278,5 +1276,277 @@ Deno.test("ExtensionCatalogStore: upsert preserves migration-backfilled extensio
   // omit it (which the loader's upsert always does — only
   // markCatalogValidationFailed sets state explicitly).
   assertEquals(probe.state, "Indexed");
+  store.close();
+});
+
+// --- W1b drop-validation_failed migration tests (issue #223) ---
+
+Deno.test("ExtensionCatalogStore: W1b drop-validation_failed migration removes the column and preserves all rows + indexes", () => {
+  // Set up a pre-W1b shape on disk: bundle_types includes the
+  // validation_failed column, has a real row with a value, and the W1a
+  // marker keys are absent so the data migration also runs.
+  const dbPath = makeTempDbPath();
+  const seed = new DatabaseSync(dbPath);
+  seed.exec(`
+    CREATE TABLE bundle_types (
+      source_path        TEXT NOT NULL PRIMARY KEY,
+      type_normalized    TEXT NOT NULL,
+      kind               TEXT NOT NULL DEFAULT 'model',
+      bundle_path        TEXT NOT NULL,
+      version            TEXT NOT NULL DEFAULT '',
+      description        TEXT NOT NULL DEFAULT '',
+      extends_type       TEXT NOT NULL DEFAULT '',
+      source_mtime       TEXT NOT NULL DEFAULT '',
+      source_fingerprint TEXT NOT NULL DEFAULT '',
+      validation_failed  INTEGER NOT NULL DEFAULT 0,
+      state              TEXT NOT NULL DEFAULT 'Indexed',
+      extension_name     TEXT NOT NULL DEFAULT '',
+      extension_version  TEXT NOT NULL DEFAULT ''
+    );
+    CREATE INDEX idx_bundle_types_kind ON bundle_types(kind);
+    CREATE INDEX idx_bundle_types_extends ON bundle_types(extends_type);
+    CREATE INDEX idx_bundle_types_type ON bundle_types(type_normalized, kind);
+    CREATE TABLE bundle_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+  `);
+  // Seed some rows with the validation_failed column populated. After
+  // migration: rows with vf=1 are surfaced as state='ValidationFailed'
+  // by the W1a phase; the W1b phase drops the column itself.
+  const repoRoot = canonicalizePath(dirname(dirname(dbPath)));
+  const insert = seed.prepare(
+    `INSERT INTO bundle_types (source_path, type_normalized, kind, bundle_path, validation_failed, state, extension_name, extension_version) VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+  );
+  insert.run(
+    `${repoRoot}/extensions/models/healthy.ts`,
+    "@local/healthy",
+    "model",
+    "/bundle/healthy.js",
+    0,
+    "Indexed",
+    "@local/" + dirname(dbPath).split("/").pop(),
+    "0.0.0",
+  );
+  insert.run(
+    `${repoRoot}/extensions/models/broken.ts`,
+    "",
+    "model",
+    "/bundle/broken.js",
+    1, // validation_failed=1
+    "ValidationFailed",
+    "@local/" + dirname(dbPath).split("/").pop(),
+    "0.0.0",
+  );
+  seed.close();
+
+  // Open the catalog — migrateSchema runs (data migration + W1b drop).
+  const store = new ExtensionCatalogStore(dbPath);
+
+  // Post-condition (a): pragma_table_info no longer reports the column.
+  const pragmaProbe = new DatabaseSync(dbPath);
+  const cols = pragmaProbe.prepare(
+    "SELECT name FROM pragma_table_info('bundle_types')",
+  ).all() as Array<{ name: string }>;
+  assertEquals(
+    cols.some((c) => c.name === "validation_failed"),
+    false,
+    "validation_failed column must be dropped",
+  );
+
+  // Post-condition (b): all 3 indexes survive the recreate-table dance.
+  const indexes = pragmaProbe.prepare(
+    "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='bundle_types' AND name NOT LIKE 'sqlite_%'",
+  ).all() as Array<{ name: string }>;
+  const indexNames = indexes.map((i) => i.name).sort();
+  assertEquals(
+    indexNames,
+    [
+      "idx_bundle_types_extends",
+      "idx_bundle_types_kind",
+      "idx_bundle_types_type",
+    ],
+  );
+
+  // Post-condition (c): rows preserved (count + content match).
+  const rowCount =
+    (pragmaProbe.prepare("SELECT COUNT(*) AS cnt FROM bundle_types").get() as
+      | { cnt: number }
+      | undefined)?.cnt ?? 0;
+  assertEquals(rowCount, 2);
+  const healthy = store.findByType("@local/healthy", "model");
+  assertEquals(healthy?.state, "Indexed");
+  // The broken row was migrated by W1a to state='ValidationFailed' and
+  // its type_normalized is empty (loader filters those at registration).
+  const broken = store.findAll().find((r) =>
+    r.source_path.endsWith("broken.ts")
+  );
+  assertEquals(broken?.state, "ValidationFailed");
+
+  // Post-condition (d): bundle_meta marker for the drop is set.
+  const marker = pragmaProbe.prepare(
+    "SELECT value FROM bundle_meta WHERE key = ?",
+  ).get("migration_applied:validation-failed-dropped-v1") as
+    | { value: string }
+    | undefined;
+  assertEquals(marker?.value, "true");
+
+  pragmaProbe.close();
+  store.close();
+});
+
+Deno.test("ExtensionCatalogStore: W1b drop-validation_failed migration is idempotent (second run is a no-op)", () => {
+  // Run migrateSchema twice; second run finds the marker and short-
+  // circuits without touching the schema.
+  const dbPath = makeTempDbPath();
+  // First open: creates fresh schema (no validation_failed column),
+  // then migrateSchema marks the migration as applied.
+  const store1 = new ExtensionCatalogStore(dbPath);
+  store1.close();
+
+  // Second open: same db. migrateSchema runs again. The drop helper
+  // sees the marker is set and returns immediately.
+  const store2 = new ExtensionCatalogStore(dbPath);
+  // The column is still absent.
+  const probe = new DatabaseSync(dbPath);
+  const cols = probe.prepare(
+    "SELECT name FROM pragma_table_info('bundle_types')",
+  ).all() as Array<{ name: string }>;
+  assertEquals(
+    cols.some((c) => c.name === "validation_failed"),
+    false,
+  );
+  // Marker is still set.
+  const marker = probe.prepare(
+    "SELECT value FROM bundle_meta WHERE key = ?",
+  ).get("migration_applied:validation-failed-dropped-v1") as
+    | { value: string }
+    | undefined;
+  assertEquals(marker?.value, "true");
+  probe.close();
+  store2.close();
+});
+
+Deno.test("ExtensionCatalogStore: W1b drop-validation_failed migration ROLLBACKs cleanly on mid-dance failure", () => {
+  // Architecture-review ask: prove the recreate-table dance's atomicity
+  // contract against Deno's node:sqlite. Seed a catalog into the
+  // pre-W1b shape (validation_failed column + rows + marker absent),
+  // monkey-patch the db.exec to throw on the second CREATE INDEX, then
+  // call the drop migration via reflection. Post-condition: the
+  // ROLLBACK fired, the original schema and rows survive, the
+  // bundle_meta marker was NOT set (so the next migrateSchema run
+  // retries cleanly).
+  const dbPath = makeTempDbPath();
+
+  // Step 1: open a fresh catalog so the schema is created and the
+  // drop-migration marker is set (for a fresh DB the column is already
+  // absent — the migration short-circuits via the pragma probe and
+  // marks itself applied). We then reset to a pre-W1b shape.
+  const store = new ExtensionCatalogStore(dbPath);
+  // deno-lint-ignore no-explicit-any
+  const internal = store as any;
+  // Reset state: re-add the validation_failed column, seed rows, clear
+  // the dropped marker so the migration would actually run again.
+  internal.db.exec(
+    "ALTER TABLE bundle_types ADD COLUMN validation_failed INTEGER NOT NULL DEFAULT 0",
+  );
+  internal.db.exec(
+    "DELETE FROM bundle_meta WHERE key = 'migration_applied:validation-failed-dropped-v1'",
+  );
+  // Seed two rows so we can verify they survive the rollback.
+  const seedRow = (suffix: string, vf: number) =>
+    internal.db.exec(
+      `INSERT INTO bundle_types (
+        source_path, type_normalized, kind, bundle_path, validation_failed
+      ) VALUES (
+        '/repo/extensions/models/${suffix}.ts',
+        '@local/test/${suffix}',
+        'model',
+        '/bundle/${suffix}.js',
+        ${vf}
+      )`,
+    );
+  seedRow("alpha", 0);
+  seedRow("beta", 1);
+
+  // Pre-condition snapshot.
+  const colsBefore = (internal.db.prepare(
+    "SELECT name FROM pragma_table_info('bundle_types')",
+  ).all() as Array<{ name: string }>).map((r) => r.name).sort();
+  const rowCountBefore = (internal.db.prepare(
+    "SELECT COUNT(*) AS cnt FROM bundle_types",
+  ).get() as { cnt: number }).cnt;
+
+  // Step 2: monkey-patch db.exec to throw on the second CREATE INDEX
+  // (idx_bundle_types_extends — the second index recreated inside the
+  // dance). The dance has already DROPped + RENAMEd by that point, so
+  // a successful ROLLBACK must restore the original bundle_types table
+  // along with its three indexes.
+  const realExec = internal.db.exec.bind(internal.db);
+  let createIndexCount = 0;
+  internal.db.exec = (sql: string) => {
+    if (/^\s*CREATE\s+INDEX/i.test(sql)) {
+      createIndexCount++;
+      if (createIndexCount === 2) {
+        throw new Error("FAULT INJECTED: second CREATE INDEX failed");
+      }
+    }
+    return realExec(sql);
+  };
+
+  // Step 3: invoke the drop migration. The exception inside the dance
+  // should ROLLBACK and re-throw.
+  let thrown: unknown;
+  try {
+    internal.dropValidationFailedColumn();
+  } catch (e) {
+    thrown = e;
+  }
+  assert(
+    thrown instanceof Error &&
+      thrown.message.includes("FAULT INJECTED"),
+    "expected the injected fault to propagate after ROLLBACK",
+  );
+
+  // Step 4: restore the real exec and verify post-conditions.
+  internal.db.exec = realExec;
+
+  // (a) The schema is intact (validation_failed column survives).
+  const colsAfter = (internal.db.prepare(
+    "SELECT name FROM pragma_table_info('bundle_types')",
+  ).all() as Array<{ name: string }>).map((r) => r.name).sort();
+  assertEquals(colsAfter, colsBefore);
+
+  // (b) Rows are unchanged (count + content).
+  const rowCountAfter = (internal.db.prepare(
+    "SELECT COUNT(*) AS cnt FROM bundle_types",
+  ).get() as { cnt: number }).cnt;
+  assertEquals(rowCountAfter, rowCountBefore);
+  const beta = internal.db.prepare(
+    "SELECT validation_failed FROM bundle_types WHERE source_path LIKE '%beta.ts'",
+  ).get() as { validation_failed: number } | undefined;
+  assertEquals(beta?.validation_failed, 1);
+
+  // (c) All 3 original indexes still present (DROP TABLE inside the
+  // failed transaction was rolled back, so the original indexes
+  // attached to the original table survive).
+  const indexes = (internal.db.prepare(
+    "SELECT name FROM sqlite_master WHERE type='index' AND tbl_name='bundle_types' AND name NOT LIKE 'sqlite_%'",
+  ).all() as Array<{ name: string }>).map((r) => r.name).sort();
+  assertEquals(
+    indexes,
+    [
+      "idx_bundle_types_extends",
+      "idx_bundle_types_kind",
+      "idx_bundle_types_type",
+    ],
+  );
+
+  // (d) Marker NOT set — the next migrateSchema run will retry the
+  // dance from scratch instead of falsely short-circuiting.
+  const marker = internal.db.prepare(
+    "SELECT value FROM bundle_meta WHERE key = ?",
+  ).get("migration_applied:validation-failed-dropped-v1") as
+    | { value: string }
+    | undefined;
+  assertEquals(marker, undefined);
+
   store.close();
 });

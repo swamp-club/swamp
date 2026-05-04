@@ -23,6 +23,7 @@ import { join } from "@std/path";
 import { createAutoResolveInstallerAdapter } from "./auto_resolver_adapters.ts";
 import type { DenoRuntime } from "../domain/runtime/deno_runtime.ts";
 import { ExtensionCatalogStore } from "../infrastructure/persistence/extension_catalog_store.ts";
+import { ExtensionRepository } from "../infrastructure/persistence/extension_repository.ts";
 import { modelRegistry } from "../domain/models/model.ts";
 import { ModelType } from "../domain/models/model_type.ts";
 import type { ModelDefinition } from "../domain/models/model.ts";
@@ -47,6 +48,18 @@ const stubCallbacks = {
     Promise.reject(new Error("not used in hot-load tests")),
   getChecksum: () => Promise.resolve(null),
 };
+
+/** W1b/(a-2): construct an ExtensionRepository wrapping a test catalog. */
+function makeRepoForCatalog(
+  catalog: ExtensionCatalogStore,
+  repoRoot: string,
+): ExtensionRepository {
+  return new ExtensionRepository({
+    catalog,
+    getLockedVersion: () => null,
+    repoRoot,
+  });
+}
 
 async function seedLockfile(
   repoDir: string,
@@ -577,7 +590,7 @@ Deno.test("auto_resolver_adapters: hotLoadModels skips catalog walk when catalog
       lockfilePath,
       repoDir: tmpDir,
       denoRuntime: stubDenoRuntime,
-      catalog,
+      repository: makeRepoForCatalog(catalog, tmpDir),
     });
 
     // With stub deno the loader fails to bundle — result.loaded is 0,
@@ -629,7 +642,7 @@ Deno.test("auto_resolver_adapters: hotLoadModels catalog walk skips types whose 
       lockfilePath,
       repoDir: tmpDir,
       denoRuntime: stubDenoRuntime,
-      catalog,
+      repository: makeRepoForCatalog(catalog, tmpDir),
     });
 
     // Primary assertion: the call completes cleanly. If the guard
@@ -692,7 +705,7 @@ Deno.test("auto_resolver_adapters: hotLoadModels catalog walk attempts attach wh
       lockfilePath,
       repoDir: tmpDir,
       denoRuntime: stubDenoRuntime,
-      catalog,
+      repository: makeRepoForCatalog(catalog, tmpDir),
     });
 
     assertEquals(await adapter.hotLoadModels(), 0);

@@ -23,11 +23,24 @@ import { UserDriverLoader } from "./user_driver_loader.ts";
 import { driverTypeRegistry } from "./driver_type_registry.ts";
 import { bundleNamespace } from "../../infrastructure/persistence/paths.ts";
 import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
+import { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
 import type { DenoRuntime } from "../runtime/deno_runtime.ts";
 
 const testDenoRuntime: DenoRuntime = {
   ensureDeno: () => Promise.resolve(Deno.execPath()),
 };
+
+/** W1b/(a-2): construct an ExtensionRepository wrapping a test catalog. */
+function makeRepoForCatalog(
+  catalog: ExtensionCatalogStore,
+  repoRoot: string,
+): ExtensionRepository {
+  return new ExtensionRepository({
+    catalog,
+    getLockedVersion: () => null,
+    repoRoot,
+  });
+}
 
 Deno.test("UserDriverLoader buildIndex rebundles when source content changes with preserved mtime (#128)", async () => {
   const ts = Date.now();
@@ -70,8 +83,15 @@ export const driver = {
     await Deno.writeTextFile(sourcePath, v1);
 
     const catalog1 = new ExtensionCatalogStore(dbPath);
-    const loader1 = new UserDriverLoader(testDenoRuntime, repoDir);
-    await loader1.buildIndex(driversDir, catalog1);
+
+    const repository1 = makeRepoForCatalog(catalog1, repoDir);
+    const loader1 = new UserDriverLoader(
+      testDenoRuntime,
+      repoDir,
+      undefined,
+      repository1,
+    );
+    await loader1.buildIndex(driversDir);
     catalog1.close();
 
     const ns = bundleNamespace(driversDir, repoDir);
@@ -101,8 +121,15 @@ export const driver = {
     );
 
     const catalog2 = new ExtensionCatalogStore(dbPath);
-    const loader2 = new UserDriverLoader(testDenoRuntime, repoDir);
-    await loader2.buildIndex(driversDir, catalog2);
+
+    const repository2 = makeRepoForCatalog(catalog2, repoDir);
+    const loader2 = new UserDriverLoader(
+      testDenoRuntime,
+      repoDir,
+      undefined,
+      repository2,
+    );
+    await loader2.buildIndex(driversDir);
     catalog2.close();
 
     const v2Bundle = await Deno.readTextFile(bundlePath);
@@ -123,6 +150,7 @@ Deno.test("UserDriverLoader buildIndex rebundles when transitive dep content cha
   const driverType = `@user/preserved-mtime-driver-dep-${ts}`;
   const entry = `
 import { marker } from "./_lib/marker.ts";
+
 export const driver = {
   type: "${driverType}",
   name: "dep-transitive",
@@ -153,8 +181,15 @@ export const driver = {
     await Deno.writeTextFile(libPath, libV1);
 
     const catalog1 = new ExtensionCatalogStore(dbPath);
-    const loader1 = new UserDriverLoader(testDenoRuntime, repoDir);
-    await loader1.buildIndex(driversDir, catalog1);
+
+    const repository1 = makeRepoForCatalog(catalog1, repoDir);
+    const loader1 = new UserDriverLoader(
+      testDenoRuntime,
+      repoDir,
+      undefined,
+      repository1,
+    );
+    await loader1.buildIndex(driversDir);
     catalog1.close();
 
     const ns = bundleNamespace(driversDir, repoDir);
@@ -178,8 +213,15 @@ export const driver = {
     await Deno.utime(entryPath, entryMtime, entryMtime);
 
     const catalog2 = new ExtensionCatalogStore(dbPath);
-    const loader2 = new UserDriverLoader(testDenoRuntime, repoDir);
-    await loader2.buildIndex(driversDir, catalog2);
+
+    const repository2 = makeRepoForCatalog(catalog2, repoDir);
+    const loader2 = new UserDriverLoader(
+      testDenoRuntime,
+      repoDir,
+      undefined,
+      repository2,
+    );
+    await loader2.buildIndex(driversDir);
     catalog2.close();
 
     const v2Bundle = await Deno.readTextFile(bundlePath);
@@ -221,8 +263,15 @@ export const driver = {
     await Deno.writeTextFile(join(driversDir, "valid.ts"), validDriver);
 
     const catalog = new ExtensionCatalogStore(dbPath);
-    const loader = new UserDriverLoader(testDenoRuntime, repoDir);
-    await loader.buildIndex(driversDir, catalog);
+
+    const repository = makeRepoForCatalog(catalog, repoDir);
+    const loader = new UserDriverLoader(
+      testDenoRuntime,
+      repoDir,
+      undefined,
+      repository,
+    );
+    await loader.buildIndex(driversDir);
 
     catalog.upsert({
       source_path: join(driversDir, "broken.ts"),
@@ -234,11 +283,16 @@ export const driver = {
       extends_type: "",
       source_mtime: "2026-05-01T12:00:00.000Z",
       source_fingerprint: "deadbeef-broken",
-      validation_failed: true,
+      // W1b: validation_failed dropped — state="ValidationFailed" is the signal.
     });
 
-    const loader2 = new UserDriverLoader(testDenoRuntime, repoDir);
-    await loader2.buildIndex(driversDir, catalog);
+    const loader2 = new UserDriverLoader(
+      testDenoRuntime,
+      repoDir,
+      undefined,
+      repository,
+    );
+    await loader2.buildIndex(driversDir);
 
     assertEquals(driverTypeRegistry.has(`@test/issue209-driver-${ts}`), true);
     assertEquals(driverTypeRegistry.has(""), false);

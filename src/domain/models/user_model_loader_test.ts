@@ -27,6 +27,19 @@ import { UserModelLoader } from "./user_model_loader.ts";
 import { modelRegistry } from "./model.ts";
 import { bundleNamespace } from "../../infrastructure/persistence/paths.ts";
 import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
+import { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
+
+/** W1b/(a-2): construct an ExtensionRepository wrapping a test catalog. */
+function makeRepoForCatalog(
+  catalog: ExtensionCatalogStore,
+  repoRoot: string,
+): ExtensionRepository {
+  return new ExtensionRepository({
+    catalog,
+    getLockedVersion: () => null,
+    repoRoot,
+  });
+}
 import type { DataHandle, DataWriter, MethodContext } from "./model.ts";
 import type { ModelType } from "./model_type.ts";
 import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
@@ -2415,8 +2428,14 @@ export const model = {
 
     // First buildIndex — bootstraps the catalog from a full import
     const catalog1 = new ExtensionCatalogStore(dbPath);
-    const loader1 = new UserModelLoader(testDenoRuntime, repoDir);
-    await loader1.buildIndex(modelsDir, catalog1);
+    const repository1 = makeRepoForCatalog(catalog1, repoDir);
+    const loader1 = new UserModelLoader(
+      testDenoRuntime,
+      repoDir,
+      undefined,
+      repository1,
+    );
+    await loader1.buildIndex(modelsDir);
     catalog1.close();
 
     // Read the cached bundle content
@@ -2435,8 +2454,14 @@ export const model = {
 
     // Second buildIndex — catalog is populated, should detect dep change
     const catalog2 = new ExtensionCatalogStore(dbPath);
-    const loader2 = new UserModelLoader(testDenoRuntime, repoDir);
-    const result = await loader2.buildIndex(modelsDir, catalog2);
+    const repository2 = makeRepoForCatalog(catalog2, repoDir);
+    const loader2 = new UserModelLoader(
+      testDenoRuntime,
+      repoDir,
+      undefined,
+      repository2,
+    );
+    const result = await loader2.buildIndex(modelsDir);
     catalog2.close();
 
     // The bundle should have been regenerated with the new dependency content
@@ -2507,8 +2532,15 @@ export const model = {
     await Deno.writeTextFile(sourcePath, v1);
 
     const catalog1 = new ExtensionCatalogStore(dbPath);
-    const loader1 = new UserModelLoader(testDenoRuntime, repoDir);
-    await loader1.buildIndex(modelsDir, catalog1);
+
+    const repository1 = makeRepoForCatalog(catalog1, repoDir);
+    const loader1 = new UserModelLoader(
+      testDenoRuntime,
+      repoDir,
+      undefined,
+      repository1,
+    );
+    await loader1.buildIndex(modelsDir);
     catalog1.close();
 
     const ns = bundleNamespace(modelsDir, repoDir);
@@ -2541,8 +2573,15 @@ export const model = {
     );
 
     const catalog2 = new ExtensionCatalogStore(dbPath);
-    const loader2 = new UserModelLoader(testDenoRuntime, repoDir);
-    const result = await loader2.buildIndex(modelsDir, catalog2);
+
+    const repository2 = makeRepoForCatalog(catalog2, repoDir);
+    const loader2 = new UserModelLoader(
+      testDenoRuntime,
+      repoDir,
+      undefined,
+      repository2,
+    );
+    const result = await loader2.buildIndex(modelsDir);
     catalog2.close();
 
     const v2Bundle = await Deno.readTextFile(bundlePath);
@@ -2688,8 +2727,14 @@ export const model = {
   try {
     await Deno.writeTextFile(join(modelsDir, "model.ts"), modelCode);
     const catalog1 = new ExtensionCatalogStore(dbPath);
-    const loader1 = new UserModelLoader(testDenoRuntime, repoDir);
-    await loader1.buildIndex(modelsDir, catalog1);
+    const repository1 = makeRepoForCatalog(catalog1, repoDir);
+    const loader1 = new UserModelLoader(
+      testDenoRuntime,
+      repoDir,
+      undefined,
+      repository1,
+    );
+    await loader1.buildIndex(modelsDir);
     catalog1.close();
 
     const ns = bundleNamespace(modelsDir, repoDir);
@@ -2703,8 +2748,15 @@ export const model = {
     await Deno.writeTextFile(join(modelsDir, "model.ts"), modelCode);
 
     const catalog2 = new ExtensionCatalogStore(dbPath);
-    const loader2 = new UserModelLoader(testDenoRuntime, repoDir);
-    const result = await loader2.buildIndex(modelsDir, catalog2);
+
+    const repository2 = makeRepoForCatalog(catalog2, repoDir);
+    const loader2 = new UserModelLoader(
+      testDenoRuntime,
+      repoDir,
+      undefined,
+      repository2,
+    );
+    const result = await loader2.buildIndex(modelsDir);
     catalog2.close();
 
     const bundleAfter = await Deno.readTextFile(bundlePath);
@@ -2813,8 +2865,14 @@ export const model = {
 
     // First buildIndex — only primary dir, no additional sources
     const catalog1 = new ExtensionCatalogStore(dbPath);
-    const loader1 = new UserModelLoader(testDenoRuntime, repoDir);
-    await loader1.buildIndex(modelsDir, catalog1);
+    const repository1 = makeRepoForCatalog(catalog1, repoDir);
+    const loader1 = new UserModelLoader(
+      testDenoRuntime,
+      repoDir,
+      undefined,
+      repository1,
+    );
+    await loader1.buildIndex(modelsDir);
     catalog1.close();
 
     // Model A should be registered, model B should not
@@ -2831,8 +2889,14 @@ export const model = {
 
     // Second buildIndex — now include the extra source dir
     const catalog2 = new ExtensionCatalogStore(dbPath);
-    const loader2 = new UserModelLoader(testDenoRuntime, repoDir);
-    const result = await loader2.buildIndex(modelsDir, catalog2, {
+    const repository2 = makeRepoForCatalog(catalog2, repoDir);
+    const loader2 = new UserModelLoader(
+      testDenoRuntime,
+      repoDir,
+      undefined,
+      repository2,
+    );
+    const result = await loader2.buildIndex(modelsDir, {
       additionalDirs: [sourceDirB],
     });
     catalog2.close();
@@ -2894,8 +2958,14 @@ export const model = {
 
     // First buildIndex bootstraps the catalog
     const catalog = new ExtensionCatalogStore(dbPath);
-    const loader = new UserModelLoader(testDenoRuntime, repoDir);
-    const result = await loader.buildIndex(modelsDir, catalog);
+    const repository = makeRepoForCatalog(catalog, repoDir);
+    const loader = new UserModelLoader(
+      testDenoRuntime,
+      repoDir,
+      undefined,
+      repository,
+    );
+    const result = await loader.buildIndex(modelsDir);
 
     assertEquals(result.failed.length, 0);
 
@@ -2978,13 +3048,20 @@ Deno.test("attachPendingExtensionsForType: attaches a single pending extension",
     await Deno.writeTextFile(join(modelsDir, "ext.ts"), extCode);
 
     const catalog = new ExtensionCatalogStore(dbPath);
-    const loader = new UserModelLoader(testDenoRuntime, repoDir);
-    await loader.buildIndex(modelsDir, catalog);
+
+    const repository = makeRepoForCatalog(catalog, repoDir);
+    const loader = new UserModelLoader(
+      testDenoRuntime,
+      repoDir,
+      undefined,
+      repository,
+    );
+    await loader.buildIndex(modelsDir);
     const base = modelRegistry.get(typeId);
     if (base) delete base.methods.pending;
     assertEquals("pending" in modelRegistry.get(typeId)!.methods, false);
 
-    await loader.attachPendingExtensionsForType(typeId, catalog);
+    await loader.attachPendingExtensionsForType(typeId);
 
     assertEquals("pending" in modelRegistry.get(typeId)!.methods, true);
     catalog.close();
@@ -3048,8 +3125,15 @@ export const extension = {
     await Deno.writeTextFile(join(modelsDir, "ext_b.ts"), extB);
 
     const catalog = new ExtensionCatalogStore(dbPath);
-    const loader = new UserModelLoader(testDenoRuntime, repoDir);
-    await loader.buildIndex(modelsDir, catalog);
+
+    const repository = makeRepoForCatalog(catalog, repoDir);
+    const loader = new UserModelLoader(
+      testDenoRuntime,
+      repoDir,
+      undefined,
+      repository,
+    );
+    await loader.buildIndex(modelsDir);
 
     const base = modelRegistry.get(typeId);
     if (base) {
@@ -3057,7 +3141,7 @@ export const extension = {
       delete base.methods.beta;
     }
 
-    await loader.attachPendingExtensionsForType(typeId, catalog);
+    await loader.attachPendingExtensionsForType(typeId);
 
     const attached = modelRegistry.get(typeId)!.methods;
     assertEquals("alpha" in attached, true);
@@ -3095,11 +3179,18 @@ export const model = {
     await Deno.writeTextFile(join(modelsDir, "base.ts"), modelCode);
 
     const catalog = new ExtensionCatalogStore(dbPath);
-    const loader = new UserModelLoader(testDenoRuntime, repoDir);
-    await loader.buildIndex(modelsDir, catalog);
+
+    const repository = makeRepoForCatalog(catalog, repoDir);
+    const loader = new UserModelLoader(
+      testDenoRuntime,
+      repoDir,
+      undefined,
+      repository,
+    );
+    await loader.buildIndex(modelsDir);
 
     const before = Object.keys(modelRegistry.get(typeId)!.methods).sort();
-    await loader.attachPendingExtensionsForType(typeId, catalog);
+    await loader.attachPendingExtensionsForType(typeId);
     const after = Object.keys(modelRegistry.get(typeId)!.methods).sort();
     assertEquals(before, after);
     catalog.close();
@@ -3121,12 +3212,19 @@ Deno.test("attachPendingExtensionsForType: is idempotent when all methods alread
     await Deno.writeTextFile(join(modelsDir, "ext.ts"), extCode);
 
     const catalog = new ExtensionCatalogStore(dbPath);
-    const loader = new UserModelLoader(testDenoRuntime, repoDir);
-    await loader.buildIndex(modelsDir, catalog);
+
+    const repository = makeRepoForCatalog(catalog, repoDir);
+    const loader = new UserModelLoader(
+      testDenoRuntime,
+      repoDir,
+      undefined,
+      repository,
+    );
+    await loader.buildIndex(modelsDir);
     // loadModels Pass 2 inside buildIndex already attached "pending".
     assertEquals("pending" in modelRegistry.get(typeId)!.methods, true);
 
-    await loader.attachPendingExtensionsForType(typeId, catalog);
+    await loader.attachPendingExtensionsForType(typeId);
     assertEquals("pending" in modelRegistry.get(typeId)!.methods, true);
     catalog.close();
   } finally {
@@ -3141,10 +3239,15 @@ Deno.test("attachPendingExtensionsForType: no-op when base is not registered", a
   const dbPath = join(repoDir, ".swamp", "_extension_catalog.db");
   try {
     const catalog = new ExtensionCatalogStore(dbPath);
-    const loader = new UserModelLoader(testDenoRuntime, repoDir);
+    const repository = makeRepoForCatalog(catalog, repoDir);
+    const loader = new UserModelLoader(
+      testDenoRuntime,
+      repoDir,
+      undefined,
+      repository,
+    );
     await loader.attachPendingExtensionsForType(
       "@user/apeft-missing-base",
-      catalog,
     );
     catalog.close();
   } finally {
@@ -3201,8 +3304,15 @@ export const extension = {
     await Deno.writeTextFile(join(modelsDir, "b_ext.ts"), extCode("V1"));
 
     const catalog1 = new ExtensionCatalogStore(dbPath);
-    const loader1 = new UserModelLoader(testDenoRuntime, repoDir);
-    await loader1.buildIndex(modelsDir, catalog1);
+
+    const repository1 = makeRepoForCatalog(catalog1, repoDir);
+    const loader1 = new UserModelLoader(
+      testDenoRuntime,
+      repoDir,
+      undefined,
+      repository1,
+    );
+    await loader1.buildIndex(modelsDir);
     catalog1.close();
 
     await Deno.writeTextFile(join(modelsDir, "a_base.ts"), modelCode("V2"));
@@ -3212,8 +3322,15 @@ export const extension = {
     if (base) delete base.methods.attached;
 
     const catalog2 = new ExtensionCatalogStore(dbPath);
-    const loader2 = new UserModelLoader(testDenoRuntime, repoDir);
-    await loader2.buildIndex(modelsDir, catalog2);
+
+    const repository2 = makeRepoForCatalog(catalog2, repoDir);
+    const loader2 = new UserModelLoader(
+      testDenoRuntime,
+      repoDir,
+      undefined,
+      repository2,
+    );
+    await loader2.buildIndex(modelsDir);
     catalog2.close();
 
     assertEquals(
@@ -3278,8 +3395,14 @@ export const model = {
 
     // Cold-start populates the catalog with the healthy model.
     const catalog1 = new ExtensionCatalogStore(dbPath);
-    const loader1 = new UserModelLoader(testDenoRuntime, repoDir);
-    await loader1.buildIndex(modelsDir, catalog1);
+    const repository1 = makeRepoForCatalog(catalog1, repoDir);
+    const loader1 = new UserModelLoader(
+      testDenoRuntime,
+      repoDir,
+      undefined,
+      repository1,
+    );
+    await loader1.buildIndex(modelsDir);
 
     // Inject a ValidationFailed row to simulate what
     // markCatalogValidationFailed would write after a schema break.
@@ -3303,6 +3426,7 @@ export const model = {
     // ADV-1 invariant: findStaleFiles needs to see the broken row to
     // terminate the rebundle loop on a stable broken source.
     const catalog2 = new ExtensionCatalogStore(dbPath);
+    const repository2 = makeRepoForCatalog(catalog2, repoDir);
     const allRows = catalog2.findByKind("model");
     const broken = allRows.find((r) => r.source_path === brokenSourcePath);
     const healthyRow = allRows.find((r) =>
@@ -3317,8 +3441,13 @@ export const model = {
     // broken row (empty type_normalized + state='ValidationFailed') must
     // NOT register. Use a fresh loader so the lazy registration path
     // runs against a clean registry view of the populated catalog.
-    const loader2 = new UserModelLoader(testDenoRuntime, repoDir);
-    await loader2.buildIndex(modelsDir, catalog2);
+    const loader2 = new UserModelLoader(
+      testDenoRuntime,
+      repoDir,
+      undefined,
+      repository2,
+    );
+    await loader2.buildIndex(modelsDir);
 
     // After buildIndex, the healthy type is registered. The empty
     // type_normalized of the broken row never reaches the registry —
@@ -3387,8 +3516,14 @@ export const model = {
 
     // Cold-start populates the catalog and writes the bundle.
     const catalog1 = new ExtensionCatalogStore(dbPath);
-    const loader1 = new UserModelLoader(testDenoRuntime, repoDir);
-    await loader1.buildIndex(modelsDir, catalog1);
+    const repository1 = makeRepoForCatalog(catalog1, repoDir);
+    const loader1 = new UserModelLoader(
+      testDenoRuntime,
+      repoDir,
+      undefined,
+      repository1,
+    );
+    await loader1.buildIndex(modelsDir);
     catalog1.close();
 
     const ns = bundleNamespace(modelsDir, repoDir);
@@ -3405,8 +3540,14 @@ export const model = {
     // Second buildIndex must NOT throw NotFound — the freshness gate
     // detects the missing bundle and triggers rebundleAndUpdateCatalog.
     const catalog2 = new ExtensionCatalogStore(dbPath);
-    const loader2 = new UserModelLoader(testDenoRuntime, repoDir);
-    const result = await loader2.buildIndex(modelsDir, catalog2);
+    const repository2 = makeRepoForCatalog(catalog2, repoDir);
+    const loader2 = new UserModelLoader(
+      testDenoRuntime,
+      repoDir,
+      undefined,
+      repository2,
+    );
+    const result = await loader2.buildIndex(modelsDir);
     catalog2.close();
 
     // Bundle is restored on disk and the rebundle landed in `loaded`.

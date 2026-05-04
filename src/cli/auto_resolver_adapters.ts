@@ -40,7 +40,7 @@ import { UserModelLoader } from "../domain/models/user_model_loader.ts";
 import { UserVaultLoader } from "../domain/vaults/user_vault_loader.ts";
 import { UserDatastoreLoader } from "../domain/datastore/user_datastore_loader.ts";
 import type { DatastorePathResolver } from "../domain/datastore/datastore_path_resolver.ts";
-import type { ExtensionCatalogStore } from "../infrastructure/persistence/extension_catalog_store.ts";
+import type { ExtensionRepository } from "../infrastructure/persistence/extension_repository.ts";
 import { modelRegistry } from "../domain/models/model.ts";
 import type { OutputMode } from "../presentation/output/output.ts";
 import {
@@ -82,11 +82,13 @@ interface InstallerAdapterConfig {
   denoRuntime: DenoRuntime;
   datastoreResolver?: DatastorePathResolver;
   /**
-   * Shared extension catalog used by hotLoadModels to attach user
-   * extensions whose base type was just registered. Optional so
-   * existing callers that do not need the attach retry can omit it.
+   * W1b/(a-2) wiring: shared ExtensionRepository used by hotLoadModels
+   * to attach user extensions whose base type was just registered, and
+   * passed through to every loader's constructor so internal
+   * catalog operations route through `repository.legacyStore`. Optional
+   * so existing callers that do not need the attach retry can omit it.
    */
-  catalog?: ExtensionCatalogStore;
+  repository?: ExtensionRepository;
 }
 
 /**
@@ -104,7 +106,7 @@ export function createAutoResolveInstallerAdapter(
     repoDir,
     denoRuntime,
     datastoreResolver,
-    catalog,
+    repository,
   } = config;
 
   return {
@@ -218,6 +220,7 @@ export function createAutoResolveInstallerAdapter(
         denoRuntime,
         repoDir,
         datastoreResolver,
+        repository,
       );
       const [primary, ...rest] = pulledDirs;
       const result = await loader.loadModels(primary, {
@@ -231,9 +234,13 @@ export function createAutoResolveInstallerAdapter(
       // short-circuit and loadSingleType's extension-attach loop would
       // never run. Walk the catalog's extension rows and attach any whose
       // base is now fully loaded. Idempotent (issue 123).
-      if (catalog && result.loaded.length > 0) {
+      if (repository && result.loaded.length > 0) {
         const pendingBases = new Set<string>();
-        for (const row of catalog.findByKind("extension")) {
+        // Direct catalog access via the W1b transitional escape hatch.
+        // W4 will rewrite this to walk aggregate state instead.
+        for (
+          const row of repository.legacyStore.findByKind("extension")
+        ) {
           // Validation-failed rows (swamp-club#209) have empty
           // extends_type so they fall out of this set naturally — the
           // explicit emptiness check below already filters them.
@@ -241,7 +248,7 @@ export function createAutoResolveInstallerAdapter(
         }
         for (const type of pendingBases) {
           if (!modelRegistry.get(type)) continue;
-          await loader.attachPendingExtensionsForType(type, catalog);
+          await loader.attachPendingExtensionsForType(type);
         }
       }
 
@@ -259,6 +266,7 @@ export function createAutoResolveInstallerAdapter(
         denoRuntime,
         repoDir,
         datastoreResolver,
+        repository,
       );
       const [primary, ...rest] = pulledDirs;
       await loader.loadVaults(primary, {
@@ -276,7 +284,7 @@ export function createAutoResolveInstallerAdapter(
       if (pulledDirs.length === 0) return;
       // Bootstrap: datastore loader must NOT receive the resolver —
       // it loads datastore extensions that configure the resolver.
-      const loader = new UserDatastoreLoader(denoRuntime, repoDir);
+      const loader = new UserDatastoreLoader(denoRuntime, repoDir, repository);
       const [primary, ...rest] = pulledDirs;
       await loader.loadDatastores(primary, {
         skipAlreadyRegistered: true,

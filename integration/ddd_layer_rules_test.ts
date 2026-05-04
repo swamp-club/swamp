@@ -68,8 +68,24 @@ function isTracingImport(filePath: string, importPath: string): boolean {
 // Ratchet counts: current number of known violations.
 // If someone fixes a violation, the count decreases and the test still passes.
 // If someone adds a new violation, the count increases and the test fails.
+//
 // Tracked refactor (data services → domain-side ports): swamp-club#229.
-const KNOWN_DOMAIN_INFRA_VIOLATIONS = 27;
+//
+// Issue #223 (W1b extension catalog rearchitecture) added 4 new
+// domain→infrastructure imports:
+//   - src/domain/extensions/bundle_location.ts → canonicalizePath
+//   - src/domain/extensions/source_location.ts → canonicalizePath
+//   - src/domain/extensions/source.ts → ExtensionKind type
+//   - src/domain/extensions/extension.ts → ExtensionKind type
+// canonicalizePath is a pure string transform with cross-platform rules
+// that the value objects need at construction time; ExtensionKind is the
+// type-level discriminator the W1a catalog defines and the aggregate
+// references for I-Repo-1 cross-aggregate uniqueness. Both are accepted
+// as transitional ports — the canonicalizer should move to a shared
+// path-utility module (W3 territory) and ExtensionKind should hoist to
+// the domain layer when the catalog gets fully replaced (W4). Until
+// then the violations are bounded and the ratchet rises by 4 (27 + 4).
+const KNOWN_DOMAIN_INFRA_VIOLATIONS = 31;
 
 Deno.test(
   "domain layer must not add new infrastructure imports (ratchet)",
