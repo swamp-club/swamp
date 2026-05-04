@@ -193,12 +193,15 @@ migrate. **Prompt the user** to confirm:
 
 1. Did the `globalArguments` schema change?
 2. If yes: what fields were added/renamed/removed and what defaults to use?
-3. If no: add a no-op upgrade (`upgradeAttributes: (old) => old`)
+3. If no: add a no-op upgrade —
+   `{ toVersion, description, upgradeAttributes: (old) => old }`.
 
+`description` is required — omitting it fails schema validation at load time.
 The last upgrade's `toVersion` must equal the model's current `version`.
 Upgrades run lazily at method execution time and persist after first run.
 
-See [references/upgrades.md](references/upgrades.md) for patterns and examples.
+See [references/upgrades.md](references/upgrades.md) for the full no-op pattern,
+multi-step chains, and field-rename / field-removal examples.
 
 ## Zod Types
 

@@ -45,12 +45,9 @@ swamp issue bug --email --title "Crash report" --body "Details..."
 swamp issue ripple 184 --body "See also #183 for the related finding." --json
 ```
 
-## Posting a Ripple
+## Ripple Constraints
 
-`swamp issue ripple <number>` posts a comment (a "ripple" in swamp.club product
-terms) on an existing Lab issue. Useful when an agent or human discovers a
-related finding, workaround, or updated reproduction during follow-on work and
-wants to record it on the original issue.
+Ripples (described in the intro) have these submission rules:
 
 - Requires `swamp auth login` — there is no email fallback.
 - `--body` skips the editor; `--json` requires `--body`.
@@ -91,44 +88,18 @@ shapes (email fallback, extension-scoped, refusals, security variants).
 
 ## Extension-Scoped Submission (`--extension @collective/name`)
 
-Routes reports to the extension's publisher. Requires the extension to be pulled
-locally (`swamp extension pull <name>`) and the command to run from inside a
-swamp repo (or pass `--repo-dir <path>`).
-
-Three outcomes depending on the extension:
-
-| Collective                  | Destination                                         |
-| --------------------------- | --------------------------------------------------- |
-| `@swamp/*`                  | swamp.club Lab, tagged with extension metadata      |
-| Third-party with repository | Publisher's repo (via `gh` CLI or browser handoff)  |
-| Third-party without repo    | Refused cleanly; points at publisher's profile page |
-
-**Non-interactive examples:**
-
-```bash
-swamp issue bug --extension @swamp/aws --title "..." --body "..." --json
-swamp issue bug --extension @adam/cfgmgmt --title "..." --body "..." --json
-swamp issue security --extension @adam/cfgmgmt --title "..." --body "..." --json
-```
-
-Output shapes differ by routing path (`extension-lab`, `gh` handoff, browser
-handoff, refusal). See
-[references/output_shapes.md](references/output_shapes.md) for full examples.
-Refusals exit **0**, not as errors — the CLI is honoring the user's intent when
-the target can't accept reports.
+Routes reports to the extension's publisher. `@swamp/*` extensions get tagged
+Lab issues; third-party extensions hand off to the publisher's repo (via `gh` or
+browser); third-party without a declared repo refuses cleanly. See
+[references/extension_routing.md](references/extension_routing.md) for the
+routing matrix, examples, and refusal semantics.
 
 ## Security Routing
 
-`swamp issue security --extension` against a third-party GitHub repository
-checks GitHub's Private Vulnerability Reporting (PVR) status first:
-
-- **PVR enabled** → opens the advisory form in the browser.
-- **PVR disabled** → **refuses**. The CLI never falls back to creating a public
-  issue for a security report, because that would silently publish the
-  vulnerability. The guidance tells the reporter to contact the publisher
-  privately and tells the publisher how to enable PVR.
-- **Check failed or `gh` unavailable** → opens the advisory URL with a fallback
-  issue URL surfaced in the output.
+`swamp issue security --extension` checks GitHub Private Vulnerability Reporting
+(PVR) before routing — and refuses rather than fall back to a public issue if
+PVR is off. See [references/security_routing.md](references/security_routing.md)
+for the full PVR-state matrix and rationale.
 
 ## Workflow
 

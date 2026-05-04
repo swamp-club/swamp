@@ -258,18 +258,8 @@ user for explicit confirmation. Present the summary and wait.
 
 **Gate:** ALL prior states (1–7) have passed. Present this summary and STOP:
 
-> All pre-publish checks passed:
->
-> - Repository: initialized
-> - Auth: verified as `<username>`
-> - Manifest: valid
-> - Collective: `@<collective>` matches auth
-> - Version: `YYYY.MM.DD.MICRO`
-> - Formatting: clean
-> - Dry run: passed
->
-> Ready to push `@collective/extension-name` version `YYYY.MM.DD.MICRO` to the
-> registry. **Shall I proceed?**
+> All gates passed. Ready to push `@collective/extension-name` version
+> `YYYY.MM.DD.MICRO` to the registry. **Shall I proceed?**
 
 **Action:** Only after the user explicitly says yes, approved, go, or proceed:
 

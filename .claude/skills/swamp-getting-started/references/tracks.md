@@ -64,8 +64,61 @@ Avoid `create`, `update`, or `delete` for the first run.
 
 ## CEL Reference Path
 
-After a successful run, show the user how to reference the output:
+After a successful run, show the user how to reference the output. CEL
+expressions wire data from one model into another — anywhere a model YAML
+accepts a value, you can interpolate from prior runs:
 
 ```
 ${{ data.latest("<name>", "<dataName>").attributes.<field> }}
 ```
+
+Use `data.latest(...)` over the deprecated
+`model.<name>.resource.<spec>.<instance>.attributes.<field>` form.
+
+## On Failure Recovery
+
+Per-state recovery actions when a Verify step fails. After fixing, re-run the
+state's action and re-verify before advancing.
+
+### State 2 (model_created) — validation failed
+
+Read the validation errors. Common fixes:
+
+- Missing required arguments → edit the model YAML to add them
+- Invalid argument values → check the type schema with
+  `swamp model type describe <type> --json`
+- File not found → verify path from `swamp model get <name> --json`
+
+For detailed model guidance, see the `swamp-model` skill.
+
+### State 3 (method_run) — method failed
+
+- **Command failed**: Read the error output and suggest specific fixes
+- **Missing secrets**: Guide toward vault setup (delegate to `swamp-vault`)
+- **Permission denied**: Check the command exists and is executable
+- **Timeout**: Suggest a simpler command for the first run
+
+### State 4 (output_inspected) — no output
+
+Check the method run logs for failed runs and report the error:
+
+```bash
+swamp model output search <name> --json
+```
+
+## Delegation Map
+
+When the user picks a next step (or asks something outside the walkthrough
+scope), delegate to the appropriate skill with context about what they built.
+Always pass along the user's original goal and what they built so the next skill
+doesn't start from zero.
+
+| User intent                             | Delegate to               |
+| --------------------------------------- | ------------------------- |
+| Another model or edit the one they made | `swamp-model`             |
+| Chain models together                   | `swamp-workflow`          |
+| Secure credentials                      | `swamp-vault`             |
+| Inspect or query their data             | `swamp-data-query`        |
+| Build a typed model from scratch        | `swamp-extension-model`   |
+| Share their work                        | `swamp-extension-publish` |
+| Something is broken                     | `swamp-troubleshooting`   |
