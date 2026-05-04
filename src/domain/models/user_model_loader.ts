@@ -79,7 +79,7 @@ const logger = getLogger(["swamp", "models", "loader"]);
  * "per-extension-v2" (each pulled extension owns its own bundle
  * namespace via its per-extension models dir).
  */
-const BUNDLE_LAYOUT_VERSION = "per-extension-v2";
+const BUNDLE_LAYOUT_VERSION = "per-extension-aggregate-v3";
 
 /**
  * Plain object result returned by user methods before conversion.
@@ -940,11 +940,12 @@ export class UserModelLoader {
   private registerLazyFromCatalog(catalog: ExtensionCatalogStore): void {
     const entries = catalog.findByKind("model");
     for (const entry of entries) {
-      // Skip validation-failed rows: their source content is fresh (the
+      // Skip ValidationFailed rows: their source content is fresh (the
       // fingerprint stops findStaleFiles from re-bundling) but the
       // module's schema is invalid, so the type is not safe to register
-      // (swamp-club#209).
-      if (entry.validation_failed) continue;
+      // (swamp-club#209). Migrated to read `state` instead of
+      // `validation_failed` per W1a (issue swamp-club#211).
+      if (entry.state === "ValidationFailed") continue;
       modelRegistry.registerLazy({
         type: ModelType.create(entry.type_normalized),
         bundlePath: entry.bundle_path,

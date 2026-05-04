@@ -3228,13 +3228,16 @@ export const extension = {
   }
 });
 
-Deno.test("UserModelLoader: registerLazyFromCatalog skips validation_failed rows (swamp-club#209)", async () => {
+Deno.test("UserModelLoader: registerLazyFromCatalog skips ValidationFailed rows (swamp-club#209)", async () => {
   // After a schema-invalid extension goes through rebundleAndUpdateCatalog,
-  // the catalog row carries validation_failed=true with empty
+  // the catalog row carries state='ValidationFailed' with empty
   // type_normalized. The fingerprint match terminates the rebundle loop
   // (verified at the catalog/freshness layer), but the registry must
   // not be polluted with the broken row — registerLazyFromCatalog has
-  // to filter on validation_failed.
+  // to filter on state.
+  //
+  // The reader migrated from `validation_failed` to `state` per W1a
+  // (issue swamp-club#211); this test follows.
   //
   // Drives the registration path directly via a seeded catalog rather
   // than going through buildIndex. The buildIndex path bumps into
@@ -3278,7 +3281,7 @@ export const model = {
     const loader1 = new UserModelLoader(testDenoRuntime, repoDir);
     await loader1.buildIndex(modelsDir, catalog1);
 
-    // Inject a validation-failed row to simulate what
+    // Inject a ValidationFailed row to simulate what
     // markCatalogValidationFailed would write after a schema break.
     const ns = bundleNamespace(modelsDir, repoDir);
     const brokenSourcePath = join(modelsDir, "broken.ts");
@@ -3292,7 +3295,7 @@ export const model = {
       extends_type: "",
       source_mtime: "2026-05-01T12:00:00.000Z",
       source_fingerprint: "deadbeef-broken-state",
-      validation_failed: true,
+      state: "ValidationFailed",
     });
     catalog1.close();
 
@@ -3306,12 +3309,12 @@ export const model = {
       r.type_normalized === `@user/issue209-healthy-${ts}`
     );
     assertNotEquals(broken, undefined, "Broken row must be in findByKind");
-    assertEquals(broken?.validation_failed, true);
+    assertEquals(broken?.state, "ValidationFailed");
     assertNotEquals(healthyRow, undefined, "Healthy row must be in findByKind");
-    assertEquals(healthyRow?.validation_failed, false);
+    assertEquals(healthyRow?.state, "Indexed");
 
     // Drive registerLazyFromCatalog. The healthy type registers; the
-    // broken row (empty type_normalized + validation_failed=true) must
+    // broken row (empty type_normalized + state='ValidationFailed') must
     // NOT register. Use a fresh loader so the lazy registration path
     // runs against a clean registry view of the populated catalog.
     const loader2 = new UserModelLoader(testDenoRuntime, repoDir);

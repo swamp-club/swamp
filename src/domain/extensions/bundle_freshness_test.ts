@@ -536,9 +536,11 @@ Deno.test("findStaleFiles: matching fingerprint + missing bundle → stale (#212
   }
 });
 
-Deno.test("findStaleFiles: matching fingerprint + missing bundle + validation_failed → not stale (#212 vs #209)", async () => {
-  // validation_failed rows must skip the bundle-existence check —
+Deno.test("findStaleFiles: matching fingerprint + missing bundle + state=ValidationFailed → not stale (#212 vs #209)", async () => {
+  // ValidationFailed rows must skip the bundle-existence check —
   // rebundling them is the inverse of the loop swamp-club#209 sealed.
+  // The reader migrated from `validation_failed` to `state` per W1a
+  // (issue swamp-club#211); fixture follows.
   const dir = await Deno.makeTempDir({ prefix: "swamp_bf_212_validfail_" });
   try {
     const file = join(dir, "broken.ts");
@@ -556,7 +558,7 @@ Deno.test("findStaleFiles: matching fingerprint + missing bundle + validation_fa
       extends_type: "",
       source_mtime: "",
       source_fingerprint: fp,
-      validation_failed: true,
+      state: "ValidationFailed",
     });
 
     const stale = await findStaleFiles({
@@ -834,7 +836,7 @@ class FakeValidationFailureCatalog implements ValidationFailureCatalog {
     extends_type: string;
     source_mtime: string;
     source_fingerprint: string;
-    validation_failed: boolean;
+    state?: string;
   }): void {
     this.upserts.push({ ...row });
   }
@@ -863,7 +865,7 @@ Deno.test("markCatalogValidationFailed: upserts a row with every field populated
   assertEquals(row.extends_type, "");
   assertEquals(row.source_mtime, "2026-05-01T12:00:00.000Z");
   assertEquals(row.source_fingerprint, "abc123");
-  assertEquals(row.validation_failed, true);
+  assertEquals(row.state, "ValidationFailed");
 });
 
 Deno.test("markCatalogValidationFailed: idempotent — repeated calls produce identical rows", () => {
@@ -1007,6 +1009,6 @@ Deno.test("markCatalogValidationFailed: works for every supported kind", () => {
   assertEquals(catalog.upserts.length, kinds.length);
   for (let i = 0; i < kinds.length; i++) {
     assertEquals(catalog.upserts[i].kind, kinds[i]);
-    assertEquals(catalog.upserts[i].validation_failed, true);
+    assertEquals(catalog.upserts[i].state, "ValidationFailed");
   }
 });

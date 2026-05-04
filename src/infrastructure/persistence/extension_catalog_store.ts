@@ -20,7 +20,23 @@
 import { DatabaseSync } from "node:sqlite";
 import { dirname } from "@std/path";
 import { ensureDirSync } from "@std/fs";
+import { getLogger } from "@logtape/logtape";
+import { canonicalizePath } from "./canonicalize_path.ts";
+import { deriveExtensionIdentity } from "./derive_extension_identity.ts";
 import { swampPath } from "./paths.ts";
+
+const logger = getLogger(["swamp", "persistence", "extension-catalog"]);
+
+/**
+ * Marker key in bundle_meta recording that the per-extension-aggregate-v3
+ * data migration has run successfully (or recovered via cold-start rebuild)
+ * on this catalog. Set after the data-migration transaction commits;
+ * checked at the top of the data-migration phase to skip the per-row
+ * UPDATEs after the first successful run. Schema-level changes (ADD COLUMN)
+ * are independently idempotent via pragma_table_info probes.
+ */
+const PER_EXTENSION_AGGREGATE_V3_MIGRATION_KEY =
+  "migration_applied:per-extension-aggregate-v3";
 
 /**
  * The kind of bundle entry — which registry type it belongs to.
@@ -58,15 +74,32 @@ export interface ExtensionTypeRow {
   source_fingerprint?: string;
   /**
    * True when bundle+import succeeded but schema validation failed
-   * (swamp-club#209). The fingerprint and bundle path are still stored
-   * so freshness comparison terminates on a stable broken source —
-   * registration paths filter on this flag to keep broken types out of
-   * the registry. findByKind/findByType deliberately do NOT filter on
-   * this column so freshness (findStaleFiles) can see broken rows.
-   * Defaults to false on upsert; old catalog rows default to false via
-   * the migration.
+   * (swamp-club#209). Vestigial after W1a — preserved on the row by the
+   * ON CONFLICT DO UPDATE SET in {@link ExtensionCatalogStore.upsert}
+   * (the column is intentionally not in the SET list) but no production
+   * code reads or writes it. W1b drops the column entirely via the
+   * SQLite recreate-table pattern. Until then, mapRow continues to
+   * surface the value so legacy tests that introspect it can compile.
    */
   validation_failed?: boolean;
+  /**
+   * RowState tag (issue swamp-club#211, W1). One of `'Indexed'`,
+   * `'Bundled'`, `'BundleBuildFailed'`, `'ValidationFailed'`,
+   * `'EntryPointUnreadable'`, `'OrphanedBundleOnly'`, `'Tombstoned'`.
+   * Optional on upsert: callers that omit it land at the column DEFAULT
+   * `'Indexed'` on INSERT and preserve the prior value on UPDATE
+   * (per-extension-aggregate-v3 schema). markCatalogValidationFailed is
+   * the only writer that sets this to `'ValidationFailed'`; loader
+   * populate paths leave it implicit so newly-bundled rows settle as
+   * `'Indexed'`.
+   *
+   * Reader contract: every row registration site filters on this value
+   * (`if (entry.state === 'ValidationFailed') continue;`). The
+   * `validation_failed` column above is no longer a reader signal —
+   * during the W1a → W1b release window it's a vestigial 0 for every
+   * row.
+   */
+  state?: string;
 }
 
 /**
@@ -84,9 +117,11 @@ export interface ExtensionTypeRow {
  */
 export class ExtensionCatalogStore {
   private readonly db: DatabaseSync;
+  private readonly dbPath: string;
 
   constructor(dbPath: string) {
     ensureDirSync(dirname(dbPath));
+    this.dbPath = dbPath;
     this.db = new DatabaseSync(dbPath);
     this.db.exec("PRAGMA busy_timeout=5000");
     this.initializeWithRetry();
@@ -138,7 +173,10 @@ export class ExtensionCatalogStore {
         extends_type       TEXT NOT NULL DEFAULT '',
         source_mtime       TEXT NOT NULL DEFAULT '',
         source_fingerprint TEXT NOT NULL DEFAULT '',
-        validation_failed  INTEGER NOT NULL DEFAULT 0
+        validation_failed  INTEGER NOT NULL DEFAULT 0,
+        state              TEXT NOT NULL DEFAULT 'Indexed',
+        extension_name     TEXT NOT NULL DEFAULT '',
+        extension_version  TEXT NOT NULL DEFAULT ''
       );
 
       CREATE INDEX IF NOT EXISTS idx_bundle_types_kind
@@ -156,13 +194,47 @@ export class ExtensionCatalogStore {
   }
 
   /**
-   * Adds columns introduced after the initial schema to existing DBs.
-   * Probes via PRAGMA table_info before issuing ALTER TABLE so the
-   * migration runs on SQLite versions without ADD COLUMN IF NOT EXISTS
-   * support, and is idempotent across process restarts. Called from
-   * initializeWithRetry so it inherits the lock-retry + backoff logic.
+   * Adds columns introduced after the initial schema to existing DBs and
+   * runs the data-migration backfill for the per-extension-aggregate-v3
+   * layout (issue swamp-club#211, W1).
+   *
+   * Schema changes (ADD COLUMN) are idempotent via pragma_table_info
+   * probes, applied outside any transaction since SQLite ALTER TABLE has
+   * its own atomicity. The data-migration phase (canonicalize source_path,
+   * backfill state from validation_failed, backfill extension_name via
+   * the path heuristic, drop unmatched rows, post-condition verify)
+   * runs inside ONE transaction with explicit ROLLBACK on any failure;
+   * a marker key in bundle_meta records first-success so subsequent
+   * process restarts skip the per-row UPDATEs.
+   *
+   * On post-condition failure (heuristic gap that the unit tests didn't
+   * catch — typically a legacy on-disk path layout we don't recognize)
+   * the data-migration transaction rolls back, then a separate cold-
+   * start rebuild transaction drops every bundle_types row and clears
+   * the bundle_meta `populated:*` keys so the next loader pass
+   * reconstructs from disk. The loaders are the source of truth for
+   * everything except identity columns; rebuild is non-destructive in
+   * the meaningful sense (the disk state is preserved). Running this
+   * function inherits the lock-retry + backoff logic from
+   * initializeWithRetry.
    */
   private migrateSchema(): void {
+    this.addNewColumnsIfMissing();
+    if (this.isDataMigrationApplied()) {
+      return;
+    }
+    this.runDataMigrationTransaction();
+  }
+
+  /**
+   * Phase 1: idempotent ADD COLUMN via pragma_table_info probes. Includes
+   * the columns added by previous migrations (source_fingerprint from #125,
+   * validation_failed from #1286) plus the per-extension-aggregate-v3
+   * columns (state, extension_name, extension_version). Order matches the
+   * order columns landed historically so probes against existing DBs
+   * produce stable results across migration generations.
+   */
+  private addNewColumnsIfMissing(): void {
     const probe = this.db.prepare(
       "SELECT COUNT(*) AS cnt FROM pragma_table_info('bundle_types') WHERE name = ?",
     );
@@ -180,19 +252,247 @@ export class ExtensionCatalogStore {
         "ALTER TABLE bundle_types ADD COLUMN validation_failed INTEGER NOT NULL DEFAULT 0",
       );
     }
+    if (!hasColumn("state")) {
+      this.db.exec(
+        "ALTER TABLE bundle_types ADD COLUMN state TEXT NOT NULL DEFAULT 'Indexed'",
+      );
+    }
+    if (!hasColumn("extension_name")) {
+      this.db.exec(
+        "ALTER TABLE bundle_types ADD COLUMN extension_name TEXT NOT NULL DEFAULT ''",
+      );
+    }
+    if (!hasColumn("extension_version")) {
+      this.db.exec(
+        "ALTER TABLE bundle_types ADD COLUMN extension_version TEXT NOT NULL DEFAULT ''",
+      );
+    }
   }
 
   /**
-   * Upserts a bundle type entry. Replaces any existing row with
-   * the same source path (primary key).
+   * Returns true if {@link runDataMigrationTransaction} has already
+   * succeeded (or recovered via cold-start rebuild) on this catalog.
+   */
+  private isDataMigrationApplied(): boolean {
+    const stmt = this.db.prepare(
+      "SELECT value FROM bundle_meta WHERE key = ?",
+    );
+    const row = stmt.get(PER_EXTENSION_AGGREGATE_V3_MIGRATION_KEY) as
+      | { value: string }
+      | undefined;
+    return row?.value === "true";
+  }
+
+  private markDataMigrationApplied(): void {
+    const stmt = this.db.prepare(
+      "INSERT OR REPLACE INTO bundle_meta (key, value) VALUES (?, 'true')",
+    );
+    stmt.run(PER_EXTENSION_AGGREGATE_V3_MIGRATION_KEY);
+  }
+
+  /**
+   * Phase 2: data-migration transaction. Inside one BEGIN/COMMIT:
+   * canonicalize source_path, backfill state from validation_failed,
+   * backfill extension_name via deriveExtensionIdentity (also writing
+   * extension_version for local rows; pulled rows leave version empty
+   * for W1b's lockfile-backed fallback to populate at read time), drop
+   * unmatched rows, verify the post-condition (extension_name non-empty
+   * for every remaining row).
+   *
+   * On any throw inside the transaction we ROLLBACK and recover via
+   * a separate cold-start rebuild — drop every row, clear
+   * `populated:*` keys, mark the migration as applied so subsequent
+   * process restarts don't loop. The rebuild path is the only line
+   * of defense against a bad backfill heuristic; we deliberately do
+   * not propagate the throw because the loaders will repopulate the
+   * catalog from disk on the next access.
+   */
+  private runDataMigrationTransaction(): void {
+    this.db.exec("BEGIN");
+    try {
+      this.canonicalizeAllSourcePaths();
+      this.db.exec(
+        "UPDATE bundle_types SET state = 'ValidationFailed' WHERE validation_failed = 1",
+      );
+      this.backfillExtensionIdentity();
+      this.db.exec(
+        "DELETE FROM bundle_types WHERE extension_name = ''",
+      );
+      this.verifyPostMigrationInvariant();
+      this.markDataMigrationApplied();
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      logger
+        .warn`Catalog migration to per-extension-aggregate-v3 failed (${error}); falling back to cold-start rebuild`;
+      this.runColdStartRebuild();
+    }
+  }
+
+  /**
+   * TS-driven per-row UPDATE. SQLite has no canonicalizePath function;
+   * we iterate, compute canonical form in TypeScript, and UPDATE one
+   * row at a time. Inside the data-migration transaction so the writes
+   * roll back together on any failure. Skips rows whose source_path is
+   * already canonical (the common case on POSIX where canonicalizePath
+   * is the identity).
+   *
+   * If two rows canonicalize to the same string (only possible with
+   * mixed-case access on Windows), the second UPDATE hits a UNIQUE
+   * constraint failure on source_path. We DELETE the duplicate and log
+   * a structured warning rather than aborting the migration.
+   */
+  private canonicalizeAllSourcePaths(): void {
+    const rows = this.db
+      .prepare("SELECT rowid AS rid, source_path FROM bundle_types")
+      .all() as { rid: number; source_path: string }[];
+    const updateStmt = this.db.prepare(
+      "UPDATE bundle_types SET source_path = ? WHERE rowid = ?",
+    );
+    const deleteStmt = this.db.prepare(
+      "DELETE FROM bundle_types WHERE rowid = ?",
+    );
+    for (const row of rows) {
+      const canonical = canonicalizePath(row.source_path);
+      if (canonical === row.source_path) continue;
+      try {
+        updateStmt.run(canonical, row.rid);
+      } catch (error) {
+        const isUniqueViolation = error instanceof Error &&
+          /UNIQUE constraint failed/i.test(error.message);
+        if (!isUniqueViolation) throw error;
+        logger
+          .warn`Migration: dropping duplicate row at ${row.source_path} (canonical form already exists)`;
+        deleteStmt.run(row.rid);
+      }
+    }
+  }
+
+  /**
+   * TS-driven per-row UPDATE that calls deriveExtensionIdentity on each
+   * row's canonical source_path. Backfills extension_name for both
+   * pulled and local rows; backfills extension_version only for local
+   * rows (pulled rows leave extension_version empty for W1b's
+   * lockfile-backed fallback to populate at read time — see Option A
+   * note in plan v6 step 2 sub-step 6 and the helper's docstring).
+   * Rows where the helper returns null (unrecognized path layout) keep
+   * their column DEFAULTs (extension_name='') and are dropped by the
+   * subsequent DELETE in {@link runDataMigrationTransaction}.
+   *
+   * Only updates rows whose extension_name is currently empty — once a
+   * row has an identity, repeat migration runs are a no-op for that
+   * row.
+   */
+  private backfillExtensionIdentity(): void {
+    const repoRoot = inferRepoRootFromDbPath(this.dbPath);
+    const rows = this.db
+      .prepare(
+        "SELECT rowid AS rid, source_path FROM bundle_types WHERE extension_name = ''",
+      )
+      .all() as { rid: number; source_path: string }[];
+    const updateStmt = this.db.prepare(
+      "UPDATE bundle_types SET extension_name = ?, extension_version = ? WHERE rowid = ?",
+    );
+    for (const row of rows) {
+      const identity = deriveExtensionIdentity(row.source_path, repoRoot);
+      if (identity === null) continue;
+      updateStmt.run(identity.name, identity.version, row.rid);
+    }
+  }
+
+  /**
+   * Post-condition for the data-migration transaction: every row must
+   * have a non-empty extension_name. extension_version is intentionally
+   * NOT checked because pulled rows leave it empty for W1b's lockfile
+   * fallback (see plan v6 step 2 sub-step 8 — the architect-pinned
+   * post-condition was narrowed when we discovered the issue body's
+   * "encodes name and version in path" assumption was incorrect).
+   *
+   * If verification fails the throw bubbles up to
+   * {@link runDataMigrationTransaction}'s catch, which runs ROLLBACK
+   * and falls back to cold-start rebuild.
+   */
+  private verifyPostMigrationInvariant(): void {
+    const stmt = this.db.prepare(
+      "SELECT COUNT(*) AS cnt FROM bundle_types WHERE extension_name = ''",
+    );
+    const row = stmt.get() as { cnt: number };
+    if (row.cnt > 0) {
+      throw new Error(
+        `Post-migration invariant violated: ${row.cnt} row(s) with empty extension_name remain`,
+      );
+    }
+  }
+
+  /**
+   * Recovery path when the data-migration transaction rolls back. Drops
+   * every bundle_types row and clears the bundle_meta `populated:*`
+   * flags so the next loader pass reconstructs the catalog from disk.
+   * Marks the migration as applied even though rows are gone — the
+   * marker says "schema is at v3 and we've recovered," not "all rows
+   * have been backfilled." Subsequent restarts skip the data-migration
+   * phase; the loaders' populate paths fill the empty catalog.
+   *
+   * Wrapped in its own transaction so rebuild itself is atomic. If
+   * this fails too the catalog is left in whatever state ROLLBACK
+   * produced; downstream code re-enters migrateSchema on the next
+   * construction, which will retry the whole sequence.
+   */
+  private runColdStartRebuild(): void {
+    this.db.exec("BEGIN");
+    try {
+      this.db.exec("DELETE FROM bundle_types");
+      this.db.exec("DELETE FROM bundle_meta WHERE key LIKE 'populated:%'");
+      this.markDataMigrationApplied();
+      this.db.exec("COMMIT");
+      logger
+        .warn`Catalog cold-start rebuild complete; loaders will repopulate from disk on next access`;
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      logger
+        .error`Catalog cold-start rebuild failed (${error}); next migrateSchema run will retry`;
+    }
+  }
+
+  /**
+   * Upserts a bundle type entry. INSERT path writes every payload
+   * column plus the W1a `state` column; UPDATE path (when a row with
+   * the same source_path already exists) writes the legacy columns +
+   * `state` but DELIBERATELY leaves `extension_name`, `extension_version`,
+   * and the vestigial `validation_failed` untouched.
+   *
+   * The intentional-not-in-SET list resolves ADV-V3-1: under the previous
+   * `INSERT OR REPLACE` pattern, omitted columns reset to DEFAULT on
+   * every UPDATE, which silently undid the migration's
+   * extension_name/extension_version backfill the first time a model-
+   * loader rescan upserted a row. ON CONFLICT DO UPDATE SET preserves
+   * the unwritten columns.
+   *
+   * `state` IS in the SET list because the loader is the source of
+   * truth for state — it transitions a row from `'ValidationFailed'`
+   * back to `'Indexed'` when validation later succeeds, and from
+   * `'Indexed'` to `'ValidationFailed'` via markCatalogValidationFailed.
+   * Callers that don't pass `row.state` get the column DEFAULT
+   * `'Indexed'` on INSERT and `'Indexed'` on UPDATE (since the bind
+   * defaults to `'Indexed'`).
    */
   upsert(row: ExtensionTypeRow): void {
     const stmt = this.db.prepare(`
-      INSERT OR REPLACE INTO bundle_types (
+      INSERT INTO bundle_types (
         source_path, type_normalized, kind, bundle_path,
         version, description, extends_type, source_mtime,
-        source_fingerprint, validation_failed
+        source_fingerprint, state
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT(source_path) DO UPDATE SET
+        type_normalized    = excluded.type_normalized,
+        kind               = excluded.kind,
+        bundle_path        = excluded.bundle_path,
+        version            = excluded.version,
+        description        = excluded.description,
+        extends_type       = excluded.extends_type,
+        source_mtime       = excluded.source_mtime,
+        source_fingerprint = excluded.source_fingerprint,
+        state              = excluded.state
     `);
     stmt.run(
       row.source_path,
@@ -204,7 +504,7 @@ export class ExtensionCatalogStore {
       row.extends_type,
       row.source_mtime,
       row.source_fingerprint ?? "",
-      row.validation_failed ? 1 : 0,
+      row.state ?? "Indexed",
     );
   }
 
@@ -233,16 +533,20 @@ export class ExtensionCatalogStore {
 
   /**
    * Coerces a raw SQLite row into a typed ExtensionTypeRow. Maps the
-   * INTEGER 0/1 `validation_failed` column to a boolean — SQLite has no
-   * native boolean type, so the column is stored as INTEGER but consumers
-   * expect a boolean.
+   * INTEGER 0/1 `validation_failed` column to a boolean (SQLite has no
+   * native boolean type) and surfaces the W1a `state` column as a
+   * string with `'Indexed'` as defensive default.
    *
-   * findByKind and findByType deliberately do NOT filter on
-   * validation_failed: findStaleFiles needs to see broken rows so the
+   * findByKind and findByType deliberately do NOT filter on `state` or
+   * `validation_failed`: findStaleFiles needs to see broken rows so the
    * fingerprint match terminates the rebundle loop (swamp-club#209).
-   * Registration call sites filter on the coerced boolean instead.
+   * Registration call sites filter on `state === 'ValidationFailed'`
+   * instead. The legacy `validation_failed` boolean is preserved on
+   * the row through the W1a → W1b release window for backwards
+   * compatibility with tests; W1b drops the column entirely.
    */
   private mapRow(raw: Record<string, unknown>): ExtensionTypeRow {
+    const stateRaw = raw.state;
     return {
       source_path: raw.source_path as string,
       type_normalized: raw.type_normalized as string,
@@ -254,6 +558,9 @@ export class ExtensionCatalogStore {
       source_mtime: raw.source_mtime as string,
       source_fingerprint: raw.source_fingerprint as string,
       validation_failed: raw.validation_failed === 1,
+      state: typeof stateRaw === "string" && stateRaw.length > 0
+        ? stateRaw
+        : "Indexed",
     };
   }
 
@@ -507,4 +814,20 @@ export function forceCatalogRescan(repoDir: string): void {
   } catch {
     // Best-effort — the loader will bootstrap a fresh catalog if this fails.
   }
+}
+
+/**
+ * Recovers the repository root from the catalog's database path.
+ * The catalog opens at `<repoRoot>/.swamp/_extension_catalog.db`, so
+ * `dirname(dirname(dbPath))` gives the repository root. Used by the
+ * data-migration backfill to resolve `<repoRoot>/extensions/<kind>/`
+ * and `<repoRoot>/.swamp/pulled-extensions/` prefixes against catalog
+ * row source_paths without needing a separate constructor parameter.
+ *
+ * The catalog's dbPath is a hard-coded layout assumption (see
+ * `swampPath(repoDir, "_extension_catalog.db")`); if that layout ever
+ * changes, this helper has to change with it.
+ */
+function inferRepoRootFromDbPath(dbPath: string): string {
+  return dirname(dirname(dbPath));
 }
