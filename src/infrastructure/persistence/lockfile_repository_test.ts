@@ -17,10 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertNotEquals } from "@std/assert";
+import { assertEquals, assertNotEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import { LockfileRepository } from "./lockfile_repository.ts";
 import { atomicWriteTextFile } from "./atomic_write.ts";
+import { UserError } from "../../domain/errors.ts";
 
 async function withTempDir(
   fn: (dir: string) => Promise<void>,
@@ -172,6 +173,23 @@ Deno.test("LockfileRepository.removeEntry: deletes key and persists", async () =
   });
 });
 
+Deno.test("LockfileRepository.removeEntry: creates parent dir (symmetric with writeEntry)", async () => {
+  await withTempDir(async (dir) => {
+    // Construct against a path whose parent dir does NOT exist yet.
+    // removeEntry must create it before acquireLock — otherwise
+    // Deno.open hits NotFound and propagates an unhelpful error.
+    const path = join(dir, "nested", "subdir", "upstream_extensions.json");
+    const repo = new LockfileRepository(path, {});
+
+    // Should not throw.
+    await repo.removeEntry("@scope/never-existed");
+
+    // The empty lockfile is now persisted and the parent dir exists.
+    const onDisk = JSON.parse(await Deno.readTextFile(path));
+    assertEquals(Object.keys(onDisk).length, 0);
+  });
+});
+
 Deno.test("LockfileRepository.removeEntry: missing key is a no-op", async () => {
   await withTempDir(async (dir) => {
     const path = join(dir, "upstream_extensions.json");
@@ -185,17 +203,28 @@ Deno.test("LockfileRepository.removeEntry: missing key is a no-op", async () => 
   });
 });
 
-Deno.test("LockfileRepository: getAllEntries returns a defensive copy", async () => {
+Deno.test("LockfileRepository: getAllEntries returns a defensive deep copy", async () => {
   await withTempDir(async (dir) => {
     const path = join(dir, "upstream_extensions.json");
     const repo = await LockfileRepository.create(path);
-    await repo.writeEntry("@scope/foo", "1.0.0", []);
+    await repo.writeEntry("@scope/foo", "1.0.0", ["models/foo.ts"], {
+      include: ["dep.ts"],
+    });
 
     const map = repo.getAllEntries();
-    delete map["@scope/foo"];
 
-    // Repo's internal cache must not be affected by external mutation.
+    // Top-level key deletion must not affect the cache.
+    delete map["@scope/foo"];
     assertNotEquals(repo.getEntry("@scope/foo"), null);
+
+    // Nested array mutation must not affect the cache either —
+    // deep copy guards against `entries["@x/y"].files!.push(...)`
+    // patterns that a shallow copy would propagate.
+    const fresh = repo.getAllEntries();
+    fresh["@scope/foo"].files!.push("INJECTED");
+    fresh["@scope/foo"].include!.push("INJECTED");
+    assertEquals(repo.getEntry("@scope/foo")?.files, ["models/foo.ts"]);
+    assertEquals(repo.getEntry("@scope/foo")?.include, ["dep.ts"]);
   });
 });
 
@@ -221,6 +250,30 @@ Deno.test("LockfileRepository: concurrent writers all complete via acquireLock r
     for (let i = 0; i < N; i++) {
       assertEquals(onDisk[`@scope/ext${i}`].version, `${i}.0.0`);
     }
+  });
+});
+
+Deno.test("LockfileRepository: lock-acquisition exhaustion throws UserError (clean CLI message, not stack trace)", async () => {
+  await withTempDir(async (dir) => {
+    const path = join(dir, "upstream_extensions.json");
+    const lockPath = `${path}.lock`;
+
+    // Pre-create the lock file so every retry sees AlreadyExists.
+    // 10 retries × 100ms = ~1s before the writer gives up.
+    await Deno.writeTextFile(lockPath, "");
+
+    const repo = await LockfileRepository.create(path);
+    const error = await assertRejects(
+      () => repo.writeEntry("@scope/foo", "1.0.0", []),
+      UserError,
+      "Could not acquire lock on upstream_extensions.json",
+    );
+    // Top-level error_output renderer keys off `instanceof UserError` to
+    // emit a clean message rather than a stack trace; this assertion
+    // pins the contract.
+    assertEquals(error instanceof UserError, true);
+
+    await Deno.remove(lockPath);
   });
 });
 
