@@ -24,6 +24,7 @@ import { dataSearchCommand } from "./data_search.ts";
 import { dataVersionsCommand } from "./data_versions.ts";
 import { dataGcCommand } from "./data_gc.ts";
 import { dataRenameCommand } from "./data_rename.ts";
+import { dataDeleteCommand } from "./data_delete.ts";
 import { dataQueryCommand } from "./data_query.ts";
 
 export const dataCommand = new Command()
@@ -38,4 +39,5 @@ export const dataCommand = new Command()
   .command("query", dataQueryCommand)
   .command("versions", dataVersionsCommand)
   .command("gc", dataGcCommand)
-  .command("rename", dataRenameCommand);
+  .command("rename", dataRenameCommand)
+  .command("delete", dataDeleteCommand);

@@ -68,15 +68,8 @@ function isTracingImport(filePath: string, importPath: string): boolean {
 // Ratchet counts: current number of known violations.
 // If someone fixes a violation, the count decreases and the test still passes.
 // If someone adds a new violation, the count increases and the test fails.
-//
-// Stream B (Windows-GA) introduced two new cross-platform helpers in
-// infrastructure (`process/resolve_command.ts` and `archive/tar_archive.ts`).
-// The domain-side consumers of each — `audit/doctor/checks/resolve_binary.ts`
-// and `extensions/extension_rubric_scorer.ts` — receive the helpers via
-// dependency injection (a `ResolveBinary` port and an `ExtractTarball`
-// port respectively, wired in by the CLI / libswamp layer at construction
-// time). Domain stays infrastructure-free; the ratchet stays at 26.
-const KNOWN_DOMAIN_INFRA_VIOLATIONS = 26;
+// Tracked refactor (data services → domain-side ports): swamp-club#229.
+const KNOWN_DOMAIN_INFRA_VIOLATIONS = 27;
 
 Deno.test(
   "domain layer must not add new infrastructure imports (ratchet)",

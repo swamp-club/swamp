@@ -1,6 +1,6 @@
 ---
 name: swamp-data
-description: Manage swamp model data — list data artifacts, view version history, delete expired versions, and run garbage collection. Use when working with swamp model data lifecycle, retention policies, or version cleanup. Triggers on "swamp data", "model data", "data list", "data get", "data versions", "garbage collection", "gc", "data gc", "data retention", "data lifecycle", "version history", "data cleanup", "prune data", "expire data", "ephemeral data".
+description: Manage swamp model data — list data artifacts, view version history, delete data artifacts, and run garbage collection. Use when working with swamp model data lifecycle, retention policies, version cleanup, or removing specific data artifacts. Triggers on "swamp data", "model data", "data list", "data get", "data versions", "garbage collection", "gc", "data gc", "data retention", "data lifecycle", "version history", "data cleanup", "data delete", "delete data artifact", "remove data", "purge data", "prune data", "expire data", "ephemeral data".
 ---
 
 # Swamp Data Skill
@@ -55,6 +55,8 @@ of queryable fields and predicate operators.
 | View version history   | `swamp data versions <model> <name> --json`           |
 | Run garbage collection | `swamp data gc --json`                                |
 | Rename data instance   | `swamp data rename <model> <old> <new>`               |
+| Delete data artifact   | `swamp data delete <model> <name> --force`            |
+| Delete one version     | `swamp data delete <model> <name> --version 3`        |
 | Preview GC (dry run)   | `swamp data gc --dry-run --json`                      |
 
 See [references/concepts.md](references/concepts.md) for lifetime types, tags,
@@ -201,6 +203,52 @@ transparently resolves to the new name.
 **Important:** After renaming, update any workflows or models that produce data
 under the old name. If a model re-runs and writes to the old name, it will
 overwrite the forward reference.
+
+## Delete Data
+
+Permanently remove a data artifact from a model. The artifact identity is the
+`(model, name)` pair — `swamp data delete` operates on that pair, not on
+individual versions, unless `--version` is given.
+
+**When to delete:**
+
+- Re-running an `import` or `start` method that's blocked by an existing-state
+  guard (e.g., `[NP-E028]`) when you want a clean re-import
+- Removing data that was created in error
+- Cleaning up after a destructive change to an external resource
+
+**Default semantics:**
+
+- `swamp data delete <model> <name>` — deletes **all versions** of the artifact.
+  Prompts `[y/N]` with the exact version count before proceeding.
+- `swamp data delete <model> <name> --version 3` — deletes only that single
+  version. The artifact's other versions remain.
+- `swamp data delete <model> <name> --force` — skips the confirmation prompt.
+  Required in scripts, JSON mode, and any non-interactive context.
+
+**Errors are loud, not silent:**
+
+- Missing model → `Model not found: <ref>`
+- Missing artifact → `No data named "<name>" exists for model <model>`
+- Missing version →
+  `Version <V> does not exist for "<name>" (available
+  versions: 1, 2, 3)`
+
+```bash
+# Full-artifact delete with confirmation prompt
+swamp data delete my-server hetzner-state
+
+# Surgical single-version delete
+swamp data delete my-server hetzner-state --version 2
+
+# Non-interactive (scripts, automation)
+swamp data delete my-server hetzner-state --force --json
+```
+
+**Note on rename forwarders:** If `oldName → newName` was renamed, deleting
+`newName` leaves the tombstone on `oldName` forwarding to nothing. Lookups via
+the forwarded path will return null. Delete the tombstone explicitly with
+`swamp data delete <model> oldName` if you want a clean slate.
 
 ## Garbage Collection
 

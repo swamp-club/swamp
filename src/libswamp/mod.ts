@@ -829,6 +829,18 @@ export {
   type DataRenameInput,
 } from "./data/rename.ts";
 
+// Data delete operations
+export {
+  createDataDeleteDeps,
+  dataDelete,
+  type DataDeleteData,
+  type DataDeleteDeps,
+  type DataDeleteEvent,
+  type DataDeleteInput,
+  type DataDeletePreview,
+  dataDeletePreview,
+} from "./data/delete.ts";
+
 // Auth login operations
 export {
   authLogin,
