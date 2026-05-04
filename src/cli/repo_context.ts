@@ -25,7 +25,7 @@
  * - Throwing clear errors when not initialized
  */
 
-import { isAbsolute, join, relative, resolve } from "@std/path";
+import { isAbsolute, join, relative, resolve, SEPARATOR } from "@std/path";
 import type { OutputMode } from "../presentation/output/output.ts";
 import {
   createRepositoryContext,
@@ -69,7 +69,10 @@ import {
   resolveSyncTimeoutMs,
 } from "../domain/datastore/datastore_config.ts";
 import type { DatastoreProvider } from "../domain/datastore/datastore_provider.ts";
-import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
+import type {
+  DatastoreSyncService,
+  MarkDirtyHook,
+} from "../domain/datastore/datastore_sync_service.ts";
 import { datastoreTypeRegistry } from "../domain/datastore/datastore_type_registry.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import { withSpan } from "../infrastructure/tracing/mod.ts";
@@ -118,6 +121,32 @@ async function resolveCustomProvider(
     );
   }
   return typeInfo.createProvider(config.config);
+}
+
+/**
+ * Bridges a `DatastoreSyncService` into a `MarkDirtyHook` that repositories
+ * can call without knowing the cache root. Repositories pass the absolute
+ * path of the about-to-be-written file (or `undefined` for bulk mutations);
+ * the hook computes the cache-relative form and forwards it to the sync
+ * service via `DatastoreSyncOptions.relPath`.
+ *
+ * Path conversion: `relative(cacheRoot, absPath)` then forward-slash
+ * normalize. Forward-slash on the wire is the cross-platform key
+ * convention (matching `.datastore-index.json`); extensions consuming
+ * `relPath` for disk access on Windows convert back to native separators.
+ */
+function buildMarkDirtyHook(
+  syncService: DatastoreSyncService,
+  cacheRoot: string,
+): MarkDirtyHook {
+  return (absPath?: string) => {
+    if (absPath === undefined) {
+      return syncService.markDirty();
+    }
+    const rel = relative(cacheRoot, absPath);
+    const relPath = SEPARATOR === "/" ? rel : rel.split(SEPARATOR).join("/");
+    return syncService.markDirty({ relPath });
+  };
 }
 
 /**
@@ -434,7 +463,10 @@ export function requireInitializedRepo(
       yamlWorkflowsDir,
       vaultsDir,
       datastoreResolver,
-      markDirty: syncService ? () => syncService!.markDirty() : undefined,
+      markDirty: syncService && isCustomDatastoreConfig(datastoreConfig) &&
+          datastoreConfig.cachePath
+        ? buildMarkDirtyHook(syncService, datastoreConfig.cachePath)
+        : undefined,
       ...factoryConfig,
     });
 
@@ -563,7 +595,10 @@ export async function requireInitializedRepoUnlocked(
     yamlWorkflowsDir,
     vaultsDir,
     datastoreResolver,
-    markDirty: syncService ? () => syncService!.markDirty() : undefined,
+    markDirty: syncService && isCustomDatastoreConfig(datastoreConfig) &&
+        datastoreConfig.cachePath
+      ? buildMarkDirtyHook(syncService, datastoreConfig.cachePath)
+      : undefined,
     ...factoryConfig,
   });
 

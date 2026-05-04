@@ -38,6 +38,13 @@ export interface LockOperation {
 export interface SyncOperation {
   method: "pullChanged" | "pushChanged" | "markDirty";
   timestamp: number;
+  /**
+   * Cache-relative path forwarded by core on this call. Only set for
+   * `markDirty` calls when core attributes the dirty signal to a single
+   * path. Undefined for bulk `markDirty` calls and always undefined for
+   * `pullChanged`/`pushChanged`.
+   */
+  relPath?: string;
 }
 
 /** Options for creating a datastore test context. */
@@ -205,8 +212,12 @@ export function createDatastoreTestContext(
         syncOperations.push({ method: "pushChanged", timestamp: Date.now() });
         return Promise.resolve();
       },
-      markDirty(): Promise<void> {
-        syncOperations.push({ method: "markDirty", timestamp: Date.now() });
+      markDirty(options?: { relPath?: string }): Promise<void> {
+        syncOperations.push({
+          method: "markDirty",
+          timestamp: Date.now(),
+          relPath: options?.relPath,
+        });
         return Promise.resolve();
       },
     }

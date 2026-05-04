@@ -70,7 +70,12 @@ function _checkDatastoreSyncServiceFields(sync: TestingDatastoreSyncService) {
     .pushChanged();
   const _markDirty: ReturnType<CanonicalDatastoreSyncService["markDirty"]> =
     sync.markDirty();
-  void [_pull, _push, _markDirty];
+  // Verify the optional relPath member on DatastoreSyncOptions type-checks
+  // through both the canonical and testing-package signatures.
+  const _markDirtyWithRelPath: ReturnType<
+    CanonicalDatastoreSyncService["markDirty"]
+  > = sync.markDirty({ relPath: "data/foo/v1/raw" });
+  void [_pull, _push, _markDirty, _markDirtyWithRelPath];
 }
 
 // DatastoreProvider: verify methods exist and return compatible types.

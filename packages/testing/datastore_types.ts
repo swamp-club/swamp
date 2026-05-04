@@ -69,6 +69,15 @@ export interface DatastoreVerifier {
 /** Options accepted by sync service methods. */
 export interface DatastoreSyncOptions {
   signal?: AbortSignal;
+  /**
+   * Cache-relative path of the file about to be written or removed.
+   * swamp core only sets this on `markDirty` calls; the field has no
+   * defined meaning on `pullChanged` or `pushChanged`. Path is
+   * forward-slash-normalized; extensions consuming it for disk access
+   * on Windows must convert to native separators. See the canonical
+   * `DatastoreSyncService.markDirty` JSDoc for the full contract.
+   */
+  relPath?: string;
 }
 
 /** Interface for datastore synchronization services. */

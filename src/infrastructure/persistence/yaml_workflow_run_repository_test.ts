@@ -396,11 +396,11 @@ Deno.test("YamlWorkflowRunRepository.deleteAllByWorkflowId does not affect other
   });
 });
 
-Deno.test("YamlWorkflowRunRepository invokes markDirty on mutations", async () => {
+Deno.test("YamlWorkflowRunRepository invokes markDirty with relPath on mutations", async () => {
   await withTempDir(async (dir) => {
-    const calls: string[] = [];
-    const markDirty = () => {
-      calls.push("markDirty");
+    const calls: Array<string | undefined> = [];
+    const markDirty = (relPath?: string) => {
+      calls.push(relPath);
       return Promise.resolve();
     };
     const repo = new YamlWorkflowRunRepository(
@@ -414,15 +414,19 @@ Deno.test("YamlWorkflowRunRepository invokes markDirty on mutations", async () =
     const run = WorkflowRun.create(workflow);
     run.start();
 
+    // save → per-run yaml path
     await repo.save(workflow.id, run);
     assertEquals(calls.length, 1);
+    assertEquals(calls[0], repo.getPath(workflow.id, run.id));
 
     await repo.findById(workflow.id, run.id);
     await repo.findAllByWorkflowId(workflow.id);
     assertEquals(calls.length, 1);
 
+    // deleteAllByWorkflowId → bulk (whole runs directory removed)
     await repo.deleteAllByWorkflowId(workflow.id);
     assertEquals(calls.length, 2);
+    assertEquals(calls[1], undefined);
 
     // deleteAllByWorkflowId on an empty workflow is a no-op and must not
     // notify — nothing was written or removed.

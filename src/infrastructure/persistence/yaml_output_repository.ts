@@ -58,8 +58,8 @@ export class YamlOutputRepository implements OutputRepository {
     this.baseDir = baseDir ?? swampPath(repoDir, SWAMP_SUBDIRS.outputs);
   }
 
-  private async notifyDirty(): Promise<void> {
-    if (this.markDirty) await this.markDirty();
+  private async notifyDirty(relPath?: string): Promise<void> {
+    if (this.markDirty) await this.markDirty(relPath);
   }
 
   async findById(
@@ -175,13 +175,12 @@ export class YamlOutputRepository implements OutputRepository {
     method: string,
     output: ModelOutput,
   ): Promise<void> {
-    await this.notifyDirty();
+    const path = this.getPath(type, method, output);
+    await this.notifyDirty(path);
 
     const dir = this.getMethodDir(type, method);
     await assertSafePath(dir, this.baseDir);
     await ensureDir(dir);
-
-    const path = this.getPath(type, method, output);
     const data = output.toData();
     // Convert logFile to relative path for storage
     if (data.logFile) {
@@ -198,9 +197,11 @@ export class YamlOutputRepository implements OutputRepository {
     method: string,
     id: ModelOutputId,
   ): Promise<void> {
-    await this.notifyDirty();
-
-    // We need to find the file first since filename includes timestamp
+    // We need to find the file first since filename includes timestamp.
+    // Notify per-path inside the loop once the match is found, before
+    // the Deno.remove — same crash-safety as the unconditional pre-write
+    // notify. When no match is found, nothing is removed and no signal
+    // is needed.
     const dir = this.getMethodDir(type, method);
     try {
       for await (const entry of Deno.readDir(dir)) {
@@ -209,6 +210,7 @@ export class YamlOutputRepository implements OutputRepository {
           const content = await Deno.readTextFile(path);
           const data = parseYaml(content) as ModelOutputData;
           if (data.id === id) {
+            await this.notifyDirty(path);
             await Deno.remove(path);
 
             // Clean up empty parent directories

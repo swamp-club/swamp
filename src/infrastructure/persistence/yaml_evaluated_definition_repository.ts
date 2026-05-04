@@ -55,8 +55,8 @@ export class YamlEvaluatedDefinitionRepository {
       swampPath(repoDir, SWAMP_SUBDIRS.definitionsEvaluated);
   }
 
-  private async notifyDirty(): Promise<void> {
-    if (this.markDirty) await this.markDirty();
+  private async notifyDirty(relPath?: string): Promise<void> {
+    if (this.markDirty) await this.markDirty(relPath);
   }
 
   /**
@@ -240,13 +240,12 @@ export class YamlEvaluatedDefinitionRepository {
    * @param definition - The evaluated definition to save
    */
   async save(type: ModelType, definition: Definition): Promise<void> {
-    await this.notifyDirty();
+    const path = this.getPath(type, definition.id);
+    await this.notifyDirty(path);
 
     const dir = this.getTypeDir(type);
     await assertSafePath(dir, this.baseDir);
     await ensureDir(dir);
-
-    const path = this.getPath(type, definition.id);
 
     const data = definition.toData();
     // Ensure type metadata is always present in persisted YAML
@@ -267,9 +266,8 @@ export class YamlEvaluatedDefinitionRepository {
    * @param id - The definition ID
    */
   async delete(type: ModelType, id: DefinitionId): Promise<void> {
-    await this.notifyDirty();
-
     const path = this.getPath(type, id);
+    await this.notifyDirty(path);
 
     try {
       await Deno.remove(path);

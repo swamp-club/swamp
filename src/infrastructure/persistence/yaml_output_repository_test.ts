@@ -371,11 +371,11 @@ Deno.test("YamlOutputRepository.getPath uses correct format", () => {
   assertPathStringIncludes(path, ".yaml");
 });
 
-Deno.test("YamlOutputRepository invokes markDirty on mutations", async () => {
+Deno.test("YamlOutputRepository invokes markDirty with relPath on mutations", async () => {
   await withTempDir(async (dir) => {
-    const calls: string[] = [];
-    const markDirty = () => {
-      calls.push("markDirty");
+    const calls: Array<string | undefined> = [];
+    const markDirty = (relPath?: string) => {
+      calls.push(relPath);
       return Promise.resolve();
     };
     const repo = new YamlOutputRepository(dir, undefined, markDirty);
@@ -386,11 +386,15 @@ Deno.test("YamlOutputRepository invokes markDirty on mutations", async () => {
       provenance: defaultProvenance,
     });
 
+    const expectedPath = repo.getPath(testType, "create", output);
+
     await repo.save(testType, "create", output);
     assertEquals(calls.length, 1);
+    assertEquals(calls[0], expectedPath);
 
     await repo.delete(testType, "create", output.id);
     assertEquals(calls.length, 2);
+    assertEquals(calls[1], expectedPath);
 
     // Reads do not notify.
     await repo.findAll(testType);

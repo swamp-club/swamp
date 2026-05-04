@@ -316,20 +316,85 @@ the fast path's local-dirty flag would stay `false` and the next `pushChanged`
 would short-circuit past real work.
 
 The `markDirty()` method on `DatastoreSyncService` is the contract that closes
-this gap:
+this gap. The signature accepts an options bag with an optional `relPath` so
+extensions tracking per-path dirty state can record exactly which path
+changed instead of only flipping a single global bit:
 
-- **Extension obligation.** Any sync service that caches a clean/dirty
-  watermark MUST flip it to dirty in `markDirty()` — same primitive as the
-  internal `pushFile`-equivalent. Sync services without a fast path MAY
-  no-op. `markDirty()` must be idempotent and cheap (not deduplicated by
-  core).
-- **Core obligation.** Repositories writing into the cache call `markDirty()`
-  at the start of every public mutation method (`save`, `append`, `delete`,
-  `rename`, `allocateVersion`, `finalizeVersion`, `removeLatestMarker`,
-  non-dry-run `collectGarbage`, and the equivalents on the three yaml
-  repositories). The call happens **before** any write begins so a crash
-  mid-write leaves the watermark dirty — `markDirty()` then slow-walk is
-  always recoverable; a lost dirty-flip is not.
+```typescript
+markDirty(options?: DatastoreSyncOptions): Promise<void>;
+
+interface DatastoreSyncOptions {
+  signal?: AbortSignal;
+  /** Cache-relative path of the file about to be written or removed. */
+  relPath?: string;
+}
+```
+
+The contract is eight load-bearing rules:
+
+1. **Pre-write timing.** `markDirty` fires *before* the cache write begins.
+   Extensions MUST NOT act synchronously on `relPath` — the file isn't on
+   disk yet. Treat `relPath` as a hint to record for the next `pushChanged`.
+2. **Absence-on-disk = delete.** When `pushChanged` later consumes a
+   recorded `relPath` and the file no longer exists in the cache, the
+   extension SHOULD delete the corresponding remote record. This collapses
+   create/update/delete into one signal — no separate op-kind needed.
+3. **`undefined` `relPath` = bulk.** A call without `relPath` signals a
+   mutation core couldn't attribute to a single path (e.g. `rename`,
+   non-dry-run `collectGarbage`, `deleteAllByWorkflowId`, `clearAll`).
+   Extensions maintaining a per-path dirty set MUST honor this by either
+   invalidating the set or flagging the next `pushChanged` for a full
+   walk.
+4. **Process restart loses the set.** Extensions holding the dirty set in
+   memory MUST fall back to a full walk on the first `pushChanged` after
+   process start. Persisting the set to a sidecar is allowed but optional.
+5. **`relPath` is cache-relative + forward-slash.** Relative to the
+   directory returned by `DatastoreProvider.resolveCachePath`, with
+   forward-slash separators on the wire regardless of host OS — matching
+   the `.datastore-index.json` key convention. **Extensions consuming
+   `relPath` for disk access on Windows MUST convert to native separators**
+   (e.g. via `@std/path` `join`) before `Deno.stat`/`Deno.readFile`/etc.
+6. **Backward compatibility.** `relPath` is optional. Existing
+   implementations (`@swamp/s3-datastore`, `@swamp/gcs-datastore`,
+   filesystem no-op, every test mock) keep working unchanged because the
+   old single-watermark pattern still satisfies the contract — any
+   `markDirty` call still flips the dirty flag.
+7. **Field scope.** swamp core only sets `relPath` on `markDirty` calls.
+   The field has no defined meaning on `pullChanged` or `pushChanged`
+   (it lives on the shared `DatastoreSyncOptions` for source
+   compatibility, not because pull/push consume it).
+8. **Bulk overrides per-path within one operation.** Some core mutations
+   emit a bulk signal AND one or more per-path signals from the same
+   logical operation — `rename` is the canonical example: the upfront
+   `markDirty()` call has no `relPath` (bulk, for the tombstone +
+   latest-marker writes that don't decompose), and the inner `save()` of
+   the new name then emits a per-path signal. Extensions MUST treat any
+   bulk signal as overriding per-path signals from the same operation.
+   Easiest implementation: keep both a `bulkInvalidated: boolean` flag
+   and the dirty set; in `pushChanged`, fall back to a full walk when
+   `bulkInvalidated` is true regardless of the set's contents.
+
+**Core obligation.** Repositories writing into the cache call the dirty
+hook at the start of every public mutation method (`save`, `append`,
+`delete`, `rename`, `allocateVersion`, `finalizeVersion`,
+`removeLatestMarker`, non-dry-run `collectGarbage`, and the equivalents
+on the three yaml repositories). The call happens **before** any write
+begins so a crash mid-write leaves the watermark dirty —
+markDirty-then-slow-walk is always recoverable; a lost dirty-flip is not.
+
+**Per-call granularity emitted by core.**
+
+| Method                                     | `relPath`                                                       |
+| ------------------------------------------ | --------------------------------------------------------------- |
+| `save`, `append`, `allocateVersion`        | data-name directory (version not yet allocated at notify time)  |
+| `removeLatestMarker`                       | data-name directory                                              |
+| `delete(version=specific)`                 | version directory                                                |
+| `delete(version=undefined)`                | data-name directory (entire subtree removed)                     |
+| `finalizeVersion`                          | version directory (version known)                                |
+| `rename`                                   | `undefined` (bulk; inner `save()` emits its own per-path signal) |
+| `collectGarbage` (non-dry-run)             | `undefined` (bulk)                                               |
+| Yaml repos: `save`, `delete`               | per-yaml file path                                               |
+| `deleteAllByWorkflowId`, `clearAll`        | `undefined` (bulk)                                               |
 
 Filesystem datastores have no fast path and wire no sync service, so the
 markDirty plumbing is a no-op for them.

@@ -722,3 +722,122 @@ Deno.test("requireInitializedRepo - default behavior still triggers coordinator 
     await flushDatastoreSync();
   });
 });
+
+Deno.test(
+  "requireInitializedRepo - wiring forwards forward-slash cache-relative relPath to markDirty",
+  async () => {
+    // End-to-end integration: a repository write under `requireInitializedRepo`
+    // should reach the sync service's `markDirty` with `options.relPath` set
+    // to a forward-slash cache-relative string. Pins the cacheRoot→relPath
+    // conversion in `buildMarkDirtyHook`. Uses a relPath that contains a
+    // directory separator so a regression that drops forward-slash
+    // normalization fails on the Windows CI runner.
+    const { datastoreTypeRegistry } = await import(
+      "../domain/datastore/datastore_type_registry.ts"
+    );
+    const { Data } = await import("../domain/data/data.ts");
+    const { ModelType } = await import("../domain/models/model_type.ts");
+
+    const typeName = "test-markdirty-relpath";
+    const markDirtyCalls: Array<{ relPath?: string }> = [];
+
+    if (!datastoreTypeRegistry.has(typeName)) {
+      datastoreTypeRegistry.register({
+        type: typeName,
+        name: "Test markDirty relPath wiring",
+        description: "Captures markDirty options to assert relPath threading",
+        isBuiltIn: false,
+        createProvider: () => ({
+          createLock: () => ({
+            acquire: () => Promise.resolve(),
+            release: () => Promise.resolve(),
+            withLock: <T>(fn: () => Promise<T>) => fn(),
+            inspect: () => Promise.resolve(null),
+            forceRelease: () => Promise.resolve(true),
+          }),
+          createVerifier: () => ({
+            verify: () =>
+              Promise.resolve({
+                healthy: true,
+                message: "ok",
+                latencyMs: 1,
+                datastoreType: typeName,
+              }),
+          }),
+          resolveDatastorePath: (repoDir: string) => `${repoDir}/.test-store`,
+          resolveCachePath: (repoDir: string) => `${repoDir}/.test-cache`,
+          createSyncService: () => ({
+            pullChanged: () => Promise.resolve(0),
+            pushChanged: () => Promise.resolve(0),
+            markDirty: (options?: { relPath?: string }) => {
+              markDirtyCalls.push({ relPath: options?.relPath });
+              return Promise.resolve();
+            },
+          }),
+        }),
+      });
+    }
+
+    await withTempDir(async (dir) => {
+      await initializeRepo(dir);
+      await configureExtensionDatastore(dir, typeName);
+
+      markDirtyCalls.length = 0;
+
+      const repo = await requireInitializedRepo({
+        repoDir: dir,
+        outputMode: "json",
+        skipImplicitSync: true,
+      });
+
+      const testType = ModelType.create("test/relpath");
+      const data = Data.create({
+        name: "wiring-probe",
+        contentType: "text/plain",
+        lifetime: "infinite",
+        garbageCollection: 100,
+        tags: { type: "test" },
+        ownerDefinition: {
+          ownerType: "manual",
+          ownerRef: "test-user",
+        },
+      });
+
+      await repo.repoContext.unifiedDataRepo.save(
+        testType,
+        "model-x",
+        data,
+        new TextEncoder().encode("payload"),
+      );
+
+      // save fires one markDirty call with the data-name directory as relPath.
+      assertEquals(markDirtyCalls.length, 1);
+      const relPath = markDirtyCalls[0].relPath;
+      if (relPath === undefined) {
+        throw new Error("expected relPath to be set");
+      }
+      // Forward-slash normalized — the data-name directory under the cache
+      // root contains at least one separator (data/<type>/.../wiring-probe).
+      if (relPath.includes("\\")) {
+        throw new Error(
+          `relPath must be forward-slash normalized, got: ${relPath}`,
+        );
+      }
+      // Cache-relative — must not start with the cache root or be absolute.
+      if (relPath.startsWith("/") || relPath.includes(":")) {
+        throw new Error(
+          `relPath must be cache-relative, got: ${relPath}`,
+        );
+      }
+      // Must contain at least one separator (data-name dir lives under
+      // data/.../<dataName>) so the normalization is exercised.
+      if (!relPath.includes("/")) {
+        throw new Error(
+          `relPath must contain a separator to exercise normalization, got: ${relPath}`,
+        );
+      }
+
+      await flushDatastoreSync();
+    });
+  },
+);

@@ -7,6 +7,7 @@ A simple local filesystem variant that stores data in a custom directory:
 ```typescript
 // extensions/datastores/custom-fs/mod.ts
 import { z } from "npm:zod@4";
+import { join } from "@std/path";
 
 const ConfigSchema = z.object({
   basePath: z.string().describe("Base directory for data storage"),
@@ -235,24 +236,72 @@ export const datastore = {
         },
       }),
 
-      // Sync service for pull/push operations
-      createSyncService: (_repoDir: string, cachePath: string) => ({
-        pullChanged: async () => {
-          // Download changed files from remote to cachePath
-          console.log(`Pulling from ${parsed.endpoint} to ${cachePath}`);
-        },
-        pushChanged: async () => {
-          // Upload changed files from cachePath to remote
-          console.log(`Pushing from ${cachePath} to ${parsed.endpoint}`);
-        },
-        markDirty: () => {
-          // Swamp core calls this before every cache write. If your
-          // pushChanged walks the cache unconditionally, there's nothing
-          // to invalidate — no-op. If you add a clean/dirty sidecar
-          // (fast-path pattern in design/datastores.md), flip it here.
-          return Promise.resolve();
-        },
-      }),
+      // Sync service for pull/push operations.
+      //
+      // The pattern below shows the per-key fast path enabled by
+      // markDirty's options.relPath: maintain a Set<string> of dirty
+      // relPaths plus a bulkInvalidated boolean. pushChanged consumes
+      // the set when bulkInvalidated is false, doing exactly the work
+      // core attributed; otherwise it falls back to a full walk. See
+      // `design/datastores.md` "markDirty() contract" for the eight
+      // load-bearing rules — pre-write timing, absence-on-disk = delete,
+      // restart-loses-set, etc.
+      //
+      // For a no-op fallback (always do a full walk on every push),
+      // delete the dirty set and just `return Promise.resolve()` from
+      // markDirty.
+      createSyncService: (_repoDir: string, cachePath: string) => {
+        const dirty = new Set<string>();
+        let bulkInvalidated = false;
+
+        return {
+          pullChanged: async () => {
+            // Download changed files from remote to cachePath
+            console.log(`Pulling from ${parsed.endpoint} to ${cachePath}`);
+          },
+          pushChanged: async () => {
+            if (bulkInvalidated || dirty.size === 0) {
+              // Full walk path — bulk signal arrived, or nothing recorded
+              // (e.g. fresh process — see rule 4: "process restart loses
+              // the set; first pushChanged after start does a full walk").
+              console.log(`Full-walk push from ${cachePath}`);
+            } else {
+              for (const relPath of dirty) {
+                // Wire format is forward-slash; convert to native path
+                // before disk access (rule 5).
+                const absPath = join(cachePath, ...relPath.split("/"));
+                try {
+                  await Deno.stat(absPath);
+                  // upsert remote record for relPath (file exists)
+                } catch (err) {
+                  if (err instanceof Deno.errors.NotFound) {
+                    // delete remote record (absence-on-disk = delete,
+                    // rule 2 — collapses create/update/delete into one
+                    // signal, no op-kind param needed).
+                  } else throw err;
+                }
+              }
+            }
+            dirty.clear();
+            bulkInvalidated = false;
+          },
+          markDirty: ({ relPath } = {}) => {
+            // Pre-write timing (rule 1): the file isn't on disk yet.
+            // We only RECORD the path; the upload happens later in
+            // pushChanged.
+            if (relPath !== undefined) {
+              dirty.add(relPath);
+            } else {
+              // undefined = bulk (rule 3). Some core mutations also
+              // emit a bulk + per-path pair from one operation
+              // (rule 8) — bulk overrides any per-path entries we may
+              // have recorded for the same operation.
+              bulkInvalidated = true;
+            }
+            return Promise.resolve();
+          },
+        };
+      },
 
       resolveDatastorePath: (repoDir: string) => {
         // For remote datastores, return the cache path

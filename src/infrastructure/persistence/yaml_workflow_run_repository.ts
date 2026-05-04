@@ -64,8 +64,8 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     this.baseDir = baseDir ?? swampPath(repoDir, SWAMP_SUBDIRS.workflowRuns);
   }
 
-  private async notifyDirty(): Promise<void> {
-    if (this.markDirty) await this.markDirty();
+  private async notifyDirty(relPath?: string): Promise<void> {
+    if (this.markDirty) await this.markDirty(relPath);
   }
 
   async findById(
@@ -181,13 +181,12 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   }
 
   async save(workflowId: WorkflowId, run: WorkflowRun): Promise<void> {
-    await this.notifyDirty();
+    const path = this.getPath(workflowId, run.id);
+    await this.notifyDirty(path);
 
     const dir = this.getRunsDir(workflowId);
     await assertSafePath(dir, this.baseDir);
     await ensureDir(dir);
-
-    const path = this.getPath(workflowId, run.id);
 
     // Get the previous status to detect state changes
     let previousStatus: string | undefined;

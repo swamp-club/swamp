@@ -163,34 +163,51 @@ Optional interface for remote datastore synchronization.
 
 ```typescript
 interface DatastoreSyncService {
-  pullChanged(): Promise<void>;
-  pushChanged(): Promise<void>;
-  markDirty(): Promise<void>;
+  pullChanged(options?: DatastoreSyncOptions): Promise<number | void>;
+  pushChanged(options?: DatastoreSyncOptions): Promise<number | void>;
+  markDirty(options?: DatastoreSyncOptions): Promise<void>;
+}
+
+interface DatastoreSyncOptions {
+  signal?: AbortSignal;
+  /** Cache-relative path of the file about to be written or removed. */
+  relPath?: string;
 }
 ```
 
-### `pullChanged()`
+### `pullChanged(options?)`
 
 Pull changed files from the remote datastore to the local cache. Called before
-read/write operations on remote datastores.
+read/write operations on remote datastores. `options.relPath` has no defined
+meaning here — core only sets it on `markDirty`.
 
-### `pushChanged()`
+### `pushChanged(options?)`
 
 Push changed files from the local cache to the remote datastore. Called after
-write operations complete.
+write operations complete. `options.relPath` has no defined meaning here — core
+only sets it on `markDirty`.
 
-### `markDirty()`
+### `markDirty(options?)`
 
 Signal that the local cache has uncommitted work. Swamp core calls this at the
 start of every repository-layer mutation that writes into the cache (e.g.
 `save`, `delete`, `rename`), **before** the write begins — a crash mid-write
 still leaves the watermark dirty.
 
-The method only matters for implementations that maintain a clean/dirty
-watermark to short-circuit zero-diff syncs (the recommended fast-path pattern —
-see `design/datastores.md`). Those implementations MUST flip the watermark to
-dirty here so the next `pushChanged` cannot skip past core's writes.
+When core can attribute the mutation to a single path, it sets `options.relPath`
+to a forward-slash cache-relative path. Bulk mutations (`rename`, non-dry-run
+`collectGarbage`, `deleteAllByWorkflowId`, `clearAll`) omit the field —
+extensions MUST treat absence as "fall back to full walk."
+
+The full eight-rule contract — pre-write timing, absence-on-disk = delete,
+`undefined` = bulk, restart-loses-set, cache-relative + forward-slash (consumers
+convert to native separators on Windows), backward compatibility, field scope,
+bulk-overrides-per-path-within-one-operation — is documented in
+`design/datastores.md` "markDirty() contract." Read that section before
+implementing per-path tracking.
+
 Implementations that unconditionally walk the cache on every `pushChanged` have
-nothing to invalidate and can return `Promise.resolve()`.
+nothing to invalidate and can return `Promise.resolve()` — fully backward
+compatible.
 
 `markDirty()` must be idempotent and cheap — core does not deduplicate calls.

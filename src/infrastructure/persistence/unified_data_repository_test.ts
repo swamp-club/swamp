@@ -556,16 +556,22 @@ Deno.test("findAllForModelSync returns empty for missing model", () => {
 
 // Pins the markDirty contract from design/datastores.md: every public mutation
 // that writes into the cache must call the sync service's markDirty hook before
-// the write begins, so the fast-path sidecar cannot short-circuit past it.
+// the write begins, so the fast-path sidecar cannot short-circuit past it. Also
+// pins the per-call relPath granularity — pre-write notify sites (save, append,
+// allocateVersion) pass the data-name directory because the version directory
+// doesn't exist yet; finalizeVersion passes the version directory; delete
+// passes the version dir or data-name dir based on whether a version was
+// supplied; rename and collectGarbage pass undefined (bulk).
+//
 // Regression coverage for the datastore fast-path contract violation that
 // silently lost writes when the sidecar stayed clean.
 Deno.test("mutations call markDirty before writing", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
     const catalogStore = new CatalogStore(join(tmpDir, "_catalog.db"));
-    const calls: string[] = [];
-    const markDirty = () => {
-      calls.push("markDirty");
+    const calls: Array<string | undefined> = [];
+    const markDirty = (relPath?: string) => {
+      calls.push(relPath);
       return Promise.resolve();
     };
     const repo = new FileSystemUnifiedDataRepository(
@@ -575,7 +581,7 @@ Deno.test("mutations call markDirty before writing", async () => {
       markDirty,
     );
 
-    // save
+    // save → data-name directory (version not yet allocated)
     const data = makeData("mark-dirty-save");
     await repo.save(
       testType,
@@ -584,8 +590,12 @@ Deno.test("mutations call markDirty before writing", async () => {
       new TextEncoder().encode("hello"),
     );
     assertEquals(calls.length, 1);
+    assertEquals(
+      calls[0],
+      repo.getDataNameDir(testType, "model-1", "mark-dirty-save"),
+    );
 
-    // allocateVersion + finalizeVersion
+    // allocateVersion → data-name directory; finalizeVersion → version dir
     const data2 = makeData("mark-dirty-alloc");
     const { version, contentPath } = await repo.allocateVersion(
       testType,
@@ -593,30 +603,91 @@ Deno.test("mutations call markDirty before writing", async () => {
       data2,
     );
     assertEquals(calls.length, 2);
+    assertEquals(
+      calls[1],
+      repo.getDataNameDir(testType, "model-1", "mark-dirty-alloc"),
+    );
     await Deno.writeFile(contentPath, new TextEncoder().encode("direct"));
     await repo.finalizeVersion(testType, "model-1", data2, version);
     assertEquals(calls.length, 3);
+    assertEquals(
+      calls[2],
+      repo.getPath(testType, "model-1", "mark-dirty-alloc", version),
+    );
 
-    // rename
+    // append → data-name directory (matches save/allocateVersion granularity).
+    // notifyDirty fires before the streaming-configured check throws, so the
+    // signal lands even though the operation aborts. Tolerate the throw.
+    try {
+      await repo.append(
+        testType,
+        "model-1",
+        "mark-dirty-save",
+        new TextEncoder().encode("more"),
+      );
+    } catch {
+      // Expected — mark-dirty-save isn't streaming-configured.
+    }
+    assertEquals(calls.length, 4);
+    assertEquals(
+      calls[3],
+      repo.getDataNameDir(testType, "model-1", "mark-dirty-save"),
+    );
+    const afterAppend = calls.length;
+
+    // rename → bulk (undefined) at entry. Internal save() emits a per-path
+    // signal for the new name. Rule 8: bulk must arrive first within the
+    // operation so extensions can correctly fall back to a full walk.
     await repo.rename(testType, "model-1", "mark-dirty-save", "mark-dirty-ren");
-    // rename calls markDirty once at entry + once per internal save()
-    // (the new-name save). Both are cache writes, so both signals are
-    // legitimate. Pin ≥ 4 to assert at-least-once-per-mutation without
-    // overspecifying internal call count.
-    if (calls.length < 4) {
+    if (calls.length < afterAppend + 2) {
       throw new Error(`rename did not call markDirty: ${calls.length}`);
+    }
+    assertEquals(
+      calls[afterAppend],
+      undefined,
+      "rename's first markDirty call must be bulk (undefined relPath) — rule 8",
+    );
+    // The inner save() emits a per-path signal for the new name. Verify by
+    // looking for the new-name data-name directory in the subsequent calls.
+    const renameTail = calls.slice(afterAppend + 1);
+    const expectedRenameInner = repo.getDataNameDir(
+      testType,
+      "model-1",
+      "mark-dirty-ren",
+    );
+    if (!renameTail.some((c) => c === expectedRenameInner)) {
+      throw new Error(
+        `rename's inner save() did not emit per-path signal for new name: ${
+          JSON.stringify(renameTail)
+        }`,
+      );
     }
     const afterRename = calls.length;
 
-    // delete (specific version then all)
+    // delete with specific version → version directory
     await repo.delete(testType, "model-1", "mark-dirty-ren", 1);
     assertEquals(calls.length, afterRename + 1);
+    assertEquals(
+      calls[afterRename],
+      repo.getPath(testType, "model-1", "mark-dirty-ren", 1),
+    );
+
+    // delete without version → data-name directory (whole subtree)
     await repo.delete(testType, "model-1", "mark-dirty-ren");
     assertEquals(calls.length, afterRename + 2);
+    assertEquals(
+      calls[afterRename + 1],
+      repo.getDataNameDir(testType, "model-1", "mark-dirty-ren"),
+    );
 
-    // collectGarbage (live)
+    // collectGarbage (live) → bulk (undefined)
     await repo.collectGarbage(testType, "model-1");
     assertEquals(calls.length, afterRename + 3);
+    assertEquals(
+      calls[afterRename + 2],
+      undefined,
+      "collectGarbage must use bulk relPath",
+    );
 
     // collectGarbage (dry-run) must not notify — it does not touch the cache
     const before = calls.length;
