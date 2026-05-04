@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { dirname } from "@std/path";
+import { UserError } from "../../domain/errors.ts";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import {
   readUpstreamExtensions,
@@ -99,11 +100,14 @@ export class LockfileRepository {
   }
 
   /**
-   * Returns the cached entry map. Callers receive a defensive shallow
-   * copy so external mutation cannot corrupt the cache.
+   * Returns the cached entry map. Callers receive a defensive deep copy
+   * so external mutation — including pushing into nested `files[]` /
+   * `include[]` arrays — cannot corrupt the cache. `structuredClone`
+   * (in scope on Deno via the global) covers every value shape the
+   * lockfile carries today (strings, arrays of strings, booleans).
    */
   getAllEntries(): UpstreamExtensionsMap {
-    return { ...this.cache };
+    return structuredClone(this.cache);
   }
 
   /**
@@ -160,6 +164,13 @@ export class LockfileRepository {
    * the result, releases the lock, and updates this instance's cache.
    */
   async removeEntry(name: string): Promise<void> {
+    // Symmetric with writeEntry — defensive against callers who removed
+    // an extension in this process and the parent dir was cleaned up
+    // between then and now. In practice unreachable today (rm.ts only
+    // calls this after extensionRmPreview confirmed the entry exists,
+    // which read the lockfile successfully) but the asymmetry would
+    // surface as an unhelpful NotFound from acquireLock if it ever did.
+    await Deno.mkdir(dirname(this.lockfilePath), { recursive: true });
     const lockFile = await this.acquireLock();
     try {
       const current = await readUpstreamExtensions(this.lockfilePath);
@@ -189,14 +200,18 @@ export class LockfileRepository {
             await new Promise((r) => setTimeout(r, LOCK_RETRY_DELAY_MS));
             continue;
           }
-          throw new Error(
+          // UserError so the top-level handler renders the clean
+          // message instead of a stack trace — matches the pre-W2-prequel
+          // behavior in pull.ts (rm.ts threw plain Error; this
+          // consolidates on the better UX).
+          throw new UserError(
             "Could not acquire lock on upstream_extensions.json. Another operation may be in progress. Please retry.",
           );
         }
         throw error;
       }
     }
-    throw new Error(
+    throw new UserError(
       "Could not acquire lock on upstream_extensions.json.",
     );
   }
