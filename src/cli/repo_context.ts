@@ -56,6 +56,7 @@ import { summarizeSyncError } from "../infrastructure/persistence/sync_error_dia
 import { FileLock } from "../infrastructure/persistence/file_lock.ts";
 import {
   type DistributedLock,
+  type LockInfo,
   LockTimeoutError,
 } from "../domain/datastore/distributed_lock.ts";
 import {
@@ -675,6 +676,40 @@ export interface ModelLockResult {
   synced: boolean;
 }
 
+/**
+ * Best-effort delete of a stale global lock whose `info` was just observed.
+ *
+ * Without this, the wait loops in `acquireModelLocks` only `break` past a
+ * stale lock — the file remains on disk/in S3 and the post-acquire TOCTOU
+ * re-check immediately re-detects it, triggering an infinite recursive
+ * retry. Using the existing `forceRelease(expectedNonce)` breakglass
+ * primitive (defined on `DistributedLock` for exactly this purpose)
+ * actually clears the stale state so subsequent inspects return null.
+ *
+ * Failure modes are benign and intentionally swallowed:
+ *   - `info.nonce` missing (older lock format) — skip; the surrounding
+ *     wait-loop timeout still bounds the wait.
+ *   - `forceRelease` returns false (nonce changed: the holder
+ *     legitimately re-acquired or another process force-released first)
+ *     — the next inspect will see the new state and we re-loop.
+ *   - Backend transient error — same recovery; one extra loop iteration.
+ */
+async function tryForceReleaseStaleLock(
+  lock: DistributedLock,
+  info: LockInfo,
+): Promise<void> {
+  if (!info.nonce) return;
+  const logger = getSwampLogger(["datastore", "lock"]);
+  try {
+    await lock.forceRelease(info.nonce);
+  } catch (error) {
+    logger.debug(
+      "Best-effort forceRelease of stale global lock failed: {error}",
+      { error: error instanceof Error ? error.message : String(error) },
+    );
+  }
+}
+
 export async function acquireModelLocks(
   config: DatastoreConfig,
   models: Array<{ modelType: string; modelId: string }>,
@@ -733,6 +768,7 @@ export async function acquireModelLocks(
           "Global lock held by {holder} appears stale (exceeded TTL of {ttl}ms) — proceeding",
           { holder: info.holder, ttl: info.ttlMs },
         );
+        await tryForceReleaseStaleLock(globalLock, info);
         break;
       }
       // Hard timeout to prevent indefinite hangs
@@ -804,6 +840,7 @@ export async function acquireModelLocks(
             "Global lock held by {holder} appears stale (exceeded TTL of {ttl}ms) — proceeding",
             { holder: info.holder, ttl: info.ttlMs },
           );
+          await tryForceReleaseStaleLock(globalLock, info);
           break;
         }
         const retryElapsed = Date.now() - retryWaitStart;

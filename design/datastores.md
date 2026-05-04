@@ -391,8 +391,16 @@ interface DistributedLock {
   release(): Promise<void>;   // Release lock, stop heartbeat
   withLock<T>(fn: () => Promise<T>): Promise<T>;
   inspect(): Promise<LockInfo | null>;  // Read without acquiring
+  forceRelease(expectedNonce: string): Promise<boolean>;  // Breakglass delete
 }
 ```
+
+`forceRelease` re-verifies the lock's nonce immediately before deleting and
+returns `false` if the holder has changed, narrowing the TOCTOU window to
+the gap between that final read and the delete itself. It is the
+breakglass primitive used by `swamp datastore lock release --force` and
+by `acquireModelLocks` to clean up stale global locks observed during
+per-model lock acquisition (see "Lock Lifecycle" below).
 
 Lock metadata (`LockInfo`) is stored as JSON:
 
@@ -427,6 +435,14 @@ lifecycle as a global singleton:
 
 - `registerDatastoreSync({ service?, lock? })` — acquire lock, pull if S3
 - `flushDatastoreSync()` — push if S3, release lock
+
+Per-model commands (`model method run`, `workflow run`) acquire only
+per-model locks via `acquireModelLocks`; they do not acquire the global
+lock but do `inspect()` it to wait out any in-flight structural command.
+When a stale global lock is observed during this wait, `acquireModelLocks`
+calls `forceRelease(expectedNonce)` to clear it — without this, the
+post-acquire TOCTOU re-check would re-detect the same stale lock on every
+iteration and recurse indefinitely.
 
 A SIGINT handler ensures best-effort lock release on Ctrl-C. If the process
 crashes without releasing, the lock expires after the TTL (30 seconds by
