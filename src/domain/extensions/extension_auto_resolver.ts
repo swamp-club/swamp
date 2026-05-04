@@ -324,7 +324,7 @@ export class ExtensionAutoResolver {
     }
     searchTerms = searchTerms.replace(/\//g, " ");
 
-    logger.debug`Search fallback: q="${searchTerms}", collective=${collective}`;
+    logger.debug`Search fallback: q=${searchTerms}, collective=${collective}`;
 
     const result = await extensionLookup.searchExtensions({
       q: searchTerms,

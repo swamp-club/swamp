@@ -475,7 +475,7 @@ export class CelEvaluator {
       if (!this.warnedPatterns.has(expression)) {
         this.warnedPatterns.add(expression);
         getLogger(["expressions"])
-          .warn`Deprecated: expression "${expression}" uses model.*.resource or model.*.file which will be removed in a future release. Use data.latest() or data.version() instead.`;
+          .warn`Deprecated: expression ${expression} uses model.*.resource or model.*.file which will be removed in a future release. Use data.latest() or data.version() instead.`;
       }
     }
   }

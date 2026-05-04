@@ -31,11 +31,11 @@ class LogDataRenameRenderer implements Renderer<DataRenameEvent> {
       completed: (e) => {
         const data = e.data;
         logger
-          .info`Renamed "${data.oldName}" -> "${data.newName}" for ${data.modelName} (${data.modelType})`;
+          .info`Renamed ${data.oldName} -> ${data.newName} for ${data.modelName} (${data.modelType})`;
         logger
           .info`Version ${data.copiedVersion} copied as v${data.newVersion} under new name`;
         logger
-          .info`Old name "${data.oldName}" now forwards to "${data.newName}"`;
+          .info`Old name ${data.oldName} now forwards to ${data.newName}`;
         logger.warn`${data.warning}`;
       },
       error: (e) => {

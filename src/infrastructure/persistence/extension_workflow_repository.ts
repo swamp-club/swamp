@@ -86,7 +86,7 @@ export class ExtensionWorkflowRepository implements WorkflowRepository {
               ? parseError.message
               : String(parseError);
             logger
-              .warn`Skipping broken extension workflow "${entry.path}": ${errorMsg}`;
+              .warn`Skipping broken extension workflow ${entry.path}: ${errorMsg}`;
           }
         }
       } catch (error) {

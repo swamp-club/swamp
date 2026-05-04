@@ -32,10 +32,10 @@ class LogDataDeleteRenderer implements Renderer<DataDeleteEvent> {
         const data = e.data;
         if (data.version !== undefined) {
           logger
-            .info`Deleted version ${data.version} of "${data.dataName}" for ${data.modelName} (${data.modelType})`;
+            .info`Deleted version ${data.version} of ${data.dataName} for ${data.modelName} (${data.modelType})`;
         } else {
           logger
-            .info`Deleted ${data.versionsDeleted} version(s) of "${data.dataName}" for ${data.modelName} (${data.modelType})`;
+            .info`Deleted ${data.versionsDeleted} version(s) of ${data.dataName} for ${data.modelName} (${data.modelType})`;
         }
       },
       error: (e) => {

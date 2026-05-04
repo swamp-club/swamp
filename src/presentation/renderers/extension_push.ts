@@ -180,9 +180,9 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
   ): void {
     this.logger.error`Collective errors (push blocked):`;
     this.logger
-      .error`  All content must use collective "${expectedCollective}"`;
+      .error`  All content must use collective ${expectedCollective}`;
     for (const m of mismatches) {
-      this.logger.error`  ${m.kind}: "${m.identifier}" in ${m.fileName}`;
+      this.logger.error`  ${m.kind}: ${m.identifier} in ${m.fileName}`;
     }
   }
 

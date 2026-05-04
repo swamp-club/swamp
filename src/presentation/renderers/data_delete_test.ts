@@ -17,7 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertThrows } from "@std/assert";
+import {
+  assertEquals,
+  assertFalse,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import {
   createDataDeleteRenderer,
@@ -27,7 +32,11 @@ import type { DataDeleteEvent } from "../../libswamp/mod.ts";
 import { UserError } from "../../domain/errors.ts";
 import { validationFailed } from "../../libswamp/errors.ts";
 
-await initializeLogging({});
+// noColor: true selects LogTape's text formatter, which produces a single
+// pre-rendered string per record — necessary for captureLog to see the
+// formatted output (the default formatter passes %c/%o placeholders that
+// the terminal expands at write time, bypassing console.info mocks).
+await initializeLogging({ noColor: true });
 
 function captureStdout(fn: () => void): string {
   const originalLog = console.log;
@@ -45,37 +54,72 @@ function captureStdout(fn: () => void): string {
   return lines.join("\n");
 }
 
+// LogTape's console sink routes per-level (info → console.info,
+// warning → console.warn, error → console.error, etc.). Capture all
+// of them and strip ANSI for stable cross-terminal assertions.
+function captureLog(fn: () => void): string {
+  const lines: string[] = [];
+  const methods = ["log", "info", "warn", "error", "debug"] as const;
+  const originals = methods.map((m) => [m, console[m]] as const);
+  for (const [m] of originals) {
+    console[m] = (...args: unknown[]) => {
+      lines.push(
+        args.map((a) => typeof a === "string" ? a : String(a)).join(" "),
+      );
+    };
+  }
+  try {
+    fn();
+  } finally {
+    for (const [m, orig] of originals) {
+      console[m] = orig;
+    }
+  }
+  // deno-lint-ignore no-control-regex
+  return lines.join("\n").replace(/\x1b\[[0-9;]*m/g, "");
+}
+
 Deno.test("createDataDeleteRenderer: log mode handles full-artifact delete", () => {
   const renderer = createDataDeleteRenderer("log");
   const handlers = renderer.handlers();
-  // Should not throw — log mode routes through the logger.
-  handlers.completed!({
-    kind: "completed",
-    data: {
-      modelId: "def-1",
-      modelName: "my-model",
-      modelType: "test/example",
-      dataName: "my-data",
-      version: undefined,
-      versionsDeleted: 3,
-    },
-  });
+  const out = captureLog(() =>
+    handlers.completed!({
+      kind: "completed",
+      data: {
+        modelId: "def-1",
+        modelName: "my-model",
+        modelType: "test/example",
+        dataName: "my-data",
+        version: undefined,
+        versionsDeleted: 3,
+      },
+    })
+  );
+  // dataName must render with single-quote style (auto-quoted by LogTape),
+  // matching the modelName/modelType interpolations on the same line. The
+  // doubled-quote artifact (""my-data"") regresses issue swamp-club#230.
+  assertStringIncludes(out, 'of "my-data" for');
+  assertFalse(out.includes('""my-data""'), `regression: ${out}`);
 });
 
 Deno.test("createDataDeleteRenderer: log mode handles single-version delete", () => {
   const renderer = createDataDeleteRenderer("log");
   const handlers = renderer.handlers();
-  handlers.completed!({
-    kind: "completed",
-    data: {
-      modelId: "def-1",
-      modelName: "my-model",
-      modelType: "test/example",
-      dataName: "my-data",
-      version: 2,
-      versionsDeleted: 1,
-    },
-  });
+  const out = captureLog(() =>
+    handlers.completed!({
+      kind: "completed",
+      data: {
+        modelId: "def-1",
+        modelName: "my-model",
+        modelType: "test/example",
+        dataName: "my-data",
+        version: 2,
+        versionsDeleted: 1,
+      },
+    })
+  );
+  assertStringIncludes(out, 'of "my-data" for');
+  assertFalse(out.includes('""my-data""'), `regression: ${out}`);
 });
 
 Deno.test("createDataDeleteRenderer: json mode emits envelope for full delete", () => {

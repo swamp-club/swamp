@@ -640,7 +640,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       if (version === undefined && data.isRenamed && data.renamedTo) {
         if (depth >= 5) {
           logger
-            .warn`Rename chain depth exceeded for "${dataName}" (model ${modelId}). Data exists but is unreachable — simplify the rename chain.`;
+            .warn`Rename chain depth exceeded for ${dataName} (model ${modelId}). Data exists but is unreachable — simplify the rename chain.`;
           return null;
         }
         return this.findByNameWithDepth(
@@ -1148,7 +1148,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     } catch (tombstoneError) {
       // Roll back: remove the newly created data under the new name
       logger
-        .warn`Tombstone write failed during rename "${oldName}" -> "${newName}". Rolling back new data.`;
+        .warn`Tombstone write failed during rename ${oldName} -> ${newName}. Rolling back new data.`;
       try {
         const newVersionDir = this.getPath(
           type,
@@ -1170,7 +1170,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         }
       } catch (rollbackError) {
         logger
-          .error`Rollback also failed during rename "${oldName}" -> "${newName}": ${
+          .error`Rollback also failed during rename ${oldName} -> ${newName}: ${
           String(rollbackError)
         }. Manual cleanup may be needed.`;
       }
@@ -1367,7 +1367,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       if (version === undefined && data.isRenamed && data.renamedTo) {
         if (depth >= 5) {
           logger
-            .warn`Rename chain depth exceeded for "${dataName}" (model ${modelId}). Data exists but is unreachable — simplify the rename chain.`;
+            .warn`Rename chain depth exceeded for ${dataName} (model ${modelId}). Data exists but is unreachable — simplify the rename chain.`;
           return null;
         }
         return this.findByNameSyncWithDepth(

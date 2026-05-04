@@ -100,10 +100,10 @@ export class YamlWorkflowRepository implements WorkflowRepository {
 
             if (errorMsg.includes('type "shell" is no longer supported')) {
               logger
-                .warn`Skipping workflow "${workflowName}": uses deprecated 'shell' task. Delete or update to 'type: model_method' with 'command/shell'. File: ${path}`;
+                .warn`Skipping workflow ${workflowName}: uses deprecated 'shell' task. Delete or update to 'type: model_method' with 'command/shell'. File: ${path}`;
             } else {
               logger
-                .warn`Skipping broken workflow "${workflowName}": ${errorMsg}. File: ${path}`;
+                .warn`Skipping broken workflow ${workflowName}: ${errorMsg}. File: ${path}`;
             }
           }
         }

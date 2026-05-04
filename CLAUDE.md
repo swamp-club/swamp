@@ -51,6 +51,11 @@ authoritative guidelines for structure, frontmatter, and progressive disclosure.
   handled — unhandled promises race with `Deno.exit` and silently lose data. For
   outbound network calls, pass an `AbortSignal` with a timeout so the caller
   controls cancellation.
+- Interpolate values bare in LogTape tagged templates — let the formatter handle
+  quoting. Strings passed as `${value}` render as `"value"` in log output;
+  wrapping them in literal quotes (`"${value}"`) doubles the quotes to
+  `""value""`. Numbers and other primitives render unquoted, so a bare
+  `${count}` is correct in all cases.
 
 Changes should only touch what's necessary — don't refactor adjacent code that
 isn't part of the task. Keep the blast radius small.

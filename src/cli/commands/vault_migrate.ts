@@ -133,7 +133,7 @@ Both the source and target vaults must be different types.`,
 
     if (cliCtx.outputMode === "log") {
       logger
-        .info`Vault "${preview.vaultName}" (${preview.currentType}) has ${preview.secretCount} secret(s).`;
+        .info`Vault ${preview.vaultName} (${preview.currentType}) has ${preview.secretCount} secret(s).`;
       logger
         .info`Target: ${preview.targetTypeName} (${preview.targetType})`;
     }
