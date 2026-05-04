@@ -26,6 +26,7 @@ import {
 } from "./datastore_type_registry.ts";
 import { bundleNamespace } from "../../infrastructure/persistence/paths.ts";
 import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
+import { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
 import type { DenoRuntime } from "../runtime/deno_runtime.ts";
 
 /** Stub runtime that returns "deno" as the binary path. */
@@ -33,6 +34,18 @@ class StubDenoRuntime implements DenoRuntime {
   ensureDeno(): Promise<string> {
     return Promise.resolve("deno");
   }
+}
+
+/** W1b/(a-2): construct an ExtensionRepository wrapping a test catalog. */
+function makeRepoForCatalog(
+  catalog: ExtensionCatalogStore,
+  repoRoot: string,
+): ExtensionRepository {
+  return new ExtensionRepository({
+    catalog,
+    getLockedVersion: () => null,
+    repoRoot,
+  });
 }
 
 Deno.test("UserDatastoreLoader - returns empty result for nonexistent directory", async () => {
@@ -353,8 +366,14 @@ export const datastore = {
     await Deno.writeTextFile(sourcePath, v1);
 
     const catalog1 = new ExtensionCatalogStore(dbPath);
-    const loader1 = new UserDatastoreLoader(new StubDenoRuntime(), repoDir);
-    await loader1.buildIndex(datastoresDir, catalog1);
+
+    const repository1 = makeRepoForCatalog(catalog1, repoDir);
+    const loader1 = new UserDatastoreLoader(
+      new StubDenoRuntime(),
+      repoDir,
+      repository1,
+    );
+    await loader1.buildIndex(datastoresDir);
     catalog1.close();
 
     const ns = bundleNamespace(datastoresDir, repoDir);
@@ -384,8 +403,14 @@ export const datastore = {
     );
 
     const catalog2 = new ExtensionCatalogStore(dbPath);
-    const loader2 = new UserDatastoreLoader(new StubDenoRuntime(), repoDir);
-    await loader2.buildIndex(datastoresDir, catalog2);
+
+    const repository2 = makeRepoForCatalog(catalog2, repoDir);
+    const loader2 = new UserDatastoreLoader(
+      new StubDenoRuntime(),
+      repoDir,
+      repository2,
+    );
+    await loader2.buildIndex(datastoresDir);
     catalog2.close();
 
     const v2Bundle = await Deno.readTextFile(bundlePath);
@@ -438,8 +463,14 @@ export const datastore = {
     await Deno.writeTextFile(libPath, libV1);
 
     const catalog1 = new ExtensionCatalogStore(dbPath);
-    const loader1 = new UserDatastoreLoader(new StubDenoRuntime(), repoDir);
-    await loader1.buildIndex(datastoresDir, catalog1);
+
+    const repository1 = makeRepoForCatalog(catalog1, repoDir);
+    const loader1 = new UserDatastoreLoader(
+      new StubDenoRuntime(),
+      repoDir,
+      repository1,
+    );
+    await loader1.buildIndex(datastoresDir);
     catalog1.close();
 
     const ns = bundleNamespace(datastoresDir, repoDir);
@@ -463,8 +494,14 @@ export const datastore = {
     await Deno.utime(entryPath, entryMtime, entryMtime);
 
     const catalog2 = new ExtensionCatalogStore(dbPath);
-    const loader2 = new UserDatastoreLoader(new StubDenoRuntime(), repoDir);
-    await loader2.buildIndex(datastoresDir, catalog2);
+
+    const repository2 = makeRepoForCatalog(catalog2, repoDir);
+    const loader2 = new UserDatastoreLoader(
+      new StubDenoRuntime(),
+      repoDir,
+      repository2,
+    );
+    await loader2.buildIndex(datastoresDir);
     catalog2.close();
 
     const v2Bundle = await Deno.readTextFile(bundlePath);
@@ -510,8 +547,14 @@ export const datastore = {
     await Deno.writeTextFile(join(datastoresDir, "valid.ts"), validDatastore);
 
     const catalog = new ExtensionCatalogStore(dbPath);
-    const loader = new UserDatastoreLoader(new StubDenoRuntime(), repoDir);
-    await loader.buildIndex(datastoresDir, catalog);
+
+    const repository = makeRepoForCatalog(catalog, repoDir);
+    const loader = new UserDatastoreLoader(
+      new StubDenoRuntime(),
+      repoDir,
+      repository,
+    );
+    await loader.buildIndex(datastoresDir);
 
     catalog.upsert({
       source_path: join(datastoresDir, "broken.ts"),
@@ -523,11 +566,15 @@ export const datastore = {
       extends_type: "",
       source_mtime: "2026-05-01T12:00:00.000Z",
       source_fingerprint: "deadbeef-broken",
-      validation_failed: true,
+      // W1b: validation_failed dropped — state="ValidationFailed" is the signal.
     });
 
-    const loader2 = new UserDatastoreLoader(new StubDenoRuntime(), repoDir);
-    await loader2.buildIndex(datastoresDir, catalog);
+    const loader2 = new UserDatastoreLoader(
+      new StubDenoRuntime(),
+      repoDir,
+      repository,
+    );
+    await loader2.buildIndex(datastoresDir);
 
     assertEquals(
       datastoreTypeRegistry.has(`@test/issue209-ds-${ts}`),

@@ -48,10 +48,12 @@ import {
 import { assertSafePath } from "../../infrastructure/persistence/safe_path.ts";
 import { emitTypeExtractionFailure } from "../../infrastructure/logging/extension_load_warnings.ts";
 import {
+  BUNDLE_LAYOUT_VERSION,
   type ExtensionCatalogStore,
   type ExtensionTypeRow,
   sourceDirsFingerprint,
 } from "../../infrastructure/persistence/extension_catalog_store.ts";
+import type { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
 
 const logger = getLogger(["swamp", "datastores", "loader"]);
 
@@ -100,15 +102,32 @@ export interface DatastoreLoadResult {
 export class UserDatastoreLoader {
   private readonly denoRuntime: DenoRuntime;
   private readonly repoDir: string | null;
+  private readonly repository?: ExtensionRepository;
 
   /**
    * @param denoRuntime - Runtime manager for obtaining a deno binary path
    * @param repoDir - Repository root for writing bundles to .swamp/datastore-bundles/
    *                   (pass null to skip bundle caching)
+   * @param repository - W1b ExtensionRepository wrapping the catalog. Held
+   *                     as a long-lived field per ADV-V2-1 option (a-2).
    */
-  constructor(denoRuntime: DenoRuntime, repoDir: string | null = null) {
+  constructor(
+    denoRuntime: DenoRuntime,
+    repoDir: string | null = null,
+    repository?: ExtensionRepository,
+  ) {
     this.denoRuntime = denoRuntime;
     this.repoDir = repoDir;
+    this.repository = repository;
+  }
+
+  private requireRepository(method: string): ExtensionRepository {
+    if (!this.repository) {
+      throw new Error(
+        `UserDatastoreLoader.${method} requires an ExtensionRepository to be passed at construction time (W1b/(a-2) wiring).`,
+      );
+    }
+    return this.repository;
   }
 
   /**
@@ -384,30 +403,38 @@ export class UserDatastoreLoader {
    */
   async buildIndex(
     datastoresDir: string,
-    catalog: ExtensionCatalogStore,
     options?: { additionalDirs?: string[] },
   ): Promise<DatastoreLoadResult> {
+    const repository = this.requireRepository("buildIndex");
+    const catalog = repository.legacyStore;
     const result: DatastoreLoadResult = { loaded: [], failed: [] };
 
     installZodGlobal();
     const denoPath = await this.denoRuntime.ensureDeno();
 
-    // Force a full rescan if the set of extension source directories has
-    // changed (e.g. user ran `swamp extension source add`). Without this,
-    // the catalog's "populated" flag causes buildIndex to skip the full
-    // import path, so datastores from newly added sources are never
-    // discovered (#1107).
+    // Cold-start invalidation guards — full coverage under (a-2). The
+    // datastore loader's bundle base path is the per-kind datastore-bundles
+    // subdir under the repo's data root.
+    const currentBasePath = this.repoDir
+      ? join(
+        this.repoDir,
+        SWAMP_DATA_DIR,
+        SWAMP_SUBDIRS.datastoreBundles,
+      )
+      : "";
     const currentSourceFingerprint = sourceDirsFingerprint(
       datastoresDir,
       options?.additionalDirs,
     );
-    if (
-      catalog.isPopulated("datastore") &&
-      catalog.getSourceDirsFingerprint("datastore") !==
-        currentSourceFingerprint
-    ) {
+    const guard = repository.invalidationGuards({
+      kind: "datastore",
+      expectedLayoutVersion: BUNDLE_LAYOUT_VERSION,
+      expectedDatastoreBasePath: currentBasePath,
+      expectedSourceDirsFingerprint: currentSourceFingerprint,
+    });
+    if (guard.shouldInvalidate && guard.reason !== "not-populated") {
       logger
-        .warn`Extension source dirs changed — invalidating datastore catalog for full rescan`;
+        .warn`Catalog invalidated for "datastore" rescan: ${guard.reason}`;
       catalog.invalidate("datastore");
     }
 
@@ -454,6 +481,8 @@ export class UserDatastoreLoader {
       options?.additionalDirs,
     );
     catalog.markPopulated("datastore");
+    catalog.setLayoutVersion(BUNDLE_LAYOUT_VERSION);
+    catalog.setDatastoreBasePath(currentBasePath, "datastore");
     catalog.setSourceDirsFingerprint(currentSourceFingerprint, "datastore");
 
     return fullResult;
@@ -464,10 +493,8 @@ export class UserDatastoreLoader {
    * Looks up the bundle path from the catalog, imports the bundle,
    * and registers the type.
    */
-  async loadSingleType(
-    typeNormalized: string,
-    catalog: ExtensionCatalogStore,
-  ): Promise<void> {
+  async loadSingleType(typeNormalized: string): Promise<void> {
+    const catalog = this.requireRepository("loadSingleType").legacyStore;
     installZodGlobal();
 
     const entry = catalog.findByType(typeNormalized, "datastore");

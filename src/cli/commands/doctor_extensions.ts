@@ -54,7 +54,9 @@ import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
 import { driverTypeRegistry } from "../../domain/drivers/driver_type_registry.ts";
 import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
 import { reportRegistry } from "../../domain/reports/report_registry.ts";
-import { forceCatalogRescan } from "../../infrastructure/persistence/extension_catalog_store.ts";
+import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
+import { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
+import { swampPath } from "../../infrastructure/persistence/paths.ts";
 import { createDoctorExtensionsRenderer } from "../../presentation/renderers/doctor_extensions.ts";
 import {
   createContext,
@@ -98,11 +100,41 @@ export const doctorExtensionsCommand = new Command()
     // Same gate as `doctor audit` — fails loudly outside a swamp repo.
     await resolveDatastoreForRepo(repoDir);
 
+    // Resolve lockfile path early so the rescan repository's
+    // empty-version fallback has lockfile entries available. (Hoisted
+    // from the post-rescan section per ADV-2 resolution; the same
+    // values are reused below for orphan detection.)
+    const repoPath = RepoPath.create(repoDir);
+    const markerRepo = new RepoMarkerRepository();
+    const marker = await markerRepo.read(repoPath);
+    const modelsDir = resolveModelsDir(marker);
+    const absoluteModelsDir = isAbsolute(modelsDir)
+      ? modelsDir
+      : resolve(repoDir, modelsDir);
+    const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
+
     // Invalidate the catalog so the loaders run a full re-validation
     // instead of returning the cached lazy entries. Without this, the
     // doctor reports stale results when run after another swamp
     // command in the same repo.
-    forceCatalogRescan(repoDir);
+    // W1b: forceCatalogRescan(repoDir) → repository.invalidateAll().
+    try {
+      const upstream = await readUpstreamExtensions(lockfilePath);
+      const rescanRepo = new ExtensionRepository({
+        catalog: new ExtensionCatalogStore(
+          swampPath(repoDir, "_extension_catalog.db"),
+        ),
+        getLockedVersion: (name) => upstream[name]?.version ?? null,
+        repoRoot: repoDir,
+      });
+      try {
+        rescanRepo.invalidateAll();
+      } finally {
+        rescanRepo.legacyStore.close();
+      }
+    } catch {
+      // Best-effort — the loader will bootstrap a fresh catalog if this fails.
+    }
 
     const registries: ReadonlyArray<DoctorRegistryDeps> = [
       {
@@ -132,16 +164,10 @@ export const doctorExtensionsCommand = new Command()
       },
     ];
 
-    // Resolve lockfile and skills paths so the orphan-detection phase
-    // can walk the per-extension roots referenced by the lockfile.
-    const repoPath = RepoPath.create(repoDir);
-    const markerRepo = new RepoMarkerRepository();
-    const marker = await markerRepo.read(repoPath);
-    const modelsDir = resolveModelsDir(marker);
-    const absoluteModelsDir = isAbsolute(modelsDir)
-      ? modelsDir
-      : resolve(repoDir, modelsDir);
-    const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
+    // Resolve skills paths so the orphan-detection phase can walk the
+    // per-extension roots referenced by the lockfile. (lockfilePath /
+    // marker / repoPath / modelsDir / absoluteModelsDir are hoisted
+    // above the rescan call earlier in this function.)
     const tool = resolvePrimaryTool(marker);
     const absoluteSkillsDir = resolveSkillsDir(repoDir, tool);
     // detectOrphanFiles wants a repo-relative skills dir so it can

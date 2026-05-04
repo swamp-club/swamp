@@ -59,6 +59,7 @@ import {
 } from "./completion_types.ts";
 import { UserModelLoader } from "../domain/models/user_model_loader.ts";
 import { ExtensionCatalogStore } from "../infrastructure/persistence/extension_catalog_store.ts";
+import { ExtensionRepository } from "../infrastructure/persistence/extension_repository.ts";
 import { UserVaultLoader } from "../domain/vaults/user_vault_loader.ts";
 import { UserDriverLoader } from "../domain/drivers/user_driver_loader.ts";
 import { UserDatastoreLoader } from "../domain/datastore/user_datastore_loader.ts";
@@ -255,6 +256,24 @@ export async function configureExtensionLoaders(
   const catalogDbPath = swampPath(repoDir, "_extension_catalog.db");
   const catalog = new ExtensionCatalogStore(catalogDbPath);
 
+  // W1b: wrap the catalog in an ExtensionRepository so all 5 loaders see
+  // it as their long-lived constructor-injected dependency (per ADV-V2-1
+  // option (a-2)). The lockfile snapshot is frozen at construction (see
+  // ExtensionRepository class JSDoc); the load* functions use a lazy
+  // getter so the lockfile is read on first need rather than at every
+  // configureExtensionLoaders call.
+  const repoModelsDir = resolveModelsDir(marker);
+  const lockfilePath = join(
+    isAbsolute(repoModelsDir) ? repoModelsDir : resolve(repoDir, repoModelsDir),
+    "upstream_extensions.json",
+  );
+  const upstream = await readUpstreamExtensions(lockfilePath);
+  const repository = new ExtensionRepository({
+    catalog,
+    getLockedVersion: (name) => upstream[name]?.version ?? null,
+    repoRoot: repoDir,
+  });
+
   modelRegistry.setLoader(() =>
     loadUserModels(
       repoDir,
@@ -262,7 +281,7 @@ export async function configureExtensionLoaders(
       denoRuntime,
       sourceModelsDirs,
       lazyResolver,
-      catalog,
+      repository,
       quiet,
     )
   );
@@ -273,7 +292,7 @@ export async function configureExtensionLoaders(
       denoRuntime,
       sourceVaultsDirs,
       lazyResolver,
-      catalog,
+      repository,
       quiet,
     )
   );
@@ -284,7 +303,7 @@ export async function configureExtensionLoaders(
       denoRuntime,
       sourceDriversDirs,
       lazyResolver,
-      catalog,
+      repository,
       quiet,
     )
   );
@@ -294,7 +313,7 @@ export async function configureExtensionLoaders(
       marker,
       denoRuntime,
       sourceDatastoresDirs,
-      catalog,
+      repository,
       quiet,
     )
   );
@@ -305,7 +324,7 @@ export async function configureExtensionLoaders(
       denoRuntime,
       sourceReportsDirs,
       lazyResolver,
-      catalog,
+      repository,
       quiet,
     )
   );
@@ -348,9 +367,19 @@ export function configureExtensionAutoResolver(
         ),
         repoDir,
         denoRuntime,
-        catalog: new ExtensionCatalogStore(
-          swampPath(repoDir, "_extension_catalog.db"),
-        ),
+        // W1b/(a-2): wrap the auto-resolver-context catalog in its own
+        // ExtensionRepository so the loaders constructed inside
+        // hotLoadModels/hotLoadVaults/hotLoadDatastores can route their
+        // catalog operations through `repository.legacyStore`. The
+        // lockfile snapshot is taken here at adapter-creation time;
+        // long-lived repository instances do not refresh.
+        repository: new ExtensionRepository({
+          catalog: new ExtensionCatalogStore(
+            swampPath(repoDir, "_extension_catalog.db"),
+          ),
+          getLockedVersion: () => null,
+          repoRoot: repoDir,
+        }),
       }),
       output: createAutoResolveOutputAdapter(outputMode),
     }),
@@ -379,7 +408,7 @@ async function loadUserModels(
   denoRuntime: EmbeddedDenoRuntime,
   sourceDirs: string[] = [],
   resolverFactory?: () => Promise<DatastorePathResolver | undefined>,
-  catalog?: ExtensionCatalogStore,
+  repository?: ExtensionRepository,
   quiet = false,
 ): Promise<void> {
   try {
@@ -389,8 +418,25 @@ async function loadUserModels(
       ? modelsDir
       : resolve(repoDir, modelsDir);
 
+    // W1b/(a-2): if no repository was passed, bootstrap one with an
+    // empty lockfile lookup. The catalog stays open for the process
+    // lifetime so the type loader can query it via the repository's
+    // legacyStore when ensureTypeLoaded() is called later.
+    const effectiveRepository = repository ?? new ExtensionRepository({
+      catalog: new ExtensionCatalogStore(
+        swampPath(repoDir, "_extension_catalog.db"),
+      ),
+      getLockedVersion: () => null,
+      repoRoot: repoDir,
+    });
+
     const resolver = resolverFactory ? await resolverFactory() : undefined;
-    const loader = new UserModelLoader(denoRuntime, repoDir, resolver);
+    const loader = new UserModelLoader(
+      denoRuntime,
+      repoDir,
+      resolver,
+      effectiveRepository,
+    );
     const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
     const pulledDirs = await enumeratePulledExtensionDirs(
       lockfilePath,
@@ -398,15 +444,9 @@ async function loadUserModels(
       "models",
     );
 
-    // Use bundle catalog for lazy per-bundle loading.
-    // The catalog stays open for the process lifetime so the type loader
-    // can query it when ensureTypeLoaded() is called later.
-    const effectiveCatalog = catalog ??
-      new ExtensionCatalogStore(swampPath(repoDir, "_extension_catalog.db"));
-
     // Set type loader on the registry for on-demand loading
     modelRegistry.setTypeLoader(async (type) => {
-      await loader.loadSingleType(type, effectiveCatalog);
+      await loader.loadSingleType(type);
     });
 
     // Build the index: reads catalog + mtime scan for freshness.
@@ -419,7 +459,6 @@ async function loadUserModels(
     // sibling extensions can't bleed into each other.
     const result = await loader.buildIndex(
       absoluteModelsDir,
-      effectiveCatalog,
       {
         additionalDirs: [...sourceDirs, ...pulledDirs],
       },
@@ -457,7 +496,7 @@ async function loadUserVaults(
   denoRuntime: EmbeddedDenoRuntime,
   sourceDirs: string[] = [],
   resolverFactory?: () => Promise<DatastorePathResolver | undefined>,
-  catalog?: ExtensionCatalogStore,
+  repository?: ExtensionRepository,
   quiet = false,
 ): Promise<void> {
   try {
@@ -467,7 +506,12 @@ async function loadUserVaults(
       : resolve(repoDir, vaultsDir);
 
     const resolver = resolverFactory ? await resolverFactory() : undefined;
-    const loader = new UserVaultLoader(denoRuntime, repoDir, resolver);
+    const loader = new UserVaultLoader(
+      denoRuntime,
+      repoDir,
+      resolver,
+      repository,
+    );
     const modelsDir = resolveModelsDir(marker);
     const lockfilePath = join(
       isAbsolute(modelsDir) ? modelsDir : resolve(repoDir, modelsDir),
@@ -479,12 +523,12 @@ async function loadUserVaults(
       "vaults",
     );
 
-    if (catalog) {
+    if (repository) {
       vaultTypeRegistry.setTypeLoader(async (type) => {
-        await loader.loadSingleType(type, catalog);
+        await loader.loadSingleType(type);
       });
 
-      const result = await loader.buildIndex(absoluteVaultsDir, catalog, {
+      const result = await loader.buildIndex(absoluteVaultsDir, {
         additionalDirs: [...sourceDirs, ...pulledDirs],
       });
 
@@ -516,7 +560,7 @@ async function loadUserDrivers(
   denoRuntime: EmbeddedDenoRuntime,
   sourceDirs: string[] = [],
   resolverFactory?: () => Promise<DatastorePathResolver | undefined>,
-  catalog?: ExtensionCatalogStore,
+  repository?: ExtensionRepository,
   quiet = false,
 ): Promise<void> {
   try {
@@ -526,7 +570,12 @@ async function loadUserDrivers(
       : resolve(repoDir, driversDir);
 
     const resolver = resolverFactory ? await resolverFactory() : undefined;
-    const loader = new UserDriverLoader(denoRuntime, repoDir, resolver);
+    const loader = new UserDriverLoader(
+      denoRuntime,
+      repoDir,
+      resolver,
+      repository,
+    );
     const modelsDir = resolveModelsDir(marker);
     const lockfilePath = join(
       isAbsolute(modelsDir) ? modelsDir : resolve(repoDir, modelsDir),
@@ -538,12 +587,12 @@ async function loadUserDrivers(
       "drivers",
     );
 
-    if (catalog) {
+    if (repository) {
       driverTypeRegistry.setTypeLoader(async (type) => {
-        await loader.loadSingleType(type, catalog);
+        await loader.loadSingleType(type);
       });
 
-      const result = await loader.buildIndex(absoluteDriversDir, catalog, {
+      const result = await loader.buildIndex(absoluteDriversDir, {
         additionalDirs: [...sourceDirs, ...pulledDirs],
       });
 
@@ -574,7 +623,7 @@ async function loadUserDatastores(
   marker: RepoMarkerData | null,
   denoRuntime: EmbeddedDenoRuntime,
   sourceDirs: string[] = [],
-  catalog?: ExtensionCatalogStore,
+  repository?: ExtensionRepository,
   quiet = false,
 ): Promise<void> {
   try {
@@ -583,7 +632,7 @@ async function loadUserDatastores(
       ? datastoresDir
       : resolve(repoDir, datastoresDir);
 
-    const loader = new UserDatastoreLoader(denoRuntime, repoDir);
+    const loader = new UserDatastoreLoader(denoRuntime, repoDir, repository);
     const modelsDir = resolveModelsDir(marker);
     const lockfilePath = join(
       isAbsolute(modelsDir) ? modelsDir : resolve(repoDir, modelsDir),
@@ -595,14 +644,13 @@ async function loadUserDatastores(
       "datastores",
     );
 
-    if (catalog) {
+    if (repository) {
       datastoreTypeRegistry.setTypeLoader(async (type) => {
-        await loader.loadSingleType(type, catalog);
+        await loader.loadSingleType(type);
       });
 
       const result = await loader.buildIndex(
         absoluteDatastoresDir,
-        catalog,
         {
           additionalDirs: [...sourceDirs, ...pulledDirs],
         },
@@ -636,7 +684,7 @@ async function loadUserReports(
   denoRuntime: EmbeddedDenoRuntime,
   sourceDirs: string[] = [],
   resolverFactory?: () => Promise<DatastorePathResolver | undefined>,
-  catalog?: ExtensionCatalogStore,
+  repository?: ExtensionRepository,
   quiet = false,
 ): Promise<void> {
   try {
@@ -646,7 +694,12 @@ async function loadUserReports(
       : resolve(repoDir, reportsDir);
 
     const resolver = resolverFactory ? await resolverFactory() : undefined;
-    const loader = new UserReportLoader(denoRuntime, repoDir, resolver);
+    const loader = new UserReportLoader(
+      denoRuntime,
+      repoDir,
+      resolver,
+      repository,
+    );
     const modelsDir = resolveModelsDir(marker);
     const lockfilePath = join(
       isAbsolute(modelsDir) ? modelsDir : resolve(repoDir, modelsDir),
@@ -658,12 +711,12 @@ async function loadUserReports(
       "reports",
     );
 
-    if (catalog) {
+    if (repository) {
       reportRegistry.setTypeLoader(async (type) => {
-        await loader.loadSingleType(type, catalog);
+        await loader.loadSingleType(type);
       });
 
-      const result = await loader.buildIndex(absoluteReportsDir, catalog, {
+      const result = await loader.buildIndex(absoluteReportsDir, {
         additionalDirs: [...sourceDirs, ...pulledDirs],
       });
 
