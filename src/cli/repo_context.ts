@@ -42,7 +42,10 @@ import { UserError } from "../domain/errors.ts";
 import { VERSION } from "./commands/version.ts";
 import { resolveWorkflowsDir } from "./resolve_workflows_dir.ts";
 import { resolveModelsDir } from "./resolve_models_dir.ts";
-import { enumeratePulledExtensionDirs } from "../libswamp/mod.ts";
+import {
+  enumeratePulledExtensionDirs,
+  parseModelLockKey,
+} from "../libswamp/mod.ts";
 import { resolveDatastoreConfig } from "./resolve_datastore.ts";
 import { DefaultDatastorePathResolver } from "../infrastructure/persistence/default_datastore_path_resolver.ts";
 import type { DatastorePathResolver } from "../domain/datastore/datastore_path_resolver.ts";
@@ -612,25 +615,20 @@ async function waitForPerModelLocks(datastorePath: string): Promise<void> {
         })
       ) {
         const rel = relative(datastorePath, entry.path);
-        const parts = rel.split("/");
-        // Match pattern: data/{modelType}/{modelId}/.lock
-        if (
-          parts.length === 4 && parts[0] === "data" && parts[3] === ".lock"
-        ) {
-          try {
-            const content = await Deno.readTextFile(entry.path);
-            const info = JSON.parse(content) as {
-              acquiredAt: string;
-              ttlMs: number;
-            };
-            // Only count non-stale locks
-            const acquiredAt = new Date(info.acquiredAt).getTime();
-            if (Date.now() - acquiredAt <= info.ttlMs) {
-              count++;
-            }
-          } catch {
-            // Skip unreadable lock files
+        if (!parseModelLockKey(rel)) continue;
+        try {
+          const content = await Deno.readTextFile(entry.path);
+          const info = JSON.parse(content) as {
+            acquiredAt: string;
+            ttlMs: number;
+          };
+          // Only count non-stale locks
+          const acquiredAt = new Date(info.acquiredAt).getTime();
+          if (Date.now() - acquiredAt <= info.ttlMs) {
+            count++;
           }
+        } catch {
+          // Skip unreadable lock files
         }
       }
     } catch {

@@ -24,12 +24,65 @@ import type {
 import type { DatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
 import { walk } from "@std/fs";
-import { relative } from "@std/path";
+import { relative, SEPARATOR } from "@std/path";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 export type { LockInfo } from "../../domain/datastore/distributed_lock.ts";
+
+// ── Lock-key parsing ───────────────────────────────────────────────────
+
+/**
+ * Parses a per-model lock key (relative path under the datastore root) into
+ * its modelType and modelId components.
+ *
+ * Lock keys have the form `data/<modelType>/<modelId>/.lock`, where
+ * `<modelType>` may itself contain `/` for scoped extension types
+ * (e.g. `@hivemq/harvester-host-kernel`). Returns null for keys that do
+ * not match this shape.
+ *
+ * Splits on the platform path separator since `relative()` from
+ * `@std/path` returns native-separated paths. The returned `modelType`
+ * is always `/`-joined (the canonical key form), regardless of the
+ * platform the path came from.
+ */
+export function parseModelLockKey(
+  rel: string,
+): { modelType: string; modelId: string } | null {
+  const parts = rel.split(SEPARATOR);
+  if (
+    parts.length < 4 ||
+    parts[0] !== "data" ||
+    parts[parts.length - 1] !== ".lock"
+  ) {
+    return null;
+  }
+  const modelId = parts[parts.length - 2];
+  const modelType = parts.slice(1, parts.length - 2).join("/");
+  if (!modelType || !modelId) return null;
+  return { modelType, modelId };
+}
+
+/**
+ * Parses a `<modelType>/<modelId>` CLI argument (e.g. the `--model` flag
+ * to `swamp datastore lock release`).
+ *
+ * The modelType may itself contain `/` for scoped extension types, so
+ * parsing is right-anchored: the last `/` separates modelType from
+ * modelId, everything before is modelType. Returns null for inputs with
+ * no separator, an empty modelType, or an empty modelId.
+ */
+export function parseModelSpec(
+  spec: string,
+): { modelType: string; modelId: string } | null {
+  const lastSlash = spec.lastIndexOf("/");
+  if (lastSlash <= 0 || lastSlash === spec.length - 1) return null;
+  return {
+    modelType: spec.slice(0, lastSlash),
+    modelId: spec.slice(lastSlash + 1),
+  };
+}
 
 // ── Lock status ────────────────────────────────────────────────────────
 
@@ -216,23 +269,20 @@ async function scanModelLocks(
       })
     ) {
       const rel = relative(datastorePath, entry.path);
-      // Match pattern: data/{modelType}/{modelId}/.lock
-      const parts = rel.split("/");
-      if (
-        parts.length === 4 && parts[0] === "data" && parts[3] === ".lock"
-      ) {
-        try {
-          const content = await Deno.readTextFile(entry.path);
-          const info = JSON.parse(content) as LockInfo;
-          results.push({
-            lockKey: rel,
-            modelType: parts[1],
-            modelId: parts[2],
-            info,
-          });
-        } catch {
-          // Skip unreadable lock files
-        }
+      const parsed = parseModelLockKey(rel);
+      if (!parsed) continue;
+      try {
+        const content = await Deno.readTextFile(entry.path);
+        const info = JSON.parse(content) as LockInfo;
+        results.push({
+          // Canonical key form uses `/` regardless of platform separator
+          lockKey: `data/${parsed.modelType}/${parsed.modelId}/.lock`,
+          modelType: parsed.modelType,
+          modelId: parsed.modelId,
+          info,
+        });
+      } catch {
+        // Skip unreadable lock files
       }
     }
   } catch {

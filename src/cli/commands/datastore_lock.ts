@@ -37,6 +37,7 @@ import {
   createLibSwampContext,
   datastoreLockRelease,
   datastoreLockStatus,
+  parseModelSpec,
 } from "../../libswamp/mod.ts";
 import {
   createDatastoreLockReleaseRenderer,
@@ -129,13 +130,14 @@ const datastoreLockReleaseCommand = new Command()
 
     let lock;
     if (modelSpec) {
-      const parts = modelSpec.split("/");
-      if (parts.length !== 2) {
+      const parsed = parseModelSpec(modelSpec);
+      if (!parsed) {
         throw new UserError(
-          `Invalid --model format: "${modelSpec}". Expected "type/id" (e.g. aws-ec2/my-server).`,
+          `Invalid --model format: "${modelSpec}". Expected "type/id" ` +
+            `(e.g. aws-ec2/my-server, or @org/name/my-server for scoped extension types).`,
         );
       }
-      lock = await createModelLock(config, parts[0], parts[1]);
+      lock = await createModelLock(config, parsed.modelType, parsed.modelId);
     } else {
       lock = await createDatastoreLock(config);
     }

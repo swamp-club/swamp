@@ -1017,4 +1017,6 @@ export {
   type DatastoreLockStatusEvent,
   type DatastoreLockStatusInput,
   type LockInfo,
+  parseModelLockKey,
+  parseModelSpec,
 } from "./datastores/lock.ts";

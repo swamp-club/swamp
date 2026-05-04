@@ -18,9 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
+import { SEPARATOR } from "@std/path";
 import { assertCompletes, collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
+  createDatastoreLockStatusDeps,
   datastoreLockRelease,
   type DatastoreLockReleaseDeps,
   type DatastoreLockReleaseEvent,
@@ -28,6 +30,8 @@ import {
   type DatastoreLockStatusDeps,
   type DatastoreLockStatusEvent,
   type LockInfo,
+  parseModelLockKey,
+  parseModelSpec,
 } from "./lock.ts";
 
 const sampleLockInfo: LockInfo = {
@@ -221,4 +225,167 @@ Deno.test("datastoreLockRelease: nonce mismatch (holder changed)", async () => {
       },
     },
   );
+});
+
+// ── parseModelLockKey ──────────────────────────────────────────────────
+
+Deno.test("parseModelLockKey: simple model type", () => {
+  const result = parseModelLockKey(
+    ["data", "aws-ec2", "server-1", ".lock"].join(SEPARATOR),
+  );
+  assertEquals(result, { modelType: "aws-ec2", modelId: "server-1" });
+});
+
+Deno.test("parseModelLockKey: scoped extension type", () => {
+  const result = parseModelLockKey(
+    ["data", "@hivemq", "harvester-host-kernel", "abc-123", ".lock"].join(
+      SEPARATOR,
+    ),
+  );
+  assertEquals(result, {
+    modelType: "@hivemq/harvester-host-kernel",
+    modelId: "abc-123",
+  });
+});
+
+Deno.test("parseModelLockKey: deeply scoped type", () => {
+  const result = parseModelLockKey(
+    ["data", "@org", "team", "feature", "instance-1", ".lock"].join(SEPARATOR),
+  );
+  assertEquals(result, {
+    modelType: "@org/team/feature",
+    modelId: "instance-1",
+  });
+});
+
+Deno.test("parseModelLockKey: missing data prefix returns null", () => {
+  const result = parseModelLockKey(
+    ["other", "aws-ec2", "server-1", ".lock"].join(SEPARATOR),
+  );
+  assertEquals(result, null);
+});
+
+Deno.test("parseModelLockKey: missing .lock suffix returns null", () => {
+  const result = parseModelLockKey(
+    ["data", "aws-ec2", "server-1", "info.json"].join(SEPARATOR),
+  );
+  assertEquals(result, null);
+});
+
+Deno.test("parseModelLockKey: too few parts returns null", () => {
+  const result = parseModelLockKey(
+    ["data", "aws-ec2", ".lock"].join(SEPARATOR),
+  );
+  assertEquals(result, null);
+});
+
+Deno.test("parseModelLockKey: handles forward-slash input on any platform", () => {
+  // Simulates the case where rel happens to contain `/` on Windows (e.g.
+  // someone constructed the path manually with forward slashes); on POSIX
+  // this is the normal case. The function should accept it on POSIX and
+  // would return null on Windows where SEPARATOR is `\` — the test
+  // harness is platform-aware.
+  const rel = "data/aws-ec2/server-1/.lock";
+  const result = parseModelLockKey(rel);
+  if (SEPARATOR === "/") {
+    assertEquals(result, { modelType: "aws-ec2", modelId: "server-1" });
+  } else {
+    assertEquals(result, null);
+  }
+});
+
+// ── parseModelSpec ─────────────────────────────────────────────────────
+
+Deno.test("parseModelSpec: simple type/id", () => {
+  assertEquals(parseModelSpec("aws-ec2/server-1"), {
+    modelType: "aws-ec2",
+    modelId: "server-1",
+  });
+});
+
+Deno.test("parseModelSpec: scoped extension type", () => {
+  assertEquals(parseModelSpec("@hivemq/harvester-host-kernel/abc-123"), {
+    modelType: "@hivemq/harvester-host-kernel",
+    modelId: "abc-123",
+  });
+});
+
+Deno.test("parseModelSpec: deeply scoped type", () => {
+  assertEquals(parseModelSpec("@org/team/feature/instance-1"), {
+    modelType: "@org/team/feature",
+    modelId: "instance-1",
+  });
+});
+
+Deno.test("parseModelSpec: no slash returns null", () => {
+  assertEquals(parseModelSpec("just-a-name"), null);
+});
+
+Deno.test("parseModelSpec: leading slash (empty modelType) returns null", () => {
+  assertEquals(parseModelSpec("/server-1"), null);
+});
+
+Deno.test("parseModelSpec: trailing slash (empty modelId) returns null", () => {
+  assertEquals(parseModelSpec("aws-ec2/"), null);
+});
+
+Deno.test("parseModelSpec: empty string returns null", () => {
+  assertEquals(parseModelSpec(""), null);
+});
+
+// ── Functional: scanModelLocks against real filesystem ────────────────
+
+Deno.test("scanModelLocks: finds both simple and scoped extension type locks", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-lock-scan-" });
+  try {
+    // Plant a simple-type lock and a scoped-type lock with active TTLs.
+    const now = new Date().toISOString();
+    const lock = JSON.stringify({
+      holder: "h@h",
+      hostname: "h",
+      pid: 1,
+      acquiredAt: now,
+      ttlMs: 600000,
+      nonce: "n",
+    });
+    await Deno.mkdir(`${dir}/data/aws-ec2/server-1`, { recursive: true });
+    await Deno.writeTextFile(`${dir}/data/aws-ec2/server-1/.lock`, lock);
+    await Deno.mkdir(`${dir}/data/@hivemq/harvester-host-kernel/abc`, {
+      recursive: true,
+    });
+    await Deno.writeTextFile(
+      `${dir}/data/@hivemq/harvester-host-kernel/abc/.lock`,
+      lock,
+    );
+
+    const deps = createDatastoreLockStatusDeps(
+      // globalLock is unused by scanModelLocks; pass a stub
+      {
+        // deno-lint-ignore require-await
+        async inspect() {
+          return null;
+        },
+      } as unknown as Parameters<typeof createDatastoreLockStatusDeps>[0],
+      { type: "filesystem", path: dir },
+    );
+
+    const locks = await deps.scanModelLocks();
+    const scopes = locks.map((l) => `${l.modelType}/${l.modelId}`).sort();
+    assertEquals(scopes, [
+      "@hivemq/harvester-host-kernel/abc",
+      "aws-ec2/server-1",
+    ]);
+    // Canonical lockKey form uses `/` regardless of platform.
+    const keys = locks.map((l) => l.lockKey).sort();
+    assertEquals(keys, [
+      "data/@hivemq/harvester-host-kernel/abc/.lock",
+      "data/aws-ec2/server-1/.lock",
+    ]);
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
 });
