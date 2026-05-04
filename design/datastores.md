@@ -245,7 +245,29 @@ Read-only commands (search, get, list, validate, history, etc.):
     (reads local cache directly)
 
     (no flush needed)
+
+Explicit datastore sync (`swamp datastore sync` and `--push`):
+
+  requireInitializedRepo({ skipImplicitSync: true })  ← command start
+    └─ acquire distributed lock
+       (no implicit pullChanged, no implicit pushChanged on flush)
+
+    ─── command executes its OWN pullChanged / pushChanged ───
+    (counts reflect work the command itself performed)
+
+  flushDatastoreSync()
+    └─ release distributed lock
 ```
+
+`swamp datastore sync` deliberately bypasses the coordinator's implicit
+pull/push. Without `skipImplicitSync` the implicit pull would silently
+move files and the explicit pull would fast-path to 0, causing
+`filesPulled: 0` to be reported even when data was hydrated (lab #220).
+The explicit sync command is the user-facing "tell me what I synced"
+command — it owns its I/O and reports honest counts.
+
+`--pull` mode uses `requireInitializedRepoReadOnly` (no lock at all),
+matching the existing read-only pattern.
 
 Read-only commands skip the lock and sync entirely, allowing them to run
 concurrently with write operations. On filesystem datastores, reads see writes
@@ -439,10 +461,26 @@ swamp datastore setup extension @swamp/s3-datastore \
 Each setup command:
 1. Verifies the target is accessible (writable directory or reachable S3 bucket)
 2. Migrates existing runtime data from `.swamp/` to the new location
-3. Updates `.swamp.yaml` with the new datastore config
-4. Cleans up migrated directories from `.swamp/`
+   (skipped when `--skip-migration` is used)
+3. Pushes migrated data to the remote (extension datastores; skipped when
+   `--skip-migration` is used or when there is nothing to push)
+4. **Hydrates** the local cache from the remote datastore (extension
+   datastores only) — runs unconditionally, regardless of `--skip-migration`
+5. Updates `.swamp.yaml` with the new datastore config
+6. Cleans up migrated directories from `.swamp/` (skipped if any prior step
+   reported an error, so retry leaves local data intact)
 
-Use `--skip-migration` to skip the data copy.
+`--skip-migration` controls only step 2 (the local→remote push of existing
+`.swamp/` data). It does NOT skip step 4 (hydration). A contributor joining a
+shared datastore that already has data needs hydration even when there is
+nothing local to migrate; without it the local cache stays empty and reads
+return nothing until a manual `swamp datastore sync --pull` runs.
+
+**Hydration invariant.** After `swamp datastore setup extension` succeeds
+with no errors, the local cache contains every entry advertised by the
+remote `.datastore-index.json` at setup time. Subsequent reads from
+datastore-tier repositories see consistent data without an explicit
+`swamp datastore sync --pull` first.
 
 ### Migrating Between Backends
 

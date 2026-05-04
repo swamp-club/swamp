@@ -123,6 +123,13 @@ export const datastoreSyncCommand = new Command()
 
     // Pull-only mode uses read-only init to avoid acquiring the global
     // lock and triggering a coordinator push on flush.
+    //
+    // Push and default ("sync") modes acquire the lock but skip the
+    // coordinator's implicit pull-at-startup and push-at-flush — those
+    // are racy duplicates of the explicit pull/push this command owns.
+    // Without skipImplicitSync, the implicit pull silently moves files
+    // and the explicit pull fast-paths to 0, causing `filesPulled: 0`
+    // to be reported even when data was actually hydrated (lab #220).
     const { repoDir, datastoreResolver } = mode === "pull"
       ? await requireInitializedRepoReadOnly({
         repoDir: resolveRepoDir(options.repoDir),
@@ -131,6 +138,7 @@ export const datastoreSyncCommand = new Command()
       : await requireInitializedRepo({
         repoDir: resolveRepoDir(options.repoDir),
         outputMode: cliCtx.outputMode,
+        skipImplicitSync: true,
       });
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });

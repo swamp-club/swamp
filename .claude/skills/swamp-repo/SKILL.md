@@ -237,10 +237,17 @@ swamp datastore setup extension @swamp/s3-datastore \
   --config '{"bucket":"my-bucket","prefix":"my-project","region":"us-east-1"}' --json
 ```
 
-Verifies the backend is accessible, pushes existing local data, and updates
-`.swamp.yaml`. Subsequent commands automatically pull before execution and push
-after. Use `--skip-migration` to skip the initial push. Legacy type name `s3` is
-auto-remapped to `@swamp/s3-datastore`.
+Verifies the backend is accessible, pushes existing local `.swamp/` data to the
+remote, hydrates the local cache from any data already present in the remote (so
+a contributor joining a populated shared bucket starts with their cache primed),
+and updates `.swamp.yaml`. Subsequent commands automatically pull before
+execution and push after.
+
+`--skip-migration` skips only the local→remote push; the remote→local hydration
+step still runs, so a fresh contributor can opt out of pushing their `.swamp/`
+(or skip the migration entirely if they have no local data) without ending up
+with an empty cache. Legacy type name `s3` is auto-remapped to
+`@swamp/s3-datastore`.
 
 ### Migrating Between Datastores
 
@@ -256,6 +263,10 @@ swamp datastore sync --json         # Bidirectional sync
 swamp datastore sync --pull --json  # Pull-only
 swamp datastore sync --push --json  # Push-only
 ```
+
+The `filesPulled` and `filesPushed` counts in the output reflect work the sync
+command itself performed — they do not double-count any implicit pre-command
+sync from other commands, and they are not a no-op summary.
 
 ### Lock Management
 

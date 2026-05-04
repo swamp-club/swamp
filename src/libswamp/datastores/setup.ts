@@ -47,6 +47,13 @@ export interface DatastoreSetupData {
   type: string;
   path?: string;
   filesCopied: number;
+  /**
+   * Files pulled from the remote datastore into the local cache during
+   * setup hydration. Always 0 for filesystem datastores (no separate
+   * cache to hydrate). For extension datastores, reflects the count
+   * returned by the sync service's pullChanged after migration.
+   */
+  filesPulled: number;
   bytesCopied: number;
   directoriesMigrated: string[];
   errors: string[];
@@ -204,6 +211,7 @@ export async function* datastoreSetupFilesystem(
           type: "filesystem",
           path: input.datastorePath,
           filesCopied,
+          filesPulled: 0,
           bytesCopied,
           directoriesMigrated,
           errors,
@@ -294,43 +302,57 @@ export async function* datastoreSetupExtension(
         return;
       }
 
-      // Migrate existing data if the extension supports sync
+      // Migrate existing data, then hydrate the cache from the remote.
+      // Both legs share the same syncService instance and timeout — the
+      // sync service is constructed once up front and reused for the
+      // optional push and the unconditional pull below.
       const errors: string[] = [];
       let filesCopied = 0;
+      let filesPulled = 0;
 
-      if (!input.skipMigration && provider.createSyncService) {
+      // Setup runs outside the flush coordinator, so it does not pick up
+      // per-config syncTimeoutMs. Env override applies if set, else fall
+      // back to the default.
+      const envValue = Deno.env.get(SYNC_TIMEOUT_ENV_VAR);
+      const parsedTimeout = envValue ? Number.parseInt(envValue, 10) : NaN;
+      const timeoutMs = Number.isFinite(parsedTimeout) && parsedTimeout > 0
+        ? parsedTimeout
+        : DEFAULT_SYNC_TIMEOUT_MS;
+
+      const cachePath = provider.resolveCachePath?.(input.repoDir) ??
+        join(getSwampDataDir(), "repos", input.repoId ?? "unknown");
+      const syncService = provider.createSyncService?.(
+        input.repoDir,
+        cachePath,
+      );
+
+      let migrationResult:
+        | {
+          filesCopied: number;
+          directoriesMigrated: string[];
+        }
+        | undefined;
+
+      if (!input.skipMigration && syncService) {
         yield { kind: "migrating" };
 
-        const cachePath = provider.resolveCachePath?.(input.repoDir) ??
-          join(getSwampDataDir(), "repos", input.repoId ?? "unknown");
         const sourceDir = `${input.repoDir}/.swamp`;
 
         // Migrate local .swamp/ data to cache path
         const config = { type: "filesystem" as const, path: cachePath };
-        const migrationResult = await deps.migrateData(
+        const result = await deps.migrateData(
           sourceDir,
           cachePath,
           config,
         );
-        errors.push(...migrationResult.errors);
-        filesCopied = migrationResult.filesCopied;
+        errors.push(...result.errors);
+        filesCopied = result.filesCopied;
+        migrationResult = result;
 
         // Push cache to remote via sync service
-        if (migrationResult.filesCopied > 0) {
+        if (result.filesCopied > 0) {
           ctx.logger.debug`Pushing data to remote datastore...`;
           try {
-            const syncService = provider.createSyncService(
-              input.repoDir,
-              cachePath,
-            );
-            // Setup runs outside the flush coordinator, so it does not
-            // pick up per-config syncTimeoutMs. Env override applies if
-            // set, else fall back to the default.
-            const envValue = Deno.env.get(SYNC_TIMEOUT_ENV_VAR);
-            const parsed = envValue ? Number.parseInt(envValue, 10) : NaN;
-            const timeoutMs = Number.isFinite(parsed) && parsed > 0
-              ? parsed
-              : DEFAULT_SYNC_TIMEOUT_MS;
             await runBoundedSync(
               input.type,
               "push",
@@ -347,22 +369,55 @@ export async function* datastoreSetupExtension(
             errors.push(summary);
           }
         }
+      }
 
-        // Clean up migrated directories from .swamp/ on success
-        if (
-          errors.length === 0 && migrationResult.filesCopied > 0 &&
-          migrationResult.directoriesMigrated.length > 0
-        ) {
-          await deps.cleanupSourceDirs(
-            sourceDir,
-            migrationResult.directoriesMigrated,
+      // Hydrate the local cache from the remote. Runs unconditionally
+      // when the extension exposes a sync service — independent of
+      // --skip-migration. Migration moves data UP (local → remote);
+      // hydration moves data DOWN (remote → local). A contributor
+      // joining a populated remote needs hydration even when there is
+      // nothing local to migrate. Runs AFTER the optional push so any
+      // files we just migrated are already in the remote index when
+      // pullChanged walks it (size match → no redundant download).
+      if (syncService && errors.length === 0) {
+        ctx.logger.debug`Hydrating cache from remote datastore...`;
+        try {
+          const pulled = await runBoundedSync(
+            input.type,
+            "pull",
+            timeoutMs,
+            (signal) => syncService.pullChanged({ signal }),
           );
+          filesPulled = typeof pulled === "number" ? pulled : 0;
+          ctx.logger.debug`Hydration complete: ${filesPulled} file(s) pulled`;
+        } catch (error) {
+          const { summary } = summarizeSyncError(
+            "pull",
+            input.type,
+            error,
+          );
+          errors.push(summary);
         }
       }
 
-      // Update .swamp.yaml only after migration succeeds (or is skipped).
-      // This avoids leaving the config pointing at an extension datastore
-      // when data never made it to the remote.
+      // Clean up migrated directories from .swamp/ only after BOTH push
+      // and pull have succeeded. Pull failure must keep .swamp/ intact
+      // so the user can retry setup without losing local data.
+      if (
+        migrationResult &&
+        errors.length === 0 &&
+        migrationResult.filesCopied > 0 &&
+        migrationResult.directoriesMigrated.length > 0
+      ) {
+        await deps.cleanupSourceDirs(
+          `${input.repoDir}/.swamp`,
+          migrationResult.directoriesMigrated,
+        );
+      }
+
+      // Update .swamp.yaml only after migration and hydration succeed
+      // (or are skipped). This avoids leaving the config pointing at an
+      // extension datastore when data movement failed.
       if (errors.length === 0) {
         await deps.updateRepoConfig(input.repoDir, {
           type: input.type,
@@ -375,6 +430,7 @@ export async function* datastoreSetupExtension(
         data: {
           type: input.type,
           filesCopied,
+          filesPulled,
           bytesCopied: 0,
           directoriesMigrated: [],
           errors,

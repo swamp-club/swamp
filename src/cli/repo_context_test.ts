@@ -471,3 +471,183 @@ Deno.test("acquireModelLocks - deduplicates same model", async () => {
     await lockResult.flush();
   });
 });
+
+// ============================================================================
+// skipImplicitSync Tests (lab #220)
+//
+// `swamp datastore sync` (push and default modes) acquires the lock but must
+// NOT run the coordinator's implicit pre-command pull — otherwise the
+// implicit pull silently moves files and the explicit pull fast-paths to 0,
+// causing `filesPulled: 0` to be reported even when data was hydrated.
+// ============================================================================
+
+async function configureExtensionDatastore(
+  dir: string,
+  type: string,
+): Promise<void> {
+  // Read the existing marker, append the datastore config, write it back.
+  // Mirrors what `swamp datastore setup extension` produces in the
+  // .swamp.yaml file.
+  const markerPath = join(dir, ".swamp.yaml");
+  const existing = await Deno.readTextFile(markerPath);
+  const datastoreYaml = [
+    "datastore:",
+    `  type: '${type}'`,
+    "  config:",
+    "    bucket: test-bucket",
+  ].join("\n");
+  await Deno.writeTextFile(
+    markerPath,
+    existing.trimEnd() + "\n" + datastoreYaml + "\n",
+  );
+}
+
+Deno.test("requireInitializedRepo - skipImplicitSync prevents coordinator pull", async () => {
+  // Late imports so registry side effects do not leak across other test
+  // files that exercise the same registry.
+  const { datastoreTypeRegistry } = await import(
+    "../domain/datastore/datastore_type_registry.ts"
+  );
+
+  let pullCount = 0;
+  let pushCount = 0;
+  const typeName = "test-skip-implicit-sync";
+
+  if (!datastoreTypeRegistry.has(typeName)) {
+    datastoreTypeRegistry.register({
+      type: typeName,
+      name: "Test skipImplicitSync",
+      description: "Test extension for the skipImplicitSync wiring",
+      isBuiltIn: false,
+      createProvider: () => ({
+        createLock: () => ({
+          acquire: () => Promise.resolve(),
+          release: () => Promise.resolve(),
+          withLock: <T>(fn: () => Promise<T>) => fn(),
+          inspect: () => Promise.resolve(null),
+          forceRelease: () => Promise.resolve(true),
+        }),
+        createVerifier: () => ({
+          verify: () =>
+            Promise.resolve({
+              healthy: true,
+              message: "ok",
+              latencyMs: 1,
+              datastoreType: typeName,
+            }),
+        }),
+        resolveDatastorePath: (repoDir: string) => `${repoDir}/.test-store`,
+        resolveCachePath: (repoDir: string) => `${repoDir}/.test-cache`,
+        createSyncService: () => ({
+          pullChanged: () => {
+            pullCount++;
+            return Promise.resolve(0);
+          },
+          pushChanged: () => {
+            pushCount++;
+            return Promise.resolve(0);
+          },
+          markDirty: () => Promise.resolve(),
+        }),
+      }),
+    });
+  }
+
+  await withTempDir(async (dir) => {
+    await initializeRepo(dir);
+    await configureExtensionDatastore(dir, typeName);
+
+    pullCount = 0;
+    pushCount = 0;
+
+    await requireInitializedRepo({
+      repoDir: dir,
+      outputMode: "json",
+      skipImplicitSync: true,
+    });
+
+    assertEquals(
+      pullCount,
+      0,
+      "skipImplicitSync must prevent the coordinator's implicit pull",
+    );
+
+    // Flush should also not trigger an implicit push, since the sync
+    // service was never registered with the coordinator.
+    await flushDatastoreSync();
+
+    assertEquals(
+      pushCount,
+      0,
+      "skipImplicitSync must prevent the coordinator's implicit push on flush",
+    );
+  });
+});
+
+Deno.test("requireInitializedRepo - default behavior still triggers coordinator pull", async () => {
+  // Sanity check that omitting skipImplicitSync preserves the existing
+  // implicit-pull behavior write commands depend on.
+  const { datastoreTypeRegistry } = await import(
+    "../domain/datastore/datastore_type_registry.ts"
+  );
+
+  let pullCount = 0;
+  const typeName = "test-default-implicit-sync";
+
+  if (!datastoreTypeRegistry.has(typeName)) {
+    datastoreTypeRegistry.register({
+      type: typeName,
+      name: "Test default implicit sync",
+      description: "Test extension for default coordinator wiring",
+      isBuiltIn: false,
+      createProvider: () => ({
+        createLock: () => ({
+          acquire: () => Promise.resolve(),
+          release: () => Promise.resolve(),
+          withLock: <T>(fn: () => Promise<T>) => fn(),
+          inspect: () => Promise.resolve(null),
+          forceRelease: () => Promise.resolve(true),
+        }),
+        createVerifier: () => ({
+          verify: () =>
+            Promise.resolve({
+              healthy: true,
+              message: "ok",
+              latencyMs: 1,
+              datastoreType: typeName,
+            }),
+        }),
+        resolveDatastorePath: (repoDir: string) => `${repoDir}/.test-store`,
+        resolveCachePath: (repoDir: string) => `${repoDir}/.test-cache`,
+        createSyncService: () => ({
+          pullChanged: () => {
+            pullCount++;
+            return Promise.resolve(0);
+          },
+          pushChanged: () => Promise.resolve(0),
+          markDirty: () => Promise.resolve(),
+        }),
+      }),
+    });
+  }
+
+  await withTempDir(async (dir) => {
+    await initializeRepo(dir);
+    await configureExtensionDatastore(dir, typeName);
+
+    pullCount = 0;
+
+    await requireInitializedRepo({
+      repoDir: dir,
+      outputMode: "json",
+    });
+
+    assertEquals(
+      pullCount,
+      1,
+      "default requireInitializedRepo must run the coordinator's implicit pull exactly once",
+    );
+
+    await flushDatastoreSync();
+  });
+});

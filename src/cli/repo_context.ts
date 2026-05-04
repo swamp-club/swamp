@@ -122,6 +122,17 @@ async function resolveCustomProvider(
 export interface RequireRepoOptions {
   repoDir: string;
   outputMode: OutputMode;
+  /**
+   * Skip the coordinator's implicit pull-at-startup and push-at-flush.
+   * The lock is still acquired (so concurrent writers are blocked), but
+   * no sync service is registered with the coordinator. Used by the
+   * `swamp datastore sync` command, which owns its own pull/push and
+   * must not race with the coordinator's implicit phase — without this
+   * flag the implicit pull silently moves files and the explicit pull
+   * fast-paths to 0, causing `filesPulled: 0` to be reported even when
+   * data was hydrated. See lab #220.
+   */
+  skipImplicitSync?: boolean;
 }
 
 /**
@@ -341,14 +352,24 @@ export function requireInitializedRepo(
         await ensureDir(datastoreConfig.cachePath);
       }
 
+      // When skipImplicitSync is set, register only the lock — no sync
+      // service. The implicit pull at startup and push at flush are both
+      // skipped; the caller (e.g. `swamp datastore sync`) owns sync I/O
+      // explicitly. The repository factory below still receives the
+      // syncService for its markDirty hooks, but cache writes from the
+      // explicit sync command don't go through repositories so this is
+      // a no-op in practice.
+      const registerService = options.skipImplicitSync
+        ? undefined
+        : syncService;
       await registerDatastoreSync({
-        service: syncService,
+        service: registerService,
         lock,
         label: datastoreConfig.type,
         syncTimeoutMs: resolveSyncTimeoutMs(datastoreConfig),
       });
       // Invalidate catalog after pull so next query backfills from fresh data
-      if (syncService) {
+      if (registerService) {
         needsCatalogInvalidation = true;
       }
     } else if (datastoreConfig.type === "filesystem") {

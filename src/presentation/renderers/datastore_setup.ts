@@ -53,6 +53,9 @@ class LogDatastoreSetupRenderer implements Renderer<DatastoreSetupEvent> {
             formatBytes(data.bytesCopied)
           })`,
         );
+        if (data.filesPulled > 0) {
+          lines.push(`  Hydrated: ${data.filesPulled} pulled`);
+        }
         lines.push(`  Dirs:     ${data.directoriesMigrated.join(", ")}`);
 
         if (data.errors.length > 0) {

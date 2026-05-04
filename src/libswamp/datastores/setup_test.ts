@@ -157,6 +157,8 @@ function createStubProvider(
     healthy?: boolean;
     message?: string;
     hasSyncService?: boolean;
+    pullResult?: number | (() => Promise<number | void>);
+    pushResult?: () => Promise<number | void>;
   },
 ): DatastoreProvider {
   const healthy = overrides?.healthy ?? true;
@@ -183,8 +185,17 @@ function createStubProvider(
     ...(overrides?.hasSyncService !== false
       ? {
         createSyncService: () => ({
-          pullChanged: () => Promise.resolve(),
-          pushChanged: () => Promise.resolve(),
+          pullChanged: () => {
+            if (typeof overrides?.pullResult === "function") {
+              return overrides.pullResult();
+            }
+            if (typeof overrides?.pullResult === "number") {
+              return Promise.resolve(overrides.pullResult);
+            }
+            return Promise.resolve();
+          },
+          pushChanged: () =>
+            overrides?.pushResult ? overrides.pushResult() : Promise.resolve(),
           markDirty: () => Promise.resolve(),
         }),
       }
@@ -200,6 +211,8 @@ function ensureTestExtensionType(
     healthy?: boolean;
     message?: string;
     hasSyncService?: boolean;
+    pullResult?: number | (() => Promise<number | void>);
+    pushResult?: () => Promise<number | void>;
   },
 ): void {
   if (!datastoreTypeRegistry.has(type)) {
@@ -214,6 +227,8 @@ function ensureTestExtensionType(
           healthy: opts?.healthy,
           message: opts?.message,
           hasSyncService: opts?.hasSyncService,
+          pullResult: opts?.pullResult,
+          pushResult: opts?.pushResult,
         }),
     });
   }
@@ -349,4 +364,153 @@ Deno.test("datastoreSetupExtension: errors on non-upgraded repo", async () => {
   const error = events[1] as Extract<DatastoreSetupEvent, { kind: "error" }>;
   assertEquals(error.kind, "error");
   assertEquals(error.error.code, "validation_failed");
+});
+
+// ============================================================================
+// Cache hydration tests (issue #220)
+//
+// Setup must pull existing remote data into the local cache regardless of
+// whether --skip-migration was used. Migration moves data UP (local →
+// remote); hydration moves data DOWN (remote → local). A contributor
+// joining a populated remote needs hydration even when there is nothing
+// local to migrate.
+// ============================================================================
+
+Deno.test("datastoreSetupExtension: skip-migration pulls populated remote into cache", async () => {
+  ensureTestExtensionType("test-ext-hydrate-skip", {
+    pullResult: 17,
+  });
+  const deps = makeDeps();
+  const input = makeExtensionInput({
+    type: "test-ext-hydrate-skip",
+    skipMigration: true,
+  });
+
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupExtension(createLibSwampContext(), deps, input),
+  );
+
+  const completed = events[events.length - 1] as Extract<
+    DatastoreSetupEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.kind, "completed");
+  assertEquals(completed.data.filesCopied, 0);
+  assertEquals(completed.data.filesPulled, 17);
+  assertEquals(completed.data.errors, []);
+});
+
+Deno.test("datastoreSetupExtension: skip-migration with empty remote is a no-op pull", async () => {
+  ensureTestExtensionType("test-ext-hydrate-empty", {
+    pullResult: 0,
+  });
+  const deps = makeDeps();
+  const input = makeExtensionInput({
+    type: "test-ext-hydrate-empty",
+    skipMigration: true,
+  });
+
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupExtension(createLibSwampContext(), deps, input),
+  );
+
+  const completed = events[events.length - 1] as Extract<
+    DatastoreSetupEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.kind, "completed");
+  assertEquals(completed.data.filesPulled, 0);
+  assertEquals(completed.data.errors, []);
+});
+
+Deno.test("datastoreSetupExtension: default path migrates and then hydrates", async () => {
+  ensureTestExtensionType("test-ext-migrate-and-hydrate", {
+    pullResult: 4,
+  });
+  const deps = makeDeps();
+  const input = makeExtensionInput({
+    type: "test-ext-migrate-and-hydrate",
+    skipMigration: false,
+  });
+
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupExtension(createLibSwampContext(), deps, input),
+  );
+
+  const completed = events[events.length - 1] as Extract<
+    DatastoreSetupEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.kind, "completed");
+  // makeDeps default migrateData returns filesCopied: 5
+  assertEquals(completed.data.filesCopied, 5);
+  assertEquals(completed.data.filesPulled, 4);
+  assertEquals(completed.data.errors, []);
+});
+
+Deno.test("datastoreSetupExtension: pull failure surfaces in errors and blocks .swamp.yaml writeback", async () => {
+  ensureTestExtensionType("test-ext-pull-fail", {
+    pullResult: () => Promise.reject(new Error("network unreachable")),
+  });
+  let configUpdated = false;
+  let cleanupCalled = false;
+  const deps = makeDeps({
+    updateRepoConfig: () => {
+      configUpdated = true;
+      return Promise.resolve();
+    },
+    cleanupSourceDirs: () => {
+      cleanupCalled = true;
+      return Promise.resolve();
+    },
+  });
+  const input = makeExtensionInput({
+    type: "test-ext-pull-fail",
+    skipMigration: true,
+  });
+
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupExtension(createLibSwampContext(), deps, input),
+  );
+
+  const completed = events[events.length - 1] as Extract<
+    DatastoreSetupEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.kind, "completed");
+  assertEquals(completed.data.errors.length, 1);
+  assertStringIncludes(completed.data.errors[0], "network unreachable");
+  assertEquals(
+    configUpdated,
+    false,
+    "pull failure must prevent .swamp.yaml writeback",
+  );
+  assertEquals(
+    cleanupCalled,
+    false,
+    "pull failure must keep migrated .swamp/ dirs intact for retry",
+  );
+});
+
+Deno.test("datastoreSetupExtension: extension without sync service skips push and pull cleanly", async () => {
+  ensureTestExtensionType("test-ext-no-sync", {
+    hasSyncService: false,
+  });
+  const deps = makeDeps();
+  const input = makeExtensionInput({
+    type: "test-ext-no-sync",
+    skipMigration: true,
+  });
+
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupExtension(createLibSwampContext(), deps, input),
+  );
+
+  const completed = events[events.length - 1] as Extract<
+    DatastoreSetupEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.kind, "completed");
+  assertEquals(completed.data.filesPulled, 0);
+  assertEquals(completed.data.errors, []);
 });
