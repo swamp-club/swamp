@@ -290,6 +290,16 @@ Deno.test("ExtensionRepository: saveAll([vN.tombstoneAll(), vN+1]) succeeds when
 // Guards against a future regression where saveAll iterates in a way
 // that lets one extension's mid-loop intermediate state leak into
 // another's diff (e.g., I-Repo-1 fired mid-loop on a transient state).
+//
+// **Note on plan v4 step 9's literal form.** The plan describes
+// `saveAll([v2, tombstoneAll(v1)])` (inverted order, single extension).
+// That form isn't tested separately because the catalog's primary key
+// is `source_path`: v1 and v2 of the same extension share the same
+// source_path, which means they share the same row. "Order matters /
+// doesn't matter" within a single source_path is a no-op concept.
+// This bulk-upgrade test (two distinct extensions, distinct rows)
+// exercises the meaningful generalization of the order-independence
+// claim.
 Deno.test("ExtensionRepository: saveAll bulk-upgrade is order-independent across extensions", () => {
   function bulkUpgrade(repoRoot: string): {
     pairs: ReadonlyArray<readonly [Extension, Extension]>;
