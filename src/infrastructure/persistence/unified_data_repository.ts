@@ -1382,15 +1382,13 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       // Re-scan actual versions after parallel deletions to avoid stale marker.
       // Skip for dry-run — nothing was actually removed.
       if (!dryRun && versionsToRemove.length > 0) {
-        // Drop catalog rows for the versions that were removed from disk.
-        for (const removedVersion of versionsToRemove) {
-          this.catalogStore.removeVersion(
-            type.normalized,
-            modelId,
-            data.name,
-            removedVersion,
-          );
-        }
+        // Drop catalog rows for all removed versions in one transaction.
+        this.catalogStore.bulkRemoveVersions(
+          type.normalized,
+          modelId,
+          data.name,
+          versionsToRemove,
+        );
 
         const currentVersions = await this.listVersions(
           type,

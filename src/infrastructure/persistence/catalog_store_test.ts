@@ -522,6 +522,66 @@ Deno.test("CatalogStore: migrates v1 catalog DB to v2 without throwing", () => {
   store.close();
 });
 
+Deno.test("CatalogStore: bulkRemoveVersions deletes all specified versions atomically", () => {
+  const dbPath = makeTempDbPath();
+  const store = new CatalogStore(dbPath);
+
+  store.upsertNewVersion(makeRow({ version: 1 }));
+  store.upsertNewVersion(makeRow({ version: 2 }));
+  store.upsertNewVersion(makeRow({ version: 3 }));
+  store.upsertNewVersion(makeRow({ version: 4 }));
+
+  store.bulkRemoveVersions("test-model", "model-001", "my-data", [1, 2, 3]);
+
+  const rows = [...store.iterate()];
+  assertEquals(rows.length, 1);
+  assertEquals(rows[0].version, 4);
+  store.close();
+});
+
+Deno.test("CatalogStore: bulkRemoveVersions is a no-op for empty array", () => {
+  const dbPath = makeTempDbPath();
+  const store = new CatalogStore(dbPath);
+
+  store.upsertNewVersion(makeRow({ version: 1 }));
+  store.bulkRemoveVersions("test-model", "model-001", "my-data", []);
+
+  assertEquals(store.count(), 1);
+  store.close();
+});
+
+Deno.test("CatalogStore: checkpoint returns WAL page counts and truncates WAL", () => {
+  const dbPath = makeTempDbPath();
+  const store = new CatalogStore(dbPath);
+
+  // Write enough rows to force WAL pages to accumulate
+  for (let i = 0; i < 50; i++) {
+    store.upsertNewVersion(
+      makeRow({ model_id: `m-${i}`, data_name: `d-${i}`, version: 1 }),
+    );
+  }
+
+  const stats = store.checkpoint();
+
+  // WAL must have been checkpointed (all pages written to main db)
+  assertEquals(
+    stats.walPagesCheckpointed,
+    stats.walPagesTotal,
+    "Expected full checkpoint — all WAL pages should be written to main db",
+  );
+
+  // WAL file should be gone or empty after TRUNCATE
+  try {
+    const walStat = Deno.statSync(dbPath + "-wal");
+    assertEquals(walStat.size, 0, "WAL file should be truncated to zero bytes");
+  } catch (e) {
+    if (!(e instanceof Deno.errors.NotFound)) throw e;
+    // WAL file not present — also correct after TRUNCATE
+  }
+
+  store.close();
+});
+
 Deno.test("CatalogStore: invalidate clears populated flag but keeps data", () => {
   const dbPath = makeTempDbPath();
   const store = new CatalogStore(dbPath);
