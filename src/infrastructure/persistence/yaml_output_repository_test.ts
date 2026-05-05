@@ -493,3 +493,204 @@ Deno.test(
     });
   },
 );
+
+// Wraps `Deno.readDir` so that a single chosen path yields a phantom
+// entry before its real entries. The phantom points to nothing on disk,
+// so when production code follows up with `Deno.readTextFile` or
+// `Deno.readDir` on it, the syscall throws `NotFound` naturally —
+// deterministically exercising the TOCTOU window. Returns a restore
+// function that must be called in `finally`. We monkey-patch the global
+// because the `find*`/`delete` walkers call `Deno.readDir` directly with
+// no injection point; the alternative ("remove file before call") only
+// triggers the race on platforms where readDir surfaces stale entries,
+// which isn't portable.
+function withPhantomReadDirEntry<T>(
+  targetDir: string,
+  phantom: Deno.DirEntry,
+  fn: () => Promise<T>,
+): Promise<T> {
+  const original = Deno.readDir;
+  const wrapped = (path: string | URL): AsyncIterable<Deno.DirEntry> => {
+    const realIter = original(path);
+    const matchPath = typeof path === "string" ? path : path.pathname;
+    if (matchPath === targetDir) {
+      return (async function* () {
+        yield phantom;
+        yield* realIter;
+      })();
+    }
+    return realIter;
+  };
+  (Deno as { readDir: typeof Deno.readDir }).readDir = wrapped;
+  return fn().finally(() => {
+    (Deno as { readDir: typeof Deno.readDir }).readDir = original;
+  });
+}
+
+Deno.test(
+  "findAll: method directory deleted mid-iteration is skipped, not fatal",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+
+      // Seed one real output under method "run". We then inject a
+      // phantom method-dir entry into readDir(typeDir); production
+      // code calls readDir(phantomMethodDir) and gets NotFound.
+      // Pre-fix: NotFound escapes the inner for-await to the outer
+      // catch, returns [], discarding `keep`.
+      const keep = await makeOutput(repo, new Date());
+
+      const typeDir = join(
+        dir,
+        ".swamp",
+        "outputs",
+        registeredType.normalized,
+      );
+      const phantom: Deno.DirEntry = {
+        name: "phantom-method",
+        isFile: false,
+        isDirectory: true,
+        isSymlink: false,
+      };
+
+      const found = await withPhantomReadDirEntry(
+        typeDir,
+        phantom,
+        () => repo.findAll(registeredType),
+      );
+
+      assertEquals(found.length, 1);
+      assertEquals(found[0].id, keep.id);
+    });
+  },
+);
+
+Deno.test(
+  "findAllGlobalSince: method directory deleted mid-iteration is skipped, not fatal",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+
+      // Same shape as above, against the per-model-type walker. Pre-fix:
+      // NotFound from readDir(phantomMethodDir) escapes to the per-type
+      // catch which `continue`s past the entire current model type,
+      // discarding results already pushed for it.
+      const keep = await makeOutput(repo, new Date());
+
+      const typeDir = join(
+        dir,
+        ".swamp",
+        "outputs",
+        registeredType.normalized,
+      );
+      const phantom: Deno.DirEntry = {
+        name: "phantom-method",
+        isFile: false,
+        isDirectory: true,
+        isSymlink: false,
+      };
+
+      const cutoff = new Date(Date.now() - 60 * 60 * 1000);
+      const found = await withPhantomReadDirEntry(
+        typeDir,
+        phantom,
+        () => repo.findAllGlobalSince(cutoff),
+      );
+
+      assertEquals(found.length, 1);
+      assertEquals(found[0].output.id, keep.id);
+    });
+  },
+);
+
+Deno.test(
+  "findById: non-target file deleted mid-iteration still returns target",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+
+      // Seed the target. Inject a phantom .yaml entry into the method
+      // dir's readDir so production code reads it before reaching the
+      // real target file. Pre-fix: NotFound from readTextFile on the
+      // phantom escapes the outer catch and returns null even though
+      // the target exists.
+      const target = await makeOutput(repo, new Date());
+
+      const methodDir = join(
+        dir,
+        ".swamp",
+        "outputs",
+        registeredType.normalized,
+        "run",
+      );
+      const phantom: Deno.DirEntry = {
+        name: "phantom-non-target.yaml",
+        isFile: true,
+        isDirectory: false,
+        isSymlink: false,
+      };
+
+      const found = await withPhantomReadDirEntry(
+        methodDir,
+        phantom,
+        () => repo.findById(registeredType, "run", target.id),
+      );
+
+      assertEquals(found?.id, target.id);
+    });
+  },
+);
+
+Deno.test(
+  "delete: non-target file deleted mid-iteration still deletes target",
+  async () => {
+    await withTempDir(async (dir) => {
+      // Capture markDirty so we can assert notifyDirty fires for the
+      // target's path. Pre-fix, a NotFound on a non-target file aborts
+      // the search before the match is found — notifyDirty never fires
+      // and the target survives.
+      const dirtyPaths: string[] = [];
+      const markDirty = (path?: string): Promise<void> => {
+        if (path) dirtyPaths.push(path);
+        return Promise.resolve();
+      };
+      const repo = new YamlOutputRepository(dir, undefined, markDirty);
+
+      const target = await makeOutput(repo, new Date());
+      const targetPath = repo.getPath(registeredType, "run", target);
+
+      // Reset dirty log: makeOutput's save called markDirty already.
+      dirtyPaths.length = 0;
+
+      const methodDir = join(
+        dir,
+        ".swamp",
+        "outputs",
+        registeredType.normalized,
+        "run",
+      );
+      const phantom: Deno.DirEntry = {
+        name: "phantom-non-target.yaml",
+        isFile: true,
+        isDirectory: false,
+        isSymlink: false,
+      };
+
+      await withPhantomReadDirEntry(
+        methodDir,
+        phantom,
+        () => repo.delete(registeredType, "run", target.id),
+      );
+
+      // Target file must be gone.
+      assertEquals(
+        await repo.findById(registeredType, "run", target.id),
+        null,
+      );
+
+      // notifyDirty must have fired with the target's path.
+      assertEquals(dirtyPaths.length, 1);
+      assertEquals(dirtyPaths[0], targetPath);
+    });
+  },
+);

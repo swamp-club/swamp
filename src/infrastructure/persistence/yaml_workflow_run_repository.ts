@@ -74,6 +74,16 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
   ): Promise<WorkflowRun | null> {
     const dir = this.getRunsDir(workflowId);
 
+    // No per-file try/catch around readTextFile here — unlike the
+    // analogous YamlOutputRepository.findById, the entry.name filter
+    // restricts readTextFile to the target file only (filenames are
+    // `workflow-run-${runId}.yaml`; runIds are 36-char UUIDs that
+    // never substring-match each other, and atomicWriteTextFile's
+    // `.{freshUuid}.tmp` files don't contain the runId). The only
+    // NotFound readTextFile can raise is for the target's own
+    // concurrent deletion, for which returning null is correct. If
+    // this filter is ever relaxed, add the per-file try/catch +
+    // continue pattern used in YamlOutputRepository.findById.
     try {
       for await (const entry of Deno.readDir(dir)) {
         if (
