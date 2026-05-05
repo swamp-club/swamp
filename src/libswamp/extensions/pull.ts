@@ -199,6 +199,18 @@ export interface ExtensionPullDeps {
   repoDir: string;
   alreadyPulled: Set<string>;
   depth: number;
+  /**
+   * Test seam (W2 Pin 2). Defaults to the real {@link installExtension}
+   * from this module; tests inject a stub so the
+   * {@link ExtensionPullEvent} stream can be exercised without a real
+   * registry, tarball, or filesystem write. Production callers always
+   * leave this unset — `extensionPull` falls back to the real
+   * `installExtension` automatically.
+   */
+  installExtensionFn?: (
+    ref: ExtensionRef,
+    ctx: InstallContext,
+  ) => Promise<InstallResult | undefined>;
 }
 
 /**
@@ -1126,7 +1138,8 @@ export async function* extensionPull(
       };
 
       // Let ConflictError propagate — CLI catches it for the two-phase prompt flow
-      const result = await installExtension(input.ref, installCtx);
+      const install = deps.installExtensionFn ?? installExtension;
+      const result = await install(input.ref, installCtx);
       if (result) {
         if (result.pruned.length > 0) {
           yield {
