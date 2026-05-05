@@ -873,16 +873,148 @@ ignored by migration rather than swept.
 
 ## Removal
 
-Installed extensions can be removed with `extension rm`. Removal deletes all
-files tracked in the extension's `files` array in `upstream_extensions.json`,
-prunes empty parent directories, and removes the entry from the tracking file.
+Installed extensions can be removed with `extension rm`. Removal first
+tombstones the extension's catalog rows (so its `(kind, type)` slots are
+released atomically in one SQLite transaction), then removes the lockfile
+entry, then deletes the on-disk files tracked in
+`upstream_extensions.json` and prunes empty parent directories.
 
 If other installed extensions list the target as a dependency (detected by
 scanning their `manifest.yaml` files on disk), a warning is displayed before
 proceeding.
 
+A double-rm yields a clean `Extension <name> is not installed.` user
+error on the second call — the lifecycle service decides "not installed"
+when both the catalog AND the lockfile confirm absence, so partial-state
+extensions still rm cleanly.
+
 Extensions pulled before file tracking was added cannot be removed cleanly —
 the user is prompted to re-pull with `--force` to populate the file list first.
+
+## Lifecycle Services
+
+`InstallExtensionService`, `RemoveExtensionService`, and
+`UpgradeExtensionService` (in `src/libswamp/extensions/`) are the three
+narrow seams through which the catalog gets written. The CLI command
+files do not call the catalog directly — they construct the appropriate
+service and call `execute(...)`. This is the W2 split that closed
+[swamp-club#201](https://swamp-club.com/issues/201) (rm now prunes
+catalog rows) and unblocks the W3+ unified-loader work.
+
+### Asymmetric ordering
+
+Install is **filesystem → lockfile → catalog**. Remove is the
+**inverse**: **catalog → lockfile → filesystem**.
+
+The asymmetry is not aesthetic. If rm went filesystem-first, the catalog
+would briefly point at deleted bundle files and any concurrent type
+resolution would crash for that window. Catalog-first means a mid-rm
+crash leaves files on disk but the catalog clean — the next loader pass
+surfaces the orphans via `findStaleFiles`. Symmetrically, install
+catalog-last means a mid-install crash leaves on-disk files + lockfile
+entry but no catalog rows; the next loader pass rebuilds the catalog
+from the on-disk content via the existing cold-start path.
+
+### Phase 8: synchronous type extraction at install
+
+After the install service has written files to disk and the lockfile
+entry, **phase 8** walks the per-extension subtree, calls each loader's
+`bundleAndIndexOne(args)` for every source file, builds an `Extension`
+aggregate whose Sources land in `Indexed` state with
+`(kind, typeNormalized, bundlePath)` populated, and commits via
+`repository.saveAll([extension])` in one SQLite transaction. The
+repository's I-Repo-1 invariant — no two non-tombstoned Sources may
+share `(kind, typeNormalized)` — fires synchronously at install time
+rather than at the next steady-state loader pass. This is the
+user-visible payoff of the W2 split: a cross-extension type collision
+surfaces as a clean `DuplicateTypeUserError` *before* the user sees a
+"successfully pulled" message.
+
+`bundleAndIndexOne` is a strict per-loader contract: it bundles + type-
+extracts + returns metadata, but **does not write to the catalog**. The
+lifecycle service is the catalog-write owner — keeping it that way is
+what lets I-Repo-1 fire on every install consistently.
+
+### Atomic upgrade pattern
+
+For every new aggregate the install service is about to save, it
+tombstones any existing aggregate with the *same name* but a *different
+version*, then submits everything to `saveAll` in one transaction:
+
+```
+saveAll([tombstoneAll(v1), ..., v2])
+```
+
+I-Repo-1 evaluates the **post-save** state, so the slot is held by
+exactly one occupant: the new version. Without this pattern,
+force-pulling an already-installed extension (or any version-bump pull)
+would fail with `DuplicateTypeError` even though the only "conflict" is
+the user's own prior version. Re-installs of the same version skip the
+tombstone — the diff-save in `saveAll` handles overwrite semantics.
+
+`UpgradeExtensionService` is a thin facade over
+`InstallExtensionService.execute(...)` that lets call sites express
+upgrade intent at the call site; the atomic-tombstone logic lives
+inside the install service's phase 8.
+
+### FS rollback on DuplicateTypeError
+
+A genuine cross-extension `DuplicateTypeError` (two different extensions
+trying to claim the same `(kind, typeNormalized)`) triggers an explicit
+filesystem rollback before the error propagates: extracted files are
+deleted and the lockfile entry is restored to its pre-install state.
+SQLite ROLLBACK does not undo filesystem mutations, so the service does
+this work explicitly. The error then propagates as a
+`DuplicateTypeUserError` (a `UserError` subclass) so the top-level CLI
+handler renders a clean single-line message in log mode and a structured
+`duplicateType` object in `--json` mode:
+
+```json
+{
+  "error": "Type \"@scope/foo\" (kind=model) is already claimed by ...",
+  "duplicateType": {
+    "kind": "model",
+    "type": "@scope/foo",
+    "existing":    { "extensionName": "...", "extensionVersion": "...", "canonicalPath": "..." },
+    "conflicting": { "extensionName": "...", "extensionVersion": "...", "canonicalPath": "..." }
+  }
+}
+```
+
+The user-visible message points the user at
+`swamp extension rm <existing-name>` to recover.
+
+### Bounded atomicity
+
+Each `execute(...)` is its own transaction. Bulk operations
+(`extension update` over N extensions) run N independent transactions —
+not one all-or-nothing batch. If extension A's upgrade rolls back due
+to a collision with unchanged extension B, every other extension
+already-upgraded in the bulk run **stays upgraded**. This is the
+explicit bounded-atomicity contract: the unit of atomicity is the
+single extension, never a multi-extension run.
+
+### Crash-state recovery
+
+A generic non-`DuplicateTypeError` failure inside `repository.saveAll`
+(SQLite I/O error, OOM, process kill mid-commit) leaves the catalog in
+its pre-save state via SQLite ROLLBACK. The filesystem and lockfile are
+**not** auto-rolled-back — only `DuplicateTypeError` triggers FS
+rollback. A retry succeeds: the diff-save in `saveAll` reconciles the
+catalog against the on-disk + lockfile state.
+
+For rm, the catalog tombstone is the **first** mutation, so a fault
+inside that `saveAll` leaves all three layers (catalog, lockfile, FS)
+in their pre-rm state — a retry is a clean re-rm.
+
+### W3+ inheritance
+
+The lifecycle services' shape is W3-stable. The unified loader
+(`KindAdapter`) work in W3 collapses the five per-loader
+`bundleAndIndexOne` methods to one dispatch, but the install/remove/
+upgrade services keep their current public surface. CLI command files'
+direct service construction (in `extension_pull.ts`,
+`extension_update.ts`, `extension_rm.ts`, etc.) persists past W3.
 
 ## Lazy Per-Bundle Loading
 
