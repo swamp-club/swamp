@@ -43,6 +43,7 @@ export interface DataSearchItem {
   createdAt: string;
   tags: Record<string, string>;
   workflowTag?: string;
+  jobTag?: string;
   stepTag?: string;
 }
 
@@ -303,6 +304,7 @@ export async function* dataSearch(
           createdAt: data.createdAt.toISOString(),
           tags: data.tags,
           workflowTag: data.tags.workflow,
+          jobTag: data.tags.job,
           stepTag: data.tags.step,
         });
       }

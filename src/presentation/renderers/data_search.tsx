@@ -122,7 +122,7 @@ class InkDataSearchRenderer implements DataSearchRenderer {
           (item) =>
             `${item.name} ${item.modelName} ${item.modelType} ${item.type} ${
               item.workflowTag ?? ""
-            } ${item.stepTag ?? ""} ${
+            } ${item.jobTag ?? ""} ${item.stepTag ?? ""} ${
               Object.entries(item.tags).map(([k, v]) => `${k}=${v}`).join(" ")
             }`,
           renderDataResultLine,
@@ -179,6 +179,7 @@ function buildMetadataMarkdown(item: DataSearchItem): string {
   ];
 
   if (item.workflowTag) lines.push(`**Workflow:** ${item.workflowTag}`);
+  if (item.jobTag) lines.push(`**Job:** ${item.jobTag}`);
   if (item.stepTag) lines.push(`**Step:** ${item.stepTag}`);
 
   if (tagEntries.length > 0) {

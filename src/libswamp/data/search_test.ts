@@ -158,6 +158,45 @@ Deno.test("dataSearch: filters by tags with AND logic", async () => {
   assertEquals(completed.data.results[0].id, "d1");
 });
 
+Deno.test("dataSearch: surfaces workflowTag/jobTag/stepTag from data tags", async () => {
+  const items = [
+    makeDataItem({
+      id: "d1",
+      tags: { workflow: "my-wf", job: "my-job", step: "my-step" },
+    }),
+  ];
+  const deps = makeDeps(items);
+  const events = await collect<DataSearchEvent>(
+    dataSearch(createLibSwampContext(), deps, {}),
+  );
+
+  const completed = events[1] as Extract<
+    DataSearchEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.data.results.length, 1);
+  assertEquals(completed.data.results[0].workflowTag, "my-wf");
+  assertEquals(completed.data.results[0].jobTag, "my-job");
+  assertEquals(completed.data.results[0].stepTag, "my-step");
+});
+
+Deno.test("dataSearch: jobTag is undefined when data has no job tag", async () => {
+  const items = [
+    makeDataItem({ id: "d1", tags: {} }),
+  ];
+  const deps = makeDeps(items);
+  const events = await collect<DataSearchEvent>(
+    dataSearch(createLibSwampContext(), deps, {}),
+  );
+
+  const completed = events[1] as Extract<
+    DataSearchEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.data.results.length, 1);
+  assertEquals(completed.data.results[0].jobTag, undefined);
+});
+
 Deno.test("dataSearch: yields error when model not found", async () => {
   const deps = makeDeps([], {
     findDefinitionByIdOrName: () => Promise.resolve(null),
