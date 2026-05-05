@@ -278,6 +278,95 @@ Deno.test("ExtensionRepository: saveAll([vN.tombstoneAll(), vN+1]) succeeds when
   });
 });
 
+// ===== Test #5b: bulk-upgrade order-independence (W2 plan v4 step 9) =====
+//
+// Bulk extension upgrade processes N independent
+// `(tombstoneAll(vN), vN+1)` pairs in one saveAll. Different extensions
+// occupy disjoint pulled-extensions subtrees, so the order in which
+// pairs are submitted to saveAll must NOT change the final catalog
+// state — and I-Repo-1 must evaluate the same post-save state either
+// way.
+//
+// Guards against a future regression where saveAll iterates in a way
+// that lets one extension's mid-loop intermediate state leak into
+// another's diff (e.g., I-Repo-1 fired mid-loop on a transient state).
+Deno.test("ExtensionRepository: saveAll bulk-upgrade is order-independent across extensions", () => {
+  function bulkUpgrade(repoRoot: string): {
+    pairs: ReadonlyArray<readonly [Extension, Extension]>;
+  } {
+    const a1 = pulledExtension({
+      repoRoot,
+      name: "@scope/a",
+      version: "1.0.0",
+      sources: [{ relPath: "models/a-old.ts", type: "@scope/a/instance" }],
+    });
+    const a2 = pulledExtension({
+      repoRoot,
+      name: "@scope/a",
+      version: "2.0.0",
+      sources: [{ relPath: "models/a-new.ts", type: "@scope/a/instance" }],
+    });
+    const b1 = pulledExtension({
+      repoRoot,
+      name: "@scope/b",
+      version: "1.0.0",
+      sources: [{ relPath: "models/b-old.ts", type: "@scope/b/instance" }],
+    });
+    const b2 = pulledExtension({
+      repoRoot,
+      name: "@scope/b",
+      version: "2.0.0",
+      sources: [{ relPath: "models/b-new.ts", type: "@scope/b/instance" }],
+    });
+    return {
+      pairs: [
+        [a1, a2],
+        [b1, b2],
+      ],
+    };
+  }
+
+  // Canonical order: A's tombstone+save, then B's tombstone+save.
+  let canonicalState: { name: string; version: string }[] = [];
+  withRepository((repo, _cat, repoRoot) => {
+    const { pairs } = bulkUpgrade(repoRoot);
+    for (const [v1, _] of pairs) repo.save(v1);
+    repo.saveAll([
+      tombstoneAll(pairs[0][0]),
+      pairs[0][1],
+      tombstoneAll(pairs[1][0]),
+      pairs[1][1],
+    ]);
+    canonicalState = repo.loadAll().map((e) => ({
+      name: e.name,
+      version: e.version,
+    })).sort((a, b) => a.name.localeCompare(b.name));
+  });
+
+  // Inverted order: B's tombstone+save, then A's tombstone+save.
+  let invertedState: { name: string; version: string }[] = [];
+  withRepository((repo, _cat, repoRoot) => {
+    const { pairs } = bulkUpgrade(repoRoot);
+    for (const [v1, _] of pairs) repo.save(v1);
+    repo.saveAll([
+      tombstoneAll(pairs[1][0]),
+      pairs[1][1],
+      tombstoneAll(pairs[0][0]),
+      pairs[0][1],
+    ]);
+    invertedState = repo.loadAll().map((e) => ({
+      name: e.name,
+      version: e.version,
+    })).sort((a, b) => a.name.localeCompare(b.name));
+  });
+
+  assertEquals(canonicalState, invertedState);
+  assertEquals(canonicalState, [
+    { name: "@scope/a", version: "2.0.0" },
+    { name: "@scope/b", version: "2.0.0" },
+  ]);
+});
+
 // ===== Test #6: saveAll cross-extension DuplicateType reject + ROLLBACK =====
 Deno.test("ExtensionRepository: saveAll rejects cross-extension (kind, type) with ROLLBACK and names both paths", () => {
   withRepository((repo, cat, repoRoot) => {
