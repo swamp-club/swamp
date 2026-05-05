@@ -32,6 +32,7 @@ import {
   summarise,
 } from "../../libswamp/mod.ts";
 import { createSummariseRenderer } from "../../presentation/renderers/summarise.ts";
+import { UserError } from "../../domain/errors.ts";
 
 /**
  * `swamp summarise`
@@ -62,8 +63,11 @@ export const summariseCommand = new Command()
     const ctx = createContext(options as GlobalOptions, ["summarise"]);
     ctx.logger.debug`Generating activity summary`;
 
-    if (options.limit !== undefined && options.limit <= 0) {
-      throw new Error("--limit must be a positive integer");
+    if (
+      options.limit !== undefined &&
+      (options.limit <= 0 || !Number.isInteger(options.limit))
+    ) {
+      throw new UserError("--limit must be a positive integer");
     }
 
     const { repoContext } = await requireInitializedRepoReadOnly({
