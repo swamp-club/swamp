@@ -538,13 +538,27 @@ function readCatalogStressRows(repoDir: string): Array<{
 }
 
 /**
+ * Normalises a repo-relative path to forward-slash form for cross-OS-stable
+ * set comparison. The lockfile stores `files[]` using the host's native
+ * separator (e.g. backslashes on Windows); the on-disk walker uses
+ * `@std/path.join` which also emits native separators. We normalise both
+ * sides to forward slashes before comparing so invariant (iv) does not
+ * fire spuriously on Windows. Per CLAUDE.md, never compare path strings
+ * with raw `assertEquals` against forward-slash literals.
+ */
+function toForwardSlash(p: string): string {
+  return p.replace(/\\/g, "/");
+}
+
+/**
  * Lists FILES (not directories) under `.swamp/pulled-extensions/@stress/...`
- * as repo-relative paths. The W2 rm path deletes files from `files[]` and
- * prunes the deepest containing directory but does not aggressively prune
- * parents up to `pulled-extensions/` (verified against
- * integration/extension_rm_test.ts which only asserts file-level absence —
- * empty parent directories are an expected leftover, not orphan state).
- * The orphan-FS invariant is therefore on FILES, not directories.
+ * as repo-relative paths normalised to forward slashes. The W2 rm path
+ * deletes files from `files[]` and prunes the deepest containing directory
+ * but does not aggressively prune parents up to `pulled-extensions/`
+ * (verified against integration/extension_rm_test.ts which only asserts
+ * file-level absence — empty parent directories are an expected leftover,
+ * not orphan state). The orphan-FS invariant is therefore on FILES, not
+ * directories.
  */
 async function listOnDiskStressFiles(repoDir: string): Promise<Set<string>> {
   const root = join(repoDir, ".swamp", "pulled-extensions");
@@ -564,7 +578,7 @@ async function listOnDiskStressFiles(repoDir: string): Promise<Set<string>> {
       if (e.isDirectory) {
         await walk(sub, subRel);
       } else if (e.isFile || e.isSymlink) {
-        out.add(subRel);
+        out.add(toForwardSlash(subRel));
       }
     }
   }
@@ -705,11 +719,16 @@ async function checkInvariants(
   // by some lockfile entry's files[]. Empty parent directories are tolerated
   // (rm prunes the deepest empty dir but not all the way up to
   // pulled-extensions/ — see listOnDiskStressFiles).
+  //
+  // Both the on-disk walker output and the lockfile files[] strings are
+  // normalised to forward slashes (via toForwardSlash) so set membership
+  // works on Windows, where the lockfile records native backslash
+  // separators.
   const onDiskFiles = await listOnDiskStressFiles(repoDir);
   const lockfileFiles = new Set<string>();
   for (const [name, entry] of Object.entries(lockfile)) {
     if (!name.startsWith("@stress/")) continue;
-    for (const rel of entry.files ?? []) lockfileFiles.add(rel);
+    for (const rel of entry.files ?? []) lockfileFiles.add(toForwardSlash(rel));
   }
   for (const file of onDiskFiles) {
     if (!lockfileFiles.has(file)) {
