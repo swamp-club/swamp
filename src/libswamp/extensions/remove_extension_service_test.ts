@@ -25,6 +25,7 @@ import { InstallExtensionService } from "./install_extension_service.ts";
 import type { InstallContext, InstallResult } from "./pull.ts";
 import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
 import { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
+import { FaultingStubRepository } from "../../infrastructure/persistence/test_helpers/faulting_stub_repository.ts";
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import { swampPath } from "../../infrastructure/persistence/paths.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -394,6 +395,95 @@ Deno.test(
         assertEquals(lockfileRepository.getEntry(extA), null);
         assertEquals(repository.loadByName(extB).length, 1);
         assertEquals(lockfileRepository.getEntry(extB)?.version, "1.0.0");
+      },
+    );
+  },
+);
+
+// =============================================================
+// Crash-state recovery (W2 plan v4 step 10)
+// =============================================================
+//
+// Order: catalog tombstone-save → lockfile remove → FS delete. A fault
+// inside the catalog `saveAll` (the very FIRST mutation of rm) must
+// roll back via SQLite ROLLBACK so retry sees the extension still
+// installed. Lockfile + FS are not yet touched, so the retry is a
+// clean re-rm.
+
+Deno.test(
+  "RemoveExtensionService.execute: catalog saveAll fault leaves install state unchanged and retry succeeds",
+  async () => {
+    await withFixtureRepo(
+      async ({ repoDir, repository, catalog, lockfileRepository }) => {
+        const ts = Date.now();
+        const extName = `@test/crash-rm-${ts}`;
+        const typeId = `@test/crash-rm-model-${ts}`;
+        await stageModel(
+          repoDir,
+          extName,
+          "model.ts",
+          MINIMAL_MODEL_CODE(typeId),
+        );
+
+        // Install first via the real repository so the on-disk +
+        // lockfile + catalog state is real.
+        const installSvc = new InstallExtensionService({
+          denoRuntime: testDenoRuntime,
+          repository,
+          installExtensionFn: async (ref, ctx) => {
+            await ctx.lockfileRepository.writeEntry(
+              ref.name,
+              "1.0.0",
+              [`.swamp/pulled-extensions/${ref.name}/models/model.ts`],
+            );
+            return makeStubInstallResult(
+              ref.name,
+              "1.0.0",
+              [`.swamp/pulled-extensions/${ref.name}/models/model.ts`],
+            );
+          },
+        });
+        await installSvc.execute(
+          { name: extName, version: "1.0.0" },
+          makeInstallContext(repoDir, lockfileRepository),
+        );
+
+        // Pre-fault snapshot.
+        const preFaultRows = catalog.findAll().length;
+        assertEquals(repository.loadByName(extName).length, 1);
+        assertEquals(lockfileRepository.getEntry(extName)?.version, "1.0.0");
+
+        // Wrap the same catalog in a faulting repo for the rm path.
+        const faultingRepo = new FaultingStubRepository({
+          catalog,
+          lockfileRepository,
+          repoRoot: repoDir,
+        });
+        faultingRepo.injectSaveAllFault(
+          new Error("simulated SQLite I/O fault during rm"),
+        );
+
+        const removeSvc = new RemoveExtensionService({
+          repository: faultingRepo,
+          lockfileRepository,
+          repoDir,
+        });
+
+        // First attempt: faults inside the tombstone saveAll. SQLite
+        // ROLLBACK preserves all rows; lockfile + FS untouched.
+        await assertRejects(
+          () => removeSvc.execute(extName),
+          Error,
+          "simulated SQLite I/O fault during rm",
+        );
+        assertEquals(catalog.findAll().length, preFaultRows);
+        assertEquals(repository.loadByName(extName).length, 1);
+        assertEquals(lockfileRepository.getEntry(extName)?.version, "1.0.0");
+
+        // Second attempt: no fault. Clean rm; everything cleared.
+        await removeSvc.execute(extName);
+        assertEquals(repository.loadByName(extName).length, 0);
+        assertEquals(lockfileRepository.getEntry(extName), null);
       },
     );
   },

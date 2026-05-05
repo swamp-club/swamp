@@ -24,6 +24,7 @@ import { InstallExtensionService } from "./install_extension_service.ts";
 import type { ExtensionRef, InstallContext, InstallResult } from "./pull.ts";
 import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
 import { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
+import { FaultingStubRepository } from "../../infrastructure/persistence/test_helpers/faulting_stub_repository.ts";
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import { swampPath } from "../../infrastructure/persistence/paths.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -319,6 +320,94 @@ Deno.test(
         // is preserved, B's never landed.
         assertEquals(repository.loadByName(extA).length, 1);
         assertEquals(repository.loadByName(extB).length, 0);
+      },
+    );
+  },
+);
+
+// =============================================================
+// Crash-state recovery (W2 plan v4 step 10)
+// =============================================================
+//
+// Generic non-`DuplicateTypeError` failures inside `repository.saveAll`
+// (process kill, SQLite I/O error, OOM, etc.) must leave the catalog
+// in its pre-save state so a retry succeeds. This pins the SQLite
+// transaction-rollback contract that the lifecycle service depends on.
+// FS + lockfile are NOT auto-rolled-back for generic errors — that's a
+// known and intentional behavior (only DuplicateTypeError triggers FS
+// rollback, because the user is provably going to want the prior state
+// restored). The retry resolves the FS+lockfile-vs-catalog drift via
+// the diff-save in saveAll.
+
+Deno.test(
+  "InstallExtensionService.execute: catalog saveAll fault leaves catalog clean and retry succeeds",
+  async () => {
+    await withFixtureRepo(
+      async ({ repoDir, catalog, lockfileRepository }) => {
+        const ts = Date.now();
+        const extName = `@test/crash-install-${ts}`;
+        const typeId = `@test/crash-install-model-${ts}`;
+        await stageModel(
+          repoDir,
+          extName,
+          "noop.ts",
+          MINIMAL_MODEL_CODE(typeId),
+        );
+
+        const faultingRepo = new FaultingStubRepository({
+          catalog,
+          lockfileRepository,
+          repoRoot: repoDir,
+        });
+        faultingRepo.injectSaveAllFault(
+          new Error("simulated SQLite I/O fault"),
+        );
+
+        const service = new InstallExtensionService({
+          denoRuntime: testDenoRuntime,
+          repository: faultingRepo,
+          installExtensionFn: async (ref, ctx) => {
+            await ctx.lockfileRepository.writeEntry(
+              ref.name,
+              ref.version ?? "1.0.0",
+              [`.swamp/pulled-extensions/${ref.name}/models/noop.ts`],
+            );
+            return makeStubInstallResult(ref.name, ref.version ?? "1.0.0", [
+              `.swamp/pulled-extensions/${ref.name}/models/noop.ts`,
+            ]);
+          },
+        });
+
+        // First attempt: faults inside saveAll, propagates the error.
+        await assertRejects(
+          () =>
+            service.execute(
+              { name: extName, version: "1.0.0" } as ExtensionRef,
+              makeInstallContext(repoDir, lockfileRepository),
+            ),
+          Error,
+          "simulated SQLite I/O fault",
+        );
+
+        // Catalog state: SQLite txn rolled back, no rows survive.
+        assertEquals(faultingRepo.loadByName(extName).length, 0);
+        assertEquals(catalog.findAll().length, 0);
+        // Lockfile + FS state: the install service does NOT roll these
+        // back for generic errors. Both still hold the partial install.
+        assertEquals(
+          lockfileRepository.getEntry(extName)?.version,
+          "1.0.0",
+        );
+
+        // Second attempt: no fault scheduled. The diff-save in saveAll
+        // reconciles the catalog against the (still-on-disk) FS+lockfile
+        // state, so the retry succeeds and the catalog now matches.
+        const retry = await service.execute(
+          { name: extName, version: "1.0.0" } as ExtensionRef,
+          makeInstallContext(repoDir, lockfileRepository),
+        );
+        assertEquals(retry?.name, extName);
+        assertEquals(faultingRepo.loadByName(extName).length, 1);
       },
     );
   },
