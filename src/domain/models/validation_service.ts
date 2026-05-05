@@ -487,7 +487,11 @@ export class DefaultModelValidationService implements ModelValidationService {
     const strictGlobalArgs = (
       globalArgsSchema as unknown as { strict?(): typeof globalArgsSchema }
     ).strict?.() ?? globalArgsSchema;
-    return this.validateWithSchema("Global arguments", strictGlobalArgs, staticArgs);
+    return this.validateWithSchema(
+      "Global arguments",
+      strictGlobalArgs,
+      staticArgs,
+    );
   }
 
   private validateMethodArguments(
