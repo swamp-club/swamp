@@ -36,7 +36,7 @@ import {
   createExtensionUpdateDeps,
   createLibSwampContext,
   extensionUpdate,
-  InstallExtensionService,
+  UpgradeExtensionService,
   warnLegacyExtensionLayout,
 } from "../../libswamp/mod.ts";
 import { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
@@ -147,8 +147,16 @@ export const extensionUpdateCommand = new Command()
             lockfileRepository: installCtx.lockfileRepository,
             repoRoot: repoDir,
           });
-          return await new InstallExtensionService({ denoRuntime, repository })
-            .execute({ name, version }, installCtx);
+          // W2 (commit 5): route through UpgradeExtensionService for
+          // explicit upgrade-intent at the call site. Internally this
+          // delegates to InstallExtensionService whose phase 8
+          // tombstones the prior version atomically (saveAll is one
+          // SQLite txn).
+          return await new UpgradeExtensionService({
+            denoRuntime,
+            repository,
+          })
+            .execute(name, version, installCtx);
         },
       });
 

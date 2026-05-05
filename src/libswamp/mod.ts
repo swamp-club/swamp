@@ -670,6 +670,7 @@ export {
   type RemoveExtensionResult,
   RemoveExtensionService,
 } from "./extensions/remove_extension_service.ts";
+export { UpgradeExtensionService } from "./extensions/upgrade_extension_service.ts";
 
 // Extension layout detection
 export {

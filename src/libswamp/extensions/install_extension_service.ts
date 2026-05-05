@@ -27,6 +27,7 @@ import {
 import {
   type Extension,
   makeExtension,
+  tombstoneAll,
 } from "../../domain/extensions/extension.ts";
 import { makeSource } from "../../domain/extensions/source.ts";
 import { makeSourceLocation } from "../../domain/extensions/source_location.ts";
@@ -147,17 +148,37 @@ export class InstallExtensionService {
     if (!result) return result; // alreadyPulled short-circuit
 
     // Phase 8: build Extension aggregates for top-level + each freshly-
-    // installed dep, then saveAll across the full set so I-Repo-1
-    // evaluates the post-save state across this install operation as a
-    // unit. On DuplicateTypeError, FS rollback the entire set.
+    // installed dep. **Atomic upgrade pattern** — for each new
+    // extension, tombstone any existing aggregates with the SAME name
+    // but a DIFFERENT version, so the saveAll commits in one SQLite
+    // transaction:
+    //   saveAll([tombstoneAll(v1), v2])
+    // I-Repo-1 then evaluates against the post-save state where only
+    // the new version holds the type. Without this, force-pulling an
+    // already-installed extension (or any version-bump pull) would
+    // fail with DuplicateTypeError even though the only "conflict" is
+    // the user's own prior version. Re-installs of the same version
+    // skip the tombstone — the diff-save in saveAll handles
+    // overwrite semantics.
+    //
+    // On DuplicateTypeError (genuine cross-extension collision —
+    // not the v1→v2 case), FS rollback the entire set.
     try {
       const installedResults = flattenInstallResults(result);
-      const extensions = await Promise.all(
+      const newExtensions = await Promise.all(
         installedResults.map((r) =>
           this.buildExtensionFromDisk(r, ctx.repoDir)
         ),
       );
-      this.repository.saveAll(extensions);
+      const tombstones: Extension[] = [];
+      for (const newExt of newExtensions) {
+        for (const existing of this.repository.loadByName(newExt.name)) {
+          if (existing.version !== newExt.version) {
+            tombstones.push(tombstoneAll(existing));
+          }
+        }
+      }
+      this.repository.saveAll([...tombstones, ...newExtensions]);
     } catch (error) {
       if (error instanceof DuplicateTypeError) {
         await this.rollbackOnCollision(result, priorEntry, ctx);
