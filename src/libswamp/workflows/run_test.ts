@@ -107,6 +107,14 @@ class InMemoryWorkflowRunRepository implements WorkflowRunRepository {
     }
     return Promise.resolve(results);
   }
+  async findAllGlobalSince(
+    cutoff: Date,
+  ): Promise<{ run: WorkflowRun; workflowId: WorkflowId }[]> {
+    const all = await this.findAllGlobal();
+    return all.filter(({ run }) =>
+      run.startedAt !== undefined && run.startedAt >= cutoff
+    );
+  }
   save(wfId: WorkflowId, run: WorkflowRun): Promise<void> {
     const existing = this.runs.get(wfId) ?? [];
     const idx = existing.findIndex((r) => r.id === run.id);

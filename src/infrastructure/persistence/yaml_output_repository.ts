@@ -170,6 +170,63 @@ export class YamlOutputRepository implements OutputRepository {
     return results;
   }
 
+  /**
+   * Finds all outputs whose `startedAt` is at or after the cutoff using a
+   * two-stage filter (mtime pre-filter, then parse-and-verify) so old YAML
+   * files are skipped without being parsed. See the matching docstring on
+   * `YamlWorkflowRunRepository.findAllGlobalSince` for the invariant.
+   *
+   * Output YAML is written exactly once at completion (`save()` does not
+   * rewrite an existing file), so mtime ≈ startedAt + duration on disk.
+   * Files older than the cutoff cannot have a startedAt on or after it.
+   */
+  async findAllGlobalSince(
+    cutoff: Date,
+  ): Promise<{ output: ModelOutput; type: ModelType; method: string }[]> {
+    const results: { output: ModelOutput; type: ModelType; method: string }[] =
+      [];
+    const cutoffMs = cutoff.getTime();
+
+    for (const modelType of modelRegistry.types()) {
+      const typeDir = this.getTypeDir(modelType);
+      try {
+        for await (const methodEntry of Deno.readDir(typeDir)) {
+          if (!methodEntry.isDirectory) continue;
+          const methodDir = join(typeDir, methodEntry.name);
+          for await (const entry of Deno.readDir(methodDir)) {
+            if (!entry.isFile || !entry.name.endsWith(".yaml")) continue;
+            const path = join(methodDir, entry.name);
+
+            // Stage A: mtime pre-filter
+            const stat = await Deno.stat(path);
+            const mtimeMs = stat.mtime?.getTime();
+            if (mtimeMs !== undefined && mtimeMs < cutoffMs) continue;
+
+            // Stage B: parse and verify
+            const content = await Deno.readTextFile(path);
+            const data = parseYaml(content) as ModelOutputData;
+            if (data.logFile) {
+              data.logFile = toAbsolutePath(this.repoDir, data.logFile);
+            }
+            const output = ModelOutput.fromData(data);
+            if (output.startedAt.getTime() < cutoffMs) continue;
+
+            results.push({
+              output,
+              type: modelType,
+              method: output.methodName,
+            });
+          }
+        }
+      } catch (error) {
+        if (error instanceof Deno.errors.NotFound) continue;
+        throw error;
+      }
+    }
+
+    return results;
+  }
+
   async save(
     type: ModelType,
     method: string,

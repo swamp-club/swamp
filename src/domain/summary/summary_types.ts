@@ -28,6 +28,16 @@ export interface DataRepositoryReader {
   findAllGlobal(): Promise<
     Array<{ data: Data; modelType: ModelType; modelId: string }>
   >;
+
+  /**
+   * Finds all data items whose `createdAt` is at or after the given cutoff.
+   * Prefer this over `findAllGlobal()` when the caller has a time bound;
+   * implementations may short-circuit the underlying scan and skip work that
+   * `findAllGlobal()` would do unconditionally.
+   */
+  findAllGlobalSince(
+    cutoff: Date,
+  ): Promise<Array<{ data: Data; modelType: ModelType; modelId: string }>>;
 }
 
 /**
@@ -45,6 +55,12 @@ export interface MethodRunDetail {
 
 /**
  * A group of runs for a single method on a model.
+ *
+ * `runs` may be capped by an opt-in `--limit` flag; when that happens the
+ * group sets `truncated: true` so consumers can tell the detail list was
+ * shortened. Counts (`succeeded`, `failed`, `total`) always reflect every
+ * matching run in the window — `truncated` only signals that `runs` does
+ * not. The field is omitted when no truncation occurred.
  */
 export interface MethodGroup {
   method: string;
@@ -52,6 +68,7 @@ export interface MethodGroup {
   failed: number;
   total: number;
   runs: MethodRunDetail[];
+  truncated?: boolean;
 }
 
 /**
@@ -92,6 +109,12 @@ export interface WorkflowRunDetail {
 
 /**
  * A group of workflow runs for a given workflow name.
+ *
+ * `runs` may be capped by an opt-in `--limit` flag; when that happens the
+ * group sets `truncated: true` so consumers can tell the detail list was
+ * shortened. Counts (`succeeded`, `failed`, `total`) always reflect every
+ * matching run in the window. The field is omitted when no truncation
+ * occurred.
  */
 export interface WorkflowRunGroup {
   workflowName: string;
@@ -99,6 +122,7 @@ export interface WorkflowRunGroup {
   failed: number;
   total: number;
   runs: WorkflowRunDetail[];
+  truncated?: boolean;
 }
 
 /**

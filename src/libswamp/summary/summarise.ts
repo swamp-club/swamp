@@ -44,11 +44,20 @@ export type SummariseEvent =
 export interface SummariseInput {
   since: Date;
   sinceLabel: string;
+  /**
+   * If set, caps each per-group `runs[]` array to the N most-recent entries.
+   * Counts always reflect every matching run in the window. Default is
+   * unlimited (preserves prior behavior — no silent JSON shape change).
+   */
+  limit?: number;
 }
 
 /** Dependencies for the summarise operation. */
 export interface SummariseDeps {
-  summarise: (cutoffDate: Date) => Promise<ActivitySummary>;
+  summarise: (
+    cutoffDate: Date,
+    options: { limit?: number },
+  ) => Promise<ActivitySummary>;
 }
 
 /** Wires real infrastructure into SummariseDeps. */
@@ -67,7 +76,7 @@ export function createSummariseDeps(repos: {
     repos.workflowRepo,
   );
   return {
-    summarise: (cutoffDate) => service.summarise(cutoffDate),
+    summarise: (cutoffDate, options) => service.summarise(cutoffDate, options),
   };
 }
 
@@ -79,7 +88,7 @@ export async function* summarise(
 ): AsyncIterable<SummariseEvent> {
   ctx.logger.debug`Generating activity summary since ${input.sinceLabel}`;
 
-  const summary = await deps.summarise(input.since);
+  const summary = await deps.summarise(input.since, { limit: input.limit });
 
   const hasActivity = summary.methodExecutions.length > 0 ||
     summary.workflows.length > 0 ||

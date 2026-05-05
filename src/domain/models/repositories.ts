@@ -84,6 +84,19 @@ export interface OutputRepository {
   >;
 
   /**
+   * Finds all outputs across all types whose `startedAt` is at or after the
+   * given cutoff. Prefer this over `findAllGlobal()` when the caller has a
+   * time bound; implementations may short-circuit the underlying scan and skip
+   * work that `findAllGlobal()` would do unconditionally.
+   *
+   * @param cutoff - Earliest `startedAt` to include (inclusive)
+   * @returns Array of outputs whose `startedAt >= cutoff`
+   */
+  findAllGlobalSince(
+    cutoff: Date,
+  ): Promise<{ output: ModelOutput; type: ModelType; method: string }[]>;
+
+  /**
    * Saves an output.
    *
    * @param type - The model type

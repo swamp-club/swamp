@@ -89,6 +89,18 @@ export interface WorkflowRunRepository {
   findAllGlobal(): Promise<{ run: WorkflowRun; workflowId: WorkflowId }[]>;
 
   /**
+   * Finds all workflow runs across all workflows whose `startedAt` is at or
+   * after the given cutoff. Prefer this over `findAllGlobal()` when the caller
+   * has a time bound; implementations may short-circuit the underlying scan and
+   * skip work that `findAllGlobal()` would do unconditionally.
+   *
+   * Runs with no `startedAt` are excluded.
+   */
+  findAllGlobalSince(
+    cutoff: Date,
+  ): Promise<{ run: WorkflowRun; workflowId: WorkflowId }[]>;
+
+  /**
    * Saves a workflow run.
    */
   save(workflowId: WorkflowId, run: WorkflowRun): Promise<void>;

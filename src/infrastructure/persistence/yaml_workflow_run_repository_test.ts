@@ -434,3 +434,94 @@ Deno.test("YamlWorkflowRunRepository invokes markDirty with relPath on mutations
     assertEquals(calls.length, 2);
   });
 });
+
+Deno.test("findAllGlobalSince: returns only in-window runs", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlWorkflowRunRepository(dir);
+    const workflow = createTestWorkflow();
+
+    const old = WorkflowRun.create(workflow);
+    old.start();
+    await repo.save(workflow.id, old);
+
+    // Backdate the file so its mtime falls before the cutoff.
+    const oldPath = repo.getPath(workflow.id, old.id);
+    const oldDate = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    await Deno.utime(oldPath, oldDate, oldDate);
+
+    const fresh = WorkflowRun.create(workflow);
+    fresh.start();
+    await repo.save(workflow.id, fresh);
+
+    const cutoff = new Date(Date.now() - 60 * 60 * 1000);
+    const found = await repo.findAllGlobalSince(cutoff);
+
+    assertEquals(found.length, 1);
+    assertEquals(found[0].run.id, fresh.id);
+  });
+});
+
+Deno.test(
+  "findAllGlobalSince: rejects long-running runs that started before the cutoff",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlWorkflowRunRepository(dir);
+      const workflow = createTestWorkflow();
+
+      // A run that started 2 days ago.
+      const longRunning = WorkflowRun.create(workflow);
+      longRunning.start();
+      await repo.save(workflow.id, longRunning);
+      const path = repo.getPath(workflow.id, longRunning.id);
+      const startedLongAgo = new Date(Date.now() - 2 * 24 * 60 * 60 * 1000);
+      // Re-write the YAML with a startedAt 2 days in the past, then bump
+      // mtime to "now" to simulate a long-running workflow that the engine
+      // saved into recently — Stage A passes, Stage B must reject.
+      const content = await Deno.readTextFile(path);
+      const patched = content.replace(
+        /startedAt: .*/,
+        `startedAt: "${startedLongAgo.toISOString()}"`,
+      );
+      await Deno.writeTextFile(path, patched);
+      const now = new Date();
+      await Deno.utime(path, now, now);
+
+      const cutoff = new Date(Date.now() - 60 * 60 * 1000);
+      const found = await repo.findAllGlobalSince(cutoff);
+
+      assertEquals(found.length, 0);
+    });
+  },
+);
+
+Deno.test(
+  "findAllGlobalSince: backup-restore (mtime in the future) keeps correctness",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlWorkflowRunRepository(dir);
+      const workflow = createTestWorkflow();
+
+      // An old run whose mtime got scrambled by a backup-restore — mtime is
+      // "now" but the YAML startedAt is far in the past. Stage A is defeated
+      // (we won't skip), but Stage B catches it.
+      const old = WorkflowRun.create(workflow);
+      old.start();
+      await repo.save(workflow.id, old);
+      const path = repo.getPath(workflow.id, old.id);
+      const startedLongAgo = new Date(Date.now() - 30 * 24 * 60 * 60 * 1000);
+      const content = await Deno.readTextFile(path);
+      const patched = content.replace(
+        /startedAt: .*/,
+        `startedAt: "${startedLongAgo.toISOString()}"`,
+      );
+      await Deno.writeTextFile(path, patched);
+      const now = new Date();
+      await Deno.utime(path, now, now);
+
+      const cutoff = new Date(Date.now() - 60 * 60 * 1000);
+      const found = await repo.findAllGlobalSince(cutoff);
+
+      assertEquals(found.length, 0);
+    });
+  },
+);

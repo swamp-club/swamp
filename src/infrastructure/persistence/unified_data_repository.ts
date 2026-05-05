@@ -152,6 +152,29 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   }
 
   /**
+   * Finds all data items whose `createdAt` is at or after the cutoff using a
+   * two-stage filter (mtime pre-filter, then parse-and-verify) on each
+   * version's metadata.yaml. Old version files are skipped without parse.
+   *
+   * The `_catalog.db` SQLite catalog does not track `createdAt`, so the only
+   * source of truth for time-bounded filtering is the metadata YAML — hence
+   * the same walk shape as `findAllGlobal`, plus a stat per file before
+   * parse.
+   */
+  async findAllGlobalSince(
+    cutoff: Date,
+  ): Promise<Array<{ data: Data; modelType: ModelType; modelId: string }>> {
+    const results: Array<
+      { data: Data; modelType: ModelType; modelId: string }
+    > = [];
+    const baseDir = this.getBaseDir();
+
+    await this.collectAllData(baseDir, [], results, cutoff);
+
+    return results;
+  }
+
+  /**
    * Recursively collects all data from the directory tree.
    * Walks .swamp/data/{type-segments...}/{model-id}/{data-name}/ structure.
    *
@@ -163,6 +186,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     currentDir: string,
     pathSegments: string[],
     results: Array<{ data: Data; modelType: ModelType; modelId: string }>,
+    cutoff?: Date,
   ): Promise<void> {
     try {
       const entries: { name: string; isDirectory: boolean }[] = [];
@@ -190,7 +214,9 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
 
           try {
             const modelType = ModelType.create(typeStr);
-            const dataItems = await this.findAllForModel(modelType, modelId);
+            const dataItems = cutoff
+              ? await this.findAllForModelSince(modelType, modelId, cutoff)
+              : await this.findAllForModel(modelType, modelId);
             for (const data of dataItems) {
               results.push({ data, modelType, modelId });
             }
@@ -199,7 +225,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
           }
         } else {
           // Keep recursing deeper into type directories
-          await this.collectAllData(childPath, childSegments, results);
+          await this.collectAllData(childPath, childSegments, results, cutoff);
         }
       }
     } catch (error) {
@@ -207,6 +233,69 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
         throw error;
       }
     }
+  }
+
+  /**
+   * Like `findAllForModel`, but only returns data items whose latest-version
+   * `createdAt` is at or after the cutoff. Stats the metadata file first
+   * (Stage A) so old data is skipped without parsing.
+   */
+  private async findAllForModelSince(
+    type: ModelType,
+    modelId: string,
+    cutoff: Date,
+  ): Promise<Data[]> {
+    const dataDir = this.getModelDataDir(type, modelId);
+    const results: Data[] = [];
+    const seen = new Set<string>();
+    const cutoffMs = cutoff.getTime();
+
+    try {
+      for await (const entry of Deno.readDir(dataDir)) {
+        if (!entry.isDirectory) continue;
+        const dataName = entry.name;
+
+        const latestVersion = await this.getLatestVersion(
+          type,
+          modelId,
+          dataName,
+        );
+        if (latestVersion === null) continue;
+
+        const metadataPath = this.getMetadataPath(
+          type,
+          modelId,
+          dataName,
+          latestVersion,
+        );
+
+        // Stage A: mtime pre-filter
+        try {
+          const stat = await Deno.stat(metadataPath);
+          const mtimeMs = stat.mtime?.getTime();
+          if (mtimeMs !== undefined && mtimeMs < cutoffMs) continue;
+        } catch (error) {
+          if (error instanceof Deno.errors.NotFound) continue;
+          throw error;
+        }
+
+        // Stage B: parse and verify
+        const data = await this.findByName(type, modelId, dataName);
+        if (!data) continue;
+        if (data.createdAt.getTime() < cutoffMs) continue;
+        if (seen.has(data.name)) continue;
+
+        seen.add(data.name);
+        results.push(data);
+      }
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) {
+        return [];
+      }
+      throw error;
+    }
+
+    return results;
   }
 
   /**

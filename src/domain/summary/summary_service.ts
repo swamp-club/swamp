@@ -55,16 +55,31 @@ export class SummaryService {
 
   /**
    * Produces an activity summary for everything since the given cutoff date.
+   *
+   * @param cutoffDate Earliest startedAt/createdAt to include (inclusive).
+   * @param options.limit If set, caps each per-group `runs[]` array to N
+   *   most-recent entries. Counts (succeeded/failed/total) always reflect
+   *   ALL matching runs in the window — `limit` only bounds the detail
+   *   array. When truncation occurs, the group's optional `truncated` flag
+   *   is set to `true`.
    */
-  async summarise(cutoffDate: Date): Promise<ActivitySummary> {
-    const [allOutputs, allWorkflowRuns, allData, allDefinitions, allWorkflows] =
-      await Promise.all([
-        this.outputRepo.findAllGlobal(),
-        this.workflowRunRepo.findAllGlobal(),
-        this.dataRepo.findAllGlobal(),
-        this.definitionRepo?.findAllGlobal() ?? Promise.resolve([]),
-        this.workflowRepo?.findAll() ?? Promise.resolve([]),
-      ]);
+  async summarise(
+    cutoffDate: Date,
+    options: { limit?: number } = {},
+  ): Promise<ActivitySummary> {
+    const [
+      filteredOutputs,
+      filteredRuns,
+      filteredData,
+      allDefinitions,
+      allWorkflows,
+    ] = await Promise.all([
+      this.outputRepo.findAllGlobalSince(cutoffDate),
+      this.workflowRunRepo.findAllGlobalSince(cutoffDate),
+      this.dataRepo.findAllGlobalSince(cutoffDate),
+      this.definitionRepo?.findAllGlobal() ?? Promise.resolve([]),
+      this.workflowRepo?.findAll() ?? Promise.resolve([]),
+    ]);
 
     // Build definition ID → name lookup
     const defNames = new Map<string, string>();
@@ -89,30 +104,19 @@ export class SummaryService {
       workflowStepModels.set(workflow.id, stepMap);
     }
 
-    // Filter outputs by cutoff
-    const filteredOutputs = allOutputs.filter(
-      ({ output }) => output.startedAt >= cutoffDate,
-    );
-
-    // Filter workflow runs by cutoff
-    const filteredRuns = allWorkflowRuns.filter(({ run }) => {
-      const startedAt = run.startedAt;
-      return startedAt !== undefined && startedAt >= cutoffDate;
-    });
-
-    // Filter data by cutoff
-    const filteredData = allData.filter(
-      ({ data }) => data.createdAt >= cutoffDate,
-    );
-
     // Group method executions
     const methodExecutions = this.groupMethodExecutions(
       filteredOutputs,
       defNames,
+      options.limit,
     );
 
     // Group workflow runs
-    const workflows = this.groupWorkflowRuns(filteredRuns, workflowStepModels);
+    const workflows = this.groupWorkflowRuns(
+      filteredRuns,
+      workflowStepModels,
+      options.limit,
+    );
 
     // Summarise data
     const dataSummary = this.summariseData(filteredData);
@@ -128,6 +132,7 @@ export class SummaryService {
   private groupMethodExecutions(
     outputs: { output: ModelOutput; type: ModelType; method: string }[],
     defNames: Map<string, string>,
+    limit?: number,
   ): ModelExecutionGroup[] {
     // Group by model (definitionId), then by method within each model
     const models = new Map<
@@ -185,11 +190,16 @@ export class SummaryService {
         b.total - a.total
       );
 
-      // Sort runs within each method by startedAt descending
+      // Sort runs within each method by startedAt descending, then truncate
+      // if a limit was supplied. Counts already reflect all matching runs.
       for (const m of methods) {
         m.runs.sort((a, b) =>
           new Date(b.startedAt).getTime() - new Date(a.startedAt).getTime()
         );
+        if (limit !== undefined && m.runs.length > limit) {
+          m.runs = m.runs.slice(0, limit);
+          m.truncated = true;
+        }
       }
 
       const total = methods.reduce((s, m) => s + m.total, 0);
@@ -215,6 +225,7 @@ export class SummaryService {
   private groupWorkflowRuns(
     runs: Awaited<ReturnType<WorkflowRunRepository["findAllGlobal"]>>,
     workflowStepModels: Map<string, Map<string, string>>,
+    limit?: number,
   ): WorkflowRunGroup[] {
     const groups = new Map<string, WorkflowRunGroup>();
 
@@ -287,13 +298,18 @@ export class SummaryService {
     // Sort groups by total count descending
     const sorted = [...groups.values()].sort((a, b) => b.total - a.total);
 
-    // Sort runs within each group by startedAt descending
+    // Sort runs within each group by startedAt descending, then truncate
+    // if a limit was supplied. Counts already reflect all matching runs.
     for (const group of sorted) {
       group.runs.sort((a, b) => {
         const aTime = a.startedAt ? new Date(a.startedAt).getTime() : 0;
         const bTime = b.startedAt ? new Date(b.startedAt).getTime() : 0;
         return bTime - aTime;
       });
+      if (limit !== undefined && group.runs.length > limit) {
+        group.runs = group.runs.slice(0, limit);
+        group.truncated = true;
+      }
     }
 
     return sorted;

@@ -77,6 +77,9 @@ function renderMethodExecutions(
       const parts: string[] = [];
       if (method.succeeded > 0) parts.push(green(`\u2713 ${method.succeeded}`));
       if (method.failed > 0) parts.push(red(`\u2717 ${method.failed}`));
+      if (method.truncated) {
+        parts.push(dim(`(showing ${method.runs.length} of ${method.total})`));
+      }
       writeOutput(`    ${label}${parts.join("  ")}`);
 
       if (verbose) {
@@ -141,6 +144,9 @@ function renderWorkflowRuns(
     const parts: string[] = [];
     if (group.succeeded > 0) parts.push(green(`\u2713 ${group.succeeded}`));
     if (group.failed > 0) parts.push(red(`\u2717 ${group.failed}`));
+    if (group.truncated) {
+      parts.push(dim(`(showing ${group.runs.length} of ${group.total})`));
+    }
     writeOutput(`  ${label} ${parts.join("  ")}`);
 
     if (verbose) {

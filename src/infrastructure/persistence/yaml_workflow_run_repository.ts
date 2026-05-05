@@ -180,6 +180,100 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     });
   }
 
+  /**
+   * Finds all workflow runs across all workflows whose startedAt is at or
+   * after the cutoff, using a two-stage filter to avoid parsing every YAML
+   * file on large repos.
+   *
+   * Stage A — mtime pre-filter: stat each candidate file and skip if mtime
+   * is strictly before the cutoff. `save()` rewrites the YAML on every
+   * status transition (pending → running → succeeded/failed), so a file
+   * with mtime < cutoff cannot have startedAt >= cutoff: any startedAt on
+   * or after the cutoff would have triggered a save on or after the cutoff.
+   *
+   * Stage B — parse and verify: parse files that pass Stage A and re-check
+   * `startedAt >= cutoff`. This rejects long-running workflows that started
+   * before the cutoff but were still being saved into after it (mtime > cutoff
+   * but startedAt < cutoff).
+   *
+   * Backup-restore scenarios that scramble mtime cannot cause incorrect
+   * inclusion — Stage B is the source of truth for inclusion. They can only
+   * defeat the optimization (degrading to current `findAllGlobal()` cost),
+   * which is acceptable.
+   */
+  async findAllGlobalSince(
+    cutoff: Date,
+  ): Promise<{ run: WorkflowRun; workflowId: WorkflowId }[]> {
+    const results: { run: WorkflowRun; workflowId: WorkflowId }[] = [];
+    const cutoffMs = cutoff.getTime();
+
+    try {
+      for await (const entry of Deno.readDir(this.baseDir)) {
+        if (!entry.isDirectory) continue;
+        const workflowId = entry.name as WorkflowId;
+        const runs = await this.findRunsSinceByWorkflowId(workflowId, cutoffMs);
+        for (const run of runs) {
+          results.push({ run, workflowId });
+        }
+      }
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) {
+        return [];
+      }
+      throw error;
+    }
+
+    return results.sort((a, b) => {
+      const aTime = a.run.startedAt?.getTime() ?? 0;
+      const bTime = b.run.startedAt?.getTime() ?? 0;
+      return bTime - aTime;
+    });
+  }
+
+  private async findRunsSinceByWorkflowId(
+    workflowId: WorkflowId,
+    cutoffMs: number,
+  ): Promise<WorkflowRun[]> {
+    const dir = this.getRunsDir(workflowId);
+    const runs: WorkflowRun[] = [];
+
+    try {
+      for await (const entry of Deno.readDir(dir)) {
+        if (
+          !entry.isFile || !entry.name.startsWith("workflow-run-") ||
+          !entry.name.endsWith(".yaml")
+        ) {
+          continue;
+        }
+        const path = join(dir, entry.name);
+
+        // Stage A: mtime pre-filter
+        const stat = await Deno.stat(path);
+        const mtimeMs = stat.mtime?.getTime();
+        if (mtimeMs !== undefined && mtimeMs < cutoffMs) continue;
+
+        // Stage B: parse and verify
+        const content = await Deno.readTextFile(path);
+        const data = parseYaml(content) as WorkflowRunData;
+        if (data.logFile) {
+          data.logFile = toAbsolutePath(this.repoDir, data.logFile);
+        }
+        const run = WorkflowRun.fromData(data);
+        const startedAtMs = run.startedAt?.getTime();
+        if (startedAtMs === undefined || startedAtMs < cutoffMs) continue;
+
+        runs.push(run);
+      }
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) {
+        return [];
+      }
+      throw error;
+    }
+
+    return runs;
+  }
+
   async save(workflowId: WorkflowId, run: WorkflowRun): Promise<void> {
     const path = this.getPath(workflowId, run.id);
     await this.notifyDirty(path);

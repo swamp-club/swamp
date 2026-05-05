@@ -54,9 +54,17 @@ export const summariseCommand = new Command()
   .option("--since <duration:string>", "Time window (e.g. 1h, 1d, 7d, 1w)", {
     default: "7d",
   })
+  .option(
+    "--limit <count:number>",
+    "Cap per-group run details (counts still reflect all matching runs)",
+  )
   .action(async function (options) {
     const ctx = createContext(options as GlobalOptions, ["summarise"]);
     ctx.logger.debug`Generating activity summary`;
+
+    if (options.limit !== undefined && options.limit <= 0) {
+      throw new Error("--limit must be a positive integer");
+    }
 
     const { repoContext } = await requireInitializedRepoReadOnly({
       repoDir: resolveRepoDir(options.repoDir),
@@ -79,6 +87,7 @@ export const summariseCommand = new Command()
       summarise(libCtx, deps, {
         since: cutoffDate,
         sinceLabel: options.since,
+        limit: options.limit,
       }),
       renderer.handlers(),
     );

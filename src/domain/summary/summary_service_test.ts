@@ -127,6 +127,8 @@ function createMockOutputRepo(
 ): OutputRepository {
   return {
     findAllGlobal: () => Promise.resolve(items),
+    findAllGlobalSince: (cutoff: Date) =>
+      Promise.resolve(items.filter(({ output }) => output.startedAt >= cutoff)),
     findById: () => Promise.resolve(null),
     findByDefinition: () => Promise.resolve([]),
     findLatestByDefinition: () => Promise.resolve(null),
@@ -143,6 +145,12 @@ function createMockWorkflowRunRepo(
 ): WorkflowRunRepository {
   return {
     findAllGlobal: () => Promise.resolve(items),
+    findAllGlobalSince: (cutoff: Date) =>
+      Promise.resolve(
+        items.filter(({ run }) =>
+          run.startedAt !== undefined && run.startedAt >= cutoff
+        ),
+      ),
     findById: () => Promise.resolve(null),
     findAllByWorkflowId: () => Promise.resolve([]),
     findLatestByWorkflowId: () => Promise.resolve(null),
@@ -158,6 +166,8 @@ function createMockDataRepo(
 ): DataRepositoryReader {
   return {
     findAllGlobal: () => Promise.resolve(items),
+    findAllGlobalSince: (cutoff: Date) =>
+      Promise.resolve(items.filter(({ data }) => data.createdAt >= cutoff)),
   };
 }
 
@@ -418,4 +428,115 @@ Deno.test("summarise - counts data items, versions, and unique models", async ()
   assertEquals(result.data.byModelType[1].modelType, "aws/ec2-instance");
   assertEquals(result.data.byModelType[1].items, 1);
   assertEquals(result.data.byModelType[1].versions, 5);
+});
+
+Deno.test("summarise - limit truncates per-group runs but counts reflect all matching runs", async () => {
+  const type = ModelType.create("aws/s3-bucket");
+  const wfId = createWorkflowId(crypto.randomUUID());
+  const sharedDefId = crypto.randomUUID();
+
+  const outputs = Array.from({ length: 10 }, (_, i) => ({
+    output: makeOutput({
+      definitionId: sharedDefId,
+      status: i % 2 === 0 ? "succeeded" : "failed",
+      startedAt: new Date(2026, 0, 1, 0, i),
+    }),
+    type,
+    method: "apply",
+  }));
+
+  const runs = Array.from({ length: 8 }, (_, i) => ({
+    run: makeWorkflowRun({
+      status: "succeeded",
+      startedAt: new Date(2026, 0, 1, 0, i),
+    }),
+    workflowId: wfId,
+  }));
+
+  const service = new SummaryService(
+    createMockOutputRepo(outputs),
+    createMockWorkflowRunRepo(runs),
+    createMockDataRepo([]),
+  );
+
+  const result = await service.summarise(new Date(0), { limit: 3 });
+
+  // Method group: counts reflect all 10, runs[] is capped at 3, truncated set
+  assertEquals(result.methodExecutions.length, 1);
+  const methodGroup = result.methodExecutions[0].methods[0];
+  assertEquals(methodGroup.total, 10);
+  assertEquals(methodGroup.succeeded, 5);
+  assertEquals(methodGroup.failed, 5);
+  assertEquals(methodGroup.runs.length, 3);
+  assertEquals(methodGroup.truncated, true);
+
+  // Workflow group: counts reflect all 8, runs[] is capped at 3, truncated set
+  assertEquals(result.workflows.length, 1);
+  const wfGroup = result.workflows[0];
+  assertEquals(wfGroup.total, 8);
+  assertEquals(wfGroup.succeeded, 8);
+  assertEquals(wfGroup.runs.length, 3);
+  assertEquals(wfGroup.truncated, true);
+});
+
+Deno.test("summarise - omits truncated when limit is not exceeded", async () => {
+  const type = ModelType.create("aws/s3-bucket");
+  const service = new SummaryService(
+    createMockOutputRepo([
+      {
+        output: makeOutput({ status: "succeeded" }),
+        type,
+        method: "apply",
+      },
+      {
+        output: makeOutput({ status: "succeeded" }),
+        type,
+        method: "apply",
+      },
+    ]),
+    createMockWorkflowRunRepo([
+      {
+        run: makeWorkflowRun({ status: "succeeded" }),
+        workflowId: createWorkflowId(crypto.randomUUID()),
+      },
+    ]),
+    createMockDataRepo([]),
+  );
+
+  const result = await service.summarise(new Date(0), { limit: 100 });
+
+  assertEquals(
+    result.methodExecutions[0].methods[0].truncated,
+    undefined,
+    "truncated should be omitted when no truncation occurred",
+  );
+  assertEquals(
+    result.workflows[0].truncated,
+    undefined,
+    "truncated should be omitted when no truncation occurred",
+  );
+});
+
+Deno.test("summarise - default (no limit) preserves all runs in details", async () => {
+  const type = ModelType.create("aws/s3-bucket");
+  const sharedDefId = crypto.randomUUID();
+  const service = new SummaryService(
+    createMockOutputRepo(
+      Array.from({ length: 50 }, () => ({
+        output: makeOutput({
+          definitionId: sharedDefId,
+          status: "succeeded",
+        }),
+        type,
+        method: "apply",
+      })),
+    ),
+    createMockWorkflowRunRepo([]),
+    createMockDataRepo([]),
+  );
+
+  const result = await service.summarise(new Date(0));
+
+  assertEquals(result.methodExecutions[0].methods[0].runs.length, 50);
+  assertEquals(result.methodExecutions[0].methods[0].truncated, undefined);
 });
