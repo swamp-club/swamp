@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertNotEquals } from "@std/assert";
-import { join } from "@std/path";
+import { dirname, join } from "@std/path";
 import { UserDatastoreLoader } from "./user_datastore_loader.ts";
 import {
   DatastoreTypeRegistry,
@@ -591,3 +591,82 @@ export const datastore = {
     await Deno.remove(datastoresDir, { recursive: true });
   }
 });
+
+// ===== Pin 1 (W2) =====
+
+Deno.test(
+  "UserDatastoreLoader.bundleAndIndexOne: returns datastore metadata without writing catalog rows (Pin 1)",
+  async () => {
+    const ts = Date.now();
+    const dsType = `@user/pin1-datastore-${ts}`;
+    const dsCode = `
+import { z } from "npm:zod";
+
+export const datastore = {
+  type: "${dsType}",
+  name: "Pin1Datastore",
+  description: "pin1",
+  configSchema: z.object({}),
+  createProvider: () => ({
+    createLock: () => ({
+      acquire: async () => {},
+      release: async () => {},
+      withLock: async (fn) => fn(),
+      inspect: async () => null,
+      forceRelease: async () => false,
+    }),
+    createVerifier: () => ({
+      verify: async () => ({
+        healthy: true,
+        message: "ok",
+        latencyMs: 1,
+        datastoreType: "${dsType}",
+      }),
+    }),
+    createSyncStrategy: () => null,
+    resolvePath: (id) => id,
+  }),
+};
+`;
+
+    const repoDir = await Deno.makeTempDir({ prefix: "swamp_pin1_ds_r_" });
+    const dsDir = await Deno.makeTempDir({ prefix: "swamp_pin1_ds_d_" });
+    const dbPath = join(repoDir, ".swamp", "_extension_catalog.db");
+    await Deno.mkdir(dirname(dbPath), { recursive: true });
+
+    try {
+      await Deno.writeTextFile(join(dsDir, "datastore.ts"), dsCode);
+
+      const catalog = new ExtensionCatalogStore(dbPath);
+      const repository = makeRepoForCatalog(catalog, repoDir);
+      const loader = new UserDatastoreLoader(
+        new StubDenoRuntime(),
+        repoDir,
+        repository,
+      );
+
+      const before = catalog.findAll().length;
+      assertEquals(before, 0);
+
+      const result = await loader.bundleAndIndexOne({
+        absolutePath: join(dsDir, "datastore.ts"),
+        relativePath: "datastore.ts",
+        baseDir: dsDir,
+      });
+
+      assertEquals(
+        catalog.findAll().length,
+        before,
+        "Pin 1: bundleAndIndexOne must NOT write catalog rows",
+      );
+      assertNotEquals(result, null);
+      assertEquals(result?.kind, "datastore");
+      assertEquals(result?.typeNormalized, dsType.toLowerCase());
+
+      catalog.close();
+    } finally {
+      await Deno.remove(repoDir, { recursive: true });
+      await Deno.remove(dsDir, { recursive: true });
+    }
+  },
+);

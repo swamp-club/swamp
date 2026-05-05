@@ -18,8 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertRejects } from "@std/assert";
-import { dirname } from "@std/path";
-import { assertCompletes, assertErrors, collect } from "../testing.ts";
+import { dirname, join } from "@std/path";
+import { assertErrors, collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
   extensionRm,
@@ -28,6 +28,8 @@ import {
   extensionRmPreview,
 } from "./rm.ts";
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
+import { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
+import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
 import type { UpstreamExtensionsMap } from "../../infrastructure/persistence/upstream_extensions.ts";
 import { UserError } from "../../domain/errors.ts";
 
@@ -44,51 +46,51 @@ const DEFAULT_UPSTREAM: UpstreamExtensionsMap = {
 };
 
 /**
- * Spins up a real temp lockfile pre-seeded with `upstream`, returns a
- * LockfileRepository whose writeEntry/removeEntry hit that real file.
- * Caller cleans up via the returned `cleanup` fn.
+ * Spins up a real temp repo with a real lockfile + catalog so deps
+ * exercise the W2 RemoveExtensionService path. Caller cleans up via
+ * the returned `cleanup` fn.
  */
-async function withFakeLockfile(
-  upstream: UpstreamExtensionsMap,
-): Promise<
-  { lockfileRepository: LockfileRepository; cleanup: () => Promise<void> }
-> {
-  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_rm_test_" });
-  const lockfilePath = `${tmpDir}/upstream_extensions.json`;
-  if (Object.keys(upstream).length > 0) {
-    await Deno.writeTextFile(lockfilePath, JSON.stringify(upstream, null, 2));
-  }
-  const lockfileRepository = await LockfileRepository.create(lockfilePath);
-  return {
-    lockfileRepository,
-    cleanup: async () => {
-      if (Deno.build.os === "windows") {
-        await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
-      } else {
-        await Deno.remove(tmpDir, { recursive: true });
-      }
-    },
-  };
-}
-
 async function fakeDeps(
   overrides: Partial<ExtensionRmDeps> & {
     upstream?: UpstreamExtensionsMap;
   } = {},
 ): Promise<{ deps: ExtensionRmDeps; cleanup: () => Promise<void> }> {
   const { upstream, ...rest } = overrides;
-  const { lockfileRepository, cleanup } = await withFakeLockfile(
-    upstream ?? DEFAULT_UPSTREAM,
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_rm_test_" });
+  const lockfilePath = join(tmpDir, "upstream_extensions.json");
+  const seedUpstream = upstream ?? DEFAULT_UPSTREAM;
+  if (Object.keys(seedUpstream).length > 0) {
+    await Deno.writeTextFile(
+      lockfilePath,
+      JSON.stringify(seedUpstream, null, 2),
+    );
+  }
+  const lockfileRepository = await LockfileRepository.create(lockfilePath);
+  await Deno.mkdir(join(tmpDir, ".swamp"), { recursive: true });
+  const catalog = new ExtensionCatalogStore(
+    join(tmpDir, ".swamp", "_extension_catalog.db"),
   );
+  const repository = new ExtensionRepository({
+    catalog,
+    lockfileRepository,
+    repoRoot: tmpDir,
+  });
+
+  const cleanup = async () => {
+    catalog.close();
+    if (Deno.build.os === "windows") {
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  };
 
   return {
     deps: {
       findDependents: () => Promise.resolve([]),
-      removeFile: () => Promise.resolve(),
-      readDirEntries: () => Promise.resolve([]),
-      removeDir: () => Promise.resolve(),
       lockfileRepository,
-      repoDir: "/fake/repo",
+      repository,
+      repoDir: tmpDir,
       ...rest,
     },
     cleanup,
@@ -163,75 +165,12 @@ Deno.test("extensionRmPreview: throws validation_failed when no file tracking", 
   }
 });
 
-Deno.test("extensionRm: deletes files and yields completed", async () => {
-  const removedFiles: string[] = [];
-
-  const ctx = fakeCtx();
-  const { deps, cleanup } = await fakeDeps({
-    removeFile: (path: string) => {
-      removedFiles.push(path);
-      return Promise.resolve();
-    },
-    // Return non-empty so dirs aren't pruned
-    readDirEntries: () =>
-      Promise.resolve([
-        {
-          name: "other.txt",
-          isFile: true,
-          isDirectory: false,
-          isSymlink: false,
-        },
-      ]),
-  });
-  try {
-    await assertCompletes<ExtensionRmEvent>(
-      extensionRm(ctx, deps, { extensionName: "@test/ext" }),
-      {
-        kind: "completed",
-        data: {
-          name: "@test/ext",
-          version: "1.0.0",
-          filesDeleted: 2,
-          filesSkipped: 0,
-          dirsRemoved: 0,
-        },
-      },
-    );
-
-    assertEquals(removedFiles.length, 2);
-    // After completion the entry must be gone (writeEntry / removeEntry
-    // update the cache in lockstep with disk).
-    assertEquals(deps.lockfileRepository.getEntry("@test/ext"), null);
-  } finally {
-    await cleanup();
-  }
-});
-
-Deno.test("extensionRm: counts skipped files when NotFound", async () => {
-  const ctx = fakeCtx();
-  const { deps, cleanup } = await fakeDeps({
-    removeFile: () => {
-      throw new Deno.errors.NotFound("not found");
-    },
-  });
-  try {
-    await assertCompletes<ExtensionRmEvent>(
-      extensionRm(ctx, deps, { extensionName: "@test/ext" }),
-      {
-        kind: "completed",
-        data: {
-          name: "@test/ext",
-          version: "1.0.0",
-          filesDeleted: 0,
-          filesSkipped: 2,
-          dirsRemoved: 0,
-        },
-      },
-    );
-  } finally {
-    await cleanup();
-  }
-});
+// Note: file-deletion behaviour (filesDeleted/filesSkipped counts,
+// dirsRemoved pruning) is covered by remove_extension_service_test.ts
+// which exercises the real filesystem via temp-dir fixtures. This file
+// retains coverage for rm.ts's wrapper-specific behaviour: event
+// shape (deleting → completed → error), lockfile/preview interactions,
+// and the existing #120 regression tests.
 
 Deno.test("extensionRm: yields error for missing extension", async () => {
   const ctx = fakeCtx();
@@ -367,8 +306,15 @@ Deno.test("extensionRm: removing one sibling leaves the other intact under a sha
       eksFiles,
       "eks lockfile entry must be untouched",
     );
+    // Close the catalog opened by createExtensionRmDeps; on Windows the
+    // open DB handle blocks the recursive remove below with EBUSY.
+    deps.repository.legacyStore.close();
   } finally {
-    await Deno.remove(tmpDir, { recursive: true });
+    if (Deno.build.os === "windows") {
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
   }
 });
 
@@ -431,7 +377,14 @@ Deno.test("extensionRmPreview: resolves dependents via the tracked per-extension
     });
 
     assertEquals(preview.dependents, ["@fake/consumer"]);
+    // Close the catalog opened by createExtensionRmDeps; on Windows the
+    // open DB handle blocks the recursive remove below with EBUSY.
+    deps.repository.legacyStore.close();
   } finally {
-    await Deno.remove(tmpDir, { recursive: true });
+    if (Deno.build.os === "windows") {
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
   }
 });

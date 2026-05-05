@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertNotEquals } from "@std/assert";
-import { join } from "@std/path";
+import { dirname, join } from "@std/path";
 import { UserDriverLoader } from "./user_driver_loader.ts";
 import { driverTypeRegistry } from "./driver_type_registry.ts";
 import { bundleNamespace } from "../../infrastructure/persistence/paths.ts";
@@ -306,3 +306,77 @@ export const driver = {
     await Deno.remove(driversDir, { recursive: true });
   }
 });
+
+// ===== Pin 1 (W2) =====
+//
+// `bundleAndIndexOne` is the public per-file entry point that
+// InstallExtensionService calls during install. The lifecycle service
+// owns the catalog write via `repository.save()`; the loader's per-file
+// method MUST NOT write directly. If a future refactor sneaks a
+// `catalog.upsert` back into this path, I-Repo-1 silently stops firing
+// at install time. This test is the regression net.
+
+Deno.test(
+  "UserDriverLoader.bundleAndIndexOne: returns driver metadata without writing catalog rows (Pin 1)",
+  async () => {
+    const ts = Date.now();
+    const driverType = `@user/pin1-driver-${ts}`;
+    const driverCode = `
+export const driver = {
+  type: "${driverType}",
+  name: "Pin1Driver",
+  description: "pin1",
+  createDriver: (_config) => ({
+    async executeMethod() {
+      return { dataHandles: [], ok: true };
+    },
+  }),
+};
+`;
+
+    const repoDir = await Deno.makeTempDir({ prefix: "swamp_pin1_driver_r_" });
+    const driversDir = await Deno.makeTempDir({
+      prefix: "swamp_pin1_driver_d_",
+    });
+    const dbPath = join(repoDir, ".swamp", "_extension_catalog.db");
+    await Deno.mkdir(dirname(dbPath), { recursive: true });
+
+    try {
+      await Deno.writeTextFile(join(driversDir, "driver.ts"), driverCode);
+
+      const catalog = new ExtensionCatalogStore(dbPath);
+      const repository = makeRepoForCatalog(catalog, repoDir);
+      const loader = new UserDriverLoader(
+        testDenoRuntime,
+        repoDir,
+        undefined,
+        repository,
+      );
+
+      const before = catalog.findAll().length;
+      assertEquals(before, 0, "test pre-condition: catalog empty");
+
+      const result = await loader.bundleAndIndexOne({
+        absolutePath: join(driversDir, "driver.ts"),
+        relativePath: "driver.ts",
+        baseDir: driversDir,
+      });
+
+      // Pin 1: catalog row count must be unchanged.
+      assertEquals(
+        catalog.findAll().length,
+        before,
+        "Pin 1: bundleAndIndexOne must NOT write catalog rows",
+      );
+
+      assertNotEquals(result, null);
+      assertEquals(result?.kind, "driver");
+      assertEquals(result?.typeNormalized, driverType.toLowerCase());
+
+      catalog.close();
+    } finally {
+      await Deno.remove(repoDir, { recursive: true });
+      await Deno.remove(driversDir, { recursive: true });
+    }
+  },
+);

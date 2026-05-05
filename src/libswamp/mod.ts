@@ -664,6 +664,14 @@ export {
 // Lockfile repository — sole gateway for upstream_extensions.json.
 export { LockfileRepository } from "../infrastructure/persistence/lockfile_repository.ts";
 
+// W2 lifecycle services — own the catalog write surface end-to-end.
+export { InstallExtensionService } from "./extensions/install_extension_service.ts";
+export {
+  type RemoveExtensionResult,
+  RemoveExtensionService,
+} from "./extensions/remove_extension_service.ts";
+export { UpgradeExtensionService } from "./extensions/upgrade_extension_service.ts";
+
 // Extension layout detection
 export {
   classifyExtensionFile,

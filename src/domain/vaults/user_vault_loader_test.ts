@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertNotEquals } from "@std/assert";
-import { join } from "@std/path";
+import { dirname, join } from "@std/path";
 import { UserVaultLoader } from "./user_vault_loader.ts";
 import { VaultTypeRegistry, vaultTypeRegistry } from "./vault_type_registry.ts";
 import { bundleNamespace } from "../../infrastructure/persistence/paths.ts";
@@ -636,3 +636,77 @@ export const vault = {
     await Deno.remove(vaultsDir, { recursive: true });
   }
 });
+
+// ===== Pin 1 (W2) =====
+//
+// `bundleAndIndexOne` is the public per-file entry point that
+// InstallExtensionService calls during install. The lifecycle service
+// owns the catalog write via `repository.save()`; the loader's per-file
+// method MUST NOT write directly. This test is the regression net.
+
+Deno.test(
+  "UserVaultLoader.bundleAndIndexOne: returns vault metadata without writing catalog rows (Pin 1)",
+  async () => {
+    const ts = Date.now();
+    const vaultType = `@user/pin1-vault-${ts}`;
+    const vaultCode = `
+import { z } from "npm:zod";
+
+export const vault = {
+  type: "${vaultType}",
+  name: "Pin1Vault",
+  description: "pin1",
+  configSchema: z.object({}),
+  createProvider: (name) => ({
+    get: async () => null,
+    put: async () => {},
+    list: async () => [],
+    getName: () => name,
+  }),
+};
+`;
+
+    const repoDir = await Deno.makeTempDir({ prefix: "swamp_pin1_vault_r_" });
+    const vaultsDir = await Deno.makeTempDir({ prefix: "swamp_pin1_vault_v_" });
+    const dbPath = join(repoDir, ".swamp", "_extension_catalog.db");
+    await Deno.mkdir(dirname(dbPath), { recursive: true });
+
+    try {
+      await Deno.writeTextFile(join(vaultsDir, "vault.ts"), vaultCode);
+
+      const catalog = new ExtensionCatalogStore(dbPath);
+      const repository = makeRepoForCatalog(catalog, repoDir);
+      const loader = new UserVaultLoader(
+        new StubDenoRuntime(),
+        repoDir,
+        undefined,
+        repository,
+      );
+
+      const before = catalog.findAll().length;
+      assertEquals(before, 0, "test pre-condition: catalog empty");
+
+      const result = await loader.bundleAndIndexOne({
+        absolutePath: join(vaultsDir, "vault.ts"),
+        relativePath: "vault.ts",
+        baseDir: vaultsDir,
+      });
+
+      // Pin 1: catalog row count must be unchanged.
+      assertEquals(
+        catalog.findAll().length,
+        before,
+        "Pin 1: bundleAndIndexOne must NOT write catalog rows",
+      );
+
+      assertNotEquals(result, null);
+      assertEquals(result?.kind, "vault");
+      assertEquals(result?.typeNormalized, vaultType.toLowerCase());
+
+      catalog.close();
+    } finally {
+      await Deno.remove(repoDir, { recursive: true });
+      await Deno.remove(vaultsDir, { recursive: true });
+    }
+  },
+);

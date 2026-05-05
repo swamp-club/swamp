@@ -694,6 +694,71 @@ export class UserDatastoreLoader {
   }
 
   /**
+   * Bundles a single source file and extracts datastore type metadata
+   * WITHOUT writing to the catalog or registering at runtime. Returns
+   * `{ kind: "datastore", typeNormalized, bundlePath, fingerprint }`
+   * for datastore source files, or `null` for files that aren't
+   * datastores.
+   *
+   * **W2 contract — load-bearing for I-Repo-1.** Lifecycle services
+   * call this at install time and commit via `repository.save()`. The
+   * regression test `bundleAndIndexOne does not write catalog rows`
+   * pins this method's no-catalog-write contract.
+   *
+   * @throws Error on bundle build failure or schema validation failure.
+   */
+  public async bundleAndIndexOne(args: {
+    absolutePath: string;
+    relativePath: string;
+    baseDir: string;
+  }): Promise<
+    | {
+      kind: "datastore";
+      typeNormalized: string;
+      bundlePath: string;
+      fingerprint: string;
+    }
+    | null
+  > {
+    const source = await Deno.readTextFile(args.absolutePath);
+    if (!/export\s+const\s+datastore\s*[=:]/.test(source)) {
+      return null;
+    }
+
+    installZodGlobal();
+    const denoPath = await this.denoRuntime.ensureDeno();
+    const js = await this.bundleWithCache(
+      args.absolutePath,
+      args.relativePath,
+      denoPath,
+      args.baseDir,
+    );
+    const module = await this.importBundle(js, args.relativePath, args.baseDir);
+    if (!module.datastore) return null;
+
+    const fingerprint = await computeSourceFingerprint(
+      args.absolutePath,
+      args.baseDir,
+    );
+    const bundlePath = this.getDatastoreBundlePath(
+      args.relativePath,
+      args.baseDir,
+    );
+
+    const parsed = UserDatastoreSchema.safeParse(module.datastore);
+    if (!parsed.success) {
+      throw new Error(this.formatValidationError(parsed.error));
+    }
+
+    return {
+      kind: "datastore",
+      typeNormalized: parsed.data.type.toLowerCase(),
+      bundlePath,
+      fingerprint,
+    };
+  }
+
+  /**
    * Rebundles a single file and updates the catalog entry.
    */
   private async rebundleAndUpdateCatalog(

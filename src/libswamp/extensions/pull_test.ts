@@ -22,9 +22,16 @@ import { assertStringIncludes } from "@std/assert/string-includes";
 import { join } from "@std/path";
 import {
   computeOrphanDiff,
+  extensionPull,
+  type ExtensionPullDeps,
+  type ExtensionPullEvent,
+  type ExtensionRef,
+  type InstallContext,
+  type InstallResult,
   parseExtensionRef,
   validateExtensionName,
 } from "./pull.ts";
+import { createLibSwampContext } from "../context.ts";
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import { UserError } from "../../domain/errors.ts";
 
@@ -163,5 +170,160 @@ Deno.test(
     const oldFiles = ["c.ts", "a.ts", "b.ts"];
     const extractedFiles = ["a.ts"];
     assertEquals(computeOrphanDiff(oldFiles, extractedFiles), ["c.ts", "b.ts"]);
+  },
+);
+
+// ===== Pin 2 (W2) =====
+//
+// `extensionPull` is one of the 5 KEEP callsites — its
+// {@link ExtensionPullEvent} stream API is consumed directly by
+// renderers in `presentation/renderers/extension_pull.ts`. Plan v4
+// asserts that W2's internal refactor (pull.ts → InstallExtensionService)
+// preserves this stream byte-identically. The architecture-agent's Pin 2
+// review demanded a regression test that locks in the current shape so
+// the W2 refactor cannot quietly leak through the event payload.
+//
+// This test captures the pre-W2 event sequence + structural shape. As
+// commits 2b/2c land (service refactor + phase 8), the test must keep
+// passing — that's the proof of byte-identicality.
+
+function makeStubInstallResult(
+  ref: ExtensionRef,
+  pruned: string[] = [],
+): InstallResult {
+  return {
+    name: ref.name,
+    version: ref.version ?? "1.0.0",
+    description: undefined,
+    extractedFiles: [`.swamp/pulled-extensions/${ref.name}/models/main.ts`],
+    integrityStatus: "verified",
+    repository: undefined,
+    platforms: [],
+    safetyWarnings: [],
+    conflicts: [],
+    missingSourceFiles: [],
+    hasSkills: false,
+    hasSkillScripts: false,
+    skillFiles: [],
+    dependencyResults: [],
+    pruned,
+  };
+}
+
+async function makeStubDeps(
+  installFn: (
+    ref: ExtensionRef,
+    ctx: InstallContext,
+  ) => Promise<InstallResult | undefined>,
+): Promise<ExtensionPullDeps> {
+  const tmpDir = await Deno.makeTempDir({
+    prefix: "swamp_pull_pin2_test_",
+  });
+  return {
+    getExtension: () =>
+      Promise.resolve({
+        name: "@stub/ext",
+        description: "stub",
+        latestVersion: "1.0.0",
+      }),
+    downloadArchive: () => Promise.reject(new Error("stubbed")),
+    getChecksum: () => Promise.resolve(null),
+    lockfileRepository: await LockfileRepository.create(
+      join(tmpDir, "upstream_extensions.json"),
+    ),
+    skillsDir: join(tmpDir, "skills"),
+    repoDir: tmpDir,
+    alreadyPulled: new Set(),
+    depth: 0,
+    installExtensionFn: installFn,
+  };
+}
+
+async function collectEvents(
+  gen: AsyncIterable<ExtensionPullEvent>,
+): Promise<ExtensionPullEvent[]> {
+  const events: ExtensionPullEvent[] = [];
+  for await (const event of gen) {
+    events.push(event);
+  }
+  return events;
+}
+
+Deno.test(
+  "extensionPull: emits installing → completed for a successful install (Pin 2 baseline)",
+  async () => {
+    const ref: ExtensionRef = { name: "@stub/ext", version: "1.0.0" };
+    const deps = await makeStubDeps(() =>
+      Promise.resolve(makeStubInstallResult(ref))
+    );
+
+    const events = await collectEvents(
+      extensionPull(createLibSwampContext(), deps, { ref, force: false }),
+    );
+
+    // Lock in the exact event-kind sequence consumed by renderers.
+    assertEquals(events.length, 2);
+    assertEquals(events[0].kind, "installing");
+    assertEquals(events[1].kind, "completed");
+
+    // Lock in the structural shape of the completed event's payload.
+    if (events[1].kind === "completed") {
+      assertEquals(events[1].data.name, "@stub/ext");
+      assertEquals(events[1].data.version, "1.0.0");
+      assertEquals(events[1].data.integrityStatus, "verified");
+      assertEquals(events[1].data.pruned, []);
+    }
+
+    await Deno.remove(deps.repoDir, { recursive: true });
+  },
+);
+
+Deno.test(
+  "extensionPull: emits installing → orphans-pruned → completed when prior version files are pruned (Pin 2 baseline)",
+  async () => {
+    const ref: ExtensionRef = { name: "@stub/ext", version: "2.0.0" };
+    const prunedPaths = [
+      ".swamp/pulled-extensions/@stub/ext/models/old.ts",
+    ];
+    const deps = await makeStubDeps(() =>
+      Promise.resolve(makeStubInstallResult(ref, prunedPaths))
+    );
+
+    const events = await collectEvents(
+      extensionPull(createLibSwampContext(), deps, { ref, force: false }),
+    );
+
+    assertEquals(events.length, 3);
+    assertEquals(events[0].kind, "installing");
+    assertEquals(events[1].kind, "orphans-pruned");
+    assertEquals(events[2].kind, "completed");
+
+    if (events[1].kind === "orphans-pruned") {
+      assertEquals(events[1].name, "@stub/ext");
+      assertEquals(events[1].version, "2.0.0");
+      assertEquals(events[1].paths, prunedPaths);
+    }
+
+    await Deno.remove(deps.repoDir, { recursive: true });
+  },
+);
+
+Deno.test(
+  "extensionPull: emits only installing when install short-circuits (alreadyPulled)",
+  async () => {
+    // The real installExtension returns undefined when ref.name is in
+    // alreadyPulled. The generator must NOT yield orphans-pruned or
+    // completed in that case — only `installing`.
+    const ref: ExtensionRef = { name: "@stub/already-pulled", version: null };
+    const deps = await makeStubDeps(() => Promise.resolve(undefined));
+
+    const events = await collectEvents(
+      extensionPull(createLibSwampContext(), deps, { ref, force: false }),
+    );
+
+    assertEquals(events.length, 1);
+    assertEquals(events[0].kind, "installing");
+
+    await Deno.remove(deps.repoDir, { recursive: true });
   },
 );

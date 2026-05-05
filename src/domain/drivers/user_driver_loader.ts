@@ -694,6 +694,70 @@ export class UserDriverLoader {
   }
 
   /**
+   * Bundles a single source file and extracts driver type metadata
+   * WITHOUT writing to the catalog or registering at runtime. Returns
+   * `{ kind: "driver", typeNormalized, bundlePath, fingerprint }` for
+   * driver source files, or `null` for files that aren't drivers.
+   *
+   * **W2 contract — load-bearing for I-Repo-1.** Lifecycle services
+   * call this at install time and commit via `repository.save()`. The
+   * regression test `bundleAndIndexOne does not write catalog rows`
+   * pins this method's no-catalog-write contract.
+   *
+   * @throws Error on bundle build failure or schema validation failure.
+   */
+  public async bundleAndIndexOne(args: {
+    absolutePath: string;
+    relativePath: string;
+    baseDir: string;
+  }): Promise<
+    | {
+      kind: "driver";
+      typeNormalized: string;
+      bundlePath: string;
+      fingerprint: string;
+    }
+    | null
+  > {
+    const source = await Deno.readTextFile(args.absolutePath);
+    if (!/export\s+const\s+driver\s*[=:]/.test(source)) {
+      return null;
+    }
+
+    installZodGlobal();
+    const denoPath = await this.denoRuntime.ensureDeno();
+    const js = await this.bundleWithCache(
+      args.absolutePath,
+      args.relativePath,
+      denoPath,
+      args.baseDir,
+    );
+    const module = await this.importBundle(js, args.relativePath, args.baseDir);
+    if (!module.driver) return null;
+
+    const fingerprint = await computeSourceFingerprint(
+      args.absolutePath,
+      args.baseDir,
+    );
+    const bundlePath = this.getDriverBundlePath(
+      args.relativePath,
+      args.baseDir,
+    );
+
+    const parsed = UserDriverSchema.safeParse(module.driver);
+    if (!parsed.success) {
+      throw new Error(this.formatValidationError(parsed.error));
+    }
+
+    return {
+      kind: "driver",
+      typeNormalized: parsed.data.type.toLowerCase(),
+      bundlePath,
+      fingerprint,
+    };
+  }
+
+  /**
    * Rebundles a single file and updates the catalog entry.
    */
   private async rebundleAndUpdateCatalog(

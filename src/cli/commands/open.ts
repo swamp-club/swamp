@@ -53,6 +53,7 @@ import { resolveModelsDir } from "../resolve_models_dir.ts";
 import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
 import { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
+import { EmbeddedDenoRuntime } from "../../infrastructure/runtime/embedded_deno_runtime.ts";
 import { swampPath } from "../../infrastructure/persistence/paths.ts";
 import { isAbsolute } from "@std/path";
 import {
@@ -218,25 +219,43 @@ export const openCommand = new Command()
           throw new LocalEditsError(name);
         }
         const pullLockfileRepo = await LockfileRepository.create(lockfilePath);
-        await pullExtension(
-          { name, version: null },
-          {
-            getExtension: (n) => extClient.getExtension(n),
-            downloadArchive: (n, v) => extClient.downloadArchive(n, v),
-            getChecksum: (n, v) => extClient.getChecksum(n, v),
-            logger: ctx.logger,
-            lockfileRepository: pullLockfileRepo,
-            skillsDir: resolveSkillsDir(repoDir, resolvePrimaryTool(marker)),
-            repoDir,
-            // Force overwrite — the web UI has no stdin to answer the
-            // "overwrite existing files?" prompt, so we always install
-            // non-interactively. Local-edits protection runs above.
-            force: true,
-            outputMode: ctx.outputMode,
-            alreadyPulled: new Set(),
-            depth: 0,
-          },
+        // W2 (commit 3): wire denoRuntime + repository into PullContext
+        // so extensionPull routes through InstallExtensionService and
+        // phase 8 fires synchronously at install time.
+        const pullDenoRuntime = new EmbeddedDenoRuntime();
+        const pullCatalog = new ExtensionCatalogStore(
+          swampPath(repoDir, "_extension_catalog.db"),
         );
+        try {
+          const pullRepository = new ExtensionRepository({
+            catalog: pullCatalog,
+            lockfileRepository: pullLockfileRepo,
+            repoRoot: repoDir,
+          });
+          await pullExtension(
+            { name, version: null },
+            {
+              getExtension: (n) => extClient.getExtension(n),
+              downloadArchive: (n, v) => extClient.downloadArchive(n, v),
+              getChecksum: (n, v) => extClient.getChecksum(n, v),
+              logger: ctx.logger,
+              lockfileRepository: pullLockfileRepo,
+              skillsDir: resolveSkillsDir(repoDir, resolvePrimaryTool(marker)),
+              repoDir,
+              // Force overwrite — the web UI has no stdin to answer the
+              // "overwrite existing files?" prompt, so we always install
+              // non-interactively. Local-edits protection runs above.
+              force: true,
+              outputMode: ctx.outputMode,
+              alreadyPulled: new Set(),
+              depth: 0,
+              denoRuntime: pullDenoRuntime,
+              repository: pullRepository,
+            },
+          );
+        } finally {
+          pullCatalog.close();
+        }
         await reloadExtensionRegistries();
       },
       createDefinition: async (type, name, globalArguments) => {

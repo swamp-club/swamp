@@ -1124,6 +1124,86 @@ export class UserModelLoader {
   }
 
   /**
+   * Bundles a single source file and extracts its registered type metadata
+   * WITHOUT writing to the catalog or registering at runtime. Returns
+   * `{ kind, typeNormalized, bundlePath, fingerprint }` for model and
+   * extension files, or `null` for files that aren't model/extensions.
+   *
+   * **W2 contract — load-bearing for I-Repo-1.** The lifecycle services
+   * (InstallExtensionService etc.) call this to build the Extension
+   * aggregate's Sources at install time, then call
+   * `repository.save(extension)` to commit. If this method ever calls
+   * `catalog.upsert` directly, I-Repo-1 silently stops firing at install
+   * time — the unit test
+   * `bundleAndIndexOne does not write catalog rows` is the regression
+   * net for that class of bug.
+   *
+   * @throws Error on bundle build failure or schema validation failure.
+   */
+  public async bundleAndIndexOne(args: {
+    absolutePath: string;
+    relativePath: string;
+    baseDir: string;
+  }): Promise<
+    | {
+      kind: "model" | "extension";
+      typeNormalized: string;
+      bundlePath: string;
+      fingerprint: string;
+    }
+    | null
+  > {
+    const source = await Deno.readTextFile(args.absolutePath);
+    if (!/export\s+const\s+(model|extension)\s*[=:]/.test(source)) {
+      return null;
+    }
+
+    // Ensure swamp's Zod is available on globalThis before importing
+    // bundles — same precondition as loadModels / buildIndex.
+    installZodGlobal();
+    const denoPath = await this.denoRuntime.ensureDeno();
+    const js = await this.bundleWithCache(
+      args.absolutePath,
+      args.relativePath,
+      denoPath,
+      args.baseDir,
+    );
+    const module = await this.importBundle(js, args.relativePath, args.baseDir);
+    const fingerprint = await computeSourceFingerprint(
+      args.absolutePath,
+      args.baseDir,
+    );
+
+    if (module.model) {
+      const parsed = UserModelSchema.safeParse(module.model);
+      if (!parsed.success) {
+        throw new Error(formatUserModelError(parsed.error));
+      }
+      return {
+        kind: "model",
+        typeNormalized: ModelType.create(parsed.data.type).normalized,
+        bundlePath: this.getBundlePath(args.relativePath, args.baseDir),
+        fingerprint,
+      };
+    }
+
+    if (module.extension) {
+      const parsed = UserExtensionSchema.safeParse(module.extension);
+      if (!parsed.success) {
+        throw new Error(parsed.error.message);
+      }
+      return {
+        kind: "extension",
+        typeNormalized: ModelType.create(parsed.data.type).normalized,
+        bundlePath: this.getBundlePath(args.relativePath, args.baseDir),
+        fingerprint,
+      };
+    }
+
+    return null;
+  }
+
+  /**
    * Rebundles a single file and updates the catalog entry.
    */
   /**
