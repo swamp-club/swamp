@@ -35,15 +35,17 @@ class LogDataGcRenderer implements Renderer<DataGcEvent> {
       completed: (e) => {
         logger
           .info`GC complete: deleted ${e.data.dataEntriesExpired} items`;
-        // wal_checkpoint(TRUNCATE) returns (0,0,0) on full success.
-        if (
-          e.data.walPagesTotal > 0 &&
-          e.data.walPagesCheckpointed < e.data.walPagesTotal
-        ) {
-          logger
-            .info`WAL partial checkpoint: ${e.data.walPagesCheckpointed}/${e.data.walPagesTotal} pages (active readers present)`;
-        } else {
-          logger.info`WAL checkpointed and truncated`;
+        if (!e.data.dryRun) {
+          // wal_checkpoint(TRUNCATE) returns (0,0,0) on full success.
+          if (
+            e.data.walPagesTotal > 0 &&
+            e.data.walPagesCheckpointed < e.data.walPagesTotal
+          ) {
+            logger
+              .info`WAL partial checkpoint: ${e.data.walPagesCheckpointed}/${e.data.walPagesTotal} pages (active readers present)`;
+          } else {
+            logger.info`WAL checkpointed and truncated`;
+          }
         }
       },
       error: (e) => {

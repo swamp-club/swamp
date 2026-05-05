@@ -52,8 +52,10 @@ export async function* datastoreCompact(
     {},
     (async function* () {
       yield { kind: "checkpointing" } as const;
-      const beforeSize = await deps.catalogDbSize();
       const stats = deps.checkpoint();
+      // Measure after checkpoint so WAL pages are flushed to the main DB,
+      // giving an accurate before-VACUUM baseline.
+      const beforeSize = await deps.catalogDbSize();
 
       yield { kind: "vacuuming" } as const;
       deps.vacuum();

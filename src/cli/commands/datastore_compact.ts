@@ -89,6 +89,9 @@ export const datastoreCompactCommand = new Command()
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
     const renderer = createDatastoreCompactRenderer(cliCtx.outputMode);
-    await consumeStream(datastoreCompact(ctx, deps), renderer.handlers());
-    catalogStore.close();
+    try {
+      await consumeStream(datastoreCompact(ctx, deps), renderer.handlers());
+    } finally {
+      catalogStore.close();
+    }
   });
