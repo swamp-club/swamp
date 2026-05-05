@@ -1194,12 +1194,21 @@ export async function* extensionPull(
  * the returned deps object is therefore single-use per the
  * {@link InstallContext.lockfileRepository} JSDoc. Construct fresh deps
  * per install operation; do not reuse across multiple installs.
+ *
+ * **W2 service deps.** Optional `denoRuntime` and `repository` activate
+ * the {@link InstallExtensionService} routing inside `extensionPull`.
+ * When BOTH are passed, phase 8 fires (catalog populated synchronously,
+ * I-Repo-1 fires on `(kind, type)` collision, FS rollback on conflict).
+ * When either is missing, the deps fall back to the pre-W2 free-function
+ * path (catalog populated lazily on next loader pass) — same behavior
+ * as before W2.
  */
 export async function createExtensionPullDeps(
   serverUrl: string,
   lockfilePath: string,
   skillsDir: string,
   repoDir: string,
+  args?: { denoRuntime?: DenoRuntime; repository?: ExtensionRepository },
 ): Promise<ExtensionPullDeps> {
   const client = new ExtensionApiClient(serverUrl);
   const lockfileRepository = await LockfileRepository.create(lockfilePath);
@@ -1212,6 +1221,8 @@ export async function createExtensionPullDeps(
     repoDir,
     alreadyPulled: new Set(),
     depth: 0,
+    denoRuntime: args?.denoRuntime,
+    repository: args?.repository,
   };
 }
 

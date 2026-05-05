@@ -34,6 +34,7 @@ import {
   enumeratePulledExtensionDirs,
   type ExtensionRegistryInfo,
   installExtension,
+  InstallExtensionService,
   LockfileRepository,
 } from "../libswamp/mod.ts";
 import { UserModelLoader } from "../domain/models/user_model_loader.ts";
@@ -182,21 +183,31 @@ export function createAutoResolveInstallerAdapter(
         const lockfileRepository = await LockfileRepository.create(
           lockfilePath,
         );
-        const result = await installExtension(
-          { name: extensionName, version: null },
-          {
-            getExtension,
-            downloadArchive,
-            getChecksum,
-            logger,
-            lockfileRepository,
-            skillsDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledSkills),
-            repoDir,
-            force: false,
-            alreadyPulled: new Set(),
-            depth: 0,
-          },
-        );
+        const installCtx = {
+          getExtension,
+          downloadArchive,
+          getChecksum,
+          logger,
+          lockfileRepository,
+          skillsDir: swampPath(repoDir, SWAMP_SUBDIRS.pulledSkills),
+          repoDir,
+          force: false,
+          alreadyPulled: new Set<string>(),
+          depth: 0,
+        };
+        // W2 (commit 3): route through InstallExtensionService when an
+        // ExtensionRepository is available so phase 8 fires (catalog
+        // populated synchronously, I-Repo-1 fires on `(kind, type)`
+        // collision). When the repository isn't wired (e.g. headless
+        // bootstrap paths), fall back to the pre-W2 free function — the
+        // catalog gets populated lazily on next loader pass.
+        const result = repository !== undefined
+          ? await new InstallExtensionService({ denoRuntime, repository })
+            .execute({ name: extensionName, version: null }, installCtx)
+          : await installExtension(
+            { name: extensionName, version: null },
+            installCtx,
+          );
         if (!result) return null;
         return { version: result.version };
       } catch (error) {

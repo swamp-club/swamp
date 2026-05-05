@@ -48,9 +48,11 @@ import { DEFAULT_SWAMP_CLUB_URL } from "../domain/auth/auth_credentials.ts";
 import {
   detectLocalEditsForExtension,
   enumeratePulledExtensionDirs,
-  installExtension,
+  InstallExtensionService,
   LockfileRepository,
 } from "../libswamp/mod.ts";
+import { ExtensionRepository } from "../infrastructure/persistence/extension_repository.ts";
+import { ExtensionCatalogStore } from "../infrastructure/persistence/extension_catalog_store.ts";
 import { UserDatastoreLoader } from "../domain/datastore/user_datastore_loader.ts";
 import { EmbeddedDenoRuntime } from "../infrastructure/runtime/embedded_deno_runtime.ts";
 import { swampPath } from "../infrastructure/persistence/paths.ts";
@@ -125,24 +127,38 @@ async function maybeAutoUpdateSwampDatastore(
         const lockfileRepository = await LockfileRepository.create(
           lockfilePath,
         );
-        await installExtension(
-          { name, version },
-          {
-            getExtension: (n) => extensionClient.getExtension(n),
-            downloadArchive: (n, v) => extensionClient.downloadArchive(n, v),
-            getChecksum: (n, v) => extensionClient.getChecksum(n, v),
-            logger,
-            lockfileRepository,
-            skillsDir: swampPath(
-              resolvedRepoDir,
-              SWAMP_SUBDIRS.pulledSkills,
-            ),
-            repoDir: resolvedRepoDir,
-            force: true,
-            alreadyPulled: new Set(),
-            depth: 0,
-          },
+        // W2 (commit 3): route through InstallExtensionService so phase 8
+        // fires (catalog populated synchronously, I-Repo-1 fires on
+        // `(kind, type)` collision, FS rollback on conflict).
+        const denoRuntime = new EmbeddedDenoRuntime();
+        const catalog = new ExtensionCatalogStore(
+          swampPath(resolvedRepoDir, "_extension_catalog.db"),
         );
+        try {
+          const repository = new ExtensionRepository({
+            catalog,
+            lockfileRepository,
+            repoRoot: resolvedRepoDir,
+          });
+          await new InstallExtensionService({ denoRuntime, repository })
+            .execute({ name, version }, {
+              getExtension: (n) => extensionClient.getExtension(n),
+              downloadArchive: (n, v) => extensionClient.downloadArchive(n, v),
+              getChecksum: (n, v) => extensionClient.getChecksum(n, v),
+              logger,
+              lockfileRepository,
+              skillsDir: swampPath(
+                resolvedRepoDir,
+                SWAMP_SUBDIRS.pulledSkills,
+              ),
+              repoDir: resolvedRepoDir,
+              force: true,
+              alreadyPulled: new Set(),
+              depth: 0,
+            });
+        } finally {
+          catalog.close();
+        }
 
         // Hot-reload the datastore type from the updated extension.
         // Under the per-extension layout the loader walks each installed

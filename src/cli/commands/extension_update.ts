@@ -30,18 +30,19 @@ import {
   RepoMarkerRepository,
 } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
-import {
-  createInstallContext,
-  installExtension,
-  parseExtensionRef,
-} from "./extension_pull.ts";
+import { createInstallContext, parseExtensionRef } from "./extension_pull.ts";
 import {
   consumeStream,
   createExtensionUpdateDeps,
   createLibSwampContext,
   extensionUpdate,
+  InstallExtensionService,
   warnLegacyExtensionLayout,
 } from "../../libswamp/mod.ts";
+import { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
+import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
+import { EmbeddedDenoRuntime } from "../../infrastructure/runtime/embedded_deno_runtime.ts";
+import { swampPath } from "../../infrastructure/persistence/paths.ts";
 import { createExtensionUpdateRenderer } from "../../presentation/renderers/extension_update.ts";
 import { resolveSkillsDir } from "../../domain/repo/skill_dirs.ts";
 import { resolvePrimaryTool } from "../../domain/repo/primary_tool.ts";
@@ -113,32 +114,54 @@ export const extensionUpdateCommand = new Command()
     const serverUrl = resolveServerUrl();
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = await createExtensionUpdateDeps({
-      lockfilePath,
-      serverUrl,
-      installExtension: async (name: string, version: string) => {
-        // Construct a fresh InstallContext per upgrade — captures a
-        // current snapshot of the lockfile per the
-        // InstallContext.lockfileRepository single-use rule. Reusing one
-        // context across multiple installs would expose stale state.
-        const installCtx = await createInstallContext(serverUrl, {
-          logger: cliCtx.logger,
-          lockfilePath,
-          skillsDir,
-          repoDir,
-          force: true,
-        });
-        return await installExtension({ name, version }, installCtx);
-      },
-    });
-
-    // 5. Execute and render
-    const renderer = createExtensionUpdateRenderer(cliCtx.outputMode);
-    await consumeStream(
-      extensionUpdate(ctx, deps, {
-        extensionName,
-        checkOnly: !!options.check,
-      }),
-      renderer.handlers(),
+    // W2 (commit 3): construct shared denoRuntime + repository so each
+    // upgrade routes through InstallExtensionService and phase 8 fires
+    // (catalog populated synchronously, I-Repo-1 fires on collision,
+    // FS rollback). The catalog stays open for the duration of the
+    // bulk update — closed in the finally block.
+    const denoRuntime = new EmbeddedDenoRuntime();
+    const catalog = new ExtensionCatalogStore(
+      swampPath(repoDir, "_extension_catalog.db"),
     );
+    try {
+      const deps = await createExtensionUpdateDeps({
+        lockfilePath,
+        serverUrl,
+        installExtension: async (name: string, version: string) => {
+          // Construct a fresh InstallContext per upgrade — captures a
+          // current snapshot of the lockfile per the
+          // InstallContext.lockfileRepository single-use rule. Reusing one
+          // context across multiple installs would expose stale state.
+          const installCtx = await createInstallContext(serverUrl, {
+            logger: cliCtx.logger,
+            lockfilePath,
+            skillsDir,
+            repoDir,
+            force: true,
+          });
+          // Build a fresh ExtensionRepository per upgrade so its lockfile
+          // snapshot lines up with the InstallContext's. Catalog is
+          // shared across the bulk run for atomicity-of-each-upgrade.
+          const repository = new ExtensionRepository({
+            catalog,
+            lockfileRepository: installCtx.lockfileRepository,
+            repoRoot: repoDir,
+          });
+          return await new InstallExtensionService({ denoRuntime, repository })
+            .execute({ name, version }, installCtx);
+        },
+      });
+
+      // 5. Execute and render
+      const renderer = createExtensionUpdateRenderer(cliCtx.outputMode);
+      await consumeStream(
+        extensionUpdate(ctx, deps, {
+          extensionName,
+          checkOnly: !!options.check,
+        }),
+        renderer.handlers(),
+      );
+    } finally {
+      catalog.close();
+    }
   });

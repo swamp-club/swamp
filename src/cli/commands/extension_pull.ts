@@ -20,6 +20,11 @@
 import { Command } from "@cliffy/command";
 import type { Logger } from "@logtape/logtape";
 import { join, resolve } from "@std/path";
+import type { DenoRuntime } from "../../domain/runtime/deno_runtime.ts";
+import { EmbeddedDenoRuntime } from "../../infrastructure/runtime/embedded_deno_runtime.ts";
+import { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
+import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
+import { swampPath } from "../../infrastructure/persistence/paths.ts";
 import {
   createContext,
   type GlobalOptions,
@@ -103,6 +108,16 @@ export interface PullContext {
   outputMode: "log" | "json";
   alreadyPulled: Set<string>;
   depth: number;
+  /**
+   * W2 service deps. When BOTH are provided, `extensionPull` routes
+   * through {@link InstallExtensionService} so phase 8 fires (catalog
+   * populated synchronously, I-Repo-1 fires on `(kind, type)` collision,
+   * FS rollback on conflict). When either is missing, falls back to
+   * the pre-W2 free-function path. See {@link ExtensionPullDeps} for
+   * the full contract.
+   */
+  denoRuntime?: DenoRuntime;
+  repository?: ExtensionRepository;
 }
 
 /**
@@ -123,6 +138,8 @@ export async function pullExtension(
     repoDir: ctx.repoDir,
     alreadyPulled: ctx.alreadyPulled,
     depth: ctx.depth,
+    denoRuntime: ctx.denoRuntime,
+    repository: ctx.repository,
   };
   const renderer = createExtensionPullRenderer(outputMode);
 
@@ -209,26 +226,44 @@ export const extensionPullCommand = new Command()
     const tool = resolvePrimaryTool(marker);
     const skillsDir = resolveSkillsDir(repoDir, tool);
 
-    // 7. Create deps via factory and pull
-    const serverUrl = resolveServerUrl();
-    const deps = await createExtensionPullDeps(
-      serverUrl,
-      lockfilePath,
-      skillsDir,
-      repoDir,
+    // 7. Construct W2 service deps (denoRuntime + ExtensionRepository)
+    // so phase 8 fires synchronously at install time. Both are required
+    // for `extensionPull` to route through {@link InstallExtensionService}
+    // — without them it falls back to the pre-W2 free-function path.
+    const denoRuntime = new EmbeddedDenoRuntime();
+    const catalog = new ExtensionCatalogStore(
+      swampPath(repoDir, "_extension_catalog.db"),
     );
+    try {
+      const serverUrl = resolveServerUrl();
+      const deps = await createExtensionPullDeps(
+        serverUrl,
+        lockfilePath,
+        skillsDir,
+        repoDir,
+      );
+      const repository = new ExtensionRepository({
+        catalog,
+        lockfileRepository: deps.lockfileRepository,
+        repoRoot: repoDir,
+      });
 
-    await pullExtension(ref, {
-      getExtension: deps.getExtension,
-      downloadArchive: deps.downloadArchive,
-      getChecksum: deps.getChecksum,
-      logger: ctx.logger,
-      lockfileRepository: deps.lockfileRepository,
-      skillsDir,
-      repoDir,
-      force: options.force ?? false,
-      outputMode: ctx.outputMode,
-      alreadyPulled: new Set(),
-      depth: 0,
-    });
+      await pullExtension(ref, {
+        getExtension: deps.getExtension,
+        downloadArchive: deps.downloadArchive,
+        getChecksum: deps.getChecksum,
+        logger: ctx.logger,
+        lockfileRepository: deps.lockfileRepository,
+        skillsDir,
+        repoDir,
+        force: options.force ?? false,
+        outputMode: ctx.outputMode,
+        alreadyPulled: new Set(),
+        depth: 0,
+        denoRuntime,
+        repository,
+      });
+    } finally {
+      catalog.close();
+    }
   });
