@@ -20,13 +20,20 @@
 import type { z } from "zod";
 
 /**
- * Internal Zod v4 definition structure for schema introspection.
+ * Internal Zod definition structure for schema introspection.
+ *
+ * Extension authors may import Zod v3 (`npm:zod@3`) or Zod v4 (`npm:zod@4`).
+ * The two versions name the type field differently (`typeName` in v3,
+ * `type` in v4) and store object shape differently (`shape()` function in
+ * v3, `shape` value in v4). Both fields are read here so the helpers work
+ * regardless of which Zod version the extension imports.
  */
 interface ZodDef {
-  type: string;
+  type?: string;
+  typeName?: string;
   innerType?: z.ZodTypeAny;
   schema?: z.ZodTypeAny;
-  shape?: Record<string, z.ZodTypeAny>;
+  shape?: Record<string, z.ZodTypeAny> | (() => Record<string, z.ZodTypeAny>);
 }
 
 /**
@@ -37,10 +44,27 @@ function getSchemaDef(schema: z.ZodTypeAny): ZodDef {
 }
 
 /**
- * Gets the definition type string from a Zod schema.
+ * Returns a normalized type name ("object", "optional", "effects", ...) for
+ * a Zod schema. Maps Zod v3 typeName values (e.g. "ZodObject") to Zod v4
+ * type values (e.g. "object").
  */
 function getSchemaType(schema: z.ZodTypeAny): string {
-  return getSchemaDef(schema)?.type ?? "";
+  const def = getSchemaDef(schema);
+  if (!def) return "";
+  if (def.type) return def.type;
+  if (def.typeName) {
+    return def.typeName.replace(/^Zod/, "").toLowerCase();
+  }
+  return "";
+}
+
+/**
+ * Returns the field shape of a ZodObject, accepting both Zod v3 (where
+ * `_def.shape` is a function) and Zod v4 (where `_def.shape` is a value).
+ */
+function readShape(def: ZodDef): Record<string, z.ZodTypeAny> | undefined {
+  if (typeof def.shape === "function") return def.shape();
+  return def.shape;
 }
 
 /**
@@ -83,7 +107,8 @@ export function coerceMethodArgs(
   }
 
   const def = getSchemaDef(unwrapped);
-  if (!def.shape) {
+  const shape = readShape(def);
+  if (!shape) {
     return args;
   }
 
@@ -94,7 +119,7 @@ export function coerceMethodArgs(
       continue;
     }
 
-    const fieldSchema = def.shape[key];
+    const fieldSchema = shape[key];
     if (!fieldSchema) {
       continue;
     }
@@ -116,4 +141,22 @@ export function coerceMethodArgs(
   }
 
   return result;
+}
+
+/**
+ * Returns the field shape of the inner ZodObject for a schema, unwrapping
+ * optional/nullable/default/effects wrappers. Returns undefined when the
+ * schema does not resolve to a ZodObject (e.g. a primitive or a union).
+ *
+ * Used to detect unknown keys passed via CLI flags before Zod's default
+ * strip mode silently discards them.
+ */
+export function getObjectShape(
+  schema: z.ZodTypeAny,
+): Record<string, z.ZodTypeAny> | undefined {
+  const unwrapped = unwrapSchema(schema);
+  if (getSchemaType(unwrapped) !== "object") {
+    return undefined;
+  }
+  return readShape(getSchemaDef(unwrapped));
 }

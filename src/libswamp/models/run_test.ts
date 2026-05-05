@@ -581,6 +581,68 @@ Deno.test("modelMethodRun: accepts known override input key", async () => {
   assertEquals(completedEvent?.kind, "completed");
 });
 
+Deno.test("modelMethodRun: rejects prototype-chain key like 'constructor'", async () => {
+  const definition = Definition.create({
+    name: "test-model",
+    methods: { run: { arguments: {} } },
+  });
+  const modelDef = createTestModelDef("run");
+  const deps = createTestDeps(definition, modelDef);
+
+  const ctx = createLibSwampContext();
+  const events = await collect(
+    modelMethodRun(ctx, deps, {
+      ...createTestInput("test-model", "run"),
+      // "constructor" is on Object.prototype but is NOT a method argument
+      inputs: { constructor: "oops" },
+    }),
+  );
+
+  const errorEvent = events.find((e) => e.kind === "error");
+  assertEquals(errorEvent?.kind, "error");
+  if (errorEvent?.kind === "error") {
+    assertEquals(errorEvent.error.code, "validation_failed");
+    assertEquals(errorEvent.error.message.includes("constructor"), true);
+  }
+});
+
+Deno.test("modelMethodRun: rejects unknown key when method arguments use .refine()", async () => {
+  const definition = Definition.create({
+    name: "refined-model",
+    methods: { run: { arguments: {} } },
+  });
+  const modelDef: ModelDefinition = {
+    type: TEST_MODEL_TYPE,
+    version: "1.0.0",
+    methods: {
+      run: {
+        description: "Test method with refined arguments",
+        arguments: z.object({ key: z.string().optional() }).refine(
+          (v) => v.key !== "forbidden",
+          { message: "key cannot be 'forbidden'" },
+        ),
+        execute: () => Promise.resolve({ dataHandles: [] }),
+      },
+    },
+  };
+  const deps = createTestDeps(definition, modelDef);
+
+  const ctx = createLibSwampContext();
+  const events = await collect(
+    modelMethodRun(ctx, deps, {
+      ...createTestInput("refined-model", "run"),
+      inputs: { typoKey: "oops" },
+    }),
+  );
+
+  const errorEvent = events.find((e) => e.kind === "error");
+  assertEquals(errorEvent?.kind, "error");
+  if (errorEvent?.kind === "error") {
+    assertEquals(errorEvent.error.code, "validation_failed");
+    assertEquals(errorEvent.error.message.includes("typoKey"), true);
+  }
+});
+
 // --- Sensitive argument registration tests ---
 
 Deno.test("modelMethodRun: registers sensitive string-array method arg values with the redactor", async () => {

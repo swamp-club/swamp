@@ -40,7 +40,7 @@ import {
   createFileWriterFactory,
   createResourceWriter,
 } from "./data_writer.ts";
-import { coerceMethodArgs } from "./zod_type_coercion.ts";
+import { coerceMethodArgs, getObjectShape } from "./zod_type_coercion.ts";
 import {
   containsExpression,
   valueContainsExpression,
@@ -449,12 +449,21 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
             modelDef.globalArguments,
           );
           const globalArgsSchema = modelDef.globalArguments;
-          const strictGlobalArgs = (
-            globalArgsSchema as unknown as {
-              strict?(): typeof globalArgsSchema;
+          const shape = getObjectShape(globalArgsSchema);
+          if (shape) {
+            const unknownKeys = Object.keys(coercedGlobalArgs).filter(
+              (k) => !Object.hasOwn(shape, k),
+            );
+            if (unknownKeys.length > 0) {
+              const validKeys = Object.keys(shape).join(", ");
+              throw new Error(
+                `Global arguments validation failed: Unknown argument(s): ${
+                  unknownKeys.join(", ")
+                }. Valid arguments are: ${validKeys || "none"}`,
+              );
             }
-          ).strict?.() ?? globalArgsSchema;
-          const globalArgsResult = strictGlobalArgs.safeParse(
+          }
+          const globalArgsResult = globalArgsSchema.safeParse(
             coercedGlobalArgs,
           );
           if (!globalArgsResult.success) {

@@ -19,7 +19,7 @@
 
 import { assertEquals } from "@std/assert";
 import { z } from "zod";
-import { coerceMethodArgs } from "./zod_type_coercion.ts";
+import { coerceMethodArgs, getObjectShape } from "./zod_type_coercion.ts";
 
 Deno.test("coerces string 'true' to boolean true", () => {
   const schema = z.object({ enabled: z.boolean() });
@@ -136,4 +136,64 @@ Deno.test("does not coerce empty string to number", () => {
   // Number("") is 0 which is not NaN, but empty string is a valid coercion to 0
   const result = coerceMethodArgs({ count: "" }, schema);
   assertEquals(result, { count: 0 });
+});
+
+// ---------- getObjectShape ----------
+
+Deno.test("getObjectShape returns shape for plain ZodObject", () => {
+  const schema = z.object({ name: z.string(), count: z.number() });
+  const shape = getObjectShape(schema);
+  assertEquals(Object.keys(shape ?? {}).sort(), ["count", "name"]);
+});
+
+Deno.test("getObjectShape returns shape for ZodObject wrapped in .refine()", () => {
+  const schema = z.object({ name: z.string() }).refine(
+    (v) => v.name.length > 0,
+  );
+  const shape = getObjectShape(schema);
+  assertEquals(Object.keys(shape ?? {}), ["name"]);
+});
+
+Deno.test("getObjectShape returns shape for ZodObject wrapped in .optional()", () => {
+  const schema = z.object({ name: z.string() }).optional();
+  const shape = getObjectShape(schema);
+  assertEquals(Object.keys(shape ?? {}), ["name"]);
+});
+
+Deno.test("getObjectShape returns undefined for non-object schema", () => {
+  const schema = z.string();
+  assertEquals(getObjectShape(schema), undefined);
+});
+
+Deno.test("getObjectShape handles Zod v3 internal structure (typeName + shape function)", () => {
+  // Extensions may import npm:zod@3, whose ZodObject stores its type as
+  // `_def.typeName` ("ZodObject") and its shape as a function `_def.shape()`.
+  // This test simulates that structure to ensure compatibility.
+  const v3LikeSchema = {
+    _def: {
+      typeName: "ZodObject",
+      shape: () => ({
+        name: z.string(),
+        count: z.number(),
+      }),
+    },
+  } as unknown as z.ZodTypeAny;
+  const shape = getObjectShape(v3LikeSchema);
+  assertEquals(Object.keys(shape ?? {}).sort(), ["count", "name"]);
+});
+
+Deno.test("getObjectShape handles Zod v3 ZodEffects (typeName + .schema)", () => {
+  const v3LikeRefined = {
+    _def: {
+      typeName: "ZodEffects",
+      schema: {
+        _def: {
+          typeName: "ZodObject",
+          shape: () => ({ name: z.string() }),
+        },
+      },
+    },
+  } as unknown as z.ZodTypeAny;
+  const shape = getObjectShape(v3LikeRefined);
+  assertEquals(Object.keys(shape ?? {}), ["name"]);
 });
