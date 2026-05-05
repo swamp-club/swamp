@@ -71,7 +71,8 @@ const INSTRUCTIONS_FILES: Partial<Record<AiTool, string>> = {
 };
 
 const GITIGNORE_TOOL_ENTRIES: Partial<Record<AiTool, string>> = {
-  claude: "# Claude Code configuration (managed by swamp)\n.claude/",
+  claude:
+    "# Claude Code configuration (managed by swamp)\n.claude/worktrees/\n.claude/settings.local.json\n.claude/scheduled_tasks.lock\n.claude/scheduled_tasks.json",
   cursor: "# Cursor skills (managed by swamp)\n.cursor/skills/",
   opencode: "# Agent skills (managed by swamp)\n.agents/skills/",
   codex: "# Agent skills (managed by swamp)\n.agents/skills/",
