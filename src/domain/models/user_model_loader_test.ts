@@ -3575,3 +3575,137 @@ export const model = {
     await Deno.remove(modelsDir, { recursive: true });
   }
 });
+
+// ===== Pin 1 (W2) =====
+//
+// `bundleAndIndexOne` is the public per-file entry point that
+// InstallExtensionService calls during install to build the Extension
+// aggregate's Sources. The whole point of moving type-extraction
+// synchronously to install time is that I-Repo-1 fires when the
+// lifecycle service calls `repository.save(extension)` — NOT when the
+// loader sneaks a row in via `catalog.upsert`. If a future refactor
+// inadvertently re-adds an upsert to this path, I-Repo-1 silently stops
+// firing at install time. The next two tests are the regression net.
+
+Deno.test(
+  "UserModelLoader.bundleAndIndexOne: returns model metadata without writing catalog rows (Pin 1)",
+  async () => {
+    const ts = Date.now();
+    const typeId = `@user/pin1-model-${ts}`;
+    const modelCode = `
+import { z } from "npm:zod@4";
+
+export const model = {
+  type: "${typeId}",
+  version: "2026.05.05.1",
+  globalArguments: z.object({}),
+  resources: {
+    "data": {
+      description: "x",
+      schema: z.object({}),
+      lifetime: "infinite",
+      garbageCollection: 1,
+    },
+  },
+  methods: {
+    noop: {
+      description: "noop",
+      arguments: z.object({}),
+      execute: async () => ({ dataHandles: [] }),
+    },
+  },
+};
+`;
+
+    const repoDir = await Deno.makeTempDir({ prefix: "swamp_pin1_model_r_" });
+    const modelsDir = await Deno.makeTempDir({ prefix: "swamp_pin1_model_m_" });
+    const dbPath = join(repoDir, ".swamp", "_extension_catalog.db");
+    await Deno.mkdir(dirname(dbPath), { recursive: true });
+
+    try {
+      await Deno.writeTextFile(join(modelsDir, "noop.ts"), modelCode);
+
+      const catalog = new ExtensionCatalogStore(dbPath);
+      const repository = makeRepoForCatalog(catalog, repoDir);
+      const loader = new UserModelLoader(
+        testDenoRuntime,
+        repoDir,
+        undefined,
+        repository,
+      );
+
+      const before = catalog.findAll().length;
+      assertEquals(before, 0, "test pre-condition: catalog empty");
+
+      const result = await loader.bundleAndIndexOne({
+        absolutePath: join(modelsDir, "noop.ts"),
+        relativePath: "noop.ts",
+        baseDir: modelsDir,
+      });
+
+      // Pin 1: catalog row count must be unchanged.
+      const after = catalog.findAll().length;
+      assertEquals(
+        after,
+        before,
+        "Pin 1: bundleAndIndexOne must NOT write catalog rows",
+      );
+
+      // Returns the metadata the lifecycle service needs.
+      assertNotEquals(result, null);
+      assertEquals(result?.kind, "model");
+      assertEquals(result?.typeNormalized, typeId.toLowerCase());
+      assertEquals(typeof result?.bundlePath, "string");
+      assertEquals(typeof result?.fingerprint, "string");
+
+      catalog.close();
+    } finally {
+      await Deno.remove(repoDir, { recursive: true });
+      await Deno.remove(modelsDir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "UserModelLoader.bundleAndIndexOne: returns null for files without a model/extension export",
+  async () => {
+    const repoDir = await Deno.makeTempDir({ prefix: "swamp_pin1_null_r_" });
+    const modelsDir = await Deno.makeTempDir({ prefix: "swamp_pin1_null_m_" });
+    const dbPath = join(repoDir, ".swamp", "_extension_catalog.db");
+    await Deno.mkdir(dirname(dbPath), { recursive: true });
+
+    try {
+      await Deno.writeTextFile(
+        join(modelsDir, "helper.ts"),
+        `export const greeting = "hello";`,
+      );
+
+      const catalog = new ExtensionCatalogStore(dbPath);
+      const repository = makeRepoForCatalog(catalog, repoDir);
+      const loader = new UserModelLoader(
+        testDenoRuntime,
+        repoDir,
+        undefined,
+        repository,
+      );
+
+      const result = await loader.bundleAndIndexOne({
+        absolutePath: join(modelsDir, "helper.ts"),
+        relativePath: "helper.ts",
+        baseDir: modelsDir,
+      });
+
+      assertEquals(result, null);
+      assertEquals(
+        catalog.findAll().length,
+        0,
+        "Pin 1: null-return path must also not write catalog rows",
+      );
+
+      catalog.close();
+    } finally {
+      await Deno.remove(repoDir, { recursive: true });
+      await Deno.remove(modelsDir, { recursive: true });
+    }
+  },
+);

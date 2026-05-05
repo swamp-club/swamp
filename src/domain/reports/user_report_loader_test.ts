@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertNotEquals } from "@std/assert";
-import { join } from "@std/path";
+import { dirname, join } from "@std/path";
 import { UserReportLoader } from "./user_report_loader.ts";
 import { reportRegistry } from "./report_registry.ts";
 import { bundleNamespace } from "../../infrastructure/persistence/paths.ts";
@@ -320,3 +320,64 @@ export const report = {
     await Deno.remove(reportsDir, { recursive: true });
   }
 });
+
+// ===== Pin 1 (W2) =====
+
+Deno.test(
+  "UserReportLoader.bundleAndIndexOne: returns report metadata without writing catalog rows (Pin 1)",
+  async () => {
+    const ts = Date.now();
+    const reportName = `@user/pin1-report-${ts}`;
+    const reportCode = `
+export const report = {
+  name: "${reportName}",
+  description: "pin1",
+  scope: "method",
+  execute: async (_ctx) => ({ markdown: "ok", json: {} }),
+};
+`;
+
+    const repoDir = await Deno.makeTempDir({ prefix: "swamp_pin1_report_r_" });
+    const reportsDir = await Deno.makeTempDir({
+      prefix: "swamp_pin1_report_d_",
+    });
+    const dbPath = join(repoDir, ".swamp", "_extension_catalog.db");
+    await Deno.mkdir(dirname(dbPath), { recursive: true });
+
+    try {
+      await Deno.writeTextFile(join(reportsDir, "report.ts"), reportCode);
+
+      const catalog = new ExtensionCatalogStore(dbPath);
+      const repository = makeRepoForCatalog(catalog, repoDir);
+      const loader = new UserReportLoader(
+        testDenoRuntime,
+        repoDir,
+        undefined,
+        repository,
+      );
+
+      const before = catalog.findAll().length;
+      assertEquals(before, 0);
+
+      const result = await loader.bundleAndIndexOne({
+        absolutePath: join(reportsDir, "report.ts"),
+        relativePath: "report.ts",
+        baseDir: reportsDir,
+      });
+
+      assertEquals(
+        catalog.findAll().length,
+        before,
+        "Pin 1: bundleAndIndexOne must NOT write catalog rows",
+      );
+      assertNotEquals(result, null);
+      assertEquals(result?.kind, "report");
+      assertEquals(result?.typeNormalized, reportName.toLowerCase());
+
+      catalog.close();
+    } finally {
+      await Deno.remove(repoDir, { recursive: true });
+      await Deno.remove(reportsDir, { recursive: true });
+    }
+  },
+);

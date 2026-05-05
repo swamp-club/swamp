@@ -540,6 +540,73 @@ export class UserReportLoader {
   }
 
   /**
+   * Bundles a single source file and extracts report metadata WITHOUT
+   * writing to the catalog or registering at runtime. Returns
+   * `{ kind: "report", typeNormalized, bundlePath, fingerprint }` for
+   * report source files, or `null` for files that aren't reports.
+   *
+   * **W2 contract — load-bearing for I-Repo-1.** Lifecycle services
+   * call this at install time and commit via `repository.save()`. The
+   * regression test `bundleAndIndexOne does not write catalog rows`
+   * pins this method's no-catalog-write contract.
+   *
+   * Reports use `name` (not `type`) as the registry identity, so
+   * `typeNormalized` is derived from `parsed.data.name.toLowerCase()`
+   * to match the existing catalog row shape.
+   *
+   * @throws Error on bundle build failure or schema validation failure.
+   */
+  public async bundleAndIndexOne(args: {
+    absolutePath: string;
+    relativePath: string;
+    baseDir: string;
+  }): Promise<
+    | {
+      kind: "report";
+      typeNormalized: string;
+      bundlePath: string;
+      fingerprint: string;
+    }
+    | null
+  > {
+    const source = await Deno.readTextFile(args.absolutePath);
+    if (!/export\s+const\s+report\s*[=:]/.test(source)) {
+      return null;
+    }
+
+    const denoPath = await this.denoRuntime.ensureDeno();
+    const js = await this.bundleWithCache(
+      args.absolutePath,
+      args.relativePath,
+      denoPath,
+      args.baseDir,
+    );
+    const module = await this.importBundle(js, args.relativePath, args.baseDir);
+    if (!module.report) return null;
+
+    const fingerprint = await computeSourceFingerprint(
+      args.absolutePath,
+      args.baseDir,
+    );
+    const bundlePath = this.getReportBundlePath(
+      args.relativePath,
+      args.baseDir,
+    );
+
+    const parsed = UserReportSchema.safeParse(module.report);
+    if (!parsed.success) {
+      throw new Error(this.formatValidationError(parsed.error));
+    }
+
+    return {
+      kind: "report",
+      typeNormalized: parsed.data.name.toLowerCase(),
+      bundlePath,
+      fingerprint,
+    };
+  }
+
+  /**
    * Rebundles a single file and updates the catalog entry.
    */
   private async rebundleAndUpdateCatalog(
