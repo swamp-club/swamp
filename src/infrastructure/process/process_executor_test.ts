@@ -340,6 +340,49 @@ Deno.test({
   },
 });
 
+// Regression for swamp-club#247: libswamp's `withTimeout` builds a signal as
+// `AbortSignal.any([userSignal, AbortSignal.timeout(ms)])`. An earlier fix
+// attempt relied on Deno.Command's native `signal` option, which propagated
+// for direct AbortControllers but not reliably for `AbortSignal.any` of a
+// timeout (observed on Linux CI). This test pins the actual production
+// pattern so a future regression to native-signal-only fails here, not in
+// flaky integration coverage.
+Deno.test({
+  name:
+    "executeProcess: AbortSignal.any + AbortSignal.timeout aborts streaming run",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    const mockLogger = {
+      info: () => {},
+      warn: () => {},
+    } as unknown as import("@logtape/logtape").Logger;
+
+    const userController = new AbortController();
+    const combined = AbortSignal.any([
+      userController.signal,
+      AbortSignal.timeout(100),
+    ]);
+
+    const start = performance.now();
+    let caught: unknown;
+    try {
+      await executeProcess({
+        command: "sleep",
+        args: ["5"],
+        logger: mockLogger,
+        signal: combined,
+      });
+    } catch (err) {
+      caught = err;
+    }
+    const elapsed = performance.now() - start;
+
+    const err = caught as { name?: string };
+    assertEquals(err?.name, "AbortError");
+    assertEquals(elapsed < 5_000, true, `elapsed ${elapsed}ms exceeded 5s`);
+  },
+});
+
 Deno.test("executeProcess redacts secrets from streamed stdout lines", async () => {
   const infoLines: string[] = [];
   const warnLines: string[] = [];
