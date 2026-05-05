@@ -106,7 +106,20 @@ export class RemoveExtensionService {
     //    filesystem still hold the extension — the next loader pass
     //    surfaces them via findStaleFiles.
     if (extensions.length > 0) {
-      this.repository.saveAll(extensions.map(tombstoneAll));
+      try {
+        this.repository.saveAll(extensions.map(tombstoneAll));
+      } catch (error) {
+        // SQLite ROLLBACK kept the catalog in its pre-rm state, so a
+        // retry is a clean re-rm. Surface a UserError so log-mode
+        // shows the guidance without a stack trace.
+        throw new UserError(
+          `Remove failed for ${name} during catalog write ` +
+            `(${
+              error instanceof Error ? error.message : String(error)
+            }). The catalog was rolled back; the extension is unchanged. ` +
+            `Retry \`swamp extension rm ${name}\`.`,
+        );
+      }
     }
 
     // 3. Lockfile remove. Cache + disk both flush in writeEntry's

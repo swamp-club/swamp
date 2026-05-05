@@ -35,6 +35,7 @@ import { makeBundleLocation } from "../../domain/extensions/bundle_location.ts";
 import type { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
 import { DuplicateTypeError } from "../../infrastructure/persistence/duplicate_type_error.ts";
 import { DuplicateTypeUserError } from "../../domain/extensions/duplicate_type_user_error.ts";
+import { UserError } from "../../domain/errors.ts";
 import { swampPath } from "../../infrastructure/persistence/paths.ts";
 import { UserModelLoader } from "../../domain/models/user_model_loader.ts";
 import { UserDriverLoader } from "../../domain/drivers/user_driver_loader.ts";
@@ -184,7 +185,19 @@ export class InstallExtensionService {
         await this.rollbackOnCollision(result, priorEntry, ctx);
         throw mapDuplicateTypeErrorToUserError(error);
       }
-      throw error;
+      // Half-state from a non-DuplicateTypeError fault during phase 8.
+      // Files + lockfile entry are on disk (the install service does
+      // NOT auto-roll-back FS for generic faults — see crash-state
+      // recovery posture in design/extension.md). Surface a UserError
+      // with the pinned recovery message so log-mode shows a clean
+      // single-line guidance instead of a stack trace.
+      throw new UserError(
+        `Install partially applied for ${ref.name} — files extracted but the ` +
+          `catalog write failed (${
+            error instanceof Error ? error.message : String(error)
+          }). Run \`swamp doctor extensions\` to inspect, or retry ` +
+          `\`swamp extension pull ${ref.name}\` to reconcile.`,
+      );
     }
 
     return result;

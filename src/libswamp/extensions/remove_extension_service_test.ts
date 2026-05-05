@@ -470,12 +470,31 @@ Deno.test(
         });
 
         // First attempt: faults inside the tombstone saveAll. SQLite
-        // ROLLBACK preserves all rows; lockfile + FS untouched.
-        await assertRejects(
+        // ROLLBACK preserves all rows; lockfile + FS untouched. The
+        // lifecycle service surfaces the failure as a UserError with a
+        // clean retry hint instead of a raw stack trace.
+        const thrown = await assertRejects(
           () => removeSvc.execute(extName),
-          Error,
-          "simulated SQLite I/O fault during rm",
+          UserError,
+          "Remove failed",
         );
+        if (!(thrown.message.includes(extName))) {
+          throw new Error(
+            `expected message to name extension ${extName}, got: ${thrown.message}`,
+          );
+        }
+        if (!(thrown.message.includes("Retry"))) {
+          throw new Error(
+            `expected message to suggest retry, got: ${thrown.message}`,
+          );
+        }
+        if (
+          !(thrown.message.includes("simulated SQLite I/O fault during rm"))
+        ) {
+          throw new Error(
+            `expected message to include underlying fault, got: ${thrown.message}`,
+          );
+        }
         assertEquals(catalog.findAll().length, preFaultRows);
         assertEquals(repository.loadByName(extName).length, 1);
         assertEquals(lockfileRepository.getEntry(extName)?.version, "1.0.0");

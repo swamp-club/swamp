@@ -378,16 +378,36 @@ Deno.test(
           },
         });
 
-        // First attempt: faults inside saveAll, propagates the error.
-        await assertRejects(
+        // First attempt: faults inside saveAll. The lifecycle service
+        // wraps the underlying error in a UserError with the pinned
+        // half-state recovery message so log-mode shows clean guidance
+        // and `--json` consumers see the recovery hint in `error`.
+        const thrown = await assertRejects(
           () =>
             service.execute(
               { name: extName, version: "1.0.0" } as ExtensionRef,
               makeInstallContext(repoDir, lockfileRepository),
             ),
-          Error,
-          "simulated SQLite I/O fault",
+          UserError,
+          "Install partially applied",
         );
+        // The pinned message names the extension and the recovery action.
+        if (!(thrown.message.includes(extName))) {
+          throw new Error(
+            `expected message to name extension ${extName}, got: ${thrown.message}`,
+          );
+        }
+        if (!(thrown.message.includes("swamp doctor extensions"))) {
+          throw new Error(
+            `expected message to mention \`swamp doctor extensions\`, got: ${thrown.message}`,
+          );
+        }
+        // The underlying fault message is preserved for diagnostics.
+        if (!(thrown.message.includes("simulated SQLite I/O fault"))) {
+          throw new Error(
+            `expected message to include underlying fault, got: ${thrown.message}`,
+          );
+        }
 
         // Catalog state: SQLite txn rolled back, no rows survive.
         assertEquals(faultingRepo.loadByName(extName).length, 0);
