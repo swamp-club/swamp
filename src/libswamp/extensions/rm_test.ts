@@ -306,8 +306,15 @@ Deno.test("extensionRm: removing one sibling leaves the other intact under a sha
       eksFiles,
       "eks lockfile entry must be untouched",
     );
+    // Close the catalog opened by createExtensionRmDeps; on Windows the
+    // open DB handle blocks the recursive remove below with EBUSY.
+    deps.repository.legacyStore.close();
   } finally {
-    await Deno.remove(tmpDir, { recursive: true });
+    if (Deno.build.os === "windows") {
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
   }
 });
 
@@ -370,7 +377,14 @@ Deno.test("extensionRmPreview: resolves dependents via the tracked per-extension
     });
 
     assertEquals(preview.dependents, ["@fake/consumer"]);
+    // Close the catalog opened by createExtensionRmDeps; on Windows the
+    // open DB handle blocks the recursive remove below with EBUSY.
+    deps.repository.legacyStore.close();
   } finally {
-    await Deno.remove(tmpDir, { recursive: true });
+    if (Deno.build.os === "windows") {
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
   }
 });
