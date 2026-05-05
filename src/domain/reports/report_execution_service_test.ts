@@ -1316,3 +1316,80 @@ Deno.test("executeReports: already-loaded reports are not re-promoted", async ()
   assertEquals(summary.results.length, 1);
   assertEquals(summary.results[0].success, true);
 });
+
+Deno.test("buildRedactSensitiveArgs: redacts array-typed sensitive method args to ***", async () => {
+  const typeName = "@test-redact/sensitive-array";
+  const modelType = ModelType.create(typeName);
+  if (!modelRegistry.has(modelType)) {
+    modelRegistry.register({
+      type: modelType,
+      version: "2026.01.01.1",
+      globalArguments: z.object({}),
+      methods: {
+        exec: {
+          description: "test exec",
+          arguments: z.object({
+            command: z.array(z.string()).meta({ sensitive: true }),
+            name: z.string(),
+          }),
+          execute: () => Promise.resolve({ dataHandles: [] }),
+        },
+      },
+    });
+  }
+
+  const methodArgs = {
+    command: ["sh", "-c", "echo TOKEN_HERE | base64 -d"],
+    name: "test-step",
+  };
+  const { report, getResults } = makeRedactionCapturingReport({}, methodArgs);
+
+  const registry = new ReportRegistry();
+  registry.register("redaction-test-array", report);
+  const { repo } = createInMemoryDataRepo();
+
+  const context: MethodReportContext = {
+    scope: "method",
+    repoDir: "/tmp/test",
+    logger: {
+      debug: () => {},
+      info: () => {},
+      warn: () => {},
+      error: () => {},
+      fatal: () => {},
+    } as unknown as MethodReportContext["logger"],
+    // deno-lint-ignore no-explicit-any
+    dataRepository: repo as any,
+    // deno-lint-ignore no-explicit-any
+    definitionRepository: {} as any,
+    modelType,
+    modelId: "test-id",
+    definition: { id: "test-id", name: "test", version: 1, tags: {} },
+    globalArgs: {},
+    methodArgs,
+    methodName: "exec",
+    executionStatus: "succeeded",
+    dataHandles: [],
+    extensionFile: () => {
+      throw new Error("extensionFile not stubbed in this test");
+    },
+  };
+
+  await executeReports(
+    registry,
+    context,
+    modelType,
+    "test-id",
+    { require: ["redaction-test-array"] },
+    {},
+    undefined,
+    "exec",
+  );
+
+  const results = getResults();
+  assertEquals(results !== null, true);
+  // The entire array is replaced with "***"
+  assertEquals(results!.redactedMethod.command, "***");
+  // Non-sensitive fields are preserved
+  assertEquals(results!.redactedMethod.name, "test-step");
+});

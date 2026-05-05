@@ -194,6 +194,52 @@ keyData: ${{ vault.get('aws', 'machineKeyData') }}
 
 The expression evaluation system resolves these at runtime.
 
+## Sensitive Method Arguments
+
+The same `z.meta({ sensitive: true })` annotation applies to **method input
+argument schemas**, not just output resource schemas. When a method argument field
+is marked sensitive, the framework:
+
+1. Registers all resolved values from that field with `SecretRedactor` before
+   executing the method — scrubbing them from the per-run log file automatically.
+2. Applies the redactor when writing result resource attributes — scrubbing
+   sensitive values even if the extension model writes them into result attributes.
+3. Redacts the field to `"***"` in the auto-generated method summary reports
+   (both Markdown and JSON variants).
+
+### Marking an Argument Field as Sensitive
+
+```typescript
+methods: {
+  exec: {
+    description: "Run a command in the container",
+    arguments: z.object({
+      // command may contain credentials — mark it sensitive
+      command: z.array(z.string()).meta({ sensitive: true }),
+      workdir: z.string().optional(),
+    }),
+    execute: async (args, context) => { ... },
+  },
+},
+```
+
+String and string-array values are both supported. For array fields, each element
+is individually registered with the redactor so any occurrence of any element in
+log output is scrubbed.
+
+### Behavior Comparison
+
+| Location | Output schema `sensitive: true` | Argument schema `sensitive: true` |
+| -------- | ------------------------------- | --------------------------------- |
+| Result resource attributes | Stored in vault, replaced with vault ref | Scrubbed by redactor at write time |
+| Per-run log file | Vault secrets scrubbed | Argument values scrubbed |
+| Method summary report | Rendered as vault ref | Rendered as `***` |
+| Audit log | Not covered | Not covered (see follow-up #244) |
+
+Use output-schema sensitive marking when the value must be retrievable later via
+`vault.get()`. Use argument-schema sensitive marking when the value is a
+short-lived credential that should never be stored anywhere.
+
 ## AWS Secrets Manager Provider
 
 The AWS Secrets Manager provider is the initial implementation supporting:

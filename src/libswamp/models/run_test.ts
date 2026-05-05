@@ -37,6 +37,7 @@ import { z } from "zod";
 import { VaultSecretBag } from "../../domain/vaults/vault_secret_bag.ts";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import type { DataQueryService } from "../../domain/data/data_query_service.ts";
+import { SecretRedactor } from "../../domain/secrets/secret_redactor.ts";
 
 await initializeLogging({});
 
@@ -578,4 +579,102 @@ Deno.test("modelMethodRun: accepts known override input key", async () => {
   assertEquals(errorEvent, undefined);
   const completedEvent = events.find((e) => e.kind === "completed");
   assertEquals(completedEvent?.kind, "completed");
+});
+
+// --- Sensitive argument registration tests ---
+
+Deno.test("modelMethodRun: registers sensitive string-array method arg values with the redactor", async () => {
+  const secretValue = "SUPER_SECRET_TOKEN_XYZ";
+  const redactor = new SecretRedactor();
+
+  const modelDef: ModelDefinition = {
+    type: TEST_MODEL_TYPE,
+    version: "1.0.0",
+    methods: {
+      run: {
+        description: "Test method with sensitive array arg",
+        arguments: z.object({
+          command: z.array(z.string()).meta({ sensitive: true }),
+          name: z.string().optional(),
+        }),
+        execute: (_args, _ctx) => Promise.resolve({ dataHandles: [] }),
+      },
+    },
+  };
+
+  const definition = Definition.create({
+    name: "sensitive-arg-model",
+    methods: {
+      run: {
+        arguments: { command: ["sh", "-c", secretValue], name: "test-step" },
+      },
+    },
+  });
+
+  const deps: ModelMethodRunDeps = {
+    ...createTestDeps(definition, modelDef),
+    createRunLog: () =>
+      Promise.resolve({
+        logFilePath: "/tmp/test.log",
+        redactor,
+        cleanup: () => {},
+      }),
+  };
+
+  const ctx = createLibSwampContext();
+  await collect(
+    modelMethodRun(ctx, deps, createTestInput("sensitive-arg-model", "run")),
+  );
+
+  // Long token must be scrubbed; short elements "sh" and "-c" fall below the 3-char threshold
+  assertEquals(redactor.redact(secretValue), "***");
+  assertEquals(redactor.redact("not-a-secret"), "not-a-secret");
+});
+
+Deno.test("modelMethodRun: registers sensitive string method arg values with the redactor", async () => {
+  const secretValue = "s3cr3t-api-key-abc123";
+  const redactor = new SecretRedactor();
+
+  const modelDef: ModelDefinition = {
+    type: TEST_MODEL_TYPE,
+    version: "1.0.0",
+    methods: {
+      run: {
+        description: "Test method with sensitive string arg",
+        arguments: z.object({
+          apiKey: z.string().meta({ sensitive: true }),
+          region: z.string().optional(),
+        }),
+        execute: (_args, _ctx) => Promise.resolve({ dataHandles: [] }),
+      },
+    },
+  };
+
+  const definition = Definition.create({
+    name: "sensitive-string-model",
+    methods: {
+      run: {
+        arguments: { apiKey: secretValue, region: "us-east-1" },
+      },
+    },
+  });
+
+  const deps: ModelMethodRunDeps = {
+    ...createTestDeps(definition, modelDef),
+    createRunLog: () =>
+      Promise.resolve({
+        logFilePath: "/tmp/test.log",
+        redactor,
+        cleanup: () => {},
+      }),
+  };
+
+  const ctx = createLibSwampContext();
+  await collect(
+    modelMethodRun(ctx, deps, createTestInput("sensitive-string-model", "run")),
+  );
+
+  assertEquals(redactor.redact(secretValue), "***");
+  // Non-sensitive field value is not redacted
+  assertEquals(redactor.redact("us-east-1"), "us-east-1");
 });

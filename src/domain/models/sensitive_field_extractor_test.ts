@@ -21,6 +21,7 @@ import { assertEquals } from "@std/assert";
 import { z } from "zod";
 import {
   extractSensitiveFields,
+  extractSensitiveFieldValues,
   getNestedValue,
   setNestedValue,
 } from "./sensitive_field_extractor.ts";
@@ -144,6 +145,88 @@ Deno.test("extractSensitiveFields: deeply nested", () => {
   const fields = extractSensitiveFields(schema);
   assertEquals(fields.length, 1);
   assertEquals(fields[0].path, "level1.level2.secret");
+});
+
+Deno.test("extractSensitiveFieldValues: string field", () => {
+  const schema = z.object({
+    apiKey: z.string().meta({ sensitive: true }),
+    name: z.string(),
+  });
+  const data = { apiKey: "s3cr3t", name: "test" };
+  assertEquals(extractSensitiveFieldValues(schema, data), ["s3cr3t"]);
+});
+
+Deno.test("extractSensitiveFieldValues: array field collects each element", () => {
+  const schema = z.object({
+    command: z.array(z.string()).meta({ sensitive: true }),
+    name: z.string(),
+  });
+  const data = { command: ["sh", "-c", "echo TOKEN_HERE"], name: "test" };
+  assertEquals(extractSensitiveFieldValues(schema, data), [
+    "sh",
+    "-c",
+    "echo TOKEN_HERE",
+  ]);
+});
+
+Deno.test("extractSensitiveFieldValues: undefined field is skipped", () => {
+  const schema = z.object({
+    apiKey: z.string().meta({ sensitive: true }).optional(),
+  });
+  const data: Record<string, unknown> = {};
+  assertEquals(extractSensitiveFieldValues(schema, data), []);
+});
+
+Deno.test("extractSensitiveFieldValues: null field is skipped", () => {
+  const schema = z.object({
+    apiKey: z.string().nullable().meta({ sensitive: true }),
+  });
+  const data = { apiKey: null };
+  assertEquals(extractSensitiveFieldValues(schema, data), []);
+});
+
+Deno.test("extractSensitiveFieldValues: non-sensitive fields ignored", () => {
+  const schema = z.object({
+    apiKey: z.string().meta({ sensitive: true }),
+    region: z.string(),
+  });
+  const data = { apiKey: "s3cr3t", region: "us-east-1" };
+  assertEquals(extractSensitiveFieldValues(schema, data), ["s3cr3t"]);
+});
+
+Deno.test("extractSensitiveFieldValues: nested sensitive field", () => {
+  const schema = z.object({
+    credentials: z.object({
+      token: z.string().meta({ sensitive: true }),
+    }),
+  });
+  const data = { credentials: { token: "tok_abc" } };
+  assertEquals(extractSensitiveFieldValues(schema, data), ["tok_abc"]);
+});
+
+Deno.test("extractSensitiveFieldValues: multiple sensitive fields", () => {
+  const schema = z.object({
+    apiKey: z.string().meta({ sensitive: true }),
+    secret: z.string().meta({ sensitive: true }),
+    name: z.string(),
+  });
+  const data = { apiKey: "key123", secret: "sec456", name: "test" };
+  const values = extractSensitiveFieldValues(schema, data);
+  assertEquals(values.sort(), ["key123", "sec456"]);
+});
+
+Deno.test("extractSensitiveFieldValues: array with non-string elements skips them", () => {
+  const schema = z.object({
+    items: z.array(z.unknown()).meta({ sensitive: true }),
+  });
+  const data = { items: ["str", 42, null, "other"] };
+  assertEquals(extractSensitiveFieldValues(schema, data), ["str", "other"]);
+});
+
+Deno.test("extractSensitiveFieldValues: empty schema returns empty", () => {
+  const schema = z.object({});
+  const data = {};
+  assertEquals(extractSensitiveFieldValues(schema, data), []);
 });
 
 Deno.test("getNestedValue: simple path", () => {

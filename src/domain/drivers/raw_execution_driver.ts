@@ -103,6 +103,7 @@ export class RawExecutionDriver implements ExecutionDriver {
       this.context.vaultService,
       this.methodName,
       this.context.onEvent,
+      this.context.redactor,
     );
 
     const {

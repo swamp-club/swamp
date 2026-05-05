@@ -433,6 +433,7 @@ export function createResourceWriter(
   vaultService?: VaultService,
   methodName?: string,
   onEvent?: (event: MethodExecutionEvent) => void,
+  redactor?: SecretRedactor,
 ): {
   writeResource: (
     specName: string,
@@ -597,7 +598,10 @@ export function createResourceWriter(
       resolvedOptions,
     );
 
-    const handle = await writer.writeText(JSON.stringify(data));
+    const serialized = redactor
+      ? redactor.redact(JSON.stringify(data))
+      : JSON.stringify(data);
+    const handle = await writer.writeText(serialized);
     handles.push(handle);
     return handle;
   };

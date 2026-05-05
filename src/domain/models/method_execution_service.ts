@@ -89,6 +89,7 @@ interface PersistContext extends
     | "tagOverrides"
     | "runtimeTags"
     | "vaultService"
+    | "redactor"
   > {
   resources: Record<string, ResourceOutputSpec>;
   files: Record<string, FileOutputSpec>;
@@ -125,6 +126,8 @@ async function processDriverOutputs(
           persistContext.definitionName,
           persistContext.vaultService,
           persistContext.methodName,
+          undefined, // onEvent
+          persistContext.redactor,
         );
         // Shape the raw content into resource data.
         // If content is valid JSON, use it directly.
@@ -747,6 +750,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
           definitionName: currentDefinition.name,
           vaultService: context.vaultService,
           methodName,
+          redactor: context.redactor,
         });
         result = { dataHandles: currentHandles };
       }

@@ -180,6 +180,49 @@ export function extractSensitiveFields(
 }
 
 /**
+ * Extracts the runtime secret values from a data object based on its Zod schema.
+ *
+ * For each field marked `{ sensitive: true }` in the schema:
+ * - String values are collected directly.
+ * - Array values have each string element collected individually.
+ * - Undefined or null values are skipped.
+ * - Object values are skipped (nested object fields are found via recursion).
+ *
+ * Used to register sensitive argument values with SecretRedactor before
+ * method execution so they are scrubbed from log files and result resources.
+ *
+ * @param schema - A Zod schema (typically a method argument schema)
+ * @param data - The resolved data object to extract values from
+ * @returns Array of secret string values to register with SecretRedactor
+ */
+export function extractSensitiveFieldValues(
+  schema: z.ZodTypeAny,
+  data: Record<string, unknown>,
+): string[] {
+  const fields = extractSensitiveFields(schema);
+  const secrets: string[] = [];
+
+  for (const field of fields) {
+    const value = getNestedValue(data, field.path);
+    if (value === undefined || value === null) {
+      continue;
+    }
+    if (typeof value === "string") {
+      secrets.push(value);
+    } else if (Array.isArray(value)) {
+      for (const element of value) {
+        if (typeof element === "string") {
+          secrets.push(element);
+        }
+      }
+    }
+    // Object values are skipped — nested fields are found by extractSensitiveFields recursion
+  }
+
+  return secrets;
+}
+
+/**
  * Gets a nested value from an object by dot-separated path.
  */
 export function getNestedValue(

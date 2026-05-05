@@ -58,6 +58,7 @@ import {
   InputValidationService,
 } from "../../domain/inputs/mod.ts";
 import { extractInputReferences } from "../../domain/expressions/expression_parser.ts";
+import { extractSensitiveFieldValues } from "../../domain/models/sensitive_field_extractor.ts";
 import { detectEnvVarUsageInDefinition } from "../../domain/models/env_var_detector.ts";
 import { withEventBridge } from "../../infrastructure/stream/event_bridge.ts";
 import type { MethodResult } from "../../domain/models/model.ts";
@@ -403,6 +404,31 @@ export async function* modelMethodRun(
           .resolveRuntimeExpressionsInDefinition(evaluatedDefinition, redactor);
         evaluatedDefinition = runtimeResult.definition;
         const secretBag = runtimeResult.secretBag;
+
+        // Register sensitive argument values with the redactor so they are
+        // scrubbed from per-run log files. Must use post-vault-resolution values.
+        const globalArgSchema = modelDef.globalArguments;
+        if (globalArgSchema) {
+          for (
+            const secret of extractSensitiveFieldValues(
+              globalArgSchema,
+              evaluatedDefinition.globalArguments,
+            )
+          ) {
+            redactor.addSecret(secret);
+          }
+        }
+        const methodArgSchema = modelDef.methods[input.methodName]?.arguments;
+        if (methodArgSchema) {
+          for (
+            const secret of extractSensitiveFieldValues(
+              methodArgSchema,
+              evaluatedDefinition.getMethodArguments(input.methodName),
+            )
+          ) {
+            redactor.addSecret(secret);
+          }
+        }
 
         // --- Execute ---
         yield {

@@ -99,6 +99,7 @@ import {
   RepoMarkerRepository,
 } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { createRepoMarkerLoader } from "../../infrastructure/persistence/repo_marker_loader.ts";
+import { extractSensitiveFieldValues } from "../models/sensitive_field_extractor.ts";
 
 /**
  * Context for step execution.
@@ -661,6 +662,34 @@ export class DefaultStepExecutor implements StepExecutor {
       driver: evaluatedDefinition.driver,
       driverConfig: evaluatedDefinition.driverConfig,
     });
+
+    // Register sensitive argument values with the workflow redactor so they
+    // are scrubbed from the workflow log file. Must use post-vault-resolution
+    // values from evaluatedDefinition.
+    if (ctx.secretRedactor) {
+      const globalArgSchema = modelDef.globalArguments;
+      if (globalArgSchema) {
+        for (
+          const secret of extractSensitiveFieldValues(
+            globalArgSchema,
+            evaluatedDefinition.globalArguments,
+          )
+        ) {
+          ctx.secretRedactor.addSecret(secret);
+        }
+      }
+      const methodArgSchema = modelDef.methods[task.methodName]?.arguments;
+      if (methodArgSchema) {
+        for (
+          const secret of extractSensitiveFieldValues(
+            methodArgSchema,
+            evaluatedDefinition.getMethodArguments(task.methodName),
+          )
+        ) {
+          ctx.secretRedactor.addSecret(secret);
+        }
+      }
+    }
 
     // Execute the method with the EVALUATED definition. The logger
     // handles both console and file persistence via RunFileSink. Data
