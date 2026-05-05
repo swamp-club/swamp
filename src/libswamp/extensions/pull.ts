@@ -31,6 +31,8 @@ import { analyzeExtensionSafety } from "../../domain/extensions/extension_safety
 import { ExtensionApiClient } from "../../infrastructure/http/extension_api_client.ts";
 import { pruneOrphanFiles } from "../../infrastructure/persistence/directory_cleanup.ts";
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
+import type { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
+import type { DenoRuntime } from "../../domain/runtime/deno_runtime.ts";
 import { InstallExtensionService } from "./install_extension_service.ts";
 import {
   bundleNamespace,
@@ -212,6 +214,20 @@ export interface ExtensionPullDeps {
     ref: ExtensionRef,
     ctx: InstallContext,
   ) => Promise<InstallResult | undefined>;
+  /**
+   * W2 service deps. When BOTH are provided, `extensionPull` routes
+   * through {@link InstallExtensionService} — phase 8 fires (synchronous
+   * type extraction + `repository.save` + FS rollback on
+   * `DuplicateTypeError`). When either is missing, falls back to the
+   * pre-W2 free-function path (catalog rows populated lazily by the
+   * loader's next pass — same behavior as W1b shipped).
+   *
+   * Production paths that want the W2 contract (I-Repo-1 fires at install
+   * time) MUST pass both. Migrating callers is plan v4 commit 3 (CONVERT
+   * callsites) and the wrapper-internal swap for KEEP callsites.
+   */
+  denoRuntime?: DenoRuntime;
+  repository?: ExtensionRepository;
 }
 
 /**
@@ -1138,13 +1154,24 @@ export async function* extensionPull(
         depth: deps.depth,
       };
 
-      // Let ConflictError propagate — CLI catches it for the two-phase prompt flow.
-      // Production path goes through InstallExtensionService so the W2 catalog-
-      // write contract (commit 2c phase 8) applies. Tests inject their own
-      // stub via deps.installExtensionFn.
+      // Let ConflictError propagate — CLI catches it for the two-phase prompt
+      // flow. Routing precedence:
+      //   1. deps.installExtensionFn (test seam — Pin 2 stubs)
+      //   2. InstallExtensionService when deps.denoRuntime + deps.repository
+      //      are both provided (W2 contract: phase 8 fires, I-Repo-1 fires
+      //      at install time, FS rollback on DuplicateTypeError)
+      //   3. Free-function installExtension (pre-W2 fallback — catalog rows
+      //      populated lazily on next loader pass)
+      const denoRt = deps.denoRuntime;
+      const repo = deps.repository;
       const install = deps.installExtensionFn ??
-        ((r: ExtensionRef, c: InstallContext) =>
-          new InstallExtensionService().execute(r, c));
+        (denoRt !== undefined && repo !== undefined
+          ? (r: ExtensionRef, c: InstallContext) =>
+            new InstallExtensionService({
+              denoRuntime: denoRt,
+              repository: repo,
+            }).execute(r, c)
+          : installExtension);
       const result = await install(input.ref, installCtx);
       if (result) {
         if (result.pruned.length > 0) {

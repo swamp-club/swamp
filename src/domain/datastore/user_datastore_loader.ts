@@ -725,6 +725,7 @@ export class UserDatastoreLoader {
       return null;
     }
 
+    installZodGlobal();
     const denoPath = await this.denoRuntime.ensureDeno();
     const js = await this.bundleWithCache(
       args.absolutePath,

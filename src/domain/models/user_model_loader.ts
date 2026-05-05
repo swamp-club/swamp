@@ -1158,6 +1158,9 @@ export class UserModelLoader {
       return null;
     }
 
+    // Ensure swamp's Zod is available on globalThis before importing
+    // bundles — same precondition as loadModels / buildIndex.
+    installZodGlobal();
     const denoPath = await this.denoRuntime.ensureDeno();
     const js = await this.bundleWithCache(
       args.absolutePath,
