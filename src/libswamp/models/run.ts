@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { cancelled, type SwampError } from "../errors.ts";
+import { cancelled, type SwampError, validationFailed } from "../errors.ts";
 import { inputValidationFailed } from "../workflows/run.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { MethodExecutionEvent } from "../../domain/models/method_events.ts";
@@ -350,7 +350,11 @@ export async function* modelMethodRun(
           await deps.saveEvaluatedDefinition(modelType, evaluatedDefinition);
         }
 
-        // Merge override inputs into method arguments
+        // Merge override inputs into method arguments.
+        // Override inputs are --input flags whose keys are not model inputs
+        // schema keys (i.e. not used for CEL expression evaluation). They map
+        // directly to method argument schema keys, so reject unknown ones here
+        // before Zod's default strip mode silently discards them.
         const definitionInputKeys = definition.inputs
           ? Object.keys(
             (definition.inputs as { properties?: Record<string, unknown> })
@@ -363,6 +367,25 @@ export async function* modelMethodRun(
           ),
         );
         if (Object.keys(overrideInputs).length > 0) {
+          const methodSchema = method.arguments as {
+            shape?: Record<string, unknown>;
+          };
+          if (methodSchema.shape !== undefined) {
+            const unknownKeys = Object.keys(overrideInputs).filter(
+              (k) => !(k in methodSchema.shape!),
+            );
+            if (unknownKeys.length > 0) {
+              const validInputs = Object.keys(methodSchema.shape).join(", ");
+              yield {
+                kind: "error",
+                error: validationFailed(
+                  `Unknown method input(s): ${unknownKeys.join(", ")}. ` +
+                    `Valid inputs are: ${validInputs || "none"}`,
+                ),
+              };
+              return;
+            }
+          }
           for (const [key, value] of Object.entries(overrideInputs)) {
             evaluatedDefinition.setMethodArgument(input.methodName, key, value);
           }

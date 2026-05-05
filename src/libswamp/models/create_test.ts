@@ -140,6 +140,74 @@ Deno.test("modelCreate: coerces string global arguments to match schema types", 
   assertEquals(completed.kind, "completed");
 });
 
+Deno.test("modelCreate: yields error when unknown global arg key is passed", async () => {
+  const globalArgsSchema = z.object({
+    name: z.string(),
+  });
+
+  const deps = makeDeps({
+    getModelDef: () => ({
+      type: { normalized: "test/strict" },
+      version: "1.0.0",
+      globalArguments: globalArgsSchema,
+      methods: {},
+      resources: {},
+    } as unknown as ModelDefinition),
+  });
+
+  const events = await collect<ModelCreateEvent>(
+    modelCreate(createLibSwampContext(), deps, {
+      typeArg: "test/strict",
+      name: "my-model",
+      globalArguments: { name: "hello", typoKey: "whatever" },
+    }),
+  );
+
+  assertEquals(events.length, 2);
+  assertEquals(events[0], { kind: "creating" });
+  const last = events[1] as Extract<ModelCreateEvent, { kind: "error" }>;
+  assertEquals(last.kind, "error");
+  assertEquals(last.error.code, "validation_failed");
+});
+
+Deno.test("modelCreate: accepts all known global arg keys", async () => {
+  const globalArgsSchema = z.object({
+    name: z.string(),
+    count: z.number(),
+  });
+
+  const deps = makeDeps({
+    getModelDef: () => ({
+      type: { normalized: "test/strict" },
+      version: "1.0.0",
+      globalArguments: globalArgsSchema,
+      methods: {},
+      resources: {},
+    } as unknown as ModelDefinition),
+    createAndSave: () =>
+      Promise.resolve({
+        id: "def-1",
+        name: "my-model",
+      } as unknown as Awaited<
+        ReturnType<ModelCreateDeps["createAndSave"]>
+      >),
+  });
+
+  const events = await collect<ModelCreateEvent>(
+    modelCreate(createLibSwampContext(), deps, {
+      typeArg: "test/strict",
+      name: "my-model",
+      globalArguments: { name: "hello", count: "3" },
+    }),
+  );
+
+  const last = events[events.length - 1] as Extract<
+    ModelCreateEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(last.kind, "completed");
+});
+
 Deno.test("modelCreate: yields error when name already exists", async () => {
   const deps = makeDeps({
     findByNameGlobal: () => Promise.resolve(true),

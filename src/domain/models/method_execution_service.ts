@@ -445,7 +445,13 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
             rawGlobalArgs,
             modelDef.globalArguments,
           );
-          const globalArgsResult = modelDef.globalArguments.safeParse(
+          const globalArgsSchema = modelDef.globalArguments;
+          const strictGlobalArgs = (
+            globalArgsSchema as unknown as {
+              strict?(): typeof globalArgsSchema;
+            }
+          ).strict?.() ?? globalArgsSchema;
+          const globalArgsResult = strictGlobalArgs.safeParse(
             coercedGlobalArgs,
           );
           if (!globalArgsResult.success) {

@@ -1560,3 +1560,35 @@ Deno.test("validateModel warns when appliesTo is empty array", async () => {
   assertStringIncludes(selResult?.error ?? "", "empty appliesTo");
   assertStringIncludes(selResult?.error ?? "", "will never run");
 });
+
+// ---------- Strict schema validation tests ----------
+
+Deno.test("validateModel rejects unknown global argument key", async () => {
+  const service = new DefaultModelValidationService();
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { message: "hello", unknownKey: "oops" },
+    methods: { write: { arguments: { message: "hello" } } },
+  });
+
+  const { results } = await service.validateModel(definition, testExprModel);
+
+  const globalResult = results.find((r) => r.name === "Global arguments");
+  assertEquals(globalResult?.passed, false);
+  assertStringIncludes(globalResult?.error ?? "", "unknownKey");
+});
+
+Deno.test("validateModel rejects unknown method argument key", async () => {
+  const service = new DefaultModelValidationService();
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { message: "hello" },
+    methods: { write: { arguments: { message: "hello", typo: "oops" } } },
+  });
+
+  const { results } = await service.validateModel(definition, testExprModel);
+
+  const methodResult = results.find((r) => r.name === "Method arguments");
+  assertEquals(methodResult?.passed, false);
+  assertStringIncludes(methodResult?.error ?? "", "typo");
+});

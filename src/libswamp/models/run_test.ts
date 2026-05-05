@@ -529,3 +529,53 @@ Deno.test("modelMethodRun: definition.driver applies when no CLI or repo tier se
   assertEquals(captured.driver, "docker");
   assertEquals(captured.driverConfig, { image: "ubuntu" });
 });
+
+// ---------- Unknown override input key rejection ----------
+
+Deno.test("modelMethodRun: rejects unknown override input key with validation_failed error", async () => {
+  const definition = Definition.create({
+    name: "test-model",
+    methods: { run: { arguments: {} } },
+  });
+  const modelDef = createTestModelDef("run");
+  const deps = createTestDeps(definition, modelDef);
+
+  const ctx = createLibSwampContext();
+  const events = await collect(
+    modelMethodRun(ctx, deps, {
+      ...createTestInput("test-model", "run"),
+      // "typoKey" is not a model input key and not a method argument key
+      inputs: { typoKey: "oops" },
+    }),
+  );
+
+  const errorEvent = events.find((e) => e.kind === "error");
+  assertEquals(errorEvent?.kind, "error");
+  if (errorEvent?.kind === "error") {
+    assertEquals(errorEvent.error.code, "validation_failed");
+    assertEquals(errorEvent.error.message.includes("typoKey"), true);
+  }
+});
+
+Deno.test("modelMethodRun: accepts known override input key", async () => {
+  const definition = Definition.create({
+    name: "test-model",
+    methods: { run: { arguments: {} } },
+  });
+  const modelDef = createTestModelDef("run");
+  const deps = createTestDeps(definition, modelDef);
+
+  const ctx = createLibSwampContext();
+  const events = await collect(
+    modelMethodRun(ctx, deps, {
+      ...createTestInput("test-model", "run"),
+      // "key" is in the method schema z.object({ key: z.string().optional() })
+      inputs: { key: "hello" },
+    }),
+  );
+
+  const errorEvent = events.find((e) => e.kind === "error");
+  assertEquals(errorEvent, undefined);
+  const completedEvent = events.find((e) => e.kind === "completed");
+  assertEquals(completedEvent?.kind, "completed");
+});

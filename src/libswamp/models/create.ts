@@ -160,7 +160,13 @@ export async function* modelCreate(
           globalArguments,
           jsonSchema as Record<string, unknown>,
         );
-        const result = modelDef.globalArguments.safeParse(globalArguments);
+        const globalArgsSchema = modelDef.globalArguments;
+        const strictGlobalArgs = (
+          globalArgsSchema as unknown as {
+            strict?(): typeof globalArgsSchema;
+          }
+        ).strict?.() ?? globalArgsSchema;
+        const result = strictGlobalArgs.safeParse(globalArguments);
         if (!result.success) {
           const issues = result.error.issues.map((i) =>
             `  ${i.path.join(".")}: ${i.message}`

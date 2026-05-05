@@ -349,10 +349,12 @@ Deno.test("execute with empty message throws error", async () => {
 
 Deno.test("execute error message includes Zod details", async () => {
   const service = new DefaultMethodExecutionService();
+  // Pass an empty argument set — missing required 'message' field, no unknown keys.
+  // This exercises the Zod validation error path (not the unknown-key path).
   const definition = Definition.create({
     name: "test-definition",
-    globalArguments: { wrongField: "value" },
-    methods: { write: { arguments: { wrongField: "value" } } },
+    globalArguments: {},
+    methods: { write: { arguments: {} } },
   });
 
   const { context } = createTestContext();
@@ -2751,3 +2753,69 @@ Deno.test(
     assertEquals(capturedDriverConfig, { image: "alpine:latest" });
   },
 );
+
+// ---------- Unknown method input key rejection ----------
+
+Deno.test("execute - accepts known method input key", async () => {
+  const service = new DefaultMethodExecutionService();
+
+  let received: Record<string, unknown> = {};
+  const model: ModelDefinition = {
+    type: ModelType.create("test/strict-inputs"),
+    version: "1",
+    methods: {
+      run: {
+        description: "Test method",
+        arguments: z.object({ count: z.number() }),
+        execute: (args) => {
+          received = args as Record<string, unknown>;
+          return Promise.resolve({});
+        },
+      },
+    },
+  };
+
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: {},
+    methods: { run: { arguments: { count: "5" } } },
+  });
+
+  const { context } = createTestContext({
+    modelType: model.type,
+    methodName: "run",
+  });
+
+  await service.execute(definition, model.methods.run, context);
+  assertEquals(received.count, 5);
+});
+
+Deno.test("executeWorkflow - rejects unknown global arg key", async () => {
+  const service = new DefaultMethodExecutionService();
+
+  const model: ModelDefinition = {
+    type: ModelType.create("test/strict-global"),
+    version: "1",
+    globalArguments: z.object({ name: z.string() }),
+    methods: {
+      run: {
+        description: "Test method",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({}),
+      },
+    },
+  };
+
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { name: "hello", unknownKey: "oops" },
+  });
+
+  const { context } = createTestContext({ modelType: model.type });
+
+  await assertRejects(
+    () => service.executeWorkflow(definition, model, "run", context),
+    Error,
+    "Global arguments validation failed",
+  );
+});
