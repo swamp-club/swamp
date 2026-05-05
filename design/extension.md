@@ -1007,6 +1007,17 @@ For rm, the catalog tombstone is the **first** mutation, so a fault
 inside that `saveAll` leaves all three layers (catalog, lockfile, FS)
 in their pre-rm state — a retry is a clean re-rm.
 
+The cross-process composition of these per-extension atomicity claims —
+that `saveAll`'s SQLite WAL transaction, the lockfile advisory-lock retry,
+and the asymmetric ordering above all hold under concurrent invocation
+from independent OS processes against the same repository — is verified
+by `integration/lifecycle_concurrent_stress_test.ts` (swamp-club#254). The
+test runs 50 iterations of four concurrent `swamp` subprocesses each
+(`extension pull` × 2 distinct extensions, `extension rm`, `extension
+update`) and asserts catalog↔lockfile↔FS bijection, well-formed lockfile
+JSON, no `DuplicateTypeError` leakage across distinct fixture types, and
+no lockfile-retry-budget or SQLite-busy exhaustion at iteration end.
+
 ### W3+ inheritance
 
 The lifecycle services' shape is W3-stable. The unified loader
