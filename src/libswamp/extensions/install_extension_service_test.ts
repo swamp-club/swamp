@@ -232,6 +232,79 @@ Deno.test(
   },
 );
 
+// =============================================================
+// Catalog source_path absolute-form regression
+// =============================================================
+//
+// Phase 8 must write the catalog's `source_path` column as the absolute
+// canonical path so that the legacy `populateCatalogFromDir` bootstrap
+// (in `user_*_loader.ts`) — which uses absolute paths from a filesystem
+// walk — UPSERTs onto the same row instead of inserting a duplicate
+// empty-identity row at the absolute form.
+//
+// Pre-fix symptom: a brand-new repo + `extension pull` + any subsequent
+// model command produced two rows per source file (one relative,
+// identity-populated; one absolute, identity-empty). The empty-
+// identity rows triggered cosmetic "Dropping orphan row" warnings on
+// the next `loadByName` because the lockfile-fallback couldn't match
+// them when the user passed `repoDir` as a relative path.
+Deno.test(
+  "InstallExtensionService.execute: catalog source_path is absolute (legacy populateCatalogFromDir compat)",
+  async () => {
+    await withFixtureRepo(
+      async ({ repoDir, repository, catalog, lockfileRepository }) => {
+        const ts = Date.now();
+        const extName = `@test/abs-path-${ts}`;
+        const typeId = `@test/abs-path-model-${ts}`;
+        await stageModel(
+          repoDir,
+          extName,
+          "noop.ts",
+          MINIMAL_MODEL_CODE(typeId),
+        );
+
+        const service = new InstallExtensionService({
+          denoRuntime: testDenoRuntime,
+          repository,
+          installExtensionFn: async (ref, ctx) => {
+            await ctx.lockfileRepository.writeEntry(
+              ref.name,
+              "1.0.0",
+              [`.swamp/pulled-extensions/${ref.name}/models/noop.ts`],
+            );
+            return makeStubInstallResult(ref.name, "1.0.0", [
+              `.swamp/pulled-extensions/${ref.name}/models/noop.ts`,
+            ]);
+          },
+        });
+
+        await service.execute(
+          { name: extName, version: "1.0.0" } as ExtensionRef,
+          makeInstallContext(repoDir, lockfileRepository),
+        );
+
+        // The row's source_path must be absolute (start with `/` on
+        // POSIX, or contain a drive letter on Windows). Relative paths
+        // would leave the legacy loader's UPSERT key-mismatched and
+        // create duplicate empty-identity rows.
+        const rows = catalog.findAll().filter((r) =>
+          r.extension_name === extName
+        );
+        assertEquals(rows.length, 1);
+        const sourcePath = rows[0].source_path;
+        const isAbsolute = Deno.build.os === "windows"
+          ? /^[a-zA-Z]:[\\/]/.test(sourcePath)
+          : sourcePath.startsWith("/");
+        assertEquals(
+          isAbsolute,
+          true,
+          `source_path must be absolute, got: ${sourcePath}`,
+        );
+      },
+    );
+  },
+);
+
 Deno.test(
   "InstallExtensionService.execute: DuplicateTypeError triggers FS rollback and surfaces as UserError",
   async () => {

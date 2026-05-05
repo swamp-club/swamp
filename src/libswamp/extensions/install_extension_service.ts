@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { join, relative } from "@std/path";
+import { join, relative, resolve as resolvePath } from "@std/path";
 import {
   type ExtensionRef,
   type InstallContext,
@@ -215,7 +215,19 @@ export class InstallExtensionService {
     result: InstallResult,
     repoDir: string,
   ): Promise<Extension> {
-    const extRoot = join(swampPath(repoDir, "pulled-extensions"), result.name);
+    // Resolve to an absolute path so the source_path written to the
+    // catalog matches the absolute paths the legacy user_*_loader
+    // bootstrap path uses (`populateCatalogFromDir`). Without this, a
+    // relative `repoDir` (e.g. `.`) would have phase 8 writing relative
+    // source_paths while the loader writes absolute ones, leaving
+    // duplicate rows in the catalog and the legacy upsert's empty-
+    // identity rows would shadow phase 8's properly-identified rows on
+    // the next `loadByName` call.
+    const absoluteRepoDir = resolvePath(repoDir);
+    const extRoot = join(
+      swampPath(absoluteRepoDir, "pulled-extensions"),
+      result.name,
+    );
     const sources: ReturnType<typeof makeSource>[] = [];
 
     for (const kindDir of KIND_DIRS) {
