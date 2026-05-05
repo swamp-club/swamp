@@ -383,6 +383,57 @@ Deno.test({
   },
 });
 
+// Regression for the Linux-CI failure mode of swamp-club#247: dash forks
+// rather than exec'ing single-command `sh -c` invocations, so SIGTERM to
+// the parent shell leaves an orphaned grandchild holding the stdout/stderr
+// pipes open. Without abort-aware stream reads, Promise.all blocks until
+// the orphan exits naturally. /bin/dash is reliably present on Linux CI
+// runners and on macOS too (this test exercises the same dash binary on
+// both platforms so the local result mirrors CI).
+Deno.test({
+  name:
+    "executeProcess: aborts even when child shell forks a long-running grandchild (dash)",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    try {
+      await Deno.stat("/bin/dash");
+    } catch {
+      // dash absent — skip rather than fail; the regression this test
+      // guards against requires a fork-then-exec shell.
+      return;
+    }
+
+    const mockLogger = {
+      info: () => {},
+      warn: () => {},
+    } as unknown as import("@logtape/logtape").Logger;
+
+    const combined = AbortSignal.any([AbortSignal.timeout(500)]);
+
+    const start = performance.now();
+    let caught: unknown;
+    try {
+      await executeProcess({
+        command: "/bin/dash",
+        args: ["-c", "sleep 30"],
+        logger: mockLogger,
+        signal: combined,
+      });
+    } catch (err) {
+      caught = err;
+    }
+    const elapsed = performance.now() - start;
+
+    const err = caught as { name?: string };
+    assertEquals(err?.name, "AbortError");
+    assertEquals(
+      elapsed < 5_000,
+      true,
+      `elapsed ${elapsed}ms exceeded 5s — orphan-pipe regression?`,
+    );
+  },
+});
+
 Deno.test("executeProcess redacts secrets from streamed stdout lines", async () => {
   const infoLines: string[] = [];
   const warnLines: string[] = [];

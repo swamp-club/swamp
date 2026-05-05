@@ -97,10 +97,17 @@ function attachSignalKill(
 /**
  * Reads lines from a ReadableStream, calling onLine for each complete line.
  * Returns the full accumulated output as a string.
+ *
+ * When `signal` is provided, the read loop releases the reader and returns
+ * as soon as the signal aborts. This unblocks callers when the underlying
+ * pipe stays open due to grandchildren that inherited it (e.g. dash on Linux
+ * forks `sleep 30` from `sh -c`; SIGTERM kills sh but the orphan keeps the
+ * write end of the pipe open, so the deno-side reader never sees EOF).
  */
 export async function streamLines(
   stream: ReadableStream<Uint8Array>,
   onLine?: (line: string) => void,
+  signal?: AbortSignal,
 ): Promise<string> {
   const reader = stream.getReader();
   const decoder = new TextDecoder();
@@ -109,10 +116,25 @@ export async function streamLines(
 
   try {
     while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
+      // Race the next read against the abort signal so an aborted run
+      // doesn't block on an inherited-pipe orphan that never EOFs.
+      const readPromise = reader.read();
+      const result = signal && !signal.aborted
+        ? await Promise.race([
+          readPromise,
+          new Promise<{ done: true; value: undefined }>((resolve) => {
+            signal.addEventListener(
+              "abort",
+              () => resolve({ done: true, value: undefined }),
+              { once: true },
+            );
+          }),
+        ])
+        : await readPromise;
 
-      buffer += decoder.decode(value, { stream: true });
+      if (signal?.aborted || result.done) break;
+
+      buffer += decoder.decode(result.value, { stream: true });
       const bufferLines = buffer.split("\n");
 
       // Process all complete lines
@@ -194,6 +216,9 @@ export async function executeProcess(
       const redact = (line: string) =>
         options.redactor?.hasSecrets ? options.redactor.redact(line) : line;
       const onOutput = options.onOutput;
+      // Pass the abort signal down so the read loops bail out when an
+      // orphaned grandchild keeps the pipe write end open after the parent
+      // shell dies (dash on Linux, see streamLines docs).
       const [stdoutResult, stderrResult, status] = await Promise.all([
         streamLines(process.stdout, (line) => {
           const redacted = redact(line);
@@ -203,7 +228,7 @@ export async function executeProcess(
           } else {
             logger.info(redacted);
           }
-        }),
+        }, options.signal),
         streamLines(process.stderr, (line) => {
           const redacted = redact(line);
           if (onOutput) {
@@ -212,7 +237,7 @@ export async function executeProcess(
           } else {
             logger.warn(redacted);
           }
-        }),
+        }, options.signal),
         process.status,
       ]);
 
