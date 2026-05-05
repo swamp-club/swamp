@@ -666,6 +666,10 @@ export { LockfileRepository } from "../infrastructure/persistence/lockfile_repos
 
 // W2 lifecycle services — own the catalog write surface end-to-end.
 export { InstallExtensionService } from "./extensions/install_extension_service.ts";
+export {
+  type RemoveExtensionResult,
+  RemoveExtensionService,
+} from "./extensions/remove_extension_service.ts";
 
 // Extension layout detection
 export {

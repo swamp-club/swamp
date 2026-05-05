@@ -31,7 +31,7 @@ import {
 import { makeSource } from "../../domain/extensions/source.ts";
 import { makeSourceLocation } from "../../domain/extensions/source_location.ts";
 import { makeBundleLocation } from "../../domain/extensions/bundle_location.ts";
-import { type ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
+import type { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
 import { DuplicateTypeError } from "../../infrastructure/persistence/duplicate_type_error.ts";
 import { swampPath } from "../../infrastructure/persistence/paths.ts";
 import { UserModelLoader } from "../../domain/models/user_model_loader.ts";

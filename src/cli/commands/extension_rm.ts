@@ -103,36 +103,44 @@ export const extensionRemoveCommand = new Command()
       (msg) => ctx.logger.warn(msg),
     );
 
-    // Create libswamp context, deps, renderer
+    // Create libswamp context, deps, renderer.
+    // W2 (commit 4): the deps now own a catalog handle (via the W2
+    // ExtensionRepository) so the rm flow routes through
+    // RemoveExtensionService and prunes catalog rows (closes
+    // swamp-club#201). Catalog must be closed when we're done.
     const libCtx = createLibSwampContext({ logger: ctx.logger });
     const deps = await createExtensionRmDeps(repoDir, lockfilePath);
-    const renderer = createExtensionRmRenderer(ctx.outputMode);
-    const input = { extensionName: ref.name };
+    try {
+      const renderer = createExtensionRmRenderer(ctx.outputMode);
+      const input = { extensionName: ref.name };
 
-    // Preview: validates extension, returns preview data
-    const preview = await extensionRmPreview(libCtx, deps, input);
+      // Preview: validates extension, returns preview data
+      const preview = await extensionRmPreview(libCtx, deps, input);
 
-    // Dependency warning
-    if (preview.dependents.length > 0) {
-      renderer.renderDependencyWarning(preview.dependents);
-    }
-
-    // Confirmation prompt (log mode only, unless --force)
-    if (ctx.outputMode === "log" && !options.force) {
-      const confirmed = await promptConfirmation(
-        `Remove ${preview.name} (v${preview.version})? This will delete ${preview.fileCount} file(s).`,
-      );
-      if (!confirmed) {
-        renderExtensionRmCancelled(ctx.outputMode);
-        return;
+      // Dependency warning
+      if (preview.dependents.length > 0) {
+        renderer.renderDependencyWarning(preview.dependents);
       }
+
+      // Confirmation prompt (log mode only, unless --force)
+      if (ctx.outputMode === "log" && !options.force) {
+        const confirmed = await promptConfirmation(
+          `Remove ${preview.name} (v${preview.version})? This will delete ${preview.fileCount} file(s).`,
+        );
+        if (!confirmed) {
+          renderExtensionRmCancelled(ctx.outputMode);
+          return;
+        }
+      }
+
+      // Execute removal
+      await consumeStream(
+        extensionRm(libCtx, deps, input),
+        renderer.handlers(),
+      );
+
+      ctx.logger.debug("Extension remove command completed");
+    } finally {
+      deps.repository.legacyStore.close();
     }
-
-    // Execute removal
-    await consumeStream(
-      extensionRm(libCtx, deps, input),
-      renderer.handlers(),
-    );
-
-    ctx.logger.debug("Extension remove command completed");
   });
