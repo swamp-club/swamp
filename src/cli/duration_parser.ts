@@ -21,13 +21,34 @@ import { parseDuration } from "../libswamp/mod.ts";
 import { UserError } from "../domain/errors.ts";
 
 /**
- * Parses a CLI timeout value like `30s`, `5m`, `1h`. Extends libswamp's
- * `parseDuration` (which is data-retention oriented and starts at
- * minutes) with second-level granularity needed for short-lived
- * cancellations. Returns milliseconds, always > 0.
+ * Parses a CLI timeout value into milliseconds. Accepts:
+ *
+ * - A bare integer interpreted as seconds: `1800` → 1,800,000ms. Matches
+ *   the convention used by `swamp datastore sync --timeout` so knowledge
+ *   transfers across commands.
+ * - A `<n>s` suffix for explicit seconds: `30s` → 30,000ms.
+ * - libswamp's `parseDuration` units (`m`, `h`, `d`, `w`, `mo`, `y`):
+ *   `5m`, `1h`, `7d`, etc.
+ *
+ * Returns milliseconds, always > 0. Throws `UserError` on non-positive
+ * values or unrecognized formats.
  */
 export function parseTimeout(value: string): number {
   const trimmed = value.trim();
+
+  // Bare integer → seconds (matches `swamp datastore sync --timeout`).
+  if (/^\d+$/.test(trimmed)) {
+    const seconds = parseInt(trimmed, 10);
+    if (seconds <= 0) {
+      throw new UserError(
+        `Invalid --timeout value "${value}": must be positive`,
+      );
+    }
+    return seconds * 1000;
+  }
+
+  // `<n>s` → seconds. parseDuration starts at minutes, so we handle this
+  // case here before delegating.
   const secondsMatch = trimmed.match(/^(\d+)s$/);
   if (secondsMatch) {
     const seconds = parseInt(secondsMatch[1], 10);
@@ -38,6 +59,7 @@ export function parseTimeout(value: string): number {
     }
     return seconds * 1000;
   }
+
   const ms = parseDuration(trimmed);
   if (ms <= 0) {
     throw new UserError(

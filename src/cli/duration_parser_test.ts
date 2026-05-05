@@ -21,6 +21,16 @@ import { assertEquals, assertThrows } from "@std/assert";
 import { parseTimeout } from "./duration_parser.ts";
 import { UserError } from "../domain/errors.ts";
 
+Deno.test("parseTimeout: bare integer is interpreted as seconds", () => {
+  // Matches `swamp datastore sync --timeout` convention.
+  assertEquals(parseTimeout("1"), 1000);
+  assertEquals(parseTimeout("1800"), 1_800_000);
+});
+
+Deno.test("parseTimeout: rejects non-positive bare integer", () => {
+  assertThrows(() => parseTimeout("0"), UserError, "must be positive");
+});
+
 Deno.test("parseTimeout: seconds", () => {
   assertEquals(parseTimeout("1s"), 1000);
   assertEquals(parseTimeout("30s"), 30_000);
