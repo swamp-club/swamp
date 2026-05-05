@@ -620,6 +620,7 @@ export class DefaultStepExecutor implements StepExecutor {
       source: "step-output",
       workflow: ctx.workflowName,
       workflowRunId: ctx.workflowRunId,
+      job: ctx.jobName,
       step: ctx.stepName,
     };
 

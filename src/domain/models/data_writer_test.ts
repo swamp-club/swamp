@@ -296,6 +296,45 @@ Deno.test("createResourceWriter: omits ownerDefinition.workflowRunId when not in
   assertEquals(handle.metadata.ownerDefinition.workflowRunId, undefined);
 });
 
+Deno.test("createResourceWriter: populates ownerDefinition.jobName and stepName from tagOverrides", async () => {
+  const repo = createMockRepo();
+  const tagOverrides = {
+    source: "step-output",
+    workflow: "my-wf",
+    job: "my-job",
+    step: "my-step",
+  };
+
+  const { writeResource } = createResourceWriter(
+    repo,
+    modelType,
+    modelId,
+    testResources,
+    tagOverrides,
+  );
+
+  const handle = await writeResource("item", "test-item", { value: "hello" });
+  assertEquals(handle.metadata.ownerDefinition.jobName, "my-job");
+  assertEquals(handle.metadata.ownerDefinition.stepName, "my-step");
+  assertEquals(handle.metadata.ownerDefinition.workflowName, "my-wf");
+});
+
+Deno.test("createResourceWriter: omits ownerDefinition.jobName when not in tagOverrides", async () => {
+  const repo = createMockRepo();
+  const tagOverrides = { source: "step-output", workflow: "my-wf" };
+
+  const { writeResource } = createResourceWriter(
+    repo,
+    modelType,
+    modelId,
+    testResources,
+    tagOverrides,
+  );
+
+  const handle = await writeResource("item", "test-item", { value: "hello" });
+  assertEquals(handle.metadata.ownerDefinition.jobName, undefined);
+});
+
 Deno.test("createFileWriterFactory: populates ownerDefinition.workflowRunId from tagOverrides", async () => {
   const repo = createMockRepo();
   const workflowRunId = "6be8c3b8-ff3f-4e23-b998-fd9456d84d0a";
@@ -318,6 +357,30 @@ Deno.test("createFileWriterFactory: populates ownerDefinition.workflowRunId from
   assertEquals(handle.metadata.ownerDefinition.workflowRunId, workflowRunId);
   assertEquals(handle.metadata.ownerDefinition.ownerType, "model-method");
   assertEquals(handle.metadata.ownerDefinition.ownerRef, modelId);
+});
+
+Deno.test("createFileWriterFactory: populates ownerDefinition.jobName and stepName from tagOverrides", async () => {
+  const repo = createMockRepo();
+  const tagOverrides = {
+    source: "step-output",
+    workflow: "my-wf",
+    job: "my-job",
+    step: "my-step",
+  };
+
+  const { createFileWriter } = createFileWriterFactory(
+    repo,
+    modelType,
+    modelId,
+    testFiles,
+    tagOverrides,
+  );
+
+  const writer = createFileWriter("log", "test-log");
+  const handle = await writer.writeText("log content");
+  assertEquals(handle.metadata.ownerDefinition.jobName, "my-job");
+  assertEquals(handle.metadata.ownerDefinition.stepName, "my-step");
+  assertEquals(handle.metadata.ownerDefinition.workflowName, "my-wf");
 });
 
 Deno.test("createResourceWriter: rejects reserved data name 'latest'", async () => {

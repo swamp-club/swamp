@@ -212,3 +212,79 @@ Deno.test("queryData chain: factory + driver derive working queryData from dataQ
     }
   });
 });
+
+// Lab issue #237: jobName was always empty in CEL data query results because
+// workflow tag overrides never carried `job` and data_writer never mapped it
+// onto OwnerDefinition. This test pins down the read-path contract that all
+// three provenance fields (workflowName, jobName, stepName) are queryable
+// via top-level CEL identifiers when populated on OwnerDefinition.
+Deno.test("data query: workflowName, jobName, stepName CEL fields resolve from ownerDefinition", async () => {
+  await withTempDir(async (repoDir) => {
+    await setupRepoDir(repoDir);
+
+    const catalogStore = new CatalogStore(
+      join(repoDir, ".swamp", "data", "_catalog.db"),
+    );
+    try {
+      const dataRepo = new FileSystemUnifiedDataRepository(
+        repoDir,
+        undefined,
+        catalogStore,
+      );
+      const definitionRepo = new YamlDefinitionRepository(repoDir);
+      const dataQueryService = new DataQueryService(catalogStore, dataRepo);
+
+      const seedModel = Definition.create({
+        name: "provenance_source",
+        type: TEST_MODEL_TYPE.normalized,
+      });
+      await definitionRepo.save(TEST_MODEL_TYPE, seedModel);
+      const seedData = Data.create({
+        name: "provenance_row",
+        contentType: "application/json",
+        lifetime: "infinite",
+        garbageCollection: 10,
+        tags: {
+          type: "resource",
+          workflow: "wf-237",
+          job: "job-237",
+          step: "step-17",
+        },
+        ownerDefinition: {
+          ownerType: "model-method",
+          ownerRef: `${TEST_MODEL_TYPE.normalized}:seed`,
+          workflowName: "wf-237",
+          jobName: "job-237",
+          stepName: "step-17",
+          source: "step-output",
+        },
+      });
+      await dataRepo.save(
+        TEST_MODEL_TYPE,
+        seedModel.id,
+        seedData,
+        new TextEncoder().encode(JSON.stringify({})),
+      );
+
+      const byWorkflow = await dataQueryService.query(
+        'workflowName == "wf-237"',
+      ) as DataRecord[];
+      assertEquals(byWorkflow.length, 1);
+      assertEquals(byWorkflow[0].name, "provenance_row");
+
+      const byJob = await dataQueryService.query(
+        'jobName == "job-237"',
+      ) as DataRecord[];
+      assertEquals(byJob.length, 1);
+      assertEquals(byJob[0].name, "provenance_row");
+
+      const byStep = await dataQueryService.query(
+        'stepName == "step-17"',
+      ) as DataRecord[];
+      assertEquals(byStep.length, 1);
+      assertEquals(byStep[0].name, "provenance_row");
+    } finally {
+      catalogStore.close();
+    }
+  });
+});
