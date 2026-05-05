@@ -17,27 +17,16 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-/**
- * Base error for user-facing errors that should not show a stack trace.
- * Use this for validation errors, "model not found" messages, and other
- * expected error conditions where the stack trace would be noise.
- *
- * The optional `code` carries a machine-readable identifier (e.g.
- * `"cancelled"`, `"timeout"`) that surfaces in JSON error output.
- */
-export class UserError extends Error {
-  readonly code?: string;
-  constructor(message: string, code?: string) {
-    super(message);
-    this.name = "UserError";
-    this.code = code;
-  }
-}
+import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 
-/**
- * Exhaustiveness check for switch statements.
- * TypeScript will error at compile time if a case is missing.
- */
-export function assertNever(value: never): never {
-  throw new Error(`Unexpected value: ${value}`);
-}
+await initializeLogging({});
+
+Deno.test("workflowRunCommand has --timeout option (swamp-club#235)", async () => {
+  const { workflowRunCommand } = await import("./workflow_run.ts");
+  const names = workflowRunCommand.getOptions().map((o) => o.name);
+  if (!names.includes("timeout")) {
+    throw new Error(
+      `expected --timeout option, got: ${names.join(", ")}`,
+    );
+  }
+});

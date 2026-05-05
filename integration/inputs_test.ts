@@ -184,7 +184,7 @@ Deno.test("CLI: model method run with invalid enum value fails", async () => {
     );
 
     assertEquals(result.code !== 0, true, "Should fail for invalid enum");
-    assertStringIncludes(result.stderr, "must be one of");
+    assertStringIncludes(result.stderr + result.stdout, "must be one of");
   });
 });
 
@@ -208,7 +208,7 @@ Deno.test("CLI: model method run with missing required input fails", async () =>
     );
 
     assertEquals(result.code !== 0, true, "Should fail for missing input");
-    assertStringIncludes(result.stderr, "environment");
+    assertStringIncludes(result.stderr + result.stdout, "environment");
   });
 });
 
@@ -341,7 +341,7 @@ Deno.test("CLI: workflow run with missing required input fails", async () => {
     );
 
     assertEquals(result.code !== 0, true, "Should fail for missing input");
-    assertStringIncludes(result.stderr, "environment");
+    assertStringIncludes(result.stderr + result.stdout, "environment");
   });
 });
 
@@ -492,7 +492,7 @@ Deno.test("CLI: input validation reports type mismatch", async () => {
     );
 
     assertEquals(result.code !== 0, true, "Should fail for type mismatch");
-    assertStringIncludes(result.stderr, "must be a string");
+    assertStringIncludes(result.stderr + result.stdout, "must be a string");
   });
 });
 
@@ -550,8 +550,8 @@ Deno.test("CLI: input validation reports multiple errors", async () => {
 
     assertEquals(result.code !== 0, true, "Should fail for multiple errors");
     // Should report both errors
-    assertStringIncludes(result.stderr, "name");
-    assertStringIncludes(result.stderr, "count");
+    assertStringIncludes(result.stderr + result.stdout, "name");
+    assertStringIncludes(result.stderr + result.stdout, "count");
   });
 });
 
@@ -933,8 +933,8 @@ Deno.test("CLI: method validates required inputs that it references", async () =
       true,
       "Should fail without referenced required inputs",
     );
-    assertStringIncludes(result.stderr, "dropletName");
-    assertStringIncludes(result.stderr, "region");
+    assertStringIncludes(result.stderr + result.stdout, "dropletName");
+    assertStringIncludes(result.stderr + result.stdout, "region");
   });
 });
 

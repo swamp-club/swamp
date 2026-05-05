@@ -103,6 +103,11 @@ async function resolveFileValue(
  * - Values starting with `@` read file contents: `key=@path/to/file`
  * - Escaped `@` with `\@` produces a literal `@`: `key=\@literal`
  * - Splits on first `=` only, so values can contain `=`
+ * - `:json` suffix on the leaf segment of the key parses the value as
+ *   JSON: `keywords:json=["a","b"]`, `server.config:json={"port":8080}`.
+ *   The `@file` and `\@literal` interactions are bypassed when `:json`
+ *   is set — the value is read as a literal JSON string. JSON parse
+ *   failures are hard errors.
  */
 export async function parseKeyValueInputs(
   entries: string[],
@@ -117,12 +122,38 @@ export async function parseKeyValueInputs(
       );
     }
 
-    const key = entry.slice(0, eqIndex);
+    let key = entry.slice(0, eqIndex);
     if (key === "") {
       throw new UserError(`Invalid input: empty key in "${entry}".`);
     }
 
-    let value: string = entry.slice(eqIndex + 1);
+    const rawValue: string = entry.slice(eqIndex + 1);
+
+    // Detect a `:json` suffix on the LEAF segment of a dot-notation
+    // path. e.g. `server.config:json` → leaf `config:json` → leaf
+    // `config` with JSON-typed value; `keywords:json` → `keywords`.
+    const jsonSuffix = ":json";
+    const dotIndex = key.lastIndexOf(".");
+    const leaf = dotIndex >= 0 ? key.slice(dotIndex + 1) : key;
+    if (leaf.endsWith(jsonSuffix) && leaf.length > jsonSuffix.length) {
+      const cleanedLeaf = leaf.slice(0, -jsonSuffix.length);
+      key = dotIndex >= 0
+        ? key.slice(0, dotIndex + 1) + cleanedLeaf
+        : cleanedLeaf;
+      let parsed: unknown;
+      try {
+        parsed = JSON.parse(rawValue);
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        throw new UserError(
+          `Invalid JSON value for input "${key}": ${message}`,
+        );
+      }
+      setNestedValue(result, key, parsed);
+      continue;
+    }
+
+    let value: string = rawValue;
 
     if (value.startsWith("\\@")) {
       // Escaped @ — use literal value without the backslash

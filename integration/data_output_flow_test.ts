@@ -798,7 +798,7 @@ Deno.test("Integration: output get fails for non-existent output", async () => {
       true,
       "Should fail for non-existent output",
     );
-    assertStringIncludes(result.stderr, "not found");
+    assertStringIncludes(result.stderr + result.stdout, "not found");
   });
 });
 
@@ -820,7 +820,7 @@ Deno.test("Integration: data get fails for non-existent model", async () => {
     );
 
     assertEquals(result.code !== 0, true, "Should fail for non-existent model");
-    assertStringIncludes(result.stderr, "not found");
+    assertStringIncludes(result.stderr + result.stdout, "not found");
   });
 });
 
@@ -886,6 +886,6 @@ Deno.test("Integration: output data fails for non-existent field", async () => {
     );
 
     assertEquals(result.code !== 0, true, "Should fail for non-existent field");
-    assertStringIncludes(result.stderr, "not found");
+    assertStringIncludes(result.stderr + result.stdout, "not found");
   });
 });

@@ -403,7 +403,8 @@ swamp model method run my-shell execute
 swamp model method run my-deploy create --input environment=prod
 swamp model method run my-deploy create --input environment=prod --input replicas=3
 swamp model method run my-deploy create --input config.timeout=30  # dot notation for nesting
-swamp model method run my-deploy create --input '{"environment": "prod"}'  # JSON also supported
+swamp model method run my-deploy create --input 'tags:json=["prod","west"]'  # :json suffix for arrays/objects
+swamp model method run my-deploy create --input '{"environment": "prod"}'  # legacy single-shot JSON
 swamp model method run my-deploy create --input-file inputs.yaml
 swamp model method run my-deploy create --last-evaluated
 swamp model method run my-deploy create --skip-checks

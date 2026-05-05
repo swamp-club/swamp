@@ -98,6 +98,45 @@ export function createWorkflowRunRenderer(
 The command handler becomes pure orchestration — wire deps, create contexts,
 pick a renderer, consume the stream, check the result.
 
+## JSON Mode Output Contract
+
+When a command runs with `--json`, swamp guarantees the following invariants
+to JSON consumers (`jq`, AI agents, CI scripts):
+
+1. **stdout contains exactly one valid JSON document** for the command's
+   primary output, OR a stream of newline-delimited JSON (NDJSON) documents
+   for streaming commands. No trailing whitespace, no log lines, no
+   prompts.
+2. **stderr is reserved for log records** at the configured log level. It
+   may be empty, may contain LogTape pretty-formatted lines, but never
+   doubles as a structured-output channel.
+3. **Errors emit a structured JSON object on stdout** with the shape
+   `{ error: string, stack?: string, code?: string }` and a non-zero
+   process exit. The `code` field is OPTIONAL — consumers MUST tolerate
+   its presence or absence. When present, it carries a machine-readable
+   identifier (e.g. `"cancelled"`, `"timeout"`, `"not_found"`,
+   `"validation_failed"`) suitable for programmatic dispatch.
+4. **Commands MUST NOT prompt interactively in JSON mode.** Any
+   confirmation gate must be bypassed when the output mode is `json`.
+   Use `Deno.stdin.isTerminal()` to detect non-interactive contexts in
+   addition to `outputMode`.
+
+Renderer implementations for new commands MUST preserve these
+guarantees. The regression test suite at `integration/json_isolation_test.ts`
+exercises the contract across representative commands and is the
+authoritative gate.
+
+This contract is enforced at the logging layer by
+`initializeLogging({ jsonMode: true })` in
+`src/infrastructure/logging/logger.ts`, which configures the
+`["model","method","run"]`, `["workflow","run"]`, and `["logtape","meta"]`
+category loggers with `parentSinks: "override"` so they cannot inherit
+the root logger's sinks. The single emitter for fatal output in JSON
+mode is `renderError` in
+`src/presentation/output/error_output.ts` — it writes to stdout and
+skips `logger.fatal`, so log-mode sinks cannot produce a duplicate
+entry.
+
 ## Logging Boundaries
 
 libswamp and renderers have distinct logging responsibilities:

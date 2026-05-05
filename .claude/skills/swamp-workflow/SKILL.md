@@ -255,7 +255,8 @@ swamp workflow validate --json  # Validate all
 swamp workflow run my-workflow
 swamp workflow run my-workflow --input environment=production
 swamp workflow run my-workflow --input environment=production --input replicas=3
-swamp workflow run my-workflow --input '{"environment": "production"}'  # JSON also supported
+swamp workflow run my-workflow --input 'tags:json=["prod","west"]'  # :json suffix for arrays/objects
+swamp workflow run my-workflow --input '{"environment": "production"}'  # legacy single-shot JSON
 swamp workflow run my-workflow --input-file inputs.yaml
 swamp workflow run my-workflow --last-evaluated  # Use pre-evaluated workflow
 ```

@@ -46,3 +46,16 @@ Deno.test("typeSearchCommand is registered as subcommand of modelTypeCommand", a
   const searchCmd = commands.find((c: Command) => c.getName() === "search");
   assertEquals(searchCmd !== undefined, true);
 });
+
+Deno.test("typeSearchCommand accepts --repo-dir for agentic-flow consistency", async () => {
+  // type search reads only the global extension catalog and does not
+  // require an initialized repo, but the option is accepted so agents
+  // can pass it uniformly across all swamp commands. (swamp-club#235)
+  const { typeSearchCommand } = await import("./type_search.ts");
+  const names = typeSearchCommand.getOptions().map((o) => o.name);
+  if (!names.includes("repo-dir")) {
+    throw new Error(
+      `expected --repo-dir option, got: ${names.join(", ")}`,
+    );
+  }
+});

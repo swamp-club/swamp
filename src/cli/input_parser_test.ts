@@ -24,6 +24,7 @@ import {
   parseKeyValueInputs,
   setNestedValue,
 } from "./input_parser.ts";
+import { UserError } from "../domain/errors.ts";
 import { stringify as stringifyYaml } from "@std/yaml";
 
 // --- setNestedValue ---
@@ -369,6 +370,85 @@ Deno.test("parseInputs: JSON input ignores input-file", async () => {
     });
     assertEquals(result.source, "json");
     assertEquals(result.inputs, { fromJson: true });
+  } finally {
+    await Deno.remove(tempFile);
+  }
+});
+
+// --- parseKeyValueInputs (:json suffix) — swamp-club#235 ---
+
+Deno.test("parseKeyValueInputs: :json suffix parses an array", async () => {
+  const result = await parseInputs({
+    input: ['keywords:json=["typescript","retry"]'],
+  });
+  assertEquals(result.source, "key-value");
+  assertEquals(result.inputs, { keywords: ["typescript", "retry"] });
+});
+
+Deno.test("parseKeyValueInputs: :json suffix parses an object", async () => {
+  const result = await parseInputs({
+    input: ['config:json={"port":8080,"host":"localhost"}'],
+  });
+  assertEquals(result.source, "key-value");
+  assertEquals(result.inputs, {
+    config: { port: 8080, host: "localhost" },
+  });
+});
+
+Deno.test("parseKeyValueInputs: :json suffix on the leaf of a nested key", async () => {
+  const result = await parseInputs({
+    input: ['server.config:json={"port":8080}'],
+  });
+  assertEquals(result.source, "key-value");
+  assertEquals(result.inputs, {
+    server: { config: { port: 8080 } },
+  });
+});
+
+Deno.test("parseKeyValueInputs: :json takes precedence over @file shorthand", async () => {
+  // A `@`-prefixed value would normally be treated as a file path; the
+  // :json suffix bypasses that and parses the literal as JSON. So
+  // `key:json=@notafile.json` parses `@notafile.json` as JSON (which
+  // fails) — verifying the suffix takes precedence.
+  await assertRejects(
+    () => parseInputs({ input: ["key:json=@notafile"] }),
+    UserError,
+    "Invalid JSON value for input",
+  );
+});
+
+Deno.test("parseKeyValueInputs: no :json suffix preserves string behavior", async () => {
+  const result = await parseInputs({
+    input: ['raw=["this","is","a","string"]'],
+  });
+  assertEquals(result.source, "key-value");
+  assertEquals(result.inputs, { raw: '["this","is","a","string"]' });
+});
+
+Deno.test("parseKeyValueInputs: :json parse failure raises UserError", async () => {
+  await assertRejects(
+    () => parseInputs({ input: ["bad:json={not json}"] }),
+    UserError,
+    "Invalid JSON value for input",
+  );
+});
+
+Deno.test("parseKeyValueInputs: :json from CLI overrides --input-file value", async () => {
+  // Confirms precedence: the YAML file sets keywords as a string list,
+  // the CLI :json override replaces it with a parsed array. Existing
+  // deepMerge semantics: CLI key-value wins over file.
+  const tempFile = await Deno.makeTempFile({ suffix: ".yaml" });
+  try {
+    await Deno.writeTextFile(
+      tempFile,
+      stringifyYaml({ keywords: ["from-file"] } as Record<string, unknown>),
+    );
+    const result = await parseInputs({
+      input: ['keywords:json=["from-cli"]'],
+      inputFile: tempFile,
+    });
+    assertEquals(result.source, "combined");
+    assertEquals(result.inputs, { keywords: ["from-cli"] });
   } finally {
     await Deno.remove(tempFile);
   }

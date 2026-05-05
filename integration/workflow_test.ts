@@ -178,7 +178,7 @@ Deno.test("CLI: workflow create rejects duplicate names", async () => {
     );
 
     assertEquals(result.code !== 0, true, "Command should fail");
-    assertStringIncludes(result.stderr, "already exists");
+    assertStringIncludes(result.stderr + result.stdout, "already exists");
   });
 });
 
@@ -266,7 +266,7 @@ Deno.test("CLI: workflow get errors for non-existent workflow", async () => {
     );
 
     assertEquals(result.code !== 0, true, "Command should fail");
-    assertStringIncludes(result.stderr, "not found");
+    assertStringIncludes(result.stderr + result.stdout, "not found");
   });
 });
 
@@ -356,7 +356,7 @@ Deno.test("CLI: workflow validate errors when no workflows found", async () => {
     );
 
     assertEquals(result.code !== 0, true, "Command should fail");
-    assertStringIncludes(result.stderr, "No workflows found");
+    assertStringIncludes(result.stderr + result.stdout, "No workflows found");
   });
 });
 
@@ -684,7 +684,7 @@ Deno.test("CLI: workflow run errors for non-existent workflow", async () => {
     );
 
     assertEquals(result.code !== 0, true, "Command should fail");
-    assertStringIncludes(result.stderr, "not found");
+    assertStringIncludes(result.stderr + result.stdout, "not found");
   });
 });
 
@@ -1042,11 +1042,11 @@ Deno.test("CLI: model delete blocked when referenced by workflow, succeeds after
       "Model delete should fail when referenced by workflow",
     );
     assertStringIncludes(
-      deleteModelBlockedResult.stderr,
+      deleteModelBlockedResult.stderr + deleteModelBlockedResult.stdout,
       "workflow-using-model",
     );
     assertStringIncludes(
-      deleteModelBlockedResult.stderr,
+      deleteModelBlockedResult.stderr + deleteModelBlockedResult.stdout,
       "referenced by workflow",
     );
 
@@ -1155,7 +1155,7 @@ Deno.test("CLI: model delete blocked when referenced by workflow using model ID"
       "Model delete should fail when referenced by workflow using ID",
     );
     assertStringIncludes(
-      deleteModelResult.stderr,
+      deleteModelResult.stderr + deleteModelResult.stdout,
       "workflow-using-id",
     );
   });
@@ -1386,7 +1386,7 @@ Deno.test("CLI: workflow delete command removes workflow and all runs", async ()
     );
 
     assertEquals(getResult.code !== 0, true, "Workflow should not exist");
-    assertStringIncludes(getResult.stderr, "not found");
+    assertStringIncludes(getResult.stderr + getResult.stdout, "not found");
   });
 });
 

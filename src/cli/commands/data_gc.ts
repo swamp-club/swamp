@@ -59,6 +59,10 @@ export const dataGcCommand = new Command()
   .description("Run garbage collection on data (lifecycle and versions)")
   .example("Preview what would be collected", "swamp data gc --dry-run")
   .example("Run garbage collection", "swamp data gc --force")
+  .example(
+    "Run non-interactively in JSON mode (no prompt, structured output)",
+    "swamp data gc --json",
+  )
   .option(
     "--repo-dir <dir:string>",
     "Repository directory (env: SWAMP_REPO_DIR)",

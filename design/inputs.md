@@ -197,12 +197,36 @@ base values and key=value pairs act as overrides (deep merged).
 
 ### Type coercion
 
-Key=value inputs are always parsed as strings. When the workflow or model
+Key=value inputs are parsed as strings by default. When the workflow or model
 declares an `InputsSchema`, string values are automatically coerced to match
 the schema's declared types (`number`, `integer`, `boolean`) before validation.
 Without a schema, values remain as strings.
 
+### JSON-typed values via `:json` suffix
+
+Append `:json` to the leaf segment of a key to parse the value as JSON
+instead of a string:
+
+```sh
+# Array
+swamp model method run my-model search --input 'keywords:json=["typescript","retry"]'
+
+# Object
+swamp model method run my-model deploy --input 'config:json={"port":8080,"replicas":3}'
+
+# Nested key (suffix attaches to the LEAF segment only)
+swamp model method run my-model deploy --input 'server.config:json={"port":8080}'
+# → { server: { config: { port: 8080 } } }
+```
+
+The `:json` suffix bypasses the `@file` shorthand and the `\@` escape;
+the value is always parsed as a JSON literal. JSON parse failures are
+hard errors. When both `--input key:json=...` and a YAML
+`--input-file` set the same key, the CLI value wins (existing
+deepMerge precedence).
+
 ### Arrays
 
-Array inputs are not supported via key=value syntax. Use `--input-file` or JSON
-for array values.
+Array inputs are supported via the `:json` suffix above (preferred), or
+via `--input-file` with YAML/JSON, or via the legacy single-shot
+`--input '<json-object>'` form.

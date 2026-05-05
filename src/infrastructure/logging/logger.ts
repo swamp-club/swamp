@@ -23,7 +23,6 @@ import {
   getLogger,
   getTextFormatter,
   type LogLevel,
-  type LogRecord,
   type Sink,
 } from "@logtape/logtape";
 import { getPrettyFormatter } from "@logtape/pretty";
@@ -37,48 +36,6 @@ export interface LoggingOptions {
   logLevel?: LogLevel;
   jsonMode?: boolean;
   noColor?: boolean;
-}
-
-/**
- * Creates a sink that formats fatal log records as JSON on stderr.
- * Used in JSON mode so error output matches the structured output contract.
- */
-function createJsonErrorSink(): Sink {
-  return (record: LogRecord) => {
-    const errorProp = record.properties["error"];
-    const messageProp = record.properties["message"];
-
-    let errorMessage: string;
-    let stack: string | undefined;
-
-    if (errorProp instanceof Error) {
-      errorMessage = errorProp.message;
-      stack = extractStackLines(errorProp.stack);
-    } else if (typeof messageProp === "string") {
-      errorMessage = messageProp;
-    } else {
-      // Fallback: render the full message
-      errorMessage = record.message.map(String).join("");
-    }
-
-    const data: Record<string, string> = { error: errorMessage };
-    if (stack) {
-      data.stack = stack;
-    }
-    console.error(JSON.stringify(data, null, 2));
-  };
-}
-
-/**
- * Extracts just the stack trace lines from an error stack.
- * Removes the error message line and any source code snippets.
- */
-function extractStackLines(stack: string | undefined): string | undefined {
-  if (!stack) return undefined;
-
-  const lines = stack.split("\n");
-  const stackLines = lines.filter((line) => line.trim().startsWith("at "));
-  return stackLines.length > 0 ? stackLines.join("\n") : undefined;
 }
 
 let isInitialized = false;
@@ -129,18 +86,16 @@ export async function initializeLogging(
   }
 
   if (options.jsonMode) {
-    sinks["jsonError"] = createJsonErrorSink();
-  }
-
-  if (options.jsonMode) {
-    // In JSON mode without debug, suppress most console output
-    // to keep stdout clean for structured output.
-    // Fatal messages use a JSON-formatted sink on stderr so
-    // error output is valid JSON matching the structured output contract.
+    // JSON mode: the renderError() function in
+    // src/presentation/output/error_output.ts is the single emitter for
+    // fatal output (it writes JSON to stdout and skips logger.fatal).
+    // The root logger has no sinks so nothing leaks via the standard
+    // logging pipeline. Audit at swamp-club#235: only error_output.ts
+    // calls logger.fatal in src/, both inside renderError itself.
     loggers.push({
       category: [],
       lowestLevel: "fatal",
-      sinks: ["jsonError"],
+      sinks: [],
     });
   } else {
     loggers.push({
@@ -150,6 +105,14 @@ export async function initializeLogging(
     });
   }
 
+  // In JSON mode, sever sink inheritance from the root logger on the
+  // category loggers — otherwise a child logger emitting an info record
+  // would also emit through the root's `jsonError` sink, polluting
+  // stderr with malformed JSON. `parentSinks: 'override'` is the
+  // documented LogTape API for this (since 0.6.0). Also clear the
+  // logtape.meta logger's own sinks in JSON mode so its warnings
+  // don't reach the console at all.
+  const jsonMode = options.jsonMode ?? false;
   await configure({
     sinks,
     loggers: [
@@ -158,16 +121,19 @@ export async function initializeLogging(
         category: ["model", "method", "run"],
         lowestLevel: logLevel,
         sinks: ["runFile"],
+        parentSinks: jsonMode ? "override" : "inherit",
       },
       {
         category: ["workflow", "run"],
         lowestLevel: logLevel,
         sinks: ["runFile"],
+        parentSinks: jsonMode ? "override" : "inherit",
       },
       {
         category: ["logtape", "meta"],
         lowestLevel: "warning",
-        sinks: ["console"],
+        sinks: jsonMode ? [] : ["console"],
+        parentSinks: jsonMode ? "override" : "inherit",
       },
     ],
   });

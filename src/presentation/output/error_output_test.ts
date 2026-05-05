@@ -182,7 +182,7 @@ Deno.test("renderError uses fatal level for all errors", () => {
 // JSON stdout output tests
 // ============================================================================
 
-Deno.test("renderError: json mode writes error JSON to stdout", () => {
+Deno.test("renderError: json mode is single-emitter (stdout JSON, no stderr)", () => {
   const stdoutLogs: string[] = [];
   const stderrLogs: string[] = [];
   const originalLog = console.log;
@@ -197,8 +197,51 @@ Deno.test("renderError: json mode writes error JSON to stdout", () => {
     const parsed = JSON.parse(stdoutLogs[0]);
     assertEquals(parsed.error, "Model not found");
     assertEquals(parsed.stack, undefined);
-    // stderr should also get the error (via LogTape)
-    assertEquals(stderrLogs.length, 1);
+    // Single-emission contract: in JSON mode renderError is the only
+    // emitter — logger.fatal must not be called, so stderr stays
+    // untouched. (See swamp-club#235.)
+    assertEquals(stderrLogs.length, 0);
+  } finally {
+    console.log = originalLog;
+    console.error = originalError;
+  }
+});
+
+Deno.test("renderError: json mode surfaces UserError code field", () => {
+  const stdoutLogs: string[] = [];
+  const originalLog = console.log;
+  const originalError = console.error;
+  console.log = (...args: unknown[]) => stdoutLogs.push(args.join(" "));
+  console.error = () => {};
+
+  try {
+    renderError(new UserError("Operation timed out", "timeout"), "json");
+    assertEquals(stdoutLogs.length, 1);
+    const parsed = JSON.parse(stdoutLogs[0]);
+    assertEquals(parsed.error, "Operation timed out");
+    assertEquals(parsed.code, "timeout");
+  } finally {
+    console.log = originalLog;
+    console.error = originalError;
+  }
+});
+
+Deno.test("renderError: json mode surfaces a `code` property from any error", () => {
+  // Errors thrown from libswamp paths often carry a `code` via duck typing
+  // rather than via UserError (e.g. cancellations, validation failures).
+  const stdoutLogs: string[] = [];
+  const originalLog = console.log;
+  const originalError = console.error;
+  console.log = (...args: unknown[]) => stdoutLogs.push(args.join(" "));
+  console.error = () => {};
+
+  try {
+    const error = new Error("Operation was cancelled.");
+    Object.assign(error, { code: "cancelled" });
+    renderError(error, "json");
+    assertEquals(stdoutLogs.length, 1);
+    const parsed = JSON.parse(stdoutLogs[0]);
+    assertEquals(parsed.code, "cancelled");
   } finally {
     console.log = originalLog;
     console.error = originalError;
@@ -262,4 +305,21 @@ Deno.test("buildErrorJson: Cliffy ValidationError has no stack", () => {
   );
   assertEquals(result.error, "Missing argument(s): extension");
   assertEquals(result.stack, undefined);
+});
+
+Deno.test("buildErrorJson: surfaces UserError code", () => {
+  const result = buildErrorJson(new UserError("timed out", "timeout"));
+  assertEquals(result.code, "timeout");
+});
+
+Deno.test("buildErrorJson: surfaces a `code` property from any error", () => {
+  const error = new Error("cancelled by user");
+  Object.assign(error, { code: "cancelled" });
+  const result = buildErrorJson(error);
+  assertEquals(result.code, "cancelled");
+});
+
+Deno.test("buildErrorJson: omits code field when not present", () => {
+  const result = buildErrorJson(new UserError("plain"));
+  assertEquals(result.code, undefined);
 });

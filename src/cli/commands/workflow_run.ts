@@ -36,6 +36,7 @@ import { WorkflowExecutionService } from "../../domain/workflows/execution_servi
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
 import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
 import { parseInputs } from "../input_parser.ts";
+import { parseTimeout } from "../duration_parser.ts";
 import { GIT_SHA } from "./version.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
@@ -121,6 +122,10 @@ export const workflowRunCommand = new Command()
     "--skip-check-label <label:string>",
     "Skip pre-flight checks with this label",
     { collect: true },
+  )
+  .option(
+    "--timeout <duration:string>",
+    "Cooperative cancellation deadline (e.g. 30s, 5m, 1h). Aborts the workflow when it expires; emits code: 'cancelled' on timeout. Effective only for steps whose model methods honor AbortSignal.",
   )
   // @ts-expect-error - Cliffy custom type returns unknown instead of string
   .action(async function (options: AnyOptions, workflowIdOrName: string) {
@@ -249,7 +254,13 @@ export const workflowRunCommand = new Command()
         definitionRepo: repoContext.definitionRepo,
       };
 
-      const libCtx = createLibSwampContext();
+      const timeoutMs = options.timeout
+        ? parseTimeout(options.timeout as string)
+        : undefined;
+      const baseLibCtx = createLibSwampContext();
+      const libCtx = timeoutMs !== undefined
+        ? baseLibCtx.withTimeout(timeoutMs)
+        : baseLibCtx;
       const renderer = createWorkflowRunRenderer(ctx.outputMode, {
         workflowName: workflowIdOrName,
         forceLog: ctx.forceLog,

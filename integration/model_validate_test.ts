@@ -280,7 +280,7 @@ Deno.test("CLI: model validate errors for non-existent model", async () => {
       true,
       `Command should fail`,
     );
-    assertStringIncludes(result.stderr, "Model not found");
+    assertStringIncludes(result.stderr + result.stdout, "Model not found");
   });
 });
 
@@ -443,7 +443,7 @@ Deno.test("CLI: model validate with no args errors when no models found", async 
       true,
       `Command should fail`,
     );
-    assertStringIncludes(result.stderr, "No models found");
+    assertStringIncludes(result.stderr + result.stdout, "No models found");
   });
 });
 

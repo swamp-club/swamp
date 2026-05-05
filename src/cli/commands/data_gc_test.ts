@@ -57,3 +57,12 @@ Deno.test("dataGcCommand - has force option", async () => {
   const force = options.find((opt) => opt.name === "force");
   assertEquals(force !== undefined, true);
 });
+
+Deno.test("dataGcCommand - help text includes a --json non-interactive example", async () => {
+  // swamp-club#235 — agentic users need to discover that JSON mode
+  // bypasses the interactive prompt without reading source.
+  const { dataGcCommand } = await import("./data_gc.ts");
+  const examples = dataGcCommand.getExamples().map((e) => e.description);
+  const hasJsonExample = examples.some((d) => d.toLowerCase().includes("json"));
+  assertEquals(hasJsonExample, true, `examples were: ${examples.join(" | ")}`);
+});

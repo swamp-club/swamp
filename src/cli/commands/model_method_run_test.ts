@@ -58,3 +58,13 @@ Deno.test("modelMethodCommand has run as subcommand", async () => {
   const runCommand = commands.find((cmd) => cmd.getName() === "run");
   assertEquals(runCommand !== undefined, true);
 });
+
+Deno.test("modelMethodRunCommand has --timeout option (swamp-club#235)", async () => {
+  const { modelMethodRunCommand } = await import("./model_method_run.ts");
+  const names = modelMethodRunCommand.getOptions().map((o) => o.name);
+  if (!names.includes("timeout")) {
+    throw new Error(
+      `expected --timeout option, got: ${names.join(", ")}`,
+    );
+  }
+});

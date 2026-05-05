@@ -186,7 +186,7 @@ Deno.test("CLI: model method run with type mismatch fails - number instead of st
     assertEquals(result.code !== 0, true, "Should fail for type mismatch");
     // Zod validation error for method arguments
     assertStringIncludes(
-      result.stderr,
+      result.stderr + result.stdout,
       "Method arguments validation failed",
     );
   });

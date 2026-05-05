@@ -337,7 +337,7 @@ Deno.test("CLI: workflow with forEach validates array minItems", async () => {
     );
 
     assertEquals(result.code !== 0, true, "Should fail for empty array");
-    assertStringIncludes(result.stderr, "at least 1 item");
+    assertStringIncludes(result.stderr + result.stdout, "at least 1 item");
   });
 });
 

@@ -223,7 +223,10 @@ Deno.test(
       );
       // Error surface is non-specific YAML parse failure; the point is the
       // run fails rather than silently proceeding with no marker.
-      assertStringIncludes(result.stderr.toLowerCase(), "yaml");
+      assertStringIncludes(
+        (result.stderr + result.stdout).toLowerCase(),
+        "yaml",
+      );
     });
   },
 );

@@ -61,6 +61,7 @@ import {
   type ModelMethodRunDeps,
 } from "../../libswamp/mod.ts";
 import { createModelMethodRunRenderer } from "../../presentation/renderers/model_method_run.ts";
+import { parseTimeout } from "../duration_parser.ts";
 
 // Cliffy's custom type system returns `unknown` for custom types like `model_name`,
 // but we need to pass `options` to functions expecting specific types. Using `any`
@@ -130,6 +131,10 @@ export const modelMethodRunCommand = new Command()
   .option(
     "--driver <driver:string>",
     "Override execution driver (e.g. raw, docker)",
+  )
+  .option(
+    "--timeout <duration:string>",
+    "Cooperative cancellation deadline (e.g. 30s, 5m, 1h). Aborts the run when it expires; emits code: 'cancelled' on timeout. Effective only for methods that honor AbortSignal — long-running model methods that ignore the signal will not be interrupted.",
   )
   .action(
     // @ts-expect-error - Cliffy custom type returns unknown instead of string
@@ -233,7 +238,13 @@ export const modelMethodRunCommand = new Command()
         },
       };
 
-      const libCtx = createLibSwampContext();
+      const timeoutMs = options.timeout
+        ? parseTimeout(options.timeout as string)
+        : undefined;
+      const baseLibCtx = createLibSwampContext();
+      const libCtx = timeoutMs !== undefined
+        ? baseLibCtx.withTimeout(timeoutMs)
+        : baseLibCtx;
       const renderer = createModelMethodRunRenderer(ctx.outputMode, {
         modelName: modelIdOrName,
         methodName,

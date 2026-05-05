@@ -156,7 +156,7 @@ class LogModelMethodRunRenderer implements ModelMethodRunRenderer {
         }
       },
       error: (e) => {
-        throw new UserError(e.error.message);
+        throw new UserError(e.error.message, e.error.code);
       },
     };
   }
@@ -199,7 +199,7 @@ class JsonModelMethodRunRenderer implements ModelMethodRunRenderer {
         console.log(JSON.stringify(e.run, null, 2));
       },
       error: (e) => {
-        throw new UserError(e.error.message);
+        throw new UserError(e.error.message, e.error.code);
       },
     };
   }

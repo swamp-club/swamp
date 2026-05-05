@@ -187,7 +187,7 @@ class LogWorkflowRunRenderer implements WorkflowRunRenderer {
         }
       },
       error: (e) => {
-        throw new UserError(e.error.message);
+        throw new UserError(e.error.message, e.error.code);
       },
     };
   }
@@ -256,7 +256,7 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
         console.log(JSON.stringify(e.run, null, 2));
       },
       error: (e) => {
-        throw new UserError(e.error.message);
+        throw new UserError(e.error.message, e.error.code);
       },
     };
   }

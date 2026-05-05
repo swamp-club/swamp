@@ -37,6 +37,13 @@ export const doctorCommand = new Command()
     "Check that user-defined extensions in this repo load cleanly",
     "swamp doctor extensions",
   )
+  // `--repo-dir` is accepted on the top-level command for consistency
+  // with subcommands and other repo-scoped commands. The top-level
+  // action only shows help; subcommands consume the option.
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
   .action(function () {
     this.showHelp();
   })
