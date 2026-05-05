@@ -129,7 +129,7 @@ export const workflowRunCommand = new Command()
   )
   .option(
     "--timeout <duration:string>",
-    "Cancellation deadline — seconds (e.g. 30, 1800) or duration string (e.g. 30s, 5m, 1h). Cooperative — only honored by methods that check AbortSignal.",
+    "Cancels the run when reached — seconds (e.g. 30, 1800) or duration string (e.g. 30s, 5m, 1h). Extension model methods must check ctx.signal to honor cancellation.",
   )
   // @ts-expect-error - Cliffy custom type returns unknown instead of string
   .action(async function (options: AnyOptions, workflowIdOrName: string) {

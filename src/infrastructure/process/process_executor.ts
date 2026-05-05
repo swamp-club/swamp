@@ -129,6 +129,16 @@ export async function executeProcess(
     commandOptions.env = options.env;
   }
 
+  // Wire the abort signal into Deno.Command natively. On abort, Deno sends
+  // SIGTERM to the child (verified under Deno 2.7.14). The native path
+  // resolves `process.status` / `process.output()` with `code: 143,
+  // signal: null` rather than rejecting — callers must check
+  // `options.signal?.aborted` after the await and surface AbortError so
+  // libswamp's run.ts handler converts it to `cancelled`.
+  if (options.signal) {
+    commandOptions.signal = options.signal;
+  }
+
   const command = new Deno.Command(options.command, commandOptions);
 
   let stdout: string;
@@ -150,27 +160,6 @@ export async function executeProcess(
           // Process may have already exited
         }
       }, options.timeoutMs);
-    }
-
-    // Kill subprocess when abort signal fires
-    let abortHandler: (() => void) | undefined;
-    if (options.signal) {
-      if (options.signal.aborted) {
-        try {
-          process.kill("SIGTERM");
-        } catch {
-          // Process may have already exited
-        }
-      } else {
-        abortHandler = () => {
-          try {
-            process.kill("SIGTERM");
-          } catch {
-            // Process may have already exited
-          }
-        };
-        options.signal.addEventListener("abort", abortHandler, { once: true });
-      }
     }
 
     try {
@@ -207,16 +196,16 @@ export async function executeProcess(
       if (timeoutId !== undefined) {
         clearTimeout(timeoutId);
       }
-      if (abortHandler && options.signal) {
-        options.signal.removeEventListener("abort", abortHandler);
-      }
     }
 
     if (timedOut) {
       throw new Error(`Command timed out after ${options.timeoutMs}ms`);
     }
 
-    // Re-throw as AbortError if signal was responsible for the kill
+    // Re-throw as AbortError if signal was responsible for the kill.
+    // Deno.Command's native signal sends SIGTERM and resolves status with
+    // code 143 rather than rejecting, so this normalization is load-bearing
+    // — without it, libswamp/models/run.ts would not recognise the abort.
     if (options.signal?.aborted) {
       throw new DOMException("The operation was aborted.", "AbortError");
     }
@@ -246,12 +235,23 @@ export async function executeProcess(
     if (timedOut) {
       throw new Error(`Command timed out after ${options.timeoutMs}ms`);
     }
+
+    if (options.signal?.aborted) {
+      throw new DOMException("The operation was aborted.", "AbortError");
+    }
   } else {
-    // Simple buffered execution
-    const output = await command.output();
+    // Simple buffered execution. Use spawn() + output() rather than
+    // command.output() directly — the latter ignores CommandOptions.signal
+    // under Deno 2.7.14, while the spawned-process variant honors it.
+    const process = command.spawn();
+    const output = await process.output();
     stdout = new TextDecoder().decode(output.stdout);
     stderr = new TextDecoder().decode(output.stderr);
     exitCode = output.code;
+
+    if (options.signal?.aborted) {
+      throw new DOMException("The operation was aborted.", "AbortError");
+    }
   }
 
   const durationMs = Date.now() - startTime;

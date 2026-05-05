@@ -89,6 +89,13 @@ export interface ExecutionResult {
   status: "success" | "error";
   /** Error message if status is "error". */
   error?: string;
+  /**
+   * True when the error originated from an aborted AbortSignal (e.g.
+   * --timeout fired). Lets the caller distinguish cancellation from a
+   * generic execution failure even though `error` flattens the exception
+   * to a string.
+   */
+  cancelled?: boolean;
   /** Outputs produced during execution. */
   outputs: DriverOutput[];
   /** Log lines captured during execution. */

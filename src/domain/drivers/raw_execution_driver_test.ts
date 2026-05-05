@@ -444,3 +444,61 @@ Deno.test("RawExecutionDriver: explicit queryData wins over dataQueryService der
   assertEquals(usedExplicit, true);
   assertEquals(usedDerived, false);
 });
+
+// AbortError preservation across the driver boundary — guards swamp-club#247.
+// The driver flattens exceptions to a string for the wire result, but it must
+// also set `cancelled: true` when the failure was an AbortError so callers
+// (method_execution_service) can re-throw an AbortError DOMException, which
+// libswamp's run handler routes to the `cancelled` envelope.
+
+Deno.test(
+  "RawExecutionDriver: marks result.cancelled=true when method throws AbortError",
+  async () => {
+    const executor: MethodExecutor = {
+      execute: () => {
+        throw new DOMException("The operation was aborted.", "AbortError");
+      },
+    };
+
+    const context = createMockContext();
+    const driver = new RawExecutionDriver(
+      executor,
+      testDefinition,
+      testMethod,
+      testModelDef,
+      context,
+      "test",
+    );
+
+    const result = await driver.execute(createMockRequest());
+
+    assertEquals(result.status, "error");
+    assertEquals(result.cancelled, true);
+  },
+);
+
+Deno.test(
+  "RawExecutionDriver: leaves result.cancelled falsy for non-abort errors",
+  async () => {
+    const executor: MethodExecutor = {
+      execute: () => {
+        throw new Error("boom");
+      },
+    };
+
+    const context = createMockContext();
+    const driver = new RawExecutionDriver(
+      executor,
+      testDefinition,
+      testMethod,
+      testModelDef,
+      context,
+      "test",
+    );
+
+    const result = await driver.execute(createMockRequest());
+
+    assertEquals(result.status, "error");
+    assertEquals(result.cancelled, false);
+  },
+);

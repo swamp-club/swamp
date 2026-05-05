@@ -668,9 +668,16 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         currentHandles = await processDriverOutputs(driverResult.outputs);
 
         if (driverResult.status === "error") {
-          const err = new Error(
-            driverResult.error ?? "Method execution failed",
-          );
+          // Preserve AbortError type so libswamp's run handler routes it to
+          // the `cancelled` envelope. Drivers flatten exceptions to a string
+          // for the wire result, so use the explicit `cancelled` flag rather
+          // than string-matching the message.
+          const err: Error = driverResult.cancelled
+            ? new DOMException(
+              driverResult.error ?? "The operation was aborted.",
+              "AbortError",
+            )
+            : new Error(driverResult.error ?? "Method execution failed");
           (err as unknown as Record<string, unknown>).dataHandles =
             currentHandles;
           throw err;
@@ -724,6 +731,16 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
           }));
 
         if (driverResult.status === "error") {
+          // Preserve AbortError type so libswamp's run handler routes it to
+          // the `cancelled` envelope. Drivers flatten exceptions to a string
+          // for the wire result, so use the explicit `cancelled` flag rather
+          // than string-matching the message.
+          if (driverResult.cancelled) {
+            throw new DOMException(
+              driverResult.error ?? "The operation was aborted.",
+              "AbortError",
+            );
+          }
           throw new Error(driverResult.error ?? "Driver execution failed");
         }
 

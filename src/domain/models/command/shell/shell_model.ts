@@ -125,6 +125,7 @@ async function executeCommand(
       timeoutMs: args.timeout,
       logger: context.logger,
       redactor: context.redactor,
+      signal: context.signal,
       onOutput: context.onEvent
         ? (line: string, stream: "stdout" | "stderr") =>
           context.onEvent!({ type: "output", line, stream })
@@ -136,6 +137,12 @@ async function executeCommand(
     exitCode = result.exitCode;
     durationMs = result.durationMs;
   } catch (error) {
+    // AbortError must escape ahead of the swallow paths below so that
+    // libswamp's run.ts handler can convert it to a `cancelled` envelope.
+    // Without this, --timeout aborts get buried as exit code -1.
+    if (error instanceof DOMException && error.name === "AbortError") {
+      throw error;
+    }
     // Handle execution errors (command not found, timeout, etc.)
     const rawError = error instanceof Error ? error.message : String(error);
     stderr = redact(rawError);

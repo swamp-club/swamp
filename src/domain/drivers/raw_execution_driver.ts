@@ -200,9 +200,12 @@ export class RawExecutionDriver implements ExecutionDriver {
         handle,
       }));
 
+      const cancelled = error instanceof DOMException &&
+        error.name === "AbortError";
       return {
         status: "error",
         error: error instanceof Error ? error.message : String(error),
+        cancelled,
         outputs,
         logs,
         durationMs,

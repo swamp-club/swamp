@@ -533,6 +533,75 @@ posixOnlyTest(
   },
 );
 
+// Abort signal propagation — guards swamp-club#247.
+// shell_model must surface AbortError ahead of its silent-swallow paths so
+// libswamp's run.ts can convert it to a `cancelled` envelope.
+
+posixOnlyTest(
+  "shellModel.methods.execute surfaces AbortError when ctx.signal aborts mid-run",
+  async () => {
+    const controller = new AbortController();
+    const args: ShellInputAttributes = { run: "sleep 5" };
+
+    const { context } = createTestContext({ signal: controller.signal });
+    setTimeout(() => controller.abort(), 100);
+
+    const caught = await assertRejects(() =>
+      shellModel.methods.execute.execute(args, context)
+    );
+    // Must be an AbortError — NOT the generic "Command exited with code -1"
+    // wrapper that the catch block swallows other errors into.
+    assertEquals(caught instanceof DOMException, true);
+    assertEquals((caught as DOMException).name, "AbortError");
+  },
+);
+
+posixOnlyTest(
+  "shellModel.methods.execute writes no data record on abort",
+  async () => {
+    const controller = new AbortController();
+    const args: ShellInputAttributes = { run: "sleep 5" };
+
+    const { context, getResults } = createTestContext({
+      signal: controller.signal,
+    });
+    setTimeout(() => controller.abort(), 100);
+
+    await assertRejects(() =>
+      shellModel.methods.execute.execute(args, context)
+    );
+
+    // AbortError must escape before context.writeResource is called, so no
+    // data artifacts should have been persisted for the aborted run.
+    assertEquals(getResults().length, 0);
+  },
+);
+
+posixOnlyTest(
+  "shellModel.methods.execute does not let ignoreExitCode swallow AbortError",
+  async () => {
+    // ignoreExitCode is a data-plane signal ("don't throw on non-zero exit").
+    // A timeout is a control-plane signal — the deadline elapsed. The two
+    // must not be conflated: even with ignoreExitCode=true, an aborted run
+    // must surface AbortError so the user sees a `cancelled` envelope, not
+    // a "successful" record with exit code 143.
+    const controller = new AbortController();
+    const args: ShellInputAttributes = {
+      run: "sleep 5",
+      ignoreExitCode: true,
+    };
+
+    const { context } = createTestContext({ signal: controller.signal });
+    setTimeout(() => controller.abort(), 100);
+
+    const caught = await assertRejects(() =>
+      shellModel.methods.execute.execute(args, context)
+    );
+    assertEquals(caught instanceof DOMException, true);
+    assertEquals((caught as DOMException).name, "AbortError");
+  },
+);
+
 Deno.test("ShellInputAttributesSchema rejects invalid attributes", () => {
   const result = ShellInputAttributesSchema.safeParse({ notRun: "value" });
   assertEquals(result.success, false);

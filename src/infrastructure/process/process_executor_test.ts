@@ -202,9 +202,9 @@ Deno.test("executeProcess handles timeout with logger", async () => {
 Deno.test({
   name:
     "executeProcess: AbortSignal aborted mid-execution surfaces AbortError (streaming mode)",
-  // sleep(1) and SIGTERM via process.kill are POSIX-only contracts. The
-  // production code only attaches abort handling in streaming mode (when
-  // a logger is provided), so we exercise that path here.
+  // sleep(1) and SIGTERM via process.kill are POSIX-only contracts. This
+  // test pins the streaming-mode (logger-attached) signal path; the two
+  // tests below cover the buffered+timeoutMs and simple-buffered paths.
   ignore: Deno.build.os === "windows",
   fn: async () => {
     const mockLogger = {
@@ -275,6 +275,68 @@ Deno.test({
     const err = caught as Error;
     assertStringIncludes(err.message, "timed out");
     assertStringIncludes(err.message, "200ms");
+  },
+});
+
+// AbortSignal handling in the buffered branches — guards swamp-club#247.
+// The streaming-mode signal test at line 200+ already covers the
+// logger-attached path. These two pin the contract for the buffered
+// branches (with timeoutMs, and simple buffered) so the documented
+// `signal` option works uniformly across all three execution modes.
+
+Deno.test({
+  name:
+    "executeProcess: AbortSignal aborts buffered+timeoutMs run with AbortError",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 100);
+
+    const start = performance.now();
+    let caught: unknown;
+    try {
+      await executeProcess({
+        command: "sleep",
+        args: ["5"],
+        timeoutMs: 10_000,
+        signal: controller.signal,
+      });
+    } catch (err) {
+      caught = err;
+    }
+    const elapsed = performance.now() - start;
+
+    const err = caught as { name?: string };
+    assertEquals(err?.name, "AbortError");
+    // Sanity: the abort short-circuited well before the 10s natural timeout.
+    assertEquals(elapsed < 5_000, true, `elapsed ${elapsed}ms exceeded 5s`);
+  },
+});
+
+Deno.test({
+  name:
+    "executeProcess: AbortSignal aborts simple buffered run with AbortError",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    const controller = new AbortController();
+    setTimeout(() => controller.abort(), 100);
+
+    const start = performance.now();
+    let caught: unknown;
+    try {
+      await executeProcess({
+        command: "sleep",
+        args: ["5"],
+        signal: controller.signal,
+      });
+    } catch (err) {
+      caught = err;
+    }
+    const elapsed = performance.now() - start;
+
+    const err = caught as { name?: string };
+    assertEquals(err?.name, "AbortError");
+    assertEquals(elapsed < 5_000, true, `elapsed ${elapsed}ms exceeded 5s`);
   },
 });
 
