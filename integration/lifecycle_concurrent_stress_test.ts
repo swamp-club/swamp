@@ -52,8 +52,20 @@
  * Lockfile and catalog use independent locks. The lockfile lock
  * (LOCK_RETRY_COUNT=10, LOCK_RETRY_DELAY_MS=100 — see
  * src/infrastructure/persistence/lockfile_repository.ts) does NOT serialise
- * SQLite catalog contention. Invariant (ii') filters BOTH lockfile-exhaustion
- * and SQLite-busy strings as real failures, not benign race outcomes.
+ * SQLite catalog contention. Invariant (ii') filters lockfile-exhaustion
+ * as a real failure (the lockfile retry budget exists precisely to
+ * absorb expected contention; exhausting it means real damage).
+ *
+ * SQLite contention ("database is locked") is INTENTIONALLY tolerated.
+ * Per design/extension.md "Crash-state recovery", a saveAll failure on
+ * SQLite I/O rolls the catalog back via SQLite ROLLBACK while leaving
+ * FS+lockfile in place — the user-visible "Install partially applied …
+ * retry to reconcile" path. The next pull/update's diff-save reconciles.
+ * The bijection invariants (i) tolerate this transient state by
+ * detecting the W2 recovery message in stderr and skipping the
+ * lockfile→catalog direction for that extension; a final sequential
+ * `extension update` after the loop drains any pending state and
+ * end-state strict bijection is asserted.
  */
 
 import { dirname, fromFileUrl, join } from "@std/path";
@@ -601,19 +613,38 @@ async function listOnDiskStressFiles(repoDir: string): Promise<Set<string>> {
 
 // Real failures we never tolerate — distinct from "benign" race outcomes
 // like a transient pull failure when an rm got there first. Resolves ADV-4
-// (lockfile-exhaustion) and ADV-9 (SQLite contention).
+// (lockfile-exhaustion) and ADV-9 (the architectural-invariant breach class
+// of SQLite errors — see notes below for the contention class which is
+// expected and tolerated).
+//
+// Note: SQLITE_BUSY / "database is locked" is INTENTIONALLY NOT in this
+// list. Per design/extension.md "Crash-state recovery", a SQLite I/O
+// failure during `repository.saveAll` is a documented W2 outcome — the
+// catalog rolls back via SQLite ROLLBACK, but the FS and lockfile are
+// not. The user-facing message is "Install partially applied for X —
+// files extracted but the catalog write failed (database is locked)…
+// retry to reconcile". On Windows CI under 4-way concurrency this can
+// fire. The next pull/update's diff-save reconciles. The bijection
+// invariants (i) below explicitly tolerate this transient state by
+// detecting the recovery message in stderr.
 const REAL_FAILURE_PATTERNS: ReadonlyArray<{ label: string; needle: string }> =
   [
     {
       label: "lockfile exhaustion",
       needle: "Could not acquire lock on upstream_extensions.json",
     },
-    { label: "SQLite busy", needle: "SQLITE_BUSY" },
-    { label: "SQLite locked", needle: "database is locked" },
-    // Architectural invariant breach — these would point at a real bug in the
-    // lifecycle services' rollback logic.
+    // Architectural invariant breach — these would point at a real bug in
+    // the lifecycle services' rollback logic.
     { label: "post-rollback orphan warning", needle: "Dropping orphan row" },
   ];
+
+// Substring of the W2 contention recovery message produced by
+// InstallExtensionService when `saveAll` fails on SQLite contention. When
+// this appears in a child's stderr, the iteration may end with a lockfile
+// entry that has no matching catalog row — that is the documented
+// transient state and invariant (i) tolerates it for the contended
+// extension.
+const W2_CONTENTION_RECOVERY_NEEDLE = "Install partially applied";
 
 async function checkInvariants(
   repoDir: string,
@@ -678,6 +709,31 @@ async function checkInvariants(
   // 1:1 to lockfile entries (by name+version). Tombstoned rows are not
   // expected to surface in the lockfile — they are the historical-state
   // residue of an upgrade.
+  //
+  // Tolerated transient: when a child this iteration emitted the W2
+  // contention-recovery message, the catalog rolled back but FS+lockfile
+  // did not. That's the documented "retry to reconcile" path. We collect
+  // those names and skip the lockfile→catalog direction for them this
+  // iteration; the next pull/update reconciles. The catalog→lockfile
+  // direction stays strict — a catalog row for an entry that's not in
+  // the lockfile would be a real rollback bug.
+  const contendedNames = new Set<string>();
+  for (const child of ctx.childOutputs) {
+    if (
+      `${child.stdout}\n${child.stderr}`.includes(W2_CONTENTION_RECOVERY_NEEDLE)
+    ) {
+      // The recovery message names the affected extension. Any @stress/*
+      // mention in this child's output is a candidate; in practice the
+      // operating child is one of `pull <name>` or `update <name>`, so we
+      // mark all @stress names appearing in its output.
+      for (const candidate of [ALPHA, BETA]) {
+        if (`${child.stdout}\n${child.stderr}`.includes(candidate)) {
+          contendedNames.add(candidate);
+        }
+      }
+    }
+  }
+
   const catalogRows = readCatalogStressRows(repoDir);
   const indexedRows = catalogRows.filter((r) => r.state !== "Tombstoned");
   const lockfileNames = new Set(Object.keys(lockfile));
@@ -704,6 +760,7 @@ async function checkInvariants(
 
   for (const [name] of Object.entries(lockfile)) {
     if (!name.startsWith("@stress/")) continue;
+    if (contendedNames.has(name)) continue;
     const matching = indexedRows.filter((r) => r.extension_name === name);
     if (matching.length === 0) {
       throw new Error(
@@ -860,6 +917,37 @@ Deno.test({
             childOutputs,
           });
         }
+
+        // Final reconcile pass: drain any documented W2 transient
+        // (lockfile entry without catalog row, left by a SQLite-busy
+        // saveAll rollback during contended iterations). Per
+        // design/extension.md "Crash-state recovery", the next
+        // pull/update's diff-save reconciles. A sequential `extension
+        // update` (no concurrency) is the canonical reconcile op. After
+        // this, the bijection invariants must hold strictly with no
+        // tolerated transients.
+        const reconcile = await runSwamp(
+          [
+            "extension",
+            "update",
+            "--repo-dir",
+            repoDir,
+            "--no-color",
+          ],
+          repoDir,
+          registryUrl,
+        );
+        if (reconcile.code !== 0) {
+          throw new Error(
+            `Final reconcile pass failed (code ${reconcile.code}): ` +
+              `${reconcile.stderr}`,
+          );
+        }
+        await checkInvariants(repoDir, {
+          iteration: RACE_ITERATIONS, // sentinel: post-reconcile
+          ops: [{ kind: "update" }],
+          childOutputs: [reconcile],
+        });
       });
     });
   },
