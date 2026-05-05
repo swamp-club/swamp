@@ -131,6 +131,59 @@ Deno.test("dataGc: yields completed with gc results", async () => {
   assertEquals(completed.data.dryRun, false);
 });
 
+Deno.test("dataGc: calls compactCatalog and includes WAL stats in completed event", async () => {
+  let compactCalled = false;
+  const deps = makeDeps({
+    compactCatalog: () => {
+      compactCalled = true;
+      return { walPagesTotal: 20, walPagesCheckpointed: 20 };
+    },
+  });
+
+  const events = await collect<DataGcEvent>(
+    dataGc(createLibSwampContext(), deps, { dryRun: false }),
+  );
+
+  assertEquals(compactCalled, true);
+  const completed = events.find((e) => e.kind === "completed") as Extract<
+    DataGcEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.data.walPagesTotal, 20);
+  assertEquals(completed.data.walPagesCheckpointed, 20);
+});
+
+Deno.test("dataGc: skips compactCatalog on dry-run", async () => {
+  let compactCalled = false;
+  const deps = makeDeps({
+    compactCatalog: () => {
+      compactCalled = true;
+      return { walPagesTotal: 20, walPagesCheckpointed: 20 };
+    },
+  });
+
+  await collect<DataGcEvent>(
+    dataGc(createLibSwampContext(), deps, { dryRun: true }),
+  );
+
+  assertEquals(compactCalled, false);
+});
+
+Deno.test("dataGc: WAL stats default to zero when compactCatalog is not provided", async () => {
+  const deps = makeDeps();
+
+  const events = await collect<DataGcEvent>(
+    dataGc(createLibSwampContext(), deps, { dryRun: false }),
+  );
+
+  const completed = events.find((e) => e.kind === "completed") as Extract<
+    DataGcEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.data.walPagesTotal, 0);
+  assertEquals(completed.data.walPagesCheckpointed, 0);
+});
+
 Deno.test("dataGc: passes dryRun flag through", async () => {
   let receivedDryRun = false;
   const deps = makeDeps({

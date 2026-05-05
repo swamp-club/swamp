@@ -64,6 +64,14 @@ export interface CatalogRow {
  */
 export const ITERATE_PAGE_SIZE = 1000;
 
+/** Stats returned by {@link CatalogStore.checkpoint}. */
+export interface CatalogCheckpointStats {
+  /** Total WAL frames at the time of the checkpoint call. */
+  walPagesTotal: number;
+  /** Frames successfully written to the main database file. */
+  walPagesCheckpointed: number;
+}
+
 /**
  * Schema version. Bump this when the catalog table structure changes.
  * On startup, if the stored version differs, the catalog is dropped and
@@ -492,6 +500,68 @@ export class CatalogStore {
       }
     }
     return [...values].sort();
+  }
+
+  /**
+   * Checkpoints the WAL file using TRUNCATE mode, which writes all WAL frames
+   * to the main database file and physically truncates the WAL to zero bytes.
+   *
+   * If active readers are still using WAL pages, SQLite returns fewer
+   * checkpointed frames than total frames (partial checkpoint). The caller
+   * should surface this discrepancy rather than treating it as an error — the
+   * next checkpoint will catch the remaining frames.
+   */
+  checkpoint(): CatalogCheckpointStats {
+    const row = this.db.prepare(
+      "PRAGMA wal_checkpoint(TRUNCATE)",
+    ).get() as { busy: number; log: number; checkpointed: number };
+    return {
+      walPagesTotal: row.log,
+      walPagesCheckpointed: row.checkpointed,
+    };
+  }
+
+  /**
+   * Removes multiple versions for a single (type, model, name) triple in a
+   * single BEGIN IMMEDIATE transaction, replacing N individual removeVersion()
+   * calls with one fsync.
+   *
+   * If the transaction fails, it is rolled back and the catalog remains
+   * consistent. Falls back gracefully — callers may catch and retry with
+   * individual removeVersion() calls if needed.
+   */
+  bulkRemoveVersions(
+    typeNormalized: string,
+    modelId: string,
+    dataName: string,
+    versions: readonly number[],
+  ): void {
+    if (versions.length === 0) return;
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const stmt = this.db.prepare(
+        `DELETE FROM catalog
+         WHERE type_normalized = ? AND model_id = ? AND data_name = ? AND version = ?`,
+      );
+      for (const version of versions) {
+        stmt.run(typeNormalized, modelId, dataName, version);
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  /**
+   * Runs VACUUM to rebuild the database file and reclaim freed pages.
+   *
+   * Must be called outside any open transaction. Acquires an exclusive lock
+   * and rewrites the entire database file — on a large catalog this may take
+   * several seconds. Safe to call only when no other connections are active.
+   */
+  vacuum(): void {
+    this.db.exec("VACUUM");
   }
 
   /**

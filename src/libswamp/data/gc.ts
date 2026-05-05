@@ -58,6 +58,8 @@ export interface DataGcPreview {
 export interface DataGcData {
   dataEntriesExpired: number;
   versionsDeleted: number;
+  walPagesTotal: number;
+  walPagesCheckpointed: number;
   bytesReclaimed: number;
   dryRun: boolean;
   expiredEntries: Array<{
@@ -85,6 +87,11 @@ export interface DataGcDeps {
   deleteExpiredData: (opts: {
     dryRun: boolean;
   }) => Promise<LifecycleGCResult>;
+  /** Checkpoints the catalog WAL. Omit in tests that don't need compaction. */
+  compactCatalog?: () => {
+    walPagesTotal: number;
+    walPagesCheckpointed: number;
+  };
 }
 
 /** Wires real infrastructure into DataGcDeps. */
@@ -94,10 +101,11 @@ export function createDataGcDeps(
 ): DataGcDeps {
   const dsPath = (subdir: string): string | undefined =>
     datastoreResolver?.resolvePath(subdir);
+  const catalogStore = createCatalogStore(repoDir, datastoreResolver);
   const unifiedDataRepo = new FileSystemUnifiedDataRepository(
     repoDir,
     dsPath(SWAMP_SUBDIRS.data),
-    createCatalogStore(repoDir, datastoreResolver),
+    catalogStore,
   );
   const workflowRunRepo = new YamlWorkflowRunRepository(
     repoDir,
@@ -112,6 +120,7 @@ export function createDataGcDeps(
     findExpiredData: () => service.findExpiredData(),
     previewVersionGarbage: () => service.previewVersionGarbage(),
     deleteExpiredData: (opts) => service.deleteExpiredData(opts),
+    compactCatalog: () => catalogStore.checkpoint(),
   };
 }
 
@@ -155,6 +164,8 @@ export async function* dataGc(
 
       const result = await deps.deleteExpiredData({ dryRun: input.dryRun });
 
+      const compact = !input.dryRun ? deps.compactCatalog?.() : undefined;
+
       yield {
         kind: "completed" as const,
         data: {
@@ -163,6 +174,8 @@ export async function* dataGc(
           bytesReclaimed: result.bytesReclaimed,
           dryRun: result.dryRun,
           expiredEntries: result.expiredEntries,
+          walPagesTotal: compact?.walPagesTotal ?? 0,
+          walPagesCheckpointed: compact?.walPagesCheckpointed ?? 0,
         },
       };
     })(),

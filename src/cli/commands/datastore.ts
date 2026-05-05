@@ -22,6 +22,7 @@ import { datastoreStatusCommand } from "./datastore_status.ts";
 import { datastoreSetupCommand } from "./datastore_setup.ts";
 import { datastoreSyncCommand } from "./datastore_sync.ts";
 import { datastoreLockCommand } from "./datastore_lock.ts";
+import { datastoreCompactCommand } from "./datastore_compact.ts";
 
 export const datastoreCommand = new Command()
   .description("Manage datastore configuration")
@@ -31,4 +32,5 @@ export const datastoreCommand = new Command()
   .command("status", datastoreStatusCommand)
   .command("setup", datastoreSetupCommand)
   .command("sync", datastoreSyncCommand)
-  .command("lock", datastoreLockCommand);
+  .command("lock", datastoreLockCommand)
+  .command("compact", datastoreCompactCommand);

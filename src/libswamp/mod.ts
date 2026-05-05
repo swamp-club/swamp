@@ -1033,3 +1033,9 @@ export {
   parseModelLockKey,
   parseModelSpec,
 } from "./datastores/lock.ts";
+export {
+  datastoreCompact,
+  type DatastoreCompactData,
+  type DatastoreCompactDeps,
+  type DatastoreCompactEvent,
+} from "./datastores/compact.ts";
