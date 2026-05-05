@@ -525,3 +525,57 @@ Deno.test(
     });
   },
 );
+
+Deno.test(
+  "findAllGlobalSince: file deleted mid-iteration is skipped, not fatal",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlWorkflowRunRepository(dir);
+      const workflow = createTestWorkflow();
+
+      const keep = WorkflowRun.create(workflow);
+      keep.start();
+      await repo.save(workflow.id, keep);
+
+      const doomed = WorkflowRun.create(workflow);
+      doomed.start();
+      await repo.save(workflow.id, doomed);
+
+      // Simulate a concurrent deletion by removing the file. Pre-fix
+      // behavior: NotFound thrown by Deno.stat propagates to the
+      // workflow-level catch, returning [] and losing `keep` too.
+      await Deno.remove(repo.getPath(workflow.id, doomed.id));
+
+      const cutoff = new Date(Date.now() - 60 * 60 * 1000);
+      const found = await repo.findAllGlobalSince(cutoff);
+
+      assertEquals(found.length, 1);
+      assertEquals(found[0].run.id, keep.id);
+    });
+  },
+);
+
+Deno.test(
+  "findAllByWorkflowId: file deleted mid-iteration is skipped, not fatal",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlWorkflowRunRepository(dir);
+      const workflow = createTestWorkflow();
+
+      const keep = WorkflowRun.create(workflow);
+      keep.start();
+      await repo.save(workflow.id, keep);
+
+      const doomed = WorkflowRun.create(workflow);
+      doomed.start();
+      await repo.save(workflow.id, doomed);
+
+      await Deno.remove(repo.getPath(workflow.id, doomed.id));
+
+      const found = await repo.findAllByWorkflowId(workflow.id);
+
+      assertEquals(found.length, 1);
+      assertEquals(found[0].id, keep.id);
+    });
+  },
+);

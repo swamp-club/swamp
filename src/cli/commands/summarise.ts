@@ -48,6 +48,7 @@ export const summariseCommand = new Command()
   .example("Show recent activity", "swamp summarise")
   .example("Activity from the last day", "swamp summarise --since 1d")
   .example("Activity from the last hour", "swamp summarise --since 1h")
+  .example("Cap detail output on a large repo", "swamp summarise --limit 10")
   .option(
     "--repo-dir <dir:string>",
     "Repository directory (env: SWAMP_REPO_DIR)",
@@ -56,7 +57,7 @@ export const summariseCommand = new Command()
     default: "7d",
   })
   .option(
-    "--limit <count:number>",
+    "--limit <n:number>",
     "Cap per-group run details (counts still reflect all matching runs)",
   )
   .action(async function (options) {

@@ -29,6 +29,14 @@ import { createDefinitionId } from "../../domain/definitions/definition.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import { YamlOutputRepository } from "./yaml_output_repository.ts";
 
+// Import the models barrel so `modelRegistry.types()` returns real entries —
+// `findAllGlobalSince` and `findAll` both walk the registry, so tests that
+// exercise them need at least one registered type. The `command/shell` model
+// is the simplest entry the barrel registers.
+import "../../domain/models/models.ts";
+
+const registeredType = ModelType.create("command/shell");
+
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-test-" });
   try {
@@ -402,3 +410,86 @@ Deno.test("YamlOutputRepository invokes markDirty with relPath on mutations", as
     assertEquals(calls.length, 2);
   });
 });
+
+// findAllGlobalSince tests use a type that's actually in the model registry
+// because the implementation iterates `modelRegistry.types()` to know where
+// to look on disk.
+
+async function makeOutput(
+  repo: YamlOutputRepository,
+  startedAt: Date,
+): Promise<ModelOutput> {
+  const output = ModelOutput.create({
+    definitionId: createDefinitionId(crypto.randomUUID()),
+    methodName: "run",
+    status: "running",
+    startedAt,
+    provenance: defaultProvenance,
+  });
+  output.markSucceeded();
+  await repo.save(registeredType, "run", output);
+  return output;
+}
+
+Deno.test("findAllGlobalSince: returns only in-window outputs", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlOutputRepository(dir);
+
+    const oldDate = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const old = await makeOutput(repo, oldDate);
+
+    // Backdate the file so its mtime falls before the cutoff.
+    const oldPath = repo.getPath(registeredType, "run", old);
+    await Deno.utime(oldPath, oldDate, oldDate);
+
+    const fresh = await makeOutput(repo, new Date());
+
+    const cutoff = new Date(Date.now() - 60 * 60 * 1000);
+    const found = await repo.findAllGlobalSince(cutoff);
+
+    assertEquals(found.length, 1);
+    assertEquals(found[0].output.id, fresh.id);
+  });
+});
+
+Deno.test(
+  "findAllGlobalSince: file deleted mid-iteration is skipped, not fatal",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+
+      const keep = await makeOutput(repo, new Date());
+      const doomed = await makeOutput(repo, new Date());
+
+      // Simulate a concurrent deletion. Pre-fix behavior: NotFound from
+      // Deno.stat propagates to the model-type catch and continues past
+      // the entire current type, dropping `keep`.
+      await Deno.remove(repo.getPath(registeredType, "run", doomed));
+
+      const cutoff = new Date(Date.now() - 60 * 60 * 1000);
+      const found = await repo.findAllGlobalSince(cutoff);
+
+      assertEquals(found.length, 1);
+      assertEquals(found[0].output.id, keep.id);
+    });
+  },
+);
+
+Deno.test(
+  "findAll: file deleted mid-iteration is skipped, not fatal",
+  async () => {
+    await withTempDir(async (dir) => {
+      const repo = new YamlOutputRepository(dir);
+
+      const keep = await makeOutput(repo, new Date());
+      const doomed = await makeOutput(repo, new Date());
+
+      await Deno.remove(repo.getPath(registeredType, "run", doomed));
+
+      const found = await repo.findAll(registeredType);
+
+      assertEquals(found.length, 1);
+      assertEquals(found[0].id, keep.id);
+    });
+  },
+);

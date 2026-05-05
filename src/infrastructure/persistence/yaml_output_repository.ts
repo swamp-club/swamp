@@ -122,24 +122,34 @@ export class YamlOutputRepository implements OutputRepository {
     try {
       // Iterate over method directories
       for await (const methodEntry of Deno.readDir(typeDir)) {
-        if (methodEntry.isDirectory) {
-          const methodDir = join(typeDir, methodEntry.name);
-          // Iterate over output files in method directory
-          for await (const entry of Deno.readDir(methodDir)) {
-            if (entry.isFile && entry.name.endsWith(".yaml")) {
-              const path = join(methodDir, entry.name);
-              const content = await Deno.readTextFile(path);
-              const data = parseYaml(content) as ModelOutputData;
-              // Convert logFile back to absolute path
-              if (data.logFile) {
-                data.logFile = toAbsolutePath(this.repoDir, data.logFile);
-              }
-              outputs.push(ModelOutput.fromData(data));
+        if (!methodEntry.isDirectory) continue;
+        const methodDir = join(typeDir, methodEntry.name);
+        // Iterate over output files in method directory
+        for await (const entry of Deno.readDir(methodDir)) {
+          if (!entry.isFile || !entry.name.endsWith(".yaml")) continue;
+          const path = join(methodDir, entry.name);
+
+          // Per-file try/catch closes the TOCTOU window: a concurrent
+          // delete (e.g. GC, output cleanup) can remove the file
+          // between readDir and readTextFile. NotFound on a single
+          // file means "skip it" — never "abandon the rest of the
+          // current method directory."
+          try {
+            const content = await Deno.readTextFile(path);
+            const data = parseYaml(content) as ModelOutputData;
+            if (data.logFile) {
+              data.logFile = toAbsolutePath(this.repoDir, data.logFile);
             }
+            outputs.push(ModelOutput.fromData(data));
+          } catch (error) {
+            if (error instanceof Deno.errors.NotFound) continue;
+            throw error;
           }
         }
       }
     } catch (error) {
+      // Outer catch handles "type/method directory itself doesn't
+      // exist." Per-file NotFound is handled above.
       if (error instanceof Deno.errors.NotFound) {
         return [];
       }
@@ -197,28 +207,40 @@ export class YamlOutputRepository implements OutputRepository {
             if (!entry.isFile || !entry.name.endsWith(".yaml")) continue;
             const path = join(methodDir, entry.name);
 
-            // Stage A: mtime pre-filter
-            const stat = await Deno.stat(path);
-            const mtimeMs = stat.mtime?.getTime();
-            if (mtimeMs !== undefined && mtimeMs < cutoffMs) continue;
+            // Per-file try/catch closes the TOCTOU window: a concurrent
+            // delete can remove the file between readDir and stat or
+            // between stat and readTextFile. NotFound on a single file
+            // means "skip it" — never "abandon the rest of the current
+            // method directory or model type."
+            try {
+              // Stage A: mtime pre-filter
+              const stat = await Deno.stat(path);
+              const mtimeMs = stat.mtime?.getTime();
+              if (mtimeMs !== undefined && mtimeMs < cutoffMs) continue;
 
-            // Stage B: parse and verify
-            const content = await Deno.readTextFile(path);
-            const data = parseYaml(content) as ModelOutputData;
-            if (data.logFile) {
-              data.logFile = toAbsolutePath(this.repoDir, data.logFile);
+              // Stage B: parse and verify
+              const content = await Deno.readTextFile(path);
+              const data = parseYaml(content) as ModelOutputData;
+              if (data.logFile) {
+                data.logFile = toAbsolutePath(this.repoDir, data.logFile);
+              }
+              const output = ModelOutput.fromData(data);
+              if (output.startedAt.getTime() < cutoffMs) continue;
+
+              results.push({
+                output,
+                type: modelType,
+                method: output.methodName,
+              });
+            } catch (error) {
+              if (error instanceof Deno.errors.NotFound) continue;
+              throw error;
             }
-            const output = ModelOutput.fromData(data);
-            if (output.startedAt.getTime() < cutoffMs) continue;
-
-            results.push({
-              output,
-              type: modelType,
-              method: output.methodName,
-            });
           }
         }
       } catch (error) {
+        // Outer catch handles "type/method directory itself doesn't
+        // exist." Per-file NotFound is handled above.
         if (error instanceof Deno.errors.NotFound) continue;
         throw error;
       }

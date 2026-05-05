@@ -109,20 +109,32 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
     try {
       for await (const entry of Deno.readDir(dir)) {
         if (
-          entry.isFile && entry.name.startsWith("workflow-run-") &&
-          entry.name.endsWith(".yaml")
+          !entry.isFile || !entry.name.startsWith("workflow-run-") ||
+          !entry.name.endsWith(".yaml")
         ) {
-          const path = join(dir, entry.name);
+          continue;
+        }
+        const path = join(dir, entry.name);
+
+        // Per-file try/catch closes the TOCTOU window: a concurrent
+        // delete (e.g. deleteAllByWorkflowId, GC) can remove the file
+        // between readDir and readTextFile. NotFound on a single file
+        // means "skip it" — never "abandon the rest of the workflow."
+        try {
           const content = await Deno.readTextFile(path);
           const data = parseYaml(content) as WorkflowRunData;
-          // Convert logFile back to absolute path
           if (data.logFile) {
             data.logFile = toAbsolutePath(this.repoDir, data.logFile);
           }
           runs.push(WorkflowRun.fromData(data));
+        } catch (error) {
+          if (error instanceof Deno.errors.NotFound) continue;
+          throw error;
         }
       }
     } catch (error) {
+      // Outer catch handles "directory itself doesn't exist" (no runs yet
+      // for this workflow). Per-file NotFound is handled above.
       if (error instanceof Deno.errors.NotFound) {
         return [];
       }
@@ -247,24 +259,35 @@ export class YamlWorkflowRunRepository implements WorkflowRunRepository {
         }
         const path = join(dir, entry.name);
 
-        // Stage A: mtime pre-filter
-        const stat = await Deno.stat(path);
-        const mtimeMs = stat.mtime?.getTime();
-        if (mtimeMs !== undefined && mtimeMs < cutoffMs) continue;
+        // Per-file try/catch closes the TOCTOU window: a concurrent
+        // delete can remove the file between readDir and stat or between
+        // stat and readTextFile. NotFound on a single file means "skip
+        // it" — never "discard runs already collected for this workflow."
+        try {
+          // Stage A: mtime pre-filter
+          const stat = await Deno.stat(path);
+          const mtimeMs = stat.mtime?.getTime();
+          if (mtimeMs !== undefined && mtimeMs < cutoffMs) continue;
 
-        // Stage B: parse and verify
-        const content = await Deno.readTextFile(path);
-        const data = parseYaml(content) as WorkflowRunData;
-        if (data.logFile) {
-          data.logFile = toAbsolutePath(this.repoDir, data.logFile);
+          // Stage B: parse and verify
+          const content = await Deno.readTextFile(path);
+          const data = parseYaml(content) as WorkflowRunData;
+          if (data.logFile) {
+            data.logFile = toAbsolutePath(this.repoDir, data.logFile);
+          }
+          const run = WorkflowRun.fromData(data);
+          const startedAtMs = run.startedAt?.getTime();
+          if (startedAtMs === undefined || startedAtMs < cutoffMs) continue;
+
+          runs.push(run);
+        } catch (error) {
+          if (error instanceof Deno.errors.NotFound) continue;
+          throw error;
         }
-        const run = WorkflowRun.fromData(data);
-        const startedAtMs = run.startedAt?.getTime();
-        if (startedAtMs === undefined || startedAtMs < cutoffMs) continue;
-
-        runs.push(run);
       }
     } catch (error) {
+      // Outer catch handles "directory itself doesn't exist." Per-file
+      // NotFound is handled above.
       if (error instanceof Deno.errors.NotFound) {
         return [];
       }

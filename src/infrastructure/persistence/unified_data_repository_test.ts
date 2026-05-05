@@ -750,3 +750,88 @@ Deno.test("markDirty is not called on read paths", async () => {
     }
   }
 });
+
+// ============================================================================
+// findAllGlobalSince — mirrors the workflow-run repo tests so the three
+// implementations of the same two-stage filter stay in lockstep.
+// ============================================================================
+
+async function withDataRepo(
+  fn: (
+    repo: FileSystemUnifiedDataRepository,
+    tmpDir: string,
+  ) => Promise<void>,
+): Promise<void> {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const catalogStore = new CatalogStore(join(tmpDir, "_catalog.db"));
+    const repo = new FileSystemUnifiedDataRepository(
+      tmpDir,
+      undefined,
+      catalogStore,
+    );
+    await fn(repo, tmpDir);
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  }
+}
+
+Deno.test("findAllGlobalSince: returns only in-window data items", async () => {
+  await withDataRepo(async (repo) => {
+    const old = makeData("old-data");
+    await repo.save(testType, "model-1", old, new TextEncoder().encode("x"));
+
+    const oldDate = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const oldMetadataPath = repo.getMetadataPath(
+      testType,
+      "model-1",
+      "old-data",
+      1,
+    );
+    await Deno.utime(oldMetadataPath, oldDate, oldDate);
+
+    const fresh = makeData("fresh-data");
+    await repo.save(testType, "model-1", fresh, new TextEncoder().encode("y"));
+
+    const cutoff = new Date(Date.now() - 60 * 60 * 1000);
+    const found = await repo.findAllGlobalSince(cutoff);
+
+    assertEquals(found.length, 1);
+    assertEquals(found[0].data.name, "fresh-data");
+  });
+});
+
+Deno.test(
+  "findAllGlobalSince: file deleted mid-iteration is skipped, not fatal",
+  async () => {
+    await withDataRepo(async (repo) => {
+      const keep = makeData("keep-data");
+      await repo.save(testType, "model-1", keep, new TextEncoder().encode("x"));
+
+      const doomed = makeData("doomed-data");
+      await repo.save(
+        testType,
+        "model-1",
+        doomed,
+        new TextEncoder().encode("y"),
+      );
+
+      // Concurrent deletion of the doomed item's metadata file. The data
+      // repo already wraps stat in per-file try/catch; this test pins
+      // that behavior so future refactors don't lose it.
+      await Deno.remove(
+        repo.getMetadataPath(testType, "model-1", "doomed-data", 1),
+      );
+
+      const cutoff = new Date(Date.now() - 60 * 60 * 1000);
+      const found = await repo.findAllGlobalSince(cutoff);
+
+      assertEquals(found.length, 1);
+      assertEquals(found[0].data.name, "keep-data");
+    });
+  },
+);
