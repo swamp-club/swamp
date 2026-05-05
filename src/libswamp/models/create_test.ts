@@ -208,6 +208,69 @@ Deno.test("modelCreate: accepts all known global arg keys", async () => {
   assertEquals(last.kind, "completed");
 });
 
+Deno.test("modelCreate: rejects prototype-chain key like 'constructor' as global arg", async () => {
+  const globalArgsSchema = z.object({ name: z.string() });
+
+  const deps = makeDeps({
+    getModelDef: () => ({
+      type: { normalized: "test/strict" },
+      version: "1.0.0",
+      globalArguments: globalArgsSchema,
+      methods: {},
+      resources: {},
+    } as unknown as ModelDefinition),
+  });
+
+  const events = await collect<ModelCreateEvent>(
+    modelCreate(createLibSwampContext(), deps, {
+      typeArg: "test/strict",
+      name: "my-model",
+      globalArguments: { name: "hello", constructor: "oops" },
+    }),
+  );
+
+  const last = events[events.length - 1] as Extract<
+    ModelCreateEvent,
+    { kind: "error" }
+  >;
+  assertEquals(last.kind, "error");
+  assertEquals(last.error.code, "validation_failed");
+  assertEquals(last.error.message.includes("constructor"), true);
+});
+
+Deno.test("modelCreate: rejects unknown global arg when schema uses .refine()", async () => {
+  const globalArgsSchema = z.object({ name: z.string() }).refine(
+    (v) => v.name.length > 0,
+    { message: "name cannot be empty" },
+  );
+
+  const deps = makeDeps({
+    getModelDef: () => ({
+      type: { normalized: "test/refined" },
+      version: "1.0.0",
+      globalArguments: globalArgsSchema,
+      methods: {},
+      resources: {},
+    } as unknown as ModelDefinition),
+  });
+
+  const events = await collect<ModelCreateEvent>(
+    modelCreate(createLibSwampContext(), deps, {
+      typeArg: "test/refined",
+      name: "my-model",
+      globalArguments: { name: "hello", typoKey: "oops" },
+    }),
+  );
+
+  const last = events[events.length - 1] as Extract<
+    ModelCreateEvent,
+    { kind: "error" }
+  >;
+  assertEquals(last.kind, "error");
+  assertEquals(last.error.code, "validation_failed");
+  assertEquals(last.error.message.includes("typoKey"), true);
+});
+
 Deno.test("modelCreate: yields error when name already exists", async () => {
   const deps = makeDeps({
     findByNameGlobal: () => Promise.resolve(true),

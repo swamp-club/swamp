@@ -60,6 +60,7 @@ import {
 import { extractInputReferences } from "../../domain/expressions/expression_parser.ts";
 import { extractSensitiveFieldValues } from "../../domain/models/sensitive_field_extractor.ts";
 import { detectEnvVarUsageInDefinition } from "../../domain/models/env_var_detector.ts";
+import { getObjectShape } from "../../domain/models/zod_type_coercion.ts";
 import { withEventBridge } from "../../infrastructure/stream/event_bridge.ts";
 import type { MethodResult } from "../../domain/models/model.ts";
 import { getRunLogger } from "../../infrastructure/logging/logger.ts";
@@ -368,15 +369,13 @@ export async function* modelMethodRun(
           ),
         );
         if (Object.keys(overrideInputs).length > 0) {
-          const methodSchema = method.arguments as {
-            shape?: Record<string, unknown>;
-          };
-          if (methodSchema.shape !== undefined) {
+          const shape = getObjectShape(method.arguments);
+          if (shape) {
             const unknownKeys = Object.keys(overrideInputs).filter(
-              (k) => !(k in methodSchema.shape!),
+              (k) => !Object.hasOwn(shape, k),
             );
             if (unknownKeys.length > 0) {
-              const validInputs = Object.keys(methodSchema.shape).join(", ");
+              const validInputs = Object.keys(shape).join(", ");
               yield {
                 kind: "error",
                 error: validationFailed(

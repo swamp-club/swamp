@@ -30,6 +30,7 @@ import {
   stripExpressionFields,
 } from "../expressions/expression_parser.ts";
 import { detectEnvVarUsageInDefinition } from "./env_var_detector.ts";
+import { getObjectShape } from "./zod_type_coercion.ts";
 import {
   extractEnvReferences,
   extractPathReferences,
@@ -482,14 +483,28 @@ export class DefaultModelValidationService implements ModelValidationService {
       return Promise.resolve(ValidationResult.pass("Global arguments"));
     }
 
-    // All fields are static, validate with strict mode to reject unknown keys
+    // All fields are static — reject unknown keys explicitly so the check
+    // also catches schemas wrapped in .refine()/.transform() (no .strict()
+    // available on ZodEffects) and is not bypassed by prototype-chain keys.
     const globalArgsSchema = modelDef.globalArguments;
-    const strictGlobalArgs = (
-      globalArgsSchema as unknown as { strict?(): typeof globalArgsSchema }
-    ).strict?.() ?? globalArgsSchema;
+    const shape = getObjectShape(globalArgsSchema);
+    if (shape) {
+      const unknownKeys = Object.keys(staticArgs).filter(
+        (k) => !Object.hasOwn(shape, k),
+      );
+      if (unknownKeys.length > 0) {
+        const validKeys = Object.keys(shape).join(", ");
+        return Promise.resolve(ValidationResult.fail(
+          "Global arguments",
+          `Unknown global argument(s): ${
+            unknownKeys.join(", ")
+          }. Valid arguments are: ${validKeys || "none"}`,
+        ));
+      }
+    }
     return this.validateWithSchema(
       "Global arguments",
-      strictGlobalArgs,
+      globalArgsSchema,
       staticArgs,
     );
   }
@@ -515,10 +530,22 @@ export class DefaultModelValidationService implements ModelValidationService {
       }
 
       const methodArgsSchema = methodDef.arguments;
-      const strictMethodArgs = (
-        methodArgsSchema as unknown as { strict?(): typeof methodArgsSchema }
-      ).strict?.() ?? methodArgsSchema;
-      const result = strictMethodArgs.safeParse(staticArgs);
+      const shape = getObjectShape(methodArgsSchema);
+      if (shape) {
+        const unknownKeys = Object.keys(staticArgs).filter(
+          (k) => !Object.hasOwn(shape, k),
+        );
+        if (unknownKeys.length > 0) {
+          const validKeys = Object.keys(shape).join(", ");
+          errors.push(
+            `Method "${methodName}": Unknown argument(s): ${
+              unknownKeys.join(", ")
+            }. Valid arguments are: ${validKeys || "none"}`,
+          );
+          continue;
+        }
+      }
+      const result = methodArgsSchema.safeParse(staticArgs);
       if (!result.success) {
         errors.push(
           `Method "${methodName}": ${formatZodError(result.error)}`,

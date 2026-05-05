@@ -34,6 +34,7 @@ import {
   zodToJsonSchema,
 } from "../types/schema_helpers.ts";
 import { coerceInputTypes } from "../../domain/inputs/mod.ts";
+import { getObjectShape } from "../../domain/models/zod_type_coercion.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /**
@@ -161,16 +162,30 @@ export async function* modelCreate(
           jsonSchema as Record<string, unknown>,
         );
         const globalArgsSchema = modelDef.globalArguments;
-        const strictGlobalArgs = (
-          globalArgsSchema as unknown as {
-            strict?(): typeof globalArgsSchema;
+        const shape = getObjectShape(globalArgsSchema);
+        if (shape) {
+          const unknownKeys = Object.keys(globalArguments).filter(
+            (k) => !Object.hasOwn(shape, k),
+          );
+          if (unknownKeys.length > 0) {
+            const validKeys = Object.keys(shape).join(", ");
+            yield {
+              kind: "error",
+              error: validationFailed(
+                `Unknown global argument(s) for type '${modelType.normalized}': ${
+                  unknownKeys.join(", ")
+                }. Valid arguments are: ${validKeys || "none"}`,
+              ),
+            };
+            return;
           }
-        ).strict?.() ?? globalArgsSchema;
-        const result = strictGlobalArgs.safeParse(globalArguments);
+        }
+        const result = globalArgsSchema.safeParse(globalArguments);
         if (!result.success) {
-          const issues = result.error.issues.map((i) =>
-            `  ${i.path.join(".")}: ${i.message}`
-          ).join("\n");
+          const issues = result.error.issues.map((i) => {
+            const path = i.path.length > 0 ? `${i.path.join(".")}: ` : "";
+            return `  ${path}${i.message}`;
+          }).join("\n");
           yield {
             kind: "error",
             error: validationFailed(
