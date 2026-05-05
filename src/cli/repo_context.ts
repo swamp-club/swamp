@@ -425,13 +425,31 @@ export function requireInitializedRepo(
         }
       }
 
-      // Wait for any held per-model locks to be released before acquiring global lock.
-      // This prevents the global lock from racing with in-progress per-model operations.
+      // Symmetric drain — see design/datastores.md "Lock Lifecycle".
+      //
+      // First drain: wait for any per-model locks visible at command start
+      // to be released. A writer that has *already* acquired a per-model
+      // lock and passed its TOCTOU recheck (acquireModelLocks, this file)
+      // is committed to writing data; we must let it finish.
       await waitForPerModelLocks(datastoreConfig.path);
 
-      // Wire file-based lock for filesystem datastores
+      // Acquire the global lock. From here on, any writer that inspects
+      // the global lock will back off — but a writer that slipped past the
+      // first drain may have acquired a per-model lock between the drain
+      // ending and this acquisition, so its in-flight write would still
+      // race our structural work.
       const lock = new FileLock(datastoreConfig.path);
       await registerDatastoreSync({ lock });
+
+      // Second drain: with the global lock now held, wait for any such
+      // straggling per-model locks to release. Writers in the middle of
+      // their own TOCTOU recheck will see the global lock and abandon
+      // their per-model lock; writers already past the recheck and into
+      // the data write must finish before we touch the filesystem. This
+      // closes the symmetric TOCTOU window — do not remove without
+      // updating the lock-lifecycle contract documented in
+      // design/datastores.md.
+      await waitForPerModelLocks(datastoreConfig.path);
     }
 
     // Compute top-level directories for definitions, workflows, and vaults
@@ -632,50 +650,61 @@ export async function createModelLock(
 /**
  * Waits for any held per-model locks to be released.
  *
- * Called before acquiring the global lock so that structural commands
- * (data gc, model create/delete) don't race with in-progress per-model
- * operations. Only works for filesystem datastores — S3 datastores use
- * distributed locks that cannot be scanned locally.
+ * Called twice during structural command setup (`requireInitializedRepo`):
+ * once before acquiring the global lock to drain in-flight writers, and
+ * once after to catch writers that slipped past the first drain. See
+ * design/datastores.md "Lock Lifecycle" for the full contract.
+ *
+ * Only works for filesystem datastores — S3 datastores use distributed
+ * locks that cannot be scanned locally.
+ *
+ * Test seam: `findModelLocksOverride` is for unit tests only — production
+ * callers must omit it. Not exported from any barrel; used solely by
+ * `repo_context_test.ts`.
  */
-async function waitForPerModelLocks(datastorePath: string): Promise<void> {
+export async function waitForPerModelLocks(
+  datastorePath: string,
+  findModelLocksOverride?: () => Promise<number>,
+): Promise<void> {
   const logger = getSwampLogger(["datastore", "lock"]);
 
-  const findModelLocks = async (): Promise<number> => {
-    let count = 0;
-    try {
-      for await (
-        const entry of walk(datastorePath, {
-          includeDirs: false,
-          match: [/\.lock$/],
-        })
-      ) {
-        const rel = relative(datastorePath, entry.path);
-        if (!parseModelLockKey(rel)) continue;
-        try {
-          const content = await Deno.readTextFile(entry.path);
-          const info = JSON.parse(content) as {
-            acquiredAt: string;
-            ttlMs: number;
-          };
-          // Only count non-stale locks
-          const acquiredAt = new Date(info.acquiredAt).getTime();
-          if (Date.now() - acquiredAt <= info.ttlMs) {
-            count++;
+  const findModelLocks = findModelLocksOverride ??
+    (async (): Promise<number> => {
+      let count = 0;
+      try {
+        for await (
+          const entry of walk(datastorePath, {
+            includeDirs: false,
+            match: [/\.lock$/],
+          })
+        ) {
+          const rel = relative(datastorePath, entry.path);
+          if (!parseModelLockKey(rel)) continue;
+          try {
+            const content = await Deno.readTextFile(entry.path);
+            const info = JSON.parse(content) as {
+              acquiredAt: string;
+              ttlMs: number;
+            };
+            // Only count non-stale locks
+            const acquiredAt = new Date(info.acquiredAt).getTime();
+            if (Date.now() - acquiredAt <= info.ttlMs) {
+              count++;
+            }
+          } catch {
+            // Skip unreadable lock files
           }
-        } catch {
-          // Skip unreadable lock files
         }
+      } catch {
+        // Datastore directory may not exist yet
       }
-    } catch {
-      // Datastore directory may not exist yet
-    }
-    return count;
-  };
+      return count;
+    });
 
   const held = await findModelLocks();
   if (held > 0) {
     logger.info(
-      "Waiting for {count} per-model lock(s) to be released before acquiring global lock",
+      "Waiting for {count} per-model lock(s) to be released",
       { count: held },
     );
     while (true) {
@@ -683,7 +712,7 @@ async function waitForPerModelLocks(datastorePath: string): Promise<void> {
       const remaining = await findModelLocks();
       if (remaining === 0) break;
     }
-    logger.info`Per-model locks released, proceeding with global lock`;
+    logger.info`Per-model locks released`;
   }
 }
 

@@ -509,6 +509,55 @@ calls `forceRelease(expectedNonce)` to clear it — without this, the
 post-acquire TOCTOU re-check would re-detect the same stale lock on every
 iteration and recurse indefinitely.
 
+#### Symmetric Drain (structural commands)
+
+Structural commands (`requireInitializedRepo`) acquire the global lock with
+a **symmetric drain** — `waitForPerModelLocks` is invoked twice, once
+before the global lock is acquired and once after:
+
+1. **First drain (pre-acquire).** Wait for any per-model locks visible at
+   command start to be released. A writer that is already past its own
+   TOCTOU recheck (in `acquireModelLocks`) is committed to writing data
+   and must be allowed to finish.
+2. **Acquire global lock.** From this point on, any writer that runs
+   `inspect()` against the global lock will see it held and back off.
+3. **Second drain (post-acquire).** Wait for any per-model locks that
+   slipped past the first drain — i.e., writers that inspected the global
+   lock between the first drain ending and the global-lock acquisition,
+   saw it not held, and went on to acquire a per-model lock.
+
+The second drain is what closes the symmetric TOCTOU window between the
+two sides of the protocol. Without it, a writer can:
+
+1. Inspect global → not held (deleter has not yet acquired)
+2. Take per-model lock
+3. Pass its TOCTOU recheck → not held (deleter still has not acquired)
+4. Begin writing a new version directory
+
+…while the deleter completes its first drain, acquires the global lock,
+and runs `Deno.remove(dataNameDir, { recursive: true })`. The recursive
+removal then races the writer's new version subdirectory and fails with
+ENOTEMPTY (Linux: `os error 39`, macOS: `os error 66`) — the failure mode
+behind swamp-club#234.
+
+The second drain catches the writer's still-held per-model lock and waits
+for the writer to finish (and either commit cleanly or release on its own
+TOCTOU recheck) before structural work proceeds. Because the writer's
+recheck runs *immediately* after taking the per-model lock — before any
+data I/O — there is no remaining window where the writer can write data
+without the deleter's second drain seeing the per-model lock.
+
+> **Maintainer note.** Both drain calls are required to keep this
+> contract sound. The bidirectional citation
+> (`src/cli/repo_context.ts:requireInitializedRepo` ↔ this section) is
+> there so a future change cannot silently remove one of the two waits
+> without confronting the contract. When changing this lifecycle, update
+> both sites.
+
+Caveat: `waitForPerModelLocks` only scans the local filesystem. Custom
+(S3, distributed) datastores use their own `DistributedLock`
+implementation and rely on its semantics rather than the local drain.
+
 A SIGINT handler ensures best-effort lock release on Ctrl-C. If the process
 crashes without releasing, the lock expires after the TTL (30 seconds by
 default).
