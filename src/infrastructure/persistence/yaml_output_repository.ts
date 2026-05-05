@@ -71,8 +71,15 @@ export class YamlOutputRepository implements OutputRepository {
     const dir = this.getMethodDir(type, method);
     try {
       for await (const entry of Deno.readDir(dir)) {
-        if (entry.isFile && entry.name.endsWith(".yaml")) {
-          const path = join(dir, entry.name);
+        if (!entry.isFile || !entry.name.endsWith(".yaml")) continue;
+        const path = join(dir, entry.name);
+
+        // Per-file try/catch closes the TOCTOU window: a concurrent
+        // delete can remove a non-target file between readDir and
+        // readTextFile. NotFound on a single file means "skip it" —
+        // never "abort the search and return null when the target
+        // exists later in the directory."
+        try {
           const content = await Deno.readTextFile(path);
           const data = parseYaml(content) as ModelOutputData;
           if (data.id === id) {
@@ -82,6 +89,9 @@ export class YamlOutputRepository implements OutputRepository {
             }
             return ModelOutput.fromData(data);
           }
+        } catch (error) {
+          if (error instanceof Deno.errors.NotFound) continue;
+          throw error;
         }
       }
     } catch (error) {
@@ -124,32 +134,44 @@ export class YamlOutputRepository implements OutputRepository {
       for await (const methodEntry of Deno.readDir(typeDir)) {
         if (!methodEntry.isDirectory) continue;
         const methodDir = join(typeDir, methodEntry.name);
-        // Iterate over output files in method directory
-        for await (const entry of Deno.readDir(methodDir)) {
-          if (!entry.isFile || !entry.name.endsWith(".yaml")) continue;
-          const path = join(methodDir, entry.name);
 
-          // Per-file try/catch closes the TOCTOU window: a concurrent
-          // delete (e.g. GC, output cleanup) can remove the file
-          // between readDir and readTextFile. NotFound on a single
-          // file means "skip it" — never "abandon the rest of the
-          // current method directory."
-          try {
-            const content = await Deno.readTextFile(path);
-            const data = parseYaml(content) as ModelOutputData;
-            if (data.logFile) {
-              data.logFile = toAbsolutePath(this.repoDir, data.logFile);
+        // Per-method-directory try/catch closes the directory-level
+        // TOCTOU window: a concurrent bulk delete can remove the
+        // method directory between readDir(typeDir) and
+        // readDir(methodDir). NotFound on a single method directory
+        // means "skip it" — never "abandon outputs already collected
+        // from earlier method directories of this type."
+        try {
+          // Iterate over output files in method directory
+          for await (const entry of Deno.readDir(methodDir)) {
+            if (!entry.isFile || !entry.name.endsWith(".yaml")) continue;
+            const path = join(methodDir, entry.name);
+
+            // Per-file try/catch closes the TOCTOU window: a concurrent
+            // delete (e.g. GC, output cleanup) can remove the file
+            // between readDir and readTextFile. NotFound on a single
+            // file means "skip it" — never "abandon the rest of the
+            // current method directory."
+            try {
+              const content = await Deno.readTextFile(path);
+              const data = parseYaml(content) as ModelOutputData;
+              if (data.logFile) {
+                data.logFile = toAbsolutePath(this.repoDir, data.logFile);
+              }
+              outputs.push(ModelOutput.fromData(data));
+            } catch (error) {
+              if (error instanceof Deno.errors.NotFound) continue;
+              throw error;
             }
-            outputs.push(ModelOutput.fromData(data));
-          } catch (error) {
-            if (error instanceof Deno.errors.NotFound) continue;
-            throw error;
           }
+        } catch (error) {
+          if (error instanceof Deno.errors.NotFound) continue;
+          throw error;
         }
       }
     } catch (error) {
-      // Outer catch handles "type/method directory itself doesn't
-      // exist." Per-file NotFound is handled above.
+      // Outer catch handles "type directory itself doesn't exist."
+      // Per-method-dir and per-file NotFound are handled above.
       if (error instanceof Deno.errors.NotFound) {
         return [];
       }
@@ -203,44 +225,56 @@ export class YamlOutputRepository implements OutputRepository {
         for await (const methodEntry of Deno.readDir(typeDir)) {
           if (!methodEntry.isDirectory) continue;
           const methodDir = join(typeDir, methodEntry.name);
-          for await (const entry of Deno.readDir(methodDir)) {
-            if (!entry.isFile || !entry.name.endsWith(".yaml")) continue;
-            const path = join(methodDir, entry.name);
 
-            // Per-file try/catch closes the TOCTOU window: a concurrent
-            // delete can remove the file between readDir and stat or
-            // between stat and readTextFile. NotFound on a single file
-            // means "skip it" — never "abandon the rest of the current
-            // method directory or model type."
-            try {
-              // Stage A: mtime pre-filter
-              const stat = await Deno.stat(path);
-              const mtimeMs = stat.mtime?.getTime();
-              if (mtimeMs !== undefined && mtimeMs < cutoffMs) continue;
+          // Per-method-directory try/catch closes the directory-level
+          // TOCTOU window: a concurrent bulk delete can remove the
+          // method directory between readDir(typeDir) and
+          // readDir(methodDir). NotFound on a single method directory
+          // means "skip it" — never "abandon results already collected
+          // from earlier method directories of this type."
+          try {
+            for await (const entry of Deno.readDir(methodDir)) {
+              if (!entry.isFile || !entry.name.endsWith(".yaml")) continue;
+              const path = join(methodDir, entry.name);
 
-              // Stage B: parse and verify
-              const content = await Deno.readTextFile(path);
-              const data = parseYaml(content) as ModelOutputData;
-              if (data.logFile) {
-                data.logFile = toAbsolutePath(this.repoDir, data.logFile);
+              // Per-file try/catch closes the TOCTOU window: a concurrent
+              // delete can remove the file between readDir and stat or
+              // between stat and readTextFile. NotFound on a single file
+              // means "skip it" — never "abandon the rest of the current
+              // method directory or model type."
+              try {
+                // Stage A: mtime pre-filter
+                const stat = await Deno.stat(path);
+                const mtimeMs = stat.mtime?.getTime();
+                if (mtimeMs !== undefined && mtimeMs < cutoffMs) continue;
+
+                // Stage B: parse and verify
+                const content = await Deno.readTextFile(path);
+                const data = parseYaml(content) as ModelOutputData;
+                if (data.logFile) {
+                  data.logFile = toAbsolutePath(this.repoDir, data.logFile);
+                }
+                const output = ModelOutput.fromData(data);
+                if (output.startedAt.getTime() < cutoffMs) continue;
+
+                results.push({
+                  output,
+                  type: modelType,
+                  method: output.methodName,
+                });
+              } catch (error) {
+                if (error instanceof Deno.errors.NotFound) continue;
+                throw error;
               }
-              const output = ModelOutput.fromData(data);
-              if (output.startedAt.getTime() < cutoffMs) continue;
-
-              results.push({
-                output,
-                type: modelType,
-                method: output.methodName,
-              });
-            } catch (error) {
-              if (error instanceof Deno.errors.NotFound) continue;
-              throw error;
             }
+          } catch (error) {
+            if (error instanceof Deno.errors.NotFound) continue;
+            throw error;
           }
         }
       } catch (error) {
-        // Outer catch handles "type/method directory itself doesn't
-        // exist." Per-file NotFound is handled above.
+        // Outer catch handles "type directory itself doesn't exist."
+        // Per-method-dir and per-file NotFound are handled above.
         if (error instanceof Deno.errors.NotFound) continue;
         throw error;
       }
@@ -277,27 +311,45 @@ export class YamlOutputRepository implements OutputRepository {
     id: ModelOutputId,
   ): Promise<void> {
     // We need to find the file first since filename includes timestamp.
-    // Notify per-path inside the loop once the match is found, before
-    // the Deno.remove — same crash-safety as the unconditional pre-write
-    // notify. When no match is found, nothing is removed and no signal
-    // is needed.
+    // Notify per-path once the match is found, before the Deno.remove —
+    // same crash-safety as the unconditional pre-write notify. When no
+    // match is found, nothing is removed and no signal is needed.
+    //
+    // Find-then-act structure: the per-file try/catch wraps only the
+    // search (readTextFile + parseYaml + match check) so a concurrent
+    // delete of a non-target file doesn't abort the search before we
+    // reach the target. The destructive ops (notifyDirty + Deno.remove
+    // + cleanupEmptyParentDirs) run after the loop, still inside the
+    // outer try/catch — preserving the existing semantic that a
+    // NotFound from Deno.remove (race: target deleted concurrently) is
+    // absorbed and returns successfully (delete is idempotent).
     const dir = this.getMethodDir(type, method);
     try {
+      let matchPath: string | null = null;
       for await (const entry of Deno.readDir(dir)) {
-        if (entry.isFile && entry.name.endsWith(".yaml")) {
-          const path = join(dir, entry.name);
+        if (!entry.isFile || !entry.name.endsWith(".yaml")) continue;
+        const path = join(dir, entry.name);
+
+        try {
           const content = await Deno.readTextFile(path);
           const data = parseYaml(content) as ModelOutputData;
           if (data.id === id) {
-            await this.notifyDirty(path);
-            await Deno.remove(path);
-
-            // Clean up empty parent directories
-            const outputsDir = this.baseDir;
-            await cleanupEmptyParentDirs(path, outputsDir);
-            return;
+            matchPath = path;
+            break;
           }
+        } catch (error) {
+          if (error instanceof Deno.errors.NotFound) continue;
+          throw error;
         }
+      }
+
+      if (matchPath) {
+        await this.notifyDirty(matchPath);
+        await Deno.remove(matchPath);
+
+        // Clean up empty parent directories
+        const outputsDir = this.baseDir;
+        await cleanupEmptyParentDirs(matchPath, outputsDir);
       }
     } catch (error) {
       if (!(error instanceof Deno.errors.NotFound)) {
