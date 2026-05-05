@@ -22,6 +22,7 @@ import { ValidationError } from "@cliffy/command";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import { buildErrorJson, renderError } from "./error_output.ts";
 import { UserError } from "../../domain/errors.ts";
+import { DuplicateTypeUserError } from "../../domain/extensions/duplicate_type_user_error.ts";
 
 await initializeLogging({});
 
@@ -296,7 +297,7 @@ Deno.test("buildErrorJson: system Error includes stack", () => {
   const result = buildErrorJson(new Error("Something broke"));
   assertEquals(result.error, "Something broke");
   assertEquals(typeof result.stack, "string");
-  assertStringIncludes(result.stack!, "at ");
+  assertStringIncludes(result.stack as string, "at ");
 });
 
 Deno.test("buildErrorJson: Cliffy ValidationError has no stack", () => {
@@ -323,3 +324,113 @@ Deno.test("buildErrorJson: omits code field when not present", () => {
   const result = buildErrorJson(new UserError("plain"));
   assertEquals(result.code, undefined);
 });
+
+// =============================================================
+// Plan v4 step 11 — DuplicateTypeUserError JSON shape
+// =============================================================
+//
+// Pinned shape: log mode emits a single-line message; JSON mode emits
+// the same message PLUS a structured `duplicateType` object so jq /
+// AI agents / CI scripts can read the collision details without
+// re-parsing the message. This test pins both the structural shape
+// and the parity (same fields available across modes).
+
+Deno.test(
+  "buildErrorJson: DuplicateTypeUserError emits structured duplicateType field (W2 plan v4 step 11)",
+  () => {
+    const err = new DuplicateTypeUserError({
+      kind: "model",
+      typeNormalized: "@scope/foo",
+      existing: {
+        extensionName: "@scopeA/aa",
+        extensionVersion: "1.0.0",
+        canonicalPath:
+          "/repo/.swamp/pulled-extensions/@scopeA/aa/models/foo.ts",
+      },
+      conflicting: {
+        extensionName: "@scopeB/bb",
+        extensionVersion: "1.0.0",
+        canonicalPath:
+          "/repo/.swamp/pulled-extensions/@scopeB/bb/models/foo.ts",
+      },
+    });
+
+    const result = buildErrorJson(err);
+
+    // Default UserError treatment: message present, no stack trace.
+    assertStringIncludes(
+      result.error as string,
+      `Type "@scope/foo" (kind=model)`,
+    );
+    assertStringIncludes(
+      result.error as string,
+      "@scopeA/aa@1.0.0",
+    );
+    assertStringIncludes(
+      result.error as string,
+      "@scopeB/bb@1.0.0",
+    );
+    assertEquals(result.stack, undefined);
+
+    // Structured field — pinned shape.
+    const dup = result.duplicateType as Record<string, unknown>;
+    assertEquals(dup.kind, "model");
+    assertEquals(dup.type, "@scope/foo");
+    const existing = dup.existing as Record<string, string>;
+    assertEquals(existing.extensionName, "@scopeA/aa");
+    assertEquals(existing.extensionVersion, "1.0.0");
+    assertEquals(
+      existing.canonicalPath,
+      "/repo/.swamp/pulled-extensions/@scopeA/aa/models/foo.ts",
+    );
+    const conflicting = dup.conflicting as Record<string, string>;
+    assertEquals(conflicting.extensionName, "@scopeB/bb");
+    assertEquals(conflicting.extensionVersion, "1.0.0");
+    assertEquals(
+      conflicting.canonicalPath,
+      "/repo/.swamp/pulled-extensions/@scopeB/bb/models/foo.ts",
+    );
+  },
+);
+
+Deno.test(
+  "buildErrorJson: DuplicateTypeUserError log+JSON share the same structured fields (output parity)",
+  () => {
+    const err = new DuplicateTypeUserError({
+      kind: "driver",
+      typeNormalized: "@scope/parity",
+      existing: {
+        extensionName: "@scopeA/aa",
+        extensionVersion: "1.0.0",
+        canonicalPath: "/path/a.ts",
+      },
+      conflicting: {
+        extensionName: "@scopeB/bb",
+        extensionVersion: "2.0.0",
+        canonicalPath: "/path/b.ts",
+      },
+    });
+
+    // Log mode: the message line names both extensions and the
+    // colliding type — no need for a separate test since the
+    // top-level renderer logs `err.message` verbatim.
+    assertStringIncludes(err.message, "@scopeA/aa@1.0.0");
+    assertStringIncludes(err.message, "@scopeB/bb@2.0.0");
+    assertStringIncludes(err.message, "@scope/parity");
+    assertStringIncludes(err.message, "(kind=driver)");
+
+    // JSON mode: same fields available structurally.
+    const result = buildErrorJson(err);
+    const dup = result.duplicateType as Record<string, unknown>;
+    assertEquals(dup.kind, "driver");
+    assertEquals(dup.type, "@scope/parity");
+    assertEquals(
+      (dup.existing as Record<string, string>).extensionName,
+      "@scopeA/aa",
+    );
+    assertEquals(
+      (dup.conflicting as Record<string, string>).extensionVersion,
+      "2.0.0",
+    );
+  },
+);

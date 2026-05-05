@@ -17,11 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import {
-  type ExtensionRef,
-  type InstallContext,
-  type InstallResult,
-} from "./pull.ts";
+import type { ExtensionRef, InstallContext, InstallResult } from "./pull.ts";
 import { InstallExtensionService } from "./install_extension_service.ts";
 import type { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
 import type { DenoRuntime } from "../../domain/runtime/deno_runtime.ts";

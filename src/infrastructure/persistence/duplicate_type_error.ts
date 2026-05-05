@@ -74,3 +74,7 @@ export class DuplicateTypeError extends Error {
     this.secondSource = args.secondSource;
   }
 }
+
+// `DuplicateTypeUserError` (the user-facing wrapper) lives in
+// `src/domain/extensions/duplicate_type_user_error.ts` so the
+// presentation layer can import it without violating DDD layer rules.

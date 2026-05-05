@@ -34,6 +34,7 @@ import { makeSourceLocation } from "../../domain/extensions/source_location.ts";
 import { makeBundleLocation } from "../../domain/extensions/bundle_location.ts";
 import type { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
 import { DuplicateTypeError } from "../../infrastructure/persistence/duplicate_type_error.ts";
+import { DuplicateTypeUserError } from "../../domain/extensions/duplicate_type_user_error.ts";
 import { swampPath } from "../../infrastructure/persistence/paths.ts";
 import { UserModelLoader } from "../../domain/models/user_model_loader.ts";
 import { UserDriverLoader } from "../../domain/drivers/user_driver_loader.ts";
@@ -42,7 +43,6 @@ import { UserDatastoreLoader } from "../../domain/datastore/user_datastore_loade
 import { UserReportLoader } from "../../domain/reports/user_report_loader.ts";
 import type { DenoRuntime } from "../../domain/runtime/deno_runtime.ts";
 import type { UpstreamExtensionEntry } from "../../infrastructure/persistence/upstream_extensions.ts";
-import { UserError } from "../../domain/errors.ts";
 
 /** Subdirectories of a per-extension subtree, paired with their kind. */
 const KIND_DIRS = [
@@ -411,21 +411,20 @@ async function collectTsFiles(dir: string): Promise<string[]> {
 }
 
 /**
- * Wraps a {@link DuplicateTypeError} in a {@link UserError} so the
- * top-level CLI error handler renders a clean message rather than a
- * stack trace. Both source paths are named — the W2 user-visible
- * payoff that replaces W1b's silent first-wins.
+ * Wraps a {@link DuplicateTypeError} in a
+ * {@link DuplicateTypeUserError} so the top-level CLI error handler
+ * renders a clean single-line message in log mode AND emits the
+ * pinned JSON shape in JSON mode (plan v4 step 11). Both source paths
+ * are named — the W2 user-visible payoff that replaces W1b's silent
+ * first-wins.
  */
 function mapDuplicateTypeErrorToUserError(
   error: DuplicateTypeError,
-): UserError {
-  return new UserError(
-    `Type "${error.typeNormalized}" (kind=${error.kind}) is already claimed by ` +
-      `${error.firstSource.extensionName}@${error.firstSource.extensionVersion} ` +
-      `at ${error.firstSource.canonicalPath}. Cannot install ` +
-      `${error.secondSource.extensionName}@${error.secondSource.extensionVersion} ` +
-      `at ${error.secondSource.canonicalPath} — filesystem changes rolled back. ` +
-      `Run \`swamp extension rm ${error.firstSource.extensionName}\` first if ` +
-      `you intended to replace it.`,
-  );
+): DuplicateTypeUserError {
+  return new DuplicateTypeUserError({
+    kind: error.kind,
+    typeNormalized: error.typeNormalized,
+    existing: error.firstSource,
+    conflicting: error.secondSource,
+  });
 }

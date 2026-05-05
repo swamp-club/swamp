@@ -20,6 +20,7 @@
 import { ValidationError } from "@cliffy/command";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
+import { DuplicateTypeUserError } from "../../domain/extensions/duplicate_type_user_error.ts";
 import type { OutputMode } from "./output.ts";
 
 const logger = getSwampLogger(["error"]);
@@ -27,14 +28,23 @@ const logger = getSwampLogger(["error"]);
 /**
  * Builds the JSON error object for structured output.
  *
- * Shape: `{ error: string, stack?: string, code?: string }`. The `code`
- * field is set when the underlying error carries a machine-readable
- * identifier (e.g. `UserError.code` or any error object exposing a
- * string `code` property — `SwampError`-like). Both `code` and `stack`
- * are optional; consumers must tolerate their presence or absence.
+ * Default shape: `{ error: string, stack?: string, code?: string }`. The
+ * `code` field is set when the underlying error carries a machine-
+ * readable identifier (e.g. `UserError.code` or any error object
+ * exposing a string `code` property — `SwampError`-like). Both `code`
+ * and `stack` are optional; consumers must tolerate their presence or
+ * absence.
+ *
+ * Specific {@link UserError} subclasses extend the default shape with
+ * structured fields:
+ *
+ * - {@link DuplicateTypeUserError} adds a `duplicateType` object with
+ *   `kind`, `type`, `existing`, and `conflicting` (per plan v4 step
+ *   11). Lets `--json` consumers (jq, AI agents, CI scripts) read the
+ *   collision details without re-parsing the message.
  */
-export function buildErrorJson(err: Error): Record<string, string> {
-  const data: Record<string, string> = { error: err.message };
+export function buildErrorJson(err: Error): Record<string, unknown> {
+  const data: Record<string, unknown> = { error: err.message };
   if (
     !(err instanceof UserError) && !(err instanceof ValidationError) &&
     err.stack
@@ -49,6 +59,22 @@ export function buildErrorJson(err: Error): Record<string, string> {
   const maybeCode = (err as { code?: unknown }).code;
   if (typeof maybeCode === "string" && maybeCode.length > 0) {
     data.code = maybeCode;
+  }
+  if (err instanceof DuplicateTypeUserError) {
+    data.duplicateType = {
+      kind: err.kind,
+      type: err.typeNormalized,
+      existing: {
+        extensionName: err.existing.extensionName,
+        extensionVersion: err.existing.extensionVersion,
+        canonicalPath: err.existing.canonicalPath,
+      },
+      conflicting: {
+        extensionName: err.conflicting.extensionName,
+        extensionVersion: err.conflicting.extensionVersion,
+        canonicalPath: err.conflicting.canonicalPath,
+      },
+    };
   }
   return data;
 }
