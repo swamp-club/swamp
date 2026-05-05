@@ -31,6 +31,7 @@ import { analyzeExtensionSafety } from "../../domain/extensions/extension_safety
 import { ExtensionApiClient } from "../../infrastructure/http/extension_api_client.ts";
 import { pruneOrphanFiles } from "../../infrastructure/persistence/directory_cleanup.ts";
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
+import { InstallExtensionService } from "./install_extension_service.ts";
 import {
   bundleNamespace,
   swampPath,
@@ -1137,8 +1138,13 @@ export async function* extensionPull(
         depth: deps.depth,
       };
 
-      // Let ConflictError propagate — CLI catches it for the two-phase prompt flow
-      const install = deps.installExtensionFn ?? installExtension;
+      // Let ConflictError propagate — CLI catches it for the two-phase prompt flow.
+      // Production path goes through InstallExtensionService so the W2 catalog-
+      // write contract (commit 2c phase 8) applies. Tests inject their own
+      // stub via deps.installExtensionFn.
+      const install = deps.installExtensionFn ??
+        ((r: ExtensionRef, c: InstallContext) =>
+          new InstallExtensionService().execute(r, c));
       const result = await install(input.ref, installCtx);
       if (result) {
         if (result.pruned.length > 0) {
