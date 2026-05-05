@@ -30,6 +30,7 @@
 import { assertEquals, assertExists, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import { ensureDir } from "@std/fs";
+import { stringify as stringifyYaml } from "@std/yaml";
 import { Data } from "../src/domain/data/data.ts";
 import type { OwnerDefinition } from "../src/domain/data/data_metadata.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
@@ -38,6 +39,8 @@ import { FileSystemUnifiedDataRepository } from "../src/infrastructure/persisten
 import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
 import { CatalogStore } from "../src/infrastructure/persistence/catalog_store.ts";
 import { DataDeleteService } from "../src/domain/data/data_delete_service.ts";
+import { SHELL_MODEL_TYPE } from "../src/domain/models/command/shell/shell_model.ts";
+import { CLI_ARGS } from "./test_helpers.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-data-delete-" });
@@ -205,4 +208,145 @@ Deno.test("Data Delete: --version against non-existent version names available v
     const after = await dataRepo.listVersions(type, modelId, "partial");
     assertEquals(after.sort((a, b) => a - b), [1, 2, 3]);
   });
+});
+
+// ============================================================================
+// Concurrent writer / delete smoke test (regression for swamp-club#234)
+// ============================================================================
+//
+// Smoke regression for the symmetric drain in `requireInitializedRepo`: a
+// concurrent writer creating a new version directory between the deleter's
+// pre-acquire drain and the rmdir caused
+// `Deno.remove(dataNameDir, { recursive: true })` to fail with ENOTEMPTY
+// (Linux: os error 39, macOS: os error 66). The architectural fix lives in
+// src/cli/repo_context.ts; the deterministic regression for the polling
+// primitive lives in src/cli/repo_context_test.ts.
+//
+// This test is non-deterministic by design — it spawns real CLI processes
+// across N iterations and asserts no ENOTEMPTY error appears. The original
+// bug reproduced in ~40 attempts under high writer pressure (4 parallel
+// writers + tight delete loop), so N=50 single-writer iterations gives a
+// margin large enough to catch a future regression with reasonable
+// probability while staying within integration-suite wall-clock budgets.
+// Do not silently shrink N below 50 — read swamp-club#234 first.
+
+const RACE_ITERATIONS = 50;
+const SHELL_SLEEP_MS = 300;
+
+async function runSwamp(
+  args: string[],
+  cwd: string,
+): Promise<{ stdout: string; stderr: string; code: number }> {
+  const { code, stdout, stderr } = await new Deno.Command(Deno.execPath(), {
+    args: [...CLI_ARGS, ...args],
+    stdout: "piped",
+    stderr: "piped",
+    cwd,
+  }).output();
+  return {
+    stdout: new TextDecoder().decode(stdout),
+    stderr: new TextDecoder().decode(stderr),
+    code,
+  };
+}
+
+async function initializeShellRepo(repoDir: string): Promise<void> {
+  for (
+    const sub of [
+      "models",
+      ".swamp/outputs",
+      ".swamp/data",
+      ".swamp/logs",
+    ]
+  ) {
+    await ensureDir(join(repoDir, sub));
+  }
+  await Deno.writeTextFile(
+    join(repoDir, ".swamp.yaml"),
+    stringifyYaml({
+      swampVersion: "0.0.0",
+      initializedAt: new Date().toISOString(),
+    } as Record<string, unknown>),
+  );
+
+  // Shell model that holds the per-model lock for ~SHELL_SLEEP_MS, giving
+  // the concurrent delete a window to race the writer.
+  const definitionRepo = new YamlDefinitionRepository(repoDir);
+  const definition = Definition.create({
+    name: "race-writer",
+    methods: {
+      execute: {
+        arguments: {
+          run: `sleep ${SHELL_SLEEP_MS / 1000}; echo done`,
+        },
+      },
+    },
+  });
+  await definitionRepo.save(SHELL_MODEL_TYPE, definition);
+}
+
+function assertNoEnoTempty(label: string, combined: string): void {
+  for (
+    const marker of [
+      "Directory not empty",
+      "os error 39",
+      "os error 66",
+    ]
+  ) {
+    assertEquals(
+      combined.includes(marker),
+      false,
+      `${label} contains race marker "${marker}":\n${combined}`,
+    );
+  }
+}
+
+Deno.test({
+  name:
+    "Data Delete: 50 iterations of concurrent writer + delete leave no ENOTEMPTY (swamp-club#234)",
+  // Subprocess spawn means file handles outlive the test scope on some
+  // platforms; the existing CLI integration tests share this exemption.
+  sanitizeResources: false,
+  sanitizeOps: false,
+  fn: async () => {
+    await withTempDir(async (repoDir) => {
+      await initializeShellRepo(repoDir);
+
+      // Seed one version so the first delete has something to remove.
+      const seed = await runSwamp(
+        ["model", "method", "run", "race-writer", "execute", "--json"],
+        repoDir,
+      );
+      assertEquals(
+        seed.code,
+        0,
+        `Seed write must succeed. stderr: ${seed.stderr}`,
+      );
+
+      for (let i = 0; i < RACE_ITERATIONS; i++) {
+        const writer = runSwamp(
+          ["model", "method", "run", "race-writer", "execute", "--json"],
+          repoDir,
+        );
+        // Brief delay so the writer establishes its per-model lock before
+        // the deleter runs its first drain.
+        await new Promise((resolve) => setTimeout(resolve, 30));
+        const deleter = runSwamp(
+          ["data", "delete", "race-writer", "result", "--force", "--json"],
+          repoDir,
+        );
+
+        const [w, d] = await Promise.all([writer, deleter]);
+
+        assertNoEnoTempty(
+          `iteration ${i} writer (code=${w.code})`,
+          `${w.stdout}\n${w.stderr}`,
+        );
+        assertNoEnoTempty(
+          `iteration ${i} deleter (code=${d.code})`,
+          `${d.stdout}\n${d.stderr}`,
+        );
+      }
+    });
+  },
 });
