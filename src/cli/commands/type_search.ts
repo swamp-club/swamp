@@ -78,10 +78,10 @@ export const typeSearchCommand = new Command()
   .example("Search by keyword", "swamp type search aws")
   // `--repo-dir` is accepted for agentic-flow consistency with other
   // commands; type search reads only the global extension catalog and
-  // does not require an initialized repo, so the option is informational.
+  // does not require an initialized repo.
   .option(
     "--repo-dir <dir:string>",
-    "Repository directory (informational; type search does not require an initialized repo)",
+    "Repository directory (env: SWAMP_REPO_DIR; not required for type search)",
   )
   .arguments("[query:string]")
   .action(async function (options: AnyOptions, query?: string) {

@@ -144,7 +144,23 @@ const names = await context.queryData!(
 // names is string[]
 ```
 
+## Empty results and errors
+
+- A predicate that matches nothing returns an empty list (CLI: empty stdout in
+  JSON mode, or "No matching data" in log mode). This is success, not error —
+  exit code is 0.
+- Malformed CEL fails fast with a `code: "validation_failed"` error before any
+  data is read. Verify the predicate against
+  [references/fields.md](references/fields.md) for available fields.
+- Referencing `attributes.<x>` or `content.<y>` on a record that lacks the field
+  yields `null` for that record, not an error — predicates involving the field
+  simply don't match. Use `has(attributes.x)` to filter records that have the
+  field set.
+- Binary data records expose `content` as `bytes`; field projection on binary
+  `content` returns base64.
+
 ## References
 
-See [references/fields.md](references/fields.md) for the complete DataRecord
-field reference and CEL operator examples.
+See [references/fields.md](references/fields.md) (also at
+`.claude/skills/swamp-data-query/references/fields.md` in this repo) for the
+complete DataRecord field reference and CEL operator examples.

@@ -77,6 +77,10 @@ export const modelMethodRunCommand = new Command()
     "Run with inputs",
     "swamp model method run my-server deploy --input env=prod",
   )
+  .example(
+    "Pass an array or object input (JSON-typed via :json suffix)",
+    'swamp model method run my-server search --input \'keywords:json=["a","b"]\'',
+  )
   .arguments("<model_id_or_name:model_name> <method_name:string>")
   .option(
     "--repo-dir <dir:string>",
@@ -134,7 +138,7 @@ export const modelMethodRunCommand = new Command()
   )
   .option(
     "--timeout <duration:string>",
-    "Cooperative cancellation deadline (e.g. 30s, 5m, 1h). Aborts the run when it expires; emits code: 'cancelled' on timeout. Effective only for methods that honor AbortSignal — long-running model methods that ignore the signal will not be interrupted.",
+    "Cancellation deadline (e.g. 30s, 5m, 1h). Cooperative — only honored by methods that check AbortSignal.",
   )
   .action(
     // @ts-expect-error - Cliffy custom type returns unknown instead of string

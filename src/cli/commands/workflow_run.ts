@@ -64,6 +64,10 @@ export const workflowRunCommand = new Command()
     "swamp workflow run deploy-pipeline --input env=prod",
   )
   .example(
+    "Pass an array or object input (JSON-typed via :json suffix)",
+    'swamp workflow run deploy-pipeline --input \'tags:json=["prod","west"]\'',
+  )
+  .example(
     "With tags",
     "swamp workflow run deploy-pipeline --tag type=deploy --tag env=production",
   )
@@ -125,7 +129,7 @@ export const workflowRunCommand = new Command()
   )
   .option(
     "--timeout <duration:string>",
-    "Cooperative cancellation deadline (e.g. 30s, 5m, 1h). Aborts the workflow when it expires; emits code: 'cancelled' on timeout. Effective only for steps whose model methods honor AbortSignal.",
+    "Cancellation deadline (e.g. 30s, 5m, 1h). Cooperative — only honored by methods that check AbortSignal.",
   )
   // @ts-expect-error - Cliffy custom type returns unknown instead of string
   .action(async function (options: AnyOptions, workflowIdOrName: string) {
