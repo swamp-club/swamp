@@ -1,0 +1,27 @@
+# CANARY-BRIDGE pin — temporary opt-in to a Deno canary commit.
+#
+# WHY THIS EXISTS
+#   Deno v2.7.12–v2.7.14 panic on `Option::unwrap()` of a None ArrayBuffer
+#   in ext/node/ops/tls_wrap.rs (denoland/deno#33713). The fix landed on
+#   main in denoland/deno#33737 (commit df8d21c2) and will ship in v2.8.0
+#   in ~2 weeks. This pin bridges to that release without forcing every
+#   user onto a broken stable.
+#
+# HOW IT WORKS
+#   The first non-blank, non-`#`-comment line below is treated as the
+#   Deno canary commit SHA. scripts/download_deno.ts reads it (via
+#   readCanarySha()), downloads from dl.deno.land/canary/<sha>/, and
+#   stamps version.txt as `canary-<short-sha>`. Setting the env var
+#   DENO_CANARY_SHA overrides this file (CI ad-hoc testing).
+#
+# BACK-OUT CHECKLIST (when v2.8.0 ships)
+#   1. Delete this file (scripts/deno_canary.txt).
+#   2. In scripts/download_deno.ts, delete the two `CANARY-BRIDGE`
+#      blocks (the helpers near the top and the branch in main()).
+#   3. Delete scripts/download_deno_test.ts (or its canary cases).
+#   4. `grep -rn CANARY-BRIDGE` should return zero matches.
+#   5. Bump the system Deno used by CI / contributors to v2.8.0.
+#   6. Rebuild and republish swamp via the normal release flow.
+#
+# Pinned commit (verified to include the tls_wrap fix df8d21c2):
+19bd3d8b99d92f15d20692aca02ac059bbc9ada7

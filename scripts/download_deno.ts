@@ -32,6 +32,77 @@ const TARGET_ARTIFACT_MAP: Record<string, string> = {
   "x86_64-pc-windows-msvc": "deno-x86_64-pc-windows-msvc.zip",
 };
 
+// CANARY-BRIDGE: temporary opt-in for shipping a pinned Deno canary commit
+// while waiting for an upstream stable release. Remove this entire block
+// (and the call site in main(), and scripts/deno_canary.txt) when the
+// targeted stable release ships. See scripts/deno_canary.txt for the
+// full back-out checklist.
+const CANARY_PIN_FILE = "deno_canary.txt";
+
+/**
+ * Returns the canary commit SHA to download, or null for stable mode.
+ *
+ * Priority:
+ *   1. `DENO_CANARY_SHA` env var (CI ad-hoc override).
+ *   2. `scripts/deno_canary.txt` (committed pin — first non-blank,
+ *      non-`#`-comment line).
+ *   3. null — fall through to the stable GitHub-releases path.
+ */
+async function readCanarySha(): Promise<string | null> {
+  const fromEnv = Deno.env.get("DENO_CANARY_SHA")?.trim();
+  if (fromEnv) return fromEnv;
+
+  const pinPath = join(import.meta.dirname ?? ".", CANARY_PIN_FILE);
+  let content: string;
+  try {
+    content = await Deno.readTextFile(pinPath);
+  } catch (err) {
+    if (err instanceof Deno.errors.NotFound) return null;
+    throw err;
+  }
+  for (const raw of content.split("\n")) {
+    const line = raw.trim();
+    if (!line || line.startsWith("#")) continue;
+    return line;
+  }
+  return null;
+}
+
+export interface DownloadPlan {
+  url: string;
+  versionLabel: string;
+  channel: "stable" | "canary";
+}
+
+/**
+ * Builds the download URL and the string written to `version.txt`.
+ *
+ * Stable channel uses the GitHub releases artifact path; canary uses
+ * `dl.deno.land/canary/<sha>/`. The `versionLabel` distinguishes canary
+ * builds (`canary-<short-sha>`) so the runtime's version-marker check
+ * forces a fresh extraction on every SHA bump.
+ */
+export function buildDownloadPlan(
+  channel: "stable" | "canary",
+  versionOrSha: string,
+  artifact: string,
+): DownloadPlan {
+  if (channel === "canary") {
+    return {
+      url: `https://dl.deno.land/canary/${versionOrSha}/${artifact}`,
+      versionLabel: `canary-${versionOrSha.slice(0, 8)}`,
+      channel,
+    };
+  }
+  return {
+    url:
+      `https://github.com/denoland/deno/releases/download/v${versionOrSha}/${artifact}`,
+    versionLabel: versionOrSha,
+    channel,
+  };
+}
+// END CANARY-BRIDGE
+
 /** Maps Deno.build.os + Deno.build.arch to a target triple. */
 function detectCurrentTarget(): string {
   const os = Deno.build.os;
@@ -129,17 +200,22 @@ async function main() {
     Deno.exit(1);
   }
 
-  const version = await getDenoVersion();
   const isWindows = target.includes("windows");
   const binaryName = isWindows ? "deno.exe" : "deno";
 
-  console.log(`Deno version: ${version}`);
+  // CANARY-BRIDGE: pick channel from deno_canary.txt / DENO_CANARY_SHA
+  // (returns null in stable mode). Remove this branch when the bridge ends.
+  const canarySha = await readCanarySha();
+  const plan = canarySha
+    ? buildDownloadPlan("canary", canarySha, artifact)
+    : buildDownloadPlan("stable", await getDenoVersion(), artifact);
+
+  console.log(`Channel: ${plan.channel}`);
   console.log(`Target: ${target}`);
   console.log(`Artifact: ${artifact}`);
+  console.log(`Source: ${plan.url}`);
 
-  const url =
-    `https://github.com/denoland/deno/releases/download/v${version}/${artifact}`;
-  const zipBytes = await downloadFile(url);
+  const zipBytes = await downloadFile(plan.url);
 
   console.log(`Downloaded ${zipBytes.length} bytes, extracting...`);
   const binaryBytes = await extractDenoFromZip(zipBytes, binaryName);
@@ -163,10 +239,10 @@ async function main() {
 
   // Write version file
   const versionPath = join(outputDir, "version.txt");
-  await Deno.writeTextFile(versionPath, version);
+  await Deno.writeTextFile(versionPath, plan.versionLabel);
 
   const sizeMB = (binaryBytes.length / 1024 / 1024).toFixed(1);
-  console.log(`Wrote deno ${version} (${sizeMB} MB) to ${outputPath}`);
+  console.log(`Wrote deno ${plan.versionLabel} (${sizeMB} MB) to ${outputPath}`);
   console.log(`Wrote version to ${versionPath}`);
 }
 
