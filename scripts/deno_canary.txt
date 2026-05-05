@@ -18,10 +18,13 @@
 #   1. Delete this file (scripts/deno_canary.txt).
 #   2. In scripts/download_deno.ts, delete the two `CANARY-BRIDGE`
 #      blocks (the helpers near the top and the branch in main()).
-#   3. Delete scripts/download_deno_test.ts (or its canary cases).
-#   4. `grep -rn CANARY-BRIDGE` should return zero matches.
-#   5. Bump the system Deno used by CI / contributors to v2.8.0.
-#   6. Rebuild and republish swamp via the normal release flow.
+#   3. In .github/workflows/release.yml, delete the "Resolve Deno canary
+#      SHA" step (marked CANARY-BRIDGE) and change the Setup Deno step's
+#      `deno-version` back to `v2.x` (or the desired stable line).
+#   4. Delete scripts/download_deno_test.ts (or its canary cases).
+#   5. `grep -rn CANARY-BRIDGE` should return zero matches.
+#   6. Bump the system Deno used by CI / contributors to v2.8.0.
+#   7. Rebuild and republish swamp via the normal release flow.
 #
 # Pinned commit (verified to include the tls_wrap fix df8d21c2):
 19bd3d8b99d92f15d20692aca02ac059bbc9ada7

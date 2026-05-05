@@ -28,10 +28,27 @@ jobs:
         with:
           ref: main
 
+      # CANARY-BRIDGE: pin the host Deno used by `deno compile` to the same
+      # canary SHA that scripts/download_deno.ts embeds as a resource. Without
+      # this, `deno compile` runs under the latest stable v2.x and bakes
+      # `denort-<stable>` into the swamp CLI binary — which is the runtime
+      # that executes workflows (and panics on the tls_wrap.rs unwrap until
+      # v2.8.0 ships). See scripts/deno_canary.txt for the back-out checklist.
+      - name: Resolve Deno canary SHA
+        id: canary
+        run: |
+          sha=$(grep -v '^[[:space:]]*#' scripts/deno_canary.txt | grep -v '^[[:space:]]*$' | head -n1 | tr -d '[:space:]')
+          if [ -z "$sha" ]; then
+            echo "scripts/deno_canary.txt has no SHA" >&2
+            exit 1
+          fi
+          echo "sha=$sha" >> "$GITHUB_OUTPUT"
+          echo "Pinned Deno canary: $sha"
+
       - name: Setup Deno
         uses: denoland/setup-deno@v2
         with:
-          deno-version: v2.x
+          deno-version: canary-${{ steps.canary.outputs.sha }}
 
       - name: Generate version
         id: version
