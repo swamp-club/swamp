@@ -496,6 +496,16 @@ export {
   type VaultListKeysInput,
 } from "./vaults/list_keys.ts";
 
+// Vault read-secret operations
+export {
+  createVaultReadSecretDeps,
+  vaultReadSecret,
+  type VaultReadSecretData,
+  type VaultReadSecretDeps,
+  type VaultReadSecretEvent,
+  type VaultReadSecretInput,
+} from "./vaults/read_secret.ts";
+
 // Vault migrate operations
 export {
   createVaultMigrateDeps,

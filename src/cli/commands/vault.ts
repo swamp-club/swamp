@@ -30,6 +30,7 @@ import { vaultEditCommand } from "./vault_edit.ts";
 import { vaultPutCommand } from "./vault_put.ts";
 import { vaultListKeysCommand } from "./vault_list_keys.ts";
 import { vaultMigrateCommand } from "./vault_migrate.ts";
+import { vaultReadSecretCommand } from "./vault_read_secret.ts";
 import { unknownCommandErrorHandler } from "../unknown_command_handler.ts";
 
 /**
@@ -69,6 +70,7 @@ export const vaultCommand = new Command()
   .command("edit", vaultEditCommand)
   .command("put", vaultPutCommand)
   .command("migrate", vaultMigrateCommand)
+  .command("read-secret", vaultReadSecretCommand)
   .command("list-keys", vaultListKeysCommand)
   .command(
     "list",

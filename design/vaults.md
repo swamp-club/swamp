@@ -84,6 +84,38 @@ The expression syntax is:
 - `key` - The secret identifier within that vault
 - `value` - The value to store (for put operations)
 
+## CLI Secret Retrieval
+
+The `swamp vault read-secret` command reads a secret value from a vault via CLI:
+
+```
+swamp vault read-secret <vault_name> <key> [--force] [--json]
+```
+
+This calls `VaultService.get()` — the same method used by `vault.get()` CEL
+expressions — through a dedicated CLI surface. No new `VaultProvider` interface
+methods are required.
+
+### Safety Model
+
+- **Log mode**: Prompts for confirmation before revealing the secret. Use
+  `--force` (`-f`) to skip the prompt.
+- **JSON mode**: Outputs directly without prompting (designed for agent/script
+  consumption).
+- **Audit**: Every CLI read emits a `VaultSecretRead` domain event through the
+  event bus, recording the vault name, type, and secret key accessed.
+
+### JSON Output
+
+```json
+{
+  "vaultName": "my-vault",
+  "secretKey": "API_KEY",
+  "vaultType": "local_encryption",
+  "value": "sk-test-..."
+}
+```
+
 ## Sensitive Field Marking (Implemented)
 
 Model schemas mark fields as sensitive using Zod's `.meta()` method. When a

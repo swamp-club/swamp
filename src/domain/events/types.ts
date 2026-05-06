@@ -188,7 +188,8 @@ export type RepositoryEvent =
   | VaultCreated
   | VaultUpdated
   | VaultDeleted
-  | VaultSecretUpdated;
+  | VaultSecretUpdated
+  | VaultSecretRead;
 
 /**
  * Event type discriminator values.
@@ -494,6 +495,17 @@ export function createVaultDeleted(
 }
 
 /**
+ * Emitted when a secret is read from a vault via CLI.
+ */
+export interface VaultSecretRead extends DomainEvent {
+  readonly type: "VaultSecretRead";
+  readonly vaultId: string;
+  readonly vaultType: string;
+  readonly vaultName: string;
+  readonly secretKey: string;
+}
+
+/**
  * Creates a VaultSecretUpdated event.
  */
 export function createVaultSecretUpdated(
@@ -504,6 +516,25 @@ export function createVaultSecretUpdated(
 ): VaultSecretUpdated {
   return {
     type: "VaultSecretUpdated",
+    vaultId,
+    vaultType,
+    vaultName,
+    secretKey,
+    timestamp: new Date(),
+  };
+}
+
+/**
+ * Creates a VaultSecretRead event.
+ */
+export function createVaultSecretRead(
+  vaultId: string,
+  vaultType: string,
+  vaultName: string,
+  secretKey: string,
+): VaultSecretRead {
+  return {
+    type: "VaultSecretRead",
     vaultId,
     vaultType,
     vaultName,

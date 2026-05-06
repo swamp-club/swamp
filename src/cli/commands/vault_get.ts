@@ -56,7 +56,7 @@ export const vaultGetCommand = new Command()
         throw new UserError(
           `Unexpected argument: ${extra}\n\n` +
             "Usage: swamp vault get <vault_name_or_id>\n\n" +
-            "To retrieve a secret value, use: swamp vault list-keys <vault_name>",
+            "To retrieve a secret value, use: swamp vault read-secret <vault_name> <key>",
         );
       }
 

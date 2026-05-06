@@ -24,19 +24,19 @@ Correct flow: `swamp vault create <type> <name> --json` → edit config if neede
 
 ## Quick Reference
 
-| Task              | Command                                            |
-| ----------------- | -------------------------------------------------- |
-| List vault types  | `swamp vault type search --json`                   |
-| Create a vault    | `swamp vault create <type> <name> --json`          |
-| Search vaults     | `swamp vault search [query] --json`                |
-| Get vault details | `swamp vault get <name_or_id> --json`              |
-| Edit vault config | `swamp vault edit <name_or_id>`                    |
-| Store a secret    | `swamp vault put <vault> KEY=VALUE --json`         |
-| Store from stdin  | `echo "val" \| swamp vault put <vault> KEY --json` |
-| Store interactive | `swamp vault put <vault> KEY` (prompts for value)  |
-| Get a secret      | `swamp vault get <vault> <key> --json`             |
-| List secret keys  | `swamp vault list-keys <vault> --json`             |
-| Migrate backend   | `swamp vault migrate <vault> --to-type <type>`     |
+| Task              | Command                                                |
+| ----------------- | ------------------------------------------------------ |
+| List vault types  | `swamp vault type search --json`                       |
+| Create a vault    | `swamp vault create <type> <name> --json`              |
+| Search vaults     | `swamp vault search [query] --json`                    |
+| Get vault details | `swamp vault get <name_or_id> --json`                  |
+| Edit vault config | `swamp vault edit <name_or_id>`                        |
+| Store a secret    | `swamp vault put <vault> KEY=VALUE --json`             |
+| Store from stdin  | `echo "val" \| swamp vault put <vault> KEY --json`     |
+| Store interactive | `swamp vault put <vault> KEY` (prompts for value)      |
+| Read a secret     | `swamp vault read-secret <vault> <key> --force --json` |
+| List secret keys  | `swamp vault list-keys <vault> --json`                 |
+| Migrate backend   | `swamp vault migrate <vault> --to-type <type>`         |
 
 ## Repository Structure
 
@@ -158,26 +158,31 @@ agent context or chat history.
 }
 ```
 
-## Get a Secret
+## Read a Secret
 
 Retrieve a specific secret value from a vault.
 
 ```bash
-swamp vault get dev-secrets API_KEY --json
+# With --force to skip confirmation prompt
+swamp vault read-secret dev-secrets API_KEY --force --json
+
+# Interactive mode prompts before revealing
+swamp vault read-secret dev-secrets API_KEY
 ```
 
-**Output shape:**
+**Output shape (--json):**
 
 ```json
 {
-  "vault": "dev-secrets",
-  "key": "API_KEY",
+  "vaultName": "dev-secrets",
+  "secretKey": "API_KEY",
+  "vaultType": "local_encryption",
   "value": "sk-1234567890"
 }
 ```
 
-**Note:** Use with caution. Secret values are sensitive and should not be logged
-or displayed unnecessarily.
+In log mode without `--force`, prompts for confirmation before displaying the
+value. In `--json` mode, outputs directly without prompting.
 
 ## List Secret Keys
 
@@ -223,7 +228,7 @@ at model creation time and prevents rotation or in-workflow refresh:
 
 ```bash
 # WRONG — frozen at creation time
-TOKEN=$(swamp vault get my-vault AUTH_TOKEN)
+TOKEN=$(swamp vault read-secret my-vault AUTH_TOKEN --force)
 swamp model create ... --global-arg "token=$TOKEN"
 
 # RIGHT — resolved fresh per-step
