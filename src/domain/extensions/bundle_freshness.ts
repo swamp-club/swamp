@@ -232,13 +232,11 @@ export interface FindStaleFilesParams {
 
 /**
  * W3 freshness query: a Source is fresh iff its RowState is `Indexed`.
- * All other states are not visible to type resolution. The freshness
- * contract is now a pure function of aggregate state — the 5+ implicit
- * states that previously lived in this function have been collapsed
- * into explicit RowState tags by ReconcileFromDisk.
+ * All other states are not visible to type resolution. An absent state
+ * (`undefined`) is NOT fresh — the source needs indexing.
  */
 export function isFresh(state: string | undefined): boolean {
-  return (state ?? "Indexed") === "Indexed";
+  return state === "Indexed";
 }
 
 /**

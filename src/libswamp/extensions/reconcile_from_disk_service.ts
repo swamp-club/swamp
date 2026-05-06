@@ -156,10 +156,9 @@ export class ReconcileFromDiskService {
     ) {
       const ratio = transitions.length / totalExistingRows;
       if (ratio > 0.5) {
+        if (!dryRun) this.markAllKindsPopulated();
         logger
-          .error`Reconcile aborted: ${transitions.length} transitions out of ${totalExistingRows} rows (${
-          Math.round(ratio * 100)
-        }%) exceeds 50% guardrail`;
+          .warn`Skipped catalog repair: too many entries would change (${transitions.length}/${totalExistingRows}). Run ${"swamp doctor extensions"} to inspect.`;
         return { transitions, applied: false };
       }
     }
@@ -168,11 +167,11 @@ export class ReconcileFromDiskService {
       this.repository.saveAll(reconciledExtensions);
       this.markAllKindsPopulated();
       logger
-        .info`Reconcile complete: ${transitions.length} transition(s) applied`;
+        .info`Extension catalog updated: ${transitions.length} ${
+        transitions.length === 1 ? "entry" : "entries"
+      } repaired`;
     } else if (!dryRun && totalExistingRows === 0) {
       this.markAllKindsPopulated();
-      logger
-        .debug`Reconcile complete: no transitions (empty catalog marked populated)`;
     } else if (transitions.length === 0) {
       logger.debug`Reconcile complete: no transitions`;
     }
@@ -187,7 +186,12 @@ export class ReconcileFromDiskService {
     const cache = createFreshnessCache();
     const result: Extension[] = [];
 
-    const localExt = await this.reconcileLocals(
+    // Gather ALL local + source-mounted on-disk sources into one map,
+    // then reconcile the @local/<repo> aggregate once. Prevents the
+    // duplicate-extension bug where reconcileLocals and
+    // reconcileSourceMounted each build separate @local/<repo>
+    // aggregates that conflict on saveAll.
+    const localExt = await this.reconcileLocalAndSourceMounted(
       existingExtensions,
       transitions,
       cache,
@@ -201,17 +205,10 @@ export class ReconcileFromDiskService {
     );
     result.push(...pulledExts);
 
-    const sourceMountedExts = await this.reconcileSourceMounted(
-      existingExtensions,
-      transitions,
-      cache,
-    );
-    result.push(...sourceMountedExts);
-
     return result;
   }
 
-  private async reconcileLocals(
+  private async reconcileLocalAndSourceMounted(
     existingExtensions: Extension[],
     transitions: ReconcileTransition[],
     cache: FreshnessCache,
@@ -222,12 +219,33 @@ export class ReconcileFromDiskService {
       (e) => e.name === localName && e.origin === "local",
     );
 
+    // Gather ALL local + source-mounted on-disk sources into one map.
     const onDiskSources = new Map<string, { kind: KindDir; baseDir: string }>();
+
+    // Local extensions under extensions/<kind>/
     for (const kindDir of KIND_DIRS) {
       const dir = join(this.repoDir, "extensions", kindDir);
       const files = await collectTsFiles(dir);
       for (const absolutePath of files) {
         onDiskSources.set(absolutePath, { kind: kindDir, baseDir: dir });
+      }
+    }
+
+    // Source-mounted extensions from .swamp-sources.yaml
+    const config = await readSwampSources(this.repoDir);
+    if (config) {
+      const expanded = await expandSourcePaths(config, this.repoDir);
+      const resolved = await resolveSourceExtensionDirs(expanded);
+      for (const sourceDirs of resolved) {
+        for (const kindDir of KIND_DIRS) {
+          const dirs = collectDirsForKind([sourceDirs], kindDir);
+          for (const dir of dirs) {
+            const files = await collectTsFiles(dir);
+            for (const absolutePath of files) {
+              onDiskSources.set(absolutePath, { kind: kindDir, baseDir: dir });
+            }
+          }
+        }
       }
     }
 
@@ -315,65 +333,6 @@ export class ReconcileFromDiskService {
     return result;
   }
 
-  private async reconcileSourceMounted(
-    existingExtensions: Extension[],
-    transitions: ReconcileTransition[],
-    cache: FreshnessCache,
-  ): Promise<Extension[]> {
-    const config = await readSwampSources(this.repoDir);
-    if (!config) return [];
-
-    const expanded = await expandSourcePaths(config, this.repoDir);
-    const resolved = await resolveSourceExtensionDirs(expanded);
-    const result: Extension[] = [];
-
-    for (const sourceDirs of resolved) {
-      for (const kindDir of KIND_DIRS) {
-        const dirs = collectDirsForKind([sourceDirs], kindDirToKind(kindDir));
-        for (const dir of dirs) {
-          const files = await collectTsFiles(dir);
-          if (files.length === 0) continue;
-
-          const onDiskSources = new Map<
-            string,
-            { kind: KindDir; baseDir: string }
-          >();
-          for (const absolutePath of files) {
-            onDiskSources.set(absolutePath, { kind: kindDir, baseDir: dir });
-          }
-
-          // Source-mounted files roll up under the local synthetic aggregate.
-          // The local reconcile already handled extensions/<kind>/ — these
-          // are additional source dirs from .swamp-sources.yaml.
-          const basename = pathBasename(this.repoDir) || "unknown";
-          const localName = `@local/${basename}`;
-          let ext = result.find((e) => e.name === localName) ??
-            existingExtensions.find(
-              (e) => e.name === localName && e.origin === "local",
-            ) ??
-            makeLocalExtension({ repoRoot: this.repoDir, basename });
-
-          ext = await this.reconcileExtension(
-            ext,
-            onDiskSources,
-            transitions,
-            cache,
-            "local",
-          );
-
-          const idx = result.findIndex((e) => e.name === localName);
-          if (idx >= 0) {
-            result[idx] = ext;
-          } else {
-            result.push(ext);
-          }
-        }
-      }
-    }
-
-    return result;
-  }
-
   private async reconcileExtension(
     extension: Extension,
     onDiskSources: Map<string, { kind: KindDir; baseDir: string }>,
@@ -436,7 +395,7 @@ export class ReconcileFromDiskService {
           bundle,
         });
 
-        if (fromState !== "Indexed" || fromState === null) {
+        if (fromState !== "Indexed") {
           transitions.push({
             source: effectiveLoc,
             fromState,
@@ -652,12 +611,6 @@ function kindDirToExtensionKind(
     case "reports":
       return "report";
   }
-}
-
-function kindDirToKind(
-  kindDir: KindDir,
-): "models" | "vaults" | "drivers" | "datastores" | "reports" {
-  return kindDir;
 }
 
 async function collectTsFiles(dir: string): Promise<string[]> {

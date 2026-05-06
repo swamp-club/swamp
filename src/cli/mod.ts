@@ -77,7 +77,7 @@ import "../domain/datastore/datastore_types.ts";
 // Import builtin reports to trigger registration
 import "../domain/reports/builtin/mod.ts";
 import { EmbeddedDenoRuntime } from "../infrastructure/runtime/embedded_deno_runtime.ts";
-import { ReconcileFromDiskService } from "../libswamp/extensions/reconcile_from_disk_service.ts";
+import { ReconcileFromDiskService } from "../libswamp/mod.ts";
 import {
   type RepoMarkerData,
   RepoMarkerRepository,

@@ -193,7 +193,7 @@ export function makeExtension(args: {
     }
     sources.set(s.id, s);
   }
-  const resolved = enforceI2(args.name, args.version, sources);
+  const resolved = enforceI2(sources);
 
   return {
     name: args.name,
@@ -245,7 +245,6 @@ export function tombstoneAll(extension: Extension): Extension {
  * doesn't match this Extension's (I1).
  *
  * @throws SourceExtensionRootMismatch if I1 is violated.
- * @throws IntraExtensionDuplicateType if I2 is violated.
  */
 export function observeFreshSource(
   extension: Extension,
@@ -288,7 +287,7 @@ export function observeFreshSource(
       }),
     );
   }
-  const resolved = enforceI2(extension.name, extension.version, next);
+  const resolved = enforceI2(next);
   return { ...extension, sources: resolved };
 }
 
@@ -441,7 +440,7 @@ function updateSourceState(
   }
   const next = new Map(extension.sources);
   next.set(location, withState(existing, state));
-  const resolved = enforceI2(extension.name, extension.version, next);
+  const resolved = enforceI2(next);
   return { ...extension, sources: resolved };
 }
 
@@ -461,8 +460,6 @@ function updateSourceState(
  * sources map with the result.
  */
 function enforceI2(
-  _name: string,
-  _version: CalVer,
   sources: ReadonlyMap<SourceLocation, Source>,
 ): Map<SourceLocation, Source> {
   const seen = new Map<string, Source>();
