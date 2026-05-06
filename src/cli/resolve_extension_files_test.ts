@@ -21,7 +21,10 @@ import { assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { getLogger } from "@logtape/logtape";
-import { resolveExtensionFiles } from "./resolve_extension_files.ts";
+import {
+  isPulledExtensionManifest,
+  resolveExtensionFiles,
+} from "./resolve_extension_files.ts";
 import { UserError } from "../domain/errors.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 
@@ -857,4 +860,37 @@ Deno.test("resolveExtensionFiles default paths.base preserves swamp-extensions p
     assertEquals(result.modelsDir, modelsDir);
     assertEquals(result.modelEntryPoints, [join(modelsDir, "backups.ts")]);
   });
+});
+
+// ── isPulledExtensionManifest ──────────────────────────────────────────
+
+Deno.test("isPulledExtensionManifest: returns true for absolute path under .swamp/pulled-extensions", () => {
+  const repoDir = "/repo";
+  const manifestPath =
+    "/repo/.swamp/pulled-extensions/@bixu/wheelshop/manifest.yaml";
+  assertEquals(isPulledExtensionManifest(repoDir, manifestPath), true);
+});
+
+Deno.test("isPulledExtensionManifest: returns true for relative path under .swamp/pulled-extensions", () => {
+  const repoDir = "/repo";
+  const manifestPath = ".swamp/pulled-extensions/@bixu/wheelshop/manifest.yaml";
+  assertEquals(isPulledExtensionManifest(repoDir, manifestPath), true);
+});
+
+Deno.test("isPulledExtensionManifest: returns false for local extension manifest", () => {
+  const repoDir = "/repo";
+  const manifestPath = "extensions/models/my-model/manifest.yaml";
+  assertEquals(isPulledExtensionManifest(repoDir, manifestPath), false);
+});
+
+Deno.test("isPulledExtensionManifest: returns false for absolute local extension manifest", () => {
+  const repoDir = "/repo";
+  const manifestPath = "/repo/extensions/models/my-model/manifest.yaml";
+  assertEquals(isPulledExtensionManifest(repoDir, manifestPath), false);
+});
+
+Deno.test("isPulledExtensionManifest: returns false for path containing pulled-extensions outside .swamp", () => {
+  const repoDir = "/repo";
+  const manifestPath = "/repo/pulled-extensions/manifest.yaml";
+  assertEquals(isPulledExtensionManifest(repoDir, manifestPath), false);
 });

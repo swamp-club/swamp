@@ -99,6 +99,18 @@ function normalizeAdditionalFileEntry(entry: string): string {
   return segments.join("/").toLowerCase();
 }
 
+export function isPulledExtensionManifest(
+  repoDir: string,
+  manifestPath: string,
+): boolean {
+  const absolute = isAbsolute(manifestPath)
+    ? manifestPath
+    : resolve(repoDir, manifestPath);
+  const pulledRoot = join(resolve(repoDir), ".swamp", "pulled-extensions");
+  return resolve(absolute).startsWith(pulledRoot + "/") ||
+    resolve(absolute).startsWith(pulledRoot + "\\");
+}
+
 export async function resolveExtensionFiles(
   ctx: ResolveExtensionFilesContext,
 ): Promise<ResolvedExtensionFiles> {

@@ -31,7 +31,10 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
-import { resolveExtensionFiles } from "../resolve_extension_files.ts";
+import {
+  isPulledExtensionManifest,
+  resolveExtensionFiles,
+} from "../resolve_extension_files.ts";
 import { UserError } from "../../domain/errors.ts";
 
 interface ExtensionFmtOptions extends GlobalOptions {
@@ -60,14 +63,19 @@ export const extensionFmtCommand = new Command()
     const cliCtx = createContext(options, ["extension", "fmt"]);
     cliCtx.logger.debug`Starting extension fmt`;
 
-    // 1. Validate repo
     const repoDir = resolveRepoDir(options.repoDir);
+    if (isPulledExtensionManifest(repoDir, manifestPath)) {
+      throw new UserError(
+        "Cannot run fmt on a pulled extension. Pulled extensions are read-only " +
+          "copies from the registry. To format a local extension, point at its manifest " +
+          "under your extensions/ directory instead.",
+      );
+    }
+
     const { repoContext } = await requireInitializedRepo({
       repoDir,
       outputMode: cliCtx.outputMode,
     });
-
-    // 2. Resolve extension files (manifest, models, workflows, additional files)
     const {
       allModelFiles,
       allVaultFiles,

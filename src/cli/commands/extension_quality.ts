@@ -35,7 +35,10 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
-import { resolveExtensionFiles } from "../resolve_extension_files.ts";
+import {
+  isPulledExtensionManifest,
+  resolveExtensionFiles,
+} from "../resolve_extension_files.ts";
 import { UserError } from "../../domain/errors.ts";
 
 interface ExtensionQualityOptions extends GlobalOptions {
@@ -94,6 +97,14 @@ export const extensionQualityCommand = new Command()
       cliCtx.logger.debug`Starting extension quality`;
 
       const repoDir = resolveRepoDir(options.repoDir);
+      if (isPulledExtensionManifest(repoDir, manifestPath)) {
+        throw new UserError(
+          "Cannot run quality on a pulled extension. Pulled extensions are read-only " +
+            "copies from the registry. To score a local extension, point at its manifest " +
+            "under your extensions/ directory instead.",
+        );
+      }
+
       const { repoContext } = await requireInitializedRepo({
         repoDir,
         outputMode: cliCtx.outputMode,
