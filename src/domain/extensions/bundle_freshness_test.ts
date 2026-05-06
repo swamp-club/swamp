@@ -310,8 +310,6 @@ Deno.test("findStaleFiles: catches mtime-preserving content change (#125)", asyn
       source_fingerprint: origFp,
     });
 
-    // Swap content, restore the old mtime — this is exactly what
-    // atomic-rename saves and rsync --times do in the wild.
     await Deno.writeTextFile(file, "export const a = 2;");
     await Deno.utime(file, origMtime, origMtime);
 
@@ -721,7 +719,6 @@ Deno.test("findStaleFiles: broken transitive dep — stale once, then stable (#2
     );
     await Deno.writeTextFile(dep, "export const x = 1;");
 
-    // Step 1: all readable. Compute fingerprint F1, store in catalog.
     const f1 = await computeSourceFingerprint(entry, dir);
     const catalog = new FakeCatalog();
     catalog.add({
@@ -736,9 +733,6 @@ Deno.test("findStaleFiles: broken transitive dep — stale once, then stable (#2
       source_fingerprint: f1,
     });
 
-    // Step 2: break the transitive dep. findStaleFiles must mark the
-    // entry stale on this pass — the dep change is a real fingerprint
-    // change and the rebundle path needs to fire to refresh the row.
     await Deno.remove(dep);
     await Deno.symlink("/nonexistent/path/dep.ts", dep, { type: "file" });
 
@@ -755,8 +749,6 @@ Deno.test("findStaleFiles: broken transitive dep — stale once, then stable (#2
     );
     assertEquals(firstPass[0].relativePath, "entry.ts");
 
-    // Step 3: simulate the rebundle path updating the catalog row to
-    // the new sentinel-bearing fingerprint F2.
     const f2 = await computeSourceFingerprint(entry, dir);
     assertNotEquals(f1, f2);
     catalog.removeBySourcePath(entry);
@@ -772,11 +764,6 @@ Deno.test("findStaleFiles: broken transitive dep — stale once, then stable (#2
       source_fingerprint: f2,
     });
 
-    // Step 4: subsequent passes — the regression's load-bearing claim.
-    // With the row reflecting the broken state, findStaleFiles must
-    // NOT mark the entry stale. Pre-fix, fingerprint computation threw
-    // and the file was marked stale on every invocation, triggering
-    // bundle spawns and the 8s wall time reported in #208.
     const secondPass = await findStaleFiles({
       modelsDir: dir,
       catalog,
@@ -935,11 +922,6 @@ Deno.test("findStaleFiles + markCatalogValidationFailed: stable broken source co
 });
 
 Deno.test("findStaleFiles + markCatalogValidationFailed: editing a broken source produces a new fingerprint and re-stales", async () => {
-  // Recovery path. After the broken-state row is in place, editing
-  // the source to ANY different content (broken or valid) produces a
-  // new fingerprint that does not match the stored value, so
-  // findStaleFiles correctly marks the file stale and the loader's
-  // rebundle pass fires.
   const dir = await Deno.makeTempDir({ prefix: "swamp_bf_209_recover_" });
   try {
     const file = join(dir, "model.ts");
@@ -956,7 +938,6 @@ Deno.test("findStaleFiles + markCatalogValidationFailed: editing a broken source
       sourceFingerprint: brokenFp,
     });
 
-    // Stable broken — not stale.
     let stale = await findStaleFiles({
       modelsDir: dir,
       catalog,
@@ -965,7 +946,6 @@ Deno.test("findStaleFiles + markCatalogValidationFailed: editing a broken source
     });
     assertEquals(stale.length, 0);
 
-    // Edit to different content (the recovery path).
     await Deno.writeTextFile(file, "export const recovered = 42;\n");
     stale = await findStaleFiles({
       modelsDir: dir,

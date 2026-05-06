@@ -594,12 +594,12 @@ Deno.test("ExtensionRepository: invalidationGuards parity over all 5 kinds × 4 
 });
 
 // ===== Test #13: W3-corruption boundary — two pulled versions on disk =====
-Deno.test("ExtensionRepository: two pulled rows for same name resolve to same version → DuplicateTypeError surfaces (W3 territory)", () => {
+Deno.test("ExtensionRepository: two pulled rows for same name resolve to same version → deterministic-winner transform (W3)", () => {
   withRepository((repo, cat, repoRoot) => {
-    // Set up: two source files for the SAME logical extension on disk
-    // (interrupted upgrade). Each row has empty extension_version.
-    // Lockfile says the only version present is 2.0.0, so both rows
-    // resolve to the same (name, version), then I-Repo-1 fires.
+    // Two source files for the SAME logical extension on disk
+    // (interrupted upgrade). Both resolve to same (name, version).
+    // W3's deterministic-winner transform tombstones the loser
+    // instead of throwing.
     const sp1 =
       `${repoRoot}/.swamp/pulled-extensions/@scope/foo/models/instance.ts`;
     const sp2 =
@@ -621,28 +621,22 @@ Deno.test("ExtensionRepository: two pulled rows for same name resolve to same ve
       });
     }
 
-    // loadAll runs the empty-version fallback for both rows. Both
-    // resolve to (name=@scope/foo, version=2.0.0). When the test then
-    // tries to SAVE the resulting aggregate, the intra-extension I2
-    // fires inside makeExtension. We catch the exception inside loadAll
-    // because the two rows fold into a single Extension whose two
-    // Sources occupy the same (kind, type).
-    let thrown: unknown;
-    try {
-      repo.loadAll();
-    } catch (e) {
-      thrown = e;
+    // loadAll resolves the duplicate via deterministic-winner transform.
+    // The lexicographically smaller canonicalPath wins; the other is
+    // tombstoned with reason "renamed".
+    const extensions = repo.loadAll();
+    assertEquals(extensions.length, 1);
+    const ext = extensions[0];
+    assertEquals(ext.name, "@scope/foo");
+    assertEquals(ext.sources.size, 2);
+    let indexed = 0;
+    let tombstoned = 0;
+    for (const s of ext.sources.values()) {
+      if (s.state.tag === "Indexed") indexed++;
+      if (s.state.tag === "Tombstoned") tombstoned++;
     }
-    // Either I2 (intra-extension) or I-Repo-1 fires — either way, the
-    // corruption surfaces as an error rather than silent first-wins.
-    // The repository's loadAll currently uses makeExtension which throws
-    // IntraExtensionDuplicateType. The post-condition is the same:
-    // corruption surfaces, fallback does NOT try to repair.
-    assert(thrown instanceof Error);
-    if (!(thrown instanceof Error)) return;
-    // Both source paths must appear in the error message.
-    assertStringIncludes(thrown.message, "models/instance.ts");
-    assertStringIncludes(thrown.message, "models/extra/instance.ts");
+    assertEquals(indexed, 1, "exactly one winner");
+    assertEquals(tombstoned, 1, "exactly one loser tombstoned");
   }, { lockedVersions: fixedLockedVersions({ "@scope/foo": "2.0.0" }) });
 });
 

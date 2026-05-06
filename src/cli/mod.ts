@@ -77,6 +77,7 @@ import "../domain/datastore/datastore_types.ts";
 // Import builtin reports to trigger registration
 import "../domain/reports/builtin/mod.ts";
 import { EmbeddedDenoRuntime } from "../infrastructure/runtime/embedded_deno_runtime.ts";
+import { ReconcileFromDiskService } from "../libswamp/mod.ts";
 import {
   type RepoMarkerData,
   RepoMarkerRepository,
@@ -273,6 +274,19 @@ export async function configureExtensionLoaders(
     lockfileRepository,
     repoRoot: repoDir,
   });
+
+  // W3: cold-start reconcile. Runs once when any kind is not yet
+  // populated — repairs aggregate state from disk before the loaders
+  // fire. NOT on every command; only on cold-start.
+  if (repository.anyKindNeedsInvalidation()) {
+    const reconciler = new ReconcileFromDiskService({
+      denoRuntime,
+      repository,
+      lockfileRepository,
+      repoDir,
+    });
+    await reconciler.execute();
+  }
 
   modelRegistry.setLoader(() =>
     loadUserModels(
