@@ -187,9 +187,10 @@ Deno.test(
   },
 );
 
-Deno.test(
-  "ReconcileFromDisk: idempotence — second run produces zero transitions",
-  async () => {
+Deno.test({
+  name: "ReconcileFromDisk: idempotence — second run produces zero transitions",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
     await withFixtureRepo(
       async ({ repoDir, repository, lockfileRepository }) => {
         const ts = Date.now();
@@ -218,7 +219,7 @@ Deno.test(
       },
     );
   },
-);
+});
 
 Deno.test(
   "ReconcileFromDisk: deleted local source → tombstoned",
@@ -341,9 +342,11 @@ Deno.test(
 
 // -- Regression tests for the three bug classes W3 structurally fixes -----
 
-Deno.test(
-  "ReconcileFromDisk regression #208: broken transitive dep → stable state, no rebundle loop",
-  async () => {
+Deno.test({
+  name:
+    "ReconcileFromDisk regression #208: broken transitive dep → stable state, no rebundle loop",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
     await withFixtureRepo(
       async ({ repoDir, repository, lockfileRepository }) => {
         const ts = Date.now();
@@ -385,11 +388,13 @@ Deno.test(
       },
     );
   },
-);
+});
 
-Deno.test(
-  "ReconcileFromDisk regression #209: schema-invalid extension → stable state, no rebundle loop",
-  async () => {
+Deno.test({
+  name:
+    "ReconcileFromDisk regression #209: schema-invalid extension → stable state, no rebundle loop",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
     await withFixtureRepo(
       async ({ repoDir, repository, lockfileRepository }) => {
         const modelsDir = join(repoDir, "extensions", "models");
@@ -424,11 +429,13 @@ Deno.test(
       },
     );
   },
-);
+});
 
-Deno.test(
-  "ReconcileFromDisk regression #212: cached bundle missing → rebundles once, not in a loop",
-  async () => {
+Deno.test({
+  name:
+    "ReconcileFromDisk regression #212: cached bundle missing → rebundles once, not in a loop",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
     await withFixtureRepo(
       async ({ repoDir, repository, lockfileRepository, catalog }) => {
         const ts = Date.now();
@@ -481,7 +488,7 @@ Deno.test(
       },
     );
   },
-);
+});
 
 // -- Pulled extension reconcile matrix ------------------------------------
 

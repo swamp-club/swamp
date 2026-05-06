@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { getLogger } from "@logtape/logtape";
-import { join, relative, resolve } from "@std/path";
+import { basename as pathBasename, join, relative, resolve } from "@std/path";
 import {
   type Extension,
   makeExtension,
@@ -216,7 +216,7 @@ export class ReconcileFromDiskService {
     transitions: ReconcileTransition[],
     cache: FreshnessCache,
   ): Promise<Extension | null> {
-    const basename = this.repoDir.split("/").pop() ?? "unknown";
+    const basename = pathBasename(this.repoDir) || "unknown";
     const localName = `@local/${basename}`;
     const existing = existingExtensions.find(
       (e) => e.name === localName && e.origin === "local",
@@ -345,7 +345,7 @@ export class ReconcileFromDiskService {
           // Source-mounted files roll up under the local synthetic aggregate.
           // The local reconcile already handled extensions/<kind>/ — these
           // are additional source dirs from .swamp-sources.yaml.
-          const basename = this.repoDir.split("/").pop() ?? "unknown";
+          const basename = pathBasename(this.repoDir) || "unknown";
           const localName = `@local/${basename}`;
           let ext = result.find((e) => e.name === localName) ??
             existingExtensions.find(
