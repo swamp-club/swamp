@@ -17,23 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { Command } from "@cliffy/command";
-import { issueBugCommand } from "./issue_bug.ts";
-import { issueFeatureCommand } from "./issue_feature.ts";
+import { assertEquals } from "@std/assert";
 import { issueGetCommand } from "./issue_get.ts";
-import { issueRippleCommand } from "./issue_ripple.ts";
-import { issueSecurityCommand } from "./issue_security.ts";
 
-export const issueCommand = new Command()
-  .name("issue")
-  .description(
-    "Fetch issue details, submit bug reports, feature requests, security reports, and ripples",
-  )
-  .action(function () {
-    this.showHelp();
-  })
-  .command("get", issueGetCommand)
-  .command("bug", issueBugCommand)
-  .command("feature", issueFeatureCommand)
-  .command("security", issueSecurityCommand)
-  .command("ripple", issueRippleCommand);
+Deno.test("issueGetCommand: has correct name and description", () => {
+  assertEquals(issueGetCommand.getName(), "get");
+  assertEquals(
+    issueGetCommand.getDescription(),
+    "Fetch and display details of a swamp-club Lab issue",
+  );
+});

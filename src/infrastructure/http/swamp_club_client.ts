@@ -65,6 +65,18 @@ export function getCollectives(
   return whoami.organizations.map((org) => org.slug);
 }
 
+/** Response from fetching a Lab issue by number. */
+export interface FetchIssueResponse {
+  number: number;
+  title: string;
+  type: string;
+  status: string;
+  author: string;
+  body: string;
+  assignees: string[];
+  commentCount: number;
+}
+
 /**
  * HTTP client for swamp-club API interactions.
  * Used by auth commands to sign in, create API keys, and verify identity.
@@ -250,6 +262,47 @@ export class SwampClubClient {
 
     const data = await res.json();
     return { id: data.id };
+  }
+
+  /**
+   * Fetch an existing Lab issue by number.
+   * Authenticates using the x-api-key header.
+   */
+  async fetchIssue(
+    apiKey: string,
+    issueNumber: number,
+  ): Promise<FetchIssueResponse> {
+    const res = await this.fetch(`/api/v1/lab/issues/${issueNumber}`, {
+      method: "GET",
+      headers: { "x-api-key": apiKey },
+    });
+
+    if (!res.ok) {
+      const text = await res.text();
+      if (res.status === 404) {
+        throw new UserError(`Issue #${issueNumber} not found.`);
+      }
+      throw new UserError(
+        `Failed to fetch issue #${issueNumber} (HTTP ${res.status}): ${text}`,
+      );
+    }
+
+    const data = await res.json();
+    const issue = data.issue;
+    return {
+      number: issue.number,
+      title: issue.title ?? "",
+      type: issue.type ?? "feature",
+      status: issue.status ?? "open",
+      author: issue.authorUsername ?? "unknown",
+      body: issue.body ?? "",
+      assignees: (issue.assignees ?? [])
+        .filter(
+          (a: Record<string, unknown>) => typeof a.username === "string",
+        )
+        .map((a: Record<string, string>) => a.username),
+      commentCount: (issue.comments ?? []).length,
+    };
   }
 
   private async fetch(

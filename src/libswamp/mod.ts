@@ -946,6 +946,13 @@ export {
   type IssueCommentInput,
   MAX_RIPPLE_LENGTH,
 } from "./issues/comment.ts";
+export {
+  issueGet,
+  type IssueGetData,
+  type IssueGetDeps,
+  type IssueGetEvent,
+  type IssueGetInput,
+} from "./issues/get.ts";
 
 // Audit operations
 export {

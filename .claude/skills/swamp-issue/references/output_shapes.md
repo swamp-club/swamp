@@ -3,6 +3,22 @@
 JSON output shapes for `swamp issue *` commands invoked with `--json`. Use these
 to assert on results programmatically.
 
+## Issue Get (`swamp issue get <number> --json`)
+
+```json
+{
+  "number": 42,
+  "title": "Add swamp issue get CLI command",
+  "type": "feature",
+  "status": "open",
+  "author": "stack72",
+  "body": "## Problem\n\nThe swamp CLI can submit issues...",
+  "assignees": ["alice", "bob"],
+  "commentCount": 3,
+  "serverUrl": "https://swamp.club"
+}
+```
+
 ## Plain Submission (no `--extension`)
 
 **Lab submission** (user logged in):

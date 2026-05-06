@@ -1,14 +1,19 @@
 ---
 name: swamp-issue
-description: Submit issues to the swamp Lab or route them to the publisher's repository — file bug reports, feature requests, and security vulnerability reports against swamp itself or against a specific extension, and post follow-up ripples (comments) on existing Lab issues. Use when the user wants to report a bug, request a feature, disclose a vulnerability, comment on an existing issue, or provide feedback about swamp. Triggers on "bug report", "feature request", "security report", "vulnerability", "report bug", "request feature", "file bug", "submit bug", "swamp bug", "swamp feature", "feedback", "report issue", "file issue", "report against extension", "extension bug", "ripple", "comment on issue", "reply to issue", "follow up on issue", "add comment to issue".
+description: Fetch issue details and submit issues to the swamp Lab or route them to the publisher's repository — fetch issue details, file bug reports, feature requests, and security vulnerability reports against swamp itself or against a specific extension, and post follow-up ripples (comments) on existing Lab issues. Use when the user wants to view an issue, report a bug, request a feature, disclose a vulnerability, comment on an existing issue, or provide feedback about swamp. Triggers on "bug report", "feature request", "security report", "vulnerability", "report bug", "request feature", "file bug", "submit bug", "swamp bug", "swamp feature", "feedback", "report issue", "file issue", "report against extension", "extension bug", "ripple", "comment on issue", "reply to issue", "follow up on issue", "add comment to issue", "get issue", "view issue", "fetch issue", "issue details", "show issue".
 ---
 
-# Swamp Issue Submission Skill
+# Swamp Issue Skill
 
-Submit bug reports, feature requests, and security vulnerability disclosures
-through the swamp CLI. When logged in (`swamp auth login`), issues are submitted
-directly to the swamp.club Lab. When not logged in, the user is prompted to log
-in or send via email. The `--email` flag skips straight to a pre-filled email.
+Fetch issue details, submit bug reports, feature requests, and security
+vulnerability disclosures through the swamp CLI. When logged in
+(`swamp auth login`), issues are submitted directly to the swamp.club Lab. When
+not logged in, the user is prompted to log in or send via email. The `--email`
+flag skips straight to a pre-filled email.
+
+To view an existing issue, use `swamp issue get <number>` — this fetches and
+displays the issue's title, type, status, author, body, assignees, and comment
+count.
 
 With `--extension <name>`, reports are routed to the extension's publisher
 instead — either as a tagged swamp.club Lab issue (for `@swamp/*` extensions) or
@@ -28,16 +33,19 @@ a template) and non-interactive mode with `--title` and `--body` flags. `ripple`
 takes a positional issue number and either opens the editor or accepts `--body`
 directly.
 
-| Command                       | Template sections                                             |
-| ----------------------------- | ------------------------------------------------------------- |
-| `swamp issue bug`             | Title, description, steps to reproduce, environment           |
-| `swamp issue feature`         | Title, problem statement, proposed solution, alternatives     |
-| `swamp issue security`        | Title, description, reproduction, affected components, impact |
-| `swamp issue ripple <number>` | Free-form markdown body (no title)                            |
+| Command                       | Purpose                                                                                       |
+| ----------------------------- | --------------------------------------------------------------------------------------------- |
+| `swamp issue get <number>`    | Fetch and display issue details (title, type, status, author, body, assignees, comment count) |
+| `swamp issue bug`             | Title, description, steps to reproduce, environment                                           |
+| `swamp issue feature`         | Title, problem statement, proposed solution, alternatives                                     |
+| `swamp issue security`        | Title, description, reproduction, affected components, impact                                 |
+| `swamp issue ripple <number>` | Free-form markdown body (no title)                                                            |
 
 **Basic non-interactive examples:**
 
 ```bash
+swamp issue get 42
+swamp issue get 42 --json
 swamp issue bug --title "CLI crashes on empty input" --body "When running..." --json
 swamp issue feature --title "Add dark mode" --body "I'd like..." --json
 swamp issue security --title "..." --body "..." --json
