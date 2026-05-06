@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertGreater } from "@std/assert";
-import { join } from "@std/path";
+import { basename as pathBasename, join } from "@std/path";
 import { ensureDir } from "@std/fs";
 import { swampPath } from "../../infrastructure/persistence/paths.ts";
 import { ReconcileFromDiskService } from "./reconcile_from_disk_service.ts";
@@ -283,7 +283,7 @@ Deno.test(
             source_mtime: "",
             source_fingerprint: "fp",
             state: "Indexed",
-            extension_name: `@local/${repoDir.split("/").pop()}`,
+            extension_name: `@local/${pathBasename(repoDir)}`,
             extension_version: "0.0.0",
           });
         }
