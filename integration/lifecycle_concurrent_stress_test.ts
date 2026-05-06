@@ -714,9 +714,9 @@ async function checkInvariants(
   // contention-recovery message, the catalog rolled back but FS+lockfile
   // did not. That's the documented "retry to reconcile" path. We collect
   // those names and skip the lockfile→catalog direction for them this
-  // iteration; the next pull/update reconciles. The catalog→lockfile
-  // direction stays strict — a catalog row for an entry that's not in
-  // the lockfile would be a real rollback bug.
+  // iteration AND tolerate version skew in the catalog→lockfile direction
+  // (the catalog keeps the old version while the lockfile already has the
+  // new one); the next pull/update reconciles both.
   const contendedNames = new Set<string>();
   for (const child of ctx.childOutputs) {
     if (
@@ -749,7 +749,15 @@ async function checkInvariants(
           }`,
       );
     }
-    if (row.extension_version && lockEntry.version !== row.extension_version) {
+    // When saveAll rolls back on SQLite contention, the catalog keeps the
+    // pre-upgrade version while the lockfile (written before the catalog)
+    // already has the new version. This version skew is the documented W2
+    // transient state — tolerate it for contended extensions; the final
+    // sequential reconcile pass drains it.
+    if (
+      row.extension_version && lockEntry.version !== row.extension_version &&
+      !contendedNames.has(row.extension_name)
+    ) {
       throw new Error(
         `${tag} invariant (i) FAILED: version skew for ${row.extension_name}` +
           ` — catalog row says ${row.extension_version}, lockfile says` +
