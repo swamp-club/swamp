@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { AsyncQueue } from "./async_queue.ts";
+import { Semaphore } from "./semaphore.ts";
 
 /**
  * Merges multiple async iterables into a single stream.
@@ -77,6 +78,66 @@ export async function* merge<T>(
       signal.removeEventListener("abort", abortHandler);
     }
     // Ensure all drain tasks complete (they may throw)
+    await Promise.allSettled(tasks);
+  }
+}
+
+/**
+ * Concurrency-limited variant of {@link merge}. At most `limit` source
+ * streams drain concurrently; additional streams are queued until a permit
+ * is released. When `limit` is `undefined` or `0`, delegates to the
+ * unbounded {@link merge} — no semaphore overhead on the default path.
+ */
+export async function* mergeWithConcurrency<T>(
+  streams: AsyncIterable<T>[],
+  limit: number | undefined,
+  signal?: AbortSignal,
+): AsyncGenerator<T> {
+  if (!limit || limit <= 0 || limit >= streams.length) {
+    yield* merge(streams, signal);
+    return;
+  }
+
+  const queue = new AsyncQueue<T>();
+  let remaining = streams.length;
+  const sem = new Semaphore(limit);
+
+  let abortHandler: (() => void) | undefined;
+  if (signal) {
+    if (signal.aborted) return;
+    abortHandler = () => queue.abort(signal.reason);
+    signal.addEventListener("abort", abortHandler, { once: true });
+  }
+
+  const drainStream = async (stream: AsyncIterable<T>) => {
+    try {
+      await sem.acquire(signal);
+    } catch {
+      return;
+    }
+    try {
+      for await (const item of stream) {
+        queue.push(item);
+      }
+    } catch {
+      // Silently handle errors from closed queue (abort scenario)
+    } finally {
+      sem.release();
+      remaining--;
+      if (remaining === 0) {
+        queue.close();
+      }
+    }
+  };
+
+  const tasks = streams.map((s) => drainStream(s));
+
+  try {
+    yield* queue;
+  } finally {
+    if (abortHandler && signal) {
+      signal.removeEventListener("abort", abortHandler);
+    }
     await Promise.allSettled(tasks);
   }
 }

@@ -17,4 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-export { merge } from "../../infrastructure/stream/merge.ts";
+export {
+  merge,
+  mergeWithConcurrency,
+} from "../../infrastructure/stream/merge.ts";

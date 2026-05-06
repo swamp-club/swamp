@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { merge } from "./merge.ts";
+import { merge, mergeWithConcurrency } from "./merge.ts";
 
 async function* fromArray<T>(items: T[]): AsyncGenerator<T> {
   for (const item of items) {
@@ -94,5 +94,73 @@ Deno.test("merge with pre-aborted signal yields nothing", async () => {
     fromArray([1, 2]),
     fromArray([3, 4]),
   ], controller.signal));
+  assertEquals(items, []);
+});
+
+// mergeWithConcurrency tests
+
+Deno.test("mergeWithConcurrency: undefined limit delegates to merge", async () => {
+  const items = await collect(mergeWithConcurrency([
+    fromArray([1, 2]),
+    fromArray([3, 4]),
+  ], undefined));
+  assertEquals(items.sort((a, b) => a - b), [1, 2, 3, 4]);
+});
+
+Deno.test("mergeWithConcurrency: zero limit delegates to merge", async () => {
+  const items = await collect(mergeWithConcurrency([
+    fromArray(["a", "b"]),
+    fromArray(["c"]),
+  ], 0));
+  assertEquals(items.sort(), ["a", "b", "c"]);
+});
+
+Deno.test("mergeWithConcurrency: limit >= streams delegates to merge", async () => {
+  const items = await collect(mergeWithConcurrency([
+    fromArray([1]),
+    fromArray([2]),
+  ], 5));
+  assertEquals(items.sort((a, b) => a - b), [1, 2]);
+});
+
+Deno.test("mergeWithConcurrency: collects all items", async () => {
+  const items = await collect(mergeWithConcurrency([
+    fromArray([1, 2]),
+    fromArray([3, 4]),
+    fromArray([5, 6]),
+    fromArray([7, 8]),
+  ], 2));
+  assertEquals(items.sort((a, b) => a - b), [1, 2, 3, 4, 5, 6, 7, 8]);
+});
+
+Deno.test("mergeWithConcurrency: limits actual concurrency", async () => {
+  let active = 0;
+  let maxActive = 0;
+
+  async function* tracked(id: number): AsyncGenerator<number> {
+    active++;
+    maxActive = Math.max(maxActive, active);
+    await new Promise((r) => setTimeout(r, 20));
+    yield id;
+    active--;
+  }
+
+  const streams = Array.from({ length: 6 }, (_, i) => tracked(i));
+  const items = await collect(mergeWithConcurrency(streams, 2));
+  assertEquals(items.length, 6);
+  assertEquals(maxActive, 2);
+});
+
+Deno.test("mergeWithConcurrency: with pre-aborted signal yields nothing", async () => {
+  const controller = new AbortController();
+  controller.abort();
+  const items = await collect(mergeWithConcurrency(
+    [
+      fromArray([1, 2]),
+      fromArray([3, 4]),
+    ],
+    1,
+    controller.signal,
+  ));
   assertEquals(items, []);
 });

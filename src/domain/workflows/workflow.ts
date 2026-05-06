@@ -74,6 +74,7 @@ export const WorkflowSchema = z.object({
   inputs: InputsSchemaSchema,
   jobs: z.array(JobSchema).min(1),
   version: z.number().int().positive().default(1),
+  concurrency: z.number().int().nonnegative().optional(),
   reports: ReportSelectionSchema,
   driver: DriverFieldSchema,
   driverConfig: DriverConfigFieldSchema,
@@ -101,6 +102,7 @@ export interface CreateWorkflowProps {
   inputs?: InputsSchema;
   jobs?: Job[];
   version?: number;
+  concurrency?: number;
   reports?: ReportSelection;
   driver?: string;
   driverConfig?: Record<string, unknown>;
@@ -126,6 +128,7 @@ export class Workflow {
     readonly inputs: InputsSchema | undefined,
     private _jobs: Job[],
     readonly version: number,
+    readonly concurrency: number | undefined,
     readonly reports: ReportSelection | undefined,
     readonly driver: string | undefined,
     readonly driverConfig: Record<string, unknown> | undefined,
@@ -150,6 +153,7 @@ export class Workflow {
       inputs: props.inputs,
       jobs: jobs.map((j) => j.toData()),
       version,
+      concurrency: props.concurrency,
       reports: props.reports,
       driver: props.driver,
       driverConfig: props.driverConfig,
@@ -172,6 +176,7 @@ export class Workflow {
       data.inputs,
       jobs,
       data.version,
+      data.concurrency,
       data.reports,
       data.driver,
       data.driverConfig,
@@ -194,6 +199,7 @@ export class Workflow {
       validated.inputs,
       jobs,
       validated.version,
+      validated.concurrency,
       validated.reports,
       validated.driver,
       validated.driverConfig,
@@ -251,6 +257,7 @@ export class Workflow {
       inputs: this.inputs,
       jobs: this._jobs.map((j) => j.toData()) as JobData[],
       version: this.version,
+      concurrency: this.concurrency,
       reports: this.reports,
       driver: this.driver,
       driverConfig: this.driverConfig,

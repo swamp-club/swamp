@@ -89,7 +89,7 @@ import {
 import { join } from "@std/path";
 import { SecretRedactor } from "../secrets/mod.ts";
 import { VaultService } from "../vaults/vault_service.ts";
-import { merge } from "../../infrastructure/stream/merge.ts";
+import { mergeWithConcurrency } from "../../infrastructure/stream/merge.ts";
 import { withEventBridge } from "../../infrastructure/stream/event_bridge.ts";
 import type { ReportFilterOptions } from "../reports/report_execution_service.ts";
 import { getTracer, SpanStatusCode } from "../../infrastructure/tracing/mod.ts";
@@ -1273,6 +1273,13 @@ export class WorkflowExecutionService {
 
       const sortedJobs = this.sortService.sort(jobNodes);
 
+      // Resolve effective job-level concurrency:
+      // workflow.concurrency capped by SWAMP_MAX_CONCURRENT_STEPS
+      const jobConcurrency = resolveEffectiveConcurrency(
+        workflow.concurrency,
+        readGlobalConcurrencyLimit(),
+      );
+
       // Execute jobs level by level
       for (const level of sortedJobs.levels) {
         // Merge parallel job generators within each level
@@ -1285,7 +1292,13 @@ export class WorkflowExecutionService {
             stepOpts,
           )
         );
-        for await (const event of merge(jobStreams, options?.signal)) {
+        for await (
+          const event of mergeWithConcurrency(
+            jobStreams,
+            jobConcurrency,
+            options?.signal,
+          )
+        ) {
           yield event;
         }
         await this.saveRun(workflow.id, run);
@@ -1428,6 +1441,7 @@ export class WorkflowExecutionService {
       }
 
       const sortedSteps = this.sortService.sort(effectiveNodes);
+      const globalLimit = readGlobalConcurrencyLimit();
 
       // Execute steps level by level
       let jobFailed = false;
@@ -1435,6 +1449,7 @@ export class WorkflowExecutionService {
         if (jobFailed) break;
 
         // Merge parallel step generators within each level
+        const stepConcurrencies: number[] = [];
         const stepStreams = level.map((stepName) => {
           // Find the expanded step info if applicable
           let forEachVar: { name: string; value: unknown } | undefined;
@@ -1451,6 +1466,13 @@ export class WorkflowExecutionService {
             }
           }
 
+          // Collect step-level concurrency for this level
+          const stepConc = originalStep?.concurrency ??
+            job.getStep(stepName)?.concurrency;
+          if (stepConc && stepConc > 0) {
+            stepConcurrencies.push(stepConc);
+          }
+
           return this.runStep(
             workflow,
             run,
@@ -1464,7 +1486,22 @@ export class WorkflowExecutionService {
           );
         });
 
-        for await (const event of merge(stepStreams, options.signal)) {
+        // Resolve: step (min across level) > job > workflow > global
+        const levelStepConc = stepConcurrencies.length > 0
+          ? Math.min(...stepConcurrencies)
+          : undefined;
+        const stepConcurrency = resolveEffectiveConcurrency(
+          levelStepConc ?? job.concurrency ?? workflow.concurrency,
+          globalLimit,
+        );
+
+        for await (
+          const event of mergeWithConcurrency(
+            stepStreams,
+            stepConcurrency,
+            options.signal,
+          )
+        ) {
           yield event;
           if (event.kind === "step_failed" && !event.allowedFailure) {
             jobFailed = true;
@@ -1966,4 +2003,21 @@ export class WorkflowExecutionService {
       evalSpan.end();
     }
   }
+}
+
+function readGlobalConcurrencyLimit(): number | undefined {
+  const raw = Deno.env.get("SWAMP_MAX_CONCURRENT_STEPS");
+  if (!raw) return undefined;
+  const n = parseInt(raw, 10);
+  return Number.isFinite(n) && n > 0 ? n : undefined;
+}
+
+function resolveEffectiveConcurrency(
+  local: number | undefined,
+  global: number | undefined,
+): number | undefined {
+  const l = local && local > 0 ? local : undefined;
+  const g = global && global > 0 ? global : undefined;
+  if (l && g) return Math.min(l, g);
+  return l ?? g;
 }

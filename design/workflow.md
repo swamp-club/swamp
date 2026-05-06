@@ -11,11 +11,51 @@ and only execute if their dependcy condition is met (for example, only run this
 job if one of its upstream dependencies fail).
 
 Within a job, steps are executed with a weighted topological sort, so that they
-have maximum paralleism through the job.
+have maximum parallelism through the job. Steps support an optional
+`concurrency` field that caps how many steps in a topological level run
+simultaneously — particularly useful for `forEach` expansions that hit
+rate-limited APIs.
 
 Jobs can have dependencies on other jobs. The entire workflow is executed with a
-weighted topological sort, so thtat htye have maximum paralleism through the
+weighted topological sort, so that they have maximum parallelism through the
 workflow. Like steps, jobs also have conditions that trigger them.
+
+## Concurrency Limits
+
+By default, all jobs in a topological level and all steps in a topological level
+run concurrently (maximum parallelism). The optional `concurrency` field caps
+the number of simultaneously executing units at each level:
+
+```yaml
+concurrency: 10  # workflow level — caps parallel jobs
+
+jobs:
+  - name: fan-out
+    concurrency: 5  # job level — caps parallel steps in this job
+    steps:
+      - name: per-item
+        forEach:
+          item: target
+          in: ${{ inputs.targets }}
+        concurrency: 3  # step level — caps forEach iterations
+        task: { ... }
+```
+
+**Semantics:**
+
+- A positive integer is a hard cap on simultaneously executing units at that
+  level.
+- `0` or absent means unbounded (current default behavior).
+- Resolution order: step > job > workflow > unbounded. The most-local non-zero
+  value wins.
+- A global `SWAMP_MAX_CONCURRENT_STEPS` environment variable provides a
+  host-level ceiling. The effective limit is `min(local, global)` when both are
+  set.
+
+Concurrency limiting is implemented via a semaphore-gated
+`mergeWithConcurrency()` that wraps the existing `merge()` stream combinator.
+When the limit is unset or exceeds the stream count, the unbounded `merge()` path
+is used with zero overhead.
 
 Workflows are specified in YAML files, that are validated with Zod, in the
 top-level `workflows/` directory of the repository, as

@@ -107,6 +107,34 @@ through `task.inputs`. See
 [nested-workflows.md § When to Use Nested Workflows](nested-workflows.md#when-to-use-nested-workflows)
 for the full pattern.
 
+### forEach with Concurrency Limits
+
+By default, all forEach iterations run in parallel. Add `concurrency` to cap
+simultaneous execution — useful for rate-limited APIs or resource-constrained
+hosts:
+
+```yaml
+steps:
+  - name: call-${{ self.target }}
+    forEach:
+      item: target
+      in: ${{ inputs.targets }}
+    concurrency: 3
+    task:
+      type: model_method
+      modelIdOrName: api-client
+      methodName: call
+      inputs:
+        target: ${{ self.target }}
+```
+
+With 10 targets and `concurrency: 3`, at most 3 iterations execute at once. The
+remaining iterations queue until a permit is released. Resolution order:
+`step → job → workflow → unbounded` — the most-local non-zero value wins.
+
+A global `SWAMP_MAX_CONCURRENT_STEPS` environment variable provides a host-level
+ceiling: `min(local, global)` is the effective limit.
+
 ### forEach with Vary Dimensions
 
 Use `vary` on `dataOutputOverrides` to isolate data per forEach iteration:

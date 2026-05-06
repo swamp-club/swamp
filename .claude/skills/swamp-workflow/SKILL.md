@@ -434,6 +434,33 @@ swamp workflow evaluate --all --json
 - Vault expressions (`${{ vault.get(...) }}`) remain raw for runtime resolution
 - Output saved to `.swamp/workflows-evaluated/` for `--last-evaluated` use
 
+## Concurrency Limits
+
+Add `concurrency: N` at the workflow, job, or step level to cap parallel
+execution. Absent or `0` means unbounded. Resolution: step > job > workflow >
+unbounded. A `SWAMP_MAX_CONCURRENT_STEPS` env var provides a host-level ceiling.
+See
+[references/expressions-and-foreach.md](references/expressions-and-foreach.md)
+for forEach concurrency examples.
+
+```yaml
+concurrency: 10 # workflow level — caps parallel jobs
+jobs:
+  - name: fan-out
+    concurrency: 5 # job level — caps parallel steps
+    steps:
+      - name: per-item
+        forEach:
+          item: target
+          in: ${{ inputs.targets }}
+        concurrency: 3 # step level — caps forEach iterations
+        task: {
+          type: model_method,
+          modelIdOrName: api-client,
+          methodName: call,
+        }
+```
+
 ## Allow Failure
 
 Steps can be marked with `allowFailure: true` so their failure does not fail the

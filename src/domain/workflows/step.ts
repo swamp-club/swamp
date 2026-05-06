@@ -67,6 +67,7 @@ export const StepSchema = z.object({
   forEach: ForEachSchema.optional(),
   dependsOn: z.array(StepDependencySchema).default([]),
   weight: z.number().default(0),
+  concurrency: z.number().int().nonnegative().optional(),
   dataOutputOverrides: z.array(DataOutputOverrideSchema).optional(),
   allowFailure: z.boolean().default(false),
   driver: DriverFieldSchema,
@@ -109,6 +110,7 @@ export interface CreateStepProps {
   forEach?: ForEach;
   dependsOn?: StepDependency[];
   weight?: number;
+  concurrency?: number;
   dataOutputOverrides?: DataOutputOverride[];
   allowFailure?: boolean;
   driver?: string;
@@ -134,6 +136,7 @@ export class Step {
     readonly forEach: ForEach | undefined,
     private _dependsOn: StepDependency[],
     readonly weight: number,
+    readonly concurrency: number | undefined,
     private _dataOutputOverrides: DataOutputOverride[],
     readonly allowFailure: boolean,
     readonly driver: string | undefined,
@@ -154,6 +157,7 @@ export class Step {
         condition: d.condition.toData(),
       })),
       weight: props.weight ?? 0,
+      concurrency: props.concurrency,
       dataOutputOverrides: props.dataOutputOverrides,
       allowFailure: props.allowFailure ?? false,
       driver: props.driver,
@@ -196,6 +200,7 @@ export class Step {
       forEach,
       dependsOn,
       validated.weight,
+      validated.concurrency,
       dataOutputOverrides,
       validated.allowFailure,
       validated.driver,
@@ -247,6 +252,7 @@ export class Step {
         condition: d.condition.toData() as TriggerConditionData,
       })),
       weight: this.weight,
+      concurrency: this.concurrency,
       dataOutputOverrides: this._dataOutputOverrides.length > 0
         ? this._dataOutputOverrides.map((override) => ({
           specName: override.specName,

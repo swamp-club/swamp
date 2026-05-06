@@ -51,6 +51,7 @@ export const JobSchema = z.object({
   steps: z.array(StepSchema).min(1),
   dependsOn: z.array(JobDependencySchema).default([]),
   weight: z.number().default(0),
+  concurrency: z.number().int().nonnegative().optional(),
   driver: DriverFieldSchema,
   driverConfig: DriverConfigFieldSchema,
 });
@@ -82,6 +83,7 @@ export interface CreateJobProps {
   steps: Step[];
   dependsOn?: JobDependency[];
   weight?: number;
+  concurrency?: number;
   driver?: string;
   driverConfig?: Record<string, unknown>;
 }
@@ -103,6 +105,7 @@ export class Job {
     private _steps: Step[],
     private _dependsOn: JobDependency[],
     readonly weight: number,
+    readonly concurrency: number | undefined,
     readonly driver: string | undefined,
     readonly driverConfig: Record<string, unknown> | undefined,
   ) {}
@@ -124,6 +127,7 @@ export class Job {
         condition: d.condition.toData(),
       })),
       weight: props.weight ?? 0,
+      concurrency: props.concurrency,
       driver: props.driver,
       driverConfig: props.driverConfig,
     });
@@ -148,6 +152,7 @@ export class Job {
       steps,
       dependsOn,
       validated.weight,
+      validated.concurrency,
       validated.driver,
       validated.driverConfig,
     );
@@ -194,6 +199,7 @@ export class Job {
         condition: d.condition.toData() as TriggerConditionData,
       })),
       weight: this.weight,
+      concurrency: this.concurrency,
       driver: this.driver,
       driverConfig: this.driverConfig,
     };
