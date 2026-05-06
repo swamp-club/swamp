@@ -40,6 +40,10 @@ import {
 import type { RowStateTag } from "../../domain/extensions/row_state.ts";
 import type { SourceLocation } from "../../domain/extensions/source_location.ts";
 import type { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
+import type {
+  ExtensionKind,
+} from "../../infrastructure/persistence/extension_catalog_store.ts";
+import { BUNDLE_LAYOUT_VERSION } from "../../infrastructure/persistence/extension_catalog_store.ts";
 import type { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import { swampPath } from "../../infrastructure/persistence/paths.ts";
 import { UserModelLoader } from "../../domain/models/user_model_loader.ts";
@@ -162,8 +166,13 @@ export class ReconcileFromDiskService {
 
     if (!dryRun && transitions.length > 0) {
       this.repository.saveAll(reconciledExtensions);
+      this.markAllKindsPopulated();
       logger
         .info`Reconcile complete: ${transitions.length} transition(s) applied`;
+    } else if (!dryRun && totalExistingRows === 0) {
+      this.markAllKindsPopulated();
+      logger
+        .debug`Reconcile complete: no transitions (empty catalog marked populated)`;
     } else if (transitions.length === 0) {
       logger.debug`Reconcile complete: no transitions`;
     }
@@ -561,6 +570,21 @@ export class ReconcileFromDiskService {
           undefined,
           this.repository,
         );
+    }
+  }
+
+  private markAllKindsPopulated(): void {
+    const catalog = this.repository.legacyStore;
+    const kinds: ExtensionKind[] = [
+      "model",
+      "vault",
+      "driver",
+      "datastore",
+      "report",
+    ];
+    catalog.setLayoutVersion(BUNDLE_LAYOUT_VERSION);
+    for (const kind of kinds) {
+      catalog.markPopulated(kind);
     }
   }
 }
