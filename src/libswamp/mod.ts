@@ -672,6 +672,13 @@ export {
 } from "./extensions/remove_extension_service.ts";
 export { UpgradeExtensionService } from "./extensions/upgrade_extension_service.ts";
 
+// W3 reconcile service — post-hoc state repair from disk.
+export {
+  ReconcileFromDiskService,
+  type ReconcileResult,
+  type ReconcileTransition,
+} from "./extensions/reconcile_from_disk_service.ts";
+
 // Extension layout detection
 export {
   classifyExtensionFile,

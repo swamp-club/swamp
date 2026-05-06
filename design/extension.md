@@ -1020,12 +1020,101 @@ no lockfile-retry-budget or SQLite-busy exhaustion at iteration end.
 
 ### W3+ inheritance
 
-The lifecycle services' shape is W3-stable. The unified loader
-(`KindAdapter`) work in W3 collapses the five per-loader
+The lifecycle services' shape is W4-stable. The unified loader
+(`KindAdapter`) work in W4 collapses the five per-loader
 `bundleAndIndexOne` methods to one dispatch, but the install/remove/
 upgrade services keep their current public surface. CLI command files'
 direct service construction (in `extension_pull.ts`,
-`extension_update.ts`, `extension_rm.ts`, etc.) persists past W3.
+`extension_update.ts`, `extension_rm.ts`, etc.) persists past W4.
+
+### W3: ReconcileFromDisk + freshness as aggregate query
+
+W3 introduces `ReconcileFromDiskService`
+(`src/libswamp/extensions/reconcile_from_disk_service.ts`) and rewrites
+the freshness contract as a two-layer model.
+
+**Two-layer freshness model.** The freshness contract has two distinct
+concerns:
+
+1. **Type resolution layer** (W3 makes this trivial):
+   `isFresh(state) = state === "Indexed"`. Constant-time aggregate
+   query. All other RowState tags are not visible to type resolution.
+
+2. **State maintenance layer** (split between two paths):
+   - **Cold-start / explicit reconcile:** `ReconcileFromDiskService`.
+     Full disk walk across all three origin types (locals, pulled,
+     source-mounted). Post-hoc state repair. Fires when
+     `anyKindNeedsInvalidation()` returns true (i.e. any kind's
+     `isPopulated` flag is false).
+   - **Warm-start / hot path:** `findStaleFiles` (preserved from
+     pre-W3). Incremental fingerprint comparison. Fires per-loader
+     `buildIndex` when the catalog is already populated.
+
+The original W3 plan targeted slimming `findStaleFiles` to a ~20 LOC
+deletion-sweep shim. Ground truth showed that warm-start incremental
+detection is load-bearing for the development workflow — 12 loader
+tests exercise this path. `findStaleFiles` retains its fingerprint
+comparison. The scope change is deliberate.
+
+**ReconcileFromDisk semantics.** The service:
+
+- Walks on-disk source trees for all origin types.
+- Loads current aggregate state via `repository.loadAll()`.
+- Diffs disk vs aggregate and emits RowState transitions using the
+  existing Extension aggregate methods.
+- Delegates to per-loader `bundleAndIndexOne` for type extraction —
+  NOT `InstallExtensionService`. The source is already on disk and the
+  lockfile already exists; reconcile is post-hoc state repair.
+- Saves via `repository.saveAll()` inside a single SQLite transaction.
+
+**Locals vs pulled reconcile matrix:**
+
+| Origin | Source on disk | Source in aggregate | Transition |
+|--------|---------------|--------------------|-|
+| Local | present | absent | `bundleAndIndexOne` → `Indexed` |
+| Local | absent | present | `markSourceMissing` → `OrphanedBundleOnly` or `Tombstoned` |
+| Pulled | present | absent | `bundleAndIndexOne` → `Indexed` |
+| Pulled | absent | lockfile present | `recordEntryPointUnreadable` (re-fetch is W4) |
+| Pulled | absent | lockfile absent | `Tombstoned` (orphan from failed rm) |
+| Source-mounted | — | — | Follows local semantics |
+
+**Trigger points:** cold-start (when `anyKindNeedsInvalidation()`
+returns true) + explicit `swamp doctor extensions` call. NOT on every
+command — reconcile would dominate the hot-path performance.
+
+**dryRun mode:** `execute({ dryRun: true })` collects transitions
+without calling `repository.saveAll()`. Returns structured
+`ReconcileTransition` records (`{ source, fromState, toState, reason }`)
+that W6's `swamp doctor extensions` will render directly.
+
+**Transition-count guardrail:** if a reconcile run would transition
+> 50% of existing rows (minimum 10 rows), the run aborts and returns
+the transitions without applying them. Catches mass-tombstone bugs.
+
+**enforceI2 transform.** W3 replaces the `IntraExtensionDuplicateType`
+throw in the Extension aggregate's I2 enforcement with a
+deterministic-winner + tombstone-loser transform. The Source with the
+lexicographically smaller `canonicalPath` wins; the loser is tombstoned
+with reason `"renamed"`. Cross-aggregate uniqueness (I-Repo-1) still
+throws `DuplicateTypeError` at the repository layer.
+
+**UNREADABLE_DEP_SENTINEL removal.** The sentinel constant was renamed
+to `UNREADABLE_PLACEHOLDER` (internal to `computeSourceFingerprint`).
+No external code compares against it. Broken transitive deps produce a
+stable fingerprint; the failure surfaces at `bundleAndIndexOne` as
+`BundleBuildFailed`. Existing catalog rows with the old sentinel value
+are caught by the first reconcile run — no schema migration needed.
+
+**Forward-only revert posture.** Same as W1b/W2: revert means deleting
+`_extension_catalog.db` and rebuilding from disk on the next cold-start.
+
+**Out of scope (deferred):**
+
+- Bundle cache file eviction (W3 detects `OrphanedBundleOnly` but does
+  NOT delete bundle files)
+- Loader unification / `KindAdapter` → W4
+- `legacyStore` escape hatch removal → W4
+- `swamp doctor extensions` aggregate-state rendering → W6
 
 ## Lazy Per-Bundle Loading
 

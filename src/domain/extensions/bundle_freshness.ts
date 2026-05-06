@@ -17,11 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { getLogger } from "@logtape/logtape";
 import { relative, resolve } from "@std/path";
 import { resolveLocalImports } from "../models/local_import_resolver.ts";
-
-const logger = getLogger(["swamp", "extensions", "bundle-freshness"]);
 
 /**
  * The extension-catalog kinds this helper can query. Declared
@@ -102,15 +99,18 @@ export interface StaleFile {
 }
 
 /**
- * Sentinel emitted in place of a real sha-256 hex hash when a transitive
- * dep cannot be read (broken symlink, deleted file, FilesystemLoop). The
- * fingerprint then encodes "this dep is currently unreadable" as part of
- * the source state, so a stable broken state produces a stable
- * fingerprint instead of marking the entry permanently stale (#208).
- * Cannot collide with a real hash — "MISSING" contains non-hex
- * characters.
+ * Placeholder emitted in place of a real sha-256 hex hash when a
+ * transitive dep cannot be read (broken symlink, deleted file,
+ * FilesystemLoop). Encodes "this dep is currently unreadable" into the
+ * fingerprint so a stable broken state produces a stable fingerprint
+ * and repairing the dep correctly invalidates it (#208). Cannot collide
+ * with a real hash — contains non-hex characters.
+ *
+ * Internal to computeSourceFingerprint. No external code compares
+ * against this value — ReconcileFromDisk handles broken-dep behavior
+ * via the BundleBuildFailed RowState transition.
  */
-const UNREADABLE_DEP_SENTINEL = "MISSING";
+const UNREADABLE_PLACEHOLDER = "MISSING";
 
 /**
  * Computes a content-based fingerprint covering an entry point and every
@@ -123,10 +123,8 @@ const UNREADABLE_DEP_SENTINEL = "MISSING";
  * resolveLocalImports stops at the boundary dir, matching the bundler's
  * own dependency scope.
  *
- * Unreadable deps (broken symlinks, deleted files, FilesystemLoop)
- * produce an UNREADABLE_DEP_SENTINEL entry instead of throwing — so a
- * stable broken state yields a stable fingerprint, and repairing the
- * dep correctly invalidates it (#208).
+ * Unreadable deps produce a stable placeholder entry instead of
+ * throwing, so a stable broken state yields a stable fingerprint (#208).
  */
 export async function computeSourceFingerprint(
   absolutePath: string,
@@ -142,7 +140,7 @@ export async function computeSourceFingerprint(
     try {
       fileHash = await hashFile(file, cache);
     } catch {
-      fileHash = UNREADABLE_DEP_SENTINEL;
+      fileHash = UNREADABLE_PLACEHOLDER;
     }
     entries.push(`${relPath}:${fileHash}`);
   }
@@ -194,15 +192,6 @@ async function hashFile(
   return toHex(digest);
 }
 
-async function bundleExists(bundlePath: string): Promise<boolean> {
-  try {
-    await Deno.stat(bundlePath);
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 function toHex(buffer: ArrayBuffer): string {
   const view = new Uint8Array(buffer);
   let out = "";
@@ -242,20 +231,25 @@ export interface FindStaleFilesParams {
 }
 
 /**
- * Walks all source directories, compares each file's current fingerprint
- * against the catalog-stored fingerprint, and returns the files that need
- * rebundling. Also removes catalog entries whose source file has been
- * deleted.
+ * W3 freshness query: a Source is fresh iff its RowState is `Indexed`.
+ * All other states are not visible to type resolution. The freshness
+ * contract is now a pure function of aggregate state — the 5+ implicit
+ * states that previously lived in this function have been collapsed
+ * into explicit RowState tags by ReconcileFromDisk.
+ */
+export function isFresh(state: string | undefined): boolean {
+  return (state ?? "Indexed") === "Indexed";
+}
+
+/**
+ * Warm-start incremental change detection. Walks source directories,
+ * compares each file's current fingerprint against the catalog, and
+ * returns files that need rebundling. Also removes catalog entries
+ * whose source file has been deleted.
  *
- * A file is stale when —
- *   1. It is new (no catalog entry), or
- *   2. Its computed fingerprint differs from the catalog's, or
- *   3. Fingerprint computation fails (e.g. dep disappeared mid-scan).
- *
- * Previously this was mtime-based. mtime is fragile — atomic-rename
- * saves, rsync --times, and sub-millisecond edits can all leave the
- * source mtime <= catalog mtime while the content has changed. Content
- * fingerprint is strictly stronger.
+ * Cold-start reconciliation is handled by ReconcileFromDisk (W3).
+ * This function handles the warm-start path: catalog is populated,
+ * a few files may have changed since the last run.
  */
 export async function findStaleFiles(
   params: FindStaleFilesParams,
@@ -303,35 +297,14 @@ export async function findStaleFiles(
           continue;
         }
 
-        // Source content is unchanged, but the cached bundle may have been
-        // deleted out from under us (manual rm, partial GC, failed previous
-        // bundle attempt). Without this check the catalog row stays "fresh"
-        // and a downstream importBundleByPath ENOENTs (swamp-club#212).
-        //
-        // ValidationFailed rows are skipped: rebundling them is a no-op
-        // cycle — bundle still fails schema validation, markCatalogValidationFailed
-        // re-pins the same fingerprint, every command spawns deno bundle.
-        // That is the inverse of the loop swamp-club#209 sealed. The W1a
-        // migration absorbed the legacy `validation_failed` boolean into
-        // the `state` column; this reader migrated together with the
-        // writer (markCatalogValidationFailed) so the W1a→W1b window
-        // never has a writer/reader schism on this guard.
         if (
           catalogEntry.bundle_path &&
           catalogEntry.state !== "ValidationFailed" &&
           !(await bundleExists(catalogEntry.bundle_path))
         ) {
-          logger
-            .warn`Rebundling ${relativePath}: cached bundle missing from disk`;
           stale.push({ absolutePath, relativePath, baseDir: dir });
         }
       } catch {
-        // Defensive backstop only. computeSourceFingerprint is total
-        // since #208 — unreadable transitive deps produce a sentinel
-        // entry rather than throwing. Anything reaching this catch is
-        // an unforeseen failure (Deno API change, crypto.subtle panic,
-        // boundary-dir stat race). Force a rebundle so the error
-        // surfaces to the user.
         stale.push({ absolutePath, relativePath, baseDir: dir });
       }
     }
@@ -344,6 +317,15 @@ export async function findStaleFiles(
   }
 
   return stale;
+}
+
+async function bundleExists(bundlePath: string): Promise<boolean> {
+  try {
+    await Deno.stat(bundlePath);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /**
@@ -397,7 +379,7 @@ export interface MarkCatalogValidationFailedParams {
  * migrate together so the column is genuinely vestigial during the
  * W1a → W1b release window. The column itself drops in W1b.
  *
- * Symmetric to the UNREADABLE_DEP_SENTINEL fix in #208: that one made
+ * Symmetric to the unreadable-dep fix in #208: that one made
  * computeSourceFingerprint total for unreadable transitive deps; this
  * one makes the catalog write total for schema-invalid sources. Both
  * encode "stable broken state" into the freshness contract.

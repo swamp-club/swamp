@@ -20,7 +20,6 @@
 import { assert, assertEquals, assertFalse, assertThrows } from "@std/assert";
 import { makeBundleLocation } from "./bundle_location.ts";
 import {
-  IntraExtensionDuplicateType,
   makeExtension,
   makeLocalExtension,
   markSourceMissing,
@@ -85,20 +84,74 @@ Deno.test("makeExtension: I1 — Source with mismatched extensionRoot throws", (
   );
 });
 
-Deno.test("makeExtension: I2 — duplicate (kind, type) in non-Tombstoned states throws", () => {
+Deno.test("makeExtension: I2 — duplicate (kind, type) resolved by deterministic-winner transform", () => {
+  // a.ts < b.ts lexicographically → a wins, b is tombstoned.
   const a = indexedSource("models/a.ts", "@scope/foo/instance");
   const b = indexedSource("models/b.ts", "@scope/foo/instance");
-  assertThrows(
-    () =>
-      makeExtension({
-        name: "@scope/foo",
-        version: "1.0.0",
-        origin: "pulled",
-        extensionRoot: EXT_ROOT,
-        sources: [a, b],
-      }),
-    IntraExtensionDuplicateType,
-  );
+  const ext = makeExtension({
+    name: "@scope/foo",
+    version: "1.0.0",
+    origin: "pulled",
+    extensionRoot: EXT_ROOT,
+    sources: [a, b],
+  });
+  assertEquals(ext.sources.size, 2);
+  const aAfter = ext.sources.get(a.id);
+  const bAfter = ext.sources.get(b.id);
+  assert(aAfter);
+  assert(bAfter);
+  assertEquals(aAfter.state.tag, "Indexed");
+  assertEquals(bAfter.state.tag, "Tombstoned");
+  if (bAfter.state.tag === "Tombstoned") {
+    assertEquals(bAfter.state.reason, "renamed");
+  }
+});
+
+Deno.test("makeExtension: I2 — three-way collision tombstones two losers", () => {
+  const a = indexedSource("models/a.ts", "@scope/foo/instance");
+  const b = indexedSource("models/b.ts", "@scope/foo/instance");
+  const c = indexedSource("models/c.ts", "@scope/foo/instance");
+  const ext = makeExtension({
+    name: "@scope/foo",
+    version: "1.0.0",
+    origin: "pulled",
+    extensionRoot: EXT_ROOT,
+    sources: [a, b, c],
+  });
+  assertEquals(ext.sources.size, 3);
+  const aAfter = ext.sources.get(a.id);
+  const bAfter = ext.sources.get(b.id);
+  const cAfter = ext.sources.get(c.id);
+  assert(aAfter);
+  assert(bAfter);
+  assert(cAfter);
+  assertEquals(aAfter.state.tag, "Indexed");
+  assertEquals(bAfter.state.tag, "Tombstoned");
+  assertEquals(cAfter.state.tag, "Tombstoned");
+});
+
+Deno.test("makeExtension: I2 — already-tombstoned loser is idempotent", () => {
+  const a = indexedSource("models/a.ts", "@scope/foo/instance");
+  const bTombstoned = makeSource({
+    id: makeSourceLocation(`${EXT_ROOT}/models/b.ts`, EXT_ROOT),
+    kind: "model",
+    fingerprint: FP,
+    state: { tag: "Tombstoned", reason: "renamed" },
+  });
+  const ext = makeExtension({
+    name: "@scope/foo",
+    version: "1.0.0",
+    origin: "pulled",
+    extensionRoot: EXT_ROOT,
+    sources: [a, bTombstoned],
+  });
+  assertEquals(ext.sources.size, 2);
+  const aAfter = ext.sources.get(a.id);
+  const bAfter = ext.sources.get(bTombstoned.id);
+  assert(aAfter);
+  assert(bAfter);
+  assertEquals(aAfter.state.tag, "Indexed");
+  assertEquals(bAfter.state.tag, "Tombstoned");
 });
 
 Deno.test("makeExtension: I2 — same type across different kinds is allowed", () => {

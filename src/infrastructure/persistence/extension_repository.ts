@@ -286,6 +286,35 @@ export class ExtensionRepository {
     }
   }
 
+  /**
+   * Whole-repo cold-start check for {@link ReconcileFromDiskService}.
+   * Returns `true` if ANY kind is not yet populated — reconcile then
+   * runs a full-tree reconcile across all origins.
+   *
+   * Checks only the `isPopulated` flag — the cheapest guard that
+   * catches the cold-start case (first run, after invalidateAll, after
+   * catalog deletion). Per-kind guard values (layout version, base path,
+   * source dirs fingerprint) require loader-computed inputs not available
+   * at the CLI layer; those guards continue to trigger per-loader
+   * rebuilds via {@link invalidationGuards}.
+   *
+   * Loaders keep their per-kind interface unchanged (W2/legacy path).
+   * W4 collapses both entry points when it unifies loaders.
+   */
+  anyKindNeedsInvalidation(): boolean {
+    const kinds: ExtensionKind[] = [
+      "model",
+      "vault",
+      "driver",
+      "datastore",
+      "report",
+    ];
+    for (const kind of kinds) {
+      if (!this.legacyStore.isPopulated(kind)) return true;
+    }
+    return false;
+  }
+
   // ----- private helpers -----
 
   /**

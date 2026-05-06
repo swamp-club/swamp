@@ -76,11 +76,11 @@ export type CalVer = string;
  *   - I1: every Source.id.extensionRoot === Extension.extensionRoot
  *     (canonical-form equality).
  *   - I2: within this Extension, no two Sources share `(kind, typeNormalized)`
- *     in any non-Tombstoned state. W1b throws `IntraExtensionDuplicateType`
- *     on violation. W3's `ReconcileFromDisk` will replace the throw with
- *     a deterministic-winner + tombstone-loser transform; W1b sees this
- *     as a corruption case because the repository only constructs
- *     aggregates from already-persisted data that previously satisfied I2.
+ *     in any non-Tombstoned state. Enforced by a deterministic-winner +
+ *     tombstone-loser transform: the Source with the lexicographically
+ *     smaller `canonicalPath` wins; the loser is tombstoned with reason
+ *     `"renamed"`. Cross-aggregate uniqueness is separately enforced by
+ *     the repository's I-Repo-1 invariant.
  *
  * I3 (ValidationFailed retains fingerprint+bundle) and I4 (Tombstoned
  * excluded from registration but retained in-memory) are structural —
@@ -101,10 +101,11 @@ export interface Extension {
 }
 
 /**
- * Thrown when an Extension is constructed (or transitioned) with two
- * non-Tombstoned Sources sharing the same `(kind, typeNormalized)`.
- * W1b's enforcement is throw-on-violation; W3 will replace this with
- * the deterministic-winner transform documented in the design.
+ * Thrown by the repository's I-Repo-1 invariant when two Sources in
+ * DIFFERENT Extensions share `(kind, typeNormalized)`. Within a single
+ * Extension, the aggregate resolves duplicates via deterministic-winner
+ * transform (see {@link enforceI2}); `IntraExtensionDuplicateType` is
+ * retained for cross-aggregate violations surfaced by the repository.
  */
 export class IntraExtensionDuplicateType extends Error {
   readonly extensionName: string;
@@ -192,7 +193,7 @@ export function makeExtension(args: {
     }
     sources.set(s.id, s);
   }
-  enforceI2(args.name, args.version, sources);
+  const resolved = enforceI2(args.name, args.version, sources);
 
   return {
     name: args.name,
@@ -200,7 +201,7 @@ export function makeExtension(args: {
     origin: args.origin,
     extensionRoot: canonicalRoot,
     checksum: args.checksum,
-    sources,
+    sources: resolved,
   };
 }
 
@@ -287,8 +288,8 @@ export function observeFreshSource(
       }),
     );
   }
-  enforceI2(extension.name, extension.version, next);
-  return { ...extension, sources: next };
+  const resolved = enforceI2(extension.name, extension.version, next);
+  return { ...extension, sources: resolved };
 }
 
 /**
@@ -440,47 +441,61 @@ function updateSourceState(
   }
   const next = new Map(extension.sources);
   next.set(location, withState(existing, state));
-  enforceI2(extension.name, extension.version, next);
-  return { ...extension, sources: next };
+  const resolved = enforceI2(extension.name, extension.version, next);
+  return { ...extension, sources: resolved };
 }
 
 /**
- * Validates I2 (intra-extension `(kind, typeNormalized)` uniqueness in
- * non-Tombstoned states). Throws on violation.
+ * Enforces I2 (intra-extension `(kind, typeNormalized)` uniqueness in
+ * non-Tombstoned states) via deterministic-winner + tombstone-loser
+ * transform.
  *
- * W3's `ReconcileFromDisk` will replace this with the deterministic-
- * winner + tombstone-loser transform (origin precedence reduces to
- * lexicographic-on-canonicalPath within a single Extension since all
- * Sources share the Extension's origin). For W1b a thrown invariant
- * surfaces corruption that the repository should never produce given
- * its diff-based saves; tests assert the throw, not a transformation.
+ * When two non-Tombstoned Sources share `(kind, type)`, the one with
+ * the lexicographically smaller `canonicalPath` wins; the loser is
+ * tombstoned with reason `"renamed"`. Within a single Extension all
+ * Sources share the same origin, so origin-precedence reduces to
+ * path ordering — deterministic across platforms because
+ * `canonicalPath` is already NFC-normalised and case-folded.
+ *
+ * Returns a NEW map with losers tombstoned. Callers replace their
+ * sources map with the result.
  */
 function enforceI2(
-  name: string,
-  version: CalVer,
+  _name: string,
+  _version: CalVer,
   sources: ReadonlyMap<SourceLocation, Source>,
-): void {
+): Map<SourceLocation, Source> {
   const seen = new Map<string, Source>();
+  const losers: Source[] = [];
+
   for (const source of sources.values()) {
     if (source.state.tag === "Tombstoned") continue;
     const typeName = extractType(source.state);
-    if (typeName === null) continue; // states without a type don't conflict
+    if (typeName === null) continue;
     const key = `${source.kind}::${typeName}`;
     const prior = seen.get(key);
     if (prior) {
-      throw new IntraExtensionDuplicateType({
-        extensionName: name,
-        extensionVersion: version,
-        kind: source.kind,
-        type: typeName,
-        canonicalPaths: [
-          prior.id.canonicalPath,
-          source.id.canonicalPath,
-        ],
-      });
+      if (source.id.canonicalPath < prior.id.canonicalPath) {
+        losers.push(prior);
+        seen.set(key, source);
+      } else {
+        losers.push(source);
+      }
+    } else {
+      seen.set(key, source);
     }
-    seen.set(key, source);
   }
+
+  if (losers.length === 0) return new Map(sources);
+
+  const result = new Map(sources);
+  for (const loser of losers) {
+    result.set(
+      loser.id,
+      withState(loser, { tag: "Tombstoned", reason: "renamed" }),
+    );
+  }
+  return result;
 }
 
 /**
