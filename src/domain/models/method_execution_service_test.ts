@@ -36,6 +36,11 @@ import { Data } from "../data/data.ts";
 import { UserError } from "../errors.ts";
 import { getLogger } from "@logtape/logtape";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
+import type {
+  ExecutionRequest,
+  ExecutionResult,
+} from "../drivers/execution_driver.ts";
+import { driverTypeRegistry } from "../drivers/driver_type_registry.ts";
 
 /**
  * Test model that mimics the echo model's write method.
@@ -2819,3 +2824,69 @@ Deno.test("executeWorkflow - rejects unknown global arg key", async () => {
     "Global arguments validation failed",
   );
 });
+
+Deno.test(
+  "executeWorkflow: out-of-process driver receives resolved vault secrets, not sentinels",
+  async () => {
+    const service = new DefaultMethodExecutionService();
+
+    const driverType = `test-capture-${crypto.randomUUID().slice(0, 8)}`;
+    let capturedRequest: ExecutionRequest | null = null;
+
+    driverTypeRegistry.register({
+      type: driverType,
+      name: "Test capture driver",
+      description: "Captures ExecutionRequest for assertions",
+      isBuiltIn: false,
+      createDriver: () => ({
+        type: driverType,
+        execute: (request: ExecutionRequest): Promise<ExecutionResult> => {
+          capturedRequest = request;
+          return Promise.resolve({
+            status: "success",
+            outputs: [],
+            logs: [],
+            durationMs: 0,
+          });
+        },
+      }),
+    });
+
+    const model: ModelDefinition = {
+      type: ModelType.create("test/driver-vault"),
+      version: "1.0.0",
+      globalArguments: z.object({ apiKey: z.string() }),
+      resources: {},
+      methods: {
+        run: {
+          description: "Test method",
+          arguments: z.object({ token: z.string() }),
+          execute: () => Promise.resolve({ dataHandles: [] }),
+        },
+      },
+    };
+
+    const secretBag = new VaultSecretBag();
+    const apiKeySentinel = secretBag.addSecret("real-api-key-value");
+    const tokenSentinel = secretBag.addSecret("real-token-value");
+
+    const definition = Definition.create({
+      name: "test-driver-vault-def",
+      type: "test/driver-vault",
+      globalArguments: { apiKey: apiKeySentinel },
+      methods: { run: { arguments: { token: tokenSentinel } } },
+    });
+
+    const { context } = createTestContext({
+      modelType: model.type,
+      vaultSecrets: secretBag,
+      driver: driverType,
+    });
+
+    await service.executeWorkflow(definition, model, "run", context);
+
+    assertEquals(capturedRequest !== null, true);
+    assertEquals(capturedRequest!.globalArgs.apiKey, "real-api-key-value");
+    assertEquals(capturedRequest!.methodArgs.token, "real-token-value");
+  },
+);

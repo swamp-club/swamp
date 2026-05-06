@@ -709,6 +709,19 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
           );
         }
 
+        // Resolve vault sentinels for out-of-process drivers. The raw driver
+        // resolves sentinels internally via DefaultMethodExecutionService.execute(),
+        // but out-of-process drivers receive the ExecutionRequest as-is.
+        const secretBag = context.vaultSecrets;
+        if (secretBag && !secretBag.isEmpty) {
+          executionRequest.methodArgs = secretBag.resolveDeep(
+            executionRequest.methodArgs,
+          ) as Record<string, unknown>;
+          executionRequest.globalArgs = secretBag.resolveDeep(
+            executionRequest.globalArgs,
+          ) as Record<string, unknown>;
+        }
+
         // Look up a registered driver type
         await driverTypeRegistry.ensureTypeLoaded(driverType);
         const driverInfo = driverTypeRegistry.get(driverType);
