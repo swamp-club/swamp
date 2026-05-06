@@ -42,17 +42,7 @@ export interface IssueGetInput {
 }
 
 export interface IssueGetDeps {
-  fetchIssue: (issueNumber: number) => Promise<{
-    number: number;
-    title: string;
-    type: string;
-    status: string;
-    author: string;
-    body: string;
-    assignees: string[];
-    commentCount: number;
-    serverUrl: string;
-  }>;
+  fetchIssue: (issueNumber: number) => Promise<IssueGetData>;
 }
 
 export async function* issueGet(
