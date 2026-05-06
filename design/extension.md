@@ -1173,6 +1173,24 @@ the model registry is wired up initially.
      by-name `loadSingleType`, and the extension-attach predicate)
      retain their existing failure semantics because they are not in
      the read-only steady-state loop.
+   - **Fingerprint preservation on build failure (issue #265).** When
+     `bundleWithCache` cannot regenerate a bundle (bare specifiers without
+     a project `deno.json`, or a transient build error) and falls back to
+     the cached `.js`, the `rebundleAndUpdateCatalog` caller preserves the
+     catalog's _stored_ `source_fingerprint` instead of writing the new
+     one. This keeps the file "stale" so `findStaleFiles` retries on the
+     next warm-start invocation. Without this, the new fingerprint would
+     be written alongside the old bundle content, permanently masking the
+     staleness — `findStaleFiles` would see matching fingerprints and
+     never retry. The warning log fires only on the fallback case
+     (`fromCache && newFingerprint !== catalogFingerprint`), not on
+     legitimate cache hits where the source hasn't changed.
+     `findStaleFiles` uses fingerprint comparison, not RowState, for
+     staleness decisions. `BundleBuildFailed` rows are skipped when
+     fingerprints match (source unchanged) and retried when they mismatch
+     (source changed) — warm-start and reconcile operate on orthogonal
+     axes.
+
    - If not populated (first run or DB deleted): falls back to the existing
      full-import path, then populates the catalog from the loaded registry
 

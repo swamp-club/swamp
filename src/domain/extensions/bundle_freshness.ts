@@ -67,6 +67,16 @@ export interface FreshnessCatalogRow {
 }
 
 /**
+ * Return type for bundleWithCache across all extension loaders.
+ * Distinguishes freshly-built bundles from stale cache fallbacks so
+ * callers can decide whether to advance the catalog fingerprint.
+ */
+export interface BundleResult {
+  readonly js: string;
+  readonly fromCache: boolean;
+}
+
+/**
  * Per-invocation cache that dedups file hashing and transitive dep
  * resolution across multiple computeSourceFingerprint calls. Safe to
  * share within a single buildIndex pass — filesystem contents don't

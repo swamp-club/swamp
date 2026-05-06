@@ -31,6 +31,7 @@ import {
   uint8ArrayToBase64,
 } from "../models/bundle.ts";
 import {
+  type BundleResult,
   computeSourceFingerprint,
   createFreshnessCache,
   findStaleFiles as findStaleFilesShared,
@@ -179,12 +180,16 @@ export class UserDatastoreLoader {
           continue;
         }
 
-        const js = await this.bundleWithCache(
+        const { js, fromCache } = await this.bundleWithCache(
           absolutePath,
           file,
           denoPath,
           baseDir,
         );
+        if (fromCache) {
+          logger
+            .warn`Using cached bundle for ${file} — source may have changed but bundle could not be regenerated`;
+        }
         const module = await this.importBundle(js, file, baseDir);
 
         if (!module.datastore) {
@@ -242,7 +247,7 @@ export class UserDatastoreLoader {
     relativePath: string,
     denoPath: string,
     boundaryDir: string,
-  ): Promise<string> {
+  ): Promise<BundleResult> {
     if (this.repoDir) {
       const bundlePath = join(
         this.repoDir,
@@ -272,7 +277,7 @@ export class UserDatastoreLoader {
       // and we'd wastefully spawn Deno before falling back to the
       // cached bundle anyway.
       if (bundleExists && isExpectedBundleFailure(absolutePath, this.repoDir)) {
-        return await Deno.readTextFile(bundlePath);
+        return { js: await Deno.readTextFile(bundlePath), fromCache: true };
       }
 
       // Try to rebundle from source. If bundling fails (e.g. bare specifiers
@@ -286,7 +291,7 @@ export class UserDatastoreLoader {
         await Deno.mkdir(dirname(bundlePath), { recursive: true });
         await Deno.writeTextFile(bundlePath, js);
         logger.debug`Wrote datastore bundle cache: ${bundlePath}`;
-        return js;
+        return { js, fromCache: false };
       } catch (bundleError) {
         if (bundleExists) {
           try {
@@ -313,7 +318,7 @@ export class UserDatastoreLoader {
               logger
                 .warn`Rebundle failed for ${relativePath}, using cached bundle: ${msg}`;
             }
-            return cached;
+            return { js: cached, fromCache: true };
           } catch {
             // Cache file was removed between stat and read — treat as no cache.
           }
@@ -323,7 +328,8 @@ export class UserDatastoreLoader {
     }
 
     // No repo dir — just bundle without caching
-    return await bundleExtension(absolutePath, denoPath);
+    const js = await bundleExtension(absolutePath, denoPath);
+    return { js, fromCache: false };
   }
 
   /**
@@ -717,6 +723,7 @@ export class UserDatastoreLoader {
       typeNormalized: string;
       bundlePath: string;
       fingerprint: string;
+      fromCache: boolean;
     }
     | null
   > {
@@ -727,7 +734,7 @@ export class UserDatastoreLoader {
 
     installZodGlobal();
     const denoPath = await this.denoRuntime.ensureDeno();
-    const js = await this.bundleWithCache(
+    const { js, fromCache } = await this.bundleWithCache(
       args.absolutePath,
       args.relativePath,
       denoPath,
@@ -755,6 +762,7 @@ export class UserDatastoreLoader {
       typeNormalized: parsed.data.type.toLowerCase(),
       bundlePath,
       fingerprint,
+      fromCache,
     };
   }
 
@@ -773,7 +781,7 @@ export class UserDatastoreLoader {
       return;
     }
 
-    const js = await this.bundleWithCache(
+    const { js, fromCache } = await this.bundleWithCache(
       absolutePath,
       relativePath,
       denoPath,
@@ -793,6 +801,23 @@ export class UserDatastoreLoader {
       absolutePath,
       baseDir,
     );
+
+    // When the bundle came from cache (build failed or isExpectedBundleFailure),
+    // preserve the catalog's stored fingerprint so findStaleFiles retries on the
+    // next warm-start. Only warn on the fallback case (fingerprint actually
+    // differs), not on legitimate cache hits where source hasn't changed.
+    let effectiveFingerprint = sourceFingerprint;
+    if (fromCache) {
+      const existing = catalog.findBySourcePath(absolutePath);
+      if (existing?.source_fingerprint) {
+        if (existing.source_fingerprint !== sourceFingerprint) {
+          logger
+            .warn`Bundle could not be regenerated for ${relativePath} — source fingerprint preserved, will retry on next command`;
+        }
+        effectiveFingerprint = existing.source_fingerprint;
+      }
+    }
+
     const bundlePath = this.getDatastoreBundlePath(relativePath, baseDir);
 
     const parsed = UserDatastoreSchema.safeParse(module.datastore);
@@ -803,7 +828,7 @@ export class UserDatastoreLoader {
         kind: "datastore",
         bundlePath,
         sourceMtime,
-        sourceFingerprint,
+        sourceFingerprint: effectiveFingerprint,
       });
       throw new Error(this.formatValidationError(parsed.error));
     }
@@ -819,7 +844,7 @@ export class UserDatastoreLoader {
       description: parsed.data.description,
       extends_type: "",
       source_mtime: sourceMtime,
-      source_fingerprint: sourceFingerprint,
+      source_fingerprint: effectiveFingerprint,
     });
 
     // Also register since we already imported

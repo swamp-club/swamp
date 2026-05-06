@@ -690,6 +690,17 @@ export class ExtensionCatalogStore {
   }
 
   /**
+   * Returns the entry for a specific source path (PK lookup), or undefined.
+   */
+  findBySourcePath(sourcePath: string): ExtensionTypeRow | undefined {
+    const stmt = this.db.prepare(
+      "SELECT * FROM bundle_types WHERE source_path = ?",
+    );
+    const row = stmt.get(sourcePath) as Record<string, unknown> | undefined;
+    return row ? this.mapRow(row) : undefined;
+  }
+
+  /**
    * Removes a bundle type entry by source path.
    */
   removeBySourcePath(sourcePath: string): void {

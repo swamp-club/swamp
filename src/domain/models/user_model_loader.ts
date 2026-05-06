@@ -31,6 +31,7 @@ import {
   uint8ArrayToBase64,
 } from "./bundle.ts";
 import {
+  type BundleResult,
   computeSourceFingerprint,
   createFreshnessCache,
   findStaleFiles as findStaleFilesShared,
@@ -430,12 +431,16 @@ export class UserModelLoader {
           continue;
         }
 
-        const js = await this.bundleWithCache(
+        const { js, fromCache } = await this.bundleWithCache(
           absolutePath,
           file,
           denoPath,
           baseDir,
         );
+        if (fromCache) {
+          logger
+            .warn`Using cached bundle for ${file} — source may have changed but bundle could not be regenerated`;
+        }
         const module = await this.importBundle(js, file, baseDir);
 
         if (module.model) {
@@ -1150,6 +1155,7 @@ export class UserModelLoader {
       typeNormalized: string;
       bundlePath: string;
       fingerprint: string;
+      fromCache: boolean;
     }
     | null
   > {
@@ -1162,7 +1168,7 @@ export class UserModelLoader {
     // bundles — same precondition as loadModels / buildIndex.
     installZodGlobal();
     const denoPath = await this.denoRuntime.ensureDeno();
-    const js = await this.bundleWithCache(
+    const { js, fromCache } = await this.bundleWithCache(
       args.absolutePath,
       args.relativePath,
       denoPath,
@@ -1184,6 +1190,7 @@ export class UserModelLoader {
         typeNormalized: ModelType.create(parsed.data.type).normalized,
         bundlePath: this.getBundlePath(args.relativePath, args.baseDir),
         fingerprint,
+        fromCache,
       };
     }
 
@@ -1197,6 +1204,7 @@ export class UserModelLoader {
         typeNormalized: ModelType.create(parsed.data.type).normalized,
         bundlePath: this.getBundlePath(args.relativePath, args.baseDir),
         fingerprint,
+        fromCache,
       };
     }
 
@@ -1227,7 +1235,7 @@ export class UserModelLoader {
       return undefined; // Not a model/extension file
     }
 
-    const js = await this.bundleWithCache(
+    const { js, fromCache } = await this.bundleWithCache(
       absolutePath,
       relativePath,
       denoPath,
@@ -1242,6 +1250,22 @@ export class UserModelLoader {
       baseDir,
     );
 
+    // When the bundle came from cache (build failed or isExpectedBundleFailure),
+    // preserve the catalog's stored fingerprint so findStaleFiles retries on the
+    // next warm-start. Only warn on the fallback case (fingerprint actually
+    // differs), not on legitimate cache hits where source hasn't changed.
+    let effectiveFingerprint = sourceFingerprint;
+    if (fromCache) {
+      const existing = catalog.findBySourcePath(absolutePath);
+      if (existing?.source_fingerprint) {
+        if (existing.source_fingerprint !== sourceFingerprint) {
+          logger
+            .warn`Bundle could not be regenerated for ${relativePath} — source fingerprint preserved, will retry on next command`;
+        }
+        effectiveFingerprint = existing.source_fingerprint;
+      }
+    }
+
     if (module.model) {
       const bundlePath = this.getBundlePath(relativePath, baseDir);
       const parsed = UserModelSchema.safeParse(module.model);
@@ -1252,7 +1276,7 @@ export class UserModelLoader {
           kind: "model",
           bundlePath,
           sourceMtime,
-          sourceFingerprint,
+          sourceFingerprint: effectiveFingerprint,
         });
         throw new Error(formatUserModelError(parsed.error));
       }
@@ -1267,7 +1291,7 @@ export class UserModelLoader {
         description: "",
         extends_type: "",
         source_mtime: sourceMtime,
-        source_fingerprint: sourceFingerprint,
+        source_fingerprint: effectiveFingerprint,
       });
 
       // Also register the full definition since we already imported it
@@ -1304,7 +1328,7 @@ export class UserModelLoader {
           kind: "extension",
           bundlePath,
           sourceMtime,
-          sourceFingerprint,
+          sourceFingerprint: effectiveFingerprint,
         });
         throw new Error(parsed.error.message);
       }
@@ -1319,7 +1343,7 @@ export class UserModelLoader {
         description: "",
         extends_type: typeNormalized,
         source_mtime: sourceMtime,
-        source_fingerprint: sourceFingerprint,
+        source_fingerprint: effectiveFingerprint,
       });
     }
 
@@ -1376,7 +1400,7 @@ export class UserModelLoader {
     relativePath: string,
     denoPath: string,
     boundaryDir: string,
-  ): Promise<string> {
+  ): Promise<BundleResult> {
     if (this.repoDir) {
       const bundlePath = this.resolveBundlePath(
         bundleNamespace(boundaryDir, this.repoDir),
@@ -1407,7 +1431,7 @@ export class UserModelLoader {
       // findStaleFiles — this branch only fires when both a bundle
       // exists AND the source can't be locally rebundled.
       if (bundleExists && isExpectedBundleFailure(absolutePath, this.repoDir)) {
-        return await Deno.readTextFile(bundlePath);
+        return { js: await Deno.readTextFile(bundlePath), fromCache: true };
       }
 
       // Try to rebundle from source. If bundling fails (e.g. bare specifiers
@@ -1431,7 +1455,7 @@ export class UserModelLoader {
         await Deno.mkdir(dirname(bundlePath), { recursive: true });
         await Deno.writeTextFile(bundlePath, js);
         logger.debug`Wrote bundle cache: ${bundlePath}`;
-        return js;
+        return { js, fromCache: false };
       } catch (bundleError) {
         if (bundleExists) {
           try {
@@ -1460,7 +1484,7 @@ export class UserModelLoader {
               // Do NOT touch the cache mtime — the next run should retry
               // bundling so the user sees the error again until fixed.
             }
-            return cached;
+            return { js: cached, fromCache: true };
           } catch {
             // Cache file was removed between stat and read — treat as no cache.
           }
@@ -1475,7 +1499,10 @@ export class UserModelLoader {
       logger
         .warn`Using discovered deno config for ${absolutePath}: ${denoConfigPath}`;
     }
-    return await bundleExtension(absolutePath, denoPath, { denoConfigPath });
+    const js = await bundleExtension(absolutePath, denoPath, {
+      denoConfigPath,
+    });
+    return { js, fromCache: false };
   }
 
   /**
