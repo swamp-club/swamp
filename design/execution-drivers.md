@@ -258,7 +258,8 @@ HOST                                    CONTAINER
 1. Build ExecutionRequest
    ├─ globalArgs, methodArgs
    ├─ definitionMeta
-   └─ bundle (Uint8Array)
+   ├─ bundle (Uint8Array)
+   └─ Resolve vault sentinels in args
 
 2. Create temp dir
    ├─ bundle.js          ──mount──▶  /swamp/bundle.js
@@ -283,6 +284,25 @@ HOST                                    CONTAINER
 8. Host persists outputs
    via DataWriter
 ```
+
+## Vault Secret Resolution
+
+Vault expressions (`${{ vault.get(...) }}`) produce sentinel tokens during
+runtime expression resolution. These sentinels must be replaced with actual
+secret values before execution. Each driver path handles this differently:
+
+- **Raw driver**: The `DefaultMethodExecutionService.execute()` method calls
+  `secretBag.resolveDeep()` on method args and global args before invoking the
+  model's `execute` function. The shell model additionally resolves sentinels
+  via environment variables (`resolveForShell`) to prevent shell injection.
+
+- **Out-of-process drivers** (docker, custom): The method execution service
+  resolves sentinels in `executionRequest.methodArgs` and
+  `executionRequest.globalArgs` before dispatching to the driver. This ensures
+  drivers receive plaintext values without needing vault awareness. The
+  resolution operates on cloned data — the original definition is never mutated,
+  so sentinel tokens remain in the persisted definition while only the in-flight
+  request carries resolved values.
 
 ## Output Parity
 
