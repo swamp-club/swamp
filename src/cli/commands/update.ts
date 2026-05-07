@@ -108,16 +108,20 @@ async function runSetupAuto(
   const scheduler = await createScheduler();
   await scheduler.install(Deno.execPath(), cadence);
 
-  logger.info`Autoupdate enabled with ${cadence} checks`;
+  if (ctx.outputMode === "json") {
+    console.log(JSON.stringify({ enabled: true, cadence }));
+  } else {
+    logger.info`Autoupdate enabled with ${cadence} checks`;
 
-  const status = await scheduler.status();
-  if (status.installed) {
-    logger.info("Background scheduler installed successfully");
+    const status = await scheduler.status();
+    if (status.installed) {
+      logger.info("Background scheduler installed successfully");
+    }
   }
 }
 
 async function runDisableAuto(
-  ctx: { logger: ReturnType<typeof getSwampLogger> },
+  ctx: { logger: ReturnType<typeof getSwampLogger>; outputMode: string },
 ): Promise<void> {
   const prefsRepo = new UpdatePreferencesFileRepository();
   const prefs = await prefsRepo.read();
@@ -128,7 +132,13 @@ async function runDisableAuto(
   prefs.enabled = false;
   await prefsRepo.write(prefs);
 
-  ctx.logger.info("Autoupdate disabled and scheduler removed");
+  if (ctx.outputMode === "json") {
+    console.log(
+      JSON.stringify({ key: "update.auto", value: "disabled" }),
+    );
+  } else {
+    ctx.logger.info("Autoupdate disabled and scheduler removed");
+  }
 }
 
 async function runSetupAutoStatus(
