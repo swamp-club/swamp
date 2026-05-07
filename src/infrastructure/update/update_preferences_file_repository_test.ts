@@ -94,6 +94,39 @@ Deno.test("UpdatePreferencesFileRepository: rejects invalid cadence", async () =
   });
 });
 
+Deno.test("UpdatePreferencesFileRepository: write succeeds when notifiedVersion is undefined", async () => {
+  await withTempDir(async (dir) => {
+    const filePath = join(dir, "update.yaml");
+    const repo = new UpdatePreferencesFileRepository(filePath);
+
+    const prefs = await repo.read();
+    await repo.write({ ...prefs, enabled: true });
+
+    const result = await repo.read();
+    assertEquals(result.enabled, true);
+    assertEquals(result.cadence, "daily");
+    assertEquals(result.notifiedVersion, undefined);
+  });
+});
+
+Deno.test("UpdatePreferencesFileRepository: write preserves notifiedVersion when present", async () => {
+  await withTempDir(async (dir) => {
+    const filePath = join(dir, "update.yaml");
+    const repo = new UpdatePreferencesFileRepository(filePath);
+
+    await repo.write({
+      enabled: true,
+      cadence: "weekly",
+      notifiedVersion: "1.2.3",
+    });
+
+    const result = await repo.read();
+    assertEquals(result.enabled, true);
+    assertEquals(result.cadence, "weekly");
+    assertEquals(result.notifiedVersion, "1.2.3");
+  });
+});
+
 Deno.test("UpdatePreferencesFileRepository: creates parent directories", async () => {
   await withTempDir(async (dir) => {
     const filePath = join(dir, "nested", "dirs", "update.yaml");
