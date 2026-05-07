@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { z } from "zod";
-import { dirname, join, resolve, toFileUrl } from "@std/path";
+import { dirname, join, resolve, SEPARATOR, toFileUrl } from "@std/path";
 import { getLogger } from "@logtape/logtape";
 import {
   bundleExtension,
@@ -755,7 +755,7 @@ export class UserReportLoader {
       const isPulled = this.repoDir &&
         resolve(boundaryDir).startsWith(
           join(resolve(this.repoDir), SWAMP_DATA_DIR, "pulled-extensions") +
-            "/",
+            SEPARATOR,
         );
       if (
         bundleExists && isPulled &&
