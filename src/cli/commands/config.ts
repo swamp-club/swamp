@@ -102,8 +102,6 @@ const configSetCommand = new Command()
           );
         }
         const enabling = value === "enabled";
-        prefs.enabled = enabling;
-        await prefsRepo.write(prefs);
 
         const scheduler = await createScheduler();
         if (enabling) {
@@ -111,6 +109,9 @@ const configSetCommand = new Command()
         } else {
           await scheduler.remove();
         }
+
+        prefs.enabled = enabling;
+        await prefsRepo.write(prefs);
 
         if (ctx.outputMode === "json") {
           console.log(JSON.stringify({ key, value }));
@@ -129,13 +130,14 @@ const configSetCommand = new Command()
             `Invalid value for update.cadence: ${value}. Must be "daily" or "weekly".`,
           );
         }
-        prefs.cadence = value;
-        await prefsRepo.write(prefs);
 
         if (prefs.enabled) {
           const scheduler = await createScheduler();
-          await scheduler.install(Deno.execPath(), prefs.cadence);
+          await scheduler.install(Deno.execPath(), value);
         }
+
+        prefs.cadence = value;
+        await prefsRepo.write(prefs);
 
         if (ctx.outputMode === "json") {
           console.log(JSON.stringify({ key, value }));
@@ -147,6 +149,8 @@ const configSetCommand = new Command()
         }
         break;
       }
+      default:
+        throw new UserError(`Unhandled config key: ${key}`);
     }
   });
 

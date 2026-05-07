@@ -103,10 +103,10 @@ async function runSetupAuto(
 
   const cadence = cadenceInput as UpdateCadence;
 
-  await prefsRepo.write({ enabled: true, cadence });
-
   const scheduler = await createScheduler();
   await scheduler.install(Deno.execPath(), cadence);
+
+  await prefsRepo.write({ enabled: true, cadence });
 
   if (ctx.outputMode === "json") {
     console.log(JSON.stringify({ enabled: true, cadence }));
