@@ -57,6 +57,7 @@ export interface DatastoreSetupData {
   bytesCopied: number;
   directoriesMigrated: string[];
   errors: string[];
+  retryHint?: string;
 }
 
 export type DatastoreSetupEvent =
@@ -198,13 +199,17 @@ export async function* datastoreSetupFilesystem(
         }
       }
 
-      // Update .swamp.yaml with new datastore config
-      const collapsedPath = deps.collapseEnvVars(input.datastorePath);
-      await deps.updateRepoConfig(input.repoDir, {
-        type: "filesystem",
-        path: collapsedPath,
-        directories: input.directories ?? undefined,
-      });
+      // Update .swamp.yaml only when migration succeeded (or was skipped).
+      // Mirrors the extension path guard — avoids pointing the config at
+      // a destination with incomplete data.
+      if (errors.length === 0) {
+        const collapsedPath = deps.collapseEnvVars(input.datastorePath);
+        await deps.updateRepoConfig(input.repoDir, {
+          type: "filesystem",
+          path: collapsedPath,
+          directories: input.directories ?? undefined,
+        });
+      }
 
       yield {
         kind: "completed",
@@ -216,6 +221,12 @@ export async function* datastoreSetupFilesystem(
           bytesCopied,
           directoriesMigrated,
           errors,
+          ...(errors.length > 0
+            ? {
+              retryHint:
+                "Re-run the same command to retry. Local data is preserved and the retry is safe.",
+            }
+            : {}),
         },
       };
     })(),
@@ -441,6 +452,12 @@ export async function* datastoreSetupExtension(
           bytesCopied: 0,
           directoriesMigrated: [],
           errors,
+          ...(errors.length > 0
+            ? {
+              retryHint:
+                "Re-run the same command to retry. Local data is preserved and the retry is safe.",
+            }
+            : {}),
         },
       };
     })(),

@@ -612,6 +612,28 @@ remote `.datastore-index.json` at setup time. Subsequent reads from
 datastore-tier repositories see consistent data without an explicit
 `swamp datastore sync --pull` first.
 
+### Partial Failure and Retry
+
+If `swamp datastore setup extension` fails partway through (network blip,
+timeout, Ctrl-C, transient 5xx), the repo stays in a safe, resumable state:
+
+- `.swamp.yaml` is **not updated** — the repo remains filesystem-typed.
+- `.swamp/` data is **not cleaned up** — local data stays intact for retry.
+- Objects already pushed to the remote are harmless — S3 PutObject is
+  idempotent, so a subsequent push overwrites with identical content.
+
+**To retry:** re-run the exact same `swamp datastore setup extension` command.
+The migration copies files to the cache (overwriting any partial cache from the
+previous attempt), pushes to the remote (idempotent), pulls from the remote,
+and only then updates `.swamp.yaml` and cleans up `.swamp/`.
+
+The same applies to `swamp datastore setup filesystem` — the config update is
+guarded behind a successful migration, so a partial copy leaves `.swamp.yaml`
+unchanged and a retry is safe.
+
+The CLI surfaces a retry hint in the output whenever setup completes with
+errors, so the user knows re-running is safe without consulting documentation.
+
 ### Migrating Between Backends
 
 Run `swamp datastore setup` again with the new backend type. The setup command

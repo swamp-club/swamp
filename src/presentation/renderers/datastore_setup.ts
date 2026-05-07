@@ -73,6 +73,10 @@ class LogDatastoreSetupRenderer implements Renderer<DatastoreSetupEvent> {
           for (const err of data.errors) {
             lines.push(`  ${yellow("!")} ${err}`);
           }
+          if (data.retryHint) {
+            lines.push("");
+            lines.push(yellow(data.retryHint));
+          }
         }
 
         writeOutput(lines.join("\n"));

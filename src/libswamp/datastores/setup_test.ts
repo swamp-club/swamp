@@ -522,6 +522,159 @@ Deno.test("datastoreSetupExtension: extension without sync service skips push an
   assertEquals(completed.data.errors, []);
 });
 
+// ============================================================================
+// Retry and partial-failure tests (issue #248)
+//
+// Verify that failed migrations leave the repo in a resumable state:
+// config not updated, .swamp/ preserved, retryHint populated.
+// ============================================================================
+
+Deno.test("datastoreSetupExtension: push failure blocks config update, preserves .swamp/, and surfaces retryHint", async () => {
+  ensureTestExtensionType("test-ext-push-fail", {
+    pushResult: () => Promise.reject(new Error("connection reset")),
+  });
+  let configUpdated = false;
+  let cleanupCalled = false;
+  const deps = makeDeps({
+    updateRepoConfig: () => {
+      configUpdated = true;
+      return Promise.resolve();
+    },
+    cleanupSourceDirs: () => {
+      cleanupCalled = true;
+      return Promise.resolve();
+    },
+  });
+  const input = makeExtensionInput({
+    type: "test-ext-push-fail",
+    skipMigration: false,
+  });
+
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupExtension(createLibSwampContext(), deps, input),
+  );
+
+  const completed = events[events.length - 1] as Extract<
+    DatastoreSetupEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.kind, "completed");
+  assertEquals(completed.data.errors.length, 1);
+  assertStringIncludes(completed.data.errors[0], "connection reset");
+  assertEquals(
+    configUpdated,
+    false,
+    "push failure must prevent .swamp.yaml writeback",
+  );
+  assertEquals(
+    cleanupCalled,
+    false,
+    "push failure must keep migrated .swamp/ dirs intact for retry",
+  );
+  assertEquals(
+    typeof completed.data.retryHint,
+    "string",
+    "push failure must surface a retryHint",
+  );
+});
+
+Deno.test("datastoreSetupExtension: pull failure after successful push surfaces retryHint", async () => {
+  ensureTestExtensionType("test-ext-push-ok-pull-fail", {
+    pullResult: () => Promise.reject(new Error("timeout")),
+  });
+  let configUpdated = false;
+  const deps = makeDeps({
+    updateRepoConfig: () => {
+      configUpdated = true;
+      return Promise.resolve();
+    },
+  });
+  const input = makeExtensionInput({
+    type: "test-ext-push-ok-pull-fail",
+    skipMigration: false,
+  });
+
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupExtension(createLibSwampContext(), deps, input),
+  );
+
+  const completed = events[events.length - 1] as Extract<
+    DatastoreSetupEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.kind, "completed");
+  assertEquals(completed.data.errors.length, 1);
+  assertStringIncludes(completed.data.errors[0], "timeout");
+  assertEquals(
+    configUpdated,
+    false,
+    "pull failure must prevent .swamp.yaml writeback even when push succeeded",
+  );
+  assertEquals(
+    typeof completed.data.retryHint,
+    "string",
+    "pull failure must surface a retryHint",
+  );
+});
+
+Deno.test("datastoreSetupFilesystem: migration errors block config update and surface retryHint", async () => {
+  let configUpdated = false;
+  const deps = makeDeps({
+    migrateData: () =>
+      Promise.resolve({
+        filesCopied: 3,
+        bytesCopied: 512,
+        directoriesMigrated: ["data"],
+        errors: ["Failed to migrate outputs: permission denied"],
+      }),
+    updateRepoConfig: () => {
+      configUpdated = true;
+      return Promise.resolve();
+    },
+  });
+  const input = makeFilesystemInput();
+
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupFilesystem(createLibSwampContext(), deps, input),
+  );
+
+  const completed = events[events.length - 1] as Extract<
+    DatastoreSetupEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.kind, "completed");
+  assertEquals(completed.data.errors.length, 1);
+  assertStringIncludes(completed.data.errors[0], "permission denied");
+  assertEquals(
+    configUpdated,
+    false,
+    "migration errors must prevent .swamp.yaml writeback",
+  );
+  assertEquals(
+    typeof completed.data.retryHint,
+    "string",
+    "migration errors must surface a retryHint",
+  );
+});
+
+Deno.test("datastoreSetupExtension: successful setup has no retryHint", async () => {
+  ensureTestExtensionType("test-ext-no-hint");
+  const deps = makeDeps();
+  const input = makeExtensionInput({ type: "test-ext-no-hint" });
+
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupExtension(createLibSwampContext(), deps, input),
+  );
+
+  const completed = events[events.length - 1] as Extract<
+    DatastoreSetupEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.kind, "completed");
+  assertEquals(completed.data.errors, []);
+  assertEquals(completed.data.retryHint, undefined);
+});
+
 Deno.test("datastoreSetupExtension: ensures cachePath exists before hydration pull", async () => {
   // Defensive guard: setup owns its preconditions rather than relying on
   // sync service internals. Some extension implementations may not call
