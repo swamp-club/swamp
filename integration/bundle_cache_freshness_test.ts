@@ -155,7 +155,8 @@ async function writeSwampSources(
   repoDir: string,
   sourcePath: string,
 ): Promise<void> {
-  const yaml = `sources:\n  - path: "${sourcePath}"\n`;
+  const normalized = sourcePath.replaceAll("\\", "/");
+  const yaml = `sources:\n  - path: "${normalized}"\n`;
   await Deno.writeTextFile(join(repoDir, ".swamp-sources.yaml"), yaml);
 }
 
