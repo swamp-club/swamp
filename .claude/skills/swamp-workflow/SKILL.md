@@ -430,7 +430,8 @@ swamp workflow evaluate --all --json
 **Key behaviors:**
 
 - CEL expressions (`${{ inputs.X }}`, `${{ model.X.resource... }}`) are resolved
-- forEach steps are expanded into concrete steps with resolved inputs
+- forEach steps are expanded into concrete steps with resolved `modelIdOrName`,
+  `methodName`, inputs, and args
 - Vault expressions (`${{ vault.get(...) }}`) remain raw for runtime resolution
 - Output saved to `.swamp/workflows-evaluated/` for `--last-evaluated` use
 

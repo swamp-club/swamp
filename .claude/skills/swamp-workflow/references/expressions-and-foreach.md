@@ -66,6 +66,29 @@ With `--input '{"tags": {"env": "prod", "team": "platform"}}'`, creates steps:
 - `tag-env` (with `self.tag.key="env"`, `self.tag.value="prod"`)
 - `tag-team` (with `self.tag.key="team"`, `self.tag.value="platform"`)
 
+### Dynamic Model Targeting
+
+`self.*` expressions resolve in `modelIdOrName` and `methodName`, enabling
+forEach steps to target different model instances per iteration:
+
+```yaml
+steps:
+  - name: summary-${{ self.region }}
+    forEach:
+      item: region
+      in: ${{ inputs.regions }}
+    task:
+      type: model_method
+      modelIdOrName: aws-alarms-${{ self.region }}
+      methodName: get_summary
+      inputs:
+        historyHours: 24
+```
+
+With `regions: ["us-east-1", "eu-west-1"]`, this creates two steps targeting
+`aws-alarms-us-east-1` and `aws-alarms-eu-west-1` respectively. The resolved
+names appear in `--last-evaluated` output.
+
 ### forEach Variables
 
 | Variable            | Description                    |
