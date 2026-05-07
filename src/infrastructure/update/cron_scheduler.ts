@@ -25,12 +25,16 @@ import type { UpdateCadence } from "../../domain/update/update_preferences.ts";
 
 const CRON_MARKER = "# swamp-autoupdate";
 
-function cronSchedule(cadence: UpdateCadence): string {
+export function cronSchedule(cadence: UpdateCadence): string {
   return cadence === "daily" ? "0 9 * * *" : "0 9 * * 1";
 }
 
-function cadenceFromSchedule(schedule: string): UpdateCadence {
+export function cadenceFromSchedule(schedule: string): UpdateCadence {
   return schedule.trim().endsWith("* * 1") ? "weekly" : "daily";
+}
+
+export function escapeShellPath(s: string): string {
+  return s.replace(/'/g, "'\\''");
 }
 
 async function readCrontab(): Promise<string> {
@@ -67,8 +71,8 @@ export class CronScheduler implements AutoupdateScheduler {
 
     const existing = await readCrontab();
     const schedule = cronSchedule(cadence);
-    const line =
-      `${schedule} "${binaryPath}" update --background ${CRON_MARKER}`;
+    const escaped = escapeShellPath(binaryPath);
+    const line = `${schedule} '${escaped}' update --background ${CRON_MARKER}`;
     const newContent = existing.trimEnd() + (existing.trim() ? "\n" : "") +
       line + "\n";
     await writeCrontab(newContent);

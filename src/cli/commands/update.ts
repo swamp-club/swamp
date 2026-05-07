@@ -46,6 +46,8 @@ import { UserError } from "../../domain/errors.ts";
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
+const BACKGROUND_TIMEOUT_MS = 5 * 60 * 1000;
+
 async function runBackgroundUpdate(
   ctx: { logger: ReturnType<typeof getSwampLogger> },
 ): Promise<void> {
@@ -60,22 +62,24 @@ async function runBackgroundUpdate(
     outcome: "up_to_date",
   };
 
-  const BACKGROUND_TIMEOUT_MS = 5 * 60 * 1000;
+  let timeoutId: number;
   try {
     const timeout = new Promise<never>((_, reject) => {
-      const id = setTimeout(
+      timeoutId = setTimeout(
         () => reject(new Error("Background update timed out")),
         BACKGROUND_TIMEOUT_MS,
       );
-      Deno.unrefTimer(id);
+      Deno.unrefTimer(timeoutId);
     });
     const result = await Promise.race([deps.update(platform), timeout]);
+    clearTimeout(timeoutId!);
 
     if (result.status === "updated") {
       entry.versionAfter = result.newVersion;
       entry.outcome = "updated";
     }
   } catch (error) {
+    clearTimeout(timeoutId!);
     entry.outcome = "error";
     entry.error = error instanceof Error ? error.message : String(error);
   }
@@ -84,6 +88,19 @@ async function runBackgroundUpdate(
   await logRepo.prune(AUTOUPDATE_LOG_RETENTION_DAYS);
 
   ctx.logger.debug`Background update completed: ${entry.outcome}`;
+}
+
+function promptCadence(defaultCadence: UpdateCadence): UpdateCadence {
+  while (true) {
+    const input = prompt(
+      "How often should swamp check for updates? (daily/weekly)",
+      defaultCadence,
+    );
+    if (input && isValidCadence(input)) {
+      return input;
+    }
+    console.error(`Invalid cadence: ${input}. Must be "daily" or "weekly".`);
+  }
 }
 
 async function runSetupAuto(
@@ -99,22 +116,12 @@ async function runSetupAuto(
   const prefs = await prefsRepo.read();
   const logger = ctx.logger;
 
-  const cadenceInput = prompt(
-    "How often should swamp check for updates? (daily/weekly)",
-    prefs.cadence,
-  );
-  if (!cadenceInput || !isValidCadence(cadenceInput)) {
-    throw new UserError(
-      `Invalid cadence: ${cadenceInput}. Must be "daily" or "weekly".`,
-    );
-  }
-
-  const cadence = cadenceInput as UpdateCadence;
+  const cadence = promptCadence(prefs.cadence);
 
   const scheduler = await createScheduler();
   await scheduler.install(Deno.execPath(), cadence);
 
-  await prefsRepo.write({ enabled: true, cadence });
+  await prefsRepo.write({ ...prefs, enabled: true, cadence });
 
   if (ctx.outputMode === "json") {
     console.log(JSON.stringify({ enabled: true, cadence }));
@@ -137,8 +144,7 @@ async function runDisableAuto(
   const scheduler = await createScheduler();
   await scheduler.remove();
 
-  prefs.enabled = false;
-  await prefsRepo.write(prefs);
+  await prefsRepo.write({ ...prefs, enabled: false });
 
   if (ctx.outputMode === "json") {
     console.log(
@@ -231,7 +237,7 @@ export const updateCommand = new Command()
         throw new UserError(
           `Unknown action: ${options.setupAuto}. Valid actions: ${
             validActions.join(", ")
-          }`,
+          } (or omit value for interactive setup)`,
         );
       }
 

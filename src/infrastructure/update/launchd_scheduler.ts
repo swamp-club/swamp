@@ -32,7 +32,7 @@ function plistPath(): string {
   return join(homeDirectory(), "Library", "LaunchAgents", `${LABEL}.plist`);
 }
 
-function escapeXml(s: string): string {
+export function escapeXml(s: string): string {
   return s
     .replace(/&/g, "&amp;")
     .replace(/</g, "&lt;")
@@ -41,7 +41,7 @@ function escapeXml(s: string): string {
     .replace(/'/g, "&apos;");
 }
 
-function buildPlist(binaryPath: string, cadence: UpdateCadence): string {
+export function buildPlist(binaryPath: string, cadence: UpdateCadence): string {
   const interval = cadence === "daily" ? 86400 : 604800;
   const escapedPath = escapeXml(binaryPath);
 
@@ -70,7 +70,7 @@ function buildPlist(binaryPath: string, cadence: UpdateCadence): string {
 `;
 }
 
-function cadenceFromInterval(interval: number): UpdateCadence {
+export function cadenceFromInterval(interval: number): UpdateCadence {
   return interval <= 86400 ? "daily" : "weekly";
 }
 

@@ -110,8 +110,7 @@ const configSetCommand = new Command()
           await scheduler.remove();
         }
 
-        prefs.enabled = enabling;
-        await prefsRepo.write(prefs);
+        await prefsRepo.write({ ...prefs, enabled: enabling });
 
         if (ctx.outputMode === "json") {
           console.log(JSON.stringify({ key, value }));
@@ -136,8 +135,7 @@ const configSetCommand = new Command()
           await scheduler.install(Deno.execPath(), value);
         }
 
-        prefs.cadence = value;
-        await prefsRepo.write(prefs);
+        await prefsRepo.write({ ...prefs, cadence: value });
 
         if (ctx.outputMode === "json") {
           console.log(JSON.stringify({ key, value }));

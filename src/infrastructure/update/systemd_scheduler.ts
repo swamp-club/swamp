@@ -45,17 +45,22 @@ function timerPath(): string {
   return join(systemdUserDir(), `${UNIT_NAME}.timer`);
 }
 
-function buildService(binaryPath: string): string {
+export function escapeSystemdPath(s: string): string {
+  return s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+export function buildService(binaryPath: string): string {
+  const escaped = escapeSystemdPath(binaryPath);
   return `[Unit]
 Description=Swamp background autoupdate
 
 [Service]
 Type=oneshot
-ExecStart="${binaryPath}" update --background
+ExecStart="${escaped}" update --background
 `;
 }
 
-function buildTimer(cadence: UpdateCadence): string {
+export function buildTimer(cadence: UpdateCadence): string {
   const onCalendar = cadence === "daily" ? "daily" : "weekly";
   return `[Unit]
 Description=Swamp autoupdate timer
