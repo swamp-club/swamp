@@ -96,7 +96,12 @@ function promptCadence(defaultCadence: UpdateCadence): UpdateCadence {
       "How often should swamp check for updates? (daily/weekly)",
       defaultCadence,
     );
-    if (input && isValidCadence(input)) {
+    if (input === null) {
+      throw new UserError(
+        "No input received. Use `swamp config set update.cadence <daily|weekly>` instead.",
+      );
+    }
+    if (isValidCadence(input)) {
       return input;
     }
     console.error(`Invalid cadence: ${input}. Must be "daily" or "weekly".`);

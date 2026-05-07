@@ -46,7 +46,7 @@ function timerPath(): string {
 }
 
 export function escapeSystemdPath(s: string): string {
-  return s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+  return s.replace(/\\/g, "\\\\").replace(/"/g, '\\"').replace(/%/g, "%%");
 }
 
 export function buildService(binaryPath: string): string {

@@ -66,6 +66,13 @@ Deno.test("cadenceFromInterval: weekly for 604800", () => {
   assertEquals(cadenceFromInterval(604800), "weekly");
 });
 
+Deno.test("escapeSystemdPath: escapes percent specifiers", () => {
+  assertEquals(
+    escapeSystemdPath("/home/user/100%done"),
+    "/home/user/100%%done",
+  );
+});
+
 Deno.test("escapeSystemdPath: escapes backslashes and quotes", () => {
   assertEquals(
     escapeSystemdPath('path with "quotes"'),
