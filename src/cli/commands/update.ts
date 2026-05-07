@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { createContext, type GlobalOptions } from "../context.ts";
+import { createContext, type GlobalOptions, isStdinTty } from "../context.ts";
 import { VERSION } from "./version.ts";
 import { Platform } from "../../domain/update/platform.ts";
 import {
@@ -29,16 +29,191 @@ import {
 } from "../../libswamp/mod.ts";
 import { createUpdateCheckRenderer } from "../../presentation/renderers/update_check.ts";
 import { Spinner } from "../../presentation/spinner.ts";
+import { UpdatePreferencesFileRepository } from "../../infrastructure/update/update_preferences_file_repository.ts";
+import { AutoupdateLogFileRepository } from "../../infrastructure/update/autoupdate_log_file_repository.ts";
+import { createScheduler } from "../../infrastructure/update/scheduler_factory.ts";
+import {
+  isValidCadence,
+  type UpdateCadence,
+} from "../../domain/update/update_preferences.ts";
+import {
+  AUTOUPDATE_LOG_RETENTION_DAYS,
+  type AutoupdateLogEntry,
+} from "../../domain/update/autoupdate_log.ts";
+import type { getSwampLogger } from "../../infrastructure/logging/logger.ts";
+import { UserError } from "../../domain/errors.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
+async function runBackgroundUpdate(
+  ctx: { logger: ReturnType<typeof getSwampLogger> },
+): Promise<void> {
+  const platform = Platform.detect();
+  const logRepo = new AutoupdateLogFileRepository();
+  const deps = createUpdateCheckDeps(VERSION, Deno.execPath());
+
+  const entry: AutoupdateLogEntry = {
+    timestamp: new Date().toISOString(),
+    versionBefore: VERSION,
+    versionAfter: null,
+    outcome: "up_to_date",
+  };
+
+  try {
+    const result = await deps.update(platform);
+
+    if (result.status === "updated") {
+      entry.versionAfter = result.newVersion;
+      entry.outcome = "updated";
+    }
+  } catch (error) {
+    entry.outcome = "error";
+    entry.error = error instanceof Error ? error.message : String(error);
+  }
+
+  await logRepo.append(entry);
+  await logRepo.prune(AUTOUPDATE_LOG_RETENTION_DAYS);
+
+  ctx.logger.debug`Background update completed: ${entry.outcome}`;
+}
+
+async function runSetupAuto(
+  ctx: { logger: ReturnType<typeof getSwampLogger>; outputMode: string },
+): Promise<void> {
+  if (!isStdinTty()) {
+    throw new UserError(
+      "Cannot set up autoupdate in a non-interactive environment. Use `swamp config set` instead.",
+    );
+  }
+
+  const prefsRepo = new UpdatePreferencesFileRepository();
+  const prefs = await prefsRepo.read();
+  const logger = ctx.logger;
+
+  const cadenceInput = prompt(
+    "How often should swamp check for updates? (daily/weekly)",
+    prefs.cadence,
+  );
+  if (!cadenceInput || !isValidCadence(cadenceInput)) {
+    throw new UserError(
+      `Invalid cadence: ${cadenceInput}. Must be "daily" or "weekly".`,
+    );
+  }
+
+  const cadence = cadenceInput as UpdateCadence;
+
+  await prefsRepo.write({ enabled: true, cadence });
+
+  const scheduler = await createScheduler();
+  await scheduler.install(Deno.execPath(), cadence);
+
+  logger.info`Autoupdate enabled with ${cadence} checks`;
+
+  const status = await scheduler.status();
+  if (status.installed) {
+    logger.info("Background scheduler installed successfully");
+  }
+}
+
+async function runDisableAuto(
+  ctx: { logger: ReturnType<typeof getSwampLogger> },
+): Promise<void> {
+  const prefsRepo = new UpdatePreferencesFileRepository();
+  const prefs = await prefsRepo.read();
+
+  const scheduler = await createScheduler();
+  await scheduler.remove();
+
+  prefs.enabled = false;
+  await prefsRepo.write(prefs);
+
+  ctx.logger.info("Autoupdate disabled and scheduler removed");
+}
+
+async function runSetupAutoStatus(
+  ctx: { logger: ReturnType<typeof getSwampLogger>; outputMode: string },
+): Promise<void> {
+  const prefsRepo = new UpdatePreferencesFileRepository();
+  const prefs = await prefsRepo.read();
+
+  if (ctx.outputMode === "json") {
+    const scheduler = await createScheduler();
+    const scheduleStatus = await scheduler.status();
+    const logRepo = new AutoupdateLogFileRepository();
+    const entries = await logRepo.readAll();
+    const lastEntry = entries.length > 0 ? entries[entries.length - 1] : null;
+
+    console.log(JSON.stringify(
+      {
+        enabled: prefs.enabled,
+        cadence: prefs.cadence,
+        schedulerInstalled: scheduleStatus.installed,
+        lastUpdate: lastEntry,
+      },
+      null,
+      2,
+    ));
+    return;
+  }
+
+  const logger = ctx.logger;
+
+  if (!prefs.enabled) {
+    logger.info(
+      "Autoupdate is disabled. Run `swamp update --setup-auto` to enable.",
+    );
+    return;
+  }
+
+  logger.info`Autoupdate: enabled`;
+  logger.info`Cadence: ${prefs.cadence}`;
+
+  const scheduler = await createScheduler();
+  const scheduleStatus = await scheduler.status();
+  logger.info`Scheduler installed: ${scheduleStatus.installed}`;
+
+  const logRepo = new AutoupdateLogFileRepository();
+  const entries = await logRepo.readAll();
+  if (entries.length > 0) {
+    const last = entries[entries.length - 1];
+    logger.info`Last check: ${last.timestamp} (${last.outcome})`;
+    if (last.versionAfter) {
+      logger
+        .info`Last update: ${last.versionBefore} → ${last.versionAfter}`;
+    }
+  } else {
+    logger.info("No autoupdate history yet");
+  }
+}
+
 export const updateCommand = new Command()
   .description("Update swamp to the latest version")
   .option("--check", "Check for updates without installing")
+  .option("--background", "Run update silently (used by autoupdate scheduler)")
+  .option(
+    "--setup-auto [action:string]",
+    "Set up, check, or disable autoupdate (status|disable)",
+  )
   .action(async function (options: AnyOptions) {
     const ctx = createContext(options as GlobalOptions, ["update"]);
     ctx.logger.debug("Executing update command");
+
+    if (options.background) {
+      await runBackgroundUpdate(ctx);
+      return;
+    }
+
+    if (options.setupAuto !== undefined) {
+      if (options.setupAuto === "status") {
+        await runSetupAutoStatus(ctx);
+      } else if (options.setupAuto === "disable") {
+        await runDisableAuto(ctx);
+      } else {
+        await runSetupAuto(ctx);
+      }
+      return;
+    }
 
     const platform = Platform.detect();
     ctx.logger.debug`Detected platform: ${platform}`;
