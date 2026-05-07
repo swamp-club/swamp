@@ -35,6 +35,7 @@ import { issueCommand } from "./commands/issue.ts";
 import { telemetryCommand } from "./commands/telemetry_stats.ts";
 import { auditCommand } from "./commands/audit.ts";
 import { updateCommand } from "./commands/update.ts";
+import { configCommand } from "./commands/config.ts";
 import { sourceCommand } from "./commands/source.ts";
 import { authCommand } from "./commands/auth.ts";
 import { extensionCommand } from "./commands/extension.ts";
@@ -110,6 +111,8 @@ import { UpdateCheckCacheFileRepository } from "../infrastructure/update/update_
 import { HttpUpdateChecker } from "../infrastructure/update/http_update_checker.ts";
 import { Platform } from "../domain/update/platform.ts";
 import { renderUpdateNotification } from "../presentation/renderers/update_notification.ts";
+import { UpdatePreferencesFileRepository } from "../infrastructure/update/update_preferences_file_repository.ts";
+import { AutoupdateLogFileRepository } from "../infrastructure/update/autoupdate_log_file_repository.ts";
 import { getOutputModeFromArgs, isQuietFromArgs } from "./context.ts";
 import { recordLoadFailures } from "../infrastructure/logging/extension_load_warnings.ts";
 import { flushDatastoreSync } from "../infrastructure/persistence/datastore_sync_coordinator.ts";
@@ -203,6 +206,7 @@ const NON_REPO_COMMANDS = new Set([
   "completions",
   "init",
   "update",
+  "config",
   "auth",
   "telemetry",
   "issue",
@@ -1093,6 +1097,7 @@ export async function runCli(args: string[]): Promise<void> {
     .command("telemetry", telemetryCommand)
     .command("audit", auditCommand.hidden())
     .command("update", updateCommand)
+    .command("config", configCommand)
     .command("source", sourceCommand)
     .command("completions", completionCommand)
     .command("issue", issueCommand)
@@ -1151,21 +1156,43 @@ export async function runCli(args: string[]): Promise<void> {
 
       if (outputMode === "log" && commandName !== "update") {
         try {
-          const cacheRepo = new UpdateCheckCacheFileRepository();
-          const checker = new HttpUpdateChecker();
-          const service = new UpdateNotificationService(
-            VERSION,
-            cacheRepo,
-            checker,
-          );
+          const prefsRepo = new UpdatePreferencesFileRepository();
+          const prefs = await prefsRepo.read();
 
-          const notification = await service.getNotification();
-          if (notification) {
-            renderUpdateNotification(notification);
+          // Show post-autoupdate notice once after background upgrade
+          if (prefs.notifiedVersion !== VERSION) {
+            const logRepo = new AutoupdateLogFileRepository();
+            const entries = await logRepo.readAll();
+            const lastUpdate = entries.findLast((e) =>
+              e.outcome === "updated" && e.versionAfter
+            );
+            if (lastUpdate && lastUpdate.versionAfter === VERSION) {
+              console.error(
+                `\nℹ swamp was auto-updated from ${lastUpdate.versionBefore} → ${lastUpdate.versionAfter}`,
+              );
+              prefs.notifiedVersion = VERSION;
+              await prefsRepo.write(prefs);
+            }
           }
 
-          const platform = Platform.detect();
-          service.backgroundCheck(platform);
+          // Skip the "run swamp update" banner if autoupdate handles it
+          if (!prefs.enabled) {
+            const cacheRepo = new UpdateCheckCacheFileRepository();
+            const checker = new HttpUpdateChecker();
+            const service = new UpdateNotificationService(
+              VERSION,
+              cacheRepo,
+              checker,
+            );
+
+            const notification = await service.getNotification();
+            if (notification) {
+              renderUpdateNotification(notification);
+            }
+
+            const platform = Platform.detect();
+            service.backgroundCheck(platform);
+          }
         } catch {
           // Silently ignore — never break the CLI for update checks
         }
