@@ -26,6 +26,7 @@ import { ExtensionCatalogStore } from "../../infrastructure/persistence/extensio
 import { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import type { DenoRuntime } from "../../domain/runtime/deno_runtime.ts";
+import type { LocalManifestIdentity } from "../../infrastructure/persistence/local_manifest_reader.ts";
 
 import "../../domain/models/models.ts";
 
@@ -679,3 +680,213 @@ Deno.test(
     );
   },
 );
+
+// -- Manifest version migration tests (#284) --------------------------------
+
+async function withManifestFixtureRepo(
+  fn: (args: {
+    repoDir: string;
+    catalog: ExtensionCatalogStore;
+    lockfileRepository: LockfileRepository;
+    makeService: (
+      manifest: LocalManifestIdentity | null,
+    ) => ReconcileFromDiskService;
+  }) => Promise<void>,
+): Promise<void> {
+  const repoDir = await Deno.makeTempDir({
+    prefix: "swamp_reconcile_manifest_",
+  });
+  await ensureDir(join(repoDir, ".swamp"));
+  await ensureDir(join(repoDir, "extensions", "models"));
+  const dbPath = join(repoDir, ".swamp", "_extension_catalog.db");
+  const lockfilePath = join(
+    repoDir,
+    "extensions",
+    "models",
+    "upstream_extensions.json",
+  );
+  await Deno.writeTextFile(lockfilePath, "{}");
+
+  const catalog = new ExtensionCatalogStore(dbPath);
+  const lockfileRepository = await LockfileRepository.create(lockfilePath);
+
+  const makeService = (
+    manifest: LocalManifestIdentity | null,
+  ): ReconcileFromDiskService => {
+    const repository = new ExtensionRepository({
+      catalog,
+      lockfileRepository,
+      repoRoot: repoDir,
+      localManifestIdentity: manifest,
+    });
+    return new ReconcileFromDiskService({
+      denoRuntime: testDenoRuntime,
+      repository,
+      lockfileRepository,
+      repoDir,
+      localManifestIdentity: manifest,
+    });
+  };
+
+  try {
+    await fn({ repoDir, catalog, lockfileRepository, makeService });
+  } finally {
+    catalog.close();
+    if (Deno.build.os === "windows") {
+      await Deno.remove(repoDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(repoDir, { recursive: true });
+    }
+  }
+}
+
+Deno.test({
+  name: "ReconcileFromDisk #284: manifest version bump updates catalog version",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withManifestFixtureRepo(
+      async ({ repoDir, catalog, makeService }) => {
+        const ts = Date.now();
+        const typeId = `@test/version-bump-${ts}`;
+        const modelPath = join(repoDir, "extensions", "models", "bump.ts");
+        await Deno.writeTextFile(modelPath, MINIMAL_MODEL_CODE(typeId));
+
+        const manifestA: LocalManifestIdentity = {
+          name: "@test/my-ext",
+          version: "2026.04.21.1",
+        };
+        const first = await makeService(manifestA).execute();
+        assertEquals(first.applied, true);
+
+        const rowsAfterFirst = catalog.findAll();
+        const row1 = rowsAfterFirst.find((r) =>
+          r.source_path.includes("bump.ts")
+        );
+        assertEquals(row1?.extension_version, "2026.04.21.1");
+
+        const manifestB: LocalManifestIdentity = {
+          name: "@test/my-ext",
+          version: "2026.04.22.1",
+        };
+        const second = await makeService(manifestB).execute();
+        assertEquals(second.applied, true);
+
+        const rowsAfterSecond = catalog.findAll();
+        const row2 = rowsAfterSecond.find((r) =>
+          r.source_path.includes("bump.ts")
+        );
+        assertEquals(
+          row2?.extension_version,
+          "2026.04.22.1",
+          "#284: version bump must update catalog",
+        );
+      },
+    );
+  },
+});
+
+Deno.test({
+  name:
+    "ReconcileFromDisk #284: simultaneous name + version change (no-manifest → manifest)",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withManifestFixtureRepo(
+      async ({ repoDir, catalog, makeService }) => {
+        const ts = Date.now();
+        const typeId = `@test/name-version-${ts}`;
+        const modelPath = join(
+          repoDir,
+          "extensions",
+          "models",
+          "combined.ts",
+        );
+        await Deno.writeTextFile(modelPath, MINIMAL_MODEL_CODE(typeId));
+
+        const first = await makeService(null).execute();
+        assertEquals(first.applied, true);
+
+        const rowsAfterFirst = catalog.findAll();
+        const row1 = rowsAfterFirst.find((r) =>
+          r.source_path.includes("combined.ts")
+        );
+        assertEquals(row1?.extension_version, "0.0.0");
+        assertEquals(
+          row1?.extension_name?.startsWith("@local/"),
+          true,
+          "no-manifest: must use @local/ prefix",
+        );
+
+        const manifest: LocalManifestIdentity = {
+          name: "@scope/my-project",
+          version: "2026.05.01.1",
+        };
+        const second = await makeService(manifest).execute();
+        assertEquals(second.applied, true);
+
+        const rowsAfterSecond = catalog.findAll();
+        const row2 = rowsAfterSecond.find((r) =>
+          r.source_path.includes("combined.ts")
+        );
+        assertEquals(
+          row2?.extension_name,
+          "@scope/my-project",
+          "#284: name must migrate to manifest name",
+        );
+        assertEquals(
+          row2?.extension_version,
+          "2026.05.01.1",
+          "#284: version must migrate to manifest version",
+        );
+      },
+    );
+  },
+});
+
+Deno.test({
+  name:
+    "ReconcileFromDisk #284: manifest deletion reverts to synthetic @local/ identity",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withManifestFixtureRepo(
+      async ({ repoDir, catalog, makeService }) => {
+        const ts = Date.now();
+        const typeId = `@test/manifest-del-${ts}`;
+        const modelPath = join(repoDir, "extensions", "models", "revert.ts");
+        await Deno.writeTextFile(modelPath, MINIMAL_MODEL_CODE(typeId));
+
+        const manifest: LocalManifestIdentity = {
+          name: "@scope/will-delete",
+          version: "2026.05.01.1",
+        };
+        const first = await makeService(manifest).execute();
+        assertEquals(first.applied, true);
+
+        const rowsAfterFirst = catalog.findAll();
+        const row1 = rowsAfterFirst.find((r) =>
+          r.source_path.includes("revert.ts")
+        );
+        assertEquals(row1?.extension_name, "@scope/will-delete");
+        assertEquals(row1?.extension_version, "2026.05.01.1");
+
+        const second = await makeService(null).execute();
+        assertEquals(second.applied, true);
+
+        const basename = pathBasename(repoDir);
+        const rowsAfterSecond = catalog.findAll();
+        const row2 = rowsAfterSecond.find((r) =>
+          r.source_path.includes("revert.ts")
+        );
+        assertEquals(
+          row2?.extension_name,
+          `@local/${basename}`,
+          "#284: deleting manifest must revert to @local/ identity",
+        );
+        assertEquals(
+          row2?.extension_version,
+          "0.0.0",
+          "#284: deleting manifest must revert version to 0.0.0",
+        );
+      },
+    );
+  },
+});

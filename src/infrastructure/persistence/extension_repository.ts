@@ -319,6 +319,15 @@ export class ExtensionRepository {
     return false;
   }
 
+  manifestIdentityChanged(
+    manifest: LocalManifestIdentity | null,
+  ): boolean {
+    const stored = this.legacyStore.getManifestIdentity();
+    const current = manifest ? `${manifest.name}@${manifest.version}` : null;
+    if (stored === undefined && current === null) return false;
+    return stored !== current;
+  }
+
   // ----- private helpers -----
 
   /**

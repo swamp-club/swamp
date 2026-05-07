@@ -868,6 +868,28 @@ export class ExtensionCatalogStore {
     stmt.run(`populated:${kind}`);
   }
 
+  getManifestIdentity(): string | undefined {
+    const stmt = this.db.prepare(
+      "SELECT value FROM bundle_meta WHERE key = 'manifest_identity'",
+    );
+    const row = stmt.get() as { value: string } | undefined;
+    return row?.value;
+  }
+
+  setManifestIdentity(identity: string | null): void {
+    if (identity === null) {
+      const stmt = this.db.prepare(
+        "DELETE FROM bundle_meta WHERE key = 'manifest_identity'",
+      );
+      stmt.run();
+    } else {
+      const stmt = this.db.prepare(
+        "INSERT OR REPLACE INTO bundle_meta (key, value) VALUES ('manifest_identity', ?)",
+      );
+      stmt.run(identity);
+    }
+  }
+
   /**
    * Returns the stored bundle layout version, or undefined if not set.
    * Used to detect when the bundle path scheme has changed and a full

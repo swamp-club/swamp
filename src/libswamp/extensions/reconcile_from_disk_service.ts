@@ -202,6 +202,19 @@ export class ReconcileFromDiskService {
       cache,
     );
 
+    // Pulled extensions next. Processed BEFORE the local aggregate in
+    // the result array so saveAll DELETEs pulled-orphan rows before
+    // local INSERTs. Prevents the manifest-deletion case from losing
+    // data: old manifest-named rows are inferred as "pulled" after the
+    // manifest is removed, orphan-tombstoned, and their DELETEs must
+    // not clobber the new @local/ rows at the same source_path.
+    const pulledExts = await this.reconcilePulled(
+      existingExtensions,
+      transitions,
+      cache,
+    );
+    result.push(...pulledExts);
+
     // Atomic identity migration: tombstone stale local-origin aggregates
     // BEFORE the new aggregate. saveAll processes in array order —
     // tombstones must come first so removeBySourcePath deletes old rows
@@ -209,18 +222,25 @@ export class ReconcileFromDiskService {
     if (localExt) {
       for (const existing of existingExtensions) {
         if (existing.origin !== "local") continue;
-        if (existing.name === localExt.name) continue;
+        if (
+          existing.name === localExt.name &&
+          existing.version === localExt.version
+        ) continue;
+        const reason =
+          `identity migration: ${existing.name}@${existing.version} → ${localExt.name}@${localExt.version}`;
+        for (const [loc, source] of existing.sources) {
+          if (source.state.tag === "Tombstoned") continue;
+          transitions.push({
+            source: loc,
+            fromState: source.state.tag,
+            toState: "Tombstoned",
+            reason,
+          });
+        }
         result.push(tombstoneAll(existing));
       }
       result.push(localExt);
     }
-
-    const pulledExts = await this.reconcilePulled(
-      existingExtensions,
-      transitions,
-      cache,
-    );
-    result.push(...pulledExts);
 
     return result;
   }
@@ -270,15 +290,30 @@ export class ReconcileFromDiskService {
       }
     }
 
-    let ext = existing ?? (manifest
-      ? makeExtension({
+    let ext: Extension;
+    if (existing && existing.version !== localVersion) {
+      ext = makeExtension({
+        name: localName,
+        version: localVersion,
+        origin: "local",
+        extensionRoot: this.repoDir,
+        sources: existing.sources.values(),
+      });
+      logger
+        .info`Local extension ${localName} version migrated: ${existing.version} → ${localVersion}`;
+    } else if (existing) {
+      ext = existing;
+    } else if (manifest) {
+      ext = makeExtension({
         name: localName,
         version: localVersion,
         origin: "local",
         extensionRoot: this.repoDir,
         sources: [],
-      })
-      : makeLocalExtension({ repoRoot: this.repoDir, basename }));
+      });
+    } else {
+      ext = makeLocalExtension({ repoRoot: this.repoDir, basename });
+    }
 
     ext = await this.reconcileExtension(
       ext,
@@ -573,6 +608,8 @@ export class ReconcileFromDiskService {
     for (const kind of kinds) {
       catalog.markPopulated(kind);
     }
+    const m = this.localManifestIdentity;
+    catalog.setManifestIdentity(m ? `${m.name}@${m.version}` : null);
   }
 }
 

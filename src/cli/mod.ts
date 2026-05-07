@@ -278,10 +278,10 @@ export async function configureExtensionLoaders(
     localManifestIdentity,
   });
 
-  // W3: cold-start reconcile. Runs once when any kind is not yet
-  // populated — repairs aggregate state from disk before the loaders
-  // fire. NOT on every command; only on cold-start.
-  if (repository.anyKindNeedsInvalidation()) {
+  if (
+    repository.anyKindNeedsInvalidation() ||
+    repository.manifestIdentityChanged(localManifestIdentity)
+  ) {
     const reconciler = new ReconcileFromDiskService({
       denoRuntime,
       repository,
