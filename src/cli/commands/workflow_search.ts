@@ -96,6 +96,64 @@ async function displayWorkflowGet(
   renderWorkflowGet(data, outputMode);
 }
 
+export async function workflowSearchAction(
+  options: AnyOptions,
+  query?: string,
+): Promise<void> {
+  const ctx = createContext(options as GlobalOptions, ["workflow", "search"]);
+  const effectiveMode = interactiveOutputMode(ctx);
+  const libCtx = createLibSwampContext();
+  ctx.logger.debug`Searching workflows with query: ${query ?? "(none)"}`;
+
+  const { repoContext } = await requireInitializedRepoReadOnly({
+    repoDir: resolveRepoDir(options.repoDir),
+    outputMode: effectiveMode,
+  });
+  const repo = repoContext.workflowRepo;
+
+  const deps: WorkflowSearchDeps = {
+    findAllWorkflows: () => repo.findAll(),
+  };
+
+  const fetchPreview = effectiveMode === "log"
+    ? createWorkflowFetchPreview(repo)
+    : undefined;
+
+  const renderer = createWorkflowSearchRenderer(effectiveMode, fetchPreview);
+  await consumeStream(
+    workflowSearch(libCtx, deps, { query }),
+    renderer.handlers(),
+  );
+
+  const selected = renderer.selectedItem();
+
+  if (selected) {
+    ctx.logger.debug`Selected workflow: ${selected.name}`;
+    const action = renderer.selectedAction();
+
+    if (action === "run") {
+      ctx.logger.debug`Running workflow: ${selected.name}`;
+      const repoDir = resolveRepoDir(options.repoDir);
+      const cmd = new Deno.Command(Deno.execPath(), {
+        args: ["workflow", "run", selected.name, "--repo-dir", repoDir],
+        stdin: "inherit",
+        stdout: "inherit",
+        stderr: "inherit",
+      });
+      const status = await cmd.output();
+      if (!status.success) {
+        Deno.exit(status.code);
+      }
+    } else if (effectiveMode === "json") {
+      await displayWorkflowGet(selected.name, repo, effectiveMode);
+    }
+  } else {
+    ctx.logger.debug`Search cancelled`;
+  }
+
+  ctx.logger.debug("Workflow search command completed");
+}
+
 export const workflowSearchCommand = new Command()
   .name("search")
   .description("Search for workflows")
@@ -106,64 +164,4 @@ export const workflowSearchCommand = new Command()
     "--repo-dir <dir:string>",
     "Repository directory (env: SWAMP_REPO_DIR)",
   )
-  .action(async function (options: AnyOptions, query?: string) {
-    const ctx = createContext(options as GlobalOptions, ["workflow", "search"]);
-    const effectiveMode = interactiveOutputMode(ctx);
-    const libCtx = createLibSwampContext();
-    ctx.logger.debug`Searching workflows with query: ${query ?? "(none)"}`;
-
-    // Search is always read-only. Execution (if "r" is pressed) happens via
-    // subprocess, so we don't need a write lock.
-    const { repoContext } = await requireInitializedRepoReadOnly({
-      repoDir: resolveRepoDir(options.repoDir),
-      outputMode: effectiveMode,
-    });
-    const repo = repoContext.workflowRepo;
-
-    const deps: WorkflowSearchDeps = {
-      findAllWorkflows: () => repo.findAll(),
-    };
-
-    const fetchPreview = effectiveMode === "log"
-      ? createWorkflowFetchPreview(repo)
-      : undefined;
-
-    const renderer = createWorkflowSearchRenderer(effectiveMode, fetchPreview);
-    await consumeStream(
-      workflowSearch(libCtx, deps, { query }),
-      renderer.handlers(),
-    );
-
-    const selected = renderer.selectedItem();
-
-    if (selected) {
-      ctx.logger.debug`Selected workflow: ${selected.name}`;
-      const action = renderer.selectedAction();
-
-      if (action === "run") {
-        // Shell out to `swamp workflow run <name>`, inheriting stdin/stdout/stderr
-        // so the user gets the full interactive experience (input file selection,
-        // progress tree, etc.)
-        ctx.logger.debug`Running workflow: ${selected.name}`;
-        const repoDir = resolveRepoDir(options.repoDir);
-        const cmd = new Deno.Command(Deno.execPath(), {
-          args: ["workflow", "run", selected.name, "--repo-dir", repoDir],
-          stdin: "inherit",
-          stdout: "inherit",
-          stderr: "inherit",
-        });
-        const status = await cmd.output();
-        if (!status.success) {
-          Deno.exit(status.code);
-        }
-      } else if (effectiveMode === "json") {
-        // JSON mode: display workflow details
-        await displayWorkflowGet(selected.name, repo, effectiveMode);
-      }
-      // Interactive mode without "run": scrollback already has the YAML
-    } else {
-      ctx.logger.debug`Search cancelled`;
-    }
-
-    ctx.logger.debug("Workflow search command completed");
-  });
+  .action(workflowSearchAction);

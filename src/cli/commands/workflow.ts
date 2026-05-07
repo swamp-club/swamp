@@ -25,7 +25,10 @@ import { workflowEvaluateCommand } from "./workflow_evaluate.ts";
 import { workflowGetCommand } from "./workflow_get.ts";
 import { workflowHistoryCommand } from "./workflow_history.ts";
 import { workflowValidateCommand } from "./workflow_validate.ts";
-import { workflowSearchCommand } from "./workflow_search.ts";
+import {
+  workflowSearchAction,
+  workflowSearchCommand,
+} from "./workflow_search.ts";
 import { workflowRunCommand } from "./workflow_run.ts";
 import { workflowSchemaCommand } from "./workflow_schema.ts";
 import { unknownCommandErrorHandler } from "../unknown_command_handler.ts";
@@ -46,4 +49,16 @@ export const workflowCommand = new Command()
   .command("validate", workflowValidateCommand)
   .command("search", workflowSearchCommand)
   .command("run", workflowRunCommand)
-  .command("schema", workflowSchemaCommand);
+  .command("schema", workflowSchemaCommand)
+  .command(
+    "list",
+    new Command()
+      .description("Alias for workflow search")
+      .hidden()
+      .arguments("[query:string]")
+      .option(
+        "--repo-dir <dir:string>",
+        "Repository directory (env: SWAMP_REPO_DIR)",
+      )
+      .action(workflowSearchAction),
+  );

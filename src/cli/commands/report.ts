@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { reportSearchCommand } from "./report_search.ts";
+import { reportSearchAction, reportSearchCommand } from "./report_search.ts";
 import { reportGetCommand } from "./report_get.ts";
 import { reportDescribeCommand } from "./report_describe.ts";
 import { unknownCommandErrorHandler } from "../unknown_command_handler.ts";
@@ -32,4 +32,16 @@ export const reportCommand = new Command()
   })
   .command("search", reportSearchCommand)
   .command("get", reportGetCommand)
-  .command("describe", reportDescribeCommand);
+  .command("describe", reportDescribeCommand)
+  .command(
+    "list",
+    new Command()
+      .description("Alias for report search")
+      .hidden()
+      .arguments("[query:string]")
+      .option(
+        "--repo-dir <dir:string>",
+        "Repository directory (env: SWAMP_REPO_DIR)",
+      )
+      .action(reportSearchAction),
+  );

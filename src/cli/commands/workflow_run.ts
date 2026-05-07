@@ -43,7 +43,10 @@ import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
 import { driverTypeRegistry } from "../../domain/drivers/driver_type_registry.ts";
 import { reportRegistry } from "../../domain/reports/report_registry.ts";
 import { parseTags } from "../../libswamp/mod.ts";
-import { workflowRunSearchCommand } from "./workflow_run_search.ts";
+import {
+  workflowRunSearchAction,
+  workflowRunSearchCommand,
+} from "./workflow_run_search.ts";
 import {
   consumeStream,
   createLibSwampContext,
@@ -317,4 +320,16 @@ export const workflowRunCommand = new Command()
       throw new UserError(`Workflow execution failed: ${message}`);
     }
   })
-  .command("search", workflowRunSearchCommand);
+  .command("search", workflowRunSearchCommand)
+  .command(
+    "list",
+    new Command()
+      .description("Alias for workflow run search")
+      .hidden()
+      .arguments("[query:string]")
+      .option(
+        "--repo-dir <dir:string>",
+        "Repository directory (env: SWAMP_REPO_DIR)",
+      )
+      .action(workflowRunSearchAction),
+  );

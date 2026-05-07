@@ -41,6 +41,58 @@ import { createDefinitionId } from "../../domain/definitions/definition.ts";
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
+export async function modelMethodHistorySearchAction(
+  options: AnyOptions,
+  query?: string,
+): Promise<void> {
+  const ctx = createContext(options as GlobalOptions, [
+    "model",
+    "method",
+    "history",
+    "search",
+  ]);
+  const effectiveMode = interactiveOutputMode(ctx);
+  const libCtx = createLibSwampContext();
+  ctx.logger.debug`Searching method history with query: ${query ?? "(none)"}`;
+
+  const { repoContext } = await requireInitializedRepoReadOnly({
+    repoDir: resolveRepoDir(options.repoDir),
+    outputMode: effectiveMode,
+  });
+
+  const deps: ModelOutputSearchDeps = {
+    findAllOutputsGlobal: () => repoContext.outputRepo.findAllGlobal(),
+    findDefinitionById: (type, defId) =>
+      repoContext.definitionRepo.findById(
+        ModelType.create(type.normalized),
+        createDefinitionId(defId),
+      ),
+  };
+
+  const renderer = createModelOutputSearchRenderer(effectiveMode);
+  await consumeStream(
+    modelOutputSearch(libCtx, deps, { query }),
+    renderer.handlers(),
+  );
+
+  const selected = renderer.selectedItem();
+  if (selected) {
+    ctx.logger.debug`Selected output: ${selected.id}`;
+    const getRenderer = createModelOutputGetRenderer(effectiveMode);
+    const getDeps = await createModelOutputGetDeps(
+      resolveRepoDir(options.repoDir),
+    );
+    await consumeStream(
+      modelOutputGet(libCtx, getDeps, selected.id),
+      getRenderer.handlers(),
+    );
+  } else {
+    ctx.logger.debug`Search cancelled`;
+  }
+
+  ctx.logger.debug("Model method history search command completed");
+}
+
 export const modelMethodHistorySearchCommand = new Command()
   .name("search")
   .description("Search model method run history")
@@ -51,51 +103,4 @@ export const modelMethodHistorySearchCommand = new Command()
     "--repo-dir <dir:string>",
     "Repository directory (env: SWAMP_REPO_DIR)",
   )
-  .action(async function (options: AnyOptions, query?: string) {
-    const ctx = createContext(options as GlobalOptions, [
-      "model",
-      "method",
-      "history",
-      "search",
-    ]);
-    const effectiveMode = interactiveOutputMode(ctx);
-    const libCtx = createLibSwampContext();
-    ctx.logger.debug`Searching method history with query: ${query ?? "(none)"}`;
-
-    const { repoContext } = await requireInitializedRepoReadOnly({
-      repoDir: resolveRepoDir(options.repoDir),
-      outputMode: effectiveMode,
-    });
-
-    const deps: ModelOutputSearchDeps = {
-      findAllOutputsGlobal: () => repoContext.outputRepo.findAllGlobal(),
-      findDefinitionById: (type, defId) =>
-        repoContext.definitionRepo.findById(
-          ModelType.create(type.normalized),
-          createDefinitionId(defId),
-        ),
-    };
-
-    const renderer = createModelOutputSearchRenderer(effectiveMode);
-    await consumeStream(
-      modelOutputSearch(libCtx, deps, { query }),
-      renderer.handlers(),
-    );
-
-    const selected = renderer.selectedItem();
-    if (selected) {
-      ctx.logger.debug`Selected output: ${selected.id}`;
-      const getRenderer = createModelOutputGetRenderer(effectiveMode);
-      const getDeps = await createModelOutputGetDeps(
-        resolveRepoDir(options.repoDir),
-      );
-      await consumeStream(
-        modelOutputGet(libCtx, getDeps, selected.id),
-        getRenderer.handlers(),
-      );
-    } else {
-      ctx.logger.debug`Search cancelled`;
-    }
-
-    ctx.logger.debug("Model method history search command completed");
-  });
+  .action(modelMethodHistorySearchAction);

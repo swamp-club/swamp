@@ -70,6 +70,65 @@ async function createOutputFetchPreview(
   };
 }
 
+export async function modelOutputSearchAction(
+  options: AnyOptions,
+  query?: string,
+): Promise<void> {
+  const ctx = createContext(options as GlobalOptions, [
+    "model",
+    "output",
+    "search",
+  ]);
+  const effectiveMode = interactiveOutputMode(ctx);
+  const libCtx = createLibSwampContext();
+  ctx.logger.debug`Searching outputs with query: ${query ?? "(none)"}`;
+
+  const { repoContext } = await requireInitializedRepoReadOnly({
+    repoDir: resolveRepoDir(options.repoDir),
+    outputMode: effectiveMode,
+  });
+
+  const deps: ModelOutputSearchDeps = {
+    findAllOutputsGlobal: () => repoContext.outputRepo.findAllGlobal(),
+    findDefinitionById: (type, defId) =>
+      repoContext.definitionRepo.findById(
+        ModelType.create(type.normalized),
+        createDefinitionId(defId),
+      ),
+  };
+
+  const repoDir = resolveRepoDir(options.repoDir);
+  const fetchPreview = effectiveMode === "log"
+    ? await createOutputFetchPreview(repoDir)
+    : undefined;
+
+  const renderer = createModelOutputSearchRenderer(
+    effectiveMode,
+    fetchPreview,
+  );
+  await consumeStream(
+    modelOutputSearch(libCtx, deps, { query }),
+    renderer.handlers(),
+  );
+
+  const selected = renderer.selectedItem();
+  if (selected) {
+    ctx.logger.debug`Selected output: ${selected.id}`;
+    if (effectiveMode === "json") {
+      const getRenderer = createModelOutputGetRenderer(effectiveMode);
+      const getDeps = await createModelOutputGetDeps(repoDir);
+      await consumeStream(
+        modelOutputGet(libCtx, getDeps, selected.id),
+        getRenderer.handlers(),
+      );
+    }
+  } else {
+    ctx.logger.debug`Search cancelled`;
+  }
+
+  ctx.logger.debug("Model output search command completed");
+}
+
 export const modelOutputSearchCommand = new Command()
   .name("search")
   .description("Search for model outputs")
@@ -80,61 +139,4 @@ export const modelOutputSearchCommand = new Command()
     "--repo-dir <dir:string>",
     "Repository directory (env: SWAMP_REPO_DIR)",
   )
-  .action(async function (options: AnyOptions, query?: string) {
-    const ctx = createContext(options as GlobalOptions, [
-      "model",
-      "output",
-      "search",
-    ]);
-    const effectiveMode = interactiveOutputMode(ctx);
-    const libCtx = createLibSwampContext();
-    ctx.logger.debug`Searching outputs with query: ${query ?? "(none)"}`;
-
-    const { repoContext } = await requireInitializedRepoReadOnly({
-      repoDir: resolveRepoDir(options.repoDir),
-      outputMode: effectiveMode,
-    });
-
-    const deps: ModelOutputSearchDeps = {
-      findAllOutputsGlobal: () => repoContext.outputRepo.findAllGlobal(),
-      findDefinitionById: (type, defId) =>
-        repoContext.definitionRepo.findById(
-          ModelType.create(type.normalized),
-          createDefinitionId(defId),
-        ),
-    };
-
-    const repoDir = resolveRepoDir(options.repoDir);
-    const fetchPreview = effectiveMode === "log"
-      ? await createOutputFetchPreview(repoDir)
-      : undefined;
-
-    const renderer = createModelOutputSearchRenderer(
-      effectiveMode,
-      fetchPreview,
-    );
-    await consumeStream(
-      modelOutputSearch(libCtx, deps, { query }),
-      renderer.handlers(),
-    );
-
-    const selected = renderer.selectedItem();
-    if (selected) {
-      ctx.logger.debug`Selected output: ${selected.id}`;
-      // In JSON mode, still display the full output get after auto-select
-      if (effectiveMode === "json") {
-        const getRenderer = createModelOutputGetRenderer(effectiveMode);
-        const getDeps = await createModelOutputGetDeps(repoDir);
-        await consumeStream(
-          modelOutputGet(libCtx, getDeps, selected.id),
-          getRenderer.handlers(),
-        );
-      }
-      // In interactive mode, the scrollback from the picker already contains
-      // the output detail, so no additional modelOutputGet call is needed.
-    } else {
-      ctx.logger.debug`Search cancelled`;
-    }
-
-    ctx.logger.debug("Model output search command completed");
-  });
+  .action(modelOutputSearchAction);

@@ -159,6 +159,61 @@ async function displayReportDetail(
   );
 }
 
+export async function reportSearchAction(
+  options: AnyOptions,
+  query?: string,
+): Promise<void> {
+  const ctx = createContext(options as GlobalOptions, [
+    "report",
+    "search",
+  ]);
+  const effectiveMode = interactiveOutputMode(ctx);
+
+  const { repoContext } = await requireInitializedRepoReadOnly({
+    repoDir: resolveRepoDir(options.repoDir),
+    outputMode: effectiveMode,
+  });
+
+  const libCtx = createLibSwampContext({ logger: ctx.logger });
+
+  const fetchPreview = effectiveMode === "log"
+    ? createReportFetchPreview(repoContext)
+    : undefined;
+
+  const searchRenderer = createReportSearchRenderer(
+    effectiveMode,
+    query ?? "",
+    fetchPreview,
+  );
+  await consumeStream(
+    reportSearch(libCtx, await buildSearchDeps(repoContext), {
+      query,
+      model: options.model as string | undefined,
+      workflow: options.workflow as string | undefined,
+      scope: options.scope as string | undefined,
+      labels: options.label as string[] | undefined,
+    }),
+    searchRenderer.handlers(),
+  );
+
+  const selected = searchRenderer.selectedItem();
+  if (selected) {
+    ctx.logger.debug`Selected report: ${selected.reportName}`;
+    if (effectiveMode === "json") {
+      await displayReportDetail(
+        selected,
+        repoContext,
+        libCtx,
+        effectiveMode,
+      );
+    }
+  } else {
+    ctx.logger.debug`Search cancelled`;
+  }
+
+  ctx.logger.debug("Report search command completed");
+}
+
 export const reportSearchCommand = new Command()
   .name("search")
   .description("Search stored report results across all models and workflows")
@@ -180,57 +235,4 @@ export const reportSearchCommand = new Command()
     "Filter by report label (repeatable)",
     { collect: true },
   )
-  .action(async function (options: AnyOptions, query?: string) {
-    const ctx = createContext(options as GlobalOptions, [
-      "report",
-      "search",
-    ]);
-    const effectiveMode = interactiveOutputMode(ctx);
-
-    const { repoContext } = await requireInitializedRepoReadOnly({
-      repoDir: resolveRepoDir(options.repoDir),
-      outputMode: effectiveMode,
-    });
-
-    const libCtx = createLibSwampContext({ logger: ctx.logger });
-
-    const fetchPreview = effectiveMode === "log"
-      ? createReportFetchPreview(repoContext)
-      : undefined;
-
-    const searchRenderer = createReportSearchRenderer(
-      effectiveMode,
-      query ?? "",
-      fetchPreview,
-    );
-    await consumeStream(
-      reportSearch(libCtx, await buildSearchDeps(repoContext), {
-        query,
-        model: options.model as string | undefined,
-        workflow: options.workflow as string | undefined,
-        scope: options.scope as string | undefined,
-        labels: options.label as string[] | undefined,
-      }),
-      searchRenderer.handlers(),
-    );
-
-    const selected = searchRenderer.selectedItem();
-    if (selected) {
-      ctx.logger.debug`Selected report: ${selected.reportName}`;
-      // In JSON mode, still display the full report detail after auto-select
-      if (effectiveMode === "json") {
-        await displayReportDetail(
-          selected,
-          repoContext,
-          libCtx,
-          effectiveMode,
-        );
-      }
-      // In interactive mode, the scrollback from the picker already contains
-      // the report detail, so no additional displayReportDetail call is needed.
-    } else {
-      ctx.logger.debug`Search cancelled`;
-    }
-
-    ctx.logger.debug("Report search command completed");
-  });
+  .action(reportSearchAction);

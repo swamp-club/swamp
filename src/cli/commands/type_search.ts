@@ -71,61 +71,60 @@ function createTypeFetchPreview(): (
   };
 }
 
+export async function typeSearchAction(
+  options: AnyOptions,
+  query?: string,
+): Promise<void> {
+  const ctx = createContext(options as GlobalOptions, ["type", "search"]);
+  const effectiveMode = interactiveOutputMode(ctx);
+  const libCtx = createLibSwampContext();
+  ctx.logger.debug`Searching types with query: ${query ?? "(none)"}`;
+
+  await modelRegistry.ensureLoaded();
+  const deps: TypeSearchDeps = {
+    getRegisteredTypes: () => modelRegistry.types(),
+  };
+
+  const fetchPreview = effectiveMode === "log"
+    ? createTypeFetchPreview()
+    : undefined;
+
+  const renderer = createTypeSearchRenderer(effectiveMode, fetchPreview);
+  await consumeStream(
+    typeSearch(libCtx, deps, { query }),
+    renderer.handlers(),
+  );
+
+  const selected = renderer.selectedItem();
+  if (selected) {
+    ctx.logger.debug`Selected type: ${selected.normalized}`;
+    if (effectiveMode === "json") {
+      const describeRenderer = createTypeDescribeRenderer(effectiveMode);
+      const describeDeps = createTypeDescribeDeps();
+      await consumeStream(
+        typeDescribe(
+          libCtx,
+          describeDeps,
+          ModelType.create(selected.normalized),
+        ),
+        describeRenderer.handlers(),
+      );
+    }
+  } else {
+    ctx.logger.debug`Search cancelled`;
+  }
+
+  ctx.logger.debug("Type search command completed");
+}
+
 export const typeSearchCommand = new Command()
   .name("search")
   .description("Search for model types")
   .example("Browse all types", "swamp type search")
   .example("Search by keyword", "swamp type search aws")
-  // `--repo-dir` is accepted for agentic-flow consistency with other
-  // commands; type search reads only the global extension catalog and
-  // does not require an initialized repo.
   .option(
     "--repo-dir <dir:string>",
     "Repository directory (env: SWAMP_REPO_DIR; not required for type search)",
   )
   .arguments("[query:string]")
-  .action(async function (options: AnyOptions, query?: string) {
-    const ctx = createContext(options as GlobalOptions, ["type", "search"]);
-    const effectiveMode = interactiveOutputMode(ctx);
-    const libCtx = createLibSwampContext();
-    ctx.logger.debug`Searching types with query: ${query ?? "(none)"}`;
-
-    await modelRegistry.ensureLoaded();
-    const deps: TypeSearchDeps = {
-      getRegisteredTypes: () => modelRegistry.types(),
-    };
-
-    const fetchPreview = effectiveMode === "log"
-      ? createTypeFetchPreview()
-      : undefined;
-
-    const renderer = createTypeSearchRenderer(effectiveMode, fetchPreview);
-    await consumeStream(
-      typeSearch(libCtx, deps, { query }),
-      renderer.handlers(),
-    );
-
-    const selected = renderer.selectedItem();
-    if (selected) {
-      ctx.logger.debug`Selected type: ${selected.normalized}`;
-      // In JSON mode, still display the full type describe output after auto-select
-      if (effectiveMode === "json") {
-        const describeRenderer = createTypeDescribeRenderer(effectiveMode);
-        const describeDeps = createTypeDescribeDeps();
-        await consumeStream(
-          typeDescribe(
-            libCtx,
-            describeDeps,
-            ModelType.create(selected.normalized),
-          ),
-          describeRenderer.handlers(),
-        );
-      }
-      // In interactive mode, the scrollback from the picker already contains
-      // the type detail, so no additional typeDescribe call is needed.
-    } else {
-      ctx.logger.debug`Search cancelled`;
-    }
-
-    ctx.logger.debug("Type search command completed");
-  });
+  .action(typeSearchAction);
