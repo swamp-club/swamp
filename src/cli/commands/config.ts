@@ -21,7 +21,7 @@ import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { UpdatePreferencesFileRepository } from "../../infrastructure/update/update_preferences_file_repository.ts";
 import { createScheduler } from "../../infrastructure/update/scheduler_factory.ts";
-import { isValidCadence } from "../../domain/update/update_preferences.ts";
+import type { UpdateCadence } from "../../domain/update/update_preferences.ts";
 import { UserError } from "../../domain/errors.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -91,16 +91,20 @@ const configSetCommand = new Command()
       );
     }
 
+    const meta = CONFIG_KEYS[key];
+    if (meta.values && !meta.values.includes(value)) {
+      throw new UserError(
+        `Invalid value for ${key}: ${value}. Must be ${
+          meta.values.map((v) => `"${v}"`).join(" or ")
+        }.`,
+      );
+    }
+
     const prefsRepo = new UpdatePreferencesFileRepository();
     const prefs = await prefsRepo.read();
 
     switch (key) {
       case "update.auto": {
-        if (value !== "enabled" && value !== "disabled") {
-          throw new UserError(
-            `Invalid value for update.auto: ${value}. Must be "enabled" or "disabled".`,
-          );
-        }
         const enabling = value === "enabled";
 
         const scheduler = await createScheduler();
@@ -124,18 +128,13 @@ const configSetCommand = new Command()
         break;
       }
       case "update.cadence": {
-        if (!isValidCadence(value)) {
-          throw new UserError(
-            `Invalid value for update.cadence: ${value}. Must be "daily" or "weekly".`,
-          );
-        }
-
+        const cadence = value as UpdateCadence;
         if (prefs.enabled) {
           const scheduler = await createScheduler();
-          await scheduler.install(Deno.execPath(), value);
+          await scheduler.install(Deno.execPath(), cadence);
         }
 
-        await prefsRepo.write({ ...prefs, cadence: value });
+        await prefsRepo.write({ ...prefs, cadence });
 
         if (ctx.outputMode === "json") {
           console.log(JSON.stringify({ key, value }));
