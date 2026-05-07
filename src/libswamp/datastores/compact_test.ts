@@ -41,7 +41,7 @@ function makeDeps(
 ): DatastoreCompactDeps {
   return {
     checkpoint: () => ({ walPagesTotal: 10, walPagesCheckpointed: 10 }),
-    vacuum: () => {},
+    vacuum: () => true,
     catalogDbSize: () => Promise.resolve(0),
     ...overrides,
   };
@@ -101,6 +101,23 @@ Deno.test("datastoreCompact: dbBytesReclaimed is 0 when db size does not decreas
   const events = await collectEvents(datastoreCompact(ctx, deps));
   const completed = events.find((e) => e.kind === "completed");
   if (completed?.kind === "completed") {
+    assertEquals(completed.data.dbBytesReclaimed, 0);
+    assertEquals(completed.data.vacuumSkipped, false);
+  }
+});
+
+Deno.test("datastoreCompact: reports vacuumSkipped when vacuum returns false", async () => {
+  await initializeLogging({});
+  const ctx = createLibSwampContext({});
+  const deps = makeDeps({
+    vacuum: () => false,
+  });
+
+  const events = await collectEvents(datastoreCompact(ctx, deps));
+  const completed = events.find((e) => e.kind === "completed");
+  assertEquals(completed?.kind, "completed");
+  if (completed?.kind === "completed") {
+    assertEquals(completed.data.vacuumSkipped, true);
     assertEquals(completed.data.dbBytesReclaimed, 0);
   }
 });

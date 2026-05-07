@@ -582,6 +582,17 @@ Deno.test("CatalogStore: checkpoint returns WAL page counts and truncates WAL", 
   store.close();
 });
 
+Deno.test("CatalogStore: vacuum returns boolean and does not throw", () => {
+  const dbPath = makeTempDbPath();
+  const store = new CatalogStore(dbPath);
+  store.upsert(makeRow());
+
+  const result = store.vacuum();
+  assertEquals(typeof result, "boolean");
+
+  store.close();
+});
+
 Deno.test("CatalogStore: invalidate clears populated flag but keeps data", () => {
   const dbPath = makeTempDbPath();
   const store = new CatalogStore(dbPath);

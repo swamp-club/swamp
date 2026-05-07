@@ -27,6 +27,8 @@ export interface DatastoreCompactData {
   walPagesCheckpointed: number;
   /** Bytes reclaimed from the main database file after VACUUM. */
   dbBytesReclaimed: number;
+  /** True when VACUUM was skipped due to a runtime limitation. */
+  vacuumSkipped: boolean;
 }
 
 export type DatastoreCompactEvent =
@@ -38,7 +40,7 @@ export type DatastoreCompactEvent =
 /** Dependencies for the datastore compact operation. */
 export interface DatastoreCompactDeps {
   checkpoint: () => { walPagesTotal: number; walPagesCheckpointed: number };
-  vacuum: () => void;
+  vacuum: () => boolean;
   catalogDbSize: () => Promise<number>;
 }
 
@@ -58,7 +60,7 @@ export async function* datastoreCompact(
       const beforeSize = await deps.catalogDbSize();
 
       yield { kind: "vacuuming" } as const;
-      deps.vacuum();
+      const vacuumed = deps.vacuum();
       const afterSize = await deps.catalogDbSize();
 
       yield {
@@ -67,6 +69,7 @@ export async function* datastoreCompact(
           walPagesTotal: stats.walPagesTotal,
           walPagesCheckpointed: stats.walPagesCheckpointed,
           dbBytesReclaimed: Math.max(0, beforeSize - afterSize),
+          vacuumSkipped: !vacuumed,
         },
       };
     })(),
