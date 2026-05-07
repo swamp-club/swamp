@@ -353,8 +353,8 @@ async function evaluateWorkflowInternal(
 }
 
 /**
- * Resolves forEach self.* expressions in a task's inputs and args.
- * Vault expressions are left raw for runtime resolution.
+ * Resolves forEach self.* expressions in a task's modelIdOrName, methodName,
+ * inputs, and args. Vault expressions are left raw for runtime resolution.
  */
 function resolveForEachTaskExpressions(
   // deno-lint-ignore no-explicit-any
@@ -365,6 +365,23 @@ function resolveForEachTaskExpressions(
   // deno-lint-ignore no-explicit-any
 ): any {
   const expandedTask = JSON.parse(JSON.stringify(taskData));
+
+  // Resolve expressions in modelIdOrName and methodName
+  for (const field of ["modelIdOrName", "methodName"] as const) {
+    if (expandedTask[field] && typeof expandedTask[field] === "string") {
+      expandedTask[field] = (expandedTask[field] as string).replace(
+        /\$\{\{\s*(.+?)\s*\}\}/g,
+        (_match: string, expr: string) => {
+          if (containsRuntimeExpression(expr)) return _match;
+          try {
+            return String(deps.evaluateCel(expr, stepContext));
+          } catch {
+            return _match;
+          }
+        },
+      );
+    }
+  }
 
   // Resolve expressions in task inputs (model and workflow tasks)
   if (expandedTask.inputs) {

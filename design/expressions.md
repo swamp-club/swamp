@@ -207,6 +207,23 @@ output.
       uri: ${{ self.ep.magnet }}
 ```
 
+`self.*` expressions also resolve in `modelIdOrName` and `methodName`, enabling
+forEach steps to target different model instances per iteration:
+
+```yaml
+# Fan out across region-specific model instances:
+- name: summary-${{ self.region }}
+  forEach:
+    item: region
+    in: ${{ inputs.regions }}
+  task:
+    type: model_method
+    modelIdOrName: aws-alarms-${{ self.region }}
+    methodName: get_summary
+    inputs:
+      historyHours: 24
+```
+
 Results are **not** run-scoped — `findBySpec` returns every matching record
 in the catalog. Add a `workflowRunId` predicate via `data.query()` when you
 want to scope to the current run.
