@@ -23,18 +23,9 @@ import type { SwampVersion } from "../../domain/repo/swamp_version.ts";
 import type { RepoPath } from "../../domain/repo/repo_path.ts";
 import { swampMarkerPath } from "./paths.ts";
 import type { DatastoreConfigData } from "../../domain/datastore/datastore_config.ts";
+import type { AiTool } from "../../domain/repo/ai_tool.ts";
 
-/**
- * The AI coding tool to configure skills and instructions for.
- */
-export type AiTool =
-  | "claude"
-  | "cursor"
-  | "opencode"
-  | "codex"
-  | "copilot"
-  | "kiro"
-  | "none";
+export type { AiTool };
 
 /**
  * Data structure for the .swamp.yaml marker file.

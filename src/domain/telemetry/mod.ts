@@ -31,6 +31,21 @@ export {
 } from "./command_invocation.ts";
 
 export {
+  createInvocationContext,
+  type InvocationContext,
+  type InvocationContextData,
+  invocationContextFromData,
+  invocationContextToData,
+} from "./invocation_context.ts";
+
+export {
+  type AgentHarnessDetection,
+  type DetectableAiTool,
+  detectAgentHarness,
+  RELEVANT_ENV_VARS,
+} from "./agent_harness_detection.ts";
+
+export {
   createErrorResult,
   createSuccessResult,
   type InvocationResult,

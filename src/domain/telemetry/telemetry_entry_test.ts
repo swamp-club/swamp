@@ -150,4 +150,94 @@ Deno.test("TelemetryEntry.fromData reconstructs entry from data", () => {
   assertEquals(entry.durationMs, 1500);
   assertEquals(entry.startedAt.toISOString(), "2026-02-05T12:00:00.000Z");
   assertEquals(entry.completedAt.toISOString(), "2026-02-05T12:00:01.500Z");
+  assertEquals(entry.invocationContext, undefined);
+});
+
+Deno.test("TelemetryEntry.create accepts invocationContext", () => {
+  const entry = TelemetryEntry.create({
+    invocation: {
+      command: "model",
+      args: [],
+      optionKeys: [],
+      globalOptions: [],
+    },
+    result: { status: "success", exitCode: 0 },
+    startedAt: new Date("2026-02-05T10:00:00Z"),
+    completedAt: new Date("2026-02-05T10:00:01Z"),
+    swampVersion: "1.0.0",
+    denoVersion: "2.1.0",
+    platform: "linux",
+    invocationContext: {
+      configuredAiTools: ["claude", "cursor"],
+      detectedAiTool: "claude",
+      agentSessionDetected: true,
+      isInteractive: false,
+    },
+  });
+
+  assertEquals(entry.invocationContext?.configuredAiTools, [
+    "claude",
+    "cursor",
+  ]);
+  assertEquals(entry.invocationContext?.detectedAiTool, "claude");
+  assertEquals(entry.invocationContext?.agentSessionDetected, true);
+  assertEquals(entry.invocationContext?.isInteractive, false);
+});
+
+Deno.test("TelemetryEntry round-trips invocationContext through toData/fromData", () => {
+  const entry = TelemetryEntry.create({
+    id: "ctx-rt-1",
+    invocation: {
+      command: "workflow",
+      args: [],
+      optionKeys: [],
+      globalOptions: [],
+    },
+    result: { status: "success", exitCode: 0 },
+    startedAt: new Date("2026-02-05T10:00:00Z"),
+    completedAt: new Date("2026-02-05T10:00:01Z"),
+    swampVersion: "1.0.0",
+    denoVersion: "2.1.0",
+    platform: "linux",
+    invocationContext: {
+      configuredAiTools: [],
+      agentSessionDetected: true,
+      isInteractive: false,
+    },
+  });
+
+  const data = entry.toData();
+  assertEquals(data.invocationContext?.configuredAiTools, []);
+  assertEquals(data.invocationContext?.agentSessionDetected, true);
+
+  const restored = TelemetryEntry.fromData(data);
+  assertEquals(restored.invocationContext?.configuredAiTools, []);
+  assertEquals(restored.invocationContext?.detectedAiTool, undefined);
+  assertEquals(restored.invocationContext?.agentSessionDetected, true);
+  assertEquals(restored.invocationContext?.isInteractive, false);
+});
+
+Deno.test("TelemetryEntry.fromData decodes legacy entries without invocationContext", () => {
+  // Lock in the back-compat contract: entries written before the field was
+  // introduced must continue to decode without loss.
+  const legacyData: TelemetryEntryData = {
+    id: "legacy-1",
+    invocation: {
+      command: "model",
+      args: [],
+      optionKeys: [],
+      globalOptions: [],
+    },
+    result: { status: "success", exitCode: 0 },
+    startedAt: "2026-02-05T12:00:00.000Z",
+    completedAt: "2026-02-05T12:00:01.000Z",
+    durationMs: 1000,
+    swampVersion: "1.0.0",
+    denoVersion: "2.1.0",
+    platform: "linux",
+  };
+
+  const entry = TelemetryEntry.fromData(legacyData);
+  assertEquals(entry.invocationContext, undefined);
+  assertEquals("invocationContext" in entry.toData(), false);
 });

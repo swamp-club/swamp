@@ -34,6 +34,12 @@ import {
   invocationResultFromData,
   invocationResultToData,
 } from "./invocation_result.ts";
+import {
+  type InvocationContext,
+  type InvocationContextData,
+  invocationContextFromData,
+  invocationContextToData,
+} from "./invocation_context.ts";
 
 /**
  * Properties required to create a new TelemetryEntry.
@@ -47,10 +53,14 @@ export interface CreateTelemetryEntryProps {
   swampVersion: string;
   denoVersion: string;
   platform: string;
+  invocationContext?: InvocationContextData;
 }
 
 /**
  * Data transfer object for TelemetryEntry.
+ *
+ * `invocationContext` is optional so entries written before the field was
+ * introduced still decode without loss.
  */
 export interface TelemetryEntryData {
   id: string;
@@ -62,6 +72,7 @@ export interface TelemetryEntryData {
   swampVersion: string;
   denoVersion: string;
   platform: string;
+  invocationContext?: InvocationContextData;
 }
 
 /**
@@ -78,6 +89,7 @@ export class TelemetryEntry {
     readonly swampVersion: string,
     readonly denoVersion: string,
     readonly platform: string,
+    readonly invocationContext?: InvocationContext,
   ) {}
 
   /**
@@ -97,6 +109,9 @@ export class TelemetryEntry {
       props.swampVersion,
       props.denoVersion,
       props.platform,
+      props.invocationContext
+        ? invocationContextFromData(props.invocationContext)
+        : undefined,
     );
   }
 
@@ -114,6 +129,9 @@ export class TelemetryEntry {
       data.swampVersion,
       data.denoVersion,
       data.platform,
+      data.invocationContext
+        ? invocationContextFromData(data.invocationContext)
+        : undefined,
     );
   }
 
@@ -121,7 +139,7 @@ export class TelemetryEntry {
    * Converts the TelemetryEntry to a plain data object for persistence.
    */
   toData(): TelemetryEntryData {
-    return {
+    const data: TelemetryEntryData = {
       id: this.id,
       invocation: commandInvocationToData(this.invocation),
       result: invocationResultToData(this.result),
@@ -132,5 +150,9 @@ export class TelemetryEntry {
       denoVersion: this.denoVersion,
       platform: this.platform,
     };
+    if (this.invocationContext) {
+      data.invocationContext = invocationContextToData(this.invocationContext);
+    }
+    return data;
   }
 }

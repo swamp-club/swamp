@@ -374,3 +374,72 @@ Deno.test("TelemetryService.flushTelemetry passes undefined authToken when not p
   assertEquals(sender.sentBatches.length, 1);
   assertEquals(sender.sentBatches[0].authToken, undefined);
 });
+
+Deno.test("TelemetryService.recordSuccess stamps invocationContext on entries", async () => {
+  const repo = new MockTelemetryRepository();
+  const service = new TelemetryService(repo, "1.0.0", {
+    configuredAiTools: ["claude", "cursor"],
+    detectedAiTool: "claude",
+    agentSessionDetected: true,
+    isInteractive: false,
+  });
+
+  await service.recordSuccess(
+    {
+      command: "model",
+      args: [],
+      optionKeys: [],
+      globalOptions: [],
+    },
+    new Date(),
+  );
+
+  const ctx = repo.savedEntries[0].invocationContext;
+  assertEquals(ctx?.configuredAiTools, ["claude", "cursor"]);
+  assertEquals(ctx?.detectedAiTool, "claude");
+  assertEquals(ctx?.agentSessionDetected, true);
+  assertEquals(ctx?.isInteractive, false);
+});
+
+Deno.test("TelemetryService.recordError stamps invocationContext on entries", async () => {
+  const repo = new MockTelemetryRepository();
+  const service = new TelemetryService(repo, "1.0.0", {
+    configuredAiTools: [],
+    agentSessionDetected: true,
+    isInteractive: false,
+  });
+
+  await service.recordError(
+    {
+      command: "workflow",
+      args: [],
+      optionKeys: [],
+      globalOptions: [],
+    },
+    new Date(),
+    new Error("boom"),
+  );
+
+  const ctx = repo.savedEntries[0].invocationContext;
+  assertEquals(ctx?.configuredAiTools, []);
+  assertEquals(ctx?.detectedAiTool, undefined);
+  assertEquals(ctx?.agentSessionDetected, true);
+  assertEquals(ctx?.isInteractive, false);
+});
+
+Deno.test("TelemetryService without invocationContext writes entries without the field", async () => {
+  const repo = new MockTelemetryRepository();
+  const service = new TelemetryService(repo, "1.0.0");
+
+  await service.recordSuccess(
+    {
+      command: "model",
+      args: [],
+      optionKeys: [],
+      globalOptions: [],
+    },
+    new Date(),
+  );
+
+  assertEquals(repo.savedEntries[0].invocationContext, undefined);
+});

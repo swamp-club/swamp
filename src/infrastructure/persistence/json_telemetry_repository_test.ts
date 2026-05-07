@@ -502,3 +502,78 @@ Deno.test("JsonTelemetryRepository.deleteOlderThan cleans up both flushed and un
     );
   });
 });
+
+Deno.test("JsonTelemetryRepository round-trips invocationContext (with detected harness)", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new JsonTelemetryRepository(dir);
+    const entry = TelemetryEntry.create({
+      id: "ctx-rt-with-tool",
+      invocation: {
+        command: "model",
+        args: [],
+        optionKeys: [],
+        globalOptions: [],
+      },
+      result: { status: "success", exitCode: 0 },
+      startedAt: new Date("2024-07-01T10:00:00Z"),
+      completedAt: new Date("2024-07-01T10:00:01Z"),
+      swampVersion: "1.0.0",
+      denoVersion: "1.40.0",
+      platform: "linux",
+      invocationContext: {
+        configuredAiTools: ["claude", "cursor"],
+        detectedAiTool: "claude",
+        agentSessionDetected: true,
+        isInteractive: false,
+      },
+    });
+
+    await repo.save(entry);
+    const restored = await repo.findByDate(new Date("2024-07-01T10:00:00Z"));
+    assertEquals(restored.length, 1);
+    assertEquals(restored[0].invocationContext?.configuredAiTools, [
+      "claude",
+      "cursor",
+    ]);
+    assertEquals(restored[0].invocationContext?.detectedAiTool, "claude");
+    assertEquals(restored[0].invocationContext?.agentSessionDetected, true);
+    assertEquals(restored[0].invocationContext?.isInteractive, false);
+  });
+});
+
+Deno.test("JsonTelemetryRepository round-trips invocationContext (legacy opt-out)", async () => {
+  // configuredAiTools=[] is distinct from undefined and must survive intact
+  // — the repo previously normalised legacy `tool: none` to an empty tools
+  // array, and the breakdown queries depend on that signal.
+  await withTempDir(async (dir) => {
+    const repo = new JsonTelemetryRepository(dir);
+    const entry = TelemetryEntry.create({
+      id: "ctx-rt-optout",
+      invocation: {
+        command: "model",
+        args: [],
+        optionKeys: [],
+        globalOptions: [],
+      },
+      result: { status: "success", exitCode: 0 },
+      startedAt: new Date("2024-07-02T10:00:00Z"),
+      completedAt: new Date("2024-07-02T10:00:01Z"),
+      swampVersion: "1.0.0",
+      denoVersion: "1.40.0",
+      platform: "linux",
+      invocationContext: {
+        configuredAiTools: [],
+        agentSessionDetected: false,
+        isInteractive: true,
+      },
+    });
+
+    await repo.save(entry);
+    const restored = await repo.findByDate(new Date("2024-07-02T10:00:00Z"));
+    assertEquals(restored.length, 1);
+    assertEquals(restored[0].invocationContext?.configuredAiTools, []);
+    assertEquals(restored[0].invocationContext?.detectedAiTool, undefined);
+    assertEquals(restored[0].invocationContext?.agentSessionDetected, false);
+    assertEquals(restored[0].invocationContext?.isInteractive, true);
+  });
+});

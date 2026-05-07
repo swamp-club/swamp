@@ -96,8 +96,10 @@ import { TelemetryService } from "../domain/telemetry/telemetry_service.ts";
 import { JsonTelemetryRepository } from "../infrastructure/persistence/json_telemetry_repository.ts";
 import { HttpTelemetrySender } from "../infrastructure/telemetry/http_telemetry_sender.ts";
 import {
+  buildInvocationContext,
   extractCommandInfo,
   isTelemetryDisabled,
+  projectEnvSnapshot,
 } from "./telemetry_integration.ts";
 import { UserIdentityRepository } from "../infrastructure/persistence/user_identity_repository.ts";
 import { AuthRepository } from "../infrastructure/persistence/auth_repository.ts";
@@ -923,7 +925,15 @@ async function initTelemetryService(
     }
 
     const repository = new JsonTelemetryRepository(repoDir);
-    const service = new TelemetryService(repository, VERSION);
+    const invocationContext = buildInvocationContext(
+      projectEnvSnapshot(),
+      marker.tools,
+    );
+    const service = new TelemetryService(
+      repository,
+      VERSION,
+      invocationContext,
+    );
     const telemetryEndpoint = resolveTelemetryEndpoint(
       marker.telemetryEndpoint,
       authServerUrl,

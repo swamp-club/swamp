@@ -21,6 +21,7 @@ import type { TelemetryRepository } from "./repositories.ts";
 import type { TelemetrySender } from "./telemetry_sender.ts";
 import { TelemetryEntry } from "./telemetry_entry.ts";
 import type { CommandInvocationData } from "./command_invocation.ts";
+import type { InvocationContextData } from "./invocation_context.ts";
 import {
   createErrorResult,
   createSuccessResult,
@@ -77,11 +78,18 @@ const DEFAULT_RETENTION_DAYS = 2;
 
 /**
  * Service for recording and analyzing CLI telemetry.
+ *
+ * The optional `invocationContext` is captured once at construction time —
+ * the runtime conditions of one CLI invocation (configured AI tools,
+ * detected harness, stdin tty state) do not change between recording a
+ * success and recording an error, so a single context applies to every
+ * entry the service writes.
  */
 export class TelemetryService {
   constructor(
     private readonly repository: TelemetryRepository,
     private readonly swampVersion: string,
+    private readonly invocationContext?: InvocationContextData,
   ) {}
 
   /**
@@ -102,6 +110,7 @@ export class TelemetryService {
       swampVersion: this.swampVersion,
       denoVersion: Deno.version.deno,
       platform: Deno.build.os,
+      invocationContext: this.invocationContext,
     });
 
     await this.repository.save(entry);
@@ -132,6 +141,7 @@ export class TelemetryService {
       swampVersion: this.swampVersion,
       denoVersion: Deno.version.deno,
       platform: Deno.build.os,
+      invocationContext: this.invocationContext,
     });
 
     await this.repository.save(entry);

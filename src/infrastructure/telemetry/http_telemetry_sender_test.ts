@@ -230,3 +230,54 @@ Deno.test("HttpTelemetrySender.sendBatch omits x-api-key header when authToken n
 
   await server.shutdown();
 });
+
+Deno.test("HttpTelemetrySender.sendBatch lands invocationContext at properties.invocationContext", async () => {
+  // Wire-shape contract: TelemetryEntry.toData() is splatted into properties
+  // verbatim, so the swamp-club consumer side queries
+  // properties.invocationContext.{configuredAiTools, detectedAiTool,
+  // agentSessionDetected, isInteractive}. Lock the shape here.
+  let capturedBody: string | undefined;
+
+  const server = Deno.serve({ port: 0 }, async (req: Request) => {
+    capturedBody = await req.text();
+    return new Response(JSON.stringify({ accepted: 1 }), { status: 202 });
+  });
+
+  const port = server.addr.port;
+  const sender = new HttpTelemetrySender(`http://localhost:${port}`);
+  const entry = TelemetryEntry.create({
+    id: "ctx-wire",
+    invocation: {
+      command: "model",
+      args: [],
+      optionKeys: [],
+      globalOptions: [],
+    },
+    result: { status: "success", exitCode: 0 },
+    startedAt: new Date("2024-03-10T10:00:00Z"),
+    completedAt: new Date("2024-03-10T10:00:01Z"),
+    swampVersion: "1.0.0",
+    denoVersion: "2.1.0",
+    platform: "linux",
+    invocationContext: {
+      configuredAiTools: ["claude", "cursor"],
+      detectedAiTool: "claude",
+      agentSessionDetected: true,
+      isInteractive: false,
+    },
+  });
+
+  const ok = await sender.sendBatch([entry], "user-uuid");
+  assertEquals(ok, true);
+
+  const parsed = JSON.parse(capturedBody!);
+  assertEquals(parsed.properties.invocationContext.configuredAiTools, [
+    "claude",
+    "cursor",
+  ]);
+  assertEquals(parsed.properties.invocationContext.detectedAiTool, "claude");
+  assertEquals(parsed.properties.invocationContext.agentSessionDetected, true);
+  assertEquals(parsed.properties.invocationContext.isInteractive, false);
+
+  await server.shutdown();
+});
