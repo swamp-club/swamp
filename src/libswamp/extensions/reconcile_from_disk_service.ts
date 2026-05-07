@@ -150,20 +150,26 @@ export class ReconcileFromDiskService {
     const existingExtensions = this.repository.loadAll();
     const totalExistingRows = countSources(existingExtensions);
 
-    const reconciledExtensions = await this.reconcileAll(
-      existingExtensions,
-      transitions,
-    );
+    const { extensions: reconciledExtensions, migrationTransitions } =
+      await this.reconcileAll(
+        existingExtensions,
+        transitions,
+      );
 
+    // Identity-migration tombstones are expected mass-transitions, not
+    // repair anomalies. Exclude them from the guardrail ratio so a
+    // version bump in a repo with ≥10 local sources doesn't permanently
+    // block the migration.
+    const repairCount = transitions.length - migrationTransitions;
     const GUARDRAIL_MIN_ROWS = 10;
     if (
-      transitions.length > 0 && totalExistingRows >= GUARDRAIL_MIN_ROWS
+      repairCount > 0 && totalExistingRows >= GUARDRAIL_MIN_ROWS
     ) {
-      const ratio = transitions.length / totalExistingRows;
+      const ratio = repairCount / totalExistingRows;
       if (ratio > 0.5) {
-        if (!dryRun) this.markAllKindsPopulated();
+        if (!dryRun) this.markKindsPopulated();
         logger
-          .warn`Skipped catalog repair: too many entries would change (${transitions.length}/${totalExistingRows}). Run ${"swamp doctor extensions"} to inspect.`;
+          .warn`Skipped catalog repair: too many entries would change (${repairCount}/${totalExistingRows}). Run ${"swamp doctor extensions"} to inspect.`;
         return { transitions, applied: false };
       }
     }
@@ -187,9 +193,10 @@ export class ReconcileFromDiskService {
   private async reconcileAll(
     existingExtensions: Extension[],
     transitions: ReconcileTransition[],
-  ): Promise<Extension[]> {
+  ): Promise<{ extensions: Extension[]; migrationTransitions: number }> {
     const cache = createFreshnessCache();
     const result: Extension[] = [];
+    let migrationTransitions = 0;
 
     // Gather ALL local + source-mounted on-disk sources into one map,
     // then reconcile the @local/<repo> aggregate once. Prevents the
@@ -236,13 +243,14 @@ export class ReconcileFromDiskService {
             toState: "Tombstoned",
             reason,
           });
+          migrationTransitions++;
         }
         result.push(tombstoneAll(existing));
       }
       result.push(localExt);
     }
 
-    return result;
+    return { extensions: result, migrationTransitions };
   }
 
   private async reconcileLocalAndSourceMounted(
@@ -595,7 +603,7 @@ export class ReconcileFromDiskService {
     }
   }
 
-  private markAllKindsPopulated(): void {
+  private markKindsPopulated(): void {
     const catalog = this.repository.legacyStore;
     const kinds: ExtensionKind[] = [
       "model",
@@ -608,8 +616,14 @@ export class ReconcileFromDiskService {
     for (const kind of kinds) {
       catalog.markPopulated(kind);
     }
+  }
+
+  private markAllKindsPopulated(): void {
+    this.markKindsPopulated();
     const m = this.localManifestIdentity;
-    catalog.setManifestIdentity(m ? `${m.name}@${m.version}` : null);
+    this.repository.legacyStore.setManifestIdentity(
+      m ? `${m.name}@${m.version}` : null,
+    );
   }
 }
 

@@ -890,3 +890,54 @@ Deno.test({
     );
   },
 });
+
+Deno.test({
+  name:
+    "ReconcileFromDisk #284: version bump with ≥10 sources does not hit guardrail",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withManifestFixtureRepo(
+      async ({ repoDir, catalog, makeService }) => {
+        const ts = Date.now();
+        for (let i = 0; i < 12; i++) {
+          const typeId = `@test/guardrail-${ts}-${i}`;
+          const modelPath = join(
+            repoDir,
+            "extensions",
+            "models",
+            `model${i}.ts`,
+          );
+          await Deno.writeTextFile(modelPath, MINIMAL_MODEL_CODE(typeId));
+        }
+
+        const manifestA: LocalManifestIdentity = {
+          name: "@test/big-ext",
+          version: "2026.04.21.1",
+        };
+        const first = await makeService(manifestA).execute();
+        assertEquals(first.applied, true);
+        assertEquals(catalog.findAll().length, 12);
+
+        const manifestB: LocalManifestIdentity = {
+          name: "@test/big-ext",
+          version: "2026.04.22.1",
+        };
+        const second = await makeService(manifestB).execute();
+        assertEquals(
+          second.applied,
+          true,
+          "#284: version migration must not be blocked by guardrail",
+        );
+
+        const rows = catalog.findAll();
+        for (const row of rows) {
+          assertEquals(
+            row.extension_version,
+            "2026.04.22.1",
+            `#284: all rows must have new version, got ${row.extension_version} for ${row.source_path}`,
+          );
+        }
+      },
+    );
+  },
+});

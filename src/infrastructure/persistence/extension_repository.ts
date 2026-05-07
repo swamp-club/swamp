@@ -322,9 +322,8 @@ export class ExtensionRepository {
   manifestIdentityChanged(
     manifest: LocalManifestIdentity | null,
   ): boolean {
-    const stored = this.legacyStore.getManifestIdentity();
+    const stored = this.legacyStore.getManifestIdentity() ?? null;
     const current = manifest ? `${manifest.name}@${manifest.version}` : null;
-    if (stored === undefined && current === null) return false;
     return stored !== current;
   }
 
