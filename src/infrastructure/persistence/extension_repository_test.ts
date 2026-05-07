@@ -24,6 +24,7 @@ import {
   assertStringIncludes,
   assertThrows,
 } from "@std/assert";
+import { canonicalizePath } from "./canonicalize_path.ts";
 import { assertPathEquals } from "./path_test_helpers.ts";
 import { ensureDirSync } from "@std/fs";
 import { join } from "@std/path";
@@ -761,7 +762,7 @@ Deno.test("ExtensionRepository: pulled row retains origin='pulled' when localMan
     assertEquals(loaded[0].origin, "pulled");
     assertPathEquals(
       loaded[0].extensionRoot,
-      `${repoRoot}/.swamp/pulled-extensions/@scope/foo`,
+      `${canonicalizePath(repoRoot)}/.swamp/pulled-extensions/@scope/foo`,
     );
   }, {
     lockedVersions: fixedLockedVersions({ "@scope/foo": "1.0.0" }),
@@ -795,6 +796,6 @@ Deno.test("ExtensionRepository: local row gets origin='local' when localManifest
     const loaded = repo.loadAll();
     assertEquals(loaded.length, 1);
     assertEquals(loaded[0].origin, "local");
-    assertPathEquals(loaded[0].extensionRoot, repoRoot);
+    assertPathEquals(loaded[0].extensionRoot, canonicalizePath(repoRoot));
   }, { localManifestIdentity: manifest });
 });
