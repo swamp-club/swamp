@@ -108,10 +108,18 @@ const configSetCommand = new Command()
         const scheduler = await createScheduler();
         if (enabling) {
           await scheduler.install(Deno.execPath(), prefs.cadence);
-          ctx.logger.info("Autoupdate enabled and scheduler installed");
         } else {
           await scheduler.remove();
-          ctx.logger.info("Autoupdate disabled and scheduler removed");
+        }
+
+        if (ctx.outputMode === "json") {
+          console.log(JSON.stringify({ key, value }));
+        } else {
+          ctx.logger.info(
+            enabling
+              ? "Autoupdate enabled and scheduler installed"
+              : "Autoupdate disabled and scheduler removed",
+          );
         }
         break;
       }
@@ -127,6 +135,11 @@ const configSetCommand = new Command()
         if (prefs.enabled) {
           const scheduler = await createScheduler();
           await scheduler.install(Deno.execPath(), prefs.cadence);
+        }
+
+        if (ctx.outputMode === "json") {
+          console.log(JSON.stringify({ key, value }));
+        } else if (prefs.enabled) {
           ctx.logger
             .info`Cadence updated to ${value} and scheduler reinstalled`;
         } else {

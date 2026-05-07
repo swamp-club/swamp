@@ -51,7 +51,7 @@ Description=Swamp background autoupdate
 
 [Service]
 Type=oneshot
-ExecStart=${binaryPath} update --background
+ExecStart="${binaryPath}" update --background
 `;
 }
 

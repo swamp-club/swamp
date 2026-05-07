@@ -67,7 +67,8 @@ export class CronScheduler implements AutoupdateScheduler {
 
     const existing = await readCrontab();
     const schedule = cronSchedule(cadence);
-    const line = `${schedule} ${binaryPath} update --background ${CRON_MARKER}`;
+    const line =
+      `${schedule} "${binaryPath}" update --background ${CRON_MARKER}`;
     const newContent = existing.trimEnd() + (existing.trim() ? "\n" : "") +
       line + "\n";
     await writeCrontab(newContent);

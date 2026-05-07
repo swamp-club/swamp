@@ -1155,16 +1155,20 @@ export async function runCli(args: string[]): Promise<void> {
           const prefsRepo = new UpdatePreferencesFileRepository();
           const prefs = await prefsRepo.read();
 
-          // Show post-autoupdate notice if background upgrade happened
-          const logRepo = new AutoupdateLogFileRepository();
-          const entries = await logRepo.readAll();
-          const lastUpdate = entries.findLast((e) =>
-            e.outcome === "updated" && e.versionAfter
-          );
-          if (lastUpdate && lastUpdate.versionAfter === VERSION) {
-            console.error(
-              `\nℹ swamp was auto-updated from ${lastUpdate.versionBefore} → ${lastUpdate.versionAfter}`,
+          // Show post-autoupdate notice once after background upgrade
+          if (prefs.notifiedVersion !== VERSION) {
+            const logRepo = new AutoupdateLogFileRepository();
+            const entries = await logRepo.readAll();
+            const lastUpdate = entries.findLast((e) =>
+              e.outcome === "updated" && e.versionAfter
             );
+            if (lastUpdate && lastUpdate.versionAfter === VERSION) {
+              console.error(
+                `\nℹ swamp was auto-updated from ${lastUpdate.versionBefore} → ${lastUpdate.versionAfter}`,
+              );
+              prefs.notifiedVersion = VERSION;
+              await prefsRepo.write(prefs);
+            }
           }
 
           // Skip the "run swamp update" banner if autoupdate handles it

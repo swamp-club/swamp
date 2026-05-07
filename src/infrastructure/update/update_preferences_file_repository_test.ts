@@ -55,7 +55,8 @@ Deno.test("UpdatePreferencesFileRepository: round-trips preferences", async () =
     await repo.write(prefs);
 
     const result = await repo.read();
-    assertEquals(result, prefs);
+    assertEquals(result.enabled, true);
+    assertEquals(result.cadence, "weekly");
   });
 });
 

@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { AutoupdateScheduler } from "../../domain/update/autoupdate_scheduler.ts";
+import { UserError } from "../../domain/errors.ts";
 import { LaunchdScheduler } from "./launchd_scheduler.ts";
 import { SystemdScheduler } from "./systemd_scheduler.ts";
 import { CronScheduler } from "./cron_scheduler.ts";
@@ -46,7 +47,7 @@ export async function createScheduler(): Promise<AutoupdateScheduler> {
       }
       return new CronScheduler();
     default:
-      throw new Error(
+      throw new UserError(
         `Background autoupdate is not yet supported on ${Deno.build.os}`,
       );
   }

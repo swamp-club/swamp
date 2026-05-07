@@ -27,6 +27,7 @@ export const VALID_CADENCES: readonly UpdateCadence[] = [
 export interface UpdatePreferences {
   enabled: boolean;
   cadence: UpdateCadence;
+  notifiedVersion?: string;
 }
 
 export const DEFAULT_UPDATE_PREFERENCES: UpdatePreferences = {

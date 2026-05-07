@@ -56,6 +56,9 @@ export class UpdatePreferencesFileRepository
           typeof data.cadence === "string" && isValidCadence(data.cadence)
             ? data.cadence
             : DEFAULT_UPDATE_PREFERENCES.cadence,
+        notifiedVersion: typeof data.notifiedVersion === "string"
+          ? data.notifiedVersion
+          : undefined,
       };
     } catch {
       return { ...DEFAULT_UPDATE_PREFERENCES };

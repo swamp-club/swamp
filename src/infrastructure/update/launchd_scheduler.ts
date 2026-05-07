@@ -32,8 +32,13 @@ function plistPath(): string {
   return join(homeDirectory(), "Library", "LaunchAgents", `${LABEL}.plist`);
 }
 
+function escapeXml(s: string): string {
+  return s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+
 function buildPlist(binaryPath: string, cadence: UpdateCadence): string {
   const interval = cadence === "daily" ? 86400 : 604800;
+  const escapedPath = escapeXml(binaryPath);
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -43,7 +48,7 @@ function buildPlist(binaryPath: string, cadence: UpdateCadence): string {
   <string>${LABEL}</string>
   <key>ProgramArguments</key>
   <array>
-    <string>${binaryPath}</string>
+    <string>${escapedPath}</string>
     <string>update</string>
     <string>--background</string>
   </array>
@@ -64,6 +69,16 @@ function cadenceFromInterval(interval: number): UpdateCadence {
   return interval <= 86400 ? "daily" : "weekly";
 }
 
+async function getUid(): Promise<string> {
+  const cmd = new Deno.Command("id", {
+    args: ["-u"],
+    stdout: "piped",
+    stderr: "null",
+  });
+  const result = await cmd.output();
+  return new TextDecoder().decode(result.stdout).trim();
+}
+
 export class LaunchdScheduler implements AutoupdateScheduler {
   async install(binaryPath: string, cadence: UpdateCadence): Promise<void> {
     await this.remove();
@@ -72,15 +87,16 @@ export class LaunchdScheduler implements AutoupdateScheduler {
     await Deno.mkdir(dirname(path), { recursive: true });
     await atomicWriteTextFile(path, buildPlist(binaryPath, cadence));
 
+    const uid = await getUid();
     const cmd = new Deno.Command("launchctl", {
-      args: ["load", path],
+      args: ["bootstrap", `gui/${uid}`, path],
       stdout: "null",
       stderr: "null",
     });
     const result = await cmd.output();
     if (!result.success) {
       throw new Error(
-        `launchctl load failed with exit code ${result.code}`,
+        `launchctl bootstrap failed with exit code ${result.code}`,
       );
     }
   }
@@ -93,8 +109,9 @@ export class LaunchdScheduler implements AutoupdateScheduler {
       return;
     }
 
+    const uid = await getUid();
     const cmd = new Deno.Command("launchctl", {
-      args: ["unload", path],
+      args: ["bootout", `gui/${uid}/${LABEL}`],
       stdout: "null",
       stderr: "null",
     });

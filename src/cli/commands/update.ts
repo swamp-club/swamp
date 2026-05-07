@@ -190,10 +190,10 @@ async function runSetupAutoStatus(
 export const updateCommand = new Command()
   .description("Update swamp to the latest version")
   .option("--check", "Check for updates without installing")
-  .option("--background", "Run update silently (used by autoupdate scheduler)")
+  .option("--background", "Run update silently", { hidden: true })
   .option(
     "--setup-auto [action:string]",
-    "Set up, check, or disable autoupdate (status|disable)",
+    "Configure autoupdate interactively; use 'status' to check, 'disable' to turn off",
   )
   .action(async function (options: AnyOptions) {
     const ctx = createContext(options as GlobalOptions, ["update"]);
@@ -205,6 +205,18 @@ export const updateCommand = new Command()
     }
 
     if (options.setupAuto !== undefined) {
+      const validActions = ["status", "disable"];
+      if (
+        typeof options.setupAuto === "string" &&
+        !validActions.includes(options.setupAuto)
+      ) {
+        throw new UserError(
+          `Unknown action: ${options.setupAuto}. Valid actions: ${
+            validActions.join(", ")
+          }`,
+        );
+      }
+
       if (options.setupAuto === "status") {
         await runSetupAutoStatus(ctx);
       } else if (options.setupAuto === "disable") {
