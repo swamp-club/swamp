@@ -20,6 +20,9 @@
 import { DatabaseSync } from "node:sqlite";
 import { dirname } from "@std/path";
 import { ensureDirSync } from "@std/fs";
+import { getLogger } from "@logtape/logtape";
+
+const logger = getLogger(["swamp", "persistence", "catalog"]);
 
 /**
  * A single row in the catalog table, representing one version of a data
@@ -559,9 +562,19 @@ export class CatalogStore {
    * Must be called outside any open transaction. Acquires an exclusive lock
    * and rewrites the entire database file — on a large catalog this may take
    * several seconds. Safe to call only when no other connections are active.
+   *
+   * Returns `true` if VACUUM succeeded, `false` if it was skipped due to a
+   * runtime limitation (e.g. SQLITE_LIMIT_ATTACHED=0 in the canary Deno
+   * runtime).
    */
-  vacuum(): void {
-    this.db.exec("VACUUM");
+  vacuum(): boolean {
+    try {
+      this.db.exec("VACUUM");
+      return true;
+    } catch (error) {
+      logger.warn`VACUUM skipped: ${error}`;
+      return false;
+    }
   }
 
   /**

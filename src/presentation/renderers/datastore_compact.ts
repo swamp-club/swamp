@@ -47,7 +47,10 @@ class LogDatastoreCompactRenderer implements Renderer<DatastoreCompactEvent> {
         } else {
           logger.info`WAL checkpointed and truncated`;
         }
-        if (e.data.dbBytesReclaimed > 0) {
+        if (e.data.vacuumSkipped) {
+          logger
+            .warn`VACUUM skipped (runtime limitation) — WAL checkpoint still reclaimed space`;
+        } else if (e.data.dbBytesReclaimed > 0) {
           logger
             .info`Catalog compacted: reclaimed ${e.data.dbBytesReclaimed} bytes`;
         } else {
@@ -72,6 +75,7 @@ class JsonDatastoreCompactRenderer implements Renderer<DatastoreCompactEvent> {
             walPagesTotal: e.data.walPagesTotal,
             walPagesCheckpointed: e.data.walPagesCheckpointed,
             dbBytesReclaimed: e.data.dbBytesReclaimed,
+            vacuumSkipped: e.data.vacuumSkipped,
           },
           null,
           2,
