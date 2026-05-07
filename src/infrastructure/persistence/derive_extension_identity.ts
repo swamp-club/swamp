@@ -32,10 +32,13 @@ import { basename } from "@std/path";
  *     authoritative for version — keeps W1a's schema migration narrow.
  *
  *   - For local extensions (rows under `<repo>/extensions/<kind>/`),
- *     name is the synthetic `@local/<basename(repoRoot)>` and version
- *     is the literal `"0.0.0"`. Locals have no manifest, no scoped
- *     name, no version; the design doc (`design/extension-rearchitecture.md`)
- *     pins `0.0.0` as the only legal value.
+ *     this function returns the synthetic `@local/<basename(repoRoot)>`
+ *     at version `"0.0.0"`. When `extensions/manifest.yaml` declares
+ *     both `name` and `version`, callers (e.g. {@link ExtensionRepository},
+ *     {@link ReconcileFromDiskService}) override this synthetic identity
+ *     with the manifest-sourced values. The override happens outside
+ *     this function — `deriveExtensionIdentity` remains a pure string
+ *     transform that does not read the filesystem beyond its inputs.
  */
 export interface ExtensionIdentity {
   readonly name: string;

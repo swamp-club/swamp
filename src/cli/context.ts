@@ -143,11 +143,11 @@ export function getRepoDirFromArgs(args: string[]): string {
  */
 export function resolveRepoDir(cliValue: string | undefined): string {
   if (cliValue !== undefined) {
-    return cliValue;
+    return resolve(cliValue);
   }
   const envDir = Deno.env.get("SWAMP_REPO_DIR");
   if (envDir && envDir.length > 0) {
-    return envDir;
+    return resolve(envDir);
   }
-  return ".";
+  return Deno.cwd();
 }

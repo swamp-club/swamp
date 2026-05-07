@@ -28,7 +28,9 @@ import {
   recordBundleBuildFailed,
   recordBundled,
   recordEntryPointUnreadable,
+  tombstoneAll,
 } from "../../domain/extensions/extension.ts";
+import type { LocalManifestIdentity } from "../../infrastructure/persistence/local_manifest_reader.ts";
 import { makeSource } from "../../domain/extensions/source.ts";
 import { makeSourceLocation } from "../../domain/extensions/source_location.ts";
 import { makeBundleLocation } from "../../domain/extensions/bundle_location.ts";
@@ -123,17 +125,20 @@ export class ReconcileFromDiskService {
   private readonly repository: ExtensionRepository;
   private readonly lockfileRepository: LockfileRepository;
   private readonly repoDir: string;
+  private readonly localManifestIdentity: LocalManifestIdentity | null;
 
   constructor(args: {
     denoRuntime: DenoRuntime;
     repository: ExtensionRepository;
     lockfileRepository: LockfileRepository;
     repoDir: string;
+    localManifestIdentity?: LocalManifestIdentity | null;
   }) {
     this.denoRuntime = args.denoRuntime;
     this.repository = args.repository;
     this.lockfileRepository = args.lockfileRepository;
     this.repoDir = resolve(args.repoDir);
+    this.localManifestIdentity = args.localManifestIdentity ?? null;
   }
 
   async execute(
@@ -196,7 +201,19 @@ export class ReconcileFromDiskService {
       transitions,
       cache,
     );
-    if (localExt) result.push(localExt);
+
+    // Atomic identity migration: tombstone stale local-origin aggregates
+    // BEFORE the new aggregate. saveAll processes in array order —
+    // tombstones must come first so removeBySourcePath deletes old rows
+    // before upsertWithIdentity writes new ones at the same paths.
+    if (localExt) {
+      for (const existing of existingExtensions) {
+        if (existing.origin !== "local") continue;
+        if (existing.name === localExt.name) continue;
+        result.push(tombstoneAll(existing));
+      }
+      result.push(localExt);
+    }
 
     const pulledExts = await this.reconcilePulled(
       existingExtensions,
@@ -213,8 +230,12 @@ export class ReconcileFromDiskService {
     transitions: ReconcileTransition[],
     cache: FreshnessCache,
   ): Promise<Extension | null> {
+    const manifest = this.localManifestIdentity;
     const basename = pathBasename(this.repoDir) || "unknown";
-    const localName = `@local/${basename}`;
+    const localName = manifest ? manifest.name : `@local/${basename}`;
+    const localVersion = manifest ? manifest.version : "0.0.0";
+
+    // Look for an existing aggregate matching the canonical identity.
     const existing = existingExtensions.find(
       (e) => e.name === localName && e.origin === "local",
     );
@@ -249,8 +270,15 @@ export class ReconcileFromDiskService {
       }
     }
 
-    let ext = existing ??
-      makeLocalExtension({ repoRoot: this.repoDir, basename });
+    let ext = existing ?? (manifest
+      ? makeExtension({
+        name: localName,
+        version: localVersion,
+        origin: "local",
+        extensionRoot: this.repoDir,
+        sources: [],
+      })
+      : makeLocalExtension({ repoRoot: this.repoDir, basename }));
 
     ext = await this.reconcileExtension(
       ext,

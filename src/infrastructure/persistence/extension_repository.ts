@@ -26,6 +26,7 @@ import type {
   ExtensionTypeRow,
 } from "./extension_catalog_store.ts";
 import { DuplicateTypeError } from "./duplicate_type_error.ts";
+import type { LocalManifestIdentity } from "./local_manifest_reader.ts";
 import type { LockfileRepository } from "./lockfile_repository.ts";
 import {
   type Extension,
@@ -129,6 +130,7 @@ export class ExtensionRepository {
 
   private readonly lockfileRepository: LockfileRepository;
   private readonly repoRoot: string;
+  private readonly localManifestIdentity: LocalManifestIdentity | null;
   /**
    * Tracks rows we've already info-logged for the empty-version
    * fallback in this process's lifetime. The write-back makes
@@ -142,10 +144,12 @@ export class ExtensionRepository {
     catalog: ExtensionCatalogStore;
     lockfileRepository: LockfileRepository;
     repoRoot: string;
+    localManifestIdentity?: LocalManifestIdentity | null;
   }) {
     this.legacyStore = args.catalog;
     this.lockfileRepository = args.lockfileRepository;
     this.repoRoot = canonicalizePath(args.repoRoot);
+    this.localManifestIdentity = args.localManifestIdentity ?? null;
     this.fallbackLoggedSourcePaths = new Set();
   }
 
@@ -417,8 +421,16 @@ export class ExtensionRepository {
       }
       name = derived.name;
       version = derived.version;
+      // When a manifest declares identity, use it for local rows
+      // instead of the synthetic @local/<basename>@0.0.0.
+      if (
+        version.length > 0 && this.localManifestIdentity &&
+        name.startsWith("@local/")
+      ) {
+        name = this.localManifestIdentity.name;
+        version = this.localManifestIdentity.version;
+      }
       if (version.length > 0) {
-        // Locals always have version="0.0.0" — write back both columns.
         this.legacyStore.updateExtensionIdentity(
           row.source_path,
           name,

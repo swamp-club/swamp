@@ -202,6 +202,32 @@ Deno.test("deriveExtensionIdentity: empty source path returns null", () => {
   assertEquals(deriveExtensionIdentity("", "/repo"), null);
 });
 
+// --- Regression: relative repoRoot "." (swamp-club#273) ---------------------
+
+Deno.test("deriveExtensionIdentity: relative repoRoot '.' fails to match absolute pulled paths", () => {
+  // Bug 3 regression pin: when repoRoot is ".", the pulled prefix
+  // "./.swamp/pulled-extensions/" does not match absolute source paths.
+  // The fix is in resolveRepoDir (always returns absolute); this test
+  // pins the behavior so a future regression is caught.
+  assertEquals(
+    deriveExtensionIdentity(
+      "/repo/.swamp/pulled-extensions/@scope/foo/models/x.ts",
+      ".",
+    ),
+    null,
+  );
+});
+
+Deno.test("deriveExtensionIdentity: absolute repoRoot correctly matches pulled paths", () => {
+  assertEquals(
+    deriveExtensionIdentity(
+      "/repo/.swamp/pulled-extensions/@scope/foo/models/x.ts",
+      "/repo",
+    ),
+    { name: "@scope/foo", version: "" },
+  );
+});
+
 // --- Windows canonical form (lowercase + forward slashes) ------------------
 
 Deno.test("deriveExtensionIdentity: Windows canonical form (lowercase + forward slashes) for pulled", () => {

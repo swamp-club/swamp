@@ -54,13 +54,16 @@ export type CalVer = string;
  * pattern: `saveAll([vN.tombstoneAll(), vN+1])`).
  *
  * Local-extension special case (per design doc lines 264-289):
- *   - One synthetic aggregate per repo, named `@local/<basename(repoRoot)>`.
- *     The basename collision across unrelated repos with the same name
- *     (e.g. `~/work/myproject` and `~/personal/myproject`) is INTENDED:
- *     per-repo catalog isolation makes the collision harmless, and the
- *     synthetic name surfaces in user-facing output (doctor, error
- *     messages) only within the scope of one repo. Not a bug.
- *   - Version is always `"0.0.0"`.
+ *   - When `extensions/manifest.yaml` declares both `name` and
+ *     `version`, the local aggregate uses those values. This makes
+ *     the identity path-independent — the same repo mounted at
+ *     different paths (host vs container) produces the same identity.
+ *   - When no manifest is present, the aggregate falls back to the
+ *     synthetic `@local/<basename(repoRoot)>` at version `"0.0.0"`.
+ *     Basename collision across unrelated repos with the same name
+ *     (e.g. `~/work/myproject` and `~/personal/myproject`) is
+ *     INTENDED for the no-manifest case: per-repo catalog isolation
+ *     makes the collision harmless.
  *   - Origin is `"local"`.
  *   - `extensionRoot` is the **repo root**, not a per-kind directory.
  *     Callers that walk extensionRoot must tolerate this distinction —

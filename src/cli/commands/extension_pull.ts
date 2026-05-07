@@ -23,6 +23,7 @@ import { join, resolve } from "@std/path";
 import type { DenoRuntime } from "../../domain/runtime/deno_runtime.ts";
 import { EmbeddedDenoRuntime } from "../../infrastructure/runtime/embedded_deno_runtime.ts";
 import { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
+import { readLocalManifestIdentity } from "../../infrastructure/persistence/local_manifest_reader.ts";
 import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
 import { swampPath } from "../../infrastructure/persistence/paths.ts";
 import {
@@ -246,6 +247,7 @@ export const extensionPullCommand = new Command()
         catalog,
         lockfileRepository: deps.lockfileRepository,
         repoRoot: repoDir,
+        localManifestIdentity: readLocalManifestIdentity(repoDir),
       });
 
       await pullExtension(ref, {

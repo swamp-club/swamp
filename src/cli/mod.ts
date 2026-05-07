@@ -59,6 +59,7 @@ import {
 import { UserModelLoader } from "../domain/models/user_model_loader.ts";
 import { ExtensionCatalogStore } from "../infrastructure/persistence/extension_catalog_store.ts";
 import { ExtensionRepository } from "../infrastructure/persistence/extension_repository.ts";
+import { readLocalManifestIdentity } from "../infrastructure/persistence/local_manifest_reader.ts";
 import { LockfileRepository } from "../infrastructure/persistence/lockfile_repository.ts";
 import { UserVaultLoader } from "../domain/vaults/user_vault_loader.ts";
 import { UserDriverLoader } from "../domain/drivers/user_driver_loader.ts";
@@ -269,10 +270,12 @@ export async function configureExtensionLoaders(
     "upstream_extensions.json",
   );
   const lockfileRepository = await LockfileRepository.create(lockfilePath);
+  const localManifestIdentity = readLocalManifestIdentity(repoDir);
   const repository = new ExtensionRepository({
     catalog,
     lockfileRepository,
     repoRoot: repoDir,
+    localManifestIdentity,
   });
 
   // W3: cold-start reconcile. Runs once when any kind is not yet
@@ -284,6 +287,7 @@ export async function configureExtensionLoaders(
       repository,
       lockfileRepository,
       repoDir,
+      localManifestIdentity,
     });
     await reconciler.execute();
   }
