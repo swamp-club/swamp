@@ -60,8 +60,16 @@ async function runBackgroundUpdate(
     outcome: "up_to_date",
   };
 
+  const BACKGROUND_TIMEOUT_MS = 5 * 60 * 1000;
   try {
-    const result = await deps.update(platform);
+    const timeout = new Promise<never>((_, reject) => {
+      const id = setTimeout(
+        () => reject(new Error("Background update timed out")),
+        BACKGROUND_TIMEOUT_MS,
+      );
+      Deno.unrefTimer(id);
+    });
+    const result = await Promise.race([deps.update(platform), timeout]);
 
     if (result.status === "updated") {
       entry.versionAfter = result.newVersion;
