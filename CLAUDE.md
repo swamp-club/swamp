@@ -9,9 +9,12 @@ architecture.
 
 ## Skills
 
-Skills live in `.claude/skills/<skill-name>/`. When creating or modifying any
-skill, **always load the `skill-creator` skill first** — it contains the
+Skills live in `.claude/skills/<skill-name>/`.
+
+IMPORTANT: Before creating or modifying ANY skill file, you MUST load the
+`skill-creator` skill first. Do not skip this step — it contains the
 authoritative guidelines for structure, frontmatter, and progressive disclosure.
+This is a hard prerequisite, not a suggestion.
 
 ### Skill structure
 
