@@ -29,6 +29,7 @@
 
 import { ExtensionCatalogStore } from "../extension_catalog_store.ts";
 import { ExtensionRepository } from "../extension_repository.ts";
+import type { LocalManifestIdentity } from "../local_manifest_reader.ts";
 import { LockfileRepository } from "../lockfile_repository.ts";
 import type { UpstreamExtensionsMap } from "../upstream_extensions.ts";
 
@@ -55,6 +56,7 @@ export function makeStubRepository(args: {
   dbPath: string;
   repoRoot?: string;
   lockedVersions?: UpstreamExtensionsMap;
+  localManifestIdentity?: LocalManifestIdentity | null;
 }): { repository: ExtensionRepository; catalog: ExtensionCatalogStore } {
   const catalog = new ExtensionCatalogStore(args.dbPath);
   const lockfileRepository = new LockfileRepository(
@@ -65,6 +67,7 @@ export function makeStubRepository(args: {
     catalog,
     lockfileRepository,
     repoRoot: args.repoRoot ?? "/test/repo",
+    localManifestIdentity: args.localManifestIdentity,
   });
   return { repository, catalog };
 }
