@@ -336,13 +336,18 @@ export class ExtensionRepository {
     };
     const groups = new Map<string, Group>();
 
+    const pulledPrefix = this.repoRoot.endsWith("/")
+      ? `${this.repoRoot}.swamp/pulled-extensions/`
+      : `${this.repoRoot}/.swamp/pulled-extensions/`;
+
     for (const row of rows) {
       const identity = this.resolveIdentity(row);
       if (identity === null) continue;
 
       const origin = (
           this.localManifestIdentity &&
-          identity.name === this.localManifestIdentity.name
+          identity.name === this.localManifestIdentity.name &&
+          !row.source_path.startsWith(pulledPrefix)
         )
         ? "local" as ExtensionOrigin
         : inferOrigin(identity.name);

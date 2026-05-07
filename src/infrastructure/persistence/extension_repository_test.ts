@@ -24,6 +24,8 @@ import {
   assertStringIncludes,
   assertThrows,
 } from "@std/assert";
+import { canonicalizePath } from "./canonicalize_path.ts";
+import { assertPathEquals } from "./path_test_helpers.ts";
 import { ensureDirSync } from "@std/fs";
 import { join } from "@std/path";
 import type { ExtensionRepository } from "./extension_repository.ts";
@@ -33,6 +35,7 @@ import {
   fixedLockedVersions,
   makeStubRepository,
 } from "./test_helpers/stub_extension_repository.ts";
+import type { LocalManifestIdentity } from "./local_manifest_reader.ts";
 import type { UpstreamExtensionsMap } from "./upstream_extensions.ts";
 import {
   type Extension,
@@ -68,13 +71,17 @@ function withRepository(
     catalog: ExtensionCatalogStore,
     repoRoot: string,
   ) => void,
-  opts?: { lockedVersions?: UpstreamExtensionsMap },
+  opts?: {
+    lockedVersions?: UpstreamExtensionsMap;
+    localManifestIdentity?: LocalManifestIdentity | null;
+  },
 ): void {
   const { repoRoot, dbPath } = makeTempLayout();
   const { repository, catalog } = makeStubRepository({
     dbPath,
     repoRoot,
     lockedVersions: opts?.lockedVersions,
+    localManifestIdentity: opts?.localManifestIdentity,
   });
   try {
     fn(repository, catalog, repoRoot);
@@ -733,4 +740,62 @@ Deno.test("ExtensionRepository: empty-identity row with neither name nor version
     assertFalse(after[0].extension_name === "");
     assertFalse(after[0].extension_version === "");
   });
+});
+
+// ===== Test: swamp-club#283 — pulled row keeps origin="pulled" when manifest name collides =====
+Deno.test("ExtensionRepository: pulled row retains origin='pulled' when localManifestIdentity name collides (swamp-club#283)", () => {
+  const manifest: LocalManifestIdentity = {
+    name: "@scope/foo",
+    version: "1.0.0",
+  };
+  withRepository((repo, _cat, repoRoot) => {
+    const ext = pulledExtension({
+      repoRoot,
+      name: "@scope/foo",
+      version: "1.0.0",
+      sources: [{ relPath: "models/instance.ts", type: "@scope/foo/instance" }],
+    });
+    repo.save(ext);
+
+    const loaded = repo.loadAll();
+    assertEquals(loaded.length, 1);
+    assertEquals(loaded[0].origin, "pulled");
+    assertPathEquals(
+      loaded[0].extensionRoot,
+      `${canonicalizePath(repoRoot)}/.swamp/pulled-extensions/@scope/foo`,
+    );
+  }, {
+    lockedVersions: fixedLockedVersions({ "@scope/foo": "1.0.0" }),
+    localManifestIdentity: manifest,
+  });
+});
+
+// ===== Test: local row still gets origin="local" when manifest identity matches =====
+Deno.test("ExtensionRepository: local row gets origin='local' when localManifestIdentity matches (preserves swamp-club#273 fix)", () => {
+  const manifest: LocalManifestIdentity = {
+    name: "@scope/foo",
+    version: "1.0.0",
+  };
+  withRepository((repo, cat, repoRoot) => {
+    const sp = `${repoRoot}/extensions/models/instance.ts`;
+    cat.upsertWithIdentity({
+      source_path: sp,
+      type_normalized: "@scope/foo/instance",
+      kind: "model",
+      bundle_path: `${repoRoot}/.swamp/bundles/instance.js`,
+      version: "1.0.0",
+      description: "",
+      extends_type: "",
+      source_mtime: "",
+      source_fingerprint: "fp",
+      state: "Indexed",
+      extension_name: "@scope/foo",
+      extension_version: "1.0.0",
+    });
+
+    const loaded = repo.loadAll();
+    assertEquals(loaded.length, 1);
+    assertEquals(loaded[0].origin, "local");
+    assertPathEquals(loaded[0].extensionRoot, canonicalizePath(repoRoot));
+  }, { localManifestIdentity: manifest });
 });
