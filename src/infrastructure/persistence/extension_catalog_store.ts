@@ -57,7 +57,7 @@ const VALIDATION_FAILED_DROPPED_MIGRATION_KEY =
  * so all 5 loaders reference the same source of truth (closing the
  * audit's "model has 3 guards, siblings have 1" coverage gap).
  */
-export const BUNDLE_LAYOUT_VERSION = "per-extension-aggregate-v3";
+export const BUNDLE_LAYOUT_VERSION = "per-extension-aggregate-v4";
 
 /**
  * The kind of bundle entry — which registry type it belongs to.

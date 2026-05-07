@@ -1427,10 +1427,19 @@ export class UserModelLoader {
       // and we'd wastefully spawn Deno before falling back to the
       // cached bundle anyway. Skipping the rebundle attempt cuts cold
       // startup on large pulled trees (106 spawns → 0 on @swamp/aws/ec2).
-      // Freshness for user-editable extensions still runs through
-      // findStaleFiles — this branch only fires when both a bundle
-      // exists AND the source can't be locally rebundled.
-      if (bundleExists && isExpectedBundleFailure(absolutePath, this.repoDir)) {
+      //
+      // Only for pulled extensions — user-developed extensions (locals
+      // and source-mounted) must always attempt the build so edits take
+      // effect and failures surface visibly (swamp-club#274).
+      const isPulled = this.repoDir &&
+        resolve(boundaryDir).startsWith(
+          join(resolve(this.repoDir), SWAMP_DATA_DIR, "pulled-extensions") +
+            "/",
+        );
+      if (
+        bundleExists && isPulled &&
+        isExpectedBundleFailure(absolutePath, this.repoDir)
+      ) {
         return { js: await Deno.readTextFile(bundlePath), fromCache: true };
       }
 
