@@ -340,7 +340,12 @@ export class ExtensionRepository {
       const identity = this.resolveIdentity(row);
       if (identity === null) continue;
 
-      const origin = inferOrigin(identity.name);
+      const origin = (
+          this.localManifestIdentity &&
+          identity.name === this.localManifestIdentity.name
+        )
+        ? "local" as ExtensionOrigin
+        : inferOrigin(identity.name);
       const extensionRoot = computeExtensionRoot(
         origin,
         identity.name,
@@ -537,13 +542,13 @@ export class ExtensionRepository {
 /**
  * Derives an Extension's origin from its name. Pulled extensions are
  * scoped (`@scope/name`) and are NOT under the `@local/` namespace;
- * locals are always `@local/<basename>`.
+ * locals are `@local/<basename>` (synthetic) or manifest-sourced.
  *
- * For W1b, source-mounted extensions roll up under the local synthetic
- * aggregate (per design doc lines 264-273) and have name `@local/...`.
- * The repository treats them as `"local"` for origin purposes — the
- * source-mounted distinction matters at the lifecycle layer (W2), not
- * at the persistence layer.
+ * When a manifest declares identity, the local extension uses the
+ * manifest name (e.g. `@hivemq/terraform-harvester`) which does NOT
+ * start with `@local/`. Callers in `materialiseExtensions` check the
+ * `localManifestIdentity` first to handle this case before falling
+ * back to this name-prefix heuristic.
  */
 function inferOrigin(extensionName: string): ExtensionOrigin {
   return extensionName.startsWith("@local/") ? "local" : "pulled";
