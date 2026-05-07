@@ -68,6 +68,9 @@ export class UpdatePreferencesFileRepository
   async write(preferences: UpdatePreferences): Promise<void> {
     const dir = dirname(this.filePath);
     await Deno.mkdir(dir, { recursive: true });
-    await atomicWriteTextFile(this.filePath, stringify(preferences));
+    const defined = Object.fromEntries(
+      Object.entries(preferences).filter(([, v]) => v !== undefined),
+    );
+    await atomicWriteTextFile(this.filePath, stringify(defined));
   }
 }
