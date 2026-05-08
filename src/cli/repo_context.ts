@@ -662,11 +662,15 @@ export async function createModelLock(
  * callers must omit it. Not exported from any barrel; used solely by
  * `repo_context_test.ts`.
  */
+export const SWAMP_LOCK_HOLDER_PID = "SWAMP_LOCK_HOLDER_PID";
+
 export async function waitForPerModelLocks(
   datastorePath: string,
   findModelLocksOverride?: () => Promise<number>,
 ): Promise<void> {
   const logger = getSwampLogger(["datastore", "lock"]);
+
+  const parentPid = Deno.env.get(SWAMP_LOCK_HOLDER_PID);
 
   const findModelLocks = findModelLocksOverride ??
     (async (): Promise<number> => {
@@ -685,7 +689,11 @@ export async function waitForPerModelLocks(
             const info = JSON.parse(content) as {
               acquiredAt: string;
               ttlMs: number;
+              pid?: number;
             };
+            // Skip locks held by our parent process (prevents deadlock
+            // when a workflow shell step spawns a nested swamp command).
+            if (parentPid && info.pid === Number(parentPid)) continue;
             // Only count non-stale locks
             const acquiredAt = new Date(info.acquiredAt).getTime();
             if (Date.now() - acquiredAt <= info.ttlMs) {
@@ -942,6 +950,8 @@ export async function acquireModelLocks(
     }
   }
 
+  Deno.env.set(SWAMP_LOCK_HOLDER_PID, String(Deno.pid));
+
   const flush = async () => {
     try {
       // For custom sync-capable datastores: push under global lock
@@ -981,6 +991,7 @@ export async function acquireModelLocks(
       for (const key of lockKeys) {
         await flushDatastoreSyncNamed(key);
       }
+      Deno.env.delete(SWAMP_LOCK_HOLDER_PID);
     }
   };
 

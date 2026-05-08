@@ -558,6 +558,20 @@ Caveat: `waitForPerModelLocks` only scans the local filesystem. Custom
 (S3, distributed) datastores use their own `DistributedLock`
 implementation and rely on its semantics rather than the local drain.
 
+#### Parent-Process Lock Awareness
+
+When `acquireModelLocks` acquires per-model locks it sets the environment
+variable `SWAMP_LOCK_HOLDER_PID` to the current process PID.
+`waitForPerModelLocks` reads this variable and skips any lock file whose
+`pid` field matches — those locks are held by the parent process, so
+waiting for them would deadlock (the parent is blocked on the child, and
+the child is blocked on the parent's locks).
+
+This arises when a workflow shell step spawns a nested `swamp` command
+(e.g. `swamp extension push`). The child inherits the env var and avoids
+polling on its parent's locks. The env var is cleared when the parent
+flushes its locks.
+
 A SIGINT handler ensures best-effort lock release on Ctrl-C. If the process
 crashes without releasing, the lock expires after the TTL (30 seconds by
 default).

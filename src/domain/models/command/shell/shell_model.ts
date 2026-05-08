@@ -116,6 +116,14 @@ async function executeCommand(
       }
     }
 
+    // When explicit env vars are present, Deno.Command replaces the entire
+    // inherited environment. Propagate the lock-holder PID so nested swamp
+    // commands can skip the parent's per-model locks (prevents deadlock).
+    const lockHolderPid = Deno.env.get("SWAMP_LOCK_HOLDER_PID");
+    if (lockHolderPid) {
+      shellEnv = { SWAMP_LOCK_HOLDER_PID: lockHolderPid, ...shellEnv };
+    }
+
     const invocation = shellStrategy.buildInvocation(shellCommand);
     const result = await executeProcess({
       command: invocation.command,
