@@ -2996,3 +2996,104 @@ Deno.test("CONTRACT: dataArtifacts attached to thrown error are preserved on the
     assertEquals(stepRun?.dataArtifacts[0].dataId, partialArtifacts[0].dataId);
   });
 });
+
+// --- forEach self.* in modelIdOrName resolution (Issue #294) ---
+
+Deno.test({
+  name:
+    "DefaultStepExecutor resolves self.* expressions in modelIdOrName before model lookup",
+  sanitizeResources: false,
+  sanitizeOps: false,
+  fn: async () => {
+    const { z } = await import("zod");
+    const { ModelType } = await import("../models/model_type.ts");
+    const { modelRegistry } = await import("../models/model.ts");
+    const { Definition } = await import("../definitions/definition.ts");
+    const { YamlDefinitionRepository } = await import(
+      "../../infrastructure/persistence/yaml_definition_repository.ts"
+    );
+    const { initializeLogging } = await import(
+      "../../infrastructure/logging/logger.ts"
+    );
+    const { buildEnvContext } = await import(
+      "../expressions/model_resolver.ts"
+    );
+    await initializeLogging({});
+
+    await withTempDir(async (tempDir) => {
+      const typeName = `@test-issue294/foreach-${
+        crypto.randomUUID().slice(0, 8)
+      }`;
+      const modelType = ModelType.create(typeName);
+      let methodExecuted = false;
+
+      modelRegistry.register({
+        type: modelType,
+        version: "2026.01.01.1",
+        globalArguments: z.object({}),
+        resources: {},
+        methods: {
+          run: {
+            description: "confirms model was found and method executed",
+            arguments: z.object({}),
+            execute: () => {
+              methodExecuted = true;
+              return Promise.resolve({});
+            },
+          },
+        },
+      });
+
+      const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+      try {
+        const definitionRepo = new YamlDefinitionRepository(tempDir);
+        const instance = Definition.create({
+          name: "test-us-east-1",
+          type: modelType.normalized,
+        });
+        await definitionRepo.save(modelType, instance);
+
+        const step = Step.create({
+          name: "run-us-east-1",
+          task: StepTask.model(
+            "test-${{ self.region }}",
+            "run",
+          ),
+        });
+        const ctx: StepExecutionContext = {
+          workflowId: createWorkflowId(
+            "00000000-0000-0000-0000-000000000000",
+          ),
+          workflowRunId: "00000000-0000-0000-0000-000000000000",
+          workflowName: "foreach-test",
+          jobName: "job1",
+          stepName: "run-us-east-1",
+          repoDir: tempDir,
+          signal: new AbortController().signal,
+          step,
+          expressionContext: {
+            model: {},
+            env: buildEnvContext(),
+            self: {
+              id: "",
+              name: "",
+              version: 1,
+              tags: {},
+              globalArguments: {},
+              region: "us-east-1",
+            },
+          },
+          forEachVariable: { name: "region", value: "us-east-1" },
+          catalogStore,
+        };
+
+        const executor = new DefaultStepExecutor();
+        await executor.execute(step, ctx);
+
+        assertEquals(methodExecuted, true);
+      } finally {
+        catalogStore.close();
+      }
+    });
+  },
+});

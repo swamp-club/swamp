@@ -64,7 +64,10 @@ import { ModelOutput } from "../models/model_output.ts";
 import type { Definition } from "../definitions/definition.ts";
 import type { ModelType } from "../models/model_type.ts";
 import type { MethodResult, ModelDefinition } from "../models/model.ts";
-import { ExpressionEvaluationService } from "../expressions/expression_evaluation_service.ts";
+import {
+  containsRuntimeExpression,
+  ExpressionEvaluationService,
+} from "../expressions/expression_evaluation_service.ts";
 import {
   buildEnvContext,
   type DataRecord,
@@ -306,6 +309,32 @@ export class DefaultStepExecutor implements StepExecutor {
       vaultService,
       expressionEvaluator,
     } = await this.resolveDeps(ctx);
+
+    // Resolve forEach self.* expressions in modelIdOrName and methodName
+    // before model lookup. The expression context has self populated with
+    // the forEach variable by runStep().
+    if (ctx.expressionContext) {
+      const celEvaluator = new CelEvaluator();
+      const resolve = (value: string): string =>
+        value.replace(
+          /\$\{\{\s*(.+?)\s*\}\}/g,
+          (_match: string, expr: string) => {
+            if (containsRuntimeExpression(expr)) return _match;
+            try {
+              return String(
+                celEvaluator.evaluate(expr, ctx.expressionContext!),
+              );
+            } catch {
+              return _match;
+            }
+          },
+        );
+      task = {
+        ...task,
+        modelIdOrName: resolve(task.modelIdOrName),
+        methodName: resolve(task.methodName),
+      };
+    }
 
     // Look up the model definition by ID or name
     const lookupResult = await findDefinitionByIdOrName(
@@ -1383,9 +1412,11 @@ export class WorkflowExecutionService {
       jobRun.start();
       yield { kind: "job_started", jobId: jobName };
 
-      // Expand forEach steps if we have expression context
+      // Expand forEach steps if we have expression context.
+      // Runs in all modes including --last-evaluated: forEach expansion
+      // is a structural transformation, not expression evaluation.
       let expandedStepsMap: Map<string, ExpandedStep[]> | undefined;
-      if (expressionContext && !options.lastEvaluated) {
+      if (expressionContext) {
         expandedStepsMap = await new ForEachExpansionService(new CelEvaluator())
           .expand(job, expressionContext);
         // Rewrite the jobRun's step list to match the expansion. The
