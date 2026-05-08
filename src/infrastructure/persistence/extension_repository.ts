@@ -376,6 +376,7 @@ export class ExtensionRepository {
         kind: row.kind,
         fingerprint: row.source_fingerprint ?? "",
         state,
+        sourceMtime: row.source_mtime ?? "",
       });
 
       const key = `${identity.name}::${identity.version}`;
@@ -680,7 +681,7 @@ function sourceToRow(
     version: extension.version, // legacy column; mirrors extension_version
     description: "",
     extends_type: "",
-    source_mtime: "",
+    source_mtime: source.sourceMtime,
     source_fingerprint: source.fingerprint,
     state: state.tag,
     extension_name: extension.name,

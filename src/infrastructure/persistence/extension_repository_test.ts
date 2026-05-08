@@ -116,6 +116,7 @@ function pulledExtension(args: {
           "fp-" + s.relPath,
         ),
       },
+      sourceMtime: "2026-01-15T10:00:00.000Z",
     });
   });
   return makeExtension({
@@ -177,6 +178,7 @@ Deno.test("ExtensionRepository: diff-save adds a new Source as INSERT", () => {
         `${repoRoot}/.swamp/bundles/b.js`,
         "fp-new",
       ),
+      sourceMtime: "2026-02-20T15:30:00.000Z",
     });
     repo.save(v1Plus);
     const loaded = repo.loadAll();

@@ -39,6 +39,7 @@ export interface Source {
   readonly kind: ExtensionKind;
   readonly fingerprint: SourceFingerprint;
   readonly state: RowState;
+  readonly sourceMtime: string;
 }
 
 /**
@@ -52,12 +53,14 @@ export function makeSource(args: {
   kind: ExtensionKind;
   fingerprint: SourceFingerprint;
   state: RowState;
+  sourceMtime: string;
 }): Source {
   return {
     id: args.id,
     kind: args.kind,
     fingerprint: args.fingerprint,
     state: args.state,
+    sourceMtime: args.sourceMtime,
   };
 }
 
@@ -73,6 +76,7 @@ export function withState(source: Source, state: RowState): Source {
     kind: source.kind,
     fingerprint: source.fingerprint,
     state,
+    sourceMtime: source.sourceMtime,
   });
 }
 
@@ -85,11 +89,13 @@ export function withFingerprintAndState(
   source: Source,
   fingerprint: SourceFingerprint,
   state: RowState,
+  sourceMtime: string,
 ): Source {
   return makeSource({
     id: source.id,
     kind: source.kind,
     fingerprint,
     state,
+    sourceMtime,
   });
 }

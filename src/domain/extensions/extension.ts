@@ -257,6 +257,7 @@ export function observeFreshSource(
     fingerprint: SourceFingerprint;
     type: TypeName;
     bundle: BundleLocation;
+    sourceMtime: string;
   },
 ): Extension {
   if (args.location.extensionRoot !== extension.extensionRoot) {
@@ -277,7 +278,12 @@ export function observeFreshSource(
   if (existing) {
     next.set(
       args.location,
-      withFingerprintAndState(existing, args.fingerprint, state),
+      withFingerprintAndState(
+        existing,
+        args.fingerprint,
+        state,
+        args.sourceMtime,
+      ),
     );
   } else {
     next.set(
@@ -287,6 +293,7 @@ export function observeFreshSource(
         kind: args.kind,
         fingerprint: args.fingerprint,
         state,
+        sourceMtime: args.sourceMtime,
       }),
     );
   }

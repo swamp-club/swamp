@@ -243,6 +243,7 @@ export class InstallExtensionService {
           baseDir: dir,
         });
         if (!out) continue;
+        const stat = await Deno.stat(absolutePath);
         sources.push(
           makeSource({
             id: makeSourceLocation(absolutePath, extRoot),
@@ -253,6 +254,7 @@ export class InstallExtensionService {
               type: out.typeNormalized,
               bundle: makeBundleLocation(out.bundlePath, out.fingerprint),
             },
+            sourceMtime: stat.mtime?.toISOString() ?? "",
           }),
         );
       }

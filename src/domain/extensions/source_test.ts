@@ -33,15 +33,17 @@ function indexedSource() {
     kind: "model",
     fingerprint: FP,
     state: { tag: "Indexed", type: "@scope/foo/instance", bundle: BUNDLE },
+    sourceMtime: "2026-01-15T10:00:00.000Z",
   });
 }
 
-Deno.test("makeSource: stores all four fields", () => {
+Deno.test("makeSource: stores all fields", () => {
   const s = indexedSource();
   assertEquals(s.kind, "model");
   assertEquals(s.fingerprint, FP);
   assertEquals(s.state.tag, "Indexed");
   assertEquals(s.id.relativePath, "models/instance.ts");
+  assertEquals(s.sourceMtime, "2026-01-15T10:00:00.000Z");
 });
 
 Deno.test("withState: returns a NEW Source, leaves original untouched", () => {
@@ -58,10 +60,11 @@ Deno.test("withState: returns a NEW Source, leaves original untouched", () => {
   assertFalse(original === next);
   // The new instance reflects the transition.
   assertEquals(next.state.tag, "ValidationFailed");
-  // Identity, kind, and fingerprint flow through untouched.
+  // Identity, kind, fingerprint, and mtime flow through untouched.
   assert(original.id === next.id);
   assertEquals(original.kind, next.kind);
   assertEquals(original.fingerprint, next.fingerprint);
+  assertEquals(next.sourceMtime, original.sourceMtime);
 });
 
 Deno.test("withFingerprintAndState: replaces both atomically", () => {
@@ -71,7 +74,7 @@ Deno.test("withFingerprintAndState: replaces both atomically", () => {
     tag: "Indexed",
     type: "@scope/foo/instance",
     bundle: newBundle,
-  });
+  }, "2026-02-20T15:30:00.000Z");
 
   assertFalse(original === next);
   assertEquals(original.fingerprint, FP); // original unchanged
@@ -80,4 +83,6 @@ Deno.test("withFingerprintAndState: replaces both atomically", () => {
   if (next.state.tag === "Indexed") {
     assertEquals(next.state.bundle.fingerprint, "def456");
   }
+  assertEquals(next.sourceMtime, "2026-02-20T15:30:00.000Z");
+  assertEquals(original.sourceMtime, "2026-01-15T10:00:00.000Z");
 });

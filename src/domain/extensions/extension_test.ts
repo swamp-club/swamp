@@ -48,6 +48,7 @@ function indexedSource(
     kind,
     fingerprint: FP,
     state: { tag: "Indexed", type, bundle: BUNDLE },
+    sourceMtime: "",
   });
 }
 
@@ -70,6 +71,7 @@ Deno.test("makeExtension: I1 — Source with mismatched extensionRoot throws", (
     kind: "model",
     fingerprint: FP,
     state: { tag: "Indexed", type: "@scope/foo/x", bundle: BUNDLE },
+    sourceMtime: "",
   });
   assertThrows(
     () =>
@@ -137,6 +139,7 @@ Deno.test("makeExtension: I2 — already-tombstoned loser is idempotent", () => 
     kind: "model",
     fingerprint: FP,
     state: { tag: "Tombstoned", reason: "renamed" },
+    sourceMtime: "",
   });
   const ext = makeExtension({
     name: "@scope/foo",
@@ -178,6 +181,7 @@ Deno.test("makeExtension: Tombstoned sources don't trigger I2", () => {
     kind: "model",
     fingerprint: FP,
     state: { tag: "Tombstoned", reason: "source-deleted" },
+    sourceMtime: "",
   });
   const ext = makeExtension({
     name: "@scope/foo",
@@ -364,6 +368,7 @@ Deno.test("observeFreshSource: I1 violation throws", () => {
         fingerprint: FP,
         type: "@scope/foo/x",
         bundle: BUNDLE,
+        sourceMtime: "",
       }),
     SourceExtensionRootMismatch,
   );
@@ -384,6 +389,7 @@ Deno.test("observeFreshSource: adds new Source in transient Bundled state", () =
     fingerprint: FP,
     type: "@scope/foo/x",
     bundle: BUNDLE,
+    sourceMtime: "2026-01-15T10:00:00.000Z",
   });
   assertEquals(next.sources.size, 1);
   const s = [...next.sources.values()][0];
@@ -486,6 +492,7 @@ Deno.test("makeExtension: canonicalizes args.extensionRoot at the boundary (Wind
             "fp",
           ),
         },
+        sourceMtime: "",
       }),
     ],
   });

@@ -437,6 +437,8 @@ export class ReconcileFromDiskService {
 
       const loader = this.makeLoaderForKind(kind);
       const relativePath = relative(baseDir, absolutePath);
+      const sourceStat = await Deno.stat(absolutePath);
+      const sourceMtime = sourceStat.mtime?.toISOString() ?? "";
       try {
         const out = await loader.bundleAndIndexOne({
           absolutePath,
@@ -459,6 +461,7 @@ export class ReconcileFromDiskService {
           fingerprint: fp,
           type: out.typeNormalized,
           bundle,
+          sourceMtime,
         });
 
         ext = recordBundled(ext, {
@@ -490,7 +493,7 @@ export class ReconcileFromDiskService {
           ext = makeExtensionWithNewSource(ext, effectiveLoc, kind, {
             tag: "BundleBuildFailed",
             lastError: errorMsg,
-          });
+          }, sourceMtime);
         }
 
         if (fromState !== "BundleBuildFailed") {
@@ -667,6 +670,7 @@ function makeExtensionWithNewSource(
   location: SourceLocation,
   kindDir: KindDir,
   state: { tag: "BundleBuildFailed"; lastError: string },
+  sourceMtime: string,
 ): Extension {
   const kind = kindDirToExtensionKind(kindDir);
   const source = makeSource({
@@ -674,6 +678,7 @@ function makeExtensionWithNewSource(
     kind,
     fingerprint: "",
     state,
+    sourceMtime,
   });
   return makeExtension({
     ...extension,
