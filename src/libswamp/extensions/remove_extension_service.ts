@@ -57,10 +57,9 @@ export interface RemoveExtensionResult {
  * cleanly — `tombstoneAll()` is idempotent (already-tombstoned Sources
  * stay tombstoned).
  *
- * **W4-inherits.** The service shape is W4-stable; `legacyStore`
- * access does not appear here. Future cleanup is just "delete the
- * service" if/when the catalog-write boundary is unified into a single
- * lifecycle layer.
+ * **W4-inherits.** The service shape is W4-stable. Future cleanup is
+ * just "delete the service" if/when the catalog-write boundary is
+ * unified into a single lifecycle layer.
  */
 export class RemoveExtensionService {
   private readonly repository: ExtensionRepository;

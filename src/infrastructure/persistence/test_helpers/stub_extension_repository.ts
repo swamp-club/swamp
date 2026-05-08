@@ -24,7 +24,7 @@
  * every loader test that previously constructed `new
  * ExtensionCatalogStore(...)` now calls `makeStubRepository(...)`,
  * gets back both the repository and (for tests that still need the
- * catalog directly) the underlying catalog via `repo.legacyStore`.
+ * catalog directly) the underlying catalog via `repo.getCatalogStore()`.
  */
 
 import { ExtensionCatalogStore } from "../extension_catalog_store.ts";
@@ -38,7 +38,7 @@ import type { UpstreamExtensionsMap } from "../upstream_extensions.ts";
  * {@link ExtensionCatalogStore}. The catalog uses the file path passed
  * in (callers create a temp dir / `:memory:` / a fixture file as
  * appropriate). Caller is responsible for closing the underlying
- * catalog via `repo.legacyStore.close()` at end-of-test.
+ * catalog via `repo.close()` at end-of-test.
  *
  * @param dbPath The catalog DB path. Use a tmpdir-relative path for
  *   isolation between tests, or `:memory:` for a fully in-memory

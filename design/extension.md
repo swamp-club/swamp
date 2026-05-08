@@ -1020,9 +1020,9 @@ no lockfile-retry-budget or SQLite-busy exhaustion at iteration end.
 
 ### W3+ inheritance
 
-The lifecycle services' shape is W4-stable. The unified loader
-(`KindAdapter`) work in W4 collapses the five per-loader
-`bundleAndIndexOne` methods to one dispatch, but the install/remove/
+The lifecycle services' shape is W4-stable. The unified
+`ExtensionLoader` (parameterized by `KindAdapter`) collapsed the five
+per-loader `bundleAndIndexOne` methods to one dispatch, but the install/remove/
 upgrade services keep their current public surface. CLI command files'
 direct service construction (in `extension_pull.ts`,
 `extension_update.ts`, `extension_rm.ts`, etc.) persists past W4.
@@ -1112,8 +1112,8 @@ are caught by the first reconcile run — no schema migration needed.
 
 - Bundle cache file eviction (W3 detects `OrphanedBundleOnly` but does
   NOT delete bundle files)
-- Loader unification / `KindAdapter` → W4
-- `legacyStore` escape hatch removal → W4
+- Loader unification / `KindAdapter` (done in W4)
+- `legacyStore` escape hatch removal (done in W4)
 - `swamp doctor extensions` aggregate-state rendering → W6
 
 ## Lazy Per-Bundle Loading

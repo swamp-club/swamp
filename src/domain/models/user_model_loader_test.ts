@@ -23,7 +23,8 @@ import {
   assertStringIncludes,
 } from "@std/assert";
 import { dirname, join } from "@std/path";
-import { UserModelLoader } from "./user_model_loader.ts";
+import { ExtensionLoader } from "../extensions/extension_loader.ts";
+import { modelKindAdapter } from "../extensions/model_kind_adapter.ts";
 import { modelRegistry } from "./model.ts";
 import { bundleNamespace } from "../../infrastructure/persistence/paths.ts";
 import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
@@ -45,7 +46,7 @@ function makeRepoForCatalog(
   });
 }
 import type { DataHandle, DataWriter, MethodContext } from "./model.ts";
-import type { ModelType } from "./model_type.ts";
+import { ModelType } from "./model_type.ts";
 import type { UnifiedDataRepository } from "../data/repositories.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
 import { type DataId, generateDataId } from "../data/data_id.ts";
@@ -61,9 +62,8 @@ const testDenoRuntime: DenoRuntime = {
   ensureDeno: () => Promise.resolve(Deno.execPath()),
 };
 
-/** Creates a UserModelLoader configured for tests. */
-function createTestLoader(): UserModelLoader {
-  return new UserModelLoader(testDenoRuntime);
+function createTestLoader(): ExtensionLoader {
+  return new ExtensionLoader(testDenoRuntime, modelKindAdapter);
 }
 
 /**
@@ -324,7 +324,7 @@ export const model = {
 
   await withTempModels({ "data_model.ts": modelCode }, async (dir) => {
     const loader = createTestLoader();
-    const result = await loader.loadModels(dir);
+    const result = await loader.load(dir);
 
     assertEquals(result.loaded.length, 1);
     assertEquals(result.loaded[0], "data_model.ts");
@@ -339,7 +339,7 @@ export const notAModel = { foo: "bar" };
 
   await withTempModels({ "no_export.ts": modelCode }, async (dir) => {
     const loader = createTestLoader();
-    const result = await loader.loadModels(dir);
+    const result = await loader.load(dir);
 
     // Files without model/extension exports are now silently skipped
     assertEquals(result.loaded.length, 0);
@@ -358,7 +358,7 @@ export const model = {
 
   await withTempModels({ "invalid_structure.ts": modelCode }, async (dir) => {
     const loader = createTestLoader();
-    const result = await loader.loadModels(dir);
+    const result = await loader.load(dir);
 
     assertEquals(result.loaded.length, 0);
     assertEquals(result.failed.length, 1);
@@ -368,7 +368,7 @@ export const model = {
 
 Deno.test("UserModelLoader handles non-existent directory", async () => {
   const loader = createTestLoader();
-  const result = await loader.loadModels("/nonexistent/path/to/models");
+  const result = await loader.load("/nonexistent/path/to/models");
 
   assertEquals(result.loaded.length, 0);
   assertEquals(result.failed.length, 0);
@@ -407,7 +407,7 @@ export const model = {
     { "model_test.ts": testFile, "model.ts": regularFile },
     async (dir) => {
       const loader = createTestLoader();
-      const result = await loader.loadModels(dir);
+      const result = await loader.load(dir);
 
       assertEquals(result.loaded.length, 1);
       assertEquals(result.loaded[0], "model.ts");
@@ -474,7 +474,7 @@ export const model = {
     { "aaa_first.ts": model1, "zzz_second.ts": model2 },
     async (dir) => {
       const loader = createTestLoader();
-      const result = await loader.loadModels(dir);
+      const result = await loader.load(dir);
 
       // First model should load, second should fail as duplicate
       assertEquals(result.loaded.length, 1);
@@ -524,7 +524,7 @@ export const model = {
 
   await withTempModels({ "passthrough_data.ts": modelCode }, async (dir) => {
     const loader = createTestLoader();
-    const result = await loader.loadModels(dir);
+    const result = await loader.load(dir);
 
     assertEquals(result.loaded.length, 1);
 
@@ -587,7 +587,7 @@ export const model = {
 
   await withTempModels({ "inherit_schema.ts": modelCode }, async (dir) => {
     const loader = createTestLoader();
-    const result = await loader.loadModels(dir);
+    const result = await loader.load(dir);
 
     assertEquals(result.loaded.length, 1);
 
@@ -655,7 +655,7 @@ export const model = {
     { "model_a.ts": model1, "model_b.ts": model2 },
     async (dir) => {
       const loader = createTestLoader();
-      const result = await loader.loadModels(dir);
+      const result = await loader.load(dir);
 
       assertEquals(result.loaded.length, 2);
       assertEquals(result.failed.length, 0);
@@ -701,7 +701,7 @@ export const model = {
 
   await withTempModels({ "empty_handles.ts": modelCode }, async (dir) => {
     const loader = createTestLoader();
-    const result = await loader.loadModels(dir);
+    const result = await loader.load(dir);
 
     assertEquals(result.loaded.length, 1);
 
@@ -755,7 +755,7 @@ export const model = {
 
   await withTempModels({ "no_handles.ts": modelCode }, async (dir) => {
     const loader = createTestLoader();
-    const result = await loader.loadModels(dir);
+    const result = await loader.load(dir);
 
     assertEquals(result.loaded.length, 1);
 
@@ -828,7 +828,7 @@ export const model = {
     { "aws/ec2_start.ts": modelA, "echo_audit.ts": modelB },
     async (dir) => {
       const loader = createTestLoader();
-      const result = await loader.loadModels(dir);
+      const result = await loader.load(dir);
 
       assertEquals(result.loaded.length, 2);
       assertEquals(result.failed.length, 0);
@@ -866,7 +866,7 @@ export const model = {
     { "sub/model.ts": modelCode, "sub/model_test.ts": testFile },
     async (dir) => {
       const loader = createTestLoader();
-      const result = await loader.loadModels(dir);
+      const result = await loader.load(dir);
 
       assertEquals(result.loaded.length, 1);
       assertEquals(result.loaded[0], join("sub", "model.ts"));
@@ -901,7 +901,7 @@ export const model = {
     { "a/b/c/deep_model.ts": modelCode },
     async (dir) => {
       const loader = createTestLoader();
-      const result = await loader.loadModels(dir);
+      const result = await loader.load(dir);
 
       assertEquals(result.loaded.length, 1);
       assertEquals(
@@ -957,7 +957,7 @@ export const extension = {
     { "base_model.ts": modelCode, "ext_audit.ts": extCode },
     async (dir) => {
       const loader = createTestLoader();
-      const result = await loader.loadModels(dir);
+      const result = await loader.load(dir);
 
       assertEquals(result.loaded.length, 1);
       assertEquals(result.extended.length, 1);
@@ -1021,7 +1021,7 @@ export const extension = {
     { "base.ts": modelCode, "ext.ts": extCode },
     async (dir) => {
       const loader = createTestLoader();
-      const result = await loader.loadModels(dir);
+      const result = await loader.load(dir);
 
       assertEquals(result.loaded.length, 1);
       assertEquals(result.extended.length, 1);
@@ -1052,7 +1052,7 @@ export const extension = {
 
   await withTempModels({ "ext_bad.ts": extCode }, async (dir) => {
     const loader = createTestLoader();
-    const result = await loader.loadModels(dir);
+    const result = await loader.load(dir);
 
     assertEquals(result.loaded.length, 0);
     assertEquals(result.extended.length, 0);
@@ -1104,7 +1104,7 @@ export const extension = {
     { "base.ts": modelCode, "ext_conflict.ts": extCode },
     async (dir) => {
       const loader = createTestLoader();
-      const result = await loader.loadModels(dir);
+      const result = await loader.load(dir);
 
       assertEquals(result.loaded.length, 1);
       assertEquals(result.extended.length, 0);
@@ -1167,7 +1167,7 @@ export const extension = {
     { "base.ts": modelCode, "ext_dup.ts": extCode },
     async (dir) => {
       const loader = createTestLoader();
-      const result = await loader.loadModels(dir);
+      const result = await loader.load(dir);
 
       assertEquals(result.loaded.length, 1);
       assertEquals(result.extended.length, 0);
@@ -1223,7 +1223,7 @@ export const extension = {
     { "base.ts": modelCode, "ext.ts": extCode },
     async (dir) => {
       const loader = createTestLoader();
-      const result = await loader.loadModels(dir);
+      const result = await loader.load(dir);
 
       assertEquals(result.extended.length, 1);
 
@@ -1255,7 +1255,7 @@ export const extension = {
 
   await withTempModels({ "shell_ext.ts": extCode }, async (dir) => {
     const loader = createTestLoader();
-    const result = await loader.loadModels(dir);
+    const result = await loader.load(dir);
 
     assertEquals(result.extended.length, 1);
     assertEquals(result.failed.length, 0);
@@ -1323,7 +1323,7 @@ export const extension = {
     { "base.ts": modelCode, "ext_audit.ts": ext1, "ext_verify.ts": ext2 },
     async (dir) => {
       const loader = createTestLoader();
-      const result = await loader.loadModels(dir);
+      const result = await loader.load(dir);
 
       assertEquals(result.loaded.length, 1);
       assertEquals(result.extended.length, 2);
@@ -1383,7 +1383,7 @@ export const extension = {
     { "zzz_model.ts": modelCode, "aaa_ext.ts": extCode },
     async (dir) => {
       const loader = createTestLoader();
-      const result = await loader.loadModels(dir);
+      const result = await loader.load(dir);
 
       assertEquals(result.loaded.length, 1);
       assertEquals(result.extended.length, 1);
@@ -1445,7 +1445,7 @@ export const extension = {
     { "base.ts": modelCode, "ext.ts": extCode },
     async (dir) => {
       const loader = createTestLoader();
-      const result = await loader.loadModels(dir);
+      const result = await loader.load(dir);
 
       assertEquals(result.extended.length, 1);
 
@@ -1514,7 +1514,7 @@ export const model = {
 
   await withTempModels({ "custom_specs.ts": modelCode }, async (dir) => {
     const loader = createTestLoader();
-    const result = await loader.loadModels(dir);
+    const result = await loader.load(dir);
 
     assertEquals(result.loaded.length, 1);
 
@@ -1564,7 +1564,7 @@ export const model = {
 
   await withTempModels({ "no_at_prefix.ts": modelCode }, async (dir) => {
     const loader = createTestLoader();
-    const result = await loader.loadModels(dir);
+    const result = await loader.load(dir);
 
     assertEquals(result.loaded.length, 1);
     assertEquals(result.failed.length, 0);
@@ -1599,7 +1599,7 @@ export const model = {
 
   await withTempModels({ "only_namespace.ts": modelCode }, async (dir) => {
     const loader = createTestLoader();
-    const result = await loader.loadModels(dir);
+    const result = await loader.load(dir);
 
     assertEquals(result.loaded.length, 0);
     assertEquals(result.failed.length, 1);
@@ -1635,7 +1635,7 @@ export const model = {
 
   await withTempModels({ "only_myorg.ts": modelCode }, async (dir) => {
     const loader = createTestLoader();
-    const result = await loader.loadModels(dir);
+    const result = await loader.load(dir);
 
     assertEquals(result.loaded.length, 0);
     assertEquals(result.failed.length, 1);
@@ -1672,7 +1672,7 @@ export const model = {
 
   await withTempModels({ "custom_namespace.ts": modelCode }, async (dir) => {
     const loader = createTestLoader();
-    const result = await loader.loadModels(dir);
+    const result = await loader.load(dir);
 
     assertEquals(result.loaded.length, 1);
     assertEquals(result.failed.length, 0);
@@ -1711,7 +1711,7 @@ export const model = {
 
   await withTempModels({ "stack72_model.ts": modelCode }, async (dir) => {
     const loader = createTestLoader();
-    const result = await loader.loadModels(dir);
+    const result = await loader.load(dir);
 
     assertEquals(result.loaded.length, 1);
     assertEquals(result.failed.length, 0);
@@ -1750,7 +1750,7 @@ export const model = {
 
   await withTempModels({ "keeb_model.ts": modelCode }, async (dir) => {
     const loader = createTestLoader();
-    const result = await loader.loadModels(dir);
+    const result = await loader.load(dir);
 
     assertEquals(result.loaded.length, 1);
     assertEquals(result.failed.length, 0);
@@ -1789,7 +1789,7 @@ export const model = {
 
   await withTempModels({ "valid_user_model.ts": modelCode }, async (dir) => {
     const loader = createTestLoader();
-    const result = await loader.loadModels(dir);
+    const result = await loader.load(dir);
 
     assertEquals(result.loaded.length, 1);
     assertEquals(result.failed.length, 0);
@@ -1828,7 +1828,7 @@ export const model = {
 
   await withTempModels({ "valid_nested.ts": modelCode }, async (dir) => {
     const loader = createTestLoader();
-    const result = await loader.loadModels(dir);
+    const result = await loader.load(dir);
 
     assertEquals(result.loaded.length, 1);
     assertEquals(result.failed.length, 0);
@@ -1863,7 +1863,7 @@ export const model = {
 
   await withTempModels({ "swamp_model.ts": modelCode }, async (dir) => {
     const loader = createTestLoader();
-    const result = await loader.loadModels(dir);
+    const result = await loader.load(dir);
 
     assertEquals(result.loaded.length, 1);
     assertEquals(result.failed.length, 0);
@@ -1898,7 +1898,7 @@ export const model = {
 
   await withTempModels({ "si_model.ts": modelCode }, async (dir) => {
     const loader = createTestLoader();
-    const result = await loader.loadModels(dir);
+    const result = await loader.load(dir);
 
     assertEquals(result.loaded.length, 1);
     assertEquals(result.failed.length, 0);
@@ -1933,7 +1933,7 @@ export const model = {
 
   await withTempModels({ "app_platform.ts": modelCode }, async (dir) => {
     const loader = createTestLoader();
-    const result = await loader.loadModels(dir);
+    const result = await loader.load(dir);
 
     assertEquals(result.loaded.length, 1);
     assertEquals(result.failed.length, 0);
@@ -1968,7 +1968,7 @@ export const model = {
 
   await withTempModels({ "single_segment.ts": modelCode }, async (dir) => {
     const loader = createTestLoader();
-    const result = await loader.loadModels(dir);
+    const result = await loader.load(dir);
 
     assertEquals(result.loaded.length, 0);
     assertEquals(result.failed.length, 1);
@@ -2004,7 +2004,7 @@ export const model = {
 
   await withTempModels({ "swamp_model.ts": modelCode }, async (dir) => {
     const loader = createTestLoader();
-    const result = await loader.loadModels(dir);
+    const result = await loader.load(dir);
 
     assertEquals(result.failed.length, 0);
     assertEquals(result.loaded.length, 1);
@@ -2040,7 +2040,7 @@ export const model = {
 
   await withTempModels({ "si_model.ts": modelCode }, async (dir) => {
     const loader = createTestLoader();
-    const result = await loader.loadModels(dir);
+    const result = await loader.load(dir);
 
     assertEquals(result.failed.length, 0);
     assertEquals(result.loaded.length, 1);
@@ -2083,7 +2083,7 @@ export class ProxmoxClient {
     "utils/helpers.ts": libCode,
   }, async (dir) => {
     const loader = createTestLoader();
-    const result = await loader.loadModels(dir);
+    const result = await loader.load(dir);
 
     // Should load only the valid model
     assertEquals(result.loaded.length, 1);
@@ -2126,7 +2126,7 @@ export type Status = "running" | "stopped" | "error";
     "models/my_model/types.ts": typeOnlyCode,
   }, async (dir) => {
     const loader = createTestLoader();
-    const result = await loader.loadModels(dir);
+    const result = await loader.load(dir);
 
     // Should load only the valid model
     assertEquals(result.loaded.length, 1);
@@ -2167,8 +2167,12 @@ export const model = {
     await Deno.writeTextFile(join(modelsDir, "model.ts"), modelCode);
 
     // First load — populates cache
-    const loader1 = new UserModelLoader(testDenoRuntime, repoDir);
-    await loader1.loadModels(modelsDir);
+    const loader1 = new ExtensionLoader(
+      testDenoRuntime,
+      modelKindAdapter,
+      repoDir,
+    );
+    await loader1.load(modelsDir);
 
     // Read the cached bundle content (namespaced by baseDir hash)
     const ns = bundleNamespace(modelsDir, repoDir);
@@ -2187,8 +2191,12 @@ export const model = {
     // Second load — should detect dependency change and rebundle
     // (registration will fail since type is already registered, but
     //  bundleWithCache runs before registration, so the bundle updates)
-    const loader2 = new UserModelLoader(testDenoRuntime, repoDir);
-    await loader2.loadModels(modelsDir);
+    const loader2 = new ExtensionLoader(
+      testDenoRuntime,
+      modelKindAdapter,
+      repoDir,
+    );
+    await loader2.load(modelsDir);
 
     // The bundle should have been regenerated with the new dependency content
     const cachedBundle2 = await Deno.readTextFile(bundlePath);
@@ -2257,7 +2265,7 @@ export const model = {
 
   await withTempModels({ "ts_syntax_model.ts": modelCode }, async (dir) => {
     const loader = createTestLoader();
-    const result = await loader.loadModels(dir);
+    const result = await loader.load(dir);
 
     assertEquals(result.loaded.length, 1);
     assertEquals(result.loaded[0], "ts_syntax_model.ts");
@@ -2325,7 +2333,7 @@ export const model = {
 
   await withTempModels({ "kind_model.ts": modelCode }, async (dir) => {
     const loader = createTestLoader();
-    const result = await loader.loadModels(dir);
+    const result = await loader.load(dir);
 
     assertEquals(result.loaded.length, 1);
 
@@ -2374,7 +2382,7 @@ export function helper() { return "helper"; }
     },
     async (dir) => {
       const loader = createTestLoader();
-      const result = await loader.loadModels(dir);
+      const result = await loader.load(dir);
 
       // The entry model should load successfully
       assertEquals(result.loaded.length, 1);
@@ -2433,8 +2441,9 @@ export const model = {
     // First buildIndex — bootstraps the catalog from a full import
     const catalog1 = new ExtensionCatalogStore(dbPath);
     const repository1 = makeRepoForCatalog(catalog1, repoDir);
-    const loader1 = new UserModelLoader(
+    const loader1 = new ExtensionLoader(
       testDenoRuntime,
+      modelKindAdapter,
       repoDir,
       undefined,
       repository1,
@@ -2459,8 +2468,9 @@ export const model = {
     // Second buildIndex — catalog is populated, should detect dep change
     const catalog2 = new ExtensionCatalogStore(dbPath);
     const repository2 = makeRepoForCatalog(catalog2, repoDir);
-    const loader2 = new UserModelLoader(
+    const loader2 = new ExtensionLoader(
       testDenoRuntime,
+      modelKindAdapter,
       repoDir,
       undefined,
       repository2,
@@ -2538,8 +2548,9 @@ export const model = {
     const catalog1 = new ExtensionCatalogStore(dbPath);
 
     const repository1 = makeRepoForCatalog(catalog1, repoDir);
-    const loader1 = new UserModelLoader(
+    const loader1 = new ExtensionLoader(
       testDenoRuntime,
+      modelKindAdapter,
       repoDir,
       undefined,
       repository1,
@@ -2579,8 +2590,9 @@ export const model = {
     const catalog2 = new ExtensionCatalogStore(dbPath);
 
     const repository2 = makeRepoForCatalog(catalog2, repoDir);
-    const loader2 = new UserModelLoader(
+    const loader2 = new ExtensionLoader(
       testDenoRuntime,
+      modelKindAdapter,
       repoDir,
       undefined,
       repository2,
@@ -2659,8 +2671,12 @@ export const model = {
   try {
     // Write valid model, load to produce cached bundle
     await Deno.writeTextFile(join(modelsDir, "model.ts"), validModelCode);
-    const loader1 = new UserModelLoader(testDenoRuntime, repoDir);
-    await loader1.loadModels(modelsDir);
+    const loader1 = new ExtensionLoader(
+      testDenoRuntime,
+      modelKindAdapter,
+      repoDir,
+    );
+    await loader1.load(modelsDir);
 
     const ns = bundleNamespace(modelsDir, repoDir);
     const bundlePath = join(repoDir, ".swamp", "bundles", ns, "model.js");
@@ -2675,8 +2691,12 @@ export const model = {
 
     // Load again — should fall back to cached bundle.
     // The broken code should NOT appear in the bundle.
-    const loader2 = new UserModelLoader(testDenoRuntime, repoDir);
-    await loader2.loadModels(modelsDir);
+    const loader2 = new ExtensionLoader(
+      testDenoRuntime,
+      modelKindAdapter,
+      repoDir,
+    );
+    await loader2.load(modelsDir);
 
     const cachedBundle2 = await Deno.readTextFile(bundlePath);
 
@@ -2732,8 +2752,9 @@ export const model = {
     await Deno.writeTextFile(join(modelsDir, "model.ts"), modelCode);
     const catalog1 = new ExtensionCatalogStore(dbPath);
     const repository1 = makeRepoForCatalog(catalog1, repoDir);
-    const loader1 = new UserModelLoader(
+    const loader1 = new ExtensionLoader(
       testDenoRuntime,
+      modelKindAdapter,
       repoDir,
       undefined,
       repository1,
@@ -2754,8 +2775,9 @@ export const model = {
     const catalog2 = new ExtensionCatalogStore(dbPath);
 
     const repository2 = makeRepoForCatalog(catalog2, repoDir);
-    const loader2 = new UserModelLoader(
+    const loader2 = new ExtensionLoader(
       testDenoRuntime,
+      modelKindAdapter,
       repoDir,
       undefined,
       repository2,
@@ -2805,15 +2827,20 @@ Deno.test("UserModelLoader: accepts optional DatastorePathResolver", () => {
   };
 
   // Should construct without error with resolver
-  const loaderWithResolver = new UserModelLoader(
+  const loaderWithResolver = new ExtensionLoader(
     testDenoRuntime,
+    modelKindAdapter,
     "/repo",
     mockResolver,
   );
   assertNotEquals(loaderWithResolver, undefined);
 
   // Should construct without error without resolver (backward compat)
-  const loaderWithoutResolver = new UserModelLoader(testDenoRuntime, "/repo");
+  const loaderWithoutResolver = new ExtensionLoader(
+    testDenoRuntime,
+    modelKindAdapter,
+    "/repo",
+  );
   assertNotEquals(loaderWithoutResolver, undefined);
 });
 
@@ -2870,8 +2897,9 @@ export const model = {
     // First buildIndex — only primary dir, no additional sources
     const catalog1 = new ExtensionCatalogStore(dbPath);
     const repository1 = makeRepoForCatalog(catalog1, repoDir);
-    const loader1 = new UserModelLoader(
+    const loader1 = new ExtensionLoader(
       testDenoRuntime,
+      modelKindAdapter,
       repoDir,
       undefined,
       repository1,
@@ -2894,8 +2922,9 @@ export const model = {
     // Second buildIndex — now include the extra source dir
     const catalog2 = new ExtensionCatalogStore(dbPath);
     const repository2 = makeRepoForCatalog(catalog2, repoDir);
-    const loader2 = new UserModelLoader(
+    const loader2 = new ExtensionLoader(
       testDenoRuntime,
+      modelKindAdapter,
       repoDir,
       undefined,
       repository2,
@@ -2963,8 +2992,9 @@ export const model = {
     // First buildIndex bootstraps the catalog
     const catalog = new ExtensionCatalogStore(dbPath);
     const repository = makeRepoForCatalog(catalog, repoDir);
-    const loader = new UserModelLoader(
+    const loader = new ExtensionLoader(
       testDenoRuntime,
+      modelKindAdapter,
       repoDir,
       undefined,
       repository,
@@ -3054,8 +3084,9 @@ Deno.test("attachPendingExtensionsForType: attaches a single pending extension",
     const catalog = new ExtensionCatalogStore(dbPath);
 
     const repository = makeRepoForCatalog(catalog, repoDir);
-    const loader = new UserModelLoader(
+    const loader = new ExtensionLoader(
       testDenoRuntime,
+      modelKindAdapter,
       repoDir,
       undefined,
       repository,
@@ -3131,8 +3162,9 @@ export const extension = {
     const catalog = new ExtensionCatalogStore(dbPath);
 
     const repository = makeRepoForCatalog(catalog, repoDir);
-    const loader = new UserModelLoader(
+    const loader = new ExtensionLoader(
       testDenoRuntime,
+      modelKindAdapter,
       repoDir,
       undefined,
       repository,
@@ -3185,8 +3217,9 @@ export const model = {
     const catalog = new ExtensionCatalogStore(dbPath);
 
     const repository = makeRepoForCatalog(catalog, repoDir);
-    const loader = new UserModelLoader(
+    const loader = new ExtensionLoader(
       testDenoRuntime,
+      modelKindAdapter,
       repoDir,
       undefined,
       repository,
@@ -3218,8 +3251,9 @@ Deno.test("attachPendingExtensionsForType: is idempotent when all methods alread
     const catalog = new ExtensionCatalogStore(dbPath);
 
     const repository = makeRepoForCatalog(catalog, repoDir);
-    const loader = new UserModelLoader(
+    const loader = new ExtensionLoader(
       testDenoRuntime,
+      modelKindAdapter,
       repoDir,
       undefined,
       repository,
@@ -3244,8 +3278,9 @@ Deno.test("attachPendingExtensionsForType: no-op when base is not registered", a
   try {
     const catalog = new ExtensionCatalogStore(dbPath);
     const repository = makeRepoForCatalog(catalog, repoDir);
-    const loader = new UserModelLoader(
+    const loader = new ExtensionLoader(
       testDenoRuntime,
+      modelKindAdapter,
       repoDir,
       undefined,
       repository,
@@ -3310,8 +3345,9 @@ export const extension = {
     const catalog1 = new ExtensionCatalogStore(dbPath);
 
     const repository1 = makeRepoForCatalog(catalog1, repoDir);
-    const loader1 = new UserModelLoader(
+    const loader1 = new ExtensionLoader(
       testDenoRuntime,
+      modelKindAdapter,
       repoDir,
       undefined,
       repository1,
@@ -3328,8 +3364,9 @@ export const extension = {
     const catalog2 = new ExtensionCatalogStore(dbPath);
 
     const repository2 = makeRepoForCatalog(catalog2, repoDir);
-    const loader2 = new UserModelLoader(
+    const loader2 = new ExtensionLoader(
       testDenoRuntime,
+      modelKindAdapter,
       repoDir,
       undefined,
       repository2,
@@ -3400,8 +3437,9 @@ export const model = {
     // Cold-start populates the catalog with the healthy model.
     const catalog1 = new ExtensionCatalogStore(dbPath);
     const repository1 = makeRepoForCatalog(catalog1, repoDir);
-    const loader1 = new UserModelLoader(
+    const loader1 = new ExtensionLoader(
       testDenoRuntime,
+      modelKindAdapter,
       repoDir,
       undefined,
       repository1,
@@ -3445,8 +3483,9 @@ export const model = {
     // broken row (empty type_normalized + state='ValidationFailed') must
     // NOT register. Use a fresh loader so the lazy registration path
     // runs against a clean registry view of the populated catalog.
-    const loader2 = new UserModelLoader(
+    const loader2 = new ExtensionLoader(
       testDenoRuntime,
+      modelKindAdapter,
       repoDir,
       undefined,
       repository2,
@@ -3521,8 +3560,9 @@ export const model = {
     // Cold-start populates the catalog and writes the bundle.
     const catalog1 = new ExtensionCatalogStore(dbPath);
     const repository1 = makeRepoForCatalog(catalog1, repoDir);
-    const loader1 = new UserModelLoader(
+    const loader1 = new ExtensionLoader(
       testDenoRuntime,
+      modelKindAdapter,
       repoDir,
       undefined,
       repository1,
@@ -3545,8 +3585,9 @@ export const model = {
     // detects the missing bundle and triggers rebundleAndUpdateCatalog.
     const catalog2 = new ExtensionCatalogStore(dbPath);
     const repository2 = makeRepoForCatalog(catalog2, repoDir);
-    const loader2 = new UserModelLoader(
+    const loader2 = new ExtensionLoader(
       testDenoRuntime,
+      modelKindAdapter,
       repoDir,
       undefined,
       repository2,
@@ -3627,8 +3668,9 @@ export const model = {
 
       const catalog = new ExtensionCatalogStore(dbPath);
       const repository = makeRepoForCatalog(catalog, repoDir);
-      const loader = new UserModelLoader(
+      const loader = new ExtensionLoader(
         testDenoRuntime,
+        modelKindAdapter,
         repoDir,
         undefined,
         repository,
@@ -3682,8 +3724,9 @@ Deno.test(
 
       const catalog = new ExtensionCatalogStore(dbPath);
       const repository = makeRepoForCatalog(catalog, repoDir);
-      const loader = new UserModelLoader(
+      const loader = new ExtensionLoader(
         testDenoRuntime,
+        modelKindAdapter,
         repoDir,
         undefined,
         repository,
@@ -3706,6 +3749,130 @@ Deno.test(
     } finally {
       await Deno.remove(repoDir, { recursive: true });
       await Deno.remove(modelsDir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "loadSingleType: promotes lazy entry to fully loaded definition",
+  async () => {
+    const repoDir = await Deno.makeTempDir({ prefix: "swamp_lazy_promo_r_" });
+    const modelsDir = await Deno.makeTempDir({
+      prefix: "swamp_lazy_promo_m_",
+    });
+
+    try {
+      await Deno.writeTextFile(
+        join(modelsDir, "model.ts"),
+        `import { z } from "npm:zod@4";
+export const model = {
+  type: "@test/lazy-promo",
+  version: "2026.01.01.1",
+  methods: {
+    run: {
+      description: "test",
+      arguments: z.object({}),
+      execute: async () => ({ dataHandles: [] }),
+    },
+  },
+};`,
+      );
+
+      const dbPath = join(repoDir, ".swamp", "_extension_catalog.db");
+      const catalog = new ExtensionCatalogStore(dbPath);
+      const repository = makeRepoForCatalog(catalog, repoDir);
+
+      const loader = new ExtensionLoader(
+        testDenoRuntime,
+        modelKindAdapter,
+        repoDir,
+        undefined,
+        repository,
+      );
+
+      // Use bundleAndIndexOne to create the bundle file on disk
+      // WITHOUT registering in the registry. This gives us a valid
+      // bundle we can load lazily.
+      const sourcePath = join(modelsDir, "model.ts");
+      const result = await loader.bundleAndIndexOne({
+        absolutePath: sourcePath,
+        relativePath: "model.ts",
+        baseDir: modelsDir,
+      });
+      assertNotEquals(result, null);
+
+      // Simulate a warm-start: catalog has a row, registry has only
+      // a lazy entry (not fully loaded). This is the state a new
+      // process sees after a prior buildIndex populated the catalog.
+      catalog.upsert({
+        type_normalized: result!.typeNormalized,
+        kind: "model",
+        bundle_path: result!.bundlePath,
+        source_path: sourcePath,
+        version: "2026.01.01.1",
+        description: "",
+        extends_type: "",
+        source_mtime: "",
+        source_fingerprint: result!.fingerprint,
+      });
+
+      modelRegistry.registerLazy({
+        type: ModelType.create(result!.typeNormalized),
+        bundlePath: result!.bundlePath,
+        sourcePath,
+        version: "2026.01.01.1",
+      });
+
+      assertEquals(
+        modelRegistry.get(result!.typeNormalized),
+        undefined,
+        "lazy entry should not be fully loaded",
+      );
+      assertEquals(
+        modelRegistry.isLazy(result!.typeNormalized),
+        true,
+        "type should be registered as lazy",
+      );
+
+      // KindAdapter.hasType must return true for lazy entries,
+      // but isFullyLoaded must return false. This distinction
+      // prevents importAndRegisterBundle from early-returning
+      // before the bundle is actually imported (35-UAT cascade).
+      assertEquals(
+        modelKindAdapter.hasType(result!.typeNormalized),
+        true,
+        "hasType must return true for lazy entries",
+      );
+      assertEquals(
+        modelKindAdapter.isFullyLoaded(result!.typeNormalized),
+        false,
+        "isFullyLoaded must return false for lazy entries",
+      );
+
+      // loadSingleType must promote lazy → fully loaded
+      await loader.loadSingleType(result!.typeNormalized);
+      const promoted = modelRegistry.get(result!.typeNormalized);
+      assertNotEquals(
+        promoted,
+        undefined,
+        "loadSingleType must promote lazy entry to fully loaded",
+      );
+
+      assertEquals(
+        modelKindAdapter.isFullyLoaded(result!.typeNormalized),
+        true,
+        "isFullyLoaded must return true after promotion",
+      );
+
+      catalog.close();
+    } finally {
+      if (Deno.build.os === "windows") {
+        await Deno.remove(repoDir, { recursive: true }).catch(() => {});
+        await Deno.remove(modelsDir, { recursive: true }).catch(() => {});
+      } else {
+        await Deno.remove(repoDir, { recursive: true });
+        await Deno.remove(modelsDir, { recursive: true });
+      }
     }
   },
 );

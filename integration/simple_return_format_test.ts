@@ -30,7 +30,8 @@ import { join } from "@std/path";
 import { ensureDir } from "@std/fs";
 import { Definition } from "../src/domain/definitions/definition.ts";
 import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
-import { UserModelLoader } from "../src/domain/models/user_model_loader.ts";
+import { ExtensionLoader } from "../src/domain/extensions/extension_loader.ts";
+import { modelKindAdapter } from "../src/domain/extensions/model_kind_adapter.ts";
 import type { DenoRuntime } from "../src/domain/runtime/deno_runtime.ts";
 import { modelRegistry } from "../src/domain/models/model.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
@@ -142,8 +143,8 @@ Deno.test("Integration: user model with dataWriter API works", async () => {
     );
 
     // 2. Load the user model
-    const loader = new UserModelLoader(testDenoRuntime);
-    const loadResult = await loader.loadModels(modelsDir);
+    const loader = new ExtensionLoader(testDenoRuntime, modelKindAdapter);
+    const loadResult = await loader.load(modelsDir);
 
     // Debug: show any load failures
     if (loadResult.failed.length > 0) {
@@ -212,8 +213,8 @@ Deno.test("Integration: expression-aware validation allows expressions in requir
     );
 
     // 2. Load the model
-    const loader = new UserModelLoader(testDenoRuntime);
-    const loadResult = await loader.loadModels(modelsDir);
+    const loader = new ExtensionLoader(testDenoRuntime, modelKindAdapter);
+    const loadResult = await loader.load(modelsDir);
 
     // Debug: show any load failures
     if (loadResult.failed.length > 0) {

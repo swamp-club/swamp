@@ -57,15 +57,16 @@ import {
   ModelTypeType,
   WorkflowNameType,
 } from "./completion_types.ts";
-import { UserModelLoader } from "../domain/models/user_model_loader.ts";
 import { ExtensionCatalogStore } from "../infrastructure/persistence/extension_catalog_store.ts";
 import { ExtensionRepository } from "../infrastructure/persistence/extension_repository.ts";
 import { readLocalManifestIdentity } from "../infrastructure/persistence/local_manifest_reader.ts";
 import { LockfileRepository } from "../infrastructure/persistence/lockfile_repository.ts";
-import { UserVaultLoader } from "../domain/vaults/user_vault_loader.ts";
-import { UserDriverLoader } from "../domain/drivers/user_driver_loader.ts";
-import { UserDatastoreLoader } from "../domain/datastore/user_datastore_loader.ts";
-import { UserReportLoader } from "../domain/reports/user_report_loader.ts";
+import { ExtensionLoader } from "../domain/extensions/extension_loader.ts";
+import { modelKindAdapter } from "../domain/extensions/model_kind_adapter.ts";
+import { vaultKindAdapter } from "../domain/extensions/vault_kind_adapter.ts";
+import { driverKindAdapter } from "../domain/extensions/driver_kind_adapter.ts";
+import { datastoreKindAdapter } from "../domain/extensions/datastore_kind_adapter.ts";
+import { reportKindAdapter } from "../domain/extensions/report_kind_adapter.ts";
 import { modelRegistry } from "../domain/models/model.ts";
 import { vaultTypeRegistry } from "../domain/vaults/vault_type_registry.ts";
 import { driverTypeRegistry } from "../domain/drivers/driver_type_registry.ts";
@@ -394,7 +395,7 @@ export function configureExtensionAutoResolver(
         // W1b/(a-2): wrap the auto-resolver-context catalog in its own
         // ExtensionRepository so the loaders constructed inside
         // hotLoadModels/hotLoadVaults/hotLoadDatastores can route their
-        // catalog operations through `repository.legacyStore`. The
+        // catalog operations through the repository. The
         // lockfile snapshot is taken here at adapter-creation time;
         // long-lived repository instances do not refresh.
         repository: new ExtensionRepository({
@@ -447,8 +448,8 @@ async function loadUserModels(
 
     // W1b/(a-2): if no repository was passed, bootstrap one with an
     // empty lockfile lookup. The catalog stays open for the process
-    // lifetime so the type loader can query it via the repository's
-    // legacyStore when ensureTypeLoaded() is called later.
+    // lifetime so the ExtensionLoader can query it via getCatalogStore()
+    // when loadSingleType() is called later.
     const effectiveRepository = repository ?? new ExtensionRepository({
       catalog: new ExtensionCatalogStore(
         swampPath(repoDir, "_extension_catalog.db"),
@@ -461,8 +462,9 @@ async function loadUserModels(
     });
 
     const resolver = resolverFactory ? await resolverFactory() : undefined;
-    const loader = new UserModelLoader(
+    const loader = new ExtensionLoader(
       denoRuntime,
+      modelKindAdapter,
       repoDir,
       resolver,
       effectiveRepository,
@@ -536,8 +538,9 @@ async function loadUserVaults(
       : resolve(repoDir, vaultsDir);
 
     const resolver = resolverFactory ? await resolverFactory() : undefined;
-    const loader = new UserVaultLoader(
+    const loader = new ExtensionLoader(
       denoRuntime,
+      vaultKindAdapter,
       repoDir,
       resolver,
       repository,
@@ -568,7 +571,7 @@ async function loadUserVaults(
       }
       recordLoadFailures("vault", result, { quiet });
     } else {
-      const result = await loader.loadVaults(absoluteVaultsDir, {
+      const result = await loader.load(absoluteVaultsDir, {
         additionalDirs: [...sourceDirs, ...pulledDirs],
         skipAlreadyRegistered: true,
       });
@@ -600,8 +603,9 @@ async function loadUserDrivers(
       : resolve(repoDir, driversDir);
 
     const resolver = resolverFactory ? await resolverFactory() : undefined;
-    const loader = new UserDriverLoader(
+    const loader = new ExtensionLoader(
       denoRuntime,
+      driverKindAdapter,
       repoDir,
       resolver,
       repository,
@@ -632,7 +636,7 @@ async function loadUserDrivers(
       }
       recordLoadFailures("driver", result, { quiet });
     } else {
-      const result = await loader.loadDrivers(absoluteDriversDir, {
+      const result = await loader.load(absoluteDriversDir, {
         additionalDirs: [...sourceDirs, ...pulledDirs],
         skipAlreadyRegistered: true,
       });
@@ -662,7 +666,13 @@ async function loadUserDatastores(
       ? datastoresDir
       : resolve(repoDir, datastoresDir);
 
-    const loader = new UserDatastoreLoader(denoRuntime, repoDir, repository);
+    const loader = new ExtensionLoader(
+      denoRuntime,
+      datastoreKindAdapter,
+      repoDir,
+      undefined,
+      repository,
+    );
     const modelsDir = resolveModelsDir(marker);
     const lockfilePath = join(
       isAbsolute(modelsDir) ? modelsDir : resolve(repoDir, modelsDir),
@@ -692,7 +702,7 @@ async function loadUserDatastores(
       }
       recordLoadFailures("datastore", result, { quiet });
     } else {
-      const result = await loader.loadDatastores(absoluteDatastoresDir, {
+      const result = await loader.load(absoluteDatastoresDir, {
         additionalDirs: [...sourceDirs, ...pulledDirs],
         skipAlreadyRegistered: true,
       });
@@ -724,8 +734,9 @@ async function loadUserReports(
       : resolve(repoDir, reportsDir);
 
     const resolver = resolverFactory ? await resolverFactory() : undefined;
-    const loader = new UserReportLoader(
+    const loader = new ExtensionLoader(
       denoRuntime,
+      reportKindAdapter,
       repoDir,
       resolver,
       repository,
@@ -756,7 +767,7 @@ async function loadUserReports(
       }
       recordLoadFailures("report", result, { quiet });
     } else {
-      const result = await loader.loadReports(absoluteReportsDir, {
+      const result = await loader.load(absoluteReportsDir, {
         additionalDirs: [...sourceDirs, ...pulledDirs],
         skipAlreadyRegistered: true,
       });

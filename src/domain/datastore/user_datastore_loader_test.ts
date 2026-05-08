@@ -19,7 +19,8 @@
 
 import { assertEquals, assertNotEquals } from "@std/assert";
 import { dirname, join } from "@std/path";
-import { UserDatastoreLoader } from "./user_datastore_loader.ts";
+import { ExtensionLoader } from "../extensions/extension_loader.ts";
+import { datastoreKindAdapter } from "../extensions/datastore_kind_adapter.ts";
 import {
   DatastoreTypeRegistry,
   datastoreTypeRegistry,
@@ -53,8 +54,11 @@ function makeRepoForCatalog(
 }
 
 Deno.test("UserDatastoreLoader - returns empty result for nonexistent directory", async () => {
-  const loader = new UserDatastoreLoader(new StubDenoRuntime());
-  const result = await loader.loadDatastores("/nonexistent/path");
+  const loader = new ExtensionLoader(
+    new StubDenoRuntime(),
+    datastoreKindAdapter,
+  );
+  const result = await loader.load("/nonexistent/path");
   assertEquals(result.loaded, []);
   assertEquals(result.failed, []);
 });
@@ -97,8 +101,11 @@ export const datastore = {
 `,
     );
 
-    const loader = new UserDatastoreLoader(new StubDenoRuntime());
-    const result = await loader.loadDatastores(tmpDir);
+    const loader = new ExtensionLoader(
+      new StubDenoRuntime(),
+      datastoreKindAdapter,
+    );
+    const result = await loader.load(tmpDir);
 
     assertEquals(result.loaded.length, 1);
     assertEquals(result.loaded[0], "custom_store.ts");
@@ -116,8 +123,11 @@ Deno.test("UserDatastoreLoader - skips files without datastore export", async ()
     const utilFile = join(tmpDir, "utils.ts");
     await Deno.writeTextFile(utilFile, `export const helper = "hi";`);
 
-    const loader = new UserDatastoreLoader(new StubDenoRuntime());
-    const result = await loader.loadDatastores(tmpDir);
+    const loader = new ExtensionLoader(
+      new StubDenoRuntime(),
+      datastoreKindAdapter,
+    );
+    const result = await loader.load(tmpDir);
 
     assertEquals(result.loaded.length, 0);
     assertEquals(result.failed.length, 0);
@@ -134,8 +144,11 @@ Deno.test("UserDatastoreLoader - skips test files", async () => {
     const testFile = join(tmpDir, "my_store_test.ts");
     await Deno.writeTextFile(testFile, `export const datastore = {};`);
 
-    const loader = new UserDatastoreLoader(new StubDenoRuntime());
-    const result = await loader.loadDatastores(tmpDir);
+    const loader = new ExtensionLoader(
+      new StubDenoRuntime(),
+      datastoreKindAdapter,
+    );
+    const result = await loader.load(tmpDir);
 
     assertEquals(result.loaded.length, 0);
     assertEquals(result.failed.length, 0);
@@ -160,8 +173,11 @@ export const datastore = {
 `,
     );
 
-    const loader = new UserDatastoreLoader(new StubDenoRuntime());
-    const result = await loader.loadDatastores(tmpDir);
+    const loader = new ExtensionLoader(
+      new StubDenoRuntime(),
+      datastoreKindAdapter,
+    );
+    const result = await loader.load(tmpDir);
 
     assertEquals(result.loaded.length, 0);
     assertEquals(result.failed.length, 1);
@@ -229,8 +245,11 @@ export const datastore = {
 `,
     );
 
-    const loader = new UserDatastoreLoader(new StubDenoRuntime());
-    const result = await loader.loadDatastores(tmpDir);
+    const loader = new ExtensionLoader(
+      new StubDenoRuntime(),
+      datastoreKindAdapter,
+    );
+    const result = await loader.load(tmpDir);
 
     assertEquals(result.loaded.length, 1);
     assertEquals(result.loaded[0], "custom_store.ts");
@@ -286,8 +305,12 @@ export const datastore = {
     );
 
     // First load — populates cache
-    const loader1 = new UserDatastoreLoader(new StubDenoRuntime(), repoDir);
-    await loader1.loadDatastores(datastoresDir);
+    const loader1 = new ExtensionLoader(
+      new StubDenoRuntime(),
+      datastoreKindAdapter,
+      repoDir,
+    );
+    await loader1.load(datastoresDir);
 
     // Read the cached bundle content (namespaced by baseDir hash)
     const { bundleNamespace } = await import(
@@ -313,8 +336,12 @@ export const datastore = {
     );
 
     // Second load — should detect dependency change and rebundle
-    const loader2 = new UserDatastoreLoader(new StubDenoRuntime(), repoDir);
-    await loader2.loadDatastores(datastoresDir);
+    const loader2 = new ExtensionLoader(
+      new StubDenoRuntime(),
+      datastoreKindAdapter,
+      repoDir,
+    );
+    await loader2.load(datastoresDir);
 
     // The bundle should have been regenerated with the new dependency content
     const cachedBundle2 = await Deno.readTextFile(bundlePath);
@@ -372,9 +399,11 @@ export const datastore = {
     const catalog1 = new ExtensionCatalogStore(dbPath);
 
     const repository1 = makeRepoForCatalog(catalog1, repoDir);
-    const loader1 = new UserDatastoreLoader(
+    const loader1 = new ExtensionLoader(
       new StubDenoRuntime(),
+      datastoreKindAdapter,
       repoDir,
+      undefined,
       repository1,
     );
     await loader1.buildIndex(datastoresDir);
@@ -409,9 +438,11 @@ export const datastore = {
     const catalog2 = new ExtensionCatalogStore(dbPath);
 
     const repository2 = makeRepoForCatalog(catalog2, repoDir);
-    const loader2 = new UserDatastoreLoader(
+    const loader2 = new ExtensionLoader(
       new StubDenoRuntime(),
+      datastoreKindAdapter,
       repoDir,
+      undefined,
       repository2,
     );
     await loader2.buildIndex(datastoresDir);
@@ -469,9 +500,11 @@ export const datastore = {
     const catalog1 = new ExtensionCatalogStore(dbPath);
 
     const repository1 = makeRepoForCatalog(catalog1, repoDir);
-    const loader1 = new UserDatastoreLoader(
+    const loader1 = new ExtensionLoader(
       new StubDenoRuntime(),
+      datastoreKindAdapter,
       repoDir,
+      undefined,
       repository1,
     );
     await loader1.buildIndex(datastoresDir);
@@ -500,9 +533,11 @@ export const datastore = {
     const catalog2 = new ExtensionCatalogStore(dbPath);
 
     const repository2 = makeRepoForCatalog(catalog2, repoDir);
-    const loader2 = new UserDatastoreLoader(
+    const loader2 = new ExtensionLoader(
       new StubDenoRuntime(),
+      datastoreKindAdapter,
       repoDir,
+      undefined,
       repository2,
     );
     await loader2.buildIndex(datastoresDir);
@@ -553,9 +588,11 @@ export const datastore = {
     const catalog = new ExtensionCatalogStore(dbPath);
 
     const repository = makeRepoForCatalog(catalog, repoDir);
-    const loader = new UserDatastoreLoader(
+    const loader = new ExtensionLoader(
       new StubDenoRuntime(),
+      datastoreKindAdapter,
       repoDir,
+      undefined,
       repository,
     );
     await loader.buildIndex(datastoresDir);
@@ -573,9 +610,11 @@ export const datastore = {
       // W1b: validation_failed dropped — state="ValidationFailed" is the signal.
     });
 
-    const loader2 = new UserDatastoreLoader(
+    const loader2 = new ExtensionLoader(
       new StubDenoRuntime(),
+      datastoreKindAdapter,
       repoDir,
+      undefined,
       repository,
     );
     await loader2.buildIndex(datastoresDir);
@@ -639,9 +678,11 @@ export const datastore = {
 
       const catalog = new ExtensionCatalogStore(dbPath);
       const repository = makeRepoForCatalog(catalog, repoDir);
-      const loader = new UserDatastoreLoader(
+      const loader = new ExtensionLoader(
         new StubDenoRuntime(),
+        datastoreKindAdapter,
         repoDir,
+        undefined,
         repository,
       );
 

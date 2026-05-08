@@ -19,7 +19,8 @@
 
 import { assertEquals, assertNotEquals } from "@std/assert";
 import { dirname, join } from "@std/path";
-import { UserDriverLoader } from "./user_driver_loader.ts";
+import { ExtensionLoader } from "../extensions/extension_loader.ts";
+import { driverKindAdapter } from "../extensions/driver_kind_adapter.ts";
 import { driverTypeRegistry } from "./driver_type_registry.ts";
 import { bundleNamespace } from "../../infrastructure/persistence/paths.ts";
 import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
@@ -89,8 +90,9 @@ export const driver = {
     const catalog1 = new ExtensionCatalogStore(dbPath);
 
     const repository1 = makeRepoForCatalog(catalog1, repoDir);
-    const loader1 = new UserDriverLoader(
+    const loader1 = new ExtensionLoader(
       testDenoRuntime,
+      driverKindAdapter,
       repoDir,
       undefined,
       repository1,
@@ -127,8 +129,9 @@ export const driver = {
     const catalog2 = new ExtensionCatalogStore(dbPath);
 
     const repository2 = makeRepoForCatalog(catalog2, repoDir);
-    const loader2 = new UserDriverLoader(
+    const loader2 = new ExtensionLoader(
       testDenoRuntime,
+      driverKindAdapter,
       repoDir,
       undefined,
       repository2,
@@ -187,8 +190,9 @@ export const driver = {
     const catalog1 = new ExtensionCatalogStore(dbPath);
 
     const repository1 = makeRepoForCatalog(catalog1, repoDir);
-    const loader1 = new UserDriverLoader(
+    const loader1 = new ExtensionLoader(
       testDenoRuntime,
+      driverKindAdapter,
       repoDir,
       undefined,
       repository1,
@@ -219,8 +223,9 @@ export const driver = {
     const catalog2 = new ExtensionCatalogStore(dbPath);
 
     const repository2 = makeRepoForCatalog(catalog2, repoDir);
-    const loader2 = new UserDriverLoader(
+    const loader2 = new ExtensionLoader(
       testDenoRuntime,
+      driverKindAdapter,
       repoDir,
       undefined,
       repository2,
@@ -269,8 +274,9 @@ export const driver = {
     const catalog = new ExtensionCatalogStore(dbPath);
 
     const repository = makeRepoForCatalog(catalog, repoDir);
-    const loader = new UserDriverLoader(
+    const loader = new ExtensionLoader(
       testDenoRuntime,
+      driverKindAdapter,
       repoDir,
       undefined,
       repository,
@@ -290,8 +296,9 @@ export const driver = {
       // W1b: validation_failed dropped — state="ValidationFailed" is the signal.
     });
 
-    const loader2 = new UserDriverLoader(
+    const loader2 = new ExtensionLoader(
       testDenoRuntime,
+      driverKindAdapter,
       repoDir,
       undefined,
       repository,
@@ -346,8 +353,9 @@ export const driver = {
 
       const catalog = new ExtensionCatalogStore(dbPath);
       const repository = makeRepoForCatalog(catalog, repoDir);
-      const loader = new UserDriverLoader(
+      const loader = new ExtensionLoader(
         testDenoRuntime,
+        driverKindAdapter,
         repoDir,
         undefined,
         repository,

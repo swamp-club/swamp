@@ -19,7 +19,8 @@
 
 import { assertEquals, assertNotEquals } from "@std/assert";
 import { dirname, join } from "@std/path";
-import { UserReportLoader } from "./user_report_loader.ts";
+import { ExtensionLoader } from "../extensions/extension_loader.ts";
+import { reportKindAdapter } from "../extensions/report_kind_adapter.ts";
 import { reportRegistry } from "./report_registry.ts";
 import { bundleNamespace } from "../../infrastructure/persistence/paths.ts";
 import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
@@ -87,8 +88,9 @@ export const report = {
     const catalog1 = new ExtensionCatalogStore(dbPath);
 
     const repository1 = makeRepoForCatalog(catalog1, repoDir);
-    const loader1 = new UserReportLoader(
+    const loader1 = new ExtensionLoader(
       testDenoRuntime,
+      reportKindAdapter,
       repoDir,
       undefined,
       repository1,
@@ -133,8 +135,9 @@ export const report = {
     // Drop the registry entry so the second buildIndex fully re-imports.
     const catalog2 = new ExtensionCatalogStore(dbPath);
     const repository2 = makeRepoForCatalog(catalog2, repoDir);
-    const loader2 = new UserReportLoader(
+    const loader2 = new ExtensionLoader(
       testDenoRuntime,
+      reportKindAdapter,
       repoDir,
       undefined,
       repository2,
@@ -196,8 +199,9 @@ export const report = {
     const catalog1 = new ExtensionCatalogStore(dbPath);
 
     const repository1 = makeRepoForCatalog(catalog1, repoDir);
-    const loader1 = new UserReportLoader(
+    const loader1 = new ExtensionLoader(
       testDenoRuntime,
+      reportKindAdapter,
       repoDir,
       undefined,
       repository1,
@@ -230,8 +234,9 @@ export const report = {
     const catalog2 = new ExtensionCatalogStore(dbPath);
 
     const repository2 = makeRepoForCatalog(catalog2, repoDir);
-    const loader2 = new UserReportLoader(
+    const loader2 = new ExtensionLoader(
       testDenoRuntime,
+      reportKindAdapter,
       repoDir,
       undefined,
       repository2,
@@ -283,8 +288,9 @@ export const report = {
     const catalog = new ExtensionCatalogStore(dbPath);
 
     const repository = makeRepoForCatalog(catalog, repoDir);
-    const loader = new UserReportLoader(
+    const loader = new ExtensionLoader(
       testDenoRuntime,
+      reportKindAdapter,
       repoDir,
       undefined,
       repository,
@@ -304,8 +310,9 @@ export const report = {
       // W1b: validation_failed dropped — state="ValidationFailed" is the signal.
     });
 
-    const loader2 = new UserReportLoader(
+    const loader2 = new ExtensionLoader(
       testDenoRuntime,
+      reportKindAdapter,
       repoDir,
       undefined,
       repository,
@@ -349,8 +356,9 @@ export const report = {
 
       const catalog = new ExtensionCatalogStore(dbPath);
       const repository = makeRepoForCatalog(catalog, repoDir);
-      const loader = new UserReportLoader(
+      const loader = new ExtensionLoader(
         testDenoRuntime,
+        reportKindAdapter,
         repoDir,
         undefined,
         repository,

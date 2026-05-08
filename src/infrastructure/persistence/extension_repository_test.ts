@@ -799,3 +799,56 @@ Deno.test("ExtensionRepository: local row gets origin='local' when localManifest
     assertPathEquals(loaded[0].extensionRoot, canonicalizePath(repoRoot));
   }, { localManifestIdentity: manifest });
 });
+
+// ===== Test: I-Repo-1 allows multiple extension rows for the same target type (swamp-club#297) =====
+Deno.test("ExtensionRepository: I-Repo-1 allows multiple extension rows targeting the same base type", () => {
+  withRepository((repo, cat, repoRoot) => {
+    const ext = pulledExtension({
+      repoRoot,
+      name: "@scope/a",
+      version: "1.0.0",
+      sources: [{ relPath: "models/base.ts", type: "@scope/a/thing" }],
+    });
+    repo.save(ext);
+
+    cat.upsert({
+      source_path:
+        `${repoRoot}/.swamp/pulled-extensions/@scope/a/models/ext1.ts`,
+      type_normalized: "@scope/a/thing",
+      kind: "extension",
+      bundle_path: `${repoRoot}/.swamp/bundles/ext1.js`,
+      version: "",
+      description: "",
+      extends_type: "@scope/a/thing",
+      source_mtime: "",
+      source_fingerprint: "fp-ext1",
+    });
+    cat.upsert({
+      source_path:
+        `${repoRoot}/.swamp/pulled-extensions/@scope/a/models/ext2.ts`,
+      type_normalized: "@scope/a/thing",
+      kind: "extension",
+      bundle_path: `${repoRoot}/.swamp/bundles/ext2.js`,
+      version: "",
+      description: "",
+      extends_type: "@scope/a/thing",
+      source_mtime: "",
+      source_fingerprint: "fp-ext2",
+    });
+
+    const secondExt = pulledExtension({
+      repoRoot,
+      name: "@scope/b",
+      version: "1.0.0",
+      sources: [{ relPath: "models/other.ts", type: "@scope/b/other" }],
+    });
+    repo.save(secondExt);
+
+    const all = cat.findAll();
+    const extensionRows = all.filter((r) => r.kind === "extension");
+    assertEquals(extensionRows.length, 2);
+    for (const row of extensionRows) {
+      assertEquals(row.type_normalized, "@scope/a/thing");
+    }
+  });
+});

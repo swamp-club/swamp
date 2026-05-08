@@ -141,6 +141,6 @@ export const extensionRemoveCommand = new Command()
 
       ctx.logger.debug("Extension remove command completed");
     } finally {
-      deps.repository.legacyStore.close();
+      deps.repository.close();
     }
   });

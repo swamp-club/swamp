@@ -82,7 +82,9 @@ function isTracingImport(filePath: string, importPath: string): boolean {
 // as transitional ports — the canonicalizer should move to a shared
 // path-utility module (W3 territory) and ExtensionKind should hoist to
 // the domain layer when the catalog gets fully replaced (W4).
-const KNOWN_DOMAIN_INFRA_VIOLATIONS = 22;
+// W4: +2 net (5 user_*_loader.ts deleted, 7 KindAdapter + ExtensionLoader
+// files added — adapters require ExtensionTypeRow + SWAMP_SUBDIRS imports).
+const KNOWN_DOMAIN_INFRA_VIOLATIONS = 24;
 
 Deno.test(
   "domain layer must not add new infrastructure imports (ratchet)",
@@ -164,6 +166,35 @@ Deno.test(
         `${violations.sort().join("\n")}\n\n` +
         `The presentation layer should go through the CLI/application layer, not reach into infrastructure.\n` +
         `Logging imports (infrastructure/logging/) are excluded as a cross-cutting concern.`,
+    );
+  },
+);
+
+Deno.test(
+  "legacyStore escape hatch must not be reintroduced (W4 CI guard)",
+  async () => {
+    const srcDir = join(ROOT, "src");
+    const violations: string[] = [];
+
+    for await (
+      const entry of walk(srcDir, {
+        exts: [".ts", ".tsx"],
+        includeDirs: false,
+        skip: [/_test\.ts$/],
+      })
+    ) {
+      const content = await Deno.readTextFile(entry.path);
+      if (/\.legacyStore\b/.test(content)) {
+        violations.push(relative(ROOT, entry.path));
+      }
+    }
+
+    assertEquals(
+      violations.length,
+      0,
+      `legacyStore references found (removed in W4):\n` +
+        `${violations.sort().join("\n")}\n\n` +
+        `Use typed ExtensionRepository methods instead.`,
     );
   },
 );

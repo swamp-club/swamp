@@ -53,7 +53,5 @@ export {
 
 export { DOCKER_RUNNER_SCRIPT } from "./docker_runner.ts";
 
-export {
-  type DriverLoadResult,
-  UserDriverLoader,
-} from "./user_driver_loader.ts";
+export { ExtensionLoader } from "../extensions/extension_loader.ts";
+export { driverKindAdapter } from "../extensions/driver_kind_adapter.ts";

@@ -53,7 +53,8 @@ import {
 } from "../libswamp/mod.ts";
 import { ExtensionRepository } from "../infrastructure/persistence/extension_repository.ts";
 import { ExtensionCatalogStore } from "../infrastructure/persistence/extension_catalog_store.ts";
-import { UserDatastoreLoader } from "../domain/datastore/user_datastore_loader.ts";
+import { ExtensionLoader } from "../domain/extensions/extension_loader.ts";
+import { datastoreKindAdapter } from "../domain/extensions/datastore_kind_adapter.ts";
 import { EmbeddedDenoRuntime } from "../infrastructure/runtime/embedded_deno_runtime.ts";
 import { swampPath } from "../infrastructure/persistence/paths.ts";
 import { SWAMP_SUBDIRS } from "../infrastructure/persistence/paths.ts";
@@ -171,9 +172,13 @@ async function maybeAutoUpdateSwampDatastore(
         );
         if (pulledDirs.length > 0) {
           const denoRuntime = new EmbeddedDenoRuntime();
-          const loader = new UserDatastoreLoader(denoRuntime, resolvedRepoDir);
+          const loader = new ExtensionLoader(
+            denoRuntime,
+            datastoreKindAdapter,
+            resolvedRepoDir,
+          );
           const [primary, ...rest] = pulledDirs;
-          await loader.loadDatastores(primary, {
+          await loader.load(primary, {
             skipAlreadyRegistered: false,
             additionalDirs: rest,
           });

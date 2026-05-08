@@ -308,7 +308,7 @@ Deno.test("extensionRm: removing one sibling leaves the other intact under a sha
     );
     // Close the catalog opened by createExtensionRmDeps; on Windows the
     // open DB handle blocks the recursive remove below with EBUSY.
-    deps.repository.legacyStore.close();
+    deps.repository.close();
   } finally {
     if (Deno.build.os === "windows") {
       await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
@@ -379,7 +379,7 @@ Deno.test("extensionRmPreview: resolves dependents via the tracked per-extension
     assertEquals(preview.dependents, ["@fake/consumer"]);
     // Close the catalog opened by createExtensionRmDeps; on Windows the
     // open DB handle blocks the recursive remove below with EBUSY.
-    deps.repository.legacyStore.close();
+    deps.repository.close();
   } finally {
     if (Deno.build.os === "windows") {
       await Deno.remove(tmpDir, { recursive: true }).catch(() => {});

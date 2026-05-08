@@ -216,7 +216,7 @@ export async function* extensionRm(
  * through {@link RemoveExtensionService} and prunes catalog rows
  * (closes swamp-club#201). The returned deps object owns the catalog
  * handle — caller is responsible for calling
- * `deps.repository.legacyStore.close()` after the rm operation
+ * `deps.repository.close()` after the rm operation
  * completes.
  */
 export async function createExtensionRmDeps(

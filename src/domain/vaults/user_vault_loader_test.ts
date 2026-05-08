@@ -19,7 +19,8 @@
 
 import { assertEquals, assertNotEquals } from "@std/assert";
 import { dirname, join } from "@std/path";
-import { UserVaultLoader } from "./user_vault_loader.ts";
+import { ExtensionLoader } from "../extensions/extension_loader.ts";
+import { vaultKindAdapter } from "../extensions/vault_kind_adapter.ts";
 import { VaultTypeRegistry, vaultTypeRegistry } from "./vault_type_registry.ts";
 import { bundleNamespace } from "../../infrastructure/persistence/paths.ts";
 import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
@@ -50,8 +51,8 @@ function makeRepoForCatalog(
 }
 
 Deno.test("UserVaultLoader - returns empty result for nonexistent directory", async () => {
-  const loader = new UserVaultLoader(new StubDenoRuntime());
-  const result = await loader.loadVaults("/nonexistent/path");
+  const loader = new ExtensionLoader(new StubDenoRuntime(), vaultKindAdapter);
+  const result = await loader.load("/nonexistent/path");
   assertEquals(result.loaded, []);
   assertEquals(result.failed, []);
 });
@@ -81,8 +82,8 @@ export const vault = {
 `,
     );
 
-    const loader = new UserVaultLoader(new StubDenoRuntime());
-    const result = await loader.loadVaults(tmpDir);
+    const loader = new ExtensionLoader(new StubDenoRuntime(), vaultKindAdapter);
+    const result = await loader.load(tmpDir);
 
     assertEquals(result.loaded.length, 1);
     assertEquals(result.loaded[0], "custom_vault.ts");
@@ -116,8 +117,8 @@ export const vault = {
 `,
     );
 
-    const loader = new UserVaultLoader(new StubDenoRuntime());
-    const result = await loader.loadVaults(tmpDir);
+    const loader = new ExtensionLoader(new StubDenoRuntime(), vaultKindAdapter);
+    const result = await loader.load(tmpDir);
 
     assertEquals(result.loaded.length, 1);
     assertEquals(result.loaded[0], "swamp_vault.ts");
@@ -133,8 +134,8 @@ Deno.test("UserVaultLoader - skips files without vault export", async () => {
     const utilFile = join(tmpDir, "utils.ts");
     await Deno.writeTextFile(utilFile, `export const helper = "hi";`);
 
-    const loader = new UserVaultLoader(new StubDenoRuntime());
-    const result = await loader.loadVaults(tmpDir);
+    const loader = new ExtensionLoader(new StubDenoRuntime(), vaultKindAdapter);
+    const result = await loader.load(tmpDir);
 
     assertEquals(result.loaded.length, 0);
     assertEquals(result.failed.length, 0);
@@ -149,8 +150,8 @@ Deno.test("UserVaultLoader - skips test files", async () => {
     const testFile = join(tmpDir, "my_vault_test.ts");
     await Deno.writeTextFile(testFile, `export const vault = {};`);
 
-    const loader = new UserVaultLoader(new StubDenoRuntime());
-    const result = await loader.loadVaults(tmpDir);
+    const loader = new ExtensionLoader(new StubDenoRuntime(), vaultKindAdapter);
+    const result = await loader.load(tmpDir);
 
     assertEquals(result.loaded.length, 0);
     assertEquals(result.failed.length, 0);
@@ -206,8 +207,8 @@ export const vault = {
 `,
     );
 
-    const loader = new UserVaultLoader(new StubDenoRuntime());
-    const result = await loader.loadVaults(tmpDir);
+    const loader = new ExtensionLoader(new StubDenoRuntime(), vaultKindAdapter);
+    const result = await loader.load(tmpDir);
 
     assertEquals(result.loaded.length, 1);
     assertEquals(result.loaded[0], "custom_vault.ts");
@@ -241,8 +242,8 @@ export const vault = {
 `,
     );
 
-    const loader = new UserVaultLoader(new StubDenoRuntime());
-    const result = await loader.loadVaults(tmpDir);
+    const loader = new ExtensionLoader(new StubDenoRuntime(), vaultKindAdapter);
+    const result = await loader.load(tmpDir);
 
     assertEquals(result.loaded.length, 1);
     assertEquals(result.loaded[0], "swamp_vault.ts");
@@ -282,8 +283,12 @@ export const vault = {
     await Deno.writeTextFile(join(vaultsDir, "my_vault.ts"), vaultCode);
 
     // First load — populates cache
-    const loader1 = new UserVaultLoader(new StubDenoRuntime(), repoDir);
-    await loader1.loadVaults(vaultsDir);
+    const loader1 = new ExtensionLoader(
+      new StubDenoRuntime(),
+      vaultKindAdapter,
+      repoDir,
+    );
+    await loader1.load(vaultsDir);
 
     // Read the cached bundle content (namespaced by baseDir hash)
     const { bundleNamespace } = await import(
@@ -309,8 +314,12 @@ export const vault = {
     );
 
     // Second load — should detect dependency change and rebundle
-    const loader2 = new UserVaultLoader(new StubDenoRuntime(), repoDir);
-    await loader2.loadVaults(vaultsDir);
+    const loader2 = new ExtensionLoader(
+      new StubDenoRuntime(),
+      vaultKindAdapter,
+      repoDir,
+    );
+    await loader2.load(vaultsDir);
 
     // The bundle should have been regenerated with the new dependency content
     const cachedBundle2 = await Deno.readTextFile(bundlePath);
@@ -345,8 +354,8 @@ export const vault = {
 `,
     );
 
-    const loader = new UserVaultLoader(new StubDenoRuntime());
-    const result = await loader.loadVaults(tmpDir);
+    const loader = new ExtensionLoader(new StubDenoRuntime(), vaultKindAdapter);
+    const result = await loader.load(tmpDir);
 
     assertEquals(result.loaded.length, 1);
     assertEquals(result.loaded[0], "si_vault.ts");
@@ -403,8 +412,9 @@ export const vault = {
     const catalog1 = new ExtensionCatalogStore(dbPath);
 
     const repository1 = makeRepoForCatalog(catalog1, repoDir);
-    const loader1 = new UserVaultLoader(
+    const loader1 = new ExtensionLoader(
       new StubDenoRuntime(),
+      vaultKindAdapter,
       repoDir,
       undefined,
       repository1,
@@ -441,8 +451,9 @@ export const vault = {
     const catalog2 = new ExtensionCatalogStore(dbPath);
 
     const repository2 = makeRepoForCatalog(catalog2, repoDir);
-    const loader2 = new UserVaultLoader(
+    const loader2 = new ExtensionLoader(
       new StubDenoRuntime(),
+      vaultKindAdapter,
       repoDir,
       undefined,
       repository2,
@@ -502,8 +513,9 @@ export const vault = {
     const catalog1 = new ExtensionCatalogStore(dbPath);
 
     const repository1 = makeRepoForCatalog(catalog1, repoDir);
-    const loader1 = new UserVaultLoader(
+    const loader1 = new ExtensionLoader(
       new StubDenoRuntime(),
+      vaultKindAdapter,
       repoDir,
       undefined,
       repository1,
@@ -534,8 +546,9 @@ export const vault = {
     const catalog2 = new ExtensionCatalogStore(dbPath);
 
     const repository2 = makeRepoForCatalog(catalog2, repoDir);
-    const loader2 = new UserVaultLoader(
+    const loader2 = new ExtensionLoader(
       new StubDenoRuntime(),
+      vaultKindAdapter,
       repoDir,
       undefined,
       repository2,
@@ -592,8 +605,9 @@ export const vault = {
     // Cold-start populates the catalog with the valid vault.
     const catalog = new ExtensionCatalogStore(dbPath);
     const repository = makeRepoForCatalog(catalog, repoDir);
-    const loader = new UserVaultLoader(
+    const loader = new ExtensionLoader(
       new StubDenoRuntime(),
+      vaultKindAdapter,
       repoDir,
       undefined,
       repository,
@@ -616,8 +630,9 @@ export const vault = {
 
     // Re-run buildIndex. registerLazyFromCatalog must skip the broken
     // row even though findByKind returns it.
-    const loader2 = new UserVaultLoader(
+    const loader2 = new ExtensionLoader(
       new StubDenoRuntime(),
+      vaultKindAdapter,
       repoDir,
       undefined,
       repository,
@@ -676,8 +691,9 @@ export const vault = {
 
       const catalog = new ExtensionCatalogStore(dbPath);
       const repository = makeRepoForCatalog(catalog, repoDir);
-      const loader = new UserVaultLoader(
+      const loader = new ExtensionLoader(
         new StubDenoRuntime(),
+        vaultKindAdapter,
         repoDir,
         undefined,
         repository,
@@ -707,6 +723,174 @@ export const vault = {
     } finally {
       await Deno.remove(repoDir, { recursive: true });
       await Deno.remove(vaultsDir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "loadSingleType: promotes lazy vault entry to fully loaded",
+  async () => {
+    const repoDir = await Deno.makeTempDir({
+      prefix: "swamp_vault_lazy_r_",
+    });
+    const vaultsDir = await Deno.makeTempDir({
+      prefix: "swamp_vault_lazy_v_",
+    });
+
+    try {
+      await Deno.writeTextFile(
+        join(vaultsDir, "vault.ts"),
+        `export const vault = {
+  type: "@test/lazy-vault",
+  name: "Lazy Test Vault",
+  description: "Test vault for lazy promotion",
+  createProvider: (_name: string, _config: Record<string, unknown>) => ({
+    get: async () => null,
+    set: async () => {},
+    delete: async () => {},
+    listKeys: async () => [],
+  }),
+};`,
+      );
+
+      const dbPath = join(repoDir, ".swamp", "_extension_catalog.db");
+      const catalog = new ExtensionCatalogStore(dbPath);
+      const repository = makeRepoForCatalog(catalog, repoDir);
+
+      const loader = new ExtensionLoader(
+        new StubDenoRuntime(),
+        vaultKindAdapter,
+        repoDir,
+        undefined,
+        repository,
+      );
+
+      const result = await loader.bundleAndIndexOne({
+        absolutePath: join(vaultsDir, "vault.ts"),
+        relativePath: "vault.ts",
+        baseDir: vaultsDir,
+      });
+      assertNotEquals(result, null);
+
+      catalog.upsert({
+        type_normalized: result!.typeNormalized,
+        kind: "vault",
+        bundle_path: result!.bundlePath,
+        source_path: join(vaultsDir, "vault.ts"),
+        version: "",
+        description: "",
+        extends_type: "",
+        source_mtime: "",
+        source_fingerprint: result!.fingerprint,
+      });
+
+      vaultTypeRegistry.registerLazy({
+        type: result!.typeNormalized,
+        bundlePath: result!.bundlePath,
+        sourcePath: join(vaultsDir, "vault.ts"),
+        version: "",
+        description: "",
+      });
+
+      assertEquals(
+        vaultTypeRegistry.get(result!.typeNormalized),
+        undefined,
+        "lazy entry should not be fully loaded",
+      );
+
+      await loader.loadSingleType(result!.typeNormalized);
+      assertNotEquals(
+        vaultTypeRegistry.get(result!.typeNormalized),
+        undefined,
+        "loadSingleType must promote lazy vault to fully loaded",
+      );
+
+      catalog.close();
+    } finally {
+      if (Deno.build.os === "windows") {
+        await Deno.remove(repoDir, { recursive: true }).catch(() => {});
+        await Deno.remove(vaultsDir, { recursive: true }).catch(() => {});
+      } else {
+        await Deno.remove(repoDir, { recursive: true });
+        await Deno.remove(vaultsDir, { recursive: true });
+      }
+    }
+  },
+);
+
+Deno.test(
+  "buildIndex warm-start: BundleBuildFailed state preserved when source unchanged",
+  async () => {
+    const repoDir = await Deno.makeTempDir({
+      prefix: "swamp_vault_terminal_r_",
+    });
+    const vaultsDir = await Deno.makeTempDir({
+      prefix: "swamp_vault_terminal_v_",
+    });
+
+    try {
+      await Deno.writeTextFile(
+        join(vaultsDir, "vault.ts"),
+        `export const vault = {
+  type: "@test/terminal-vault",
+  name: "Terminal Test",
+  description: "Test vault for terminal state",
+  createProvider: (_name: string, _config: Record<string, unknown>) => ({
+    get: async () => null,
+    set: async () => {},
+    delete: async () => {},
+    listKeys: async () => [],
+  }),
+};`,
+      );
+
+      const dbPath = join(repoDir, ".swamp", "_extension_catalog.db");
+      const catalog = new ExtensionCatalogStore(dbPath);
+      const repository = makeRepoForCatalog(catalog, repoDir);
+
+      const loader = new ExtensionLoader(
+        new StubDenoRuntime(),
+        vaultKindAdapter,
+        repoDir,
+        undefined,
+        repository,
+      );
+
+      // Cold-start to populate catalog
+      await loader.buildIndex(vaultsDir);
+
+      const rows = catalog.findByKind("vault");
+      assertEquals(rows.length > 0, true, "catalog should have vault rows");
+
+      // Manually set state to BundleBuildFailed (simulating a prior build failure)
+      const row = rows[0];
+      catalog.upsert({
+        ...row,
+        state: "BundleBuildFailed",
+      });
+
+      const beforeState = catalog.findByKind("vault")[0].state;
+      assertEquals(beforeState, "BundleBuildFailed", "precondition: state set");
+
+      // Warm-start: source unchanged, fingerprint matches — should NOT rebundle
+      await loader.buildIndex(vaultsDir);
+
+      const afterState = catalog.findByKind("vault")[0].state;
+      assertEquals(
+        afterState,
+        "BundleBuildFailed",
+        "warm-start must preserve BundleBuildFailed when source is unchanged",
+      );
+
+      catalog.close();
+    } finally {
+      if (Deno.build.os === "windows") {
+        await Deno.remove(repoDir, { recursive: true }).catch(() => {});
+        await Deno.remove(vaultsDir, { recursive: true }).catch(() => {});
+      } else {
+        await Deno.remove(repoDir, { recursive: true });
+        await Deno.remove(vaultsDir, { recursive: true });
+      }
     }
   },
 );

@@ -66,9 +66,9 @@ export interface InvalidationGuardResult {
  * **Role.** The repository hides SQLite for save/load/saveAll, returning
  * Extensions rather than rows. Loaders, lifecycle services
  * (W2 InstallExtensionService etc.), and `ReconcileFromDisk` (W3) talk
- * to this class and never touch SQL directly. The single transitional
- * exception is the {@link ExtensionRepository.legacyStore} field — see
- * its JSDoc.
+ * to this class and never touch SQL directly. The ExtensionLoader
+ * accesses the catalog via {@link ExtensionRepository.getCatalogStore}
+ * for row-level operations (buildIndex, loadSingleType).
  *
  * **I-Repo-1 invariant** (cross-aggregate `(kind, typeNormalized)`
  * uniqueness over non-Tombstoned Sources). Evaluated against post-save
@@ -99,34 +99,15 @@ export interface InvalidationGuardResult {
  * convergence; SQLite's `busy_timeout` serializes the write itself.
  *
  * **Composition over inheritance.** The repository wraps an
- * {@link ExtensionCatalogStore} via composition, NOT inheritance, so
- * the catalog's row-shaped API stays available to loaders during the
- * W1b transition via {@link ExtensionRepository.legacyStore}.
+ * {@link ExtensionCatalogStore} via composition, NOT inheritance. The
+ * {@link ExtensionLoader} accesses the catalog via
+ * {@link getCatalogStore} for row-level operations.
  *
  * See `design/extension-rearchitecture.md` (workstream W1) for the full
  * architectural blueprint this class lives inside.
  */
 export class ExtensionRepository {
-  /**
-   * Transitional escape hatch. **REMOVE IN W4.**
-   *
-   * Exposes the underlying {@link ExtensionCatalogStore} for the
-   * read/write paths W1b doesn't migrate (loader's
-   * `registerLazyFromCatalog`, `findStaleFiles`, direct upsert,
-   * `markCatalogValidationFailed` — all W3/W4 territory). Callers that
-   * need the row-shaped catalog API during the transition reach it via
-   * `repository.legacyStore`.
-   *
-   * **Aliasing rule.** A per-method local
-   * (`const catalog = this.repository.legacyStore;` at the top of one
-   * method body) is fine — the W4 removal grep still finds the
-   * `.legacyStore` token at the alias site. Do NOT alias **across method
-   * boundaries** (i.e. do not stash the catalog as a private class field,
-   * a module-level const, or pass it as a method argument), because
-   * those forms hide the `.legacyStore` token from the literal-token
-   * grep W4 will use to delete every callsite mechanically.
-   */
-  readonly legacyStore: ExtensionCatalogStore;
+  private readonly catalog: ExtensionCatalogStore;
 
   private readonly lockfileRepository: LockfileRepository;
   private readonly repoRoot: string;
@@ -146,7 +127,7 @@ export class ExtensionRepository {
     repoRoot: string;
     localManifestIdentity?: LocalManifestIdentity | null;
   }) {
-    this.legacyStore = args.catalog;
+    this.catalog = args.catalog;
     this.lockfileRepository = args.lockfileRepository;
     this.repoRoot = canonicalizePath(args.repoRoot);
     this.localManifestIdentity = args.localManifestIdentity ?? null;
@@ -158,8 +139,32 @@ export class ExtensionRepository {
    * fallback to pulled rows with empty `extension_version` and to W1a
    * leftover rows where both identity columns are empty.
    */
+  getCatalogStore(): ExtensionCatalogStore {
+    return this.catalog;
+  }
+
+  close(): void {
+    this.catalog.close();
+  }
+
+  findByKind(kind: ExtensionKind): ExtensionTypeRow[] {
+    return this.catalog.findByKind(kind);
+  }
+
+  setLayoutVersion(version: string): void {
+    this.catalog.setLayoutVersion(version);
+  }
+
+  markPopulated(kind: ExtensionKind): void {
+    this.catalog.markPopulated(kind);
+  }
+
+  setManifestIdentity(identity: string | null): void {
+    this.catalog.setManifestIdentity(identity);
+  }
+
   loadAll(): Extension[] {
-    const rows = this.legacyStore.findAll();
+    const rows = this.catalog.findAll();
     return this.materialiseExtensions(rows);
   }
 
@@ -173,7 +178,7 @@ export class ExtensionRepository {
     // Need full-table read because findByExtension takes (name, version)
     // and we don't know which versions are present. Filter in-memory by
     // the resolved identity after the empty-identity fallback runs.
-    const rows = this.legacyStore.findAll();
+    const rows = this.catalog.findAll();
     return this.materialiseExtensions(rows).filter((e) => e.name === name);
   }
 
@@ -207,7 +212,7 @@ export class ExtensionRepository {
    * {@link DuplicateTypeError}.
    */
   saveAll(extensions: readonly Extension[]): void {
-    this.legacyStore.runInTransaction(() => {
+    this.catalog.runInTransaction(() => {
       for (const ext of extensions) {
         this.applyDiffForExtension(ext);
       }
@@ -236,14 +241,14 @@ export class ExtensionRepository {
     expectedDatastoreBasePath: string;
     expectedSourceDirsFingerprint: string;
   }): InvalidationGuardResult {
-    if (!this.legacyStore.isPopulated(args.kind)) {
+    if (!this.catalog.isPopulated(args.kind)) {
       return { shouldInvalidate: true, reason: "not-populated" };
     }
-    if (this.legacyStore.getLayoutVersion() !== args.expectedLayoutVersion) {
+    if (this.catalog.getLayoutVersion() !== args.expectedLayoutVersion) {
       return { shouldInvalidate: true, reason: "layout-version-mismatch" };
     }
     if (
-      this.legacyStore.getDatastoreBasePath(args.kind) !==
+      this.catalog.getDatastoreBasePath(args.kind) !==
         args.expectedDatastoreBasePath
     ) {
       return {
@@ -252,7 +257,7 @@ export class ExtensionRepository {
       };
     }
     if (
-      this.legacyStore.getSourceDirsFingerprint(args.kind) !==
+      this.catalog.getSourceDirsFingerprint(args.kind) !==
         args.expectedSourceDirsFingerprint
     ) {
       return {
@@ -283,7 +288,7 @@ export class ExtensionRepository {
     ];
     for (const kind of kinds) {
       try {
-        this.legacyStore.invalidate(kind);
+        this.catalog.invalidate(kind);
       } catch (error) {
         logger.warn`invalidateAll: failed to invalidate ${kind} (${error})`;
       }
@@ -314,7 +319,7 @@ export class ExtensionRepository {
       "report",
     ];
     for (const kind of kinds) {
-      if (!this.legacyStore.isPopulated(kind)) return true;
+      if (!this.catalog.isPopulated(kind)) return true;
     }
     return false;
   }
@@ -322,7 +327,7 @@ export class ExtensionRepository {
   manifestIdentityChanged(
     manifest: LocalManifestIdentity | null,
   ): boolean {
-    const stored = this.legacyStore.getManifestIdentity() ?? null;
+    const stored = this.catalog.getManifestIdentity() ?? null;
     const current = manifest ? `${manifest.name}@${manifest.version}` : null;
     return stored !== current;
   }
@@ -434,7 +439,7 @@ export class ExtensionRepository {
       if (derived === null) {
         logger
           .warn`Dropping orphan row at ${row.source_path}: source path matches no known extension layout.`;
-        this.legacyStore.removeBySourcePath(row.source_path);
+        this.catalog.removeBySourcePath(row.source_path);
         return null;
       }
       name = derived.name;
@@ -449,7 +454,7 @@ export class ExtensionRepository {
         version = this.localManifestIdentity.version;
       }
       if (version.length > 0) {
-        this.legacyStore.updateExtensionIdentity(
+        this.catalog.updateExtensionIdentity(
           row.source_path,
           name,
           version,
@@ -466,7 +471,7 @@ export class ExtensionRepository {
       if (locked === null) {
         logger
           .warn`Dropping orphan pulled row at ${row.source_path}: lockfile has no entry for ${name}.`;
-        this.legacyStore.removeBySourcePath(row.source_path);
+        this.catalog.removeBySourcePath(row.source_path);
         return null;
       }
       if (!this.fallbackLoggedSourcePaths.has(row.source_path)) {
@@ -474,7 +479,7 @@ export class ExtensionRepository {
         logger
           .info`Empty-version fallback resolved ${name}@${locked} for ${row.source_path}; writing back so subsequent boots are silent.`;
       }
-      this.legacyStore.updateExtensionIdentity(row.source_path, name, locked);
+      this.catalog.updateExtensionIdentity(row.source_path, name, locked);
       return { name, version: locked };
     }
 
@@ -488,7 +493,7 @@ export class ExtensionRepository {
    * Sources and rows that the Extension no longer owns.
    */
   private applyDiffForExtension(extension: Extension): void {
-    const currentRows = this.legacyStore.findByExtension(
+    const currentRows = this.catalog.findByExtension(
       extension.name,
       extension.version,
     );
@@ -497,12 +502,12 @@ export class ExtensionRepository {
     for (const source of extension.sources.values()) {
       if (source.state.tag === "Tombstoned") {
         // Tombstoned sources are DELETEd on save.
-        this.legacyStore.removeBySourcePath(source.id.canonicalPath);
+        this.catalog.removeBySourcePath(source.id.canonicalPath);
         continue;
       }
       newSourcePaths.add(source.id.canonicalPath);
       const row = sourceToRow(extension, source);
-      this.legacyStore.upsertWithIdentity(row);
+      this.catalog.upsertWithIdentity(row);
     }
 
     // DELETE current rows whose source_path is no longer owned by the
@@ -510,7 +515,7 @@ export class ExtensionRepository {
     // tombstoned — e.g. v2 of an extension with fewer files than v1).
     for (const row of currentRows) {
       if (!newSourcePaths.has(row.source_path)) {
-        this.legacyStore.removeBySourcePath(row.source_path);
+        this.catalog.removeBySourcePath(row.source_path);
       }
     }
   }
@@ -522,13 +527,14 @@ export class ExtensionRepository {
    * requirement.
    */
   private assertIRepo1(): void {
-    const rows = this.legacyStore.findAll();
+    const rows = this.catalog.findAll();
     const occupants = new Map<string, ExtensionTypeRow>();
     for (const row of rows) {
       if ((row.state ?? "Indexed") === "Tombstoned") continue;
-      // Rows with empty type_normalized (validation-failed legacy shape,
-      // empty types from W1a) cannot collide on type identity.
       if (row.type_normalized.length === 0) continue;
+      // Extension rows augment a base type — multiple files may target
+      // the same type_normalized. Uniqueness only applies to base kinds.
+      if (row.kind === "extension") continue;
       const key = `${row.kind}::${row.type_normalized}`;
       const prior = occupants.get(key);
       if (prior) {

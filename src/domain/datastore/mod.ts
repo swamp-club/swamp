@@ -64,7 +64,5 @@ export {
 
 export { getDatastoreType, getDatastoreTypes } from "./datastore_types.ts";
 
-export {
-  type DatastoreLoadResult,
-  UserDatastoreLoader,
-} from "./user_datastore_loader.ts";
+export { ExtensionLoader } from "../extensions/extension_loader.ts";
+export { datastoreKindAdapter } from "../extensions/datastore_kind_adapter.ts";

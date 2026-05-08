@@ -37,11 +37,12 @@ import { DuplicateTypeError } from "../../infrastructure/persistence/duplicate_t
 import { DuplicateTypeUserError } from "../../domain/extensions/duplicate_type_user_error.ts";
 import { UserError } from "../../domain/errors.ts";
 import { swampPath } from "../../infrastructure/persistence/paths.ts";
-import { UserModelLoader } from "../../domain/models/user_model_loader.ts";
-import { UserDriverLoader } from "../../domain/drivers/user_driver_loader.ts";
-import { UserVaultLoader } from "../../domain/vaults/user_vault_loader.ts";
-import { UserDatastoreLoader } from "../../domain/datastore/user_datastore_loader.ts";
-import { UserReportLoader } from "../../domain/reports/user_report_loader.ts";
+import { ExtensionLoader } from "../../domain/extensions/extension_loader.ts";
+import { modelKindAdapter } from "../../domain/extensions/model_kind_adapter.ts";
+import { vaultKindAdapter } from "../../domain/extensions/vault_kind_adapter.ts";
+import { driverKindAdapter } from "../../domain/extensions/driver_kind_adapter.ts";
+import { datastoreKindAdapter } from "../../domain/extensions/datastore_kind_adapter.ts";
+import { reportKindAdapter } from "../../domain/extensions/report_kind_adapter.ts";
 import type { DenoRuntime } from "../../domain/runtime/deno_runtime.ts";
 import type { UpstreamExtensionEntry } from "../../infrastructure/persistence/upstream_extensions.ts";
 
@@ -297,35 +298,41 @@ export class InstallExtensionService {
   } {
     switch (kindDir) {
       case "models":
-        return new UserModelLoader(
+        return new ExtensionLoader(
           this.denoRuntime,
+          modelKindAdapter,
           repoDir,
           undefined,
           this.repository,
         );
       case "vaults":
-        return new UserVaultLoader(
+        return new ExtensionLoader(
           this.denoRuntime,
+          vaultKindAdapter,
           repoDir,
           undefined,
           this.repository,
         );
       case "drivers":
-        return new UserDriverLoader(
+        return new ExtensionLoader(
           this.denoRuntime,
+          driverKindAdapter,
           repoDir,
           undefined,
           this.repository,
         );
       case "datastores":
-        return new UserDatastoreLoader(
+        return new ExtensionLoader(
           this.denoRuntime,
+          datastoreKindAdapter,
           repoDir,
+          undefined,
           this.repository,
         );
       case "reports":
-        return new UserReportLoader(
+        return new ExtensionLoader(
           this.denoRuntime,
+          reportKindAdapter,
           repoDir,
           undefined,
           this.repository,

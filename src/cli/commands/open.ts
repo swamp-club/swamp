@@ -136,7 +136,7 @@ async function loadRepoIntoState(
     try {
       rescanRepo.invalidateAll();
     } finally {
-      rescanRepo.legacyStore.close();
+      rescanRepo.close();
     }
   } catch {
     // Best-effort — the loader will bootstrap a fresh catalog if this fails.
