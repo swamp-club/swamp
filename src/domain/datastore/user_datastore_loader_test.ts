@@ -711,3 +711,15 @@ export const datastore = {
     }
   },
 );
+
+Deno.test("datastoreKindAdapter.extractTypeFromSource: ignores type in helper objects above the export", () => {
+  const source = `
+const cfg = { type: "wrong/type" };
+export const datastore = {
+  type: "@org/correct-datastore",
+  connect: async () => ({}),
+};`;
+  const result = datastoreKindAdapter.extractTypeFromSource(source);
+  assertNotEquals(result, null);
+  assertEquals(result?.typeNormalized, "@org/correct-datastore");
+});

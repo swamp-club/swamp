@@ -894,3 +894,15 @@ Deno.test(
     }
   },
 );
+
+Deno.test("vaultKindAdapter.extractTypeFromSource: ignores type in helper objects above the export", () => {
+  const source = `
+const cfg = { type: "wrong/type" };
+export const vault = {
+  type: "@org/correct-vault",
+  resolve: async () => "secret",
+};`;
+  const result = vaultKindAdapter.extractTypeFromSource(source);
+  assertNotEquals(result, null);
+  assertEquals(result?.typeNormalized, "@org/correct-vault");
+});

@@ -70,7 +70,9 @@ export const vaultKindAdapter: KindAdapter = {
 
   extractTypeFromSource(source: string) {
     if (!/export\s+const\s+vault\s*[=:]/.test(source)) return null;
-    const typeMatch = source.match(/type\s*:\s*["']([^"']+)["']/);
+    const typeMatch = source.match(
+      /export\s+const\s+vault\s*=\s*\{[\s\S]*?type\s*:\s*["']([^"']+)["']/,
+    );
     if (!typeMatch) return null;
     return {
       typeNormalized: typeMatch[1].toLowerCase(),

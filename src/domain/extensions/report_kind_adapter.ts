@@ -71,7 +71,9 @@ export const reportKindAdapter: KindAdapter = {
 
   extractTypeFromSource(source: string) {
     if (!/export\s+const\s+report\s*[=:]/.test(source)) return null;
-    const nameMatch = source.match(/name\s*:\s*["']([^"']+)["']/);
+    const nameMatch = source.match(
+      /export\s+const\s+report\s*=\s*\{[\s\S]*?name\s*:\s*["']([^"']+)["']/,
+    );
     if (!nameMatch) return null;
     return {
       typeNormalized: nameMatch[1].toLowerCase(),

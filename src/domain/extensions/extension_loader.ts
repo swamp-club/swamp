@@ -431,25 +431,23 @@ export class ExtensionLoader {
 
     if (
       this.adapter.secondaryExportKey &&
-      module[this.adapter.secondaryExportKey]
+      module[this.adapter.secondaryExportKey] &&
+      this.adapter.validateSecondaryExport
     ) {
-      const validate = this.adapter.validateSecondaryExport;
-      if (validate) {
-        const parsed = validate(
-          module[this.adapter.secondaryExportKey],
-        );
-        if (!parsed.success) {
-          throw new Error(parsed.error.message);
-        }
-        const validated = parsed.data as Record<string, unknown>;
-        return {
-          kind: this.adapter.catalogKinds[1] ?? this.adapter.catalogKinds[0],
-          typeNormalized: this.adapter.normalizeType(validated),
-          bundlePath: this.getBundlePath(args.relativePath, args.baseDir),
-          fingerprint,
-          fromCache,
-        };
+      const parsed = this.adapter.validateSecondaryExport(
+        module[this.adapter.secondaryExportKey],
+      );
+      if (!parsed.success) {
+        throw new Error(parsed.error.message);
       }
+      const validated = parsed.data as Record<string, unknown>;
+      return {
+        kind: this.adapter.catalogKinds[1] ?? this.adapter.catalogKinds[0],
+        typeNormalized: this.adapter.normalizeType(validated),
+        bundlePath: this.getBundlePath(args.relativePath, args.baseDir),
+        fingerprint,
+        fromCache,
+      };
     }
 
     return null;
@@ -708,40 +706,38 @@ export class ExtensionLoader {
 
     if (
       this.adapter.secondaryExportKey &&
-      module[this.adapter.secondaryExportKey]
+      module[this.adapter.secondaryExportKey] &&
+      this.adapter.validateSecondaryExport
     ) {
       const bundlePath = this.getBundlePath(relativePath, baseDir);
-      const validate = this.adapter.validateSecondaryExport;
-      if (validate) {
-        const parsed = validate(
-          module[this.adapter.secondaryExportKey],
-        );
-        if (!parsed.success) {
-          markCatalogValidationFailed({
-            catalog,
-            sourcePath: absolutePath,
-            kind: this.adapter.catalogKinds[1] ?? this.adapter.catalogKinds[0],
-            bundlePath,
-            sourceMtime,
-            sourceFingerprint: effectiveFingerprint,
-          });
-          throw new Error(parsed.error.message);
-        }
-        const validated = parsed.data as Record<string, unknown>;
-        const typeNormalized = this.adapter.normalizeType(validated);
-
-        catalog.upsert({
-          type_normalized: typeNormalized,
+      const parsed = this.adapter.validateSecondaryExport(
+        module[this.adapter.secondaryExportKey],
+      );
+      if (!parsed.success) {
+        markCatalogValidationFailed({
+          catalog,
+          sourcePath: absolutePath,
           kind: this.adapter.catalogKinds[1] ?? this.adapter.catalogKinds[0],
-          bundle_path: bundlePath,
-          source_path: absolutePath,
-          version: "",
-          description: "",
-          extends_type: typeNormalized,
-          source_mtime: sourceMtime,
-          source_fingerprint: effectiveFingerprint,
+          bundlePath,
+          sourceMtime,
+          sourceFingerprint: effectiveFingerprint,
         });
+        throw new Error(parsed.error.message);
       }
+      const validated = parsed.data as Record<string, unknown>;
+      const typeNormalized = this.adapter.normalizeType(validated);
+
+      catalog.upsert({
+        type_normalized: typeNormalized,
+        kind: this.adapter.catalogKinds[1] ?? this.adapter.catalogKinds[0],
+        bundle_path: bundlePath,
+        source_path: absolutePath,
+        version: "",
+        description: "",
+        extends_type: typeNormalized,
+        source_mtime: sourceMtime,
+        source_fingerprint: effectiveFingerprint,
+      });
     }
 
     return undefined;

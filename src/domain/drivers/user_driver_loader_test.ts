@@ -388,3 +388,15 @@ export const driver = {
     }
   },
 );
+
+Deno.test("driverKindAdapter.extractTypeFromSource: ignores type in helper objects above the export", () => {
+  const source = `
+const cfg = { type: "wrong/type" };
+export const driver = {
+  type: "@org/correct-driver",
+  execute: async () => ({}),
+};`;
+  const result = driverKindAdapter.extractTypeFromSource(source);
+  assertNotEquals(result, null);
+  assertEquals(result?.typeNormalized, "@org/correct-driver");
+});

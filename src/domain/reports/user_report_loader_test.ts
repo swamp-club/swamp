@@ -389,3 +389,15 @@ export const report = {
     }
   },
 );
+
+Deno.test("reportKindAdapter.extractTypeFromSource: ignores name in helper objects above the export", () => {
+  const source = `
+const cfg = { name: "wrong-report" };
+export const report = {
+  name: "@org/correct-report",
+  render: () => "",
+};`;
+  const result = reportKindAdapter.extractTypeFromSource(source);
+  assertNotEquals(result, null);
+  assertEquals(result?.typeNormalized, "@org/correct-report");
+});
