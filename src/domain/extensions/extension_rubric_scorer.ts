@@ -45,7 +45,7 @@ import type { ExtensionManifest } from "./extension_manifest.ts";
  *   4. Run `deno doc --json` and `deno doc --lint` with CWD at the
  *      extraction root. `--lint` exits 0 regardless of diagnostics;
  *      we parse stdout/stderr for `error[<code>]` patterns.
- *   5. Compute the 5 per-version factors and the 4 per-package
+ *   5. Compute the 5 per-version factors and the 3 per-package
  *      factors + `repository-verified`, then compose a rubric v2
  *      score.
  */
@@ -345,23 +345,14 @@ export function composeScore(
       { remediation: "Fill `description:` in manifest.yaml." },
     ),
     boolRow(
-      "platforms-one",
-      "At least one platform tag (or universal)",
-      1,
+      "platforms",
+      "Platform support declared (or universal)",
+      2,
       manifest.platforms.length === 0 || manifest.platforms.length >= 1,
       {
         remediation:
-          "Leave `platforms:` empty (= universal) or add at least one entry.",
-      },
-    ),
-    boolRow(
-      "platforms-two",
-      "Two or more platform tags (or universal)",
-      1,
-      manifest.platforms.length === 0 || manifest.platforms.length >= 2,
-      {
-        remediation:
-          "Leave `platforms:` empty (= universal) or add ≥2 entries.",
+          "Set `platforms:` in manifest.yaml — list supported platforms " +
+          "or leave it empty to declare universal support.",
       },
     ),
     boolRow(
