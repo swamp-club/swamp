@@ -257,11 +257,10 @@ Deno.test(
       );
       assertEquals(statusById.get("description"), "missing");
       assertEquals(statusById.get("repository-verified"), "missing");
-      assertEquals(statusById.get("platforms-two"), "missing");
       // Still-earned controls:
       assertEquals(statusById.get("has-readme"), "earned");
       assertEquals(statusById.get("has-license"), "earned");
-      assertEquals(statusById.get("platforms-one"), "earned");
+      assertEquals(statusById.get("platforms"), "earned");
     } finally {
       await Deno.remove(tmpDir, { recursive: true });
     }

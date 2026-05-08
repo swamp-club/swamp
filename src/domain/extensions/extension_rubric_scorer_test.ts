@@ -418,18 +418,17 @@ Deno.test("composeScore: bad manifest fails several factors", () => {
     .map((f) => f.id);
   assert(failed.includes("description"));
   assert(failed.includes("repository-verified"));
-  assert(failed.includes("platforms-two"));
+  assert(!failed.includes("platforms"));
 });
 
-Deno.test("composeScore: empty platforms is universal (both platform factors earned)", () => {
+Deno.test("composeScore: empty platforms is universal (platform factor earned)", () => {
   const score = composeScore(
     factorsAllEarned(),
     makeManifest({ platforms: [] }),
   );
-  const one = score.factors.find((f) => f.id === "platforms-one")!;
-  const two = score.factors.find((f) => f.id === "platforms-two")!;
-  assertEquals(one.status, "earned");
-  assertEquals(two.status, "earned");
+  const factor = score.factors.find((f) => f.id === "platforms")!;
+  assertEquals(factor.status, "earned");
+  assertEquals(factor.earnedPoints, 2);
 });
 
 Deno.test("composeScore: missing LICENSE file misses has-license", () => {
@@ -523,8 +522,7 @@ Deno.test("composeScore: factor IDs and order match server", () => {
     "symbols-docs",
     "fast-check",
     "description",
-    "platforms-one",
-    "platforms-two",
+    "platforms",
     "has-license",
     "repository-verified",
   ]);
@@ -837,14 +835,14 @@ Deno.test("[parity] composeScore: empty everything earns universal-platform only
       platforms: [],
     }),
   );
-  // Universal platforms earns 2 points (platforms-one + platforms-two).
+  // Universal platforms earns 2 points (single platforms factor).
   assertEquals(score.earnedPoints, 2);
   assertEquals(score.percentage, Math.floor((2 * 100) / 12));
   assertEquals(score.rubricVersion, 2);
-  assertEquals(score.factors.length, 10);
+  assertEquals(score.factors.length, 9);
   const byId = new Map(score.factors.map((f) => [f.id, f]));
-  assertEquals(byId.get("platforms-one")?.status, "earned");
-  assertEquals(byId.get("platforms-two")?.status, "earned");
+  assertEquals(byId.get("platforms")?.status, "earned");
+  assertEquals(byId.get("platforms")?.earnedPoints, 2);
   assertEquals(byId.get("repository-verified")?.status, "missing");
   // verified-by-swamp is not a factor in the rubric (badge only)
   assertEquals(byId.get("verified-by-swamp"), undefined);
@@ -869,31 +867,31 @@ Deno.test("[parity] composeScore: percentage floors (11/12 → 91)", () => {
   assertEquals(score.percentage, 91);
 });
 
-Deno.test("[parity] composeScore: platforms thresholds", () => {
-  // 1 platform: platforms-one earned, platforms-two missing
+Deno.test("[parity] composeScore: platforms factor earns 2 for any count", () => {
+  // 1 platform: earned
   const s1 = composeScore(
     factorsAllEarned(),
     makeManifest({ platforms: ["linux"] }),
   );
   const m1 = new Map(s1.factors.map((f) => [f.id, f]));
-  assertEquals(m1.get("platforms-one")?.status, "earned");
-  assertEquals(m1.get("platforms-two")?.status, "missing");
+  assertEquals(m1.get("platforms")?.status, "earned");
+  assertEquals(m1.get("platforms")?.earnedPoints, 2);
 
-  // 2+ platforms: both earned
+  // 2+ platforms: earned
   const s2 = composeScore(
     factorsAllEarned(),
     makeManifest({ platforms: ["linux", "darwin"] }),
   );
   const m2 = new Map(s2.factors.map((f) => [f.id, f]));
-  assertEquals(m2.get("platforms-one")?.status, "earned");
-  assertEquals(m2.get("platforms-two")?.status, "earned");
+  assertEquals(m2.get("platforms")?.status, "earned");
+  assertEquals(m2.get("platforms")?.earnedPoints, 2);
 
-  // Empty (= universal): both earned
+  // Empty (= universal): earned
   const s3 = composeScore(
     factorsAllEarned(),
     makeManifest({ platforms: [] }),
   );
   const m3 = new Map(s3.factors.map((f) => [f.id, f]));
-  assertEquals(m3.get("platforms-one")?.status, "earned");
-  assertEquals(m3.get("platforms-two")?.status, "earned");
+  assertEquals(m3.get("platforms")?.status, "earned");
+  assertEquals(m3.get("platforms")?.earnedPoints, 2);
 });
