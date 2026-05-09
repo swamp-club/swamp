@@ -35,7 +35,7 @@ Deno.test("modelMethodRunCommand has correct description", async () => {
   const { modelMethodRunCommand } = await import("./model_method_run.ts");
   assertEquals(
     modelMethodRunCommand.getDescription(),
-    "Execute a method on a model",
+    "Execute a method on a model. With @type prefix, auto-creates the definition if needed.",
   );
 });
 
