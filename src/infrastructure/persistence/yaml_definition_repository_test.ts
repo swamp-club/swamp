@@ -425,3 +425,138 @@ Deno.test("YamlDefinitionRepository.findAll rejects symlink pointing outside rep
     }
   });
 });
+
+// Secondary search path tests
+
+Deno.test("YamlDefinitionRepository.findByNameGlobal finds definition in secondary dir", async () => {
+  await withTempDir(async (dir) => {
+    const primaryDir = join(dir, "models");
+    const secondaryDir = join(dir, ".swamp", "auto-definitions");
+    const repo = new YamlDefinitionRepository(
+      dir,
+      undefined,
+      primaryDir,
+      secondaryDir,
+    );
+
+    // Save to secondary dir directly
+    const secondaryRepo = new YamlDefinitionRepository(
+      dir,
+      undefined,
+      secondaryDir,
+      false,
+    );
+    const def = createTestDefinition("auto-created-def");
+    await secondaryRepo.save(testType, def);
+
+    // Primary repo should find it via secondary search
+    const found = await repo.findByNameGlobal("auto-created-def");
+    assertNotEquals(found, null);
+    assertEquals(found!.definition.name, "auto-created-def");
+  });
+});
+
+Deno.test("YamlDefinitionRepository.findByNameGlobal prefers primary over secondary", async () => {
+  await withTempDir(async (dir) => {
+    const primaryDir = join(dir, "models");
+    const secondaryDir = join(dir, ".swamp", "auto-definitions");
+    const repo = new YamlDefinitionRepository(
+      dir,
+      undefined,
+      primaryDir,
+      secondaryDir,
+    );
+
+    // Save different definitions with the same name to both dirs
+    const primaryRepo = new YamlDefinitionRepository(
+      dir,
+      undefined,
+      primaryDir,
+      false,
+    );
+    const secondaryRepo = new YamlDefinitionRepository(
+      dir,
+      undefined,
+      secondaryDir,
+      false,
+    );
+
+    const primaryDef = Definition.create({
+      name: "shared-name",
+      globalArguments: { source: "primary" },
+    });
+    const secondaryDef = Definition.create({
+      name: "shared-name",
+      globalArguments: { source: "secondary" },
+    });
+
+    await primaryRepo.save(testType, primaryDef);
+    await secondaryRepo.save(testType, secondaryDef);
+
+    // Should find the primary one
+    const found = await repo.findByNameGlobal("shared-name");
+    assertNotEquals(found, null);
+    assertEquals(found!.definition.id, primaryDef.id);
+  });
+});
+
+Deno.test("YamlDefinitionRepository.findAllGlobal excludes secondary dir", async () => {
+  await withTempDir(async (dir) => {
+    const primaryDir = join(dir, "models");
+    const secondaryDir = join(dir, ".swamp", "auto-definitions");
+    const repo = new YamlDefinitionRepository(
+      dir,
+      undefined,
+      primaryDir,
+      secondaryDir,
+    );
+
+    const primaryRepo = new YamlDefinitionRepository(
+      dir,
+      undefined,
+      primaryDir,
+      false,
+    );
+    const secondaryRepo = new YamlDefinitionRepository(
+      dir,
+      undefined,
+      secondaryDir,
+      false,
+    );
+
+    await primaryRepo.save(testType, createTestDefinition("primary-def"));
+    await secondaryRepo.save(testType, createTestDefinition("auto-def"));
+
+    // findAllGlobal should only return primary
+    const all = await repo.findAllGlobal();
+    assertEquals(all.length, 1);
+    assertEquals(all[0].definition.name, "primary-def");
+  });
+});
+
+Deno.test("YamlDefinitionRepository.findById falls back to secondary dir", async () => {
+  await withTempDir(async (dir) => {
+    const primaryDir = join(dir, "models");
+    const secondaryDir = join(dir, ".swamp", "auto-definitions");
+    const repo = new YamlDefinitionRepository(
+      dir,
+      undefined,
+      primaryDir,
+      secondaryDir,
+    );
+
+    const secondaryRepo = new YamlDefinitionRepository(
+      dir,
+      undefined,
+      secondaryDir,
+      false,
+    );
+    const def = createTestDefinition("by-id-def");
+    await secondaryRepo.save(testType, def);
+
+    // Should find by ID in secondary
+    const found = await repo.findById(testType, def.id);
+    assertNotEquals(found, null);
+    assertEquals(found!.name, "by-id-def");
+  });
+});

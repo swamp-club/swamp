@@ -159,11 +159,6 @@ export const modelMethodRunCommand = new Command()
       definitionNameArg?: string,
     ) {
       const isDirectExecution = modelOrType.startsWith("@");
-      const typeArg = isDirectExecution ? modelOrType : undefined;
-      const modelIdOrName = isDirectExecution
-        ? (definitionNameArg ?? methodName)
-        : modelOrType;
-      const definitionName = isDirectExecution ? definitionNameArg : undefined;
 
       if (isDirectExecution && !definitionNameArg) {
         throw new UserError(
@@ -171,6 +166,12 @@ export const modelMethodRunCommand = new Command()
             `swamp model ${modelOrType} method run ${methodName} <name>`,
         );
       }
+
+      const typeArg = isDirectExecution ? modelOrType : undefined;
+      const modelIdOrName = isDirectExecution
+        ? definitionNameArg!
+        : modelOrType;
+      const definitionName = isDirectExecution ? definitionNameArg : undefined;
       const ctx = createContext(options as GlobalOptions, [
         "model",
         "method",
