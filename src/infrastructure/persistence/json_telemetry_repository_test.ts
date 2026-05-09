@@ -577,3 +577,75 @@ Deno.test("JsonTelemetryRepository round-trips invocationContext (legacy opt-out
     assertEquals(restored[0].invocationContext?.isInteractive, true);
   });
 });
+
+Deno.test("JsonTelemetryRepository round-trips parentInvocationId and workflowContext", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new JsonTelemetryRepository(dir);
+    const entry = TelemetryEntry.create({
+      id: "child-roundtrip",
+      invocation: {
+        command: "model",
+        subcommand: "method",
+        args: ["run", "<REDACTED>", "validate"],
+        optionKeys: [],
+        globalOptions: [],
+      },
+      result: { status: "success", exitCode: 0 },
+      startedAt: new Date("2024-08-01T10:00:00Z"),
+      completedAt: new Date("2024-08-01T10:00:00.500Z"),
+      swampVersion: "1.0.0",
+      denoVersion: "1.40.0",
+      platform: "linux",
+      parentInvocationId: "parent-roundtrip",
+      workflowContext: {
+        workflowName: "deploy",
+        runId: "run-1",
+        jobName: "build",
+        stepName: "validate",
+        modelType: "@swamp/shell",
+        driver: "local",
+      },
+    });
+
+    await repo.save(entry);
+    const restored = await repo.findByDate(new Date("2024-08-01T10:00:00Z"));
+    assertEquals(restored.length, 1);
+    assertEquals(restored[0].parentInvocationId, "parent-roundtrip");
+    assertEquals(restored[0].workflowContext?.workflowName, "deploy");
+    assertEquals(restored[0].workflowContext?.runId, "run-1");
+    assertEquals(restored[0].workflowContext?.modelType, "@swamp/shell");
+    assertEquals(restored[0].workflowContext?.driver, "local");
+  });
+});
+
+Deno.test("JsonTelemetryRepository decodes legacy entries without parentInvocationId or workflowContext", async () => {
+  // Backward-compat: a fixture written before the new fields existed
+  // must round-trip through findByDate without error and surface
+  // undefined for the missing fields.
+  await withTempDir(async (dir) => {
+    const repo = new JsonTelemetryRepository(dir);
+    const entry = TelemetryEntry.create({
+      id: "legacy-roundtrip",
+      invocation: {
+        command: "model",
+        subcommand: "create",
+        args: ["<REDACTED>"],
+        optionKeys: [],
+        globalOptions: [],
+      },
+      result: { status: "success", exitCode: 0 },
+      startedAt: new Date("2024-09-01T10:00:00Z"),
+      completedAt: new Date("2024-09-01T10:00:01Z"),
+      swampVersion: "1.0.0",
+      denoVersion: "1.40.0",
+      platform: "linux",
+      // intentionally no parentInvocationId / workflowContext
+    });
+
+    await repo.save(entry);
+    const restored = await repo.findByDate(new Date("2024-09-01T10:00:00Z"));
+    assertEquals(restored.length, 1);
+    assertEquals(restored[0].parentInvocationId, undefined);
+    assertEquals(restored[0].workflowContext, undefined);
+  });
+});

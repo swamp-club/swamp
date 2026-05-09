@@ -66,6 +66,7 @@ import type { DefinitionRepository } from "../../domain/definitions/repositories
 import { YamlEvaluatedDefinitionRepository } from "../../infrastructure/persistence/yaml_evaluated_definition_repository.ts";
 import type { DataHandle } from "../../domain/models/model.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
+import { WorkflowTelemetryBridge } from "./telemetry_bridge.ts";
 
 /**
  * Events emitted by the libswamp workflow run generator.
@@ -102,6 +103,14 @@ export type WorkflowRunEvent =
     stepId: string;
     error: string;
     allowedFailure?: boolean;
+    /**
+     * Populated only when the failing step is a model-method task. The
+     * telemetry bridge uses these to synthesize a child entry for
+     * failures that occurred before `method_executing` was yielded.
+     */
+    modelName?: string;
+    methodName?: string;
+    driver?: string;
   }
   | {
     kind: "model_resolved";
@@ -125,6 +134,11 @@ export type WorkflowRunEvent =
     stepId: string;
     modelName: string;
     methodName: string;
+    /**
+     * Resolved driver from the DriverPlan tier resolution. Optional:
+     * undefined when no driver is explicitly configured at any tier.
+     */
+    driver?: string;
   }
   | {
     kind: "method_output";
@@ -171,6 +185,34 @@ export type WorkflowRunEvent =
   | { kind: "error"; error: SwampError };
 
 /**
+ * Narrow callback shape for emitting per-method-invocation telemetry from
+ * inside a workflow run. The CLI binds this to TelemetryService's
+ * recordChildInvocation; non-CLI consumers (UI, tests, scripts) pass
+ * `undefined` for `telemetrySink` to no-op.
+ *
+ * Lives in libswamp (not domain.telemetry) so libswamp can stay free of
+ * direct domain.telemetry imports beyond plain DTO shapes.
+ */
+export interface WorkflowTelemetrySink {
+  recordChildInvocation(
+    invocation:
+      import("../../domain/telemetry/command_invocation.ts").CommandInvocationData,
+    startedAt: Date,
+    completedAt: Date,
+    error: Error | null,
+    parentInvocationId: string,
+    workflowContext:
+      import("../../domain/telemetry/workflow_context.ts").WorkflowContextData,
+  ): Promise<void>;
+  /**
+   * Pre-allocated id of the parent CLI invocation. Children reference
+   * this id via `parentInvocationId` so analytics can join children to
+   * the parent without timestamp guessing.
+   */
+  readonly parentInvocationId: string;
+}
+
+/**
  * Dependencies injected into the workflow run generator.
  */
 export interface WorkflowRunDeps {
@@ -190,6 +232,7 @@ export interface WorkflowRunDeps {
   catalogStore: CatalogStore;
   dataRepo?: UnifiedDataRepository;
   definitionRepo?: DefinitionRepository;
+  telemetrySink?: WorkflowTelemetrySink;
 }
 
 /**
@@ -449,6 +492,14 @@ export async function* workflowRun(
       // Track per-step data handles from step_completed events
       const dataHandlesByStep = new Map<string, DataHandle[]>();
 
+      // Per-method-invocation telemetry bridge. Constructed once per
+      // stream consumption and finalized in the outer try/finally so
+      // any in-flight invocations on cancellation / throw are still
+      // recorded as error child entries.
+      const telemetryBridge = deps.telemetrySink
+        ? new WorkflowTelemetryBridge(deps.telemetrySink)
+        : undefined;
+
       try {
         let completedEvent: WorkflowRunEvent | undefined;
 
@@ -522,6 +573,12 @@ export async function* workflowRun(
 
           const mapped = mapEvent(event, deps, resolvedInput);
 
+          // Per-method telemetry observer — runs alongside existing
+          // event handling. Skipped when telemetry is disabled.
+          if (telemetryBridge) {
+            await telemetryBridge.observe(mapped);
+          }
+
           // Intercept the completed event to run reports first
           if (mapped.kind === "completed") {
             completedEvent = mapped;
@@ -564,6 +621,15 @@ export async function* workflowRun(
           kind: "error",
           error: workflowExecutionFailed(error),
         };
+      } finally {
+        // Drain any in-flight method invocations as error entries. Runs
+        // on every stream termination — normal completion, thrown
+        // errors, and AbortSignal cancellation — so methods that
+        // started but never received a terminal event don't disappear
+        // from telemetry.
+        if (telemetryBridge) {
+          await telemetryBridge.finalize();
+        }
       }
     })(),
   );

@@ -281,3 +281,85 @@ Deno.test("HttpTelemetrySender.sendBatch lands invocationContext at properties.i
 
   await server.shutdown();
 });
+
+Deno.test("HttpTelemetrySender.sendBatch lands parentInvocationId and workflowContext at properties", async () => {
+  // Same wire-shape contract as invocationContext: TelemetryEntry.toData()
+  // is splatted into properties, so child invocation entries land
+  // properties.parentInvocationId and properties.workflowContext.{...}.
+  let capturedBody: string | undefined;
+
+  const server = Deno.serve({ port: 0 }, async (req: Request) => {
+    capturedBody = await req.text();
+    return new Response(JSON.stringify({ accepted: 1 }), { status: 202 });
+  });
+
+  const port = server.addr.port;
+  const sender = new HttpTelemetrySender(`http://localhost:${port}`);
+  const entry = TelemetryEntry.create({
+    id: "child-wire",
+    invocation: {
+      command: "model",
+      subcommand: "method",
+      args: ["run", "<REDACTED>", "validate"],
+      optionKeys: [],
+      globalOptions: [],
+    },
+    result: { status: "success", exitCode: 0 },
+    startedAt: new Date("2024-03-10T10:00:00Z"),
+    completedAt: new Date("2024-03-10T10:00:00.250Z"),
+    swampVersion: "1.0.0",
+    denoVersion: "2.1.0",
+    platform: "linux",
+    parentInvocationId: "parent-wire",
+    workflowContext: {
+      workflowName: "deploy",
+      runId: "run-1",
+      jobName: "build",
+      stepName: "validate",
+      modelType: "@swamp/shell",
+      driver: "local",
+    },
+  });
+
+  const ok = await sender.sendBatch([entry], "user-uuid");
+  assertEquals(ok, true);
+
+  const parsed = JSON.parse(capturedBody!);
+  assertEquals(parsed.properties.parentInvocationId, "parent-wire");
+  assertEquals(parsed.properties.workflowContext.workflowName, "deploy");
+  assertEquals(parsed.properties.workflowContext.runId, "run-1");
+  assertEquals(parsed.properties.workflowContext.jobName, "build");
+  assertEquals(parsed.properties.workflowContext.stepName, "validate");
+  assertEquals(parsed.properties.workflowContext.modelType, "@swamp/shell");
+  assertEquals(parsed.properties.workflowContext.driver, "local");
+
+  await server.shutdown();
+});
+
+Deno.test("HttpTelemetrySender.sendBatch omits parentInvocationId / workflowContext when absent", async () => {
+  // Backward-compat: parent entries and direct CLI invocations don't
+  // carry these fields. The wire payload must omit them entirely (not
+  // serialize undefined) so older ingest schemas don't break.
+  let capturedBody: string | undefined;
+
+  const server = Deno.serve({ port: 0 }, async (req: Request) => {
+    capturedBody = await req.text();
+    return new Response(JSON.stringify({ accepted: 1 }), { status: 202 });
+  });
+
+  const port = server.addr.port;
+  const sender = new HttpTelemetrySender(`http://localhost:${port}`);
+  const entry = createTestEntry(
+    "no-extras",
+    new Date("2024-03-10T10:00:00Z"),
+  );
+
+  const ok = await sender.sendBatch([entry], "user-uuid");
+  assertEquals(ok, true);
+
+  const parsed = JSON.parse(capturedBody!);
+  assertEquals("parentInvocationId" in parsed.properties, false);
+  assertEquals("workflowContext" in parsed.properties, false);
+
+  await server.shutdown();
+});

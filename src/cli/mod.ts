@@ -99,9 +99,11 @@ import { JsonTelemetryRepository } from "../infrastructure/persistence/json_tele
 import { HttpTelemetrySender } from "../infrastructure/telemetry/http_telemetry_sender.ts";
 import {
   buildInvocationContext,
+  clearActiveTelemetryService,
   extractCommandInfo,
   isTelemetryDisabled,
   projectEnvSnapshot,
+  setActiveTelemetryService,
 } from "./telemetry_integration.ts";
 import { UserIdentityRepository } from "../infrastructure/persistence/user_identity_repository.ts";
 import { AuthRepository } from "../infrastructure/persistence/auth_repository.ts";
@@ -990,6 +992,13 @@ export async function runCli(args: string[]): Promise<void> {
     telemetryCtx = await initTelemetryService(repoDir);
   }
 
+  // Surface the active service for command actions that emit child
+  // telemetry (e.g. workflow_run wiring into libswamp). Cleared in the
+  // outer try/finally below regardless of how the invocation ends.
+  if (telemetryCtx) {
+    setActiveTelemetryService(telemetryCtx.service);
+  }
+
   // Read marker once for log level, extension loading, and auto-resolver
   let marker: RepoMarkerData | null = null;
   try {
@@ -1246,5 +1255,10 @@ export async function runCli(args: string[]): Promise<void> {
       });
     }
     throw error;
+  } finally {
+    // Always clear the module-scoped service handle when the CLI
+    // invocation finishes — runCli is the single setter and must be the
+    // single clearer.
+    clearActiveTelemetryService();
   }
 }

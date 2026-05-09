@@ -67,6 +67,17 @@ export type WorkflowExecutionEvent =
     stepId: string;
     error: string;
     allowedFailure?: boolean;
+    /**
+     * Populated only when the failing step represents a model-method task
+     * (the runStep model-method catch site). Workflow-task failures and
+     * structural failures (cycle, max nesting depth) leave these
+     * undefined — the libswamp telemetry bridge keys off their presence
+     * to synthesize a child entry for failures that occur BEFORE the
+     * `method_executing` event was yielded.
+     */
+    modelName?: string;
+    methodName?: string;
+    driver?: string;
   }
   | {
     kind: "model_resolved";
@@ -90,6 +101,12 @@ export type WorkflowExecutionEvent =
     stepId: string;
     modelName: string;
     methodName: string;
+    /**
+     * Resolved driver from the DriverPlan tier resolution (workflow > job
+     * > step > definition > repo). Optional: undefined when no driver is
+     * explicitly configured, allowing the method's default to apply.
+     */
+    driver?: string;
   }
   | {
     kind: "method_output";
