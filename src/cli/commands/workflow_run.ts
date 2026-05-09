@@ -32,9 +32,21 @@ import { UserError } from "../../domain/errors.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { extractModelReferencesFromWorkflow } from "../../domain/workflows/model_reference_extractor.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
-import { WorkflowExecutionService } from "../../domain/workflows/execution_service.ts";
+import {
+  type DirectTypeResolver,
+  WorkflowExecutionService,
+} from "../../domain/workflows/execution_service.ts";
+import { resolveOrCreateDefinition } from "../../libswamp/models/direct_execution.ts";
+import { ModelType } from "../../domain/models/model_type.ts";
+import type { DefinitionId } from "../../domain/definitions/definition.ts";
+import { resolveModelType } from "../../domain/extensions/extension_auto_resolver.ts";
+import { getAutoResolver } from "../auto_resolver_context.ts";
+import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
+import {
+  SWAMP_SUBDIRS,
+  swampPath,
+} from "../../infrastructure/persistence/paths.ts";
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
-import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
 import { parseInputs } from "../input_parser.ts";
 import { parseTimeout } from "../duration_parser.ts";
 import { GIT_SHA } from "./version.ts";
@@ -247,15 +259,68 @@ export const workflowRunCommand = new Command()
           return await repo.findByName(idOrName) ??
             await repo.findById(createWorkflowId(idOrName));
         },
-        createExecutionService: (wfRepo, rnRepo, dir, catalogStore) =>
-          new WorkflowExecutionService(
+        createExecutionService: (wfRepo, rnRepo, dir, catalogStore) => {
+          const directResolver: DirectTypeResolver = async (
+            typeArg,
+            defName,
+            methodName,
+            inputs,
+          ) => {
+            const typeStr = typeArg.startsWith("@")
+              ? typeArg.slice(1)
+              : typeArg;
+            const resolvedType = ModelType.create(typeStr);
+            const modelDef = await resolveModelType(
+              resolvedType,
+              getAutoResolver(),
+            );
+            if (!modelDef) {
+              throw new Error(
+                `Unknown model type: ${resolvedType.normalized}`,
+              );
+            }
+            const autoDefRepo = new YamlDefinitionRepository(
+              dir,
+              undefined,
+              swampPath(dir, SWAMP_SUBDIRS.autoDefinitions),
+              false,
+            );
+            const result = await resolveOrCreateDefinition(
+              {
+                lookupDefinition: (name) =>
+                  findDefinitionByIdOrName(repoContext.definitionRepo, name),
+                getModelDef: (type) =>
+                  resolveModelType(type, getAutoResolver()),
+                saveDefinition: (type, def) => autoDefRepo.save(type, def),
+                getDefinitionPath: (type, id) =>
+                  autoDefRepo.getPath(type, id as DefinitionId),
+              },
+              typeStr,
+              defName,
+              methodName,
+              inputs,
+              resolvedType,
+              modelDef,
+            );
+            if (!result.ok) throw new Error(result.error.message);
+            return {
+              definition: result.definition,
+              modelType: result.modelType,
+              created: result.created,
+              routedMethodInputs: result.routedInputs.methodArguments,
+            };
+          };
+
+          return new WorkflowExecutionService(
             wfRepo,
             rnRepo,
             dir,
             undefined,
             unlocked.datastoreResolver.resolvePath(SWAMP_SUBDIRS.data),
             catalogStore,
-          ),
+            directResolver,
+          );
+        },
         catalogStore: repoContext.catalogStore,
         dataRepo: repoContext.unifiedDataRepo,
         definitionRepo: repoContext.definitionRepo,

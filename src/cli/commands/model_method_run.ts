@@ -86,7 +86,9 @@ export const modelMethodRunCommand = new Command()
     "Pass an array or object input (JSON-typed via :json suffix)",
     'swamp model method run my-server search --input \'keywords:json=["a","b"]\'',
   )
-  .arguments("<first:string> <second:string> [third:string]")
+  .arguments(
+    "<model_or_type:string> <method_name:string> [definition_name:string]",
+  )
   .option(
     "--repo-dir <dir:string>",
     "Repository directory (env: SWAMP_REPO_DIR)",
@@ -148,21 +150,21 @@ export const modelMethodRunCommand = new Command()
   .action(
     async function (
       options: AnyOptions,
-      first: string,
-      second: string,
-      third?: string,
+      modelOrType: string,
+      methodName: string,
+      definitionNameArg?: string,
     ) {
-      // Detect direct type execution: first arg starts with @
-      const isDirectExecution = first.startsWith("@");
-      const typeArg = isDirectExecution ? first : undefined;
-      const methodName = isDirectExecution ? second : second;
-      const modelIdOrName = isDirectExecution ? (third ?? second) : first;
-      const definitionName = isDirectExecution ? third : undefined;
+      const isDirectExecution = modelOrType.startsWith("@");
+      const typeArg = isDirectExecution ? modelOrType : undefined;
+      const modelIdOrName = isDirectExecution
+        ? (definitionNameArg ?? methodName)
+        : modelOrType;
+      const definitionName = isDirectExecution ? definitionNameArg : undefined;
 
-      if (isDirectExecution && !third) {
+      if (isDirectExecution && !definitionNameArg) {
         throw new UserError(
           "Direct type execution requires a definition name: " +
-            `swamp model ${first} method run ${second} <name>`,
+            `swamp model ${modelOrType} method run ${methodName} <name>`,
         );
       }
       const ctx = createContext(options as GlobalOptions, [

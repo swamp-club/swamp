@@ -32,7 +32,7 @@ import { createContext, type GlobalOptions } from "../context.ts";
 export const VERSION = "20260206.200442.0-sha.";
 
 // Git sha baked at compile time; falls back to runtime detection
-export const GIT_SHA = "";
+export const GIT_SHA = "0043013b";
 
 export function getVersionData(): VersionData {
   return { version: VERSION };

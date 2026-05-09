@@ -204,3 +204,82 @@ Deno.test("StepTaskSchema shell error suggests command/shell model", () => {
     "command/shell",
   );
 });
+
+// Direct type execution tests
+
+Deno.test("StepTask.directExecution creates direct type execution task", () => {
+  const task = StepTask.directExecution(
+    "@test/greeter",
+    "my-greeter",
+    "greet",
+    {
+      greeting: "Hello",
+    },
+  );
+  assertEquals(task.data.type, "model_method");
+  assertEquals(task.isModelMethod(), true);
+  assertEquals(task.isDirectExecution(), true);
+});
+
+Deno.test("StepTask.isDirectExecution returns false for modelIdOrName tasks", () => {
+  const task = StepTask.modelMethod("my-model", "run");
+  assertEquals(task.isDirectExecution(), false);
+});
+
+Deno.test("StepTaskSchema parses modelType + modelName", () => {
+  const result = StepTaskSchema.parse({
+    type: "model_method",
+    modelType: "@test/greeter",
+    modelName: "my-greeter",
+    methodName: "greet",
+  });
+  assertEquals(result.type, "model_method");
+  if (result.type === "model_method") {
+    assertEquals(result.modelType, "@test/greeter");
+    assertEquals(result.modelName, "my-greeter");
+    assertEquals(result.methodName, "greet");
+  }
+});
+
+Deno.test("StepTaskSchema rejects both modelIdOrName and modelType", () => {
+  assertThrows(
+    () => {
+      StepTaskSchema.parse({
+        type: "model_method",
+        modelIdOrName: "my-model",
+        modelType: "@test/greeter",
+        modelName: "my-greeter",
+        methodName: "run",
+      });
+    },
+    Error,
+    "both modelIdOrName and modelType",
+  );
+});
+
+Deno.test("StepTaskSchema rejects modelType without modelName", () => {
+  assertThrows(
+    () => {
+      StepTaskSchema.parse({
+        type: "model_method",
+        modelType: "@test/greeter",
+        methodName: "greet",
+      });
+    },
+    Error,
+    "modelType requires modelName",
+  );
+});
+
+Deno.test("StepTaskSchema rejects neither modelIdOrName nor modelType", () => {
+  assertThrows(
+    () => {
+      StepTaskSchema.parse({
+        type: "model_method",
+        methodName: "run",
+      });
+    },
+    Error,
+    "requires either modelIdOrName or modelType",
+  );
+});

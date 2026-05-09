@@ -41,7 +41,6 @@ import {
   SWAMP_SUBDIRS,
   swampPath,
 } from "../../infrastructure/persistence/paths.ts";
-import { resolveOrCreateDefinition } from "../../libswamp/models/direct_execution.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
 import type { OutputRepository } from "../models/repositories.ts";
 import type { UnifiedDataRepository } from "../data/repositories.ts";
@@ -66,8 +65,8 @@ import { detectEnvVarUsageInDefinition } from "../models/env_var_detector.ts";
 import { findDefinitionByIdOrName } from "../models/model_lookup.ts";
 import type { MethodExecutionEvent } from "../models/method_events.ts";
 import { ModelOutput } from "../models/model_output.ts";
-import type { Definition, DefinitionId } from "../definitions/definition.ts";
-import { ModelType } from "../models/model_type.ts";
+import type { Definition } from "../definitions/definition.ts";
+import type { ModelType } from "../models/model_type.ts";
 import type { MethodResult, ModelDefinition } from "../models/model.ts";
 import {
   containsRuntimeExpression,
@@ -196,6 +195,20 @@ const MAX_WORKFLOW_NESTING_DEPTH = 10;
  * {@link DefaultStepExecutor.fromRepoDir} or rely on the no-arg
  * constructor's lazy per-call construction (today's behaviour).
  */
+export interface DirectTypeResolveResult {
+  definition: Definition;
+  modelType: ModelType;
+  created: boolean;
+  routedMethodInputs: Record<string, unknown>;
+}
+
+export type DirectTypeResolver = (
+  typeArg: string,
+  definitionName: string,
+  methodName: string,
+  inputs: Record<string, unknown>,
+) => Promise<DirectTypeResolveResult>;
+
 export interface StepExecutorDeps {
   definitionRepo: DefinitionRepository;
   unifiedDataRepo: UnifiedDataRepository;
@@ -205,6 +218,7 @@ export interface StepExecutorDeps {
   methodExecutionService: MethodExecutionService;
   vaultService: VaultService;
   expressionEvaluator: ExpressionEvaluationService;
+  directTypeResolver?: DirectTypeResolver;
 }
 
 /**
@@ -213,8 +227,14 @@ export interface StepExecutorDeps {
 export class DefaultStepExecutor implements StepExecutor {
   private readonly validationService = new DefaultModelValidationService();
   private readonly reportRunner = new MethodReportRunner();
+  private readonly _directTypeResolver?: DirectTypeResolver;
 
-  constructor(private readonly injectedDeps?: StepExecutorDeps) {}
+  constructor(
+    private readonly injectedDeps?: StepExecutorDeps,
+    directTypeResolver?: DirectTypeResolver,
+  ) {
+    this._directTypeResolver = directTypeResolver;
+  }
 
   /**
    * Build a fully-wired DefaultStepExecutor for production use. Performs
@@ -243,10 +263,14 @@ export class DefaultStepExecutor implements StepExecutor {
     ctx: StepExecutionContext,
   ): Promise<StepExecutorDeps> {
     if (this.injectedDeps) return this.injectedDeps;
-    return await DefaultStepExecutor.buildDeps(ctx.repoDir, {
+    const deps = await DefaultStepExecutor.buildDeps(ctx.repoDir, {
       dataBaseDir: ctx.dataBaseDir,
       catalogStore: ctx.catalogStore,
     });
+    if (this._directTypeResolver) {
+      deps.directTypeResolver = this._directTypeResolver;
+    }
+    return deps;
   }
 
   private static async buildDeps(
@@ -275,6 +299,8 @@ export class DefaultStepExecutor implements StepExecutor {
         definitionRepo,
         repoDir,
       ),
+      // directTypeResolver is not available in the lazy buildDeps path.
+      // It must be injected via the WorkflowExecutionService constructor.
     };
   }
 
@@ -346,54 +372,28 @@ export class DefaultStepExecutor implements StepExecutor {
     let modelType: ModelType;
 
     if (task.modelType && task.modelName) {
-      // Direct type execution path
-      const typeStr = task.modelType.startsWith("@")
-        ? task.modelType.slice(1)
-        : task.modelType;
-      const resolvedType = ModelType.create(typeStr);
+      const deps = await this.resolveDeps(ctx);
+      const resolver = deps.directTypeResolver;
 
-      const modelDef = await resolveModelType(resolvedType, getAutoResolver());
-      if (!modelDef) {
-        throw new Error(`Unknown model type: ${resolvedType.normalized}`);
+      if (!resolver) {
+        throw new Error(
+          "Direct type execution is not supported in this context",
+        );
       }
 
-      const autoDefRepo = new YamlDefinitionRepository(
-        ctx.repoDir,
-        undefined,
-        swampPath(ctx.repoDir, SWAMP_SUBDIRS.autoDefinitions),
-        false,
-      );
-
-      const result = await resolveOrCreateDefinition(
-        {
-          lookupDefinition: (name: string) =>
-            findDefinitionByIdOrName(definitionRepo, name),
-          getModelDef: (type: ModelType) =>
-            resolveModelType(type, getAutoResolver()),
-          saveDefinition: (type: ModelType, def: Definition) =>
-            autoDefRepo.save(type, def),
-          getDefinitionPath: (type: ModelType, id: string) =>
-            autoDefRepo.getPath(type, id as DefinitionId),
-        },
-        typeStr,
+      const result = await resolver(
+        task.modelType,
         task.modelName,
         task.methodName,
         task.inputs ?? {},
-        resolvedType,
-        modelDef,
       );
-
-      if (!result.ok) {
-        throw new Error(result.error.message);
-      }
 
       originalDefinition = result.definition;
       modelType = result.modelType;
 
-      // Replace task inputs with routed method arguments only
       task = {
         ...task,
-        inputs: result.routedInputs.methodArguments,
+        inputs: result.routedMethodInputs,
       };
     } else if (task.modelIdOrName) {
       // Standard path: look up existing definition
@@ -1184,8 +1184,10 @@ export class WorkflowExecutionService {
     executor: StepExecutor | undefined,
     dataBaseDir: string | undefined,
     catalogStore: CatalogStore,
+    private readonly directTypeResolver?: DirectTypeResolver,
   ) {
-    this.executor = executor ?? new DefaultStepExecutor();
+    this.executor = executor ??
+      new DefaultStepExecutor(undefined, directTypeResolver);
     this.dataBaseDir = dataBaseDir;
     this.catalogStore = catalogStore;
     this.definitionRepo = new YamlDefinitionRepository(repoDir);

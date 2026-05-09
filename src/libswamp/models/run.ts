@@ -80,12 +80,8 @@ export type ModelMethodRunEvent =
   | { kind: "validating_inputs" }
   | { kind: "resolving_model"; modelIdOrName: string }
   | {
-    kind: "auto_creating";
+    kind: "auto_created";
     modelType: string;
-    definitionName: string;
-  }
-  | {
-    kind: "definition_created";
     definitionName: string;
     definitionPath: string;
   }
@@ -266,8 +262,7 @@ export async function* modelMethodRun(
             kind: "error",
             error: {
               code: "missing_deps",
-              message:
-                "Direct type execution requires createAndSaveDefinition and getDefinitionPath dependencies",
+              message: "Direct type execution is not supported in this context",
             },
           };
           return;
@@ -295,12 +290,8 @@ export async function* modelMethodRun(
 
         if (result.created) {
           yield {
-            kind: "auto_creating",
+            kind: "auto_created",
             modelType: resolvedType.normalized,
-            definitionName: input.definitionName,
-          };
-          yield {
-            kind: "definition_created",
             definitionName: result.definition.name,
             definitionPath: result.definitionPath,
           };
@@ -310,10 +301,12 @@ export async function* modelMethodRun(
         modelType = result.modelType;
         modelDef = result.modelDef;
 
-        // Override inputs with routed method arguments only
-        // (global args are already in the definition)
-        Object.keys(input.inputs).forEach((k) => delete input.inputs[k]);
-        Object.assign(input.inputs, result.routedInputs.methodArguments);
+        // Use routed method arguments as the inputs for downstream processing.
+        // Global args are already stored in the auto-created definition.
+        input = {
+          ...input,
+          inputs: { ...result.routedInputs.methodArguments },
+        };
       } else {
         // Standard path: look up existing definition
         const lookupResult = await deps.lookupDefinition(input.modelIdOrName);

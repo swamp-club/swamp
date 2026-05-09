@@ -126,6 +126,13 @@ export {
   unknownModelType,
 } from "./models/run.ts";
 export {
+  type DirectExecutionDeps,
+  type DirectExecutionResult,
+  resolveOrCreateDefinition,
+  type RoutedInputs,
+  routeInputsBySchema,
+} from "./models/direct_execution.ts";
+export {
   type DataArtifactView,
   type ModelMethodRunView,
   type ModelReportView,

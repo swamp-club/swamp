@@ -50,16 +50,15 @@ class LogModelMethodRunRenderer implements ModelMethodRunRenderer {
     return {
       validating_inputs: () => {},
       resolving_model: () => {},
-      auto_creating: (e) => {
-        getRunLogger(this.modelName, this.methodName).info(
-          "Auto-creating definition {name} (type: {type})",
+      auto_created: (e) => {
+        const logger = getRunLogger(this.modelName, this.methodName);
+        logger.info(
+          "Auto-created definition {name} (type: {type})",
           { name: e.definitionName, type: e.modelType },
         );
-      },
-      definition_created: (e) => {
-        getRunLogger(this.modelName, this.methodName).info(
+        logger.info(
           "Definition created at {path}",
-          { path: e.definitionPath, name: e.definitionName },
+          { path: e.definitionPath },
         );
       },
       model_resolved: (e) => {
@@ -185,8 +184,14 @@ class JsonModelMethodRunRenderer implements ModelMethodRunRenderer {
     return {
       validating_inputs: () => {},
       resolving_model: () => {},
-      auto_creating: () => {},
-      definition_created: () => {},
+      auto_created: (e) => {
+        console.log(JSON.stringify({
+          event: "definition_auto_created",
+          modelType: e.modelType,
+          definitionName: e.definitionName,
+          definitionPath: e.definitionPath,
+        }));
+      },
       model_resolved: () => {},
       env_var_warning: (e) => {
         console.log(JSON.stringify(

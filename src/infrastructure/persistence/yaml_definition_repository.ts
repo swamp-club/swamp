@@ -59,6 +59,7 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     private readonly repoDir: string,
     private readonly eventBus?: EventBus,
     baseDir?: string,
+    /** Pass `false` to disable secondary search. Omit to auto-compute from repoDir. */
     secondaryBaseDir?: string | false,
   ) {
     this.baseDir = baseDir ?? join(repoDir, "models");
