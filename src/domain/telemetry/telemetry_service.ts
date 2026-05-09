@@ -22,6 +22,8 @@ import type { TelemetrySender } from "./telemetry_sender.ts";
 import { TelemetryEntry } from "./telemetry_entry.ts";
 import type { CommandInvocationData } from "./command_invocation.ts";
 import type { InvocationContextData } from "./invocation_context.ts";
+import { generateTelemetryId, type TelemetryId } from "./telemetry_id.ts";
+import type { WorkflowContextData } from "./workflow_context.ts";
 import {
   createErrorResult,
   createSuccessResult,
@@ -84,13 +86,23 @@ const DEFAULT_RETENTION_DAYS = 2;
  * detected harness, stdin tty state) do not change between recording a
  * success and recording an error, so a single context applies to every
  * entry the service writes.
+ *
+ * The `invocationId` is pre-allocated at construction time so the same id
+ * can be referenced as `parentInvocationId` by child entries written
+ * during the invocation (e.g. workflow-internal method invocations) before
+ * the parent entry itself is recorded at the end of the CLI lifecycle.
  */
 export class TelemetryService {
+  readonly invocationId: TelemetryId;
+
   constructor(
     private readonly repository: TelemetryRepository,
     private readonly swampVersion: string,
     private readonly invocationContext?: InvocationContextData,
-  ) {}
+    invocationId?: TelemetryId,
+  ) {
+    this.invocationId = invocationId ?? generateTelemetryId();
+  }
 
   /**
    * Records a successful CLI invocation.
@@ -103,6 +115,7 @@ export class TelemetryService {
     startedAt: Date,
   ): Promise<void> {
     const entry = TelemetryEntry.create({
+      id: this.invocationId,
       invocation,
       result: createSuccessResult(),
       startedAt,
@@ -134,6 +147,7 @@ export class TelemetryService {
     };
 
     const entry = TelemetryEntry.create({
+      id: this.invocationId,
       invocation,
       result,
       startedAt,
@@ -142,6 +156,61 @@ export class TelemetryService {
       denoVersion: Deno.version.deno,
       platform: Deno.build.os,
       invocationContext: this.invocationContext,
+    });
+
+    await this.repository.save(entry);
+  }
+
+  /**
+   * Records a child invocation that happened inside a workflow run.
+   *
+   * Produces the same wire shape as recordSuccess/recordError plus a
+   * `parentInvocationId` pointer to the outer CLI invocation and a
+   * `workflowContext` block describing the surrounding workflow/job/step.
+   *
+   * The caller supplies `completedAt` rather than letting the service
+   * stamp `new Date()` because workflow-internal invocations finalize via
+   * a bridge that may close them after a deferred event arrives. For
+   * pre-method-executing failures the caller passes the same instant for
+   * `startedAt` and `completedAt`, producing `durationMs = 0` — the
+   * method was never actually invoked.
+   *
+   * @param invocation - The command invocation data shaped like a direct
+   *   `model method run <name> <method>` invocation, with the same
+   *   redactions
+   * @param startedAt - When the method invocation started (or `now` for
+   *   pre-method-executing failures)
+   * @param completedAt - When the method invocation ended (or `now` for
+   *   pre-method-executing failures)
+   * @param error - The error that occurred, or `null` for success. Caller
+   *   classifies UserError vs Error via instanceof — this method mirrors
+   *   recordError's classification.
+   * @param parentInvocationId - Id of the parent CLI invocation
+   * @param workflowContext - Workflow/job/step/driver/modelType context
+   */
+  async recordChildInvocation(
+    invocation: CommandInvocationData,
+    startedAt: Date,
+    completedAt: Date,
+    error: Error | null,
+    parentInvocationId: string,
+    workflowContext: WorkflowContextData,
+  ): Promise<void> {
+    const result: InvocationResultData = error === null
+      ? { ...createSuccessResult() }
+      : { ...createErrorResult(error, error instanceof UserError) };
+
+    const entry = TelemetryEntry.create({
+      invocation,
+      result,
+      startedAt,
+      completedAt,
+      swampVersion: this.swampVersion,
+      denoVersion: Deno.version.deno,
+      platform: Deno.build.os,
+      invocationContext: this.invocationContext,
+      parentInvocationId,
+      workflowContext,
     });
 
     await this.repository.save(entry);

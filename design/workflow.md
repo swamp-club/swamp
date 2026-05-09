@@ -307,3 +307,67 @@ The WorkflowRepository and WorkflowRunRepository emit domain events:
 
 The RepoIndexService subscribes to these events (currently a noop
 implementation). See [./repo.md] for details on domain events.
+
+## Per-Method Telemetry
+
+A workflow run emits one parent telemetry entry for the outer
+`swamp workflow run` invocation plus one child entry per workflow YAML step
+that resolves to a model method. Children are linked to the parent through
+`parentInvocationId` and carry a `workflowContext` block:
+
+```yaml
+workflowContext:
+  workflowName: deploy
+  runId: <workflow-run-uuid>
+  jobName: build
+  stepName: validate-config
+  modelType: command/shell
+  driver: local
+```
+
+Children use the same `cli_invocation` event shape as a direct
+`swamp model method run <name> <method>` invocation, with the same
+redactions: `command="model"`, `subcommand="method"`,
+`args=["run", "<REDACTED>", <methodName>]`. Analytics that aggregate by
+command/method roll up direct invocations and workflow-internal
+invocations uniformly; per-driver and per-model-type queries read
+`workflowContext` directly without joining through the parent.
+
+### Failure Semantics
+
+- A step that fails AFTER `method_executing` was yielded records an error
+  child entry with the actual duration.
+- A step that fails BEFORE `method_executing` (model lookup failure, vault
+  expression resolution failure, vary-key validation failure, env-var
+  validation) records a synthesized child entry with `durationMs = 0` —
+  the method was never actually invoked, so duration is honestly zero.
+  Dashboards that filter zero-duration entries will hide
+  failure-by-validation cases by design.
+- A step with `allowFailure: true` records as `error` in the child entry
+  (the method outcome) while the parent records its overall workflow
+  outcome — `success` if all unallowed failures were absent. Joining
+  `child.error_category × parent.success` on `parentInvocationId` surfaces
+  "how many allowed failures" without changing the entry shape.
+
+### V1 Limitations
+
+- **Workflow-step granularity only.** Sub-method follow-up calls inside
+  `DefaultMethodExecutionService.execute` (e.g. one method that internally
+  invokes another method) are NOT captured as separate child entries; the
+  workflow-step boundary is the unit of measurement.
+- **Workflow-task steps** (a step whose task is a nested workflow) emit no
+  child entry of their own. The nested workflow's own model-method steps
+  generate child entries linked to the same parent CLI invocation.
+- **Failures before workflow validation** (e.g. workflow not found, input
+  schema validation) produce no child entry — no method was ever resolved.
+- **Cancellation** during a method invocation (AbortSignal, timeout)
+  records the in-flight method as an error child entry via the bridge's
+  finalize path with a synthetic "workflow run terminated before
+  completion" message.
+
+The bridge lives in `src/libswamp/workflows/telemetry_bridge.ts`. The
+domain `step_failed` event carries optional `modelName`, `methodName`, and
+`driver` fields populated only at the model-method failure site (other
+yield sites — nesting depth, cycle detection, nested-workflow failure —
+leave them undefined so the bridge can distinguish structural failures
+from method failures).

@@ -443,3 +443,108 @@ Deno.test("TelemetryService without invocationContext writes entries without the
 
   assertEquals(repo.savedEntries[0].invocationContext, undefined);
 });
+
+Deno.test("TelemetryService.recordChildInvocation writes a success child entry", async () => {
+  const repo = new MockTelemetryRepository();
+  const service = new TelemetryService(repo, "1.0.0");
+
+  const startedAt = new Date("2026-02-05T10:00:00Z");
+  const completedAt = new Date("2026-02-05T10:00:00.500Z");
+
+  await service.recordChildInvocation(
+    {
+      command: "model",
+      subcommand: "method",
+      args: ["run", "<REDACTED>", "validate"],
+      optionKeys: [],
+      globalOptions: [],
+    },
+    startedAt,
+    completedAt,
+    null,
+    "parent-id-1",
+    {
+      workflowName: "deploy",
+      runId: "run-1",
+      jobName: "build",
+      stepName: "step-a",
+      modelType: "@swamp/shell",
+      driver: "local",
+    },
+  );
+
+  assertEquals(repo.savedEntries.length, 1);
+  const saved = repo.savedEntries[0];
+  assertEquals(saved.result.status, "success");
+  assertEquals(saved.parentInvocationId, "parent-id-1");
+  assertEquals(saved.workflowContext?.workflowName, "deploy");
+  assertEquals(saved.workflowContext?.driver, "local");
+  assertEquals(saved.durationMs, 500);
+});
+
+Deno.test("TelemetryService.recordChildInvocation classifies UserError as user_error", async () => {
+  const repo = new MockTelemetryRepository();
+  const service = new TelemetryService(repo, "1.0.0");
+
+  // Reuse the runtime's UserError surface — the service imports it from
+  // ../errors.ts at the top of the file. We construct a UserError-shaped
+  // instance via dynamic import to avoid coupling this test file to the
+  // domain errors module path.
+  const { UserError } = await import("../errors.ts");
+
+  await service.recordChildInvocation(
+    {
+      command: "model",
+      subcommand: "method",
+      args: ["run", "<REDACTED>", "transform"],
+      optionKeys: [],
+      globalOptions: [],
+    },
+    new Date(),
+    new Date(),
+    new UserError("vary key missing"),
+    "parent-id-2",
+    {
+      workflowName: "etl",
+      runId: "run-2",
+      jobName: "extract",
+      stepName: "pull",
+    },
+  );
+
+  assertEquals(repo.savedEntries[0].result.status, "user_error");
+  assertEquals(repo.savedEntries[0].result.errorType, "UserError");
+  assertEquals(repo.savedEntries[0].result.errorMessage, "vary key missing");
+});
+
+Deno.test("TelemetryService.recordChildInvocation supports zero-duration entries (pre-method-executing failure)", async () => {
+  const repo = new MockTelemetryRepository();
+  const service = new TelemetryService(repo, "1.0.0");
+
+  const sameInstant = new Date("2026-02-05T10:00:00Z");
+
+  await service.recordChildInvocation(
+    {
+      command: "model",
+      subcommand: "method",
+      args: ["run", "<REDACTED>", "enrich"],
+      optionKeys: [],
+      globalOptions: [],
+    },
+    sameInstant,
+    sameInstant,
+    new Error("model 'missing' not found"),
+    "parent-id-3",
+    {
+      workflowName: "etl",
+      runId: "run-3",
+      jobName: "lookup",
+      stepName: "fetch",
+    },
+  );
+
+  assertEquals(repo.savedEntries[0].durationMs, 0);
+  assertEquals(repo.savedEntries[0].result.status, "error");
+  assertEquals(repo.savedEntries[0].workflowContext?.modelType, undefined);
+  assertEquals(repo.savedEntries[0].workflowContext?.driver, undefined);
+});

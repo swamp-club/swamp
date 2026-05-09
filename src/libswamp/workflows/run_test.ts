@@ -943,3 +943,88 @@ Deno.test("workflowRun yields cancelled error when signal is pre-aborted", async
     assertEquals(last.error.code, "cancelled");
   }
 });
+
+Deno.test("workflowRun bridge finalizes in-flight invocations when execution service throws mid-stream", async () => {
+  // Adversarial case: a method_executing event is yielded, then the
+  // execution service throws BEFORE step_completed/step_failed arrives.
+  // The bridge's try/finally must drain the in-flight invocation as an
+  // error child entry. The parent stream's error event must still
+  // propagate cleanly.
+  const workflow = createTestWorkflow();
+
+  type RecordedCall = {
+    methodName: string;
+    error: Error | null;
+    durationMs: number;
+  };
+  const recorded: RecordedCall[] = [];
+
+  const deps: WorkflowRunDeps = {
+    ...createTestDeps(workflow, []),
+    createExecutionService: (_wr, _rr, _rd, _cs) =>
+      ({
+        async *run(): AsyncGenerator<WorkflowExecutionEvent> {
+          yield {
+            kind: "started",
+            runId: "run-throw",
+            workflowName: "test-workflow",
+            logPath: "/tmp/log",
+            jobs: [],
+          };
+          yield {
+            kind: "method_executing",
+            jobId: "job1",
+            stepId: "step1",
+            modelName: "test-model",
+            methodName: "run",
+            driver: "local",
+          };
+          // Simulate the workflow engine blowing up after starting a
+          // method but before any terminal step event.
+          throw new Error("execution service crashed");
+        },
+        execute(): Promise<WorkflowRun> {
+          throw new Error("not implemented");
+        },
+        // deno-lint-ignore no-explicit-any
+      }) as any,
+    telemetrySink: {
+      parentInvocationId: "parent-throw",
+      recordChildInvocation: (
+        invocation,
+        startedAt,
+        completedAt,
+        error,
+      ) => {
+        recorded.push({
+          methodName: invocation.args[2],
+          error,
+          durationMs: completedAt.getTime() - startedAt.getTime(),
+        });
+        return Promise.resolve();
+      },
+    },
+  };
+
+  const ctx = createLibSwampContext();
+  const events = await collect(workflowRun(ctx, deps, {
+    workflowIdOrName: "test-workflow",
+  }));
+
+  // Parent stream still emits the error event cleanly.
+  const last = events[events.length - 1];
+  assertEquals(last.kind, "error");
+
+  // Bridge drained the in-flight method as an error child entry.
+  assertEquals(recorded.length, 1);
+  assertEquals(recorded[0].methodName, "run");
+  assertEquals(
+    recorded[0].error?.message,
+    "workflow run terminated before completion",
+  );
+  // durationMs is non-negative (start time recorded at method_executing,
+  // end time at finalize) — guard against accidental NaN/negative.
+  if (recorded[0].durationMs < 0 || Number.isNaN(recorded[0].durationMs)) {
+    throw new Error(`unexpected durationMs: ${recorded[0].durationMs}`);
+  }
+});

@@ -634,13 +634,6 @@ export class DefaultStepExecutor implements StepExecutor {
     } = args;
 
     runLogger.debug("Executing method {method}", { method: task.methodName });
-    ctx.emitEvent?.({
-      kind: "method_executing",
-      jobId: ctx.jobName,
-      stepId: ctx.stepName,
-      modelName: originalDefinition.name,
-      methodName: task.methodName,
-    });
 
     // Build workflow-specific tag overrides. Use "source" instead of
     // "type" to preserve the original data type (resource/file) while
@@ -690,6 +683,20 @@ export class DefaultStepExecutor implements StepExecutor {
     const resolved = (ctx.driverPlan ?? new DriverPlan({})).withDefinition({
       driver: evaluatedDefinition.driver,
       driverConfig: evaluatedDefinition.driverConfig,
+    });
+
+    // Yield `method_executing` AFTER driver resolution so the resolved
+    // driver can ride along on the event for downstream telemetry. Note:
+    // any failure between the start of runModelMethodTask and this point
+    // (vary-key validation, etc.) becomes a "pre-method-executing"
+    // failure and is reported via step_failed instead — by design.
+    ctx.emitEvent?.({
+      kind: "method_executing",
+      jobId: ctx.jobName,
+      stepId: ctx.stepName,
+      modelName: originalDefinition.name,
+      methodName: task.methodName,
+      driver: resolved.driver,
     });
 
     // Register sensitive argument values with the workflow redactor so they
@@ -1623,6 +1630,12 @@ export class WorkflowExecutionService {
     stepRun.start();
     yield { kind: "step_started", jobId: job.name, stepId: stepName };
 
+    // Declared outside the try so the step_failed yield in the catch
+    // block can populate `driver` when the failure occurred AFTER the
+    // DriverPlan was constructed but BEFORE method_executing was yielded
+    // (e.g. vault expression resolution failure inside the executor).
+    let driverPlan: DriverPlan | undefined;
+
     try {
       // Build the expression context with forEach variable
       let stepExprContext = expressionContext;
@@ -1663,6 +1676,23 @@ export class WorkflowExecutionService {
       // withEventBridge lets the executor push events via callback
       // while we yield them into the parent stream.
       const repoMarker = await this.loadRepoMarker();
+      // Build the DriverPlan; assign to the outer-scoped `driverPlan`
+      // so the catch block can populate `driver` on step_failed events
+      // for failures that occur BEFORE method_executing was yielded
+      // (model lookup, input validation, vault expression resolution).
+      driverPlan = new DriverPlan({
+        cli: { driver: options.driver },
+        step: { driver: step.driver, driverConfig: step.driverConfig },
+        job: { driver: job.driver, driverConfig: job.driverConfig },
+        workflow: {
+          driver: workflow.driver,
+          driverConfig: workflow.driverConfig,
+        },
+        repo: {
+          driver: repoMarker?.defaultDriver,
+          driverConfig: repoMarker?.defaultDriverConfig,
+        },
+      });
       const output = yield* withEventBridge<
         WorkflowExecutionEvent,
         unknown
@@ -1683,19 +1713,7 @@ export class WorkflowExecutionService {
           workflowTags: options.workflowTags,
           runtimeTags: options.runtimeTags,
           secretRedactor: options.secretRedactor,
-          driverPlan: new DriverPlan({
-            cli: { driver: options.driver },
-            step: { driver: step.driver, driverConfig: step.driverConfig },
-            job: { driver: job.driver, driverConfig: job.driverConfig },
-            workflow: {
-              driver: workflow.driver,
-              driverConfig: workflow.driverConfig,
-            },
-            repo: {
-              driver: repoMarker?.defaultDriver,
-              driverConfig: repoMarker?.defaultDriverConfig,
-            },
-          }),
+          driverPlan,
           emitEvent: push,
           reportFilterOptions: options.reportFilterOptions,
           swampSha: options.swampSha,
@@ -1816,12 +1834,37 @@ export class WorkflowExecutionService {
         code: SpanStatusCode.ERROR,
         message: errorMessage,
       });
+      // Populate model/method/driver context on step_failed only for
+      // model-method tasks. The libswamp telemetry bridge keys off these
+      // fields to synthesize a child invocation entry for failures that
+      // occurred before `method_executing` was yielded. Workflow-task
+      // steps (which short-circuit via runWorkflowStep above) and other
+      // structural failures leave them undefined.
+      //
+      // Driver resolution at catch time uses an empty definition tier
+      // because we may not have an evaluated definition yet — for
+      // pre-method-executing failures the driver reflects the upstream
+      // tiers (cli > step > job > workflow > repo) only. This is the
+      // analytically relevant tier for "what driver was the user asking
+      // this step to use".
+      const taskData = step.task.data;
+      const isModelMethodTask = taskData.type === "model_method";
+      const failureDriver = isModelMethodTask && driverPlan
+        ? driverPlan.withDefinition({}).driver
+        : undefined;
       yield {
         kind: "step_failed",
         jobId: job.name,
         stepId: stepName,
         error: errorMessage,
         allowedFailure: isAllowed || undefined,
+        modelName: taskData.type === "model_method"
+          ? taskData.modelIdOrName
+          : undefined,
+        methodName: taskData.type === "model_method"
+          ? taskData.methodName
+          : undefined,
+        driver: failureDriver,
       };
       // Do not re-throw: merge() continues draining all step generators
       // (allSettled semantics). The job generator tracks failure via step_failed events.

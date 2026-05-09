@@ -28,6 +28,7 @@ import {
   requireInitializedRepoReadOnly,
   requireInitializedRepoUnlocked,
   resolveDatastoreForRepo,
+  SWAMP_LOCK_HOLDER_PID,
   waitForPerModelLocks,
 } from "./repo_context.ts";
 import { flushDatastoreSync } from "../infrastructure/persistence/datastore_sync_coordinator.ts";
@@ -956,6 +957,123 @@ Deno.test(
       });
       assertEquals(typeof ctx.repoDir, "string");
       await flushDatastoreSync();
+    });
+  },
+);
+
+// ============================================================================
+// waitForPerModelLocks — Parent-Process Lock Awareness Tests
+// ============================================================================
+//
+// These tests use real lock files in a temp directory so the default scanner
+// exercises the PID-matching code path (the findModelLocksOverride seam
+// bypasses it).
+
+Deno.test(
+  "waitForPerModelLocks - skips locks held by parent process (SWAMP_LOCK_HOLDER_PID)",
+  async () => {
+    await withTempDir(async (dir) => {
+      const lockDir = join(dir, "data", "command-shell", "test-model");
+      await ensureDir(lockDir);
+      const lockFile = join(lockDir, ".lock");
+      const parentPid = 99999;
+      await Deno.writeTextFile(
+        lockFile,
+        JSON.stringify({
+          holder: "parent@host",
+          hostname: "host",
+          pid: parentPid,
+          acquiredAt: new Date().toISOString(),
+          ttlMs: 30_000,
+        }),
+      );
+
+      Deno.env.set(SWAMP_LOCK_HOLDER_PID, String(parentPid));
+      try {
+        const start = Date.now();
+        await waitForPerModelLocks(dir);
+        const elapsed = Date.now() - start;
+
+        assertEquals(
+          elapsed < 500,
+          true,
+          `expected immediate return when parent lock is skipped, elapsed=${elapsed}ms`,
+        );
+      } finally {
+        Deno.env.delete(SWAMP_LOCK_HOLDER_PID);
+      }
+    });
+  },
+);
+
+Deno.test(
+  "waitForPerModelLocks - does not skip locks from a different PID",
+  async () => {
+    await withTempDir(async (dir) => {
+      const lockDir = join(dir, "data", "command-shell", "test-model");
+      await ensureDir(lockDir);
+      const lockFile = join(lockDir, ".lock");
+      // Write a fresh lock with a different PID
+      const otherPid = 88888;
+      await Deno.writeTextFile(
+        lockFile,
+        JSON.stringify({
+          holder: "other@host",
+          hostname: "host",
+          pid: otherPid,
+          acquiredAt: new Date().toISOString(),
+          ttlMs: 2_000,
+        }),
+      );
+
+      Deno.env.set(SWAMP_LOCK_HOLDER_PID, "77777");
+      try {
+        const start = Date.now();
+        // The lock has a 2s TTL; the scanner will count it on the first
+        // pass, enter the wait loop, and eventually see it as stale.
+        await waitForPerModelLocks(dir);
+        const elapsed = Date.now() - start;
+
+        assertEquals(
+          elapsed >= 1_000,
+          true,
+          `expected to wait for non-parent lock to go stale, elapsed=${elapsed}ms`,
+        );
+      } finally {
+        Deno.env.delete(SWAMP_LOCK_HOLDER_PID);
+      }
+    });
+  },
+);
+
+Deno.test(
+  "waitForPerModelLocks - no env var preserves existing wait behavior",
+  async () => {
+    await withTempDir(async (dir) => {
+      const lockDir = join(dir, "data", "command-shell", "test-model");
+      await ensureDir(lockDir);
+      const lockFile = join(lockDir, ".lock");
+      await Deno.writeTextFile(
+        lockFile,
+        JSON.stringify({
+          holder: "writer@host",
+          hostname: "host",
+          pid: 66666,
+          acquiredAt: new Date().toISOString(),
+          ttlMs: 2_000,
+        }),
+      );
+
+      Deno.env.delete(SWAMP_LOCK_HOLDER_PID);
+      const start = Date.now();
+      await waitForPerModelLocks(dir);
+      const elapsed = Date.now() - start;
+
+      assertEquals(
+        elapsed >= 1_000,
+        true,
+        `expected to wait for lock to go stale without env var, elapsed=${elapsed}ms`,
+      );
     });
   },
 );
