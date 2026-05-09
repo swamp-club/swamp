@@ -86,8 +86,11 @@ export const modelMethodRunCommand = new Command()
     "Pass an array or object input (JSON-typed via :json suffix)",
     'swamp model method run my-server search --input \'keywords:json=["a","b"]\'',
   )
+  .description(
+    "Execute a method on a model. With @type prefix, auto-creates the definition if needed.",
+  )
   .arguments(
-    "<model_or_type:string> <method_name:string> [definition_name:string]",
+    "<model_or_type:model_name> <method_name:string> [definition_name:string]",
   )
   .option(
     "--repo-dir <dir:string>",
@@ -148,6 +151,7 @@ export const modelMethodRunCommand = new Command()
     "Cancellation deadline — seconds (e.g. 30, 1800) or duration string (e.g. 30s, 5m, 1h). Cooperative — only honored by methods that check AbortSignal.",
   )
   .action(
+    // @ts-expect-error - Cliffy custom type returns unknown instead of string
     async function (
       options: AnyOptions,
       modelOrType: string,

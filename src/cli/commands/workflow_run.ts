@@ -36,7 +36,7 @@ import {
   type DirectTypeResolver,
   WorkflowExecutionService,
 } from "../../domain/workflows/execution_service.ts";
-import { resolveOrCreateDefinition } from "../../libswamp/models/direct_execution.ts";
+import { resolveOrCreateDefinition } from "../../libswamp/mod.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import type { DefinitionId } from "../../domain/definitions/definition.ts";
 import { resolveModelType } from "../../domain/extensions/extension_auto_resolver.ts";

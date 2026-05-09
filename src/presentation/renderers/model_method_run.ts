@@ -61,6 +61,12 @@ class LogModelMethodRunRenderer implements ModelMethodRunRenderer {
           { path: e.definitionPath },
         );
       },
+      global_args_ignored: (e) => {
+        getRunLogger(this.modelName, this.methodName).warn(
+          "{message}",
+          { message: e.message },
+        );
+      },
       model_resolved: (e) => {
         this.modelName = e.modelName;
         this.methodName = e.methodName;
@@ -186,10 +192,17 @@ class JsonModelMethodRunRenderer implements ModelMethodRunRenderer {
       resolving_model: () => {},
       auto_created: (e) => {
         console.log(JSON.stringify({
-          event: "definition_auto_created",
+          warning: "definition_auto_created",
           modelType: e.modelType,
           definitionName: e.definitionName,
           definitionPath: e.definitionPath,
+        }));
+      },
+      global_args_ignored: (e) => {
+        console.log(JSON.stringify({
+          warning: "global_args_ignored",
+          definitionName: e.definitionName,
+          message: e.message,
         }));
       },
       model_resolved: () => {},

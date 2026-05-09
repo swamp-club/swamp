@@ -328,6 +328,7 @@ export class DefaultStepExecutor implements StepExecutor {
     },
     ctx: StepExecutionContext,
   ): Promise<unknown> {
+    const allDeps = await this.resolveDeps(ctx);
     const {
       definitionRepo,
       unifiedDataRepo,
@@ -337,7 +338,7 @@ export class DefaultStepExecutor implements StepExecutor {
       methodExecutionService: executionService,
       vaultService,
       expressionEvaluator,
-    } = await this.resolveDeps(ctx);
+    } = allDeps;
 
     // Resolve forEach self.* expressions in modelIdOrName/modelName and methodName
     // before model lookup. The expression context has self populated with
@@ -372,8 +373,7 @@ export class DefaultStepExecutor implements StepExecutor {
     let modelType: ModelType;
 
     if (task.modelType && task.modelName) {
-      const deps = await this.resolveDeps(ctx);
-      const resolver = deps.directTypeResolver;
+      const resolver = allDeps.directTypeResolver;
 
       if (!resolver) {
         throw new Error(
