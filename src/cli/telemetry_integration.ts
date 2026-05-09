@@ -25,7 +25,44 @@ import {
   detectAgentHarness,
   RELEVANT_ENV_VARS,
 } from "../domain/telemetry/mod.ts";
+import type { TelemetryService } from "../domain/telemetry/telemetry_service.ts";
 import type { AiTool } from "../infrastructure/persistence/repo_marker_repository.ts";
+
+/**
+ * Module-scoped accessor for the active TelemetryService. Set once at the
+ * top of runCli (before Cliffy parse) and cleared in the surrounding
+ * try/finally. Command actions that need to emit child telemetry (e.g.
+ * workflow_run.ts wiring a sink into libswamp) read it via
+ * `getActiveTelemetryService()`.
+ *
+ * Module-scoped state matches the lifecycle: a single CLI invocation has
+ * a single TelemetryService for its entire duration. Tests that exercise
+ * the bridge inject a stub directly rather than relying on this module.
+ */
+let activeTelemetryService: TelemetryService | null = null;
+
+/**
+ * Sets the active TelemetryService for the current CLI invocation.
+ * Call from runCli only — not from individual commands.
+ */
+export function setActiveTelemetryService(service: TelemetryService): void {
+  activeTelemetryService = service;
+}
+
+/**
+ * Clears the active TelemetryService. Call from runCli's finally block.
+ */
+export function clearActiveTelemetryService(): void {
+  activeTelemetryService = null;
+}
+
+/**
+ * Returns the active TelemetryService, or null if telemetry is disabled
+ * for this invocation (e.g. --no-telemetry, outside a swamp repo).
+ */
+export function getActiveTelemetryService(): TelemetryService | null {
+  return activeTelemetryService;
+}
 
 /**
  * Per-position sensitivity for positional arguments by command.

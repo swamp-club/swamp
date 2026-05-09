@@ -40,6 +40,12 @@ import {
   invocationContextFromData,
   invocationContextToData,
 } from "./invocation_context.ts";
+import {
+  type WorkflowContext,
+  type WorkflowContextData,
+  workflowContextFromData,
+  workflowContextToData,
+} from "./workflow_context.ts";
 
 /**
  * Properties required to create a new TelemetryEntry.
@@ -54,13 +60,16 @@ export interface CreateTelemetryEntryProps {
   denoVersion: string;
   platform: string;
   invocationContext?: InvocationContextData;
+  parentInvocationId?: string;
+  workflowContext?: WorkflowContextData;
 }
 
 /**
  * Data transfer object for TelemetryEntry.
  *
- * `invocationContext` is optional so entries written before the field was
- * introduced still decode without loss.
+ * `invocationContext`, `parentInvocationId`, and `workflowContext` are
+ * optional so entries written before each field was introduced still decode
+ * without loss.
  */
 export interface TelemetryEntryData {
   id: string;
@@ -73,6 +82,8 @@ export interface TelemetryEntryData {
   denoVersion: string;
   platform: string;
   invocationContext?: InvocationContextData;
+  parentInvocationId?: string;
+  workflowContext?: WorkflowContextData;
 }
 
 /**
@@ -90,6 +101,8 @@ export class TelemetryEntry {
     readonly denoVersion: string,
     readonly platform: string,
     readonly invocationContext?: InvocationContext,
+    readonly parentInvocationId?: TelemetryId,
+    readonly workflowContext?: WorkflowContext,
   ) {}
 
   /**
@@ -112,6 +125,12 @@ export class TelemetryEntry {
       props.invocationContext
         ? invocationContextFromData(props.invocationContext)
         : undefined,
+      props.parentInvocationId
+        ? createTelemetryId(props.parentInvocationId)
+        : undefined,
+      props.workflowContext
+        ? workflowContextFromData(props.workflowContext)
+        : undefined,
     );
   }
 
@@ -131,6 +150,12 @@ export class TelemetryEntry {
       data.platform,
       data.invocationContext
         ? invocationContextFromData(data.invocationContext)
+        : undefined,
+      data.parentInvocationId
+        ? createTelemetryId(data.parentInvocationId)
+        : undefined,
+      data.workflowContext
+        ? workflowContextFromData(data.workflowContext)
         : undefined,
     );
   }
@@ -152,6 +177,12 @@ export class TelemetryEntry {
     };
     if (this.invocationContext) {
       data.invocationContext = invocationContextToData(this.invocationContext);
+    }
+    if (this.parentInvocationId) {
+      data.parentInvocationId = this.parentInvocationId;
+    }
+    if (this.workflowContext) {
+      data.workflowContext = workflowContextToData(this.workflowContext);
     }
     return data;
   }

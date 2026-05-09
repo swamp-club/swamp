@@ -52,8 +52,10 @@ import {
   createLibSwampContext,
   workflowRun,
   type WorkflowRunDeps,
+  type WorkflowTelemetrySink,
 } from "../../libswamp/mod.ts";
 import { createWorkflowRunRenderer } from "../../presentation/renderers/workflow_run.ts";
+import { getActiveTelemetryService } from "../telemetry_integration.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -239,6 +241,20 @@ export const workflowRunCommand = new Command()
         reportRegistry.ensureLoaded(),
       ]);
 
+      // Wire the telemetry sink only when the active service is
+      // available — telemetry is disabled outside a swamp repo or under
+      // --no-telemetry, in which case the bridge inside libswamp
+      // becomes a no-op.
+      const telemetryService = getActiveTelemetryService();
+      const telemetrySink: WorkflowTelemetrySink | undefined = telemetryService
+        ? {
+          parentInvocationId: telemetryService.invocationId,
+          recordChildInvocation: telemetryService.recordChildInvocation.bind(
+            telemetryService,
+          ),
+        }
+        : undefined;
+
       const deps: WorkflowRunDeps = {
         workflowRepo: repoContext.workflowRepo,
         runRepo,
@@ -259,6 +275,7 @@ export const workflowRunCommand = new Command()
         catalogStore: repoContext.catalogStore,
         dataRepo: repoContext.unifiedDataRepo,
         definitionRepo: repoContext.definitionRepo,
+        telemetrySink,
       };
 
       const timeoutMs = options.timeout

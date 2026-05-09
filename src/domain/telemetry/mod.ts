@@ -39,6 +39,14 @@ export {
 } from "./invocation_context.ts";
 
 export {
+  createWorkflowContext,
+  type WorkflowContext,
+  type WorkflowContextData,
+  workflowContextFromData,
+  workflowContextToData,
+} from "./workflow_context.ts";
+
+export {
   type AgentHarnessDetection,
   type DetectableAiTool,
   detectAgentHarness,

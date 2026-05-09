@@ -241,3 +241,113 @@ Deno.test("TelemetryEntry.fromData decodes legacy entries without invocationCont
   assertEquals(entry.invocationContext, undefined);
   assertEquals("invocationContext" in entry.toData(), false);
 });
+
+Deno.test("TelemetryEntry.create accepts parentInvocationId and workflowContext", () => {
+  const entry = TelemetryEntry.create({
+    invocation: {
+      command: "model",
+      subcommand: "method",
+      args: ["run", "<REDACTED>", "validate"],
+      optionKeys: [],
+      globalOptions: [],
+    },
+    result: { status: "success", exitCode: 0 },
+    startedAt: new Date("2026-02-05T10:00:00Z"),
+    completedAt: new Date("2026-02-05T10:00:00.250Z"),
+    swampVersion: "1.0.0",
+    denoVersion: "2.1.0",
+    platform: "linux",
+    parentInvocationId: "parent-abc",
+    workflowContext: {
+      workflowName: "deploy",
+      runId: "run-123",
+      jobName: "build",
+      stepName: "validate-config",
+      modelType: "@swamp/shell",
+      driver: "local",
+    },
+  });
+
+  assertEquals(entry.parentInvocationId, "parent-abc");
+  assertEquals(entry.workflowContext?.workflowName, "deploy");
+  assertEquals(entry.workflowContext?.runId, "run-123");
+  assertEquals(entry.workflowContext?.jobName, "build");
+  assertEquals(entry.workflowContext?.stepName, "validate-config");
+  assertEquals(entry.workflowContext?.modelType, "@swamp/shell");
+  assertEquals(entry.workflowContext?.driver, "local");
+});
+
+Deno.test("TelemetryEntry round-trips parentInvocationId and workflowContext through toData/fromData", () => {
+  const entry = TelemetryEntry.create({
+    id: "child-1",
+    invocation: {
+      command: "model",
+      subcommand: "method",
+      args: ["run", "<REDACTED>", "transform"],
+      optionKeys: [],
+      globalOptions: [],
+    },
+    result: {
+      status: "error",
+      errorType: "Error",
+      errorMessage: "boom",
+      exitCode: 1,
+    },
+    startedAt: new Date("2026-02-05T10:00:00Z"),
+    completedAt: new Date("2026-02-05T10:00:00.250Z"),
+    swampVersion: "1.0.0",
+    denoVersion: "2.1.0",
+    platform: "linux",
+    parentInvocationId: "parent-xyz",
+    workflowContext: {
+      workflowName: "etl",
+      runId: "run-9",
+      jobName: "extract",
+      stepName: "pull-rows",
+    },
+  });
+
+  const data = entry.toData();
+  assertEquals(data.parentInvocationId, "parent-xyz");
+  assertEquals(data.workflowContext?.workflowName, "etl");
+  assertEquals(data.workflowContext?.runId, "run-9");
+  assertEquals(data.workflowContext?.modelType, undefined);
+  assertEquals(data.workflowContext?.driver, undefined);
+  assertEquals("modelType" in (data.workflowContext ?? {}), false);
+  assertEquals("driver" in (data.workflowContext ?? {}), false);
+
+  const restored = TelemetryEntry.fromData(data);
+  assertEquals(restored.parentInvocationId, "parent-xyz");
+  assertEquals(restored.workflowContext?.workflowName, "etl");
+  assertEquals(restored.workflowContext?.modelType, undefined);
+  assertEquals(restored.workflowContext?.driver, undefined);
+});
+
+Deno.test("TelemetryEntry.fromData decodes legacy entries without parentInvocationId or workflowContext", () => {
+  // Forward-compat contract for the new fields, mirroring the
+  // invocationContext regression above.
+  const legacyData: TelemetryEntryData = {
+    id: "legacy-2",
+    invocation: {
+      command: "workflow",
+      subcommand: "run",
+      args: ["<REDACTED>"],
+      optionKeys: [],
+      globalOptions: [],
+    },
+    result: { status: "success", exitCode: 0 },
+    startedAt: "2026-02-05T12:00:00.000Z",
+    completedAt: "2026-02-05T12:00:05.000Z",
+    durationMs: 5000,
+    swampVersion: "1.0.0",
+    denoVersion: "2.1.0",
+    platform: "linux",
+  };
+
+  const entry = TelemetryEntry.fromData(legacyData);
+  assertEquals(entry.parentInvocationId, undefined);
+  assertEquals(entry.workflowContext, undefined);
+  const roundTripped = entry.toData();
+  assertEquals("parentInvocationId" in roundTripped, false);
+  assertEquals("workflowContext" in roundTripped, false);
+});
