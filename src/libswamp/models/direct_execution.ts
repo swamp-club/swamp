@@ -161,10 +161,13 @@ export async function resolveOrCreateDefinition(
       };
     }
 
-    const storedGlobal = existing.definition.globalArguments;
+    const storedGlobal = existing.definition
+      .globalArguments as Record<string, unknown>;
     const routedGlobal = routed.globalArguments;
     const globalArgsDiffer = Object.keys(routedGlobal).length > 0 &&
-      JSON.stringify(storedGlobal) !== JSON.stringify(routedGlobal);
+      !Object.entries(routedGlobal).every(([k, v]) =>
+        JSON.stringify(storedGlobal?.[k]) === JSON.stringify(v)
+      );
 
     return {
       ok: true,

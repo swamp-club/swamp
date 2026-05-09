@@ -192,7 +192,7 @@ class JsonModelMethodRunRenderer implements ModelMethodRunRenderer {
       resolving_model: () => {},
       auto_created: (e) => {
         console.log(JSON.stringify({
-          warning: "definition_auto_created",
+          event: "definition_auto_created",
           modelType: e.modelType,
           definitionName: e.definitionName,
           definitionPath: e.definitionPath,
