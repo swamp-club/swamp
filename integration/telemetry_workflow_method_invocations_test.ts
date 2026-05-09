@@ -315,13 +315,14 @@ Deno.test("workflow run persists per-step child telemetry entries with workflowC
     const failChild = children.find((c) =>
       c.workflowContext!.stepName === "fail-step"
     );
+    // Match by exact suffix — `includes("a")` would also match "fanout-b"
+    // because the prefix "fanout-" itself contains the letter "a", and
+    // directory iteration order is non-deterministic across platforms.
     const fanoutA = children.find((c) =>
-      c.workflowContext!.stepName.startsWith("fanout-") &&
-      c.workflowContext!.stepName.includes("a")
+      c.workflowContext!.stepName === "fanout-a"
     );
     const fanoutB = children.find((c) =>
-      c.workflowContext!.stepName.startsWith("fanout-") &&
-      c.workflowContext!.stepName.includes("b")
+      c.workflowContext!.stepName === "fanout-b"
     );
 
     assert(okChild, "missing ok-step child");
