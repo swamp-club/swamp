@@ -150,6 +150,7 @@ export async function resolveExtensionFiles(
       field: "additionalFiles",
       path: p,
     })),
+    ...manifest.binaries.map((p) => ({ field: "binaries", path: p })),
   ];
   for (const { field, path } of allManifestPaths) {
     if (!isSafeRelativePath(path)) {
@@ -509,16 +510,25 @@ export async function resolveExtensionFiles(
   }
 
   // 16. Validate binary files: uniqueness, symlink rejection, existence.
+  // Also check for overlap with additionalFiles — both land in files/.
   const binaryFilePaths: string[] = [];
   const seenBinNormalized = new Map<string, string>();
   for (const bf of manifest.binaries) {
     const normalized = normalizeAdditionalFileEntry(bf);
-    const existing = seenBinNormalized.get(normalized);
-    if (existing !== undefined) {
+    const existingBin = seenBinNormalized.get(normalized);
+    if (existingBin !== undefined) {
       throw new UserError(
-        `Duplicate binaries entries: "${existing}" and "${bf}" ` +
+        `Duplicate binaries entries: "${existingBin}" and "${bf}" ` +
           `resolve to the same archive path (case-insensitive, normalized). ` +
           `Remove one entry from the manifest, or rename the file.`,
+      );
+    }
+    const existingAdditional = seenNormalized.get(normalized);
+    if (existingAdditional !== undefined) {
+      throw new UserError(
+        `Path "${bf}" appears in both binaries and additionalFiles ` +
+          `(as "${existingAdditional}"). Use one or the other — both ` +
+          `land in the same files/ directory in the archive.`,
       );
     }
     seenBinNormalized.set(normalized, bf);

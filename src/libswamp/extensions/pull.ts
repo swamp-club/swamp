@@ -965,8 +965,11 @@ export async function installExtension(
         const binPath = join(absoluteFilesDir, bin);
         try {
           await Deno.chmod(binPath, 0o755);
-        } catch {
-          // Best-effort — file may not exist in archive
+        } catch (error) {
+          if (error instanceof Deno.errors.NotFound) continue;
+          if (logger) {
+            logger.debug`Failed to chmod binary ${bin}: ${error}`;
+          }
         }
       }
     }
