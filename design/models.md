@@ -131,10 +131,59 @@ first method execution and persisted with the new CalVer `typeVersion`.
 
 ## Definitions
 
-Definitions are specified as YAML files that live in the top-level `models/`
-directory of a repository, underneath the normalized type as a directory. The
-file name is `${id}.yaml`. For example,
+There are two ways to create a definition:
+
+### Direct Instantiation (`model create`)
+
+Use this when you want to manage values in the definition file. Global arguments
+are baked into the YAML, edited with `model edit`, and version-controlled in
+git. Good for: static configuration that rarely changes, definitions that use CEL
+expressions in global arguments, definitions shared across multiple workflow
+steps.
+
+These definitions live in the top-level `models/` directory of a repository,
+underneath the normalized type as a directory. The file name is `${id}.yaml`.
+For example,
 `models/aws/ec2/vpc/fc7fd41e-ae16-4b31-b57a-86de716e3ece.yaml`.
+
+### Direct Type Execution (recommended starting point)
+
+Use this when everything comes from `--input` at runtime. The definition is
+auto-created as a byproduct, not as a deliberate configuration act. Good for:
+scripts, CI pipelines, one-shot CLI invocations, and workflow steps where all
+values are dynamic.
+
+**CLI syntax:**
+
+```sh
+swamp model @swamp/aws/ec2/vpc method run create my-vpc \
+  --input region=us-east-1 --input cidr=10.0.0.0/16
+```
+
+**First run:** The definition `my-vpc` doesn't exist yet. Swamp auto-creates it
+with type `@swamp/aws/ec2/vpc` and executes `create`. The `--input` values are
+automatically routed between global arguments and method arguments using the
+type's schemas (method arguments take precedence on ambiguous keys).
+
+**Subsequent runs:** Finds `my-vpc`, verifies its type matches
+`@swamp/aws/ec2/vpc` (safety check), and runs. The same command is idempotent.
+
+**Storage:** Auto-created definitions live in `.swamp/auto-definitions/` (not
+`models/`). They are local runtime state, not git-tracked, and do not appear in
+`swamp model search` results. They are findable by name for `model get`,
+`model method run`, and workflow references.
+
+### Choosing Between the Two
+
+| Question                                        | Direct Instantiation | Direct Type Execution |
+| ----------------------------------------------- | -------------------- | --------------------- |
+| Do you manage values in the definition file?    | Yes                  | No                    |
+| Are values passed at runtime via `--input`?     | Sometimes            | Always                |
+| Is the definition git-tracked?                  | Yes                  | No                    |
+| Visible in `model search`?                      | Yes                  | No                    |
+| Stored in                                       | `models/`            | `.swamp/auto-definitions/` |
+
+### Definition Properties
 
 The valid shape of a definition is specified with a Zod 4 schema as part of the
 type.

@@ -971,6 +971,11 @@ async function initTelemetryService(
 }
 
 export async function runCli(args: string[]): Promise<void> {
+  // Rewrite `model @type method run` → `model method run @type` before
+  // Cliffy parses the command tree. Must happen before any arg inspection.
+  const { rewriteDirectTypeArgs } = await import("./arg_rewriter.ts");
+  args = rewriteDirectTypeArgs(args);
+
   // Capture start time for telemetry
   const startTime = new Date();
 

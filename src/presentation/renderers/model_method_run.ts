@@ -50,6 +50,18 @@ class LogModelMethodRunRenderer implements ModelMethodRunRenderer {
     return {
       validating_inputs: () => {},
       resolving_model: () => {},
+      auto_creating: (e) => {
+        getRunLogger(this.modelName, this.methodName).info(
+          "Auto-creating definition {name} (type: {type})",
+          { name: e.definitionName, type: e.modelType },
+        );
+      },
+      definition_created: (e) => {
+        getRunLogger(this.modelName, this.methodName).info(
+          "Definition created at {path}",
+          { path: e.definitionPath, name: e.definitionName },
+        );
+      },
       model_resolved: (e) => {
         this.modelName = e.modelName;
         this.methodName = e.methodName;
@@ -173,6 +185,8 @@ class JsonModelMethodRunRenderer implements ModelMethodRunRenderer {
     return {
       validating_inputs: () => {},
       resolving_model: () => {},
+      auto_creating: () => {},
+      definition_created: () => {},
       model_resolved: () => {},
       env_var_warning: (e) => {
         console.log(JSON.stringify(

@@ -24,6 +24,7 @@ import { atomicWriteTextFile } from "./atomic_write.ts";
 import { cleanupEmptyParentDirs } from "./directory_cleanup.ts";
 import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { assertSafePath } from "./safe_path.ts";
+import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
 import type { DefinitionRepository } from "../../domain/definitions/repositories.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import {
@@ -52,13 +53,19 @@ const logger = getLogger(["definition-repo"]);
  */
 export class YamlDefinitionRepository implements DefinitionRepository {
   private readonly baseDir: string;
+  private readonly secondaryBaseDir: string | undefined;
 
   constructor(
     private readonly repoDir: string,
     private readonly eventBus?: EventBus,
     baseDir?: string,
+    secondaryBaseDir?: string | false,
   ) {
     this.baseDir = baseDir ?? join(repoDir, "models");
+    this.secondaryBaseDir = secondaryBaseDir === false
+      ? undefined
+      : (secondaryBaseDir ??
+        swampPath(repoDir, SWAMP_SUBDIRS.autoDefinitions));
   }
 
   async findById(
@@ -66,6 +73,27 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     id: DefinitionId,
   ): Promise<Definition | null> {
     const path = this.getPath(type, id);
+    try {
+      const content = await Deno.readTextFile(path);
+      const data = parseYaml(content) as DefinitionData;
+      return Definition.fromData(data);
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) {
+        if (this.secondaryBaseDir) {
+          return this.findByIdInDir(this.secondaryBaseDir, type, id);
+        }
+        return null;
+      }
+      throw error;
+    }
+  }
+
+  private async findByIdInDir(
+    dir: string,
+    type: ModelType,
+    id: DefinitionId,
+  ): Promise<Definition | null> {
+    const path = join(dir, type.toDirectoryPath(), `${id}.yaml`);
     try {
       const content = await Deno.readTextFile(path);
       const data = parseYaml(content) as DefinitionData;
@@ -112,13 +140,58 @@ export class YamlDefinitionRepository implements DefinitionRepository {
 
   async findByName(type: ModelType, name: string): Promise<Definition | null> {
     const definitions = await this.findAll(type);
-    return definitions.find((def) => def.name === name) ?? null;
+    const found = definitions.find((def) => def.name === name);
+    if (found) return found;
+    if (this.secondaryBaseDir) {
+      const secondaryDir = join(this.secondaryBaseDir, type.toDirectoryPath());
+      const secondaryDefs = await this.findAllInDir(secondaryDir);
+      return secondaryDefs.find((def) => def.name === name) ?? null;
+    }
+    return null;
+  }
+
+  private async findAllInDir(dir: string): Promise<Definition[]> {
+    const definitions: Definition[] = [];
+    try {
+      for await (const entry of Deno.readDir(dir)) {
+        if (
+          (entry.isFile || entry.isSymlink) && entry.name.endsWith(".yaml")
+        ) {
+          const path = join(dir, entry.name);
+          try {
+            if (entry.isSymlink) {
+              await assertSafePath(path, this.repoDir);
+            }
+            const content = await Deno.readTextFile(path);
+            const data = parseYaml(content) as DefinitionData;
+            definitions.push(Definition.fromData(data));
+          } catch (parseError) {
+            logger.warn`Skipping broken definition file ${path}: ${parseError}`;
+          }
+        }
+      }
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) {
+        return [];
+      }
+      throw error;
+    }
+    return definitions;
   }
 
   async findByNameGlobal(
     name: string,
   ): Promise<{ definition: Definition; type: ModelType } | null> {
-    return await this.searchDefinitionByName(this.baseDir, [], name);
+    const result = await this.searchDefinitionByName(this.baseDir, [], name);
+    if (result) return result;
+    if (this.secondaryBaseDir) {
+      return await this.searchDefinitionByName(
+        this.secondaryBaseDir,
+        [],
+        name,
+      );
+    }
+    return null;
   }
 
   /**

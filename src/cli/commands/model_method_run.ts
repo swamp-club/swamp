@@ -47,6 +47,7 @@ import {
   SWAMP_SUBDIRS,
   swampPath,
 } from "../../infrastructure/persistence/paths.ts";
+import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { SecretRedactor } from "../../domain/secrets/mod.ts";
 import { DataQueryService } from "../../domain/data/data_query_service.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
@@ -78,10 +79,14 @@ export const modelMethodRunCommand = new Command()
     "swamp model method run my-server deploy --input env=prod",
   )
   .example(
+    "Direct type execution",
+    "swamp model @swamp/aws/ec2/vpc method run create my-vpc --input region=us-east-1",
+  )
+  .example(
     "Pass an array or object input (JSON-typed via :json suffix)",
     'swamp model method run my-server search --input \'keywords:json=["a","b"]\'',
   )
-  .arguments("<model_id_or_name:model_name> <method_name:string>")
+  .arguments("<first:string> <second:string> [third:string]")
   .option(
     "--repo-dir <dir:string>",
     "Repository directory (env: SWAMP_REPO_DIR)",
@@ -141,12 +146,25 @@ export const modelMethodRunCommand = new Command()
     "Cancellation deadline — seconds (e.g. 30, 1800) or duration string (e.g. 30s, 5m, 1h). Cooperative — only honored by methods that check AbortSignal.",
   )
   .action(
-    // @ts-expect-error - Cliffy custom type returns unknown instead of string
     async function (
       options: AnyOptions,
-      modelIdOrName: string,
-      methodName: string,
+      first: string,
+      second: string,
+      third?: string,
     ) {
+      // Detect direct type execution: first arg starts with @
+      const isDirectExecution = first.startsWith("@");
+      const typeArg = isDirectExecution ? first : undefined;
+      const methodName = isDirectExecution ? second : second;
+      const modelIdOrName = isDirectExecution ? (third ?? second) : first;
+      const definitionName = isDirectExecution ? third : undefined;
+
+      if (isDirectExecution && !third) {
+        throw new UserError(
+          "Direct type execution requires a definition name: " +
+            `swamp model ${first} method run ${second} <name>`,
+        );
+      }
       const ctx = createContext(options as GlobalOptions, [
         "model",
         "method",
@@ -240,6 +258,26 @@ export const modelMethodRunCommand = new Command()
             cleanup: () => runFileSink.unregister(logCategory),
           };
         },
+        createAndSaveDefinition: isDirectExecution
+          ? async (type, definition) => {
+            const autoDefRepo = new YamlDefinitionRepository(
+              repoDir,
+              undefined,
+              swampPath(repoDir, SWAMP_SUBDIRS.autoDefinitions),
+              false,
+            );
+            await autoDefRepo.save(type, definition);
+          }
+          : undefined,
+        getDefinitionPath: isDirectExecution
+          ? (type, id) => {
+            return join(
+              swampPath(repoDir, SWAMP_SUBDIRS.autoDefinitions),
+              type.toDirectoryPath(),
+              `${id}.yaml`,
+            );
+          }
+          : undefined,
       };
 
       const timeoutMs = options.timeout
@@ -283,6 +321,8 @@ export const modelMethodRunCommand = new Command()
             methodName,
             inputs,
             lastEvaluated: options.lastEvaluated as boolean,
+            typeArg,
+            definitionName,
             runtimeTags,
             skipCheckNames: options.skipCheck as string[] | undefined,
             skipCheckLabels: options.skipCheckLabel as string[] | undefined,

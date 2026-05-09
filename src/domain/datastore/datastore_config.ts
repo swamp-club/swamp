@@ -40,6 +40,7 @@ export const ALWAYS_LOCAL_SUBDIRS = [] as const;
  * These contain derived/runtime data that can be stored externally.
  */
 export const DEFAULT_DATASTORE_SUBDIRS = [
+  "auto-definitions",
   "definitions-evaluated",
   "workflows-evaluated",
   "data",

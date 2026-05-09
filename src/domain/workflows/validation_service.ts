@@ -368,15 +368,18 @@ export class DefaultWorkflowValidationService
 
         const taskData = task.data;
         if (taskData.type === "model_method" && this.methodResolver) {
-          results.push(
-            ...await this.validateModelMethodInputs(
-              job.name,
-              step.name,
-              taskData.modelIdOrName,
-              taskData.methodName,
-              taskData.inputs,
-            ),
-          );
+          const modelRef = taskData.modelIdOrName ?? taskData.modelName;
+          if (modelRef) {
+            results.push(
+              ...await this.validateModelMethodInputs(
+                job.name,
+                step.name,
+                modelRef,
+                taskData.methodName,
+                taskData.inputs,
+              ),
+            );
+          }
         } else if (taskData.type === "workflow" && this.workflowRepo) {
           results.push(
             ...await this.validateWorkflowTaskInputs(

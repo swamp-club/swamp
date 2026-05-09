@@ -77,6 +77,8 @@ export const SWAMP_SUBDIRS = {
   datastoreBundles: "datastore-bundles",
   /** Cached report extension bundles */
   reportBundles: "report-bundles",
+  /** Auto-created definitions from direct type execution */
+  autoDefinitions: "auto-definitions",
   /** Audit command logs */
   audit: "audit",
   /** Legacy: resource definitions */

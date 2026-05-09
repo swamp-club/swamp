@@ -29,7 +29,9 @@ import { z } from "zod";
 const StepTaskRawSchema = z.discriminatedUnion("type", [
   z.object({
     type: z.literal("model_method"),
-    modelIdOrName: z.string().min(1),
+    modelIdOrName: z.string().min(1).optional(),
+    modelType: z.string().min(1).optional(),
+    modelName: z.string().min(1).optional(),
     methodName: z.string().min(1),
     inputs: z.record(z.string(), z.unknown()).optional(),
   }),
@@ -60,6 +62,26 @@ export const StepTaskSchema = z.preprocess((data) => {
           `    inputs:\n` +
           `      command: "your-command-here"`,
       );
+    }
+    if (d.type === "model_method") {
+      const hasExisting = "modelIdOrName" in d && d.modelIdOrName;
+      const hasDirect = "modelType" in d && d.modelType;
+      if (hasExisting && hasDirect) {
+        throw new Error(
+          `Step task has both modelIdOrName and modelType. ` +
+            `Use either modelIdOrName (existing definition) or modelType + modelName (direct type execution), not both.`,
+        );
+      }
+      if (!hasExisting && !hasDirect) {
+        throw new Error(
+          `Step task requires either modelIdOrName or modelType + modelName.`,
+        );
+      }
+      if (hasDirect && !("modelName" in d && d.modelName)) {
+        throw new Error(
+          `modelType requires modelName to name the auto-created definition.`,
+        );
+      }
     }
   }
   return data;
@@ -114,6 +136,24 @@ export class StepTask {
   }
 
   /**
+   * Creates a direct type execution task.
+   */
+  static directExecution(
+    modelType: string,
+    modelName: string,
+    methodName: string,
+    inputs?: Record<string, unknown>,
+  ): StepTask {
+    return new StepTask({
+      type: "model_method",
+      modelType,
+      modelName,
+      methodName,
+      inputs,
+    });
+  }
+
+  /**
    * Creates a workflow invocation task.
    */
   static workflow(
@@ -132,6 +172,14 @@ export class StepTask {
    */
   isModelMethod(): boolean {
     return this.data.type === "model_method";
+  }
+
+  /**
+   * Returns true if this is a direct type execution task (modelType + modelName).
+   */
+  isDirectExecution(): boolean {
+    return this.data.type === "model_method" && "modelType" in this.data &&
+      !!this.data.modelType;
   }
 
   /**

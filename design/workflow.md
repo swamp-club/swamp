@@ -20,6 +20,57 @@ Jobs can have dependencies on other jobs. The entire workflow is executed with a
 weighted topological sort, so that they have maximum parallelism through the
 workflow. Like steps, jobs also have conditions that trigger them.
 
+## Step Task Variants
+
+A `model_method` step task supports two mutually exclusive variants:
+
+### Existing Definition (`modelIdOrName`)
+
+References a pre-created definition by name or ID:
+
+```yaml
+task:
+  type: model_method
+  modelIdOrName: my-vpc
+  methodName: create
+  inputs:
+    cidr: "10.0.0.0/16"
+```
+
+### Direct Type Execution (`modelType` + `modelName`)
+
+Auto-creates a definition if it doesn't exist, using the type's schemas to route
+inputs between global arguments and method arguments:
+
+```yaml
+task:
+  type: model_method
+  modelType: "@swamp/aws/ec2/vpc"
+  modelName: my-vpc
+  methodName: create
+  inputs:
+    region: us-east-1
+    cidr: "10.0.0.0/16"
+```
+
+These variants are mutually exclusive — a step cannot have both `modelIdOrName`
+and `modelType`. Auto-created definitions are stored in
+`.swamp/auto-definitions/`.
+
+For `forEach` steps, `modelName` supports CEL template expressions:
+
+```yaml
+- name: scan-${{self.host}}
+  forEach: { item: host, in: "${{ inputs.hosts }}" }
+  task:
+    type: model_method
+    modelType: "@swamp/cve/dirtyfrag"
+    modelName: fleet-scanner
+    methodName: scanFleet
+    inputs:
+      host: ${{ self.host }}
+```
+
 ## Concurrency Limits
 
 By default, all jobs in a topological level and all steps in a topological level

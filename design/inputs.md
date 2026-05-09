@@ -230,3 +230,24 @@ deepMerge precedence).
 Array inputs are supported via the `:json` suffix above (preferred), or
 via `--input-file` with YAML/JSON, or via the legacy single-shot
 `--input '<json-object>'` form.
+
+## Input Routing for Direct Type Execution
+
+When using direct type execution (`swamp model @type method run ...`), there is
+no `definition.inputs` schema to guide input splitting. Instead, the type's own
+schemas are used to route `--input` values:
+
+1. Keys matching the method's `arguments` Zod schema → **method arguments**
+2. Keys matching the type's `globalArguments` Zod schema (but not in the method
+   schema) → **global arguments**
+3. Keys in neither schema → **rejected** with an error listing valid keys
+
+Method arguments take precedence when a key appears in both schemas (more
+specific scope wins).
+
+String values are coerced to match schema types (e.g., `"428"` → `428` for a
+number field) using the same `coerceInputTypes` function used elsewhere.
+
+This routing happens at definition creation time. The routed global arguments
+are stored in the auto-created definition; the routed method arguments are
+passed to the method's execute function.

@@ -37,6 +37,11 @@ import type {
   WorkflowRunRepository,
 } from "./repositories.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
+import {
+  SWAMP_SUBDIRS,
+  swampPath,
+} from "../../infrastructure/persistence/paths.ts";
+import { resolveOrCreateDefinition } from "../../libswamp/models/direct_execution.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
 import type { OutputRepository } from "../models/repositories.ts";
 import type { UnifiedDataRepository } from "../data/repositories.ts";
@@ -61,8 +66,8 @@ import { detectEnvVarUsageInDefinition } from "../models/env_var_detector.ts";
 import { findDefinitionByIdOrName } from "../models/model_lookup.ts";
 import type { MethodExecutionEvent } from "../models/method_events.ts";
 import { ModelOutput } from "../models/model_output.ts";
-import type { Definition } from "../definitions/definition.ts";
-import type { ModelType } from "../models/model_type.ts";
+import type { Definition, DefinitionId } from "../definitions/definition.ts";
+import { ModelType } from "../models/model_type.ts";
 import type { MethodResult, ModelDefinition } from "../models/model.ts";
 import {
   containsRuntimeExpression,
@@ -85,10 +90,6 @@ import {
   getRunLogger,
   runFileSink,
 } from "../../infrastructure/logging/logger.ts";
-import {
-  SWAMP_SUBDIRS,
-  swampPath,
-} from "../../infrastructure/persistence/paths.ts";
 import { join } from "@std/path";
 import { SecretRedactor } from "../secrets/mod.ts";
 import { VaultService } from "../vaults/vault_service.ts";
@@ -293,7 +294,9 @@ export class DefaultStepExecutor implements StepExecutor {
 
   private async executeModelMethod(
     task: {
-      modelIdOrName: string;
+      modelIdOrName?: string;
+      modelType?: string;
+      modelName?: string;
       methodName: string;
       inputs?: Record<string, unknown>;
     },
@@ -310,7 +313,7 @@ export class DefaultStepExecutor implements StepExecutor {
       expressionEvaluator,
     } = await this.resolveDeps(ctx);
 
-    // Resolve forEach self.* expressions in modelIdOrName and methodName
+    // Resolve forEach self.* expressions in modelIdOrName/modelName and methodName
     // before model lookup. The expression context has self populated with
     // the forEach variable by runStep().
     if (ctx.expressionContext) {
@@ -331,22 +334,83 @@ export class DefaultStepExecutor implements StepExecutor {
         );
       task = {
         ...task,
-        modelIdOrName: resolve(task.modelIdOrName),
+        modelIdOrName: task.modelIdOrName
+          ? resolve(task.modelIdOrName)
+          : undefined,
+        modelName: task.modelName ? resolve(task.modelName) : undefined,
         methodName: resolve(task.methodName),
       };
     }
 
-    // Look up the model definition by ID or name
-    const lookupResult = await findDefinitionByIdOrName(
-      definitionRepo,
-      task.modelIdOrName,
-    );
-    if (!lookupResult) {
-      throw new Error(`Model not found: ${task.modelIdOrName}`);
-    }
+    let originalDefinition: Definition;
+    let modelType: ModelType;
 
-    // Keep original definition (with expressions)
-    const { definition: originalDefinition, type: modelType } = lookupResult;
+    if (task.modelType && task.modelName) {
+      // Direct type execution path
+      const typeStr = task.modelType.startsWith("@")
+        ? task.modelType.slice(1)
+        : task.modelType;
+      const resolvedType = ModelType.create(typeStr);
+
+      const modelDef = await resolveModelType(resolvedType, getAutoResolver());
+      if (!modelDef) {
+        throw new Error(`Unknown model type: ${resolvedType.normalized}`);
+      }
+
+      const autoDefRepo = new YamlDefinitionRepository(
+        ctx.repoDir,
+        undefined,
+        swampPath(ctx.repoDir, SWAMP_SUBDIRS.autoDefinitions),
+        false,
+      );
+
+      const result = await resolveOrCreateDefinition(
+        {
+          lookupDefinition: (name: string) =>
+            findDefinitionByIdOrName(definitionRepo, name),
+          getModelDef: (type: ModelType) =>
+            resolveModelType(type, getAutoResolver()),
+          saveDefinition: (type: ModelType, def: Definition) =>
+            autoDefRepo.save(type, def),
+          getDefinitionPath: (type: ModelType, id: string) =>
+            autoDefRepo.getPath(type, id as DefinitionId),
+        },
+        typeStr,
+        task.modelName,
+        task.methodName,
+        task.inputs ?? {},
+        resolvedType,
+        modelDef,
+      );
+
+      if (!result.ok) {
+        throw new Error(result.error.message);
+      }
+
+      originalDefinition = result.definition;
+      modelType = result.modelType;
+
+      // Replace task inputs with routed method arguments only
+      task = {
+        ...task,
+        inputs: result.routedInputs.methodArguments,
+      };
+    } else if (task.modelIdOrName) {
+      // Standard path: look up existing definition
+      const lookupResult = await findDefinitionByIdOrName(
+        definitionRepo,
+        task.modelIdOrName,
+      );
+      if (!lookupResult) {
+        throw new Error(`Model not found: ${task.modelIdOrName}`);
+      }
+      originalDefinition = lookupResult.definition;
+      modelType = lookupResult.type;
+    } else {
+      throw new Error(
+        "Step task requires either modelIdOrName or modelType + modelName",
+      );
+    }
 
     // Log via model method run logger (same categories as standalone)
     const runLogger = getRunLogger(originalDefinition.name, task.methodName);
@@ -597,7 +661,9 @@ export class DefaultStepExecutor implements StepExecutor {
    */
   private async invokeMethod(args: {
     task: {
-      modelIdOrName: string;
+      modelIdOrName?: string;
+      modelType?: string;
+      modelName?: string;
       methodName: string;
       inputs?: Record<string, unknown>;
     };
@@ -796,7 +862,9 @@ export class DefaultStepExecutor implements StepExecutor {
    */
   private async handleMethodSuccess(args: {
     task: {
-      modelIdOrName: string;
+      modelIdOrName?: string;
+      modelType?: string;
+      modelName?: string;
       methodName: string;
       inputs?: Record<string, unknown>;
     };
@@ -932,7 +1000,7 @@ export class DefaultStepExecutor implements StepExecutor {
 
     return {
       type: "model_method",
-      model: task.modelIdOrName,
+      model: task.modelIdOrName ?? task.modelName ?? "",
       method: task.methodName,
       resources,
       files,
@@ -951,7 +1019,9 @@ export class DefaultStepExecutor implements StepExecutor {
    */
   private async handleMethodFailure(args: {
     task: {
-      modelIdOrName: string;
+      modelIdOrName?: string;
+      modelType?: string;
+      modelName?: string;
       methodName: string;
       inputs?: Record<string, unknown>;
     };

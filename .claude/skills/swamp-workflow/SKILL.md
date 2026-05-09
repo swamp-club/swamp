@@ -487,15 +487,28 @@ steps:
 
 Steps support two task types:
 
-**`model_method`** - Call a method on a model:
+**`model_method`** has two mutually exclusive variants — `modelIdOrName`
+(existing definition) or `modelType` + `modelName` (direct type execution). See
+[references/direct-execution.md](references/direct-execution.md) for details.
 
 ```yaml
+# Existing definition
 task:
   type: model_method
   modelIdOrName: my-model
   methodName: run
-  inputs: # Optional: pass values to the model
+  inputs:
     key: ${{ inputs.value }}
+
+# Direct type execution (auto-creates definition)
+task:
+  type: model_method
+  modelType: "@test/greeter"
+  modelName: my-greeter
+  methodName: greet
+  inputs:
+    greeting: ${{ inputs.greeting }}
+    name: ${{ inputs.who }}
 ```
 
 **`workflow`** - Invoke another workflow (waits for completion):

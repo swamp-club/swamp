@@ -64,11 +64,15 @@ export async function extractModelReferencesFromWorkflow(
 
       const taskData = task.data;
       if (taskData.type === "model_method") {
+        // Determine the reference name: modelIdOrName for existing, modelName for direct
+        const refName = taskData.modelIdOrName ?? taskData.modelName;
+        if (!refName) continue;
+
         // Check for dynamic CEL expressions
-        if (taskData.modelIdOrName.includes("${{")) {
+        if (refName.includes("${{")) {
           return null;
         }
-        references.push(taskData.modelIdOrName);
+        references.push(refName);
       } else if (taskData.type === "workflow") {
         // Check for dynamic CEL expressions in workflow reference
         if (taskData.workflowIdOrName.includes("${{")) {

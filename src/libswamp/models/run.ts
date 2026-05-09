@@ -35,7 +35,7 @@ import { buildOutputSpecs } from "../../domain/models/output_spec_builder.ts";
 import type { ReportResultView } from "./model_method_run_view.ts";
 import type { Definition } from "../../domain/definitions/definition.ts";
 import type { InputsSchema } from "../../domain/definitions/definition.ts";
-import type { ModelType } from "../../domain/models/model_type.ts";
+import { ModelType } from "../../domain/models/model_type.ts";
 import type { ModelDefinition } from "../../domain/models/model.ts";
 import type { MethodExecutionService } from "../../domain/models/method_execution_service.ts";
 import type { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
@@ -65,6 +65,7 @@ import { withEventBridge } from "../../infrastructure/stream/event_bridge.ts";
 import type { MethodResult } from "../../domain/models/model.ts";
 import { getRunLogger } from "../../infrastructure/logging/logger.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
+import { resolveOrCreateDefinition } from "./direct_execution.ts";
 
 /**
  * Events emitted by the libswamp model method run generator.
@@ -78,6 +79,16 @@ export interface EnvVarUsage {
 export type ModelMethodRunEvent =
   | { kind: "validating_inputs" }
   | { kind: "resolving_model"; modelIdOrName: string }
+  | {
+    kind: "auto_creating";
+    modelType: string;
+    definitionName: string;
+  }
+  | {
+    kind: "definition_created";
+    definitionName: string;
+    definitionPath: string;
+  }
   | {
     kind: "model_resolved";
     modelName: string;
@@ -175,6 +186,11 @@ export interface ModelMethodRunDeps {
     methodName: string,
     definitionId: string,
   ) => Promise<RunLog>;
+  createAndSaveDefinition?: (
+    type: ModelType,
+    definition: Definition,
+  ) => Promise<void>;
+  getDefinitionPath?: (type: ModelType, id: string) => string;
 }
 
 /**
@@ -185,6 +201,10 @@ export interface ModelMethodRunInput {
   methodName: string;
   inputs: Record<string, unknown>;
   lastEvaluated: boolean;
+  /** When present, enables direct type execution (auto-create-then-run). */
+  typeArg?: string;
+  /** Definition name for direct type execution (separate from modelIdOrName). */
+  definitionName?: string;
   runtimeTags?: Record<string, string>;
   skipCheckNames?: string[];
   skipCheckLabels?: string[];
@@ -219,18 +239,102 @@ export async function* modelMethodRun(
       // --- Resolve model ---
       yield { kind: "resolving_model", modelIdOrName: input.modelIdOrName };
 
-      const lookupResult = await deps.lookupDefinition(input.modelIdOrName);
-      if (!lookupResult) {
-        yield { kind: "error", error: modelNotFound(input.modelIdOrName) };
-        return;
-      }
-      const { definition, type: modelType } = lookupResult;
+      let definition: Definition;
+      let modelType: ModelType;
+      let modelDef: ModelDefinition;
 
-      // Get model definition from registry (may auto-resolve if async)
-      const modelDef = await Promise.resolve(deps.getModelDef(modelType));
-      if (!modelDef) {
-        yield { kind: "error", error: unknownModelType(modelType.normalized) };
-        return;
+      if (input.typeArg && input.definitionName) {
+        // Direct type execution path: auto-create-then-run
+        const typeArg = input.typeArg.startsWith("@")
+          ? input.typeArg.slice(1)
+          : input.typeArg;
+        const resolvedType = ModelType.create(typeArg);
+
+        const resolvedModelDef = await Promise.resolve(
+          deps.getModelDef(resolvedType),
+        );
+        if (!resolvedModelDef) {
+          yield {
+            kind: "error",
+            error: unknownModelType(resolvedType.normalized),
+          };
+          return;
+        }
+
+        if (!deps.createAndSaveDefinition || !deps.getDefinitionPath) {
+          yield {
+            kind: "error",
+            error: {
+              code: "missing_deps",
+              message:
+                "Direct type execution requires createAndSaveDefinition and getDefinitionPath dependencies",
+            },
+          };
+          return;
+        }
+
+        const result = await resolveOrCreateDefinition(
+          {
+            lookupDefinition: deps.lookupDefinition,
+            getModelDef: deps.getModelDef,
+            saveDefinition: deps.createAndSaveDefinition,
+            getDefinitionPath: deps.getDefinitionPath,
+          },
+          typeArg,
+          input.definitionName,
+          input.methodName,
+          input.inputs,
+          resolvedType,
+          resolvedModelDef,
+        );
+
+        if (!result.ok) {
+          yield { kind: "error", error: result.error };
+          return;
+        }
+
+        if (result.created) {
+          yield {
+            kind: "auto_creating",
+            modelType: resolvedType.normalized,
+            definitionName: input.definitionName,
+          };
+          yield {
+            kind: "definition_created",
+            definitionName: result.definition.name,
+            definitionPath: result.definitionPath,
+          };
+        }
+
+        definition = result.definition;
+        modelType = result.modelType;
+        modelDef = result.modelDef;
+
+        // Override inputs with routed method arguments only
+        // (global args are already in the definition)
+        Object.keys(input.inputs).forEach((k) => delete input.inputs[k]);
+        Object.assign(input.inputs, result.routedInputs.methodArguments);
+      } else {
+        // Standard path: look up existing definition
+        const lookupResult = await deps.lookupDefinition(input.modelIdOrName);
+        if (!lookupResult) {
+          yield { kind: "error", error: modelNotFound(input.modelIdOrName) };
+          return;
+        }
+        definition = lookupResult.definition;
+        modelType = lookupResult.type;
+
+        const resolvedModelDef = await Promise.resolve(
+          deps.getModelDef(modelType),
+        );
+        if (!resolvedModelDef) {
+          yield {
+            kind: "error",
+            error: unknownModelType(modelType.normalized),
+          };
+          return;
+        }
+        modelDef = resolvedModelDef;
       }
 
       // Validate method exists

@@ -61,6 +61,7 @@ Correct flow: `swamp model create <type> <name> --json` → set global args with
 | Evaluate input(s)   | `swamp model evaluate [id_or_name] --json`                       |
 | Run a method        | `swamp model method run <id_or_name> <method>`                   |
 | Run with inputs     | `swamp model method run <name> <method> --input key=value`       |
+| Direct type exec    | `swamp model @<type> method run <method> <name> --input k=v`     |
 | Skip all checks     | `swamp model method run <name> <method> --skip-checks`           |
 | Skip check by name  | `swamp model method run <name> <method> --skip-check <n>`        |
 | Skip check by label | `swamp model method run <name> <method> --skip-check-label <l>`  |
@@ -392,6 +393,16 @@ swamp model evaluate --all --json
     }
   ]
 }
+```
+
+## Direct Type Execution
+
+Collapse `model create` + `model method run` into one command — recommended when
+all values come from `--input` at runtime. See
+[references/direct-execution.md](references/direct-execution.md) for details.
+
+```bash
+swamp model @command/shell method run execute my-shell --input 'run=echo hello'
 ```
 
 ## Run Methods

@@ -96,7 +96,10 @@ export class SummaryService {
           if (step.task.isModelMethod()) {
             const taskData = step.task.data;
             if (taskData.type === "model_method") {
-              stepMap.set(step.name, taskData.modelIdOrName);
+              stepMap.set(
+                step.name,
+                taskData.modelIdOrName ?? taskData.modelName ?? "",
+              );
             }
           }
         }
