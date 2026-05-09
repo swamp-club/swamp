@@ -58,6 +58,7 @@ const BASE64_PATTERN = /[A-Za-z0-9+/=]{100,}/;
  */
 export async function analyzeExtensionSafety(
   files: string[],
+  exemptFromExtensionCheck?: Set<string>,
 ): Promise<SafetyCheckResult> {
   const errors: SafetyIssue[] = [];
   const warnings: SafetyIssue[] = [];
@@ -85,9 +86,10 @@ export async function analyzeExtensionSafety(
       continue;
     }
 
-    // Check allowed extensions
+    // Check allowed extensions (exempt files skip this check)
     const ext = extname(file).toLowerCase();
-    if (!ALLOWED_EXTENSIONS.has(ext)) {
+    const isExempt = exemptFromExtensionCheck?.has(file) ?? false;
+    if (!isExempt && !ALLOWED_EXTENSIONS.has(ext)) {
       errors.push({
         file,
         message: `File extension "${ext}" is not allowed. Allowed: ${

@@ -51,6 +51,7 @@ function makeManifest(
     skills: [],
     include: [],
     additionalFiles: [],
+    binaries: [],
     platforms: [],
     labels: [],
     releaseNotes: undefined,
@@ -85,6 +86,7 @@ function makePrepareInput(
     allSkillFiles: [],
     includeFilePaths: [],
     additionalFilePaths: [],
+    binaryFilePaths: [],
     dryRun: true,
     ...overrides,
   };

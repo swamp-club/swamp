@@ -116,6 +116,7 @@ function makeStubInstallResult(
     repository: undefined,
     platforms: [],
     safetyWarnings: [],
+    binaries: [],
     conflicts: [],
     missingSourceFiles: [],
     hasSkills: false,

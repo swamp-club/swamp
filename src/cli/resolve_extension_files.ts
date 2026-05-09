@@ -82,6 +82,7 @@ export interface ResolvedExtensionFiles {
   allSkillFiles: string[];
   includeFilePaths: string[];
   additionalFilePaths: string[];
+  binaryFilePaths: string[];
 }
 
 /**
@@ -507,6 +508,41 @@ export async function resolveExtensionFiles(
     additionalFilePaths.push(afPath);
   }
 
+  // 16. Validate binary files: uniqueness, symlink rejection, existence.
+  const binaryFilePaths: string[] = [];
+  const seenBinNormalized = new Map<string, string>();
+  for (const bf of manifest.binaries) {
+    const normalized = normalizeAdditionalFileEntry(bf);
+    const existing = seenBinNormalized.get(normalized);
+    if (existing !== undefined) {
+      throw new UserError(
+        `Duplicate binaries entries: "${existing}" and "${bf}" ` +
+          `resolve to the same archive path (case-insensitive, normalized). ` +
+          `Remove one entry from the manifest, or rename the file.`,
+      );
+    }
+    seenBinNormalized.set(normalized, bf);
+
+    const bfPath = resolve(dirname(absoluteManifestPath), bf);
+    let info: Deno.FileInfo;
+    try {
+      info = await Deno.lstat(bfPath);
+    } catch {
+      throw new UserError(
+        `Binary file not found: ${bf} (expected at ${bfPath})`,
+      );
+    }
+    if (info.isSymlink) {
+      throw new UserError(
+        `Binary file is a symlink: ${bf} (at ${bfPath}). ` +
+          `Symlinks in binaries are rejected to prevent archive ` +
+          `bloat and path escapes — copy the target file into the ` +
+          `extension tree instead.`,
+      );
+    }
+    binaryFilePaths.push(bfPath);
+  }
+
   return {
     manifest,
     absoluteManifestPath,
@@ -530,5 +566,6 @@ export async function resolveExtensionFiles(
     allSkillFiles,
     includeFilePaths,
     additionalFilePaths,
+    binaryFilePaths,
   };
 }

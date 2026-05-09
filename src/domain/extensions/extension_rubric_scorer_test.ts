@@ -53,6 +53,7 @@ function makeManifest(
     skills: [],
     include: [],
     additionalFiles: [],
+    binaries: [],
     platforms: ["linux", "darwin"],
     labels: [],
     releaseNotes: undefined,

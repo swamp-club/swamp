@@ -252,6 +252,7 @@ function buildInstallResult(
     repository: undefined,
     platforms: [],
     safetyWarnings: [],
+    binaries: [],
     conflicts: [],
     missingSourceFiles: [],
     hasSkills: false,

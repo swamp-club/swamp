@@ -53,6 +53,7 @@ function makeManifest(
     skills: [],
     include: [],
     additionalFiles: [],
+    binaries: [],
     platforms: [],
     labels: [],
     releaseNotes: undefined,
@@ -174,6 +175,7 @@ Deno.test(
           join(src, "templates", "review.md"),
           join(src, "README.md"),
         ],
+        binaryFilePaths: [],
         dryRun: true,
       };
 
@@ -274,6 +276,7 @@ Deno.test(
         allSkillFiles: [],
         includeFilePaths: [],
         additionalFilePaths: [join(extDir, "README.md")],
+        binaryFilePaths: [],
         dryRun: true,
       };
 

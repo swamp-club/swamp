@@ -393,6 +393,7 @@ function makeInstallWithPruned(
       repository: undefined,
       platforms: [],
       safetyWarnings: [],
+      binaries: [],
       conflicts: [],
       missingSourceFiles: [],
       hasSkills: false,

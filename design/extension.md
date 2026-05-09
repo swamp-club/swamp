@@ -657,7 +657,7 @@ after pull.
 
 - Hidden files (names starting with `.`)
 - Disallowed file extensions (only `.ts`, `.json`, `.md`, `.yaml`, `.yml`,
-  `.txt` are allowed)
+  `.txt` are allowed). Files declared in `binaries` are exempt from this check.
 - Symlinks
 - Individual file size exceeding 1 MB
 - Total extension size exceeding 10 MB
@@ -669,6 +669,17 @@ after pull.
 - Lines with more than 500 non-whitespace characters
 - Base64-like strings (100+ consecutive base64 characters)
 - Use of `Deno.Command()` for subprocess spawning
+
+### Binaries
+
+Extensions can declare executable host helpers via the `binaries` manifest field.
+These files are exempt from the file-extension allowlist but still subject to all
+other safety checks (hidden files, symlinks, size limits, file count). Executable
+mode bits are preserved through the publish/pull cycle on POSIX systems.
+
+At pull time, if the extension declares binaries, the CLI warns the user to
+inspect them before use. The binaries list is also sent as push metadata to
+swamp-club for display on extension pages.
 
 ### Integrity Verification
 

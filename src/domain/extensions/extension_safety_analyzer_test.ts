@@ -190,3 +190,71 @@ Deno.test("analyzeExtensionSafety allows .json, .md, .yaml, .yml, .txt", async (
     },
   );
 });
+
+Deno.test("analyzeExtensionSafety: exempt files bypass extension check", async () => {
+  await withTempFiles(
+    { "script.sh": "#!/bin/bash\necho hello\n" },
+    async (_dir, paths) => {
+      const exempt = new Set(paths);
+      const result = await analyzeExtensionSafety(paths, exempt);
+      assertEquals(result.errors, []);
+    },
+  );
+});
+
+Deno.test("analyzeExtensionSafety: extensionless file passes when exempt", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const binPath = join(tmpDir, "mudroom");
+    await Deno.writeTextFile(
+      binPath,
+      "#!/bin/bash\nexec swamp model method run\n",
+    );
+    const exempt = new Set([binPath]);
+    const result = await analyzeExtensionSafety([binPath], exempt);
+    assertEquals(result.errors, []);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("analyzeExtensionSafety: extensionless file rejected when not exempt", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const binPath = join(tmpDir, "mudroom");
+    await Deno.writeTextFile(binPath, "#!/bin/bash\n");
+    const result = await analyzeExtensionSafety([binPath]);
+    assertEquals(result.errors.length, 1);
+    assertEquals(result.errors[0].message.includes("not allowed"), true);
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("analyzeExtensionSafety: exempt files still checked for hidden names", async () => {
+  await withTempFiles(
+    { ".hidden": "secret\n" },
+    async (_dir, paths) => {
+      const exempt = new Set(paths);
+      const result = await analyzeExtensionSafety(paths, exempt);
+      assertEquals(result.errors.length, 1);
+      assertEquals(result.errors[0].message.includes("Hidden files"), true);
+    },
+  );
+});
+
+Deno.test("analyzeExtensionSafety: exempt files still checked for size limit", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const bigFile = join(tmpDir, "big.bin");
+    await Deno.writeFile(bigFile, new Uint8Array(1_100_000));
+    const exempt = new Set([bigFile]);
+    const result = await analyzeExtensionSafety([bigFile], exempt);
+    assertEquals(
+      result.errors.some((e) => e.message.includes("exceeds maximum")),
+      true,
+    );
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});

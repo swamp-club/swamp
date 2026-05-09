@@ -94,6 +94,7 @@ const ExtensionManifestSchemaV1 = z.object({
   skills: z.array(safePathString).optional(),
   include: z.array(safePathString).optional(),
   additionalFiles: z.array(safePathString).optional(),
+  binaries: z.array(safePathString).optional(),
   platforms: z.array(z.string().min(1)).optional(),
   labels: z.array(z.string().min(1)).optional(),
   releaseNotes: z.string().max(5000).optional(),
@@ -134,6 +135,7 @@ export interface ExtensionManifest {
   skills: string[];
   include: string[];
   additionalFiles: string[];
+  binaries: string[];
   platforms: string[];
   labels: string[];
   releaseNotes: string | undefined;
@@ -195,6 +197,7 @@ export function parseExtensionManifest(content: string): ExtensionManifest {
     skills: result.data.skills ?? [],
     include: result.data.include ?? [],
     additionalFiles: result.data.additionalFiles ?? [],
+    binaries: result.data.binaries ?? [],
     platforms: result.data.platforms ?? [],
     labels: result.data.labels ?? [],
     releaseNotes: result.data.releaseNotes,

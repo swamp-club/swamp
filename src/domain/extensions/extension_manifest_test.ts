@@ -73,6 +73,33 @@ additionalFiles:
   assertEquals(manifest.additionalFiles, ["README.md"]);
 });
 
+Deno.test("parseExtensionManifest parses valid manifest with binaries", () => {
+  const yaml = `
+manifestVersion: 1
+name: "@myuser/myext"
+version: "2026.02.26.1"
+models:
+  - foo.ts
+binaries:
+  - bin/mudroom
+  - bin/helper.sh
+`;
+  const manifest = parseExtensionManifest(yaml);
+  assertEquals(manifest.binaries, ["bin/mudroom", "bin/helper.sh"]);
+});
+
+Deno.test("parseExtensionManifest defaults binaries to empty array", () => {
+  const yaml = `
+manifestVersion: 1
+name: "@myuser/myext"
+version: "2026.02.26.1"
+models:
+  - foo.ts
+`;
+  const manifest = parseExtensionManifest(yaml);
+  assertEquals(manifest.binaries, []);
+});
+
 Deno.test("parseExtensionManifest rejects missing manifestVersion", () => {
   const yaml = `
 name: "@myuser/myext"

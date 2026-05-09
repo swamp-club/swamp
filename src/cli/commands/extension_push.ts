@@ -224,6 +224,7 @@ export const extensionPushCommand = new Command()
       workflowFiles,
       includeFilePaths,
       additionalFilePaths,
+      binaryFilePaths,
     } = resolved;
 
     // 2b. Detect project config for project-aware bundling and quality checks.
@@ -284,6 +285,7 @@ export const extensionPushCommand = new Command()
       reportFilePaths: allReportFiles,
       workflowFilePaths: workflowFiles.map((w) => w.sourcePath),
       additionalFilePaths,
+      binaryFilePaths,
       skillFilePaths: resolved.allSkillFiles,
       includeFilePaths,
       denoConfigPath,
@@ -324,6 +326,7 @@ export const extensionPushCommand = new Command()
         allSkillFiles: resolved.allSkillFiles,
         includeFilePaths,
         additionalFilePaths,
+        binaryFilePaths,
         dryRun: options.dryRun ?? false,
         releaseNotes: options.releaseNotes,
         denoConfigPath,
@@ -386,6 +389,7 @@ export const extensionPushCommand = new Command()
                   allSkillFiles: resolved.allSkillFiles,
                   includeFilePaths,
                   additionalFilePaths,
+                  binaryFilePaths,
                   dryRun: options.dryRun ?? false,
                   releaseNotes: options.releaseNotes,
                   denoConfigPath,

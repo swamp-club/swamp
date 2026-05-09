@@ -30,6 +30,7 @@ export interface PushMetadata {
   labels: string[];
   repository?: string;
   releaseNotes?: string;
+  binaries?: string[];
 }
 
 /** Metadata sent during push confirmation (extends PushMetadata with content metadata). */

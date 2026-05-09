@@ -56,6 +56,7 @@ export interface PackageCacheHashInput {
   reportFilePaths: string[];
   workflowFilePaths: string[];
   additionalFilePaths: string[];
+  binaryFilePaths: string[];
   skillFilePaths: string[];
   includeFilePaths: string[];
   denoConfigPath: string | undefined;
@@ -98,6 +99,7 @@ export async function computePackageCacheHash(
   await appendFileGroup("reports", input.reportFilePaths, parts);
   await appendFileGroup("workflows", input.workflowFilePaths, parts);
   await appendFileGroup("additional", input.additionalFilePaths, parts);
+  await appendFileGroup("binaries", input.binaryFilePaths, parts);
   await appendFileGroup("skills", input.skillFilePaths, parts);
   await appendFileGroup("include", input.includeFilePaths, parts);
 

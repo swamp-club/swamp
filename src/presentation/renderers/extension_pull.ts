@@ -57,6 +57,14 @@ function renderInstallResultLog(result: InstallResult): void {
     }`;
   }
 
+  if (result.binaries.length > 0) {
+    logger
+      .warn`This extension includes executable binaries — inspect before use:`;
+    for (const b of result.binaries) {
+      logger.warn`  ${b}`;
+    }
+  }
+
   if (result.safetyWarnings.length > 0) {
     logger.warn`Safety warnings:`;
     for (const w of result.safetyWarnings) {
@@ -135,6 +143,10 @@ function renderInstallResultJson(result: InstallResult): void {
 
   if (result.platforms.length > 0) {
     console.log(JSON.stringify({ platforms: result.platforms }, null, 2));
+  }
+
+  if (result.binaries.length > 0) {
+    console.log(JSON.stringify({ binaries: result.binaries }, null, 2));
   }
 
   if (result.safetyWarnings.length > 0) {

@@ -151,6 +151,7 @@ export interface ExtensionPushPrepareInput {
   allSkillFiles: string[];
   includeFilePaths: string[];
   additionalFilePaths: string[];
+  binaryFilePaths: string[];
   dryRun: boolean;
   releaseNotes?: string;
   denoConfigPath?: string;
@@ -229,7 +230,10 @@ export interface ExtensionPushPrepareDeps {
     reportFiles: string[],
     reportsDir: string,
   ) => Promise<ExtensionContentMetadata>;
-  analyzeExtensionSafety: (files: string[]) => Promise<SafetyCheckResult>;
+  analyzeExtensionSafety: (
+    files: string[],
+    exemptFromExtensionCheck?: Set<string>,
+  ) => Promise<SafetyCheckResult>;
   checkExtensionQuality: (
     files: string[],
     denoPath: string,
@@ -258,6 +262,7 @@ export interface ExtensionPushMetadata {
   labels: string[];
   repository?: string;
   releaseNotes?: string;
+  binaries?: string[];
   contentMetadata?: ExtensionContentMetadata;
 }
 
@@ -492,8 +497,13 @@ export async function extensionPushPrepare(
   const allFiles = [
     ...qualityFiles,
     ...input.includeFilePaths,
+    ...input.binaryFilePaths,
   ];
-  const safetyResult = await deps.analyzeExtensionSafety(allFiles);
+  const binaryExemptSet = new Set(input.binaryFilePaths);
+  const safetyResult = await deps.analyzeExtensionSafety(
+    allFiles,
+    binaryExemptSet,
+  );
 
   if (safetyResult.errors.length > 0) {
     throw validationFailed(
@@ -644,6 +654,9 @@ export async function* extensionPush(
         labels: input.manifest.labels,
         repository: input.manifest.repository || undefined,
         ...(releaseNotes ? { releaseNotes } : {}),
+        ...(input.manifest.binaries.length > 0
+          ? { binaries: input.manifest.binaries }
+          : {}),
       };
 
       // Phase 1: Initiate
@@ -1180,6 +1193,29 @@ async function createArchive(
       const destPath = join(extDir, "files", relPath);
       await Deno.mkdir(dirname(destPath), { recursive: true });
       await Deno.copyFile(absPath, destPath);
+    }
+
+    // Copy binary files, preserving executable mode bits.
+    if (
+      input.manifest.binaries.length !== input.binaryFilePaths.length
+    ) {
+      throw validationFailed(
+        "binaries and binaryFilePaths length mismatch — " +
+          "this is a bug in extension file resolution.",
+      );
+    }
+    for (let i = 0; i < input.binaryFilePaths.length; i++) {
+      const absPath = input.binaryFilePaths[i];
+      const relPath = input.manifest.binaries[i];
+      const destPath = join(extDir, "files", relPath);
+      await Deno.mkdir(dirname(destPath), { recursive: true });
+      await Deno.copyFile(absPath, destPath);
+      if (Deno.build.os !== "windows") {
+        const srcStat = await Deno.stat(absPath);
+        if (srcStat.mode !== null) {
+          await Deno.chmod(destPath, srcStat.mode);
+        }
+      }
     }
 
     // Create tar.gz. The Deno-native archiver walks the staged tree

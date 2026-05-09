@@ -84,6 +84,7 @@ export interface InstallResult {
   repository: string | undefined;
   platforms: string[];
   safetyWarnings: ExtensionSafetyWarning[];
+  binaries: string[];
   conflicts: string[];
   missingSourceFiles: string[];
   hasSkills: boolean;
@@ -958,6 +959,18 @@ export async function installExtension(
     );
     extractedFiles.push(...filesExtracted);
 
+    // Restore executable bits for declared binaries
+    if (Deno.build.os !== "windows" && manifest.binaries.length > 0) {
+      for (const bin of manifest.binaries) {
+        const binPath = join(absoluteFilesDir, bin);
+        try {
+          await Deno.chmod(binPath, 0o755);
+        } catch {
+          // Best-effort — file may not exist in archive
+        }
+      }
+    }
+
     // Extract skills to tool-specific skill directory.
     // Track only the skill directory root (not individual files) so that
     // extension rm can delete the entire directory in one shot.
@@ -1112,6 +1125,7 @@ export async function installExtension(
       repository: manifest.repository,
       platforms: manifest.platforms,
       safetyWarnings,
+      binaries: manifest.binaries,
       conflicts,
       missingSourceFiles,
       hasSkills,
