@@ -23,27 +23,9 @@ state. Never reorder states. The user cannot push until all gates have passed.
 
 ## Before Starting
 
-Present the full checklist to the user so they know what to expect:
-
-> **Publishing checklist — 8 steps must pass before push:**
->
-> 1. **Repository** — verify `.swamp.yaml` exists (swamp repo initialized)
-> 2. **Authentication** — verify logged in to swamp registry
-> 3. **Manifest** — validate `manifest.yaml` structure and file references
-> 4. **Collective** — verify manifest name matches authenticated user
-> 5. **Version** — get next CalVer version and bump manifest
-> 6. **Formatting** — run `swamp extension fmt` and verify clean
-> 7. **Dry run** — validate push without uploading
-> 8. **Push** — publish to registry (requires your explicit approval)
->
-> Optional between steps 6 and 7: run `swamp extension quality manifest.yaml` to
-> see how the extension scores against the Swamp Club rubric. The packaged
-> tarball is cached and reused by the dry-run and push steps if you run it
-> there.
->
-> Starting now. I'll report progress at each step.
-
-Then begin with State 1.
+Tell the user: **"Publishing runs through 8 gates (repo → auth → manifest →
+collective → version → format → dry-run → push). I'll report progress at each
+step."** Then begin with State 1.
 
 ## State 1: repo_verified
 
@@ -238,16 +220,9 @@ swamp extension push manifest.yaml --dry-run --json
 (subprocess spawning, long lines, base64 blobs) and confirm with the user if
 warnings are present.
 
-**On Failure:** Read the error output. Common issues:
-
-- `eval()` or `new Function()` → remove dynamic code execution
-- Symlinks → replace with regular files
-- File too large → reduce file size below 1 MB
-- Too many files → reduce to under 150 files
-- Bundle compilation failed → fix TypeScript errors
-
-See [references/publishing.md](references/publishing.md#safety-rules) for the
-full list of safety rules.
+**On Failure:** Read the error output and fix the reported issue. See
+[references/publishing.md](references/publishing.md#safety-rules) for the full
+list of safety rules and common fixes.
 
 ## State 8: pushed
 
