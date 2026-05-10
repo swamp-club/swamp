@@ -1054,6 +1054,9 @@ async function createArchive(
           ? { include: input.manifest.include }
           : {}),
         additionalFiles: input.manifest.additionalFiles,
+        ...(input.manifest.binaries.length > 0
+          ? { binaries: input.manifest.binaries }
+          : {}),
         ...(input.manifest.platforms.length > 0
           ? { platforms: input.manifest.platforms }
           : {}),

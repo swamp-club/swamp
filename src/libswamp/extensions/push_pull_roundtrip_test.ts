@@ -322,3 +322,72 @@ Deno.test(
     }
   },
 );
+
+Deno.test(
+  "round-trip: binaries field survives push → extract in archive manifest",
+  async () => {
+    const { parse: parseYaml } = await import("@std/yaml");
+    const src = await Deno.makeTempDir({ prefix: "rt-bin-src-" });
+    const dst = await Deno.makeTempDir({ prefix: "rt-bin-dst-" });
+    try {
+      const modelsDir = join(src, "extensions", "models");
+      await Deno.mkdir(modelsDir, { recursive: true });
+      await Deno.writeTextFile(
+        join(modelsDir, "echo.ts"),
+        'export const model = { type: "@t/e", version: "1.0.0" };',
+      );
+      await Deno.mkdir(join(src, "bin"), { recursive: true });
+      await Deno.writeTextFile(join(src, "bin", "helper"), "#!/bin/sh\nexit 0");
+
+      const manifest = makeManifest({
+        binaries: ["bin/helper"],
+        additionalFiles: [],
+      });
+      const input: ExtensionPushPrepareInput = {
+        manifest,
+        repoDir: src,
+        modelsDir,
+        allModelFiles: [join(modelsDir, "echo.ts")],
+        modelEntryPoints: [join(modelsDir, "echo.ts")],
+        vaultsDir: join(src, "vaults"),
+        allVaultFiles: [],
+        vaultEntryPoints: [],
+        driversDir: join(src, "drivers"),
+        allDriverFiles: [],
+        driverEntryPoints: [],
+        datastoresDir: join(src, "datastores"),
+        allDatastoreFiles: [],
+        datastoreEntryPoints: [],
+        reportsDir: join(src, "reports"),
+        allReportFiles: [],
+        reportEntryPoints: [],
+        workflowFiles: [],
+        skillDirs: [],
+        allSkillFiles: [],
+        includeFilePaths: [],
+        additionalFilePaths: [],
+        binaryFilePaths: [join(src, "bin", "helper")],
+        dryRun: true,
+      };
+
+      const ctx = createLibSwampContext();
+      const prepared = await extensionPushPrepare(
+        ctx,
+        makePrepareDeps(),
+        input,
+      );
+
+      await untarArchiveTo(prepared.archiveBytes, dst);
+
+      const onWire = parseYaml(
+        await Deno.readTextFile(join(dst, "extension", "manifest.yaml")),
+      ) as Record<string, unknown>;
+      assertEquals(onWire.binaries, ["bin/helper"]);
+
+      await Deno.stat(join(dst, "extension", "files", "bin", "helper"));
+    } finally {
+      await Deno.remove(src, { recursive: true });
+      await Deno.remove(dst, { recursive: true });
+    }
+  },
+);
