@@ -22,6 +22,7 @@ import {
   assertNotEquals,
   assertStringIncludes,
 } from "@std/assert";
+import { assertPathStringIncludes } from "../persistence/path_test_helpers.ts";
 import {
   autoupdateLogDir,
   buildPlist,
@@ -146,11 +147,11 @@ Deno.test("buildPlist: uses log file paths instead of /dev/null", () => {
 
 Deno.test("autoupdateLogDir: returns an absolute path under Library/Logs", () => {
   const dir = autoupdateLogDir();
-  assertStringIncludes(dir, "Library/Logs/swamp");
+  assertPathStringIncludes(dir, "Library/Logs/swamp");
 });
 
 Deno.test("cronLogPath: returns an absolute path", () => {
   const path = cronLogPath();
   assertNotEquals(path, "");
-  assertStringIncludes(path, "autoupdate-cron.log");
+  assertPathStringIncludes(path, "autoupdate-cron.log");
 });
