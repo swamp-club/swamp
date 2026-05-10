@@ -125,27 +125,19 @@ async function runSetupAuto(
   }
 
   const binaryPath = Deno.execPath();
+  const probeFile = binaryPath + ".swamp-write-test";
   try {
-    const file = await Deno.open(binaryPath, { write: true });
-    try {
-      file.close();
-    } catch { /* fd leak is acceptable here */ }
+    await Deno.writeTextFile(probeFile, "");
+    await Deno.remove(probeFile);
   } catch (error) {
-    if (error instanceof Deno.errors.Busy) {
-      throw new UserError(
-        `Cannot set up autoupdate: ${binaryPath} is currently in use (text file busy).\n` +
-          `The background scheduler cannot replace a binary that is being executed.\n\n` +
-          `Options:\n` +
-          `  • Retry after the current process exits\n` +
-          `  • Run updates manually:  sudo swamp update`,
-      );
-    }
     if (error instanceof Deno.errors.PermissionDenied) {
       throw new UserError(
-        `Cannot set up autoupdate: ${binaryPath} is not writable by the current user.\n` +
-          `The background scheduler runs as your user and cannot replace a root-owned binary.\n\n` +
+        `Cannot set up autoupdate: the directory containing ${binaryPath} is not writable.\n` +
+          `The background scheduler runs as your user and cannot replace the binary.\n\n` +
           `Options:\n` +
-          `  • Change ownership:  sudo chown $(whoami) ${binaryPath}\n` +
+          `  • Change ownership:  sudo chown ${
+            Deno.env.get("USER") ?? "$(whoami)"
+          } ${binaryPath}\n` +
           `  • Run updates manually:  sudo swamp update`,
       );
     }
