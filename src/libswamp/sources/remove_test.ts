@@ -25,10 +25,15 @@ import type { SourceModifyEvent } from "./source_events.ts";
 
 function createTestDeps(
   existing: SwampSourcesConfig | null = null,
-): SourceRemoveDeps & { written: SwampSourcesConfig | null; removed: boolean } {
+): SourceRemoveDeps & {
+  written: SwampSourcesConfig | null;
+  removed: boolean;
+  purgedPrefixes: string[];
+} {
   const state = {
     written: null as SwampSourcesConfig | null,
     removed: false,
+    purgedPrefixes: [] as string[],
   };
   return {
     readSources: () => Promise.resolve(existing),
@@ -40,11 +45,19 @@ function createTestDeps(
       state.removed = true;
       return Promise.resolve();
     },
+    purgeCatalogByPrefix: (prefix: string) => {
+      state.purgedPrefixes.push(prefix);
+      return 1;
+    },
+    expandPath: (path: string) => Promise.resolve([path]),
     get written() {
       return state.written;
     },
     get removed() {
       return state.removed;
+    },
+    get purgedPrefixes() {
+      return state.purgedPrefixes;
     },
   };
 }
@@ -119,4 +132,76 @@ Deno.test("sourceRemove: errors when no sources configured", async () => {
 
   const error = events.find((e) => e.kind === "error");
   assertEquals(error?.kind, "error");
+});
+
+Deno.test("sourceRemove: purges catalog rows for removed source", async () => {
+  const deps = createTestDeps({
+    sources: [
+      { path: "~/code/ext-a" },
+      { path: "~/code/ext-b" },
+    ],
+  });
+  await collectEvents(sourceRemove(ctx, deps, "~/code/ext-a"));
+
+  assertEquals(deps.purgedPrefixes, ["~/code/ext-a"]);
+});
+
+Deno.test("sourceRemove: purges catalog for last source removed", async () => {
+  const deps = createTestDeps({
+    sources: [{ path: "/abs/path/extensions" }],
+  });
+  await collectEvents(sourceRemove(ctx, deps, "/abs/path/extensions"));
+
+  assertEquals(deps.purgedPrefixes, ["/abs/path/extensions"]);
+});
+
+Deno.test("sourceRemove: does not purge catalog on error path", async () => {
+  const deps = createTestDeps({
+    sources: [{ path: "~/code/existing" }],
+  });
+  await collectEvents(sourceRemove(ctx, deps, "~/code/nonexistent"));
+
+  assertEquals(deps.purgedPrefixes, []);
+});
+
+Deno.test("sourceRemove: purges multiple expanded paths from glob source", async () => {
+  const state = {
+    written: null as SwampSourcesConfig | null,
+    removed: false,
+    purgedPrefixes: [] as string[],
+  };
+  const deps: SourceRemoveDeps & {
+    written: SwampSourcesConfig | null;
+    removed: boolean;
+    purgedPrefixes: string[];
+  } = {
+    readSources: () => Promise.resolve({ sources: [{ path: "~/code/ext-*" }] }),
+    writeSources: (_config) => {
+      state.written = _config;
+      return Promise.resolve();
+    },
+    removeSources: () => {
+      state.removed = true;
+      return Promise.resolve();
+    },
+    purgeCatalogByPrefix: (prefix: string) => {
+      state.purgedPrefixes.push(prefix);
+      return 1;
+    },
+    expandPath: () =>
+      Promise.resolve(["/expanded/ext-one", "/expanded/ext-two"]),
+    get written() {
+      return state.written;
+    },
+    get removed() {
+      return state.removed;
+    },
+    get purgedPrefixes() {
+      return state.purgedPrefixes;
+    },
+  };
+
+  await collectEvents(sourceRemove(ctx, deps, "~/code/ext-*"));
+
+  assertEquals(deps.purgedPrefixes, ["/expanded/ext-one", "/expanded/ext-two"]);
 });

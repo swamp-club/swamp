@@ -22,16 +22,22 @@ import { notFound, validationFailed } from "../errors.ts";
 import type { SourceModifyEvent } from "./source_events.ts";
 import type { SwampSourcesConfig } from "../../domain/repo/swamp_sources.ts";
 import {
+  expandSourcePaths,
   readSwampSources,
   removeSwampSources,
   writeSwampSources,
 } from "../../infrastructure/persistence/swamp_sources_repository.ts";
+import { existsSync } from "@std/fs/exists";
+import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
+import { swampPath } from "../../infrastructure/persistence/paths.ts";
 
 /** Dependencies for the source remove operation. */
 export interface SourceRemoveDeps {
   readSources: () => Promise<SwampSourcesConfig | null>;
   writeSources: (config: SwampSourcesConfig) => Promise<void>;
   removeSources: () => Promise<void>;
+  purgeCatalogByPrefix: (prefix: string) => number;
+  expandPath: (path: string) => Promise<string[]>;
 }
 
 /** Wires real infrastructure into SourceRemoveDeps. */
@@ -40,6 +46,23 @@ export function createSourceRemoveDeps(repoDir: string): SourceRemoveDeps {
     readSources: () => readSwampSources(repoDir),
     writeSources: (config) => writeSwampSources(repoDir, config),
     removeSources: () => removeSwampSources(repoDir),
+    purgeCatalogByPrefix: (prefix: string) => {
+      const dbPath = swampPath(repoDir, "_extension_catalog.db");
+      if (!existsSync(dbPath)) return 0;
+      const catalog = new ExtensionCatalogStore(dbPath);
+      try {
+        return catalog.removeBySourcePrefix(prefix);
+      } finally {
+        catalog.close();
+      }
+    },
+    expandPath: async (path: string) => {
+      const expanded = await expandSourcePaths(
+        { sources: [{ path }] },
+        repoDir,
+      );
+      return expanded.map((s) => s.path);
+    },
   };
 }
 
@@ -75,10 +98,15 @@ export async function* sourceRemove(
   const updated = existing.sources.filter((_, i) => i !== idx);
 
   if (updated.length === 0) {
-    // Last source removed — delete the file entirely
     await deps.removeSources();
   } else {
     await deps.writeSources({ sources: updated });
+  }
+
+  // Purge stale catalog rows contributed by the removed source.
+  const expandedPaths = await deps.expandPath(removed.path);
+  for (const expandedPath of expandedPaths) {
+    deps.purgeCatalogByPrefix(expandedPath);
   }
 
   yield {
