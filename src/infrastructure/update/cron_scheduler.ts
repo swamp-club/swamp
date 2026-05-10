@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { join } from "@std/path";
+import { dirname, join } from "@std/path";
 import type {
   AutoupdateScheduler,
   ScheduleStatus,
@@ -74,6 +74,8 @@ export function cronLogPath(): string {
 export class CronScheduler implements AutoupdateScheduler {
   async install(binaryPath: string, cadence: UpdateCadence): Promise<void> {
     await this.remove();
+
+    await Deno.mkdir(dirname(cronLogPath()), { recursive: true });
 
     const existing = await readCrontab();
     const schedule = cronSchedule(cadence);

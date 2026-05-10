@@ -28,6 +28,7 @@ export interface UpdatePreferences {
   enabled: boolean;
   cadence: UpdateCadence;
   notifiedVersion?: string;
+  lastPermissionWarning?: string;
 }
 
 export const DEFAULT_UPDATE_PREFERENCES: UpdatePreferences = {

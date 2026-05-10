@@ -1194,37 +1194,47 @@ export async function runCli(args: string[]): Promise<void> {
           const prefsRepo = new UpdatePreferencesFileRepository();
           const prefs = await prefsRepo.read();
 
-          // Show post-autoupdate notice once after background upgrade
-          if (prefs.enabled && prefs.notifiedVersion !== VERSION) {
-            const logRepo = new AutoupdateLogFileRepository();
-            const entries = await logRepo.readAll();
-            const lastUpdate = entries.findLast((e) =>
-              e.outcome === "updated" && e.versionAfter
-            );
-            if (lastUpdate && lastUpdate.versionAfter === VERSION) {
-              console.error(
-                `\nℹ swamp was auto-updated from ${lastUpdate.versionBefore} → ${lastUpdate.versionAfter}`,
-              );
-            }
-            await prefsRepo.write({ ...prefs, notifiedVersion: VERSION });
-          }
-
-          // Warn if background autoupdate is failing due to permissions
           if (prefs.enabled) {
             const logRepo = new AutoupdateLogFileRepository();
             const entries = await logRepo.readAll();
+
+            // Show post-autoupdate notice once after background upgrade
+            if (prefs.notifiedVersion !== VERSION) {
+              const lastUpdate = entries.findLast((e) =>
+                e.outcome === "updated" && e.versionAfter
+              );
+              if (lastUpdate && lastUpdate.versionAfter === VERSION) {
+                console.error(
+                  `\nℹ swamp was auto-updated from ${lastUpdate.versionBefore} → ${lastUpdate.versionAfter}`,
+                );
+              }
+              await prefsRepo.write({ ...prefs, notifiedVersion: VERSION });
+            }
+
+            // Warn if background autoupdate is failing due to permissions
+            // (throttled to at most once per 24h to avoid alarm fatigue)
             const lastEntry = entries.length > 0
               ? entries[entries.length - 1]
               : null;
             if (
               lastEntry?.outcome === "error" && lastEntry.error &&
-              lastEntry.error.includes("permission denied")
+              lastEntry.error.toLowerCase().includes("permission denied")
             ) {
-              console.error(
-                `\n⚠ Background autoupdate is failing: the swamp binary is not writable by your user.` +
-                  `\n  Run \`sudo swamp update\` to update manually, or \`sudo chown $(whoami) $(which swamp)\` to fix.` +
-                  `\n  Disable with: swamp update --setup-auto disable\n`,
-              );
+              const lastWarned = prefs.lastPermissionWarning;
+              const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
+              if (!lastWarned || new Date(lastWarned).getTime() < oneDayAgo) {
+                const binaryPath = Deno.execPath();
+                console.error(
+                  `\n⚠ Background autoupdate is failing: ${binaryPath} is not writable by your user.` +
+                    `\n  Run \`sudo swamp update\` to update manually, or \`sudo chown $(whoami) ${binaryPath}\` to fix.` +
+                    `\n  Disable with: swamp update --setup-auto disable` +
+                    `\n  See logs: ${lastEntry.error}\n`,
+                );
+                await prefsRepo.write({
+                  ...prefs,
+                  lastPermissionWarning: new Date().toISOString(),
+                });
+              }
             }
           }
 
