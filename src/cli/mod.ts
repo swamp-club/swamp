@@ -1209,6 +1209,25 @@ export async function runCli(args: string[]): Promise<void> {
             await prefsRepo.write({ ...prefs, notifiedVersion: VERSION });
           }
 
+          // Warn if background autoupdate is failing due to permissions
+          if (prefs.enabled) {
+            const logRepo = new AutoupdateLogFileRepository();
+            const entries = await logRepo.readAll();
+            const lastEntry = entries.length > 0
+              ? entries[entries.length - 1]
+              : null;
+            if (
+              lastEntry?.outcome === "error" && lastEntry.error &&
+              lastEntry.error.includes("permission denied")
+            ) {
+              console.error(
+                `\n⚠ Background autoupdate is failing: the swamp binary is not writable by your user.` +
+                  `\n  Run \`sudo swamp update\` to update manually, or \`sudo chown $(whoami) $(which swamp)\` to fix.` +
+                  `\n  Disable with: swamp update --setup-auto disable\n`,
+              );
+            }
+          }
+
           // Skip the "run swamp update" banner if autoupdate handles it
           if (!prefs.enabled) {
             const cacheRepo = new UpdateCheckCacheFileRepository();

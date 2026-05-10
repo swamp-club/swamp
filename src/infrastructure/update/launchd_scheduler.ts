@@ -41,9 +41,16 @@ export function escapeXml(s: string): string {
     .replace(/'/g, "&apos;");
 }
 
+export function autoupdateLogDir(): string {
+  return join(homeDirectory(), "Library", "Logs", "swamp");
+}
+
 export function buildPlist(binaryPath: string, cadence: UpdateCadence): string {
   const interval = cadence === "daily" ? 86400 : 604800;
   const escapedPath = escapeXml(binaryPath);
+  const logDir = autoupdateLogDir();
+  const stdoutLog = escapeXml(join(logDir, "autoupdate.stdout.log"));
+  const stderrLog = escapeXml(join(logDir, "autoupdate.stderr.log"));
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -62,9 +69,9 @@ export function buildPlist(binaryPath: string, cadence: UpdateCadence): string {
   <key>RunAtLoad</key>
   <true/>
   <key>StandardOutPath</key>
-  <string>/dev/null</string>
+  <string>${stdoutLog}</string>
   <key>StandardErrorPath</key>
-  <string>/dev/null</string>
+  <string>${stderrLog}</string>
 </dict>
 </plist>
 `;
@@ -90,6 +97,7 @@ export class LaunchdScheduler implements AutoupdateScheduler {
 
     const path = plistPath();
     await Deno.mkdir(dirname(path), { recursive: true });
+    await Deno.mkdir(autoupdateLogDir(), { recursive: true });
     await atomicWriteTextFile(path, buildPlist(binaryPath, cadence));
 
     const uid = await getUid();
