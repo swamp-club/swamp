@@ -59,6 +59,9 @@ export class UpdatePreferencesFileRepository
         notifiedVersion: typeof data.notifiedVersion === "string"
           ? data.notifiedVersion
           : undefined,
+        lastPermissionWarning: typeof data.lastPermissionWarning === "string"
+          ? data.lastPermissionWarning
+          : undefined,
       };
     } catch {
       return { ...DEFAULT_UPDATE_PREFERENCES };

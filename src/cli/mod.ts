@@ -1197,6 +1197,8 @@ export async function runCli(args: string[]): Promise<void> {
           if (prefs.enabled) {
             const logRepo = new AutoupdateLogFileRepository();
             const entries = await logRepo.readAll();
+            let prefsChanged = false;
+            const updatedPrefs = { ...prefs };
 
             // Show post-autoupdate notice once after background upgrade
             if (prefs.notifiedVersion !== VERSION) {
@@ -1208,7 +1210,8 @@ export async function runCli(args: string[]): Promise<void> {
                   `\nℹ swamp was auto-updated from ${lastUpdate.versionBefore} → ${lastUpdate.versionAfter}`,
                 );
               }
-              await prefsRepo.write({ ...prefs, notifiedVersion: VERSION });
+              updatedPrefs.notifiedVersion = VERSION;
+              prefsChanged = true;
             }
 
             // Warn if background autoupdate is failing due to permissions
@@ -1220,21 +1223,22 @@ export async function runCli(args: string[]): Promise<void> {
               lastEntry?.outcome === "error" && lastEntry.error &&
               lastEntry.error.toLowerCase().includes("permission denied")
             ) {
-              const lastWarned = prefs.lastPermissionWarning;
+              const lastWarned = updatedPrefs.lastPermissionWarning;
               const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
               if (!lastWarned || new Date(lastWarned).getTime() < oneDayAgo) {
                 const binaryPath = Deno.execPath();
                 console.error(
                   `\n⚠ Background autoupdate is failing: ${binaryPath} is not writable by your user.` +
                     `\n  Run \`sudo swamp update\` to update manually, or \`sudo chown $(whoami) ${binaryPath}\` to fix.` +
-                    `\n  Disable with: swamp update --setup-auto disable` +
-                    `\n  See logs: ${lastEntry.error}\n`,
+                    `\n  Disable with: swamp update --setup-auto disable\n`,
                 );
-                await prefsRepo.write({
-                  ...prefs,
-                  lastPermissionWarning: new Date().toISOString(),
-                });
+                updatedPrefs.lastPermissionWarning = new Date().toISOString();
+                prefsChanged = true;
               }
+            }
+
+            if (prefsChanged) {
+              await prefsRepo.write(updatedPrefs);
             }
           }
 

@@ -131,10 +131,16 @@ async function runSetupAuto(
       file.close();
     } catch { /* fd leak is acceptable here */ }
   } catch (error) {
-    if (
-      error instanceof Deno.errors.PermissionDenied ||
-      error instanceof Deno.errors.Busy
-    ) {
+    if (error instanceof Deno.errors.Busy) {
+      throw new UserError(
+        `Cannot set up autoupdate: ${binaryPath} is currently in use (text file busy).\n` +
+          `The background scheduler cannot replace a binary that is being executed.\n\n` +
+          `Options:\n` +
+          `  • Retry after the current process exits\n` +
+          `  • Run updates manually:  sudo swamp update`,
+      );
+    }
+    if (error instanceof Deno.errors.PermissionDenied) {
       throw new UserError(
         `Cannot set up autoupdate: ${binaryPath} is not writable by the current user.\n` +
           `The background scheduler runs as your user and cannot replace a root-owned binary.\n\n` +

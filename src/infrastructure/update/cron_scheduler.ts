@@ -82,7 +82,7 @@ export class CronScheduler implements AutoupdateScheduler {
     const escaped = escapeShellPath(binaryPath);
     const logPath = escapeShellPath(cronLogPath());
     const line =
-      `${schedule} '${escaped}' update --background >> '${logPath}' 2>&1 ${CRON_MARKER}`;
+      `${schedule} '${escaped}' update --background > '${logPath}' 2>&1 ${CRON_MARKER}`;
     const newContent = existing.trimEnd() + (existing.trim() ? "\n" : "") +
       line + "\n";
     await writeCrontab(newContent);
