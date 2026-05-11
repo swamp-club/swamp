@@ -17,13 +17,19 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-export { initTracing, shutdownTracing } from "./otel_init.ts";
-export {
-  getTracer,
-  SpanStatusCode,
-  withGeneratorSpan,
-  withSpan,
-} from "./tracer.ts";
-export { extractTraceContext, injectTraceContext } from "./propagation.ts";
+import { type Context, context } from "@opentelemetry/api";
 
-export { runWithParentTrace } from "./parent_trace.ts";
+/**
+ * Runs `fn` within the given parent trace context, or directly if no
+ * parent context is provided. Keeps @opentelemetry/api imports
+ * encapsulated in the tracing module.
+ */
+export function runWithParentTrace<T>(
+  parentCtx: Context | undefined,
+  fn: () => T,
+): T {
+  if (parentCtx) {
+    return context.with(parentCtx, fn);
+  }
+  return fn();
+}

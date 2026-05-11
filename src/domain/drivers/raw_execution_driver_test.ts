@@ -444,3 +444,67 @@ Deno.test("RawExecutionDriver: explicit queryData wins over dataQueryService der
   assertEquals(usedExplicit, true);
   assertEquals(usedDerived, false);
 });
+
+Deno.test("RawExecutionDriver: sets TRACEPARENT env var from traceHeaders during execution", async () => {
+  let capturedTraceparent: string | undefined;
+  const originalTraceparent = Deno.env.get("TRACEPARENT");
+
+  const executor: MethodExecutor = {
+    execute: () => {
+      capturedTraceparent = Deno.env.get("TRACEPARENT");
+      return Promise.resolve({});
+    },
+  };
+
+  const context = createMockContext();
+
+  const driver = new RawExecutionDriver(
+    executor,
+    testDefinition,
+    testMethod,
+    testModelDef,
+    context,
+    "test",
+  );
+
+  const request = createMockRequest();
+  request.traceHeaders = {
+    traceparent: "00-abc123-def456-01",
+  };
+
+  await driver.execute(request);
+
+  assertEquals(capturedTraceparent, "00-abc123-def456-01");
+  assertEquals(Deno.env.get("TRACEPARENT"), originalTraceparent);
+});
+
+Deno.test("RawExecutionDriver: restores TRACEPARENT env var after execution error", async () => {
+  const originalTraceparent = Deno.env.get("TRACEPARENT");
+
+  const executor: MethodExecutor = {
+    execute: () => {
+      throw new Error("boom");
+    },
+  };
+
+  const context = createMockContext();
+
+  const driver = new RawExecutionDriver(
+    executor,
+    testDefinition,
+    testMethod,
+    testModelDef,
+    context,
+    "test",
+  );
+
+  const request = createMockRequest();
+  request.traceHeaders = {
+    traceparent: "00-abc123-def456-01",
+  };
+
+  const result = await driver.execute(request);
+
+  assertEquals(result.status, "error");
+  assertEquals(Deno.env.get("TRACEPARENT"), originalTraceparent);
+});

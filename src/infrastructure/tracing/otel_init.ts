@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { Context } from "@opentelemetry/api";
+
 /** Handle to the provider so we can flush on shutdown. */
 let providerRef: { shutdown(): Promise<void> } | undefined;
 
@@ -27,13 +29,13 @@ let providerRef: { shutdown(): Promise<void> } | undefined;
  * tracing is disabled. `@opentelemetry/api` is statically imported because it
  * returns no-op implementations by default.
  */
-export async function initTracing(): Promise<void> {
+export async function initTracing(): Promise<Context | undefined> {
   const endpoint = Deno.env.get("OTEL_EXPORTER_OTLP_ENDPOINT");
   const exporterKind = Deno.env.get("OTEL_TRACES_EXPORTER") ?? "otlp";
 
   if (!endpoint && exporterKind !== "console") {
     // No endpoint configured and not console mode — tracing stays disabled.
-    return;
+    return undefined;
   }
 
   // Dynamic imports — only loaded when tracing is actually enabled.
@@ -107,7 +109,26 @@ export async function initTracing(): Promise<void> {
   // Register as global tracer provider
   provider.register();
 
+  // Register W3C propagator so inject/extract produce real traceparent headers.
+  const { W3CTraceContextPropagator } = await import("@opentelemetry/core");
+  contextApi.propagation.setGlobalPropagator(
+    new W3CTraceContextPropagator(),
+  );
+
   providerRef = provider;
+
+  // Extract inbound TRACEPARENT from the parent process, if present.
+  const traceparent = Deno.env.get("TRACEPARENT");
+  if (traceparent) {
+    const headers: Record<string, string> = { traceparent };
+    const tracestate = Deno.env.get("TRACESTATE");
+    if (tracestate) headers.tracestate = tracestate;
+    return contextApi.propagation.extract(
+      contextApi.context.active(),
+      headers,
+    );
+  }
+  return undefined;
 }
 
 /**
@@ -123,8 +144,9 @@ export async function shutdownTracing(): Promise<void> {
     }
     providerRef = undefined;
 
-    // Disable the global context manager
+    // Disable global context manager and propagator
     const contextApi = await import("@opentelemetry/api");
     contextApi.context.disable();
+    contextApi.propagation.disable();
   }
 }

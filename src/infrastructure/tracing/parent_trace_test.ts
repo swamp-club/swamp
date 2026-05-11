@@ -17,13 +17,24 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-export { initTracing, shutdownTracing } from "./otel_init.ts";
-export {
-  getTracer,
-  SpanStatusCode,
-  withGeneratorSpan,
-  withSpan,
-} from "./tracer.ts";
-export { extractTraceContext, injectTraceContext } from "./propagation.ts";
+import { assertEquals } from "@std/assert";
+import { ROOT_CONTEXT } from "@opentelemetry/api";
+import { runWithParentTrace } from "./parent_trace.ts";
 
-export { runWithParentTrace } from "./parent_trace.ts";
+Deno.test("runWithParentTrace: passes through when parentCtx is undefined", () => {
+  const result = runWithParentTrace(undefined, () => 42);
+  assertEquals(result, 42);
+});
+
+Deno.test("runWithParentTrace: runs fn within the given context", () => {
+  const result = runWithParentTrace(ROOT_CONTEXT, () => "hello");
+  assertEquals(result, "hello");
+});
+
+Deno.test("runWithParentTrace: propagates async return values", async () => {
+  const result = await runWithParentTrace(
+    ROOT_CONTEXT,
+    () => Promise.resolve("async-value"),
+  );
+  assertEquals(result, "async-value");
+});

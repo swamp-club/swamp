@@ -37,6 +37,14 @@ import {
 } from "../models/data_writer.ts";
 import { DataAccessService } from "../data/data_access_service.ts";
 
+function restoreEnv(key: string, saved: string | undefined): void {
+  if (saved !== undefined) {
+    Deno.env.set(key, saved);
+  } else {
+    Deno.env.delete(key);
+  }
+}
+
 /**
  * Interface for the execute method of MethodExecutionService.
  * Allows RawExecutionDriver to delegate argument validation and
@@ -79,7 +87,7 @@ export class RawExecutionDriver implements ExecutionDriver {
   ) {}
 
   async execute(
-    _request: ExecutionRequest,
+    request: ExecutionRequest,
     _callbacks?: ExecutionCallbacks,
   ): Promise<ExecutionResult> {
     const start = performance.now();
@@ -160,7 +168,15 @@ export class RawExecutionDriver implements ExecutionDriver {
       createFileWriter,
     };
 
+    const savedTraceparent = Deno.env.get("TRACEPARENT");
+    const savedTracestate = Deno.env.get("TRACESTATE");
     try {
+      if (request.traceHeaders) {
+        for (const [key, value] of Object.entries(request.traceHeaders)) {
+          Deno.env.set(key.toUpperCase().replace(/-/g, "_"), value);
+        }
+      }
+
       const result = await this.executor.execute(
         this.definition,
         this.method,
@@ -208,6 +224,9 @@ export class RawExecutionDriver implements ExecutionDriver {
         logs,
         durationMs,
       };
+    } finally {
+      restoreEnv("TRACEPARENT", savedTraceparent);
+      restoreEnv("TRACESTATE", savedTracestate);
     }
   }
 }

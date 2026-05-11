@@ -24,13 +24,14 @@ import { flushDatastoreSync } from "./src/infrastructure/persistence/datastore_s
 import { getOutputModeFromArgs } from "./src/cli/context.ts";
 import {
   initTracing,
+  runWithParentTrace,
   shutdownTracing,
 } from "./src/infrastructure/tracing/mod.ts";
 
 if (import.meta.main) {
-  await initTracing();
+  const parentCtx = await initTracing();
   try {
-    await runCli(Deno.args);
+    await runWithParentTrace(parentCtx, () => runCli(Deno.args));
   } catch (error) {
     // Release datastore lock if still held (safety net for uncaught errors)
     await flushDatastoreSync();
