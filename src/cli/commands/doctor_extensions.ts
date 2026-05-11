@@ -38,11 +38,15 @@
 // already warmed get re-loaded.
 
 import { Command } from "@cliffy/command";
+import { bold, dim } from "@std/fmt/colors";
+import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { isAbsolute, join, relative, resolve } from "@std/path";
 import {
+  buildAggregateState,
   consumeStream,
   doctorExtensions,
   type DoctorRegistryDeps,
+  repairExtensions,
 } from "../../libswamp/mod.ts";
 import {
   getExtensionLoadWarnings,
@@ -69,6 +73,18 @@ import { resolveSkillsDir } from "../../domain/repo/skill_dirs.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { resolvePrimaryTool } from "../../domain/repo/primary_tool.ts";
+import { readLocalManifestIdentity } from "../../infrastructure/persistence/local_manifest_reader.ts";
+
+async function promptConfirmation(message: string): Promise<boolean> {
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder();
+  await Deno.stdout.write(encoder.encode(`${message} [y/N] `));
+  const buf = new Uint8Array(1024);
+  const n = await Deno.stdin.read(buf);
+  if (n === null) return false;
+  const response = decoder.decode(buf.subarray(0, n)).trim().toLowerCase();
+  return response === "y" || response === "yes";
+}
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -81,20 +97,47 @@ type AnyOptions = any;
  */
 export const doctorExtensionsCommand = new Command()
   .description(
-    "Verify that user-defined extensions in this repo load cleanly.",
+    "Verify that user-defined extensions in this repo load cleanly " +
+      "and inspect catalog aggregate state.",
   )
   .example("Check this repo's extensions", "swamp doctor extensions")
   .example("Machine-readable output for CI", "swamp doctor extensions --json")
+  .example("Show per-source detail", "swamp doctor extensions --verbose")
+  .example(
+    "Preview what repair would clean up",
+    "swamp doctor extensions --repair --dry-run",
+  )
+  .example(
+    "Apply repair operations",
+    "swamp doctor extensions --repair",
+  )
   .option(
     "--repo-dir <dir:string>",
     "Repository directory (env: SWAMP_REPO_DIR)",
   )
+  .option("--verbose", "Show per-source detail for each extension")
+  .option(
+    "--repair",
+    "Prune Tombstoned catalog rows and evict unreferenced bundle files",
+  )
+  .option(
+    "--dry-run",
+    "Preview repair operations without executing (use with --repair)",
+  )
+  .option("-f, --force", "Skip confirmation prompt (use with --repair)")
   .action(async function (options: AnyOptions) {
     const cliCtx = createContext(options as GlobalOptions, [
       "doctor",
       "extensions",
     ]);
     cliCtx.logger.debug("Executing doctor extensions command");
+
+    const verbose = options.verbose === true;
+    const repair = options.repair === true;
+    const dryRun = options.dryRun === true;
+    const force = options.force === true;
+    const needsPrompt = repair && !dryRun && !force &&
+      cliCtx.outputMode === "log";
 
     const repoDir = resolveRepoDir(options.repoDir);
     // Same gate as `doctor audit` — fails loudly outside a swamp repo.
@@ -175,7 +218,11 @@ export const doctorExtensionsCommand = new Command()
     const repoRelativeSkillsDir = relative(repoDir, absoluteSkillsDir);
 
     const controller = new AbortController();
-    const renderer = createDoctorExtensionsRenderer(cliCtx.outputMode);
+    const renderer = createDoctorExtensionsRenderer(cliCtx.outputMode, {
+      verbose,
+    });
+
+    const catalogDbPath = swampPath(repoDir, "_extension_catalog.db");
 
     const doctorLockfileRepo = await LockfileRepository.create(lockfilePath);
     await consumeStream(
@@ -187,6 +234,69 @@ export const doctorExtensionsCommand = new Command()
         repoDir,
         skillsDir: repoRelativeSkillsDir,
         abortSignal: controller.signal,
+        buildAggregateState: async () => {
+          const aggLockfileRepo = await LockfileRepository.create(
+            lockfilePath,
+          );
+          const localIdentity = readLocalManifestIdentity(repoDir);
+          const repo = new ExtensionRepository({
+            catalog: new ExtensionCatalogStore(catalogDbPath),
+            lockfileRepository: aggLockfileRepo,
+            repoRoot: repoDir,
+            localManifestIdentity: localIdentity,
+          });
+          try {
+            const extensions = repo.loadAll();
+            return buildAggregateState({ extensions, repoDir });
+          } finally {
+            repo.close();
+          }
+        },
+        runRepair: repair
+          ? async (aggregateReport) => {
+            // In interactive mode without --force, preview first and prompt.
+            if (needsPrompt) {
+              const preview = await repairExtensions({
+                aggregateReport,
+                deleteBySourcePaths: () => 0,
+                apply: false,
+              });
+              if (preview.operations.length === 0) {
+                return preview;
+              }
+              const n = preview.operations.length;
+              writeOutput(
+                `\n${bold(`${n} repair operation(s) planned`)} ${
+                  dim("(use --dry-run to see details without prompting)")
+                }`,
+              );
+              const confirmed = await promptConfirmation(
+                "Proceed with repair?",
+              );
+              if (!confirmed) {
+                writeOutput(dim("Repair cancelled."));
+                return preview;
+              }
+            }
+            const repairLockfileRepo = await LockfileRepository.create(
+              lockfilePath,
+            );
+            const repo = new ExtensionRepository({
+              catalog: new ExtensionCatalogStore(catalogDbPath),
+              lockfileRepository: repairLockfileRepo,
+              repoRoot: repoDir,
+            });
+            try {
+              return repairExtensions({
+                aggregateReport,
+                deleteBySourcePaths: (paths) => repo.deleteBySourcePaths(paths),
+                apply: !dryRun,
+              });
+            } finally {
+              repo.close();
+            }
+          }
+          : undefined,
       }),
       renderer.handlers(),
     );

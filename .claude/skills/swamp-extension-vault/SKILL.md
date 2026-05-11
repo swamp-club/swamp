@@ -39,6 +39,8 @@ Custom vaults let you:
 | Create vault        | Create `extensions/vaults/my-vault/mod.ts`     |
 | Verify registration | `swamp vault status --json`                    |
 | Verify it loads     | `swamp doctor extensions --json`               |
+| Inspect catalog     | `swamp doctor extensions --verbose`            |
+| Repair stale state  | `swamp doctor extensions --repair`             |
 | Check config        | View `.swamp.yaml` vault section               |
 | Push extension      | `swamp extension push manifest.yaml --json`    |
 | Dry-run push        | `swamp extension push manifest.yaml --dry-run` |

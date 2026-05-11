@@ -63,6 +63,8 @@ and integrations.
 | Create model file   | Create `extensions/models/my_model.ts`                               |
 | Verify registration | `swamp model type search --json`                                     |
 | Verify it loads     | `swamp doctor extensions --json`                                     |
+| Inspect catalog     | `swamp doctor extensions --verbose`                                  |
+| Repair stale state  | `swamp doctor extensions --repair`                                   |
 | Check schema        | `swamp model type describe @myorg/my-model --json`                   |
 | Create instance     | `swamp model create @myorg/my-model my-instance --json`              |
 | Create with args    | `swamp model create @myorg/my-model inst --global-arg message=hi -j` |

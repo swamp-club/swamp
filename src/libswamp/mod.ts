@@ -739,6 +739,32 @@ export {
   type DoctorRegistryResult,
 } from "./extensions/doctor.ts";
 
+// Extension RowState (used by doctor extensions rendering)
+export {
+  ROW_STATE_TAGS,
+  type RowStateTag,
+} from "../domain/extensions/row_state.ts";
+
+// Extension aggregate state (`swamp doctor extensions` W6)
+export {
+  buildAggregateState,
+  type DoctorAggregateReport,
+  type DoctorAggregateSummary,
+  type DoctorBundleOrphan,
+  type DoctorCatalogOrphan,
+  type DoctorSourceDetail,
+  enumerateBundleFiles,
+} from "./extensions/doctor_aggregate.ts";
+
+// Extension repair (`swamp doctor extensions --repair` W6)
+export {
+  type RepairDeps,
+  repairExtensions,
+  type RepairOperation,
+  type RepairOperationKind,
+  type RepairReport,
+} from "./extensions/doctor_repair.ts";
+
 // Model edit operations
 export {
   createModelEditDeps,

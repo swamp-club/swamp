@@ -1121,11 +1121,34 @@ are caught by the first reconcile run — no schema migration needed.
 
 **Out of scope (deferred):**
 
-- Bundle cache file eviction (W3 detects `OrphanedBundleOnly` but does
-  NOT delete bundle files)
 - Loader unification / `KindAdapter` (done in W4)
 - `legacyStore` escape hatch removal (done in W4)
-- `swamp doctor extensions` aggregate-state rendering → W6
+
+## W6 — `swamp doctor extensions` Aggregate-State Rendering + Repair
+
+Extends `swamp doctor extensions` with two capabilities:
+
+1. **Aggregate-state rendering** — surfaces per-extension RowState
+   distribution, orphan detection, and summary rollups in both `log` and
+   `json` modes. Always runs after the existing invalidation-guard checks.
+
+2. **Repair surface** — `--repair` enters repair mode (`--dry-run` by
+   default), `--repair --apply` performs cleanup. Catalog row pruning
+   (Tombstoned/OrphanedBundleOnly) and bundle file eviction (unreferenced
+   `.js` files in `<kind>-bundles/`).
+
+**Bundle naming convention:** overwrite-on-rebundle (not content-addressed).
+Orphans accumulate linearly per deleted source. The `bundle_path` column is
+the source of truth for which files are referenced.
+
+**Event model:** `DoctorExtensionsReport` extended with additive
+`aggregateState` and `repairReport` fields. No new event kinds. Backward
+compatible for existing `--json` consumers.
+
+**Repair safety:** `--dry-run` is the default. Only `--repair --apply`
+performs destructive operations. Indexed and Bundled rows are NEVER touched.
+
+**Absorbed:** swamp-club#267 (extension layer garbage collection).
 
 ## Lazy Per-Bundle Loading
 

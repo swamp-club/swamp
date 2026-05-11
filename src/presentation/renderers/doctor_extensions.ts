@@ -17,14 +17,17 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { bold, dim, green, red, yellow } from "@std/fmt/colors";
+import { bold, cyan, dim, green, red, yellow } from "@std/fmt/colors";
 import {
   DOCTOR_REGISTRY_ORDER,
+  type DoctorAggregateReport,
   type DoctorExtensionsEvent,
   type DoctorOverallStatus,
   type DoctorRegistryName,
   type DoctorRegistryResult,
   type EventHandlers,
+  type RepairReport,
+  ROW_STATE_TAGS,
 } from "../../libswamp/mod.ts";
 import { UserError } from "../../domain/errors.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
@@ -45,6 +48,10 @@ export interface DoctorExtensionsRenderer {
   readonly overallStatus: DoctorOverallStatus;
 }
 
+export interface DoctorExtensionsRendererOptions {
+  verbose?: boolean;
+}
+
 function iconFor(status: DoctorRegistryResult["status"]): string {
   switch (status) {
     case "pass":
@@ -63,8 +70,159 @@ function summaryLine(status: DoctorOverallStatus): string {
   }
 }
 
+function stateColor(tag: string): (s: string) => string {
+  switch (tag) {
+    case "Indexed":
+      return green;
+    case "Bundled":
+      return cyan;
+    case "Tombstoned":
+      return dim;
+    case "BundleBuildFailed":
+    case "ValidationFailed":
+    case "EntryPointUnreadable":
+      return red;
+    case "OrphanedBundleOnly":
+      return yellow;
+    default:
+      return dim;
+  }
+}
+
+function renderAggregateStateLog(
+  report: DoctorAggregateReport,
+  verbose: boolean,
+): void {
+  writeOutput(`\n${bold(cyan("Extension Catalog State"))}`);
+  writeOutput(
+    dim(
+      `  ${report.totalSources} total source(s) across ${report.aggregates.length} extension(s), ` +
+        `${report.healthySources} healthy (Indexed)`,
+    ),
+  );
+  if (report.orphanRowCount > 0 || report.orphanBundleFileCount > 0) {
+    writeOutput(
+      yellow(
+        `  ${report.orphanRowCount} orphan row(s), ${report.orphanBundleFileCount} orphan bundle file(s)`,
+      ),
+    );
+  }
+
+  writeOutput("");
+  for (const agg of report.aggregates) {
+    const originTag = dim(`[${agg.origin}]`);
+    writeOutput(
+      `  ${bold(agg.name)}${dim("@")}${agg.version} ${originTag}  ${
+        dim(`${agg.sourceCount} source(s)`)
+      }`,
+    );
+
+    // State distribution — only show non-zero counts.
+    const parts: string[] = [];
+    for (const tag of ROW_STATE_TAGS) {
+      const count = agg.stateDistribution[tag];
+      if (count > 0) {
+        parts.push(stateColor(tag)(`${tag}: ${count}`));
+      }
+    }
+    if (parts.length > 0) {
+      writeOutput(`    ${parts.join(dim(" | "))}`);
+    }
+  }
+
+  if (verbose && report.sourceDetails.length > 0) {
+    writeOutput(`\n${bold(cyan("Per-Source Detail"))}`);
+    for (const detail of report.sourceDetails) {
+      const colorFn = stateColor(detail.stateTag);
+      const fp = detail.fingerprint
+        ? dim(` fp:${detail.fingerprint.slice(0, 12)}`)
+        : "";
+      const bp = detail.bundlePath ? dim(` bundle:${detail.bundlePath}`) : "";
+      writeOutput(
+        `  ${dim(detail.kind)} ${detail.sourcePath}  ${
+          colorFn(detail.stateTag)
+        }${fp}${bp}`,
+      );
+    }
+  }
+
+  if (report.catalogOrphans.length > 0) {
+    writeOutput(
+      `\n${yellow("⚠")} ${bold("Catalog orphans")} ${
+        dim("(source missing on disk)")
+      }`,
+    );
+    for (const orphan of report.catalogOrphans) {
+      writeOutput(
+        `  ${yellow("•")} ${orphan.sourcePath}  ${
+          dim(`[${orphan.extensionName}]`)
+        } ${red(orphan.stateTag)}`,
+      );
+    }
+  }
+
+  if (report.bundleOrphans.length > 0) {
+    writeOutput(
+      `\n${yellow("⚠")} ${bold("Bundle orphans")} ${
+        dim("(not referenced by catalog)")
+      }`,
+    );
+    for (const orphan of report.bundleOrphans) {
+      writeOutput(
+        `  ${yellow("•")} ${orphan.repoRelativePath}  ${
+          dim(`[${orphan.bundleDir}]`)
+        }`,
+      );
+    }
+  }
+}
+
+function renderRepairLog(report: RepairReport): void {
+  const modeLabel = report.mode === "dry-run"
+    ? yellow(bold("DRY RUN"))
+    : green(bold("APPLIED"));
+  writeOutput(`\n${bold(cyan("Repair"))} ${modeLabel}`);
+
+  if (report.operations.length === 0) {
+    writeOutput(dim("  Nothing to clean up — catalog is healthy."));
+    return;
+  }
+
+  const pastTense = report.mode === "applied";
+  writeOutput(
+    `  ${report.prunedRowCount} catalog row(s) ${
+      pastTense ? "pruned" : "to prune"
+    }, ${report.evictedFileCount} bundle file(s) ${
+      pastTense ? "evicted" : "to evict"
+    }`,
+  );
+  writeOutput("");
+
+  for (const op of report.operations) {
+    const icon = op.kind === "catalog-row-pruned" ? "x" : "-";
+    const label = op.kind === "catalog-row-pruned"
+      ? dim("[row]")
+      : dim("[file]");
+    writeOutput(`  ${icon} ${label} ${op.path}`);
+    writeOutput(`     ${dim(op.reason)}`);
+  }
+
+  if (report.mode === "dry-run") {
+    writeOutput(
+      dim(
+        "\n  Run with --repair (without --dry-run) to perform these operations.",
+      ),
+    );
+  }
+}
+
 class LogDoctorExtensionsRenderer implements DoctorExtensionsRenderer {
   overallStatus: DoctorOverallStatus = "pass";
+  private readonly verbose: boolean;
+
+  constructor(options: DoctorExtensionsRendererOptions) {
+    this.verbose = options.verbose ?? false;
+  }
 
   handlers(): EventHandlers<DoctorExtensionsEvent> {
     return {
@@ -117,6 +275,17 @@ class LogDoctorExtensionsRenderer implements DoctorExtensionsRenderer {
             ),
           );
         }
+
+        // W6: Aggregate state rendering.
+        if (e.report.aggregateState) {
+          renderAggregateStateLog(e.report.aggregateState, this.verbose);
+        }
+
+        // W6: Repair report rendering.
+        if (e.report.repairReport) {
+          renderRepairLog(e.report.repairReport);
+        }
+
         const passCount = Object.values(e.report.registries)
           .filter((r) => r.status === "pass").length;
         const failCount = Object.values(e.report.registries)
@@ -155,17 +324,20 @@ class JsonDoctorExtensionsRenderer implements DoctorExtensionsRenderer {
         for (const name of DOCTOR_REGISTRY_ORDER) {
           registries[name] = e.report.registries[name];
         }
-        console.log(
-          JSON.stringify(
-            {
-              overallStatus: e.report.overallStatus,
-              registries,
-              orphanFiles: e.report.orphanFiles,
-            },
-            null,
-            2,
-          ),
-        );
+        // Build the output object with existing fields first (backward
+        // compatible), then W6 additive fields.
+        const output: Record<string, unknown> = {
+          overallStatus: e.report.overallStatus,
+          registries,
+          orphanFiles: e.report.orphanFiles,
+        };
+        if (e.report.aggregateState) {
+          output.aggregateState = e.report.aggregateState;
+        }
+        if (e.report.repairReport) {
+          output.repairReport = e.report.repairReport;
+        }
+        console.log(JSON.stringify(output, null, 2));
       },
       error: (e) => {
         throw new UserError(e.error.message);
@@ -176,11 +348,13 @@ class JsonDoctorExtensionsRenderer implements DoctorExtensionsRenderer {
 
 export function createDoctorExtensionsRenderer(
   mode: OutputMode,
+  options?: DoctorExtensionsRendererOptions,
 ): DoctorExtensionsRenderer {
+  const opts = options ?? {};
   switch (mode) {
     case "json":
       return new JsonDoctorExtensionsRenderer();
     case "log":
-      return new LogDoctorExtensionsRenderer();
+      return new LogDoctorExtensionsRenderer(opts);
   }
 }
