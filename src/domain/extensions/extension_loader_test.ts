@@ -21,11 +21,6 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import { toFileUrl } from "@std/path";
 
-// W5: Per-fingerprint import URL construction tests.
-// Verifies the empty-fingerprint guard and fingerprint-present behavior
-// at the URL construction level. Cross-process verification is covered
-// by extension_loader_subprocess_test.ts.
-
 Deno.test("importBundleByPath: non-empty fingerprint appends ?fp= to import URL", async () => {
   const dir = await Deno.makeTempDir({ prefix: "swamp_fp_url_" });
   try {

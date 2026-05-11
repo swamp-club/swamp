@@ -17,10 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-// W5 RAM growth benchmark — measures heap delta after N module reloads
-// in a subprocess. Each reload uses a distinct fingerprint, forcing V8
-// to retain the old module and import a new one.
-//
 // Threshold: ≤ 50 MB heap growth after 100 reloads.
 
 import { join } from "@std/path";

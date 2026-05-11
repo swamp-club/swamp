@@ -36,19 +36,26 @@ function respond(data: Record<string, unknown>): void {
   console.log(JSON.stringify(data));
 }
 
-const decoder = new TextDecoder();
+const decoder = new TextDecoder("utf-8");
 const buf = new Uint8Array(65536);
+let remainder = "";
 
 async function readLine(): Promise<string> {
-  let line = "";
   while (true) {
-    const n = await Deno.stdin.read(buf);
-    if (n === null) return line;
-    const chunk = decoder.decode(buf.subarray(0, n));
-    line += chunk;
-    if (line.includes("\n")) {
-      return line.trim();
+    const idx = remainder.indexOf("\n");
+    if (idx !== -1) {
+      const line = remainder.slice(0, idx).trim();
+      remainder = remainder.slice(idx + 1);
+      if (line) return line;
+      continue;
     }
+    const n = await Deno.stdin.read(buf);
+    if (n === null) {
+      const last = remainder.trim();
+      remainder = "";
+      return last;
+    }
+    remainder += decoder.decode(buf.subarray(0, n), { stream: true });
   }
 }
 
