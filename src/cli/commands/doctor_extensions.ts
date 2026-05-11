@@ -38,6 +38,8 @@
 // already warmed get re-loaded.
 
 import { Command } from "@cliffy/command";
+import { bold, dim } from "@std/fmt/colors";
+import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { isAbsolute, join, relative, resolve } from "@std/path";
 import {
   buildAggregateState,
@@ -72,6 +74,17 @@ import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { resolvePrimaryTool } from "../../domain/repo/primary_tool.ts";
 import { readLocalManifestIdentity } from "../../infrastructure/persistence/local_manifest_reader.ts";
+
+async function promptConfirmation(message: string): Promise<boolean> {
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder();
+  await Deno.stdout.write(encoder.encode(`${message} [y/N] `));
+  const buf = new Uint8Array(1024);
+  const n = await Deno.stdin.read(buf);
+  if (n === null) return false;
+  const response = decoder.decode(buf.subarray(0, n)).trim().toLowerCase();
+  return response === "y" || response === "yes";
+}
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -111,6 +124,7 @@ export const doctorExtensionsCommand = new Command()
     "--dry-run",
     "Preview repair operations without executing (use with --repair)",
   )
+  .option("-f, --force", "Skip confirmation prompt (use with --repair)")
   .action(async function (options: AnyOptions) {
     const cliCtx = createContext(options as GlobalOptions, [
       "doctor",
@@ -121,6 +135,9 @@ export const doctorExtensionsCommand = new Command()
     const verbose = options.verbose === true;
     const repair = options.repair === true;
     const dryRun = options.dryRun === true;
+    const force = options.force === true;
+    const needsPrompt = repair && !dryRun && !force &&
+      cliCtx.outputMode === "log";
 
     const repoDir = resolveRepoDir(options.repoDir);
     // Same gate as `doctor audit` — fails loudly outside a swamp repo.
@@ -237,6 +254,30 @@ export const doctorExtensionsCommand = new Command()
         },
         runRepair: repair
           ? async (aggregateReport) => {
+            // In interactive mode without --force, preview first and prompt.
+            if (needsPrompt) {
+              const preview = await repairExtensions({
+                aggregateReport,
+                deleteBySourcePaths: () => 0,
+                apply: false,
+              });
+              if (preview.operations.length === 0) {
+                return preview;
+              }
+              const n = preview.operations.length;
+              writeOutput(
+                `\n${bold(`${n} repair operation(s) planned`)} ${
+                  dim("(use --dry-run to see details without prompting)")
+                }`,
+              );
+              const confirmed = await promptConfirmation(
+                "Proceed with repair?",
+              );
+              if (!confirmed) {
+                writeOutput(dim("Repair cancelled."));
+                return preview;
+              }
+            }
             const repairLockfileRepo = await LockfileRepository.create(
               lockfilePath,
             );
