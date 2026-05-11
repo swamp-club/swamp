@@ -43,14 +43,7 @@ ls .swamp.yaml
 **Verify:** The file exists and is valid YAML. If you are in a subdirectory,
 check parent directories up to the filesystem root.
 
-**On Failure:** The directory is not a swamp repository. Run:
-
-```bash
-swamp repo init --json
-```
-
-Then re-verify. If `swamp repo init` fails, check that swamp is installed and up
-to date (`swamp update`).
+**On Failure:** Run `swamp repo init --json`, then re-verify.
 
 ## State 2: auth_verified
 
@@ -66,13 +59,7 @@ swamp auth whoami --json
 
 **Verify:** The output contains a `username` field and `authenticated: true`.
 
-**On Failure:** The user is not logged in. Run:
-
-```bash
-swamp auth login
-```
-
-Then re-verify. If login fails, check network connectivity and credentials.
+**On Failure:** Run `swamp auth login`, then re-verify.
 
 ## State 3: manifest_validated
 
@@ -147,15 +134,10 @@ swamp extension version --manifest manifest.yaml --json
 `manifest.yaml` with this version. If the model source file also contains a
 `version` field, update it to match.
 
-**On Failure:**
-
-- If the extension has never been published, `currentPublished` will be `null` —
-  this is normal. Use `nextVersion` as-is.
-- If the command fails, check that the manifest `name` is valid and the registry
-  is reachable.
-
-See [references/publishing.md](references/publishing.md#calver-versioning) for
-CalVer format details.
+**On Failure:** If `currentPublished` is `null`, use `nextVersion` as-is (first
+publish). Otherwise check manifest `name` and registry connectivity. See
+[references/publishing.md](references/publishing.md#calver-versioning) for
+CalVer details.
 
 ## State 6: formatted
 
@@ -176,33 +158,14 @@ confirm:
 swamp extension fmt manifest.yaml --check --json
 ```
 
-**On Failure:** If `--check` reports issues after formatting, there are
-unfixable lint errors. Read the error output, fix the issues manually, then
-re-run `swamp extension fmt manifest.yaml`.
+**On Failure:** Fix lint errors reported by `--check`, then re-run fmt. See
+[references/publishing.md](references/publishing.md#extension-formatting) for
+details.
 
-See [references/publishing.md](references/publishing.md#extension-formatting)
-for details on what fmt checks.
-
-### Optional — quality self-check
-
-After State 6 (formatted) and before State 7 (dry_run_passed), the author can
-run a rubric score locally:
-
-```bash
-swamp extension quality manifest.yaml --json
-```
-
-This packages the extension, scores it against the 10 client-earnable Swamp Club
-quality factors (README, LICENSE, JSDoc coverage, repository URL, manifest
-completeness, slow-type diagnostics, …), and prints per- factor results with
-remediation hints. The packaged tarball is written to
-`.swamp/cache/packages/<hash>/` and is transparently reused by the dry run and
-push steps below when the source tree hasn't changed — so no work is duplicated.
-
-This step is purely optional. Skipping it does not block the push; users who
-want rubric feedback should run it before State 7. See the
-[`swamp-extension-quality`](../swamp-extension-quality/SKILL.md) skill for the
-full rubric breakdown and per-factor remediation guidance.
+**Optional:** Run `swamp extension quality manifest.yaml --json` between States
+6 and 7 for a rubric score. See
+[references/publishing.md](references/publishing.md#quality-self-check) for
+details.
 
 ## State 7: dry_run_passed
 
@@ -220,9 +183,9 @@ swamp extension push manifest.yaml --dry-run --json
 (subprocess spawning, long lines, base64 blobs) and confirm with the user if
 warnings are present.
 
-**On Failure:** Read the error output and fix the reported issue. See
-[references/publishing.md](references/publishing.md#safety-rules) for the full
-list of safety rules and common fixes.
+**On Failure:** Fix the reported issue. See
+[references/publishing.md](references/publishing.md#safety-rules) for safety
+rules.
 
 ## State 8: pushed
 

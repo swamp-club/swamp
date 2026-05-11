@@ -518,3 +518,20 @@ swamp extension version --manifest manifest.yaml --json
 | "Version already exists"        | Bump the MICRO component or let CLI auto-bump                                     |
 | "Missing manifestVersion"       | Add `manifestVersion: 1` to your manifest                                         |
 | "Bundle compilation failed"     | Fix TypeScript errors in your model files                                         |
+
+## Quality Self-Check
+
+Run between formatting (State 6) and dry-run (State 7):
+
+```bash
+swamp extension quality manifest.yaml --json
+```
+
+Scores the extension against the 10 client-earnable Swamp Club quality factors
+(README, LICENSE, JSDoc coverage, repository URL, manifest completeness,
+slow-type diagnostics, etc.) and prints per-factor results with remediation
+hints. The packaged tarball is written to `.swamp/cache/packages/<hash>/` and
+reused by dry-run and push when the source tree hasn't changed.
+
+This step is optional — skipping does not block the push. See the
+`swamp-extension-quality` skill for the full rubric and per-factor guidance.
