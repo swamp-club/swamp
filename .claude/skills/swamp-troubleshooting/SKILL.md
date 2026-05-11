@@ -1,23 +1,15 @@
 ---
 name: swamp-troubleshooting
 description: >
-  Diagnose swamp problems and verify swamp's health through a layered
-  diagnostic loop — health checks (`swamp doctor ...`), error inspection,
-  tracing, and source reading. Prefer this skill when the user's primary
-  intent is diagnosis or health verification, not when they're performing
-  the underlying operation. Do NOT use for smoke testing extensions before
-  publish (that is swamp-extension) or for setting up repos (that is
-  swamp-repo). Use when something is broken ("swamp error", "failing",
-  "not working", "crash", "timeout", "bug", "debug", "troubleshoot",
-  "root cause", "slow", "performance", "latency", "erroring",
-  "workflow error", "step error"); when verifying setup health
-  ("is swamp working", "is my repo healthy", "verify swamp setup",
-  "sanity check", "health check", "diagnose swamp"), often after
-  `swamp init` or `swamp repo upgrade`; when a swamp component looks
-  broken ("audit log empty", "audit not recording", "hooks not firing",
-  "extension not loading", "swamp-warning", "preflight", "doctor audit",
-  "verify audit", "doctor extensions"); or for swamp internals ("how does
-  swamp", "what happens when", "where is", "internals", "under the hood").
+  Diagnose swamp problems and verify health through a layered diagnostic
+  loop — health checks, error inspection, tracing, and source reading. Do
+  NOT use for smoke testing extensions (swamp-extension) or setting up
+  repos (swamp-repo). Triggers on "swamp error", "failing", "not working",
+  "crash", "timeout", "bug", "debug", "troubleshoot", "root cause", "slow",
+  "performance", "latency", "erroring", "workflow error", "step error",
+  "is swamp working", "health check", "diagnose swamp", "audit log empty",
+  "hooks not firing", "extension not loading", "swamp-warning", "preflight",
+  "doctor audit", "doctor extensions", "internals", "under the hood".
 ---
 
 # Swamp Troubleshooting
