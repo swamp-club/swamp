@@ -333,8 +333,8 @@ reports:
 2. **Bump version** in `manifest.yaml` — use `nextVersion` from the output above
 3. **Format & lint**: `swamp extension fmt manifest.yaml`
 4. **(Optional) Quality score**: `swamp extension quality manifest.yaml --json`
-   — see the `swamp-extension-quality` skill for the rubric. Packages and caches
-   the tarball at `.swamp/cache/packages/<hash>/`; the cache is reused by the
+   — see the `swamp-extension` skill for the rubric. Packages and caches the
+   tarball at `.swamp/cache/packages/<hash>/`; the cache is reused by the
    dry-run and push below if source hasn't changed.
 5. **Dry-run push**: `swamp extension push manifest.yaml --dry-run --json`
 6. **Push**: `swamp extension push manifest.yaml --yes --json`
@@ -521,15 +521,15 @@ swamp extension version --manifest manifest.yaml --json
 
 ## Related Skills
 
-| Need                               | Use Skill                   |
-| ---------------------------------- | --------------------------- |
-| Create custom models               | `swamp-extension-model`     |
-| Create custom vaults               | `swamp-extension-vault`     |
-| Create custom datastores           | `swamp-extension-datastore` |
-| Create custom execution drivers    | `swamp-extension-driver`    |
-| Repository setup and management    | `swamp-repo`                |
-| Create reports                     | `swamp-report`              |
-| Quality scorecard & best practices | `swamp-extension-quality`   |
+| Need                               | Use Skill         |
+| ---------------------------------- | ----------------- |
+| Create custom models               | `swamp-extension` |
+| Create custom vaults               | `swamp-extension` |
+| Create custom datastores           | `swamp-extension` |
+| Create custom execution drivers    | `swamp-extension` |
+| Repository setup and management    | `swamp-repo`      |
+| Create reports                     | `swamp-report`    |
+| Quality scorecard & best practices | `swamp-extension` |
 
 ## Quality Self-Check
 
@@ -546,4 +546,4 @@ hints. The packaged tarball is written to `.swamp/cache/packages/<hash>/` and
 reused by dry-run and push when the source tree hasn't changed.
 
 This step is optional — skipping does not block the push. See the
-`swamp-extension-quality` skill for the full rubric and per-factor guidance.
+`swamp-extension` skill for the full rubric and per-factor guidance.

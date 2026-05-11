@@ -1,6 +1,16 @@
 ---
 name: swamp-repo
-description: Manage swamp repositories, datastores, extension sources, and the audit integration — initializing repos (single or multi-tool), upgrading swamp, syncing data, releasing stuck locks, loading extensions from external paths, installing swamp in CI, and verifying the audit pipeline. Use when initializing repos, upgrading swamp, configuring datastores, managing extension sources, setting up CI/CD, enrolling multiple AI tools in one repo, or diagnosing broken audit hooks. Triggers on "repo", "repository", "init", "setup swamp", "upgrade swamp", ".swamp folder", "datastore", "datastore sync", "datastore lock", "stuck lock", "install swamp", "CI/CD", "extension source", ".swamp-sources.yaml", "source add", "source rm", "doctor audit", "verify audit", "preflight", "multi-tool repo", "multiple tools", "--tool", "enroll tool", "primary tool", "marker.tools".
+description: >
+  Manage swamp repositories, datastores, extension sources, and the audit
+  integration — initializing repos (single or multi-tool), upgrading swamp,
+  syncing data, releasing stuck locks, loading extensions from external paths,
+  and installing swamp in CI. Do NOT use for diagnosing health check failures
+  or doctor command output (that is swamp-troubleshooting). Triggers on "repo",
+  "repository", "init", "setup swamp", "upgrade swamp", ".swamp folder",
+  "datastore", "datastore sync", "datastore lock", "stuck lock", "install
+  swamp", "CI/CD", "extension source", ".swamp-sources.yaml", "source add",
+  "source rm", "multi-tool repo", "multiple tools", "--tool", "enroll tool",
+  "primary tool", "marker.tools".
 ---
 
 # Swamp Repository Skill
@@ -320,8 +330,7 @@ Or via environment variable (JSON config after the type):
 export SWAMP_DATASTORE='@myorg/my-store:{"endpoint":"https://storage.example.com","bucket":"my-data"}'
 ```
 
-For creating custom datastore implementations, see the
-`swamp-extension-datastore` skill.
+For creating custom datastore implementations, see the `swamp-extension` skill.
 
 ### Custom Drivers
 
@@ -329,8 +338,7 @@ Custom execution drivers control where and how model methods run (SSH, Lambda,
 Kubernetes, etc.). Drivers are configured per-definition, per-workflow, or
 per-step via the `driver:` and `driverConfig:` YAML fields.
 
-For creating custom driver implementations, see the `swamp-extension-driver`
-skill.
+For creating custom driver implementations, see the `swamp-extension` skill.
 
 ### Environment Variable Override
 
@@ -416,16 +424,16 @@ pointing at your local development copy — your local version loads instead.
 
 ## When to Use Other Skills
 
-| Need                            | Use Skill                   |
-| ------------------------------- | --------------------------- |
-| Create/run models               | `swamp-model`               |
-| Create/run workflows            | `swamp-workflow`            |
-| Manage secrets                  | `swamp-vault`               |
-| Manage model data               | `swamp-data`                |
-| Create custom TypeScript models | `swamp-extension-model`     |
-| Create custom datastores        | `swamp-extension-datastore` |
-| Create custom drivers           | `swamp-extension-driver`    |
-| Understand swamp internals      | `swamp-troubleshooting`     |
+| Need                            | Use Skill               |
+| ------------------------------- | ----------------------- |
+| Create/run models               | `swamp-model`           |
+| Create/run workflows            | `swamp-workflow`        |
+| Manage secrets                  | `swamp-vault`           |
+| Manage model data               | `swamp-data`            |
+| Create custom TypeScript models | `swamp-extension`       |
+| Create custom datastores        | `swamp-extension`       |
+| Create custom drivers           | `swamp-extension`       |
+| Understand swamp internals      | `swamp-troubleshooting` |
 
 ## References
 

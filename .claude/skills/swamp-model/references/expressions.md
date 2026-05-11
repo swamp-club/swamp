@@ -19,8 +19,7 @@ Model inputs support CEL expressions using `${{ <expression> }}` syntax.
 > `instanceName` equals `specName`. For example, a model `my-shell` with
 > resource spec `result` is accessed as
 > `model.my-shell.resource.result.result.attributes.exitCode`. Factory models
-> use distinct instance names — see the `swamp-extension-model` skill for
-> details.
+> use distinct instance names — see the `swamp-extension` skill for details.
 
 ## CEL Operations
 

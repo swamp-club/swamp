@@ -54,7 +54,7 @@
   {
     "query": "I want to create a completely custom model type using TypeScript",
     "should_trigger": false,
-    "note": "Building custom model type → swamp-extension-model"
+    "note": "Building custom model type → swamp-extension"
   },
   {
     "query": "How do I chain this model into an automated workflow?",
@@ -74,6 +74,6 @@
   {
     "query": "Build a Zod schema for my custom validation model",
     "should_trigger": false,
-    "note": "Building custom model types → swamp-extension-model"
+    "note": "Building custom model types → swamp-extension"
   }
 ]

@@ -574,7 +574,7 @@ End-to-end workflow creation:
 | Vault management           | `swamp-vault`           |
 | Repository structure       | `swamp-repo`            |
 | Manage model data          | `swamp-data`            |
-| Create custom models       | `swamp-extension-model` |
+| Create custom models       | `swamp-extension`       |
 | Understand swamp internals | `swamp-troubleshooting` |
 
 ## References

@@ -52,7 +52,7 @@ matching skill (`swamp-model`, `swamp-workflow`, `swamp-vault`, etc.).
 1. `swamp model type search <keywords> --json`
 2. If nothing local: `swamp extension search <keywords> --json`
 3. If an extension matches: `swamp extension pull <package>`
-4. If nothing exists, offer a custom extension via `swamp-extension-model`. Use
+4. If nothing exists, offer a custom extension via `swamp-extension`. Use
    `command/shell` only for genuine one-off ad-hoc commands.
 
 Store the goal — use it to name the model and tailor later examples.

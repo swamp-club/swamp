@@ -1,16 +1,14 @@
 ---
 name: swamp-report
 description: >
-  Create, register, configure, and run reports for swamp models and workflows.
-  Use when creating report extensions, configuring reports in definition YAML,
-  running reports via CLI, viewing report output, or accessing execution data
-  through the report API (dataRepository, UnifiedDataRepository, dataHandles,
-  MethodReportContext). Do NOT use for debugging report execution failures —
-  that is swamp-troubleshooting. Triggers on "report", "swamp report", "model
-  report", "create report", "run report", "report extension", "report label",
-  "skip report", "report output", "cost report", "audit report", "workflow
-  report", "report results", "dataRepository", "UnifiedDataRepository",
-  "dataHandles", "report context", "report data access".
+  Run, configure, and view reports for swamp models and workflows. Use when
+  running reports via CLI, configuring report selection in definition YAML,
+  viewing report output, or filtering reports by label. Do NOT use for creating
+  report extensions (that is swamp-extension) or debugging report failures
+  (that is swamp-troubleshooting). Triggers on "run report", "swamp report",
+  "model report", "report output", "report label", "skip report", "report
+  results", "cost report", "audit report", "workflow report", "report get",
+  "report filtering".
 ---
 
 # Swamp Report Skill
@@ -61,114 +59,11 @@ up-to-date CLI schema.
 5. **Check stored output** — run `swamp data query 'tags.type == "report"'` to
    verify the report artifact was persisted correctly.
 
-## Creating a Standalone Report Extension
+## Creating Report Extensions
 
-Reports are standalone TypeScript files in `extensions/reports/`. Each file
-exports a `report` object with a `name`, `description`, `scope`, optional
-`labels`, and an `execute` function.
-
-```typescript
-// extensions/reports/cost_report.ts
-export const report = {
-  name: "@myorg/cost-report",
-  description: "Estimate costs for the executed method",
-  scope: "method",
-  labels: ["cost", "finops"],
-  execute: async (context) => {
-    const modelName = context.definition.name;
-    const method = context.methodName;
-    const status = context.executionStatus;
-
-    return {
-      markdown:
-        `# Cost Report\n\n- **Model**: ${modelName}\n- **Method**: ${method}\n- **Status**: ${status}\n`,
-      json: { modelName, method, status },
-    };
-  },
-};
-```
-
-### Name Conventions
-
-Report names follow `@collective/name` (e.g. `@myorg/cost-report`,
-`@myorg/aws/cost-report`) — same convention as models, drivers, vaults, and
-datastores.
-
-### Report Scopes
-
-| Scope      | Context type            | When it runs                    |
-| ---------- | ----------------------- | ------------------------------- |
-| `method`   | `MethodReportContext`   | After a single method execution |
-| `model`    | `ModelReportContext`    | After all method-scope reports  |
-| `workflow` | `WorkflowReportContext` | After a workflow run completes  |
-
-Reports are generic — they receive a `ReportContext` and decide at runtime how
-to handle their inputs. They don't declare which model types they support. See
-[references/report-types.md](references/report-types.md) for context field
-listings and full type definitions.
-
-### Redacting Sensitive Arguments
-
-The context provides `redactSensitiveArgs()` which replaces values marked
-`{ sensitive: true }` in the model type's Zod schema with `"***"`. Use it when
-including argument values in report output:
-
-```typescript
-const globalArgs = context.redactSensitiveArgs(context.globalArgs, "global");
-const methodArgs = context.redactSensitiveArgs(context.methodArgs, "method");
-```
-
-The helper is available on method and model scope contexts. It returns args
-unchanged if no schema is found, so it is safe to call unconditionally.
-
-### Reading Execution Data
-
-Reports can read data produced during method execution via `context.dataHandles`
-and `context.dataRepository`:
-
-```typescript
-execute: async (context) => {
-  const handle = context.dataHandles.find(h => h.specName === "state");
-  if (!handle) {
-    return { markdown: "No data produced.", json: {} };
-  }
-
-  // getContent returns raw bytes — parse JSON manually
-  const raw = await context.dataRepository.getContent(
-    context.modelType,
-    context.modelId,
-    handle.name,
-    handle.version,
-  );
-  if (!raw) {
-    return { markdown: "Data not found.", json: {} };
-  }
-  const attrs = JSON.parse(new TextDecoder().decode(raw));
-
-  return {
-    markdown: `# State Report\n\n- **Status**: ${attrs.status}\n`,
-    json: { status: attrs.status },
-  };
-},
-```
-
-Use `findByName()` when you need metadata (tags, version, content type) without
-the content itself. See
-[references/report-types.md](references/report-types.md#unifieddatarepository-methods)
-for the full API and
-[references/testing.md](references/testing.md#testing-reports-that-read-data)
-for testing patterns.
-
-### Key Rules
-
-1. **Return both markdown and json** — every report must produce both
-2. **Labels are optional** — use them for filtering (e.g., `["cost", "audit"]`)
-3. **One report per file** — export a single `report` object from each file
-4. **Use scope correctly** — method-scope for per-execution analysis,
-   model-scope for cross-method analysis, workflow-scope for multi-step
-   aggregation
-5. **Redact sensitive args** — use `context.redactSensitiveArgs()` when
-   including argument values in report output
+To create a new report extension, use the `swamp-extension` skill. It covers the
+TypeScript authoring workflow, export contract, scopes, reading execution data,
+and testing.
 
 ## Three-Level Report Control Model
 
@@ -291,7 +186,7 @@ Report results are automatically persisted as data artifacts:
 - **Lifetime**: 30 days, garbage collection keeps 5 versions
 - **Tags**: `type=report`, `reportName={name}`, `reportScope={scope}`
 
-Access stored reports via data query (see `swamp-data-query` skill):
+Access stored reports via data query (see `swamp-data` skill):
 
 ```bash
 swamp data query 'tags.type == "report"'
@@ -331,15 +226,15 @@ Failed reports appear as `{ "_error": "error message" }`.
 
 ## When to Use Other Skills
 
-| Need                         | Use Skill               |
-| ---------------------------- | ----------------------- |
-| Work with models             | `swamp-model`           |
-| Create/run workflows         | `swamp-workflow`        |
-| Create custom model types    | `swamp-extension-model` |
-| Extend model with new method | `swamp-extension-model` |
-| Manage model data            | `swamp-data`            |
-| Repository structure         | `swamp-repo`            |
-| Understand swamp internals   | `swamp-troubleshooting` |
+| Need                       | Use Skill               |
+| -------------------------- | ----------------------- |
+| Work with models           | `swamp-model`           |
+| Create/run workflows       | `swamp-workflow`        |
+| Create report extensions   | `swamp-extension`       |
+| Create custom model types  | `swamp-extension`       |
+| Manage model data          | `swamp-data`            |
+| Repository structure       | `swamp-repo`            |
+| Understand swamp internals | `swamp-troubleshooting` |
 
 ## References
 

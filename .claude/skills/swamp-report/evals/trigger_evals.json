@@ -1,21 +1,12 @@
 [
   {
-    "query": "How do I create a report on model performance metrics?",
-    "should_trigger": true
-  },
-  {
     "query": "Run a report to show all workflow executions from last week",
     "should_trigger": true
   },
   {
-    "query": "Generate a report extension for custom data analysis",
+    "query": "Can I export a report as CSV or JSON?",
     "should_trigger": true
   },
-  {
-    "query": "Create a report that tracks data model changes over time",
-    "should_trigger": true
-  },
-  { "query": "Can I export a report as CSV or JSON?", "should_trigger": true },
   {
     "query": "Run a compliance report for all stored secrets",
     "should_trigger": true
@@ -31,6 +22,29 @@
   {
     "query": "Show me the report results from the last automation run",
     "should_trigger": true
+  },
+  {
+    "query": "How do I view stored report output for a model?",
+    "should_trigger": true
+  },
+  {
+    "query": "Filter reports by label when running a model method",
+    "should_trigger": true
+  },
+  {
+    "query": "Generate a report extension for custom data analysis",
+    "should_trigger": false,
+    "note": "Creating report extensions → swamp-extension"
+  },
+  {
+    "query": "How do I read execution data in a report using dataHandles?",
+    "should_trigger": true,
+    "note": "Report data access is covered by swamp-report reference docs"
+  },
+  {
+    "query": "What methods does UnifiedDataRepository expose in reports?",
+    "should_trigger": true,
+    "note": "Report data access is covered by swamp-report reference docs"
   },
   {
     "query": "List the version history for the Payment model",
@@ -50,7 +64,7 @@
   {
     "query": "Create a custom execution driver for running on Kubernetes",
     "should_trigger": false,
-    "note": "Building custom drivers → swamp-extension-driver"
+    "note": "Building custom drivers → swamp-extension"
   },
   {
     "query": "Execute the processing workflow and show logs",
@@ -61,17 +75,5 @@
     "query": "The report generation is timing out",
     "should_trigger": false,
     "note": "Debugging report execution issues → swamp-troubleshooting"
-  },
-  {
-    "query": "How do I read execution data in a report using dataHandles?",
-    "should_trigger": true
-  },
-  {
-    "query": "Access dataRepository from report context to get model output",
-    "should_trigger": true
-  },
-  {
-    "query": "What methods does UnifiedDataRepository expose in reports?",
-    "should_trigger": true
   }
 ]

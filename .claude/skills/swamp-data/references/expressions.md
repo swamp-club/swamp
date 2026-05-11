@@ -53,8 +53,8 @@ query result.
 | `data.findByTag("k", "v")`    | `data.query('tags.k == "v"')`                                              |
 | `data.findBySpec("m", "s")`   | `data.query('modelName == "m" && specName == "s"')`                        |
 
-See the `swamp-data-query` skill for the full list of queryable fields and
-predicate operators.
+See [fields.md](fields.md) for the full list of queryable fields and predicate
+operators.
 
 **DataRecord structure** returned by these functions:
 

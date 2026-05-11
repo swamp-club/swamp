@@ -35,8 +35,8 @@ schema and available methods.
 ## Step 3: Build a Custom Extension
 
 If nothing matches locally or in the registry, offer to build a custom extension
-model using the `swamp-extension-model` skill. This creates a typed model with
-proper Zod schemas for the service the user wants to automate.
+model using the `swamp-extension` skill. This creates a typed model with proper
+Zod schemas for the service the user wants to automate.
 
 Only use `command/shell` if the user's goal is genuinely a one-off ad-hoc
 command (e.g., "check my disk space right now") — never for wrapping CLI tools
@@ -118,7 +118,7 @@ doesn't start from zero.
 | Another model or edit the one they made | `swamp-model`             |
 | Chain models together                   | `swamp-workflow`          |
 | Secure credentials                      | `swamp-vault`             |
-| Inspect or query their data             | `swamp-data-query`        |
-| Build a typed model from scratch        | `swamp-extension-model`   |
+| Inspect or query their data             | `swamp-data`              |
+| Build a typed model from scratch        | `swamp-extension`         |
 | Share their work                        | `swamp-extension-publish` |
 | Something is broken                     | `swamp-troubleshooting`   |

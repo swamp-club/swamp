@@ -27,9 +27,52 @@
     "query": "How do I prune ephemeral data that's past its expiration?",
     "should_trigger": true
   },
-  { "query": "Configure data gc to run on a schedule", "should_trigger": true },
+  {
+    "query": "Configure data gc to run on a schedule",
+    "should_trigger": true
+  },
   {
     "query": "View the data lifecycle and retention settings",
+    "should_trigger": true
+  },
+  {
+    "query": "Find all data where the status attribute is failed",
+    "should_trigger": true
+  },
+  {
+    "query": "Query data artifacts filtered by model name and spec",
+    "should_trigger": true
+  },
+  {
+    "query": "Search data where tags.env equals prod",
+    "should_trigger": true
+  },
+  {
+    "query": "Which data has the team tag set to platform?",
+    "should_trigger": true
+  },
+  {
+    "query": "Use a CEL predicate to filter data by attributes",
+    "should_trigger": true
+  },
+  {
+    "query": "Extract hostnames from scanner model data using --select",
+    "should_trigger": true
+  },
+  {
+    "query": "What did the ingest method produce?",
+    "should_trigger": true
+  },
+  {
+    "query": "Browse the artifacts from the last factory run",
+    "should_trigger": true
+  },
+  {
+    "query": "How do I use data.query in a CEL expression?",
+    "should_trigger": true
+  },
+  {
+    "query": "Use context.queryData in my extension method to find records",
     "should_trigger": true
   },
   {
@@ -50,7 +93,7 @@
   {
     "query": "Help me set up a new datastore backend",
     "should_trigger": false,
-    "note": "Building datastore provider → swamp-extension-datastore"
+    "note": "Building datastore provider → swamp-extension"
   },
   {
     "query": "Debug why my workflow isn't reading the right data version",
@@ -60,6 +103,11 @@
   {
     "query": "Create a custom datastore for MongoDB",
     "should_trigger": false,
-    "note": "Building custom datastore → swamp-extension-datastore"
+    "note": "Building custom datastore → swamp-extension"
+  },
+  {
+    "query": "Chain three models together in a workflow",
+    "should_trigger": false,
+    "note": "Orchestrating models → swamp-workflow"
   }
 ]

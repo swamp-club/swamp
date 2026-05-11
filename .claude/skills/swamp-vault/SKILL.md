@@ -1,6 +1,14 @@
 ---
 name: swamp-vault
-description: Manage swamp vaults for secure secret storage. Use when creating vaults, storing secrets, retrieving secrets, listing vault keys, or working with vault expressions in workflows. Triggers on "vault", "secret", "secrets", "swamp vault", "store secret", "get secret", "vault expression", "aws secrets manager", "credential storage", "user-defined vault", "custom vault", "vault implementation", "extensions/vaults", "vault provider", or vault-related CLI commands.
+description: >
+  Manage swamp vaults for secure secret storage — create vault instances, store
+  and retrieve secrets, list keys, and use vault expressions in workflows. Use
+  when working with existing vault types through the CLI. Do NOT use for
+  creating custom vault TypeScript implementations (that is swamp-extension).
+  Triggers on "vault", "secret", "secrets", "swamp vault", "store secret",
+  "get secret", "vault expression", "aws secrets manager", "credential
+  storage", "vault create", "vault put", "vault read", "vault list-keys",
+  "vault migrate".
 ---
 
 # Swamp Vault Skill
@@ -284,7 +292,7 @@ The actual value is stored in the vault.
 
 A vault must be configured or an error is thrown at write time.
 
-See the **swamp-extension-model** skill for full schema examples.
+See the **swamp-extension** skill for full schema examples.
 
 ## Security Best Practices
 
@@ -296,7 +304,7 @@ Use separate vaults for dev/staging/prod to enforce environment separation.
 | -------------------------- | ----------------------- |
 | Vault usage in workflows   | `swamp-workflow`        |
 | Create/run models          | `swamp-model`           |
-| Create custom model types  | `swamp-extension-model` |
+| Create custom model types  | `swamp-extension`       |
 | Repository structure       | `swamp-repo`            |
 | Manage model data          | `swamp-data`            |
 | Understand swamp internals | `swamp-troubleshooting` |

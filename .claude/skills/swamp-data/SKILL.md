@@ -1,6 +1,20 @@
 ---
 name: swamp-data
-description: Manage swamp model data — list data artifacts, view version history, delete data artifacts, and run garbage collection. Use when working with swamp model data lifecycle, retention policies, version cleanup, or removing specific data artifacts. Triggers on "swamp data", "model data", "data list", "data get", "data versions", "garbage collection", "gc", "data gc", "data retention", "data lifecycle", "version history", "data cleanup", "data delete", "delete data artifact", "remove data", "purge data", "prune data", "expire data", "ephemeral data".
+description: >
+  Manage swamp model data — list data artifacts, view version history, delete
+  data artifacts, run garbage collection, and query data using CEL predicates.
+  Use when working with swamp model data lifecycle, retention policies, version
+  cleanup, removing specific data artifacts, searching for data by field values,
+  filtering by attributes or tags, or exploring results after running a model
+  method. Triggers on "swamp data", "model data", "data list", "data get",
+  "data versions", "garbage collection", "gc", "data gc", "data retention",
+  "data lifecycle", "version history", "data cleanup", "data delete", "delete
+  data artifact", "remove data", "purge data", "prune data", "expire data",
+  "ephemeral data", "data query", "query data", "find data", "search data
+  where", "filter data", "which data has", "data with", "select from data",
+  "data.query", "context.queryData", "CEL predicate", "data predicate",
+  "inspect results", "method output", "factory results", "browse artifacts",
+  "what did method produce".
 ---
 
 # Swamp Data Skill
@@ -35,8 +49,8 @@ predicate, a projection, or history beyond a single version.
 | `swamp data search --tag env=prod`    | `swamp data query 'tags.env == "prod"'`                                                     |
 
 The shortcut and the equivalent query run through the same catalog and return
-the same `DataRecord` shape. See the `swamp-data-query` skill for the full list
-of queryable fields and predicate operators.
+the same `DataRecord` shape. See [references/fields.md](references/fields.md)
+for the full list of queryable fields and predicate operators.
 
 ## Quick Reference
 
@@ -65,8 +79,8 @@ and version GC policies.
 ## Query Data
 
 Use `swamp data query` with CEL predicates for filtering and `--select` for
-projection. See the `swamp-data-query` skill for full query syntax, filterable
-fields, and projection examples.
+projection. See [references/fields.md](references/fields.md) for all filterable
+fields and CEL operators.
 
 ```bash
 # By model
@@ -318,6 +332,8 @@ Data is stored in the `.swamp/data/` directory:
 
 ## References
 
+- **Query fields**: See [references/fields.md](references/fields.md) for the
+  complete list of filterable fields, CEL operators, and predicate examples
 - **Output shapes**: See
   [references/output-shapes.md](references/output-shapes.md) for JSON output
   examples from all data commands

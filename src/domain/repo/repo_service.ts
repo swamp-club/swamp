@@ -104,6 +104,27 @@ function formatToolsList(tools: AiTool[]): string {
   return tools.length === 0 ? "none" : tools.join(", ");
 }
 
+const SUPERSEDED_SKILLS = [
+  "swamp-extension-model",
+  "swamp-extension-vault",
+  "swamp-extension-driver",
+  "swamp-extension-datastore",
+  "swamp-extension-quality",
+  "swamp-data-query",
+];
+
+async function removeSupersededSkills(skillsDir: string): Promise<void> {
+  for (const name of SUPERSEDED_SKILLS) {
+    const dir = join(skillsDir, name);
+    try {
+      await Deno.remove(dir, { recursive: true });
+      logger.info`Removed superseded skill ${name}`;
+    } catch (e) {
+      if (!(e instanceof Deno.errors.NotFound)) throw e;
+    }
+  }
+}
+
 /**
  * Pulled extensions present for one of the previously-enrolled tools that
  * were NOT copied into a newly-added tool's skills directory. Surfaced so
@@ -415,6 +436,9 @@ export class RepoService {
     const skillsDir = join(repoPath.value, SKILL_DIRS[tool]!);
     await this.skillAssets.copySkillsTo(skillsDir);
     const skillsCopied = this.skillAssets.getSkillNames();
+
+    // Remove superseded skill directories from prior versions
+    await removeSupersededSkills(skillsDir);
 
     // Create or update instructions file
     const instructionsFileChanged = alreadyExists
@@ -746,7 +770,7 @@ This repository is managed with [swamp](https://github.com/systeminit/swamp).
 ## Rules
 
 1. **Search before you build.** When automating AWS, APIs, or any external service: (a) search local types with \`swamp model type search <query>\`, (b) search community extensions with \`swamp extension search <query>\`, (c) if a community extension exists, install it with \`swamp extension pull <package>\` instead of building from scratch, (d) only create a custom extension model in \`extensions/models/\` if nothing exists. ${
-      skillAction("swamp-extension-model", "Use")
+      skillAction("swamp-extension", "Use")
     } for guidance. The \`command/shell\` model is ONLY for ad-hoc one-off shell commands, NEVER for wrapping CLI tools or building integrations.
 2. **Extend, don't be clever.** When a model covers the domain but lacks the method you need, extend it with \`export const extension\` — don't bypass it with shell scripts, CLI tools, or multi-step hacks. One method, one purpose. Use \`swamp model type describe <type> --json\` to check available methods.
 3. **Use the data model.** Once data exists in a model (via \`lookup\`, \`start\`, \`sync\`, etc.), reference it with CEL expressions. Don't re-fetch data that's already available.
@@ -781,39 +805,29 @@ ${
       )
     }
 ${skillListEntry("swamp-vault", "Manage secrets and credentials")}
-${skillListEntry("swamp-data", "Manage model data lifecycle")}
 ${
       skillListEntry(
-        "swamp-data-query",
-        "Query model data artifacts with CEL predicates",
+        "swamp-data",
+        "Manage model data lifecycle and query with CEL",
       )
     }
 ${
       skillListEntry(
         "swamp-report",
-        "Create and run reports for models and workflows",
+        "Run and configure reports for models and workflows",
       )
     }
 ${skillListEntry("swamp-repo", "Repository management")}
-${skillListEntry("swamp-extension-model", "Create custom TypeScript models")}
-${skillListEntry("swamp-extension-driver", "Create custom execution drivers")}
 ${
       skillListEntry(
-        "swamp-extension-datastore",
-        "Create custom datastore backends",
+        "swamp-extension",
+        "Create custom extensions (models, vaults, drivers, datastores, reports)",
       )
     }
-${skillListEntry("swamp-extension-vault", "Create custom vault providers")}
 ${
       skillListEntry(
         "swamp-extension-publish",
         "Publish extensions to the registry",
-      )
-    }
-${
-      skillListEntry(
-        "swamp-extension-quality",
-        "Improve extension quality scorecards",
       )
     }
 ${skillListEntry("swamp-issue", "Submit bug reports and feature requests")}

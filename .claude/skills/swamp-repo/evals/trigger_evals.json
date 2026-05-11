@@ -19,7 +19,11 @@
     "query": "Set up a new datastore for production use",
     "should_trigger": true
   },
-  { "query": "How do I upgrade the web application?", "should_trigger": true },
+  {
+    "query": "How do I add a second AI tool like Cursor to my existing swamp repo?",
+    "should_trigger": true,
+    "note": "Multi-tool enrollment is a repo management operation"
+  },
   {
     "query": "Release a stuck lock that's blocking datastore writes",
     "should_trigger": true
@@ -28,19 +32,24 @@
     "query": "Configure an S3 datastore for my swamp project",
     "should_trigger": true
   },
-  { "query": "Check the datastore status and health", "should_trigger": true },
+  {
+    "query": "Show the current datastore status and configuration",
+    "should_trigger": true,
+    "note": "Datastore status is a repo management operation"
+  },
   {
     "query": "How do I install swamp in a GitHub Actions CI pipeline?",
     "should_trigger": true
   },
   {
-    "query": "Create a GitHub Actions workflow that runs swamp on every PR",
-    "should_trigger": true
+    "query": "How do I set up CI/CD to run swamp on every PR?",
+    "should_trigger": true,
+    "note": "CI/CD is a listed trigger keyword"
   },
   {
     "query": "Create a custom model type for AWS Lambda",
     "should_trigger": false,
-    "note": "Building custom model types → swamp-extension-model"
+    "note": "Building custom model types → swamp-extension"
   },
   {
     "query": "List all the data versions in my system",
@@ -65,6 +74,6 @@
   {
     "query": "Implement a custom datastore backend for PostgreSQL",
     "should_trigger": false,
-    "note": "Building custom datastore → swamp-extension-datastore"
+    "note": "Building custom datastore → swamp-extension"
   }
 ]

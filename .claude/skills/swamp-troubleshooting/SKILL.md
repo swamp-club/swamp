@@ -2,21 +2,22 @@
 name: swamp-troubleshooting
 description: >
   Diagnose swamp problems and verify swamp's health through a layered
-  diagnostic loop — health checks (`swamp doctor ...`), error
-  inspection, tracing, and source reading. Prefer this skill when the
-  user's primary intent is diagnosis or health verification, not when
-  they're performing the underlying operation. Use when something is
-  broken ("swamp error", "failing", "not working", "crash", "timeout",
-  "bug", "debug", "troubleshoot", "root cause", "slow", "performance",
-  "latency"); when verifying setup health ("is swamp working", "is my
-  repo healthy", "verify swamp setup", "sanity check", "smoke test",
-  "is everything wired up", "are hooks firing", "health check",
-  "diagnose swamp"), often after `swamp init` or `swamp repo upgrade`;
-  when a swamp component looks broken ("audit log empty", "audit not
-  recording", "AI tool not recording", "hooks not firing", "extension
-  not loading", "swamp-warning", "preflight"); or for swamp internals
-  ("how does swamp", "what happens when", "where is", "internals",
-  "under the hood").
+  diagnostic loop — health checks (`swamp doctor ...`), error inspection,
+  tracing, and source reading. Prefer this skill when the user's primary
+  intent is diagnosis or health verification, not when they're performing
+  the underlying operation. Do NOT use for smoke testing extensions before
+  publish (that is swamp-extension) or for setting up repos (that is
+  swamp-repo). Use when something is broken ("swamp error", "failing",
+  "not working", "crash", "timeout", "bug", "debug", "troubleshoot",
+  "root cause", "slow", "performance", "latency", "erroring",
+  "workflow error", "step error"); when verifying setup health
+  ("is swamp working", "is my repo healthy", "verify swamp setup",
+  "sanity check", "health check", "diagnose swamp"), often after
+  `swamp init` or `swamp repo upgrade`; when a swamp component looks
+  broken ("audit log empty", "audit not recording", "hooks not firing",
+  "extension not loading", "swamp-warning", "preflight", "doctor audit",
+  "verify audit", "doctor extensions"); or for swamp internals ("how does
+  swamp", "what happens when", "where is", "internals", "under the hood").
 ---
 
 # Swamp Troubleshooting
@@ -113,7 +114,7 @@ For a typical investigation:
 | Run/create workflows                  | `swamp-workflow`                                                  |
 | Manage secrets                        | `swamp-vault`                                                     |
 | Manage repository / install / upgrade | `swamp-repo`                                                      |
-| Author custom TypeScript models       | `swamp-extension-model`                                           |
+| Author custom extensions              | `swamp-extension`                                                 |
 | Debug method preflight checks         | this skill, Tier 2 + [references/checks.md](references/checks.md) |
 
 ## References

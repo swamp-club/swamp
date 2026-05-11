@@ -81,7 +81,7 @@ When a model is run via a workflow, the driver is resolved from multiple sources
 Extension models (TypeScript models in `extensions/models/`) work with the
 Docker driver with no code changes. Swamp automatically generates a
 self-contained bundle that inlines all dependencies (including zod) for
-container execution. See the `swamp-extension-model` skill for details.
+container execution. See the `swamp-extension` skill for details.
 
 ## Design Reference
 

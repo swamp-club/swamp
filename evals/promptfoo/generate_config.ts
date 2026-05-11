@@ -63,10 +63,9 @@ const VALID_MODELS = Object.keys(PROVIDER_REGISTRY);
 const SKILLS_DIR = join(Deno.cwd(), ".claude", "skills");
 const SKILL_NAMES = [
   "swamp-data",
-  "swamp-extension-datastore",
-  "swamp-extension-driver",
-  "swamp-extension-model",
-  "swamp-extension-vault",
+  "swamp-extension",
+  "swamp-extension-publish",
+  "swamp-getting-started",
   "swamp-issue",
   "swamp-model",
   "swamp-repo",

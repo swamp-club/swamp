@@ -43,12 +43,12 @@
   {
     "query": "I want to build a custom vault provider that talks to HashiCorp Vault",
     "should_trigger": false,
-    "note": "Building custom vault provider → swamp-extension-vault"
+    "note": "Building custom vault provider → swamp-extension"
   },
   {
     "query": "Implement VaultProvider interface for Azure Key Vault",
     "should_trigger": false,
-    "note": "Implementing vault interface → swamp-extension-vault"
+    "note": "Implementing vault interface → swamp-extension"
   },
   {
     "query": "Show me the version history of my stored model data",
@@ -58,7 +58,7 @@
   {
     "query": "Create a new TypeScript model type for DNS management",
     "should_trigger": false,
-    "note": "Creating model types → swamp-extension-model"
+    "note": "Creating model types → swamp-extension"
   },
   {
     "query": "The vault command keeps crashing with a stack trace",
