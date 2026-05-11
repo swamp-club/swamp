@@ -61,7 +61,7 @@ other), opt in with `paths.base: manifest`. The default is unchanged in the code
 (a single ternary picks between the configured typed dir and the manifest's own
 directory), so omitting the field is the same as writing `paths.base: typedDir`
 — historical behavior. See
-[swamp-extension-publish references/publishing.md](../../swamp-extension-publish/references/publishing.md#path-resolution--pathsbase)
+[swamp-extension-publish references/publishing.md](../../../swamp-extension-publish/references/publishing.md#path-resolution--pathsbase)
 for the canonical reference.
 
 ```yaml

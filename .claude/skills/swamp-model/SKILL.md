@@ -7,7 +7,7 @@ description: >
   inputs, running or executing methods, viewing outputs, or managing lifecycle
   (edit, delete). Do NOT use when the user wants to build, create, or implement
   a custom model type, Zod schema, or TypeScript model — that is
-  swamp-extension-model. Do NOT use for orchestrating or chaining models in
+  swamp-extension. Do NOT use for orchestrating or chaining models in
   workflows — that is swamp-workflow. Triggers on "swamp model", "model type",
   "model schema", "create input", "type search", "type describe", "run method",
   "execute method", "validation method", "transform method", "enrichment model",
@@ -475,7 +475,7 @@ to inspect method execution results. See
 ### Inspecting Factory Method Results
 
 When a factory method produces multiple data artifacts, use `swamp data query`
-(from the **swamp-data-query** skill) to explore them:
+(from the **swamp-data** skill) to explore them:
 
 ```bash
 # List all artifacts from a model
@@ -532,12 +532,12 @@ validation.
 
 ## Choosing the Right Approach
 
-| Task                                                  | Approach                                  |
-| ----------------------------------------------------- | ----------------------------------------- |
-| New API/service integration                           | Extension model (`swamp-extension-model`) |
-| Existing model missing a method                       | Extend it (`swamp-extension-model`)       |
-| Reusable data pipeline (reports, analysis, summaries) | Report extension (`swamp-report`)         |
-| Ad-hoc debugging or one-off data inspection           | Inline processing is fine                 |
+| Task                                                  | Approach                            |
+| ----------------------------------------------------- | ----------------------------------- |
+| New API/service integration                           | Extension model (`swamp-extension`) |
+| Existing model missing a method                       | Extend it (`swamp-extension`)       |
+| Reusable data pipeline (reports, analysis, summaries) | Report extension (`swamp-report`)   |
+| Ad-hoc debugging or one-off data inspection           | Inline processing is fine           |
 
 ## When to Use Other Skills
 
@@ -547,8 +547,8 @@ validation.
 | Manage secrets                  | `swamp-vault`           |
 | Repository structure            | `swamp-repo`            |
 | Manage data lifecycle           | `swamp-data`            |
-| Explore/query method results    | `swamp-data-query`      |
-| Create custom TypeScript models | `swamp-extension-model` |
+| Explore/query method results    | `swamp-data`            |
+| Create custom TypeScript models | `swamp-extension`       |
 | Create reports for models       | `swamp-report`          |
 | Understand swamp internals      | `swamp-troubleshooting` |
 

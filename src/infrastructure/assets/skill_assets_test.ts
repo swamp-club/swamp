@@ -139,11 +139,11 @@ Deno.test("SkillAssets.copySkillsTo rejects path traversal attempts", async () =
   });
 });
 
-Deno.test("SkillAssets includes swamp-extension-model skill", () => {
+Deno.test("SkillAssets includes swamp-extension skill", () => {
   const assets = new SkillAssets();
   const names = assets.getSkillNames();
 
-  assertEquals(names.includes("swamp-extension-model"), true);
+  assertEquals(names.includes("swamp-extension"), true);
 });
 
 Deno.test("SkillAssets.copySkillsTo copies nested reference files", async () => {
@@ -151,29 +151,30 @@ Deno.test("SkillAssets.copySkillsTo copies nested reference files", async () => 
     const assets = new SkillAssets();
     await assets.copySkillsTo(dir);
 
-    // Check that swamp-extension-model skill and references were copied
-    const skillPath = join(dir, "swamp-extension-model", "SKILL.md");
-    const examplesPath = join(
+    const skillPath = join(dir, "swamp-extension", "SKILL.md");
+    const modelApiPath = join(
       dir,
-      "swamp-extension-model",
+      "swamp-extension",
       "references",
-      "examples.md",
+      "model",
+      "api.md",
     );
-    const troubleshootingPath = join(
+    const vaultApiPath = join(
       dir,
-      "swamp-extension-model",
+      "swamp-extension",
       "references",
-      "troubleshooting.md",
+      "vault",
+      "api.md",
     );
 
     const skillStat = await Deno.stat(skillPath);
     assertEquals(skillStat.isFile, true);
 
-    const examplesStat = await Deno.stat(examplesPath);
-    assertEquals(examplesStat.isFile, true);
+    const modelApiStat = await Deno.stat(modelApiPath);
+    assertEquals(modelApiStat.isFile, true);
 
-    const troubleshootingStat = await Deno.stat(troubleshootingPath);
-    assertEquals(troubleshootingStat.isFile, true);
+    const vaultApiStat = await Deno.stat(vaultApiPath);
+    assertEquals(vaultApiStat.isFile, true);
   });
 });
 
@@ -323,15 +324,16 @@ Deno.test("SkillAssets.copySkillsTo copies swamp-vault examples file", async () 
   });
 });
 
-Deno.test("SkillAssets.copySkillsTo copies swamp-extension-model scenarios file", async () => {
+Deno.test("SkillAssets.copySkillsTo copies swamp-extension model scenarios file", async () => {
   await withTempDir(async (dir) => {
     const assets = new SkillAssets();
     await assets.copySkillsTo(dir);
 
     const scenariosPath = join(
       dir,
-      "swamp-extension-model",
+      "swamp-extension",
       "references",
+      "model",
       "scenarios.md",
     );
 
@@ -347,32 +349,16 @@ Deno.test("SkillAssets includes swamp-troubleshooting skill", () => {
   assertEquals(names.includes("swamp-troubleshooting"), true);
 });
 
-Deno.test("SkillAssets.copySkillsTo copies swamp-extension-model api file", async () => {
-  await withTempDir(async (dir) => {
-    const assets = new SkillAssets();
-    await assets.copySkillsTo(dir);
-
-    const apiPath = join(
-      dir,
-      "swamp-extension-model",
-      "references",
-      "api.md",
-    );
-
-    const apiStat = await Deno.stat(apiPath);
-    assertEquals(apiStat.isFile, true);
-  });
-});
-
-Deno.test("SkillAssets.copySkillsTo copies swamp-extension-model checks file", async () => {
+Deno.test("SkillAssets.copySkillsTo copies swamp-extension model checks file", async () => {
   await withTempDir(async (dir) => {
     const assets = new SkillAssets();
     await assets.copySkillsTo(dir);
 
     const checksPath = join(
       dir,
-      "swamp-extension-model",
+      "swamp-extension",
       "references",
+      "model",
       "checks.md",
     );
 
@@ -381,15 +367,16 @@ Deno.test("SkillAssets.copySkillsTo copies swamp-extension-model checks file", a
   });
 });
 
-Deno.test("SkillAssets.copySkillsTo copies swamp-extension-model smoke_testing file", async () => {
+Deno.test("SkillAssets.copySkillsTo copies swamp-extension model smoke_testing file", async () => {
   await withTempDir(async (dir) => {
     const assets = new SkillAssets();
     await assets.copySkillsTo(dir);
 
     const smokePath = join(
       dir,
-      "swamp-extension-model",
+      "swamp-extension",
       "references",
+      "model",
       "smoke_testing.md",
     );
 
@@ -432,60 +419,42 @@ Deno.test("SkillAssets.copySkillsTo copies swamp-workflow expressions-and-foreac
   });
 });
 
-Deno.test("SkillAssets includes swamp-extension-datastore skill", () => {
-  const assets = new SkillAssets();
-  const names = assets.getSkillNames();
-
-  assertEquals(names.includes("swamp-extension-datastore"), true);
-});
-
-Deno.test("SkillAssets.copySkillsTo copies swamp-extension-datastore reference files", async () => {
+Deno.test("SkillAssets.copySkillsTo copies swamp-extension datastore reference files", async () => {
   await withTempDir(async (dir) => {
     const assets = new SkillAssets();
     await assets.copySkillsTo(dir);
 
-    const skillPath = join(dir, "swamp-extension-datastore", "SKILL.md");
     const apiPath = join(
       dir,
-      "swamp-extension-datastore",
+      "swamp-extension",
       "references",
+      "datastore",
       "api.md",
     );
     const examplesPath = join(
       dir,
-      "swamp-extension-datastore",
+      "swamp-extension",
       "references",
+      "datastore",
       "examples.md",
     );
-    const troubleshootingPath = join(
-      dir,
-      "swamp-extension-datastore",
-      "references",
-      "troubleshooting.md",
-    );
-
-    const skillStat = await Deno.stat(skillPath);
-    assertEquals(skillStat.isFile, true);
 
     const apiStat = await Deno.stat(apiPath);
     assertEquals(apiStat.isFile, true);
 
     const examplesStat = await Deno.stat(examplesPath);
     assertEquals(examplesStat.isFile, true);
-
-    const troubleshootingStat = await Deno.stat(troubleshootingPath);
-    assertEquals(troubleshootingStat.isFile, true);
   });
 });
 
-Deno.test("SkillAssets.copySkillsTo copies swamp-extension-model adversarial-review file", async () => {
+Deno.test("SkillAssets.copySkillsTo copies swamp-extension adversarial-review file", async () => {
   await withTempDir(async (dir) => {
     const assets = new SkillAssets();
     await assets.copySkillsTo(dir);
 
     const adversarialPath = join(
       dir,
-      "swamp-extension-model",
+      "swamp-extension",
       "references",
       "adversarial-review.md",
     );
@@ -495,49 +464,31 @@ Deno.test("SkillAssets.copySkillsTo copies swamp-extension-model adversarial-rev
   });
 });
 
-Deno.test("SkillAssets includes swamp-extension-driver skill", () => {
-  const assets = new SkillAssets();
-  const names = assets.getSkillNames();
-
-  assertEquals(names.includes("swamp-extension-driver"), true);
-});
-
-Deno.test("SkillAssets.copySkillsTo copies swamp-extension-driver reference files", async () => {
+Deno.test("SkillAssets.copySkillsTo copies swamp-extension driver reference files", async () => {
   await withTempDir(async (dir) => {
     const assets = new SkillAssets();
     await assets.copySkillsTo(dir);
 
-    const skillPath = join(dir, "swamp-extension-driver", "SKILL.md");
     const apiPath = join(
       dir,
-      "swamp-extension-driver",
+      "swamp-extension",
       "references",
+      "driver",
       "api.md",
     );
     const examplesPath = join(
       dir,
-      "swamp-extension-driver",
+      "swamp-extension",
       "references",
+      "driver",
       "examples.md",
     );
-    const troubleshootingPath = join(
-      dir,
-      "swamp-extension-driver",
-      "references",
-      "troubleshooting.md",
-    );
-
-    const skillStat = await Deno.stat(skillPath);
-    assertEquals(skillStat.isFile, true);
 
     const apiStat = await Deno.stat(apiPath);
     assertEquals(apiStat.isFile, true);
 
     const examplesStat = await Deno.stat(examplesPath);
     assertEquals(examplesStat.isFile, true);
-
-    const troubleshootingStat = await Deno.stat(troubleshootingPath);
-    assertEquals(troubleshootingStat.isFile, true);
   });
 });
 
@@ -581,34 +532,25 @@ Deno.test("SkillAssets.copySkillsTo copies swamp-troubleshooting skill", async (
   });
 });
 
-Deno.test("SkillAssets includes swamp-extension-quality skill", () => {
-  const assets = new SkillAssets();
-  const names = assets.getSkillNames();
-
-  assertEquals(names.includes("swamp-extension-quality"), true);
-});
-
-Deno.test("SkillAssets.copySkillsTo copies swamp-extension-quality reference files", async () => {
+Deno.test("SkillAssets.copySkillsTo copies swamp-extension quality reference files", async () => {
   await withTempDir(async (dir) => {
     const assets = new SkillAssets();
     await assets.copySkillsTo(dir);
 
-    const skillPath = join(dir, "swamp-extension-quality", "SKILL.md");
     const rubricPath = join(
       dir,
-      "swamp-extension-quality",
+      "swamp-extension",
       "references",
+      "quality",
       "rubric.md",
     );
     const templatesPath = join(
       dir,
-      "swamp-extension-quality",
+      "swamp-extension",
       "references",
+      "quality",
       "templates.md",
     );
-
-    const skillStat = await Deno.stat(skillPath);
-    assertEquals(skillStat.isFile, true);
 
     const rubricStat = await Deno.stat(rubricPath);
     assertEquals(rubricStat.isFile, true);

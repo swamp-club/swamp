@@ -89,7 +89,7 @@ my-swamp-repo/
 │   │   ├── swamp-vault/
 │   │   ├── swamp-data/
 │   │   ├── swamp-repo/
-│   │   └── swamp-extension-model/
+│   │   └── swamp-extension/
 │   └── settings.local.json      # Claude permissions
 │
 ├── .swamp.yaml                  # Repository metadata

@@ -1,6 +1,16 @@
 ---
 name: swamp-extension-publish
-description: Publish swamp extensions to the registry with an enforced state-machine checklist that verifies repo initialization, authentication, manifest validation, collective ownership, version bumping, formatting, and dry-run before allowing a push. Use when publishing, pushing, or releasing extensions. Triggers on "publish extension", "push extension", "extension push", "publish to registry", "swamp extension push", "release extension", "prepare for publishing", "extension-publish".
+description: >
+  Publish swamp extensions to the registry with an enforced state-machine
+  checklist that verifies repo initialization, authentication, manifest
+  validation, collective ownership, version bumping, formatting, and dry-run
+  before allowing a push. Do NOT use for creating extensions (that is
+  swamp-extension), improving quality scores (that is swamp-extension), or
+  smoke testing extensions before push (that is swamp-extension). Use when
+  publishing, pushing, or releasing extensions. Triggers on "publish
+  extension", "push extension", "extension push", "publish to registry",
+  "swamp extension push", "release extension", "prepare for publishing",
+  "extension-publish".
 ---
 
 # Swamp Extension Publish

@@ -43,7 +43,7 @@
   {
     "query": "I want to create a custom SSH execution driver",
     "should_trigger": false,
-    "note": "Building custom drivers → swamp-extension-driver"
+    "note": "Building custom drivers → swamp-extension"
   },
   {
     "query": "How do I describe the schema for this data model?",

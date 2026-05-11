@@ -325,7 +325,7 @@ globalArguments:
 
 ### Query Workflow-Produced Data
 
-Use `swamp data query` with CEL predicates (see `swamp-data-query` skill):
+Use `swamp data query` with CEL predicates (see [fields.md](fields.md)):
 
 ```bash
 # Find all data created by a specific workflow

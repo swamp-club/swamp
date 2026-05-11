@@ -34,7 +34,7 @@
   {
     "query": "Make a manifest.yaml so I can push my extension",
     "should_trigger": true,
-    "note": "manifest creation for publishing triggers both this skill and swamp-extension-model"
+    "note": "manifest creation for publishing triggers both this skill and swamp-extension"
   },
   {
     "query": "swamp extension push manifest.yaml",
@@ -43,7 +43,7 @@
   {
     "query": "How do I create a custom model using TypeScript and Zod?",
     "should_trigger": false,
-    "note": "Creating models → swamp-extension-model"
+    "note": "Creating models → swamp-extension"
   },
   {
     "query": "List all the data stored from running my models",
@@ -63,11 +63,11 @@
   {
     "query": "Create a custom vault for AWS Secrets Manager",
     "should_trigger": false,
-    "note": "Creating vaults → swamp-extension-vault"
+    "note": "Creating vaults → swamp-extension"
   },
   {
     "query": "How do I smoke test my extension model before pushing?",
     "should_trigger": false,
-    "note": "Smoke testing → swamp-extension-model"
+    "note": "Smoke testing → swamp-extension"
   }
 ]
