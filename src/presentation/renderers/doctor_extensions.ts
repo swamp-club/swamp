@@ -209,7 +209,9 @@ function renderRepairLog(report: RepairReport): void {
 
   if (report.mode === "dry-run") {
     writeOutput(
-      dim("\n  Run with --repair --apply to perform these operations."),
+      dim(
+        "\n  Run with --repair (without --dry-run) to perform these operations.",
+      ),
     );
   }
 }

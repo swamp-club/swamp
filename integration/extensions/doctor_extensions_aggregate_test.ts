@@ -83,7 +83,7 @@ Deno.test("doctor extensions --json includes aggregateState field", async () => 
   });
 });
 
-Deno.test("doctor extensions --repair dry-run produces no filesystem changes", async () => {
+Deno.test("doctor extensions --repair --dry-run produces no filesystem changes", async () => {
   await withTestRepo(async (repoDir) => {
     // Create a bundle file that will look like an orphan (no model references it).
     const orphanDir = join(repoDir, ".swamp", "bundles", "orphan-ns");
@@ -92,7 +92,7 @@ Deno.test("doctor extensions --repair dry-run produces no filesystem changes", a
     await Deno.writeTextFile(orphanFile, "// orphan bundle");
 
     const result = await runCliCommand(
-      ["doctor", "extensions", "--repair", "--json"],
+      ["doctor", "extensions", "--repair", "--dry-run", "--json"],
       repoDir,
     );
     assertEquals(result.code, 0, `Expected exit 0: ${result.stderr}`);
@@ -106,7 +106,7 @@ Deno.test("doctor extensions --repair dry-run produces no filesystem changes", a
   });
 });
 
-Deno.test("doctor extensions --repair --apply evicts only true orphans", async () => {
+Deno.test("doctor extensions --repair evicts only true orphans", async () => {
   await withTestRepo(async (repoDir) => {
     // Create an orphan bundle file (no catalog reference).
     const orphanDir = join(repoDir, ".swamp", "bundles", "orphan-ns");
@@ -115,7 +115,7 @@ Deno.test("doctor extensions --repair --apply evicts only true orphans", async (
     await Deno.writeTextFile(orphanFile, "// stale bundle");
 
     const result = await runCliCommand(
-      ["doctor", "extensions", "--repair", "--apply", "--json"],
+      ["doctor", "extensions", "--repair", "--json"],
       repoDir,
     );
     assertEquals(result.code, 0, `Expected exit 0: ${result.stderr}`);
@@ -134,7 +134,7 @@ Deno.test("doctor extensions --repair --apply evicts only true orphans", async (
   });
 });
 
-Deno.test("doctor extensions --repair --apply is idempotent", async () => {
+Deno.test("doctor extensions --repair is idempotent", async () => {
   await withTestRepo(async (repoDir) => {
     // Create an orphan to clean up.
     const orphanDir = join(repoDir, ".swamp", "bundles", "orphan-ns");
@@ -143,7 +143,7 @@ Deno.test("doctor extensions --repair --apply is idempotent", async () => {
 
     // First apply — cleans up.
     const run1 = await runCliCommand(
-      ["doctor", "extensions", "--repair", "--apply", "--json"],
+      ["doctor", "extensions", "--repair", "--json"],
       repoDir,
     );
     assertEquals(run1.code, 0);
@@ -152,7 +152,7 @@ Deno.test("doctor extensions --repair --apply is idempotent", async () => {
 
     // Second apply — no-op.
     const run2 = await runCliCommand(
-      ["doctor", "extensions", "--repair", "--apply", "--json"],
+      ["doctor", "extensions", "--repair", "--json"],
       repoDir,
     );
     assertEquals(run2.code, 0);
@@ -204,9 +204,9 @@ Deno.test("doctor extensions: Indexed bundle file is NOT classified as orphan", 
       }
     }
 
-    // Now run --repair --apply and confirm the bundle file survives.
+    // Now run --repair and confirm the bundle file survives.
     const repair = await runCliCommand(
-      ["doctor", "extensions", "--repair", "--apply", "--json"],
+      ["doctor", "extensions", "--repair", "--json"],
       repoDir,
     );
     assertEquals(repair.code, 0);
@@ -221,7 +221,7 @@ Deno.test("doctor extensions: Indexed bundle file is NOT classified as orphan", 
             assertEquals(
               evictedPath.includes(detail.bundlePath),
               false,
-              `--apply should NEVER evict an Indexed bundle: ${evictedPath}`,
+              `--repair should NEVER evict an Indexed bundle: ${evictedPath}`,
             );
           }
         }

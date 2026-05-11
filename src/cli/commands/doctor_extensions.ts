@@ -92,11 +92,11 @@ export const doctorExtensionsCommand = new Command()
   .example("Show per-source detail", "swamp doctor extensions --verbose")
   .example(
     "Preview what repair would clean up",
-    "swamp doctor extensions --repair",
+    "swamp doctor extensions --repair --dry-run",
   )
   .example(
     "Apply repair operations",
-    "swamp doctor extensions --repair --apply",
+    "swamp doctor extensions --repair",
   )
   .option(
     "--repo-dir <dir:string>",
@@ -105,11 +105,11 @@ export const doctorExtensionsCommand = new Command()
   .option("--verbose", "Show per-source detail for each extension")
   .option(
     "--repair",
-    "Enter repair mode (dry-run by default, use --apply to execute)",
+    "Prune Tombstoned catalog rows and evict unreferenced bundle files",
   )
   .option(
-    "--apply",
-    "Execute repair operations (implies --repair)",
+    "--dry-run",
+    "Preview repair operations without executing (use with --repair)",
   )
   .action(async function (options: AnyOptions) {
     const cliCtx = createContext(options as GlobalOptions, [
@@ -119,9 +119,8 @@ export const doctorExtensionsCommand = new Command()
     cliCtx.logger.debug("Executing doctor extensions command");
 
     const verbose = options.verbose === true;
-    // --apply implies --repair.
-    const repair = options.repair === true || options.apply === true;
-    const apply = options.apply === true;
+    const repair = options.repair === true;
+    const dryRun = options.dryRun === true;
 
     const repoDir = resolveRepoDir(options.repoDir);
     // Same gate as `doctor audit` — fails loudly outside a swamp repo.
@@ -250,7 +249,7 @@ export const doctorExtensionsCommand = new Command()
               return repairExtensions({
                 aggregateReport,
                 deleteBySourcePaths: (paths) => repo.deleteBySourcePaths(paths),
-                apply,
+                apply: !dryRun,
               });
             } finally {
               repo.close();

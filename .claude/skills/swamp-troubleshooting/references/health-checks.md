@@ -126,8 +126,8 @@ entries cannot mask failures. Exits 1 on any registry fail.
 swamp doctor extensions
 swamp doctor extensions --json
 swamp doctor extensions --verbose
+swamp doctor extensions --repair --dry-run
 swamp doctor extensions --repair
-swamp doctor extensions --repair --apply
 ```
 
 ### Flags
@@ -136,9 +136,8 @@ swamp doctor extensions --repair --apply
 | ----------- | ----------------------------------------------------------------- |
 | `--json`    | Machine-readable output for CI                                    |
 | `--verbose` | Show per-source detail (source path, RowState, fingerprint)       |
-| `--repair`  | Enter repair mode (dry-run by default — lists what would change)  |
-| `--apply`   | Execute repair operations (implies `--repair`); prunes Tombstoned |
-|             | rows and evicts unreferenced bundle files                         |
+| `--repair`  | Prune Tombstoned rows and evict unreferenced bundle files         |
+| `--dry-run` | Preview repair operations without executing (use with `--repair`) |
 
 ### Registries checked
 

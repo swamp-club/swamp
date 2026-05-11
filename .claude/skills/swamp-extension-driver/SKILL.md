@@ -26,7 +26,7 @@ startup.
 | Verify registration | `swamp model type search --json`               |
 | Verify it loads     | `swamp doctor extensions --json`               |
 | Inspect catalog     | `swamp doctor extensions --verbose`            |
-| Repair stale state  | `swamp doctor extensions --repair --apply`     |
+| Repair stale state  | `swamp doctor extensions --repair`             |
 | Push extension      | `swamp extension push manifest.yaml --json`    |
 | Dry-run push        | `swamp extension push manifest.yaml --dry-run` |
 
