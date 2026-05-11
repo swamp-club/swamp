@@ -29,6 +29,7 @@ import { createIssueGetRenderer } from "../../presentation/renderers/issue_get.t
 import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
 import { SwampClubClient } from "../../infrastructure/http/swamp_club_client.ts";
 import { UserError } from "../../domain/errors.ts";
+import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -47,17 +48,14 @@ export const issueGetCommand = new Command()
     }
 
     const credentials = await new AuthRepository().load();
-    if (!credentials) {
-      throw new UserError(
-        'Not logged in. Run "swamp auth login" first.',
-      );
-    }
+    const serverUrl = credentials?.serverUrl ??
+      Deno.env.get("SWAMP_CLUB_URL") ?? DEFAULT_SWAMP_CLUB_URL;
 
-    const client = new SwampClubClient(credentials.serverUrl);
+    const client = new SwampClubClient(serverUrl);
     const deps: IssueGetDeps = {
       fetchIssue: async (num) => {
-        const issue = await client.fetchIssue(credentials.apiKey, num);
-        return { ...issue, serverUrl: credentials.serverUrl };
+        const issue = await client.fetchIssue(credentials?.apiKey, num);
+        return { ...issue, serverUrl };
       },
     };
 

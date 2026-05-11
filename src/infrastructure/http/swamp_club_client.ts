@@ -266,15 +266,19 @@ export class SwampClubClient {
 
   /**
    * Fetch an existing Lab issue by number.
-   * Authenticates using the x-api-key header.
+   * When an API key is provided, authenticates using the x-api-key header.
    */
   async fetchIssue(
-    apiKey: string,
+    apiKey: string | undefined,
     issueNumber: number,
   ): Promise<FetchIssueResponse> {
+    const headers: Record<string, string> = {};
+    if (apiKey) {
+      headers["x-api-key"] = apiKey;
+    }
     const res = await this.fetch(`/api/v1/lab/issues/${issueNumber}`, {
       method: "GET",
-      headers: { "x-api-key": apiKey },
+      headers,
     });
 
     if (!res.ok) {
