@@ -739,6 +739,12 @@ export {
   type DoctorRegistryResult,
 } from "./extensions/doctor.ts";
 
+// Extension RowState (used by doctor extensions rendering)
+export {
+  ROW_STATE_TAGS,
+  type RowStateTag,
+} from "../domain/extensions/row_state.ts";
+
 // Extension aggregate state (`swamp doctor extensions` W6)
 export {
   buildAggregateState,

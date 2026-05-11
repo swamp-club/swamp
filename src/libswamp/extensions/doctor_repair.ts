@@ -90,15 +90,19 @@ export async function repairExtensions(
     });
   }
 
+  let actualPruned = rowsToPrune.length;
+  let actualEvicted = filesToEvict.length;
+
   if (deps.apply) {
-    // Execute the repairs.
     if (rowsToPrune.length > 0) {
-      const deleted = deps.deleteBySourcePaths(rowsToPrune);
-      logger.info`Pruned ${deleted} catalog row(s)`;
+      actualPruned = deps.deleteBySourcePaths(rowsToPrune);
+      logger.info`Pruned ${actualPruned} catalog row(s)`;
     }
+    actualEvicted = 0;
     for (const file of filesToEvict) {
       try {
         await Deno.remove(file);
+        actualEvicted++;
         logger.info`Evicted bundle file: ${file}`;
       } catch (error) {
         if (!(error instanceof Deno.errors.NotFound)) {
@@ -111,7 +115,7 @@ export async function repairExtensions(
   return {
     mode: deps.apply ? "applied" : "dry-run",
     operations,
-    prunedRowCount: rowsToPrune.length,
-    evictedFileCount: filesToEvict.length,
+    prunedRowCount: actualPruned,
+    evictedFileCount: actualEvicted,
   };
 }

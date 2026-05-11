@@ -161,10 +161,21 @@ export async function buildAggregateState(deps: {
   let totalSources = 0;
   let healthySources = 0;
 
-  // Collect all bundle paths referenced by non-Tombstoned catalog rows.
-  // Use repo-relative paths for the set so the comparison is immune to
-  // symlink aliasing (e.g. /var vs /private/var on macOS).
+  // Collect repo-relative bundle paths from all sources. States without
+  // a bundle (Tombstoned, BundleBuildFailed, EntryPointUnreadable) return
+  // "" from extractBundlePath and are filtered by the if-guard below.
+  // Repo-relative comparison is immune to symlink aliasing.
   const referencedBundleRelPaths = new Set<string>();
+
+  // Collect source metadata and paths to check in a single pass,
+  // then batch the fileExists calls with Promise.all.
+  interface OrphanCandidate {
+    sourcePath: string;
+    extensionName: string;
+    stateTag: RowStateTag;
+    bundlePath: string;
+  }
+  const orphanCandidates: OrphanCandidate[] = [];
 
   for (const ext of deps.extensions) {
     const dist = emptyDistribution();
@@ -194,21 +205,16 @@ export async function buildAggregateState(deps: {
         kind: source.kind,
       });
 
-      // Detect catalog orphans: source_path missing on disk.
-      // Skip Tombstoned — they're already known-deleted.
       if (
         source.state.tag !== "Tombstoned" &&
         source.state.tag !== "OrphanedBundleOnly"
       ) {
-        const exists = await fileExists(source.id.canonicalPath);
-        if (!exists) {
-          catalogOrphans.push({
-            sourcePath: source.id.canonicalPath,
-            extensionName: ext.name,
-            stateTag: source.state.tag,
-            bundlePath,
-          });
-        }
+        orphanCandidates.push({
+          sourcePath: source.id.canonicalPath,
+          extensionName: ext.name,
+          stateTag: source.state.tag,
+          bundlePath,
+        });
       }
     }
 
@@ -219,6 +225,16 @@ export async function buildAggregateState(deps: {
       sourceCount,
       stateDistribution: dist,
     });
+  }
+
+  // Batch all fileExists checks in parallel.
+  const existsResults = await Promise.all(
+    orphanCandidates.map((c) => fileExists(c.sourcePath)),
+  );
+  for (let i = 0; i < orphanCandidates.length; i++) {
+    if (!existsResults[i]) {
+      catalogOrphans.push(orphanCandidates[i]);
+    }
   }
 
   // Detect bundle orphans: files on disk not referenced by any catalog row.

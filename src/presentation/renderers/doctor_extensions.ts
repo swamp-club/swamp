@@ -20,15 +20,15 @@
 import { bold, cyan, dim, green, red, yellow } from "@std/fmt/colors";
 import {
   DOCTOR_REGISTRY_ORDER,
+  type DoctorAggregateReport,
   type DoctorExtensionsEvent,
   type DoctorOverallStatus,
   type DoctorRegistryName,
   type DoctorRegistryResult,
   type EventHandlers,
+  type RepairReport,
+  ROW_STATE_TAGS,
 } from "../../libswamp/mod.ts";
-import type { DoctorAggregateReport } from "../../libswamp/extensions/doctor_aggregate.ts";
-import type { RepairReport } from "../../libswamp/extensions/doctor_repair.ts";
-import { ROW_STATE_TAGS } from "../../domain/extensions/row_state.ts";
 import { UserError } from "../../domain/errors.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import type { OutputMode } from "../output/output.ts";
@@ -188,13 +188,18 @@ function renderRepairLog(report: RepairReport): void {
     return;
   }
 
+  const pastTense = report.mode === "applied";
   writeOutput(
-    `  ${report.prunedRowCount} catalog row(s) to prune, ${report.evictedFileCount} bundle file(s) to evict`,
+    `  ${report.prunedRowCount} catalog row(s) ${
+      pastTense ? "pruned" : "to prune"
+    }, ${report.evictedFileCount} bundle file(s) ${
+      pastTense ? "evicted" : "to evict"
+    }`,
   );
   writeOutput("");
 
   for (const op of report.operations) {
-    const icon = op.kind === "catalog-row-pruned" ? "🗑" : "🗑";
+    const icon = op.kind === "catalog-row-pruned" ? "x" : "-";
     const label = op.kind === "catalog-row-pruned"
       ? dim("[row]")
       : dim("[file]");

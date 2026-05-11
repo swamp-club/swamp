@@ -40,9 +40,11 @@
 import { Command } from "@cliffy/command";
 import { isAbsolute, join, relative, resolve } from "@std/path";
 import {
+  buildAggregateState,
   consumeStream,
   doctorExtensions,
   type DoctorRegistryDeps,
+  repairExtensions,
 } from "../../libswamp/mod.ts";
 import {
   getExtensionLoadWarnings,
@@ -57,8 +59,6 @@ import { ExtensionCatalogStore } from "../../infrastructure/persistence/extensio
 import { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import { swampPath } from "../../infrastructure/persistence/paths.ts";
-import { buildAggregateState } from "../../libswamp/extensions/doctor_aggregate.ts";
-import { repairExtensions } from "../../libswamp/extensions/doctor_repair.ts";
 import { createDoctorExtensionsRenderer } from "../../presentation/renderers/doctor_extensions.ts";
 import {
   createContext,

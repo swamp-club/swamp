@@ -326,16 +326,18 @@ export class ExtensionRepository {
 
   /**
    * Deletes catalog rows by source path. Used by the W6 repair service
-   * to prune cleanup-eligible rows (Tombstoned, OrphanedBundleOnly where
-   * neither source nor bundle exists on disk). Runs inside a single
-   * transaction for atomicity.
+   * to prune Tombstoned rows. Runs inside a single transaction for
+   * atomicity. Returns the count of rows that actually existed and
+   * were deleted (not the input count).
    */
   deleteBySourcePaths(paths: readonly string[]): number {
     let deleted = 0;
     this.catalog.runInTransaction(() => {
       for (const p of paths) {
-        this.catalog.removeBySourcePath(p);
-        deleted++;
+        if (this.catalog.findBySourcePath(p)) {
+          this.catalog.removeBySourcePath(p);
+          deleted++;
+        }
       }
     });
     return deleted;
