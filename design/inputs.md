@@ -246,7 +246,8 @@ Method arguments take precedence when a key appears in both schemas (more
 specific scope wins).
 
 String values are coerced to match schema types (e.g., `"428"` → `428` for a
-number field) using the same `coerceInputTypes` function used elsewhere.
+number field) using `coerceMethodArgs`, which introspects the Zod schema directly
+and handles both Zod v3 and v4.
 
 This routing happens at definition creation time. The routed global arguments
 are stored in the auto-created definition; the routed method arguments are

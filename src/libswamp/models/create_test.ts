@@ -289,3 +289,165 @@ Deno.test("modelCreate: yields error when name already exists", async () => {
   assertEquals(last.kind, "error");
   assertEquals(last.error.code, "already_exists");
 });
+
+Deno.test("modelCreate: coerces string boolean global arguments", async () => {
+  const globalArgsSchema = z.object({
+    name: z.string(),
+    enabled: z.boolean(),
+  });
+
+  const deps = makeDeps({
+    getModelDef: () => ({
+      type: { normalized: "test/bool-args" },
+      version: "1.0.0",
+      globalArguments: globalArgsSchema,
+      methods: {},
+      resources: {},
+    } as unknown as ModelDefinition),
+    createAndSave: (_type, _name, _version, globalArguments) => {
+      assertEquals(
+        (globalArguments as Record<string, unknown>)?.enabled,
+        true,
+      );
+      return Promise.resolve({
+        id: "def-1",
+        name: "my-model",
+      } as unknown as Awaited<
+        ReturnType<ModelCreateDeps["createAndSave"]>
+      >);
+    },
+  });
+
+  const events = await collect<ModelCreateEvent>(
+    modelCreate(createLibSwampContext(), deps, {
+      typeArg: "test/bool-args",
+      name: "my-model",
+      globalArguments: { name: "test", enabled: "true" },
+    }),
+  );
+
+  const completed = events[events.length - 1] as Extract<
+    ModelCreateEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.kind, "completed");
+});
+
+Deno.test("modelCreate: coerces string values with default-wrapped schema", async () => {
+  const globalArgsSchema = z.object({
+    cpus: z.number().default(4),
+  });
+
+  const deps = makeDeps({
+    getModelDef: () => ({
+      type: { normalized: "test/default-args" },
+      version: "1.0.0",
+      globalArguments: globalArgsSchema,
+      methods: {},
+      resources: {},
+    } as unknown as ModelDefinition),
+    createAndSave: (_type, _name, _version, globalArguments) => {
+      assertEquals(
+        (globalArguments as Record<string, unknown>)?.cpus,
+        8,
+      );
+      return Promise.resolve({
+        id: "def-1",
+        name: "my-model",
+      } as unknown as Awaited<
+        ReturnType<ModelCreateDeps["createAndSave"]>
+      >);
+    },
+  });
+
+  const events = await collect<ModelCreateEvent>(
+    modelCreate(createLibSwampContext(), deps, {
+      typeArg: "test/default-args",
+      name: "my-model",
+      globalArguments: { cpus: "8" },
+    }),
+  );
+
+  const completed = events[events.length - 1] as Extract<
+    ModelCreateEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.kind, "completed");
+});
+
+Deno.test("modelCreate: coerces Zod v3-style schema global arguments", async () => {
+  // Simulate a Zod v3 schema where _def uses typeName instead of type,
+  // and shape is a function instead of a value.
+  const v3LikeSchema = {
+    _def: {
+      typeName: "ZodObject",
+      shape: () => ({
+        count: {
+          _def: {
+            typeName: "ZodNumber",
+          },
+          safeParse: (v: unknown) => {
+            if (typeof v === "number") {
+              return { success: true, data: v };
+            }
+            return {
+              success: false,
+              error: { issues: [{ path: [], message: "expected number" }] },
+            };
+          },
+        },
+      }),
+    },
+    safeParse: (v: unknown) => {
+      const obj = v as Record<string, unknown>;
+      if (typeof obj.count === "number") {
+        return { success: true, data: obj };
+      }
+      return {
+        success: false,
+        error: {
+          issues: [{
+            path: ["count"],
+            message: "expected number, received string",
+          }],
+        },
+      };
+    },
+  };
+
+  const deps = makeDeps({
+    getModelDef: () => ({
+      type: { normalized: "test/v3-schema" },
+      version: "1.0.0",
+      globalArguments: v3LikeSchema,
+      methods: {},
+      resources: {},
+    } as unknown as ModelDefinition),
+    createAndSave: (_type, _name, _version, globalArguments) => {
+      assertEquals(
+        (globalArguments as Record<string, unknown>)?.count,
+        42,
+      );
+      return Promise.resolve({
+        id: "def-1",
+        name: "my-model",
+      } as unknown as Awaited<
+        ReturnType<ModelCreateDeps["createAndSave"]>
+      >);
+    },
+  });
+
+  const events = await collect<ModelCreateEvent>(
+    modelCreate(createLibSwampContext(), deps, {
+      typeArg: "test/v3-schema",
+      name: "my-model",
+      globalArguments: { count: "42" },
+    }),
+  );
+
+  const completed = events[events.length - 1] as Extract<
+    ModelCreateEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.kind, "completed");
+});

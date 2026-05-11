@@ -1592,3 +1592,65 @@ Deno.test("validateModel rejects unknown method argument key", async () => {
   assertEquals(methodResult?.passed, false);
   assertStringIncludes(methodResult?.error ?? "", "typo");
 });
+
+Deno.test("validateModel: coerces string global arguments to match schema types", async () => {
+  const NumericGlobalArgsSchema = z.object({
+    count: z.number(),
+  });
+  const numericModel: ModelDefinition = defineModel({
+    type: ModelType.create("test/numeric-global"),
+    version: "2026.05.11.1",
+    globalArguments: NumericGlobalArgsSchema,
+    resources: {},
+    methods: {
+      run: {
+        description: "Run",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({ dataHandles: [] }),
+      },
+    },
+  });
+
+  const service = new DefaultModelValidationService();
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { count: "42" },
+    methods: {},
+  });
+
+  const { results } = await service.validateModel(definition, numericModel);
+
+  const globalResult = results.find((r) => r.name === "Global arguments");
+  assertEquals(globalResult?.passed, true);
+});
+
+Deno.test("validateModel: coerces string method arguments to match schema types", async () => {
+  const service = new DefaultModelValidationService();
+  const NumericMethodModel: ModelDefinition = defineModel({
+    type: ModelType.create("test/numeric-method"),
+    version: "2026.05.11.1",
+    globalArguments: z.object({}),
+    resources: {},
+    methods: {
+      run: {
+        description: "Run",
+        arguments: z.object({ port: z.number(), verbose: z.boolean() }),
+        execute: () => Promise.resolve({ dataHandles: [] }),
+      },
+    },
+  });
+
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: {},
+    methods: { run: { arguments: { port: "8080", verbose: "true" } } },
+  });
+
+  const { results } = await service.validateModel(
+    definition,
+    NumericMethodModel,
+  );
+
+  const methodResult = results.find((r) => r.name === "Method arguments");
+  assertEquals(methodResult?.passed, true);
+});

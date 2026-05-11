@@ -30,7 +30,7 @@ import {
   stripExpressionFields,
 } from "../expressions/expression_parser.ts";
 import { detectEnvVarUsageInDefinition } from "./env_var_detector.ts";
-import { getObjectShape } from "./zod_type_coercion.ts";
+import { coerceMethodArgs, getObjectShape } from "./zod_type_coercion.ts";
 import {
   extractEnvReferences,
   extractPathReferences,
@@ -502,10 +502,11 @@ export class DefaultModelValidationService implements ModelValidationService {
         ));
       }
     }
+    const coerced = coerceMethodArgs(staticArgs, globalArgsSchema);
     return this.validateWithSchema(
       "Global arguments",
       globalArgsSchema,
-      staticArgs,
+      coerced,
     );
   }
 
@@ -545,7 +546,8 @@ export class DefaultModelValidationService implements ModelValidationService {
           continue;
         }
       }
-      const result = methodArgsSchema.safeParse(staticArgs);
+      const coercedArgs = coerceMethodArgs(staticArgs, methodArgsSchema);
+      const result = methodArgsSchema.safeParse(coercedArgs);
       if (!result.success) {
         errors.push(
           `Method "${methodName}": ${formatZodError(result.error)}`,

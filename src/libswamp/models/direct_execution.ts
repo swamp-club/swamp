@@ -21,9 +21,10 @@ import type { z } from "zod";
 import { Definition } from "../../domain/definitions/definition.ts";
 import type { ModelType } from "../../domain/models/model_type.ts";
 import type { ModelDefinition } from "../../domain/models/model.ts";
-import { coerceInputTypes } from "../../domain/inputs/mod.ts";
-import { getObjectShape } from "../../domain/models/zod_type_coercion.ts";
-import { zodToJsonSchema } from "../types/schema_helpers.ts";
+import {
+  coerceMethodArgs,
+  getObjectShape,
+} from "../../domain/models/zod_type_coercion.ts";
 import type { SwampError } from "../errors.ts";
 import { validationFailed } from "../errors.ts";
 
@@ -113,12 +114,10 @@ export function routeInputsBySchema(
     };
   }
 
-  // Coerce global arguments to match schema types
   if (modelDef.globalArguments) {
-    const jsonSchema = zodToJsonSchema(modelDef.globalArguments);
-    const coerced = coerceInputTypes(
+    const coerced = coerceMethodArgs(
       globalArguments,
-      jsonSchema as Record<string, unknown>,
+      modelDef.globalArguments,
     );
     Object.assign(globalArguments, coerced);
   }

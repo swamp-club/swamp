@@ -33,8 +33,10 @@ import {
   toMethodDescribeData,
   zodToJsonSchema,
 } from "../types/schema_helpers.ts";
-import { coerceInputTypes } from "../../domain/inputs/mod.ts";
-import { getObjectShape } from "../../domain/models/zod_type_coercion.ts";
+import {
+  coerceMethodArgs,
+  getObjectShape,
+} from "../../domain/models/zod_type_coercion.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /**
@@ -155,11 +157,9 @@ export async function* modelCreate(
       const modelDef = deps.getModelDef(modelType);
       let globalArguments = input.globalArguments;
       if (globalArguments && modelDef?.globalArguments) {
-        // Coerce CLI string values to match schema types (e.g. "428" → 428)
-        const jsonSchema = zodToJsonSchema(modelDef.globalArguments);
-        globalArguments = coerceInputTypes(
+        globalArguments = coerceMethodArgs(
           globalArguments,
-          jsonSchema as Record<string, unknown>,
+          modelDef.globalArguments,
         );
         const globalArgsSchema = modelDef.globalArguments;
         const shape = getObjectShape(globalArgsSchema);
