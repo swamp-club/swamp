@@ -24,7 +24,10 @@ import {
 } from "@std/assert";
 import { dirname, join } from "@std/path";
 import { ExtensionLoader } from "../extensions/extension_loader.ts";
-import { modelKindAdapter } from "../extensions/model_kind_adapter.ts";
+import {
+  clearAttachedExtensions,
+  modelKindAdapter,
+} from "../extensions/model_kind_adapter.ts";
 import { modelRegistry } from "./model.ts";
 import { bundleNamespace } from "../../infrastructure/persistence/paths.ts";
 import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
@@ -3876,3 +3879,381 @@ export const model = {
     }
   },
 );
+
+// Regression tests for swamp-club#318 / #123: the fingerprint-aware
+// tracking set that replaced allExtensionMethodsAttached.
+
+Deno.test("attachPendingExtensionsForType: idempotent across two code paths (issue #123 regression)", async () => {
+  const ts = Date.now();
+  const typeId = `@user/issue123-cross-path-${ts}`;
+  const modelCode = `
+import { z } from "npm:zod@4";
+export const model = {
+  type: "${typeId}",
+  version: "2026.02.09.1",
+  methods: {
+    seed: {
+      description: "Seed",
+      arguments: z.object({}),
+      execute: async () => ({ dataHandles: [] }),
+    },
+  },
+};
+`;
+  const extCode = `
+import { z } from "npm:zod@4";
+export const extension = {
+  type: "${typeId}",
+  methods: [{
+    extra: {
+      description: "Extra method from extension",
+      arguments: z.object({}),
+      execute: async () => ({ dataHandles: [] }),
+    },
+  }],
+};
+`;
+
+  const repoDir = await Deno.makeTempDir({ prefix: "swamp_issue123_r_" });
+  const modelsDir = await Deno.makeTempDir({ prefix: "swamp_issue123_m_" });
+  const dbPath = join(repoDir, ".swamp", "_extension_catalog.db");
+
+  try {
+    clearAttachedExtensions();
+    await Deno.writeTextFile(join(modelsDir, "base.ts"), modelCode);
+    await Deno.writeTextFile(join(modelsDir, "ext.ts"), extCode);
+
+    const catalog = new ExtensionCatalogStore(dbPath);
+    const repository = makeRepoForCatalog(catalog, repoDir);
+    const loader = new ExtensionLoader(
+      testDenoRuntime,
+      modelKindAdapter,
+      repoDir,
+      undefined,
+      repository,
+    );
+
+    // Path A: buildIndex registers the base and attaches the extension
+    // via the post-loop attachPendingExtensionsForType.
+    await loader.buildIndex(modelsDir);
+    assertEquals(
+      "extra" in modelRegistry.get(typeId)!.methods,
+      true,
+      "Extension must be attached after buildIndex",
+    );
+
+    // Path B: explicit attachPendingExtensionsForType (simulates
+    // hotLoadModels' post-load attachment loop). Must be a no-op —
+    // the tracking set should prevent a duplicate extend() call.
+    await loader.attachPendingExtensionsForType(typeId);
+    assertEquals(
+      "extra" in modelRegistry.get(typeId)!.methods,
+      true,
+      "Extension must remain attached after second attachment call",
+    );
+
+    const methods = Object.keys(modelRegistry.get(typeId)!.methods);
+    assertEquals(
+      methods.filter((m) => m === "extra").length,
+      1,
+      "Method 'extra' must appear exactly once (no duplicates)",
+    );
+
+    catalog.close();
+  } finally {
+    clearAttachedExtensions();
+    if (Deno.build.os === "windows") {
+      await Deno.remove(repoDir, { recursive: true }).catch(() => {});
+      await Deno.remove(modelsDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(repoDir, { recursive: true });
+      await Deno.remove(modelsDir, { recursive: true });
+    }
+  }
+});
+
+Deno.test("attachPendingExtensionsForType: load-then-attach cross-path produces no failures (hotLoadModels scenario)", async () => {
+  const ts = Date.now();
+  const typeId = `@user/issue318-hotload-${ts}`;
+  const modelCode = `
+import { z } from "npm:zod@4";
+export const model = {
+  type: "${typeId}",
+  version: "2026.02.09.1",
+  methods: {
+    seed: {
+      description: "Seed",
+      arguments: z.object({}),
+      execute: async () => ({ dataHandles: [] }),
+    },
+  },
+};
+`;
+  const extCode = `
+import { z } from "npm:zod@4";
+export const extension = {
+  type: "${typeId}",
+  methods: [{
+    hotloaded: {
+      description: "Hot-loaded extension method",
+      arguments: z.object({}),
+      execute: async () => ({ dataHandles: [] }),
+    },
+  }],
+};
+`;
+
+  const repoDir = await Deno.makeTempDir({ prefix: "swamp_hotload_r_" });
+  const modelsDir = await Deno.makeTempDir({ prefix: "swamp_hotload_m_" });
+  const dbPath = join(repoDir, ".swamp", "_extension_catalog.db");
+
+  try {
+    clearAttachedExtensions();
+    await Deno.writeTextFile(join(modelsDir, "base.ts"), modelCode);
+    await Deno.writeTextFile(join(modelsDir, "ext.ts"), extCode);
+
+    const catalog = new ExtensionCatalogStore(dbPath);
+    const repository = makeRepoForCatalog(catalog, repoDir);
+    const loader = new ExtensionLoader(
+      testDenoRuntime,
+      modelKindAdapter,
+      repoDir,
+      undefined,
+      repository,
+    );
+
+    // Simulate the hotLoadModels sequence:
+    // 1. load() discovers and attaches the extension via processSecondaryExport
+    const loadResult = await loader.load(modelsDir);
+    assertEquals(loadResult.failed.length, 0, "load must not fail");
+    assertEquals(
+      "hotloaded" in modelRegistry.get(typeId)!.methods,
+      true,
+      "Extension must be attached after load",
+    );
+
+    // 2. Populate the catalog so attachPendingExtensionsForType can find it
+    await loader.buildIndex(modelsDir);
+
+    // 3. attachPendingExtensionsForType tries to re-attach the same
+    //    extension. importAndExtendBundle must treat "already exists"
+    //    as idempotent — no failures, no warnings.
+    await loader.attachPendingExtensionsForType(typeId);
+
+    assertEquals(
+      "hotloaded" in modelRegistry.get(typeId)!.methods,
+      true,
+      "Extension must remain attached",
+    );
+
+    catalog.close();
+  } finally {
+    clearAttachedExtensions();
+    if (Deno.build.os === "windows") {
+      await Deno.remove(repoDir, { recursive: true }).catch(() => {});
+      await Deno.remove(modelsDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(repoDir, { recursive: true });
+      await Deno.remove(modelsDir, { recursive: true });
+    }
+  }
+});
+
+Deno.test("attachPendingExtensionsForType: attaches new extension B while skipping already-attached A", async () => {
+  const ts = Date.now();
+  const typeId = `@user/issue318-ab-${ts}`;
+  const modelCode = `
+import { z } from "npm:zod@4";
+export const model = {
+  type: "${typeId}",
+  version: "2026.02.09.1",
+  methods: {
+    seed: {
+      description: "Seed",
+      arguments: z.object({}),
+      execute: async () => ({ dataHandles: [] }),
+    },
+  },
+};
+`;
+  const extACode = `
+import { z } from "npm:zod@4";
+export const extension = {
+  type: "${typeId}",
+  methods: [{
+    alpha: {
+      description: "Extension A",
+      arguments: z.object({}),
+      execute: async () => ({ dataHandles: [] }),
+    },
+  }],
+};
+`;
+  const extBCode = `
+import { z } from "npm:zod@4";
+export const extension = {
+  type: "${typeId}",
+  methods: [{
+    beta: {
+      description: "Extension B",
+      arguments: z.object({}),
+      execute: async () => ({ dataHandles: [] }),
+    },
+  }],
+};
+`;
+
+  const repoDir = await Deno.makeTempDir({ prefix: "swamp_issue318_ab_r_" });
+  const modelsDir = await Deno.makeTempDir({
+    prefix: "swamp_issue318_ab_m_",
+  });
+  const dbPath = join(repoDir, ".swamp", "_extension_catalog.db");
+
+  try {
+    clearAttachedExtensions();
+    await Deno.writeTextFile(join(modelsDir, "base.ts"), modelCode);
+    await Deno.writeTextFile(join(modelsDir, "ext_a.ts"), extACode);
+
+    const catalog1 = new ExtensionCatalogStore(dbPath);
+    const repository1 = makeRepoForCatalog(catalog1, repoDir);
+    const loader1 = new ExtensionLoader(
+      testDenoRuntime,
+      modelKindAdapter,
+      repoDir,
+      undefined,
+      repository1,
+    );
+
+    await loader1.buildIndex(modelsDir);
+    assertEquals(
+      "alpha" in modelRegistry.get(typeId)!.methods,
+      true,
+      "Extension A must be attached",
+    );
+    catalog1.close();
+
+    // Add extension B — a new file targeting the same base type.
+    // The base model file is unchanged, so only ext_b.ts is stale.
+    // buildIndex must still trigger attachment for the target type
+    // because a stale secondary export was processed.
+    await Deno.writeTextFile(join(modelsDir, "ext_b.ts"), extBCode);
+
+    const catalog2 = new ExtensionCatalogStore(dbPath);
+    const repository2 = makeRepoForCatalog(catalog2, repoDir);
+    const loader2 = new ExtensionLoader(
+      testDenoRuntime,
+      modelKindAdapter,
+      repoDir,
+      undefined,
+      repository2,
+    );
+
+    await loader2.buildIndex(modelsDir);
+
+    const model = modelRegistry.get(typeId)!;
+    assertEquals(
+      "alpha" in model.methods,
+      true,
+      "Extension A must still be attached",
+    );
+    assertEquals(
+      "beta" in model.methods,
+      true,
+      "Extension B must be attached after second buildIndex",
+    );
+
+    catalog2.close();
+  } finally {
+    clearAttachedExtensions();
+    if (Deno.build.os === "windows") {
+      await Deno.remove(repoDir, { recursive: true }).catch(() => {});
+      await Deno.remove(modelsDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(repoDir, { recursive: true });
+      await Deno.remove(modelsDir, { recursive: true });
+    }
+  }
+});
+
+Deno.test("attachPendingExtensionsForType: resetLoadedFlag does not break tracking (ADV-2)", async () => {
+  const ts = Date.now();
+  const typeId = `@user/issue318-reset-${ts}`;
+  const modelCode = `
+import { z } from "npm:zod@4";
+export const model = {
+  type: "${typeId}",
+  version: "2026.02.09.1",
+  methods: {
+    seed: {
+      description: "Seed",
+      arguments: z.object({}),
+      execute: async () => ({ dataHandles: [] }),
+    },
+  },
+};
+`;
+  const extCode = `
+import { z } from "npm:zod@4";
+export const extension = {
+  type: "${typeId}",
+  methods: [{
+    tracked: {
+      description: "Tracked extension method",
+      arguments: z.object({}),
+      execute: async () => ({ dataHandles: [] }),
+    },
+  }],
+};
+`;
+
+  const repoDir = await Deno.makeTempDir({ prefix: "swamp_issue318_rst_r_" });
+  const modelsDir = await Deno.makeTempDir({
+    prefix: "swamp_issue318_rst_m_",
+  });
+  const dbPath = join(repoDir, ".swamp", "_extension_catalog.db");
+
+  try {
+    clearAttachedExtensions();
+    await Deno.writeTextFile(join(modelsDir, "base.ts"), modelCode);
+    await Deno.writeTextFile(join(modelsDir, "ext.ts"), extCode);
+
+    const catalog = new ExtensionCatalogStore(dbPath);
+    const repository = makeRepoForCatalog(catalog, repoDir);
+    const loader = new ExtensionLoader(
+      testDenoRuntime,
+      modelKindAdapter,
+      repoDir,
+      undefined,
+      repository,
+    );
+
+    await loader.buildIndex(modelsDir);
+    assertEquals(
+      "tracked" in modelRegistry.get(typeId)!.methods,
+      true,
+      "Extension must be attached after buildIndex",
+    );
+
+    // resetLoadedFlag doesn't clear models — extensions remain attached.
+    // The tracking set should correctly report this.
+    modelRegistry.resetLoadedFlag();
+
+    await loader.attachPendingExtensionsForType(typeId);
+    assertEquals(
+      "tracked" in modelRegistry.get(typeId)!.methods,
+      true,
+      "Extension must remain attached after resetLoadedFlag + re-attach",
+    );
+
+    catalog.close();
+  } finally {
+    clearAttachedExtensions();
+    if (Deno.build.os === "windows") {
+      await Deno.remove(repoDir, { recursive: true }).catch(() => {});
+      await Deno.remove(modelsDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(repoDir, { recursive: true });
+      await Deno.remove(modelsDir, { recursive: true });
+    }
+  }
+});

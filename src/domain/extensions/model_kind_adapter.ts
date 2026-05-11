@@ -56,6 +56,36 @@ import type {
 
 const logger = getLogger(["swamp", "models", "loader"]);
 
+const attachedExtensions: Map<string, Map<string, string>> = new Map();
+
+export function clearAttachedExtensions(): void {
+  attachedExtensions.clear();
+}
+
+function markExtensionAttached(
+  typeNormalized: string,
+  sourcePath: string,
+  fingerprint: string,
+): void {
+  let paths = attachedExtensions.get(typeNormalized);
+  if (!paths) {
+    paths = new Map();
+    attachedExtensions.set(typeNormalized, paths);
+  }
+  paths.set(sourcePath, fingerprint);
+}
+
+function isExtensionAttached(
+  typeNormalized: string,
+  sourcePath: string,
+  fingerprint: string | undefined,
+): boolean {
+  const recorded = attachedExtensions.get(typeNormalized)?.get(sourcePath);
+  if (recorded === undefined) return false;
+  if (fingerprint === undefined) return true;
+  return recorded === fingerprint;
+}
+
 interface UserMethodResult {
   dataHandles?: DataHandle[];
   [key: string]: unknown;
@@ -596,10 +626,17 @@ export const modelKindAdapter: KindAdapter = {
       result,
     );
 
+    const genuine: typeof result.failed = [];
     for (const failure of result.failed) {
-      logger
-        .warn`Failed to extend model from ${failure.file}: ${failure.error}`;
+      if (String(failure.error).includes("already exists on model type")) {
+        result.extended.push(failure.file);
+      } else {
+        genuine.push(failure);
+        logger
+          .warn`Failed to extend model from ${failure.file}: ${failure.error}`;
+      }
     }
+    result.failed = genuine;
   },
 
   async attachPendingExtensionsForType(
@@ -618,13 +655,26 @@ export const modelKindAdapter: KindAdapter = {
 
     const extensions = catalog.findExtensionsForType(typeNormalized);
     for (const entry of extensions) {
-      if (await allExtensionMethodsAttached(entry, base, importFn)) continue;
+      if (
+        isExtensionAttached(
+          typeNormalized,
+          entry.source_path,
+          entry.source_fingerprint,
+        )
+      ) continue;
       const result: ExtensionLoadResult = {
         loaded: [],
         extended: [],
         failed: [],
       };
       await modelKindAdapter.importAndExtendBundle!(entry, importFn, result);
+      if (result.extended.length > 0) {
+        markExtensionAttached(
+          typeNormalized,
+          entry.source_path,
+          entry.source_fingerprint ?? "",
+        );
+      }
     }
   },
 
@@ -665,52 +715,3 @@ export const modelKindAdapter: KindAdapter = {
 
   resolveDenoConfig: findNearestDenoConfig,
 };
-
-async function allExtensionMethodsAttached(
-  entry: ExtensionTypeRow,
-  base: ModelDefinition,
-  importFn: (
-    paths: {
-      bundlePath: string;
-      sourcePath: string;
-      sourceFingerprint?: string;
-    },
-  ) => Promise<Record<string, unknown>>,
-): Promise<boolean> {
-  let module: Record<string, unknown>;
-  try {
-    module = await importFn({
-      bundlePath: entry.bundle_path,
-      sourcePath: entry.source_path,
-      sourceFingerprint: entry.source_fingerprint || undefined,
-    });
-  } catch {
-    return false;
-  }
-  if (!module.extension) return false;
-
-  const parsed = UserExtensionSchema.safeParse(module.extension);
-  if (!parsed.success) return false;
-
-  const methodNames = new Set<string>();
-  for (const record of parsed.data.methods) {
-    for (const name of Object.keys(record)) {
-      methodNames.add(name);
-    }
-  }
-  const checkNames = new Set<string>();
-  for (const record of parsed.data.checks ?? []) {
-    for (const name of Object.keys(record)) {
-      checkNames.add(name);
-    }
-  }
-  if (methodNames.size === 0 && checkNames.size === 0) return true;
-
-  for (const name of methodNames) {
-    if (base.methods[name] === undefined) return false;
-  }
-  for (const name of checkNames) {
-    if (base.checks?.[name] === undefined) return false;
-  }
-  return true;
-}

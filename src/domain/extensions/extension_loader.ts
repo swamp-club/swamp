@@ -278,18 +278,22 @@ export class ExtensionLoader {
         return result;
       }
 
-      const eagerlyRegisteredTypes = new Set<string>();
+      const typesNeedingExtensionAttach = new Set<string>();
       for (const { absolutePath, relativePath, baseDir } of staleFiles) {
         try {
-          const registeredType = await this.rebundleAndUpdateCatalog(
-            absolutePath,
-            relativePath,
-            denoPath,
-            baseDir,
-            catalog,
-          );
+          const { registeredType, extensionTarget } = await this
+            .rebundleAndUpdateCatalog(
+              absolutePath,
+              relativePath,
+              denoPath,
+              baseDir,
+              catalog,
+            );
           if (registeredType) {
-            eagerlyRegisteredTypes.add(registeredType);
+            typesNeedingExtensionAttach.add(registeredType);
+          }
+          if (extensionTarget) {
+            typesNeedingExtensionAttach.add(extensionTarget);
           }
           result.loaded.push(relativePath);
         } catch (error) {
@@ -298,7 +302,7 @@ export class ExtensionLoader {
       }
 
       if (this.adapter.attachPendingExtensionsForType) {
-        for (const type of eagerlyRegisteredTypes) {
+        for (const type of typesNeedingExtensionAttach) {
           await this.adapter.attachPendingExtensionsForType(
             type,
             catalog,
@@ -632,10 +636,10 @@ export class ExtensionLoader {
     denoPath: string,
     baseDir: string,
     catalog: ExtensionCatalogStore,
-  ): Promise<string | undefined> {
+  ): Promise<{ registeredType?: string; extensionTarget?: string }> {
     const source = await Deno.readTextFile(absolutePath);
     if (!this.adapter.exportRegex.test(source)) {
-      return undefined;
+      return {};
     }
 
     const { js, fromCache } = await this.bundleWithCache(
@@ -718,7 +722,7 @@ export class ExtensionLoader {
         );
       }
 
-      return typeNormalized;
+      return { registeredType: typeNormalized };
     }
 
     if (
@@ -755,9 +759,11 @@ export class ExtensionLoader {
         source_mtime: sourceMtime,
         source_fingerprint: effectiveFingerprint,
       });
+
+      return { extensionTarget: typeNormalized };
     }
 
-    return undefined;
+    return {};
   }
 
   resolveBundlePath(...segments: string[]): string {
