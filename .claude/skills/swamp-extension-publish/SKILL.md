@@ -18,15 +18,6 @@ start → repo_verified → auth_verified → manifest_validated
       → versioned → formatted → dry_run_passed → pushed
 ```
 
-**Core rule:** If any Verify fails, execute the On Failure action. Never skip a
-state. Never reorder states. The user cannot push until all gates have passed.
-
-## Before Starting
-
-Tell the user: **"Publishing runs through 8 gates (repo → auth → manifest →
-collective → version → format → dry-run → push). I'll report progress at each
-step."** Then begin with State 1.
-
 ## State 1: repo_verified
 
 Confirm the extension directory is an initialized swamp repository.
@@ -67,33 +58,15 @@ Confirm `manifest.yaml` exists and is structurally valid.
 
 **Gate:** State 2 passed (authenticated).
 
-**Action:** Read `manifest.yaml` and validate:
-
-1. `manifestVersion: 1` is present
-2. `name` is present and matches `@collective/name` format
-3. At least one content array (`models`, `workflows`, `vaults`, `drivers`,
-   `datastores`, or `reports`) has entries
-4. All referenced files exist at their expected paths. Default resolution is
-   unchanged: `models` resolve under `extensions/models/`, `workflows` under
-   `workflows/`, etc. — every existing manifest keeps its semantics. Only
-   manifests that explicitly opt in via `paths.base: manifest` resolve typed
-   entries beside the manifest itself.
+**Action:** Read `manifest.yaml` and validate the 4 required checks documented
+in [references/publishing.md](references/publishing.md#manifest-validation)
+(`manifestVersion`, `name` format, content arrays, file paths).
 
 **Verify:** All 4 checks pass.
 
-**On Failure:** Report which checks failed. Common fixes:
-
-- Missing `manifestVersion` → add `manifestVersion: 1`
-- Invalid name → use `@collective/extension-name` format
-- No content arrays → add at least one of `models`, `workflows`, `skills`, etc.
-- Missing files → create the files or fix the paths
-- Files exist but resolver can't find them with bare basenames in a
-  per-extension-subdir layout → see "Path resolution" in
-  [references/publishing.md](references/publishing.md) for the
-  `paths.base: manifest` opt-in
-
-See [references/publishing.md](references/publishing.md) for the full manifest
-schema and field reference.
+**On Failure:** Report which checks failed. See
+[references/publishing.md](references/publishing.md#manifest-validation) for the
+checklist and common fixes.
 
 ## State 4: collective_verified
 
@@ -108,15 +81,8 @@ between `@` and `/`). Compare it against the `username` from
 **Verify:** The collective matches the authenticated username, or the user has
 confirmed they have permission to publish under this collective.
 
-**On Failure:** Collective mismatch. Report:
-
-> Manifest collective `@<collective>` does not match your authenticated username
-> `<username>`. Either:
->
-> 1. Update the manifest `name` to use `@<username>/...`
-> 2. Confirm you have publishing rights to `@<collective>`
-
-Do not proceed until the user resolves this.
+**On Failure:** Collective mismatch — ask the user to update the manifest `name`
+or confirm publishing rights. Do not proceed until resolved.
 
 ## State 5: versioned
 
@@ -179,27 +145,22 @@ Validate the extension can be pushed without actually uploading.
 swamp extension push manifest.yaml --dry-run --json
 ```
 
-**Verify:** The command exits successfully. Review the output for any warnings
-(subprocess spawning, long lines, base64 blobs) and confirm with the user if
-warnings are present.
+**Verify:** Exit code 0. Confirm any warnings with the user.
 
-**On Failure:** Fix the reported issue. See
-[references/publishing.md](references/publishing.md#safety-rules) for safety
-rules.
+**On Failure:** See
+[references/publishing.md](references/publishing.md#safety-rules).
 
 ## State 8: pushed
 
 Publish the extension to the registry.
 
-**CRITICAL: Do NOT run the push command automatically.** Always stop and ask the
-user for explicit confirmation. Present the summary and wait.
+**CRITICAL: Do NOT push automatically.** Present summary and wait for explicit
+user confirmation.
 
-**Gate:** ALL prior states (1–7) have passed. Present this summary and STOP:
+**Gate:** ALL prior states (1–7) passed. Ask: "Ready to push
+`@collective/name@YYYY.MM.DD.MICRO`. Shall I proceed?"
 
-> All gates passed. Ready to push `@collective/extension-name` version
-> `YYYY.MM.DD.MICRO` to the registry. **Shall I proceed?**
-
-**Action:** Only after the user explicitly says yes, approved, go, or proceed:
+**Action:** Only after explicit user approval:
 
 ```bash
 swamp extension push manifest.yaml --yes --json
@@ -215,21 +176,6 @@ swamp extension push manifest.yaml --yes --json
 
 ## References
 
-- **Publishing Details**: See
-  [references/publishing.md](references/publishing.md) for manifest schema,
-  field reference, CalVer versioning, safety rules, and common errors
-- **Extension Creation**: Use the `swamp-extension-model`,
-  `swamp-extension-vault`, `swamp-extension-datastore`, or
-  `swamp-extension-driver` skills to create extension code before publishing
-
-## When to Use Other Skills
-
-| Need                               | Use Skill                   |
-| ---------------------------------- | --------------------------- |
-| Create custom models               | `swamp-extension-model`     |
-| Create custom vaults               | `swamp-extension-vault`     |
-| Create custom datastores           | `swamp-extension-datastore` |
-| Create custom execution drivers    | `swamp-extension-driver`    |
-| Repository setup and management    | `swamp-repo`                |
-| Create reports                     | `swamp-report`              |
-| Quality scorecard & best practices | `swamp-extension-quality`   |
+See [references/publishing.md](references/publishing.md) for manifest schema,
+field reference, CalVer versioning, safety rules, related skills, and common
+errors.

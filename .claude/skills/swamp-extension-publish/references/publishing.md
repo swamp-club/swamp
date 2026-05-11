@@ -519,6 +519,18 @@ swamp extension version --manifest manifest.yaml --json
 | "Missing manifestVersion"       | Add `manifestVersion: 1` to your manifest                                         |
 | "Bundle compilation failed"     | Fix TypeScript errors in your model files                                         |
 
+## Related Skills
+
+| Need                               | Use Skill                   |
+| ---------------------------------- | --------------------------- |
+| Create custom models               | `swamp-extension-model`     |
+| Create custom vaults               | `swamp-extension-vault`     |
+| Create custom datastores           | `swamp-extension-datastore` |
+| Create custom execution drivers    | `swamp-extension-driver`    |
+| Repository setup and management    | `swamp-repo`                |
+| Create reports                     | `swamp-report`              |
+| Quality scorecard & best practices | `swamp-extension-quality`   |
+
 ## Quality Self-Check
 
 Run between formatting (State 6) and dry-run (State 7):
