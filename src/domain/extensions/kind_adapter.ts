@@ -122,7 +122,11 @@ export interface KindAdapter {
   importAndExtendBundle?(
     entry: ExtensionTypeRow,
     importFn: (
-      paths: { bundlePath: string; sourcePath: string },
+      paths: {
+        bundlePath: string;
+        sourcePath: string;
+        sourceFingerprint?: string;
+      },
     ) => Promise<Record<string, unknown>>,
     result: ExtensionLoadResult,
   ): Promise<void>;
@@ -131,7 +135,11 @@ export interface KindAdapter {
     typeNormalized: string,
     catalog: ExtensionCatalogStore,
     importFn: (
-      paths: { bundlePath: string; sourcePath: string },
+      paths: {
+        bundlePath: string;
+        sourcePath: string;
+        sourceFingerprint?: string;
+      },
     ) => Promise<Record<string, unknown>>,
   ): Promise<void>;
 

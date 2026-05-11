@@ -570,13 +570,18 @@ export const modelKindAdapter: KindAdapter = {
   async importAndExtendBundle(
     entry: ExtensionTypeRow,
     importFn: (
-      paths: { bundlePath: string; sourcePath: string },
+      paths: {
+        bundlePath: string;
+        sourcePath: string;
+        sourceFingerprint?: string;
+      },
     ) => Promise<Record<string, unknown>>,
     result: ExtensionLoadResult,
   ): Promise<void> {
     const module = await importFn({
       bundlePath: entry.bundle_path,
       sourcePath: entry.source_path,
+      sourceFingerprint: entry.source_fingerprint || undefined,
     });
 
     if (!module.extension) {
@@ -601,7 +606,11 @@ export const modelKindAdapter: KindAdapter = {
     typeNormalized: string,
     catalog: ExtensionCatalogStore,
     importFn: (
-      paths: { bundlePath: string; sourcePath: string },
+      paths: {
+        bundlePath: string;
+        sourcePath: string;
+        sourceFingerprint?: string;
+      },
     ) => Promise<Record<string, unknown>>,
   ): Promise<void> {
     const base = modelRegistry.get(typeNormalized);
@@ -661,7 +670,11 @@ async function allExtensionMethodsAttached(
   entry: ExtensionTypeRow,
   base: ModelDefinition,
   importFn: (
-    paths: { bundlePath: string; sourcePath: string },
+    paths: {
+      bundlePath: string;
+      sourcePath: string;
+      sourceFingerprint?: string;
+    },
   ) => Promise<Record<string, unknown>>,
 ): Promise<boolean> {
   let module: Record<string, unknown>;
@@ -669,6 +682,7 @@ async function allExtensionMethodsAttached(
     module = await importFn({
       bundlePath: entry.bundle_path,
       sourcePath: entry.source_path,
+      sourceFingerprint: entry.source_fingerprint || undefined,
     });
   } catch {
     return false;
