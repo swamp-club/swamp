@@ -1285,3 +1285,4 @@ When `swamp extension push` runs against a manifest without a `repository`
 field, the CLI emits a non-blocking warning reminding the publisher that
 users will not be able to file issues via `--extension`. The warning never
 blocks the push — some publishers may deliberately omit `repository`.
+

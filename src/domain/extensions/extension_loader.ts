@@ -400,14 +400,15 @@ export class ExtensionLoader {
       denoPath,
       args.baseDir,
     );
+    const fingerprint = await computeSourceFingerprint(
+      args.absolutePath,
+      args.baseDir,
+    );
     const module = await this.importBundle(
       js,
       args.relativePath,
       args.baseDir,
-    );
-    const fingerprint = await computeSourceFingerprint(
-      args.absolutePath,
-      args.baseDir,
+      fingerprint,
     );
 
     if (module[this.adapter.primaryExportKey]) {
@@ -458,6 +459,7 @@ export class ExtensionLoader {
       type_normalized: string;
       bundle_path: string;
       source_path: string;
+      source_fingerprint?: string;
     },
   ): Promise<void> {
     if (this.adapter.isFullyLoaded(entry.type_normalized)) return;
@@ -465,6 +467,7 @@ export class ExtensionLoader {
     const module = await this.importBundleByPath({
       bundlePath: entry.bundle_path,
       sourcePath: entry.source_path,
+      sourceFingerprint: entry.source_fingerprint || undefined,
     });
 
     const exportKey = this.adapter.primaryExportKey;
@@ -494,7 +497,11 @@ export class ExtensionLoader {
   }
 
   async importBundleByPath(
-    paths: { bundlePath: string; sourcePath: string },
+    paths: {
+      bundlePath: string;
+      sourcePath: string;
+      sourceFingerprint?: string;
+    },
   ): Promise<Record<string, unknown>> {
     let js: string;
     try {
@@ -508,7 +515,11 @@ export class ExtensionLoader {
       js = fixed;
       await Deno.writeTextFile(paths.bundlePath, js);
     }
-    return await import(toFileUrl(paths.bundlePath).href);
+    const baseUrl = toFileUrl(paths.bundlePath).href;
+    const importUrl = paths.sourceFingerprint
+      ? `${baseUrl}?fp=${paths.sourceFingerprint}`
+      : baseUrl;
+    return await import(importUrl);
   }
 
   private async recoverMissingBundle(
@@ -633,7 +644,6 @@ export class ExtensionLoader {
       denoPath,
       baseDir,
     );
-    const module = await this.importBundle(js, relativePath, baseDir);
 
     const stat = await Deno.stat(absolutePath);
     const sourceMtime = stat.mtime?.toISOString() ?? "";
@@ -653,6 +663,13 @@ export class ExtensionLoader {
         effectiveFingerprint = existing.source_fingerprint;
       }
     }
+
+    const module = await this.importBundle(
+      js,
+      relativePath,
+      baseDir,
+      effectiveFingerprint,
+    );
 
     const exportKey = this.adapter.primaryExportKey;
 
@@ -872,6 +889,7 @@ export class ExtensionLoader {
     js: string,
     relativePath: string,
     baseDir?: string,
+    sourceFingerprint?: string,
   ): Promise<Record<string, unknown>> {
     const rewritten = fixCjsEsmInterop(rewriteZodImports(js));
 
@@ -890,7 +908,11 @@ export class ExtensionLoader {
           cachedJs = fixed;
           await Deno.writeTextFile(bundlePath, cachedJs);
         }
-        return await import(toFileUrl(bundlePath).href);
+        const baseUrl = toFileUrl(bundlePath).href;
+        const importUrl = sourceFingerprint
+          ? `${baseUrl}?fp=${sourceFingerprint}`
+          : baseUrl;
+        return await import(importUrl);
       } catch (error) {
         this.logger.debug`File URL import failed for ${relativePath}: ${
           String(error).substring(0, 200)
