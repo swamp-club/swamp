@@ -125,7 +125,20 @@ entries cannot mask failures. Exits 1 on any registry fail.
 ```bash
 swamp doctor extensions
 swamp doctor extensions --json
+swamp doctor extensions --verbose
+swamp doctor extensions --repair
+swamp doctor extensions --repair --apply
 ```
+
+### Flags
+
+| Flag        | Effect                                                            |
+| ----------- | ----------------------------------------------------------------- |
+| `--json`    | Machine-readable output for CI                                    |
+| `--verbose` | Show per-source detail (source path, RowState, fingerprint)       |
+| `--repair`  | Enter repair mode (dry-run by default — lists what would change)  |
+| `--apply`   | Execute repair operations (implies `--repair`); prunes Tombstoned |
+|             | rows and evicts unreferenced bundle files                         |
 
 ### Registries checked
 

@@ -57,6 +57,8 @@ import { ExtensionCatalogStore } from "../../infrastructure/persistence/extensio
 import { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import { swampPath } from "../../infrastructure/persistence/paths.ts";
+import { buildAggregateState } from "../../libswamp/extensions/doctor_aggregate.ts";
+import { repairExtensions } from "../../libswamp/extensions/doctor_repair.ts";
 import { createDoctorExtensionsRenderer } from "../../presentation/renderers/doctor_extensions.ts";
 import {
   createContext,
@@ -69,6 +71,7 @@ import { resolveSkillsDir } from "../../domain/repo/skill_dirs.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { resolvePrimaryTool } from "../../domain/repo/primary_tool.ts";
+import { readLocalManifestIdentity } from "../../infrastructure/persistence/local_manifest_reader.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -81,13 +84,32 @@ type AnyOptions = any;
  */
 export const doctorExtensionsCommand = new Command()
   .description(
-    "Verify that user-defined extensions in this repo load cleanly.",
+    "Verify that user-defined extensions in this repo load cleanly " +
+      "and inspect catalog aggregate state.",
   )
   .example("Check this repo's extensions", "swamp doctor extensions")
   .example("Machine-readable output for CI", "swamp doctor extensions --json")
+  .example("Show per-source detail", "swamp doctor extensions --verbose")
+  .example(
+    "Preview what repair would clean up",
+    "swamp doctor extensions --repair",
+  )
+  .example(
+    "Apply repair operations",
+    "swamp doctor extensions --repair --apply",
+  )
   .option(
     "--repo-dir <dir:string>",
     "Repository directory (env: SWAMP_REPO_DIR)",
+  )
+  .option("--verbose", "Show per-source detail for each extension")
+  .option(
+    "--repair",
+    "Enter repair mode (dry-run by default, use --apply to execute)",
+  )
+  .option(
+    "--apply",
+    "Execute repair operations (implies --repair)",
   )
   .action(async function (options: AnyOptions) {
     const cliCtx = createContext(options as GlobalOptions, [
@@ -95,6 +117,11 @@ export const doctorExtensionsCommand = new Command()
       "extensions",
     ]);
     cliCtx.logger.debug("Executing doctor extensions command");
+
+    const verbose = options.verbose === true;
+    // --apply implies --repair.
+    const repair = options.repair === true || options.apply === true;
+    const apply = options.apply === true;
 
     const repoDir = resolveRepoDir(options.repoDir);
     // Same gate as `doctor audit` — fails loudly outside a swamp repo.
@@ -175,7 +202,11 @@ export const doctorExtensionsCommand = new Command()
     const repoRelativeSkillsDir = relative(repoDir, absoluteSkillsDir);
 
     const controller = new AbortController();
-    const renderer = createDoctorExtensionsRenderer(cliCtx.outputMode);
+    const renderer = createDoctorExtensionsRenderer(cliCtx.outputMode, {
+      verbose,
+    });
+
+    const catalogDbPath = swampPath(repoDir, "_extension_catalog.db");
 
     const doctorLockfileRepo = await LockfileRepository.create(lockfilePath);
     await consumeStream(
@@ -187,6 +218,45 @@ export const doctorExtensionsCommand = new Command()
         repoDir,
         skillsDir: repoRelativeSkillsDir,
         abortSignal: controller.signal,
+        buildAggregateState: async () => {
+          const aggLockfileRepo = await LockfileRepository.create(
+            lockfilePath,
+          );
+          const localIdentity = readLocalManifestIdentity(repoDir);
+          const repo = new ExtensionRepository({
+            catalog: new ExtensionCatalogStore(catalogDbPath),
+            lockfileRepository: aggLockfileRepo,
+            repoRoot: repoDir,
+            localManifestIdentity: localIdentity,
+          });
+          try {
+            const extensions = repo.loadAll();
+            return buildAggregateState({ extensions, repoDir });
+          } finally {
+            repo.close();
+          }
+        },
+        runRepair: repair
+          ? async (aggregateReport) => {
+            const repairLockfileRepo = await LockfileRepository.create(
+              lockfilePath,
+            );
+            const repo = new ExtensionRepository({
+              catalog: new ExtensionCatalogStore(catalogDbPath),
+              lockfileRepository: repairLockfileRepo,
+              repoRoot: repoDir,
+            });
+            try {
+              return repairExtensions({
+                aggregateReport,
+                deleteBySourcePaths: (paths) => repo.deleteBySourcePaths(paths),
+                apply,
+              });
+            } finally {
+              repo.close();
+            }
+          }
+          : undefined,
       }),
       renderer.handlers(),
     );

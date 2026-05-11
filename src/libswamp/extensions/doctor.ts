@@ -23,6 +23,8 @@ import type { ExtensionLoadWarning } from "../../infrastructure/logging/extensio
 import type { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import type { UpstreamExtensionsMap } from "../../infrastructure/persistence/upstream_extensions.ts";
 import type { SwampError } from "../errors.ts";
+import type { DoctorAggregateReport } from "./doctor_aggregate.ts";
+import type { RepairReport } from "./doctor_repair.ts";
 import { extractTopLevelRoot } from "./layout.ts";
 
 /**
@@ -91,6 +93,17 @@ export interface DoctorExtensionsReport {
    * drained pre-existing dirt from the ecosystem.
    */
   orphanFiles: DoctorOrphanFile[];
+  /**
+   * W6: Per-extension aggregate state with RowState distribution,
+   * catalog orphans, and bundle orphans. Always present when the
+   * catalog is readable; undefined only on early abort.
+   */
+  aggregateState?: DoctorAggregateReport;
+  /**
+   * W6: Repair report — present only when `--repair` was requested.
+   * Contains the list of operations (dry-run or applied).
+   */
+  repairReport?: RepairReport;
 }
 
 /**
@@ -142,6 +155,20 @@ export interface DoctorExtensionsDeps {
    */
   skillsDir: string;
   abortSignal: AbortSignal;
+  /**
+   * W6: Callback that builds aggregate state from the catalog after
+   * loaders have run. Injected by the CLI so the service doesn't
+   * construct infrastructure objects directly.
+   */
+  buildAggregateState?: () => Promise<DoctorAggregateReport>;
+  /**
+   * W6: Callback that runs repair operations. Injected by the CLI.
+   * Called only when repair is requested. Receives the aggregate
+   * report and the apply flag.
+   */
+  runRepair?: (
+    aggregateReport: DoctorAggregateReport,
+  ) => Promise<RepairReport>;
 }
 
 function overallStatus(
@@ -347,12 +374,28 @@ export async function* doctorExtensions(
     );
   }
 
+  // W6: Build aggregate state from the catalog (post-load).
+  let aggregateState: DoctorAggregateReport | undefined;
+  if (!deps.abortSignal.aborted && deps.buildAggregateState) {
+    aggregateState = await deps.buildAggregateState();
+  }
+
+  // W6: Run repair if requested (only after aggregate state is built).
+  let repairReport: RepairReport | undefined;
+  if (
+    !deps.abortSignal.aborted && deps.runRepair && aggregateState
+  ) {
+    repairReport = await deps.runRepair(aggregateState);
+  }
+
   yield {
     kind: "completed",
     report: {
       overallStatus: overallStatus(results),
       registries,
       orphanFiles,
+      aggregateState,
+      repairReport,
     },
   };
 }

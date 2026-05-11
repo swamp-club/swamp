@@ -40,6 +40,8 @@ Custom datastores let you:
 | Create datastore    | Create `extensions/datastores/my-store/mod.ts` |
 | Verify registration | `swamp datastore status --json`                |
 | Verify it loads     | `swamp doctor extensions --json`               |
+| Inspect catalog     | `swamp doctor extensions --verbose`            |
+| Repair stale state  | `swamp doctor extensions --repair --apply`     |
 | Check config        | View `.swamp.yaml` datastore section           |
 | Push extension      | `swamp extension push manifest.yaml --json`    |
 | Dry-run push        | `swamp extension push manifest.yaml --dry-run` |

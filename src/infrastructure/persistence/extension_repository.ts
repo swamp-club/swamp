@@ -324,6 +324,23 @@ export class ExtensionRepository {
     return false;
   }
 
+  /**
+   * Deletes catalog rows by source path. Used by the W6 repair service
+   * to prune cleanup-eligible rows (Tombstoned, OrphanedBundleOnly where
+   * neither source nor bundle exists on disk). Runs inside a single
+   * transaction for atomicity.
+   */
+  deleteBySourcePaths(paths: readonly string[]): number {
+    let deleted = 0;
+    this.catalog.runInTransaction(() => {
+      for (const p of paths) {
+        this.catalog.removeBySourcePath(p);
+        deleted++;
+      }
+    });
+    return deleted;
+  }
+
   manifestIdentityChanged(
     manifest: LocalManifestIdentity | null,
   ): boolean {
