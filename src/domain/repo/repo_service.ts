@@ -104,7 +104,7 @@ function formatToolsList(tools: AiTool[]): string {
   return tools.length === 0 ? "none" : tools.join(", ");
 }
 
-const SUPERSEDED_SKILLS = [
+export const SUPERSEDED_SKILLS: readonly string[] = [
   "swamp-extension-model",
   "swamp-extension-vault",
   "swamp-extension-driver",
@@ -123,6 +123,21 @@ async function removeSupersededSkills(skillsDir: string): Promise<void> {
       if (!(e instanceof Deno.errors.NotFound)) throw e;
     }
   }
+}
+
+export async function detectSupersededSkills(
+  skillsDir: string,
+): Promise<string[]> {
+  const found: string[] = [];
+  for (const name of SUPERSEDED_SKILLS) {
+    try {
+      await Deno.stat(join(skillsDir, name));
+      found.push(name);
+    } catch {
+      // Not found — not stale
+    }
+  }
+  return found;
 }
 
 /**

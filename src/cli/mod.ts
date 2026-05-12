@@ -87,6 +87,9 @@ import {
   RepoMarkerRepository,
 } from "../infrastructure/persistence/repo_marker_repository.ts";
 import { RepoPath } from "../domain/repo/repo_path.ts";
+import { detectSupersededSkills } from "../domain/repo/repo_service.ts";
+import { resolvePrimaryTool } from "../domain/repo/primary_tool.ts";
+import { SKILL_DIRS } from "../domain/repo/skill_dirs.ts";
 import { ExtensionAutoResolver } from "../domain/extensions/extension_auto_resolver.ts";
 import { ExtensionApiClient } from "../infrastructure/http/extension_api_client.ts";
 import { DEFAULT_SWAMP_CLUB_URL } from "../domain/auth/auth_credentials.ts";
@@ -358,6 +361,7 @@ export async function configureExtensionLoaders(
   );
 
   await checkForMissingPulledExtensions(repoDir, marker, deferredWarnings);
+  await checkForSupersededSkills(repoDir, marker, deferredWarnings);
 }
 
 /**
@@ -424,7 +428,14 @@ export function commandNeedsLoaderSetup(args: string[]): boolean {
 
 /** A deferred warning message to emit after logging is initialized. */
 export interface DeferredWarning {
-  kind: "model" | "vault" | "driver" | "datastore" | "report" | "extensions";
+  kind:
+    | "model"
+    | "vault"
+    | "driver"
+    | "datastore"
+    | "report"
+    | "extensions"
+    | "skills";
   file: string;
   error: string;
 }
@@ -843,6 +854,37 @@ async function checkForMissingPulledExtensions(
   }
 }
 
+async function checkForSupersededSkills(
+  repoDir: string,
+  marker: RepoMarkerData | null,
+  deferredWarnings: DeferredWarning[],
+): Promise<void> {
+  try {
+    const tools = marker?.tools?.length
+      ? marker.tools
+      : [resolvePrimaryTool(marker)];
+    const allStale = new Set<string>();
+    for (const tool of tools) {
+      const dir = SKILL_DIRS[tool];
+      if (!dir) continue;
+      const stale = await detectSupersededSkills(join(repoDir, dir));
+      for (const name of stale) allStale.add(name);
+    }
+    if (allStale.size > 0) {
+      const names = [...allStale].sort();
+      deferredWarnings.push({
+        kind: "skills",
+        file: repoDir,
+        error: `${names.length} superseded skill(s) found: ${
+          names.join(", ")
+        }. Run 'swamp repo upgrade' to update skills.`,
+      });
+    }
+  } catch {
+    // Non-fatal — don't block startup for skill dir read errors
+  }
+}
+
 /** Default telemetry endpoint */
 const DEFAULT_TELEMETRY_ENDPOINT = "https://telemetry.swamp-club.com";
 
@@ -1111,7 +1153,7 @@ export async function runCli(args: string[]): Promise<void> {
 
       // Emit deferred warnings now that logging is initialized
       for (const warning of deferredWarnings) {
-        if (warning.kind === "extensions") {
+        if (warning.kind === "extensions" || warning.kind === "skills") {
           logger.warn`${warning.error}`;
         } else {
           logger

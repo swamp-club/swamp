@@ -19,7 +19,7 @@
 
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
-import { RepoService } from "./repo_service.ts";
+import { detectSupersededSkills, RepoService } from "./repo_service.ts";
 import { RepoPath } from "./repo_path.ts";
 import {
   type AiTool,
@@ -2483,4 +2483,28 @@ Deno.test("RepoService.upgrade adding a tool with no pulled extensions emits no 
     assertEquals(result.addedTools, ["kiro"]);
     assertEquals(result.extensionsToReinstall, []);
   });
+});
+
+Deno.test("detectSupersededSkills: returns empty when no superseded dirs exist", async () => {
+  await withTempDir(async (tempDir) => {
+    const result = await detectSupersededSkills(tempDir);
+    assertEquals(result, []);
+  });
+});
+
+Deno.test("detectSupersededSkills: detects superseded skill directories", async () => {
+  await withTempDir(async (tempDir) => {
+    await Deno.mkdir(join(tempDir, "swamp-extension-model"));
+    await Deno.mkdir(join(tempDir, "swamp-data-query"));
+    // Non-superseded dir should be ignored
+    await Deno.mkdir(join(tempDir, "swamp-model"));
+
+    const result = await detectSupersededSkills(tempDir);
+    assertEquals(result.sort(), ["swamp-data-query", "swamp-extension-model"]);
+  });
+});
+
+Deno.test("detectSupersededSkills: returns empty for nonexistent directory", async () => {
+  const result = await detectSupersededSkills("/tmp/nonexistent-dir-326");
+  assertEquals(result, []);
 });
