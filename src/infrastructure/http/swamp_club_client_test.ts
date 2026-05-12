@@ -216,6 +216,60 @@ Deno.test("SwampClubClient - submitIssue throws UserError on failure", async () 
   }
 });
 
+Deno.test("SwampClubClient - updateIssueStatus sends PATCH with status", async () => {
+  let capturedMethod = "";
+  let capturedBody: Record<string, unknown> = {};
+  let capturedApiKey = "";
+  const mock = startMockServer(async (req) => {
+    capturedMethod = req.method;
+    capturedApiKey = req.headers.get("x-api-key") ?? "";
+    capturedBody = await req.json();
+    return Response.json({ issue: { number: 42, status: "closed" } });
+  });
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    const result = await client.updateIssueStatus("my-key", 42, "closed");
+    assertEquals(capturedMethod, "PATCH");
+    assertEquals(capturedApiKey, "my-key");
+    assertEquals(capturedBody.status, "closed");
+    assertEquals(result.status, "closed");
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("SwampClubClient - updateIssueStatus throws on 404", async () => {
+  const mock = startMockServer((_req) =>
+    new Response("Not found", { status: 404 })
+  );
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    await assertRejects(
+      () => client.updateIssueStatus("key", 999, "closed"),
+      UserError,
+      "Issue #999 not found",
+    );
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("SwampClubClient - updateIssueStatus throws on failure", async () => {
+  const mock = startMockServer((_req) =>
+    new Response("Forbidden", { status: 403 })
+  );
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    await assertRejects(
+      () => client.updateIssueStatus("key", 42, "open"),
+      UserError,
+      "Failed to update issue #42 status",
+    );
+  } finally {
+    await mock.shutdown();
+  }
+});
+
 Deno.test("SwampClubClient - 429 surfaces Retry-After in UserError", async () => {
   const mock = startMockServer((_req) =>
     new Response("rate limited", {

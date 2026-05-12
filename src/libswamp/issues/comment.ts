@@ -29,11 +29,15 @@ import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
  */
 export const MAX_RIPPLE_LENGTH = 65_536;
 
+export type IssueStatusTransition = "closed" | "open";
+
 /** Output of a successful ripple post. */
 export interface IssueCommentData {
   issueNumber: number;
   commentId: string;
   serverUrl: string;
+  statusChanged?: IssueStatusTransition;
+  statusError?: string;
 }
 
 export type IssueCommentEvent =
@@ -43,6 +47,7 @@ export type IssueCommentEvent =
 export interface IssueCommentInput {
   issueNumber: number;
   body: string;
+  statusTransition?: IssueStatusTransition;
 }
 
 export interface IssueCommentDeps {
@@ -50,6 +55,10 @@ export interface IssueCommentDeps {
     issueNumber: number;
     body: string;
   }) => Promise<{ commentId: string; serverUrl: string }>;
+  updateStatus?: (input: {
+    issueNumber: number;
+    status: IssueStatusTransition;
+  }) => Promise<void>;
 }
 
 /**
@@ -85,14 +94,25 @@ export async function* issueComment(
         body: input.body,
       });
 
-      yield {
-        kind: "completed",
-        data: {
-          issueNumber: input.issueNumber,
-          commentId: result.commentId,
-          serverUrl: result.serverUrl,
-        },
+      const data: IssueCommentData = {
+        issueNumber: input.issueNumber,
+        commentId: result.commentId,
+        serverUrl: result.serverUrl,
       };
+
+      if (input.statusTransition && deps.updateStatus) {
+        try {
+          await deps.updateStatus({
+            issueNumber: input.issueNumber,
+            status: input.statusTransition,
+          });
+          data.statusChanged = input.statusTransition;
+        } catch (err) {
+          data.statusError = err instanceof Error ? err.message : String(err);
+        }
+      }
+
+      yield { kind: "completed", data };
     })(),
   );
 }

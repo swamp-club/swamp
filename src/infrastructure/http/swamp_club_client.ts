@@ -266,6 +266,41 @@ export class SwampClubClient {
   }
 
   /**
+   * Update the status of an existing Lab issue (close or reopen).
+   * Authenticates using the x-api-key header.
+   */
+  async updateIssueStatus(
+    apiKey: string,
+    issueNumber: number,
+    status: "closed" | "open",
+  ): Promise<{ status: string }> {
+    const res = await this.fetch(
+      `/api/v1/lab/issues/${issueNumber}`,
+      {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": apiKey,
+        },
+        body: JSON.stringify({ status }),
+      },
+    );
+
+    if (!res.ok) {
+      const text = await res.text();
+      if (res.status === 404) {
+        throw new UserError(`Issue #${issueNumber} not found.`);
+      }
+      throw new UserError(
+        `Failed to update issue #${issueNumber} status (HTTP ${res.status}): ${text}`,
+      );
+    }
+
+    const data = await res.json();
+    return { status: data.issue.status };
+  }
+
+  /**
    * Fetch an existing Lab issue by number.
    * When an API key is provided, authenticates using the x-api-key header.
    */

@@ -27,7 +27,7 @@ import { issueSecurityCommand } from "./issue_security.ts";
 export const issueCommand = new Command()
   .name("issue")
   .description(
-    "Fetch issue details, submit bug reports, feature requests, security reports, and ripples",
+    "Fetch issue details, submit bug reports, feature requests, security reports, and ripples (comments)",
   )
   .action(function () {
     this.showHelp();

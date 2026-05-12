@@ -124,6 +124,77 @@ Deno.test("issueComment: rejects body exceeding max length", async () => {
   assertStringIncludes(error.message, String(MAX_RIPPLE_LENGTH));
 });
 
+Deno.test("issueComment: calls updateStatus and sets statusChanged on success", async () => {
+  let statusCalled = false;
+  const deps = makeDeps({
+    updateStatus: (input) => {
+      statusCalled = true;
+      assertEquals(input.issueNumber, 42);
+      assertEquals(input.status, "closed");
+      return Promise.resolve();
+    },
+  });
+
+  const events = await collect<IssueCommentEvent>(
+    issueComment(createLibSwampContext(), deps, {
+      issueNumber: 42,
+      body: "Closing this.",
+      statusTransition: "closed",
+    }),
+  );
+
+  assertEquals(statusCalled, true);
+  assertEquals(events.length, 1);
+  const completed = events[0] as Extract<
+    IssueCommentEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.data.statusChanged, "closed");
+  assertEquals(completed.data.statusError, undefined);
+});
+
+Deno.test("issueComment: sets statusError on update failure without losing the comment", async () => {
+  const deps = makeDeps({
+    updateStatus: () => Promise.reject(new Error("forbidden")),
+  });
+
+  const events = await collect<IssueCommentEvent>(
+    issueComment(createLibSwampContext(), deps, {
+      issueNumber: 42,
+      body: "Try to close.",
+      statusTransition: "closed",
+    }),
+  );
+
+  assertEquals(events.length, 1);
+  const completed = events[0] as Extract<
+    IssueCommentEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.data.commentId, "ripple-123");
+  assertEquals(completed.data.statusChanged, undefined);
+  assertStringIncludes(completed.data.statusError!, "forbidden");
+});
+
+Deno.test("issueComment: skips status update when no statusTransition", async () => {
+  let statusCalled = false;
+  const deps = makeDeps({
+    updateStatus: () => {
+      statusCalled = true;
+      return Promise.resolve();
+    },
+  });
+
+  await collect(
+    issueComment(createLibSwampContext(), deps, {
+      issueNumber: 42,
+      body: "No status change.",
+    }),
+  );
+
+  assertEquals(statusCalled, false);
+});
+
 Deno.test("issueComment: accepts body at exactly the max length", async () => {
   const exactlyMax = "x".repeat(MAX_RIPPLE_LENGTH);
   const events = await collect<IssueCommentEvent>(

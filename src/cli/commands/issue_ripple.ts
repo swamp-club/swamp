@@ -24,6 +24,7 @@ import {
   createLibSwampContext,
   issueComment,
   type IssueCommentDeps,
+  type IssueStatusTransition,
 } from "../../libswamp/mod.ts";
 import {
   createIssueCommentRenderer,
@@ -69,8 +70,19 @@ export const issueRippleCommand = new Command()
     "Post a ripple directly",
     'swamp issue ripple 184 --body "See also #183."',
   )
+  .example(
+    "Close with a ripple",
+    'swamp issue ripple 327 --body "Fixed in latest build" --close',
+  )
+  .alias("comment")
   .arguments("<number:integer>")
   .option("-b, --body <body:string>", "Ripple body (skips editor)")
+  .option("--close", "Close the issue after posting the ripple", {
+    conflicts: ["reopen"],
+  })
+  .option("--reopen", "Reopen the issue after posting the ripple", {
+    conflicts: ["close"],
+  })
   .action(async function (options: AnyOptions, issueNumber: number) {
     const ctx = createContext(options as GlobalOptions, ["issue", "ripple"]);
 
@@ -125,6 +137,12 @@ export const issueRippleCommand = new Command()
       }
     }
 
+    const statusTransition: IssueStatusTransition | undefined = options.close
+      ? "closed"
+      : options.reopen
+      ? "open"
+      : undefined;
+
     const libCtx = createLibSwampContext({ logger: ctx.logger });
     const renderer = createIssueCommentRenderer(ctx.outputMode);
     const client = new SwampClubClient(credentials.serverUrl);
@@ -140,10 +158,17 @@ export const issueRippleCommand = new Command()
           serverUrl: credentials.serverUrl,
         };
       },
+      updateStatus: async (input) => {
+        await client.updateIssueStatus(
+          credentials.apiKey,
+          input.issueNumber,
+          input.status,
+        );
+      },
     };
 
     await consumeStream(
-      issueComment(libCtx, deps, { issueNumber, body }),
+      issueComment(libCtx, deps, { issueNumber, body, statusTransition }),
       renderer.handlers(),
     );
   });

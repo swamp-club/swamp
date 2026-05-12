@@ -147,6 +147,18 @@ class LogIssueCommentRenderer implements Renderer<IssueCommentEvent> {
         logger.info("View at: {url}", {
           url: `${data.serverUrl}/lab/${data.issueNumber}`,
         });
+        if (data.statusChanged) {
+          const verb = data.statusChanged === "closed" ? "Closed" : "Reopened";
+          logger.info(`${verb} issue #{number}`, {
+            number: data.issueNumber,
+          });
+        }
+        if (data.statusError) {
+          logger.warn(
+            "Ripple posted but status change failed: {error}",
+            { error: data.statusError },
+          );
+        }
       },
       error: (e) => {
         throw new UserError(e.error.message);
