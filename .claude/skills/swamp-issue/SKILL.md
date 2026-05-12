@@ -76,15 +76,13 @@ Ripples (described in the intro) have these submission rules:
 {
   "issueNumber": 184,
   "commentId": "ripple_abc123",
-  "serverUrl": "https://swamp.club",
-  "statusChanged": "closed",
-  "statusError": null
+  "serverUrl": "https://swamp.club"
 }
 ```
 
-The `statusChanged` field is present only when `--close` or `--reopen` was used
-and the status change succeeded. `statusError` appears when the ripple posted
-but the status change failed.
+With `--close`: adds `"statusChanged": "closed"`. With `--reopen`: adds
+`"statusChanged": "open"`. If the status change fails after a successful ripple,
+`"statusError"` contains the error message instead.
 
 ## Plain Submission Flow (no `--extension`)
 
