@@ -27,6 +27,8 @@ import {
   containsVaultExpression,
   ExpressionEvaluationService,
 } from "./expression_evaluation_service.ts";
+import type { ExpressionContext } from "./model_resolver.ts";
+import { SecretRedactor } from "../secrets/secret_redactor.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-eval-service-" });
@@ -237,5 +239,161 @@ Deno.test("evaluateDefinition: directly-missing input in globalArguments stays u
       result.definition.globalArguments.unusedArg as string,
       "${{",
     );
+  });
+});
+
+// ============================================================================
+// resolveAllExpressionsInData — driverConfig seam (swamp-club#291)
+// ============================================================================
+
+function makeContext(
+  overrides: Partial<ExpressionContext> = {},
+): ExpressionContext {
+  return {
+    model: {},
+    env: {},
+    ...overrides,
+  };
+}
+
+Deno.test("resolveAllExpressionsInData: returns literals unchanged", async () => {
+  await withTempDir(async (repoDir) => {
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const service = new ExpressionEvaluationService(definitionRepo, repoDir);
+    const data = {
+      image: "alpine:3",
+      volumes: ["/host/path:/container/path:ro"],
+      env: { LITERAL: "value" },
+    };
+    const result = await service.resolveAllExpressionsInData(
+      data,
+      makeContext(),
+    );
+    assertEquals(result, data);
+  });
+});
+
+Deno.test("resolveAllExpressionsInData: resolves env runtime expressions", async () => {
+  await withTempDir(async (repoDir) => {
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const service = new ExpressionEvaluationService(definitionRepo, repoDir);
+    Deno.env.set("SWAMP_TEST_HOME", "/tmp/test-home-291");
+    try {
+      const data = {
+        volumes: ["${{ env.SWAMP_TEST_HOME }}:/host-home:ro"],
+      };
+      const result = await service.resolveAllExpressionsInData(
+        data,
+        makeContext(),
+      ) as { volumes: string[] };
+      assertEquals(result.volumes, ["/tmp/test-home-291:/host-home:ro"]);
+    } finally {
+      Deno.env.delete("SWAMP_TEST_HOME");
+    }
+  });
+});
+
+Deno.test("resolveAllExpressionsInData: resolves self.* via supplied CEL context", async () => {
+  await withTempDir(async (repoDir) => {
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const service = new ExpressionEvaluationService(definitionRepo, repoDir);
+    const ctx = makeContext({
+      self: {
+        id: "test-id",
+        name: "test",
+        version: 1,
+        tags: {},
+        globalArguments: {},
+        region: "us-west-2",
+      },
+    });
+    const data = {
+      env: { AWS_REGION: "${{ self.region }}" },
+    };
+    const result = await service.resolveAllExpressionsInData(
+      data,
+      ctx,
+    ) as { env: Record<string, string> };
+    assertEquals(result.env.AWS_REGION, "us-west-2");
+  });
+});
+
+Deno.test("resolveAllExpressionsInData: walks nested arrays and objects", async () => {
+  await withTempDir(async (repoDir) => {
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const service = new ExpressionEvaluationService(definitionRepo, repoDir);
+    Deno.env.set("SWAMP_TEST_A", "alpha");
+    Deno.env.set("SWAMP_TEST_B", "beta");
+    try {
+      const data = {
+        extraArgs: [
+          "--label",
+          "${{ env.SWAMP_TEST_A }}",
+          "--label",
+          "${{ env.SWAMP_TEST_B }}",
+        ],
+        env: {
+          FIRST: "${{ env.SWAMP_TEST_A }}",
+          NESTED: { inner: "${{ env.SWAMP_TEST_B }}" },
+        },
+      };
+      const result = await service.resolveAllExpressionsInData(
+        data,
+        makeContext(),
+      ) as {
+        extraArgs: string[];
+        env: { FIRST: string; NESTED: { inner: string } };
+      };
+      assertEquals(result.extraArgs, [
+        "--label",
+        "alpha",
+        "--label",
+        "beta",
+      ]);
+      assertEquals(result.env.FIRST, "alpha");
+      assertEquals(result.env.NESTED.inner, "beta");
+    } finally {
+      Deno.env.delete("SWAMP_TEST_A");
+      Deno.env.delete("SWAMP_TEST_B");
+    }
+  });
+});
+
+Deno.test("resolveAllExpressionsInData: short-circuits with no expressions (no redactor calls)", async () => {
+  await withTempDir(async (repoDir) => {
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const service = new ExpressionEvaluationService(definitionRepo, repoDir);
+    let addedSecrets = 0;
+    const redactor = new SecretRedactor();
+    const origAdd = redactor.addSecret.bind(redactor);
+    redactor.addSecret = (v: string) => {
+      addedSecrets++;
+      origAdd(v);
+    };
+    const data = { image: "alpine:3", volumes: ["/abs/path:/dst:ro"] };
+    await service.resolveAllExpressionsInData(data, makeContext(), redactor);
+    assertEquals(addedSecrets, 0);
+  });
+});
+
+Deno.test("resolveAllExpressionsInData: env-only resolution does not register secrets with redactor", async () => {
+  await withTempDir(async (repoDir) => {
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const service = new ExpressionEvaluationService(definitionRepo, repoDir);
+    Deno.env.set("SWAMP_TEST_PUB", "public-value");
+    try {
+      let addedSecrets = 0;
+      const redactor = new SecretRedactor();
+      const origAdd = redactor.addSecret.bind(redactor);
+      redactor.addSecret = (v: string) => {
+        addedSecrets++;
+        origAdd(v);
+      };
+      const data = { env: { VAR: "${{ env.SWAMP_TEST_PUB }}" } };
+      await service.resolveAllExpressionsInData(data, makeContext(), redactor);
+      assertEquals(addedSecrets, 0);
+    } finally {
+      Deno.env.delete("SWAMP_TEST_PUB");
+    }
   });
 });

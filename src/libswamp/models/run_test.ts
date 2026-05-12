@@ -128,6 +128,7 @@ function createFakeEvaluationService(): any {
         definition: def,
         secretBag: new VaultSecretBag(),
       }),
+    resolveRuntimeExpressionsInData: (data: unknown) => Promise.resolve(data),
   };
 }
 

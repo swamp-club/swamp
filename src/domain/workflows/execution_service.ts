@@ -612,6 +612,7 @@ export class DefaultStepExecutor implements StepExecutor {
         evaluatedDefinition,
         runLogger,
         secretBag,
+        expressionEvaluator,
       });
 
       return await this.handleMethodSuccess({
@@ -682,6 +683,7 @@ export class DefaultStepExecutor implements StepExecutor {
       ExpressionEvaluationService["resolveRuntimeExpressionsInDefinition"]
     > extends Promise<infer R> ? R extends { secretBag: infer S } ? S : never
       : never;
+    expressionEvaluator: ExpressionEvaluationService;
   }): Promise<MethodResult> {
     const {
       task,
@@ -697,6 +699,7 @@ export class DefaultStepExecutor implements StepExecutor {
       evaluatedDefinition,
       runLogger,
       secretBag,
+      expressionEvaluator,
     } = args;
 
     runLogger.debug("Executing method {method}", { method: task.methodName });
@@ -746,10 +749,30 @@ export class DefaultStepExecutor implements StepExecutor {
     // honoured — matches the pre-DriverPlan behaviour where the
     // definition was passed to resolveDriverConfig regardless of whether
     // upper tiers were set.
-    const resolved = (ctx.driverPlan ?? new DriverPlan({})).withDefinition({
-      driver: evaluatedDefinition.driver,
-      driverConfig: evaluatedDefinition.driverConfig,
-    });
+    const resolvedDriver = (ctx.driverPlan ?? new DriverPlan({}))
+      .withDefinition({
+        driver: evaluatedDefinition.driver,
+        driverConfig: evaluatedDefinition.driverConfig,
+      });
+
+    // Resolve CEL (including self.* for forEach) and runtime expressions
+    // (env, vault) in the winning tier's driverConfig. WorkflowExpressionEvaluator
+    // deliberately skips runtime expressions and self.* during workflow
+    // evaluation, and the definition-tier driverConfig is the only tier
+    // that already went through resolveRuntimeExpressionsInDefinition; this
+    // seam covers workflow/job/step/repo tiers (and is idempotent for the
+    // definition tier). Vault values land as raw strings on driver argv;
+    // see the workflows manual reference for the visibility caveat.
+    const resolved = ctx.expressionContext && resolvedDriver.driverConfig
+      ? {
+        driver: resolvedDriver.driver,
+        driverConfig: (await expressionEvaluator.resolveAllExpressionsInData(
+          resolvedDriver.driverConfig,
+          ctx.expressionContext,
+          ctx.secretRedactor,
+        )) as Record<string, unknown>,
+      }
+      : resolvedDriver;
 
     // Yield `method_executing` AFTER driver resolution so the resolved
     // driver can ride along on the event for downstream telemetry. Note:

@@ -503,6 +503,31 @@ export class ExpressionEvaluationService {
   }
 
   /**
+   * Resolves both CEL expressions (with the supplied context, including
+   * self.* for forEach iteration) and runtime expressions (env, vault)
+   * in arbitrary data in a single call. Two-pass composition:
+   *
+   *   1. {@link evaluateData} — CEL only, skips runtime. Resolves self.*,
+   *      inputs.*, model.*, data.*, etc. against the supplied context.
+   *   2. {@link resolveRuntimeExpressionsInData} — env and vault. Vault
+   *      values are resolved to raw strings and registered with the
+   *      optional redactor for log scrubbing.
+   *
+   * Used at execution-time seams that consume workflow-level driverConfig
+   * (post-DriverPlan.withDefinition and post-resolveDriverConfig), where
+   * CEL must materialize before runtime resolution walks the now-CEL-
+   * resolved tree.
+   */
+  async resolveAllExpressionsInData(
+    data: unknown,
+    context: ExpressionContext,
+    redactor?: SecretRedactor,
+  ): Promise<unknown> {
+    const afterCel = await this.evaluateData(data, context);
+    return await this.resolveRuntimeExpressionsInData(afterCel, redactor);
+  }
+
+  /**
    * @deprecated Use resolveRuntimeExpressionsInDefinition instead.
    */
   async resolveVaultExpressionsInDefinition(

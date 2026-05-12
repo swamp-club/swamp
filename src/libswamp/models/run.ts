@@ -571,7 +571,7 @@ export async function* modelMethodRun(
         // (cli > definition > repo > "raw"). No workflow/job/step tiers
         // apply outside a workflow run.
         const repoMarker = await deps.loadRepoMarker();
-        const resolvedDriver = resolveDriverConfig(
+        const resolvedDriverPre = resolveDriverConfig(
           { driver: input.driver },
           undefined,
           undefined,
@@ -585,6 +585,24 @@ export async function* modelMethodRun(
             driverConfig: repoMarker?.defaultDriverConfig,
           },
         );
+
+        // Resolve runtime expressions (env, vault) in the winning tier's
+        // driverConfig. The definition-tier already went through
+        // resolveRuntimeExpressionsInDefinition above, so this pass is
+        // idempotent for that tier; it is LOAD-BEARING for the repo-tier
+        // defaultDriverConfig from .swamp.yaml, which is never resolved
+        // anywhere else. No forEach on the direct path, so the CEL/self.*
+        // pass is unnecessary here.
+        const resolvedDriver = resolvedDriverPre.driverConfig
+          ? {
+            driver: resolvedDriverPre.driver,
+            driverConfig:
+              (await evaluationService.resolveRuntimeExpressionsInData(
+                resolvedDriverPre.driverConfig,
+                redactor,
+              )) as Record<string, unknown>,
+          }
+          : resolvedDriverPre;
 
         let execResult: MethodResult;
         try {
