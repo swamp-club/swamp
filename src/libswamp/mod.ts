@@ -1025,6 +1025,7 @@ export {
   type IssueCommentDeps,
   type IssueCommentEvent,
   type IssueCommentInput,
+  type IssueStatusTransition,
   MAX_RIPPLE_LENGTH,
 } from "./issues/comment.ts";
 export {
