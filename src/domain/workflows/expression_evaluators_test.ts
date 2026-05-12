@@ -112,6 +112,58 @@ Deno.test("WorkflowExpressionEvaluator: skips self.* (forEach variables resolved
   assertStringIncludes(result.workflow.description ?? "", "self.env");
 });
 
+Deno.test("WorkflowExpressionEvaluator: skips run.* (resolved at step execution time)", async () => {
+  const evaluator = new WorkflowExpressionEvaluator(new CelEvaluator());
+  const workflow = Workflow.create({
+    name: "run-expr",
+    jobs: [
+      Job.create({
+        name: "j",
+        steps: [
+          Step.create({
+            name: "s",
+            task: StepTask.model("m", "run", {
+              resourceKey: "vms-${{ run.id }}",
+              wfName: "${{ run.workflowName }}",
+            }),
+          }),
+        ],
+      }),
+    ],
+  });
+  const result = await evaluator.evaluate(workflow, emptyContext());
+  assertEquals(result.expressionsEvaluated, 0);
+  const step = result.workflow.jobs[0].steps[0];
+  const inputs = step.task.data.inputs ?? {};
+  assertEquals(inputs["resourceKey"], "vms-${{ run.id }}");
+  assertEquals(inputs["wfName"], "${{ run.workflowName }}");
+});
+
+Deno.test("WorkflowExpressionEvaluator: skips bare workflowRunId (resolved at step execution time)", async () => {
+  const evaluator = new WorkflowExpressionEvaluator(new CelEvaluator());
+  const workflow = Workflow.create({
+    name: "wfrunid-expr",
+    jobs: [
+      Job.create({
+        name: "j",
+        steps: [
+          Step.create({
+            name: "s",
+            task: StepTask.model("m", "run", {
+              runId: "${{ workflowRunId }}",
+            }),
+          }),
+        ],
+      }),
+    ],
+  });
+  const result = await evaluator.evaluate(workflow, emptyContext());
+  assertEquals(result.expressionsEvaluated, 0);
+  const step = result.workflow.jobs[0].steps[0];
+  const inputs = step.task.data.inputs ?? {};
+  assertEquals(inputs["runId"], "${{ workflowRunId }}");
+});
+
 Deno.test("WorkflowExpressionEvaluator: skips forEach.in expressions (must remain string for expansion)", async () => {
   const evaluator = new WorkflowExpressionEvaluator(new CelEvaluator());
   const workflow = Workflow.create({

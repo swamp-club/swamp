@@ -3097,3 +3097,66 @@ Deno.test({
     });
   },
 });
+
+// ---------------------------------------------------------------------------
+// run.* namespace in CEL expressions
+// ---------------------------------------------------------------------------
+
+Deno.test("run.id expression in step inputs resolves to the workflow run UUID", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+
+    const capturedContexts: StepExecutionContext[] = [];
+    const capturingExecutor: StepExecutor = {
+      execute(
+        _step: Step,
+        ctx: StepExecutionContext,
+      ): Promise<unknown> {
+        capturedContexts.push(ctx);
+        return Promise.resolve({ executed: true });
+      },
+    };
+
+    const workflow = Workflow.create({
+      name: "run-id-test",
+      jobs: [
+        Job.create({
+          name: "j",
+          steps: [
+            Step.create({
+              name: "s",
+              task: StepTask.model("test-model", "run", {
+                scopedKey: "result-${{ run.id }}",
+                wfName: "${{ run.workflowName }}",
+              }),
+            }),
+          ],
+        }),
+      ],
+    });
+
+    await workflowRepo.save(workflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      capturingExecutor,
+      undefined,
+      catalogStore,
+    );
+
+    const run = await service.execute(workflow.name);
+
+    assertEquals(run.status, "succeeded");
+    assertEquals(capturedContexts.length, 1);
+
+    const ctx = capturedContexts[0];
+    assertNotEquals(ctx.expressionContext?.run, undefined);
+    assertEquals(ctx.expressionContext?.run?.id, run.id);
+    assertEquals(ctx.expressionContext?.run?.workflowName, "run-id-test");
+    assertNotEquals(ctx.expressionContext?.run?.startedAt, undefined);
+  });
+});

@@ -1334,7 +1334,9 @@ export class WorkflowExecutionService {
       };
       const run = WorkflowRun.create(workflow, mergedTags);
 
-      // Make the workflow run ID available as a CEL variable (workflowRunId).
+      // workflowRunId is set here for backward compat; the structured
+      // run namespace is populated after run.start() below so that
+      // startedAt is available.
       if (expressionContext) {
         expressionContext.workflowRunId = run.id;
       }
@@ -1364,6 +1366,17 @@ export class WorkflowExecutionService {
 
       // Start execution
       run.start();
+
+      if (expressionContext) {
+        expressionContext.run = {
+          id: run.id,
+          workflowId: workflow.id,
+          workflowName: workflow.name,
+          startedAt: run.startedAt!.toISOString(),
+          tags: { ...run.tags },
+        };
+      }
+
       yield {
         kind: "started",
         runId: run.id,

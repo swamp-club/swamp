@@ -397,3 +397,84 @@ Deno.test("resolveAllExpressionsInData: env-only resolution does not register se
     }
   });
 });
+
+// ============================================================================
+// run.* namespace
+// ============================================================================
+
+Deno.test("resolveAllExpressionsInData: resolves run.id from context", async () => {
+  await withTempDir(async (repoDir) => {
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const service = new ExpressionEvaluationService(definitionRepo, repoDir);
+    const ctx = makeContext({
+      run: {
+        id: "790f565a-c2e4-476f-88d9-39090bca11c5",
+        workflowId: "wf-001",
+        workflowName: "deploy",
+        startedAt: "2026-05-12T15:00:00.000Z",
+        tags: { env: "prod" },
+      },
+    });
+    const data = {
+      resourceKey: "filtered-vms-${{ run.id }}",
+    };
+    const result = await service.resolveAllExpressionsInData(
+      data,
+      ctx,
+    ) as { resourceKey: string };
+    assertEquals(
+      result.resourceKey,
+      "filtered-vms-790f565a-c2e4-476f-88d9-39090bca11c5",
+    );
+  });
+});
+
+Deno.test("resolveAllExpressionsInData: resolves run.workflowName and run.startedAt", async () => {
+  await withTempDir(async (repoDir) => {
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const service = new ExpressionEvaluationService(definitionRepo, repoDir);
+    const ctx = makeContext({
+      run: {
+        id: "test-run-id",
+        workflowId: "wf-002",
+        workflowName: "kernel-update",
+        startedAt: "2026-05-12T16:30:00.000Z",
+        tags: {},
+      },
+    });
+    const data = {
+      name: "${{ run.workflowName }}",
+      started: "${{ run.startedAt }}",
+    };
+    const result = await service.resolveAllExpressionsInData(
+      data,
+      ctx,
+    ) as { name: string; started: string };
+    assertEquals(result.name, "kernel-update");
+    assertEquals(result.started, "2026-05-12T16:30:00.000Z");
+  });
+});
+
+Deno.test("resolveAllExpressionsInData: resolves run.tags nested access", async () => {
+  await withTempDir(async (repoDir) => {
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const service = new ExpressionEvaluationService(definitionRepo, repoDir);
+    const ctx = makeContext({
+      run: {
+        id: "test-run-id",
+        workflowId: "wf-003",
+        workflowName: "deploy",
+        startedAt: "2026-05-12T15:00:00.000Z",
+        tags: { env: "staging", team: "platform" },
+      },
+    });
+    const data = {
+      environment: "${{ run.tags.env }}",
+    };
+    const result = await service.resolveAllExpressionsInData(
+      data,
+      ctx,
+    ) as { environment: string };
+    assertEquals(result.environment, "staging");
+  });
+});

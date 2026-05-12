@@ -45,9 +45,10 @@ export interface WorkflowEvaluationResult {
 
 /**
  * Evaluates CEL expressions in a workflow definition, leaving vault
- * expressions, runtime-only expressions, self.* references, forEach.in
- * expressions, and task.inputs with step-output dependencies raw. Those
- * are resolved at runtime when their inputs become available.
+ * expressions, runtime-only expressions, self.* references, run.*
+ * references, bare workflowRunId, forEach.in expressions, and
+ * task.inputs with step-output dependencies raw. Those are resolved at
+ * runtime when their inputs become available.
  *
  * **Strict** about per-expression evaluation errors: any throw during
  * `evaluateAsync` propagates out, surfacing the error to the caller.
@@ -91,6 +92,14 @@ export class WorkflowExpressionEvaluator {
       }
       // self.* references forEach variables resolved at runtime.
       if (expr.celExpression.match(/\bself\./)) {
+        continue;
+      }
+      // run.* and workflowRunId are only available at step execution
+      // time, after the WorkflowRun is created.
+      if (
+        expr.celExpression.match(/\brun\./) ||
+        expr.celExpression.match(/\bworkflowRunId\b/)
+      ) {
         continue;
       }
       // forEach.in expressions must remain as strings for expansion.

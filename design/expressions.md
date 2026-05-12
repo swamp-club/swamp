@@ -96,6 +96,46 @@ attributes:
 Inputs can be required or optional (specified in JsonSchema), and provide
 dynamic configuration without modifying definition files.
 
+## Workflow Run Context
+
+Inside workflow step inputs, the `run` namespace exposes metadata about the
+current workflow execution. This is only available at step execution time (not
+in workflow-level fields like `description`).
+
+| Field              | Type                    | Description                    |
+| ------------------ | ----------------------- | ------------------------------ |
+| `run.id`           | string (UUID)           | Unique ID of this workflow run |
+| `run.workflowId`   | string (UUID)           | Workflow definition ID         |
+| `run.workflowName` | string                  | Workflow name                  |
+| `run.startedAt`    | string (ISO 8601)       | Timestamp when the run started |
+| `run.tags`         | `Record<string,string>` | Merged workflow + runtime tags |
+
+The flat `workflowRunId` variable is also available (equivalent to `run.id`)
+for backward compatibility with `data.query()` predicates.
+
+**Run-scoped resource keys** — use `run.id` to prevent collisions when the
+same workflow runs concurrently:
+
+```yaml
+steps:
+  - name: filter-vms
+    task:
+      type: model_method
+      modelIdOrName: fleet-scanner
+      methodName: filter
+      inputs:
+        outputKey: "filtered-vms-${{ run.id }}"
+
+  - name: reboot-gate
+    dependsOn: [filter-vms]
+    task:
+      type: model_method
+      modelIdOrName: fleet-manager
+      methodName: check_kernel
+      inputs:
+        vmListKey: "filtered-vms-${{ run.id }}"
+```
+
 ## Data Versioning
 
 Data is immutable and versioned. The following CEL shortcuts cover the common

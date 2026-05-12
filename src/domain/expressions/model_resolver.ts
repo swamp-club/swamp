@@ -189,6 +189,19 @@ export interface FileNamespace {
 }
 
 /**
+ * Workflow run metadata exposed as `run.*` in CEL expressions.
+ * Populated by the workflow engine after the run starts; only available
+ * inside workflow step inputs (not during workflow-level evaluation).
+ */
+export interface RunContext {
+  id: string;
+  workflowId: string;
+  workflowName: string;
+  startedAt: string;
+  tags: Record<string, string>;
+}
+
+/**
  * Context for evaluating CEL expressions.
  */
 export interface ExpressionContext {
@@ -233,6 +246,8 @@ export interface ExpressionContext {
    * Set by the workflow engine after creating the run.
    */
   workflowRunId?: string;
+  /** Structured workflow run context, available as `run.*` in CEL expressions. */
+  run?: RunContext;
   /** Index signature for CEL evaluator compatibility */
   [key: string]: unknown;
 }
