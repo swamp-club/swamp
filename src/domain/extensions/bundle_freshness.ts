@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { relative, resolve } from "@std/path";
+import { canonicalizePath } from "../../infrastructure/persistence/canonicalize_path.ts";
 import { resolveLocalImports } from "../models/local_import_resolver.ts";
 
 /**
@@ -271,7 +272,7 @@ export async function findStaleFiles(
   const catalogEntries = kinds.flatMap((k) => catalog.findByKind(k));
   const catalogBySource = new Map<string, FreshnessCatalogRow>();
   for (const entry of catalogEntries) {
-    catalogBySource.set(entry.source_path, entry);
+    catalogBySource.set(canonicalizePath(entry.source_path), entry);
   }
 
   const seenSources = new Set<string>();
@@ -286,9 +287,10 @@ export async function findStaleFiles(
     const files = await discoverFiles(dir);
     for (const relativePath of files) {
       const absolutePath = resolve(dir, relativePath);
-      seenSources.add(absolutePath);
+      const canonical = canonicalizePath(absolutePath);
+      seenSources.add(canonical);
 
-      const catalogEntry = catalogBySource.get(absolutePath);
+      const catalogEntry = catalogBySource.get(canonical);
       if (!catalogEntry) {
         stale.push({ absolutePath, relativePath, baseDir: dir });
         continue;
