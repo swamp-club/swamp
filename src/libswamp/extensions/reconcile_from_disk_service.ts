@@ -31,6 +31,7 @@ import {
   tombstoneAll,
 } from "../../domain/extensions/extension.ts";
 import type { LocalManifestIdentity } from "../../infrastructure/persistence/local_manifest_reader.ts";
+import { canonicalizePath } from "../../infrastructure/persistence/canonicalize_path.ts";
 import { makeSource } from "../../domain/extensions/source.ts";
 import { makeSourceLocation } from "../../domain/extensions/source_location.ts";
 import { makeBundleLocation } from "../../domain/extensions/bundle_location.ts";
@@ -534,9 +535,15 @@ export class ReconcileFromDiskService {
     }
 
     // Phase 2: Sources in aggregate but NOT on disk → transition.
+    // Canonicalize on-disk keys for comparison — on Windows the raw
+    // absolutePath uses backslashes while loc.canonicalPath uses forward
+    // slashes (see canonicalizePath).
+    const onDiskCanonical = new Set(
+      [...onDiskSources.keys()].map(canonicalizePath),
+    );
     for (const [loc, source] of ext.sources) {
       if (source.state.tag === "Tombstoned") continue;
-      if (onDiskSources.has(loc.canonicalPath)) continue;
+      if (onDiskCanonical.has(loc.canonicalPath)) continue;
 
       const fromState = source.state.tag;
 
