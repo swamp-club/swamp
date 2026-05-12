@@ -17,13 +17,16 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { basename } from "@std/path";
+import { basename, join } from "@std/path";
 import { parse as parseYaml } from "@std/yaml";
 import {
   Workflow,
   type WorkflowData,
 } from "../../domain/workflows/workflow.ts";
 import type { SwampError } from "../errors.ts";
+import { getLogger } from "@logtape/logtape";
+
+const logger = getLogger(["doctor-workflows"]);
 
 /** Per-file result: pass means the file loaded cleanly. */
 export interface DoctorWorkflowResult {
@@ -50,20 +53,6 @@ export type DoctorWorkflowsEvent =
 export interface DoctorWorkflowsDeps {
   workflowDirs: string[];
   abortSignal: AbortSignal;
-}
-
-/**
- * Attempts to extract the workflow name from raw YAML content.
- * Falls back to the filename if the content cannot be parsed far enough
- * to read a `name` field.
- */
-function tryExtractName(content: string, filePath: string): string | null {
-  try {
-    const data = parseYaml(content) as { name?: string };
-    return data?.name ?? null;
-  } catch {
-    return fallbackName(filePath);
-  }
 }
 
 function fallbackName(filePath: string): string | null {
@@ -94,6 +83,12 @@ export async function* doctorWorkflows(
       }
     } catch (error) {
       if (error instanceof Deno.errors.NotFound) continue;
+      if (error instanceof Deno.errors.PermissionDenied) {
+        logger.warn`Skipping inaccessible workflow directory ${dir}: ${
+          error instanceof Error ? error.message : String(error)
+        }`;
+        continue;
+      }
       throw error;
     }
 
@@ -104,7 +99,7 @@ export async function* doctorWorkflows(
     for (const entry of yamlFiles) {
       if (deps.abortSignal.aborted) break;
 
-      const filePath = `${dir}/${entry.name}`;
+      const filePath = join(dir, entry.name);
       let content: string;
       try {
         content = await Deno.readTextFile(filePath);
@@ -123,19 +118,24 @@ export async function* doctorWorkflows(
         continue;
       }
 
-      const name = tryExtractName(content, filePath);
-
       try {
         const data = parseYaml(content) as WorkflowData;
         Workflow.fromData(data);
         const result: DoctorWorkflowResult = {
           file: filePath,
-          name: name ?? data.name ?? null,
+          name: data.name ?? fallbackName(filePath),
           status: "pass",
         };
         results.push(result);
         yield { kind: "workflow-checked", result };
       } catch (parseError) {
+        const name = (() => {
+          try {
+            return (parseYaml(content) as { name?: string })?.name ?? null;
+          } catch {
+            return fallbackName(filePath);
+          }
+        })();
         const error = parseError instanceof Error
           ? parseError.message
           : String(parseError);

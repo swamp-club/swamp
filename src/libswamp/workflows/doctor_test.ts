@@ -83,7 +83,7 @@ Deno.test("doctorWorkflows: reports pass for valid workflow", async () => {
     assertEquals(completed.report.totalPassed, 1);
     assertEquals(completed.report.totalFailed, 0);
   } finally {
-    await Deno.remove(tmpDir, { recursive: true });
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
   }
 });
 
@@ -117,7 +117,7 @@ Deno.test("doctorWorkflows: reports fail for broken YAML", async () => {
     assertEquals(completed.report.overallStatus, "fail");
     assertEquals(completed.report.totalFailed, 1);
   } finally {
-    await Deno.remove(tmpDir, { recursive: true });
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
   }
 });
 
@@ -143,7 +143,7 @@ Deno.test("doctorWorkflows: reports fail for invalid schema", async () => {
     assertEquals(checked.result.status, "fail");
     assertEquals(typeof checked.result.error, "string");
   } finally {
-    await Deno.remove(tmpDir, { recursive: true });
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
   }
 });
 
@@ -180,7 +180,7 @@ Deno.test("doctorWorkflows: skips non-yaml files", async () => {
     assertEquals(events.length, 1);
     assertEquals(events[0].kind, "completed");
   } finally {
-    await Deno.remove(tmpDir, { recursive: true });
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
   }
 });
 
@@ -215,8 +215,8 @@ Deno.test("doctorWorkflows: scans multiple directories", async () => {
     assertEquals(completed.report.totalPassed, 2);
     assertEquals(completed.report.overallStatus, "pass");
   } finally {
-    await Deno.remove(tmpDir1, { recursive: true });
-    await Deno.remove(tmpDir2, { recursive: true });
+    await Deno.remove(tmpDir1, { recursive: true }).catch(() => {});
+    await Deno.remove(tmpDir2, { recursive: true }).catch(() => {});
   }
 });
 
@@ -247,7 +247,7 @@ Deno.test("doctorWorkflows: mixed pass and fail results", async () => {
     assertEquals(completed.report.totalPassed, 1);
     assertEquals(completed.report.totalFailed, 1);
   } finally {
-    await Deno.remove(tmpDir, { recursive: true });
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
   }
 });
 
@@ -274,6 +274,6 @@ Deno.test("doctorWorkflows: extracts name from parseable YAML even when construc
     // Name extraction should still work even though schema validation fails
     // (empty string name won't parse from YAML since it's falsy)
   } finally {
-    await Deno.remove(tmpDir, { recursive: true });
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
   }
 });

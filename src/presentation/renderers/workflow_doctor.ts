@@ -20,7 +20,6 @@
 import { bold, cyan, dim, green, red } from "@std/fmt/colors";
 import type {
   DoctorWorkflowsEvent,
-  DoctorWorkflowsReport,
   EventHandlers,
 } from "../../libswamp/mod.ts";
 import type { Renderer } from "../renderer.ts";
@@ -60,19 +59,18 @@ class LogWorkflowDoctorRenderer implements WorkflowDoctorRenderer {
           if (!this.headerPrinted) {
             writeOutput(bold(cyan("Checking workflows...")));
           }
-          writeOutput(`\n  No workflow files found`);
-          writeOutput(`\n${bold(cyan("Result:"))} ${green("PASSED")}`);
+          writeOutput(`  No workflow files found`);
+          writeOutput("");
+          writeOutput(
+            `0 passed, 0 failed — ${green(bold("OVERALL: PASS"))}`,
+          );
           return;
         }
+        const status = e.report.overallStatus === "pass"
+          ? green(bold("OVERALL: PASS"))
+          : red(bold("OVERALL: FAIL"));
         writeOutput(
-          `\n${
-            bold(cyan("Summary:"))
-          } ${e.report.totalPassed}/${e.report.workflows.length} workflows loaded successfully`,
-        );
-        writeOutput(
-          `${bold(cyan("Result:"))} ${
-            e.report.overallStatus === "pass" ? green("PASSED") : red("FAILED")
-          }`,
+          `\n${e.report.totalPassed} passed, ${e.report.totalFailed} failed — ${status}`,
         );
       },
       error: (e) => {
@@ -90,8 +88,7 @@ class JsonWorkflowDoctorRenderer implements WorkflowDoctorRenderer {
       "workflow-checked": () => {},
       completed: (e) => {
         this.overallStatus = e.report.overallStatus;
-        const report: DoctorWorkflowsReport = e.report;
-        console.log(JSON.stringify(report, null, 2));
+        console.log(JSON.stringify(e.report, null, 2));
       },
       error: (e) => {
         throw new UserError(e.error.message);

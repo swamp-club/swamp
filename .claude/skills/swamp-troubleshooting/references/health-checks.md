@@ -250,8 +250,7 @@ Checking workflows...
   ✗ emergency-kernel-update
     → YAML parse error at line 42, column 15: bad indentation of a mapping entry
 
-Summary: 2/3 workflows loaded successfully
-Result: FAILED
+2 passed, 1 failed — OVERALL: FAIL
 ```
 
 ### Output — JSON mode
@@ -261,12 +260,12 @@ Result: FAILED
   "overallStatus": "fail",
   "workflows": [
     {
-      "file": "workflows/workflow-abc.yaml",
+      "file": "/path/to/repo/workflows/workflow-abc.yaml",
       "name": "deploy-pipeline",
       "status": "pass"
     },
     {
-      "file": "workflows/workflow-broken.yaml",
+      "file": "/path/to/repo/workflows/workflow-broken.yaml",
       "name": "emergency-kernel-update",
       "status": "fail",
       "error": "YAML parse error at line 42, column 15: bad indentation"
