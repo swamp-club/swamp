@@ -390,6 +390,36 @@ export {
   type VaultTypeSearchItem,
 } from "./vaults/type_search.ts";
 
+// Driver type search operations
+export {
+  driverTypeSearch,
+  type DriverTypeSearchData,
+  type DriverTypeSearchDeps,
+  type DriverTypeSearchEvent,
+  type DriverTypeSearchInput,
+  type DriverTypeSearchItem,
+} from "./drivers/type_search.ts";
+
+// Datastore type search operations
+export {
+  datastoreTypeSearch,
+  type DatastoreTypeSearchData,
+  type DatastoreTypeSearchDeps,
+  type DatastoreTypeSearchEvent,
+  type DatastoreTypeSearchInput,
+  type DatastoreTypeSearchItem,
+} from "./datastores/type_search.ts";
+
+// Report type search operations
+export {
+  reportTypeSearch,
+  type ReportTypeSearchData,
+  type ReportTypeSearchDeps,
+  type ReportTypeSearchEvent,
+  type ReportTypeSearchInput,
+  type ReportTypeSearchItem,
+} from "./reports/type_search.ts";
+
 // Vault search operations
 export {
   vaultSearch,

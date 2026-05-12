@@ -18,42 +18,33 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { datastoreStatusCommand } from "./datastore_status.ts";
-import { datastoreSetupCommand } from "./datastore_setup.ts";
-import { datastoreSyncCommand } from "./datastore_sync.ts";
-import { datastoreLockCommand } from "./datastore_lock.ts";
-import { datastoreCompactCommand } from "./datastore_compact.ts";
 import {
-  datastoreTypeSearchAction,
-  datastoreTypeSearchCommand,
-} from "./datastore_type_search.ts";
+  driverTypeSearchAction,
+  driverTypeSearchCommand,
+} from "./driver_type_search.ts";
 import { unknownCommandErrorHandler } from "../unknown_command_handler.ts";
 
-export const datastoreTypeCommand = new Command()
+export const driverTypeCommand = new Command()
   .name("type")
-  .description("Inspect datastore types")
+  .description("Inspect driver types")
   .action(function () {
     this.showHelp();
   })
-  .command("search", datastoreTypeSearchCommand)
+  .command("search", driverTypeSearchCommand)
   .command(
     "list",
     new Command()
-      .description("Alias for datastore type search")
+      .description("Alias for driver type search")
       .hidden()
       .arguments("[query:string]")
-      .action(datastoreTypeSearchAction),
+      .action(driverTypeSearchAction),
   );
 
-export const datastoreCommand = new Command()
-  .description("Manage datastore configuration")
+export const driverCommand = new Command()
+  .name("driver")
+  .description("Manage execution drivers")
   .error(unknownCommandErrorHandler)
   .action(function () {
     this.showHelp();
   })
-  .command("type", datastoreTypeCommand)
-  .command("status", datastoreStatusCommand)
-  .command("setup", datastoreSetupCommand)
-  .command("sync", datastoreSyncCommand)
-  .command("lock", datastoreLockCommand)
-  .command("compact", datastoreCompactCommand);
+  .command("type", driverTypeCommand);

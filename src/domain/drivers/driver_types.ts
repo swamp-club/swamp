@@ -58,10 +58,23 @@ for (const driverType of BUILT_IN_DRIVER_TYPES) {
 }
 
 /**
- * Gets all available driver types.
+ * Gets all available driver types (both loaded and lazy).
+ * Lazy types are synthesized from catalog metadata.
  */
 export function getDriverTypes(): DriverTypeInfo[] {
-  return driverTypeRegistry.getAll();
+  const loaded = driverTypeRegistry.getAll();
+  const loadedKeys = new Set(loaded.map((t) => t.type.toLowerCase()));
+
+  const lazy = driverTypeRegistry.getAllLazy()
+    .filter((entry) => !loadedKeys.has(entry.type.toLowerCase()))
+    .map((entry) => ({
+      type: entry.type,
+      name: entry.type,
+      description: "",
+      isBuiltIn: false,
+    }));
+
+  return [...loaded, ...lazy];
 }
 
 /**

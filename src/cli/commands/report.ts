@@ -21,7 +21,27 @@ import { Command } from "@cliffy/command";
 import { reportSearchAction, reportSearchCommand } from "./report_search.ts";
 import { reportGetCommand } from "./report_get.ts";
 import { reportDescribeCommand } from "./report_describe.ts";
+import {
+  reportTypeSearchAction,
+  reportTypeSearchCommand,
+} from "./report_type_search.ts";
 import { unknownCommandErrorHandler } from "../unknown_command_handler.ts";
+
+export const reportTypeCommand = new Command()
+  .name("type")
+  .description("Inspect report types")
+  .action(function () {
+    this.showHelp();
+  })
+  .command("search", reportTypeSearchCommand)
+  .command(
+    "list",
+    new Command()
+      .description("Alias for report type search")
+      .hidden()
+      .arguments("[query:string]")
+      .action(reportTypeSearchAction),
+  );
 
 export const reportCommand = new Command()
   .name("report")
@@ -30,6 +50,7 @@ export const reportCommand = new Command()
   .action(function () {
     this.showHelp();
   })
+  .command("type", reportTypeCommand)
   .command("search", reportSearchCommand)
   .command("get", reportGetCommand)
   .command("describe", reportDescribeCommand)
