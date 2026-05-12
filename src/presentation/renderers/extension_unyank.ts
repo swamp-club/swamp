@@ -75,3 +75,12 @@ export function createExtensionUnyankRenderer(
       return new LogExtensionUnyankRenderer();
   }
 }
+
+export function renderExtensionUnyankCancelled(mode: OutputMode): void {
+  if (mode === "json") {
+    console.log(JSON.stringify({ status: "cancelled" }));
+  } else {
+    const logger = getSwampLogger(["extension", "unyank"]);
+    logger.info("Unyank cancelled.");
+  }
+}

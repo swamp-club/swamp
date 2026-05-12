@@ -25,13 +25,30 @@ import {
   extensionUnyank,
   extensionUnyankPreview,
 } from "../../libswamp/mod.ts";
-import { createExtensionUnyankRenderer } from "../../presentation/renderers/extension_unyank.ts";
+import {
+  createExtensionUnyankRenderer,
+  renderExtensionUnyankCancelled,
+} from "../../presentation/renderers/extension_unyank.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { UserError } from "../../domain/errors.ts";
 import { parseExtensionRef } from "./extension_pull.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
+
+async function promptConfirmation(message: string): Promise<boolean> {
+  const encoder = new TextEncoder();
+  const decoder = new TextDecoder();
+
+  await Deno.stdout.write(encoder.encode(`${message} [y/N] `));
+
+  const buf = new Uint8Array(1024);
+  const n = await Deno.stdin.read(buf);
+  if (n === null) return false;
+
+  const response = decoder.decode(buf.subarray(0, n)).trim().toLowerCase();
+  return response === "y" || response === "yes";
+}
 
 export const extensionUnyankCommand = new Command()
   .name("unyank")
@@ -48,6 +65,7 @@ export const extensionUnyankCommand = new Command()
   )
   .arguments("<extension:string> [version:string]")
   .option("--reason <reason:string>", "Optional reason (audit log only)")
+  .option("-y, --yes", "Skip confirmation prompt")
   .action(async function (
     options: AnyOptions,
     extension: string,
@@ -70,13 +88,25 @@ export const extensionUnyankCommand = new Command()
       reason: (options.reason as string | undefined) ?? null,
     };
 
+    let preview;
     try {
-      await extensionUnyankPreview(ctx, deps, input);
+      preview = await extensionUnyankPreview(ctx, deps, input);
     } catch (error) {
       if ("code" in (error as Record<string, unknown>)) {
         throw new UserError((error as { message: string }).message);
       }
       throw error;
+    }
+
+    if (cliCtx.outputMode === "log" && !options.yes) {
+      const prompt = preview.version
+        ? `Unyank ${preview.extensionName}@${preview.version}? This will restore availability.`
+        : `Unyank ALL versions of ${preview.extensionName}? This will restore availability and allow future pushes.`;
+      const confirmed = await promptConfirmation(prompt);
+      if (!confirmed) {
+        renderExtensionUnyankCancelled(cliCtx.outputMode);
+        return;
+      }
     }
 
     const renderer = createExtensionUnyankRenderer(cliCtx.outputMode);
