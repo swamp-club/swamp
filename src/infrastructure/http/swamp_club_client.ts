@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { UserError } from "../../domain/errors.ts";
+import { parseRetryAfter, rateLimitError } from "./rate_limit.ts";
 
 /** Response from BetterAuth sign-in endpoint. */
 export interface SignInResponse {
@@ -320,8 +321,15 @@ export class SwampClubClient {
       ? AbortSignal.any([callerSignal, timeoutSignal])
       : timeoutSignal;
     try {
-      return await fetch(url, { ...init, signal });
+      const res = await fetch(url, { ...init, signal });
+      if (res.status === 429) {
+        const retryAfter = parseRetryAfter(res.headers.get("retry-after"));
+        await res.body?.cancel();
+        throw rateLimitError(retryAfter);
+      }
+      return res;
     } catch (error) {
+      if (error instanceof UserError) throw error;
       // Re-throw AbortError from caller signal without wrapping
       if (
         callerSignal?.aborted && error instanceof DOMException &&

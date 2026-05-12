@@ -19,6 +19,7 @@
 
 import { UserError } from "../../domain/errors.ts";
 import type { ExtensionContentMetadata } from "../../domain/extensions/extension_content.ts";
+import { parseRetryAfter, rateLimitError } from "./rate_limit.ts";
 
 /** Metadata sent during push initiation and confirmation. */
 export interface PushMetadata {
@@ -457,6 +458,12 @@ export class ExtensionApiClient {
 
   private async checkResponse(res: Response): Promise<void> {
     if (res.ok || res.status === 201) return;
+
+    if (res.status === 429) {
+      const retryAfter = parseRetryAfter(res.headers.get("retry-after"));
+      await res.body?.cancel();
+      throw rateLimitError(retryAfter);
+    }
 
     const body = await res.text();
 

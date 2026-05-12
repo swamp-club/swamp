@@ -543,3 +543,68 @@ Deno.test("ExtensionApiClient version-scoped methods URL-encode version path seg
     await server.shutdown();
   }
 });
+
+Deno.test("ExtensionApiClient: 429 surfaces Retry-After in UserError", async () => {
+  const server = Deno.serve({ port: 0, onListen: () => {} }, (_req) => {
+    return new Response("rate limited", {
+      status: 429,
+      headers: { "retry-after": "45" },
+    });
+  });
+  try {
+    const client = new ExtensionApiClient(
+      `http://localhost:${server.addr.port}`,
+    );
+    const err = await assertRejects(
+      () => client.getLatestVersion("@test/ext"),
+      UserError,
+    );
+    assertStringIncludes(err.message, "Rate limit exceeded");
+    assertStringIncludes(err.message, "Retry in 45s");
+    assertStringIncludes(err.message, "swamp auth login");
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("ExtensionApiClient: 429 on search surfaces sign-in hint", async () => {
+  const server = Deno.serve({ port: 0, onListen: () => {} }, (_req) => {
+    return new Response("rate limited", { status: 429 });
+  });
+  try {
+    const client = new ExtensionApiClient(
+      `http://localhost:${server.addr.port}`,
+    );
+    const err = await assertRejects(
+      () => client.searchExtensions({ q: "aws" }),
+      UserError,
+    );
+    assertStringIncludes(err.message, "Rate limit exceeded");
+    assertEquals(err.message.includes("Retry in"), false);
+    assertStringIncludes(err.message, "swamp auth login");
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("ExtensionApiClient: 429 on getDownloadUrl is preferred over 404 fallthrough", async () => {
+  const server = Deno.serve({ port: 0, onListen: () => {} }, (_req) => {
+    return new Response("rate limited", {
+      status: 429,
+      headers: { "retry-after": "10" },
+    });
+  });
+  try {
+    const client = new ExtensionApiClient(
+      `http://localhost:${server.addr.port}`,
+    );
+    const err = await assertRejects(
+      () => client.getDownloadUrl("@test/ext", "2026.01.01.1"),
+      UserError,
+    );
+    assertStringIncludes(err.message, "Rate limit exceeded");
+    assertStringIncludes(err.message, "Retry in 10s");
+  } finally {
+    await server.shutdown();
+  }
+});

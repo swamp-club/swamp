@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertRejects } from "@std/assert";
+import { assertStringIncludes } from "@std/assert/string-includes";
 import { SwampClubClient } from "./swamp_club_client.ts";
 import { UserError } from "../../domain/errors.ts";
 
@@ -210,6 +211,45 @@ Deno.test("SwampClubClient - submitIssue throws UserError on failure", async () 
       UserError,
       "Failed to submit issue",
     );
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("SwampClubClient - 429 surfaces Retry-After in UserError", async () => {
+  const mock = startMockServer((_req) =>
+    new Response("rate limited", {
+      status: 429,
+      headers: { "retry-after": "30" },
+    })
+  );
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    const err = await assertRejects(
+      () => client.fetchIssue(undefined, 1),
+      UserError,
+    );
+    assertStringIncludes(err.message, "Rate limit exceeded");
+    assertStringIncludes(err.message, "Retry in 30s");
+    assertStringIncludes(err.message, "swamp auth login");
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("SwampClubClient - 429 without Retry-After still surfaces sign-in hint", async () => {
+  const mock = startMockServer((_req) =>
+    new Response("rate limited", { status: 429 })
+  );
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    const err = await assertRejects(
+      () => client.fetchIssue(undefined, 1),
+      UserError,
+    );
+    assertStringIncludes(err.message, "Rate limit exceeded");
+    assertEquals(err.message.includes("Retry in"), false);
+    assertStringIncludes(err.message, "swamp auth login");
   } finally {
     await mock.shutdown();
   }
