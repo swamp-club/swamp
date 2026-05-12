@@ -484,16 +484,42 @@ export class ReconcileFromDiskService {
         const fromState = existingSource?.state.tag ?? null;
         const errorMsg = error instanceof Error ? error.message : String(error);
 
+        // Store the current fingerprint so findStaleFiles sees the file
+        // as fresh and doesn't re-trigger a redundant rebundle on the
+        // next buildIndex pass. Fallback to "" if the file became
+        // unreadable mid-flight — "" never matches a computed hash, so
+        // subsequent reconciles will re-attempt the bundle (acceptable
+        // for this rare case).
+        let failFp: string;
+        try {
+          failFp = await computeSourceFingerprint(
+            absolutePath,
+            baseDir,
+            cache,
+          );
+        } catch {
+          failFp = "";
+        }
+
         if (existingSource) {
           ext = recordBundleBuildFailed(ext, {
             location: effectiveLoc,
             lastError: errorMsg,
+            fingerprint: failFp,
+            sourceMtime,
           });
         } else {
-          ext = makeExtensionWithNewSource(ext, effectiveLoc, kind, {
-            tag: "BundleBuildFailed",
-            lastError: errorMsg,
-          }, sourceMtime);
+          ext = makeExtensionWithNewSource(
+            ext,
+            effectiveLoc,
+            kind,
+            {
+              tag: "BundleBuildFailed",
+              lastError: errorMsg,
+            },
+            sourceMtime,
+            failFp,
+          );
         }
 
         if (fromState !== "BundleBuildFailed") {
@@ -671,12 +697,13 @@ function makeExtensionWithNewSource(
   kindDir: KindDir,
   state: { tag: "BundleBuildFailed"; lastError: string },
   sourceMtime: string,
+  fingerprint = "",
 ): Extension {
   const kind = kindDirToExtensionKind(kindDir);
   const source = makeSource({
     id: location,
     kind,
-    fingerprint: "",
+    fingerprint,
     state,
     sourceMtime,
   });

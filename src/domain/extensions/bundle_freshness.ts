@@ -318,9 +318,16 @@ export async function findStaleFiles(
     }
   }
 
-  for (const [sourcePath] of catalogBySource) {
+  const FAILURE_STATES = new Set([
+    "BundleBuildFailed",
+    "EntryPointUnreadable",
+    "OrphanedBundleOnly",
+  ]);
+  for (const [sourcePath, entry] of catalogBySource) {
     if (!seenSources.has(sourcePath)) {
-      catalog.removeBySourcePath(sourcePath);
+      if (!FAILURE_STATES.has(entry.state ?? "Indexed")) {
+        catalog.removeBySourcePath(sourcePath);
+      }
     }
   }
 

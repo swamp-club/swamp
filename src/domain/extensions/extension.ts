@@ -323,16 +323,36 @@ export function recordBundled(
 /**
  * Records that a bundle build failed AND no cached bundle exists on
  * disk. Returns a NEW Extension.
+ *
+ * When {@link fingerprint} is provided, the Source's fingerprint is
+ * updated atomically with the state transition. This prevents
+ * {@link findStaleFiles} from re-marking the file as stale on the
+ * next pass — the stored fingerprint matches the on-disk content,
+ * terminating the rebundle loop.
  */
 export function recordBundleBuildFailed(
   extension: Extension,
-  args: { location: SourceLocation; lastError: string },
+  args: {
+    location: SourceLocation;
+    lastError: string;
+    fingerprint?: SourceFingerprint;
+    sourceMtime?: string;
+  },
 ): Extension {
-  return updateSourceState(
-    extension,
-    args.location,
-    { tag: "BundleBuildFailed", lastError: args.lastError },
-  );
+  const state: RowState = {
+    tag: "BundleBuildFailed",
+    lastError: args.lastError,
+  };
+  if (args.fingerprint !== undefined) {
+    return updateSourceStateAndFingerprint(
+      extension,
+      args.location,
+      state,
+      args.fingerprint,
+      args.sourceMtime,
+    );
+  }
+  return updateSourceState(extension, args.location, state);
 }
 
 /**
@@ -450,6 +470,34 @@ function updateSourceState(
   }
   const next = new Map(extension.sources);
   next.set(location, withState(existing, state));
+  const resolved = enforceI2(next);
+  return { ...extension, sources: resolved };
+}
+
+function updateSourceStateAndFingerprint(
+  extension: Extension,
+  location: SourceLocation,
+  state: RowState,
+  fingerprint: SourceFingerprint,
+  sourceMtime?: string,
+): Extension {
+  const existing = extension.sources.get(location);
+  if (!existing) {
+    throw new Error(
+      `Extension ${extension.name}@${extension.version} has no Source at ` +
+        `${location.canonicalPath}; cannot update state to ${state.tag}.`,
+    );
+  }
+  const next = new Map(extension.sources);
+  next.set(
+    location,
+    withFingerprintAndState(
+      existing,
+      fingerprint,
+      state,
+      sourceMtime ?? existing.sourceMtime,
+    ),
+  );
   const resolved = enforceI2(next);
   return { ...extension, sources: resolved };
 }
