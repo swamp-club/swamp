@@ -23,6 +23,7 @@ import {
   DefaultStepExecutor,
   type StepExecutionContext,
   type StepExecutor,
+  stepNameFromCompositeKey,
   WorkflowExecutionService,
 } from "./execution_service.ts";
 import { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
@@ -3160,3 +3161,19 @@ Deno.test("run.id expression in step inputs resolves to the workflow run UUID", 
     assertNotEquals(ctx.expressionContext?.run?.startedAt, undefined);
   });
 });
+
+Deno.test(
+  "stepNameFromCompositeKey: preserves colons in the step name segment",
+  () => {
+    const cases: Array<[string, string]> = [
+      ["job1:step1", "step1"],
+      ["job1:docker:build", "docker:build"],
+      ["job1:a:b:c", "a:b:c"],
+      ["jobOnly", ""],
+      ["", ""],
+    ];
+    for (const [key, expected] of cases) {
+      assertEquals(stepNameFromCompositeKey(key), expected, `key=${key}`);
+    }
+  },
+);

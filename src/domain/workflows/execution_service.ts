@@ -192,6 +192,18 @@ export interface StepExecutor {
 const MAX_WORKFLOW_NESTING_DEPTH = 10;
 
 /**
+ * Decode the step-name segment of a `${jobId}:${stepName}` composite key.
+ *
+ * Splits on the FIRST colon only, so step names that themselves contain
+ * colons (e.g. `docker:build`) round-trip without truncation. Returns ""
+ * when the key has no colon.
+ */
+export function stepNameFromCompositeKey(key: string): string {
+  const idx = key.indexOf(":");
+  return idx >= 0 ? key.slice(idx + 1) : "";
+}
+
+/**
  * Infrastructure dependencies the {@link DefaultStepExecutor} needs to
  * run a model method. Inject this for tests so the executor can be
  * exercised without disk, real vaults, or YAML on the filesystem.
@@ -2245,7 +2257,7 @@ export class WorkflowExecutionService {
     for (const [key, info] of modelInfoByStep) {
       const status = stepStatuses.get(key) ?? "failed";
       const jobName = stepJobNames.get(key) ?? "";
-      const stepName = key.split(":")[1] ?? "";
+      const stepName = stepNameFromCompositeKey(key);
 
       // Prefer the evaluated definition (post-CEL) so report templates see
       // resolved expression values. Fall back to the raw definition.
