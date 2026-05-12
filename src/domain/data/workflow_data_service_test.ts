@@ -338,3 +338,125 @@ Deno.test("WorkflowDataService.findByNameInWorkflowRun returns null for non-exis
   const result = await service.findByNameInWorkflowRun(run, "nonexistent");
   assertEquals(result, null);
 });
+
+Deno.test("WorkflowDataService.findAllForWorkflowRun resolves workflow-scope artifacts", async () => {
+  const workflowModelType = ModelType.create("workflow");
+  const wfReportData = await createTestData("report-swamp-workflow-summary", {
+    type: "report",
+    reportName: "@swamp/workflow-summary",
+    reportScope: "workflow",
+  });
+
+  const globalData = [
+    {
+      data: wfReportData,
+      modelType: workflowModelType,
+      modelId: TEST_WORKFLOW_ID,
+    },
+  ];
+
+  const run = WorkflowRun.fromData({
+    id: TEST_RUN_ID,
+    workflowId: TEST_WORKFLOW_ID,
+    workflowName: "test-workflow",
+    status: "succeeded",
+    startedAt: new Date().toISOString(),
+    completedAt: new Date().toISOString(),
+    jobs: [{
+      jobName: "main",
+      status: "succeeded",
+      steps: [{ stepName: "noop", status: "succeeded" }],
+    }],
+    workflowDataArtifacts: [{
+      dataId: wfReportData.id,
+      name: "report-swamp-workflow-summary",
+      version: 1,
+      tags: {
+        type: "report",
+        reportName: "@swamp/workflow-summary",
+        reportScope: "workflow",
+      },
+    }],
+  });
+
+  const service = new WorkflowDataService(
+    createMockDefinitionRepo(),
+    createMockDataRepo(globalData),
+  );
+
+  const result = await service.findAllForWorkflowRun(run);
+  assertEquals(result.length, 1);
+  assertEquals(result[0].data.name, "report-swamp-workflow-summary");
+  assertEquals(result[0].modelType.normalized, "workflow");
+  // Workflow-scope items have no owning job or step.
+  assertEquals(result[0].jobName, undefined);
+  assertEquals(result[0].stepName, undefined);
+});
+
+Deno.test("WorkflowDataService.findAllForWorkflowRun returns both step and workflow-scope artifacts", async () => {
+  const stepModelType = ModelType.create("aws/ec2/vpc");
+  const stepData = await createTestData("vpc-state");
+  const wfModelType = ModelType.create("workflow");
+  const wfReportData = await createTestData("report-swamp-workflow-summary", {
+    type: "report",
+    reportScope: "workflow",
+  });
+
+  const globalData = [
+    { data: stepData, modelType: stepModelType, modelId: TEST_MODEL_ID },
+    {
+      data: wfReportData,
+      modelType: wfModelType,
+      modelId: TEST_WORKFLOW_ID,
+    },
+  ];
+
+  const run = WorkflowRun.fromData({
+    id: TEST_RUN_ID,
+    workflowId: TEST_WORKFLOW_ID,
+    workflowName: "test-workflow",
+    status: "succeeded",
+    startedAt: new Date().toISOString(),
+    completedAt: new Date().toISOString(),
+    jobs: [{
+      jobName: "main",
+      status: "succeeded",
+      steps: [{
+        stepName: "create",
+        status: "succeeded",
+        dataArtifacts: [{
+          dataId: stepData.id,
+          name: "vpc-state",
+          version: 1,
+          tags: { type: "resource" },
+        }],
+      }],
+    }],
+    workflowDataArtifacts: [{
+      dataId: wfReportData.id,
+      name: "report-swamp-workflow-summary",
+      version: 1,
+      tags: { type: "report", reportScope: "workflow" },
+    }],
+  });
+
+  const service = new WorkflowDataService(
+    createMockDefinitionRepo(),
+    createMockDataRepo(globalData),
+  );
+
+  const result = await service.findAllForWorkflowRun(run);
+  assertEquals(result.length, 2);
+
+  const stepItem = result.find((r) => r.data.name === "vpc-state");
+  if (!stepItem) throw new Error("expected step artifact");
+  assertEquals(stepItem.jobName, "main");
+  assertEquals(stepItem.stepName, "create");
+
+  const wfItem = result.find((r) =>
+    r.data.name === "report-swamp-workflow-summary"
+  );
+  if (!wfItem) throw new Error("expected workflow-scope artifact");
+  assertEquals(wfItem.jobName, undefined);
+  assertEquals(wfItem.stepName, undefined);
+});

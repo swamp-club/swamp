@@ -57,6 +57,10 @@ import {
 } from "../data/data_record_mapper.ts";
 import { resolveModelType } from "../extensions/extension_auto_resolver.ts";
 import { MethodReportRunner } from "./method_report_runner.ts";
+import {
+  WorkflowReportRunner,
+  type WorkflowStepExecutionDetail,
+} from "./workflow_report_runner.ts";
 import { getAutoResolver } from "../extensions/auto_resolver_context.ts";
 import { DefaultMethodExecutionService } from "../models/method_execution_service.ts";
 import { DefaultModelValidationService } from "../models/validation_service.ts";
@@ -87,6 +91,7 @@ import {
 import { UserError } from "../errors.ts";
 import {
   getRunLogger,
+  getWorkflowRunLogger,
   runFileSink,
 } from "../../infrastructure/logging/logger.ts";
 import { join } from "@std/path";
@@ -1193,11 +1198,13 @@ export class WorkflowExecutionService {
   private readonly sortService = new TopologicalSortService();
   private readonly executor: StepExecutor;
   private readonly definitionRepo: YamlDefinitionRepository;
+  private readonly evaluatedDefRepo: YamlEvaluatedDefinitionRepository;
   private readonly modelResolver: ModelResolver;
   private readonly dataRepo: FileSystemUnifiedDataRepository;
   private readonly dataBaseDir?: string;
   private readonly catalogStore: CatalogStore;
   private readonly markerRepo = new RepoMarkerRepository();
+  private readonly workflowReportRunner = new WorkflowReportRunner();
   /**
    * Promise-memoized loader for `.swamp.yaml`. Instance-scoped so a
    * long-running serve process creates a fresh loader per request and
@@ -1221,6 +1228,7 @@ export class WorkflowExecutionService {
     this.dataBaseDir = dataBaseDir;
     this.catalogStore = catalogStore;
     this.definitionRepo = new YamlDefinitionRepository(repoDir);
+    this.evaluatedDefRepo = new YamlEvaluatedDefinitionRepository(repoDir);
     this.dataRepo = new FileSystemUnifiedDataRepository(
       repoDir,
       dataBaseDir,
@@ -1424,6 +1432,23 @@ export class WorkflowExecutionService {
         readGlobalConcurrencyLimit(),
       );
 
+      // Track per-step model info and data handles for the workflow-scope
+      // report context. Built up by intercepting the events the service
+      // emits as steps execute.
+      const modelInfoByStep = new Map<
+        string,
+        { modelName: string; modelType: string; methodName: string }
+      >();
+      const stepStatuses = new Map<
+        string,
+        "succeeded" | "failed" | "skipped"
+      >();
+      const stepJobNames = new Map<string, string>();
+      const dataHandlesByStep = new Map<
+        string,
+        import("../models/model.ts").DataHandle[]
+      >();
+
       // Execute jobs level by level
       for (const level of sortedJobs.levels) {
         // Merge parallel job generators within each level
@@ -1443,6 +1468,25 @@ export class WorkflowExecutionService {
             options?.signal,
           )
         ) {
+          if (event.kind === "model_resolved") {
+            const key = `${event.jobId}:${event.stepId}`;
+            modelInfoByStep.set(key, {
+              modelName: event.modelName,
+              modelType: event.modelType,
+              methodName: event.methodName,
+            });
+            stepJobNames.set(key, event.jobId);
+          } else if (event.kind === "step_completed") {
+            const key = `${event.jobId}:${event.stepId}`;
+            stepStatuses.set(key, "succeeded");
+            if (event.dataHandles) {
+              dataHandlesByStep.set(key, event.dataHandles);
+            }
+          } else if (event.kind === "step_failed") {
+            stepStatuses.set(`${event.jobId}:${event.stepId}`, "failed");
+          } else if (event.kind === "step_skipped") {
+            stepStatuses.set(`${event.jobId}:${event.stepId}`, "skipped");
+          }
           yield event;
         }
         await this.saveRun(workflow.id, run);
@@ -1450,6 +1494,21 @@ export class WorkflowExecutionService {
 
       // Complete workflow
       run.complete();
+
+      // Execute workflow-scope reports before the completed event so the
+      // run aggregate carries the workflow-scope dataArtifacts produced by
+      // those reports — required for `swamp data get --workflow` and
+      // `swamp data list --workflow` to surface them.
+      yield* this.runWorkflowReports(
+        workflow,
+        run,
+        modelInfoByStep,
+        stepStatuses,
+        stepJobNames,
+        dataHandlesByStep,
+        options?.reportFilterOptions,
+      );
+
       yield { kind: "completed", run };
       await this.saveRun(workflow.id, run);
 
@@ -2151,6 +2210,109 @@ export class WorkflowExecutionService {
     run: WorkflowRun,
   ): Promise<void> {
     await this.runRepo.save(workflowId, run);
+  }
+
+  /**
+   * Runs workflow-scope reports after the workflow completes and appends
+   * their data artifacts to the WorkflowRun aggregate so the `--workflow`
+   * retrieval path can resolve them.
+   *
+   * Buffers report events emitted by the runner so they can be yielded
+   * back through the service's event stream in order.
+   */
+  private async *runWorkflowReports(
+    workflow: Workflow,
+    run: WorkflowRun,
+    modelInfoByStep: Map<
+      string,
+      { modelName: string; modelType: string; methodName: string }
+    >,
+    stepStatuses: Map<string, "succeeded" | "failed" | "skipped">,
+    stepJobNames: Map<string, string>,
+    dataHandlesByStep: Map<
+      string,
+      import("../models/model.ts").DataHandle[]
+    >,
+    reportFilterOptions:
+      | import("../reports/report_execution_service.ts").ReportFilterOptions
+      | undefined,
+  ): AsyncGenerator<WorkflowExecutionEvent> {
+    if (!reportFilterOptions) {
+      return;
+    }
+
+    const stepExecutions: WorkflowStepExecutionDetail[] = [];
+    for (const [key, info] of modelInfoByStep) {
+      const status = stepStatuses.get(key) ?? "failed";
+      const jobName = stepJobNames.get(key) ?? "";
+      const stepName = key.split(":")[1] ?? "";
+
+      // Prefer the evaluated definition (post-CEL) so report templates see
+      // resolved expression values. Fall back to the raw definition.
+      let lookupResult = await this.evaluatedDefRepo.findByNameGlobal(
+        info.modelName,
+      );
+      if (!lookupResult) {
+        lookupResult = await findDefinitionByIdOrName(
+          this.definitionRepo,
+          info.modelName,
+        );
+      }
+
+      if (!lookupResult || status === "skipped") {
+        stepExecutions.push({
+          jobName,
+          stepName,
+          modelName: info.modelName,
+          modelType: info.modelType,
+          methodName: info.methodName,
+          status,
+          dataHandles: [],
+          methodArgs: {},
+          modelId: "",
+          globalArgs: {},
+        });
+        continue;
+      }
+
+      const { definition } = lookupResult;
+      stepExecutions.push({
+        jobName,
+        stepName,
+        modelName: info.modelName,
+        modelType: info.modelType,
+        methodName: info.methodName,
+        status,
+        dataHandles: dataHandlesByStep.get(key) ?? [],
+        methodArgs: definition.getMethodArguments(info.methodName),
+        modelId: definition.id,
+        globalArgs: definition.globalArguments,
+      });
+    }
+
+    const bufferedEvents: WorkflowExecutionEvent[] = [];
+    const artifacts = await this.workflowReportRunner.runFor({
+      workflow,
+      workflowRunId: run.id,
+      workflowStatus: run.status === "succeeded" ? "succeeded" : "failed",
+      stepExecutions,
+      reportFilterOptions,
+      repoDir: this.repoDir,
+      runLogger: getWorkflowRunLogger(workflow.name),
+      unifiedDataRepo: this.dataRepo,
+      definitionRepository: this.definitionRepo,
+      emitEvent: (event: WorkflowExecutionEvent) => {
+        bufferedEvents.push(event);
+      },
+    });
+
+    for (const ref of artifacts) {
+      run.addWorkflowDataArtifact(ref);
+    }
+
+    for (const event of bufferedEvents) {
+      yield event;
+    }
   }
 
   /**

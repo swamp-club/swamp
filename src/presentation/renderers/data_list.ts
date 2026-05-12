@@ -92,7 +92,9 @@ class LogDataListRenderer implements Renderer<DataListEvent> {
       );
       for (const item of group.items) {
         const size = formatSize(item.size);
-        const step = `${item.jobName}.${item.stepName}`;
+        const step = item.jobName !== undefined && item.stepName !== undefined
+          ? `${item.jobName}.${item.stepName}`
+          : "(workflow)";
         console.log(
           `  ${item.name}  v${item.version}  ${item.modelName}  ${step}  ${size}`,
         );

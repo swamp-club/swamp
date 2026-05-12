@@ -65,8 +65,10 @@ export interface WorkflowDataListItem extends DataListItem {
   modelId: string;
   modelName: string;
   modelType: string;
-  jobName: string;
-  stepName: string;
+  /** Absent for workflow-scope artifacts not produced by a single step. */
+  jobName?: string;
+  /** Absent for workflow-scope artifacts not produced by a single step. */
+  stepName?: string;
 }
 
 /** Workflow-scoped data list. */
@@ -112,8 +114,10 @@ interface WorkflowDataEntry {
   modelId: string;
   modelName: string;
   modelType: ModelType;
-  jobName: string;
-  stepName: string;
+  /** Absent for workflow-scope artifacts not produced by a single step. */
+  jobName?: string;
+  /** Absent for workflow-scope artifacts not produced by a single step. */
+  stepName?: string;
 }
 
 /** Minimal workflow info for data list operations. */
@@ -302,21 +306,24 @@ async function* workflowScopedList(
     ? workflowData.filter((d) => d.data.type === input.typeFilter)
     : workflowData;
 
-  const items: WorkflowDataListItem[] = filteredData.map((item) => ({
-    id: item.data.id,
-    name: item.data.name,
-    version: item.data.version,
-    contentType: item.data.contentType,
-    type: item.data.type,
-    streaming: item.data.streaming,
-    size: item.data.size,
-    createdAt: item.data.createdAt.toISOString(),
-    modelId: item.modelId,
-    modelName: item.modelName,
-    modelType: item.modelType.normalized,
-    jobName: item.jobName,
-    stepName: item.stepName,
-  }));
+  const items: WorkflowDataListItem[] = filteredData.map((item) => {
+    const listItem: WorkflowDataListItem = {
+      id: item.data.id,
+      name: item.data.name,
+      version: item.data.version,
+      contentType: item.data.contentType,
+      type: item.data.type,
+      streaming: item.data.streaming,
+      size: item.data.size,
+      createdAt: item.data.createdAt.toISOString(),
+      modelId: item.modelId,
+      modelName: item.modelName,
+      modelType: item.modelType.normalized,
+    };
+    if (item.jobName !== undefined) listItem.jobName = item.jobName;
+    if (item.stepName !== undefined) listItem.stepName = item.stepName;
+    return listItem;
+  });
 
   const groups = groupByType(items);
 

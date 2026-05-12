@@ -76,4 +76,6 @@ export interface WorkflowRunView {
   duration?: number;
   path?: string;
   reports?: ReportResultView[];
+  /** Data artifacts produced at workflow scope (e.g. workflow-scope reports). */
+  workflowDataArtifacts?: DataArtifactRefData[];
 }

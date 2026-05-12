@@ -73,6 +73,7 @@ export const WorkflowRunSchema = z.object({
   startedAt: z.string().datetime().optional(),
   completedAt: z.string().datetime().optional(),
   jobs: z.array(JobRunSchema),
+  workflowDataArtifacts: z.array(DataArtifactRefSchema).optional(),
   logFile: z.string().optional(),
   tags: z.record(z.string(), z.string()).default({}),
 });
@@ -415,6 +416,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
     private _jobs: JobRun[],
     private _logFile: string | undefined,
     private readonly _tags: Record<string, string>,
+    private _workflowDataArtifacts: DataArtifactRef[] = [],
   ) {}
 
   /**
@@ -442,6 +444,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
       jobs,
       undefined,
       tags ?? {},
+      [],
     );
   }
 
@@ -462,6 +465,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
       jobs,
       validated.logFile,
       validated.tags,
+      validated.workflowDataArtifacts ?? [],
     );
   }
 
@@ -479,6 +483,21 @@ export class WorkflowRun implements TriggerEvaluationContext {
 
   get jobs(): ReadonlyArray<JobRun> {
     return this._jobs;
+  }
+
+  /**
+   * Gets the data artifacts produced at workflow scope (e.g. by workflow-scope
+   * reports), independent of any single step.
+   */
+  get workflowDataArtifacts(): ReadonlyArray<DataArtifactRef> {
+    return this._workflowDataArtifacts;
+  }
+
+  /**
+   * Adds a workflow-scope data artifact reference to this run.
+   */
+  addWorkflowDataArtifact(artifact: DataArtifactRef): void {
+    this._workflowDataArtifacts.push({ ...artifact });
   }
 
   /**
@@ -549,6 +568,11 @@ export class WorkflowRun implements TriggerEvaluationContext {
     };
     if (this._logFile) {
       data.logFile = this._logFile;
+    }
+    if (this._workflowDataArtifacts.length > 0) {
+      data.workflowDataArtifacts = this._workflowDataArtifacts.map((a) => ({
+        ...a,
+      }));
     }
     return data;
   }

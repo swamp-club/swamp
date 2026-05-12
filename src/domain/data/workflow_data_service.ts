@@ -26,14 +26,18 @@ import { createDefinitionId } from "../definitions/definition.ts";
 
 /**
  * Represents a data item resolved from a workflow run.
+ *
+ * `jobName` and `stepName` are absent for workflow-scope artifacts (e.g.
+ * data produced by workflow-scope reports), which belong to the run as a
+ * whole rather than to any single step.
  */
 export interface WorkflowDataItem {
   data: Data;
   modelType: ModelType;
   modelId: string;
   modelName: string;
-  jobName: string;
-  stepName: string;
+  jobName?: string;
+  stepName?: string;
   contentPath: string;
 }
 
@@ -86,49 +90,82 @@ export class WorkflowDataService {
         if (step.dataArtifacts.length === 0) continue;
 
         for (const artifact of step.dataArtifacts) {
-          // Look up the data by its ID first, then fall back to name matching.
-          // Data IDs change with each version, so older run artifacts may not
-          // match the current data's ID. Name matching resolves this by finding
-          // the data item across all models that shares the same name.
-          let found = dataById.get(artifact.dataId);
-          if (!found) {
-            // Try matching by name across all models
-            for (const [, item] of dataByName) {
-              if (item.data.name === artifact.name) {
-                found = item;
-                break;
-              }
-            }
-          }
-          if (!found) continue; // GC'd or missing data
-
-          // Resolve model name
-          const modelName = await this.resolveModelName(
-            found.modelType,
-            found.modelId,
+          const resolved = await this.resolveArtifact(
+            artifact,
+            dataById,
+            dataByName,
           );
-
-          const contentPath = this.dataRepo.getContentPath(
-            found.modelType,
-            found.modelId,
-            found.data.name,
-            found.data.version,
-          );
-
+          if (!resolved) continue;
           results.push({
-            data: found.data,
-            modelType: found.modelType,
-            modelId: found.modelId,
-            modelName,
+            ...resolved,
             jobName: job.jobName,
             stepName: step.stepName,
-            contentPath,
           });
         }
       }
     }
 
+    // Workflow-scope artifacts (e.g. workflow-scope report output) are
+    // tracked on the run aggregate rather than under any single step.
+    for (const artifact of run.workflowDataArtifacts) {
+      const resolved = await this.resolveArtifact(
+        artifact,
+        dataById,
+        dataByName,
+      );
+      if (resolved) {
+        results.push(resolved);
+      }
+    }
+
     return results;
+  }
+
+  private async resolveArtifact(
+    artifact: { dataId: string; name: string },
+    dataById: Map<
+      string,
+      { data: Data; modelType: ModelType; modelId: string }
+    >,
+    dataByName: Map<
+      string,
+      { data: Data; modelType: ModelType; modelId: string }
+    >,
+  ): Promise<Omit<WorkflowDataItem, "jobName" | "stepName"> | null> {
+    // Look up the data by its ID first, then fall back to name matching.
+    // Data IDs change with each version, so older run artifacts may not
+    // match the current data's ID. Name matching resolves this by finding
+    // the data item across all models that shares the same name.
+    let found = dataById.get(artifact.dataId);
+    if (!found) {
+      for (const [, item] of dataByName) {
+        if (item.data.name === artifact.name) {
+          found = item;
+          break;
+        }
+      }
+    }
+    if (!found) return null;
+
+    const modelName = await this.resolveModelName(
+      found.modelType,
+      found.modelId,
+    );
+
+    const contentPath = this.dataRepo.getContentPath(
+      found.modelType,
+      found.modelId,
+      found.data.name,
+      found.data.version,
+    );
+
+    return {
+      data: found.data,
+      modelType: found.modelType,
+      modelId: found.modelId,
+      modelName,
+      contentPath,
+    };
   }
 
   /**

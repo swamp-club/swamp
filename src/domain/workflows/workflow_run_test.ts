@@ -462,3 +462,101 @@ Deno.test("WorkflowRun.fromData with missing tags defaults to empty", () => {
   const run = WorkflowRun.fromData(data);
   assertEquals(run.tags, {});
 });
+
+Deno.test("WorkflowRun.create starts with no workflow data artifacts", () => {
+  const workflow = createTestWorkflow();
+  const run = WorkflowRun.create(workflow);
+  assertEquals(run.workflowDataArtifacts.length, 0);
+});
+
+Deno.test("WorkflowRun.addWorkflowDataArtifact stores the ref", () => {
+  const workflow = createTestWorkflow();
+  const run = WorkflowRun.create(workflow);
+  run.addWorkflowDataArtifact({
+    dataId: "550e8400-e29b-41d4-a716-44665544aaaa",
+    name: "report-summary",
+    version: 1,
+    tags: { type: "report", reportScope: "workflow" },
+  });
+
+  assertEquals(run.workflowDataArtifacts.length, 1);
+  assertEquals(run.workflowDataArtifacts[0].name, "report-summary");
+  assertEquals(run.workflowDataArtifacts[0].tags.reportScope, "workflow");
+});
+
+Deno.test("WorkflowRun.toData omits workflowDataArtifacts when empty", () => {
+  const workflow = createTestWorkflow();
+  const run = WorkflowRun.create(workflow);
+  const data = run.toData();
+  assertEquals(data.workflowDataArtifacts, undefined);
+});
+
+Deno.test("WorkflowRun.toData includes workflowDataArtifacts when present", () => {
+  const workflow = createTestWorkflow();
+  const run = WorkflowRun.create(workflow);
+  run.addWorkflowDataArtifact({
+    dataId: "550e8400-e29b-41d4-a716-44665544bbbb",
+    name: "report-md",
+    version: 2,
+    tags: { type: "report" },
+  });
+  run.addWorkflowDataArtifact({
+    dataId: "550e8400-e29b-41d4-a716-44665544cccc",
+    name: "report-json",
+    version: 1,
+    tags: { type: "report" },
+  });
+
+  const data = run.toData();
+  assertEquals(data.workflowDataArtifacts?.length, 2);
+  assertEquals(data.workflowDataArtifacts?.[0].name, "report-md");
+  assertEquals(data.workflowDataArtifacts?.[1].name, "report-json");
+});
+
+Deno.test("WorkflowRun.fromData with missing workflowDataArtifacts defaults to empty", () => {
+  const data = {
+    id: "550e8400-e29b-41d4-a716-446655440002",
+    workflowId: "550e8400-e29b-41d4-a716-446655440000",
+    workflowName: "test-workflow",
+    status: "succeeded" as const,
+    startedAt: new Date().toISOString(),
+    jobs: [
+      {
+        jobName: "job1",
+        status: "succeeded" as const,
+        steps: [{ stepName: "step1", status: "succeeded" as const }],
+      },
+    ],
+  };
+
+  const run = WorkflowRun.fromData(data);
+  assertEquals(run.workflowDataArtifacts.length, 0);
+});
+
+Deno.test("WorkflowRun roundtrip preserves workflowDataArtifacts", () => {
+  const workflow = createTestWorkflow();
+  const original = WorkflowRun.create(workflow);
+  original.addWorkflowDataArtifact({
+    dataId: "550e8400-e29b-41d4-a716-44665544dddd",
+    name: "report-swamp-workflow-summary",
+    version: 1,
+    tags: {
+      type: "report",
+      reportName: "@swamp/workflow-summary",
+      reportScope: "workflow",
+    },
+  });
+
+  const data = original.toData();
+  const restored = WorkflowRun.fromData(data);
+
+  assertEquals(restored.workflowDataArtifacts.length, 1);
+  assertEquals(
+    restored.workflowDataArtifacts[0].dataId,
+    "550e8400-e29b-41d4-a716-44665544dddd",
+  );
+  assertEquals(
+    restored.workflowDataArtifacts[0].tags.reportName,
+    "@swamp/workflow-summary",
+  );
+});

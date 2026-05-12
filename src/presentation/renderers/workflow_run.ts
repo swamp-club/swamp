@@ -210,6 +210,11 @@ class LogWorkflowRunRenderer implements WorkflowRunRenderer {
         }
       }
     }
+    if (run.workflowDataArtifacts) {
+      for (const artifact of run.workflowDataArtifacts) {
+        artifactNames.add(artifact.name);
+      }
+    }
 
     if (artifactNames.size > 0) {
       logger.info("");

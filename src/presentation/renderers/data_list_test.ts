@@ -62,6 +62,89 @@ Deno.test("JsonDataListRenderer - completed outputs JSON", async () => {
   }
 });
 
+Deno.test("LogDataListRenderer - workflow-scope row renders '(workflow)' placeholder", async () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg = "") => logs.push(msg);
+
+  try {
+    const renderer = createDataListRenderer("log");
+    await consumeStream(
+      toStream([
+        { kind: "resolving" },
+        {
+          kind: "completed",
+          data: {
+            workflowId: "wf-1",
+            workflowName: "deploy",
+            runId: "abcdef0123456789",
+            runStatus: "succeeded",
+            groups: [
+              {
+                type: "report",
+                items: [
+                  {
+                    id: "d-step",
+                    name: "report-step-summary",
+                    version: 1,
+                    contentType: "text/markdown",
+                    type: "report",
+                    streaming: false,
+                    size: 100,
+                    createdAt: new Date().toISOString(),
+                    modelId: "m-1",
+                    modelName: "my-model",
+                    modelType: "ns/type",
+                    jobName: "main",
+                    stepName: "build",
+                  },
+                  {
+                    id: "d-wf",
+                    name: "report-swamp-workflow-summary",
+                    version: 1,
+                    contentType: "text/markdown",
+                    type: "report",
+                    streaming: false,
+                    size: 200,
+                    createdAt: new Date().toISOString(),
+                    modelId: "wf-1",
+                    modelName: "",
+                    modelType: "workflow",
+                  },
+                ],
+              },
+            ],
+            total: 2,
+          },
+        },
+      ]),
+      renderer.handlers(),
+    );
+
+    const joined = logs.join("\n");
+    // Step-scoped artifact keeps the "job.step" rendering.
+    const stepLine = logs.find((l) => l.includes("report-step-summary"));
+    if (!stepLine) {
+      throw new Error(`expected step line in logs:\n${joined}`);
+    }
+    if (!stepLine.includes("main.build")) {
+      throw new Error(`expected 'main.build' in step line: ${stepLine}`);
+    }
+    // Workflow-scoped artifact renders "(workflow)".
+    const wfLine = logs.find((l) =>
+      l.includes("report-swamp-workflow-summary")
+    );
+    if (!wfLine) {
+      throw new Error(`expected workflow line in logs:\n${joined}`);
+    }
+    if (!wfLine.includes("(workflow)")) {
+      throw new Error(`expected '(workflow)' in workflow line: ${wfLine}`);
+    }
+  } finally {
+    console.log = originalLog;
+  }
+});
+
 Deno.test("DataListRenderer - error throws UserError", () => {
   const renderer = createDataListRenderer("log");
   const handlers = renderer.handlers();
