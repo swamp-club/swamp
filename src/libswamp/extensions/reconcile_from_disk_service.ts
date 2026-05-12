@@ -31,6 +31,7 @@ import {
   tombstoneAll,
 } from "../../domain/extensions/extension.ts";
 import type { LocalManifestIdentity } from "../../infrastructure/persistence/local_manifest_reader.ts";
+import { canonicalizePath } from "../../infrastructure/persistence/canonicalize_path.ts";
 import { makeSource } from "../../domain/extensions/source.ts";
 import { makeSourceLocation } from "../../domain/extensions/source_location.ts";
 import { makeBundleLocation } from "../../domain/extensions/bundle_location.ts";
@@ -484,16 +485,42 @@ export class ReconcileFromDiskService {
         const fromState = existingSource?.state.tag ?? null;
         const errorMsg = error instanceof Error ? error.message : String(error);
 
+        // Store the current fingerprint so findStaleFiles sees the file
+        // as fresh and doesn't re-trigger a redundant rebundle on the
+        // next buildIndex pass. Fallback to "" if the file became
+        // unreadable mid-flight — "" never matches a computed hash, so
+        // subsequent reconciles will re-attempt the bundle (acceptable
+        // for this rare case).
+        let failFp: string;
+        try {
+          failFp = await computeSourceFingerprint(
+            absolutePath,
+            baseDir,
+            cache,
+          );
+        } catch {
+          failFp = "";
+        }
+
         if (existingSource) {
           ext = recordBundleBuildFailed(ext, {
             location: effectiveLoc,
             lastError: errorMsg,
+            fingerprint: failFp,
+            sourceMtime,
           });
         } else {
-          ext = makeExtensionWithNewSource(ext, effectiveLoc, kind, {
-            tag: "BundleBuildFailed",
-            lastError: errorMsg,
-          }, sourceMtime);
+          ext = makeExtensionWithNewSource(
+            ext,
+            effectiveLoc,
+            kind,
+            {
+              tag: "BundleBuildFailed",
+              lastError: errorMsg,
+            },
+            sourceMtime,
+            failFp,
+          );
         }
 
         if (fromState !== "BundleBuildFailed") {
@@ -508,9 +535,15 @@ export class ReconcileFromDiskService {
     }
 
     // Phase 2: Sources in aggregate but NOT on disk → transition.
+    // Canonicalize on-disk keys for comparison — on Windows the raw
+    // absolutePath uses backslashes while loc.canonicalPath uses forward
+    // slashes (see canonicalizePath).
+    const onDiskCanonical = new Set(
+      [...onDiskSources.keys()].map(canonicalizePath),
+    );
     for (const [loc, source] of ext.sources) {
       if (source.state.tag === "Tombstoned") continue;
-      if (onDiskSources.has(loc.canonicalPath)) continue;
+      if (onDiskCanonical.has(loc.canonicalPath)) continue;
 
       const fromState = source.state.tag;
 
@@ -671,12 +704,13 @@ function makeExtensionWithNewSource(
   kindDir: KindDir,
   state: { tag: "BundleBuildFailed"; lastError: string },
   sourceMtime: string,
+  fingerprint = "",
 ): Extension {
   const kind = kindDirToExtensionKind(kindDir);
   const source = makeSource({
     id: location,
     kind,
-    fingerprint: "",
+    fingerprint,
     state,
     sourceMtime,
   });

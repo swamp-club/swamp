@@ -553,6 +553,7 @@ export class ExtensionLoader {
       const entries = catalog.findByKind(kind);
       for (const entry of entries) {
         if (entry.state === "ValidationFailed") continue;
+        if (!entry.type_normalized) continue;
         this.adapter.registerLazy(entry);
       }
     }

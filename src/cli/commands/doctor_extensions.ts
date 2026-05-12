@@ -46,8 +46,10 @@ import {
   consumeStream,
   doctorExtensions,
   type DoctorRegistryDeps,
+  ReconcileFromDiskService,
   repairExtensions,
 } from "../../libswamp/mod.ts";
+import { EmbeddedDenoRuntime } from "../../infrastructure/runtime/embedded_deno_runtime.ts";
 import {
   getExtensionLoadWarnings,
   resetExtensionLoadWarnings,
@@ -156,22 +158,41 @@ export const doctorExtensionsCommand = new Command()
       : resolve(repoDir, modelsDir);
     const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
 
-    // Invalidate the catalog so the loaders run a full re-validation
-    // instead of returning the cached lazy entries. Without this, the
-    // doctor reports stale results when run after another swamp
-    // command in the same repo.
-    // W1b: forceCatalogRescan(repoDir) → repository.invalidateAll().
+    // Invalidate the catalog and run reconcile so failure states
+    // (BundleBuildFailed, EntryPointUnreadable, OrphanedBundleOnly)
+    // are written through the Extension aggregate and surface in
+    // sourceDetails[]. Without reconcile, failures only land in
+    // registries.<kind>.failures[] via the legacy buildIndex path.
+    //
+    // This repository instance and the loaders' repository (constructed
+    // at mod.ts startup) are two separate ExtensionRepository objects
+    // pointing at the same SQLite DB. Writes here are process-wide-
+    // visible to the loaders regardless of close ordering; the close
+    // is connection hygiene, not synchronization.
+    const localManifestIdentity = readLocalManifestIdentity(repoDir);
     try {
-      const lockfileRepository = await LockfileRepository.create(lockfilePath);
+      const reconcileLockfileRepo = await LockfileRepository.create(
+        lockfilePath,
+      );
       const rescanRepo = new ExtensionRepository({
         catalog: new ExtensionCatalogStore(
           swampPath(repoDir, "_extension_catalog.db"),
         ),
-        lockfileRepository,
+        lockfileRepository: reconcileLockfileRepo,
         repoRoot: repoDir,
+        localManifestIdentity,
       });
       try {
         rescanRepo.invalidateAll();
+        const denoRuntime = new EmbeddedDenoRuntime();
+        const reconciler = new ReconcileFromDiskService({
+          denoRuntime,
+          repository: rescanRepo,
+          lockfileRepository: reconcileLockfileRepo,
+          repoDir,
+          localManifestIdentity,
+        });
+        await reconciler.execute();
       } finally {
         rescanRepo.close();
       }
