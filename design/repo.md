@@ -51,6 +51,24 @@ The compiled swamp binary should include everything it needs to initialize a
 repository, including the skill files, so that they can be written out by the
 cli.
 
+## Superseded Skill Detection
+
+When the CLI binary is upgraded but `swamp repo upgrade` is not run, the
+repo retains old skill directories that have been consolidated in the new
+version. The `SUPERSEDED_SKILLS` constant in `repo_service.ts` lists these
+directory names.
+
+On every CLI startup (for repo-scoped commands), the CLI checks all enrolled
+tools' skill directories for superseded subdirectories. If any are found, a
+warning is emitted via the deferred-warning system:
+
+```
+WRN 2 superseded skill(s) found: swamp-data-query, swamp-extension-model. Run 'swamp repo upgrade' to update skills.
+```
+
+This check is non-fatal — it never blocks startup. `swamp repo upgrade`
+removes the superseded directories via `removeSupersededSkills()`.
+
 ## Repository Layout
 
 Source-of-truth files live in top-level directories tracked in git:
