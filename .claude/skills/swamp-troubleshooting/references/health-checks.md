@@ -10,6 +10,7 @@ piece in the output.
 - [When to use Tier 1](#when-to-use-tier-1)
 - [`swamp doctor audit`](#swamp-doctor-audit)
 - [`swamp doctor extensions`](#swamp-doctor-extensions)
+- [`swamp doctor workflows`](#swamp-doctor-workflows)
 - [Using doctor in CI](#using-doctor-in-ci)
 - [Escalating to other tiers](#escalating-to-other-tiers)
 
@@ -23,7 +24,9 @@ Reach for a doctor command when the symptom maps to a known integration:
 | Hooks aren't firing for the configured AI tool                 | `swamp doctor audit`      |
 | Extension model/vault/driver/datastore/report missing from CLI | `swamp doctor extensions` |
 | `swamp-warning:` line on stderr mentioning a load failure      | `swamp doctor extensions` |
-| CI preflight needs to gate on integration health               | either, with `--json`     |
+| Workflow YAML fails to parse or construct                      | `swamp doctor workflows`  |
+| `swamp workflow get` errors on a file that search finds        | `swamp doctor workflows`  |
+| CI preflight needs to gate on integration health               | any, with `--json`        |
 
 If the symptom is generic ("command errored", "method failed"), skip Tier 1 and
 go to Tier 2 (error inspection).
@@ -209,10 +212,96 @@ For the deeper "extension not in type search" walkthrough (stderr inspection,
 source registration, `deno.json` discovery), see
 [error-inspection.md](error-inspection.md).
 
+## `swamp doctor workflows`
+
+Checks that every workflow YAML file in the repo can be parsed and constructed
+into a valid Workflow domain object. This catches YAML syntax errors and schema
+construction failures that `findAll()` silently skips — meaning
+`swamp workflow
+validate` never sees these broken files. Exits 1 on any load
+failure.
+
+```bash
+swamp doctor workflows
+swamp doctor workflows --json
+```
+
+### What it checks
+
+Walks all workflow directories (primary `workflows/`, extension workflows,
+source-mounted workflows, pulled extension workflows) and for each `*.yaml`
+file:
+
+1. Reads the file content
+2. Parses YAML via `@std/yaml`
+3. Constructs the domain object via `Workflow.fromData()`
+
+Scope is **load-ability only** — whether the file can be parsed and constructed.
+Schema validity (DAG integrity, model references, expression validation) is the
+job of `swamp workflow validate`.
+
+### Output — log mode
+
+```
+Checking workflows...
+
+  ✓ deploy-pipeline
+  ✓ nightly-sync
+  ✗ emergency-kernel-update
+    → YAML parse error at line 42, column 15: bad indentation of a mapping entry
+
+Summary: 2/3 workflows loaded successfully
+Result: FAILED
+```
+
+### Output — JSON mode
+
+```json
+{
+  "overallStatus": "fail",
+  "workflows": [
+    {
+      "file": "workflows/workflow-abc.yaml",
+      "name": "deploy-pipeline",
+      "status": "pass"
+    },
+    {
+      "file": "workflows/workflow-broken.yaml",
+      "name": "emergency-kernel-update",
+      "status": "fail",
+      "error": "YAML parse error at line 42, column 15: bad indentation"
+    }
+  ],
+  "totalPassed": 2,
+  "totalFailed": 1
+}
+```
+
+### Common failures
+
+| Error fragment                        | Fix                                                                   |
+| ------------------------------------- | --------------------------------------------------------------------- |
+| YAML parse error at line N            | Fix the YAML syntax at the indicated line/column                      |
+| `type "shell" is no longer supported` | Replace `type: shell` with `type: model_method` using `command/shell` |
+| Invalid uuid / missing name           | Add required `id` (UUID) and `name` fields to the workflow YAML       |
+| Invalid cron expression               | Fix the `trigger.schedule` cron expression                            |
+
+### Relationship with `swamp workflow validate`
+
+These two commands are complementary:
+
+- `doctor workflows` catches files that **fail to load** (YAML syntax, missing
+  fields, invalid types). These files are silently dropped by the workflow
+  loader, so `workflow validate` never sees them.
+- `workflow validate` checks **loaded** workflows for semantic validity (DAG
+  cycles, undefined model references, expression errors).
+
+Run both in CI for complete coverage.
+
 ## Using doctor in CI
 
-Both commands exit 1 on failure, so they compose directly into CI. Use `--json`
-to capture structured output for review.
+All doctor commands exit 1 on failure, so they compose directly into CI. Use
+`--json` to capture structured output for review.
 
 ```bash
 # Gate on audit health
@@ -220,11 +309,15 @@ swamp doctor audit --json > audit-health.json
 
 # Gate on extension health
 swamp doctor extensions --json > extension-health.json
+
+# Gate on workflow health
+swamp doctor workflows --json > workflow-health.json
 ```
 
 Run `doctor extensions` after every PR that touches `extensions/` or
-`.swamp-sources.yaml`. Run `doctor audit` after every `init` or `upgrade` step
-in CI bootstrap.
+`.swamp-sources.yaml`. Run `doctor workflows` after every PR that touches
+workflow YAML files. Run `doctor audit` after every `init` or `upgrade` step in
+CI bootstrap.
 
 ## Escalating to other tiers
 

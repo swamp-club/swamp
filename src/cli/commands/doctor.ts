@@ -20,6 +20,7 @@
 import { Command } from "@cliffy/command";
 import { doctorAuditCommand } from "./doctor_audit.ts";
 import { doctorExtensionsCommand } from "./doctor_extensions.ts";
+import { doctorWorkflowsCommand } from "./doctor_workflows.ts";
 
 export const doctorCommand = new Command()
   .description(
@@ -37,6 +38,10 @@ export const doctorCommand = new Command()
     "Check that user-defined extensions in this repo load cleanly",
     "swamp doctor extensions",
   )
+  .example(
+    "Check that workflow YAML files load cleanly",
+    "swamp doctor workflows",
+  )
   // `--repo-dir` is accepted on the top-level command for consistency
   // with subcommands and other repo-scoped commands. The top-level
   // action only shows help; subcommands consume the option.
@@ -48,4 +53,5 @@ export const doctorCommand = new Command()
     this.showHelp();
   })
   .command("audit", doctorAuditCommand)
-  .command("extensions", doctorExtensionsCommand);
+  .command("extensions", doctorExtensionsCommand)
+  .command("workflows", doctorWorkflowsCommand);

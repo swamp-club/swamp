@@ -450,6 +450,15 @@ export {
   type WorkflowValidateInput,
 } from "./workflows/validate.ts";
 
+// Workflow doctor operations
+export {
+  type DoctorWorkflowResult,
+  doctorWorkflows,
+  type DoctorWorkflowsDeps,
+  type DoctorWorkflowsEvent,
+  type DoctorWorkflowsReport,
+} from "./workflows/doctor.ts";
+
 // Workflow evaluate operations
 export {
   createWorkflowEvaluateDeps,
