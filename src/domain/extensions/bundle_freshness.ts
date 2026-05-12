@@ -17,8 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { relative, resolve } from "@std/path";
-import { canonicalizePath } from "../../infrastructure/persistence/canonicalize_path.ts";
+import { relative, resolve, SEPARATOR } from "@std/path";
 import { resolveLocalImports } from "../models/local_import_resolver.ts";
 
 /**
@@ -269,10 +268,14 @@ export async function findStaleFiles(
 
   const allDirs = [modelsDir, ...(additionalDirs ?? [])];
 
+  const needsNormalize = SEPARATOR === "\\";
+  const normalizePath = (p: string): string =>
+    needsNormalize ? p.toLowerCase().replaceAll("\\", "/") : p;
+
   const catalogEntries = kinds.flatMap((k) => catalog.findByKind(k));
   const catalogBySource = new Map<string, FreshnessCatalogRow>();
   for (const entry of catalogEntries) {
-    catalogBySource.set(canonicalizePath(entry.source_path), entry);
+    catalogBySource.set(normalizePath(entry.source_path), entry);
   }
 
   const seenSources = new Set<string>();
@@ -287,10 +290,9 @@ export async function findStaleFiles(
     const files = await discoverFiles(dir);
     for (const relativePath of files) {
       const absolutePath = resolve(dir, relativePath);
-      const canonical = canonicalizePath(absolutePath);
-      seenSources.add(canonical);
+      seenSources.add(normalizePath(absolutePath));
 
-      const catalogEntry = catalogBySource.get(canonical);
+      const catalogEntry = catalogBySource.get(normalizePath(absolutePath));
       if (!catalogEntry) {
         stale.push({ absolutePath, relativePath, baseDir: dir });
         continue;
@@ -325,10 +327,10 @@ export async function findStaleFiles(
     "EntryPointUnreadable",
     "OrphanedBundleOnly",
   ]);
-  for (const [sourcePath, entry] of catalogBySource) {
-    if (!seenSources.has(sourcePath)) {
+  for (const [normalizedPath, entry] of catalogBySource) {
+    if (!seenSources.has(normalizedPath)) {
       if (!FAILURE_STATES.has(entry.state ?? "Indexed")) {
-        catalog.removeBySourcePath(sourcePath);
+        catalog.removeBySourcePath(entry.source_path);
       }
     }
   }
