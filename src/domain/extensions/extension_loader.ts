@@ -48,6 +48,7 @@ import {
 } from "../../infrastructure/persistence/paths.ts";
 import { assertSafePath } from "../../infrastructure/persistence/safe_path.ts";
 import { emitTypeExtractionFailure } from "../../infrastructure/logging/extension_load_warnings.ts";
+import { canonicalizePath } from "../../infrastructure/persistence/canonicalize_path.ts";
 import type { DatastorePathResolver } from "../datastore/datastore_path_resolver.ts";
 import type {
   BundleIndexResult,
@@ -397,15 +398,6 @@ export class ExtensionLoader {
         const extIdx = coldIndex.get(loc.canonicalPath);
         const ext = extIdx !== undefined ? coldExtensions[extIdx] : undefined;
 
-        let failFp: string;
-        try {
-          failFp = await computeSourceFingerprint(absolutePath, dir);
-        } catch {
-          failFp = "";
-        }
-        const stat = await Deno.stat(absolutePath).catch(() => null);
-        const sourceMtime = stat?.mtime?.toISOString() ?? "";
-
         const existingSource = ext
           ? findSourceByPath(ext, loc.canonicalPath)
           : undefined;
@@ -417,6 +409,15 @@ export class ExtensionLoader {
         ) {
           continue;
         }
+
+        let failFp: string;
+        try {
+          failFp = await computeSourceFingerprint(absolutePath, dir);
+        } catch {
+          failFp = "";
+        }
+        const stat = await Deno.stat(absolutePath).catch(() => null);
+        const sourceMtime = stat?.mtime?.toISOString() ?? "";
 
         const targetExt = ext ?? makeLocalExtension({
           repoRoot: this.repoDir,
@@ -740,7 +741,7 @@ export class ExtensionLoader {
           type_normalized: extracted.typeNormalized,
           kind: extracted.kind,
           bundle_path: bundlePath,
-          source_path: absolutePath,
+          source_path: canonicalizePath(absolutePath),
           version: extracted.version,
           description: "",
           extends_type: extracted.extendsType,
