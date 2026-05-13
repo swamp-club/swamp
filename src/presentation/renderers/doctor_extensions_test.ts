@@ -23,7 +23,9 @@ import type {
   DoctorExtensionsReport,
   DoctorRegistryName,
   DoctorRegistryResult,
+  ReconcileTransition,
 } from "../../libswamp/mod.ts";
+import { makeSourceLocation } from "../../domain/extensions/source_location.ts";
 import { createDoctorExtensionsRenderer } from "./doctor_extensions.ts";
 
 await initializeLogging({});
@@ -65,6 +67,7 @@ function buildPassReport(): DoctorExtensionsReport {
       report: passResult("report"),
     },
     orphanFiles: [],
+    recentTransitions: [],
   };
 }
 
@@ -81,6 +84,7 @@ function buildFailReport(): DoctorExtensionsReport {
       report: passResult("report"),
     },
     orphanFiles: [],
+    recentTransitions: [],
   };
 }
 
@@ -165,6 +169,7 @@ Deno.test("doctor_extensions json renderer: stable key ordering", async () => {
         model: passResult("model"),
       },
       orphanFiles: [],
+      recentTransitions: [],
     };
     await handlers.completed({ kind: "completed", report: reversed });
   });
@@ -230,6 +235,7 @@ Deno.test(
             path: ".swamp/pulled-extensions/@hivemq/harvester/models/orphan.ts",
           },
         ],
+        recentTransitions: [],
       };
       await handlers.completed({ kind: "completed", report });
     });
@@ -266,6 +272,7 @@ Deno.test(
             path: ".swamp/pulled-extensions/@x/y/models/orphan.ts",
           },
         ],
+        recentTransitions: [],
       };
       // Drive the kind-completed events first so the registry headers
       // get rendered, then completed.
@@ -299,5 +306,61 @@ Deno.test(
     if (!out.includes("OVERALL: PASS")) {
       throw new Error(`expected OVERALL: PASS, got: ${out}`);
     }
+  },
+);
+
+function sampleTransitions(): ReconcileTransition[] {
+  return [
+    {
+      source: makeSourceLocation("/repo/extensions/models/a.ts", "/repo"),
+      fromState: "Indexed",
+      toState: "Tombstoned",
+      reason: "source file deleted from disk",
+    },
+  ];
+}
+
+Deno.test(
+  "doctor_extensions json renderer: recentTransitions always present in JSON output",
+  async () => {
+    const out = await captureStdout(async () => {
+      const r = createDoctorExtensionsRenderer("json");
+      const handlers = r.handlers();
+      await handlers.completed({
+        kind: "completed",
+        report: buildPassReport(),
+      });
+    });
+
+    const parsed = JSON.parse(out);
+    assertEquals(parsed.recentTransitions, []);
+  },
+);
+
+Deno.test(
+  "doctor_extensions json renderer: recentTransitions serializes sourcePath from canonicalPath",
+  async () => {
+    const out = await captureStdout(async () => {
+      const r = createDoctorExtensionsRenderer("json");
+      const handlers = r.handlers();
+      const report: DoctorExtensionsReport = {
+        ...buildPassReport(),
+        recentTransitions: sampleTransitions(),
+      };
+      await handlers.completed({ kind: "completed", report });
+    });
+
+    const parsed = JSON.parse(out);
+    assertEquals(parsed.recentTransitions.length, 1);
+    assertEquals(
+      parsed.recentTransitions[0].sourcePath,
+      "/repo/extensions/models/a.ts",
+    );
+    assertEquals(parsed.recentTransitions[0].fromState, "Indexed");
+    assertEquals(parsed.recentTransitions[0].toState, "Tombstoned");
+    assertEquals(
+      parsed.recentTransitions[0].reason,
+      "source file deleted from disk",
+    );
   },
 );

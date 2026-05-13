@@ -108,6 +108,7 @@ Deno.test("doctorExtensions: clean state — all five registries pass", async ()
   assertEquals(completed?.kind, "completed");
   if (completed?.kind !== "completed") return;
   assertEquals(completed.report.overallStatus, "pass");
+  assertEquals(completed.report.recentTransitions, []);
   for (const registry of DOCTOR_REGISTRY_ORDER) {
     const result = completed.report.registries[registry];
     assertEquals(result.status, "pass");
@@ -250,6 +251,8 @@ Deno.test("doctorExtensions: completed report has all five registry keys even on
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
 import type { UpstreamExtensionsMap } from "../../infrastructure/persistence/upstream_extensions.ts";
+import type { ReconcileTransition } from "./reconcile_from_disk_service.ts";
+import { makeSourceLocation } from "../../domain/extensions/source_location.ts";
 
 Deno.test(
   "doctorExtensions: detects an orphan file under a per-extension subtree",
@@ -475,5 +478,58 @@ Deno.test(
     } finally {
       await Deno.remove(tmpDir, { recursive: true });
     }
+  },
+);
+
+Deno.test(
+  "doctorExtensions: recentTransitions defaults to empty array when no callback provided",
+  async () => {
+    resetExtensionLoadWarnings();
+    const { deps } = buildDeps();
+
+    const events = await collect(doctorExtensions(deps));
+    const completed = events.find((e) => e.kind === "completed");
+    if (completed?.kind !== "completed") {
+      throw new Error("expected completed event");
+    }
+    assertEquals(completed.report.recentTransitions, []);
+  },
+);
+
+Deno.test(
+  "doctorExtensions: recentTransitions surfaces transitions from getRecentTransitions callback",
+  async () => {
+    resetExtensionLoadWarnings();
+    const transitions: ReconcileTransition[] = [
+      {
+        source: makeSourceLocation("/repo/extensions/models/a.ts", "/repo"),
+        fromState: "Indexed",
+        toState: "Tombstoned",
+        reason: "source file deleted from disk",
+      },
+      {
+        source: makeSourceLocation("/repo/extensions/models/b.ts", "/repo"),
+        fromState: null,
+        toState: "Indexed",
+        reason: "new source discovered",
+      },
+    ];
+
+    const { deps } = buildDeps();
+    deps.getRecentTransitions = () => transitions;
+
+    const events = await collect(doctorExtensions(deps));
+    const completed = events.find((e) => e.kind === "completed");
+    if (completed?.kind !== "completed") {
+      throw new Error("expected completed event");
+    }
+    assertEquals(completed.report.recentTransitions.length, 2);
+    assertEquals(completed.report.recentTransitions[0].toState, "Tombstoned");
+    assertEquals(
+      completed.report.recentTransitions[0].source.canonicalPath,
+      "/repo/extensions/models/a.ts",
+    );
+    assertEquals(completed.report.recentTransitions[1].fromState, null);
+    assertEquals(completed.report.recentTransitions[1].toState, "Indexed");
   },
 );

@@ -47,6 +47,7 @@ import {
   doctorExtensions,
   type DoctorRegistryDeps,
   ReconcileFromDiskService,
+  type ReconcileTransition,
   repairExtensions,
 } from "../../libswamp/mod.ts";
 import { EmbeddedDenoRuntime } from "../../infrastructure/runtime/embedded_deno_runtime.ts";
@@ -170,6 +171,7 @@ export const doctorExtensionsCommand = new Command()
     // visible to the loaders regardless of close ordering; the close
     // is connection hygiene, not synchronization.
     const localManifestIdentity = readLocalManifestIdentity(repoDir);
+    let reconcileTransitions: readonly ReconcileTransition[] = [];
     try {
       const reconcileLockfileRepo = await LockfileRepository.create(
         lockfilePath,
@@ -192,7 +194,8 @@ export const doctorExtensionsCommand = new Command()
           repoDir,
           localManifestIdentity,
         });
-        await reconciler.execute();
+        const result = await reconciler.execute();
+        reconcileTransitions = result.transitions;
       } finally {
         rescanRepo.close();
       }
@@ -273,6 +276,7 @@ export const doctorExtensionsCommand = new Command()
             repo.close();
           }
         },
+        getRecentTransitions: () => reconcileTransitions,
         runRepair: repair
           ? async (aggregateReport) => {
             // In interactive mode without --force, preview first and prompt.

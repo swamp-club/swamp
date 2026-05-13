@@ -25,6 +25,7 @@ import type { UpstreamExtensionsMap } from "../../infrastructure/persistence/ups
 import type { SwampError } from "../errors.ts";
 import type { DoctorAggregateReport } from "./doctor_aggregate.ts";
 import type { RepairReport } from "./doctor_repair.ts";
+import type { ReconcileTransition } from "./reconcile_from_disk_service.ts";
 import { extractTopLevelRoot } from "./layout.ts";
 
 /**
@@ -104,6 +105,12 @@ export interface DoctorExtensionsReport {
    * Contains the list of operations (dry-run or applied).
    */
   repairReport?: RepairReport;
+  /**
+   * State transitions from the most recent reconcile pass. Always
+   * present (empty array when no transitions occurred). Each entry
+   * captures a source's fromState → toState with reason.
+   */
+  recentTransitions: readonly ReconcileTransition[];
 }
 
 /**
@@ -169,6 +176,13 @@ export interface DoctorExtensionsDeps {
   runRepair?: (
     aggregateReport: DoctorAggregateReport,
   ) => Promise<RepairReport>;
+  /**
+   * Returns transitions from the most recent reconcile pass. Injected
+   * by the CLI so the generator doesn't depend on infrastructure
+   * objects. Returns an empty array when reconcile was skipped or
+   * failed.
+   */
+  getRecentTransitions?: () => readonly ReconcileTransition[];
 }
 
 function overallStatus(
@@ -388,6 +402,8 @@ export async function* doctorExtensions(
     repairReport = await deps.runRepair(aggregateState);
   }
 
+  const recentTransitions = deps.getRecentTransitions?.() ?? [];
+
   yield {
     kind: "completed",
     report: {
@@ -396,6 +412,7 @@ export async function* doctorExtensions(
       orphanFiles,
       aggregateState,
       repairReport,
+      recentTransitions,
     },
   };
 }

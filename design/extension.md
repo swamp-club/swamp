@@ -1142,8 +1142,18 @@ Orphans accumulate linearly per deleted source. The `bundle_path` column is
 the source of truth for which files are referenced.
 
 **Event model:** `DoctorExtensionsReport` extended with additive
-`aggregateState` and `repairReport` fields. No new event kinds. Backward
-compatible for existing `--json` consumers.
+`aggregateState`, `repairReport`, and `recentTransitions` fields. No new
+event kinds. Backward compatible for existing `--json` consumers.
+
+**`recentTransitions`**: Always-present array (empty when no transitions
+occurred) populated from `ReconcileResult.transitions[]`. Each entry
+serializes `sourcePath` (from `SourceLocation.canonicalPath`, matching
+`sourceDetails[].sourcePath`), `fromState`, `toState`, and `reason`. No
+timestamp — post-#334 every `doctor extensions` invocation triggers
+reconcile, so all transitions are current-process. In JSON mode the array
+is unconditionally present; in log mode it renders only with `--verbose`.
+Surfaced via `DoctorExtensionsDeps.getRecentTransitions` callback so the
+generator stays infrastructure-free.
 
 **Repair safety:** `--dry-run` is the default. Only `--repair --apply`
 performs destructive operations. Indexed and Bundled rows are NEVER touched.

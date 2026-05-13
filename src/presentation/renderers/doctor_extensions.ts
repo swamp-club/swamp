@@ -281,6 +281,20 @@ class LogDoctorExtensionsRenderer implements DoctorExtensionsRenderer {
           renderAggregateStateLog(e.report.aggregateState, this.verbose);
         }
 
+        if (this.verbose && e.report.recentTransitions.length > 0) {
+          writeOutput(`\n${bold(cyan("Recent Transitions"))}`);
+          for (const t of e.report.recentTransitions) {
+            const from = t.fromState
+              ? stateColor(t.fromState)(t.fromState)
+              : dim("(new)");
+            const to = stateColor(t.toState)(t.toState);
+            writeOutput(
+              `  ${t.source.canonicalPath}  ${from} ${dim("→")} ${to}`,
+            );
+            writeOutput(`    ${dim(t.reason)}`);
+          }
+        }
+
         // W6: Repair report rendering.
         if (e.report.repairReport) {
           renderRepairLog(e.report.repairReport);
@@ -337,6 +351,12 @@ class JsonDoctorExtensionsRenderer implements DoctorExtensionsRenderer {
         if (e.report.repairReport) {
           output.repairReport = e.report.repairReport;
         }
+        output.recentTransitions = e.report.recentTransitions.map((t) => ({
+          sourcePath: t.source.canonicalPath,
+          fromState: t.fromState,
+          toState: t.toState,
+          reason: t.reason,
+        }));
         console.log(JSON.stringify(output, null, 2));
       },
       error: (e) => {
