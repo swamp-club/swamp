@@ -251,3 +251,40 @@ cp -r extensions.backup/* extensions/
 
 **Note**: This loses all model data and workflow history. Only use as last
 resort.
+
+## Lock Internals
+
+Write commands (create, edit, delete, run, gc) acquire the lock via
+`requireInitializedRepo()`. Read-only commands (search, get, list, validate,
+history) use `requireInitializedRepoReadOnly()` which skips the lock, allowing
+them to run concurrently with write operations.
+
+**Lock status output shape:**
+
+```json
+{
+  "holder": "user@hostname",
+  "hostname": "hostname",
+  "pid": 12345,
+  "acquiredAt": "2026-03-10T12:00:00.000Z",
+  "ttlMs": 30000
+}
+```
+
+Returns `null` if no lock is held.
+
+## Extension Datastore --skip-migration
+
+`--skip-migration` on `swamp datastore setup extension` skips only the
+local→remote push; the remote→local hydration step still runs, so a fresh
+contributor can opt out of pushing their `.swamp/` without ending up with an
+empty cache. Legacy type name `s3` is auto-remapped to `@swamp/s3-datastore`.
+
+## Legacy Extension Layout Migration
+
+If `swamp repo upgrade` detects extensions tracked at a legacy on-disk layout
+(`extensions/<type>/…` or `.swamp/pulled-extensions/<type>/…`), it re-pulls each
+one into the current per-extension subtree
+(`.swamp/pulled-extensions/<ext-name>/<type>/…`) and sweeps the old files
+automatically. This step requires registry access; on failure, the legacy files
+are preserved and the error names the affected extensions.

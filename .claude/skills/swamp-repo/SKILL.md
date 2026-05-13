@@ -176,13 +176,9 @@ etc.) — remove them by hand if desired. Adding a tool that didn't share a skil
 directory with the previous primary surfaces an `extensionsToReinstall` warning
 naming pulled extensions that need to be re-installed for the new tool.
 
-If the upgrade detects extensions tracked at a legacy on-disk layout
-(`extensions/<type>/…` or `.swamp/pulled-extensions/<type>/…`), it re-pulls each
-one into the current per-extension subtree
-(`.swamp/pulled-extensions/<ext-name>/<type>/…`) and sweeps the old files
-automatically — no follow-up `swamp extension install` command is required. This
-step requires registry access; on failure, the legacy files are preserved and
-the error names the affected extensions.
+Legacy extension layouts are automatically migrated during upgrade. See
+[references/troubleshooting.md](references/troubleshooting.md) for details on
+legacy layout migration behavior.
 
 ## Start Web Interface
 
@@ -247,17 +243,10 @@ swamp datastore setup extension @swamp/s3-datastore \
   --config '{"bucket":"my-bucket","prefix":"my-project","region":"us-east-1"}' --json
 ```
 
-Verifies the backend is accessible, pushes existing local `.swamp/` data to the
-remote, hydrates the local cache from any data already present in the remote (so
-a contributor joining a populated shared bucket starts with their cache primed),
-and updates `.swamp.yaml`. Subsequent commands automatically pull before
-execution and push after.
-
-`--skip-migration` skips only the local→remote push; the remote→local hydration
-step still runs, so a fresh contributor can opt out of pushing their `.swamp/`
-(or skip the migration entirely if they have no local data) without ending up
-with an empty cache. Legacy type name `s3` is auto-remapped to
-`@swamp/s3-datastore`.
+Verifies the backend, migrates local data to the remote, hydrates the local
+cache, and updates `.swamp.yaml`. Subsequent commands automatically sync. See
+[references/troubleshooting.md](references/troubleshooting.md) for
+`--skip-migration` behavior and edge cases.
 
 ### Migrating Between Datastores
 
@@ -280,65 +269,22 @@ sync from other commands, and they are not a no-op summary.
 
 ### Lock Management
 
-Both filesystem and S3 datastores use a distributed lock to prevent concurrent
-write access. Write commands (create, edit, delete, run, gc) acquire the lock
-via `requireInitializedRepo()`. Read-only commands (search, get, list, validate,
-history) use `requireInitializedRepoReadOnly()` which skips the lock, allowing
-them to run concurrently with write operations. Locks auto-expire after 30
-seconds if a process crashes.
+Datastores use a distributed lock to prevent concurrent write access. Locks
+auto-expire after 30 seconds if a process crashes.
 
 ```bash
 swamp datastore lock status --json           # Show lock holder
 swamp datastore lock release --force --json  # Force-release stuck lock
 ```
 
-**Lock status output shape:**
-
-```json
-{
-  "holder": "user@hostname",
-  "hostname": "hostname",
-  "pid": 12345,
-  "acquiredAt": "2026-03-10T12:00:00.000Z",
-  "ttlMs": 30000
-}
-```
-
-Returns `null` if no lock is held.
-
-### Custom Datastores
-
-Install a community datastore or create your own in `extensions/datastores/`:
+After releasing a stuck lock, verify it cleared:
 
 ```bash
-swamp extension search datastore --json    # Find community datastores
+swamp datastore lock status --json  # Should return null
 ```
 
-Configure in `.swamp.yaml` with `type:` and `config:` fields:
-
-```yaml
-datastore:
-  type: "@myorg/my-store"
-  config:
-    endpoint: "https://storage.example.com"
-    bucket: "my-data"
-```
-
-Or via environment variable (JSON config after the type):
-
-```bash
-export SWAMP_DATASTORE='@myorg/my-store:{"endpoint":"https://storage.example.com","bucket":"my-data"}'
-```
-
-For creating custom datastore implementations, see the `swamp-extension` skill.
-
-### Custom Drivers
-
-Custom execution drivers control where and how model methods run (SSH, Lambda,
-Kubernetes, etc.). Drivers are configured per-definition, per-workflow, or
-per-step via the `driver:` and `driverConfig:` YAML fields.
-
-For creating custom driver implementations, see the `swamp-extension` skill.
+See [references/troubleshooting.md](references/troubleshooting.md) for lock
+internals and which commands acquire vs skip the lock.
 
 ### Environment Variable Override
 
@@ -349,6 +295,8 @@ export SWAMP_DATASTORE=s3:my-bucket/my-prefix
 export SWAMP_DATASTORE=filesystem:/tmp/swamp-data
 export SWAMP_DATASTORE='@myorg/my-store:{"key":"val"}'
 ```
+
+For custom datastore or driver implementations, see the `swamp-extension` skill.
 
 ## Extension Sources
 
@@ -410,7 +358,11 @@ swamp extension source rm "~/code/swamp-extensions/model/aws/*"
 
 `swamp extension source add` fails with a clear error if the path contributes no
 extensions, so misconfigured paths are caught at add time rather than silently
-ignored.
+ignored. After adding, verify the source loaded:
+
+```bash
+swamp extension source list --json  # Confirm the new source appears
+```
 
 ### Load Order
 
