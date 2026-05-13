@@ -359,6 +359,10 @@ export function recordBundleBuildFailed(
  * Records that the bundle imported cleanly but Zod schema validation
  * rejected the export. Per I3, the fingerprint and bundle are retained.
  * Returns a NEW Extension.
+ *
+ * When {@link fingerprint} is provided, the Source's fingerprint is
+ * updated atomically with the state transition (same pattern as
+ * {@link recordBundleBuildFailed}).
  */
 export function recordValidationFailed(
   extension: Extension,
@@ -366,17 +370,25 @@ export function recordValidationFailed(
     location: SourceLocation;
     bundle: BundleLocation;
     lastError: string;
+    fingerprint?: SourceFingerprint;
+    sourceMtime?: string;
   },
 ): Extension {
-  return updateSourceState(
-    extension,
-    args.location,
-    {
-      tag: "ValidationFailed",
-      bundle: args.bundle,
-      lastError: args.lastError,
-    },
-  );
+  const state: RowState = {
+    tag: "ValidationFailed",
+    bundle: args.bundle,
+    lastError: args.lastError,
+  };
+  if (args.fingerprint !== undefined) {
+    return updateSourceStateAndFingerprint(
+      extension,
+      args.location,
+      state,
+      args.fingerprint,
+      args.sourceMtime,
+    );
+  }
+  return updateSourceState(extension, args.location, state);
 }
 
 /**

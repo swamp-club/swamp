@@ -297,6 +297,35 @@ Deno.test("recordValidationFailed: retains fingerprint and bundle (I3)", () => {
   }
 });
 
+Deno.test("recordValidationFailed: updates fingerprint when provided (I3 freshness)", () => {
+  const initial = indexedSource("models/a.ts", "@scope/foo/a");
+  const ext = makeExtension({
+    name: "@scope/foo",
+    version: "1.0.0",
+    origin: "pulled",
+    extensionRoot: EXT_ROOT,
+    sources: [initial],
+  });
+  const newFp = "newfingerprint456";
+  const newBundle = makeBundleLocation("/repo/.swamp/bundles/y.js", newFp);
+  const failed = recordValidationFailed(ext, {
+    location: initial.id,
+    bundle: newBundle,
+    lastError: "schema mismatch",
+    fingerprint: newFp,
+    sourceMtime: "2026-05-13T00:00:00.000Z",
+  });
+  const after = [...failed.sources.values()][0];
+  assertEquals(after.fingerprint, newFp);
+  assertEquals(after.sourceMtime, "2026-05-13T00:00:00.000Z");
+  if (after.state.tag === "ValidationFailed") {
+    assertEquals(after.state.bundle, newBundle);
+    assertEquals(after.state.lastError, "schema mismatch");
+  } else {
+    throw new Error("expected ValidationFailed");
+  }
+});
+
 Deno.test("markSourceMissing: → OrphanedBundleOnly when bundle present", () => {
   const initial = indexedSource("models/a.ts", "@scope/foo/a");
   const ext = makeExtension({
