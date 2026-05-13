@@ -741,3 +741,49 @@ Deno.test("modelMethodRun: registers sensitive string method arg values with the
   // Non-sensitive field value is not redacted
   assertEquals(redactor.redact("us-east-1"), "us-east-1");
 });
+
+Deno.test("modelMethodRun: direct execution resolves @-prefixed type from registry", async () => {
+  const nsType = ModelType.create("@myorg/custom-model");
+  const modelDef: ModelDefinition = {
+    type: nsType,
+    version: "2026.01.01.1",
+    methods: {
+      run: {
+        description: "Test method",
+        arguments: z.object({}),
+        execute: (_args, _ctx) => Promise.resolve({ dataHandles: [] }),
+      },
+    },
+  };
+
+  const deps: ModelMethodRunDeps = {
+    ...createTestDeps(null, undefined),
+    getModelDef: (type) => {
+      const key = typeof type === "string"
+        ? ModelType.create(type).normalized
+        : type.normalized;
+      if (key === nsType.normalized) return modelDef;
+      return undefined;
+    },
+    createAndSaveDefinition: async (_type, _def) => {},
+    getDefinitionPath: (_type, id) => `/tmp/auto/${id}.yaml`,
+  };
+
+  const ctx = createLibSwampContext();
+  const events = await collect(
+    modelMethodRun(ctx, deps, {
+      modelIdOrName: "my-instance",
+      methodName: "run",
+      inputs: {},
+      lastEvaluated: false,
+      typeArg: "@myorg/custom-model",
+      definitionName: "my-instance",
+    }),
+  );
+
+  const autoCreated = events.find((e) => e.kind === "auto_created");
+  assertEquals(autoCreated !== undefined, true);
+  if (autoCreated && autoCreated.kind === "auto_created") {
+    assertEquals(autoCreated.modelType, "@myorg/custom-model");
+  }
+});

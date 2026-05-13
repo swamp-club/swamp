@@ -246,9 +246,7 @@ export async function* modelMethodRun(
 
       if (input.typeArg && input.definitionName) {
         // Direct type execution path: auto-create-then-run
-        const typeArg = input.typeArg.startsWith("@")
-          ? input.typeArg.slice(1)
-          : input.typeArg;
+        const typeArg = input.typeArg;
         const resolvedType = ModelType.create(typeArg);
 
         const resolvedModelDef = await Promise.resolve(

@@ -282,9 +282,7 @@ export const workflowRunCommand = new Command()
             methodName,
             inputs,
           ) => {
-            const typeStr = typeArg.startsWith("@")
-              ? typeArg.slice(1)
-              : typeArg;
+            const typeStr = typeArg;
             const resolvedType = ModelType.create(typeStr);
             const modelDef = await resolveModelType(
               resolvedType,

@@ -154,7 +154,7 @@ export async function resolveOrCreateDefinition(
         ok: false,
         error: validationFailed(
           `Definition '${definitionName}' exists with type '${existing.type.normalized}' ` +
-            `but '@${typeArg}' resolves to '${resolvedType.normalized}'. ` +
+            `but '${typeArg}' resolves to '${resolvedType.normalized}'. ` +
             `Type mismatch — delete the existing definition or use a different name.`,
         ),
       };
