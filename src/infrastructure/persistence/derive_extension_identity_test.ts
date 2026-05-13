@@ -251,3 +251,13 @@ Deno.test("deriveExtensionIdentity: Windows canonical form for local", () => {
     { name: "@local/myrepo", version: "0.0.0" },
   );
 });
+
+Deno.test("deriveExtensionIdentity: Windows backslash paths return null (callers must canonicalize)", () => {
+  assertEquals(
+    deriveExtensionIdentity(
+      "C:\\Users\\foo\\myrepo\\extensions\\models\\echo.ts",
+      "C:\\Users\\foo\\myrepo",
+    ),
+    null,
+  );
+});

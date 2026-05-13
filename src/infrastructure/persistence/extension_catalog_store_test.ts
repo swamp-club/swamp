@@ -21,7 +21,8 @@ import { assert, assertEquals } from "@std/assert";
 import { DatabaseSync } from "node:sqlite";
 import { dirname, join } from "@std/path";
 import { ensureDirSync } from "@std/fs";
-import { canonicalizePath } from "./canonicalize_path.ts";
+import { canonicalizePath, canonicalizePathFor } from "./canonicalize_path.ts";
+import { deriveExtensionIdentity } from "./derive_extension_identity.ts";
 import {
   ExtensionCatalogStore,
   type ExtensionTypeRow,
@@ -652,6 +653,30 @@ Deno.test("ExtensionCatalogStore: upsert without state preserves existing last_e
   const found = store.findByType("@myorg/echo", "model");
   assertEquals(found?.state, "BundleBuildFailed");
   assertEquals(found?.last_error, "boom");
+  store.close();
+});
+
+Deno.test("ExtensionCatalogStore: canonicalized source_path resolves via deriveExtensionIdentity", () => {
+  const dbPath = makeTempDbPath();
+  const store = new ExtensionCatalogStore(dbPath);
+
+  const windowsPath = "C:\\Users\\runner\\repo\\extensions\\models\\echo.ts";
+  const canonicalized = canonicalizePathFor(windowsPath, true);
+
+  store.upsert(makeRow({ source_path: canonicalized }));
+  const found = store.findBySourcePath(canonicalized);
+  assertEquals(found !== undefined, true, "row must be retrievable");
+
+  const identity = deriveExtensionIdentity(
+    canonicalized,
+    "c:/users/runner/repo",
+  );
+  assertEquals(
+    identity !== null,
+    true,
+    "canonicalized path must resolve to a valid identity",
+  );
+  assertEquals(identity?.name, "@local/repo");
   store.close();
 });
 
