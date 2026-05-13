@@ -680,6 +680,53 @@ Deno.test("ExtensionCatalogStore: canonicalized source_path resolves via deriveE
   store.close();
 });
 
+Deno.test("ExtensionCatalogStore: findBySourcePath canonicalizes input before lookup", () => {
+  const dbPath = makeTempDbPath();
+  const store = new ExtensionCatalogStore(dbPath);
+
+  const canonical = canonicalizePathFor(
+    "C:\\Users\\runner\\repo\\extensions\\models\\echo.ts",
+    true,
+  );
+  store.upsert(makeRow({ source_path: canonical }));
+
+  const foundViaCanonical = store.findBySourcePath(canonical);
+  assertEquals(
+    foundViaCanonical !== undefined,
+    true,
+    "lookup via canonical path must find the row",
+  );
+
+  const foundViaNative = store.findBySourcePath(
+    canonicalizePathFor(
+      "C:\\Users\\Runner\\Repo\\extensions\\models\\echo.ts",
+      true,
+    ),
+  );
+  assertEquals(
+    foundViaNative !== undefined,
+    true,
+    "lookup via differently-cased Windows path must find the same row after canonicalization",
+  );
+  store.close();
+});
+
+Deno.test("ExtensionCatalogStore: removeBySourcePath canonicalizes input", () => {
+  const dbPath = makeTempDbPath();
+  const store = new ExtensionCatalogStore(dbPath);
+
+  const canonical = canonicalizePathFor(
+    "C:\\Users\\runner\\repo\\extensions\\models\\echo.ts",
+    true,
+  );
+  store.upsert(makeRow({ source_path: canonical }));
+  assertEquals(store.count(), 1);
+
+  store.removeBySourcePath(canonical);
+  assertEquals(store.count(), 0);
+  store.close();
+});
+
 Deno.test("ExtensionCatalogStore: upsert with explicit state overwrites both state and last_error", () => {
   const dbPath = makeTempDbPath();
   const store = new ExtensionCatalogStore(dbPath);

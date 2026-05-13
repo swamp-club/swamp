@@ -709,7 +709,9 @@ export class ExtensionCatalogStore {
     const stmt = this.db.prepare(
       "SELECT * FROM bundle_types WHERE source_path = ?",
     );
-    const row = stmt.get(sourcePath) as Record<string, unknown> | undefined;
+    const row = stmt.get(canonicalizePath(sourcePath)) as
+      | Record<string, unknown>
+      | undefined;
     return row ? this.mapRow(row) : undefined;
   }
 
@@ -720,7 +722,7 @@ export class ExtensionCatalogStore {
     const stmt = this.db.prepare(
       "DELETE FROM bundle_types WHERE source_path = ?",
     );
-    stmt.run(sourcePath);
+    stmt.run(canonicalizePath(sourcePath));
   }
 
   /**
@@ -732,7 +734,7 @@ export class ExtensionCatalogStore {
     const stmt = this.db.prepare(
       "DELETE FROM bundle_types WHERE source_path LIKE ?",
     );
-    const result = stmt.run(`${sourcePrefix}%`);
+    const result = stmt.run(`${canonicalizePath(sourcePrefix)}%`);
     return Number(result.changes);
   }
 
@@ -1112,7 +1114,7 @@ export class ExtensionCatalogStore {
     const stmt = this.db.prepare(
       "UPDATE bundle_types SET extension_name = ?, extension_version = ? WHERE source_path = ?",
     );
-    stmt.run(name, version, sourcePath);
+    stmt.run(name, version, canonicalizePath(sourcePath));
   }
 
   /**
