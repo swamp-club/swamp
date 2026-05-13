@@ -711,7 +711,7 @@ Deno.test("ExtensionCatalogStore: findBySourcePath canonicalizes input before lo
   store.close();
 });
 
-Deno.test("ExtensionCatalogStore: removeBySourcePath canonicalizes input", () => {
+Deno.test("ExtensionCatalogStore: removeBySourcePath deletes by exact stored path", () => {
   const dbPath = makeTempDbPath();
   const store = new ExtensionCatalogStore(dbPath);
 
