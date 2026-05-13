@@ -52,83 +52,30 @@ export const model = {
 };
 `;
 
-// Missing `version` — fails Zod validation in loadModels. Recorded
-// under kind=model.
-const BAD_MODEL_VALIDATION = `
-import { z } from "npm:zod@4";
-export const model = {
-  type: "@tutorial/missing-version",
-  globalArguments: z.object({}),
-  resources: {},
-  methods: {
-    run: {
-      description: "no-op",
-      arguments: z.object({}),
-      execute: () => ({ dataHandles: [] }),
-    },
-  },
-};
-`;
-
-// `type` field is a const, not a literal — populateCatalogFromDir's
-// regex cannot extract it. Recorded under kind=model.
-const BAD_MODEL_REGEX = `
-import { z } from "npm:zod@4";
-const TYPE = "@tutorial/non-literal-type";
-export const model = {
-  type: TYPE,
-  version: "2026.04.28.0",
-  globalArguments: z.object({}),
-  resources: {},
-  methods: {
-    run: {
-      description: "no-op",
-      arguments: z.object({}),
-      execute: () => ({ dataHandles: [] }),
-    },
-  },
-};
-`;
-
-// EXTENSION (not model) with a non-literal `type`. This is the only
-// fixture that triggers `emitTypeExtractionFailure(file, "extension")`
-// — recorded under kind=extension by populateCatalogFromDir. The
-// doctor service must fold this into the model registry's row.
-//
-// The extension targets the type from VALID_MODEL so processExtension
-// succeeds at runtime; the catalog-population regex still fails on
-// the source text because TYPE is a const reference.
-const BAD_EXTENSION_REGEX = `
-import { z } from "npm:zod@4";
-const TYPE = "@tutorial/working";
-export const extension = {
-  type: TYPE,
-  methods: [{
-    extra: {
-      description: "no-op extension method",
-      arguments: z.object({}),
-      execute: () => ({ dataHandles: [] }),
-    },
-  }],
-};
-`;
-
 interface DoctorJson {
   overallStatus: "pass" | "fail";
   registries: Record<
     string,
     {
+      registry: string;
       status: "pass" | "fail";
-      failures: Array<{ file: string; error: string }>;
     }
   >;
+  aggregateState?: {
+    sourceDetails: Array<{
+      sourcePath: string;
+      stateTag: string;
+      kind?: string;
+      lastError?: string;
+    }>;
+  };
 }
 
-function findFailureFor(
-  failures: Array<{ file: string; error: string }>,
+function findSourceDetailFor(
+  details: Array<{ sourcePath: string; stateTag: string }>,
   needle: string,
-): { file: string; error: string } | undefined {
-  return failures.find((f) => f.file.includes(needle));
+): { sourcePath: string; stateTag: string } | undefined {
+  return details.find((d) => d.sourcePath.includes(needle));
 }
 
 Deno.test(
@@ -143,22 +90,18 @@ Deno.test(
       await ensureDir(modelsDir);
       await Deno.writeTextFile(join(modelsDir, "working.ts"), VALID_MODEL);
       await Deno.writeTextFile(
-        join(modelsDir, "missing_version.ts"),
-        BAD_MODEL_VALIDATION,
+        join(modelsDir, "schema_invalid.ts"),
+        `export const model = "not an object";\n`,
       );
       await Deno.writeTextFile(
-        join(modelsDir, "non_literal_type.ts"),
-        BAD_MODEL_REGEX,
-      );
-      await Deno.writeTextFile(
-        join(modelsDir, "non_literal_type_extension.ts"),
-        BAD_EXTENSION_REGEX,
+        join(modelsDir, "unresolvable.ts"),
+        `import { x } from "./does_not_exist.ts";\nexport const model = x;\n`,
       );
 
       // Run the doctor as the FIRST swamp command in this repo so the
       // bundle catalog is empty when ensureLoaded() runs.
       const { stdout, code } = await runCliCommand(
-        ["--json", "doctor", "extensions"],
+        ["--json", "doctor", "extensions", "--verbose"],
         repoDir,
       );
 
@@ -184,53 +127,38 @@ Deno.test(
         ["datastore", "driver", "model", "report", "vault"],
       );
 
-      // The non-model registries pass with empty failure arrays.
+      // The non-model registries pass.
       assertEquals(parsed.registries.vault.status, "pass");
       assertEquals(parsed.registries.driver.status, "pass");
       assertEquals(parsed.registries.datastore.status, "pass");
       assertEquals(parsed.registries.report.status, "pass");
-      assertEquals(parsed.registries.vault.failures.length, 0);
-      assertEquals(parsed.registries.driver.failures.length, 0);
-      assertEquals(parsed.registries.datastore.failures.length, 0);
-      assertEquals(parsed.registries.report.failures.length, 0);
 
-      // The model registry's row absorbs the kind=model failures (b, c)
-      // AND the kind=extension failure (d) thanks to the fold.
       const modelRow = parsed.registries.model;
       assertEquals(modelRow.status, "fail");
 
-      const validationFailure = findFailureFor(
-        modelRow.failures,
-        "missing_version.ts",
+      const details = parsed.aggregateState?.sourceDetails ?? [];
+
+      const schemaInvalid = findSourceDetailFor(
+        details,
+        "schema_invalid.ts",
       );
-      const regexFailure = findFailureFor(
-        modelRow.failures,
-        "non_literal_type.ts",
-      );
-      const extensionFailure = findFailureFor(
-        modelRow.failures,
-        "non_literal_type_extension.ts",
+      const unresolvable = findSourceDetailFor(
+        details,
+        "unresolvable.ts",
       );
 
       assertEquals(
-        typeof validationFailure?.file,
+        typeof schemaInvalid?.sourcePath,
         "string",
-        `expected missing_version.ts under model row; got: ${
-          JSON.stringify(modelRow.failures)
+        `expected schema_invalid.ts in sourceDetails; got: ${
+          JSON.stringify(details)
         }`,
       );
       assertEquals(
-        typeof regexFailure?.file,
+        typeof unresolvable?.sourcePath,
         "string",
-        `expected non_literal_type.ts under model row; got: ${
-          JSON.stringify(modelRow.failures)
-        }`,
-      );
-      assertEquals(
-        typeof extensionFailure?.file,
-        "string",
-        `expected non_literal_type_extension.ts under model row (proves model+extension fold); got: ${
-          JSON.stringify(modelRow.failures)
+        `expected unresolvable.ts in sourceDetails; got: ${
+          JSON.stringify(details)
         }`,
       );
     } finally {
@@ -265,7 +193,7 @@ Deno.test(
       );
       assertEquals(parsed.overallStatus, "pass");
 
-      // All five registry keys still present, all empty.
+      // All five registry keys still present, all passing.
       const keys = Object.keys(parsed.registries).sort();
       assertEquals(
         keys,
@@ -273,7 +201,6 @@ Deno.test(
       );
       for (const key of keys) {
         assertEquals(parsed.registries[key].status, "pass");
-        assertEquals(parsed.registries[key].failures.length, 0);
       }
     } finally {
       await Deno.remove(repoDir, { recursive: true });
@@ -292,8 +219,8 @@ Deno.test(
       const modelsDir = join(repoDir, "extensions", "models");
       await ensureDir(modelsDir);
       await Deno.writeTextFile(
-        join(modelsDir, "missing_version.ts"),
-        BAD_MODEL_VALIDATION,
+        join(modelsDir, "bad_model.ts"),
+        `export const model = "not an object";\n`,
       );
 
       const { code } = await runCliCommand(
@@ -324,17 +251,17 @@ Deno.test(
       await ensureDir(modelsDir);
       await Deno.writeTextFile(join(modelsDir, "working.ts"), VALID_MODEL);
       await Deno.writeTextFile(
-        join(modelsDir, "missing_version.ts"),
-        BAD_MODEL_VALIDATION,
+        join(modelsDir, "schema_invalid.ts"),
+        `export const model = "not an object";\n`,
       );
       await Deno.writeTextFile(
-        join(modelsDir, "non_literal_type_extension.ts"),
-        BAD_EXTENSION_REGEX,
+        join(modelsDir, "unresolvable.ts"),
+        `import { x } from "./does_not_exist.ts";\nexport const model = x;\n`,
       );
 
       // First invocation — catalog starts empty, populates during this run.
       const first = await runCliCommand(
-        ["--json", "doctor", "extensions"],
+        ["--json", "doctor", "extensions", "--verbose"],
         repoDir,
       );
       const firstParsed = JSON.parse(
@@ -344,7 +271,7 @@ Deno.test(
       // Second invocation — catalog now populated. Without the
       // doctor's catalog-rescan, this would short-circuit and report pass.
       const second = await runCliCommand(
-        ["--json", "doctor", "extensions"],
+        ["--json", "doctor", "extensions", "--verbose"],
         repoDir,
       );
       const secondParsed = JSON.parse(
@@ -365,12 +292,21 @@ Deno.test(
       assertEquals(secondParsed.overallStatus, "fail");
 
       // The second run must surface the same failure files as the first.
-      // Use basename() so the comparison works regardless of host separator.
-      const firstFiles = firstParsed.registries.model.failures
-        .map((f) => basename(f.file))
+      // Failures are now in aggregateState.sourceDetails with failure
+      // stateTag values. Use basename() so the comparison works
+      // regardless of host separator.
+      const failureTags = new Set([
+        "ValidationFailed",
+        "BundleBuildFailed",
+        "EntryPointUnreadable",
+      ]);
+      const firstFiles = (firstParsed.aggregateState?.sourceDetails ?? [])
+        .filter((d) => failureTags.has(d.stateTag))
+        .map((d) => basename(d.sourcePath))
         .sort();
-      const secondFiles = secondParsed.registries.model.failures
-        .map((f) => basename(f.file))
+      const secondFiles = (secondParsed.aggregateState?.sourceDetails ?? [])
+        .filter((d) => failureTags.has(d.stateTag))
+        .map((d) => basename(d.sourcePath))
         .sort();
       assertEquals(
         firstFiles,
@@ -379,11 +315,11 @@ Deno.test(
       );
       // Both files we expect to fail are present (validation + extension fold).
       assertEquals(
-        secondFiles.includes("missing_version.ts"),
+        secondFiles.includes("schema_invalid.ts"),
         true,
       );
       assertEquals(
-        secondFiles.includes("non_literal_type_extension.ts"),
+        secondFiles.includes("unresolvable.ts"),
         true,
       );
     } finally {

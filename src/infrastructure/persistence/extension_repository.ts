@@ -638,11 +638,18 @@ function mapStateRowToRowState(row: ExtensionTypeRow): RowState {
         loadedInProcess: false,
       };
     case "BundleBuildFailed":
-      return { tag: "BundleBuildFailed", lastError: "" };
+      return { tag: "BundleBuildFailed", lastError: row.last_error ?? "" };
     case "ValidationFailed":
-      return { tag: "ValidationFailed", bundle, lastError: "" };
+      return {
+        tag: "ValidationFailed",
+        bundle,
+        lastError: row.last_error ?? "",
+      };
     case "EntryPointUnreadable":
-      return { tag: "EntryPointUnreadable", lastError: "" };
+      return {
+        tag: "EntryPointUnreadable",
+        lastError: row.last_error ?? "",
+      };
     case "OrphanedBundleOnly":
       return { tag: "OrphanedBundleOnly", bundle };
     case "Tombstoned":
@@ -692,12 +699,20 @@ function sourceToRow(
       break;
   }
 
+  let lastError = "";
+  if (
+    state.tag === "BundleBuildFailed" || state.tag === "ValidationFailed" ||
+    state.tag === "EntryPointUnreadable"
+  ) {
+    lastError = state.lastError;
+  }
+
   return {
     source_path: source.id.canonicalPath,
     type_normalized: typeNormalized,
     kind: source.kind,
     bundle_path: bundlePath,
-    version: extension.version, // legacy column; mirrors extension_version
+    version: extension.version,
     description: "",
     extends_type: "",
     source_mtime: source.sourceMtime,
@@ -705,5 +720,6 @@ function sourceToRow(
     state: state.tag,
     extension_name: extension.name,
     extension_version: extension.version,
+    last_error: lastError,
   };
 }

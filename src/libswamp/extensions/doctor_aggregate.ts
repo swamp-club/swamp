@@ -46,6 +46,7 @@ export interface DoctorSourceDetail {
   readonly fingerprint: string;
   readonly bundlePath: string;
   readonly kind: string;
+  readonly lastError?: string;
 }
 
 /** A catalog row whose source_path doesn't exist on disk. */
@@ -105,6 +106,18 @@ function extractBundlePath(source: Source): string {
       return s.bundle.canonicalPath;
     default:
       return "";
+  }
+}
+
+function extractLastError(source: Source): string | undefined {
+  const s = source.state;
+  switch (s.tag) {
+    case "BundleBuildFailed":
+    case "ValidationFailed":
+    case "EntryPointUnreadable":
+      return s.lastError;
+    default:
+      return undefined;
   }
 }
 
@@ -197,12 +210,14 @@ export async function buildAggregateState(deps: {
         );
       }
 
+      const lastError = extractLastError(source);
       sourceDetails.push({
         sourcePath: source.id.canonicalPath,
         stateTag: source.state.tag,
         fingerprint: source.fingerprint,
         bundlePath,
         kind: source.kind,
+        ...(lastError ? { lastError } : {}),
       });
 
       if (

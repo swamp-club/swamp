@@ -77,7 +77,7 @@ interface DoctorReport {
   overallStatus: string;
   registries: Record<
     string,
-    { status: string; failures: { file: string }[] }
+    { registry: string; status: string }
   >;
   aggregateState: {
     totalSources: number;
@@ -85,6 +85,8 @@ interface DoctorReport {
       sourcePath: string;
       stateTag: string;
       fingerprint?: string;
+      kind?: string;
+      lastError?: string;
     }[];
   };
 }
@@ -112,16 +114,6 @@ function findSourceDetail(
   );
 }
 
-function findFailure(
-  report: DoctorReport,
-  registry: string,
-  pathFragment: string,
-): { file: string } | undefined {
-  return report.registries[registry]?.failures?.find((f) =>
-    f.file.includes(pathFragment)
-  );
-}
-
 // AC 1: schema-invalid content → ValidationFailed in sourceDetails (#340)
 Deno.test("doctor extensions: schema-invalid content produces ValidationFailed in sourceDetails", async () => {
   await withTestRepo(async (repoDir) => {
@@ -139,21 +131,13 @@ Deno.test("doctor extensions: schema-invalid content produces ValidationFailed i
     assertEquals(indexedDetail.stateTag, "Indexed");
 
     await Deno.writeTextFile(modelPath, SCHEMA_INVALID_MODEL);
-    const second = await runDoctor(repoDir);
+    const second = await runDoctor(repoDir, { allowNonZero: true });
     const failedDetail = findSourceDetail(second, "test_model.ts");
     assert(
       failedDetail,
       "Source should appear in sourceDetails after corruption",
     );
     assertEquals(failedDetail.stateTag, "ValidationFailed");
-
-    // AC 5: no dual-write
-    const dualWrite = findFailure(second, "model", "test_model.ts");
-    assertEquals(
-      dualWrite,
-      undefined,
-      "ValidationFailed source must NOT also appear in registries.model.failures[]",
-    );
   });
 });
 
@@ -177,18 +161,10 @@ Deno.test("doctor extensions: validation-failing content produces ValidationFail
     assertEquals(indexedDetail.stateTag, "Indexed");
 
     await Deno.writeTextFile(modelPath, VALIDATION_FAILING_MODEL);
-    const second = await runDoctor(repoDir);
+    const second = await runDoctor(repoDir, { allowNonZero: true });
     const failedDetail = findSourceDetail(second, "bad_validation.ts");
     assert(failedDetail, "Source should appear after corruption");
     assertEquals(failedDetail.stateTag, "ValidationFailed");
-
-    // AC 5: no dual-write
-    const dualWrite = findFailure(second, "model", "bad_validation.ts");
-    assertEquals(
-      dualWrite,
-      undefined,
-      "ValidationFailed source must NOT also appear in registries.model.failures[]",
-    );
   });
 });
 
@@ -227,7 +203,7 @@ Deno.test("doctor extensions: deleted pulled source produces EntryPointUnreadabl
 
     // Delete the source file, keep the lockfile entry
     await Deno.remove(modelPath);
-    const second = await runDoctor(repoDir);
+    const second = await runDoctor(repoDir, { allowNonZero: true });
     const missingDetail = findSourceDetail(second, "pulled_model.ts");
     assert(
       missingDetail,
@@ -291,7 +267,7 @@ Deno.test("doctor extensions: ValidationFailed recovers to Indexed when source i
 
     // Corrupt → ValidationFailed
     await Deno.writeTextFile(modelPath, SCHEMA_INVALID_MODEL);
-    const second = await runDoctor(repoDir);
+    const second = await runDoctor(repoDir, { allowNonZero: true });
     const failed = findSourceDetail(second, "recovery_model.ts");
     assert(failed);
     assertEquals(failed.stateTag, "ValidationFailed");
@@ -335,7 +311,7 @@ Deno.test("doctor extensions: ValidationFailed stores current source fingerprint
     assert(indexedFingerprint, "Indexed source should have a fingerprint");
 
     await Deno.writeTextFile(modelPath, SCHEMA_INVALID_MODEL);
-    const second = await runDoctor(repoDir);
+    const second = await runDoctor(repoDir, { allowNonZero: true });
     const failed = findSourceDetail(second, "fp_model.ts");
     assert(failed);
     assertEquals(failed.stateTag, "ValidationFailed");
@@ -427,6 +403,51 @@ Deno.test("doctor extensions: BundleBuildFailed recovers to Indexed when import 
     const recovered = findSourceDetail(third, "import_recovery.ts");
     assert(recovered);
     assertEquals(recovered.stateTag, "Indexed");
+  });
+});
+
+// W7: lastError populates on failure and clears on recovery
+Deno.test("doctor extensions: lastError populates on failure and clears on recovery", async () => {
+  await withTestRepo(async (repoDir) => {
+    const modelDir = join(repoDir, "extensions", "models");
+    await ensureDir(modelDir);
+    const modelPath = join(modelDir, "last_error_lifecycle.ts");
+
+    await Deno.writeTextFile(modelPath, SCHEMA_INVALID_MODEL);
+    const failed = await runDoctor(repoDir, { allowNonZero: true });
+    const failedDetail = findSourceDetail(failed, "last_error_lifecycle.ts");
+    assert(failedDetail, "Source should appear in sourceDetails");
+    assert(
+      failedDetail.stateTag === "BundleBuildFailed" ||
+        failedDetail.stateTag === "ValidationFailed",
+      `Expected failure state, got ${failedDetail.stateTag}`,
+    );
+    assert(
+      failedDetail.lastError && failedDetail.lastError.length > 0,
+      `lastError must be populated on failure, got: ${
+        JSON.stringify(failedDetail.lastError)
+      }`,
+    );
+
+    await Deno.writeTextFile(
+      modelPath,
+      VALID_MODEL.replace(
+        "@tutorial/failure-test",
+        "@tutorial/last-error-lifecycle",
+      ),
+    );
+    const recovered = await runDoctor(repoDir);
+    const recoveredDetail = findSourceDetail(
+      recovered,
+      "last_error_lifecycle.ts",
+    );
+    assert(recoveredDetail, "Source should appear after recovery");
+    assertEquals(recoveredDetail.stateTag, "Indexed");
+    assertEquals(
+      recoveredDetail.lastError,
+      undefined,
+      "lastError must be absent from sourceDetails after recovery to Indexed",
+    );
   });
 });
 

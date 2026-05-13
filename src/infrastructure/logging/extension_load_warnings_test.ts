@@ -21,8 +21,6 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   emitExtensionLoadWarning,
   emitTypeExtractionFailure,
-  getExtensionLoadWarnings,
-  recordLoadFailures,
   resetExtensionLoadWarnings,
 } from "./extension_load_warnings.ts";
 
@@ -150,21 +148,6 @@ Deno.test("emitExtensionLoadWarning: quiet=true suppresses output entirely", () 
   assertEquals(cap.lines.length, 0);
 });
 
-Deno.test("emitExtensionLoadWarning: quiet=true still captures into the warnings array", () => {
-  // The doctor command relies on this contract — capture is always-on
-  // so the diagnostic stays available even when stderr is muted.
-  resetExtensionLoadWarnings();
-
-  emitExtensionLoadWarning(
-    { kind: "model", file: "/m.ts", error: "boom" },
-    { quiet: true },
-  );
-
-  const warnings = getExtensionLoadWarnings();
-  assertEquals(warnings.length, 1);
-  assertEquals(warnings[0].file, "/m.ts");
-});
-
 Deno.test("emitExtensionLoadWarning: quiet=false overrides any process-level --quiet detection", () => {
   resetExtensionLoadWarnings();
   const cap = makeCapture();
@@ -177,39 +160,6 @@ Deno.test("emitExtensionLoadWarning: quiet=false overrides any process-level --q
   );
 
   assertEquals(cap.lines.length, 2);
-});
-
-Deno.test("recordLoadFailures: emits one warning per failed entry", () => {
-  resetExtensionLoadWarnings();
-  const cap = makeCapture();
-
-  recordLoadFailures(
-    "report",
-    {
-      failed: [
-        { file: "/a.ts", error: "e1" },
-        { file: "/b.ts", error: "e2" },
-      ],
-    },
-    { writer: cap.writer },
-  );
-
-  // Two warnings + one hint = three lines. Hint emits after the
-  // first warning (because that's when the kind becomes "seen"),
-  // so the order is: warn, hint, warn.
-  assertEquals(cap.lines.length, 3);
-  assertStringIncludes(cap.lines[0], "/a.ts");
-  assertStringIncludes(cap.lines[1], "extensions/reports/");
-  assertStringIncludes(cap.lines[2], "/b.ts");
-});
-
-Deno.test("recordLoadFailures: empty failed array is a no-op", () => {
-  resetExtensionLoadWarnings();
-  const cap = makeCapture();
-
-  recordLoadFailures("model", { failed: [] }, { writer: cap.writer });
-
-  assertEquals(cap.lines.length, 0);
 });
 
 Deno.test("emitTypeExtractionFailure: surfaces the regex-mismatch case with a clear message", () => {
@@ -236,55 +186,4 @@ Deno.test("resetExtensionLoadWarnings: clears dedupe and hint state", () => {
 
   // Two warning lines + two hint lines.
   assertEquals(cap.lines.length, 4);
-});
-
-Deno.test("getExtensionLoadWarnings: returns each unique warning once", () => {
-  resetExtensionLoadWarnings();
-
-  emitExtensionLoadWarning(
-    { kind: "model", file: "/a.ts", error: "e1" },
-    { quiet: true },
-  );
-  emitExtensionLoadWarning(
-    { kind: "extension", file: "/b.ts", error: "e2" },
-    { quiet: true },
-  );
-  // Duplicate of the first — should be deduped.
-  emitExtensionLoadWarning(
-    { kind: "model", file: "/a.ts", error: "e1" },
-    { quiet: true },
-  );
-
-  const warnings = getExtensionLoadWarnings();
-  assertEquals(warnings.length, 2);
-  assertEquals(warnings[0].kind, "model");
-  assertEquals(warnings[1].kind, "extension");
-});
-
-Deno.test("getExtensionLoadWarnings: returns a defensive copy (caller cannot mutate state)", () => {
-  resetExtensionLoadWarnings();
-
-  emitExtensionLoadWarning(
-    { kind: "model", file: "/a.ts", error: "e" },
-    { quiet: true },
-  );
-
-  const snapshot = getExtensionLoadWarnings() as Array<unknown>;
-  snapshot.push({ kind: "vault", file: "/x.ts", error: "tampered" });
-
-  // Internal state must not have grown.
-  assertEquals(getExtensionLoadWarnings().length, 1);
-});
-
-Deno.test("resetExtensionLoadWarnings: clears the captured warnings array", () => {
-  resetExtensionLoadWarnings();
-
-  emitExtensionLoadWarning(
-    { kind: "model", file: "/a.ts", error: "e" },
-    { quiet: true },
-  );
-  assertEquals(getExtensionLoadWarnings().length, 1);
-
-  resetExtensionLoadWarnings();
-  assertEquals(getExtensionLoadWarnings().length, 0);
 });

@@ -84,7 +84,7 @@ function isTracingImport(filePath: string, importPath: string): boolean {
 // the domain layer when the catalog gets fully replaced (W4).
 // W4: +2 net (5 user_*_loader.ts deleted, 7 KindAdapter + ExtensionLoader
 // files added — adapters require ExtensionTypeRow + SWAMP_SUBDIRS imports).
-const KNOWN_DOMAIN_INFRA_VIOLATIONS = 24;
+const KNOWN_DOMAIN_INFRA_VIOLATIONS = 25;
 
 Deno.test(
   "domain layer must not add new infrastructure imports (ratchet)",

@@ -34,7 +34,7 @@ export type ValidationResult =
 export interface ExtensionLoadResult {
   loaded: string[];
   extended: string[];
-  failed: Array<{ file: string; error: string }>;
+  failed: Array<{ file: string; error: string; originalError?: unknown }>;
 }
 
 export interface BundleIndexResult {

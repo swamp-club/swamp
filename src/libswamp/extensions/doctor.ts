@@ -19,7 +19,6 @@
 
 import { walk } from "@std/fs";
 import { join, relative } from "@std/path";
-import type { ExtensionLoadWarning } from "../../infrastructure/logging/extension_load_warnings.ts";
 import type { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import type { UpstreamExtensionsMap } from "../../infrastructure/persistence/upstream_extensions.ts";
 import type { SwampError } from "../errors.ts";
@@ -52,17 +51,10 @@ export const DOCTOR_REGISTRY_ORDER: ReadonlyArray<DoctorRegistryName> = [
   "report",
 ];
 
-/** A single registry's failure record after the model/extension fold. */
-export interface DoctorRegistryFailure {
-  file: string;
-  error: string;
-}
-
 /** Per-registry result emitted on `kind-completed`. */
 export interface DoctorRegistryResult {
   registry: DoctorRegistryName;
   status: "pass" | "fail";
-  failures: DoctorRegistryFailure[];
 }
 
 /** Final overall status — `pass` when every registry passed. */
@@ -142,10 +134,6 @@ export interface DoctorRegistryDeps {
 export interface DoctorExtensionsDeps {
   /** One entry per registry, in DOCTOR_REGISTRY_ORDER. */
   registries: ReadonlyArray<DoctorRegistryDeps>;
-  /** Reads the captured warnings array (defensive snapshot). */
-  getWarnings: () => ReadonlyArray<ExtensionLoadWarning>;
-  /** Clears the captured warnings array + dedupe state. */
-  resetState: () => void;
   /**
    * Lockfile repository — captures upstream_extensions.json at
    * construction so the orphan-detection phase can walk every
@@ -269,26 +257,24 @@ async function detectOrphanFiles(
   return orphans;
 }
 
-/**
- * Filters the captured warnings down to the ones owned by a given
- * registry. The model registry absorbs both `model` and `extension`
- * ExtensionKind values — `extension` warnings come exclusively from
- * the model loader's catalog-population path (see
- * `user_model_loader.ts:populateCatalogFromDir`) and so logically
- * belong to the model registry's row.
- */
-function partitionForRegistry(
+const FAILURE_STATE_TAGS = new Set([
+  "ValidationFailed",
+  "BundleBuildFailed",
+  "EntryPointUnreadable",
+]);
+
+function registryHasFailures(
   registry: DoctorRegistryName,
-  warnings: ReadonlyArray<ExtensionLoadWarning>,
-): DoctorRegistryFailure[] {
-  return warnings
-    .filter((w) => {
-      if (registry === "model") {
-        return w.kind === "model" || w.kind === "extension";
-      }
-      return w.kind === registry;
-    })
-    .map((w) => ({ file: w.file, error: w.error }));
+  aggregateState: DoctorAggregateReport | undefined,
+): boolean {
+  if (!aggregateState) return false;
+  return aggregateState.sourceDetails.some((d) => {
+    if (!FAILURE_STATE_TAGS.has(d.stateTag)) return false;
+    if (registry === "model") {
+      return d.kind === "model" || d.kind === "extension";
+    }
+    return d.kind === registry;
+  });
 }
 
 /**
@@ -316,18 +302,12 @@ function partitionForRegistry(
 export async function* doctorExtensions(
   deps: DoctorExtensionsDeps,
 ): AsyncIterable<DoctorExtensionsEvent> {
-  // Step (a): clear the emitter so we only see what THIS pass produces.
-  deps.resetState();
-  // Step (b): force every registry's loader to re-run, even if a prior
-  // CLI codepath already warmed it.
   for (const reg of deps.registries) {
     reg.resetLoadedFlag();
   }
 
-  const results: DoctorRegistryResult[] = [];
+  const loaderErrors = new Map<DoctorRegistryName, string>();
 
-  // Step (c): iterate each registry, run its loader, partition the
-  // captured warnings, and emit a per-registry result.
   for (const reg of deps.registries) {
     if (deps.abortSignal.aborted) break;
 
@@ -336,48 +316,18 @@ export async function* doctorExtensions(
     try {
       await reg.ensureLoaded();
     } catch (error) {
-      // A throw from ensureLoaded means the loader couldn't even run.
-      // Convert it into a synthetic failure so the report still surfaces
-      // the problem and the remaining registries continue running.
-      const synthetic: ExtensionLoadWarning = {
-        kind: reg.registry === "model" ? "model" : reg.registry,
-        file: `<${reg.registry} loader>`,
-        error: error instanceof Error ? error.message : String(error),
-      };
-      // Fold the synthetic failure into the partitioned list directly —
-      // we cannot rely on the emitter capturing it.
-      const captured = partitionForRegistry(reg.registry, deps.getWarnings());
-      const failures = [...captured, {
-        file: synthetic.file,
-        error: synthetic.error,
-      }];
-      const result: DoctorRegistryResult = {
-        registry: reg.registry,
-        status: "fail",
-        failures,
-      };
-      results.push(result);
-      yield { kind: "kind-completed", result };
-      continue;
+      loaderErrors.set(
+        reg.registry,
+        error instanceof Error ? error.message : String(error),
+      );
     }
 
-    const failures = partitionForRegistry(reg.registry, deps.getWarnings());
-    const result: DoctorRegistryResult = {
-      registry: reg.registry,
-      status: failures.length > 0 ? "fail" : "pass",
-      failures,
+    yield {
+      kind: "kind-completed",
+      result: { registry: reg.registry, status: "pass" },
     };
-    results.push(result);
-    yield { kind: "kind-completed", result };
   }
 
-  const registries = Object.fromEntries(
-    results.map((r) => [r.registry, r]),
-  ) as Record<DoctorRegistryName, DoctorRegistryResult>;
-
-  // Filesystem orphan detection — independent of loader validation.
-  // Always runs (unless aborted) so users get a warning even when
-  // every loader passes. Errors are not folded into `overallStatus`.
   let orphanFiles: DoctorOrphanFile[] = [];
   if (!deps.abortSignal.aborted) {
     const upstreamMap = deps.lockfileRepository.getAllEntries();
@@ -388,13 +338,11 @@ export async function* doctorExtensions(
     );
   }
 
-  // W6: Build aggregate state from the catalog (post-load).
   let aggregateState: DoctorAggregateReport | undefined;
   if (!deps.abortSignal.aborted && deps.buildAggregateState) {
     aggregateState = await deps.buildAggregateState();
   }
 
-  // W6: Run repair if requested (only after aggregate state is built).
   let repairReport: RepairReport | undefined;
   if (
     !deps.abortSignal.aborted && deps.runRepair && aggregateState
@@ -403,6 +351,18 @@ export async function* doctorExtensions(
   }
 
   const recentTransitions = deps.getRecentTransitions?.() ?? [];
+
+  const results: DoctorRegistryResult[] = DOCTOR_REGISTRY_ORDER.map((name) => ({
+    registry: name,
+    status: (loaderErrors.has(name) ||
+        registryHasFailures(name, aggregateState))
+      ? "fail" as const
+      : "pass" as const,
+  }));
+
+  const registries = Object.fromEntries(
+    results.map((r) => [r.registry, r]),
+  ) as Record<DoctorRegistryName, DoctorRegistryResult>;
 
   yield {
     kind: "completed",

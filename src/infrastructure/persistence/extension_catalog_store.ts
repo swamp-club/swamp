@@ -97,12 +97,10 @@ export interface ExtensionTypeRow {
    * RowState tag (issue swamp-club#211, W1). One of `'Indexed'`,
    * `'Bundled'`, `'BundleBuildFailed'`, `'ValidationFailed'`,
    * `'EntryPointUnreadable'`, `'OrphanedBundleOnly'`, `'Tombstoned'`.
-   * Optional on upsert: callers that omit it land at the column DEFAULT
-   * `'Indexed'` on INSERT and preserve the prior value on UPDATE
-   * (per-extension-aggregate-v3 schema). markCatalogValidationFailed is
-   * the only writer that sets this to `'ValidationFailed'`; loader
-   * populate paths leave it implicit so newly-bundled rows settle as
-   * `'Indexed'`.
+   * Optional on upsert. On INSERT: uses the column DEFAULT `'Indexed'`.
+   * On UPDATE: preserves the prior value by excluding the state field
+   * from the ON CONFLICT DO UPDATE clause. Callers that want to write
+   * a specific state must provide it explicitly.
    *
    * Reader contract: every row registration site filters on this value
    * (`if (entry.state === 'ValidationFailed') continue;`). The
@@ -111,6 +109,7 @@ export interface ExtensionTypeRow {
    * row.
    */
   state?: string;
+  last_error?: string;
   /**
    * Owning extension's logical name. Backfilled by the W1a migration
    * (`@local/<repo-name>` for locals, `@scope/foo` parsed from
@@ -207,7 +206,8 @@ export class ExtensionCatalogStore {
         source_fingerprint TEXT NOT NULL DEFAULT '',
         state              TEXT NOT NULL DEFAULT 'Indexed',
         extension_name     TEXT NOT NULL DEFAULT '',
-        extension_version  TEXT NOT NULL DEFAULT ''
+        extension_version  TEXT NOT NULL DEFAULT '',
+        last_error         TEXT NOT NULL DEFAULT ''
       );
 
       CREATE INDEX IF NOT EXISTS idx_bundle_types_kind
@@ -299,6 +299,11 @@ export class ExtensionCatalogStore {
     if (!hasColumn("extension_version")) {
       this.db.exec(
         "ALTER TABLE bundle_types ADD COLUMN extension_version TEXT NOT NULL DEFAULT ''",
+      );
+    }
+    if (!hasColumn("last_error")) {
+      this.db.exec(
+        "ALTER TABLE bundle_types ADD COLUMN last_error TEXT NOT NULL DEFAULT ''",
       );
     }
   }
@@ -658,22 +663,29 @@ export class ExtensionCatalogStore {
    * defaults to `'Indexed'`).
    */
   upsert(row: ExtensionTypeRow): void {
+    const updateClauses = [
+      "type_normalized    = excluded.type_normalized",
+      "kind               = excluded.kind",
+      "bundle_path        = excluded.bundle_path",
+      "version            = excluded.version",
+      "description        = excluded.description",
+      "extends_type       = excluded.extends_type",
+      "source_mtime       = excluded.source_mtime",
+      "source_fingerprint = excluded.source_fingerprint",
+    ];
+    if (row.state !== undefined) {
+      updateClauses.push("state              = excluded.state");
+      updateClauses.push("last_error         = excluded.last_error");
+    }
+
     const stmt = this.db.prepare(`
       INSERT INTO bundle_types (
         source_path, type_normalized, kind, bundle_path,
         version, description, extends_type, source_mtime,
-        source_fingerprint, state
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        source_fingerprint, state, last_error
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(source_path) DO UPDATE SET
-        type_normalized    = excluded.type_normalized,
-        kind               = excluded.kind,
-        bundle_path        = excluded.bundle_path,
-        version            = excluded.version,
-        description        = excluded.description,
-        extends_type       = excluded.extends_type,
-        source_mtime       = excluded.source_mtime,
-        source_fingerprint = excluded.source_fingerprint,
-        state              = excluded.state
+        ${updateClauses.join(",\n        ")}
     `);
     stmt.run(
       row.source_path,
@@ -686,6 +698,7 @@ export class ExtensionCatalogStore {
       row.source_mtime,
       row.source_fingerprint ?? "",
       row.state ?? "Indexed",
+      row.last_error ?? "",
     );
   }
 
@@ -758,6 +771,7 @@ export class ExtensionCatalogStore {
       extension_version: typeof raw.extension_version === "string"
         ? raw.extension_version
         : "",
+      last_error: typeof raw.last_error === "string" ? raw.last_error : "",
     };
   }
 
@@ -1015,8 +1029,9 @@ export class ExtensionCatalogStore {
       INSERT INTO bundle_types (
         source_path, type_normalized, kind, bundle_path,
         version, description, extends_type, source_mtime,
-        source_fingerprint, state, extension_name, extension_version
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        source_fingerprint, state, extension_name, extension_version,
+        last_error
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       ON CONFLICT(source_path) DO UPDATE SET
         type_normalized    = excluded.type_normalized,
         kind               = excluded.kind,
@@ -1028,7 +1043,8 @@ export class ExtensionCatalogStore {
         source_fingerprint = excluded.source_fingerprint,
         state              = excluded.state,
         extension_name     = excluded.extension_name,
-        extension_version  = excluded.extension_version
+        extension_version  = excluded.extension_version,
+        last_error         = excluded.last_error
     `);
     stmt.run(
       row.source_path,
@@ -1043,6 +1059,7 @@ export class ExtensionCatalogStore {
       row.state ?? "Indexed",
       row.extension_name,
       row.extension_version,
+      row.last_error ?? "",
     );
   }
 

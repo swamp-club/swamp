@@ -18,7 +18,6 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import type { ExtensionLoadWarning } from "../../infrastructure/logging/extension_load_warnings.ts";
 import { resetExtensionLoadWarnings } from "../../infrastructure/logging/extension_load_warnings.ts";
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import {
@@ -28,33 +27,25 @@ import {
   type DoctorExtensionsEvent,
   type DoctorRegistryName,
 } from "./doctor.ts";
+import type { DoctorAggregateReport } from "./doctor_aggregate.ts";
 
 interface SpyEntry {
   fn: string;
   registry?: DoctorRegistryName;
 }
 
-/**
- * Builds a deps object with spy callbacks. The shared `events` array
- * records every callback invocation so tests can assert ordering.
- *
- * The `getWarnings` stub returns a stable closure over the supplied
- * snapshot — it is called once per kind iteration and must return the
- * same value every time so partition-by-kind is deterministic.
- */
 function buildDeps(
   options: {
-    warnings?: ReadonlyArray<ExtensionLoadWarning>;
     throwForRegistry?: DoctorRegistryName;
     repoDir?: string;
     skillsDir?: string;
+    aggregateState?: DoctorAggregateReport;
   } = {},
 ): {
   deps: DoctorExtensionsDeps;
   events: SpyEntry[];
 } {
   const events: SpyEntry[] = [];
-  const warnings = options.warnings ?? [];
 
   const registries = DOCTOR_REGISTRY_ORDER.map((registry) => ({
     registry,
@@ -72,10 +63,6 @@ function buildDeps(
 
   const deps: DoctorExtensionsDeps = {
     registries,
-    getWarnings: () => warnings,
-    resetState: () => {
-      events.push({ fn: "resetState" });
-    },
     lockfileRepository: new LockfileRepository(
       "/test/repo/upstream_extensions.json",
       {},
@@ -83,9 +70,25 @@ function buildDeps(
     repoDir: options.repoDir ?? "/tmp/swamp-test-repo",
     skillsDir: options.skillsDir ?? ".claude/skills",
     abortSignal: new AbortController().signal,
+    buildAggregateState: options.aggregateState
+      ? () => Promise.resolve(options.aggregateState!)
+      : undefined,
   };
 
   return { deps, events };
+}
+
+function emptyAggregateReport(): DoctorAggregateReport {
+  return {
+    aggregates: [],
+    sourceDetails: [],
+    catalogOrphans: [],
+    bundleOrphans: [],
+    totalSources: 0,
+    healthySources: 0,
+    orphanRowCount: 0,
+    orphanBundleFileCount: 0,
+  };
 }
 
 async function collect(
@@ -100,7 +103,7 @@ async function collect(
 
 Deno.test("doctorExtensions: clean state — all five registries pass", async () => {
   resetExtensionLoadWarnings();
-  const { deps } = buildDeps();
+  const { deps } = buildDeps({ aggregateState: emptyAggregateReport() });
 
   const events = await collect(doctorExtensions(deps));
 
@@ -112,13 +115,12 @@ Deno.test("doctorExtensions: clean state — all five registries pass", async ()
   for (const registry of DOCTOR_REGISTRY_ORDER) {
     const result = completed.report.registries[registry];
     assertEquals(result.status, "pass");
-    assertEquals(result.failures.length, 0);
   }
 });
 
 Deno.test("doctorExtensions: emits all five kind-completed events in fixed order", async () => {
   resetExtensionLoadWarnings();
-  const { deps } = buildDeps();
+  const { deps } = buildDeps({ aggregateState: emptyAggregateReport() });
 
   const events = await collect(doctorExtensions(deps));
   const completedEvents = events.filter((e) => e.kind === "kind-completed");
@@ -131,33 +133,22 @@ Deno.test("doctorExtensions: emits all five kind-completed events in fixed order
   }
 });
 
-Deno.test("doctorExtensions: order of operations — resetState + all resetLoadedFlag run BEFORE any ensureLoaded", async () => {
+Deno.test("doctorExtensions: order of operations — all resetLoadedFlag run BEFORE any ensureLoaded", async () => {
   resetExtensionLoadWarnings();
-  const { deps, events } = buildDeps();
+  const { deps, events } = buildDeps({
+    aggregateState: emptyAggregateReport(),
+  });
 
   await collect(doctorExtensions(deps));
 
-  // Find the indices of the first ensureLoaded vs all resets.
   const firstEnsureLoadedIdx = events.findIndex((e) => e.fn === "ensureLoaded");
   const lastResetIdx = events.reduce(
-    (acc, e, i) =>
-      e.fn === "resetState" || e.fn === "resetLoadedFlag" ? i : acc,
+    (acc, e, i) => e.fn === "resetLoadedFlag" ? i : acc,
     -1,
   );
 
-  // The last reset must come before the first ensureLoaded — that is
-  // the load-bearing invariant the service owns.
   assertEquals(lastResetIdx < firstEnsureLoadedIdx, true);
 
-  // resetState runs exactly once, and before any resetLoadedFlag.
-  const resetStateIdx = events.findIndex((e) => e.fn === "resetState");
-  assertEquals(resetStateIdx, 0);
-  assertEquals(
-    events.filter((e) => e.fn === "resetState").length,
-    1,
-  );
-
-  // All five resetLoadedFlag calls fire exactly once.
   const resetCounts = new Map<DoctorRegistryName, number>();
   for (const e of events) {
     if (e.fn !== "resetLoadedFlag" || !e.registry) continue;
@@ -168,15 +159,39 @@ Deno.test("doctorExtensions: order of operations — resetState + all resetLoade
   }
 });
 
-Deno.test("doctorExtensions: model/extension fold — both ExtensionKind values land under the model registry's row", async () => {
+Deno.test("doctorExtensions: model/extension fold — both ExtensionKind values in sourceDetails drive model registry status", async () => {
   resetExtensionLoadWarnings();
-  const mixedWarnings: ExtensionLoadWarning[] = [
-    { kind: "model", file: "/m1.ts", error: "missing version" },
-    { kind: "extension", file: "/m2.ts", error: "non-literal type" },
-    { kind: "vault", file: "/v.ts", error: "broken vault" },
-    { kind: "driver", file: "/d.ts", error: "broken driver" },
-  ];
-  const { deps } = buildDeps({ warnings: mixedWarnings });
+  const aggregate = emptyAggregateReport();
+  const withFailures: DoctorAggregateReport = {
+    ...aggregate,
+    sourceDetails: [
+      {
+        sourcePath: "/m1.ts",
+        stateTag: "BundleBuildFailed",
+        fingerprint: "",
+        bundlePath: "",
+        kind: "model",
+        lastError: "missing version",
+      },
+      {
+        sourcePath: "/m2.ts",
+        stateTag: "ValidationFailed",
+        fingerprint: "",
+        bundlePath: "",
+        kind: "extension",
+        lastError: "non-literal type",
+      },
+      {
+        sourcePath: "/v.ts",
+        stateTag: "BundleBuildFailed",
+        fingerprint: "",
+        bundlePath: "",
+        kind: "vault",
+        lastError: "broken vault",
+      },
+    ],
+  };
+  const { deps } = buildDeps({ aggregateState: withFailures });
 
   const events = await collect(doctorExtensions(deps));
   const completed = events.find((e) => e.kind === "completed");
@@ -184,30 +199,19 @@ Deno.test("doctorExtensions: model/extension fold — both ExtensionKind values 
     throw new Error("expected completed event");
   }
 
-  // The model row absorbs BOTH the kind=model AND the kind=extension warnings.
-  const modelRow = completed.report.registries.model;
-  assertEquals(modelRow.status, "fail");
-  assertEquals(modelRow.failures.length, 2);
-  assertEquals(modelRow.failures[0].file, "/m1.ts");
-  assertEquals(modelRow.failures[1].file, "/m2.ts");
-
-  // The vault row sees only its own warnings.
-  const vaultRow = completed.report.registries.vault;
-  assertEquals(vaultRow.status, "fail");
-  assertEquals(vaultRow.failures.length, 1);
-  assertEquals(vaultRow.failures[0].file, "/v.ts");
-
-  // datastore + report rows are clean.
+  assertEquals(completed.report.registries.model.status, "fail");
+  assertEquals(completed.report.registries.vault.status, "fail");
   assertEquals(completed.report.registries.datastore.status, "pass");
   assertEquals(completed.report.registries.report.status, "pass");
-
-  // Overall status is fail because at least one registry failed.
   assertEquals(completed.report.overallStatus, "fail");
 });
 
 Deno.test("doctorExtensions: per-kind throw isolation — a thrown ensureLoaded becomes a fail without aborting other kinds", async () => {
   resetExtensionLoadWarnings();
-  const { deps } = buildDeps({ throwForRegistry: "vault" });
+  const { deps } = buildDeps({
+    throwForRegistry: "vault",
+    aggregateState: emptyAggregateReport(),
+  });
 
   const events = await collect(doctorExtensions(deps));
   const completed = events.find((e) => e.kind === "completed");
@@ -215,28 +219,19 @@ Deno.test("doctorExtensions: per-kind throw isolation — a thrown ensureLoaded 
     throw new Error("expected completed event");
   }
 
-  // Vault failed, others passed.
   assertEquals(completed.report.registries.vault.status, "fail");
-  assertEquals(completed.report.registries.vault.failures.length, 1);
-  assertEquals(
-    completed.report.registries.vault.failures[0].error.includes("stub-throw"),
-    true,
-  );
-
-  // The other registries still ran and reported pass.
   assertEquals(completed.report.registries.model.status, "pass");
   assertEquals(completed.report.registries.driver.status, "pass");
   assertEquals(completed.report.registries.datastore.status, "pass");
   assertEquals(completed.report.registries.report.status, "pass");
 
-  // All five kind-completed events were emitted.
   const completedEvents = events.filter((e) => e.kind === "kind-completed");
   assertEquals(completedEvents.length, 5);
 });
 
 Deno.test("doctorExtensions: completed report has all five registry keys even on pass", async () => {
   resetExtensionLoadWarnings();
-  const { deps } = buildDeps();
+  const { deps } = buildDeps({ aggregateState: emptyAggregateReport() });
 
   const events = await collect(doctorExtensions(deps));
   const completed = events.find((e) => e.kind === "completed");

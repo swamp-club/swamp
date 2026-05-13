@@ -773,7 +773,6 @@ export {
   type DoctorExtensionsReport,
   type DoctorOverallStatus,
   type DoctorRegistryDeps,
-  type DoctorRegistryFailure,
   type DoctorRegistryName,
   type DoctorRegistryResult,
 } from "./extensions/doctor.ts";

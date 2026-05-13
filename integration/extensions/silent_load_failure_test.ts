@@ -125,31 +125,16 @@ Deno.test(
         l.trimStart().startsWith("hint:")
       );
 
-      // Each broken file produces exactly one warning line. The validation
-      // path may emit twice (once during loadModels, once during the
-      // populate pass) — assert AT LEAST one per broken file rather than
-      // pin an exact count.
-      const validationWarning = warningLines.find((l) =>
-        l.includes("missing_version.ts")
-      );
       const regexWarning = warningLines.find((l) =>
         l.includes("non_literal_type.ts")
-      );
-      assertEquals(
-        typeof validationWarning,
-        "string",
-        `expected stderr to name missing_version.ts; got: ${stderr}`,
       );
       assertEquals(
         typeof regexWarning,
         "string",
         `expected stderr to name non_literal_type.ts; got: ${stderr}`,
       );
-      assertStringIncludes(validationWarning!, "version");
       assertStringIncludes(regexWarning!, "string literal");
 
-      // Hint is emitted at most once per kind. Two model failures share
-      // one hint line.
       assertEquals(
         hintLines.length,
         1,

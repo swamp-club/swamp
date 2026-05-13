@@ -232,19 +232,33 @@ class LogDoctorExtensionsRenderer implements DoctorExtensionsRenderer {
       },
       "kind-completed": (e) => {
         const r = e.result;
-        const failureSuffix = r.failures.length > 0
-          ? dim(` (${r.failures.length} failure(s))`)
-          : "";
-        writeOutput(`${iconFor(r.status)} ${bold(r.registry)}${failureSuffix}`);
-        for (const failure of r.failures) {
-          writeOutput(`    ${yellow("•")} ${failure.file}: ${failure.error}`);
-        }
+        writeOutput(`${iconFor(r.status)} ${bold(r.registry)}`);
       },
       completed: (e) => {
         this.overallStatus = e.report.overallStatus;
-        // Filesystem orphan warnings are independent of pass/fail — if
-        // anything is found, surface it before the summary so users see
-        // both halves of the diagnostic.
+
+        if (e.report.aggregateState) {
+          const failureDetails = e.report.aggregateState.sourceDetails.filter(
+            (d) =>
+              d.stateTag === "ValidationFailed" ||
+              d.stateTag === "BundleBuildFailed" ||
+              d.stateTag === "EntryPointUnreadable",
+          );
+          if (failureDetails.length > 0) {
+            writeOutput("");
+            for (const detail of failureDetails) {
+              const errorSuffix = detail.lastError
+                ? `: ${detail.lastError}`
+                : "";
+              writeOutput(
+                `    ${yellow("•")} ${detail.sourcePath} ${
+                  red(detail.stateTag)
+                }${errorSuffix}`,
+              );
+            }
+          }
+        }
+
         if (e.report.orphanFiles.length > 0) {
           writeOutput(
             `\n${yellow("⚠")} ${

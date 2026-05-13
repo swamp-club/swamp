@@ -272,7 +272,7 @@ Deno.test("UserReportLoader: registerLazyFromCatalog skips validation_failed row
 
   try {
     const ts = Date.now();
-    const reportName = `issue209-report-${ts}`;
+    const reportName = `@test/issue209-report-${ts}`;
     const validReport = `
 export const report = {
   name: "${reportName}",
@@ -307,7 +307,7 @@ export const report = {
       extends_type: "",
       source_mtime: "2026-05-01T12:00:00.000Z",
       source_fingerprint: "deadbeef-broken",
-      // W1b: validation_failed dropped — state="ValidationFailed" is the signal.
+      state: "ValidationFailed",
     });
 
     const loader2 = new ExtensionLoader(

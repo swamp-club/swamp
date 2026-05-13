@@ -621,6 +621,52 @@ Deno.test("ExtensionCatalogStore: state defaults to 'Indexed' when omitted from 
   store.close();
 });
 
+Deno.test("ExtensionCatalogStore: upsert without state preserves existing non-default state", () => {
+  const dbPath = makeTempDbPath();
+  const store = new ExtensionCatalogStore(dbPath);
+
+  store.upsert(makeRow({ state: "ValidationFailed" }));
+  store.upsert(makeRow());
+  const found = store.findByType("@myorg/echo", "model");
+  assertEquals(found?.state, "ValidationFailed");
+  store.close();
+});
+
+Deno.test("ExtensionCatalogStore: upsert with explicit state overwrites existing state", () => {
+  const dbPath = makeTempDbPath();
+  const store = new ExtensionCatalogStore(dbPath);
+
+  store.upsert(makeRow({ state: "ValidationFailed" }));
+  store.upsert(makeRow({ state: "Indexed" }));
+  const found = store.findByType("@myorg/echo", "model");
+  assertEquals(found?.state, "Indexed");
+  store.close();
+});
+
+Deno.test("ExtensionCatalogStore: upsert without state preserves existing last_error", () => {
+  const dbPath = makeTempDbPath();
+  const store = new ExtensionCatalogStore(dbPath);
+
+  store.upsert(makeRow({ state: "BundleBuildFailed", last_error: "boom" }));
+  store.upsert(makeRow());
+  const found = store.findByType("@myorg/echo", "model");
+  assertEquals(found?.state, "BundleBuildFailed");
+  assertEquals(found?.last_error, "boom");
+  store.close();
+});
+
+Deno.test("ExtensionCatalogStore: upsert with explicit state overwrites both state and last_error", () => {
+  const dbPath = makeTempDbPath();
+  const store = new ExtensionCatalogStore(dbPath);
+
+  store.upsert(makeRow({ state: "BundleBuildFailed", last_error: "boom" }));
+  store.upsert(makeRow({ state: "Indexed", last_error: "" }));
+  const found = store.findByType("@myorg/echo", "model");
+  assertEquals(found?.state, "Indexed");
+  assertEquals(found?.last_error, "");
+  store.close();
+});
+
 Deno.test("ExtensionCatalogStore: findByKind returns rows regardless of state", () => {
   // ADV-1 invariant guard: findStaleFiles relies on findByKind seeing
   // ValidationFailed rows so the stable broken fingerprint terminates
