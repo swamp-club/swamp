@@ -415,18 +415,21 @@ export class ExtensionCatalogStore {
           source_fingerprint TEXT NOT NULL DEFAULT '',
           state              TEXT NOT NULL DEFAULT 'Indexed',
           extension_name     TEXT NOT NULL DEFAULT '',
-          extension_version  TEXT NOT NULL DEFAULT ''
+          extension_version  TEXT NOT NULL DEFAULT '',
+          last_error         TEXT NOT NULL DEFAULT ''
         );
       `);
       this.db.exec(`
         INSERT INTO bundle_types_new (
           source_path, type_normalized, kind, bundle_path,
           version, description, extends_type, source_mtime,
-          source_fingerprint, state, extension_name, extension_version
+          source_fingerprint, state, extension_name, extension_version,
+          last_error
         ) SELECT
           source_path, type_normalized, kind, bundle_path,
           version, description, extends_type, source_mtime,
-          source_fingerprint, state, extension_name, extension_version
+          source_fingerprint, state, extension_name, extension_version,
+          last_error
         FROM bundle_types;
       `);
       this.db.exec("DROP TABLE bundle_types;");

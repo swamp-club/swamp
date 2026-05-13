@@ -231,11 +231,31 @@ class LogDoctorExtensionsRenderer implements DoctorExtensionsRenderer {
         // line is visual noise — users see the ✓/✗ on kind-completed.
       },
       "kind-completed": (e) => {
-        const r = e.result;
-        writeOutput(`${iconFor(r.status)} ${bold(r.registry)}`);
+        // Don't render status icon during scan — the per-registry result
+        // always reports "pass" at this point because loader errors are
+        // only folded into the final results. Instead, just show the
+        // registry name; the completed handler re-renders each row with
+        // its correct icon from e.report.registries.
+        writeOutput(`  ${dim("•")} ${e.result.registry}`);
       },
       completed: (e) => {
         this.overallStatus = e.report.overallStatus;
+
+        // Re-render each registry row with its correct status icon.
+        writeOutput("");
+        for (const name of DOCTOR_REGISTRY_ORDER) {
+          const reg = e.report.registries[name];
+          writeOutput(`${iconFor(reg.status)} ${bold(reg.registry)}`);
+        }
+
+        if (e.report.loaderErrors && e.report.loaderErrors.size > 0) {
+          writeOutput("");
+          for (const [registry, message] of e.report.loaderErrors) {
+            writeOutput(
+              `    ${red("•")} ${registry} loader error: ${message}`,
+            );
+          }
+        }
 
         if (e.report.aggregateState) {
           const failureDetails = e.report.aggregateState.sourceDetails.filter(
@@ -364,6 +384,9 @@ class JsonDoctorExtensionsRenderer implements DoctorExtensionsRenderer {
         }
         if (e.report.repairReport) {
           output.repairReport = e.report.repairReport;
+        }
+        if (e.report.loaderErrors && e.report.loaderErrors.size > 0) {
+          output.loaderErrors = Object.fromEntries(e.report.loaderErrors);
         }
         output.recentTransitions = e.report.recentTransitions.map((t) => ({
           sourcePath: t.source.canonicalPath,

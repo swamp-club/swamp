@@ -130,10 +130,12 @@ export class ExtensionLoader {
       file: string;
       module: Record<string, unknown>;
       absolutePath: string;
+      baseDir: string;
     }> = [];
     const secondaryFiles: Array<{
       file: string;
       module: Record<string, unknown>;
+      baseDir: string;
     }> = [];
 
     for (const { file, baseDir } of allFiles) {
@@ -159,18 +161,19 @@ export class ExtensionLoader {
         const module = await this.importBundle(js, file, baseDir);
 
         if (module[this.adapter.primaryExportKey]) {
-          primaryFiles.push({ file, module, absolutePath });
+          primaryFiles.push({ file, module, absolutePath, baseDir });
         } else if (
           this.adapter.secondaryExportKey &&
           module[this.adapter.secondaryExportKey]
         ) {
-          secondaryFiles.push({ file, module });
+          secondaryFiles.push({ file, module, baseDir });
         }
       } catch (error) {
         result.failed.push({
           file,
           error: String(error),
           originalError: error,
+          baseDir,
         });
       }
     }
@@ -182,7 +185,7 @@ export class ExtensionLoader {
       repoDir: this.repoDir,
     };
 
-    for (const { file, module, absolutePath } of primaryFiles) {
+    for (const { file, module, absolutePath, baseDir } of primaryFiles) {
       try {
         const exported = module[this.adapter.primaryExportKey];
         const parsed = this.adapter.validatePrimaryExport(exported);
@@ -196,6 +199,7 @@ export class ExtensionLoader {
               bundlePath,
               "",
             ),
+            baseDir,
           });
           continue;
         }
@@ -208,7 +212,7 @@ export class ExtensionLoader {
             String(validated.type ?? validated.name ?? ""),
           );
           if (namespaceError) {
-            result.failed.push({ file, error: namespaceError });
+            result.failed.push({ file, error: namespaceError, baseDir });
             continue;
           }
         }
@@ -219,6 +223,7 @@ export class ExtensionLoader {
             file,
             error:
               `${this.adapter.kind} type '${typeNormalized}' already registered`,
+            baseDir,
           });
           continue;
         }
@@ -235,12 +240,13 @@ export class ExtensionLoader {
           file,
           error: String(error),
           originalError: error,
+          baseDir,
         });
       }
     }
 
     if (this.adapter.processSecondaryExport) {
-      for (const { file, module } of secondaryFiles) {
+      for (const { file, module, baseDir } of secondaryFiles) {
         try {
           this.adapter.processSecondaryExport(
             file,
@@ -248,7 +254,7 @@ export class ExtensionLoader {
             result,
           );
         } catch (error) {
-          result.failed.push({ file, error: String(error) });
+          result.failed.push({ file, error: String(error), baseDir });
         }
       }
     }
@@ -393,7 +399,8 @@ export class ExtensionLoader {
 
       const kindDir = extensionKindToKindDir(this.adapter.kind);
       for (const failure of fullResult.failed) {
-        const absolutePath = resolve(dir, failure.file);
+        const resolveDir = failure.baseDir ?? dir;
+        const absolutePath = resolve(resolveDir, failure.file);
         const loc = makeSourceLocation(absolutePath, this.repoDir);
         const extIdx = coldIndex.get(loc.canonicalPath);
         const ext = extIdx !== undefined ? coldExtensions[extIdx] : undefined;
@@ -412,7 +419,7 @@ export class ExtensionLoader {
 
         let failFp: string;
         try {
-          failFp = await computeSourceFingerprint(absolutePath, dir);
+          failFp = await computeSourceFingerprint(absolutePath, resolveDir);
         } catch {
           failFp = "";
         }

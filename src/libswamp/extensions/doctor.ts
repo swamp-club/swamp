@@ -103,6 +103,11 @@ export interface DoctorExtensionsReport {
    * captures a source's fromState → toState with reason.
    */
   recentTransitions: readonly ReconcileTransition[];
+  /**
+   * Errors thrown by `ensureLoaded()` for each registry. Empty when every
+   * loader succeeds. Keyed by registry name; value is the error message.
+   */
+  loaderErrors?: ReadonlyMap<DoctorRegistryName, string>;
 }
 
 /**
@@ -373,6 +378,7 @@ export async function* doctorExtensions(
       aggregateState,
       repairReport,
       recentTransitions,
+      loaderErrors: loaderErrors.size > 0 ? loaderErrors : undefined,
     },
   };
 }

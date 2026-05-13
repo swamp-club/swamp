@@ -514,12 +514,21 @@ Deno.test("ExtensionRepository: lockfile fallback orphan-DELETEs a pulled row wh
     });
     assertEquals(cat.findAll().length, 1);
 
-    // Lockfile lookup returns null — the entry is gone (e.g. user
-    // deleted upstream_extensions.json or the entry was pruned).
-    const exts = repo.loadAll();
-    assertEquals(exts.length, 0);
-    // The row was DELETEd as an orphan.
-    assertEquals(cat.findAll().length, 0);
+    const readOnly = repo.loadAll();
+    assertEquals(readOnly.length, 0);
+    assertEquals(
+      cat.findAll().length,
+      1,
+      "read-only loadAll must NOT delete orphan rows",
+    );
+
+    const pruned = repo.loadAllWithPruning();
+    assertEquals(pruned.length, 0);
+    assertEquals(
+      cat.findAll().length,
+      0,
+      "loadAllWithPruning must DELETE orphan rows",
+    );
   }, { lockedVersions: {} });
 });
 
