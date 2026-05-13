@@ -56,6 +56,7 @@ import type {
   KindAdapter,
   RegistrationContext,
 } from "./kind_adapter.ts";
+import { ValidationError } from "./validation_error.ts";
 
 export class ExtensionLoader {
   private readonly denoRuntime: DenoRuntime;
@@ -420,8 +421,10 @@ export class ExtensionLoader {
         module[this.adapter.primaryExportKey],
       );
       if (!parsed.success) {
-        throw new Error(
+        throw new ValidationError(
           this.adapter.formatValidationError(parsed.error),
+          this.getBundlePath(args.relativePath, args.baseDir),
+          fingerprint,
         );
       }
       const validated = parsed.data as Record<string, unknown>;
@@ -443,7 +446,11 @@ export class ExtensionLoader {
         module[this.adapter.secondaryExportKey],
       );
       if (!parsed.success) {
-        throw new Error(parsed.error.message);
+        throw new ValidationError(
+          parsed.error.message,
+          this.getBundlePath(args.relativePath, args.baseDir),
+          fingerprint,
+        );
       }
       const validated = parsed.data as Record<string, unknown>;
       return {

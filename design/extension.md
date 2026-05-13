@@ -1113,8 +1113,11 @@ throws `DuplicateTypeError` at the repository layer.
 to `UNREADABLE_PLACEHOLDER` (internal to `computeSourceFingerprint`).
 No external code compares against it. Broken transitive deps produce a
 stable fingerprint; the failure surfaces at `bundleAndIndexOne` as
-`BundleBuildFailed`. Existing catalog rows with the old sentinel value
-are caught by the first reconcile run — no schema migration needed.
+`BundleBuildFailed`. Zod schema validation failures (bundle built
+successfully but export rejected) surface as `ValidationFailed` via a
+`ValidationError` subclass that carries the bundle path and fingerprint
+(see `validation_error.ts`). Existing catalog rows with the old sentinel
+value are caught by the first reconcile run — no schema migration needed.
 
 **Forward-only revert posture.** Same as W1b/W2: revert means deleting
 `_extension_catalog.db` and rebuilding from disk on the next cold-start.

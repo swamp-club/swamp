@@ -414,7 +414,7 @@ Deno.test({
           repoDir,
         });
 
-        // First reconcile: bundleAndIndexOne fails → BundleBuildFailed.
+        // First reconcile: bundleAndIndexOne fails → ValidationFailed.
         await service.execute();
         // The file might be skipped entirely (bundleAndIndexOne returns
         // null for non-model exports) or fail. Either way, subsequent

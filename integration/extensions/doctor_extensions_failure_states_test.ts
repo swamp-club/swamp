@@ -43,6 +43,11 @@ const SCHEMA_INVALID_MODEL = `
 export const model = "not an object";
 `;
 
+const UNRESOLVABLE_IMPORT_MODEL = `
+import { nonexistent } from "./this_file_does_not_exist.ts";
+export const model = nonexistent;
+`;
+
 const VALIDATION_FAILING_MODEL = `
 import { z } from "npm:zod@4";
 export const model = {
@@ -84,12 +89,17 @@ interface DoctorReport {
   };
 }
 
-async function runDoctor(repoDir: string): Promise<DoctorReport> {
+async function runDoctor(
+  repoDir: string,
+  opts?: { allowNonZero?: boolean },
+): Promise<DoctorReport> {
   const result = await runCliCommand(
     ["doctor", "extensions", "--json", "--verbose"],
     repoDir,
   );
-  assertEquals(result.code, 0, `doctor failed: ${result.stderr}`);
+  if (!opts?.allowNonZero) {
+    assertEquals(result.code, 0, `doctor failed: ${result.stderr}`);
+  }
   return JSON.parse(result.stdout);
 }
 
@@ -112,8 +122,8 @@ function findFailure(
   );
 }
 
-// AC 1: schema-invalid content → BundleBuildFailed in sourceDetails
-Deno.test("doctor extensions: schema-invalid content produces BundleBuildFailed in sourceDetails", async () => {
+// AC 1: schema-invalid content → ValidationFailed in sourceDetails (#340)
+Deno.test("doctor extensions: schema-invalid content produces ValidationFailed in sourceDetails", async () => {
   await withTestRepo(async (repoDir) => {
     const modelDir = join(repoDir, "extensions", "models");
     await ensureDir(modelDir);
@@ -135,20 +145,20 @@ Deno.test("doctor extensions: schema-invalid content produces BundleBuildFailed 
       failedDetail,
       "Source should appear in sourceDetails after corruption",
     );
-    assertEquals(failedDetail.stateTag, "BundleBuildFailed");
+    assertEquals(failedDetail.stateTag, "ValidationFailed");
 
     // AC 5: no dual-write
     const dualWrite = findFailure(second, "model", "test_model.ts");
     assertEquals(
       dualWrite,
       undefined,
-      "BundleBuildFailed source must NOT also appear in registries.model.failures[]",
+      "ValidationFailed source must NOT also appear in registries.model.failures[]",
     );
   });
 });
 
-// AC 2: validation-failing content → BundleBuildFailed in sourceDetails
-Deno.test("doctor extensions: validation-failing content produces BundleBuildFailed in sourceDetails", async () => {
+// AC 2: validation-failing content → ValidationFailed in sourceDetails (#340)
+Deno.test("doctor extensions: validation-failing content produces ValidationFailed in sourceDetails", async () => {
   await withTestRepo(async (repoDir) => {
     const modelDir = join(repoDir, "extensions", "models");
     await ensureDir(modelDir);
@@ -170,14 +180,14 @@ Deno.test("doctor extensions: validation-failing content produces BundleBuildFai
     const second = await runDoctor(repoDir);
     const failedDetail = findSourceDetail(second, "bad_validation.ts");
     assert(failedDetail, "Source should appear after corruption");
-    assertEquals(failedDetail.stateTag, "BundleBuildFailed");
+    assertEquals(failedDetail.stateTag, "ValidationFailed");
 
     // AC 5: no dual-write
     const dualWrite = findFailure(second, "model", "bad_validation.ts");
     assertEquals(
       dualWrite,
       undefined,
-      "BundleBuildFailed source must NOT also appear in registries.model.failures[]",
+      "ValidationFailed source must NOT also appear in registries.model.failures[]",
     );
   });
 });
@@ -259,8 +269,8 @@ Deno.test("doctor extensions: deleted local source with bundle produces Orphaned
   });
 });
 
-// Addition 1: recovery path — BundleBuildFailed → valid content → Indexed
-Deno.test("doctor extensions: BundleBuildFailed recovers to Indexed when source is fixed", async () => {
+// Recovery path — ValidationFailed → valid content → Indexed (#340)
+Deno.test("doctor extensions: ValidationFailed recovers to Indexed when source is fixed", async () => {
   await withTestRepo(async (repoDir) => {
     const modelDir = join(repoDir, "extensions", "models");
     await ensureDir(modelDir);
@@ -279,12 +289,12 @@ Deno.test("doctor extensions: BundleBuildFailed recovers to Indexed when source 
     assert(indexed);
     assertEquals(indexed.stateTag, "Indexed");
 
-    // Corrupt → BundleBuildFailed
+    // Corrupt → ValidationFailed
     await Deno.writeTextFile(modelPath, SCHEMA_INVALID_MODEL);
     const second = await runDoctor(repoDir);
     const failed = findSourceDetail(second, "recovery_model.ts");
     assert(failed);
-    assertEquals(failed.stateTag, "BundleBuildFailed");
+    assertEquals(failed.stateTag, "ValidationFailed");
 
     // Fix → Indexed again
     await Deno.writeTextFile(
@@ -301,13 +311,13 @@ Deno.test("doctor extensions: BundleBuildFailed recovers to Indexed when source 
     assertNotEquals(
       recovered.fingerprint,
       failed.fingerprint,
-      "Fingerprint should change from BundleBuildFailed to Indexed",
+      "Fingerprint should change from ValidationFailed to Indexed",
     );
   });
 });
 
-// Addition 2: catalog-column-level fingerprint assertion
-Deno.test("doctor extensions: BundleBuildFailed stores current source fingerprint", async () => {
+// Fingerprint assertion — ValidationFailed stores current source fingerprint (#340)
+Deno.test("doctor extensions: ValidationFailed stores current source fingerprint", async () => {
   await withTestRepo(async (repoDir) => {
     const modelDir = join(repoDir, "extensions", "models");
     await ensureDir(modelDir);
@@ -328,17 +338,95 @@ Deno.test("doctor extensions: BundleBuildFailed stores current source fingerprin
     const second = await runDoctor(repoDir);
     const failed = findSourceDetail(second, "fp_model.ts");
     assert(failed);
-    assertEquals(failed.stateTag, "BundleBuildFailed");
+    assertEquals(failed.stateTag, "ValidationFailed");
 
     assert(
       failed.fingerprint,
-      "BundleBuildFailed source should have a fingerprint",
+      "ValidationFailed source should have a fingerprint",
     );
     assertNotEquals(
       failed.fingerprint,
       indexedFingerprint,
-      "BundleBuildFailed fingerprint must differ from the prior Indexed fingerprint",
+      "ValidationFailed fingerprint must differ from the prior Indexed fingerprint",
     );
+  });
+});
+
+// #340 regression: unresolvable import → BundleBuildFailed (not ValidationFailed)
+Deno.test("doctor extensions: unresolvable import produces BundleBuildFailed in sourceDetails", async () => {
+  await withTestRepo(async (repoDir) => {
+    const modelDir = join(repoDir, "extensions", "models");
+    await ensureDir(modelDir);
+    const modelPath = join(modelDir, "bad_import.ts");
+
+    await Deno.writeTextFile(
+      modelPath,
+      VALID_MODEL.replace(
+        "@tutorial/failure-test",
+        "@tutorial/bad-import-test",
+      ),
+    );
+    const first = await runDoctor(repoDir);
+    const indexed = findSourceDetail(first, "bad_import.ts");
+    assert(indexed, "Source should appear in sourceDetails");
+    assertEquals(indexed.stateTag, "Indexed");
+
+    // Delete cached bundles so the fallback path doesn't reuse the valid bundle
+    const bundlesDir = join(repoDir, ".swamp", "bundles");
+    await Deno.remove(bundlesDir, { recursive: true }).catch(() => {});
+
+    await Deno.writeTextFile(modelPath, UNRESOLVABLE_IMPORT_MODEL);
+    const second = await runDoctor(repoDir, { allowNonZero: true });
+    const failed = findSourceDetail(second, "bad_import.ts");
+    assert(failed, "Source should appear after corruption");
+    assertEquals(
+      failed.stateTag,
+      "BundleBuildFailed",
+      "Unresolvable import must produce BundleBuildFailed, not ValidationFailed",
+    );
+  });
+});
+
+// #340: BundleBuildFailed recovery — unresolvable import → fix → Indexed
+Deno.test("doctor extensions: BundleBuildFailed recovers to Indexed when import is fixed", async () => {
+  await withTestRepo(async (repoDir) => {
+    const modelDir = join(repoDir, "extensions", "models");
+    await ensureDir(modelDir);
+    const modelPath = join(modelDir, "import_recovery.ts");
+
+    await Deno.writeTextFile(
+      modelPath,
+      VALID_MODEL.replace(
+        "@tutorial/failure-test",
+        "@tutorial/import-recovery",
+      ),
+    );
+    const first = await runDoctor(repoDir);
+    const indexed = findSourceDetail(first, "import_recovery.ts");
+    assert(indexed);
+    assertEquals(indexed.stateTag, "Indexed");
+
+    // Delete cached bundles so the fallback path doesn't reuse the valid bundle
+    const bundlesDir = join(repoDir, ".swamp", "bundles");
+    await Deno.remove(bundlesDir, { recursive: true }).catch(() => {});
+
+    await Deno.writeTextFile(modelPath, UNRESOLVABLE_IMPORT_MODEL);
+    const second = await runDoctor(repoDir, { allowNonZero: true });
+    const failed = findSourceDetail(second, "import_recovery.ts");
+    assert(failed);
+    assertEquals(failed.stateTag, "BundleBuildFailed");
+
+    await Deno.writeTextFile(
+      modelPath,
+      VALID_MODEL.replace(
+        "@tutorial/failure-test",
+        "@tutorial/import-recovery",
+      ),
+    );
+    const third = await runDoctor(repoDir);
+    const recovered = findSourceDetail(third, "import_recovery.ts");
+    assert(recovered);
+    assertEquals(recovered.stateTag, "Indexed");
   });
 });
 

@@ -28,13 +28,17 @@ import {
   recordBundleBuildFailed,
   recordBundled,
   recordEntryPointUnreadable,
+  recordValidationFailed,
   tombstoneAll,
 } from "../../domain/extensions/extension.ts";
 import type { LocalManifestIdentity } from "../../infrastructure/persistence/local_manifest_reader.ts";
 import { canonicalizePath } from "../../infrastructure/persistence/canonicalize_path.ts";
 import { makeSource } from "../../domain/extensions/source.ts";
 import { makeSourceLocation } from "../../domain/extensions/source_location.ts";
-import { makeBundleLocation } from "../../domain/extensions/bundle_location.ts";
+import {
+  type BundleLocation,
+  makeBundleLocation,
+} from "../../domain/extensions/bundle_location.ts";
 import {
   computeSourceFingerprint,
   createFreshnessCache,
@@ -50,6 +54,7 @@ import { BUNDLE_LAYOUT_VERSION } from "../../infrastructure/persistence/extensio
 import type { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import { swampPath } from "../../infrastructure/persistence/paths.ts";
 import { ExtensionLoader } from "../../domain/extensions/extension_loader.ts";
+import { ValidationError } from "../../domain/extensions/validation_error.ts";
 import { modelKindAdapter } from "../../domain/extensions/model_kind_adapter.ts";
 import { vaultKindAdapter } from "../../domain/extensions/vault_kind_adapter.ts";
 import { driverKindAdapter } from "../../domain/extensions/driver_kind_adapter.ts";
@@ -502,33 +507,69 @@ export class ReconcileFromDiskService {
           failFp = "";
         }
 
-        if (existingSource) {
-          ext = recordBundleBuildFailed(ext, {
-            location: effectiveLoc,
-            lastError: errorMsg,
-            fingerprint: failFp,
-            sourceMtime,
-          });
-        } else {
-          ext = makeExtensionWithNewSource(
-            ext,
-            effectiveLoc,
-            kind,
-            {
-              tag: "BundleBuildFailed",
-              lastError: errorMsg,
-            },
-            sourceMtime,
-            failFp,
+        const isValidation = error instanceof ValidationError;
+        const toState: RowStateTag = isValidation
+          ? "ValidationFailed"
+          : "BundleBuildFailed";
+
+        if (isValidation) {
+          const bundle = makeBundleLocation(
+            error.bundlePath,
+            error.fingerprint,
           );
+          if (existingSource) {
+            ext = recordValidationFailed(ext, {
+              location: effectiveLoc,
+              bundle,
+              lastError: errorMsg,
+              fingerprint: failFp,
+              sourceMtime,
+            });
+          } else {
+            ext = makeExtensionWithNewSource(
+              ext,
+              effectiveLoc,
+              kind,
+              {
+                tag: "ValidationFailed",
+                bundle,
+                lastError: errorMsg,
+              },
+              sourceMtime,
+              failFp,
+            );
+          }
+        } else {
+          if (existingSource) {
+            ext = recordBundleBuildFailed(ext, {
+              location: effectiveLoc,
+              lastError: errorMsg,
+              fingerprint: failFp,
+              sourceMtime,
+            });
+          } else {
+            ext = makeExtensionWithNewSource(
+              ext,
+              effectiveLoc,
+              kind,
+              {
+                tag: "BundleBuildFailed",
+                lastError: errorMsg,
+              },
+              sourceMtime,
+              failFp,
+            );
+          }
         }
 
-        if (fromState !== "BundleBuildFailed") {
+        if (fromState !== toState) {
           transitions.push({
             source: effectiveLoc,
             fromState,
-            toState: "BundleBuildFailed",
-            reason: `bundle build failed: ${errorMsg}`,
+            toState,
+            reason: isValidation
+              ? `validation failed: ${errorMsg}`
+              : `bundle build failed: ${errorMsg}`,
           });
         }
       }
@@ -702,7 +743,9 @@ function makeExtensionWithNewSource(
   extension: Extension,
   location: SourceLocation,
   kindDir: KindDir,
-  state: { tag: "BundleBuildFailed"; lastError: string },
+  state:
+    | { tag: "BundleBuildFailed"; lastError: string }
+    | { tag: "ValidationFailed"; bundle: BundleLocation; lastError: string },
   sourceMtime: string,
   fingerprint = "",
 ): Extension {
