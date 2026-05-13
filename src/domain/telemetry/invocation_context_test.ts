@@ -29,11 +29,13 @@ Deno.test("createInvocationContext: minimal context with mandatory fields only",
   const ctx = createInvocationContext({
     agentSessionDetected: false,
     isInteractive: true,
+    externalDatastoreConfigured: false,
   });
   assertEquals(ctx.configuredAiTools, undefined);
   assertEquals(ctx.detectedAiTool, undefined);
   assertEquals(ctx.agentSessionDetected, false);
   assertEquals(ctx.isInteractive, true);
+  assertEquals(ctx.externalDatastoreConfigured, false);
 });
 
 Deno.test("createInvocationContext: configuredAiTools=[] preserved (not coerced to undefined)", () => {
@@ -41,6 +43,7 @@ Deno.test("createInvocationContext: configuredAiTools=[] preserved (not coerced 
     configuredAiTools: [],
     agentSessionDetected: false,
     isInteractive: false,
+    externalDatastoreConfigured: false,
   });
   assertEquals(ctx.configuredAiTools, []);
 });
@@ -51,9 +54,19 @@ Deno.test("createInvocationContext: copies configuredAiTools array (no aliasing)
     configuredAiTools: tools,
     agentSessionDetected: true,
     isInteractive: false,
+    externalDatastoreConfigured: false,
   });
   tools.push("kiro");
   assertEquals(ctx.configuredAiTools, ["claude", "cursor"]);
+});
+
+Deno.test("createInvocationContext: externalDatastoreConfigured=true preserved", () => {
+  const ctx = createInvocationContext({
+    agentSessionDetected: false,
+    isInteractive: false,
+    externalDatastoreConfigured: true,
+  });
+  assertEquals(ctx.externalDatastoreConfigured, true);
 });
 
 Deno.test("invocationContextToData: round-trip with detectedAiTool and tools", () => {
@@ -62,6 +75,7 @@ Deno.test("invocationContextToData: round-trip with detectedAiTool and tools", (
     detectedAiTool: "claude",
     agentSessionDetected: true,
     isInteractive: false,
+    externalDatastoreConfigured: true,
   });
   const data = invocationContextToData(ctx);
   assertEquals(data, {
@@ -69,6 +83,7 @@ Deno.test("invocationContextToData: round-trip with detectedAiTool and tools", (
     detectedAiTool: "claude",
     agentSessionDetected: true,
     isInteractive: false,
+    externalDatastoreConfigured: true,
   });
 });
 
@@ -76,6 +91,7 @@ Deno.test("invocationContextToData: omits absent optional fields", () => {
   const ctx = createInvocationContext({
     agentSessionDetected: false,
     isInteractive: true,
+    externalDatastoreConfigured: false,
   });
   const data = invocationContextToData(ctx);
   assertEquals("configuredAiTools" in data, false);
@@ -87,6 +103,7 @@ Deno.test("invocationContextToData: empty configuredAiTools array is preserved o
     configuredAiTools: [],
     agentSessionDetected: false,
     isInteractive: false,
+    externalDatastoreConfigured: false,
   });
   const data = invocationContextToData(ctx);
   assertEquals(data.configuredAiTools, []);
@@ -98,18 +115,21 @@ Deno.test("invocationContextFromData: round-trip preserves every field", () => {
     detectedAiTool: "claude",
     agentSessionDetected: true,
     isInteractive: true,
+    externalDatastoreConfigured: true,
   });
   const restored = invocationContextFromData(invocationContextToData(original));
   assertEquals(restored.configuredAiTools, ["claude"]);
   assertEquals(restored.detectedAiTool, "claude");
   assertEquals(restored.agentSessionDetected, true);
   assertEquals(restored.isInteractive, true);
+  assertEquals(restored.externalDatastoreConfigured, true);
 });
 
 Deno.test("invocationContextFromData: agent detected without specific tool round-trips", () => {
   const original = createInvocationContext({
     agentSessionDetected: true,
     isInteractive: false,
+    externalDatastoreConfigured: false,
   });
   const restored = invocationContextFromData(invocationContextToData(original));
   assertEquals(restored.detectedAiTool, undefined);

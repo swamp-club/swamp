@@ -45,6 +45,7 @@ export interface InvocationContext {
   readonly detectedAiTool?: DetectableAiTool;
   readonly agentSessionDetected: boolean;
   readonly isInteractive: boolean;
+  readonly externalDatastoreConfigured: boolean;
 }
 
 /**
@@ -55,6 +56,7 @@ export interface InvocationContextData {
   detectedAiTool?: DetectableAiTool;
   agentSessionDetected: boolean;
   isInteractive: boolean;
+  externalDatastoreConfigured: boolean;
 }
 
 /**
@@ -70,6 +72,7 @@ export function createInvocationContext(
     detectedAiTool: props.detectedAiTool,
     agentSessionDetected: props.agentSessionDetected,
     isInteractive: props.isInteractive,
+    externalDatastoreConfigured: props.externalDatastoreConfigured,
   };
 }
 
@@ -82,6 +85,7 @@ export function invocationContextToData(
   const data: InvocationContextData = {
     agentSessionDetected: context.agentSessionDetected,
     isInteractive: context.isInteractive,
+    externalDatastoreConfigured: context.externalDatastoreConfigured,
   };
   if (context.configuredAiTools !== undefined) {
     data.configuredAiTools = [...context.configuredAiTools];

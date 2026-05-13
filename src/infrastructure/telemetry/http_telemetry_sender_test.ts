@@ -235,7 +235,8 @@ Deno.test("HttpTelemetrySender.sendBatch lands invocationContext at properties.i
   // Wire-shape contract: TelemetryEntry.toData() is splatted into properties
   // verbatim, so the swamp-club consumer side queries
   // properties.invocationContext.{configuredAiTools, detectedAiTool,
-  // agentSessionDetected, isInteractive}. Lock the shape here.
+  // agentSessionDetected, isInteractive, externalDatastoreConfigured}.
+  // Lock the shape here.
   let capturedBody: string | undefined;
 
   const server = Deno.serve({ port: 0 }, async (req: Request) => {
@@ -264,6 +265,7 @@ Deno.test("HttpTelemetrySender.sendBatch lands invocationContext at properties.i
       detectedAiTool: "claude",
       agentSessionDetected: true,
       isInteractive: false,
+      externalDatastoreConfigured: true,
     },
   });
 
@@ -278,6 +280,10 @@ Deno.test("HttpTelemetrySender.sendBatch lands invocationContext at properties.i
   assertEquals(parsed.properties.invocationContext.detectedAiTool, "claude");
   assertEquals(parsed.properties.invocationContext.agentSessionDetected, true);
   assertEquals(parsed.properties.invocationContext.isInteractive, false);
+  assertEquals(
+    parsed.properties.invocationContext.externalDatastoreConfigured,
+    true,
+  );
 
   await server.shutdown();
 });

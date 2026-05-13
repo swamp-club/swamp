@@ -27,6 +27,19 @@ import {
 } from "../domain/telemetry/mod.ts";
 import type { TelemetryService } from "../domain/telemetry/telemetry_service.ts";
 import type { AiTool } from "../infrastructure/persistence/repo_marker_repository.ts";
+import type { DatastoreConfigData } from "../domain/datastore/datastore_config.ts";
+
+/**
+ * True when the repo marker declares a non-`filesystem` datastore. Local
+ * `filesystem` datastores and absent configs both report false — the signal
+ * is "data lives behind a custom datastore provider," not "the user has any
+ * datastore block." Used to populate the telemetry invocation context.
+ */
+export function isExternalDatastoreConfigured(
+  datastore: DatastoreConfigData | undefined,
+): boolean {
+  return datastore !== undefined && datastore.type !== "filesystem";
+}
 
 /**
  * Module-scoped accessor for the active TelemetryService. Set once at the
@@ -282,11 +295,13 @@ export function projectEnvSnapshot(): Record<string, string> {
 export function buildInvocationContext(
   envSnapshot: Record<string, string>,
   configuredAiTools: AiTool[] | undefined,
+  externalDatastoreConfigured: boolean,
 ): InvocationContextData {
   const detection = detectAgentHarness(envSnapshot);
   const data: InvocationContextData = {
     agentSessionDetected: detection.agentSessionDetected,
     isInteractive: Deno.stdin.isTerminal(),
+    externalDatastoreConfigured,
   };
   if (configuredAiTools !== undefined) {
     data.configuredAiTools = configuredAiTools;

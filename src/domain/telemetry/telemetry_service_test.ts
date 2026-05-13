@@ -382,6 +382,7 @@ Deno.test("TelemetryService.recordSuccess stamps invocationContext on entries", 
     detectedAiTool: "claude",
     agentSessionDetected: true,
     isInteractive: false,
+    externalDatastoreConfigured: false,
   });
 
   await service.recordSuccess(
@@ -407,6 +408,7 @@ Deno.test("TelemetryService.recordError stamps invocationContext on entries", as
     configuredAiTools: [],
     agentSessionDetected: true,
     isInteractive: false,
+    externalDatastoreConfigured: false,
   });
 
   await service.recordError(

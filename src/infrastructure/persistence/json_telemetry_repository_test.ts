@@ -525,6 +525,7 @@ Deno.test("JsonTelemetryRepository round-trips invocationContext (with detected 
         detectedAiTool: "claude",
         agentSessionDetected: true,
         isInteractive: false,
+        externalDatastoreConfigured: false,
       },
     });
 
@@ -565,6 +566,7 @@ Deno.test("JsonTelemetryRepository round-trips invocationContext (legacy opt-out
         configuredAiTools: [],
         agentSessionDetected: false,
         isInteractive: true,
+        externalDatastoreConfigured: false,
       },
     });
 

@@ -21,6 +21,7 @@ import { assert, assertEquals } from "@std/assert";
 import {
   buildInvocationContext,
   extractCommandInfo,
+  isExternalDatastoreConfigured,
   isTelemetryDisabled,
   projectEnvSnapshot,
 } from "./telemetry_integration.ts";
@@ -321,35 +322,60 @@ Deno.test("buildInvocationContext: claude detected, tools configured", () => {
   const ctx = buildInvocationContext(
     { CLAUDECODE: "1" },
     ["claude", "cursor"],
+    false,
   );
   assertEquals(ctx.configuredAiTools, ["claude", "cursor"]);
   assertEquals(ctx.detectedAiTool, "claude");
   assertEquals(ctx.agentSessionDetected, true);
+  assertEquals(ctx.externalDatastoreConfigured, false);
 });
 
 Deno.test("buildInvocationContext: configuredAiTools=undefined when no marker passed", () => {
-  const ctx = buildInvocationContext({ CLAUDECODE: "1" }, undefined);
+  const ctx = buildInvocationContext({ CLAUDECODE: "1" }, undefined, false);
   assertEquals("configuredAiTools" in ctx, false);
   assertEquals(ctx.detectedAiTool, "claude");
   assertEquals(ctx.agentSessionDetected, true);
 });
 
 Deno.test("buildInvocationContext: configuredAiTools=[] preserved (legacy opt-out)", () => {
-  const ctx = buildInvocationContext({}, []);
+  const ctx = buildInvocationContext({}, [], false);
   assertEquals(ctx.configuredAiTools, []);
   assertEquals("detectedAiTool" in ctx, false);
   assertEquals(ctx.agentSessionDetected, false);
 });
 
 Deno.test("buildInvocationContext: generic AGENT fallback flips agentSessionDetected", () => {
-  const ctx = buildInvocationContext({ AGENT: "1" }, ["claude"]);
+  const ctx = buildInvocationContext({ AGENT: "1" }, ["claude"], false);
   assertEquals(ctx.configuredAiTools, ["claude"]);
   assertEquals("detectedAiTool" in ctx, false);
   assertEquals(ctx.agentSessionDetected, true);
 });
 
 Deno.test("buildInvocationContext: empty env yields no detection", () => {
-  const ctx = buildInvocationContext({}, ["claude"]);
+  const ctx = buildInvocationContext({}, ["claude"], false);
   assertEquals("detectedAiTool" in ctx, false);
   assertEquals(ctx.agentSessionDetected, false);
+});
+
+Deno.test("buildInvocationContext: externalDatastoreConfigured=true is recorded", () => {
+  const ctx = buildInvocationContext({}, ["claude"], true);
+  assertEquals(ctx.externalDatastoreConfigured, true);
+});
+
+Deno.test("isExternalDatastoreConfigured: undefined marker datastore is not external", () => {
+  assertEquals(isExternalDatastoreConfigured(undefined), false);
+});
+
+Deno.test("isExternalDatastoreConfigured: filesystem type is not external", () => {
+  assertEquals(
+    isExternalDatastoreConfigured({ type: "filesystem", path: "/tmp/ds" }),
+    false,
+  );
+});
+
+Deno.test("isExternalDatastoreConfigured: custom (non-filesystem) type is external", () => {
+  assertEquals(
+    isExternalDatastoreConfigured({ type: "s3", bucket: "my-bucket" }),
+    true,
+  );
 });

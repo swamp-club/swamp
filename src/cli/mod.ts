@@ -105,6 +105,7 @@ import {
   buildInvocationContext,
   clearActiveTelemetryService,
   extractCommandInfo,
+  isExternalDatastoreConfigured,
   isTelemetryDisabled,
   projectEnvSnapshot,
   setActiveTelemetryService,
@@ -988,6 +989,7 @@ async function initTelemetryService(
     const invocationContext = buildInvocationContext(
       projectEnvSnapshot(),
       marker.tools,
+      isExternalDatastoreConfigured(marker.datastore),
     );
     const service = new TelemetryService(
       repository,
