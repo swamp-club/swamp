@@ -8,7 +8,7 @@ Read this after the plan is approved and the human says to implement. The
 Before writing any code, signal that implementation has begun:
 
 ```
-swamp model method run issue-<N> implement
+swamp model @swamp/issue-lifecycle method run implement issue-<N>
 ```
 
 This transitions the phase to `implementing` and posts an
@@ -51,7 +51,7 @@ After the PR is open, record its URL on the lifecycle so the swamp-club record
 points to where the fix lives:
 
 ```
-swamp model method run issue-<N> link_pr --input url=<PR URL>
+swamp model @swamp/issue-lifecycle method run link_pr issue-<N> --input url=<PR URL>
 ```
 
 This writes a `pullRequest-main` resource, transitions the phase to `pr_open`,
@@ -84,11 +84,11 @@ Check the PR status externally (e.g.,
 
 - **PR merged**: call `pr_merged` to transition to `releasing`
   ```
-  swamp model method run issue-<N> pr_merged
+  swamp model @swamp/issue-lifecycle method run pr_merged issue-<N>
   ```
 - **PR failed** (CI red, changes requested): call `pr_failed` with the reason
   ```
-  swamp model method run issue-<N> pr_failed --input reason="CI failed: type check errors"
+  swamp model @swamp/issue-lifecycle method run pr_failed issue-<N> --input reason="CI failed: type check errors"
   ```
 - **PR still open and passing**: wait and check again later.
 
@@ -99,11 +99,11 @@ When in `pr_failed`, diagnose and fix the issue. Then either:
 - Push fixes and call `link_pr` again (same or new PR URL) to return to
   `pr_open`:
   ```
-  swamp model method run issue-<N> link_pr --input url=<PR URL>
+  swamp model @swamp/issue-lifecycle method run link_pr issue-<N> --input url=<PR URL>
   ```
 - Call `implement` to go back to the implementing phase for major rework:
   ```
-  swamp model method run issue-<N> implement
+  swamp model @swamp/issue-lifecycle method run implement issue-<N>
   ```
 
 ## 5. Ship the Release
@@ -112,13 +112,13 @@ After `pr_merged` transitions to `releasing`, wait for the release build to
 complete. Once the release is out, call `ship`:
 
 ```
-swamp model method run issue-<N> ship
+swamp model @swamp/issue-lifecycle method run ship issue-<N>
 ```
 
 Optionally pass release metadata:
 
 ```
-swamp model method run issue-<N> ship --input releaseUrl=<URL> --input releaseNotes="Bug fix release"
+swamp model @swamp/issue-lifecycle method run ship issue-<N> --input releaseUrl=<URL> --input releaseNotes="Bug fix release"
 ```
 
 This transitions the phase to `done`, transitions the swamp-club status to

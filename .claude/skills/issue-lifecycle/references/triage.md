@@ -1,6 +1,6 @@
 # Triage Phase
 
-Steps 1–5 of the issue lifecycle. Read this when starting a new triage or
+Steps 1–4 of the issue lifecycle. Read this when starting a new triage or
 resuming an issue in the `triaging` phase.
 
 ## Before You Start
@@ -18,36 +18,33 @@ swamp data get issue-<N> state-main --json
 - If the command **fails** (no data found), the model instance hasn't been
   created yet — proceed with step 1 below.
 
-## 1. Create the Model Instance
+## 1. Start the Lifecycle
 
 The swamp-club issue must already exist — create it in the swamp-club UI first,
 then note its sequential number (e.g. `42`).
 
 ```
-swamp model create @swamp/issue-lifecycle issue-<N> \
-  --global-arg issueNumber=<N> --json
+swamp model @swamp/issue-lifecycle method run start issue-<N> --input issueNumber=<N>
 ```
+
+This uses direct type execution to auto-create the model definition and run
+`start` in a single command. The definition is stored in
+`.swamp/auto-definitions/` (not `models/`).
+
+> **Warning:** `start` unconditionally resets the phase to `triaging`. Only call
+> it once when beginning a new lifecycle. Never use it to resume an in-progress
+> issue — it will destroy all progress (classification, plan, approvals).
+
+`start` fetches the issue from swamp-club via `GET /api/v1/lab/issues/<N>` and
+writes the title, body, type, status, and comments to the `context` resource. If
+the issue doesn't exist in swamp-club, `start` fails loudly — create the issue
+there first.
 
 **Worktree note:** If you are in a Claude Code worktree (`.claude/worktrees/`),
 the worktree is not an initialized swamp repository. Add
 `--repo-dir <path-to-main-repo>` to all `swamp` commands, where the main repo is
 the parent of the `.claude/worktrees/` directory. All subsequent `swamp`
 commands in this skill also need `--repo-dir`.
-
-## 2. Fetch the Issue Context
-
-```
-swamp model method run issue-<N> start
-```
-
-> **Warning:** `start` unconditionally resets the phase to `triaging`. Only call
-> it once when beginning a new lifecycle. Never use it to resume an in-progress
-> issue — it will destroy all progress (classification, plan, approvals).
-
-This fetches the issue from swamp-club via `GET /api/v1/lab/issues/<N>` and
-writes the title, body, type, status, and comments to the `context` resource. If
-the issue doesn't exist in swamp-club, `start` fails loudly — create the issue
-there first.
 
 ### Auto-assignment
 
@@ -59,7 +56,7 @@ endpoint, and PATCHes the issue's assignees. Existing assignees are preserved
 error, API failure), `start` still succeeds — it logs a warning and continues
 with triage.
 
-## 3. Read the Issue Context and Codebase
+## 2. Read the Issue Context and Codebase
 
 Read the model output, then explore the codebase.
 
@@ -68,10 +65,10 @@ explore this codebase. If it does not exist, start with `CLAUDE.md` and explore
 source files related to the issue. Check for regression signals: use `git log`
 on affected files to see if they were recently changed.
 
-## 4. Classify the Issue
+## 3. Classify the Issue
 
 ```
-swamp model method run issue-<N> triage \
+swamp model @swamp/issue-lifecycle method run triage issue-<N> \
   --input type=<bug|feature|security> \
   --input confidence=<high|medium|low> \
   --input reasoning="<your analysis>"
@@ -100,7 +97,7 @@ Running `triage` automatically:
 - Transitions the swamp-club status to `triaged`
 - Posts a `classified` lifecycle entry with the full classification payload
 
-## 5. Reproduce the Bug
+## 4. Reproduce the Bug
 
 **Bugs and regressions only — skip for features and security issues.**
 

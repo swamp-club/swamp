@@ -45,14 +45,14 @@ reference file.
 Each phase has detailed instructions in a reference file. Read only the
 reference you need for the current phase.
 
-### Phase 1: Triage (steps 1–5)
+### Phase 1: Triage (steps 1–4)
 
 Read [references/triage.md](references/triage.md) when starting a new triage or
-resuming an issue in the `triaging` phase. Covers: creating the model instance,
-fetching issue context from swamp-club, reading the codebase, classifying the
-issue, and reproducing bugs.
+resuming an issue in the `triaging` phase. Covers: starting the lifecycle (using
+direct type execution to auto-create the model and fetch issue context in one
+command), reading the codebase, classifying the issue, and reproducing bugs.
 
-### Phase 2: Planning (steps 6–9)
+### Phase 2: Planning (steps 5–7)
 
 Read [references/planning.md](references/planning.md) after triage is complete.
 Covers: generating the implementation plan, applying repo-specific planning
@@ -97,7 +97,7 @@ but do NOT map to separate swamp-club types:
 To review a specific plan version:
 
 ```
-swamp model method run issue-<N> review --input version=<V>
+swamp model @swamp/issue-lifecycle method run review issue-<N> --input version=<V>
 ```
 
 To see all model data:
@@ -144,20 +144,20 @@ When a PR has already merged and the lifecycle just needs to be marked done:
    ```
 2. If the phase is `implementing`, link the PR first:
    ```
-   swamp model method run issue-<N> link_pr --input url=<PR URL>
+   swamp model @swamp/issue-lifecycle method run link_pr issue-<N> --input url=<PR URL>
    ```
 3. If the phase is `pr_open`, record the merge:
    ```
-   swamp model method run issue-<N> pr_merged
+   swamp model @swamp/issue-lifecycle method run pr_merged issue-<N>
    ```
 4. If the phase is `releasing`, ship it:
    ```
-   swamp model method run issue-<N> ship
+   swamp model @swamp/issue-lifecycle method run ship issue-<N>
    ```
 5. For quick close-out, `complete` still works from `implementing`, `pr_open`,
    or `releasing`:
    ```
-   swamp model method run issue-<N> complete
+   swamp model @swamp/issue-lifecycle method run complete issue-<N>
    ```
 
 ## Key Rules

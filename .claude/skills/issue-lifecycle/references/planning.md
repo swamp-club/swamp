@@ -1,9 +1,9 @@
 # Planning Phase
 
-Steps 6–9 of the issue lifecycle. Read this after triage is complete and you're
+Steps 5–7 of the issue lifecycle. Read this after triage is complete and you're
 ready to generate an implementation plan.
 
-## 6. Generate an Implementation Plan
+## 5. Generate an Implementation Plan
 
 Write a single YAML file containing both `steps` and `potentialChallenges` as
 top-level keys. The CLI only supports one `--input-file` flag per invocation,
@@ -38,14 +38,14 @@ Then run the method. The `--input` flags handle scalar values, and
 `--input-file` handles the structured data:
 
 ```
-swamp model method run issue-<N> plan \
+swamp model @swamp/issue-lifecycle method run plan issue-<N> \
   --input summary="..." \
   --input dddAnalysis="..." \
   --input testingStrategy="..." \
   --input-file /tmp/plan-issue-<N>.yaml
 ```
 
-## 7. Apply Repo-Specific Planning Conventions
+## 6. Apply Repo-Specific Planning Conventions
 
 Read `agent-constraints/planning-conventions.md` at the repo root for
 repo-specific planning requirements (documentation checks, test strategy,
@@ -53,7 +53,7 @@ analysis conventions, and any additional assessments the repo defines). If it
 does not exist, generate the plan based on your codebase analysis and CLAUDE.md
 conventions.
 
-## 8. Present the Plan
+## 7. Present the Plan
 
 Show the plan to the human, including any assessment findings required by the
 repo's planning conventions. Then run adversarial review (see
