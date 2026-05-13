@@ -121,18 +121,80 @@ routing matrix, examples, and refusal semantics.
 PVR is off. See [references/security_routing.md](references/security_routing.md)
 for the full PVR-state matrix and rationale.
 
-## Workflow
+## Bug Report Workflow
 
-1. Gather details from the user (bug reproduction steps, feature context, or
-   vulnerability description).
-2. For extension-scoped reports, confirm the extension is pulled locally with
-   `swamp extension list` — if missing, run `swamp extension pull <name>` first.
+A state machine. Each state gates the next — do not advance until the current
+state's **Verify** passes. If Verify fails, run **On Failure** and re-verify.
+
+```
+gather_details → version_check → submit → verify
+```
+
+### State 1: gather_details
+
+**Gate:** None (first state).
+
+**Action:** Gather bug details from the user — reproduction steps, affected
+component, environment. For extension-scoped reports, confirm the extension is
+pulled locally with `swamp extension list` — if missing, run
+`swamp extension pull <name>` first. Note which source files you investigated
+during diagnosis — you will need these paths in the next state.
+
+**Verify:** Title and body are ready. Ideally you also know which source files
+are relevant to the bug (for the version check in the next state).
+
+**On Failure:** Ask the user for more details.
+
+### State 2: version_check
+
+**Gate:** State 1 passed (title, body, and diagnosed file paths are known).
+
+**Action:** Check if the bug was already fixed in a newer version. Read
+[references/version_check.md](references/version_check.md) for the full
+procedure.
+
+**Verify:** One of three outcomes determined:
+
+- **bug_fixed** — the code changed and the bug appears resolved. Tell the user
+  to run `swamp update` instead of filing. Do not advance to submit.
+- **bug_present** — the code is unchanged or the bug still exists. Advance to
+  submit.
+- **inconclusive** — could not determine (source fetch failed, comparison
+  unclear). Advance to submit.
+
+**On Failure:** If `swamp update --check` or `swamp source fetch` fails, treat
+as inconclusive and advance.
+
+### State 3: submit
+
+**Gate:** State 2 passed with `bug_present` or `inconclusive`.
+
+**Action:** Verify syntax with `swamp help issue bug`. Run the command.
+
+**Verify:** The command succeeded and returned an issue number or URL.
+
+**On Failure:** See Error Recovery table below.
+
+### State 4: verify
+
+**Gate:** State 3 passed.
+
+**Action:** Confirm the returned issue number / URL with the user (or relay
+refusal guidance).
+
+**Verify:** User acknowledged.
+
+## Feature / Security Workflow
+
+Feature requests and security reports use a linear flow (no version check):
+
+1. Gather details from the user.
+2. For extension-scoped reports, confirm the extension is pulled locally.
 3. Verify syntax with `swamp help issue`.
 4. Run the appropriate command.
-5. Verify with the returned issue number / URL (or relay the refusal guidance to
-   the user).
+5. Verify with the returned issue number / URL.
 
-### Error Recovery
+## Error Recovery
 
 Map the failure to the right fix rather than retrying blindly:
 
