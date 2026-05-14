@@ -43,6 +43,7 @@ up-to-date CLI schema.
 | Workflow with reports    | `swamp workflow run <workflow>`                                   |
 | Workflow skip reports    | `swamp workflow run <workflow> --skip-reports`                    |
 | Get stored report        | `swamp report get <report-name> --model <model> --json`           |
+| Get report as markdown   | `swamp report get <report-name> --model <model> --markdown`       |
 
 ## End-to-End Workflow
 
@@ -198,6 +199,11 @@ swamp data get my-model report-cost-estimate --json
 **Log mode** (default): renders report markdown with terminal formatting plus a
 pass/fail summary. The built-in `@swamp/method-summary` markdown is compact —
 narrative + retrieval hint only.
+
+**Markdown mode** (`--markdown`): raw markdown output with no ANSI escape
+sequences or box-drawing characters. Use for pasting into GitHub PRs, Linear
+tickets, wikis, or saving to `.md` files. Mutually exclusive with `--json`.
+Retrieve with `swamp report get <name> --model <model> --markdown`.
 
 **JSON mode** (`--json`): full structured detail for agents. The built-in
 `@swamp/method-summary` JSON includes narrative, output schema, and data

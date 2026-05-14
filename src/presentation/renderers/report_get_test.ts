@@ -149,6 +149,139 @@ Deno.test("report get log renderer - omits Variant when varySuffix absent", () =
   }
 });
 
+Deno.test("report get markdown renderer - outputs raw markdown without ANSI escapes", () => {
+  const output: string[] = [];
+  const origLog = console.log;
+  console.log = (msg: string) => output.push(msg);
+
+  try {
+    const renderer = createReportGetRenderer("markdown");
+    const handlers = renderer.handlers();
+    handlers.completed({
+      kind: "completed",
+      data: {
+        reportName: "cost-report",
+        reportScope: "model",
+        modelId: "test-id",
+        modelName: "my-ec2",
+        modelType: "aws/ec2",
+        version: 1,
+        createdAt: "2026-01-15T10:00:00.000Z",
+        dataName: "report-cost",
+        markdown:
+          "# Cost Report\n\n| Item | Cost |\n| --- | --- |\n| EC2 | $42 |",
+        json: { total: 42 },
+      },
+    });
+
+    const combined = output.join("\n");
+    // deno-lint-ignore no-control-regex
+    const ansiPattern = /\x1b\[/;
+    assertEquals(ansiPattern.test(combined), false);
+    assertStringIncludes(combined, "## cost-report");
+    assertStringIncludes(combined, "Model: my-ec2 (aws/ec2)");
+    assertStringIncludes(combined, "| Item | Cost |");
+  } finally {
+    console.log = origLog;
+  }
+});
+
+Deno.test("report get markdown renderer - includes Variant when varySuffix present", () => {
+  const output: string[] = [];
+  const origLog = console.log;
+  console.log = (msg: string) => output.push(msg);
+
+  try {
+    const renderer = createReportGetRenderer("markdown");
+    const handlers = renderer.handlers();
+    handlers.completed({
+      kind: "completed",
+      data: {
+        reportName: "cost-report",
+        reportScope: "model",
+        modelId: "test-id",
+        modelName: "my-ec2",
+        modelType: "aws/ec2",
+        version: 1,
+        createdAt: "2026-01-15T10:00:00.000Z",
+        dataName: "report-cost",
+        varySuffix: "10.0.0.1",
+        markdown: "# Cost Report\nTotal: $42",
+        json: { total: 42 },
+      },
+    });
+
+    const combined = output.join("\n");
+    assertStringIncludes(combined, "Variant: 10.0.0.1");
+  } finally {
+    console.log = origLog;
+  }
+});
+
+Deno.test("report get markdown renderer - omits Variant when varySuffix absent", () => {
+  const output: string[] = [];
+  const origLog = console.log;
+  console.log = (msg: string) => output.push(msg);
+
+  try {
+    const renderer = createReportGetRenderer("markdown");
+    const handlers = renderer.handlers();
+    handlers.completed({
+      kind: "completed",
+      data: {
+        reportName: "cost-report",
+        reportScope: "model",
+        modelId: "test-id",
+        modelName: "my-ec2",
+        modelType: "aws/ec2",
+        version: 1,
+        createdAt: "2026-01-15T10:00:00.000Z",
+        dataName: "report-cost",
+        markdown: "# Cost Report\nTotal: $42",
+        json: { total: 42 },
+      },
+    });
+
+    const combined = output.join("\n");
+    assertEquals(combined.includes("Variant"), false);
+  } finally {
+    console.log = origLog;
+  }
+});
+
+Deno.test("report get markdown renderer - shows workflow source", () => {
+  const output: string[] = [];
+  const origLog = console.log;
+  console.log = (msg: string) => output.push(msg);
+
+  try {
+    const renderer = createReportGetRenderer("markdown");
+    const handlers = renderer.handlers();
+    handlers.completed({
+      kind: "completed",
+      data: {
+        reportName: "audit-report",
+        reportScope: "workflow",
+        modelId: "test-id",
+        modelName: "my-ec2",
+        modelType: "aws/ec2",
+        version: 3,
+        createdAt: "2026-01-15T10:00:00.000Z",
+        dataName: "report-audit",
+        workflowName: "deploy-pipeline",
+        markdown: "# Audit\nAll good.",
+        json: { status: "pass" },
+      },
+    });
+
+    const combined = output.join("\n");
+    assertStringIncludes(combined, "Workflow: deploy-pipeline");
+    assertEquals(combined.includes("Model:"), false);
+  } finally {
+    console.log = origLog;
+  }
+});
+
 Deno.test("report get renderer - throws on error", () => {
   const renderer = createReportGetRenderer("log");
   const handlers = renderer.handlers();

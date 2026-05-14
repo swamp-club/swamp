@@ -49,6 +49,10 @@ export const reportGetCommand = new Command()
     "Scoped to a workflow",
     "swamp report get cost-summary --workflow deploy-pipeline",
   )
+  .example(
+    "Output as markdown",
+    "swamp report get cost-summary --model my-server --markdown > report.md",
+  )
   .arguments("<report_name:string>")
   .option(
     "--repo-dir <dir:string>",
@@ -61,6 +65,13 @@ export const reportGetCommand = new Command()
     "Get specific version (default: latest)",
   )
   .option("--variant <variant:string>", "Select a specific forEach variant")
+  .option(
+    "--markdown",
+    "Output as plain markdown instead of terminal-formatted",
+    {
+      conflicts: ["json"],
+    },
+  )
   .action(async function (options: AnyOptions, reportName: string) {
     const ctx = createContext(options as GlobalOptions, ["report", "get"]);
 
@@ -98,7 +109,8 @@ export const reportGetCommand = new Command()
     };
 
     const libCtx = createLibSwampContext({ logger: ctx.logger });
-    const renderer = createReportGetRenderer(ctx.outputMode);
+    const reportMode = options.markdown ? "markdown" as const : ctx.outputMode;
+    const renderer = createReportGetRenderer(reportMode);
 
     await consumeStream(
       reportGet(libCtx, deps, {

@@ -22,7 +22,12 @@ import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
-import { renderMarkdownToTerminal } from "../markdown_renderer.ts";
+import {
+  renderMarkdownPlain,
+  renderMarkdownToTerminal,
+} from "../markdown_renderer.ts";
+
+type ReportOutputMode = OutputMode | "markdown";
 
 class LogReportGetRenderer implements Renderer<ReportGetEvent> {
   handlers(): EventHandlers<ReportGetEvent> {
@@ -63,12 +68,38 @@ class JsonReportGetRenderer implements Renderer<ReportGetEvent> {
   }
 }
 
+class MarkdownReportGetRenderer implements Renderer<ReportGetEvent> {
+  handlers(): EventHandlers<ReportGetEvent> {
+    return {
+      resolving: () => {},
+      completed: (e) => {
+        const r = e.data;
+        const source = r.workflowName
+          ? `Workflow: ${r.workflowName}`
+          : `Model: ${r.modelName} (${r.modelType})`;
+        const varySuffixLabel = r.varySuffix
+          ? `  |  Variant: ${r.varySuffix}`
+          : "";
+        writeOutput(
+          `## ${r.reportName}\n\n${source}  |  Scope: ${r.reportScope}${varySuffixLabel}  |  v${r.version}  |  ${r.createdAt}\n`,
+        );
+        writeOutput(renderMarkdownPlain(r.markdown));
+      },
+      error: (e) => {
+        throw new UserError(e.error.message);
+      },
+    };
+  }
+}
+
 export function createReportGetRenderer(
-  mode: OutputMode,
+  mode: ReportOutputMode,
 ): Renderer<ReportGetEvent> {
   switch (mode) {
     case "json":
       return new JsonReportGetRenderer();
+    case "markdown":
+      return new MarkdownReportGetRenderer();
     case "log":
       return new LogReportGetRenderer();
   }
