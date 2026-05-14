@@ -68,7 +68,9 @@ import {
   isCustomDatastoreConfig,
   resolveSyncTimeoutMs,
 } from "../domain/datastore/datastore_config.ts";
-import type { DatastoreProvider } from "../domain/datastore/datastore_provider.ts";
+import type {
+  DatastoreProvider,
+} from "../domain/datastore/datastore_provider.ts";
 import type {
   DatastoreSyncService,
   MarkDirtyHook,
@@ -936,7 +938,12 @@ export async function acquireModelLocks(
           type: modelType,
           id: modelId,
         });
-        await customSyncService.pullChanged();
+        const useScopedSync = customProvider?.capabilities?.()
+          ?.scopedSync === true;
+        const pullOptions = useScopedSync
+          ? { scope: `data/${modelType}/${modelId}` }
+          : undefined;
+        await customSyncService.pullChanged(pullOptions);
         synced = true;
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
@@ -952,42 +959,79 @@ export async function acquireModelLocks(
 
   Deno.env.set(SWAMP_LOCK_HOLDER_PID, String(Deno.pid));
 
+  const scopedSync = customProvider?.capabilities?.()?.scopedSync === true;
+  const lockedModels = [...unique];
+
   const flush = async () => {
     try {
-      // For custom sync-capable datastores: push under global lock
+      // For custom sync-capable datastores: push changes
       if (
         customSyncService && customProvider && isCustomDatastoreConfig(config)
       ) {
-        const pushLock = customProvider.createLock(config.datastorePath);
-        try {
-          await pushLock.acquire();
-          logger.info`Pushing changes to datastore...`;
-          const pushed = await customSyncService.pushChanged();
-          if (pushed && pushed > 0) {
-            logger.info("Pushed {count} file(s) to datastore", {
-              count: pushed,
-            });
-          } else {
-            logger.info`Push complete, no changes`;
+        if (scopedSync) {
+          // Scoped push: one pushChanged call per model, no global lock
+          for (const { modelType, modelId } of lockedModels) {
+            try {
+              const scope = `data/${modelType}/${modelId}`;
+              logger.info("Pushing changes for {type}/{id} to datastore...", {
+                type: modelType,
+                id: modelId,
+              });
+              const pushed = await customSyncService.pushChanged({ scope });
+              if (pushed && pushed > 0) {
+                logger.info(
+                  "Pushed {count} file(s) for {type}/{id} to datastore",
+                  { count: pushed, type: modelType, id: modelId },
+                );
+              } else {
+                logger.info(
+                  "Push complete for {type}/{id}, no changes",
+                  { type: modelType, id: modelId },
+                );
+              }
+            } catch (error) {
+              const { summary, fields } = summarizeSyncError(
+                "push",
+                config.type,
+                error,
+              );
+              logger.error("{summary}", { summary, ...fields });
+              throw new Error(summary, { cause: error });
+            }
           }
-        } catch (error) {
-          const { summary, fields } = summarizeSyncError(
-            "push",
-            config.type,
-            error,
-          );
-          logger.error("{summary}", { summary, ...fields });
-          throw new Error(summary, { cause: error });
-        } finally {
+        } else {
+          // Global push: single pushChanged under global lock (current behavior)
+          const pushLock = customProvider.createLock(config.datastorePath);
           try {
-            await pushLock.release();
-          } catch {
-            // Best-effort release
+            await pushLock.acquire();
+            logger.info`Pushing changes to datastore...`;
+            const pushed = await customSyncService.pushChanged();
+            if (pushed && pushed > 0) {
+              logger.info("Pushed {count} file(s) to datastore", {
+                count: pushed,
+              });
+            } else {
+              logger.info`Push complete, no changes`;
+            }
+          } catch (error) {
+            const { summary, fields } = summarizeSyncError(
+              "push",
+              config.type,
+              error,
+            );
+            logger.error("{summary}", { summary, ...fields });
+            throw new Error(summary, { cause: error });
+          } finally {
+            try {
+              await pushLock.release();
+            } catch {
+              // Best-effort release
+            }
           }
         }
       }
     } finally {
-      // Always release per-model locks, even if S3 push fails
+      // Always release per-model locks, even if push fails
       for (const key of lockKeys) {
         await flushDatastoreSyncNamed(key);
       }

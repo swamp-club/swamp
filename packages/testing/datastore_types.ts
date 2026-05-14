@@ -78,6 +78,20 @@ export interface DatastoreSyncOptions {
    * `DatastoreSyncService.markDirty` JSDoc for the full contract.
    */
   relPath?: string;
+  /**
+   * Prefix scope for pull/push. When set, the implementation MUST sync
+   * at least all files whose cache-relative path starts with this prefix.
+   * It MAY sync additional files (a superset is always safe). When absent,
+   * the implementation syncs the entire datastore (current behavior).
+   *
+   * Forward-slash-normalized, no trailing slash.
+   * Example: "data/aws-ec2/my-instance"
+   *
+   * swamp core only sets this on `pullChanged` and `pushChanged` calls
+   * when the provider declares `capabilities().scopedSync === true`.
+   * Orthogonal to `relPath` (which is markDirty-only).
+   */
+  scope?: string;
 }
 
 /** Interface for datastore synchronization services. */
@@ -85,6 +99,24 @@ export interface DatastoreSyncService {
   pullChanged(options?: DatastoreSyncOptions): Promise<number | void>;
   pushChanged(options?: DatastoreSyncOptions): Promise<number | void>;
   markDirty(options?: DatastoreSyncOptions): Promise<void>;
+}
+
+/**
+ * Declares which optional features a datastore provider supports.
+ * Absent or returning an empty object means no optional features —
+ * core uses the conservative default behavior for everything.
+ */
+export interface DatastoreCapabilities {
+  /**
+   * When true, the provider's sync service handles scoped push/pull
+   * correctly and its lock implementation supports concurrent per-scope
+   * writes without a global coordination point.
+   *
+   * SAFETY INVARIANT: declaring scopedSync: true is a promise that
+   * concurrent scoped pushes to non-overlapping scopes cannot corrupt
+   * shared state. This is a hard contract, not a performance hint.
+   */
+  scopedSync?: boolean;
 }
 
 /**
@@ -112,4 +144,10 @@ export interface DatastoreProvider {
    * inferred from a missing property.
    */
   resolveCachePath?(repoDir: string): string | undefined;
+  /**
+   * Declares which optional features this provider supports.
+   * Absent or returning an empty object means no optional features —
+   * core uses the conservative default behavior for everything.
+   */
+  capabilities?(): DatastoreCapabilities;
 }

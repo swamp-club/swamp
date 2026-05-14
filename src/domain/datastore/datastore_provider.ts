@@ -22,6 +22,31 @@ import type { DatastoreVerifier } from "./datastore_health.ts";
 import type { DatastoreSyncService } from "./datastore_sync_service.ts";
 
 /**
+ * Declares which optional features a datastore provider supports.
+ * Absent or returning an empty object means no optional features —
+ * core uses the conservative default behavior for everything.
+ */
+export interface DatastoreCapabilities {
+  /**
+   * When true, the provider's sync service handles scoped push/pull
+   * correctly and its lock implementation supports concurrent per-scope
+   * writes without a global coordination point.
+   *
+   * Core uses this to decide whether per-model push needs the global
+   * lock. When true: per-model push passes `scope` and uses only the
+   * per-model lock. When false/absent: per-model push acquires the
+   * global lock and syncs without scope (current behavior).
+   *
+   * SAFETY INVARIANT: declaring scopedSync: true is a promise that
+   * concurrent scoped pushes to non-overlapping scopes cannot corrupt
+   * shared state. If an extension declares scopedSync: true but cannot
+   * honor it, concurrent pushes will corrupt the remote datastore.
+   * This is a hard contract, not a performance hint.
+   */
+  scopedSync?: boolean;
+}
+
+/**
  * Factory interface for user-defined datastores.
  *
  * Implementations provide the components needed to operate a datastore:
@@ -51,4 +76,10 @@ export interface DatastoreProvider {
    * inferred from a missing property.
    */
   resolveCachePath?(repoDir: string): string | undefined;
+  /**
+   * Declares which optional features this provider supports.
+   * Absent or returning an empty object means no optional features —
+   * core uses the conservative default behavior for everything.
+   */
+  capabilities?(): DatastoreCapabilities;
 }

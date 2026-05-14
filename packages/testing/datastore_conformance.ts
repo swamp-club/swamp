@@ -164,6 +164,23 @@ export function assertDatastoreExportConformance(
     "resolveDatastorePath must return a non-empty string",
   );
 
+  // capabilities() is optional — providers without it must still pass
+  if (typeof provider.capabilities === "function") {
+    const caps = provider.capabilities();
+    assertEquals(
+      typeof caps,
+      "object",
+      "capabilities() must return an object",
+    );
+    if (caps.scopedSync !== undefined) {
+      assertEquals(
+        typeof caps.scopedSync,
+        "boolean",
+        "capabilities().scopedSync must be a boolean when present",
+      );
+    }
+  }
+
   // createLock must return an object with the right methods
   const lock = provider.createLock("/tmp/test-ds");
   assertExists(lock, "createLock must return a lock");

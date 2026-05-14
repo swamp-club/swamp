@@ -1077,3 +1077,271 @@ Deno.test(
     });
   },
 );
+
+// ============================================================================
+// Scoped Sync / Capability-Gated Concurrency Tests (swamp-club#350)
+// ============================================================================
+
+import type { DatastoreSyncOptions } from "../domain/datastore/datastore_sync_service.ts";
+
+Deno.test(
+  "acquireModelLocks - scopedSync: true passes scope to pullChanged and pushChanged per model",
+  async () => {
+    const { datastoreTypeRegistry } = await import(
+      "../domain/datastore/datastore_type_registry.ts"
+    );
+
+    const pullCalls: Array<DatastoreSyncOptions | undefined> = [];
+    const pushCalls: Array<DatastoreSyncOptions | undefined> = [];
+    let globalLockAcquired = false;
+    const typeName = "test-scoped-sync";
+
+    if (!datastoreTypeRegistry.has(typeName)) {
+      datastoreTypeRegistry.register({
+        type: typeName,
+        name: "Test scoped sync",
+        description: "Test extension for scoped sync capability",
+        isBuiltIn: false,
+        createProvider: () => ({
+          createLock: (_path: string, options?: { lockKey?: string }) => ({
+            acquire: () => {
+              if (!options?.lockKey) globalLockAcquired = true;
+              return Promise.resolve();
+            },
+            release: () => Promise.resolve(),
+            withLock: <T>(fn: () => Promise<T>) => fn(),
+            inspect: () => Promise.resolve(null),
+            forceRelease: () => Promise.resolve(true),
+          }),
+          createVerifier: () => ({
+            verify: () =>
+              Promise.resolve({
+                healthy: true,
+                message: "ok",
+                latencyMs: 1,
+                datastoreType: typeName,
+              }),
+          }),
+          resolveDatastorePath: (repoDir: string) => `${repoDir}/.test-store`,
+          resolveCachePath: (repoDir: string) => `${repoDir}/.test-cache`,
+          createSyncService: () => ({
+            pullChanged: (options?: DatastoreSyncOptions) => {
+              pullCalls.push(options);
+              return Promise.resolve(0);
+            },
+            pushChanged: (options?: DatastoreSyncOptions) => {
+              pushCalls.push(options);
+              return Promise.resolve(0);
+            },
+            markDirty: () => Promise.resolve(),
+          }),
+          capabilities: () => ({ scopedSync: true }),
+        }),
+      });
+    }
+
+    await withTempDir(async (dir) => {
+      await initializeRepo(dir);
+      await configureExtensionDatastore(dir, typeName);
+
+      pullCalls.length = 0;
+      pushCalls.length = 0;
+      globalLockAcquired = false;
+
+      const { datastoreConfig } = await resolveDatastoreForRepo(dir);
+      const lockResult = await acquireModelLocks(
+        datastoreConfig,
+        [
+          { modelType: "aws-ec2", modelId: "server-1" },
+          { modelType: "aws-rds", modelId: "db-1" },
+        ],
+        dir,
+      );
+
+      // Pull should have been called with scope for each model
+      assertEquals(pullCalls.length, 2);
+      assertEquals(pullCalls[0]?.scope, "data/aws-ec2/server-1");
+      assertEquals(pullCalls[1]?.scope, "data/aws-rds/db-1");
+
+      await lockResult.flush();
+
+      // Push should have been called with scope for each model
+      assertEquals(pushCalls.length, 2);
+      assertEquals(pushCalls[0]?.scope, "data/aws-ec2/server-1");
+      assertEquals(pushCalls[1]?.scope, "data/aws-rds/db-1");
+
+      // Global lock should NOT have been acquired
+      assertEquals(
+        globalLockAcquired,
+        false,
+        "scopedSync: true must not acquire the global lock",
+      );
+    });
+  },
+);
+
+Deno.test(
+  "acquireModelLocks - no capabilities: global lock acquired, no scope passed",
+  async () => {
+    const { datastoreTypeRegistry } = await import(
+      "../domain/datastore/datastore_type_registry.ts"
+    );
+
+    const pullCalls: Array<DatastoreSyncOptions | undefined> = [];
+    const pushCalls: Array<DatastoreSyncOptions | undefined> = [];
+    let globalLockAcquired = false;
+    const typeName = "test-no-capabilities";
+
+    if (!datastoreTypeRegistry.has(typeName)) {
+      datastoreTypeRegistry.register({
+        type: typeName,
+        name: "Test no capabilities",
+        description: "Test extension without capabilities method",
+        isBuiltIn: false,
+        createProvider: () => ({
+          createLock: (_path: string, options?: { lockKey?: string }) => ({
+            acquire: () => {
+              if (!options?.lockKey) globalLockAcquired = true;
+              return Promise.resolve();
+            },
+            release: () => Promise.resolve(),
+            withLock: <T>(fn: () => Promise<T>) => fn(),
+            inspect: () => Promise.resolve(null),
+            forceRelease: () => Promise.resolve(true),
+          }),
+          createVerifier: () => ({
+            verify: () =>
+              Promise.resolve({
+                healthy: true,
+                message: "ok",
+                latencyMs: 1,
+                datastoreType: typeName,
+              }),
+          }),
+          resolveDatastorePath: (repoDir: string) => `${repoDir}/.test-store`,
+          resolveCachePath: (repoDir: string) => `${repoDir}/.test-cache`,
+          createSyncService: () => ({
+            pullChanged: (options?: DatastoreSyncOptions) => {
+              pullCalls.push(options);
+              return Promise.resolve(0);
+            },
+            pushChanged: (options?: DatastoreSyncOptions) => {
+              pushCalls.push(options);
+              return Promise.resolve(0);
+            },
+            markDirty: () => Promise.resolve(),
+          }),
+        }),
+      });
+    }
+
+    await withTempDir(async (dir) => {
+      await initializeRepo(dir);
+      await configureExtensionDatastore(dir, typeName);
+
+      pullCalls.length = 0;
+      pushCalls.length = 0;
+      globalLockAcquired = false;
+
+      const { datastoreConfig } = await resolveDatastoreForRepo(dir);
+      const lockResult = await acquireModelLocks(
+        datastoreConfig,
+        [{ modelType: "aws-ec2", modelId: "server-1" }],
+        dir,
+      );
+
+      // Pull should have been called without scope
+      assertEquals(pullCalls.length, 1);
+      assertEquals(pullCalls[0]?.scope, undefined);
+
+      await lockResult.flush();
+
+      // Push should have been called without scope
+      assertEquals(pushCalls.length, 1);
+      assertEquals(pushCalls[0]?.scope, undefined);
+
+      // Global lock should have been acquired
+      assertEquals(
+        globalLockAcquired,
+        true,
+        "provider without capabilities must use the global lock",
+      );
+    });
+  },
+);
+
+Deno.test(
+  "acquireModelLocks - scopedSync: true with duplicate models pushes each model exactly once",
+  async () => {
+    const { datastoreTypeRegistry } = await import(
+      "../domain/datastore/datastore_type_registry.ts"
+    );
+
+    const pushCalls: Array<DatastoreSyncOptions | undefined> = [];
+    const typeName = "test-scoped-dedup";
+
+    if (!datastoreTypeRegistry.has(typeName)) {
+      datastoreTypeRegistry.register({
+        type: typeName,
+        name: "Test scoped dedup",
+        description: "Test scoped sync deduplicates models on push",
+        isBuiltIn: false,
+        createProvider: () => ({
+          createLock: () => ({
+            acquire: () => Promise.resolve(),
+            release: () => Promise.resolve(),
+            withLock: <T>(fn: () => Promise<T>) => fn(),
+            inspect: () => Promise.resolve(null),
+            forceRelease: () => Promise.resolve(true),
+          }),
+          createVerifier: () => ({
+            verify: () =>
+              Promise.resolve({
+                healthy: true,
+                message: "ok",
+                latencyMs: 1,
+                datastoreType: typeName,
+              }),
+          }),
+          resolveDatastorePath: (repoDir: string) => `${repoDir}/.test-store`,
+          resolveCachePath: (repoDir: string) => `${repoDir}/.test-cache`,
+          createSyncService: () => ({
+            pullChanged: () => Promise.resolve(0),
+            pushChanged: (options?: DatastoreSyncOptions) => {
+              pushCalls.push(options);
+              return Promise.resolve(0);
+            },
+            markDirty: () => Promise.resolve(),
+          }),
+          capabilities: () => ({ scopedSync: true }),
+        }),
+      });
+    }
+
+    await withTempDir(async (dir) => {
+      await initializeRepo(dir);
+      await configureExtensionDatastore(dir, typeName);
+
+      pushCalls.length = 0;
+
+      const { datastoreConfig } = await resolveDatastoreForRepo(dir);
+      const lockResult = await acquireModelLocks(
+        datastoreConfig,
+        [
+          { modelType: "aws-ec2", modelId: "server-1" },
+          { modelType: "aws-ec2", modelId: "server-1" },
+        ],
+        dir,
+      );
+
+      await lockResult.flush();
+
+      assertEquals(
+        pushCalls.length,
+        1,
+        "duplicate model must result in exactly one scoped push",
+      );
+      assertEquals(pushCalls[0]?.scope, "data/aws-ec2/server-1");
+    });
+  },
+);

@@ -49,6 +49,24 @@ export interface DatastoreSyncOptions {
    * or push consume it.)
    */
   relPath?: string;
+  /**
+   * Prefix scope for pull/push. When set, the implementation MUST sync
+   * at least all files whose cache-relative path starts with this prefix.
+   * It MAY sync additional files (a superset is always safe). When absent,
+   * the implementation syncs the entire datastore (current behavior).
+   *
+   * Scoped pull: only download files matching the prefix.
+   * Scoped push: only upload dirty files matching the prefix.
+   *
+   * Forward-slash-normalized, no trailing slash.
+   * Example: "data/aws-ec2/my-instance"
+   *
+   * Field scope: swamp core only sets this on `pullChanged` and
+   * `pushChanged` calls when the provider declares
+   * `capabilities().scopedSync === true`. Orthogonal to `relPath`
+   * (which is markDirty-only).
+   */
+  scope?: string;
 }
 
 /**

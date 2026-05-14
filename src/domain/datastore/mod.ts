@@ -54,7 +54,10 @@ export {
   SyncTimeoutError,
 } from "./datastore_sync_service.ts";
 
-export { type DatastoreProvider } from "./datastore_provider.ts";
+export {
+  type DatastoreCapabilities,
+  type DatastoreProvider,
+} from "./datastore_provider.ts";
 
 export {
   type DatastoreTypeInfo,
