@@ -47,10 +47,10 @@ class LogModelMethodDescribeRenderer
           } ${data.method.description}`,
         );
 
-        const argAttrs = formatSchemaAttributes(data.method.arguments, "  ");
+        const argAttrs = formatSchemaAttributes(data.method.inputs, "  ");
         if (argAttrs.length > 0) {
           lines.push("");
-          lines.push(bold(cyan("Arguments:")));
+          lines.push(bold(cyan("Inputs:")));
           lines.push(...argAttrs);
         }
 

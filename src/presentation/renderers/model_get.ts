@@ -89,7 +89,7 @@ export function formatMethodLines(methods: MethodDescribeData[]): string[] {
     );
 
     const methodAttrs = formatSchemaAttributes(
-      method.arguments,
+      method.inputs,
       "      ",
     );
     if (methodAttrs.length > 0) {

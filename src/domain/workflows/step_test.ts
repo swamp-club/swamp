@@ -17,8 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
-import { Step } from "./step.ts";
+import { assertEquals, assertThrows } from "@std/assert";
+import { Step, StepSchema } from "./step.ts";
 import { StepTask } from "./step_task.ts";
 import { TriggerCondition } from "./trigger_condition.ts";
 
@@ -356,4 +356,22 @@ Deno.test("Step.fromData and toData roundtrip with forEach", () => {
   assertEquals(restored.name, original.name);
   assertEquals(restored.forEach?.item, original.forEach?.item);
   assertEquals(restored.forEach?.in, original.forEach?.in);
+});
+
+Deno.test("StepSchema throws clear error for string dependsOn entries", () => {
+  assertThrows(
+    () => {
+      StepSchema.parse({
+        name: "deploy",
+        task: {
+          type: "model_method",
+          modelIdOrName: "my-model",
+          methodName: "run",
+        },
+        dependsOn: ["build-step"],
+      });
+    },
+    Error,
+    "dependsOn entries must be objects, not strings",
+  );
 });

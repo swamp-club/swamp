@@ -130,7 +130,8 @@ swamp model type describe command/shell --json
     {
       "name": "execute",
       "description": "Execute a shell command and capture output",
-      "arguments": {/* JSON Schema */}
+      "arguments": {/* JSON Schema */},
+      "inputs": {/* JSON Schema (same as arguments) */}
     }
   ]
 }
@@ -139,7 +140,8 @@ swamp model type describe command/shell --json
 **Key fields:**
 
 - `globalArguments` - JSON Schema for input YAML `globalArguments` section
-- `methods` - Available operations with their per-method `arguments` schemas
+- `methods` - Available operations with their per-method `inputs` schemas (also
+  available as `arguments` for backward compatibility)
 
 ## Create Model Inputs
 

@@ -386,7 +386,8 @@ Deno.test("workflowNotFound returns correct error", () => {
   assertEquals(error.code, "workflow_not_found");
   assertEquals(
     error.message,
-    "Workflow not found: my-wf. Create it with 'swamp workflow create my-wf', " +
+    "Workflow not found: my-wf.\n" +
+      "Create it with 'swamp workflow create my-wf', " +
       "or run 'swamp doctor workflows --json' to check for broken workflow files",
   );
 });
