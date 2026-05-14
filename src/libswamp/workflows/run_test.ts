@@ -384,7 +384,11 @@ Deno.test("workflowRun completed event contains WorkflowRunData", async () => {
 Deno.test("workflowNotFound returns correct error", () => {
   const error = workflowNotFound("my-wf");
   assertEquals(error.code, "workflow_not_found");
-  assertEquals(error.message, "Workflow not found: my-wf");
+  assertEquals(
+    error.message,
+    "Workflow not found: my-wf. Create it with 'swamp workflow create my-wf', " +
+      "or run 'swamp doctor workflows --json' to check for broken workflow files",
+  );
 });
 
 Deno.test("workflowExecutionFailed wraps error", () => {

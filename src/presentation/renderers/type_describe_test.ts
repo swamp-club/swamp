@@ -31,6 +31,7 @@ const testData = {
       name: "run",
       description: "Run",
       arguments: { type: "object", properties: {}, required: [] },
+      inputs: { type: "object", properties: {}, required: [] },
       dataOutputSpecs: [],
     },
   ],

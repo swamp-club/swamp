@@ -248,3 +248,26 @@ Deno.test("Job.fromData and toData roundtrip correctly", () => {
   assertEquals(restored.dependsOn.length, original.dependsOn.length);
   assertEquals(restored.weight, original.weight);
 });
+
+import { JobSchema } from "./job.ts";
+
+Deno.test("JobSchema throws clear error for string dependsOn entries", () => {
+  assertThrows(
+    () => {
+      JobSchema.parse({
+        name: "deploy",
+        steps: [{
+          name: "step1",
+          task: {
+            type: "model_method",
+            modelIdOrName: "my-model",
+            methodName: "run",
+          },
+        }],
+        dependsOn: ["build-job"],
+      });
+    },
+    Error,
+    "dependsOn entries must be objects, not strings",
+  );
+});

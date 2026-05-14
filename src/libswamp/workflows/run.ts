@@ -572,7 +572,9 @@ export async function* workflowRun(
 export function workflowNotFound(idOrName: string): SwampError {
   return {
     code: "workflow_not_found",
-    message: `Workflow not found: ${idOrName}`,
+    message: `Workflow not found: ${idOrName}. ` +
+      `Create it with 'swamp workflow create ${idOrName}', ` +
+      `or run 'swamp doctor workflows --json' to check for broken workflow files`,
   };
 }
 

@@ -103,7 +103,7 @@ export class YamlWorkflowRepository implements WorkflowRepository {
                 .warn`Skipping workflow ${workflowName}: uses deprecated 'shell' task. Delete or update to 'type: model_method' with 'command/shell'. File: ${path}`;
             } else {
               logger
-                .warn`Skipping broken workflow ${workflowName}: ${errorMsg}. File: ${path}`;
+                .warn`Skipping broken workflow ${workflowName}: ${errorMsg}. Run 'swamp doctor workflows --json' to see all errors. File: ${path}`;
             }
           }
         }

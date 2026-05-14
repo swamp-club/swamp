@@ -283,3 +283,18 @@ Deno.test("StepTaskSchema rejects neither modelIdOrName nor modelType", () => {
     "requires either modelIdOrName or modelType",
   );
 });
+
+Deno.test("StepTaskSchema throws clear error for arguments instead of inputs", () => {
+  assertThrows(
+    () => {
+      StepTaskSchema.parse({
+        type: "model_method",
+        modelIdOrName: "my-model",
+        methodName: "run",
+        arguments: { key: "value" },
+      });
+    },
+    Error,
+    'Did you mean "inputs"',
+  );
+});

@@ -46,6 +46,7 @@ export interface MethodDescribeData {
   name: string;
   description: string;
   arguments: object;
+  inputs: object;
   dataOutputSpecs?: DataOutputSpecDescribeData[];
 }
 
@@ -220,10 +221,12 @@ export function toMethodDescribeData(
 
   const dataOutputSpecs = [...resourceSpecs, ...fileSpecs];
 
+  const schema = zodToJsonSchema(method.arguments);
   return {
     name,
     description: method.description,
-    arguments: zodToJsonSchema(method.arguments),
+    arguments: schema,
+    inputs: schema,
     dataOutputSpecs: dataOutputSpecs.length > 0 ? dataOutputSpecs : undefined,
   };
 }

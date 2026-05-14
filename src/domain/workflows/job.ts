@@ -42,6 +42,27 @@ export const JobDependencySchema = z.object({
  */
 export type JobDependencyData = z.infer<typeof JobDependencySchema>;
 
+const JobDependencyFieldSchema = z.preprocess((data) => {
+  if (Array.isArray(data)) {
+    const hasStrings = data.some((item) => typeof item === "string");
+    if (hasStrings) {
+      const example = typeof data[0] === "string" ? data[0] : "job-name";
+      throw new Error(
+        `dependsOn entries must be objects, not strings.\n\n` +
+          `Replace:\n` +
+          `  dependsOn:\n` +
+          `    - ${example}\n\n` +
+          `With:\n` +
+          `  dependsOn:\n` +
+          `    - job: ${example}\n` +
+          `      condition:\n` +
+          `        type: succeeded`,
+      );
+    }
+  }
+  return data;
+}, z.array(JobDependencySchema).default([]));
+
 /**
  * Zod schema for Job entity.
  */
@@ -49,7 +70,7 @@ export const JobSchema = z.object({
   name: z.string().min(1),
   description: z.string().optional(),
   steps: z.array(StepSchema).min(1),
-  dependsOn: z.array(JobDependencySchema).default([]),
+  dependsOn: JobDependencyFieldSchema,
   weight: z.number().default(0),
   concurrency: z.number().int().nonnegative().optional(),
   driver: DriverFieldSchema,

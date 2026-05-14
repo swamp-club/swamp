@@ -63,6 +63,18 @@ export const StepTaskSchema = z.preprocess((data) => {
           `      command: "your-command-here"`,
       );
     }
+    if ("arguments" in d && !("inputs" in d)) {
+      throw new Error(
+        `Unknown field "arguments" in step task. Did you mean "inputs"?\n\n` +
+          `Example:\n` +
+          `  task:\n` +
+          `    type: model_method\n` +
+          `    modelIdOrName: my-model\n` +
+          `    methodName: run\n` +
+          `    inputs:\n` +
+          `      param: value`,
+      );
+    }
     if (d.type === "model_method") {
       const hasExisting = "modelIdOrName" in d && d.modelIdOrName;
       const hasDirect = "modelType" in d && d.modelType;

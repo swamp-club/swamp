@@ -50,6 +50,13 @@ const testData: TypeDescribeData = {
         },
         required: ["message"],
       },
+      inputs: {
+        type: "object",
+        properties: {
+          message: { type: "string", minLength: 1 },
+        },
+        required: ["message"],
+      },
     },
   ],
 };
@@ -73,6 +80,13 @@ const testDataWithSpecs: TypeDescribeData = {
       name: "create",
       description: "Create a new VPC",
       arguments: {
+        type: "object",
+        properties: {
+          cidrBlock: { type: "string" },
+        },
+        required: ["cidrBlock"],
+      },
+      inputs: {
         type: "object",
         properties: {
           cidrBlock: { type: "string" },

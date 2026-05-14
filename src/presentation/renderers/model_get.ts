@@ -93,7 +93,7 @@ export function formatMethodLines(methods: MethodDescribeData[]): string[] {
       "      ",
     );
     if (methodAttrs.length > 0) {
-      lines.push(`    ${cyan("Arguments:")}`);
+      lines.push(`    ${cyan("Inputs:")}`);
       lines.push(...methodAttrs);
     }
 
