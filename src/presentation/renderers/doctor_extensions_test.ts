@@ -46,14 +46,13 @@ function captureStdout(fn: () => void | Promise<void>): Promise<string> {
 }
 
 function passResult(registry: DoctorRegistryName): DoctorRegistryResult {
-  return { registry, status: "pass", failures: [] };
+  return { registry, status: "pass" };
 }
 
 function failResult(
   registry: DoctorRegistryName,
-  failures: Array<{ file: string; error: string }>,
 ): DoctorRegistryResult {
-  return { registry, status: "fail", failures };
+  return { registry, status: "fail" };
 }
 
 function buildPassReport(): DoctorExtensionsReport {
@@ -75,9 +74,7 @@ function buildFailReport(): DoctorExtensionsReport {
   return {
     overallStatus: "fail",
     registries: {
-      model: failResult("model", [
-        { file: "/repo/extensions/models/bad.ts", error: "missing version" },
-      ]),
+      model: failResult("model"),
       vault: passResult("vault"),
       driver: passResult("driver"),
       datastore: passResult("datastore"),
@@ -101,7 +98,6 @@ Deno.test("doctor_extensions json renderer: emits all five registry keys on pass
   assertEquals(keys, ["datastore", "driver", "model", "report", "vault"]);
   for (const key of keys) {
     assertEquals(parsed.registries[key].status, "pass");
-    assertEquals(parsed.registries[key].failures.length, 0);
   }
 });
 
@@ -118,7 +114,6 @@ Deno.test("doctor_extensions json renderer: emits all five registry keys on fail
   const keys = Object.keys(parsed.registries).sort();
   assertEquals(keys, ["datastore", "driver", "model", "report", "vault"]);
   assertEquals(parsed.registries.model.status, "fail");
-  assertEquals(parsed.registries.model.failures.length, 1);
   assertEquals(parsed.registries.vault.status, "pass");
 });
 
@@ -141,10 +136,7 @@ Deno.test("doctor_extensions log renderer: emits one failure bullet per file", a
   // kind-completed for a failing model row should not throw.
   await handlers["kind-completed"]({
     kind: "kind-completed",
-    result: failResult("model", [
-      { file: "/a.ts", error: "boom" },
-      { file: "/b.ts", error: "boom2" },
-    ]),
+    result: failResult("model"),
   });
   // completed sets overallStatus.
   await handlers.completed({ kind: "completed", report: buildFailReport() });

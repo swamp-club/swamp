@@ -165,7 +165,12 @@ export class ExtensionRepository {
 
   loadAll(): Extension[] {
     const rows = this.catalog.findAll();
-    return this.materialiseExtensions(rows);
+    return this.materialiseExtensions(rows, false);
+  }
+
+  loadAllWithPruning(): Extension[] {
+    const rows = this.catalog.findAll();
+    return this.materialiseExtensions(rows, true);
   }
 
   /**
@@ -179,7 +184,9 @@ export class ExtensionRepository {
     // and we don't know which versions are present. Filter in-memory by
     // the resolved identity after the empty-identity fallback runs.
     const rows = this.catalog.findAll();
-    return this.materialiseExtensions(rows).filter((e) => e.name === name);
+    return this.materialiseExtensions(rows, false).filter((e) =>
+      e.name === name
+    );
   }
 
   /**
@@ -358,7 +365,10 @@ export class ExtensionRepository {
    * fallback per row, drops rows whose identity can't be resolved, then
    * groups surviving rows by `(extension_name, extension_version)`.
    */
-  private materialiseExtensions(rows: ExtensionTypeRow[]): Extension[] {
+  private materialiseExtensions(
+    rows: ExtensionTypeRow[],
+    pruneOrphans: boolean,
+  ): Extension[] {
     type Group = {
       name: string;
       version: string;
@@ -373,7 +383,7 @@ export class ExtensionRepository {
       : `${this.repoRoot}/.swamp/pulled-extensions/`;
 
     for (const row of rows) {
-      const identity = this.resolveIdentity(row);
+      const identity = this.resolveIdentity(row, pruneOrphans);
       if (identity === null) continue;
 
       const origin = (
@@ -446,6 +456,7 @@ export class ExtensionRepository {
    */
   private resolveIdentity(
     row: ExtensionTypeRow,
+    pruneOrphans: boolean,
   ): { name: string; version: string } | null {
     const hasName = row.extension_name?.length ?? 0;
     const hasVersion = row.extension_version?.length ?? 0;
@@ -454,12 +465,13 @@ export class ExtensionRepository {
     let version: string | null = row.extension_version ?? null;
 
     if (!hasName && !hasVersion) {
-      // W1a leftover: both columns empty. Derive from source path.
       const derived = deriveExtensionIdentity(row.source_path, this.repoRoot);
       if (derived === null) {
-        logger
-          .warn`Dropping orphan row at ${row.source_path}: source path matches no known extension layout.`;
-        this.catalog.removeBySourcePath(row.source_path);
+        if (pruneOrphans) {
+          logger
+            .warn`Dropping orphan row at ${row.source_path}: source path matches no known extension layout.`;
+          this.catalog.removeBySourcePath(row.source_path);
+        }
         return null;
       }
       name = derived.name;
@@ -489,9 +501,11 @@ export class ExtensionRepository {
       // Pulled row: name populated, version empty. Consult the lockfile.
       const locked = this.lockfileRepository.getLockedVersion(name);
       if (locked === null) {
-        logger
-          .warn`Dropping orphan pulled row at ${row.source_path}: lockfile has no entry for ${name}.`;
-        this.catalog.removeBySourcePath(row.source_path);
+        if (pruneOrphans) {
+          logger
+            .warn`Dropping orphan pulled row at ${row.source_path}: lockfile has no entry for ${name}.`;
+          this.catalog.removeBySourcePath(row.source_path);
+        }
         return null;
       }
       if (!this.fallbackLoggedSourcePaths.has(row.source_path)) {
@@ -638,11 +652,18 @@ function mapStateRowToRowState(row: ExtensionTypeRow): RowState {
         loadedInProcess: false,
       };
     case "BundleBuildFailed":
-      return { tag: "BundleBuildFailed", lastError: "" };
+      return { tag: "BundleBuildFailed", lastError: row.last_error ?? "" };
     case "ValidationFailed":
-      return { tag: "ValidationFailed", bundle, lastError: "" };
+      return {
+        tag: "ValidationFailed",
+        bundle,
+        lastError: row.last_error ?? "",
+      };
     case "EntryPointUnreadable":
-      return { tag: "EntryPointUnreadable", lastError: "" };
+      return {
+        tag: "EntryPointUnreadable",
+        lastError: row.last_error ?? "",
+      };
     case "OrphanedBundleOnly":
       return { tag: "OrphanedBundleOnly", bundle };
     case "Tombstoned":
@@ -692,12 +713,20 @@ function sourceToRow(
       break;
   }
 
+  let lastError = "";
+  if (
+    state.tag === "BundleBuildFailed" || state.tag === "ValidationFailed" ||
+    state.tag === "EntryPointUnreadable"
+  ) {
+    lastError = state.lastError;
+  }
+
   return {
     source_path: source.id.canonicalPath,
     type_normalized: typeNormalized,
     kind: source.kind,
     bundle_path: bundlePath,
-    version: extension.version, // legacy column; mirrors extension_version
+    version: extension.version,
     description: "",
     extends_type: "",
     source_mtime: source.sourceMtime,
@@ -705,5 +734,6 @@ function sourceToRow(
     state: state.tag,
     extension_name: extension.name,
     extension_version: extension.version,
+    last_error: lastError,
   };
 }

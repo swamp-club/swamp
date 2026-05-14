@@ -71,12 +71,17 @@ interface DoctorReport {
   };
 }
 
-async function runDoctor(repoDir: string): Promise<DoctorReport> {
+async function runDoctor(
+  repoDir: string,
+  opts?: { allowNonZero?: boolean },
+): Promise<DoctorReport> {
   const result = await runCliCommand(
     ["doctor", "extensions", "--json", "--verbose"],
     repoDir,
   );
-  assertEquals(result.code, 0, `doctor failed: ${result.stderr}`);
+  if (!opts?.allowNonZero) {
+    assertEquals(result.code, 0, `doctor failed: ${result.stderr}`);
+  }
   return JSON.parse(result.stdout);
 }
 
@@ -168,7 +173,7 @@ Deno.test("doctor extensions transitions: deleted pulled source produces transit
     await Deno.remove(modelPath);
 
     // Second run: reconcile detects the missing source
-    const second = await runDoctor(repoDir);
+    const second = await runDoctor(repoDir, { allowNonZero: true });
     assert(
       Array.isArray(second.recentTransitions),
       "recentTransitions must be an array",

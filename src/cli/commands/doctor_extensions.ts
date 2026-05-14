@@ -51,10 +51,6 @@ import {
   repairExtensions,
 } from "../../libswamp/mod.ts";
 import { EmbeddedDenoRuntime } from "../../infrastructure/runtime/embedded_deno_runtime.ts";
-import {
-  getExtensionLoadWarnings,
-  resetExtensionLoadWarnings,
-} from "../../infrastructure/logging/extension_load_warnings.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
 import { driverTypeRegistry } from "../../domain/drivers/driver_type_registry.ts";
@@ -252,8 +248,6 @@ export const doctorExtensionsCommand = new Command()
     await consumeStream(
       doctorExtensions({
         registries,
-        getWarnings: getExtensionLoadWarnings,
-        resetState: resetExtensionLoadWarnings,
         lockfileRepository: doctorLockfileRepo,
         repoDir,
         skillsDir: repoRelativeSkillsDir,

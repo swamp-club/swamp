@@ -34,7 +34,6 @@ import {
   createFreshnessCache,
   findStaleFiles as findStaleFilesShared,
   type FreshnessCache,
-  markCatalogValidationFailed,
 } from "./bundle_freshness.ts";
 import {
   BUNDLE_LAYOUT_VERSION,
@@ -49,6 +48,7 @@ import {
 } from "../../infrastructure/persistence/paths.ts";
 import { assertSafePath } from "../../infrastructure/persistence/safe_path.ts";
 import { emitTypeExtractionFailure } from "../../infrastructure/logging/extension_load_warnings.ts";
+import { canonicalizePath } from "../../infrastructure/persistence/canonicalize_path.ts";
 import type { DatastorePathResolver } from "../datastore/datastore_path_resolver.ts";
 import type {
   BundleIndexResult,
@@ -57,6 +57,13 @@ import type {
   RegistrationContext,
 } from "./kind_adapter.ts";
 import { ValidationError } from "./validation_error.ts";
+import { makeLocalExtension } from "./extension.ts";
+import {
+  extensionKindToKindDir,
+  findSourceByPath,
+  recordSourceFailure,
+} from "./source_failure_recorder.ts";
+import { makeSourceLocation } from "./source_location.ts";
 
 export class ExtensionLoader {
   private readonly denoRuntime: DenoRuntime;
@@ -123,10 +130,12 @@ export class ExtensionLoader {
       file: string;
       module: Record<string, unknown>;
       absolutePath: string;
+      baseDir: string;
     }> = [];
     const secondaryFiles: Array<{
       file: string;
       module: Record<string, unknown>;
+      baseDir: string;
     }> = [];
 
     for (const { file, baseDir } of allFiles) {
@@ -152,15 +161,20 @@ export class ExtensionLoader {
         const module = await this.importBundle(js, file, baseDir);
 
         if (module[this.adapter.primaryExportKey]) {
-          primaryFiles.push({ file, module, absolutePath });
+          primaryFiles.push({ file, module, absolutePath, baseDir });
         } else if (
           this.adapter.secondaryExportKey &&
           module[this.adapter.secondaryExportKey]
         ) {
-          secondaryFiles.push({ file, module });
+          secondaryFiles.push({ file, module, baseDir });
         }
       } catch (error) {
-        result.failed.push({ file, error: String(error) });
+        result.failed.push({
+          file,
+          error: String(error),
+          originalError: error,
+          baseDir,
+        });
       }
     }
 
@@ -171,14 +185,21 @@ export class ExtensionLoader {
       repoDir: this.repoDir,
     };
 
-    for (const { file, module, absolutePath } of primaryFiles) {
+    for (const { file, module, absolutePath, baseDir } of primaryFiles) {
       try {
         const exported = module[this.adapter.primaryExportKey];
         const parsed = this.adapter.validatePrimaryExport(exported);
         if (!parsed.success) {
+          const bundlePath = this.getBundlePath(file, dir);
           result.failed.push({
             file,
             error: this.adapter.formatValidationError(parsed.error),
+            originalError: new ValidationError(
+              this.adapter.formatValidationError(parsed.error),
+              bundlePath,
+              "",
+            ),
+            baseDir,
           });
           continue;
         }
@@ -191,7 +212,7 @@ export class ExtensionLoader {
             String(validated.type ?? validated.name ?? ""),
           );
           if (namespaceError) {
-            result.failed.push({ file, error: namespaceError });
+            result.failed.push({ file, error: namespaceError, baseDir });
             continue;
           }
         }
@@ -202,6 +223,7 @@ export class ExtensionLoader {
             file,
             error:
               `${this.adapter.kind} type '${typeNormalized}' already registered`,
+            baseDir,
           });
           continue;
         }
@@ -214,12 +236,17 @@ export class ExtensionLoader {
         );
         result.loaded.push(file);
       } catch (error) {
-        result.failed.push({ file, error: String(error) });
+        result.failed.push({
+          file,
+          error: String(error),
+          originalError: error,
+          baseDir,
+        });
       }
     }
 
     if (this.adapter.processSecondaryExport) {
-      for (const { file, module } of secondaryFiles) {
+      for (const { file, module, baseDir } of secondaryFiles) {
         try {
           this.adapter.processSecondaryExport(
             file,
@@ -227,7 +254,7 @@ export class ExtensionLoader {
             result,
           );
         } catch (error) {
-          result.failed.push({ file, error: String(error) });
+          result.failed.push({ file, error: String(error), baseDir });
         }
       }
     }
@@ -279,6 +306,15 @@ export class ExtensionLoader {
         return result;
       }
 
+      const extensions = repository.loadAll();
+      const sourcePathIndex = new Map<string, number>();
+      for (let i = 0; i < extensions.length; i++) {
+        for (const [loc] of extensions[i].sources) {
+          sourcePathIndex.set(loc.canonicalPath, i);
+        }
+      }
+
+      const kindDir = extensionKindToKindDir(this.adapter.kind);
       const typesNeedingExtensionAttach = new Set<string>();
       for (const { absolutePath, relativePath, baseDir } of staleFiles) {
         try {
@@ -299,6 +335,37 @@ export class ExtensionLoader {
           result.loaded.push(relativePath);
         } catch (error) {
           result.failed.push({ file: relativePath, error: String(error) });
+
+          if (this.repoDir) {
+            const loc = makeSourceLocation(absolutePath, this.repoDir);
+            const extIdx = sourcePathIndex.get(loc.canonicalPath);
+            if (extIdx !== undefined) {
+              const ext = extensions[extIdx];
+              const existingSource = findSourceByPath(
+                ext,
+                loc.canonicalPath,
+              );
+              let failFp: string;
+              try {
+                failFp = await computeSourceFingerprint(absolutePath, baseDir);
+              } catch {
+                failFp = "";
+              }
+              const stat = await Deno.stat(absolutePath).catch(() => null);
+              const sourceMtime = stat?.mtime?.toISOString() ?? "";
+              const failResult = recordSourceFailure({
+                extension: ext,
+                location: existingSource?.id ?? loc,
+                kindDir,
+                error,
+                existingSource,
+                fingerprint: failFp,
+                sourceMtime,
+              });
+              extensions[extIdx] = failResult.extension;
+              repository.saveAll([failResult.extension]);
+            }
+          }
         }
       }
 
@@ -320,6 +387,78 @@ export class ExtensionLoader {
       additionalDirs: options?.additionalDirs,
       skipAlreadyRegistered: true,
     });
+
+    if (fullResult.failed.length > 0 && this.repoDir) {
+      const coldExtensions = repository.loadAll();
+      const coldIndex = new Map<string, number>();
+      for (let i = 0; i < coldExtensions.length; i++) {
+        for (const [loc] of coldExtensions[i].sources) {
+          coldIndex.set(loc.canonicalPath, i);
+        }
+      }
+
+      let localFallback: import("./extension.ts").Extension | undefined;
+      const kindDir = extensionKindToKindDir(this.adapter.kind);
+      for (const failure of fullResult.failed) {
+        const resolveDir = failure.baseDir ?? dir;
+        const absolutePath = resolve(resolveDir, failure.file);
+        const loc = makeSourceLocation(absolutePath, this.repoDir);
+        const extIdx = coldIndex.get(loc.canonicalPath);
+        let ext = extIdx !== undefined ? coldExtensions[extIdx] : undefined;
+
+        if (!ext) {
+          localFallback ??= makeLocalExtension({
+            repoRoot: this.repoDir,
+            basename: this.adapter.kind,
+          });
+          ext = localFallback;
+        }
+
+        const existingSource = findSourceByPath(ext, loc.canonicalPath);
+        if (
+          existingSource &&
+          existingSource.state.tag !== "Indexed" &&
+          existingSource.state.tag !== "Bundled"
+        ) {
+          continue;
+        }
+
+        let failFp: string;
+        try {
+          failFp = await computeSourceFingerprint(absolutePath, resolveDir);
+        } catch {
+          failFp = "";
+        }
+        const stat = await Deno.stat(absolutePath).catch(() => null);
+        const sourceMtime = stat?.mtime?.toISOString() ?? "";
+
+        const failResult = recordSourceFailure({
+          extension: ext,
+          location: existingSource?.id ?? loc,
+          kindDir,
+          error: failure.originalError ?? new Error(failure.error),
+          existingSource,
+          fingerprint: failFp,
+          sourceMtime,
+        });
+
+        if (extIdx !== undefined) {
+          coldExtensions[extIdx] = failResult.extension;
+        } else {
+          localFallback = failResult.extension;
+        }
+      }
+
+      const toSave = [
+        ...new Map(
+          coldExtensions.map((e) => [`${e.name}::${e.version}`, e]),
+        ).values(),
+      ];
+      if (localFallback) toSave.push(localFallback);
+      if (toSave.length > 0) {
+        repository.saveAll(toSave);
+      }
+    }
 
     await this.populateCatalogFromRegistry(
       catalog,
@@ -625,7 +764,7 @@ export class ExtensionLoader {
           type_normalized: extracted.typeNormalized,
           kind: extracted.kind,
           bundle_path: bundlePath,
-          source_path: absolutePath,
+          source_path: canonicalizePath(absolutePath),
           version: extracted.version,
           description: "",
           extends_type: extracted.extendsType,
@@ -689,16 +828,10 @@ export class ExtensionLoader {
       const bundlePath = this.getBundlePath(relativePath, baseDir);
       const parsed = this.adapter.validatePrimaryExport(module[exportKey]);
       if (!parsed.success) {
-        markCatalogValidationFailed({
-          catalog,
-          sourcePath: absolutePath,
-          kind: this.adapter.catalogKinds[0],
-          bundlePath,
-          sourceMtime,
-          sourceFingerprint: effectiveFingerprint,
-        });
-        throw new Error(
+        throw new ValidationError(
           this.adapter.formatValidationError(parsed.error),
+          bundlePath,
+          effectiveFingerprint,
         );
       }
       const validated = parsed.data as Record<string, unknown>;
@@ -714,6 +847,7 @@ export class ExtensionLoader {
         extends_type: "",
         source_mtime: sourceMtime,
         source_fingerprint: effectiveFingerprint,
+        state: "Indexed",
       });
 
       if (!this.adapter.hasType(typeNormalized)) {
@@ -743,15 +877,11 @@ export class ExtensionLoader {
         module[this.adapter.secondaryExportKey],
       );
       if (!parsed.success) {
-        markCatalogValidationFailed({
-          catalog,
-          sourcePath: absolutePath,
-          kind: this.adapter.catalogKinds[1] ?? this.adapter.catalogKinds[0],
+        throw new ValidationError(
+          parsed.error.message,
           bundlePath,
-          sourceMtime,
-          sourceFingerprint: effectiveFingerprint,
-        });
-        throw new Error(parsed.error.message);
+          effectiveFingerprint,
+        );
       }
       const validated = parsed.data as Record<string, unknown>;
       const typeNormalized = this.adapter.normalizeType(validated);
@@ -766,6 +896,7 @@ export class ExtensionLoader {
         extends_type: typeNormalized,
         source_mtime: sourceMtime,
         source_fingerprint: effectiveFingerprint,
+        state: "Indexed",
       });
 
       return { extensionTarget: typeNormalized };

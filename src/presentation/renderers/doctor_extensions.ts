@@ -138,10 +138,11 @@ function renderAggregateStateLog(
         ? dim(` fp:${detail.fingerprint.slice(0, 12)}`)
         : "";
       const bp = detail.bundlePath ? dim(` bundle:${detail.bundlePath}`) : "";
+      const le = detail.lastError ? dim(`: ${detail.lastError}`) : "";
       writeOutput(
         `  ${dim(detail.kind)} ${detail.sourcePath}  ${
           colorFn(detail.stateTag)
-        }${fp}${bp}`,
+        }${le}${fp}${bp}`,
       );
     }
   }
@@ -231,20 +232,54 @@ class LogDoctorExtensionsRenderer implements DoctorExtensionsRenderer {
         // line is visual noise — users see the ✓/✗ on kind-completed.
       },
       "kind-completed": (e) => {
-        const r = e.result;
-        const failureSuffix = r.failures.length > 0
-          ? dim(` (${r.failures.length} failure(s))`)
-          : "";
-        writeOutput(`${iconFor(r.status)} ${bold(r.registry)}${failureSuffix}`);
-        for (const failure of r.failures) {
-          writeOutput(`    ${yellow("•")} ${failure.file}: ${failure.error}`);
-        }
+        // Don't render status icon during scan — the per-registry result
+        // always reports "pass" at this point because loader errors are
+        // only folded into the final results. Instead, just show the
+        // registry name; the completed handler re-renders each row with
+        // its correct icon from e.report.registries.
+        writeOutput(`  ${dim("•")} ${e.result.registry}`);
       },
       completed: (e) => {
         this.overallStatus = e.report.overallStatus;
-        // Filesystem orphan warnings are independent of pass/fail — if
-        // anything is found, surface it before the summary so users see
-        // both halves of the diagnostic.
+
+        // Re-render each registry row with its correct status icon.
+        writeOutput("");
+        for (const name of DOCTOR_REGISTRY_ORDER) {
+          const reg = e.report.registries[name];
+          writeOutput(`${iconFor(reg.status)} ${bold(reg.registry)}`);
+        }
+
+        if (e.report.loaderErrors && e.report.loaderErrors.size > 0) {
+          writeOutput("");
+          for (const [registry, message] of e.report.loaderErrors) {
+            writeOutput(
+              `    ${red("•")} ${registry} loader error: ${message}`,
+            );
+          }
+        }
+
+        if (e.report.aggregateState) {
+          const failureDetails = e.report.aggregateState.sourceDetails.filter(
+            (d) =>
+              d.stateTag === "ValidationFailed" ||
+              d.stateTag === "BundleBuildFailed" ||
+              d.stateTag === "EntryPointUnreadable",
+          );
+          if (failureDetails.length > 0) {
+            writeOutput("");
+            for (const detail of failureDetails) {
+              const errorSuffix = detail.lastError
+                ? `: ${detail.lastError}`
+                : "";
+              writeOutput(
+                `    ${yellow("•")} ${dim(detail.kind)} ${detail.sourcePath} ${
+                  red(detail.stateTag)
+                }${errorSuffix}`,
+              );
+            }
+          }
+        }
+
         if (e.report.orphanFiles.length > 0) {
           writeOutput(
             `\n${yellow("⚠")} ${
@@ -351,6 +386,9 @@ class JsonDoctorExtensionsRenderer implements DoctorExtensionsRenderer {
         if (e.report.repairReport) {
           output.repairReport = e.report.repairReport;
         }
+        output.loaderErrors = e.report.loaderErrors
+          ? Object.fromEntries(e.report.loaderErrors)
+          : {};
         output.recentTransitions = e.report.recentTransitions.map((t) => ({
           sourcePath: t.source.canonicalPath,
           fromState: t.fromState,

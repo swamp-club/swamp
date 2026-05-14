@@ -25,20 +25,14 @@ import {
   makeLocalExtension,
   markSourceMissing,
   observeFreshSource,
-  recordBundleBuildFailed,
   recordBundled,
   recordEntryPointUnreadable,
-  recordValidationFailed,
   tombstoneAll,
 } from "../../domain/extensions/extension.ts";
 import type { LocalManifestIdentity } from "../../infrastructure/persistence/local_manifest_reader.ts";
 import { canonicalizePath } from "../../infrastructure/persistence/canonicalize_path.ts";
-import { makeSource } from "../../domain/extensions/source.ts";
 import { makeSourceLocation } from "../../domain/extensions/source_location.ts";
-import {
-  type BundleLocation,
-  makeBundleLocation,
-} from "../../domain/extensions/bundle_location.ts";
+import { makeBundleLocation } from "../../domain/extensions/bundle_location.ts";
 import {
   computeSourceFingerprint,
   createFreshnessCache,
@@ -47,6 +41,11 @@ import {
 import type { RowStateTag } from "../../domain/extensions/row_state.ts";
 import type { SourceLocation } from "../../domain/extensions/source_location.ts";
 import type { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
+import {
+  findSourceByPath,
+  type KindDir,
+  recordSourceFailure,
+} from "../../domain/extensions/source_failure_recorder.ts";
 import type {
   ExtensionKind,
 } from "../../infrastructure/persistence/extension_catalog_store.ts";
@@ -54,7 +53,6 @@ import { BUNDLE_LAYOUT_VERSION } from "../../infrastructure/persistence/extensio
 import type { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import { swampPath } from "../../infrastructure/persistence/paths.ts";
 import { ExtensionLoader } from "../../domain/extensions/extension_loader.ts";
-import { ValidationError } from "../../domain/extensions/validation_error.ts";
 import { modelKindAdapter } from "../../domain/extensions/model_kind_adapter.ts";
 import { vaultKindAdapter } from "../../domain/extensions/vault_kind_adapter.ts";
 import { driverKindAdapter } from "../../domain/extensions/driver_kind_adapter.ts";
@@ -78,8 +76,6 @@ const KIND_DIRS = [
   "datastores",
   "reports",
 ] as const;
-
-type KindDir = typeof KIND_DIRS[number];
 
 /**
  * A single state transition produced by reconcile. Structured value —
@@ -487,15 +483,6 @@ export class ReconcileFromDiskService {
           });
         }
       } catch (error) {
-        const fromState = existingSource?.state.tag ?? null;
-        const errorMsg = error instanceof Error ? error.message : String(error);
-
-        // Store the current fingerprint so findStaleFiles sees the file
-        // as fresh and doesn't re-trigger a redundant rebundle on the
-        // next buildIndex pass. Fallback to "" if the file became
-        // unreadable mid-flight — "" never matches a computed hash, so
-        // subsequent reconciles will re-attempt the bundle (acceptable
-        // for this rare case).
         let failFp: string;
         try {
           failFp = await computeSourceFingerprint(
@@ -507,70 +494,18 @@ export class ReconcileFromDiskService {
           failFp = "";
         }
 
-        const isValidation = error instanceof ValidationError;
-        const toState: RowStateTag = isValidation
-          ? "ValidationFailed"
-          : "BundleBuildFailed";
-
-        if (isValidation) {
-          const bundle = makeBundleLocation(
-            error.bundlePath,
-            error.fingerprint,
-          );
-          if (existingSource) {
-            ext = recordValidationFailed(ext, {
-              location: effectiveLoc,
-              bundle,
-              lastError: errorMsg,
-              fingerprint: failFp,
-              sourceMtime,
-            });
-          } else {
-            ext = makeExtensionWithNewSource(
-              ext,
-              effectiveLoc,
-              kind,
-              {
-                tag: "ValidationFailed",
-                bundle,
-                lastError: errorMsg,
-              },
-              sourceMtime,
-              failFp,
-            );
-          }
-        } else {
-          if (existingSource) {
-            ext = recordBundleBuildFailed(ext, {
-              location: effectiveLoc,
-              lastError: errorMsg,
-              fingerprint: failFp,
-              sourceMtime,
-            });
-          } else {
-            ext = makeExtensionWithNewSource(
-              ext,
-              effectiveLoc,
-              kind,
-              {
-                tag: "BundleBuildFailed",
-                lastError: errorMsg,
-              },
-              sourceMtime,
-              failFp,
-            );
-          }
-        }
-
-        if (fromState !== toState) {
-          transitions.push({
-            source: effectiveLoc,
-            fromState,
-            toState,
-            reason: isValidation
-              ? `validation failed: ${errorMsg}`
-              : `bundle build failed: ${errorMsg}`,
-          });
+        const result = recordSourceFailure({
+          extension: ext,
+          location: effectiveLoc,
+          kindDir: kind,
+          error,
+          existingSource,
+          fingerprint: failFp,
+          sourceMtime,
+        });
+        ext = result.extension;
+        if (result.transition) {
+          transitions.push(result.transition);
         }
       }
     }
@@ -710,16 +645,6 @@ export class ReconcileFromDiskService {
   }
 }
 
-function findSourceByPath(
-  extension: Extension,
-  canonicalPath: string,
-): import("../../domain/extensions/source.ts").Source | undefined {
-  for (const [loc, source] of extension.sources) {
-    if (loc.canonicalPath === canonicalPath) return source;
-  }
-  return undefined;
-}
-
 function countSources(extensions: Extension[]): number {
   let count = 0;
   for (const ext of extensions) {
@@ -737,47 +662,6 @@ function extractBundlePath(
     return state.bundle as ReturnType<typeof makeBundleLocation>;
   }
   return null;
-}
-
-function makeExtensionWithNewSource(
-  extension: Extension,
-  location: SourceLocation,
-  kindDir: KindDir,
-  state:
-    | { tag: "BundleBuildFailed"; lastError: string }
-    | { tag: "ValidationFailed"; bundle: BundleLocation; lastError: string },
-  sourceMtime: string,
-  fingerprint = "",
-): Extension {
-  const kind = kindDirToExtensionKind(kindDir);
-  const source = makeSource({
-    id: location,
-    kind,
-    fingerprint,
-    state,
-    sourceMtime,
-  });
-  return makeExtension({
-    ...extension,
-    sources: [...extension.sources.values(), source],
-  });
-}
-
-function kindDirToExtensionKind(
-  kindDir: KindDir,
-): "model" | "vault" | "driver" | "datastore" | "report" {
-  switch (kindDir) {
-    case "models":
-      return "model";
-    case "vaults":
-      return "vault";
-    case "drivers":
-      return "driver";
-    case "datastores":
-      return "datastore";
-    case "reports":
-      return "report";
-  }
 }
 
 async function collectTsFiles(dir: string): Promise<string[]> {

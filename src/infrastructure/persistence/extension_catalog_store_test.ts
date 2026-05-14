@@ -21,7 +21,8 @@ import { assert, assertEquals } from "@std/assert";
 import { DatabaseSync } from "node:sqlite";
 import { dirname, join } from "@std/path";
 import { ensureDirSync } from "@std/fs";
-import { canonicalizePath } from "./canonicalize_path.ts";
+import { canonicalizePath, canonicalizePathFor } from "./canonicalize_path.ts";
+import { deriveExtensionIdentity } from "./derive_extension_identity.ts";
 import {
   ExtensionCatalogStore,
   type ExtensionTypeRow,
@@ -618,6 +619,123 @@ Deno.test("ExtensionCatalogStore: state defaults to 'Indexed' when omitted from 
   store.upsert(makeRow());
   const found = store.findByType("@myorg/echo", "model");
   assertEquals(found?.state, "Indexed");
+  store.close();
+});
+
+Deno.test("ExtensionCatalogStore: upsert without state preserves existing non-default state", () => {
+  const dbPath = makeTempDbPath();
+  const store = new ExtensionCatalogStore(dbPath);
+
+  store.upsert(makeRow({ state: "ValidationFailed" }));
+  store.upsert(makeRow());
+  const found = store.findByType("@myorg/echo", "model");
+  assertEquals(found?.state, "ValidationFailed");
+  store.close();
+});
+
+Deno.test("ExtensionCatalogStore: upsert with explicit state overwrites existing state", () => {
+  const dbPath = makeTempDbPath();
+  const store = new ExtensionCatalogStore(dbPath);
+
+  store.upsert(makeRow({ state: "ValidationFailed" }));
+  store.upsert(makeRow({ state: "Indexed" }));
+  const found = store.findByType("@myorg/echo", "model");
+  assertEquals(found?.state, "Indexed");
+  store.close();
+});
+
+Deno.test("ExtensionCatalogStore: upsert without state preserves existing last_error", () => {
+  const dbPath = makeTempDbPath();
+  const store = new ExtensionCatalogStore(dbPath);
+
+  store.upsert(makeRow({ state: "BundleBuildFailed", last_error: "boom" }));
+  store.upsert(makeRow());
+  const found = store.findByType("@myorg/echo", "model");
+  assertEquals(found?.state, "BundleBuildFailed");
+  assertEquals(found?.last_error, "boom");
+  store.close();
+});
+
+Deno.test("ExtensionCatalogStore: canonicalized source_path resolves via deriveExtensionIdentity", () => {
+  const dbPath = makeTempDbPath();
+  const store = new ExtensionCatalogStore(dbPath);
+
+  const windowsPath = "C:\\Users\\runner\\repo\\extensions\\models\\echo.ts";
+  const canonicalized = canonicalizePathFor(windowsPath, true);
+
+  store.upsert(makeRow({ source_path: canonicalized }));
+  const found = store.findBySourcePath(canonicalized);
+  assertEquals(found !== undefined, true, "row must be retrievable");
+
+  const identity = deriveExtensionIdentity(
+    canonicalized,
+    "c:/users/runner/repo",
+  );
+  assertEquals(
+    identity !== null,
+    true,
+    "canonicalized path must resolve to a valid identity",
+  );
+  assertEquals(identity?.name, "@local/repo");
+  store.close();
+});
+
+Deno.test("ExtensionCatalogStore: findBySourcePath canonicalizes input before lookup", () => {
+  const dbPath = makeTempDbPath();
+  const store = new ExtensionCatalogStore(dbPath);
+
+  const canonical = canonicalizePathFor(
+    "C:\\Users\\runner\\repo\\extensions\\models\\echo.ts",
+    true,
+  );
+  store.upsert(makeRow({ source_path: canonical }));
+
+  const foundViaCanonical = store.findBySourcePath(canonical);
+  assertEquals(
+    foundViaCanonical !== undefined,
+    true,
+    "lookup via canonical path must find the row",
+  );
+
+  const foundViaNative = store.findBySourcePath(
+    canonicalizePathFor(
+      "C:\\Users\\Runner\\Repo\\extensions\\models\\echo.ts",
+      true,
+    ),
+  );
+  assertEquals(
+    foundViaNative !== undefined,
+    true,
+    "lookup via differently-cased Windows path must find the same row after canonicalization",
+  );
+  store.close();
+});
+
+Deno.test("ExtensionCatalogStore: removeBySourcePath deletes by exact stored path", () => {
+  const dbPath = makeTempDbPath();
+  const store = new ExtensionCatalogStore(dbPath);
+
+  const canonical = canonicalizePathFor(
+    "C:\\Users\\runner\\repo\\extensions\\models\\echo.ts",
+    true,
+  );
+  store.upsert(makeRow({ source_path: canonical }));
+  assertEquals(store.count(), 1);
+
+  store.removeBySourcePath(canonical);
+  assertEquals(store.count(), 0);
+  store.close();
+});
+
+Deno.test("ExtensionCatalogStore: upsert with explicit state overwrites both state and last_error", () => {
+  const dbPath = makeTempDbPath();
+  const store = new ExtensionCatalogStore(dbPath);
+
+  store.upsert(makeRow({ state: "BundleBuildFailed", last_error: "boom" }));
+  store.upsert(makeRow({ state: "Indexed", last_error: "" }));
+  const found = store.findByType("@myorg/echo", "model");
+  assertEquals(found?.state, "Indexed");
+  assertEquals(found?.last_error, "");
   store.close();
 });
 
