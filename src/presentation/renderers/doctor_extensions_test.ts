@@ -67,6 +67,7 @@ function buildPassReport(): DoctorExtensionsReport {
     },
     orphanFiles: [],
     recentTransitions: [],
+    warnings: [],
   };
 }
 
@@ -82,6 +83,7 @@ function buildFailReport(): DoctorExtensionsReport {
     },
     orphanFiles: [],
     recentTransitions: [],
+    warnings: [],
   };
 }
 
@@ -162,6 +164,7 @@ Deno.test("doctor_extensions json renderer: stable key ordering", async () => {
       },
       orphanFiles: [],
       recentTransitions: [],
+      warnings: [],
     };
     await handlers.completed({ kind: "completed", report: reversed });
   });
@@ -228,6 +231,7 @@ Deno.test(
           },
         ],
         recentTransitions: [],
+        warnings: [],
       };
       await handlers.completed({ kind: "completed", report });
     });
@@ -265,6 +269,7 @@ Deno.test(
           },
         ],
         recentTransitions: [],
+        warnings: [],
       };
       // Drive the kind-completed events first so the registry headers
       // get rendered, then completed.

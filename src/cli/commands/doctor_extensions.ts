@@ -39,6 +39,10 @@
 
 import { Command } from "@cliffy/command";
 import { bold, dim } from "@std/fmt/colors";
+import {
+  getExtensionLoadWarnings,
+  resetExtensionLoadWarnings,
+} from "../../infrastructure/logging/extension_load_warnings.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { isAbsolute, join, relative, resolve } from "@std/path";
 import {
@@ -271,6 +275,13 @@ export const doctorExtensionsCommand = new Command()
           }
         },
         getRecentTransitions: () => reconcileTransitions,
+        getWarnings: () =>
+          getExtensionLoadWarnings().map((w) => ({
+            sourcePath: w.file,
+            category: "TypeExtractionFailed",
+            message: w.error,
+          })),
+        resetWarnings: resetExtensionLoadWarnings,
         runRepair: repair
           ? async (aggregateReport) => {
             // In interactive mode without --force, preview first and prompt.

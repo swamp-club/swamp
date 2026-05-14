@@ -311,6 +311,24 @@ class LogDoctorExtensionsRenderer implements DoctorExtensionsRenderer {
           );
         }
 
+        if (e.report.warnings.length > 0) {
+          writeOutput(
+            `\n${yellow("⚠")} ${
+              bold(
+                `${e.report.warnings.length} warning(s) (advisory, not failures):`,
+              )
+            }`,
+          );
+          for (const w of e.report.warnings) {
+            writeOutput(
+              `    ${yellow("•")} ${w.sourcePath}`,
+            );
+            writeOutput(
+              `      ${dim(w.message)}`,
+            );
+          }
+        }
+
         // W6: Aggregate state rendering.
         if (e.report.aggregateState) {
           renderAggregateStateLog(e.report.aggregateState, this.verbose);
@@ -389,6 +407,7 @@ class JsonDoctorExtensionsRenderer implements DoctorExtensionsRenderer {
         output.loaderErrors = e.report.loaderErrors
           ? Object.fromEntries(e.report.loaderErrors)
           : {};
+        output.warnings = e.report.warnings;
         output.recentTransitions = e.report.recentTransitions.map((t) => ({
           sourcePath: t.source.canonicalPath,
           fromState: t.fromState,

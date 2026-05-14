@@ -30,8 +30,15 @@ export interface EmitterOptions {
   quiet?: boolean;
 }
 
+export interface ExtensionLoadWarningEvent {
+  readonly kind: ExtensionKind;
+  readonly file: string;
+  readonly error: string;
+}
+
 interface EmitterState {
   emitted: Set<string>;
+  events: ExtensionLoadWarningEvent[];
   hintsEmittedFor: Set<ExtensionKind>;
 }
 
@@ -44,6 +51,7 @@ function getState(): EmitterState {
   if (!globalAny[STATE_KEY]) {
     globalAny[STATE_KEY] = {
       emitted: new Set<string>(),
+      events: [],
       hintsEmittedFor: new Set<ExtensionKind>(),
     } satisfies EmitterState;
   }
@@ -87,6 +95,11 @@ export function emitExtensionLoadWarning(
   const key = dedupeKey(warning.kind, warning.file, warning.error);
   if (state.emitted.has(key)) return;
   state.emitted.add(key);
+  state.events.push({
+    kind: warning.kind,
+    file: warning.file,
+    error: warning.error,
+  });
 
   if (isSilenced(options)) return;
 
@@ -115,8 +128,15 @@ export function emitTypeExtractionFailure(
   );
 }
 
+export function getExtensionLoadWarnings(): ReadonlyArray<
+  ExtensionLoadWarningEvent
+> {
+  return Array.from(getState().events);
+}
+
 export function resetExtensionLoadWarnings(): void {
   const state = getState();
   state.emitted.clear();
+  state.events.length = 0;
   state.hintsEmittedFor.clear();
 }

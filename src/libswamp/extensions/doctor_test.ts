@@ -18,14 +18,20 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { resetExtensionLoadWarnings } from "../../infrastructure/logging/extension_load_warnings.ts";
+import {
+  emitExtensionLoadWarning,
+  getExtensionLoadWarnings,
+  resetExtensionLoadWarnings,
+} from "../../infrastructure/logging/extension_load_warnings.ts";
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import {
   DOCTOR_REGISTRY_ORDER,
   doctorExtensions,
   type DoctorExtensionsDeps,
   type DoctorExtensionsEvent,
+  type DoctorRegistryDeps,
   type DoctorRegistryName,
+  type DoctorWarning,
 } from "./doctor.ts";
 import type { DoctorAggregateReport } from "./doctor_aggregate.ts";
 
@@ -526,5 +532,134 @@ Deno.test(
     );
     assertEquals(completed.report.recentTransitions[1].fromState, null);
     assertEquals(completed.report.recentTransitions[1].toState, "Indexed");
+  },
+);
+
+Deno.test(
+  "doctorExtensions: resetWarnings prevents stale bootstrap warnings from leaking into report",
+  async () => {
+    resetExtensionLoadWarnings();
+
+    emitExtensionLoadWarning(
+      {
+        kind: "model",
+        file: "/repo/extensions/models/stale.ts",
+        error: "stale bootstrap warning",
+      },
+      { quiet: true },
+    );
+    assertEquals(getExtensionLoadWarnings().length, 1);
+
+    const warnings: DoctorWarning[] = [];
+    const { deps } = buildDeps();
+    deps.resetWarnings = resetExtensionLoadWarnings;
+    deps.getWarnings = () =>
+      getExtensionLoadWarnings().map((w) => ({
+        sourcePath: w.file,
+        category: "TypeExtractionFailed",
+        message: w.error,
+      }));
+
+    const events = await collect(doctorExtensions(deps));
+    const completed = events.find((e) => e.kind === "completed");
+    if (completed?.kind !== "completed") {
+      throw new Error("expected completed event");
+    }
+    assertEquals(completed.report.warnings.length, 0);
+    void warnings;
+  },
+);
+
+Deno.test(
+  "doctorExtensions: warnings emitted during loader pass appear in report",
+  async () => {
+    resetExtensionLoadWarnings();
+
+    const { deps } = buildDeps();
+    const originalEnsureLoaded = deps.registries[0].ensureLoaded;
+    (deps.registries as DoctorRegistryDeps[])[0] = {
+      ...deps.registries[0],
+      ensureLoaded: async () => {
+        emitExtensionLoadWarning(
+          {
+            kind: "model",
+            file: "/repo/extensions/models/non_literal.ts",
+            error: "type field could not be extracted",
+          },
+          { quiet: true },
+        );
+        await originalEnsureLoaded();
+      },
+    };
+    deps.resetWarnings = resetExtensionLoadWarnings;
+    deps.getWarnings = () =>
+      getExtensionLoadWarnings().map((w) => ({
+        sourcePath: w.file,
+        category: "TypeExtractionFailed",
+        message: w.error,
+      }));
+
+    const events = await collect(doctorExtensions(deps));
+    const completed = events.find((e) => e.kind === "completed");
+    if (completed?.kind !== "completed") {
+      throw new Error("expected completed event");
+    }
+    assertEquals(completed.report.warnings.length, 1);
+    assertEquals(
+      completed.report.warnings[0].sourcePath,
+      "/repo/extensions/models/non_literal.ts",
+    );
+    assertEquals(
+      completed.report.warnings[0].category,
+      "TypeExtractionFailed",
+    );
+    assertEquals(completed.report.overallStatus, "pass");
+  },
+);
+
+Deno.test(
+  "doctorExtensions: second invocation does not double-count warnings",
+  async () => {
+    resetExtensionLoadWarnings();
+
+    const { deps } = buildDeps();
+    const originalEnsureLoaded = deps.registries[0].ensureLoaded;
+    (deps.registries as DoctorRegistryDeps[])[0] = {
+      ...deps.registries[0],
+      ensureLoaded: async () => {
+        emitExtensionLoadWarning(
+          {
+            kind: "model",
+            file: "/repo/extensions/models/non_literal.ts",
+            error: "type field could not be extracted",
+          },
+          { quiet: true },
+        );
+        await originalEnsureLoaded();
+      },
+    };
+    deps.resetWarnings = resetExtensionLoadWarnings;
+    deps.getWarnings = () =>
+      getExtensionLoadWarnings().map((w) => ({
+        sourcePath: w.file,
+        category: "TypeExtractionFailed",
+        message: w.error,
+      }));
+
+    // First invocation
+    let events = await collect(doctorExtensions(deps));
+    let completed = events.find((e) => e.kind === "completed");
+    if (completed?.kind !== "completed") {
+      throw new Error("expected completed event");
+    }
+    assertEquals(completed.report.warnings.length, 1);
+
+    // Second invocation — reset should clear, loader re-emits exactly once
+    events = await collect(doctorExtensions(deps));
+    completed = events.find((e) => e.kind === "completed");
+    if (completed?.kind !== "completed") {
+      throw new Error("expected completed event");
+    }
+    assertEquals(completed.report.warnings.length, 1);
   },
 );

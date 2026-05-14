@@ -71,6 +71,12 @@ export interface DoctorOrphanFile {
   path: string;
 }
 
+export interface DoctorWarning {
+  sourcePath: string;
+  category: string;
+  message: string;
+}
+
 /** Final report shape — used by the renderer's JSON mode. */
 export interface DoctorExtensionsReport {
   overallStatus: DoctorOverallStatus;
@@ -108,6 +114,13 @@ export interface DoctorExtensionsReport {
    * loader succeeds. Keyed by registry name; value is the error message.
    */
   loaderErrors?: ReadonlyMap<DoctorRegistryName, string>;
+  /**
+   * Extension load warnings — diagnostic findings about suboptimal-but-working
+   * patterns (e.g. non-literal type fields that prevent static catalog
+   * extraction). Advisory only: `overallStatus` is unchanged by warning
+   * presence. Empty array when no warnings were emitted.
+   */
+  warnings: readonly DoctorWarning[];
 }
 
 /**
@@ -176,6 +189,17 @@ export interface DoctorExtensionsDeps {
    * failed.
    */
   getRecentTransitions?: () => readonly ReconcileTransition[];
+  /**
+   * Returns extension load warnings emitted during this process run.
+   * Injected by the CLI — maps emitter events to DoctorWarning shape.
+   */
+  getWarnings?: () => readonly DoctorWarning[];
+  /**
+   * Resets the extension load warning state. Called at the start of
+   * each doctor invocation (alongside resetLoadedFlag) to prevent
+   * stale warnings from the CLI bootstrap leaking into doctor output.
+   */
+  resetWarnings?: () => void;
 }
 
 function overallStatus(
@@ -307,6 +331,7 @@ function registryHasFailures(
 export async function* doctorExtensions(
   deps: DoctorExtensionsDeps,
 ): AsyncIterable<DoctorExtensionsEvent> {
+  deps.resetWarnings?.();
   for (const reg of deps.registries) {
     reg.resetLoadedFlag();
   }
@@ -361,6 +386,7 @@ export async function* doctorExtensions(
   }
 
   const recentTransitions = deps.getRecentTransitions?.() ?? [];
+  const warnings = deps.getWarnings?.() ?? [];
 
   const results: DoctorRegistryResult[] = DOCTOR_REGISTRY_ORDER.map((name) => ({
     registry: name,
@@ -384,6 +410,7 @@ export async function* doctorExtensions(
       repairReport,
       recentTransitions,
       loaderErrors: loaderErrors.size > 0 ? loaderErrors : undefined,
+      warnings,
     },
   };
 }

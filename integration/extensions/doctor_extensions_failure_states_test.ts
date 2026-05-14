@@ -59,6 +59,24 @@ export const model = {
 };
 `;
 
+const NON_LITERAL_TYPE_MODEL = `
+import { z } from "npm:zod@4";
+const TYPE = "@tutorial/non-literal";
+export const model = {
+  type: TYPE,
+  version: "2026.05.12.0",
+  globalArguments: z.object({}),
+  resources: {},
+  methods: {
+    run: {
+      description: "no-op",
+      arguments: z.object({}),
+      execute: () => ({ dataHandles: [] }),
+    },
+  },
+};
+`;
+
 async function withTestRepo(
   fn: (repoDir: string) => Promise<void>,
 ): Promise<void> {
@@ -89,6 +107,11 @@ interface DoctorReport {
       lastError?: string;
     }[];
   };
+  warnings: {
+    sourcePath: string;
+    category: string;
+    message: string;
+  }[];
 }
 
 async function runDoctor(
@@ -479,5 +502,39 @@ Deno.test("doctor extensions: reconcile with >=10 extensions completes in <30s",
       result.aggregateState.totalSources >= 12,
       `Expected >=12 sources, got ${result.aggregateState.totalSources}`,
     );
+  });
+});
+
+// #351: non-literal type field → warnings-only (overallStatus=pass, exit 0, warnings populated)
+Deno.test("doctor extensions: non-literal type field appears in warnings[] without failing", async () => {
+  await withTestRepo(async (repoDir) => {
+    const modelDir = join(repoDir, "extensions", "models");
+    await ensureDir(modelDir);
+    await Deno.writeTextFile(
+      join(modelDir, "non_literal.ts"),
+      NON_LITERAL_TYPE_MODEL,
+    );
+
+    const result = await runDoctor(repoDir);
+    assertEquals(
+      result.overallStatus,
+      "pass",
+      "overallStatus must be pass — type-extraction warnings are advisory",
+    );
+
+    assert(
+      Array.isArray(result.warnings),
+      "report must include a warnings array",
+    );
+    const typeWarning = result.warnings.find((w) =>
+      w.sourcePath.includes("non_literal.ts")
+    );
+    assert(
+      typeWarning !== undefined,
+      `expected warnings[] to contain non_literal.ts; got: ${
+        JSON.stringify(result.warnings)
+      }`,
+    );
+    assertEquals(typeWarning!.category, "TypeExtractionFailed");
   });
 });

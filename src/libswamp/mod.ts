@@ -775,6 +775,7 @@ export {
   type DoctorRegistryDeps,
   type DoctorRegistryName,
   type DoctorRegistryResult,
+  type DoctorWarning,
 } from "./extensions/doctor.ts";
 
 // Extension RowState (used by doctor extensions rendering)

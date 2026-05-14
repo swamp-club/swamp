@@ -19,7 +19,7 @@
 
 // Regression guard for swamp-club#177.
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assert, assertEquals, assertStringIncludes } from "@std/assert";
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
 import { initializeTestRepo, runCliCommand } from "../test_helpers.ts";
@@ -156,6 +156,67 @@ Deno.test(
       );
     } finally {
       await Deno.remove(repoDir, { recursive: true });
+    }
+  },
+);
+
+Deno.test(
+  "silent load failure: doctor extensions --json surfaces type-extraction warning in warnings[]",
+  async () => {
+    const repoDir = await Deno.makeTempDir({
+      prefix: "swamp-issue-351-test-",
+    });
+    try {
+      await initializeTestRepo(repoDir);
+      const modelsDir = join(repoDir, "extensions", "models");
+      await ensureDir(modelsDir);
+      await Deno.writeTextFile(
+        join(modelsDir, "working.ts"),
+        VALID_MODEL,
+      );
+      await Deno.writeTextFile(
+        join(modelsDir, "non_literal_type.ts"),
+        BAD_MODEL_REGEX,
+      );
+
+      const { stdout, stderr, code } = await runCliCommand(
+        ["--json", "doctor", "extensions"],
+        repoDir,
+      );
+
+      const report = JSON.parse(stdout);
+
+      assertEquals(
+        report.overallStatus,
+        "pass",
+        "overallStatus must be pass — type-extraction warnings are advisory",
+      );
+      assertEquals(code, 0, "exit code must be 0 for warnings-only");
+
+      assert(
+        Array.isArray(report.warnings),
+        "report must include a warnings array",
+      );
+      const typeWarning = (
+        report.warnings as Array<{
+          sourcePath: string;
+          category: string;
+          message: string;
+        }>
+      ).find((w) => w.sourcePath.includes("non_literal_type.ts"));
+      assert(
+        typeWarning !== undefined,
+        `expected warnings[] to contain non_literal_type.ts; got: ${
+          JSON.stringify(report.warnings)
+        }`,
+      );
+      assertEquals(typeWarning!.category, "TypeExtractionFailed");
+      assertStringIncludes(typeWarning!.message, "string literal");
+
+      // stderr still surfaces the warning for non-JSON consumers
+      assertStringIncludes(stderr, "non_literal_type.ts");
+    } finally {
+      await Deno.remove(repoDir, { recursive: true }).catch(() => {});
     }
   },
 );
