@@ -1291,110 +1291,122 @@ export class WorkflowExecutionService {
     });
 
     try {
-      // Load repo marker early so the `repo` tier of resolveDriverConfig
-      // (populated below at every step) uses the memoized value.
-      await this.loadRepoMarker();
-
-      // Look up workflow
-      let workflow = await this.lookupWorkflow(idOrName);
-      if (!workflow) {
-        throw new Error(`Workflow not found: ${idOrName}`);
-      }
-
+      const wfSetupSpan = tracer.startSpan("swamp.workflow.setup");
+      let workflow: Workflow;
       let expressionContext: ExpressionContext | undefined;
-
-      if (options?.lastEvaluated) {
-        // Load previously evaluated workflow from cache
-        const evaluatedWorkflowRepo = new YamlEvaluatedWorkflowRepository(
-          this.repoDir,
-        );
-        const lastEvaluated = await evaluatedWorkflowRepo.findByName(
-          workflow.name,
-        );
-        if (!lastEvaluated) {
-          throw new UserError(
-            `No previously evaluated workflow found for "${workflow.name}".\n\n` +
-              `Evaluate the workflow first to generate evaluated data:\n` +
-              `  swamp workflow evaluate ${workflow.name}`,
-          );
-        }
-        // Use the fully evaluated workflow (forEach expanded, expressions resolved)
-        workflow = lastEvaluated;
-
-        // Build a minimal expression context so step outputs can be tracked
-        // and deferred expressions (e.g. model.previous.resource.*) can be
-        // evaluated at step execution time.
-        expressionContext = {
-          model: {},
-          env: buildEnvContext(),
-        };
-        if (options?.inputs) {
-          expressionContext.inputs = options.inputs;
-        }
-      } else {
-        // Build expression context and evaluate workflow
-        expressionContext = await this.modelResolver.buildContext();
-
-        // Add workflow inputs to context
-        if (options?.inputs) {
-          expressionContext.inputs = options.inputs;
-        }
-
-        workflow = await this.evaluateWorkflow(workflow, expressionContext);
-        const evaluatedWorkflowRepo = new YamlEvaluatedWorkflowRepository(
-          this.repoDir,
-        );
-        await evaluatedWorkflowRepo.save(workflow);
-      }
-
-      // Create workflow run with merged tags (runtime tags take precedence)
-      const mergedTags: Record<string, string> = {
-        ...(workflow.tags ?? {}),
-        ...(options?.runtimeTags ?? {}),
-      };
-      const run = WorkflowRun.create(workflow, mergedTags);
-
-      // workflowRunId is set here for backward compat; the structured
-      // run namespace is populated after run.start() below so that
-      // startedAt is available.
-      if (expressionContext) {
-        expressionContext.workflowRunId = run.id;
-      }
-
-      // Create secret redactor — populated during vault resolution, used by log sink and data writers
+      let run: WorkflowRun;
+      let workflowLogPath: string;
+      let workflowLogCategory: string[];
       const secretRedactor = new SecretRedactor();
 
-      // Register run file sink target for the workflow log output
-      const workflowLogPath = join(
-        swampPath(this.repoDir, SWAMP_SUBDIRS.workflowRuns),
-        workflow.id,
-        `workflow-run-${run.id}.log`,
-      );
-      const workflowLogCategory: string[] = [];
-      const workflowLogBoundary = swampPath(this.repoDir);
-      await runFileSink.register(
-        workflowLogCategory,
-        workflowLogPath,
-        secretRedactor,
-        workflowLogBoundary,
-      );
-      run.setLogFile(workflowLogPath);
+      try {
+        // Load repo marker early so the `repo` tier of resolveDriverConfig
+        // (populated below at every step) uses the memoized value.
+        await this.loadRepoMarker();
 
-      // Enrich span with resolved workflow metadata
-      runSpan.setAttribute("workflow.id", workflow.id);
-      runSpan.setAttribute("workflow.run_id", run.id);
+        // Look up workflow
+        const found = await this.lookupWorkflow(idOrName);
+        if (!found) {
+          throw new Error(`Workflow not found: ${idOrName}`);
+        }
+        workflow = found;
 
-      // Start execution
-      run.start();
+        if (options?.lastEvaluated) {
+          // Load previously evaluated workflow from cache
+          const evaluatedWorkflowRepo = new YamlEvaluatedWorkflowRepository(
+            this.repoDir,
+          );
+          const lastEvaluated = await evaluatedWorkflowRepo.findByName(
+            workflow.name,
+          );
+          if (!lastEvaluated) {
+            throw new UserError(
+              `No previously evaluated workflow found for "${workflow.name}".\n\n` +
+                `Evaluate the workflow first to generate evaluated data:\n` +
+                `  swamp workflow evaluate ${workflow.name}`,
+            );
+          }
+          // Use the fully evaluated workflow (forEach expanded, expressions resolved)
+          workflow = lastEvaluated;
 
-      if (expressionContext) {
-        expressionContext.run = {
-          id: run.id,
-          workflowId: workflow.id,
-          workflowName: workflow.name,
-          startedAt: run.startedAt!.toISOString(),
-          tags: { ...run.tags },
+          // Build a minimal expression context so step outputs can be tracked
+          // and deferred expressions (e.g. model.previous.resource.*) can be
+          // evaluated at step execution time.
+          expressionContext = {
+            model: {},
+            env: buildEnvContext(),
+          };
+          if (options?.inputs) {
+            expressionContext.inputs = options.inputs;
+          }
+        } else {
+          // Build expression context and evaluate workflow
+          const buildCtxSpan = tracer.startSpan(
+            "swamp.workflow.build_context",
+          );
+          expressionContext = await this.modelResolver.buildContext();
+          buildCtxSpan.end();
+
+          // Add workflow inputs to context
+          if (options?.inputs) {
+            expressionContext.inputs = options.inputs;
+          }
+
+          workflow = await this.evaluateWorkflow(workflow, expressionContext);
+          const evaluatedWorkflowRepo = new YamlEvaluatedWorkflowRepository(
+            this.repoDir,
+          );
+          await evaluatedWorkflowRepo.save(workflow);
+        }
+
+        // Create workflow run with merged tags (runtime tags take precedence)
+        const mergedTags: Record<string, string> = {
+          ...(workflow.tags ?? {}),
+          ...(options?.runtimeTags ?? {}),
         };
+        run = WorkflowRun.create(workflow, mergedTags);
+
+        // workflowRunId is set here for backward compat; the structured
+        // run namespace is populated after run.start() below so that
+        // startedAt is available.
+        if (expressionContext) {
+          expressionContext.workflowRunId = run.id;
+        }
+
+        // Register run file sink target for the workflow log output
+        workflowLogPath = join(
+          swampPath(this.repoDir, SWAMP_SUBDIRS.workflowRuns),
+          workflow.id,
+          `workflow-run-${run.id}.log`,
+        );
+        workflowLogCategory = [];
+        const workflowLogBoundary = swampPath(this.repoDir);
+        await runFileSink.register(
+          workflowLogCategory,
+          workflowLogPath,
+          secretRedactor,
+          workflowLogBoundary,
+        );
+        run.setLogFile(workflowLogPath);
+
+        // Enrich span with resolved workflow metadata
+        runSpan.setAttribute("workflow.id", workflow.id);
+        runSpan.setAttribute("workflow.run_id", run.id);
+
+        // Start execution
+        run.start();
+
+        if (expressionContext) {
+          expressionContext.run = {
+            id: run.id,
+            workflowId: workflow.id,
+            workflowName: workflow.name,
+            startedAt: run.startedAt!.toISOString(),
+            tags: { ...run.tags },
+          };
+        }
+      } finally {
+        wfSetupSpan.end();
       }
 
       yield {
@@ -1505,28 +1517,42 @@ export class WorkflowExecutionService {
       }
 
       // Complete workflow
-      run.complete();
+      const wfTeardownSpan = tracer.startSpan("swamp.workflow.teardown");
+      try {
+        run.complete();
 
-      // Execute workflow-scope reports before the completed event so the
-      // run aggregate carries the workflow-scope dataArtifacts produced by
-      // those reports — required for `swamp data get --workflow` and
-      // `swamp data list --workflow` to surface them.
-      yield* this.runWorkflowReports(
-        workflow,
-        run,
-        modelInfoByStep,
-        stepStatuses,
-        stepJobNames,
-        dataHandlesByStep,
-        options?.reportFilterOptions,
-      );
+        // Execute workflow-scope reports before the completed event so the
+        // run aggregate carries the workflow-scope dataArtifacts produced by
+        // those reports — required for `swamp data get --workflow` and
+        // `swamp data list --workflow` to surface them.
+        const wfReportsSpan = tracer.startSpan("swamp.workflow.reports");
+        try {
+          yield* this.runWorkflowReports(
+            workflow,
+            run,
+            modelInfoByStep,
+            stepStatuses,
+            stepJobNames,
+            dataHandlesByStep,
+            options?.reportFilterOptions,
+          );
+        } finally {
+          wfReportsSpan.end();
+        }
 
-      yield { kind: "completed", run };
-      await this.saveRun(workflow.id, run);
+        yield { kind: "completed", run };
+        const wfSaveSpan = tracer.startSpan("swamp.workflow.save_run");
+        try {
+          await this.saveRun(workflow.id, run);
+        } finally {
+          wfSaveSpan.end();
+        }
 
-      // Unregister workflow log file sink
-      runFileSink.unregister(workflowLogCategory);
-
+        // Unregister workflow log file sink
+        runFileSink.unregister(workflowLogCategory);
+      } finally {
+        wfTeardownSpan.end();
+      }
       runSpan.setStatus({ code: SpanStatusCode.OK });
     } catch (error) {
       runSpan.setStatus({

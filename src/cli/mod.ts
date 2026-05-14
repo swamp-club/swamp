@@ -125,7 +125,7 @@ import { UpdatePreferencesFileRepository } from "../infrastructure/update/update
 import { AutoupdateLogFileRepository } from "../infrastructure/update/autoupdate_log_file_repository.ts";
 import { getOutputModeFromArgs, isQuietFromArgs } from "./context.ts";
 import { flushDatastoreSync } from "../infrastructure/persistence/datastore_sync_coordinator.ts";
-import { withSpan } from "../infrastructure/tracing/mod.ts";
+import { getTracer, withSpan } from "../infrastructure/tracing/mod.ts";
 import {
   collectDirsForKind,
   expandSourcePaths,
@@ -1019,6 +1019,8 @@ export async function runCli(args: string[]): Promise<void> {
   // Extract command info for telemetry (before parsing)
   const commandInfo = extractCommandInfo(args);
 
+  const bootstrapSpan = getTracer().startSpan("swamp.cli.bootstrap");
+
   // Initialize telemetry service (only if in a swamp repo)
   let telemetryCtx: TelemetryContext | null = null;
   if (!telemetryDisabled) {
@@ -1058,6 +1060,9 @@ export async function runCli(args: string[]): Promise<void> {
   // by the time ensureLoaded() runs inside command .action() handlers).
   const deferredWarnings: DeferredWarning[] = [];
   if (commandNeedsLoaderSetup(args)) {
+    const loaderSpan = getTracer().startSpan(
+      "swamp.cli.configure_extension_loaders",
+    );
     await configureExtensionLoaders(
       repoDir,
       marker,
@@ -1065,6 +1070,7 @@ export async function runCli(args: string[]): Promise<void> {
       deferredWarnings,
       isQuietFromArgs(args),
     );
+    loaderSpan.end();
   }
 
   // Load cached auth collectives for membership-based trust
@@ -1177,6 +1183,8 @@ export async function runCli(args: string[]): Promise<void> {
   // Register help command last — needs reference to the fully-built CLI tree
   cli.command("help", createHelpCommand(cli));
 
+  bootstrapSpan.end();
+
   try {
     await withSpan("swamp.cli", {
       "swamp.command": commandInfo.command,
@@ -1190,109 +1198,114 @@ export async function runCli(args: string[]): Promise<void> {
     });
 
     // Flush datastore sync (push to S3 + release lock)
-    await flushDatastoreSync();
+    const teardownSpan = getTracer().startSpan("swamp.cli.teardown");
+    try {
+      await flushDatastoreSync();
 
-    // Record successful invocation
-    if (telemetryCtx) {
-      await telemetryCtx.service.recordSuccess(commandInfo, startTime);
+      // Record successful invocation
+      if (telemetryCtx) {
+        await telemetryCtx.service.recordSuccess(commandInfo, startTime);
 
-      // Flush telemetry to remote endpoint with a 2-second cancellation
-      // timeout. If the endpoint is slow or unreachable, data stays local
-      // and will be flushed on the next invocation.
-      const sender = new HttpTelemetrySender(telemetryCtx.telemetryEndpoint);
-      await telemetryCtx.service.flushTelemetry({
-        sender,
-        distinctId: telemetryCtx.userId ?? telemetryCtx.repoId,
-        repoId: telemetryCtx.repoId,
-        authToken: telemetryCtx.authToken ?? undefined,
-        keepFlushed: telemetryCtx.keepFlushed,
-        signal: AbortSignal.timeout(2000),
-      });
+        // Flush telemetry to remote endpoint with a 2-second cancellation
+        // timeout. If the endpoint is slow or unreachable, data stays local
+        // and will be flushed on the next invocation.
+        const sender = new HttpTelemetrySender(telemetryCtx.telemetryEndpoint);
+        await telemetryCtx.service.flushTelemetry({
+          sender,
+          distinctId: telemetryCtx.userId ?? telemetryCtx.repoId,
+          repoId: telemetryCtx.repoId,
+          authToken: telemetryCtx.authToken ?? undefined,
+          keepFlushed: telemetryCtx.keepFlushed,
+          signal: AbortSignal.timeout(2000),
+        });
 
-      // Trigger cleanup asynchronously (fire-and-forget)
-      telemetryCtx.service.cleanupOldTelemetry();
-    }
+        // Trigger cleanup asynchronously (fire-and-forget)
+        telemetryCtx.service.cleanupOldTelemetry();
+      }
 
-    // Proactive update notification (after telemetry, before exit)
-    if (!isUpdateCheckDisabledByEnv() && !isDevBuild(VERSION)) {
-      const outputMode = getOutputModeFromArgs(args);
-      const commandName = commandInfo.command;
+      // Proactive update notification (after telemetry, before exit)
+      if (!isUpdateCheckDisabledByEnv() && !isDevBuild(VERSION)) {
+        const outputMode = getOutputModeFromArgs(args);
+        const commandName = commandInfo.command;
 
-      if (outputMode === "log" && commandName !== "update") {
-        try {
-          const prefsRepo = new UpdatePreferencesFileRepository();
-          const prefs = await prefsRepo.read();
+        if (outputMode === "log" && commandName !== "update") {
+          try {
+            const prefsRepo = new UpdatePreferencesFileRepository();
+            const prefs = await prefsRepo.read();
 
-          if (prefs.enabled) {
-            const logRepo = new AutoupdateLogFileRepository();
-            const entries = await logRepo.readAll();
-            let prefsChanged = false;
-            const updatedPrefs = { ...prefs };
+            if (prefs.enabled) {
+              const logRepo = new AutoupdateLogFileRepository();
+              const entries = await logRepo.readAll();
+              let prefsChanged = false;
+              const updatedPrefs = { ...prefs };
 
-            // Show post-autoupdate notice once after background upgrade
-            if (prefs.notifiedVersion !== VERSION) {
-              const lastUpdate = entries.findLast((e) =>
-                e.outcome === "updated" && e.versionAfter
-              );
-              if (lastUpdate && lastUpdate.versionAfter === VERSION) {
-                console.error(
-                  `\nℹ swamp was auto-updated from ${lastUpdate.versionBefore} → ${lastUpdate.versionAfter}`,
+              // Show post-autoupdate notice once after background upgrade
+              if (prefs.notifiedVersion !== VERSION) {
+                const lastUpdate = entries.findLast((e) =>
+                  e.outcome === "updated" && e.versionAfter
                 );
-              }
-              updatedPrefs.notifiedVersion = VERSION;
-              prefsChanged = true;
-            }
-
-            // Warn if background autoupdate is failing due to permissions
-            // (throttled to at most once per 24h to avoid alarm fatigue)
-            const lastEntry = entries.length > 0
-              ? entries[entries.length - 1]
-              : null;
-            if (
-              lastEntry?.outcome === "error" && lastEntry.error &&
-              lastEntry.error.toLowerCase().includes("permission denied")
-            ) {
-              const lastWarned = updatedPrefs.lastPermissionWarning;
-              const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
-              if (!lastWarned || new Date(lastWarned).getTime() < oneDayAgo) {
-                const binaryPath = Deno.execPath();
-                console.error(
-                  `\n⚠ Background autoupdate is failing: ${binaryPath} is not writable by your user.` +
-                    `\n  Run \`sudo swamp update\` to update manually, or \`sudo chown $(whoami) ${binaryPath}\` to fix.` +
-                    `\n  Disable with: swamp update --setup-auto disable`,
-                );
-                updatedPrefs.lastPermissionWarning = new Date().toISOString();
+                if (lastUpdate && lastUpdate.versionAfter === VERSION) {
+                  console.error(
+                    `\nℹ swamp was auto-updated from ${lastUpdate.versionBefore} → ${lastUpdate.versionAfter}`,
+                  );
+                }
+                updatedPrefs.notifiedVersion = VERSION;
                 prefsChanged = true;
               }
+
+              // Warn if background autoupdate is failing due to permissions
+              // (throttled to at most once per 24h to avoid alarm fatigue)
+              const lastEntry = entries.length > 0
+                ? entries[entries.length - 1]
+                : null;
+              if (
+                lastEntry?.outcome === "error" && lastEntry.error &&
+                lastEntry.error.toLowerCase().includes("permission denied")
+              ) {
+                const lastWarned = updatedPrefs.lastPermissionWarning;
+                const oneDayAgo = Date.now() - 24 * 60 * 60 * 1000;
+                if (!lastWarned || new Date(lastWarned).getTime() < oneDayAgo) {
+                  const binaryPath = Deno.execPath();
+                  console.error(
+                    `\n⚠ Background autoupdate is failing: ${binaryPath} is not writable by your user.` +
+                      `\n  Run \`sudo swamp update\` to update manually, or \`sudo chown $(whoami) ${binaryPath}\` to fix.` +
+                      `\n  Disable with: swamp update --setup-auto disable`,
+                  );
+                  updatedPrefs.lastPermissionWarning = new Date().toISOString();
+                  prefsChanged = true;
+                }
+              }
+
+              if (prefsChanged) {
+                await prefsRepo.write(updatedPrefs);
+              }
             }
 
-            if (prefsChanged) {
-              await prefsRepo.write(updatedPrefs);
+            // Skip the "run swamp update" banner if autoupdate handles it
+            if (!prefs.enabled) {
+              const cacheRepo = new UpdateCheckCacheFileRepository();
+              const checker = new HttpUpdateChecker();
+              const service = new UpdateNotificationService(
+                VERSION,
+                cacheRepo,
+                checker,
+              );
+
+              const notification = await service.getNotification();
+              if (notification) {
+                renderUpdateNotification(notification);
+              }
+
+              const platform = Platform.detect();
+              service.backgroundCheck(platform);
             }
+          } catch {
+            // Silently ignore — never break the CLI for update checks
           }
-
-          // Skip the "run swamp update" banner if autoupdate handles it
-          if (!prefs.enabled) {
-            const cacheRepo = new UpdateCheckCacheFileRepository();
-            const checker = new HttpUpdateChecker();
-            const service = new UpdateNotificationService(
-              VERSION,
-              cacheRepo,
-              checker,
-            );
-
-            const notification = await service.getNotification();
-            if (notification) {
-              renderUpdateNotification(notification);
-            }
-
-            const platform = Platform.detect();
-            service.backgroundCheck(platform);
-          }
-        } catch {
-          // Silently ignore — never break the CLI for update checks
         }
       }
+    } finally {
+      teardownSpan.end();
     }
   } catch (error) {
     // Release datastore lock even on failure (don't leave locks stuck).
