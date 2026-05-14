@@ -329,7 +329,12 @@ export async function* doctorExtensions(
 
     yield {
       kind: "kind-completed",
-      result: { registry: reg.registry, status: "pass" },
+      result: {
+        registry: reg.registry,
+        status: loaderErrors.has(reg.registry)
+          ? "fail" as const
+          : "pass" as const,
+      },
     };
   }
 

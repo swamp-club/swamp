@@ -397,18 +397,24 @@ export class ExtensionLoader {
         }
       }
 
+      let localFallback: import("./extension.ts").Extension | undefined;
       const kindDir = extensionKindToKindDir(this.adapter.kind);
       for (const failure of fullResult.failed) {
         const resolveDir = failure.baseDir ?? dir;
         const absolutePath = resolve(resolveDir, failure.file);
         const loc = makeSourceLocation(absolutePath, this.repoDir);
         const extIdx = coldIndex.get(loc.canonicalPath);
-        const ext = extIdx !== undefined ? coldExtensions[extIdx] : undefined;
+        let ext = extIdx !== undefined ? coldExtensions[extIdx] : undefined;
 
-        const existingSource = ext
-          ? findSourceByPath(ext, loc.canonicalPath)
-          : undefined;
+        if (!ext) {
+          localFallback ??= makeLocalExtension({
+            repoRoot: this.repoDir,
+            basename: this.adapter.kind,
+          });
+          ext = localFallback;
+        }
 
+        const existingSource = findSourceByPath(ext, loc.canonicalPath);
         if (
           existingSource &&
           existingSource.state.tag !== "Indexed" &&
@@ -426,13 +432,8 @@ export class ExtensionLoader {
         const stat = await Deno.stat(absolutePath).catch(() => null);
         const sourceMtime = stat?.mtime?.toISOString() ?? "";
 
-        const targetExt = ext ?? makeLocalExtension({
-          repoRoot: this.repoDir,
-          basename: this.adapter.kind,
-        });
-
         const failResult = recordSourceFailure({
-          extension: targetExt,
+          extension: ext,
           location: existingSource?.id ?? loc,
           kindDir,
           error: failure.originalError ?? new Error(failure.error),
@@ -440,7 +441,22 @@ export class ExtensionLoader {
           fingerprint: failFp,
           sourceMtime,
         });
-        repository.saveAll([failResult.extension]);
+
+        if (extIdx !== undefined) {
+          coldExtensions[extIdx] = failResult.extension;
+        } else {
+          localFallback = failResult.extension;
+        }
+      }
+
+      const toSave = [
+        ...new Map(
+          coldExtensions.map((e) => [`${e.name}::${e.version}`, e]),
+        ).values(),
+      ];
+      if (localFallback) toSave.push(localFallback);
+      if (toSave.length > 0) {
+        repository.saveAll(toSave);
       }
     }
 

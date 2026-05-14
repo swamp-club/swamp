@@ -138,10 +138,11 @@ function renderAggregateStateLog(
         ? dim(` fp:${detail.fingerprint.slice(0, 12)}`)
         : "";
       const bp = detail.bundlePath ? dim(` bundle:${detail.bundlePath}`) : "";
+      const le = detail.lastError ? dim(`: ${detail.lastError}`) : "";
       writeOutput(
         `  ${dim(detail.kind)} ${detail.sourcePath}  ${
           colorFn(detail.stateTag)
-        }${fp}${bp}`,
+        }${le}${fp}${bp}`,
       );
     }
   }
@@ -271,7 +272,7 @@ class LogDoctorExtensionsRenderer implements DoctorExtensionsRenderer {
                 ? `: ${detail.lastError}`
                 : "";
               writeOutput(
-                `    ${yellow("•")} ${detail.sourcePath} ${
+                `    ${yellow("•")} ${dim(detail.kind)} ${detail.sourcePath} ${
                   red(detail.stateTag)
                 }${errorSuffix}`,
               );
@@ -385,9 +386,9 @@ class JsonDoctorExtensionsRenderer implements DoctorExtensionsRenderer {
         if (e.report.repairReport) {
           output.repairReport = e.report.repairReport;
         }
-        if (e.report.loaderErrors && e.report.loaderErrors.size > 0) {
-          output.loaderErrors = Object.fromEntries(e.report.loaderErrors);
-        }
+        output.loaderErrors = e.report.loaderErrors
+          ? Object.fromEntries(e.report.loaderErrors)
+          : {};
         output.recentTransitions = e.report.recentTransitions.map((t) => ({
           sourcePath: t.source.canonicalPath,
           fromState: t.fromState,
