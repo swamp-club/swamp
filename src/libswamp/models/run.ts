@@ -64,7 +64,10 @@ import { getObjectShape } from "../../domain/models/zod_type_coercion.ts";
 import { withEventBridge } from "../../infrastructure/stream/event_bridge.ts";
 import type { MethodResult } from "../../domain/models/model.ts";
 import { getRunLogger } from "../../infrastructure/logging/logger.ts";
-import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
+import {
+  getTracer,
+  withGeneratorSpan,
+} from "../../infrastructure/tracing/mod.ts";
 import { resolveOrCreateDefinition } from "./direct_execution.ts";
 
 /**
@@ -418,6 +421,7 @@ export async function* modelMethodRun(
       }
 
       // --- Set up logging ---
+      const setupSpan = getTracer().startSpan("swamp.model.method.setup");
       const runLog = await deps.createRunLog(
         modelType,
         input.methodName,
@@ -427,6 +431,9 @@ export async function* modelMethodRun(
 
       try {
         // --- Evaluate expressions ---
+        const exprSpan = getTracer().startSpan(
+          "swamp.model.method.evaluate_expressions",
+        );
         yield {
           kind: "evaluating_expressions",
           lastEvaluated: input.lastEvaluated,
@@ -441,6 +448,8 @@ export async function* modelMethodRun(
             definition.name,
           );
           if (!lastEval) {
+            exprSpan.end();
+            setupSpan.end();
             yield {
               kind: "error",
               error: noEvaluatedDefinition(definition.name),
@@ -487,6 +496,8 @@ export async function* modelMethodRun(
             );
             if (unknownKeys.length > 0) {
               const validInputs = Object.keys(shape).join(", ");
+              exprSpan.end();
+              setupSpan.end();
               yield {
                 kind: "error",
                 error: validationFailed(
@@ -502,6 +513,8 @@ export async function* modelMethodRun(
           }
         }
 
+        exprSpan.end();
+
         // Capture pre-vault args for report context (so vault secrets stay as expressions)
         const reportGlobalArgs = evaluatedDefinition.globalArguments;
         const reportMethodArgs = evaluatedDefinition.getMethodArguments(
@@ -510,6 +523,9 @@ export async function* modelMethodRun(
 
         // Resolve runtime expressions (vault and env).
         // Vault secrets become sentinel tokens; the secretBag maps sentinels to raw values.
+        const runtimeSpan = getTracer().startSpan(
+          "swamp.model.method.resolve_runtime",
+        );
         const runtimeResult = await evaluationService
           .resolveRuntimeExpressionsInDefinition(evaluatedDefinition, redactor);
         evaluatedDefinition = runtimeResult.definition;
@@ -540,6 +556,8 @@ export async function* modelMethodRun(
           }
         }
 
+        runtimeSpan.end();
+
         // --- Execute ---
         yield {
           kind: "executing",
@@ -548,6 +566,9 @@ export async function* modelMethodRun(
         };
 
         // Create ModelOutput for tracking
+        const preExecSpan = getTracer().startSpan(
+          "swamp.model.method.pre_execute",
+        );
         const definitionHash = await definition.computeHash();
         const output = ModelOutput.create({
           definitionId: definition.id,
@@ -601,6 +622,9 @@ export async function* modelMethodRun(
               )) as Record<string, unknown>,
           }
           : resolvedDriverPre;
+
+        preExecSpan.end();
+        setupSpan.end();
 
         let execResult: MethodResult;
         try {
@@ -764,6 +788,9 @@ export async function* modelMethodRun(
         }
 
         // --- Process data artifacts ---
+        const postExecSpan = getTracer().startSpan(
+          "swamp.model.method.post_execute",
+        );
         const dataArtifacts: DataArtifactView[] = [];
         if (execResult.dataHandles && execResult.dataHandles.length > 0) {
           for (const handle of execResult.dataHandles) {
@@ -819,6 +846,9 @@ export async function* modelMethodRun(
         await deps.outputRepo.save(modelType, input.methodName, output);
 
         // --- Post-run reports ---
+        const reportsSpan = getTracer().startSpan(
+          "swamp.model.method.reports",
+        );
         let reportResults: Record<string, ReportResultView> | undefined;
         let reportFailures = 0;
 
@@ -957,6 +987,9 @@ export async function* modelMethodRun(
           }
           reportFailures += modelSummary.failures;
         }
+
+        reportsSpan.end();
+        postExecSpan.end();
 
         // --- Complete ---
         const view: ModelMethodRunView = {
