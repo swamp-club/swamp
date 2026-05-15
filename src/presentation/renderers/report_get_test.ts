@@ -282,6 +282,103 @@ Deno.test("report get markdown renderer - shows workflow source", () => {
   }
 });
 
+Deno.test("report get log renderer - passes width options through", () => {
+  const output: string[] = [];
+  const origLog = console.log;
+  console.log = (msg: string) => output.push(msg);
+
+  try {
+    const renderer = createReportGetRenderer("log", { maxColWidth: 10 });
+    const handlers = renderer.handlers();
+    handlers.completed({
+      kind: "completed",
+      data: {
+        reportName: "test-report",
+        reportScope: "model",
+        modelId: "test-id",
+        modelName: "my-ec2",
+        modelType: "aws/ec2",
+        version: 1,
+        createdAt: "2026-01-15T10:00:00.000Z",
+        dataName: "report-test",
+        markdown:
+          "| Name | Value |\n| --- | --- |\n| ok | abcdefghijklmnopqrstuvwxyz |",
+        json: {},
+      },
+    });
+
+    const combined = output.join("\n");
+    assertStringIncludes(combined, "test-report");
+    assertStringIncludes(combined, "ok");
+  } finally {
+    console.log = origLog;
+  }
+});
+
+Deno.test("report get markdown renderer - applies maxColWidth to table cells", () => {
+  const output: string[] = [];
+  const origLog = console.log;
+  console.log = (msg: string) => output.push(msg);
+
+  try {
+    const renderer = createReportGetRenderer("markdown", { maxColWidth: 10 });
+    const handlers = renderer.handlers();
+    handlers.completed({
+      kind: "completed",
+      data: {
+        reportName: "test-report",
+        reportScope: "model",
+        modelId: "test-id",
+        modelName: "my-ec2",
+        modelType: "aws/ec2",
+        version: 1,
+        createdAt: "2026-01-15T10:00:00.000Z",
+        dataName: "report-test",
+        markdown:
+          "| Name | Value |\n| --- | --- |\n| ok | abcdefghijklmnopqrstuvwxyz |",
+        json: {},
+      },
+    });
+
+    const combined = output.join("\n");
+    assertStringIncludes(combined, "…");
+  } finally {
+    console.log = origLog;
+  }
+});
+
+Deno.test("report get json renderer - ignores width options", () => {
+  const output: string[] = [];
+  const origLog = console.log;
+  console.log = (msg: string) => output.push(msg);
+
+  try {
+    const renderer = createReportGetRenderer("json", { maxColWidth: 10 });
+    const handlers = renderer.handlers();
+    handlers.completed({
+      kind: "completed",
+      data: {
+        reportName: "test-report",
+        reportScope: "model",
+        modelId: "test-id",
+        modelName: "my-ec2",
+        modelType: "aws/ec2",
+        version: 1,
+        createdAt: "2026-01-15T10:00:00.000Z",
+        dataName: "report-test",
+        markdown:
+          "| Name | Value |\n| --- | --- |\n| ok | abcdefghijklmnopqrstuvwxyz |",
+        json: {},
+      },
+    });
+
+    const parsed = JSON.parse(output[0]);
+    assertStringIncludes(parsed.markdown, "abcdefghijklmnopqrstuvwxyz");
+  } finally {
+    console.log = origLog;
+  }
+});
+
 Deno.test("report get renderer - throws on error", () => {
   const renderer = createReportGetRenderer("log");
   const handlers = renderer.handlers();

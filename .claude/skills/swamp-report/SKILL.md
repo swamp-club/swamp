@@ -44,6 +44,8 @@ up-to-date CLI schema.
 | Workflow skip reports    | `swamp workflow run <workflow> --skip-reports`                    |
 | Get stored report        | `swamp report get <report-name> --model <model> --json`           |
 | Get report as markdown   | `swamp report get <report-name> --model <model> --markdown`       |
+| Cap total output width   | `swamp report get <report-name> --model <model> --max-width 120`  |
+| Cap column width         | `swamp report get <report-name> --max-col-width 60`               |
 
 ## End-to-End Workflow
 
@@ -196,39 +198,13 @@ swamp data get my-model report-cost-estimate --json
 
 ## Output
 
-**Log mode** (default): renders report markdown with terminal formatting plus a
-pass/fail summary. The built-in `@swamp/method-summary` markdown is compact —
-narrative + retrieval hint only.
+Three output modes: **log** (default, terminal-formatted), **markdown**
+(`--markdown`, raw pipe-tables for pasting), **JSON** (`--json`, structured
+detail for agents).
 
-**Markdown mode** (`--markdown`): raw markdown output with no ANSI escape
-sequences or box-drawing characters. Use for pasting into GitHub PRs, Linear
-tickets, wikis, or saving to `.md` files. Mutually exclusive with `--json`.
-Retrieve with `swamp report get <name> --model <model> --markdown`.
-
-**JSON mode** (`--json`): full structured detail for agents. The built-in
-`@swamp/method-summary` JSON includes narrative, output schema, and data
-pointers grouped by spec. Retrieve with
-`swamp report get <name> --model <model> --json`.
-
-JSON output shape:
-
-```json
-{
-  "outputId": "...",
-  "modelName": "my-vpc",
-  "method": "create",
-  "status": "succeeded",
-  "reports": {
-    "cost-estimate": {
-      "modelName": "my-vpc",
-      "method": "create",
-      "status": "succeeded"
-    }
-  }
-}
-```
-
-Failed reports appear as `{ "_error": "error message" }`.
+**Width controls** (log and markdown modes): `--max-width N` caps total output
+width. `--max-col-width N` truncates individual table columns with `…`. Both
+combine. Env vars: `SWAMP_REPORT_MAX_WIDTH`, `SWAMP_REPORT_MAX_COL_WIDTH`.
 
 ## When to Use Other Skills
 

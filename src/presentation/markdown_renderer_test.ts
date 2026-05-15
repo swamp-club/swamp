@@ -17,10 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertStringIncludes } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
   renderMarkdownPlain,
   renderMarkdownToTerminal,
+  truncateMarkdownTableCells,
 } from "./markdown_renderer.ts";
 
 Deno.test("renderMarkdownToTerminal - renders heading", () => {
@@ -55,4 +56,58 @@ Deno.test("renderMarkdownPlain - returns markdown unchanged", () => {
   const result = renderMarkdownPlain(md);
   assertStringIncludes(result, "# Hello");
   assertStringIncludes(result, "**bold**");
+});
+
+Deno.test("renderMarkdownPlain - applies maxColWidth to table cells", () => {
+  const md =
+    "| Name | Description |\n| --- | --- |\n| short | This is a very long description that exceeds the limit |";
+  const result = renderMarkdownPlain(md, { maxColWidth: 20 });
+  assertStringIncludes(result, "…");
+  assertStringIncludes(result, "| short |");
+});
+
+Deno.test("truncateMarkdownTableCells: truncates wide cells with ellipsis", () => {
+  const md =
+    "| Name | Value |\n| --- | --- |\n| ok | abcdefghijklmnopqrstuvwxyz |";
+  const result = truncateMarkdownTableCells(md, 10);
+  assertStringIncludes(result, "abcdefghi…");
+  assertStringIncludes(result, "| ok |");
+});
+
+Deno.test("truncateMarkdownTableCells: preserves cells within limit", () => {
+  const md = "| A | B |\n| --- | --- |\n| short | tiny |";
+  const result = truncateMarkdownTableCells(md, 20);
+  assertEquals(result, md);
+});
+
+Deno.test("truncateMarkdownTableCells: preserves non-table content", () => {
+  const md = "# Title\n\nSome paragraph text that is quite long.\n\n- a list";
+  const result = truncateMarkdownTableCells(md, 10);
+  assertEquals(result, md);
+});
+
+Deno.test("truncateMarkdownTableCells: skips separator rows", () => {
+  const md = "| A | B |\n| --- | --- |\n| x | y |";
+  const result = truncateMarkdownTableCells(md, 5);
+  assertStringIncludes(result, "| --- | --- |");
+});
+
+Deno.test("truncateMarkdownTableCells: handles pipes in code spans", () => {
+  const md = "| Code | Result |\n| --- | --- |\n| `a|b` | ok |";
+  const result = truncateMarkdownTableCells(md, 20);
+  assertStringIncludes(result, "`a|b`");
+});
+
+Deno.test("renderMarkdownToTerminal - applies maxColWidth before rendering", () => {
+  const md =
+    "| Name | Description |\n| --- | --- |\n| ok | abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz |";
+  const result = renderMarkdownToTerminal(md, { maxColWidth: 15 });
+  assertStringIncludes(result, "ok");
+});
+
+Deno.test("renderMarkdownToTerminal - default behavior unchanged without options", () => {
+  const md = "# Test\n\n**bold**";
+  const withOpts = renderMarkdownToTerminal(md);
+  const withoutOpts = renderMarkdownToTerminal(md, undefined);
+  assertEquals(withOpts, withoutOpts);
 });
