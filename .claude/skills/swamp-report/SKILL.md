@@ -44,6 +44,8 @@ up-to-date CLI schema.
 | Workflow skip reports    | `swamp workflow run <workflow> --skip-reports`                    |
 | Get stored report        | `swamp report get <report-name> --model <model> --json`           |
 | Get report as markdown   | `swamp report get <report-name> --model <model> --markdown`       |
+| Cap total output width   | `swamp report get <report-name> --model <model> --max-width 120`  |
+| Cap column width         | `swamp report get <report-name> --max-col-width 60`               |
 
 ## End-to-End Workflow
 
@@ -204,6 +206,13 @@ narrative + retrieval hint only.
 sequences or box-drawing characters. Use for pasting into GitHub PRs, Linear
 tickets, wikis, or saving to `.md` files. Mutually exclusive with `--json`.
 Retrieve with `swamp report get <name> --model <model> --markdown`.
+
+**Width controls**: `--max-width N` caps total output width (tables and reflowed
+text) at N columns. `--max-col-width N` caps individual table columns,
+truncating cells with `…`. Both can combine — `--max-col-width` truncates cells
+first, then `--max-width` constrains total width. Set defaults via
+`SWAMP_REPORT_MAX_WIDTH` and `SWAMP_REPORT_MAX_COL_WIDTH` environment variables.
+Width controls apply to both log and markdown output modes.
 
 **JSON mode** (`--json`): full structured detail for agents. The built-in
 `@swamp/method-summary` JSON includes narrative, output schema, and data

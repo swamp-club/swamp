@@ -33,9 +33,14 @@ import {
   type ReportGetDeps,
 } from "../../libswamp/mod.ts";
 import { createReportGetRenderer } from "../../presentation/renderers/report_get.ts";
+import { UserError } from "../../domain/errors.ts";
+import type { WidthOptions } from "../../presentation/markdown_renderer.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
+
+const MIN_MAX_WIDTH = 20;
+const MIN_MAX_COL_WIDTH = 5;
 
 export const reportGetCommand = new Command()
   .name("get")
@@ -52,6 +57,14 @@ export const reportGetCommand = new Command()
   .example(
     "Output as markdown",
     "swamp report get cost-summary --model my-server --markdown > report.md",
+  )
+  .example(
+    "Cap total table width",
+    "swamp report get cost-summary --max-width 120",
+  )
+  .example(
+    "Cap individual column width",
+    "swamp report get cost-summary --max-col-width 60",
   )
   .arguments("<report_name:string>")
   .option(
@@ -72,8 +85,18 @@ export const reportGetCommand = new Command()
       conflicts: ["json"],
     },
   )
+  .option(
+    "--max-width <width:number>",
+    "Cap total output width in columns (env: SWAMP_REPORT_MAX_WIDTH)",
+  )
+  .option(
+    "--max-col-width <width:number>",
+    "Cap individual table column width in characters (env: SWAMP_REPORT_MAX_COL_WIDTH)",
+  )
   .action(async function (options: AnyOptions, reportName: string) {
     const ctx = createContext(options as GlobalOptions, ["report", "get"]);
+
+    const widthOptions = resolveWidthOptions(options);
 
     const { repoContext } = await requireInitializedRepoReadOnly({
       repoDir: resolveRepoDir(options.repoDir),
@@ -110,7 +133,7 @@ export const reportGetCommand = new Command()
 
     const libCtx = createLibSwampContext({ logger: ctx.logger });
     const reportMode = options.markdown ? "markdown" as const : ctx.outputMode;
-    const renderer = createReportGetRenderer(reportMode);
+    const renderer = createReportGetRenderer(reportMode, widthOptions);
 
     await consumeStream(
       reportGet(libCtx, deps, {
@@ -125,3 +148,40 @@ export const reportGetCommand = new Command()
 
     ctx.logger.debug("Report get command completed");
   });
+
+function resolveWidthOptions(
+  options: AnyOptions,
+): WidthOptions | undefined {
+  const maxWidthRaw = options.maxWidth as number | undefined ??
+    parseEnvInt("SWAMP_REPORT_MAX_WIDTH");
+  const maxColWidthRaw = options.maxColWidth as number | undefined ??
+    parseEnvInt("SWAMP_REPORT_MAX_COL_WIDTH");
+
+  if (maxWidthRaw !== undefined && maxWidthRaw < MIN_MAX_WIDTH) {
+    throw new UserError(
+      `--max-width must be at least ${MIN_MAX_WIDTH}, got ${maxWidthRaw}`,
+    );
+  }
+  if (maxColWidthRaw !== undefined && maxColWidthRaw < MIN_MAX_COL_WIDTH) {
+    throw new UserError(
+      `--max-col-width must be at least ${MIN_MAX_COL_WIDTH}, got ${maxColWidthRaw}`,
+    );
+  }
+
+  if (maxWidthRaw === undefined && maxColWidthRaw === undefined) {
+    return undefined;
+  }
+
+  return {
+    maxWidth: maxWidthRaw,
+    maxColWidth: maxColWidthRaw,
+  };
+}
+
+function parseEnvInt(name: string): number | undefined {
+  const raw = Deno.env.get(name);
+  if (raw === undefined) return undefined;
+  const n = parseInt(raw, 10);
+  if (isNaN(n)) return undefined;
+  return n;
+}

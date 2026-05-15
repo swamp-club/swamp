@@ -25,11 +25,14 @@ import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import {
   renderMarkdownPlain,
   renderMarkdownToTerminal,
+  type WidthOptions,
 } from "../markdown_renderer.ts";
 
 type ReportOutputMode = OutputMode | "markdown";
 
 class LogReportGetRenderer implements Renderer<ReportGetEvent> {
+  constructor(private widthOptions?: WidthOptions) {}
+
   handlers(): EventHandlers<ReportGetEvent> {
     return {
       resolving: () => {},
@@ -45,7 +48,7 @@ class LogReportGetRenderer implements Renderer<ReportGetEvent> {
         writeOutput(
           `${separator}\n  ${r.reportName}  |  ${source}  |  Scope: ${r.reportScope}${varySuffixLabel}  |  v${r.version}  |  ${r.createdAt}\n${separator}`,
         );
-        writeOutput(renderMarkdownToTerminal(r.markdown));
+        writeOutput(renderMarkdownToTerminal(r.markdown, this.widthOptions));
       },
       error: (e) => {
         throw new UserError(e.error.message);
@@ -69,6 +72,8 @@ class JsonReportGetRenderer implements Renderer<ReportGetEvent> {
 }
 
 class MarkdownReportGetRenderer implements Renderer<ReportGetEvent> {
+  constructor(private widthOptions?: WidthOptions) {}
+
   handlers(): EventHandlers<ReportGetEvent> {
     return {
       resolving: () => {},
@@ -83,7 +88,7 @@ class MarkdownReportGetRenderer implements Renderer<ReportGetEvent> {
         writeOutput(
           `## ${r.reportName}\n\n${source}  |  Scope: ${r.reportScope}${varySuffixLabel}  |  v${r.version}  |  ${r.createdAt}\n`,
         );
-        writeOutput(renderMarkdownPlain(r.markdown));
+        writeOutput(renderMarkdownPlain(r.markdown, this.widthOptions));
       },
       error: (e) => {
         throw new UserError(e.error.message);
@@ -94,13 +99,14 @@ class MarkdownReportGetRenderer implements Renderer<ReportGetEvent> {
 
 export function createReportGetRenderer(
   mode: ReportOutputMode,
+  widthOptions?: WidthOptions,
 ): Renderer<ReportGetEvent> {
   switch (mode) {
     case "json":
       return new JsonReportGetRenderer();
     case "markdown":
-      return new MarkdownReportGetRenderer();
+      return new MarkdownReportGetRenderer(widthOptions);
     case "log":
-      return new LogReportGetRenderer();
+      return new LogReportGetRenderer(widthOptions);
   }
 }
