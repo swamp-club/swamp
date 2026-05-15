@@ -446,6 +446,7 @@ export class ReconcileFromDiskService {
           absolutePath,
           relativePath,
           baseDir,
+          trustPulledCache: originType === "pulled",
         });
         if (!out) continue;
 
@@ -562,6 +563,7 @@ export class ReconcileFromDiskService {
       absolutePath: string;
       relativePath: string;
       baseDir: string;
+      trustPulledCache?: boolean;
     }) => Promise<
       | {
         kind:

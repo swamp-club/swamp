@@ -153,6 +153,7 @@ export class ExtensionLoader {
           file,
           denoPath,
           baseDir,
+          { trustPulledCache: true },
         );
         if (fromCache) {
           this.logger
@@ -530,6 +531,7 @@ export class ExtensionLoader {
     absolutePath: string;
     relativePath: string;
     baseDir: string;
+    trustPulledCache?: boolean;
   }): Promise<BundleIndexResult | null> {
     const source = await Deno.readTextFile(args.absolutePath);
     if (!this.adapter.exportRegex.test(source)) {
@@ -543,6 +545,7 @@ export class ExtensionLoader {
       args.relativePath,
       denoPath,
       args.baseDir,
+      { trustPulledCache: args.trustPulledCache },
     );
     const fingerprint = await computeSourceFingerprint(
       args.absolutePath,
@@ -934,6 +937,7 @@ export class ExtensionLoader {
     relativePath: string,
     denoPath: string,
     boundaryDir: string,
+    options?: { trustPulledCache?: boolean },
   ): Promise<BundleResult> {
     if (this.repoDir) {
       const bundlePath = this.resolveBundlePath(
@@ -956,7 +960,8 @@ export class ExtensionLoader {
         );
       if (
         bundleExists && isPulled &&
-        isExpectedBundleFailure(absolutePath, this.repoDir)
+        (options?.trustPulledCache ||
+          isExpectedBundleFailure(absolutePath, this.repoDir))
       ) {
         return { js: await Deno.readTextFile(bundlePath), fromCache: true };
       }
