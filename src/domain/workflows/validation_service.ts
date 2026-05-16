@@ -66,9 +66,19 @@ export class WorkflowValidationResult {
 
 /**
  * Result of resolving a method's required arguments.
+ *
+ * `definitionProvidedArgs` carries the keys of arguments already populated
+ * on the resolved definition — both `methods.<methodName>.arguments` and
+ * `globalArguments`. The runtime merges these as fallbacks under step-level
+ * inputs (see DefaultMethodExecutionService.execute), so the validator must
+ * treat them as satisfied when checking required arguments.
  */
 export type MethodResolution =
-  | { status: "resolved"; requiredArgs: string[] }
+  | {
+    status: "resolved";
+    requiredArgs: string[];
+    definitionProvidedArgs?: string[];
+  }
   | { status: "model_not_found" }
   | { status: "method_not_found"; modelType: string }
   | { status: "type_unresolvable"; modelType: string };
@@ -439,9 +449,12 @@ export class DefaultWorkflowValidationService
           ),
         ];
       case "resolved": {
-        const inputKeys = new Set(Object.keys(inputs ?? {}));
+        const provided = new Set<string>([
+          ...Object.keys(inputs ?? {}),
+          ...(resolution.definitionProvidedArgs ?? []),
+        ]);
         const missing = resolution.requiredArgs.filter((arg) =>
-          !inputKeys.has(arg)
+          !provided.has(arg)
         );
         if (missing.length > 0) {
           return [

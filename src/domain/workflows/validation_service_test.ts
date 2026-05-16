@@ -765,6 +765,164 @@ Deno.test("validateStepInputs: method with no required args and no inputs passes
   assertEquals(inputResult?.passed, true);
 });
 
+// --- Definition-provided arguments (issue #359) ---
+
+Deno.test("validateStepInputs: passes when definition provides all required args", async () => {
+  const resolver = mockResolver({
+    "shell.execute": {
+      status: "resolved",
+      requiredArgs: ["run"],
+      definitionProvidedArgs: ["run"],
+    },
+  });
+  const svc = new DefaultWorkflowValidationService(resolver);
+
+  const workflow = Workflow.create({
+    name: "test",
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: [
+          Step.create({
+            name: "step1",
+            task: StepTask.model("shell", "execute"),
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await svc.validate(workflow);
+  const inputResult = results.find((r) => r.name.includes("Step inputs"));
+  assertEquals(inputResult?.passed, true);
+});
+
+Deno.test("validateStepInputs: passes when definition and step inputs together cover required args", async () => {
+  const resolver = mockResolver({
+    "deploy.run": {
+      status: "resolved",
+      requiredArgs: ["environment", "version"],
+      definitionProvidedArgs: ["environment"],
+    },
+  });
+  const svc = new DefaultWorkflowValidationService(resolver);
+
+  const workflow = Workflow.create({
+    name: "test",
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: [
+          Step.create({
+            name: "step1",
+            task: StepTask.model("deploy", "run", { version: "1.0" }),
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await svc.validate(workflow);
+  const inputResult = results.find((r) => r.name.includes("Step inputs"));
+  assertEquals(inputResult?.passed, true);
+});
+
+Deno.test("validateStepInputs: fails only on truly missing args when definition supplies some", async () => {
+  const resolver = mockResolver({
+    "deploy.run": {
+      status: "resolved",
+      requiredArgs: ["environment", "version", "region"],
+      definitionProvidedArgs: ["environment"],
+    },
+  });
+  const svc = new DefaultWorkflowValidationService(resolver);
+
+  const workflow = Workflow.create({
+    name: "test",
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: [
+          Step.create({
+            name: "step1",
+            task: StepTask.model("deploy", "run", { version: "1.0" }),
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await svc.validate(workflow);
+  const inputResult = results.find((r) => r.name.includes("Step inputs"));
+  assertEquals(inputResult?.passed, false);
+  assertEquals(inputResult?.error, "Missing required inputs: region");
+});
+
+Deno.test("validateStepInputs: definition and step inputs overlap on the same key (no double-count, still passes)", async () => {
+  const resolver = mockResolver({
+    "shell.execute": {
+      status: "resolved",
+      requiredArgs: ["run"],
+      definitionProvidedArgs: ["run"],
+    },
+  });
+  const svc = new DefaultWorkflowValidationService(resolver);
+
+  const workflow = Workflow.create({
+    name: "test",
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: [
+          Step.create({
+            name: "step1",
+            task: StepTask.model("shell", "execute", {
+              run: "echo override",
+            }),
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await svc.validate(workflow);
+  const inputResult = results.find((r) => r.name.includes("Step inputs"));
+  assertEquals(inputResult?.passed, true);
+});
+
+Deno.test("validateStepInputs: missing definitionProvidedArgs field preserves legacy behavior", async () => {
+  // Mocks written before issue #359 omit definitionProvidedArgs entirely.
+  // The validator must treat the field as empty (no args provided by the
+  // definition) so existing behavior is unchanged.
+  const resolver = mockResolver({
+    "my-model.deploy": {
+      status: "resolved",
+      requiredArgs: ["environment"],
+    },
+  });
+  const svc = new DefaultWorkflowValidationService(resolver);
+
+  const workflow = Workflow.create({
+    name: "test",
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: [
+          Step.create({
+            name: "step1",
+            task: StepTask.model("my-model", "deploy"),
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await svc.validate(workflow);
+  const inputResult = results.find((r) => r.name.includes("Step inputs"));
+  assertEquals(inputResult?.passed, false);
+  assertEquals(inputResult?.error?.includes("environment"), true);
+});
+
 Deno.test("validateStepInputs: skips dynamic CEL model reference", async () => {
   const resolver = mockResolver({});
   const svc = new DefaultWorkflowValidationService(resolver);
