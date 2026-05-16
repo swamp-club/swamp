@@ -120,7 +120,20 @@ function createModelMethodResolver(
       };
       const requiredArgs = jsonSchema.required ?? [];
 
-      return { status: "resolved", requiredArgs };
+      // Arguments the definition already supplies — runtime merges these as
+      // fallbacks under step-level inputs (see DefaultMethodExecutionService).
+      // The validator treats any defined key as "present" regardless of value,
+      // including unresolved ${{ ... }} expressions: invalid CEL is a runtime
+      // concern, not a validator concern.
+      const { definition } = lookupResult;
+      const definitionProvidedArgs = Array.from(
+        new Set([
+          ...Object.keys(definition.getMethodArguments(methodName)),
+          ...Object.keys(definition.globalArguments),
+        ]),
+      );
+
+      return { status: "resolved", requiredArgs, definitionProvidedArgs };
     },
   };
 }
