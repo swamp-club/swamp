@@ -2890,3 +2890,64 @@ Deno.test(
     assertEquals(capturedRequest!.methodArgs.token, "real-token-value");
   },
 );
+
+Deno.test("executeWorkflow - passes with required globalArgs schema when definition has empty globalArgs", async () => {
+  const service = new DefaultMethodExecutionService();
+
+  const model: ModelDefinition = {
+    type: ModelType.create("test/required-globals-exec"),
+    version: "1",
+    globalArguments: z.object({ Bucket: z.string(), PolicyDocument: z.string() }),
+    methods: {
+      get: {
+        description: "Get resource",
+        arguments: z.object({ identifier: z.string() }),
+        execute: () => Promise.resolve({ dataHandles: [] }),
+      },
+    },
+  };
+
+  const definition = Definition.create({
+    name: "policy-lookup",
+    globalArguments: {},
+    methods: { get: { arguments: { identifier: "my-bucket" } } },
+  });
+
+  const { context } = createTestContext({ modelType: model.type });
+  const result = await service.executeWorkflow(
+    definition,
+    model,
+    "get",
+    context,
+  );
+  assertEquals(result !== undefined, true);
+});
+
+Deno.test("executeWorkflow - still rejects invalid types on provided globalArgs", async () => {
+  const service = new DefaultMethodExecutionService();
+
+  const model: ModelDefinition = {
+    type: ModelType.create("test/typed-globals-exec"),
+    version: "1",
+    globalArguments: z.object({ region: z.string(), count: z.number() }),
+    methods: {
+      run: {
+        description: "Run",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({}),
+      },
+    },
+  };
+
+  const definition = Definition.create({
+    name: "test-typed",
+    globalArguments: { region: 12345 },
+  });
+
+  const { context } = createTestContext({ modelType: model.type });
+  await assertRejects(
+    () => service.executeWorkflow(definition, model, "run", context),
+    Error,
+    "Global arguments validation failed",
+  );
+});

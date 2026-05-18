@@ -503,9 +503,19 @@ export class DefaultModelValidationService implements ModelValidationService {
       }
     }
     const coerced = coerceMethodArgs(staticArgs, globalArgsSchema);
+    // Use lenient validation: validate provided fields but don't require
+    // missing ones. Direct execution and workflow steps create ephemeral
+    // instances where not all globalArgs are needed (e.g. get/sync/delete
+    // don't need creation-time fields). swamp model create has its own
+    // strict validation in create.ts.
+    const lenient =
+      "partial" in globalArgsSchema &&
+        typeof globalArgsSchema.partial === "function"
+        ? (globalArgsSchema.partial() as z.ZodTypeAny)
+        : globalArgsSchema;
     return this.validateWithSchema(
       "Global arguments",
-      globalArgsSchema,
+      lenient,
       coerced,
     );
   }

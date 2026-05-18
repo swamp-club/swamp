@@ -1654,3 +1654,55 @@ Deno.test("validateModel: coerces string method arguments to match schema types"
   const methodResult = results.find((r) => r.name === "Method arguments");
   assertEquals(methodResult?.passed, true);
 });
+
+Deno.test("validateModel passes with required globalArgs schema when definition has empty globalArgs", async () => {
+  const service = new DefaultModelValidationService();
+  const RequiredArgsModel = defineModel({
+    type: ModelType.create("test/required-globals"),
+    version: "2026.05.18.1",
+    globalArguments: z.object({ Bucket: z.string(), PolicyDocument: z.string() }),
+    resources: {},
+    methods: {
+      get: {
+        description: "Get",
+        arguments: z.object({ identifier: z.string() }),
+        execute: () => Promise.resolve({ dataHandles: [] }),
+      },
+    },
+  });
+
+  const definition = Definition.create({
+    name: "policy-lookup",
+    globalArguments: {},
+  });
+
+  const { results } = await service.validateModel(definition, RequiredArgsModel);
+  const globalResult = results.find((r) => r.name === "Global arguments");
+  assertEquals(globalResult?.passed, true);
+});
+
+Deno.test("validateModel still rejects invalid types on provided globalArgs", async () => {
+  const service = new DefaultModelValidationService();
+  const TypedModel = defineModel({
+    type: ModelType.create("test/typed-globals"),
+    version: "2026.05.18.1",
+    globalArguments: z.object({ region: z.string(), count: z.number() }),
+    resources: {},
+    methods: {
+      run: {
+        description: "Run",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({ dataHandles: [] }),
+      },
+    },
+  });
+
+  const definition = Definition.create({
+    name: "test-typed",
+    globalArguments: { region: 12345 },
+  });
+
+  const { results } = await service.validateModel(definition, TypedModel);
+  const globalResult = results.find((r) => r.name === "Global arguments");
+  assertEquals(globalResult?.passed, false);
+});

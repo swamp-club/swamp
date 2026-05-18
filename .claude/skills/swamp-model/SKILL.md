@@ -29,7 +29,24 @@ Work with swamp models through the CLI.
 - **Mutation** (`model create`, `model delete`): Use `--json` to capture the
   structured result.
 
-## CRITICAL: Model Creation Rules
+## Prefer Direct Execution
+
+For most use cases, **direct type execution** is the right approach — pass inputs
+at runtime without managing definition YAML files:
+
+```bash
+swamp model @<type> method run <method> <name> --input key=value
+```
+
+Inputs are automatically routed between global arguments and method arguments
+using the type's schemas. See
+[references/direct-execution.md](references/direct-execution.md) for details.
+
+Use `model create` only when you need **persistent, managed definitions** — CEL
+expressions in global arguments, version-controlled definition files, or shared
+definitions referenced across multiple workflows.
+
+## Model Creation Rules (when using `model create`)
 
 - **Never generate model IDs** — no `uuidgen`, `crypto.randomUUID()`, or manual
   UUIDs. Swamp assigns IDs automatically via `swamp model create`.
@@ -39,9 +56,6 @@ Work with swamp models through the CLI.
 - **Never modify the `id` field** in an existing model file.
 - **Verify CLI syntax**: If unsure about exact flags or subcommands, run
   `swamp help model` for the complete, up-to-date CLI schema.
-
-Correct flow: `swamp model create <type> <name> --json` → set global args with
-`--global-arg` or edit the YAML → validate → run.
 
 ## Quick Reference
 
@@ -395,16 +409,6 @@ swamp model evaluate --all --json
     }
   ]
 }
-```
-
-## Direct Type Execution
-
-Collapse `model create` + `model method run` into one command — recommended when
-all values come from `--input` at runtime. See
-[references/direct-execution.md](references/direct-execution.md) for details.
-
-```bash
-swamp model @command/shell method run execute my-shell --input 'run=echo hello'
 ```
 
 ## Run Methods

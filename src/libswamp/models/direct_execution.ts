@@ -183,9 +183,17 @@ export async function resolveOrCreateDefinition(
     };
   }
 
-  // Validate global arguments against schema
+  // Validate provided global arguments but don't require missing ones.
+  // Direct execution creates ephemeral instances — methods like get/sync/delete
+  // don't need creation-time fields, and the cloud API enforces required-ness
+  // at call time for methods that do (create/update).
   if (modelDef.globalArguments) {
-    const result = modelDef.globalArguments.safeParse(routed.globalArguments);
+    const schema = modelDef.globalArguments;
+    const lenient =
+      "partial" in schema && typeof schema.partial === "function"
+        ? (schema.partial() as z.ZodTypeAny)
+        : schema;
+    const result = lenient.safeParse(routed.globalArguments);
     if (!result.success) {
       const issues = result.error.issues.map((i: z.ZodIssue) => {
         const path = i.path.length > 0 ? `${i.path.join(".")}: ` : "";

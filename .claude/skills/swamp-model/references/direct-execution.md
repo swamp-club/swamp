@@ -1,7 +1,8 @@
 # Direct Type Execution
 
-Collapse `model create` + `model method run` into one command. Use when all
-values come from `--input` at runtime — scripts, CI, one-shot invocations.
+The default way to run model methods. Pass inputs at runtime without managing
+definition YAML files — the right choice for dynamic inputs, scripts, CI,
+workflows, and any case where you don't need a persistent definition.
 
 ## CLI Syntax
 

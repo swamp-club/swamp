@@ -487,20 +487,13 @@ steps:
 
 Steps support two task types:
 
-**`model_method`** has two mutually exclusive variants — `modelIdOrName`
-(existing definition) or `modelType` + `modelName` (direct type execution). See
+**`model_method`** — prefer `modelType` + `modelName` (direct type execution)
+for dynamic inputs. Use `modelIdOrName` only for persistent definitions with CEL
+expressions or shared config. See
 [references/direct-execution.md](references/direct-execution.md) for details.
 
 ```yaml
-# Existing definition
-task:
-  type: model_method
-  modelIdOrName: my-model
-  methodName: run
-  inputs:
-    key: ${{ inputs.value }}
-
-# Direct type execution (auto-creates definition)
+# Direct type execution (default — dynamic inputs, no YAML to manage)
 task:
   type: model_method
   modelType: "@test/greeter"
@@ -509,6 +502,14 @@ task:
   inputs:
     greeting: ${{ inputs.greeting }}
     name: ${{ inputs.who }}
+
+# Existing definition (only for persistent config with CEL expressions)
+task:
+  type: model_method
+  modelIdOrName: my-model
+  methodName: run
+  inputs:
+    key: ${{ inputs.value }}
 ```
 
 **`workflow`** - Invoke another workflow (waits for completion):

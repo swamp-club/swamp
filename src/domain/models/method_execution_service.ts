@@ -463,7 +463,16 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
               );
             }
           }
-          const globalArgsResult = globalArgsSchema.safeParse(
+          // Use lenient validation: validate provided fields but don't
+          // require missing ones. Direct execution creates ephemeral instances
+          // where not all globalArgs are needed (e.g. get doesn't need
+          // creation-time fields). swamp model create validates strictly.
+          const lenientSchema =
+            "partial" in globalArgsSchema &&
+              typeof globalArgsSchema.partial === "function"
+              ? (globalArgsSchema.partial() as z.ZodTypeAny)
+              : globalArgsSchema;
+          const globalArgsResult = lenientSchema.safeParse(
             coercedGlobalArgs,
           );
           if (!globalArgsResult.success) {

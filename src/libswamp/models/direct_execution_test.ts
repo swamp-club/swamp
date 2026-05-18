@@ -274,3 +274,68 @@ Deno.test("resolveOrCreateDefinition: rejects type mismatch", async () => {
     assertStringIncludes(result.error.message, "test/old-type");
   }
 });
+
+Deno.test("resolveOrCreateDefinition: succeeds with required globalArgs when none provided (direct exec get)", async () => {
+  const modelDef = createTestModelDef(
+    z.object({ Bucket: z.string(), PolicyDocument: z.string() }),
+    { get: z.object({ identifier: z.string() }) },
+  );
+  const resolvedType = ModelType.create("test/bucket-policy");
+  let savedDefinition: Definition | null = null;
+
+  const result = await resolveOrCreateDefinition(
+    {
+      lookupDefinition: () => Promise.resolve(null),
+      getModelDef: () => modelDef,
+      saveDefinition: (_type, def) => {
+        savedDefinition = def;
+        return Promise.resolve();
+      },
+      getDefinitionPath: (_type, id) => `/tmp/models/test/${id}.yaml`,
+    },
+    "test/bucket-policy",
+    "policy-lookup",
+    "get",
+    { identifier: "my-bucket" },
+    resolvedType,
+    modelDef,
+  );
+
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    assertEquals(result.created, true);
+    assertEquals(result.routedInputs.globalArguments, {});
+    assertEquals(result.routedInputs.methodArguments, {
+      identifier: "my-bucket",
+    });
+    assertEquals(savedDefinition !== null, true);
+  }
+});
+
+Deno.test("resolveOrCreateDefinition: still rejects invalid types on provided globalArgs", async () => {
+  const modelDef = createTestModelDef(
+    z.object({ region: z.string(), account: z.string() }),
+    { run: z.object({ id: z.string() }) },
+  );
+  const resolvedType = ModelType.create("test/typed-model");
+
+  const result = await resolveOrCreateDefinition(
+    {
+      lookupDefinition: () => Promise.resolve(null),
+      getModelDef: () => modelDef,
+      saveDefinition: () => Promise.resolve(),
+      getDefinitionPath: (_type, id) => `/tmp/models/test/${id}.yaml`,
+    },
+    "test/typed-model",
+    "my-model",
+    "run",
+    { region: 12345, id: "abc" },
+    resolvedType,
+    modelDef,
+  );
+
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertStringIncludes(result.error.message, "Invalid global arguments");
+  }
+});

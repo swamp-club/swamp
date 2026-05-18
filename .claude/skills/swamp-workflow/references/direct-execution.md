@@ -1,7 +1,7 @@
 # Direct Type Execution in Workflows
 
-Workflow steps can auto-create model definitions using `modelType` + `modelName`
-instead of referencing an existing definition with `modelIdOrName`.
+The default way to call model methods from workflows. Use `modelType` +
+`modelName` to drive inputs dynamically without managing definition YAML files.
 
 ## Syntax
 
@@ -47,8 +47,9 @@ all iterations, or a template `modelName` for per-iteration definitions.
 
 ## When to Use `modelIdOrName` Instead
 
-Use `modelIdOrName` when:
+Use `modelIdOrName` only when the definition needs persistent, managed
+configuration:
 
-- The definition is pre-created with `model create` and managed in `models/`
-- You need CEL expressions in global arguments
-- The definition is shared across multiple workflows
+- CEL expressions in global arguments (vault refs, cross-model data refs)
+- Version-controlled definition files committed to the repo
+- A shared definition referenced across multiple workflows
