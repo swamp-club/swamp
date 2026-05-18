@@ -1269,6 +1269,7 @@ export async function runCli(args: string[]): Promise<void> {
                   console.error(
                     `\n⚠ Background autoupdate is failing: ${binaryPath} is not writable by your user.` +
                       `\n  Run \`sudo swamp update\` to update manually, or \`sudo chown $(whoami) ${binaryPath}\` to fix.` +
+                      `\n  Run \`swamp doctor install\` for a full installation health check.` +
                       `\n  Disable with: swamp update --setup-auto disable`,
                   );
                   updatedPrefs.lastPermissionWarning = new Date().toISOString();

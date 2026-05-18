@@ -20,6 +20,7 @@
 import { Command } from "@cliffy/command";
 import { doctorAuditCommand } from "./doctor_audit.ts";
 import { doctorExtensionsCommand } from "./doctor_extensions.ts";
+import { doctorInstallCommand } from "./doctor_install.ts";
 import { doctorWorkflowsCommand } from "./doctor_workflows.ts";
 
 export const doctorCommand = new Command()
@@ -33,6 +34,10 @@ export const doctorCommand = new Command()
   .example(
     "Check the audit integration for a specific tool",
     "swamp doctor audit --tool kiro",
+  )
+  .example(
+    "Check swamp installation health",
+    "swamp doctor install",
   )
   .example(
     "Check that user-defined extensions in this repo load cleanly",
@@ -54,4 +59,5 @@ export const doctorCommand = new Command()
   })
   .command("audit", doctorAuditCommand)
   .command("extensions", doctorExtensionsCommand)
+  .command("install", doctorInstallCommand)
   .command("workflows", doctorWorkflowsCommand);

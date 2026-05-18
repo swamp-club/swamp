@@ -125,6 +125,23 @@ async function runSetupAuto(
   }
 
   const binaryPath = Deno.execPath();
+
+  // On POSIX, detect the case where setup is running as root (via sudo)
+  // but the scheduler will run as the unprivileged user.
+  try {
+    if (Deno.uid() === 0) {
+      throw new UserError(
+        `Cannot set up autoupdate while running as root.\n` +
+          `The background scheduler runs as your normal user, not as root.\n` +
+          `Run this command without sudo:\n\n` +
+          `  swamp update --setup-auto`,
+      );
+    }
+  } catch (e) {
+    if (e instanceof UserError) throw e;
+    // Deno.uid() not available (e.g. Windows) — skip this check
+  }
+
   const probeFile = binaryPath + ".swamp-write-test";
   try {
     await Deno.writeTextFile(probeFile, "");
@@ -138,7 +155,8 @@ async function runSetupAuto(
           `  • Change ownership:  sudo chown ${
             Deno.env.get("USER") ?? "$(whoami)"
           } ${binaryPath}\n` +
-          `  • Run updates manually:  sudo swamp update`,
+          `  • Run updates manually:  sudo swamp update\n\n` +
+          `Run \`swamp doctor install\` for a full installation health check.`,
       );
     }
     throw error;
