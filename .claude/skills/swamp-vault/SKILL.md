@@ -7,7 +7,7 @@ description: >
   creating custom vault TypeScript implementations (that is swamp-extension).
   Triggers on "vault", "secret", "secrets", "swamp vault", "store secret",
   "get secret", "vault expression", "aws secrets manager", "credential
-  storage", "vault create", "vault put", "vault read", "vault list-keys",
+  storage", "vault create", "vault put", "vault read-secret", "vault list-keys",
   "vault migrate".
 ---
 
