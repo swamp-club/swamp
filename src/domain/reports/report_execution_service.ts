@@ -31,6 +31,7 @@ import {
   getNestedValue,
   setNestedValue,
 } from "../models/sensitive_field_extractor.ts";
+import { buildReportErrorResult } from "./builtin/report_error_report.ts";
 
 /**
  * Options for filtering which reports to execute.
@@ -280,7 +281,12 @@ export interface ReportEventCallback {
     json: Record<string, unknown>,
     dataHandles: DataHandle[],
   ): void;
-  onReportFailed(reportName: string, scope: ReportScope, error: string): void;
+  onReportFailed(
+    reportName: string,
+    scope: ReportScope,
+    error: string,
+    dataHandles?: DataHandle[],
+  ): void;
 }
 
 /**
@@ -422,13 +428,41 @@ export async function executeReports(
         ? error.message
         : String(error);
 
-      events?.onReportFailed(name, report.scope, errorMessage);
+      // Persist a fallback error artifact so diagnostic data is not lost.
+      let errorDataHandles: DataHandle[] | undefined;
+      try {
+        const fallback = buildReportErrorResult(
+          name,
+          report.scope,
+          errorMessage,
+        );
+        errorDataHandles = await persistReportData(
+          context.dataRepository,
+          modelType,
+          modelId,
+          name,
+          report.scope,
+          fallback.markdown,
+          fallback.json,
+          varySuffix,
+        );
+      } catch {
+        // Best-effort — don't mask the original report error.
+      }
+
+      events?.onReportFailed(
+        name,
+        report.scope,
+        errorMessage,
+        errorDataHandles,
+      );
 
       results.push({
         name,
         scope: report.scope,
         success: false,
         error: errorMessage,
+        dataHandles: errorDataHandles,
       });
       failures++;
     }

@@ -155,7 +155,7 @@ class LogModelMethodRunRenderer implements ModelMethodRunRenderer {
       },
       report_failed: (e) => {
         getRunLogger(this.modelName, this.methodName).warn(
-          "Running report: {reportName} \u2192 \u2717 {error}",
+          "Report {reportName} failed, fell back to default error report: {error}",
           { reportName: e.reportName, error: e.error },
         );
       },

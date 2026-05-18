@@ -115,13 +115,23 @@ export class WorkflowReportRunner {
           });
         }
       },
-      onReportFailed: (name, scope, error) => {
+      onReportFailed: (name, scope, error, dataHandles) => {
         args.emitEvent?.({
           kind: "report_failed",
           reportName: name,
           scope,
           error,
         });
+        if (dataHandles) {
+          for (const handle of dataHandles) {
+            collected.push({
+              dataId: handle.dataId,
+              name: handle.name,
+              version: handle.version,
+              tags: handle.tags,
+            });
+          }
+        }
       },
     };
 

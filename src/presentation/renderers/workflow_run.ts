@@ -170,7 +170,7 @@ class LogWorkflowRunRenderer implements WorkflowRunRenderer {
       },
       report_failed: (e) => {
         getWorkflowRunLogger(this.workflowName).warn(
-          "Running report: {reportName} \u2192 \u2717 {error}",
+          "Report {reportName} failed, fell back to default error report: {error}",
           { reportName: e.reportName, error: e.error },
         );
       },

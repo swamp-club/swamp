@@ -1393,3 +1393,122 @@ Deno.test("buildRedactSensitiveArgs: redacts array-typed sensitive method args t
   // Non-sensitive fields are preserved
   assertEquals(results!.redactedMethod.name, "test-step");
 });
+
+// --- executeReports error fallback tests ---
+
+function makeThrowingReport(
+  scope: "method" | "model" | "workflow" = "method",
+  errorMessage = "report threw",
+): ReportDefinition {
+  return {
+    description: `Throwing ${scope} report`,
+    scope,
+    execute(_context: ReportContext) {
+      return Promise.reject(new Error(errorMessage));
+    },
+  };
+}
+
+Deno.test("executeReports: persists fallback error artifact when execute() throws", async () => {
+  const registry = new ReportRegistry();
+  registry.register(
+    "@test/throwing",
+    makeThrowingReport("method", "gate tripped"),
+  );
+
+  const { repo, saved } = createInMemoryDataRepo();
+  const modelType = ModelType.create("test/model");
+  const context = makeMethodContext(repo, modelType);
+
+  const summary = await executeReports(
+    registry,
+    context,
+    modelType,
+    "test-id",
+    { require: ["@test/throwing"] },
+    {},
+    undefined,
+    "run",
+  );
+
+  assertEquals(summary.failures, 1);
+  assertEquals(summary.results.length, 1);
+  assertEquals(summary.results[0].success, false);
+  assertEquals(summary.results[0].error, "gate tripped");
+
+  // Fallback error artifact should be persisted
+  assertEquals(saved.length, 2);
+  assertEquals(saved[0].name, "report-test-throwing");
+  assertEquals(saved[1].name, "report-test-throwing-json");
+
+  // Markdown artifact contains error details
+  assertStringIncludes(saved[0].content, "Report Error: @test/throwing");
+  assertStringIncludes(saved[0].content, "gate tripped");
+
+  // JSON artifact contains structured error
+  const json = JSON.parse(saved[1].content);
+  assertEquals(json.error, true);
+  assertEquals(json.reportName, "@test/throwing");
+  assertEquals(json.message, "gate tripped");
+});
+
+Deno.test("executeReports: error result includes data handles from fallback", async () => {
+  const registry = new ReportRegistry();
+  registry.register("@test/throwing-handles", makeThrowingReport("method"));
+
+  const { repo } = createInMemoryDataRepo();
+  const modelType = ModelType.create("test/model");
+  const context = makeMethodContext(repo, modelType);
+
+  const summary = await executeReports(
+    registry,
+    context,
+    modelType,
+    "test-id",
+    { require: ["@test/throwing-handles"] },
+    {},
+    undefined,
+    "run",
+  );
+
+  assertEquals(summary.results[0].success, false);
+  assertEquals(summary.results[0].dataHandles !== undefined, true);
+  assertEquals(summary.results[0].dataHandles!.length, 2);
+});
+
+Deno.test("executeReports: onReportFailed callback receives data handles", async () => {
+  const registry = new ReportRegistry();
+  registry.register("@test/throwing-cb", makeThrowingReport("method"));
+
+  const { repo } = createInMemoryDataRepo();
+  const modelType = ModelType.create("test/model");
+  const context = makeMethodContext(repo, modelType);
+
+  let failedHandles: DataHandle[] | undefined;
+  const events = {
+    onReportStarted: () => {},
+    onReportCompleted: () => {},
+    onReportFailed: (
+      _name: string,
+      _scope: string,
+      _error: string,
+      dataHandles?: DataHandle[],
+    ) => {
+      failedHandles = dataHandles;
+    },
+  };
+
+  await executeReports(
+    registry,
+    context,
+    modelType,
+    "test-id",
+    { require: ["@test/throwing-cb"] },
+    {},
+    events,
+    "run",
+  );
+
+  assertEquals(failedHandles !== undefined, true);
+  assertEquals(failedHandles!.length, 2);
+});

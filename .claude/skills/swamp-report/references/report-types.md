@@ -121,6 +121,25 @@ reportRegistry.getByScope("method"); // Array<{ name, report }>
 
 Names must be unique — `register()` throws on duplicates.
 
+## Error Handling (Throw Semantics)
+
+If `execute()` throws, the error is **advisory** — it does not fail the workflow
+or change the exit code. Swamp persists a fallback error artifact under the same
+data name so `swamp data get report-{name}-json` returns structured error info:
+
+```json
+{
+  "error": true,
+  "reportName": "@example/failing-report",
+  "scope": "workflow",
+  "message": "the error message from the throw"
+}
+```
+
+Consumers should check the `error` field to distinguish success from failure. If
+your report needs to signal a gate/policy failure to downstream automation,
+return normally with the gate decision in the JSON output rather than throwing.
+
 ## Report Selection Schema (YAML)
 
 ```typescript

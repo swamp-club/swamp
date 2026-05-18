@@ -327,6 +327,36 @@ Both artifacts are written with:
 Data handles are returned in the `ReportExecutionResult` and included in the
 final view.
 
+## Error Handling
+
+Report `execute()` throws are **advisory** — they do not fail the workflow or
+change the exit code. A broken report must not mask a successful workflow run.
+
+When `execute()` throws, swamp generates a fallback error artifact using the
+built-in `buildReportErrorResult` function
+(`src/domain/reports/builtin/report_error_report.ts`). The fallback artifact is
+persisted under the **same data name** as the original report would have used,
+so `swamp data get report-{reportName}-json` still returns useful diagnostic
+data.
+
+The fallback JSON artifact contains:
+
+```json
+{
+  "error": true,
+  "reportName": "@example/failing-report",
+  "scope": "workflow",
+  "message": "the error message from the throw"
+}
+```
+
+Consumers can check the `error` field to distinguish a successful report result
+from a fallback error artifact.
+
+If persisting the fallback artifact itself fails, the error is silently absorbed
+to avoid masking the original report error. In this case, only the `WRN` log
+line carries the error information.
+
 ## Sensitive Argument Redaction
 
 Report contexts include an optional `redactSensitiveArgs` helper that replaces

@@ -138,7 +138,7 @@ export class MethodReportRunner {
           });
         }
       },
-      onReportFailed: (name, scope, error) => {
+      onReportFailed: (name, scope, error, dataHandles) => {
         args.emitEvent?.({
           kind: "report_failed",
           reportName: name,
@@ -147,6 +147,16 @@ export class MethodReportRunner {
           jobId: args.jobName,
           stepId: args.stepName,
         });
+        if (dataHandles) {
+          for (const handle of dataHandles) {
+            collected.push({
+              dataId: handle.dataId,
+              name: handle.name,
+              version: handle.version,
+              tags: handle.tags,
+            });
+          }
+        }
       },
     };
 
@@ -242,7 +252,7 @@ export class MethodReportRunner {
             stepId: args.stepName,
           });
         },
-        onReportFailed: (name, scope, reportError) => {
+        onReportFailed: (name, scope, reportError, _dataHandles) => {
           args.emitEvent?.({
             kind: "report_failed",
             reportName: name,
