@@ -41,7 +41,7 @@ import type { DetectableAiTool } from "./agent_harness_detection.ts";
  *    normalised), an explicit opt-out of tool integration.
  */
 export interface InvocationContext {
-  readonly configuredAiTools?: AiTool[];
+  readonly configuredAiTools?: string[];
   readonly detectedAiTool?: DetectableAiTool;
   readonly agentSessionDetected: boolean;
   readonly isInteractive: boolean;
@@ -52,7 +52,7 @@ export interface InvocationContext {
  * Data transfer object for InvocationContext.
  */
 export interface InvocationContextData {
-  configuredAiTools?: AiTool[];
+  configuredAiTools?: string[];
   detectedAiTool?: DetectableAiTool;
   agentSessionDetected: boolean;
   isInteractive: boolean;

@@ -78,7 +78,7 @@ export interface SyntheticPayload {
  * nonce becomes part of the command string the smoke-test greps for.
  */
 export function syntheticPayloadFor(
-  tool: AiTool,
+  tool: string,
   nonce: string,
 ): SyntheticPayload | null {
   const expectedCommand = `${DOCTOR_SMOKE_TEST_COMMAND_PREFIX} ${nonce}`;
@@ -128,6 +128,7 @@ export function syntheticPayloadFor(
     case "codex":
     case "copilot":
     case "none":
+    default:
       return null;
   }
 }

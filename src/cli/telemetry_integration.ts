@@ -294,7 +294,7 @@ export function projectEnvSnapshot(): Record<string, string> {
  */
 export function buildInvocationContext(
   envSnapshot: Record<string, string>,
-  configuredAiTools: AiTool[] | undefined,
+  configuredAiTools: string[] | undefined,
   externalDatastoreConfigured: boolean,
 ): InvocationContextData {
   const detection = detectAgentHarness(envSnapshot);

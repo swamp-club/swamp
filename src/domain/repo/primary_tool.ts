@@ -35,6 +35,6 @@ import type {
  * "no tools enrolled" (represented as `tools: []`); it never appears inside
  * `tools` and is therefore never returned.
  */
-export function resolvePrimaryTool(marker: RepoMarkerData | null): AiTool {
+export function resolvePrimaryTool(marker: RepoMarkerData | null): string {
   return marker?.tools?.[0] ?? "claude";
 }

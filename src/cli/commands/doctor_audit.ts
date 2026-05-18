@@ -48,8 +48,8 @@ import { resolveDatastoreForRepo } from "../repo_context.ts";
  */
 export function resolveTargetTool(
   flagTool: string | undefined,
-  markerTool: AiTool | undefined,
-): AiTool {
+  markerTool: string | undefined,
+): string {
   const overrideTool = flagTool ? parseAiToolOrThrow(flagTool) : undefined;
   const resolved = overrideTool ?? markerTool;
   if (!resolved) {

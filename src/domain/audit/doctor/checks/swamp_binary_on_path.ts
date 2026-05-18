@@ -34,7 +34,7 @@ import type { ResolveBinary } from "./resolve_binary.ts";
  * This check surfaces both conditions.
  */
 
-function appliesTo(tool: AiTool): boolean {
+function appliesTo(tool: string): boolean {
   return tool === "claude" || tool === "cursor" || tool === "kiro" ||
     tool === "opencode";
 }

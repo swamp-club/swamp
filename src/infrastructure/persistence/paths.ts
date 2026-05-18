@@ -35,6 +35,9 @@ export const SWAMP_MARKER_FILE = ".swamp.yaml";
 /** The sources file name for local extension sources */
 export const SWAMP_SOURCES_FILE = ".swamp-sources.yaml";
 
+/** The custom tools file name for user-defined AI tool configurations */
+export const SWAMP_CUSTOM_TOOLS_FILE = ".swamp-custom-tools.yaml";
+
 /**
  * Subdirectory names within the .swamp directory.
  */
@@ -132,6 +135,10 @@ export function swampMarkerPath(repoDir: string): string {
  */
 export function swampSourcesPath(repoDir: string): string {
   return join(repoDir, SWAMP_SOURCES_FILE);
+}
+
+export function swampCustomToolsPath(repoDir: string): string {
+  return join(repoDir, SWAMP_CUSTOM_TOOLS_FILE);
 }
 
 /**

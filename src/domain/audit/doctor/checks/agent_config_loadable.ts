@@ -235,7 +235,7 @@ async function checkOpenCode(ctx: CheckContext): Promise<CheckResult> {
   };
 }
 
-function appliesTo(tool: AiTool): boolean {
+function appliesTo(tool: string): boolean {
   return tool in CONFIG_FILES;
 }
 

@@ -35,7 +35,7 @@ import { syntheticPayloadFor } from "../synthetic_payloads.ts";
  * throws by design (to avoid disrupting the user's coding session).
  */
 
-function appliesTo(tool: AiTool): boolean {
+function appliesTo(tool: string): boolean {
   return tool === "claude" || tool === "cursor" || tool === "kiro" ||
     tool === "opencode";
 }

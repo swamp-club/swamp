@@ -29,7 +29,7 @@ const INSTALL_HINTS: Record<string, string> = {
   opencode: "Install OpenCode: https://opencode.ai",
 };
 
-function appliesTo(tool: AiTool): boolean {
+function appliesTo(tool: string): boolean {
   return tool === "claude" || tool === "cursor" || tool === "kiro" ||
     tool === "opencode";
 }

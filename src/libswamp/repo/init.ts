@@ -19,7 +19,6 @@
 
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import {
-  type AiTool,
   type RepoInitResult,
   RepoService,
   type RepoUpgradeResult,
@@ -83,7 +82,7 @@ export interface RepoInitInput {
 export interface RepoInitDeps {
   init: (
     repoPath: RepoPath,
-    options: { force?: boolean; tools?: AiTool[] },
+    options: { force?: boolean; tools?: string[] },
   ) => Promise<RepoInitResult>;
 }
 
@@ -156,12 +155,12 @@ export async function* repoInit(
 function resolveToolsInput(
   tools: string[] | undefined,
   tool: string | undefined,
-): AiTool[] | undefined {
+): string[] | undefined {
   if (tools !== undefined) {
-    return tools as AiTool[];
+    return tools;
   }
   if (tool !== undefined) {
-    return [tool as AiTool];
+    return [tool];
   }
   return undefined;
 }
@@ -176,7 +175,7 @@ function resolveToolsInput(
  *  - `tools: [X, Y, ...]` (multi-tool) → `null` so SDK consumers cannot
  *    silently miss the second enrolled tool — they must read `tools`.
  */
-function legacyToolField(tools: AiTool[]): string | null {
+function legacyToolField(tools: string[]): string | null {
   if (tools.length === 0) return "none";
   if (tools.length === 1) return tools[0];
   return null;
@@ -257,7 +256,7 @@ export interface RepoUpgradeInput {
 export interface RepoUpgradeDeps {
   upgrade: (
     repoPath: RepoPath,
-    options: { tools?: AiTool[]; includeGitignore?: boolean },
+    options: { tools?: string[]; includeGitignore?: boolean },
   ) => Promise<RepoUpgradeResult>;
 }
 
