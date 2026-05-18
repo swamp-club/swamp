@@ -162,7 +162,13 @@ export interface MethodContext<TGlobalArgs = Record<string, unknown>> {
     name: string,
     data: Record<string, unknown>,
   ) => Promise<DataHandle>;
-  /** Read a previously stored resource by instance name. */
+  /**
+   * Read a previously stored resource by instance name.
+   *
+   * The `instanceName` is the `name` parameter from `writeResource`, not the
+   * `specName`. For example, after `writeResource("state", "main", data)`,
+   * read it back with `readResource("main")`.
+   */
   readResource: (
     instanceName: string,
     version?: number,

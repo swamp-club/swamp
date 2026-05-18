@@ -63,8 +63,11 @@ export interface ModelTestContextOptions {
   /** Abort signal (default: never-aborted). */
   signal?: AbortSignal;
   /**
-   * Pre-seed stored resources so readResource returns them.
-   * Keys are instance names, values are the JSON data.
+   * Pre-seed stored resources so `readResource` returns them.
+   *
+   * Keys are **instance names** (the `name` parameter from `writeResource`,
+   * not the `specName`). For example, if your model writes with
+   * `writeResource("state", "main", data)`, seed with `{ "main": data }`.
    */
   storedResources?: Record<string, Record<string, unknown>>;
   /**
@@ -200,6 +203,14 @@ export function createModelTestContext(
     instanceName: string,
     _version?: number,
   ): Promise<Record<string, unknown> | null> => {
+    if (typeof _version === "string") {
+      throw new Error(
+        `readResource(instanceName, version?) received a string as version: "${_version}". ` +
+          `Unlike writeResource(specName, name, data), readResource does not take a specName — ` +
+          `the first argument is the instance name (the "name" from writeResource). ` +
+          `Use readResource("${_version}") instead of readResource("${instanceName}", "${_version}").`,
+      );
+    }
     const data = storedResources.get(instanceName) ?? null;
     return Promise.resolve(data ? structuredClone(data) : null);
   };

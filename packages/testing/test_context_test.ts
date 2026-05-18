@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertExists } from "@std/assert";
+import { assertEquals, assertExists, assertThrows } from "@std/assert";
 import { createModelTestContext } from "./test_context.ts";
 
 Deno.test("createModelTestContext: returns context with default values", () => {
@@ -363,4 +363,32 @@ Deno.test("createModelTestContext: writeStream handles multi-chunk streams", asy
     new TextDecoder().decode(getWrittenFiles()[0].content),
     "chunk1chunk2",
   );
+});
+
+Deno.test("createModelTestContext: readResource throws when version is a string", () => {
+  const { context } = createModelTestContext({
+    storedResources: { "foo": { val: 42 } },
+  });
+
+  assertThrows(
+    () =>
+      context.readResource(
+        "item",
+        "foo" as unknown as number,
+      ),
+    Error,
+    'readResource(instanceName, version?) received a string as version: "foo"',
+  );
+});
+
+Deno.test("createModelTestContext: readResource uses instanceName not specName", async () => {
+  const { context } = createModelTestContext();
+
+  await context.writeResource("state", "main", { status: "created" });
+  await context.writeResource("config", "settings", { debug: true });
+
+  assertEquals(await context.readResource("main"), { status: "created" });
+  assertEquals(await context.readResource("settings"), { debug: true });
+  assertEquals(await context.readResource("state"), null);
+  assertEquals(await context.readResource("config"), null);
 });
