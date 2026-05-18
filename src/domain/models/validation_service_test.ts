@@ -1660,7 +1660,10 @@ Deno.test("validateModel passes with required globalArgs schema when definition 
   const RequiredArgsModel = defineModel({
     type: ModelType.create("test/required-globals"),
     version: "2026.05.18.1",
-    globalArguments: z.object({ Bucket: z.string(), PolicyDocument: z.string() }),
+    globalArguments: z.object({
+      Bucket: z.string(),
+      PolicyDocument: z.string(),
+    }),
     resources: {},
     methods: {
       get: {
@@ -1676,7 +1679,10 @@ Deno.test("validateModel passes with required globalArgs schema when definition 
     globalArguments: {},
   });
 
-  const { results } = await service.validateModel(definition, RequiredArgsModel);
+  const { results } = await service.validateModel(
+    definition,
+    RequiredArgsModel,
+  );
   const globalResult = results.find((r) => r.name === "Global arguments");
   assertEquals(globalResult?.passed, true);
 });

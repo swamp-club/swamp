@@ -2897,7 +2897,10 @@ Deno.test("executeWorkflow - passes with required globalArgs schema when definit
   const model: ModelDefinition = {
     type: ModelType.create("test/required-globals-exec"),
     version: "1",
-    globalArguments: z.object({ Bucket: z.string(), PolicyDocument: z.string() }),
+    globalArguments: z.object({
+      Bucket: z.string(),
+      PolicyDocument: z.string(),
+    }),
     methods: {
       get: {
         description: "Get resource",

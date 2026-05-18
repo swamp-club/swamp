@@ -508,11 +508,10 @@ export class DefaultModelValidationService implements ModelValidationService {
     // instances where not all globalArgs are needed (e.g. get/sync/delete
     // don't need creation-time fields). swamp model create has its own
     // strict validation in create.ts.
-    const lenient =
-      "partial" in globalArgsSchema &&
+    const lenient = "partial" in globalArgsSchema &&
         typeof globalArgsSchema.partial === "function"
-        ? (globalArgsSchema.partial() as z.ZodTypeAny)
-        : globalArgsSchema;
+      ? (globalArgsSchema.partial() as z.ZodTypeAny)
+      : globalArgsSchema;
     return this.validateWithSchema(
       "Global arguments",
       lenient,

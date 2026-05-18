@@ -467,11 +467,10 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
           // require missing ones. Direct execution creates ephemeral instances
           // where not all globalArgs are needed (e.g. get doesn't need
           // creation-time fields). swamp model create validates strictly.
-          const lenientSchema =
-            "partial" in globalArgsSchema &&
+          const lenientSchema = "partial" in globalArgsSchema &&
               typeof globalArgsSchema.partial === "function"
-              ? (globalArgsSchema.partial() as z.ZodTypeAny)
-              : globalArgsSchema;
+            ? (globalArgsSchema.partial() as z.ZodTypeAny)
+            : globalArgsSchema;
           const globalArgsResult = lenientSchema.safeParse(
             coercedGlobalArgs,
           );

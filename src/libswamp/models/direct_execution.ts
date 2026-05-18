@@ -189,10 +189,9 @@ export async function resolveOrCreateDefinition(
   // at call time for methods that do (create/update).
   if (modelDef.globalArguments) {
     const schema = modelDef.globalArguments;
-    const lenient =
-      "partial" in schema && typeof schema.partial === "function"
-        ? (schema.partial() as z.ZodTypeAny)
-        : schema;
+    const lenient = "partial" in schema && typeof schema.partial === "function"
+      ? (schema.partial() as z.ZodTypeAny)
+      : schema;
     const result = lenient.safeParse(routed.globalArguments);
     if (!result.success) {
       const issues = result.error.issues.map((i: z.ZodIssue) => {

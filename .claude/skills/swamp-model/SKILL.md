@@ -31,8 +31,8 @@ Work with swamp models through the CLI.
 
 ## Prefer Direct Execution
 
-For most use cases, **direct type execution** is the right approach — pass inputs
-at runtime without managing definition YAML files:
+For most use cases, **direct type execution** is the right approach — pass
+inputs at runtime without managing definition YAML files:
 
 ```bash
 swamp model @<type> method run <method> <name> --input key=value
