@@ -165,6 +165,13 @@ export class ExpressionEvaluationService {
         continue;
       }
 
+      // Skip syntactically-invalid CEL: the ${{ ... }} sequence appears
+      // inside a prose string (e.g. a plan body that documents expression
+      // syntax). Leaving the raw text in place preserves prose round-trip.
+      if (!this.celEvaluator.validate(expr.celExpression).valid) {
+        continue;
+      }
+
       const value = await this.celEvaluator.evaluateAsync(
         expr.celExpression,
         context,
@@ -477,6 +484,14 @@ export class ExpressionEvaluationService {
     const secretBag = new VaultSecretBag();
     const evaluatedValues = new Map<string, unknown>();
     for (const expr of runtimeExpressions) {
+      // Skip syntactically-invalid CEL: the ${{ ... }} sequence appears
+      // inside a prose string (e.g. a plan body that documents env.* /
+      // vault.get() syntax). Leaving the raw text in place preserves
+      // prose round-trip; real misconfigurations still throw at evaluate.
+      if (!this.celEvaluator.validate(expr.celExpression).valid) {
+        continue;
+      }
+
       // Resolve vault references first (if any), then evaluate the full CEL
       let resolvedCelExpr = expr.celExpression;
       if (containsVaultExpression(expr.celExpression)) {
@@ -564,6 +579,14 @@ export class ExpressionEvaluationService {
   ): Promise<Definition> {
     const evaluatedValues = new Map<string, unknown>();
     for (const expr of runtimeExpressions) {
+      // Skip syntactically-invalid CEL: the ${{ ... }} sequence appears
+      // inside a prose field (e.g. a method input documenting env.* /
+      // vault.get() syntax). Leaving the raw text in place preserves
+      // prose round-trip; real misconfigurations still throw at evaluate.
+      if (!this.celEvaluator.validate(expr.celExpression).valid) {
+        continue;
+      }
+
       // Resolve vault references first (if any), then evaluate the CEL expression
       let resolvedCelExpr = expr.celExpression;
       if (containsVaultExpression(expr.celExpression)) {

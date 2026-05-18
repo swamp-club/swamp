@@ -478,3 +478,94 @@ Deno.test("resolveAllExpressionsInData: resolves run.tags nested access", async 
     assertEquals(result.environment, "staging");
   });
 });
+
+// ============================================================================
+// Invalid-CEL-in-prose tolerance (swamp-club#291 follow-up)
+//
+// When the ${{ ... }} sequence appears inside prose (a plan body, an issue
+// description, a method-input string that documents expression syntax), the
+// inner CEL is often syntactically invalid (e.g. `env.*`, `vault.get(...)`).
+// These must be left as raw text rather than failing the surrounding call,
+// otherwise any model whose inputs round-trip such prose becomes unrunnable.
+// ============================================================================
+
+Deno.test("evaluateData: leaves invalid-CEL prose unchanged", async () => {
+  await withTempDir(async (repoDir) => {
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const service = new ExpressionEvaluationService(definitionRepo, repoDir);
+    const data = {
+      doc:
+        "driverConfig.volumes does not resolve ${{ inputs.* }} expressions yet",
+    };
+    const result = await service.resolveAllExpressionsInData(
+      data,
+      makeContext(),
+    ) as { doc: string };
+    assertEquals(result.doc, data.doc);
+  });
+});
+
+Deno.test("resolveRuntimeExpressionsInData: leaves invalid env.* prose unchanged", async () => {
+  await withTempDir(async (repoDir) => {
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const service = new ExpressionEvaluationService(definitionRepo, repoDir);
+    const data = {
+      reasoning:
+        "driverConfig.volumes does not resolve ${{ env.* }} / ${{ vault.get(...) }} expressions",
+    };
+    const result = await service.resolveRuntimeExpressionsInData(
+      data,
+    ) as { reasoning: string };
+    assertEquals(result.reasoning, data.reasoning);
+  });
+});
+
+Deno.test("resolveAllExpressionsInData: mixed prose and valid env resolves only the valid one", async () => {
+  await withTempDir(async (repoDir) => {
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const service = new ExpressionEvaluationService(definitionRepo, repoDir);
+    Deno.env.set("SWAMP_TEST_MIXED", "ok");
+    try {
+      const data = {
+        doc: "documentation: ${{ env.* }} is invalid syntax",
+        real: "${{ env.SWAMP_TEST_MIXED }}",
+      };
+      const result = await service.resolveAllExpressionsInData(
+        data,
+        makeContext(),
+      ) as { doc: string; real: string };
+      assertEquals(result.doc, data.doc);
+      assertEquals(result.real, "ok");
+    } finally {
+      Deno.env.delete("SWAMP_TEST_MIXED");
+    }
+  });
+});
+
+Deno.test("resolveRuntimeExpressionsInDefinition: leaves invalid env.* prose in method args unchanged", async () => {
+  await withTempDir(async (repoDir) => {
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const service = new ExpressionEvaluationService(definitionRepo, repoDir);
+
+    const definition = Definition.create({
+      name: "prose-model",
+      methods: {
+        triage: {
+          arguments: {
+            reasoning:
+              "driverConfig.volumes does not resolve ${{ env.* }} / ${{ vault.get(...) }}",
+          },
+        },
+      },
+    });
+
+    const result = await service.resolveRuntimeExpressionsInDefinition(
+      definition,
+    );
+
+    assertEquals(
+      result.definition.getMethodArguments("triage").reasoning,
+      "driverConfig.volumes does not resolve ${{ env.* }} / ${{ vault.get(...) }}",
+    );
+  });
+});
