@@ -32,7 +32,11 @@ import {
   type OwnerDefinition,
   parseDataDuration,
 } from "../../domain/data/mod.ts";
-import { ModelType } from "../../domain/models/model_type.ts";
+import {
+  coerceModelType,
+  ModelType,
+  type ModelTypeInput,
+} from "../../domain/models/model_type.ts";
 import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
 import type { CatalogStore } from "./catalog_store.ts";
 import {
@@ -330,12 +334,18 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   }
 
   findByName(
-    type: ModelType,
+    type: ModelTypeInput,
     modelId: string,
     dataName: string,
     version?: number,
   ): Promise<Data | null> {
-    return this.findByNameWithDepth(type, modelId, dataName, version, 0);
+    return this.findByNameWithDepth(
+      coerceModelType(type),
+      modelId,
+      dataName,
+      version,
+      0,
+    );
   }
 
   private async findByNameWithDepth(
@@ -443,7 +453,11 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     return versions.sort((a, b) => a - b);
   }
 
-  async findAllForModel(type: ModelType, modelId: string): Promise<Data[]> {
+  async findAllForModel(
+    type: ModelTypeInput,
+    modelId: string,
+  ): Promise<Data[]> {
+    type = coerceModelType(type);
     const dataDir = this.getModelDataDir(type, modelId);
     const results: Data[] = [];
     const seen = new Set<string>();
@@ -640,11 +654,12 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
   }
 
   async getContent(
-    type: ModelType,
+    type: ModelTypeInput,
     modelId: string,
     dataName: string,
     version?: number,
   ): Promise<Uint8Array | null> {
+    type = coerceModelType(type);
     const versionToRead = version ??
       await this.getLatestVersion(type, modelId, dataName);
     if (versionToRead === null) return null;

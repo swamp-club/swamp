@@ -172,3 +172,10 @@ export class ModelType {
     return ModelType.RESERVED_COLLECTIVES.includes(firstSegment);
   }
 }
+
+export type ModelTypeInput = string | ModelType;
+
+export function coerceModelType(input: ModelTypeInput): ModelType {
+  if (input instanceof ModelType) return input;
+  return ModelType.create(input);
+}

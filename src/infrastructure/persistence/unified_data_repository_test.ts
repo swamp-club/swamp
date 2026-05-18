@@ -835,3 +835,86 @@ Deno.test(
     });
   },
 );
+
+Deno.test("getContent: accepts string type parameter", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const catalogStore = new CatalogStore(join(tmpDir, "_catalog.db"));
+    const repo = new FileSystemUnifiedDataRepository(
+      tmpDir,
+      undefined,
+      catalogStore,
+    );
+    const data = makeData("string-type-content");
+    const content = new TextEncoder().encode("hello");
+    await repo.save(testType, "model-1", data, content);
+
+    const result = await repo.getContent(
+      "test/model",
+      "model-1",
+      "string-type-content",
+    );
+    assertExists(result);
+    assertEquals(new TextDecoder().decode(result), "hello");
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  }
+});
+
+Deno.test("findByName: accepts string type parameter", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const catalogStore = new CatalogStore(join(tmpDir, "_catalog.db"));
+    const repo = new FileSystemUnifiedDataRepository(
+      tmpDir,
+      undefined,
+      catalogStore,
+    );
+    const data = makeData("string-type-find");
+    const content = new TextEncoder().encode("data");
+    await repo.save(testType, "model-1", data, content);
+
+    const result = await repo.findByName(
+      "test/model",
+      "model-1",
+      "string-type-find",
+    );
+    assertExists(result);
+    assertEquals(result.name, "string-type-find");
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  }
+});
+
+Deno.test("findAllForModel: accepts string type parameter", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const catalogStore = new CatalogStore(join(tmpDir, "_catalog.db"));
+    const repo = new FileSystemUnifiedDataRepository(
+      tmpDir,
+      undefined,
+      catalogStore,
+    );
+    const data = makeData("string-type-all");
+    const content = new TextEncoder().encode("data");
+    await repo.save(testType, "model-1", data, content);
+
+    const results = await repo.findAllForModel("test/model", "model-1");
+    assertEquals(results.length, 1);
+    assertEquals(results[0].name, "string-type-all");
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  }
+});
