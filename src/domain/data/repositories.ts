@@ -19,7 +19,7 @@
 
 import type { Data } from "./data.ts";
 import type { DataId } from "./data_id.ts";
-import type { ModelType } from "../models/model_type.ts";
+import type { ModelType, ModelTypeInput } from "../models/model_type.ts";
 
 /**
  * Error thrown when ownership validation fails.
@@ -70,7 +70,7 @@ export interface UnifiedDataRepository {
    * @returns The data if found, or null
    */
   findByName(
-    type: ModelType,
+    type: ModelTypeInput,
     modelId: string,
     dataName: string,
     version?: number,
@@ -113,7 +113,7 @@ export interface UnifiedDataRepository {
    * @param modelId - The model input ID
    * @returns Array of data (latest version of each)
    */
-  findAllForModel(type: ModelType, modelId: string): Promise<Data[]>;
+  findAllForModel(type: ModelTypeInput, modelId: string): Promise<Data[]>;
 
   /**
    * Saves data with its content, creating a new version.
@@ -174,7 +174,7 @@ export interface UnifiedDataRepository {
    * @returns The content or null if not found
    */
   getContent(
-    type: ModelType,
+    type: ModelTypeInput,
     modelId: string,
     dataName: string,
     version?: number,
