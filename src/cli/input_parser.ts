@@ -323,18 +323,7 @@ function normalizeInputOption(
   return [input];
 }
 
-/**
- * Parses raw stdin text into an array of input records for iteration.
- *
- * Format detection order:
- * 1. JSON array → one record per element
- * 2. JSON object → single record
- * 3. NDJSON (one JSON object per non-empty line) → one record per line
- * 4. YAML object → single record
- * 5. All fail → UserError
- *
- * Each returned record is a plain object suitable for use as method/workflow inputs.
- */
+// Detects JSON object/array, NDJSON, or YAML; returns one record per item.
 export function parseStdinContent(
   content: string,
 ): Record<string, unknown>[] {

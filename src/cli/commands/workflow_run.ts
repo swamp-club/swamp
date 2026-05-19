@@ -90,6 +90,14 @@ export const workflowRunCommand = new Command()
     "swamp workflow run deploy-pipeline --tag type=deploy --tag env=production",
   )
   .example("Skip reports", "swamp workflow run deploy-pipeline --skip-reports")
+  .example(
+    "Pipe inputs from stdin",
+    'echo \'{"env":"prod"}\' | swamp workflow run deploy-pipeline',
+  )
+  .example(
+    "Batch run via NDJSON from stdin",
+    'printf \'{"env":"dev"}\\n{"env":"prod"}\' | swamp workflow run deploy-pipeline',
+  )
   .arguments("<workflow_id_or_name:workflow_name>")
   .option(
     "--repo-dir <dir:string>",
@@ -103,7 +111,10 @@ export const workflowRunCommand = new Command()
   .option("--input <value:string>", "Input values (key=value or JSON)", {
     collect: true,
   })
-  .option("--input-file <file:string>", "Input values from YAML file")
+  .option(
+    "--input-file <file:string>",
+    "Input values from YAML file (cannot combine with piped stdin)",
+  )
   .option(
     "--tag <tag:string>",
     "Add tag to produced data (KEY=VALUE, repeatable)",

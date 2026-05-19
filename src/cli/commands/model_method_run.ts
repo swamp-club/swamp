@@ -87,6 +87,14 @@ export const modelMethodRunCommand = new Command()
     "Pass an array or object input (JSON-typed via :json suffix)",
     'swamp model method run my-server search --input \'keywords:json=["a","b"]\'',
   )
+  .example(
+    "Pipe inputs from stdin",
+    'echo \'{"env":"prod"}\' | swamp model method run my-server deploy',
+  )
+  .example(
+    "Batch run via NDJSON from stdin",
+    'printf \'{"env":"dev"}\\n{"env":"prod"}\' | swamp model method run my-server deploy',
+  )
   .description(
     "Execute a method on a model. With @type prefix, auto-creates the definition if needed.",
   )
@@ -105,7 +113,10 @@ export const modelMethodRunCommand = new Command()
   .option("--input <value:string>", "Input values (key=value or JSON)", {
     collect: true,
   })
-  .option("--input-file <file:string>", "Input values from YAML file")
+  .option(
+    "--input-file <file:string>",
+    "Input values from YAML file (cannot combine with piped stdin)",
+  )
   .option(
     "--tag <tag:string>",
     "Add tag to produced data (KEY=VALUE, repeatable)",
@@ -377,6 +388,7 @@ export const modelMethodRunCommand = new Command()
           );
 
           if (renderer.runFailed()) {
+            if (flushModelLocks) await flushModelLocks();
             Deno.exit(1);
           }
         }
