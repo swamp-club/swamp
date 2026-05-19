@@ -204,7 +204,7 @@ export const modelMethodRunCommand = new Command()
       if (stdinContent !== null) {
         if (options.inputFile) {
           throw new UserError(
-            "Cannot combine piped stdin with --input-file.",
+            "Cannot combine --stdin with --input-file.",
           );
         }
         stdinItems = parseStdinContent(stdinContent);
