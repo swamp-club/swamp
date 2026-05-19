@@ -18,23 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Reads content from stdin if data is available.
+ * Reads all content from stdin until EOF.
  *
- * Returns null if stdin is a TTY (interactive mode) or if no data is available.
- * Returns the content as a string if data was piped to stdin.
- *
- * This allows commands to auto-detect piped input without requiring flags.
- *
- * @example
- * ```ts
- * const stdinContent = await readStdin();
- * if (stdinContent !== null) {
- *   // Process piped content
- *   const data = parseYaml(stdinContent);
- * } else {
- *   // Continue with interactive mode
- * }
- * ```
+ * Returns null if stdin is a TTY. Callers should gate invocation behind
+ * an explicit `--stdin` flag to avoid blocking on pipes that never close.
  */
 export async function readStdin(): Promise<string | null> {
   // If stdin is a TTY, no piped data available

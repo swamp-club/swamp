@@ -92,11 +92,11 @@ export const workflowRunCommand = new Command()
   .example("Skip reports", "swamp workflow run deploy-pipeline --skip-reports")
   .example(
     "Pipe inputs from stdin",
-    'echo \'{"env":"prod"}\' | swamp workflow run deploy-pipeline',
+    'echo \'{"env":"prod"}\' | swamp workflow run deploy-pipeline --stdin',
   )
   .example(
     "Batch run via NDJSON from stdin",
-    'printf \'{"env":"dev"}\\n{"env":"prod"}\' | swamp workflow run deploy-pipeline',
+    'printf \'{"env":"dev"}\\n{"env":"prod"}\' | swamp workflow run deploy-pipeline --stdin',
   )
   .arguments("<workflow_id_or_name:workflow_name>")
   .option(
@@ -113,8 +113,9 @@ export const workflowRunCommand = new Command()
   })
   .option(
     "--input-file <file:string>",
-    "Input values from YAML file (cannot combine with piped stdin)",
+    "Input values from YAML file (cannot combine with --stdin)",
   )
+  .option("--stdin", "Read inputs from stdin (piped data)", { default: false })
   .option(
     "--tag <tag:string>",
     "Add tag to produced data (KEY=VALUE, repeatable)",
@@ -174,8 +175,7 @@ export const workflowRunCommand = new Command()
 
     const lastEvaluated = options.lastEvaluated as boolean;
 
-    // Auto-detect piped stdin (returns null when stdin is a TTY)
-    const stdinContent = await readStdin();
+    const stdinContent = options.stdin ? await readStdin() : null;
     let stdinItems: Record<string, unknown>[] | null = null;
     if (stdinContent !== null) {
       if (options.inputFile) {

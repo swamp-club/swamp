@@ -204,19 +204,19 @@ swamp model method run my-deploy deploy --input '{"environment": "production"}'
 # YAML file input
 swamp model method run my-deploy deploy --input-file inputs.yaml
 
-# Piped stdin (auto-detected, no flag needed)
-echo '{"environment": "production"}' | swamp model method run my-deploy deploy
+# Piped stdin (explicit --stdin flag required)
+echo '{"environment": "production"}' | swamp model method run my-deploy deploy --stdin
 
 # NDJSON from stdin: one run per line
-printf '{"environment":"dev"}\n{"environment":"prod"}' | swamp model method run my-deploy deploy
+printf '{"environment":"dev"}\n{"environment":"prod"}' | swamp model method run my-deploy deploy --stdin
 
 # Pipe from data query via jq
 swamp data query 'modelName == "source"' --json \
   | jq -c '.results[] | {environment: .attributes.env}' \
-  | swamp model method run my-deploy deploy
+  | swamp model method run my-deploy deploy --stdin
 
 # Stdin + --input overrides (--input wins on conflict)
-echo '{"environment": "dev"}' | swamp model method run my-deploy deploy --input dryRun=true
+echo '{"environment": "dev"}' | swamp model method run my-deploy deploy --stdin --input dryRun=true
 ```
 
 **Input file format (inputs.yaml)**:

@@ -89,11 +89,11 @@ export const modelMethodRunCommand = new Command()
   )
   .example(
     "Pipe inputs from stdin",
-    'echo \'{"env":"prod"}\' | swamp model method run my-server deploy',
+    'echo \'{"env":"prod"}\' | swamp model method run my-server deploy --stdin',
   )
   .example(
     "Batch run via NDJSON from stdin",
-    'printf \'{"env":"dev"}\\n{"env":"prod"}\' | swamp model method run my-server deploy',
+    'printf \'{"env":"dev"}\\n{"env":"prod"}\' | swamp model method run my-server deploy --stdin',
   )
   .description(
     "Execute a method on a model. With @type prefix, auto-creates the definition if needed.",
@@ -115,8 +115,9 @@ export const modelMethodRunCommand = new Command()
   })
   .option(
     "--input-file <file:string>",
-    "Input values from YAML file (cannot combine with piped stdin)",
+    "Input values from YAML file (cannot combine with --stdin)",
   )
+  .option("--stdin", "Read inputs from stdin (piped data)", { default: false })
   .option(
     "--tag <tag:string>",
     "Add tag to produced data (KEY=VALUE, repeatable)",
@@ -198,8 +199,7 @@ export const modelMethodRunCommand = new Command()
       ctx.logger
         .debug`Running method '${methodName}' on model: ${modelIdOrName}`;
 
-      // Auto-detect piped stdin (returns null when stdin is a TTY)
-      const stdinContent = await readStdin();
+      const stdinContent = options.stdin ? await readStdin() : null;
       let stdinItems: Record<string, unknown>[] | null = null;
       if (stdinContent !== null) {
         if (options.inputFile) {

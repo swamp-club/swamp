@@ -24,25 +24,25 @@ run.
 
 ## Quick Reference
 
-| Task               | Command                                                |
-| ------------------ | ------------------------------------------------------ |
-| Get schema         | `swamp workflow schema get --json`                     |
-| Search workflows   | `swamp workflow search [query] --json`                 |
-| Get a workflow     | `swamp workflow get <id_or_name> --json`               |
-| Create a workflow  | `swamp workflow create <name> --json`                  |
-| Edit a workflow    | `swamp workflow edit [id_or_name]`                     |
-| Delete a workflow  | `swamp workflow delete <id_or_name> --json`            |
-| Validate workflow  | `swamp workflow validate [id_or_name] --json`          |
-| Evaluate workflow  | `swamp workflow evaluate <id_or_name> --json`          |
-| Run a workflow     | `swamp workflow run <id_or_name>`                      |
-| Run with inputs    | `swamp workflow run <id_or_name> --input key=value`    |
-| Run from stdin     | `echo '{"k":"v"}' \| swamp workflow run <id_or_name>`  |
-| View run history   | `swamp workflow history search --json`                 |
-| Get latest run     | `swamp workflow history get <workflow> --json`         |
-| View run logs      | `swamp workflow history logs <run_or_workflow> --json` |
-| List workflow data | `swamp data list --workflow <name> --json`             |
-| Query wf data      | `swamp data query 'tags.workflow == "<name>"'`         |
-| Get workflow data  | `swamp data get --workflow <name> <data_name> --json`  |
+| Task               | Command                                                       |
+| ------------------ | ------------------------------------------------------------- |
+| Get schema         | `swamp workflow schema get --json`                            |
+| Search workflows   | `swamp workflow search [query] --json`                        |
+| Get a workflow     | `swamp workflow get <id_or_name> --json`                      |
+| Create a workflow  | `swamp workflow create <name> --json`                         |
+| Edit a workflow    | `swamp workflow edit [id_or_name]`                            |
+| Delete a workflow  | `swamp workflow delete <id_or_name> --json`                   |
+| Validate workflow  | `swamp workflow validate [id_or_name] --json`                 |
+| Evaluate workflow  | `swamp workflow evaluate <id_or_name> --json`                 |
+| Run a workflow     | `swamp workflow run <id_or_name>`                             |
+| Run with inputs    | `swamp workflow run <id_or_name> --input key=value`           |
+| Run from stdin     | `echo '{"k":"v"}' \| swamp workflow run <id_or_name> --stdin` |
+| View run history   | `swamp workflow history search --json`                        |
+| Get latest run     | `swamp workflow history get <workflow> --json`                |
+| View run logs      | `swamp workflow history logs <run_or_workflow> --json`        |
+| List workflow data | `swamp data list --workflow <name> --json`                    |
+| Query wf data      | `swamp data query 'tags.workflow == "<name>"'`                |
+| Get workflow data  | `swamp data get --workflow <name> <data_name> --json`         |
 
 ## Repository Structure
 
@@ -259,13 +259,13 @@ swamp workflow run my-workflow --input environment=production --input replicas=3
 swamp workflow run my-workflow --input 'tags:json=["prod","west"]'  # :json suffix for arrays/objects
 swamp workflow run my-workflow --input '{"environment": "production"}'  # legacy single-shot JSON
 swamp workflow run my-workflow --input-file inputs.yaml
-echo '{"environment": "prod"}' | swamp workflow run my-workflow  # stdin auto-detected
-printf '{"environment":"dev"}\n{"environment":"prod"}' | swamp workflow run my-workflow  # NDJSON: one run per line
+echo '{"environment": "prod"}' | swamp workflow run my-workflow --stdin
+printf '{"environment":"dev"}\n{"environment":"prod"}' | swamp workflow run my-workflow --stdin  # NDJSON: one run per line
 swamp workflow run my-workflow --last-evaluated  # Use pre-evaluated workflow
 ```
 
-Piped stdin is auto-detected. JSON objects, JSON arrays, NDJSON (one JSON per
-line), and YAML are supported. Multiple items (array or NDJSON) produce one
+Pass `--stdin` to read piped input. JSON objects, JSON arrays, NDJSON (one JSON
+per line), and YAML are supported. Multiple items (array or NDJSON) produce one
 workflow run per item. `--input` key=value overrides are deep-merged onto each
 stdin item.
 
@@ -274,7 +274,8 @@ stdin item.
 | Flag                | Description                                                        |
 | ------------------- | ------------------------------------------------------------------ |
 | `--input <value>`   | Input values (key=value repeatable, or JSON)                       |
-| `--input-file <f>`  | Input values from YAML file (cannot combine with piped stdin)      |
+| `--input-file <f>`  | Input values from YAML file (cannot combine with `--stdin`)        |
+| `--stdin`           | Read inputs from stdin (piped data)                                |
 | `--last-evaluated`  | Use previously evaluated workflow (skip eval and input validation) |
 | `--driver <driver>` | Override execution driver for all steps (e.g. `raw`, `docker`)     |
 

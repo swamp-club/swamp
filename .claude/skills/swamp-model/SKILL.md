@@ -59,31 +59,31 @@ definitions referenced across multiple workflows.
 
 ## Quick Reference
 
-| Task                | Command                                                          |
-| ------------------- | ---------------------------------------------------------------- |
-| Search model types  | `swamp model type search [query] --json`                         |
-| Describe a type     | `swamp model type describe <type> --json`                        |
-| Create model input  | `swamp model create <type> <name> --json`                        |
-| Create with args    | `swamp model create <type> <name> --global-arg key=value --json` |
-| Search models       | `swamp model search [query] --json`                              |
-| Get model details   | `swamp model get <id_or_name> --json`                            |
-| Edit model input    | `swamp model edit [id_or_name]`                                  |
-| Delete a model      | `swamp model delete <id_or_name> --json`                         |
-| Validate model      | `swamp model validate [id_or_name] --json`                       |
-| Validate by label   | `swamp model validate [id_or_name] --label policy --json`        |
-| Validate by method  | `swamp model validate [id_or_name] --method create --json`       |
-| Evaluate input(s)   | `swamp model evaluate [id_or_name] --json`                       |
-| Run a method        | `swamp model method run <id_or_name> <method>`                   |
-| Run with inputs     | `swamp model method run <name> <method> --input key=value`       |
-| Run from stdin      | `echo '{"k":"v"}' \| swamp model method run <name> <method>`     |
-| Direct type exec    | `swamp model @<type> method run <method> <name> --input k=v`     |
-| Skip all checks     | `swamp model method run <name> <method> --skip-checks`           |
-| Skip check by name  | `swamp model method run <name> <method> --skip-check <n>`        |
-| Skip check by label | `swamp model method run <name> <method> --skip-check-label <l>`  |
-| Search outputs      | `swamp model output search [query] --json`                       |
-| Get output details  | `swamp model output get <output_or_model> --json`                |
-| View output logs    | `swamp model output logs <output_id> --json`                     |
-| View output data    | `swamp model output data <output_id> --json`                     |
+| Task                | Command                                                              |
+| ------------------- | -------------------------------------------------------------------- |
+| Search model types  | `swamp model type search [query] --json`                             |
+| Describe a type     | `swamp model type describe <type> --json`                            |
+| Create model input  | `swamp model create <type> <name> --json`                            |
+| Create with args    | `swamp model create <type> <name> --global-arg key=value --json`     |
+| Search models       | `swamp model search [query] --json`                                  |
+| Get model details   | `swamp model get <id_or_name> --json`                                |
+| Edit model input    | `swamp model edit [id_or_name]`                                      |
+| Delete a model      | `swamp model delete <id_or_name> --json`                             |
+| Validate model      | `swamp model validate [id_or_name] --json`                           |
+| Validate by label   | `swamp model validate [id_or_name] --label policy --json`            |
+| Validate by method  | `swamp model validate [id_or_name] --method create --json`           |
+| Evaluate input(s)   | `swamp model evaluate [id_or_name] --json`                           |
+| Run a method        | `swamp model method run <id_or_name> <method>`                       |
+| Run with inputs     | `swamp model method run <name> <method> --input key=value`           |
+| Run from stdin      | `echo '{"k":"v"}' \| swamp model method run <name> <method> --stdin` |
+| Direct type exec    | `swamp model @<type> method run <method> <name> --input k=v`         |
+| Skip all checks     | `swamp model method run <name> <method> --skip-checks`               |
+| Skip check by name  | `swamp model method run <name> <method> --skip-check <n>`            |
+| Skip check by label | `swamp model method run <name> <method> --skip-check-label <l>`      |
+| Search outputs      | `swamp model output search [query] --json`                           |
+| Get output details  | `swamp model output get <output_or_model> --json`                    |
+| View output logs    | `swamp model output logs <output_id> --json`                         |
+| View output data    | `swamp model output data <output_id> --json`                         |
 
 ## Repository Structure
 
@@ -424,9 +424,9 @@ swamp model method run my-deploy create --input config.timeout=30  # dot notatio
 swamp model method run my-deploy create --input 'tags:json=["prod","west"]'  # :json suffix for arrays/objects
 swamp model method run my-deploy create --input '{"environment": "prod"}'  # legacy single-shot JSON
 swamp model method run my-deploy create --input-file inputs.yaml
-echo '{"environment": "prod"}' | swamp model method run my-deploy create  # stdin auto-detected
-printf '{"environment":"dev"}\n{"environment":"prod"}' | swamp model method run my-deploy create  # NDJSON: one run per line
-swamp data query 'modelName == "source"' --json | jq -c '.results[] | {environment: .attributes.env}' | swamp model method run my-deploy create  # pipe composition
+echo '{"environment": "prod"}' | swamp model method run my-deploy create --stdin
+printf '{"environment":"dev"}\n{"environment":"prod"}' | swamp model method run my-deploy create --stdin  # NDJSON: one run per line
+swamp data query 'modelName == "source"' --json | jq -c '.results[] | {environment: .attributes.env}' | swamp model method run my-deploy create --stdin
 swamp model method run my-deploy create --last-evaluated
 swamp model method run my-deploy create --skip-checks
 swamp model method run my-deploy create --skip-check valid-region

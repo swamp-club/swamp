@@ -233,10 +233,10 @@ via `--input-file` with YAML/JSON, or via the legacy single-shot
 
 ### Reading inputs from stdin
 
-Both `method run` and `workflow run` auto-detect piped stdin. When data is piped
-to the command, it is read and parsed as inputs — no flag needed. This enables
-Unix pipe composition following the same pattern as `vault put`, `model edit`,
-and `workflow edit`.
+Both `method run` and `workflow run` accept piped stdin via the `--stdin` flag.
+When `--stdin` is passed, the command reads stdin until EOF and parses it as
+inputs. This enables Unix pipe composition following the same pattern as `jq -n`
+(explicit opt-in).
 
 The input format is detected automatically:
 
@@ -250,22 +250,22 @@ executed once per item. Each execution is discrete — it produces its own data
 artifacts, runs pre-flight checks, and reports independently. Execution stops on
 the first failure.
 
-Piped stdin and `--input-file` cannot be combined. `--input` key=value overrides
-can be combined with piped stdin — they are deep-merged onto each stdin item (the
+`--stdin` and `--input-file` cannot be combined. `--input` key=value overrides
+can be combined with `--stdin` — they are deep-merged onto each stdin item (the
 `--input` values win on conflict).
 
 ```sh
 # Single JSON object from stdin
-echo '{"run": "echo hello"}' | swamp model method run my-model execute
+echo '{"run": "echo hello"}' | swamp model method run my-model execute --stdin
 
 # NDJSON: run method once per line
 printf '{"run":"echo a"}\n{"run":"echo b"}' \
-  | swamp model method run my-model execute
+  | swamp model method run my-model execute --stdin
 
 # Pipe from data query via jq, with static overrides
 swamp data query 'modelName == "source"' --json \
   | jq -c '.results[] | {run: .attributes.command}' \
-  | swamp model method run target-model execute --input env=prod
+  | swamp model method run target-model execute --stdin --input env=prod
 ```
 
 ## Input Routing for Direct Type Execution
