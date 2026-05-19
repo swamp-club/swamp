@@ -256,7 +256,7 @@ Deno.test("repo init dedupes repeated --tool values", async () => {
   });
 });
 
-Deno.test("repo init with shared-dir tools (opencode + codex) writes one .agents/ ignore line", async () => {
+Deno.test("repo init with shared-dir tools (opencode + codex) does not gitignore skills", async () => {
   await withTempDir(async (dir) => {
     const { code } = await runCliCommand(
       ["--json", "repo", "init", "--tool", "opencode", "--tool", "codex"],
@@ -266,7 +266,7 @@ Deno.test("repo init with shared-dir tools (opencode + codex) writes one .agents
 
     const gitignore = await Deno.readTextFile(join(dir, ".gitignore"));
     const matches = gitignore.match(/\.agents\/skills\//g) ?? [];
-    assertEquals(matches.length, 1);
+    assertEquals(matches.length, 0);
   });
 });
 
