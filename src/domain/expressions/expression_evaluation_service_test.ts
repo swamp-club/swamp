@@ -569,3 +569,53 @@ Deno.test("resolveRuntimeExpressionsInDefinition: leaves invalid env.* prose in 
     );
   });
 });
+
+// ============================================================================
+// evaluateDefinition — nested globalArguments (swamp-club#358)
+// ============================================================================
+
+Deno.test("evaluateDefinition: resolves expressions in nested globalArguments objects and arrays", async () => {
+  await withTempDir(async (repoDir) => {
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    const service = new ExpressionEvaluationService(definitionRepo, repoDir);
+    const type = ModelType.create("command/shell");
+
+    const definition = Definition.create({
+      name: "nested-ga-test",
+      inputs: {
+        properties: {
+          region: { type: "string" },
+          key_name: { type: "string" },
+        },
+        required: ["region", "key_name"],
+      },
+      globalArguments: {
+        name: "my-pool",
+        config: {
+          region: "${{ inputs.region }}",
+          keys: ["${{ inputs.key_name }}"],
+          nested: {
+            deep_value: '${{ "resolved-" + inputs.region }}',
+          },
+        },
+      },
+      methods: { exec: { arguments: { run: "echo hello" } } },
+    });
+
+    const result = await service.evaluateDefinition(
+      definition,
+      type,
+      { region: "us-east-1", key_name: "my-key" },
+    );
+
+    const ga = result.definition.globalArguments;
+    assertEquals(ga.name, "my-pool");
+
+    const config = ga.config as Record<string, unknown>;
+    assertEquals(config.region, "us-east-1");
+    assertEquals((config.keys as string[])[0], "my-key");
+
+    const nested = config.nested as Record<string, unknown>;
+    assertEquals(nested.deep_value, "resolved-us-east-1");
+  });
+});

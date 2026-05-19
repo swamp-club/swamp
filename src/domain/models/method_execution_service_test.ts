@@ -2954,3 +2954,165 @@ Deno.test("executeWorkflow - still rejects invalid types on provided globalArgs"
     "Global arguments validation failed",
   );
 });
+
+// ---------- Nested Unresolved Expression Tests (swamp-club#358) ----------
+
+Deno.test("execute - Proxy throws for nested unresolved expression in globalArgs object", async () => {
+  const service = new DefaultMethodExecutionService();
+
+  const model: ModelDefinition = {
+    type: ModelType.create("test/nested-unresolved"),
+    version: "1",
+    methods: {
+      run: {
+        description: "Test method",
+        arguments: z.object({}),
+        execute: (_args: Record<string, unknown>, context) => {
+          const _val = context.globalArgs.config;
+          return Promise.resolve({});
+        },
+      },
+    },
+  };
+
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: {
+      name: "my-server",
+      config: {
+        nested_key:
+          '${{ data.latest("other-model", "state").attributes.value }}',
+      },
+    },
+    methods: { run: { arguments: {} } },
+  });
+
+  const { context } = createTestContext({ modelType: model.type });
+  await assertRejects(
+    () => service.execute(definition, model.methods.run, context),
+    Error,
+    "Unresolved expression in globalArguments.config",
+  );
+});
+
+Deno.test("execute - Proxy throws for unresolved expression in nested array", async () => {
+  const service = new DefaultMethodExecutionService();
+
+  const model: ModelDefinition = {
+    type: ModelType.create("test/nested-array-unresolved"),
+    version: "1",
+    methods: {
+      run: {
+        description: "Test method",
+        arguments: z.object({}),
+        execute: (_args: Record<string, unknown>, context) => {
+          const _val = context.globalArgs.ssh_keys;
+          return Promise.resolve({});
+        },
+      },
+    },
+  };
+
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: {
+      name: "my-server",
+      ssh_keys: [
+        '${{ data.latest("my-key", "state").attributes.fingerprint }}',
+      ],
+    },
+    methods: { run: { arguments: {} } },
+  });
+
+  const { context } = createTestContext({ modelType: model.type });
+  await assertRejects(
+    () => service.execute(definition, model.methods.run, context),
+    Error,
+    "Unresolved expression in globalArguments.ssh_keys",
+  );
+});
+
+Deno.test("execute - Proxy allows access to fully resolved nested object", async () => {
+  const service = new DefaultMethodExecutionService();
+
+  let receivedConfig: Record<string, unknown> = {};
+  const model: ModelDefinition = {
+    type: ModelType.create("test/nested-resolved"),
+    version: "1",
+    methods: {
+      run: {
+        description: "Test method",
+        arguments: z.object({}),
+        execute: (_args: Record<string, unknown>, context) => {
+          receivedConfig = context.globalArgs.config as Record<string, unknown>;
+          return Promise.resolve({});
+        },
+      },
+    },
+  };
+
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: {
+      name: "my-server",
+      config: {
+        region: "us-east-1",
+        keys: ["key-1", "key-2"],
+      },
+    },
+    methods: { run: { arguments: {} } },
+  });
+
+  const { context } = createTestContext({ modelType: model.type });
+  await service.execute(definition, model.methods.run, context);
+  assertEquals(receivedConfig.region, "us-east-1");
+  assertEquals((receivedConfig.keys as string[])[0], "key-1");
+});
+
+Deno.test("executeWorkflow - detects nested unresolved expressions in globalArgs validation", async () => {
+  const service = new DefaultMethodExecutionService();
+
+  const schema = z.object({
+    name: z.string(),
+    config: z.object({
+      region: z.string(),
+    }),
+  });
+
+  let receivedName = "";
+  const model: ModelDefinition = {
+    type: ModelType.create("test/nested-unresolved-validation"),
+    version: "1",
+    globalArguments: schema,
+    methods: {
+      run: {
+        description: "Test method",
+        arguments: z.object({}),
+        execute: (_args: Record<string, unknown>, context) => {
+          receivedName = context.globalArgs.name as string;
+          return Promise.resolve({});
+        },
+      },
+    },
+  };
+
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: {
+      name: "my-server",
+      config: {
+        region: "${{ inputs.region }}",
+      },
+    },
+  });
+
+  const { context } = createTestContext({ modelType: model.type });
+  const result = await service.executeWorkflow(
+    definition,
+    model,
+    "run",
+    context,
+  );
+  assertEquals(result !== undefined, true);
+  assertEquals(receivedName, "my-server");
+});

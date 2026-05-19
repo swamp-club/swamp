@@ -41,10 +41,7 @@ import {
   createResourceWriter,
 } from "./data_writer.ts";
 import { coerceMethodArgs, getObjectShape } from "./zod_type_coercion.ts";
-import {
-  containsExpression,
-  valueContainsExpression,
-} from "../expressions/expression_parser.ts";
+import { valueContainsExpression } from "../expressions/expression_parser.ts";
 import type { Data } from "../data/data.ts";
 import type { DriverOutput } from "../drivers/execution_driver.ts";
 import { RawExecutionDriver } from "../drivers/raw_execution_driver.ts";
@@ -300,12 +297,11 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
     const globalArgsProxy = new Proxy(resolvedGlobalArgs, {
       get(target, prop, receiver) {
         const value = Reflect.get(target, prop, receiver);
-        if (
-          typeof prop === "string" && typeof value === "string" &&
-          containsExpression(value)
-        ) {
+        if (typeof prop === "string" && valueContainsExpression(value)) {
           throw new Error(
-            `Unresolved expression in globalArguments.${prop}: ${value}`,
+            `Unresolved expression in globalArguments.${prop}: ${
+              JSON.stringify(value)
+            }`,
           );
         }
         return value;
@@ -421,11 +417,13 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         const rawGlobalArgs = currentDefinition.globalArguments;
 
         // Identify globalArg fields with unresolved expressions (inputs,
-        // model resource/file refs, or any other ${{ ... }} that wasn't evaluated)
+        // model resource/file refs, or any other ${{ ... }} that wasn't evaluated).
+        // Uses valueContainsExpression for recursive detection of expressions
+        // inside nested objects and arrays (swamp-club#358).
         let hasUnresolved = false;
         const resolvedGlobalArgs: Record<string, unknown> = {};
         for (const [key, value] of Object.entries(rawGlobalArgs)) {
-          if (typeof value === "string" && containsExpression(value)) {
+          if (valueContainsExpression(value)) {
             hasUnresolved = true;
           } else {
             resolvedGlobalArgs[key] = value;

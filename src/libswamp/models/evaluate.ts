@@ -25,6 +25,7 @@ import type { ModelType } from "../../domain/models/model_type.ts";
 import type { EvaluatedDefinition } from "../../domain/expressions/expression_evaluation_service.ts";
 import { ExpressionEvaluationService } from "../../domain/expressions/expression_evaluation_service.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
+import { DataQueryService } from "../../domain/data/data_query_service.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { YamlEvaluatedDefinitionRepository } from "../../infrastructure/persistence/yaml_evaluated_definition_repository.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
@@ -92,15 +93,17 @@ export function createModelEvaluateDeps(
   const dsPath = (subdir: string): string | undefined =>
     datastoreResolver?.resolvePath(subdir);
   const definitionRepo = new YamlDefinitionRepository(repoDir);
+  const catalogStore = createCatalogStore(repoDir, datastoreResolver);
   const dataRepo = new FileSystemUnifiedDataRepository(
     repoDir,
     dsPath(SWAMP_SUBDIRS.data),
-    createCatalogStore(repoDir, datastoreResolver),
+    catalogStore,
   );
+  const dataQueryService = new DataQueryService(catalogStore, dataRepo);
   const evaluationService = new ExpressionEvaluationService(
     definitionRepo,
     repoDir,
-    { dataRepo },
+    { dataRepo, dataQueryService },
   );
   const evaluatedDefRepo = new YamlEvaluatedDefinitionRepository(
     repoDir,
