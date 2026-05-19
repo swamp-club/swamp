@@ -974,19 +974,34 @@ Deno.test("RepoService.init cursor instructions have MDC frontmatter", async () 
 });
 
 Deno.test("RepoService.init includes tool-specific gitignore entries", async () => {
-  const toolGitignoreEntries: Partial<Record<AiTool, string>> = {
-    claude: ".claude/worktrees/",
-    cursor: ".cursor/skills/",
-    opencode: ".agents/skills/",
-    codex: ".agents/skills/",
-    kiro: ".kiro/skills/",
-  };
+  // Claude has tool-specific gitignore entries for local config files
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+    await service.init(repoPath, { tools: ["claude"] });
+    const content = await Deno.readTextFile(join(tempDir, ".gitignore"));
+    assertStringIncludes(content, ".claude/worktrees/");
+    assertStringIncludes(content, ".claude/settings.local.json");
+    assertStringIncludes(content, ".claude/scheduled_tasks.lock");
+    assertStringIncludes(content, ".claude/scheduled_tasks.json");
+    // Skills must NOT be gitignored — they should be checked in
+    assertEquals(content.includes(".claude/skills/"), false);
+    assertStringIncludes(content, ".swamp/");
+    assertStringIncludes(
+      content,
+      "# BEGIN swamp managed section - DO NOT EDIT",
+    );
+    assertStringIncludes(content, "# END swamp managed section");
+  });
 
-  for (
-    const [tool, expectedEntry] of Object.entries(
-      toolGitignoreEntries,
-    ) as [AiTool, string][]
-  ) {
+  // Non-claude tools: skills must NOT be gitignored — they should be checked in
+  const toolsWithNoSkillsIgnore: AiTool[] = [
+    "cursor",
+    "opencode",
+    "codex",
+    "kiro",
+  ];
+  for (const tool of toolsWithNoSkillsIgnore) {
     await withTempDir(async (tempDir) => {
       const service = new RepoService("0.1.0");
       const repoPath = RepoPath.create(tempDir);
@@ -995,10 +1010,10 @@ Deno.test("RepoService.init includes tool-specific gitignore entries", async () 
 
       const gitignorePath = join(tempDir, ".gitignore");
       const content = await Deno.readTextFile(gitignorePath);
-      assertStringIncludes(
-        content,
-        expectedEntry,
-        `${tool} gitignore should include ${expectedEntry}`,
+      assertEquals(
+        content.includes("skills/"),
+        false,
+        `${tool} gitignore must not include skills/ — skills should be checked in`,
       );
       // All tools should have common entries within managed section
       assertStringIncludes(content, ".swamp/");
@@ -1009,20 +1024,6 @@ Deno.test("RepoService.init includes tool-specific gitignore entries", async () 
       assertStringIncludes(content, "# END swamp managed section");
     });
   }
-
-  // Claude specifically: .claude/skills/ must NOT be gitignored so extension
-  // authors can commit skill sources to their extension repo.
-  await withTempDir(async (tempDir) => {
-    const service = new RepoService("0.1.0");
-    const repoPath = RepoPath.create(tempDir);
-    await service.init(repoPath, { tools: ["claude"] });
-    const content = await Deno.readTextFile(join(tempDir, ".gitignore"));
-    assertStringIncludes(content, ".claude/worktrees/");
-    assertStringIncludes(content, ".claude/settings.local.json");
-    assertStringIncludes(content, ".claude/scheduled_tasks.lock");
-    assertStringIncludes(content, ".claude/scheduled_tasks.json");
-    assertEquals(content.split("\n").includes(".claude/"), false);
-  });
 });
 
 // Managed .gitignore section tests
@@ -1059,7 +1060,7 @@ Deno.test("RepoService.init replaces managed section on tool switch", async () =
     let content = await Deno.readTextFile(gitignorePath);
     assertStringIncludes(content, ".claude/worktrees/");
 
-    // Re-init with cursor (force)
+    // Re-init with cursor (force) — cursor has no tool-specific gitignore
     const result = await service.init(repoPath, {
       force: true,
       tools: ["cursor"],
@@ -1067,10 +1068,11 @@ Deno.test("RepoService.init replaces managed section on tool switch", async () =
 
     assertEquals(result.gitignoreAction, "updated");
     content = await Deno.readTextFile(gitignorePath);
-    assertStringIncludes(content, ".cursor/skills/");
     // Old tool entries should be replaced
     assertEquals(content.includes(".claude/worktrees/"), false);
     assertEquals(content.includes(".claude/settings.local.json"), false);
+    // Common entries still present
+    assertStringIncludes(content, ".swamp/");
   });
 });
 
@@ -1095,7 +1097,10 @@ Deno.test("RepoService.upgrade updates managed section on tool switch", async ()
 
     assertEquals(result.gitignoreAction, "updated");
     const content = await Deno.readTextFile(gitignorePath);
-    assertStringIncludes(content, ".cursor/skills/");
+    // Claude-specific entries removed after tool switch
+    assertEquals(content.includes(".claude/worktrees/"), false);
+    // Common entries still present
+    assertStringIncludes(content, ".swamp/");
     // User content after section is preserved
     assertStringIncludes(content, "*.log");
   });
@@ -1400,7 +1405,7 @@ Deno.test("RepoService.init with kiro does not create claude settings", async ()
   });
 });
 
-Deno.test("RepoService.init kiro gitignore contains .kiro/skills/", async () => {
+Deno.test("RepoService.init kiro gitignore does not include skills", async () => {
   await withTempDir(async (tempDir) => {
     const service = new RepoService("0.1.0");
     const repoPath = RepoPath.create(tempDir);
@@ -1409,8 +1414,7 @@ Deno.test("RepoService.init kiro gitignore contains .kiro/skills/", async () => 
 
     const gitignorePath = join(tempDir, ".gitignore");
     const content = await Deno.readTextFile(gitignorePath);
-    assertStringIncludes(content, ".kiro/skills/");
-    assertStringIncludes(content, "# Kiro skills (managed by swamp)");
+    assertEquals(content.includes(".kiro/skills/"), false);
     assertStringIncludes(content, ".swamp/");
   });
 });
@@ -2306,10 +2310,10 @@ Deno.test("RepoService.init with multiple tools writes scaffolding for each", as
     assertEquals(marker!.tools, ["claude", "kiro"]);
     assertEquals(marker!.tool, undefined);
 
-    // .gitignore should contain entries for both tools
+    // .gitignore should contain claude-specific entries (kiro has no gitignore entries)
     const gitignore = await Deno.readTextFile(join(tempDir, ".gitignore"));
     assertStringIncludes(gitignore, ".claude/worktrees/");
-    assertStringIncludes(gitignore, ".kiro/skills/");
+    assertEquals(gitignore.includes(".kiro/skills/"), false);
   });
 });
 
@@ -2326,7 +2330,7 @@ Deno.test("RepoService.init with duplicate --tool values dedupes", async () => {
   });
 });
 
-Deno.test("RepoService.init with shared-dir tools (opencode + codex) keeps a single managed gitignore section", async () => {
+Deno.test("RepoService.init with shared-dir tools (opencode + codex) does not gitignore skills", async () => {
   await withTempDir(async (tempDir) => {
     const service = new RepoService("0.1.0");
     const repoPath = RepoPath.create(tempDir);
@@ -2334,9 +2338,8 @@ Deno.test("RepoService.init with shared-dir tools (opencode + codex) keeps a sin
     await service.init(repoPath, { tools: ["opencode", "codex", "copilot"] });
 
     const gitignore = await Deno.readTextFile(join(tempDir, ".gitignore"));
-    // Both tools share `.agents/skills/` — should appear exactly once
-    const matches = gitignore.match(/\.agents\/skills\//g) ?? [];
-    assertEquals(matches.length, 1);
+    assertEquals(gitignore.includes(".agents/skills/"), false);
+    assertStringIncludes(gitignore, ".swamp/");
   });
 });
 

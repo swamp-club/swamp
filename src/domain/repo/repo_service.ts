@@ -73,11 +73,6 @@ const INSTRUCTIONS_FILES: Partial<Record<AiTool, string>> = {
 const GITIGNORE_TOOL_ENTRIES: Partial<Record<AiTool, string>> = {
   claude:
     "# Claude Code configuration (managed by swamp)\n.claude/worktrees/\n.claude/settings.local.json\n.claude/scheduled_tasks.lock\n.claude/scheduled_tasks.json",
-  cursor: "# Cursor skills (managed by swamp)\n.cursor/skills/",
-  opencode: "# Agent skills (managed by swamp)\n.agents/skills/",
-  codex: "# Agent skills (managed by swamp)\n.agents/skills/",
-  copilot: "# Agent skills (managed by swamp)\n.agents/skills/",
-  kiro: "# Kiro skills (managed by swamp)\n.kiro/skills/",
 };
 
 /**
@@ -980,9 +975,8 @@ ${body}`;
 
   /**
    * Generates the content between markers (not including the markers).
-   * Emits one entry per enrolled tool, deduplicated so tools that share an
-   * ignore line (e.g. opencode/codex/copilot all use `.agents/skills/`) only
-   * produce a single entry.
+   * Emits one entry per enrolled tool that has tool-specific gitignore
+   * entries (currently only Claude for local config files).
    */
   private generateGitignoreSectionBody(tools: AiTool[]): string {
     const lines = [
