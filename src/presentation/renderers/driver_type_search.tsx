@@ -133,14 +133,15 @@ function renderDriverTypeResultLine(
 function renderDriverTypePreview(
   item: DriverTypeSearchItem,
   _detail: DriverTypeSearchItem | undefined,
-  _width: number,
+  width: number,
   _height: number,
 ): React.ReactElement {
+  const innerWidth = Math.max(10, width - 1);
   return (
-    <Box flexDirection="column" paddingLeft={1}>
-      <Text bold>{item.type}</Text>
-      <Text dimColor>name: {item.name}</Text>
-      <Text dimColor>{item.description}</Text>
+    <Box flexDirection="column" marginLeft={1} width={innerWidth}>
+      <Text bold wrap="truncate-end">{item.type}</Text>
+      <Text dimColor wrap="truncate-end">name: {item.name}</Text>
+      <Text dimColor wrap="truncate-end">{item.description}</Text>
     </Box>
   );
 }

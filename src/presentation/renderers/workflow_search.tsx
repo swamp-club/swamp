@@ -193,16 +193,28 @@ function renderWorkflowResultLine(
 function renderWorkflowPreview(
   item: WorkflowSearchItem,
   detail: WorkflowPreviewDetail | undefined,
-  _width: number,
+  width: number,
   _height: number,
 ): React.ReactElement {
+  const innerWidth = Math.max(10, width - 1);
   if (!detail) {
     // Immediate content from the search item
+    const lines: React.ReactElement[] = [
+      <Text key="name" bold wrap="truncate-end">{item.name}</Text>,
+    ];
+    if (item.description) {
+      lines.push(
+        <Text key="desc" wrap="truncate-end">{item.description}</Text>,
+      );
+    }
+    lines.push(
+      <Text key="jobs" dimColor wrap="truncate-end">
+        {`${item.jobCount} jobs`}
+      </Text>,
+    );
     return (
-      <Box flexDirection="column" paddingLeft={1}>
-        <Text bold>{item.name}</Text>
-        {item.description && <Text>{item.description}</Text>}
-        <Text dimColor>{`${item.jobCount} jobs`}</Text>
+      <Box flexDirection="column" marginLeft={1} width={innerWidth}>
+        {lines}
       </Box>
     );
   }
@@ -212,8 +224,8 @@ function renderWorkflowPreview(
     `**${detail.name}**\n\n\`\`\`yaml\n${detail.yaml}\n\`\`\``,
   );
   return (
-    <Box paddingLeft={1}>
-      <Text>{rendered}</Text>
+    <Box flexDirection="column" marginLeft={1} width={innerWidth}>
+      <Text wrap="truncate-end">{rendered}</Text>
     </Box>
   );
 }

@@ -50,7 +50,7 @@ export function ResultsList<T>(
     props;
 
   return (
-    <Box flexDirection="column" width={width}>
+    <Box flexDirection="column" width={width} overflow="hidden">
       {scrollMetrics.hasMoreAbove && (
         <Text dimColor>
           {INDENT}... {scrollMetrics.moreAboveCount} more above
@@ -60,17 +60,17 @@ export function ResultsList<T>(
         const isSelected =
           index + scrollMetrics.moreAboveCount === selectedIndex;
         return (
-          <Box key={index}>
+          <Box key={index} width={width} overflow="hidden">
             {isSelected
               ? (
-                <Text inverse bold>
+                <Text inverse bold wrap="truncate-end">
                   {" "}
                   <ResultLineWrapper renderLine={renderLine} item={item} />
                   {" "}
                 </Text>
               )
               : (
-                <Text>
+                <Text wrap="truncate-end">
                   {INDENT}
                   <ResultLineWrapper renderLine={renderLine} item={item} />
                 </Text>

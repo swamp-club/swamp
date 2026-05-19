@@ -26,6 +26,7 @@ import {
   writeOutput,
 } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
+import { getTerminalColumns } from "../output/terminal_size.ts";
 import type { AuditEntry } from "../../domain/audit/audit_entry.ts";
 import { auditEntryToData } from "../../domain/audit/audit_entry.ts";
 
@@ -65,13 +66,17 @@ function renderTimelineTable(
     return;
   }
 
+  const cols = getTerminalColumns();
+  const prefixLen = 12 + 1 + 8 + 1; // time + space + source + space
+  const maxSummaryLen = Math.max(20, cols - prefixLen);
+
   // Print header
   writeOutput(
     bold(
       `${"Time".padEnd(12)} ${"Source".padEnd(8)} ${"Summary"}`,
     ),
   );
-  writeOutput(dim("-".repeat(60)));
+  writeOutput(dim("-".repeat(cols)));
 
   for (const entry of entries) {
     const time = formatTime(entry.timestamp);
@@ -79,8 +84,6 @@ function renderTimelineTable(
       ? cyan("swamp".padEnd(8))
       : yellow("direct".padEnd(8));
 
-    // Truncate long commands for display
-    const maxSummaryLen = 60;
     const summary = entry.summary.length > maxSummaryLen
       ? entry.summary.substring(0, maxSummaryLen - 3) + "..."
       : entry.summary;

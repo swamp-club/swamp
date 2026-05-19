@@ -26,6 +26,7 @@ import {
 } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
 import { renderMarkdownToTerminal } from "../markdown_renderer.ts";
+import { getTerminalColumns } from "../output/terminal_size.ts";
 
 export interface ModelMethodRunRenderOpts {
   modelName: string;
@@ -146,10 +147,11 @@ class LogModelMethodRunRenderer implements ModelMethodRunRenderer {
         logger.info('Running report: "{reportName}"', {
           reportName: e.reportName,
         });
-        const separator = "\u2500".repeat(60);
+        const cols = getTerminalColumns();
+        const separator = "\u2500".repeat(cols);
         writeOutput(
           `\u2500\u2500 Report: ${e.reportName} ${separator}\n${
-            renderMarkdownToTerminal(e.markdown)
+            renderMarkdownToTerminal(e.markdown, { maxWidth: cols })
           }\n${separator}`,
         );
       },

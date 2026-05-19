@@ -26,6 +26,7 @@ import type {
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
+import { getTerminalColumns } from "../output/terminal_size.ts";
 
 /** Formats a byte size into a human-readable string. */
 function formatSize(bytes?: number): string {
@@ -60,6 +61,7 @@ class LogDataListRenderer implements Renderer<DataListEvent> {
   }
 
   private renderModel(data: DataListData): void {
+    const cols = getTerminalColumns();
     console.log(`Data for ${data.modelName} (${data.modelType})`);
     console.log();
 
@@ -71,15 +73,19 @@ class LogDataListRenderer implements Renderer<DataListEvent> {
       for (const item of group.items) {
         const size = formatSize(item.size);
         const date = item.createdAt.slice(0, 10);
-        console.log(
-          `  ${item.name}  v${item.version}  ${item.contentType}  ${size}  ${date}`,
-        );
+        let line =
+          `  ${item.name}  v${item.version}  ${item.contentType}  ${size}  ${date}`;
+        if (line.length > cols) {
+          line = line.substring(0, cols - 1) + "…";
+        }
+        console.log(line);
       }
       console.log();
     }
   }
 
   private renderWorkflow(data: WorkflowDataListData): void {
+    const cols = getTerminalColumns();
     console.log(
       `Data for workflow ${data.workflowName} (run ${data.runId.slice(0, 8)})`,
     );
@@ -95,9 +101,12 @@ class LogDataListRenderer implements Renderer<DataListEvent> {
         const step = item.jobName !== undefined && item.stepName !== undefined
           ? `${item.jobName}.${item.stepName}`
           : "(workflow)";
-        console.log(
-          `  ${item.name}  v${item.version}  ${item.modelName}  ${step}  ${size}`,
-        );
+        let line =
+          `  ${item.name}  v${item.version}  ${item.modelName}  ${step}  ${size}`;
+        if (line.length > cols) {
+          line = line.substring(0, cols - 1) + "…";
+        }
+        console.log(line);
       }
       console.log();
     }

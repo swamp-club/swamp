@@ -199,87 +199,150 @@ function renderOutputResultLine(
 function renderOutputPreview(
   item: ModelOutputSearchItem,
   detail: ModelOutputGetData | undefined,
-  _width: number,
+  width: number,
   _height: number,
 ): React.ReactElement {
+  const innerWidth = Math.max(10, width - 1);
   if (!detail) {
     // Immediate content from the search item
     const displayName = item.modelName ?? item.definitionId;
+    const lines: React.ReactElement[] = [
+      <Text key="name" bold wrap="truncate-end">{displayName}</Text>,
+      <Text key="type" dimColor wrap="truncate-end">type: {item.type}</Text>,
+      <Text key="method" wrap="truncate-end">
+        method: <Text color="cyan">{item.methodName}</Text>
+      </Text>,
+      <Text key="status" wrap="truncate-end">
+        status: <Text color={getStatusColor(item.status)}>{item.status}</Text>
+      </Text>,
+      <Text key="started" dimColor wrap="truncate-end">
+        started: {item.startedAt}
+      </Text>,
+    ];
+    if (item.durationMs !== undefined) {
+      lines.push(
+        <Text key="duration" dimColor wrap="truncate-end">
+          duration: {formatDuration(item.durationMs)}
+        </Text>,
+      );
+    }
+    lines.push(
+      <Text key="defId" dimColor wrap="truncate-end">
+        definitionId: {item.definitionId}
+      </Text>,
+    );
     return (
-      <Box flexDirection="column" paddingLeft={1}>
-        <Text bold>{displayName}</Text>
-        <Text dimColor>type: {item.type}</Text>
-        <Text>
-          method: <Text color="cyan">{item.methodName}</Text>
-        </Text>
-        <Text>
-          status: <Text color={getStatusColor(item.status)}>{item.status}</Text>
-        </Text>
-        <Text dimColor>started: {item.startedAt}</Text>
-        {item.durationMs !== undefined && (
-          <Text dimColor>duration: {formatDuration(item.durationMs)}</Text>
-        )}
-        <Text dimColor>definitionId: {item.definitionId}</Text>
+      <Box flexDirection="column" marginLeft={1} width={innerWidth}>
+        {lines}
       </Box>
     );
   }
 
   // Full detail from fetchPreview
   const displayName = detail.modelName ?? detail.definitionId;
+  const lines: React.ReactElement[] = [
+    <Text key="name" bold wrap="truncate-end">{displayName}</Text>,
+    <Text key="type" dimColor wrap="truncate-end">type: {detail.type}</Text>,
+    <Text key="method" wrap="truncate-end">
+      method: <Text color="cyan">{detail.methodName}</Text>
+    </Text>,
+    <Text key="status" wrap="truncate-end">
+      status: <Text color={getStatusColor(detail.status)}>{detail.status}</Text>
+    </Text>,
+    <Text key="started" dimColor wrap="truncate-end">
+      started: {detail.startedAt}
+    </Text>,
+  ];
+  if (detail.completedAt) {
+    lines.push(
+      <Text key="completed" dimColor wrap="truncate-end">
+        completed: {detail.completedAt}
+      </Text>,
+    );
+  }
+  if (detail.durationMs !== undefined) {
+    lines.push(
+      <Text key="duration" dimColor wrap="truncate-end">
+        duration: {formatDuration(detail.durationMs)}
+      </Text>,
+    );
+  }
+  lines.push(
+    <Text key="retries" dimColor wrap="truncate-end">
+      retries: {detail.retryCount}
+    </Text>,
+  );
+
+  // Provenance section
+  lines.push(<Text key="prov-gap" />);
+  lines.push(
+    <Text key="prov-hdr" color="cyan" bold wrap="truncate-end">
+      Provenance:
+    </Text>,
+  );
+  lines.push(
+    <Text key="prov-trigger" dimColor wrap="truncate-end">
+      {`  triggeredBy: ${detail.provenance.triggeredBy}`}
+    </Text>,
+  );
+  lines.push(
+    <Text key="prov-ver" dimColor wrap="truncate-end">
+      {`  modelVersion: ${detail.provenance.modelVersion}`}
+    </Text>,
+  );
+  lines.push(
+    <Text key="prov-hash" dimColor wrap="truncate-end">
+      {`  definitionHash: ${detail.provenance.definitionHash}`}
+    </Text>,
+  );
+  if (detail.provenance.workflowId) {
+    lines.push(
+      <Text key="prov-wf" dimColor wrap="truncate-end">
+        {`  workflow: ${detail.provenance.workflowId}`}
+      </Text>,
+    );
+  }
+  if (detail.provenance.stepName) {
+    lines.push(
+      <Text key="prov-step" dimColor wrap="truncate-end">
+        {`  step: ${detail.provenance.stepName}`}
+      </Text>,
+    );
+  }
+
+  // Artifacts section
+  if (detail.artifacts && detail.artifacts.dataArtifacts.length > 0) {
+    lines.push(<Text key="art-gap" />);
+    lines.push(
+      <Text key="art-hdr" color="cyan" bold wrap="truncate-end">
+        Artifacts:
+      </Text>,
+    );
+    for (const a of detail.artifacts.dataArtifacts) {
+      lines.push(
+        <Text key={`art-${a.dataId}`} dimColor wrap="truncate-end">
+          {`  ${a.name} v${a.version}`}
+        </Text>,
+      );
+    }
+  }
+
+  // Error section
+  if (detail.error) {
+    lines.push(<Text key="err-gap" />);
+    lines.push(
+      <Text key="err-hdr" color="red" bold wrap="truncate-end">Error:</Text>,
+    );
+    lines.push(
+      <Text key="err-msg" color="red" wrap="truncate-end">
+        {`  ${detail.error.message}`}
+      </Text>,
+    );
+  }
+
   return (
-    <Box flexDirection="column" paddingLeft={1}>
-      <Text bold>{displayName}</Text>
-      <Text dimColor>type: {detail.type}</Text>
-      <Text>
-        method: <Text color="cyan">{detail.methodName}</Text>
-      </Text>
-      <Text>
-        status:{" "}
-        <Text color={getStatusColor(detail.status)}>{detail.status}</Text>
-      </Text>
-      <Text dimColor>started: {detail.startedAt}</Text>
-      {detail.completedAt && (
-        <Text dimColor>completed: {detail.completedAt}</Text>
-      )}
-      {detail.durationMs !== undefined && (
-        <Text dimColor>duration: {formatDuration(detail.durationMs)}</Text>
-      )}
-      <Text dimColor>retries: {detail.retryCount}</Text>
-
-      <Box flexDirection="column" marginTop={1}>
-        <Text color="cyan" bold>Provenance:</Text>
-        <Text dimColor>triggeredBy: {detail.provenance.triggeredBy}</Text>
-        <Text dimColor>modelVersion: {detail.provenance.modelVersion}</Text>
-        <Text dimColor>
-          definitionHash: {detail.provenance.definitionHash}
-        </Text>
-        {detail.provenance.workflowId && (
-          <Text dimColor>workflow: {detail.provenance.workflowId}</Text>
-        )}
-        {detail.provenance.stepName && (
-          <Text dimColor>step: {detail.provenance.stepName}</Text>
-        )}
-      </Box>
-
-      {detail.artifacts &&
-        detail.artifacts.dataArtifacts.length > 0 && (
-        <Box flexDirection="column" marginTop={1}>
-          <Text color="cyan" bold>Artifacts:</Text>
-          {detail.artifacts.dataArtifacts.map((a) => (
-            <Text key={a.dataId} dimColor>
-              {"  "}
-              {a.name} v{a.version}
-            </Text>
-          ))}
-        </Box>
-      )}
-
-      {detail.error && (
-        <Box flexDirection="column" marginTop={1}>
-          <Text color="red" bold>Error:</Text>
-          <Text color="red">{detail.error.message}</Text>
-        </Box>
-      )}
+    <Box flexDirection="column" marginLeft={1} width={innerWidth}>
+      {lines}
     </Box>
   );
 }

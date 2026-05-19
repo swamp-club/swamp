@@ -205,23 +205,51 @@ function renderReportResultLine(
 function renderReportPreview(
   item: StoredReportSummary,
   detail: StoredReportDetail | undefined,
-  _width: number,
+  width: number,
   _height: number,
 ): React.ReactElement {
+  const innerWidth = Math.max(10, width - 1);
   if (!detail) {
     // Immediate content from the search item
+    const lines: React.ReactElement[] = [
+      <Text key="name" bold wrap="truncate-end">{item.reportName}</Text>,
+      <Text key="scope" dimColor wrap="truncate-end">
+        scope: {item.reportScope}
+      </Text>,
+      <Text key="model" dimColor wrap="truncate-end">
+        model: {item.modelName}
+      </Text>,
+      <Text key="type" dimColor wrap="truncate-end">
+        type: {item.modelType}
+      </Text>,
+    ];
+    if (item.workflowName) {
+      lines.push(
+        <Text key="wf" dimColor wrap="truncate-end">
+          workflow: {item.workflowName}
+        </Text>,
+      );
+    }
+    lines.push(
+      <Text key="version" dimColor wrap="truncate-end">
+        version: {item.version}
+      </Text>,
+    );
+    lines.push(
+      <Text key="created" dimColor wrap="truncate-end">
+        created: {item.createdAt}
+      </Text>,
+    );
+    if (item.varySuffix) {
+      lines.push(
+        <Text key="variant" dimColor wrap="truncate-end">
+          variant: {item.varySuffix}
+        </Text>,
+      );
+    }
     return (
-      <Box flexDirection="column" paddingLeft={1}>
-        <Text bold>{item.reportName}</Text>
-        <Text dimColor>scope: {item.reportScope}</Text>
-        <Text dimColor>model: {item.modelName}</Text>
-        <Text dimColor>type: {item.modelType}</Text>
-        {item.workflowName && (
-          <Text dimColor>workflow: {item.workflowName}</Text>
-        )}
-        <Text dimColor>version: {item.version}</Text>
-        <Text dimColor>created: {item.createdAt}</Text>
-        {item.varySuffix && <Text dimColor>variant: {item.varySuffix}</Text>}
+      <Box flexDirection="column" marginLeft={1} width={innerWidth}>
+        {lines}
       </Box>
     );
   }
@@ -232,8 +260,8 @@ function renderReportPreview(
     `${detail.reportName}\nscope: ${detail.reportScope} | model: ${detail.modelName} | v${detail.version}\n`;
   const rendered = renderMarkdownToTerminal(detail.markdown);
   return (
-    <Box paddingLeft={1}>
-      <Text>{header + rendered}</Text>
+    <Box flexDirection="column" marginLeft={1} width={innerWidth}>
+      <Text wrap="truncate-end">{header + rendered}</Text>
     </Box>
   );
 }

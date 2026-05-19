@@ -151,55 +151,66 @@ function renderExtensionResultLine(
 function renderExtensionPreview(
   item: ExtensionSearchItem,
   _detail: ExtensionSearchItem | undefined,
-  _width: number,
+  width: number,
   _height: number,
 ): React.ReactElement {
+  const innerWidth = Math.max(10, width - 1);
+  const lines: React.ReactElement[] = [
+    <Text key="name" wrap="truncate-end">
+      <Text color="cyan" bold>{item.name}</Text>{" "}
+      <Text dimColor>v{item.latestVersion}</Text>
+    </Text>,
+  ];
+
+  if (item.description) {
+    lines.push(<Text key="desc-gap" />);
+    lines.push(
+      <Text key="desc" wrap="truncate-end">{item.description}</Text>,
+    );
+  }
+
+  if (item.platforms.length > 0) {
+    lines.push(<Text key="plat-gap" />);
+    lines.push(
+      <Text key="platforms" wrap="truncate-end">
+        <Text bold>Platforms:</Text> {item.platforms.join(", ")}
+      </Text>,
+    );
+  }
+
+  if (item.labels.length > 0) {
+    lines.push(<Text key="label-gap" />);
+    lines.push(
+      <Text key="labels" wrap="truncate-end">
+        <Text bold>Labels:</Text> {item.labels.join(", ")}
+      </Text>,
+    );
+  }
+
+  if (item.contentTypes.length > 0) {
+    lines.push(<Text key="ct-gap" />);
+    lines.push(
+      <Text key="contentTypes" wrap="truncate-end">
+        <Text bold>Content Types:</Text> {item.contentTypes.join(", ")}
+      </Text>,
+    );
+  }
+
+  lines.push(<Text key="dates-gap" />);
+  lines.push(
+    <Text key="created" dimColor wrap="truncate-end">
+      Created: {item.createdAt}
+    </Text>,
+  );
+  lines.push(
+    <Text key="updated" dimColor wrap="truncate-end">
+      Updated: {item.updatedAt}
+    </Text>,
+  );
+
   return (
-    <Box flexDirection="column" paddingLeft={1}>
-      <Box>
-        <Text color="cyan" bold>{item.name}</Text>
-        <Text dimColor>v{item.latestVersion}</Text>
-      </Box>
-
-      {item.description && (
-        <Box marginTop={1}>
-          <Text>{item.description}</Text>
-        </Box>
-      )}
-
-      {item.platforms.length > 0 && (
-        <Box marginTop={1}>
-          <Text>
-            <Text bold>Platforms:</Text>
-            {item.platforms.join(", ")}
-          </Text>
-        </Box>
-      )}
-
-      {item.labels.length > 0 && (
-        <Box marginTop={1}>
-          <Text>
-            <Text bold>Labels:</Text>
-            {item.labels.join(", ")}
-          </Text>
-        </Box>
-      )}
-
-      {item.contentTypes.length > 0 && (
-        <Box marginTop={1}>
-          <Text>
-            <Text bold>Content Types:</Text>
-            {item.contentTypes.join(", ")}
-          </Text>
-        </Box>
-      )}
-
-      <Box marginTop={1}>
-        <Text dimColor>Created: {item.createdAt}</Text>
-      </Box>
-      <Box>
-        <Text dimColor>Updated: {item.updatedAt}</Text>
-      </Box>
+    <Box flexDirection="column" marginLeft={1} width={innerWidth}>
+      {lines}
     </Box>
   );
 }

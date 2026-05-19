@@ -185,85 +185,108 @@ function renderModelResultLine(item: ModelSearchItem): React.ReactElement {
 function renderModelPreview(
   item: ModelSearchItem,
   detail: ModelGetData | undefined,
-  _width: number,
+  width: number,
   _height: number,
 ): React.ReactElement {
+  const innerWidth = Math.max(10, width - 1);
   if (!detail) {
     // Immediate content from the search item
     return (
-      <Box flexDirection="column" paddingLeft={1}>
-        <Text bold>{item.name}</Text>
-        <Text dimColor>type: {item.type}</Text>
+      <Box flexDirection="column" marginLeft={1} width={innerWidth}>
+        <Text bold wrap="truncate-end">{item.name}</Text>
+        <Text dimColor wrap="truncate-end">type: {item.type}</Text>
       </Box>
     );
   }
 
   // Full detail from fetchPreview
-  return (
-    <Box flexDirection="column" paddingLeft={1}>
-      <Text bold>{detail.name}</Text>
-      <Text dimColor>type: {detail.type}</Text>
-      <Text dimColor>version: {detail.version}</Text>
-      {detail.methods && detail.methods.length > 0 && (
-        <Box flexDirection="column" marginTop={1}>
-          <Text color="cyan" bold>Methods:</Text>
-          {detail.methods.map((method) => (
-            <Box key={method.name} flexDirection="column" marginLeft={1}>
-              <Text>
-                <Text color="cyan" bold>{method.name}</Text>
-                <Text dimColor>- {method.description}</Text>
-              </Text>
-              {renderMethodArguments(method.arguments)}
-              {method.dataOutputSpecs && method.dataOutputSpecs.length > 0 && (
-                <Box flexDirection="column" marginLeft={2}>
-                  <Text color="cyan">Data Outputs:</Text>
-                  {method.dataOutputSpecs.map((spec) => (
-                    <Text key={spec.specName} dimColor>
-                      {INDENT_2}
-                      {spec.specName} [{spec.kind}]
-                      {spec.description ? ` - ${spec.description}` : ""}
-                    </Text>
-                  ))}
-                </Box>
-              )}
-            </Box>
-          ))}
-        </Box>
-      )}
-    </Box>
-  );
-}
+  const lines: React.ReactElement[] = [
+    <Text key="name" bold wrap="truncate-end">{detail.name}</Text>,
+    <Text key="type" dimColor wrap="truncate-end">type: {detail.type}</Text>,
+    <Text key="version" dimColor wrap="truncate-end">
+      version: {detail.version}
+    </Text>,
+  ];
 
-/** Renders JSON Schema arguments as Ink elements for the preview pane. */
-function renderMethodArguments(schema: object): React.ReactElement | null {
-  const s = schema as {
-    properties?: Record<
-      string,
-      { type?: string | string[]; enum?: string[]; description?: string }
-    >;
-    required?: string[];
-  };
-  if (!s.properties) return null;
+  if (detail.methods && detail.methods.length > 0) {
+    lines.push(<Text key="mhdr-gap" />);
+    lines.push(
+      <Text key="mhdr" color="cyan" bold wrap="truncate-end">Methods:</Text>,
+    );
+    for (const method of detail.methods) {
+      lines.push(
+        <Text key={`m-${method.name}`} wrap="truncate-end">
+          {INDENT_2}
+          <Text color="cyan" bold>{method.name}</Text>
+          <Text dimColor>- {method.description}</Text>
+        </Text>,
+      );
 
-  const required = new Set(s.required ?? []);
-  const entries = Object.entries(s.properties);
-  if (entries.length === 0) return null;
+      // Inline method arguments
+      const s = method.arguments as {
+        properties?: Record<
+          string,
+          { type?: string | string[]; enum?: string[]; description?: string }
+        >;
+        required?: string[];
+      };
+      if (s.properties) {
+        const required = new Set(s.required ?? []);
+        const entries = Object.entries(s.properties);
+        if (entries.length > 0) {
+          lines.push(
+            <Text key={`a-hdr-${method.name}`} color="cyan" wrap="truncate-end">
+              {INDENT_4}Arguments:
+            </Text>,
+          );
+          for (const [name, prop] of entries) {
+            const formatted = formatSchemaType(prop.type);
+            lines.push(
+              <Text key={`a-${method.name}-${name}`} wrap="truncate-end">
+                {"      "}
+                {name}
+                {formatted ? <Text dimColor>({formatted})</Text> : null}
+                {prop.enum
+                  ? <Text dimColor>[{prop.enum.join(", ")}]</Text>
+                  : null}
+                {required.has(name) ? <Text dimColor>*required</Text> : null}
+              </Text>,
+            );
+          }
+        }
+      }
 
-  return (
-    <Box flexDirection="column" marginLeft={2}>
-      <Text color="cyan">Arguments:</Text>
-      {entries.map(([name, prop]) => {
-        const formatted = formatSchemaType(prop.type);
-        return (
-          <Text key={name}>
-            {INDENT_4}
-            {name}
-            {formatted ? <Text dimColor>({formatted})</Text> : null}
-            {prop.enum ? <Text dimColor>[{prop.enum.join(", ")}]</Text> : null}
-            {required.has(name) ? <Text dimColor>*required</Text> : null}
-          </Text>
+      // Inline data output specs
+      if (method.dataOutputSpecs && method.dataOutputSpecs.length > 0) {
+        lines.push(
+          <Text
+            key={`do-hdr-${method.name}`}
+            color="cyan"
+            wrap="truncate-end"
+          >
+            {INDENT_4}Data Outputs:
+          </Text>,
         );
-      })}
+        for (const spec of method.dataOutputSpecs) {
+          lines.push(
+            <Text
+              key={`do-${method.name}-${spec.specName}`}
+              dimColor
+              wrap="truncate-end"
+            >
+              {"      "}
+              {spec.specName} [{spec.kind}]
+              {spec.description ? ` - ${spec.description}` : ""}
+            </Text>,
+          );
+        }
+      }
+    }
+  }
+
+  return (
+    <Box flexDirection="column" marginLeft={1} width={innerWidth}>
+      {lines}
     </Box>
   );
 }

@@ -158,32 +158,38 @@ function renderVaultResultLine(item: VaultSearchItem): React.ReactElement {
 function renderVaultPreview(
   item: VaultSearchItem,
   detail: VaultDescribeData | undefined,
-  _width: number,
+  width: number,
   _height: number,
 ): React.ReactElement {
+  const innerWidth = Math.max(10, width - 1);
   if (!detail) {
     // Immediate content from the search item
     return (
-      <Box flexDirection="column" paddingLeft={1}>
-        <Text bold>{item.name}</Text>
-        <Text dimColor>type: {item.type}</Text>
-        <Text dimColor>id: {item.id}</Text>
+      <Box flexDirection="column" marginLeft={1} width={innerWidth}>
+        <Text bold wrap="truncate-end">{item.name}</Text>
+        <Text dimColor wrap="truncate-end">type: {item.type}</Text>
+        <Text dimColor wrap="truncate-end">id: {item.id}</Text>
       </Box>
     );
   }
 
   // Full detail from fetchPreview
   const configJson = JSON.stringify(detail.config, null, 2);
+  const lines: React.ReactElement[] = [
+    <Text key="name" bold wrap="truncate-end">{detail.name}</Text>,
+    <Text key="type" dimColor wrap="truncate-end">type: {detail.type}</Text>,
+    <Text key="id" dimColor wrap="truncate-end">id: {detail.id}</Text>,
+    <Text key="created" dimColor wrap="truncate-end">
+      created: {detail.createdAt}
+    </Text>,
+    <Text key="cfg-gap" />,
+    <Text key="cfg-hdr" color="cyan" bold wrap="truncate-end">Config:</Text>,
+    <Text key="cfg" wrap="truncate-end">{configJson}</Text>,
+  ];
+
   return (
-    <Box flexDirection="column" paddingLeft={1}>
-      <Text bold>{detail.name}</Text>
-      <Text dimColor>type: {detail.type}</Text>
-      <Text dimColor>id: {detail.id}</Text>
-      <Text dimColor>created: {detail.createdAt}</Text>
-      <Box flexDirection="column" marginTop={1}>
-        <Text color="cyan" bold>Config:</Text>
-        <Text>{configJson}</Text>
-      </Box>
+    <Box flexDirection="column" marginLeft={1} width={innerWidth}>
+      {lines}
     </Box>
   );
 }

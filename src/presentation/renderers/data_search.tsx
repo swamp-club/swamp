@@ -236,9 +236,10 @@ function renderDataResultLine(item: DataSearchItem): React.ReactElement {
 function renderDataPreview(
   item: DataSearchItem,
   detail: DataPreviewDetail | undefined,
-  _width: number,
+  width: number,
   _height: number,
 ): React.ReactElement {
+  const innerWidth = Math.max(10, width - 1);
   // Combine metadata + content into a single string to avoid Ink layout
   // issues with multiple <Text> blocks containing ANSI-formatted content.
   const parts: string[] = [
@@ -252,8 +253,8 @@ function renderDataPreview(
   }
 
   return (
-    <Box paddingLeft={1}>
-      <Text>{parts.join("\n")}</Text>
+    <Box flexDirection="column" marginLeft={1} width={innerWidth}>
+      <Text wrap="truncate-end">{parts.join("\n")}</Text>
     </Box>
   );
 }

@@ -204,9 +204,10 @@ function renderHistoryResultLine(
 function renderHistoryPreview(
   item: WorkflowHistorySearchItem,
   detail: WorkflowRunView | undefined,
-  _width: number,
+  width: number,
   _height: number,
 ): React.ReactElement {
+  const innerWidth = Math.max(10, width - 1);
   if (!detail) {
     // Immediate content from the search item
     const statusColor = STATUS_COLORS[item.status] ?? "white";
@@ -223,17 +224,38 @@ function renderHistoryPreview(
       ? Object.entries(item.tags).map(([k, v]) => `${k}=${v}`).join(", ")
       : "";
 
+    const lines: React.ReactElement[] = [
+      <Text key="name" bold wrap="truncate-end">{item.workflowName}</Text>,
+      <Text key="run" dimColor wrap="truncate-end">run: {item.runId}</Text>,
+      <Text key="status" wrap="truncate-end">
+        status: <Text color={statusColor}>{item.status}</Text>
+      </Text>,
+      <Text key="started" dimColor wrap="truncate-end">
+        started: {dateStr}
+      </Text>,
+    ];
+    if (completedStr) {
+      lines.push(
+        <Text key="completed" dimColor wrap="truncate-end">
+          completed: {completedStr}
+        </Text>,
+      );
+    }
+    if (durationStr) {
+      lines.push(
+        <Text key="duration" dimColor wrap="truncate-end">
+          duration: {durationStr}
+        </Text>,
+      );
+    }
+    if (tagStr) {
+      lines.push(
+        <Text key="tags" dimColor wrap="truncate-end">tags: {tagStr}</Text>,
+      );
+    }
     return (
-      <Box flexDirection="column" paddingLeft={1}>
-        <Text bold>{item.workflowName}</Text>
-        <Text dimColor>run: {item.runId}</Text>
-        <Text>
-          status: <Text color={statusColor}>{item.status}</Text>
-        </Text>
-        <Text dimColor>started: {dateStr}</Text>
-        {completedStr && <Text dimColor>completed: {completedStr}</Text>}
-        {durationStr && <Text dimColor>duration: {durationStr}</Text>}
-        {tagStr && <Text dimColor>tags: {tagStr}</Text>}
+      <Box flexDirection="column" marginLeft={1} width={innerWidth}>
+        {lines}
       </Box>
     );
   }
@@ -244,52 +266,60 @@ function renderHistoryPreview(
     ? formatDurationSec(detail.duration)
     : "";
 
-  return (
-    <Box flexDirection="column" paddingLeft={1}>
-      <Text bold>{detail.workflowName}</Text>
-      <Text dimColor>run: {detail.id}</Text>
-      <Text>
-        status: <Text color={statusColor}>{detail.status}</Text>
-      </Text>
-      {durationStr && <Text dimColor>duration: {durationStr}</Text>}
+  const lines: React.ReactElement[] = [
+    <Text key="name" bold wrap="truncate-end">{detail.workflowName}</Text>,
+    <Text key="run" dimColor wrap="truncate-end">run: {detail.id}</Text>,
+    <Text key="status" wrap="truncate-end">
+      status: <Text color={statusColor}>{detail.status}</Text>
+    </Text>,
+  ];
+  if (durationStr) {
+    lines.push(
+      <Text key="duration" dimColor wrap="truncate-end">
+        duration: {durationStr}
+      </Text>,
+    );
+  }
 
-      {detail.jobs.length > 0 && (
-        <Box flexDirection="column" marginTop={1}>
-          <Text color="cyan" bold>Jobs:</Text>
-          {detail.jobs.map((job) => {
-            const jobIcon = STATUS_ICONS[job.status] ?? " ";
-            const jobColor = STATUS_COLORS[job.status] ?? "white";
-            const jobDur = job.duration !== undefined
-              ? ` (${formatDurationSec(job.duration)})`
-              : "";
-            return (
-              <Box key={job.name} flexDirection="column" marginLeft={1}>
-                <Text>
-                  <Text color={jobColor}>{jobIcon}</Text>{" "}
-                  <Text bold>{job.name}</Text>
-                  <Text dimColor>{jobDur}</Text>
-                </Text>
-                {job.steps.map((step) => {
-                  const stepIcon = STATUS_ICONS[step.status] ?? " ";
-                  const stepColor = STATUS_COLORS[step.status] ?? "white";
-                  const stepDur = step.duration !== undefined
-                    ? ` (${formatDurationSec(step.duration)})`
-                    : "";
-                  return (
-                    <Box key={step.name} marginLeft={2}>
-                      <Text>
-                        <Text color={stepColor}>{stepIcon}</Text> {step.name}
-                        <Text dimColor>{stepDur}</Text>
-                        {step.error && <Text color="red">- {step.error}</Text>}
-                      </Text>
-                    </Box>
-                  );
-                })}
-              </Box>
-            );
-          })}
-        </Box>
-      )}
+  if (detail.jobs.length > 0) {
+    lines.push(<Text key="jobs-gap" />);
+    lines.push(
+      <Text key="jobs-hdr" color="cyan" bold wrap="truncate-end">Jobs:</Text>,
+    );
+    for (const job of detail.jobs) {
+      const jobIcon = STATUS_ICONS[job.status] ?? " ";
+      const jobColor = STATUS_COLORS[job.status] ?? "white";
+      const jobDur = job.duration !== undefined
+        ? ` (${formatDurationSec(job.duration)})`
+        : "";
+      lines.push(
+        <Text key={`job-${job.name}`} wrap="truncate-end">
+          {"  "}
+          <Text color={jobColor}>{jobIcon}</Text> <Text bold>{job.name}</Text>
+          <Text dimColor>{jobDur}</Text>
+        </Text>,
+      );
+      for (const step of job.steps) {
+        const stepIcon = STATUS_ICONS[step.status] ?? " ";
+        const stepColor = STATUS_COLORS[step.status] ?? "white";
+        const stepDur = step.duration !== undefined
+          ? ` (${formatDurationSec(step.duration)})`
+          : "";
+        lines.push(
+          <Text key={`step-${job.name}-${step.name}`} wrap="truncate-end">
+            {"    "}
+            <Text color={stepColor}>{stepIcon}</Text> {step.name}
+            <Text dimColor>{stepDur}</Text>
+            {step.error && <Text color="red">- {step.error}</Text>}
+          </Text>,
+        );
+      }
+    }
+  }
+
+  return (
+    <Box flexDirection="column" marginLeft={1} width={innerWidth}>
+      {lines}
     </Box>
   );
 }

@@ -26,6 +26,7 @@ import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
+import { getTerminalColumns } from "../output/terminal_size.ts";
 
 const logger = getSwampLogger(["extension", "list"]);
 
@@ -65,8 +66,12 @@ class LogExtensionListRenderer implements Renderer<EnrichedExtensionListEvent> {
 
         const exts = e.data.extensions;
         const enriched = exts.some((x) => x.updateStatus !== undefined);
+        const cols = getTerminalColumns();
 
-        const maxName = Math.max(...exts.map((ext) => ext.name.length));
+        const maxName = Math.min(
+          Math.max(...exts.map((ext) => ext.name.length)),
+          Math.floor(cols * 0.4),
+        );
         const maxVersion = Math.max(
           ...exts.map((ext) => ext.version.length + 1),
         ); // +1 for "v" prefix
@@ -79,7 +84,10 @@ class LogExtensionListRenderer implements Renderer<EnrichedExtensionListEvent> {
           : 0;
 
         for (const ext of exts) {
-          const paddedName = ext.name.padEnd(maxName);
+          const name = ext.name.length > maxName
+            ? ext.name.substring(0, maxName - 1) + "…"
+            : ext.name;
+          const paddedName = name.padEnd(maxName);
           const paddedVersion = `v${ext.version}`.padEnd(maxVersion);
           let line = `${paddedName}  ${paddedVersion}`;
           if (enriched) {
@@ -94,6 +102,9 @@ class LogExtensionListRenderer implements Renderer<EnrichedExtensionListEvent> {
             }
           }
           line += `  (pulled ${ext.pulledAt})`;
+          if (line.length > cols) {
+            line = line.substring(0, cols - 1) + "…";
+          }
           logger.info("{line}", { line });
           if (this.verbose) {
             for (const file of ext.files) {

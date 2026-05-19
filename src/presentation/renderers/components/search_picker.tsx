@@ -335,7 +335,12 @@ export function SearchPicker<T, D = T>(
         </Box>
 
         {/* Results list with inline preview expansion */}
-        <Box flexDirection="column" marginTop={1}>
+        <Box
+          flexDirection="column"
+          marginTop={1}
+          width={width}
+          overflow="hidden"
+        >
           {resultsContent}
           {highlightedItem && previewContent && (
             <Box marginLeft={4} marginTop={1}>
@@ -370,7 +375,12 @@ export function SearchPicker<T, D = T>(
       </Box>
 
       {/* Results list */}
-      <Box flexDirection="column" marginTop={1}>
+      <Box
+        flexDirection="column"
+        marginTop={1}
+        width={width}
+        overflow="hidden"
+      >
         {resultsContent}
       </Box>
 

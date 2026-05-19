@@ -624,3 +624,35 @@ Command handlers depend on both libswamp (for the event stream) and the
 presentation layer (for the renderer). The presentation layer depends on
 infrastructure (loggers, color formatting). libswamp depends on domain and
 infrastructure but never on presentation.
+
+## Terminal Width Awareness
+
+All renderers must adapt to the current terminal width to avoid broken layouts
+at non-standard sizes (large fonts, narrow windows, split panes).
+
+### Ink/TUI renderers (interactive mode)
+
+Use the `useTerminalSize()` hook from
+`presentation/output/hooks/useTerminalSize.ts`. Constrain content containers
+with `overflow="hidden"` and explicit `width` props so Ink clips content rather
+than wrapping it. The shared `ResultsList` and `PreviewPane` components handle
+this automatically — individual `renderResultLine` and `renderPreview` callbacks
+do not need to truncate manually.
+
+### Log-mode renderers (non-interactive)
+
+Use `getTerminalColumns()` from `presentation/output/terminal_size.ts` to query
+the terminal width synchronously. Apply width constraints only to `writeOutput()`
+calls (which have no prefix). `logger.info()` calls are left unconstrained —
+LogTape's formatter handles its own line formatting.
+
+Guidelines:
+
+- **Separators**: Use `"─".repeat(getTerminalColumns())` instead of hardcoded
+  widths like `"─".repeat(60)`.
+- **Column widths**: Clamp `padEnd()` values so the total line width does not
+  exceed terminal columns.
+- **Truncation**: Truncate plain text before applying ANSI colors to avoid
+  breaking escape sequences mid-string.
+- **Markdown reports**: Pass `{ maxWidth: getTerminalColumns() }` to
+  `renderMarkdownToTerminal()`.

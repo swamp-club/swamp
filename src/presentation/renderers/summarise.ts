@@ -27,6 +27,7 @@ import {
   writeOutput,
 } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
+import { getTerminalColumns } from "../output/terminal_size.ts";
 import type { ActivitySummary } from "../../domain/summary/summary_types.ts";
 
 function formatDateTime(iso?: string): string {
@@ -67,10 +68,15 @@ function renderMethodExecutions(
   header += ")";
   writeOutput(bold(header));
 
+  const cols = getTerminalColumns();
+
   for (const model of models) {
     writeOutput(`  Model: ${bold(model.modelName)} ${dim(`(${model.type})`)}`);
 
-    const maxMethod = Math.max(...model.methods.map((m) => m.method.length));
+    const maxMethod = Math.min(
+      Math.max(...model.methods.map((m) => m.method.length)),
+      Math.floor(cols * 0.4),
+    );
 
     for (const method of model.methods) {
       const label = method.method.padEnd(maxMethod + 3);
@@ -126,6 +132,7 @@ function renderWorkflowRuns(
     return;
   }
 
+  const cols = getTerminalColumns();
   const totalAll = groups.reduce((s, g) => s + g.total, 0);
   const succeededAll = groups.reduce((s, g) => s + g.succeeded, 0);
   const failedAll = groups.reduce((s, g) => s + g.failed, 0);
@@ -137,7 +144,10 @@ function renderWorkflowRuns(
   header += ")";
   writeOutput(bold(header));
 
-  const maxLabel = Math.max(...groups.map((g) => g.workflowName.length));
+  const maxLabel = Math.min(
+    Math.max(...groups.map((g) => g.workflowName.length)),
+    Math.floor(cols * 0.4),
+  );
 
   for (const group of groups) {
     const label = group.workflowName.padEnd(maxLabel + 2);

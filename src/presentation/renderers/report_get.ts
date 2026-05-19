@@ -27,18 +27,29 @@ import {
   renderMarkdownToTerminal,
   type WidthOptions,
 } from "../markdown_renderer.ts";
+import { getTerminalColumns } from "../output/terminal_size.ts";
 
 type ReportOutputMode = OutputMode | "markdown";
 
 class LogReportGetRenderer implements Renderer<ReportGetEvent> {
-  constructor(private widthOptions?: WidthOptions) {}
+  private readonly effectiveWidthOptions: WidthOptions;
+
+  constructor(widthOptions?: WidthOptions) {
+    const cols = getTerminalColumns();
+    this.effectiveWidthOptions = {
+      maxWidth: widthOptions?.maxWidth ?? cols,
+      maxColWidth: widthOptions?.maxColWidth,
+    };
+  }
 
   handlers(): EventHandlers<ReportGetEvent> {
     return {
       resolving: () => {},
       completed: (e) => {
         const r = e.data;
-        const separator = "\u2500".repeat(60);
+        const cols = this.effectiveWidthOptions.maxWidth ??
+          getTerminalColumns();
+        const separator = "\u2500".repeat(cols);
         const source = r.workflowName
           ? `Workflow: ${r.workflowName}`
           : `Model: ${r.modelName} (${r.modelType})`;
@@ -48,7 +59,9 @@ class LogReportGetRenderer implements Renderer<ReportGetEvent> {
         writeOutput(
           `${separator}\n  ${r.reportName}  |  ${source}  |  Scope: ${r.reportScope}${varySuffixLabel}  |  v${r.version}  |  ${r.createdAt}\n${separator}`,
         );
-        writeOutput(renderMarkdownToTerminal(r.markdown, this.widthOptions));
+        writeOutput(
+          renderMarkdownToTerminal(r.markdown, this.effectiveWidthOptions),
+        );
       },
       error: (e) => {
         throw new UserError(e.error.message);
