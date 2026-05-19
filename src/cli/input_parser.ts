@@ -322,3 +322,97 @@ function normalizeInputOption(
   }
   return [input];
 }
+
+/**
+ * Parses raw stdin text into an array of input records for iteration.
+ *
+ * Format detection order:
+ * 1. JSON array → one record per element
+ * 2. JSON object → single record
+ * 3. NDJSON (one JSON object per non-empty line) → one record per line
+ * 4. YAML object → single record
+ * 5. All fail → UserError
+ *
+ * Each returned record is a plain object suitable for use as method/workflow inputs.
+ */
+export function parseStdinContent(
+  content: string,
+): Record<string, unknown>[] {
+  const trimmed = content.trim();
+  if (trimmed === "") {
+    throw new UserError(
+      "No input received from stdin. Pipe JSON, NDJSON, or YAML into the command.",
+    );
+  }
+
+  // Try JSON parse first (handles both array and object)
+  try {
+    const parsed = JSON.parse(trimmed);
+    if (Array.isArray(parsed)) {
+      if (parsed.length === 0) {
+        throw new UserError("Empty JSON array received from stdin.");
+      }
+      return parsed.map((item, i) => {
+        if (typeof item !== "object" || item === null || Array.isArray(item)) {
+          throw new UserError(
+            `stdin array element [${i}] is not a JSON object.`,
+          );
+        }
+        return item as Record<string, unknown>;
+      });
+    }
+    if (typeof parsed === "object" && parsed !== null) {
+      return [parsed as Record<string, unknown>];
+    }
+    throw new UserError(
+      "stdin must contain a JSON object, JSON array, or NDJSON lines.",
+    );
+  } catch (error) {
+    if (error instanceof UserError) throw error;
+    // JSON parse failed — try NDJSON
+  }
+
+  // Try NDJSON: multiple lines, each a JSON object
+  const lines = trimmed.split("\n").filter((l) => l.trim() !== "");
+  if (lines.length > 1) {
+    try {
+      const records: Record<string, unknown>[] = [];
+      for (let i = 0; i < lines.length; i++) {
+        const parsed = JSON.parse(lines[i]);
+        if (
+          typeof parsed !== "object" || parsed === null || Array.isArray(parsed)
+        ) {
+          throw new UserError(
+            `stdin NDJSON line ${i + 1} is not a JSON object.`,
+          );
+        }
+        records.push(parsed as Record<string, unknown>);
+      }
+      return records;
+    } catch (error) {
+      if (error instanceof UserError) throw error;
+      // NDJSON parse failed — try YAML
+    }
+  }
+
+  // Try YAML
+  try {
+    const parsed = parseYaml(trimmed);
+    if (
+      typeof parsed === "object" && parsed !== null && !Array.isArray(parsed)
+    ) {
+      return [parsed as Record<string, unknown>];
+    }
+    throw new UserError(
+      "stdin YAML must be an object (mapping), not a scalar or list.",
+    );
+  } catch (error) {
+    if (error instanceof UserError) throw error;
+    throw new UserError(
+      "Failed to parse stdin content. Expected JSON object, JSON array, NDJSON, or YAML.\n" +
+        `Parse error: ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+    );
+  }
+}

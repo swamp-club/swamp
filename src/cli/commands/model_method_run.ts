@@ -40,7 +40,8 @@ import { VaultService } from "../../domain/vaults/vault_service.ts";
 import { ExpressionEvaluationService } from "../../domain/expressions/expression_evaluation_service.ts";
 import { runFileSink } from "../../infrastructure/logging/logger.ts";
 import { GIT_SHA } from "./version.ts";
-import { parseInputs } from "../input_parser.ts";
+import { deepMerge, parseInputs, parseStdinContent } from "../input_parser.ts";
+import { readStdin } from "../../infrastructure/io/stdin_reader.ts";
 import { parseTags } from "../../libswamp/mod.ts";
 import { join } from "@std/path";
 import {
@@ -186,10 +187,24 @@ export const modelMethodRunCommand = new Command()
       ctx.logger
         .debug`Running method '${methodName}' on model: ${modelIdOrName}`;
 
-      // Parse input values
-      const { inputs } = await parseInputs({
+      // Auto-detect piped stdin (returns null when stdin is a TTY)
+      const stdinContent = await readStdin();
+      let stdinItems: Record<string, unknown>[] | null = null;
+      if (stdinContent !== null) {
+        if (options.inputFile) {
+          throw new UserError(
+            "Cannot combine piped stdin with --input-file.",
+          );
+        }
+        stdinItems = parseStdinContent(stdinContent);
+      }
+
+      // Parse --input overrides (used standalone or merged with stdin items)
+      const { inputs: cliInputs } = await parseInputs({
         input: options.input as string[] | undefined,
-        inputFile: options.inputFile as string | undefined,
+        inputFile: stdinItems
+          ? undefined
+          : options.inputFile as string | undefined,
       });
 
       // Parse runtime tags
@@ -294,10 +309,6 @@ export const modelMethodRunCommand = new Command()
       const libCtx = timeoutMs !== undefined
         ? baseLibCtx.withTimeout(timeoutMs)
         : baseLibCtx;
-      const renderer = createModelMethodRunRenderer(ctx.outputMode, {
-        modelName: modelIdOrName,
-        methodName,
-      });
 
       // Pre-lookup for per-model lock acquisition (reads YAML — no lock needed)
       const preResult = await findDefinitionByIdOrName(
@@ -321,32 +332,53 @@ export const modelMethodRunCommand = new Command()
         flushModelLocks = lockResult.flush;
       }
 
-      try {
-        await consumeStream(
-          modelMethodRun(libCtx, deps, {
-            modelIdOrName,
-            methodName,
-            inputs,
-            lastEvaluated: options.lastEvaluated as boolean,
-            typeArg,
-            definitionName,
-            runtimeTags,
-            skipCheckNames: options.skipCheck as string[] | undefined,
-            skipCheckLabels: options.skipCheckLabel as string[] | undefined,
-            skipAllChecks: options.skipChecks as boolean | undefined,
-            skipReportNames: options.skipReport as string[] | undefined,
-            skipReportLabels: options.skipReportLabel as string[] | undefined,
-            skipAllReports: options.skipReports as boolean | undefined,
-            reportNames: options.report as string[] | undefined,
-            reportLabels: options.reportLabel as string[] | undefined,
-            driver: options.driver as string | undefined,
-            swampSha: GIT_SHA || undefined,
-          }),
-          renderer.handlers(),
-        );
+      // Build the list of input sets to iterate over
+      const inputSets: Record<string, unknown>[] = stdinItems
+        ? stdinItems.map((item) =>
+          Object.keys(cliInputs).length > 0 ? deepMerge(item, cliInputs) : item
+        )
+        : [cliInputs];
 
-        if (renderer.runFailed()) {
-          Deno.exit(1);
+      try {
+        for (let i = 0; i < inputSets.length; i++) {
+          if (inputSets.length > 1) {
+            ctx.logger
+              .info`Running method ${methodName} [${
+              i + 1
+            }/${inputSets.length}]`;
+          }
+
+          const renderer = createModelMethodRunRenderer(ctx.outputMode, {
+            modelName: modelIdOrName,
+            methodName,
+          });
+
+          await consumeStream(
+            modelMethodRun(libCtx, deps, {
+              modelIdOrName,
+              methodName,
+              inputs: inputSets[i],
+              lastEvaluated: options.lastEvaluated as boolean,
+              typeArg,
+              definitionName,
+              runtimeTags,
+              skipCheckNames: options.skipCheck as string[] | undefined,
+              skipCheckLabels: options.skipCheckLabel as string[] | undefined,
+              skipAllChecks: options.skipChecks as boolean | undefined,
+              skipReportNames: options.skipReport as string[] | undefined,
+              skipReportLabels: options.skipReportLabel as string[] | undefined,
+              skipAllReports: options.skipReports as boolean | undefined,
+              reportNames: options.report as string[] | undefined,
+              reportLabels: options.reportLabel as string[] | undefined,
+              driver: options.driver as string | undefined,
+              swampSha: GIT_SHA || undefined,
+            }),
+            renderer.handlers(),
+          );
+
+          if (renderer.runFailed()) {
+            Deno.exit(1);
+          }
         }
       } catch (error) {
         if (error instanceof UserError) {

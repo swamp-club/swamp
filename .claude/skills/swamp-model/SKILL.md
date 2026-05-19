@@ -75,6 +75,7 @@ definitions referenced across multiple workflows.
 | Evaluate input(s)   | `swamp model evaluate [id_or_name] --json`                       |
 | Run a method        | `swamp model method run <id_or_name> <method>`                   |
 | Run with inputs     | `swamp model method run <name> <method> --input key=value`       |
+| Run from stdin      | `echo '{"k":"v"}' \| swamp model method run <name> <method>`     |
 | Direct type exec    | `swamp model @<type> method run <method> <name> --input k=v`     |
 | Skip all checks     | `swamp model method run <name> <method> --skip-checks`           |
 | Skip check by name  | `swamp model method run <name> <method> --skip-check <n>`        |
@@ -423,6 +424,9 @@ swamp model method run my-deploy create --input config.timeout=30  # dot notatio
 swamp model method run my-deploy create --input 'tags:json=["prod","west"]'  # :json suffix for arrays/objects
 swamp model method run my-deploy create --input '{"environment": "prod"}'  # legacy single-shot JSON
 swamp model method run my-deploy create --input-file inputs.yaml
+echo '{"environment": "prod"}' | swamp model method run my-deploy create  # stdin auto-detected
+printf '{"environment":"dev"}\n{"environment":"prod"}' | swamp model method run my-deploy create  # NDJSON: one run per line
+swamp data query 'modelName == "source"' --json | jq -c '.results[] | {environment: .attributes.env}' | swamp model method run my-deploy create  # pipe composition
 swamp model method run my-deploy create --last-evaluated
 swamp model method run my-deploy create --skip-checks
 swamp model method run my-deploy create --skip-check valid-region

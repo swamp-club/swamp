@@ -231,6 +231,43 @@ Array inputs are supported via the `:json` suffix above (preferred), or
 via `--input-file` with YAML/JSON, or via the legacy single-shot
 `--input '<json-object>'` form.
 
+### Reading inputs from stdin
+
+Both `method run` and `workflow run` auto-detect piped stdin. When data is piped
+to the command, it is read and parsed as inputs — no flag needed. This enables
+Unix pipe composition following the same pattern as `vault put`, `model edit`,
+and `workflow edit`.
+
+The input format is detected automatically:
+
+- **JSON object** — single run with the object as inputs
+- **JSON array** — one run per array element (each must be an object)
+- **NDJSON** (one JSON object per line) — one run per line
+- **YAML object** — single run with the parsed object as inputs
+
+When multiple items are detected (array or NDJSON), the method or workflow is
+executed once per item. Each execution is discrete — it produces its own data
+artifacts, runs pre-flight checks, and reports independently. Execution stops on
+the first failure.
+
+Piped stdin and `--input-file` cannot be combined. `--input` key=value overrides
+can be combined with piped stdin — they are deep-merged onto each stdin item (the
+`--input` values win on conflict).
+
+```sh
+# Single JSON object from stdin
+echo '{"run": "echo hello"}' | swamp model method run my-model execute
+
+# NDJSON: run method once per line
+printf '{"run":"echo a"}\n{"run":"echo b"}' \
+  | swamp model method run my-model execute
+
+# Pipe from data query via jq, with static overrides
+swamp data query 'modelName == "source"' --json \
+  | jq -c '.results[] | {run: .attributes.command}' \
+  | swamp model method run target-model execute --input env=prod
+```
+
 ## Input Routing for Direct Type Execution
 
 When using direct type execution (`swamp model @type method run ...`), there is

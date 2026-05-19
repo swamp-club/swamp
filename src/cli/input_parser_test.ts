@@ -22,9 +22,11 @@ import {
   deepMerge,
   parseInputs,
   parseKeyValueInputs,
+  parseStdinContent,
   setNestedValue,
 } from "./input_parser.ts";
 import { UserError } from "../domain/errors.ts";
+import { assertThrows } from "@std/assert";
 import { stringify as stringifyYaml } from "@std/yaml";
 
 // --- setNestedValue ---
@@ -460,4 +462,95 @@ Deno.test("parseInputs: no options returns none", async () => {
   const result = await parseInputs({});
   assertEquals(result.source, "none");
   assertEquals(result.inputs, {});
+});
+
+// --- parseStdinContent ---
+
+Deno.test("parseStdinContent: single JSON object returns one-element array", () => {
+  const result = parseStdinContent('{"run": "echo hello"}');
+  assertEquals(result, [{ run: "echo hello" }]);
+});
+
+Deno.test("parseStdinContent: JSON array returns one element per item", () => {
+  const result = parseStdinContent(
+    '[{"run": "echo a"}, {"run": "echo b"}]',
+  );
+  assertEquals(result, [{ run: "echo a" }, { run: "echo b" }]);
+});
+
+Deno.test("parseStdinContent: NDJSON returns one element per line", () => {
+  const input = '{"run": "echo a"}\n{"run": "echo b"}\n{"run": "echo c"}';
+  const result = parseStdinContent(input);
+  assertEquals(result, [
+    { run: "echo a" },
+    { run: "echo b" },
+    { run: "echo c" },
+  ]);
+});
+
+Deno.test("parseStdinContent: NDJSON ignores blank lines", () => {
+  const input = '{"run": "echo a"}\n\n{"run": "echo b"}\n';
+  const result = parseStdinContent(input);
+  assertEquals(result, [{ run: "echo a" }, { run: "echo b" }]);
+});
+
+Deno.test("parseStdinContent: YAML object returns one-element array", () => {
+  const input = "run: echo hello\nenv: prod";
+  const result = parseStdinContent(input);
+  assertEquals(result, [{ run: "echo hello", env: "prod" }]);
+});
+
+Deno.test("parseStdinContent: empty string throws UserError", () => {
+  assertThrows(
+    () => parseStdinContent(""),
+    UserError,
+    "No input received from stdin",
+  );
+});
+
+Deno.test("parseStdinContent: whitespace-only string throws UserError", () => {
+  assertThrows(
+    () => parseStdinContent("   \n  \n  "),
+    UserError,
+    "No input received from stdin",
+  );
+});
+
+Deno.test("parseStdinContent: empty JSON array throws UserError", () => {
+  assertThrows(
+    () => parseStdinContent("[]"),
+    UserError,
+    "Empty JSON array",
+  );
+});
+
+Deno.test("parseStdinContent: JSON array with non-object element throws", () => {
+  assertThrows(
+    () => parseStdinContent('[{"ok": true}, "not-an-object"]'),
+    UserError,
+    "not a JSON object",
+  );
+});
+
+Deno.test("parseStdinContent: NDJSON with non-object line throws", () => {
+  assertThrows(
+    () => parseStdinContent('"just a string"\n"another"'),
+    UserError,
+    "not a JSON object",
+  );
+});
+
+Deno.test("parseStdinContent: JSON object with whitespace padding", () => {
+  const result = parseStdinContent('  \n  {"run": "echo hello"}  \n  ');
+  assertEquals(result, [{ run: "echo hello" }]);
+});
+
+Deno.test("parseStdinContent: complex nested JSON object", () => {
+  const result = parseStdinContent(
+    '{"server": {"host": "localhost", "port": 8080}, "env": "prod"}',
+  );
+  assertEquals(result, [{
+    server: { host: "localhost", port: 8080 },
+    env: "prod",
+  }]);
 });

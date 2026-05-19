@@ -36,6 +36,7 @@ run.
 | Evaluate workflow  | `swamp workflow evaluate <id_or_name> --json`          |
 | Run a workflow     | `swamp workflow run <id_or_name>`                      |
 | Run with inputs    | `swamp workflow run <id_or_name> --input key=value`    |
+| Run from stdin     | `echo '{"k":"v"}' \| swamp workflow run <id_or_name>`  |
 | View run history   | `swamp workflow history search --json`                 |
 | Get latest run     | `swamp workflow history get <workflow> --json`         |
 | View run logs      | `swamp workflow history logs <run_or_workflow> --json` |
@@ -258,15 +259,22 @@ swamp workflow run my-workflow --input environment=production --input replicas=3
 swamp workflow run my-workflow --input 'tags:json=["prod","west"]'  # :json suffix for arrays/objects
 swamp workflow run my-workflow --input '{"environment": "production"}'  # legacy single-shot JSON
 swamp workflow run my-workflow --input-file inputs.yaml
+echo '{"environment": "prod"}' | swamp workflow run my-workflow  # stdin auto-detected
+printf '{"environment":"dev"}\n{"environment":"prod"}' | swamp workflow run my-workflow  # NDJSON: one run per line
 swamp workflow run my-workflow --last-evaluated  # Use pre-evaluated workflow
 ```
+
+Piped stdin is auto-detected. JSON objects, JSON arrays, NDJSON (one JSON per
+line), and YAML are supported. Multiple items (array or NDJSON) produce one
+workflow run per item. `--input` key=value overrides are deep-merged onto each
+stdin item.
 
 **Options:**
 
 | Flag                | Description                                                        |
 | ------------------- | ------------------------------------------------------------------ |
 | `--input <value>`   | Input values (key=value repeatable, or JSON)                       |
-| `--input-file <f>`  | Input values from YAML file                                        |
+| `--input-file <f>`  | Input values from YAML file (cannot combine with piped stdin)      |
 | `--last-evaluated`  | Use previously evaluated workflow (skip eval and input validation) |
 | `--driver <driver>` | Override execution driver for all steps (e.g. `raw`, `docker`)     |
 

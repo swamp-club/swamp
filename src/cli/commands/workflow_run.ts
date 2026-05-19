@@ -47,7 +47,8 @@ import {
   swampPath,
 } from "../../infrastructure/persistence/paths.ts";
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
-import { parseInputs } from "../input_parser.ts";
+import { deepMerge, parseInputs, parseStdinContent } from "../input_parser.ts";
+import { readStdin } from "../../infrastructure/io/stdin_reader.ts";
 import { parseTimeout } from "../duration_parser.ts";
 import { GIT_SHA } from "./version.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
@@ -162,10 +163,24 @@ export const workflowRunCommand = new Command()
 
     const lastEvaluated = options.lastEvaluated as boolean;
 
-    // Parse input values
-    const { inputs } = await parseInputs({
+    // Auto-detect piped stdin (returns null when stdin is a TTY)
+    const stdinContent = await readStdin();
+    let stdinItems: Record<string, unknown>[] | null = null;
+    if (stdinContent !== null) {
+      if (options.inputFile) {
+        throw new UserError(
+          "Cannot combine piped stdin with --input-file.",
+        );
+      }
+      stdinItems = parseStdinContent(stdinContent);
+    }
+
+    // Parse --input overrides (used standalone or merged with stdin items)
+    const { inputs: cliInputs } = await parseInputs({
       input: options.input as string[] | undefined,
-      inputFile: options.inputFile as string | undefined,
+      inputFile: stdinItems
+        ? undefined
+        : options.inputFile as string | undefined,
     });
 
     // Parse runtime tags
@@ -348,38 +363,57 @@ export const workflowRunCommand = new Command()
       const libCtx = timeoutMs !== undefined
         ? baseLibCtx.withTimeout(timeoutMs)
         : baseLibCtx;
-      const renderer = createWorkflowRunRenderer(ctx.outputMode, {
-        workflowName: workflowIdOrName,
-        forceLog: ctx.forceLog,
-      });
 
-      await consumeStream(
-        workflowRun(libCtx, deps, {
-          workflowIdOrName,
-          lastEvaluated,
-          inputs,
-          runtimeTags,
-          verbose: ctx.verbosity === "verbose",
-          driver: options.driver as string | undefined,
-          skipAllReports: options.skipReports as boolean | undefined,
-          skipReportNames: options.skipReport as string[] | undefined,
-          skipReportLabels: options.skipReportLabel as string[] | undefined,
-          reportNames: options.report as string[] | undefined,
-          reportLabels: options.reportLabel as string[] | undefined,
-          swampSha: GIT_SHA || undefined,
-          skipAllChecks: options.skipChecks as boolean | undefined,
-          skipCheckNames: options.skipCheck as string[] | undefined,
-          skipCheckLabels: options.skipCheckLabel as string[] | undefined,
-        }),
-        renderer.handlers(),
-      );
+      // Build the list of input sets to iterate over
+      const inputSets: Record<string, unknown>[] = stdinItems
+        ? stdinItems.map((item) =>
+          Object.keys(cliInputs).length > 0 ? deepMerge(item, cliInputs) : item
+        )
+        : [cliInputs];
+
+      for (let i = 0; i < inputSets.length; i++) {
+        if (inputSets.length > 1) {
+          ctx.logger
+            .info`Running workflow ${workflowIdOrName} [${
+            i + 1
+          }/${inputSets.length}]`;
+        }
+
+        const renderer = createWorkflowRunRenderer(ctx.outputMode, {
+          workflowName: workflowIdOrName,
+          forceLog: ctx.forceLog,
+        });
+
+        await consumeStream(
+          workflowRun(libCtx, deps, {
+            workflowIdOrName,
+            lastEvaluated,
+            inputs: inputSets[i],
+            runtimeTags,
+            verbose: ctx.verbosity === "verbose",
+            driver: options.driver as string | undefined,
+            skipAllReports: options.skipReports as boolean | undefined,
+            skipReportNames: options.skipReport as string[] | undefined,
+            skipReportLabels: options.skipReportLabel as string[] | undefined,
+            reportNames: options.report as string[] | undefined,
+            reportLabels: options.reportLabel as string[] | undefined,
+            swampSha: GIT_SHA || undefined,
+            skipAllChecks: options.skipChecks as boolean | undefined,
+            skipCheckNames: options.skipCheck as string[] | undefined,
+            skipCheckLabels: options.skipCheckLabel as string[] | undefined,
+          }),
+          renderer.handlers(),
+        );
+
+        if (renderer.workflowFailed()) {
+          // Release locks before exiting
+          if (flushModelLocks) await flushModelLocks();
+          Deno.exit(1);
+        }
+      }
 
       // Release per-model locks on success
       if (flushModelLocks) await flushModelLocks();
-
-      if (renderer.workflowFailed()) {
-        Deno.exit(1);
-      }
     } catch (error) {
       // Release per-model locks on error (best-effort — don't lose original error)
       try {

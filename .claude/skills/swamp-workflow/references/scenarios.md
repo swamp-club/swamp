@@ -561,3 +561,36 @@ swamp workflow run deploy-and-notify --input environment=production
 | deploy-and-notify | `inputs.environment` | Parent workflow input |
 | notify-team       | `inputs.message`     | Passed from parent    |
 | notify-team       | `inputs.channel`     | Passed from parent    |
+
+---
+
+## Scenario: Pipe Composition with stdin
+
+Run a workflow for each result from a data query using Unix pipes and `jq`.
+
+### When to Use
+
+- Batch-running a workflow over query results
+- Ad-hoc iteration without writing a wrapper workflow
+- Composing swamp commands with other CLI tools
+
+### Example
+
+```bash
+# Run workflow once per pending item from a data query
+swamp data query 'modelName == "source" && attributes.status == "pending"' --json \
+  | jq -c '.results[] | {environment: .attributes.env}' \
+  | swamp workflow run deploy-pipeline
+
+# NDJSON: run workflow once per line
+printf '{"environment":"dev"}\n{"environment":"prod"}' \
+  | swamp workflow run deploy-pipeline
+
+# Stdin + --input overrides (--input wins on conflict)
+echo '{"environment": "dev"}' \
+  | swamp workflow run deploy-pipeline --input dryRun=true
+```
+
+Stdin is auto-detected — no flag needed. JSON objects, JSON arrays, NDJSON, and
+YAML are all supported. Multiple items produce one workflow run per item.
+Execution stops on the first failure.

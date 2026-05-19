@@ -217,6 +217,8 @@ swamp model validate my-instance --json
 ```
 User wants runtime parameterization → Use inputs schema
 Values change per invocation → --input or --input-file
+Values come from another command → Pipe stdin (auto-detected)
+Batch run over query results → data query --json | jq | method run
 ```
 
 ### Step-by-Step
@@ -295,6 +297,19 @@ Run with file:
 
 ```bash
 swamp model method run my-deploy deploy --input-file inputs/production.yaml
+```
+
+**6. Alternative: Pipe inputs from another command**
+
+```bash
+# Stdin is auto-detected — pipe JSON and it becomes the inputs
+echo '{"environment": "production", "replicas": 5}' \
+  | swamp model method run my-deploy deploy
+
+# Batch: run deploy for each result from a data query
+swamp data query 'modelName == "infra" && attributes.status == "pending"' --json \
+  | jq -c '.results[] | {environment: .attributes.env, replicas: .attributes.count}' \
+  | swamp model method run my-deploy deploy
 ```
 
 ### CEL Paths Used
