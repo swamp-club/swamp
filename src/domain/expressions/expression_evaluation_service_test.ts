@@ -571,7 +571,7 @@ Deno.test("resolveRuntimeExpressionsInDefinition: leaves invalid env.* prose in 
 });
 
 // ============================================================================
-// evaluateDefinition — nested globalArguments (swamp-club#358)
+// evaluateDefinition — nested globalArguments
 // ============================================================================
 
 Deno.test("evaluateDefinition: resolves expressions in nested globalArguments objects and arrays", async () => {

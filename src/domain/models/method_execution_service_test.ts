@@ -2955,7 +2955,7 @@ Deno.test("executeWorkflow - still rejects invalid types on provided globalArgs"
   );
 });
 
-// ---------- Nested Unresolved Expression Tests (swamp-club#358) ----------
+// ---------- Nested Unresolved Expression Tests ----------
 
 Deno.test("execute - Proxy throws for nested unresolved expression in globalArgs object", async () => {
   const service = new DefaultMethodExecutionService();

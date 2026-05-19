@@ -419,7 +419,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         // Identify globalArg fields with unresolved expressions (inputs,
         // model resource/file refs, or any other ${{ ... }} that wasn't evaluated).
         // Uses valueContainsExpression for recursive detection of expressions
-        // inside nested objects and arrays (swamp-club#358).
+        // inside nested objects and arrays.
         let hasUnresolved = false;
         const resolvedGlobalArgs: Record<string, unknown> = {};
         for (const [key, value] of Object.entries(rawGlobalArgs)) {
