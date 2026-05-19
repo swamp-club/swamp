@@ -83,7 +83,10 @@ import {
   type FileDataRecord,
   ModelResolver,
 } from "../expressions/model_resolver.ts";
-import { CelEvaluator } from "../../infrastructure/cel/cel_evaluator.ts";
+import {
+  CelEvaluator,
+  createExtensionCelEnvironment,
+} from "../../infrastructure/cel/cel_evaluator.ts";
 import {
   DefinitionExpressionEvaluator,
   WorkflowExpressionEvaluator,
@@ -847,6 +850,7 @@ export class DefaultStepExecutor implements StepExecutor {
           vaultService,
           redactor: ctx.secretRedactor,
           dataQueryService,
+          createCelEnvironment: createExtensionCelEnvironment,
         },
         {
           signal: ctx.signal,

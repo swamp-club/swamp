@@ -40,6 +40,14 @@ export interface CommonMethodContextDeps {
   redactor?: MethodContext["redactor"];
   dataQueryService?: MethodContext["dataQueryService"];
   cloudControlClientFactory?: MethodContext["cloudControlClientFactory"];
+  /**
+   * Factory that builds a fresh cel-js Environment with swamp's baseline
+   * arithmetic-overload registrations for extension use. Passed in by the
+   * application layer (libswamp / CLI) so the domain layer does not need
+   * to import the cel-js binding directly. See
+   * `src/infrastructure/cel/cel_evaluator.ts#createExtensionCelEnvironment`.
+   */
+  createCelEnvironment: MethodContext["createCelEnvironment"];
 }
 
 /**
@@ -127,5 +135,6 @@ export function buildMethodContext(
     vaultSecrets: invocation.vaultSecrets,
     unresolvedMethodArgs: invocation.unresolvedMethodArgs,
     extensionFile: (relPath: string) => resolveExtensionFile(root, relPath),
+    createCelEnvironment: common.createCelEnvironment,
   };
 }

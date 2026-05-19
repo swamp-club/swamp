@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
+import { createExtensionCelEnvironment } from "../../infrastructure/cel/cel_evaluator.ts";
 import { z } from "zod";
 import {
   DefaultModelValidationService,
@@ -1133,6 +1134,7 @@ function createCheckContext(
       nextId: () => createDefinitionId(crypto.randomUUID()),
       getPath: () => "",
     },
+    createCelEnvironment: createExtensionCelEnvironment,
     ...overrides,
   };
 }

@@ -20,6 +20,7 @@
 import { z } from "zod";
 import { isZodSchemaLike } from "../zod_compat.ts";
 import type { CloudControlClient } from "@aws-sdk/client-cloudcontrol";
+import type { Environment } from "cel-js";
 import type { Logger } from "@logtape/logtape";
 import { ModelType } from "./model_type.ts";
 import type { VaultService } from "../vaults/vault_service.ts";
@@ -355,6 +356,19 @@ export interface MethodContext {
    * (pulled vs source) to give actionable guidance.
    */
   extensionFile: (relPath: string) => string;
+
+  /**
+   * Build a fresh, isolated cel-js `Environment` seeded with swamp's
+   * baseline arithmetic-overload registrations. Use this to evaluate
+   * CEL expressions over data the extension already holds (e.g. a
+   * selector predicate over a fleet of hosts). Each call returns a
+   * new Environment — registrations on one returned instance do not
+   * affect any other. The returned Environment does NOT carry swamp's
+   * internal namespace types (`file.contents`, `data.latest`, etc.);
+   * extensions may freely register their own functions, types, and
+   * operators on top.
+   */
+  createCelEnvironment: () => Environment;
 }
 
 /**

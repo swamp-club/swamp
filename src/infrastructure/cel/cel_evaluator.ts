@@ -178,6 +178,71 @@ export class CelDataNamespace {
 }
 
 /**
+ * Builds a fresh, isolated cel-js `Environment` with swamp's baseline
+ * registrations for extension use.
+ *
+ * Options: `{ unlistedVariablesAreDyn: true }` so callers can pass arbitrary
+ * context maps without pre-registering every variable. Extensions can
+ * `.clone({ homogeneousAggregateLiterals: false })` if they want mixed-type
+ * literals.
+ *
+ * Registrations: bigint/double arithmetic operator overloads only. The
+ * returned Environment does NOT carry swamp's internal namespace types
+ * (`CelFileNamespace`/`CelDataNamespace`) — those are private to swamp's
+ * own expression surface. Callers may freely register their own
+ * functions, types, and operators on the returned Environment.
+ */
+export function createExtensionCelEnvironment(): Environment {
+  const env = new Environment({ unlistedVariablesAreDyn: true });
+
+  // Register mixed-type arithmetic overloads. Context values from model
+  // attributes are JS numbers (double), but CEL integer literals are bigint
+  // (int). Without these, expressions like `count * 2` fail.
+  env.registerOperator(
+    "double + int",
+    (a: number, b: bigint) => a + Number(b),
+  );
+  env.registerOperator(
+    "int + double",
+    (a: bigint, b: number) => Number(a) + b,
+  );
+  env.registerOperator(
+    "double - int",
+    (a: number, b: bigint) => a - Number(b),
+  );
+  env.registerOperator(
+    "int - double",
+    (a: bigint, b: number) => Number(a) - b,
+  );
+  env.registerOperator(
+    "double * int",
+    (a: number, b: bigint) => a * Number(b),
+  );
+  env.registerOperator(
+    "int * double",
+    (a: bigint, b: number) => Number(a) * b,
+  );
+  env.registerOperator(
+    "double / int",
+    (a: number, b: bigint) => a / Number(b),
+  );
+  env.registerOperator(
+    "int / double",
+    (a: bigint, b: number) => Number(a) / b,
+  );
+  env.registerOperator(
+    "double % int",
+    (a: number, b: bigint) => a % Number(b),
+  );
+  env.registerOperator(
+    "int % double",
+    (a: bigint, b: number) => Number(a) % b,
+  );
+
+  return env;
+}
+
+/**
  * CEL evaluator that wraps the cel-js library.
  *
  * Uses the cel-js Environment class with registered types and receiver methods
@@ -189,51 +254,9 @@ export class CelEvaluator {
   private readonly warnedPatterns = new Set<string>();
 
   constructor() {
-    this.env = new Environment({ unlistedVariablesAreDyn: true });
-
-    // Register mixed-type arithmetic overloads. Context values from model
-    // attributes are JS numbers (double), but CEL integer literals are bigint
-    // (int). Without these, expressions like `count * 2` fail.
-    this.env.registerOperator(
-      "double + int",
-      (a: number, b: bigint) => a + Number(b),
-    );
-    this.env.registerOperator(
-      "int + double",
-      (a: bigint, b: number) => Number(a) + b,
-    );
-    this.env.registerOperator(
-      "double - int",
-      (a: number, b: bigint) => a - Number(b),
-    );
-    this.env.registerOperator(
-      "int - double",
-      (a: bigint, b: number) => Number(a) - b,
-    );
-    this.env.registerOperator(
-      "double * int",
-      (a: number, b: bigint) => a * Number(b),
-    );
-    this.env.registerOperator(
-      "int * double",
-      (a: bigint, b: number) => Number(a) * b,
-    );
-    this.env.registerOperator(
-      "double / int",
-      (a: number, b: bigint) => a / Number(b),
-    );
-    this.env.registerOperator(
-      "int / double",
-      (a: bigint, b: number) => Number(a) / b,
-    );
-    this.env.registerOperator(
-      "double % int",
-      (a: number, b: bigint) => a % Number(b),
-    );
-    this.env.registerOperator(
-      "int % double",
-      (a: bigint, b: number) => Number(a) % b,
-    );
+    // Start from the shared extension baseline, then layer swamp's internal
+    // namespace types on top.
+    this.env = createExtensionCelEnvironment();
 
     // Register namespace types so cel-js recognizes them via constructor
     // matching instead of trying to infer them as maps.

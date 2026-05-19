@@ -23,6 +23,7 @@ import {
   assertStringIncludes,
 } from "@std/assert";
 import { dirname, join } from "@std/path";
+import { createExtensionCelEnvironment } from "../../infrastructure/cel/cel_evaluator.ts";
 import { ExtensionLoader } from "../extensions/extension_loader.ts";
 import {
   clearAttachedExtensions,
@@ -265,6 +266,7 @@ function createTestContext(
     extensionFile: () => {
       throw new Error("extensionFile not stubbed in this test");
     },
+    createCelEnvironment: createExtensionCelEnvironment,
   };
   return { context, getResults };
 }

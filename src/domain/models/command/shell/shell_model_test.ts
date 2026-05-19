@@ -19,6 +19,7 @@
 
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { assertNotEquals } from "@std/assert/not-equals";
+import { createExtensionCelEnvironment } from "../../../../infrastructure/cel/cel_evaluator.ts";
 import { createDefinitionId } from "../../../definitions/definition.ts";
 import {
   SHELL_MODEL_TYPE,
@@ -292,6 +293,7 @@ function createTestContext(
     extensionFile: () => {
       throw new Error("extensionFile not stubbed in this test");
     },
+    createCelEnvironment: createExtensionCelEnvironment,
     ...overrides,
   };
   return { context, getResults };

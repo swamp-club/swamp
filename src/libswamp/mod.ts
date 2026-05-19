@@ -18,6 +18,17 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 export { createLibSwampContext, type LibSwampContext } from "./context.ts";
+
+// Extension CEL surface — INTERNAL re-exports for libswamp/* and CLI callers.
+// Extension authors never reach into libswamp/mod.ts directly (the top-level
+// `@swamp/cli` package only exports main.ts); they get the runtime factory
+// via `ctx.createCelEnvironment()` and type via inference. The runtime
+// constructor is deliberately kept out of any extension-author-facing
+// package — swamp-host's cel-js and an extension's bundled cel-js have
+// separate class identities, so `instanceof` checks across that boundary
+// silently fail.
+export { createExtensionCelEnvironment } from "../infrastructure/cel/cel_evaluator.ts";
+export type { Environment } from "cel-js";
 export {
   alreadyExists,
   cancelled,

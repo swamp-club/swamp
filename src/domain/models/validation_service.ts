@@ -235,6 +235,13 @@ export interface CheckValidationContext {
   dataRepository: MethodContext["dataRepository"];
   definitionRepository: DefinitionRepository;
   dataQueryService?: DataQueryService;
+  /**
+   * Factory that builds a fresh cel-js Environment with swamp's baseline
+   * registrations. Forwarded to `buildMethodContext` so the domain layer
+   * does not import the cel-js binding directly. The application layer
+   * (libswamp / CLI) supplies the implementation.
+   */
+  createCelEnvironment: MethodContext["createCelEnvironment"];
   labels?: string[];
   method?: string;
 }
@@ -384,6 +391,7 @@ export class DefaultModelValidationService implements ModelValidationService {
             dataRepository: checkContext.dataRepository,
             definitionRepository: checkContext.definitionRepository,
             dataQueryService: checkContext.dataQueryService,
+            createCelEnvironment: checkContext.createCelEnvironment,
           },
           {
             signal: new AbortController().signal,

@@ -25,6 +25,7 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import { getLogger } from "@logtape/logtape";
+import { createExtensionCelEnvironment } from "../src/infrastructure/cel/cel_evaluator.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
 import {
   type MethodContext,
@@ -148,6 +149,7 @@ Deno.test("Data output specs - shell model execution produces valid resource han
         extensionFile: () => {
           throw new Error("extensionFile not stubbed in this test");
         },
+        createCelEnvironment: createExtensionCelEnvironment,
       },
     );
 
@@ -241,6 +243,7 @@ Deno.test("Data output specs - undeclared resource spec fails at writeResource",
           extensionFile: () => {
             throw new Error("extensionFile not stubbed in this test");
           },
+          createCelEnvironment: createExtensionCelEnvironment,
         },
       );
     } catch (error) {
@@ -319,6 +322,7 @@ Deno.test("Data output specs - undeclared file spec fails at createFileWriter", 
           extensionFile: () => {
             throw new Error("extensionFile not stubbed in this test");
           },
+          createCelEnvironment: createExtensionCelEnvironment,
         },
       );
     } catch (error) {

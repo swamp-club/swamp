@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
+import { createExtensionCelEnvironment } from "../../infrastructure/cel/cel_evaluator.ts";
 import { RawExecutionDriver } from "./raw_execution_driver.ts";
 import type { MethodExecutor } from "./raw_execution_driver.ts";
 import type { ExecutionRequest } from "./execution_driver.ts";
@@ -138,6 +139,7 @@ function createMockContext(): MethodContext {
     extensionFile: () => {
       throw new Error("extensionFile not stubbed in this test");
     },
+    createCelEnvironment: createExtensionCelEnvironment,
   } as MethodContext;
 }
 

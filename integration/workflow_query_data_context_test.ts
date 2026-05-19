@@ -46,6 +46,7 @@ import type { ExecutionRequest } from "../src/domain/drivers/execution_driver.ts
 import { FileSystemUnifiedDataRepository } from "../src/infrastructure/persistence/unified_data_repository.ts";
 import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
 import { CatalogStore } from "../src/infrastructure/persistence/catalog_store.ts";
+import { createExtensionCelEnvironment } from "../src/infrastructure/cel/cel_evaluator.ts";
 import { DataQueryService } from "../src/domain/data/data_query_service.ts";
 
 const TEST_MODEL_TYPE = ModelType.create("test/query_data_ctx");
@@ -163,6 +164,7 @@ Deno.test("queryData chain: factory + driver derive working queryData from dataQ
           dataRepository: dataRepo,
           definitionRepository: definitionRepo,
           dataQueryService,
+          createCelEnvironment: createExtensionCelEnvironment,
         },
         {
           signal: new AbortController().signal,

@@ -30,6 +30,7 @@ import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
 import { createCatalogStore } from "../../infrastructure/persistence/repository_factory.ts";
+import { createExtensionCelEnvironment } from "../../infrastructure/cel/cel_evaluator.ts";
 import { DataQueryService } from "../../domain/data/data_query_service.ts";
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import type { ModelType } from "../../domain/models/model_type.ts";
@@ -137,6 +138,7 @@ export function createModelValidateDeps(
     dataRepository: dataRepo,
     definitionRepository: definitionRepo,
     dataQueryService,
+    createCelEnvironment: createExtensionCelEnvironment,
     labels: options?.labels,
     method: options?.method,
   };

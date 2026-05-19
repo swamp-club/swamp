@@ -35,6 +35,33 @@ Deno.test("createModelTestContext: returns context with default values", () => {
   assertExists(context.writeResource);
   assertExists(context.readResource);
   assertExists(context.createFileWriter);
+  assertExists(context.createCelEnvironment);
+});
+
+Deno.test("createModelTestContext: createCelEnvironment returns a working Environment", () => {
+  const { context } = createModelTestContext();
+  const env = context.createCelEnvironment();
+
+  // Baseline arithmetic overloads work (double + int).
+  assertEquals(env.evaluate("a + 2", { a: 1.5 }), 3.5);
+
+  // Custom function registration works.
+  env.registerFunction("triple(int): int", (x: bigint) => x * 3n);
+  assertEquals(env.evaluate("triple(7)"), 21n);
+
+  // Compile-once-evaluate-many pattern.
+  const predicate = env.parse('name == "web"');
+  assertEquals(predicate({ name: "web" }), true);
+  assertEquals(predicate({ name: "db" }), false);
+});
+
+Deno.test("createModelTestContext: each createCelEnvironment call yields a fresh Environment", () => {
+  const { context } = createModelTestContext();
+  const first = context.createCelEnvironment();
+  first.registerFunction("only_on_first(): bool", () => true);
+
+  const second = context.createCelEnvironment();
+  assertThrows(() => second.evaluate("only_on_first()"), Error);
 });
 
 Deno.test("createModelTestContext: accepts custom options", () => {

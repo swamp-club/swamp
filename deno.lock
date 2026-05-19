@@ -1670,6 +1670,7 @@
       "packages/testing": {
         "dependencies": [
           "jsr:@std/assert@1.0.19",
+          "npm:@marcbachmann/cel-js@7.6.1",
           "npm:zod@^4.3.6"
         ]
       }

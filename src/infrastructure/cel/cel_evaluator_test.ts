@@ -18,9 +18,64 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
-import { CelEvaluator } from "./cel_evaluator.ts";
+import {
+  CelEvaluator,
+  createExtensionCelEnvironment,
+} from "./cel_evaluator.ts";
 import { InvalidExpressionError } from "../../domain/expressions/errors.ts";
 import { transformHyphenatedModelRefs } from "../../domain/expressions/expression_parser.ts";
+
+Deno.test("createExtensionCelEnvironment: arithmetic overloads work for double/int mixes", () => {
+  const env = createExtensionCelEnvironment();
+  assertEquals(env.evaluate("a + 2", { a: 1.5 }), 3.5);
+  assertEquals(env.evaluate("2 + a", { a: 1.5 }), 3.5);
+  assertEquals(env.evaluate("a - 1", { a: 3.5 }), 2.5);
+  assertEquals(env.evaluate("a * 2", { a: 1.5 }), 3);
+  assertEquals(env.evaluate("a / 2", { a: 5.0 }), 2.5);
+  assertEquals(env.evaluate("a % 2", { a: 5.0 }), 1);
+});
+
+Deno.test("createExtensionCelEnvironment: unlistedVariablesAreDyn allows ad-hoc context keys", () => {
+  const env = createExtensionCelEnvironment();
+  // No registerVariable call needed — the option lets unknown identifiers
+  // resolve from the evaluation context.
+  assertEquals(env.evaluate("foo + bar", { foo: 1.0, bar: 2.0 }), 3);
+});
+
+Deno.test("createExtensionCelEnvironment: callers can register custom functions", () => {
+  const env = createExtensionCelEnvironment();
+  env.registerFunction(
+    "triple(int): int",
+    (x: bigint) => x * 3n,
+  );
+  assertEquals(env.evaluate("triple(7)"), 21n);
+});
+
+Deno.test("createExtensionCelEnvironment: each call returns a fresh, isolated Environment", () => {
+  const a = createExtensionCelEnvironment();
+  a.registerFunction("only_on_a(): bool", () => true);
+  assertEquals(a.evaluate("only_on_a()"), true);
+
+  // Second factory call must NOT see the function registered on `a`.
+  const b = createExtensionCelEnvironment();
+  assertThrows(
+    () => b.evaluate("only_on_a()"),
+    Error,
+  );
+});
+
+Deno.test("createExtensionCelEnvironment: does NOT pre-register swamp's internal namespace types", () => {
+  const env = createExtensionCelEnvironment();
+  // file.contents(...) is a swamp-internal receiver method; extensions should
+  // see no such registration on a baseline Environment.
+  assertThrows(
+    () =>
+      env.evaluate("file.contents('m', 's')", {
+        file: { contents: () => null },
+      }),
+    Error,
+  );
+});
 
 Deno.test("CelEvaluator evaluates simple property access", () => {
   const evaluator = new CelEvaluator();

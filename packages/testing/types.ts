@@ -25,6 +25,11 @@
  * compatibility with the canonical types.
  */
 
+// Type-only — used to type the `createCelEnvironment` field below.
+// Extensions get Environment instances via `ctx.createCelEnvironment()` and
+// rely on inference; no consumer-facing re-export is provided.
+import type { Environment } from "cel-js";
+
 /**
  * Lifetime determines how long data should be retained.
  * - Duration strings: "1h", "5m", "10d", "2w", "1mo", "10y"
@@ -175,6 +180,15 @@ export interface MethodContext<TGlobalArgs = Record<string, unknown>> {
   ) => Promise<Record<string, unknown> | null>;
   /** Create a file writer for binary/streaming content. */
   createFileWriter: (specName: string, name: string) => DataWriter;
+  /**
+   * Build a fresh, isolated cel-js `Environment` seeded with swamp's
+   * baseline arithmetic-overload registrations. Use this to evaluate
+   * CEL expressions over data the extension already holds (e.g. a
+   * selector predicate over a fleet of hosts). Each call returns a
+   * new Environment — registrations on one returned instance do not
+   * affect any other.
+   */
+  createCelEnvironment: () => Environment;
   /** Optional callback for emitting domain events during execution. */
   onEvent?: (event: MethodExecutionEvent) => void;
 }

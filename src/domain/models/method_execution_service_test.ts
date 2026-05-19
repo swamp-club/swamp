@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertRejects } from "@std/assert";
+import { createExtensionCelEnvironment } from "../../infrastructure/cel/cel_evaluator.ts";
 import { DefaultMethodExecutionService } from "./method_execution_service.ts";
 import { createDefinitionId, Definition } from "../definitions/definition.ts";
 import { ModelType } from "./model_type.ts";
@@ -271,6 +272,7 @@ function createTestContext(
     extensionFile: () => {
       throw new Error("extensionFile not stubbed in this test");
     },
+    createCelEnvironment: createExtensionCelEnvironment,
     ...overrides,
   };
   return { context, getResults };

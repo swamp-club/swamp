@@ -52,6 +52,16 @@ Deno.test("run method writes expected resource", async () => {
 | `storedResources` | `{}`                | Pre-seed data for `readResource` calls                |
 | `onEvent`         | captures only       | Optional callback for domain events                   |
 
+## CEL Evaluation in Tests
+
+`createModelTestContext` provides `ctx.createCelEnvironment()` — a working
+cel-js Environment seeded with the same baseline registrations as production.
+Extensions that use CEL evaluation in their `execute` methods can be unit-tested
+with no extra setup. See the
+[Custom CEL Evaluation section in the model API
+reference](https://github.com/systeminit/swamp/blob/main/.claude/skills/swamp-extension/references/model/api.md#custom-cel-evaluation)
+for usage patterns.
+
 ## Inspection Helpers
 
 The return value includes helpers to inspect what happened during execution:

@@ -25,6 +25,7 @@ import {
   type CommonMethodContextDeps,
   type MethodInvocationContext,
 } from "./method_context.ts";
+import { createExtensionCelEnvironment } from "../../infrastructure/cel/cel_evaluator.ts";
 import { ModelType } from "./model_type.ts";
 import type { DataQueryService } from "../data/data_query_service.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
@@ -41,6 +42,7 @@ function makeCommon(
   return {
     dataRepository,
     definitionRepository,
+    createCelEnvironment: createExtensionCelEnvironment,
     ...overrides,
   };
 }
@@ -71,7 +73,11 @@ Deno.test("buildMethodContext: passes through required common deps", () => {
   const definitionRepository = {} as DefinitionRepository;
 
   const ctx = buildMethodContext(
-    { dataRepository, definitionRepository },
+    {
+      dataRepository,
+      definitionRepository,
+      createCelEnvironment: createExtensionCelEnvironment,
+    },
     makeInvocation(),
   );
 

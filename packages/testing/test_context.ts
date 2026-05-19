@@ -26,6 +26,7 @@ import type {
   MethodContext,
   MethodExecutionEvent,
 } from "./types.ts";
+import { createExtensionCelEnvironment } from "./_cel_environment.ts";
 
 /** A resource captured by the test context's writeResource. */
 export interface WrittenResource {
@@ -307,6 +308,7 @@ export function createModelTestContext(
     writeResource,
     readResource,
     createFileWriter,
+    createCelEnvironment: createExtensionCelEnvironment,
     onEvent,
   };
 

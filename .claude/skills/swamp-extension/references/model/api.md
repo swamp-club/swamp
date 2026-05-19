@@ -14,6 +14,7 @@ Detailed API documentation for extension model development.
 - [Lifetime Values](#lifetime-values)
 - [Standard Tags](#standard-tags)
 - [Error Handling](#error-handling)
+- [Custom CEL Evaluation](#custom-cel-evaluation)
 - [Logging API](#logging-api)
 
 ---
@@ -389,6 +390,88 @@ execute: (async (args, context) => {
 **Workflow integration:** When a model method throws, the workflow engine
 automatically marks the step as failed. Use `allowFailure: true` on a workflow
 step to catch exceptions and allow continued execution of subsequent steps.
+
+---
+
+## Custom CEL Evaluation
+
+Model methods can evaluate Google CEL expressions against data the model already
+holds — useful for selector predicates over a fleet, filter expressions over a
+list of records, or any user-supplied predicate. `ctx.createCelEnvironment()`
+returns a fresh, isolated `cel-js` `Environment` seeded with swamp's baseline
+arithmetic-overload registrations.
+
+### Basic usage
+
+```typescript
+execute: (async (args, ctx) => {
+  const env = ctx.createCelEnvironment();
+
+  // Compile once, evaluate many.
+  const predicate = env.parse(args.selector);
+
+  const matched = ctx.globalArgs.hosts.filter((h) =>
+    predicate({ name: h.name, region: h.region, tags: h.tags }) === true
+  );
+
+  // ... write resource with matched ...
+});
+```
+
+The example above takes a selector like
+`tags.role == "web" && region.startsWith("us-")` and applies it to each host in
+the fleet. `unlistedVariablesAreDyn: true` is enabled in the baseline, so any
+keys passed in the evaluation context resolve without pre-registration.
+
+### Custom function registration
+
+```typescript
+const env = ctx.createCelEnvironment();
+env.registerFunction(
+  "matchesRegex(string, string): bool",
+  (value: string, pattern: string) => new RegExp(pattern).test(value),
+);
+const predicate = env.parse('matchesRegex(region, "^us-.*")');
+```
+
+Registrations on one returned Environment do NOT affect any other — each
+`ctx.createCelEnvironment()` call returns a fresh instance.
+
+### Typing the Environment
+
+You almost never need to import `Environment` as a named type — inference from
+`ctx.createCelEnvironment()` carries the type through everything chained on the
+result. This matches the convention every existing extension follows for typing
+`MethodContext` (declared inline at the `execute` callsite, never imported).
+
+If a helper signature inside the extension needs the named type, use
+`ReturnType<typeof ctx.createCelEnvironment>` — no external import is required:
+
+```typescript
+execute: (async (args, ctx) => {
+  type CelEnv = ReturnType<typeof ctx.createCelEnvironment>;
+  return runPredicate(ctx.createCelEnvironment(), args.selector);
+
+  function runPredicate(env: CelEnv, selector: string) {
+    return env.parse(selector)({/* ... */});
+  }
+});
+```
+
+Do NOT import `Environment` from `@systeminit/swamp-testing` in production
+source — testing-named packages don't belong in production code. Do NOT import
+from `cel-js` directly unless your extension already pins cel-js for other
+runtime use; pinning a library just for a type is unnecessary churn.
+
+### Boundary caveat: no `instanceof Environment`
+
+The `Environment` _instance_ returned by `ctx.createCelEnvironment()` comes from
+swamp-host's bundled cel-js. If your extension also bundles its own cel-js
+(e.g., you import a value from it for another purpose), the two `Environment`
+class identifiers are different objects. Method calls dispatch correctly via
+prototypes, but `instanceof Environment` will return `false` across that
+boundary. Don't write identity checks against the class — duck-type against the
+methods you call.
 
 ---
 

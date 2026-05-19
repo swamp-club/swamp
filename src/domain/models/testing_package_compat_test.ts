@@ -78,6 +78,8 @@ function _checkContextFields(ctx: TestingMethodContext) {
   const _repoDir: _CanonicalMethodContext["repoDir"] = ctx.repoDir;
   const _globalArgs: _CanonicalMethodContext["globalArgs"] = ctx.globalArgs;
   const _methodName: _CanonicalMethodContext["methodName"] = ctx.methodName;
+  const _createCelEnvironment: _CanonicalMethodContext["createCelEnvironment"] =
+    ctx.createCelEnvironment;
 
   // definition sub-fields (canonical uses inline object type, not DefinitionInfo)
   const _defName: string = ctx.definition.name;
@@ -85,7 +87,7 @@ function _checkContextFields(ctx: TestingMethodContext) {
   const _defVersion: number = ctx.definition.version;
   const _defTags: Record<string, string> = ctx.definition.tags;
 
-  void [_signal, _repoDir, _globalArgs, _methodName];
+  void [_signal, _repoDir, _globalArgs, _methodName, _createCelEnvironment];
   void [_defName, _defId, _defVersion, _defTags];
 }
 
@@ -221,4 +223,53 @@ Deno.test("testing package types: compile-time compatibility check", () => {
     _checkMethodDefinitionFields,
     _checkModelDefinitionFields,
   ];
+});
+
+// Runtime drift + isolation: the testing package mirrors swamp's
+// createExtensionCelEnvironment locally (it cannot import from src/ during
+// JSR publish). These tests fail loudly if the two implementations diverge.
+import { assertEquals, assertThrows } from "@std/assert";
+import { createExtensionCelEnvironment as canonicalFactory } from "../../infrastructure/cel/cel_evaluator.ts";
+import { createExtensionCelEnvironment as testingFactory } from "../../../packages/testing/_cel_environment.ts";
+
+Deno.test("cel env factory parity: both factories produce identical results", () => {
+  const exprs: Array<[string, Record<string, unknown>]> = [
+    ["a + 2", { a: 1.5 }],
+    ["a - 1", { a: 3.5 }],
+    ["a * 2", { a: 1.5 }],
+    ["a / 2", { a: 5.0 }],
+    ["a % 2", { a: 5.0 }],
+    ["2 + a", { a: 1.5 }],
+  ];
+
+  const a = canonicalFactory();
+  const b = testingFactory();
+
+  for (const [expr, ctx] of exprs) {
+    assertEquals(
+      a.evaluate(expr, ctx),
+      b.evaluate(expr, ctx),
+      `Factories diverge on expression "${expr}"`,
+    );
+  }
+
+  // Custom function registration parity: both must accept the same signature.
+  a.registerFunction("quadruple(int): int", (x: bigint) => x * 4n);
+  b.registerFunction("quadruple(int): int", (x: bigint) => x * 4n);
+  assertEquals(a.evaluate("quadruple(5)"), b.evaluate("quadruple(5)"));
+});
+
+Deno.test("cel env factory isolation: each call returns a fresh Environment", () => {
+  for (const factory of [canonicalFactory, testingFactory]) {
+    const first = factory();
+    first.registerFunction("only_on_first(): bool", () => true);
+    assertEquals(first.evaluate("only_on_first()"), true);
+
+    // Second call must not see registrations from the first.
+    const second = factory();
+    assertThrows(
+      () => second.evaluate("only_on_first()"),
+      Error,
+    );
+  }
 });

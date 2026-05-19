@@ -48,6 +48,7 @@ import type { DataQueryService } from "../../domain/data/data_query_service.ts";
 import type { RepoMarkerData } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { resolveDriverConfig } from "../../domain/drivers/driver_resolution.ts";
 import { buildMethodContext } from "../../domain/models/method_context.ts";
+import { createExtensionCelEnvironment } from "../../infrastructure/cel/cel_evaluator.ts";
 import type {
   DataArtifactView,
   ModelMethodRunView,
@@ -644,6 +645,7 @@ export async function* modelMethodRun(
                     vaultService,
                     redactor,
                     dataQueryService: deps.dataQueryService,
+                    createCelEnvironment: createExtensionCelEnvironment,
                   },
                   {
                     signal: ctx.signal,

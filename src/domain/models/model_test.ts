@@ -19,6 +19,7 @@
 
 import { assertEquals, assertThrows } from "@std/assert";
 import { z } from "zod";
+import { createExtensionCelEnvironment } from "../../infrastructure/cel/cel_evaluator.ts";
 import {
   type DataHandle,
   type DataWriter,
@@ -234,6 +235,7 @@ function createTestContext(modelType: ModelType): {
     extensionFile: () => {
       throw new Error("extensionFile not stubbed in this test");
     },
+    createCelEnvironment: createExtensionCelEnvironment,
   };
   return { context, getResults };
 }

@@ -7,6 +7,30 @@ should be able to reference models by name, then grab data from definitions or
 data, and manipulate it in place (such as string manipulation, concatenating
 array members, etc).
 
+## Two CEL Surfaces
+
+Swamp has two distinct CEL surfaces:
+
+1. **Internal**: `CelEvaluator` (`src/infrastructure/cel/cel_evaluator.ts`) is
+   used to evaluate expressions in workflow conditions, data queries,
+   `forEach` expansion, and definition evaluation. It registers swamp's own
+   namespace types (`file.contents`, `data.latest`, etc.) on top of the
+   baseline factory.
+2. **Extension-author-facing**: `createExtensionCelEnvironment()` is the same
+   factory without the swamp-internal namespace types. It is exposed on
+   `MethodContext` as `ctx.createCelEnvironment()` so extension model
+   methods can evaluate their own CEL expressions over data the model
+   already holds (e.g. selector predicates over a fleet of hosts).
+   Extensions register their own functions, types, and operators on the
+   returned Environment — registrations on one instance do not affect any
+   other. See `.claude/skills/swamp-extension/references/model/api.md` for
+   the extension-author guide.
+
+The two surfaces share the same arithmetic-overload registrations
+(bigint/double mixes) so a CEL expression parsed against either evaluates
+arithmetic identically. They diverge only on what receiver methods are
+visible.
+
 ## Model Data
 
 You should be able to access models by name or id, and then definition
