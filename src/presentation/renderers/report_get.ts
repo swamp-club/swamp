@@ -47,8 +47,7 @@ class LogReportGetRenderer implements Renderer<ReportGetEvent> {
       resolving: () => {},
       completed: (e) => {
         const r = e.data;
-        const cols = this.effectiveWidthOptions.maxWidth ??
-          getTerminalColumns();
+        const cols = this.effectiveWidthOptions.maxWidth!;
         const separator = "\u2500".repeat(cols);
         const source = r.workflowName
           ? `Workflow: ${r.workflowName}`

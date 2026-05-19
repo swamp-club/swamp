@@ -148,9 +148,13 @@ class LogModelMethodRunRenderer implements ModelMethodRunRenderer {
           reportName: e.reportName,
         });
         const cols = getTerminalColumns();
+        const headerPrefix = `\u2500\u2500 Report: ${e.reportName} `;
+        const headerSep = "\u2500".repeat(
+          Math.max(0, cols - headerPrefix.length),
+        );
         const separator = "\u2500".repeat(cols);
         writeOutput(
-          `\u2500\u2500 Report: ${e.reportName} ${separator}\n${
+          `${headerPrefix}${headerSep}\n${
             renderMarkdownToTerminal(e.markdown, { maxWidth: cols })
           }\n${separator}`,
         );

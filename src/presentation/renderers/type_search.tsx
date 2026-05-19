@@ -189,10 +189,19 @@ function renderTypePreview(
     <Text key="name" bold wrap="truncate-end">
       {detail.type.normalized}
     </Text>,
+  ];
+  if (detail.type.raw !== detail.type.normalized) {
+    lines.push(
+      <Text key="raw" dimColor wrap="truncate-end">
+        raw: {detail.type.raw}
+      </Text>,
+    );
+  }
+  lines.push(
     <Text key="version" dimColor wrap="truncate-end">
       version: {detail.version}
     </Text>,
-  ];
+  );
   if (detail.methods && detail.methods.length > 0) {
     lines.push(<Text key="mhdr" />);
     lines.push(

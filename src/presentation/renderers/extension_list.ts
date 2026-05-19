@@ -102,9 +102,6 @@ class LogExtensionListRenderer implements Renderer<EnrichedExtensionListEvent> {
             }
           }
           line += `  (pulled ${ext.pulledAt})`;
-          if (line.length > cols) {
-            line = line.substring(0, cols - 1) + "…";
-          }
           logger.info("{line}", { line });
           if (this.verbose) {
             for (const file of ext.files) {
