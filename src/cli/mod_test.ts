@@ -605,6 +605,17 @@ Deno.test("commandNeedsLoaderSetup returns false for version with global flags",
   assertEquals(commandNeedsLoaderSetup(["--json", "version"]), false);
 });
 
+Deno.test("commandNeedsLoaderSetup returns false for audit record (hook command)", () => {
+  assertEquals(
+    commandNeedsLoaderSetup(["audit", "record", "--from-hook"]),
+    false,
+  );
+});
+
+Deno.test("commandNeedsLoaderSetup returns true for audit (timeline viewer)", () => {
+  assertEquals(commandNeedsLoaderSetup(["audit"]), true);
+});
+
 Deno.test("commandNeedsLoaderSetup returns true for model type search with global flags", () => {
   assertEquals(
     commandNeedsLoaderSetup(["--json", "model", "type", "search", "aws"]),

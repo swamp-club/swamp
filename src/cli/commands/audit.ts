@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import { isAbsolute } from "@std/path";
 import {
   createContext,
   type GlobalOptions,
@@ -128,7 +129,10 @@ export const auditRecordCommand = new Command()
         failure,
       );
 
-      const repoDir = resolveRepoDir(options.repoDir as string | undefined);
+      const hookCwd = isAbsolute(normalized.cwd) ? normalized.cwd : undefined;
+      const repoDir = resolveRepoDir(
+        (options.repoDir as string | undefined) ?? hookCwd,
+      );
       const repository = new JsonlAuditRepository(repoDir);
       await repository.append(entry);
 
