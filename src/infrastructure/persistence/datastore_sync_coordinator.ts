@@ -262,6 +262,8 @@ export async function registerDatastoreSyncNamed(
 
   // Acquire distributed lock if provided
   if (lock) {
+    const logger = getSwampLogger(["datastore", "lock"]);
+    logger.info("Acquiring lock for {key}", { key });
     const lockSpan = getTracer().startSpan("swamp.lock.acquire", {
       attributes: { "lock.key": key, "lock.label": label },
     });

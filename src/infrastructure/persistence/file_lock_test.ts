@@ -21,6 +21,9 @@ import { assertEquals, assertRejects } from "@std/assert";
 import { FileLock } from "./file_lock.ts";
 import type { LockInfo } from "../../domain/datastore/distributed_lock.ts";
 import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
+import { initializeLogging } from "../logging/logger.ts";
+
+await initializeLogging({});
 
 async function withTempDir(
   fn: (dir: string) => Promise<void>,

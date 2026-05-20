@@ -140,6 +140,8 @@ export class FileLock implements DistributedLock {
     await ensureDir(dirname(this.lockPath));
 
     const nonce = crypto.randomUUID();
+    const logger = getSwampLogger(["datastore", "lock"]);
+    let contentionLogged = false;
 
     while (true) {
       // Check timeout on every iteration — including retries after stale lock cleanup
@@ -189,6 +191,20 @@ export class FileLock implements DistributedLock {
             // Another process may have already cleaned it up
           }
           continue; // Retry atomic create (timeout checked at top of loop)
+        }
+
+        if (!contentionLogged) {
+          const ageMs = Date.now() - new Date(existing.acquiredAt).getTime();
+          logger.warn(
+            "Waiting for lock {path} held by {holder} (pid {pid}, acquired {age}ms ago)",
+            {
+              path: this.lockPath,
+              holder: existing.holder,
+              pid: existing.pid,
+              age: ageMs,
+            },
+          );
+          contentionLogged = true;
         }
       }
 
