@@ -3118,3 +3118,149 @@ Deno.test("executeWorkflow - detects nested unresolved expressions in globalArgs
   assertEquals(result !== undefined, true);
   assertEquals(receivedName, "my-server");
 });
+
+Deno.test("executeWorkflow: check receives unresolvedMethodArgs with method arguments", async () => {
+  const service = new DefaultMethodExecutionService();
+
+  let capturedArgs: Record<string, unknown> | undefined;
+  const model: ModelDefinition = {
+    type: ModelType.create("test/check-args"),
+    version: "1",
+    methods: {
+      forward: {
+        description: "Forward ports",
+        arguments: z.object({ spec: z.string() }),
+        execute: () => Promise.resolve({}),
+      },
+    },
+    checks: {
+      "spec-valid": {
+        description: "Validates spec arg is present",
+        appliesTo: ["forward"],
+        execute: (context: MethodContext) => {
+          capturedArgs = context.unresolvedMethodArgs;
+          if (!context.unresolvedMethodArgs?.spec) {
+            return Promise.resolve({
+              pass: false,
+              errors: ["forward requires a `spec` argument"],
+            });
+          }
+          return Promise.resolve({ pass: true });
+        },
+      },
+    },
+  };
+
+  const definition = Definition.create({
+    name: "test-forward",
+    globalArguments: {},
+    methods: {
+      forward: { arguments: { spec: "19090:localhost:22" } },
+    },
+  });
+
+  const { context } = createTestContext({ modelType: model.type });
+  const result = await service.executeWorkflow(
+    definition,
+    model,
+    "forward",
+    context,
+  );
+
+  assertEquals(result !== undefined, true);
+  assertEquals(capturedArgs?.spec, "19090:localhost:22");
+});
+
+Deno.test("executeWorkflow: check unresolvedMethodArgs merges global and method args, method wins", async () => {
+  const service = new DefaultMethodExecutionService();
+
+  let capturedArgs: Record<string, unknown> | undefined;
+  const model: ModelDefinition = {
+    type: ModelType.create("test/check-merge"),
+    version: "1",
+    globalArguments: z.object({
+      region: z.string().optional(),
+      timeout: z.number().optional(),
+    }),
+    methods: {
+      create: {
+        description: "Create resource",
+        arguments: z.object({
+          region: z.string().optional(),
+          name: z.string().optional(),
+        }),
+        execute: () => Promise.resolve({}),
+      },
+    },
+    checks: {
+      "capture-args": {
+        description: "Captures unresolvedMethodArgs",
+        appliesTo: ["create"],
+        execute: (context: MethodContext) => {
+          capturedArgs = context.unresolvedMethodArgs;
+          return Promise.resolve({ pass: true });
+        },
+      },
+    },
+  };
+
+  const definition = Definition.create({
+    name: "test-merge",
+    globalArguments: { region: "us-east-1", timeout: 30 },
+    methods: {
+      create: { arguments: { region: "eu-west-1", name: "my-resource" } },
+    },
+  });
+
+  const { context } = createTestContext({ modelType: model.type });
+  await service.executeWorkflow(definition, model, "create", context);
+
+  assertEquals(capturedArgs?.region, "eu-west-1");
+  assertEquals(capturedArgs?.name, "my-resource");
+  assertEquals(capturedArgs?.timeout, 30);
+});
+
+Deno.test("executeWorkflow: check unresolvedMethodArgs filters unresolved expressions from global args", async () => {
+  const service = new DefaultMethodExecutionService();
+
+  let capturedArgs: Record<string, unknown> | undefined;
+  const model: ModelDefinition = {
+    type: ModelType.create("test/check-filter"),
+    version: "1",
+    globalArguments: z.object({
+      name: z.string().optional(),
+      apiKey: z.string().optional(),
+    }),
+    methods: {
+      create: {
+        description: "Create resource",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({}),
+      },
+    },
+    checks: {
+      "capture-args": {
+        description: "Captures unresolvedMethodArgs",
+        appliesTo: ["create"],
+        execute: (context: MethodContext) => {
+          capturedArgs = context.unresolvedMethodArgs;
+          return Promise.resolve({ pass: true });
+        },
+      },
+    },
+  };
+
+  const definition = Definition.create({
+    name: "test-filter",
+    globalArguments: {
+      name: "my-server",
+      apiKey: "${{ vault.secrets.api_key }}",
+    },
+  });
+
+  const { context } = createTestContext({ modelType: model.type });
+  await service.executeWorkflow(definition, model, "create", context);
+
+  assertEquals(capturedArgs?.name, "my-server");
+  assertEquals(capturedArgs?.apiKey, undefined);
+});

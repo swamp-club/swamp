@@ -493,6 +493,27 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       // Infer method kind for lifecycle checks
       const methodKind = inferMethodKind(methodName, method);
 
+      // Build unresolvedMethodArgs for pre-flight checks so they can
+      // validate method arguments. Mirrors the merge in execute() (line ~326):
+      // per-method args override global args, with unresolved ${{ }}
+      // expressions filtered from global args.
+      const rawMethodArgs = currentDefinition.getMethodArguments(methodName);
+      const filteredRawGlobalArgs: Record<string, unknown> = {};
+      for (
+        const [key, value] of Object.entries(
+          currentDefinition.globalArguments,
+        )
+      ) {
+        if (valueContainsExpression(value)) {
+          continue;
+        }
+        filteredRawGlobalArgs[key] = value;
+      }
+      const checkUnresolvedMethodArgs: Record<string, unknown> = {
+        ...filteredRawGlobalArgs,
+        ...rawMethodArgs,
+      };
+
       // Run pre-flight checks for mutating methods
       if (modelDef.checks && isMutatingKind(methodKind)) {
         const defChecks = currentDefinition.checkSelection;
@@ -541,6 +562,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
                   version: currentDefinition.version,
                   tags: currentDefinition.tags,
                 },
+                unresolvedMethodArgs: checkUnresolvedMethodArgs,
               });
               if (!checkResult || typeof checkResult.pass !== "boolean") {
                 failures.push({

@@ -267,8 +267,30 @@ interface CheckResult {
 ```
 
 The `execute` function receives the same `MethodContext` as a method's execute
-function, with one restriction: `writeResource` and `createFileWriter` are **not
-available**. Checks inspect state only — they do not produce data output.
+function, with two differences:
+
+- `writeResource` and `createFileWriter` are **not available**. Checks inspect
+  state only — they do not produce data output.
+- `unresolvedMethodArgs` **is populated** with the method's arguments merged over
+  filtered global arguments (global args containing unresolved `${{ }}`
+  expressions are excluded). This lets per-method checks validate that required
+  arguments are present before execution begins.
+
+```typescript
+// Example: validate a method argument in a pre-flight check
+checks: {
+  "spec-required": {
+    description: "Forward requires a spec argument",
+    appliesTo: ["forward"],
+    execute: async (context) => {
+      if (!context.unresolvedMethodArgs?.spec) {
+        return { pass: false, errors: ["forward requires a `spec`"] };
+      }
+      return { pass: true };
+    },
+  },
+},
+```
 
 ### isMutatingKind
 

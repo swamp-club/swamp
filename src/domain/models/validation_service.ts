@@ -28,6 +28,7 @@ import type { DataQueryService } from "../data/data_query_service.ts";
 import {
   extractExpressions,
   stripExpressionFields,
+  valueContainsExpression,
 } from "../expressions/expression_parser.ts";
 import { detectEnvVarUsageInDefinition } from "./env_var_detector.ts";
 import { coerceMethodArgs, getObjectShape } from "./zod_type_coercion.ts";
@@ -386,6 +387,20 @@ export class DefaultModelValidationService implements ModelValidationService {
       }
 
       try {
+        const methodName = checkContext.method ?? "";
+        const rawMethodArgs = methodName
+          ? definition.getMethodArguments(methodName)
+          : {};
+        const filteredGlobalArgs: Record<string, unknown> = {};
+        for (
+          const [key, value] of Object.entries(definition.globalArguments)
+        ) {
+          if (valueContainsExpression(value)) {
+            continue;
+          }
+          filteredGlobalArgs[key] = value;
+        }
+
         const context = buildMethodContext(
           {
             dataRepository: checkContext.dataRepository,
@@ -405,7 +420,7 @@ export class DefaultModelValidationService implements ModelValidationService {
               version: definition.version,
               tags: definition.tags,
             },
-            methodName: checkContext.method ?? "",
+            methodName,
             logger: {
               debug() {},
               info() {},
@@ -417,6 +432,10 @@ export class DefaultModelValidationService implements ModelValidationService {
               },
             } as unknown as MethodContext["logger"],
             extensionFilesRoot: modelDef.extensionFilesRoot,
+            unresolvedMethodArgs: {
+              ...filteredGlobalArgs,
+              ...rawMethodArgs,
+            },
           },
         );
 

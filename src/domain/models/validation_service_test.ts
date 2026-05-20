@@ -28,6 +28,7 @@ import { Definition, type DefinitionId } from "../definitions/definition.ts";
 import {
   defineModel,
   type LazyModelEntry,
+  type MethodContext,
   type ModelDefinition,
   modelRegistry,
 } from "./model.ts";
@@ -1713,4 +1714,50 @@ Deno.test("validateModel still rejects invalid types on provided globalArgs", as
   const { results } = await service.validateModel(definition, TypedModel);
   const globalResult = results.find((r) => r.name === "Global arguments");
   assertEquals(globalResult?.passed, false);
+});
+
+Deno.test("validateModel: check receives unresolvedMethodArgs with method arguments", async () => {
+  const service = new DefaultModelValidationService();
+
+  let capturedArgs: Record<string, unknown> | undefined;
+  const model: ModelDefinition = {
+    type: ModelType.create("test/check-args-validation"),
+    version: "1",
+    methods: {
+      forward: {
+        description: "Forward ports",
+        arguments: z.object({ spec: z.string() }),
+        execute: () => Promise.resolve({}),
+      },
+    },
+    checks: {
+      "spec-valid": {
+        description: "Validates spec via unresolvedMethodArgs",
+        appliesTo: ["forward"],
+        execute: (context: MethodContext) => {
+          capturedArgs = context.unresolvedMethodArgs;
+          return Promise.resolve({ pass: true });
+        },
+      },
+    },
+  };
+
+  const definition = Definition.create({
+    name: "test-forward",
+    globalArguments: {},
+    methods: {
+      forward: { arguments: { spec: "19090:localhost:22" } },
+    },
+  });
+
+  const { results } = await service.validateModel(
+    definition,
+    model,
+    undefined,
+    createCheckContext({ method: "forward" }),
+  );
+
+  const checkResult = results.find((r) => r.name === "Check: spec-valid");
+  assertEquals(checkResult?.passed, true);
+  assertEquals(capturedArgs?.spec, "19090:localhost:22");
 });
