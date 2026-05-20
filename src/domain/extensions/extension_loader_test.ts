@@ -20,6 +20,8 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import { toFileUrl } from "@std/path";
+import { findStaleFiles, type FreshnessCatalog } from "./bundle_freshness.ts";
+import type { ExtensionTypeRow } from "../../infrastructure/persistence/extension_catalog_store.ts";
 
 Deno.test("importBundleByPath: non-empty fingerprint appends ?fp= to import URL", async () => {
   const dir = await Deno.makeTempDir({ prefix: "swamp_fp_url_" });
@@ -88,6 +90,112 @@ Deno.test("importBundleByPath: undefined fingerprint produces bare URL without ?
 function buildImportUrl(baseUrl: string, fingerprint?: string): string {
   return fingerprint ? `${baseUrl}?fp=${fingerprint}` : baseUrl;
 }
+
+// -- Discovery _test.ts filtering (swamp-club#389) -----------------------
+
+class StubCatalog implements FreshnessCatalog {
+  findByKind(): ExtensionTypeRow[] {
+    return [];
+  }
+  removeBySourcePath(): void {}
+}
+
+const discoverExcludingTestFiles = async (dir: string): Promise<string[]> => {
+  const out: string[] = [];
+  for await (const entry of Deno.readDir(dir)) {
+    if (
+      entry.isFile && entry.name.endsWith(".ts") &&
+      !entry.name.endsWith("_test.ts")
+    ) {
+      out.push(entry.name);
+    }
+  }
+  return out.sort();
+};
+
+const discoverIncludingTestFiles = async (dir: string): Promise<string[]> => {
+  const out: string[] = [];
+  for await (const entry of Deno.readDir(dir)) {
+    if (entry.isFile && entry.name.endsWith(".ts")) {
+      out.push(entry.name);
+    }
+  }
+  return out.sort();
+};
+
+Deno.test("discovery: _test.ts files excluded from local dir discovery", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp_discover_local_" });
+  try {
+    await Deno.writeTextFile(
+      join(dir, "my_model.ts"),
+      "export const model = {};",
+    );
+    await Deno.writeTextFile(
+      join(dir, "my_model_test.ts"),
+      "import { model } from './my_model.ts';",
+    );
+
+    const stale = await findStaleFiles({
+      modelsDir: dir,
+      catalog: new StubCatalog(),
+      discoverFiles: discoverExcludingTestFiles,
+      kinds: ["model"],
+    });
+
+    assertEquals(
+      stale.map((s) => s.relativePath),
+      ["my_model.ts"],
+      "_test.ts files must be excluded from local dir discovery",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("discovery: _test.ts files included from additional dir discovery", async () => {
+  const localDir = await Deno.makeTempDir({
+    prefix: "swamp_discover_adl_local_",
+  });
+  const pulledDir = await Deno.makeTempDir({
+    prefix: "swamp_discover_adl_pulled_",
+  });
+  try {
+    await Deno.writeTextFile(
+      join(localDir, "local_model.ts"),
+      "export const model = {};",
+    );
+    await Deno.writeTextFile(
+      join(localDir, "local_model_test.ts"),
+      "import { model } from './local_model.ts';",
+    );
+    await Deno.writeTextFile(
+      join(pulledDir, "docker_image_test.ts"),
+      "export const model = {};",
+    );
+
+    const additionalSet = new Set([pulledDir]);
+    const stale = await findStaleFiles({
+      modelsDir: localDir,
+      additionalDirs: [pulledDir],
+      catalog: new StubCatalog(),
+      discoverFiles: (d) =>
+        additionalSet.has(d)
+          ? discoverIncludingTestFiles(d)
+          : discoverExcludingTestFiles(d),
+      kinds: ["model"],
+    });
+
+    const found = stale.map((s) => s.relativePath).sort();
+    assertEquals(
+      found,
+      ["docker_image_test.ts", "local_model.ts"],
+      "_test.ts must be excluded from local dir but included from additional (pulled/source) dirs",
+    );
+  } finally {
+    await Deno.remove(localDir, { recursive: true }).catch(() => {});
+    await Deno.remove(pulledDir, { recursive: true }).catch(() => {});
+  }
+});
 
 Deno.test("fingerprint URL guard: distinct fingerprints produce distinct URLs", () => {
   const baseUrl = "file:///tmp/bundle.js";

@@ -114,13 +114,18 @@ export class ExtensionLoader {
     const denoPath = await this.denoRuntime.ensureDeno();
 
     const allFiles: Array<{ file: string; baseDir: string }> = [];
-    for (const d of [dir, ...(options?.additionalDirs ?? [])]) {
+    const additionalSet = new Set(options?.additionalDirs ?? []);
+    for (const d of [dir, ...additionalSet]) {
       try {
         await Deno.stat(d);
       } catch {
         continue;
       }
-      const files = await this.discoverFiles(d);
+      const files = await this.discoverFiles(
+        d,
+        "",
+        additionalSet.has(d),
+      );
       for (const file of files) {
         allFiles.push({ file, baseDir: d });
       }
@@ -717,11 +722,18 @@ export class ExtensionLoader {
 
     const bundleBaseDir = this.resolveBundlePath();
     const cache = createFreshnessCache();
+    const additionalSet = new Set(additionalDirs ?? []);
 
-    const dirs = [dir, ...(additionalDirs ?? [])];
+    const dirs = [dir, ...additionalSet];
     for (const d of dirs) {
       try {
-        await this.populateCatalogFromDir(d, bundleBaseDir, catalog, cache);
+        await this.populateCatalogFromDir(
+          d,
+          bundleBaseDir,
+          catalog,
+          cache,
+          additionalSet.has(d),
+        );
       } catch {
         // Directory doesn't exist — skip
       }
@@ -733,8 +745,9 @@ export class ExtensionLoader {
     bundleBaseDir: string,
     catalog: ExtensionCatalogStore,
     cache: FreshnessCache,
+    includeTestFiles = false,
   ): Promise<void> {
-    const files = this.discoverFilesSync(dir);
+    const files = this.discoverFilesSync(dir, "", includeTestFiles);
     const ns = this.repoDir ? bundleNamespace(dir, this.repoDir) : "";
     for (const relativePath of files) {
       const absolutePath = resolve(dir, relativePath);
@@ -1089,27 +1102,36 @@ export class ExtensionLoader {
   ): Promise<
     Array<{ absolutePath: string; relativePath: string; baseDir: string }>
   > {
+    const additionalSet = new Set(additionalDirs ?? []);
     return await findStaleFilesShared({
       modelsDir: dir,
       additionalDirs,
       catalog,
-      discoverFiles: (d) => this.discoverFiles(d),
+      discoverFiles: (d) => this.discoverFiles(d, "", additionalSet.has(d)),
       kinds: [...this.adapter.catalogKinds],
     });
   }
 
-  private discoverFilesSync(dir: string, prefix = ""): string[] {
+  private discoverFilesSync(
+    dir: string,
+    prefix = "",
+    includeTestFiles = false,
+  ): string[] {
     const files: string[] = [];
     for (const entry of Deno.readDirSync(dir)) {
       const relativePath = prefix ? join(prefix, entry.name) : entry.name;
       if (entry.isDirectory) {
         if (entry.name.startsWith("_")) continue;
         files.push(
-          ...this.discoverFilesSync(join(dir, entry.name), relativePath),
+          ...this.discoverFilesSync(
+            join(dir, entry.name),
+            relativePath,
+            includeTestFiles,
+          ),
         );
       } else if (
         entry.isFile && entry.name.endsWith(".ts") &&
-        !entry.name.endsWith("_test.ts")
+        (includeTestFiles || !entry.name.endsWith("_test.ts"))
       ) {
         files.push(relativePath);
       }
@@ -1120,6 +1142,7 @@ export class ExtensionLoader {
   private async discoverFiles(
     dir: string,
     prefix = "",
+    includeTestFiles = false,
   ): Promise<string[]> {
     const files: string[] = [];
     for await (const entry of Deno.readDir(dir)) {
@@ -1129,11 +1152,12 @@ export class ExtensionLoader {
         const nested = await this.discoverFiles(
           join(dir, entry.name),
           relativePath,
+          includeTestFiles,
         );
         files.push(...nested);
       } else if (
         entry.isFile && entry.name.endsWith(".ts") &&
-        !entry.name.endsWith("_test.ts")
+        (includeTestFiles || !entry.name.endsWith("_test.ts"))
       ) {
         files.push(relativePath);
       }
