@@ -432,7 +432,11 @@ export function configureExtensionAutoResolver(
 
 export function commandNeedsLoaderSetup(args: string[]): boolean {
   const commandInfo = extractCommandInfo(args);
-  return !NON_REPO_COMMANDS.has(commandInfo.command);
+  if (NON_REPO_COMMANDS.has(commandInfo.command)) return false;
+  if (commandInfo.command === "audit" && commandInfo.subcommand === "record") {
+    return false;
+  }
+  return true;
 }
 
 /** A deferred warning message to emit after logging is initialized. */
