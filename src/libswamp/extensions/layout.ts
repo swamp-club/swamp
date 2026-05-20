@@ -56,6 +56,31 @@ export const PULLED_TYPE_DIRS: ReadonlySet<string> = new Set([
   "files",
 ]);
 
+/**
+ * Per-extension scaffold dir names that `pull` unconditionally creates
+ * under `.swamp/pulled-extensions/<name>/` regardless of whether the
+ * extension ships content for that kind. Skills are excluded because
+ * they land at the tool-specific skills dir, not under the per-extension
+ * root. These scaffold dirs are NOT recorded in the lockfile's tracked
+ * files, so `extension rm` must enumerate them explicitly to prune any
+ * empty ones — `pruneEmptyDirs` in `remove_extension_service.ts` walks
+ * up from tracked-file parents and would otherwise stop at the
+ * extension root when it sees the untracked scaffolds as entries.
+ *
+ * Stays in sync with the seven `Deno.mkdir` calls in `installExtension`
+ * in `pull.ts`. If `pull` adds a new per-extension kind dir, add it
+ * here too.
+ */
+export const PER_EXTENSION_SCAFFOLD_DIRS: readonly string[] = [
+  "models",
+  "workflows",
+  "vaults",
+  "drivers",
+  "datastores",
+  "reports",
+  "files",
+];
+
 const PULLED_PREFIX = `${SWAMP_DATA_DIR}/pulled-extensions/`;
 const GEN1_PREFIX = "extensions/";
 

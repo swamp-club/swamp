@@ -508,3 +508,262 @@ Deno.test(
     );
   },
 );
+
+// =============================================================
+// swamp-club#383: empty per-extension scaffold dirs left behind
+// =============================================================
+//
+// `pull` unconditionally `Deno.mkdir`s seven per-extension scaffold
+// dirs (`models`, `workflows`, `vaults`, `drivers`, `datastores`,
+// `reports`, `files`) regardless of whether the extension ships
+// content for that kind. These dirs are never recorded in the
+// lockfile's tracked-file list. Pre-fix, `pruneEmptyDirs`'s upward
+// walk from tracked-file parents stopped at the extension root
+// because the un-tracked scaffolds made it appear non-empty —
+// leaving the entire per-extension subtree on disk after rm.
+//
+// The fix has RemoveExtensionService push the seven scaffold paths
+// into parentDirs so pruneEmptyDirs sweeps them too. These tests
+// pin (a) the canonical case, (b) sibling-extension safety, and
+// (c) flat (non-scoped) name handling.
+//
+// Tests intentionally hardcode the seven scaffold names rather than
+// importing PER_EXTENSION_SCAFFOLD_DIRS from production — a silent
+// shrinkage of that constant must show up as a regression here.
+
+async function stageScaffoldDirs(extRoot: string): Promise<void> {
+  for (
+    const kind of [
+      "models",
+      "workflows",
+      "vaults",
+      "drivers",
+      "datastores",
+      "reports",
+      "files",
+    ]
+  ) {
+    await ensureDir(join(extRoot, kind));
+  }
+}
+
+Deno.test(
+  "swamp-club#383: rm prunes empty per-extension scaffold dirs (canonical)",
+  async () => {
+    await withFixtureRepo(
+      async ({ repoDir, repository, lockfileRepository }) => {
+        const ts = Date.now();
+        const extName = `@test/scaffold-${ts}`;
+        const typeId = `@test/scaffold-model-${ts}`;
+        await stageModel(
+          repoDir,
+          extName,
+          "model.ts",
+          MINIMAL_MODEL_CODE(typeId),
+        );
+        const extRoot = join(
+          swampPath(repoDir, "pulled-extensions"),
+          extName,
+        );
+        await stageScaffoldDirs(extRoot);
+
+        const installSvc = new InstallExtensionService({
+          denoRuntime: testDenoRuntime,
+          repository,
+          installExtensionFn: async (ref, ctx) => {
+            await ctx.lockfileRepository.writeEntry(
+              ref.name,
+              "1.0.0",
+              [`.swamp/pulled-extensions/${ref.name}/models/model.ts`],
+            );
+            return makeStubInstallResult(ref.name, "1.0.0", [
+              `.swamp/pulled-extensions/${ref.name}/models/model.ts`,
+            ]);
+          },
+        });
+        await installSvc.execute(
+          { name: extName, version: "1.0.0" },
+          makeInstallContext(repoDir, lockfileRepository),
+        );
+
+        const removeSvc = new RemoveExtensionService({
+          repository,
+          lockfileRepository,
+          repoDir,
+        });
+        await removeSvc.execute(extName);
+
+        // The per-extension subtree must be entirely gone — neither
+        // the extension root nor any of the empty scaffold dirs may
+        // remain.
+        await assertRejects(
+          () => Deno.stat(extRoot),
+          Deno.errors.NotFound,
+          undefined,
+          "Post-rm: per-extension subtree must be removed",
+        );
+        // The `@scope/` dir is also gone since this fixture has no
+        // sibling extensions under `@test/`.
+        const scopeDir = join(
+          swampPath(repoDir, "pulled-extensions"),
+          "@test",
+        );
+        await assertRejects(
+          () => Deno.stat(scopeDir),
+          Deno.errors.NotFound,
+          undefined,
+          "Post-rm: empty scope dir must be removed",
+        );
+      },
+    );
+  },
+);
+
+Deno.test(
+  "swamp-club#383: rm preserves sibling extension under the same @scope",
+  async () => {
+    await withFixtureRepo(
+      async ({ repoDir, repository, lockfileRepository }) => {
+        const ts = Date.now();
+        const extA = `@test/sibling-a-${ts}`;
+        const extB = `@test/sibling-b-${ts}`;
+        const typeA = `@test/sibling-type-a-${ts}`;
+        const typeB = `@test/sibling-type-b-${ts}`;
+        await stageModel(repoDir, extA, "a.ts", MINIMAL_MODEL_CODE(typeA));
+        await stageModel(repoDir, extB, "b.ts", MINIMAL_MODEL_CODE(typeB));
+        const extRootA = join(
+          swampPath(repoDir, "pulled-extensions"),
+          extA,
+        );
+        const extRootB = join(
+          swampPath(repoDir, "pulled-extensions"),
+          extB,
+        );
+        await stageScaffoldDirs(extRootA);
+        await stageScaffoldDirs(extRootB);
+
+        const installSvc = new InstallExtensionService({
+          denoRuntime: testDenoRuntime,
+          repository,
+          installExtensionFn: async (ref, ctx) => {
+            const fileName = ref.name === extA ? "a.ts" : "b.ts";
+            await ctx.lockfileRepository.writeEntry(
+              ref.name,
+              "1.0.0",
+              [`.swamp/pulled-extensions/${ref.name}/models/${fileName}`],
+            );
+            return makeStubInstallResult(ref.name, "1.0.0", [
+              `.swamp/pulled-extensions/${ref.name}/models/${fileName}`,
+            ]);
+          },
+        });
+        await installSvc.execute(
+          { name: extA, version: "1.0.0" },
+          makeInstallContext(repoDir, lockfileRepository),
+        );
+        await installSvc.execute(
+          { name: extB, version: "1.0.0" },
+          makeInstallContext(repoDir, lockfileRepository),
+        );
+
+        const removeSvc = new RemoveExtensionService({
+          repository,
+          lockfileRepository,
+          repoDir,
+        });
+        await removeSvc.execute(extA);
+
+        // A is gone — both subtree and scaffolds.
+        await assertRejects(
+          () => Deno.stat(extRootA),
+          Deno.errors.NotFound,
+          undefined,
+          "Post-rm: extA subtree must be removed",
+        );
+        // B is intact — including its scaffold dirs and its tracked
+        // model file.
+        const bStat = await Deno.stat(extRootB);
+        assertEquals(
+          bStat.isDirectory,
+          true,
+          "Post-rm: extB subtree must be preserved",
+        );
+        const bModelStat = await Deno.stat(
+          join(extRootB, "models", "b.ts"),
+        );
+        assertEquals(
+          bModelStat.isFile,
+          true,
+          "Post-rm: extB tracked file must be preserved",
+        );
+        // The shared `@test/` scope dir is also preserved because B
+        // still lives inside it.
+        const scopeStat = await Deno.stat(
+          join(swampPath(repoDir, "pulled-extensions"), "@test"),
+        );
+        assertEquals(
+          scopeStat.isDirectory,
+          true,
+          "Post-rm: shared @scope dir must be preserved",
+        );
+      },
+    );
+  },
+);
+
+Deno.test(
+  "swamp-club#383: rm prunes scaffold dirs for flat (non-scoped) extension names",
+  async () => {
+    await withFixtureRepo(
+      async ({ repoDir, repository, lockfileRepository }) => {
+        const ts = Date.now();
+        const extName = `flat-scaffold-${ts}`;
+        const typeId = `flat-scaffold-model-${ts}`;
+        await stageModel(
+          repoDir,
+          extName,
+          "model.ts",
+          MINIMAL_MODEL_CODE(typeId),
+        );
+        const extRoot = join(
+          swampPath(repoDir, "pulled-extensions"),
+          extName,
+        );
+        await stageScaffoldDirs(extRoot);
+
+        const installSvc = new InstallExtensionService({
+          denoRuntime: testDenoRuntime,
+          repository,
+          installExtensionFn: async (ref, ctx) => {
+            await ctx.lockfileRepository.writeEntry(
+              ref.name,
+              "1.0.0",
+              [`.swamp/pulled-extensions/${ref.name}/models/model.ts`],
+            );
+            return makeStubInstallResult(ref.name, "1.0.0", [
+              `.swamp/pulled-extensions/${ref.name}/models/model.ts`,
+            ]);
+          },
+        });
+        await installSvc.execute(
+          { name: extName, version: "1.0.0" },
+          makeInstallContext(repoDir, lockfileRepository),
+        );
+
+        const removeSvc = new RemoveExtensionService({
+          repository,
+          lockfileRepository,
+          repoDir,
+        });
+        await removeSvc.execute(extName);
+
+        await assertRejects(
+          () => Deno.stat(extRoot),
+          Deno.errors.NotFound,
+          undefined,
+          "Post-rm: flat-name subtree must be removed",
+        );
+      },
+    );
+  },
+);
