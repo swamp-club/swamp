@@ -22,6 +22,7 @@ import { dirname, join, resolve } from "@std/path";
 import {
   createContext,
   type GlobalOptions,
+  resolveExtensionsDir,
   resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
@@ -54,6 +55,7 @@ import type { CompilationError, SwampError } from "../../libswamp/mod.ts";
 
 interface ExtensionPushOptions extends GlobalOptions {
   repoDir?: string;
+  extensionsDir?: string;
   yes?: boolean;
   dryRun?: boolean;
   releaseNotes?: string;
@@ -180,6 +182,10 @@ export const extensionPushCommand = new Command()
     "--repo-dir <dir:string>",
     "Repository directory (env: SWAMP_REPO_DIR)",
   )
+  .option(
+    "--extensions-dir <dir:string>",
+    "Extensions source directory (env: SWAMP_EXTENSIONS_DIR)",
+  )
   .option("-y, --yes", "Skip confirmation prompts")
   .option("--dry-run", "Build archive locally without pushing to registry")
   .option(
@@ -192,6 +198,7 @@ export const extensionPushCommand = new Command()
 
     // 1. Validate repo
     const repoDir = resolveRepoDir(options.repoDir);
+    const extensionsDir = resolveExtensionsDir(options.extensionsDir);
     const { repoContext } = await requireInitializedRepoReadOnly({
       repoDir,
       outputMode: cliCtx.outputMode,
@@ -203,6 +210,7 @@ export const extensionPushCommand = new Command()
       manifestPath,
       repoContext,
       logger: cliCtx.logger,
+      extensionsDir,
     });
     const {
       manifest,

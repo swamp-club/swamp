@@ -21,6 +21,7 @@ import { Command } from "@cliffy/command";
 import { setColorEnabled } from "@std/fmt/colors";
 import { isAbsolute, join, resolve } from "@std/path";
 import { swampPath } from "../infrastructure/persistence/paths.ts";
+import { UserError } from "../domain/errors.ts";
 import { enumeratePulledExtensionDirs } from "../libswamp/mod.ts";
 import { getLogger, parseLogLevel } from "@logtape/logtape";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
@@ -49,6 +50,7 @@ import { openCommand } from "./commands/open.ts";
 import { createHelpCommand } from "./commands/help.ts";
 import { unknownCommandErrorHandler } from "./unknown_command_handler.ts";
 import {
+  getExtensionsDirFromArgs,
   getRepoDirFromArgs,
   type GlobalOptions,
   isStdinTty,
@@ -244,7 +246,9 @@ export async function configureExtensionLoaders(
   resolvedSources: ResolvedSourceDirs[],
   deferredWarnings: DeferredWarning[],
   quiet = false,
+  extensionsDir?: string,
 ): Promise<void> {
+  const effectiveExtDir = extensionsDir ?? repoDir;
   const denoRuntime = new EmbeddedDenoRuntime();
   const sourceModelsDirs = collectDirsForKind(resolvedSources, "models");
   const sourceVaultsDirs = collectDirsForKind(resolvedSources, "vaults");
@@ -314,6 +318,7 @@ export async function configureExtensionLoaders(
       lazyResolver,
       repository,
       quiet,
+      effectiveExtDir,
     )
   );
   vaultTypeRegistry.setLoader(() =>
@@ -325,6 +330,7 @@ export async function configureExtensionLoaders(
       lazyResolver,
       repository,
       quiet,
+      effectiveExtDir,
     )
   );
   driverTypeRegistry.setLoader(() =>
@@ -336,6 +342,7 @@ export async function configureExtensionLoaders(
       lazyResolver,
       repository,
       quiet,
+      effectiveExtDir,
     )
   );
   datastoreTypeRegistry.setLoader(() =>
@@ -346,6 +353,7 @@ export async function configureExtensionLoaders(
       sourceDatastoresDirs,
       repository,
       quiet,
+      effectiveExtDir,
     )
   );
   reportRegistry.setLoader(() =>
@@ -357,6 +365,7 @@ export async function configureExtensionLoaders(
       lazyResolver,
       repository,
       quiet,
+      effectiveExtDir,
     )
   );
 
@@ -452,13 +461,15 @@ async function loadUserModels(
   resolverFactory?: () => Promise<DatastorePathResolver | undefined>,
   repository?: ExtensionRepository,
   _quiet = false,
+  extensionsDir?: string,
 ): Promise<void> {
   try {
+    const extBase = extensionsDir ?? repoDir;
     const modelsDir = resolveModelsDir(marker);
     // Handle both absolute and relative paths (cross-platform)
     const absoluteModelsDir = isAbsolute(modelsDir)
       ? modelsDir
-      : resolve(repoDir, modelsDir);
+      : resolve(extBase, modelsDir);
 
     // W1b/(a-2): if no repository was passed, bootstrap one with an
     // empty lockfile lookup. The catalog stays open for the process
@@ -536,12 +547,14 @@ async function loadUserVaults(
   resolverFactory?: () => Promise<DatastorePathResolver | undefined>,
   repository?: ExtensionRepository,
   _quiet = false,
+  extensionsDir?: string,
 ): Promise<void> {
   try {
+    const extBase = extensionsDir ?? repoDir;
     const vaultsDir = resolveVaultsDir(marker);
     const absoluteVaultsDir = isAbsolute(vaultsDir)
       ? vaultsDir
-      : resolve(repoDir, vaultsDir);
+      : resolve(extBase, vaultsDir);
 
     const resolver = resolverFactory ? await resolverFactory() : undefined;
     const loader = new ExtensionLoader(
@@ -599,12 +612,14 @@ async function loadUserDrivers(
   resolverFactory?: () => Promise<DatastorePathResolver | undefined>,
   repository?: ExtensionRepository,
   _quiet = false,
+  extensionsDir?: string,
 ): Promise<void> {
   try {
+    const extBase = extensionsDir ?? repoDir;
     const driversDir = resolveDriversDir(marker);
     const absoluteDriversDir = isAbsolute(driversDir)
       ? driversDir
-      : resolve(repoDir, driversDir);
+      : resolve(extBase, driversDir);
 
     const resolver = resolverFactory ? await resolverFactory() : undefined;
     const loader = new ExtensionLoader(
@@ -661,12 +676,14 @@ async function loadUserDatastores(
   sourceDirs: string[] = [],
   repository?: ExtensionRepository,
   _quiet = false,
+  extensionsDir?: string,
 ): Promise<void> {
   try {
+    const extBase = extensionsDir ?? repoDir;
     const datastoresDir = resolveDatastoresDir(marker);
     const absoluteDatastoresDir = isAbsolute(datastoresDir)
       ? datastoresDir
-      : resolve(repoDir, datastoresDir);
+      : resolve(extBase, datastoresDir);
 
     const loader = new ExtensionLoader(
       denoRuntime,
@@ -726,12 +743,14 @@ async function loadUserReports(
   resolverFactory?: () => Promise<DatastorePathResolver | undefined>,
   repository?: ExtensionRepository,
   _quiet = false,
+  extensionsDir?: string,
 ): Promise<void> {
   try {
+    const extBase = extensionsDir ?? repoDir;
     const reportsDir = resolveReportsDir(marker);
     const absoluteReportsDir = isAbsolute(reportsDir)
       ? reportsDir
-      : resolve(repoDir, reportsDir);
+      : resolve(extBase, reportsDir);
 
     const resolver = resolverFactory ? await resolverFactory() : undefined;
     const loader = new ExtensionLoader(
@@ -1012,6 +1031,37 @@ export async function runCli(args: string[]): Promise<void> {
   // Pre-parse --repo-dir so startup functions use the correct repository
   const repoDir = getRepoDirFromArgs(args);
 
+  // Pre-parse --extensions-dir for split code-plane/data-plane scenarios
+  const extensionsDir = getExtensionsDirFromArgs(args);
+
+  if (extensionsDir !== undefined) {
+    const swampDataDir = join(repoDir, ".swamp");
+    if (
+      extensionsDir === swampDataDir ||
+      extensionsDir.startsWith(swampDataDir + "/") ||
+      extensionsDir.startsWith(swampDataDir + "\\")
+    ) {
+      throw new UserError(
+        "--extensions-dir must not point inside the .swamp data directory",
+      );
+    }
+    try {
+      const stat = await Deno.stat(extensionsDir);
+      if (!stat.isDirectory) {
+        throw new UserError(
+          `--extensions-dir must be a directory: ${extensionsDir}`,
+        );
+      }
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) {
+        throw new UserError(
+          `--extensions-dir directory not found: ${extensionsDir}`,
+        );
+      }
+      throw error;
+    }
+  }
+
   // Pre-parse check for telemetry disable flag
   const telemetryDisabled = isTelemetryDisabled(args) ||
     isTelemetryDisabledByEnv();
@@ -1069,6 +1119,7 @@ export async function runCli(args: string[]): Promise<void> {
       resolvedSources,
       deferredWarnings,
       isQuietFromArgs(args),
+      extensionsDir,
     );
     loaderSpan.end();
   }

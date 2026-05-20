@@ -495,6 +495,59 @@ Only files within the respective directory boundary are included. Non-local
 imports (`npm:`, `jsr:`, `https:`) are skipped here — they are resolved and
 inlined at bundle time by `deno bundle`, not by the local-import resolver.
 
+## Split Extensions Directory (`--extensions-dir`)
+
+By default, swamp discovers local extension sources from `extensions/<kind>/`
+relative to the repository root (`--repo-dir` / `SWAMP_REPO_DIR`). The
+`--extensions-dir` flag (or `SWAMP_EXTENSIONS_DIR` env var) overrides only
+the local source scanning root while keeping all data at the repository root.
+
+This enables **git worktree** workflows where the working tree (code plane) is
+separate from the `.swamp/` data directory (data plane):
+
+```
+# Main repo has .swamp/ data + original extensions
+~/repo/
+  .swamp/          ← data, bundles, catalog (data plane)
+  .swamp.yaml      ← repo marker
+  extensions/models/my-model.ts
+
+# Worktree has its own working copy of extensions
+~/repo/trees/feature-branch/
+  .swamp.yaml      ← same marker (committed to git)
+  extensions/models/my-model.ts      ← modified copy
+  extensions/models/new-model.ts     ← worktree-only
+```
+
+Usage:
+
+```
+SWAMP_REPO_DIR=~/repo \
+SWAMP_EXTENSIONS_DIR=~/repo/trees/feature-branch \
+  swamp model type search my-model
+```
+
+### What `--extensions-dir` controls
+
+- Local extension source scanning for all 5 kinds (models, vaults, drivers,
+  datastores, reports)
+- Manifest path resolution in `extension fmt` and `extension push`
+
+### What stays at `--repo-dir`
+
+- `.swamp/` data directory (outputs, data artifacts, workflow runs)
+- Extension catalog (`_extension_catalog.db`)
+- Bundle cache (`.swamp/bundles/`)
+- Pulled extensions (`.swamp/pulled-extensions/`)
+- Model definitions (`models/<type>/<id>.yaml`)
+- Lockfiles and secrets
+
+### Validation
+
+The CLI rejects `--extensions-dir` values that point inside `.swamp/` to
+prevent accidental reads of data-plane files as extension sources. The
+directory must exist and must be a real directory (not a file).
+
 ## Dependencies
 
 Extensions can declare dependencies on other extensions. During a pull,

@@ -151,3 +151,52 @@ export function resolveRepoDir(cliValue: string | undefined): string {
   }
   return Deno.cwd();
 }
+
+/**
+ * Pre-parses --extensions-dir from raw CLI arguments before Cliffy option
+ * parsing.
+ *
+ * Supports both `--extensions-dir <value>` and `--extensions-dir=<value>` forms.
+ * Returns the resolved absolute path, or undefined if not set.
+ *
+ * Priority: --extensions-dir flag > SWAMP_EXTENSIONS_DIR env var > undefined.
+ */
+export function getExtensionsDirFromArgs(
+  args: string[],
+): string | undefined {
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === "--extensions-dir" && i + 1 < args.length) {
+      return resolve(args[i + 1]);
+    }
+    if (arg.startsWith("--extensions-dir=")) {
+      return resolve(arg.slice("--extensions-dir=".length));
+    }
+  }
+  const envDir = Deno.env.get("SWAMP_EXTENSIONS_DIR");
+  if (envDir && envDir.length > 0) {
+    return resolve(envDir);
+  }
+  return undefined;
+}
+
+/**
+ * Resolves the extensions directory for a command action, given the Cliffy
+ * parsed `--extensions-dir` option value.
+ *
+ * Priority: --extensions-dir flag > SWAMP_EXTENSIONS_DIR env var > undefined.
+ *
+ * When undefined, callers should fall back to repoDir for extension scanning.
+ */
+export function resolveExtensionsDir(
+  cliValue: string | undefined,
+): string | undefined {
+  if (cliValue !== undefined) {
+    return resolve(cliValue);
+  }
+  const envDir = Deno.env.get("SWAMP_EXTENSIONS_DIR");
+  if (envDir && envDir.length > 0) {
+    return resolve(envDir);
+  }
+  return undefined;
+}
