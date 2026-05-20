@@ -34,7 +34,7 @@ import {
   type GlobalOptions,
   resolveRepoDir,
 } from "../context.ts";
-import { requireInitializedRepo } from "../repo_context.ts";
+import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import {
   isPulledExtensionManifest,
   resolveExtensionFiles,
@@ -105,7 +105,7 @@ export const extensionQualityCommand = new Command()
         );
       }
 
-      const { repoContext } = await requireInitializedRepo({
+      const { repoContext } = await requireInitializedRepoReadOnly({
         repoDir,
         outputMode: cliCtx.outputMode,
       });
