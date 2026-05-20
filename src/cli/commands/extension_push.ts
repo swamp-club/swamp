@@ -24,7 +24,7 @@ import {
   type GlobalOptions,
   resolveRepoDir,
 } from "../context.ts";
-import { requireInitializedRepo } from "../repo_context.ts";
+import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import { resolveExtensionFiles } from "../resolve_extension_files.ts";
 import { UserError } from "../../domain/errors.ts";
 import { sourceHasBareSpecifiers } from "../../domain/models/bundle.ts";
@@ -192,7 +192,7 @@ export const extensionPushCommand = new Command()
 
     // 1. Validate repo
     const repoDir = resolveRepoDir(options.repoDir);
-    const { repoContext } = await requireInitializedRepo({
+    const { repoContext } = await requireInitializedRepoReadOnly({
       repoDir,
       outputMode: cliCtx.outputMode,
     });
