@@ -21,9 +21,11 @@ import { assertEquals } from "@std/assert";
 import { isAbsolute, resolve } from "@std/path";
 import {
   createContext,
+  getExtensionsDirFromArgs,
   getOutputModeFromArgs,
   getRepoDirFromArgs,
   type GlobalOptions,
+  resolveExtensionsDir,
   resolveRepoDir,
 } from "./context.ts";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
@@ -255,6 +257,119 @@ Deno.test("resolveRepoDir treats empty SWAMP_REPO_DIR as unset", () => {
   } finally {
     if (original !== undefined) Deno.env.set("SWAMP_REPO_DIR", original);
     else Deno.env.delete("SWAMP_REPO_DIR");
+  }
+});
+
+// ============================================================================
+// getExtensionsDirFromArgs Tests
+// ============================================================================
+
+Deno.test("getExtensionsDirFromArgs: returns undefined when no flag or env var", () => {
+  const original = Deno.env.get("SWAMP_EXTENSIONS_DIR");
+  try {
+    Deno.env.delete("SWAMP_EXTENSIONS_DIR");
+    assertEquals(getExtensionsDirFromArgs([]), undefined);
+    assertEquals(getExtensionsDirFromArgs(["model", "create"]), undefined);
+  } finally {
+    if (original !== undefined) {
+      Deno.env.set("SWAMP_EXTENSIONS_DIR", original);
+    }
+  }
+});
+
+Deno.test("getExtensionsDirFromArgs: parses --extensions-dir with space separator", () => {
+  const result = getExtensionsDirFromArgs([
+    "--extensions-dir",
+    "/tmp/my-extensions",
+  ]);
+  assertPathEquals(result!, resolve("/tmp/my-extensions"));
+});
+
+Deno.test("getExtensionsDirFromArgs: parses --extensions-dir with equals separator", () => {
+  const result = getExtensionsDirFromArgs([
+    "--extensions-dir=/tmp/my-extensions",
+  ]);
+  assertPathEquals(result!, resolve("/tmp/my-extensions"));
+});
+
+Deno.test("getExtensionsDirFromArgs: resolves relative paths to absolute", () => {
+  const result = getExtensionsDirFromArgs(["--extensions-dir", "./relative"]);
+  assertEquals(isAbsolute(result!), true);
+  assertPathEquals(result!, resolve("./relative"));
+});
+
+Deno.test("getExtensionsDirFromArgs: uses SWAMP_EXTENSIONS_DIR when flag absent", () => {
+  const original = Deno.env.get("SWAMP_EXTENSIONS_DIR");
+  try {
+    Deno.env.set("SWAMP_EXTENSIONS_DIR", "/tmp/env-ext");
+    assertPathEquals(getExtensionsDirFromArgs([])!, resolve("/tmp/env-ext"));
+  } finally {
+    if (original !== undefined) {
+      Deno.env.set("SWAMP_EXTENSIONS_DIR", original);
+    } else Deno.env.delete("SWAMP_EXTENSIONS_DIR");
+  }
+});
+
+Deno.test("getExtensionsDirFromArgs: prefers flag over env var", () => {
+  const original = Deno.env.get("SWAMP_EXTENSIONS_DIR");
+  try {
+    Deno.env.set("SWAMP_EXTENSIONS_DIR", "/tmp/env-ext");
+    const result = getExtensionsDirFromArgs([
+      "--extensions-dir",
+      "/tmp/flag-ext",
+    ]);
+    assertPathEquals(result!, resolve("/tmp/flag-ext"));
+  } finally {
+    if (original !== undefined) {
+      Deno.env.set("SWAMP_EXTENSIONS_DIR", original);
+    } else Deno.env.delete("SWAMP_EXTENSIONS_DIR");
+  }
+});
+
+Deno.test("getExtensionsDirFromArgs: ignores empty env var", () => {
+  const original = Deno.env.get("SWAMP_EXTENSIONS_DIR");
+  try {
+    Deno.env.set("SWAMP_EXTENSIONS_DIR", "");
+    assertEquals(getExtensionsDirFromArgs([]), undefined);
+  } finally {
+    if (original !== undefined) {
+      Deno.env.set("SWAMP_EXTENSIONS_DIR", original);
+    } else Deno.env.delete("SWAMP_EXTENSIONS_DIR");
+  }
+});
+
+// ============================================================================
+// resolveExtensionsDir Tests
+// ============================================================================
+
+Deno.test("resolveExtensionsDir: returns resolved cli value when provided", () => {
+  assertPathEquals(
+    resolveExtensionsDir("/tmp/flag-ext")!,
+    resolve("/tmp/flag-ext"),
+  );
+});
+
+Deno.test("resolveExtensionsDir: returns env var when cli value undefined", () => {
+  const original = Deno.env.get("SWAMP_EXTENSIONS_DIR");
+  try {
+    Deno.env.set("SWAMP_EXTENSIONS_DIR", "/tmp/env-ext");
+    assertPathEquals(resolveExtensionsDir(undefined)!, resolve("/tmp/env-ext"));
+  } finally {
+    if (original !== undefined) {
+      Deno.env.set("SWAMP_EXTENSIONS_DIR", original);
+    } else Deno.env.delete("SWAMP_EXTENSIONS_DIR");
+  }
+});
+
+Deno.test("resolveExtensionsDir: returns undefined when neither set", () => {
+  const original = Deno.env.get("SWAMP_EXTENSIONS_DIR");
+  try {
+    Deno.env.delete("SWAMP_EXTENSIONS_DIR");
+    assertEquals(resolveExtensionsDir(undefined), undefined);
+  } finally {
+    if (original !== undefined) {
+      Deno.env.set("SWAMP_EXTENSIONS_DIR", original);
+    }
   }
 });
 

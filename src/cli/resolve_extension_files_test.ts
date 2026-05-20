@@ -894,3 +894,37 @@ Deno.test("isPulledExtensionManifest: returns false for path containing pulled-e
   const manifestPath = "/repo/pulled-extensions/manifest.yaml";
   assertEquals(isPulledExtensionManifest(repoDir, manifestPath), false);
 });
+
+// ── .ts/.js file rejection ──────────────────────────────────────────────
+
+Deno.test("resolveExtensionFiles: rejects .ts file with UserError", async () => {
+  await withTempRepo(async (dir) => {
+    await assertRejects(
+      () =>
+        resolveExtensionFiles({
+          repoDir: dir,
+          manifestPath: "extensions/models/my_model.ts",
+          repoContext: stubRepoContext,
+          logger,
+        }),
+      UserError,
+      "Expected a manifest path but got a TypeScript/JavaScript file",
+    );
+  });
+});
+
+Deno.test("resolveExtensionFiles: rejects .js file with UserError", async () => {
+  await withTempRepo(async (dir) => {
+    await assertRejects(
+      () =>
+        resolveExtensionFiles({
+          repoDir: dir,
+          manifestPath: "extensions/models/my_model.js",
+          repoContext: stubRepoContext,
+          logger,
+        }),
+      UserError,
+      "Expected a manifest path but got a TypeScript/JavaScript file",
+    );
+  });
+});

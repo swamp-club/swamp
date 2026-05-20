@@ -17,7 +17,14 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { basename, dirname, isAbsolute, join, resolve } from "@std/path";
+import {
+  basename,
+  dirname,
+  extname,
+  isAbsolute,
+  join,
+  resolve,
+} from "@std/path";
 import type { Logger } from "@logtape/logtape";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import {
@@ -119,8 +126,8 @@ export async function resolveExtensionFiles(
   const { repoDir, manifestPath, repoContext, logger } = ctx;
   const extensionsDir = ctx.extensionsDir ?? repoDir;
 
-  const ext = manifestPath.split(".").pop()?.toLowerCase();
-  if (ext === "ts" || ext === "js") {
+  const ext = extname(manifestPath).toLowerCase();
+  if (ext === ".ts" || ext === ".js") {
     throw new UserError(
       `Expected a manifest path but got a TypeScript/JavaScript file: ${manifestPath}\n` +
         "Pass the manifest directory or manifest.yaml path instead.\n\n" +
