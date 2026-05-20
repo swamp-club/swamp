@@ -21,7 +21,9 @@ import { dirname, join, resolve } from "@std/path";
 import { tombstoneAll } from "../../domain/extensions/extension.ts";
 import type { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
 import type { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
+import { swampPath } from "../../infrastructure/persistence/paths.ts";
 import { UserError } from "../../domain/errors.ts";
+import { PER_EXTENSION_SCAFFOLD_DIRS } from "./layout.ts";
 
 /** Result of `RemoveExtensionService.execute()`. */
 export interface RemoveExtensionResult {
@@ -148,7 +150,23 @@ export class RemoveExtensionService {
       }
     }
 
-    // 5. Prune empty parent directories up to (but not including)
+    // 5. Add the per-extension scaffold subdirs that `pull` creates
+    //    unconditionally — they are never recorded as tracked files,
+    //    so without this push `pruneEmptyDirs` would see them as
+    //    "non-empty entries" when walking up through the extension
+    //    root and bail. For legacy gen-1 / gen-2 installs these paths
+    //    don't exist on disk; `pruneEmptyDirs`'s `try/catch` around
+    //    `Deno.readDir` absorbs the resulting `NotFound` safely, so
+    //    the push is unconditional.
+    const extensionRoot = join(
+      swampPath(this.repoDir, "pulled-extensions"),
+      name,
+    );
+    for (const scaffoldDir of PER_EXTENSION_SCAFFOLD_DIRS) {
+      parentDirs.push(join(extensionRoot, scaffoldDir));
+    }
+
+    // 6. Prune empty parent directories up to (but not including)
     //    the repo root.
     const dirsRemoved = await pruneEmptyDirs(parentDirs, this.repoDir);
 
