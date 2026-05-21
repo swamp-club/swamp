@@ -17,19 +17,20 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+type QuoteContext = "unquoted" | "single" | "double";
+
 /**
- * Determines whether a position in a shell command string is inside double quotes.
- * Tracks single-quote and double-quote state, respecting backslash escapes outside
- * single quotes. Used by resolveForShell to decide whether to add quoting around
- * environment variable references.
+ * Returns the quoting context at a given position in a shell command string.
+ * Tracks single-quote and double-quote state, respecting backslash escapes
+ * outside single quotes.
  */
-function isInsideDoubleQuotes(str: string, position: number): boolean {
+export function getQuoteContext(str: string, position: number): QuoteContext {
   let inDouble = false;
   let inSingle = false;
   for (let i = 0; i < position; i++) {
     const ch = str[i];
     if (ch === "\\" && !inSingle) {
-      i++; // skip escaped character
+      i++;
       continue;
     }
     if (ch === "'" && !inDouble) {
@@ -38,7 +39,9 @@ function isInsideDoubleQuotes(str: string, position: number): boolean {
       inDouble = !inDouble;
     }
   }
-  return inDouble;
+  if (inSingle) return "single";
+  if (inDouble) return "double";
+  return "unquoted";
 }
 
 /**
@@ -75,6 +78,23 @@ export class VaultSecretBag {
   /** Whether this bag contains any secrets. */
   get isEmpty(): boolean {
     return this.secrets.size === 0;
+  }
+
+  /**
+   * Returns sentinel tokens that appear inside single quotes in the given
+   * command string. Single quotes prevent shell variable expansion, so an
+   * env-var reference injected inside single quotes will be treated as a
+   * literal string instead of being expanded to the secret value.
+   */
+  findSingleQuotedSentinels(command: string): string[] {
+    const found: string[] = [];
+    for (const sentinel of this.secrets.keys()) {
+      const pos = command.indexOf(sentinel);
+      if (pos !== -1 && getQuoteContext(command, pos) === "single") {
+        found.push(sentinel);
+      }
+    }
+    return found;
   }
 
   /**
@@ -132,7 +152,7 @@ export class VaultSecretBag {
       const pos = result.indexOf(sentinel);
       if (pos !== -1) {
         const envName = `__SWAMP_VAULT_${envIdx++}`;
-        const ref = isInsideDoubleQuotes(result, pos)
+        const ref = getQuoteContext(result, pos) === "double"
           ? `\${${envName}}`
           : `"\${${envName}}"`;
         result = result.split(sentinel).join(ref);
@@ -159,7 +179,7 @@ export class VaultSecretBag {
    *   against PowerShell's whitespace-splitting behavior when the
    *   resolved value is passed to a native (non-cmdlet) command.
    *
-   * Quote tracking reuses the POSIX `isInsideDoubleQuotes` helper.
+   * Quote tracking reuses the POSIX `getQuoteContext` helper.
    * PowerShell's escape character is a backtick rather than a
    * backslash, so commands authored with PowerShell-specific escape
    * sequences inside single quotes could mis-classify their context;
@@ -177,7 +197,7 @@ export class VaultSecretBag {
       const pos = result.indexOf(sentinel);
       if (pos !== -1) {
         const envName = `__SWAMP_VAULT_${envIdx++}`;
-        const ref = isInsideDoubleQuotes(result, pos)
+        const ref = getQuoteContext(result, pos) === "double"
           ? `$env:${envName}`
           : `"$env:${envName}"`;
         result = result.split(sentinel).join(ref);

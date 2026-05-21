@@ -191,6 +191,27 @@ using single-quoted string arguments:
 ${{ vault.get('vault-name', 'vault-key') }}
 ```
 
+### Shell Quoting
+
+In `command/shell` model `run:` fields, vault expressions compile to shell
+environment-variable references (`${__SWAMP_VAULT_N}`). Single quotes prevent
+shell variable expansion, so wrapping a vault expression in single quotes
+silently produces the literal placeholder instead of the secret value. Always use
+double quotes:
+
+```yaml
+# correct — double quotes allow expansion
+run: |
+  PASSWORD="${{ vault.get(my-vault, DB_PASS) }}"
+
+# WRONG — single quotes prevent expansion
+run: |
+  PASSWORD='${{ vault.get(my-vault, DB_PASS) }}'
+```
+
+swamp emits a warning at execution time when it detects a vault sentinel inside
+single quotes.
+
 ### Vault Resolution Order
 
 The vault used for storing a sensitive field is resolved in this order:

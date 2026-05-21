@@ -110,6 +110,16 @@ async function executeCommand(
     if (secretBag && !secretBag.isEmpty && context.unresolvedMethodArgs) {
       const unresolvedRun = context.unresolvedMethodArgs.run;
       if (typeof unresolvedRun === "string") {
+        const singleQuoted = secretBag.findSingleQuotedSentinels(
+          unresolvedRun,
+        );
+        if (singleQuoted.length > 0) {
+          context.onEvent?.({
+            type: "vault_single_quote_warning",
+            message:
+              "Vault secret expression inside single quotes will not be expanded by the shell — use double quotes instead",
+          });
+        }
         const resolved = shellStrategy.resolveSecrets(unresolvedRun, secretBag);
         shellCommand = resolved.command;
         shellEnv = { ...shellEnv, ...resolved.env };

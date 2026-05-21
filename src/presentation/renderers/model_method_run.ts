@@ -133,6 +133,9 @@ class LogModelMethodRunRenderer implements ModelMethodRunRenderer {
               },
             );
             break;
+          case "vault_single_quote_warning":
+            logger.warn(e.event.message);
+            break;
         }
       },
       data_artifact_saved: (e) => {
@@ -227,7 +230,15 @@ class JsonModelMethodRunRenderer implements ModelMethodRunRenderer {
       evaluating_expressions: () => {},
       executing: () => {},
       method_output: () => {},
-      method_event: () => {},
+      method_event: (e) => {
+        if (e.event.type === "vault_single_quote_warning") {
+          console.log(JSON.stringify({
+            warning: "vault_single_quote",
+            modelName: e.modelName,
+            message: e.event.message,
+          }));
+        }
+      },
       data_artifact_saved: () => {},
       report_started: () => {},
       report_completed: () => {},

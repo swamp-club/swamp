@@ -18,7 +18,56 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
+import { getQuoteContext } from "./vault_secret_bag.ts";
 import { VaultSecretBag } from "./vault_secret_bag.ts";
+
+Deno.test("getQuoteContext", async (t) => {
+  await t.step("returns 'unquoted' for position outside any quotes", () => {
+    assertEquals(getQuoteContext("echo hello", 5), "unquoted");
+  });
+
+  await t.step("returns 'double' for position inside double quotes", () => {
+    assertEquals(getQuoteContext('echo "hello', 7), "double");
+  });
+
+  await t.step("returns 'single' for position inside single quotes", () => {
+    assertEquals(getQuoteContext("echo 'hello", 7), "single");
+  });
+
+  await t.step("returns 'unquoted' after closed double quotes", () => {
+    assertEquals(getQuoteContext('echo "hello" world', 14), "unquoted");
+  });
+
+  await t.step("returns 'unquoted' after closed single quotes", () => {
+    assertEquals(getQuoteContext("echo 'hello' world", 14), "unquoted");
+  });
+
+  await t.step("ignores escaped double quote outside single quotes", () => {
+    assertEquals(getQuoteContext('echo \\"hello', 8), "unquoted");
+  });
+
+  await t.step(
+    "does not treat backslash as escape inside single quotes",
+    () => {
+      assertEquals(getQuoteContext("echo '\\\"'rest", 10), "unquoted");
+    },
+  );
+
+  await t.step("handles mixed quoting contexts", () => {
+    const cmd = `echo "double" 'single' unquoted`;
+    assertEquals(getQuoteContext(cmd, 6), "double");
+    assertEquals(getQuoteContext(cmd, 16), "single");
+    assertEquals(getQuoteContext(cmd, 24), "unquoted");
+  });
+
+  await t.step("returns 'single' for position at start of content", () => {
+    assertEquals(getQuoteContext("'hello", 1), "single");
+  });
+
+  await t.step("returns 'unquoted' at position 0", () => {
+    assertEquals(getQuoteContext("'hello", 0), "unquoted");
+  });
+});
 
 Deno.test("VaultSecretBag", async (t) => {
   await t.step("addSecret: returns unique sentinel tokens", () => {
@@ -267,6 +316,71 @@ Deno.test("VaultSecretBag", async (t) => {
       const result = bag.resolveForPowerShell("Write-Output hello");
       assertEquals(result.command, "Write-Output hello");
       assertEquals(result.env, {});
+    },
+  );
+
+  await t.step(
+    "findSingleQuotedSentinels: detects sentinel inside single quotes",
+    () => {
+      const bag = new VaultSecretBag();
+      const sentinel = bag.addSecret("secret");
+      const cmd = `S='${sentinel}'`;
+      const found = bag.findSingleQuotedSentinels(cmd);
+      assertEquals(found, [sentinel]);
+    },
+  );
+
+  await t.step(
+    "findSingleQuotedSentinels: does not flag sentinel in double quotes",
+    () => {
+      const bag = new VaultSecretBag();
+      const sentinel = bag.addSecret("secret");
+      const cmd = `D="${sentinel}"`;
+      const found = bag.findSingleQuotedSentinels(cmd);
+      assertEquals(found, []);
+    },
+  );
+
+  await t.step(
+    "findSingleQuotedSentinels: does not flag unquoted sentinel",
+    () => {
+      const bag = new VaultSecretBag();
+      const sentinel = bag.addSecret("secret");
+      const cmd = `echo ${sentinel}`;
+      const found = bag.findSingleQuotedSentinels(cmd);
+      assertEquals(found, []);
+    },
+  );
+
+  await t.step(
+    "findSingleQuotedSentinels: detects only the single-quoted one among mixed",
+    () => {
+      const bag = new VaultSecretBag();
+      const s1 = bag.addSecret("good");
+      const s2 = bag.addSecret("bad");
+      const cmd = `D="${s1}"\nS='${s2}'`;
+      const found = bag.findSingleQuotedSentinels(cmd);
+      assertEquals(found, [s2]);
+    },
+  );
+
+  await t.step(
+    "findSingleQuotedSentinels: returns empty when no secrets exist",
+    () => {
+      const bag = new VaultSecretBag();
+      const found = bag.findSingleQuotedSentinels("echo 'hello'");
+      assertEquals(found, []);
+    },
+  );
+
+  await t.step(
+    "findSingleQuotedSentinels: handles multi-line scripts",
+    () => {
+      const bag = new VaultSecretBag();
+      const sentinel = bag.addSecret("secret");
+      const cmd = `#!/bin/sh\necho "safe"\nBROKEN='${sentinel}'\necho done`;
+      const found = bag.findSingleQuotedSentinels(cmd);
+      assertEquals(found, [sentinel]);
     },
   );
 });

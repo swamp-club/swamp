@@ -585,7 +585,7 @@ Deno.test("Vault CEL: secrets accessible in workflow execution", async () => {
       methods: {
         execute: {
           arguments: {
-            run: "echo '${{ vault.get(workflow-vault, WORKFLOW_SECRET) }}'",
+            run: 'echo "${{ vault.get(workflow-vault, WORKFLOW_SECRET) }}"',
           },
         },
       },

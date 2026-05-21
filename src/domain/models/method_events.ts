@@ -41,4 +41,8 @@ export type MethodExecutionEvent =
     specName: string;
     instanceName: string;
     error: string;
+  }
+  | {
+    type: "vault_single_quote_warning";
+    message: string;
   };

@@ -153,6 +153,9 @@ class LogWorkflowRunRenderer implements WorkflowRunRenderer {
               },
             );
             break;
+          case "vault_single_quote_warning":
+            logger.warn(e.event.message);
+            break;
         }
       },
       report_started: () => {},
@@ -252,7 +255,15 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
       env_var_warning: () => {},
       method_executing: () => {},
       method_output: () => {},
-      method_event: () => {},
+      method_event: (e) => {
+        if (e.event.type === "vault_single_quote_warning") {
+          console.log(JSON.stringify({
+            warning: "vault_single_quote",
+            modelName: e.modelName,
+            message: e.event.message,
+          }));
+        }
+      },
       report_started: () => {},
       report_completed: () => {},
       report_failed: () => {},
