@@ -90,28 +90,86 @@ export function cvssToSeverity(score: number): string {
   return "UNKNOWN";
 }
 
+const CVSS_V3_AV: Record<string, number> = {
+  N: 0.85,
+  A: 0.62,
+  L: 0.55,
+  P: 0.20,
+};
+const CVSS_V3_AC: Record<string, number> = { L: 0.77, H: 0.44 };
+const CVSS_V3_PR_U: Record<string, number> = { N: 0.85, L: 0.62, H: 0.27 };
+const CVSS_V3_PR_C: Record<string, number> = { N: 0.85, L: 0.68, H: 0.50 };
+const CVSS_V3_UI: Record<string, number> = { N: 0.85, R: 0.62 };
+const CVSS_V3_CIA: Record<string, number> = { N: 0, L: 0.22, H: 0.56 };
+
+export function parseCvssV3BaseScore(vector: string): number | null {
+  if (!vector.startsWith("CVSS:3")) return null;
+  const parts: Record<string, string> = {};
+  for (const seg of vector.split("/")) {
+    const [k, v] = seg.split(":");
+    if (k && v) parts[k] = v;
+  }
+  const av = CVSS_V3_AV[parts.AV ?? ""];
+  const ac = CVSS_V3_AC[parts.AC ?? ""];
+  const scope = parts.S;
+  const pr = scope === "C"
+    ? CVSS_V3_PR_C[parts.PR ?? ""]
+    : CVSS_V3_PR_U[parts.PR ?? ""];
+  const ui = CVSS_V3_UI[parts.UI ?? ""];
+  const c = CVSS_V3_CIA[parts.C ?? ""];
+  const i = CVSS_V3_CIA[parts.I ?? ""];
+  const a = CVSS_V3_CIA[parts.A ?? ""];
+  if (
+    av == null || ac == null || pr == null || ui == null ||
+    c == null || i == null || a == null || !scope
+  ) {
+    return null;
+  }
+  const iss = 1 - (1 - c) * (1 - i) * (1 - a);
+  if (iss <= 0) return 0;
+  const exploitability = 8.22 * av * ac * pr * ui;
+  const impact = scope === "C"
+    ? 7.52 * (iss - 0.029) - 3.25 * Math.pow(iss - 0.02, 15)
+    : 6.42 * iss;
+  if (impact <= 0) return 0;
+  const raw = scope === "C"
+    ? 1.08 * (impact + exploitability)
+    : impact + exploitability;
+  return Math.min(Math.ceil(raw * 10) / 10, 10);
+}
+
 function extractSeverity(vuln: Record<string, unknown>): string {
   const dbSpecific = vuln.database_specific as
     | Record<string, unknown>
     | undefined;
   if (dbSpecific && typeof dbSpecific.severity === "string") {
-    return String(dbSpecific.severity).toUpperCase();
+    const upper = dbSpecific.severity.toUpperCase();
+    if (upper === "MODERATE") return "MEDIUM";
+    return upper;
   }
   const sevArr = vuln.severity;
   if (Array.isArray(sevArr) && sevArr.length > 0) {
+    let highest: string = "UNKNOWN";
     for (const entry of sevArr) {
       const obj = entry as Record<string, unknown>;
-      if (typeof obj.score === "number" && Number.isFinite(obj.score)) {
-        return cvssToSeverity(obj.score);
+      let numeric: number | null = null;
+      if (typeof obj.score === "number") {
+        numeric = obj.score;
+      } else if (typeof obj.score === "string") {
+        numeric = parseCvssV3BaseScore(obj.score);
       }
-      if (typeof obj.score === "string") {
-        const numeric = Number(obj.score);
-        if (Number.isFinite(numeric)) return cvssToSeverity(numeric);
-      }
-      if (typeof obj.baseScore === "number" && Number.isFinite(obj.baseScore)) {
-        return cvssToSeverity(obj.baseScore);
+      if (numeric !== null) {
+        if (numeric >= 9.0) return "CRITICAL";
+        if (numeric >= 7.0) {
+          highest = "HIGH";
+        } else if (numeric >= 4.0 && highest !== "HIGH") {
+          highest = "MEDIUM";
+        } else if (numeric < 4.0 && highest === "UNKNOWN") {
+          highest = "LOW";
+        }
       }
     }
+    return highest;
   }
   return "UNKNOWN";
 }

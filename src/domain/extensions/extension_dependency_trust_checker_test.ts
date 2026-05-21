@@ -27,6 +27,7 @@ import {
   type Fetcher,
   licenseAllowed,
   monthsSince,
+  parseCvssV3BaseScore,
   parseSpdxLicense,
 } from "./extension_dependency_trust_checker.ts";
 
@@ -52,6 +53,42 @@ Deno.test("monthsSince: computes months correctly", () => {
   assertEquals(monthsSince("2026-04-02T00:00:00Z", now), 1);
   // Large gap: ~900 days
   assertEquals(monthsSince("2024-01-01T00:00:00Z", now) > 25, true);
+});
+
+Deno.test("parseCvssV3BaseScore: parses CRITICAL vector", () => {
+  const score = parseCvssV3BaseScore(
+    "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H",
+  );
+  assertEquals(score !== null && score >= 9.0, true);
+});
+
+Deno.test("parseCvssV3BaseScore: parses LOW vector", () => {
+  const score = parseCvssV3BaseScore(
+    "CVSS:3.1/AV:L/AC:H/PR:H/UI:R/S:U/C:L/I:N/A:N",
+  );
+  assertEquals(score !== null && score < 4.0, true);
+});
+
+Deno.test("parseCvssV3BaseScore: returns null for non-CVSS string", () => {
+  assertEquals(parseCvssV3BaseScore("not a vector"), null);
+});
+
+Deno.test("evaluateNpmTrustGates: MODERATE GHSA severity is a warning", () => {
+  const { errors, warnings } = evaluateNpmTrustGates(
+    "test-pkg",
+    {
+      version: "1.0.0",
+      license: "MIT",
+      deprecated: false,
+      maintainerCount: 2,
+      weeklyDownloads: 10000,
+      lastPublish: "2026-01-01T00:00:00Z",
+    },
+    [{ id: "GHSA-mod1", severity: "MEDIUM" }],
+  );
+  assertEquals(errors.length, 0);
+  assertEquals(warnings.length, 1);
+  assertEquals(warnings[0].message, "vulnerability GHSA-mod1 (MEDIUM)");
 });
 
 Deno.test("parseSpdxLicense: splits compound expressions", () => {
