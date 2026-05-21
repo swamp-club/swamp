@@ -93,6 +93,7 @@ export interface ModelMethodResolver {
   resolve(
     modelIdOrName: string,
     methodName: string,
+    modelType?: string,
   ): Promise<MethodResolution>;
 }
 
@@ -387,6 +388,7 @@ export class DefaultWorkflowValidationService
                 modelRef,
                 taskData.methodName,
                 taskData.inputs,
+                taskData.modelType,
               ),
             );
           }
@@ -412,6 +414,7 @@ export class DefaultWorkflowValidationService
     modelIdOrName: string,
     methodName: string,
     inputs: Record<string, unknown> | undefined,
+    modelType?: string,
   ): Promise<WorkflowValidationResult[]> {
     const checkName =
       `Step inputs for '${stepName}' in job '${jobName}' (${modelIdOrName}.${methodName})`;
@@ -420,10 +423,14 @@ export class DefaultWorkflowValidationService
     if (modelIdOrName.includes("${{")) {
       return [WorkflowValidationResult.pass(checkName)];
     }
+    if (modelType?.includes("${{")) {
+      return [WorkflowValidationResult.pass(checkName)];
+    }
 
     const resolution = await this.methodResolver!.resolve(
       modelIdOrName,
       methodName,
+      modelType,
     );
 
     switch (resolution.status) {
@@ -438,7 +445,7 @@ export class DefaultWorkflowValidationService
         return [
           WorkflowValidationResult.pass(
             checkName +
-              " (model type not resolved, skipped)",
+              ` (model type '${resolution.modelType}' not resolved, skipped)`,
           ),
         ];
       case "method_not_found":

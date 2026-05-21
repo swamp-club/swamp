@@ -27,7 +27,10 @@ import { ExtensionCatalogStore } from "../../infrastructure/persistence/extensio
 import { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
 import { FaultingStubRepository } from "../../infrastructure/persistence/test_helpers/faulting_stub_repository.ts";
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
-import { swampPath } from "../../infrastructure/persistence/paths.ts";
+import {
+  bundleNamespace,
+  swampPath,
+} from "../../infrastructure/persistence/paths.ts";
 import { UserError } from "../../domain/errors.ts";
 import type { DenoRuntime } from "../../domain/runtime/deno_runtime.ts";
 
@@ -763,6 +766,246 @@ Deno.test(
           undefined,
           "Post-rm: flat-name subtree must be removed",
         );
+      },
+    );
+  },
+);
+
+// =============================================================
+// swamp-club#392: empty <kind>-bundles/<hash>/ dirs left behind
+// =============================================================
+//
+// `pull` unconditionally `Deno.mkdir`s five bundle namespace dirs
+// (`bundles/<hash>/`, `vault-bundles/<hash>/`, `driver-bundles/<hash>/`,
+// `datastore-bundles/<hash>/`, `report-bundles/<hash>/`) regardless of
+// whether the extension ships content for that bundle kind. When the
+// source archive has no bundles for a kind, `copyDir` returns an empty
+// file list and nothing is tracked. `RemoveExtensionService` must push
+// these bundle namespace paths into `parentDirs` so `pruneEmptyDirs`
+// sweeps them.
+//
+// Tests intentionally hardcode the five (sourceKind, bundleKind) pairs
+// rather than importing from production — a silent change to the
+// mapping must show up as a regression here.
+
+const BUNDLE_MAPPINGS: ReadonlyArray<[string, string]> = [
+  ["models", "bundles"],
+  ["vaults", "vault-bundles"],
+  ["drivers", "driver-bundles"],
+  ["datastores", "datastore-bundles"],
+  ["reports", "report-bundles"],
+];
+
+async function stageBundleNamespaceDirs(
+  repoDir: string,
+  extName: string,
+): Promise<void> {
+  const extensionRoot = join(
+    swampPath(repoDir, "pulled-extensions"),
+    extName,
+  );
+  for (const [sourceKind, bundleKind] of BUNDLE_MAPPINGS) {
+    const hash = bundleNamespace(
+      join(extensionRoot, sourceKind),
+      repoDir,
+    );
+    await ensureDir(join(swampPath(repoDir, bundleKind), hash));
+  }
+}
+
+Deno.test(
+  "swamp-club#392: rm prunes empty bundle namespace dirs",
+  async () => {
+    await withFixtureRepo(
+      async ({ repoDir, repository, lockfileRepository }) => {
+        const ts = Date.now();
+        const extName = `@test/bundle-ns-${ts}`;
+        const trackedFile =
+          `.swamp/pulled-extensions/${extName}/models/model.ts`;
+        const extRoot = join(
+          swampPath(repoDir, "pulled-extensions"),
+          extName,
+        );
+        await ensureDir(join(extRoot, "models"));
+        await Deno.writeTextFile(
+          join(extRoot, "models", "model.ts"),
+          "// stub",
+        );
+        await stageScaffoldDirs(extRoot);
+        await stageBundleNamespaceDirs(repoDir, extName);
+        await lockfileRepository.writeEntry(extName, "1.0.0", [
+          trackedFile,
+        ]);
+
+        const removeSvc = new RemoveExtensionService({
+          repository,
+          lockfileRepository,
+          repoDir,
+        });
+        await removeSvc.execute(extName);
+
+        for (const [sourceKind, bundleKind] of BUNDLE_MAPPINGS) {
+          const hash = bundleNamespace(
+            join(extRoot, sourceKind),
+            repoDir,
+          );
+          const bundleDir = join(swampPath(repoDir, bundleKind), hash);
+          await assertRejects(
+            () => Deno.stat(bundleDir),
+            Deno.errors.NotFound,
+            undefined,
+            `Post-rm: ${bundleKind}/${hash} must be removed`,
+          );
+        }
+      },
+    );
+  },
+);
+
+Deno.test(
+  "swamp-club#392: rm preserves sibling extension bundle namespace dirs",
+  async () => {
+    await withFixtureRepo(
+      async ({ repoDir, repository, lockfileRepository }) => {
+        const ts = Date.now();
+        const extA = `@test/bundle-sib-a-${ts}`;
+        const extB = `@test/bundle-sib-b-${ts}`;
+        const extRootA = join(
+          swampPath(repoDir, "pulled-extensions"),
+          extA,
+        );
+        const extRootB = join(
+          swampPath(repoDir, "pulled-extensions"),
+          extB,
+        );
+        for (const [ext, root] of [[extA, extRootA], [extB, extRootB]]) {
+          await ensureDir(join(root, "models"));
+          await Deno.writeTextFile(
+            join(root, "models", "model.ts"),
+            "// stub",
+          );
+          await stageScaffoldDirs(root);
+          await stageBundleNamespaceDirs(repoDir, ext);
+          await lockfileRepository.writeEntry(ext, "1.0.0", [
+            `.swamp/pulled-extensions/${ext}/models/model.ts`,
+          ]);
+        }
+
+        const removeSvc = new RemoveExtensionService({
+          repository,
+          lockfileRepository,
+          repoDir,
+        });
+        await removeSvc.execute(extA);
+
+        // A's bundle namespace dirs must be gone.
+        for (const [sourceKind, bundleKind] of BUNDLE_MAPPINGS) {
+          const hashA = bundleNamespace(
+            join(extRootA, sourceKind),
+            repoDir,
+          );
+          await assertRejects(
+            () => Deno.stat(join(swampPath(repoDir, bundleKind), hashA)),
+            Deno.errors.NotFound,
+            undefined,
+            `Post-rm: extA ${bundleKind}/${hashA} must be removed`,
+          );
+        }
+
+        // B's bundle namespace dirs must be preserved.
+        for (const [sourceKind, bundleKind] of BUNDLE_MAPPINGS) {
+          const hashB = bundleNamespace(
+            join(extRootB, sourceKind),
+            repoDir,
+          );
+          const stat = await Deno.stat(
+            join(swampPath(repoDir, bundleKind), hashB),
+          );
+          assertEquals(
+            stat.isDirectory,
+            true,
+            `Post-rm: extB ${bundleKind}/${hashB} must be preserved`,
+          );
+        }
+      },
+    );
+  },
+);
+
+Deno.test(
+  "swamp-club#392: rm prunes bundle namespace dir after tracked bundle file deleted",
+  async () => {
+    await withFixtureRepo(
+      async ({ repoDir, repository, lockfileRepository }) => {
+        const ts = Date.now();
+        const extName = `@test/bundle-pop-${ts}`;
+        const extRoot = join(
+          swampPath(repoDir, "pulled-extensions"),
+          extName,
+        );
+        await ensureDir(join(extRoot, "models"));
+        await Deno.writeTextFile(
+          join(extRoot, "models", "model.ts"),
+          "// stub",
+        );
+        await stageScaffoldDirs(extRoot);
+        await stageBundleNamespaceDirs(repoDir, extName);
+
+        // Place a compiled bundle file in bundles/<hash>/ and track it.
+        const bundlesHash = bundleNamespace(
+          join(extRoot, "models"),
+          repoDir,
+        );
+        const bundleFile = join(
+          swampPath(repoDir, "bundles"),
+          bundlesHash,
+          "compiled.js",
+        );
+        await Deno.writeTextFile(bundleFile, "// compiled");
+        const bundleFileRel = `.swamp/bundles/${bundlesHash}/compiled.js`;
+
+        await lockfileRepository.writeEntry(extName, "1.0.0", [
+          `.swamp/pulled-extensions/${extName}/models/model.ts`,
+          bundleFileRel,
+        ]);
+
+        const removeSvc = new RemoveExtensionService({
+          repository,
+          lockfileRepository,
+          repoDir,
+        });
+        await removeSvc.execute(extName);
+
+        // The tracked bundle file is deleted, and since the dir is now
+        // empty the namespace dir should also be pruned.
+        await assertRejects(
+          () =>
+            Deno.stat(
+              join(swampPath(repoDir, "bundles"), bundlesHash),
+            ),
+          Deno.errors.NotFound,
+          undefined,
+          "Post-rm: bundles/<hash>/ must be pruned after tracked file deleted",
+        );
+
+        // The four empty bundle namespace dirs (vault-, driver-,
+        // datastore-, report-) must also be pruned.
+        for (
+          const [sourceKind, bundleKind] of BUNDLE_MAPPINGS.filter(
+            ([_, bk]) => bk !== "bundles",
+          )
+        ) {
+          const hash = bundleNamespace(
+            join(extRoot, sourceKind),
+            repoDir,
+          );
+          await assertRejects(
+            () => Deno.stat(join(swampPath(repoDir, bundleKind), hash)),
+            Deno.errors.NotFound,
+            undefined,
+            `Post-rm: ${bundleKind}/${hash} must be removed`,
+          );
+        }
       },
     );
   },
