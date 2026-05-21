@@ -874,6 +874,15 @@ export async function acquireModelLocks(
 
   const lockKeys: string[] = [];
 
+  let caps: SyncCapabilities | undefined;
+  if (customSyncService) {
+    try {
+      caps = customSyncService.capabilities?.();
+    } catch {
+      // Buggy extension — degrade to full sync
+    }
+  }
+
   for (const { modelType, modelId } of unique) {
     const key = `data/${modelType}/${modelId}/.lock`;
     // Use cached provider for custom types to avoid repeated registry lookups
@@ -939,13 +948,6 @@ export async function acquireModelLocks(
           id: modelId,
         });
 
-        let caps: SyncCapabilities | undefined;
-        try {
-          caps = customSyncService.capabilities?.();
-        } catch {
-          // Buggy extension — degrade to full sync
-        }
-
         if (caps?.scopedSync) {
           const context: SyncContext = {
             models: [{ modelType, modelId }],
@@ -979,13 +981,6 @@ export async function acquireModelLocks(
         try {
           await pushLock.acquire();
           logger.info`Pushing changes to datastore...`;
-
-          let caps: SyncCapabilities | undefined;
-          try {
-            caps = customSyncService.capabilities?.();
-          } catch {
-            // Buggy extension — degrade to full sync
-          }
 
           let pushed: number | void;
           if (caps?.scopedSync) {

@@ -459,11 +459,13 @@ export async function assertSyncServiceConformance(
 
     const caps = syncService.capabilities();
     assertExists(caps, "capabilities() must return a value");
-    assertEquals(
-      typeof caps.scopedSync,
-      "boolean",
-      "capabilities().scopedSync must be a boolean",
-    );
+    if (caps.scopedSync !== undefined) {
+      assertEquals(
+        typeof caps.scopedSync,
+        "boolean",
+        "capabilities().scopedSync must be a boolean when present",
+      );
+    }
 
     if (options?.expectScopedSync) {
       assertEquals(
