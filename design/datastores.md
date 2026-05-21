@@ -291,7 +291,7 @@ When `scopedSync` is `true`, swamp core passes a `SyncContext` to
 
 ```typescript
 interface SyncContext {
-  models: ReadonlyArray<{ modelType: string; modelId: string }>;
+  models?: ReadonlyArray<{ modelType: string; modelId: string }>;
 }
 ```
 
