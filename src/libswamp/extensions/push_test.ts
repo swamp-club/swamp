@@ -117,7 +117,7 @@ function makePrepareDeps(
     checkExtensionQuality: () => Promise.resolve({ passed: true, issues: [] }),
     extractDependencySpecifiers: () => Promise.resolve([]),
     checkDependencyTrust: () =>
-      Promise.resolve({ errors: [], warnings: [], passed: true }),
+      Promise.resolve({ errors: [], warnings: [], audited: [], passed: true }),
     bundleEntryPoint: () => Promise.resolve("/* bundled */"),
     ensureDenoPath: () => Promise.resolve("/usr/bin/deno"),
     getLatestVersion: () => Promise.resolve(null),

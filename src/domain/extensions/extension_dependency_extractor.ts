@@ -25,23 +25,46 @@ export interface DependencySpecifier {
 }
 
 function stripComments(source: string): string {
-  let result = "";
-  let i = 0;
-  while (i < source.length) {
-    if (source[i] === "/" && source[i + 1] === "/") {
-      while (i < source.length && source[i] !== "\n") i++;
-    } else if (source[i] === "/" && source[i + 1] === "*") {
-      i += 2;
-      while (
-        i < source.length - 1 && !(source[i] === "*" && source[i + 1] === "/")
-      ) i++;
-      i += 2;
-    } else {
-      result += source[i];
-      i++;
+  const lines = source.split("\n");
+  const result: string[] = [];
+  let inBlockComment = false;
+
+  for (const line of lines) {
+    if (inBlockComment) {
+      const end = line.indexOf("*/");
+      if (end !== -1) {
+        inBlockComment = false;
+        result.push(line.slice(end + 2));
+      }
+      continue;
     }
+
+    const blockStart = line.indexOf("/*");
+    if (blockStart !== -1) {
+      const blockEnd = line.indexOf("*/", blockStart + 2);
+      if (blockEnd !== -1) {
+        result.push(line.slice(0, blockStart) + line.slice(blockEnd + 2));
+      } else {
+        inBlockComment = true;
+        result.push(line.slice(0, blockStart));
+      }
+      continue;
+    }
+
+    // Only strip // comments on lines containing import/export keywords
+    // to avoid false-stripping URLs in string literals
+    if (/\b(?:import|export)\b/.test(line)) {
+      const lineComment = line.indexOf("//");
+      if (lineComment !== -1) {
+        result.push(line.slice(0, lineComment));
+        continue;
+      }
+    }
+
+    result.push(line);
   }
-  return result;
+
+  return result.join("\n");
 }
 
 // Matches static imports: `from "npm:..."` and side-effect `import "npm:..."`

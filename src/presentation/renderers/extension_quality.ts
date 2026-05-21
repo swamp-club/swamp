@@ -26,6 +26,12 @@ import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 
+function formatDownloads(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return String(n);
+}
+
 /** Renderer interface that also reports pass/fail to the CLI. */
 export interface ExtensionQualityRenderer
   extends Renderer<ExtensionQualityEvent> {
@@ -74,8 +80,27 @@ class LogExtensionQualityRenderer implements ExtensionQualityRenderer {
           }
         }
         const { dependencyTrustResult } = e.data;
+        if (dependencyTrustResult.audited.length > 0) {
+          for (const dep of dependencyTrustResult.audited) {
+            const mark = dep.passed ? "✓" : "✗";
+            const parts: string[] = [];
+            if (dep.registry === "jsr") {
+              parts.push("jsr (trusted)");
+            } else {
+              if (dep.license) parts.push(dep.license);
+              if (dep.weeklyDownloads !== null) {
+                parts.push(`${formatDownloads(dep.weeklyDownloads)}/week`);
+              }
+              if (dep.publishedAgo) parts.push(dep.publishedAgo);
+            }
+            const detail = parts.length > 0 ? ` — ${parts.join(", ")}` : "";
+            logger.info`      ${mark} ${dep.name}@${dep.version}${detail}`;
+          }
+        } else {
+          logger.info`      No npm/jsr dependencies to audit`;
+        }
         if (dependencyTrustResult.errors.length > 0) {
-          logger.error`Dependency trust blockers:`;
+          logger.error`Dependency trust blockers (push blocked):`;
           for (const err of dependencyTrustResult.errors) {
             logger.error`  ${err.dependency}: ${err.message}`;
           }
@@ -146,6 +171,7 @@ class JsonExtensionQualityRenderer implements ExtensionQualityRenderer {
             factors: score.factors,
             dependencyTrust: {
               passed: dependencyTrustResult.passed,
+              audited: dependencyTrustResult.audited,
               errors: dependencyTrustResult.errors,
               warnings: dependencyTrustResult.warnings,
             },

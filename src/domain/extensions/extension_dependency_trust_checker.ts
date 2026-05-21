@@ -24,9 +24,20 @@ export interface DependencyTrustIssue {
   message: string;
 }
 
+export interface DependencyAuditSummary {
+  name: string;
+  version: string;
+  registry: "npm" | "jsr";
+  license: string | null;
+  weeklyDownloads: number | null;
+  publishedAgo: string | null;
+  passed: boolean;
+}
+
 export interface DependencyTrustResult {
   errors: DependencyTrustIssue[];
   warnings: DependencyTrustIssue[];
+  audited: DependencyAuditSummary[];
   passed: boolean;
 }
 
@@ -381,6 +392,14 @@ export function evaluateNpmTrustGates(
   return { errors, warnings };
 }
 
+function formatAge(lastPublish: string | null): string | null {
+  if (!lastPublish) return null;
+  const months = monthsSince(lastPublish);
+  if (months <= 0) return "this month";
+  if (months === 1) return "1mo ago";
+  return `${months}mo ago`;
+}
+
 export async function checkDependencyTrust(
   specifiers: DependencySpecifier[],
   fetcher: Fetcher = fetch,
@@ -389,11 +408,22 @@ export async function checkDependencyTrust(
 ): Promise<DependencyTrustResult> {
   const allErrors: DependencyTrustIssue[] = [];
   const allWarnings: DependencyTrustIssue[] = [];
+  const audited: DependencyAuditSummary[] = [];
 
   const npmSpecs = specifiers.filter((s) => s.registry === "npm");
+  const jsrSpecs = specifiers.filter((s) => s.registry === "jsr");
 
-  // jsr packages trust jsr's built-in enforcement (SPDX license,
-  // provenance, no install scripts) — skip gates where data is unavailable
+  for (const spec of jsrSpecs) {
+    audited.push({
+      name: spec.name,
+      version: spec.version ?? "latest",
+      registry: "jsr",
+      license: null,
+      weeklyDownloads: null,
+      publishedAgo: null,
+      passed: true,
+    });
+  }
 
   const CONCURRENCY = 5;
   for (let i = 0; i < npmSpecs.length; i += CONCURRENCY) {
@@ -405,6 +435,15 @@ export async function checkDependencyTrust(
           allWarnings.push({
             dependency: spec.name,
             message: "could not fetch package metadata (API unreachable)",
+          });
+          audited.push({
+            name: spec.name,
+            version: spec.version ?? "unknown",
+            registry: "npm",
+            license: null,
+            weeklyDownloads: null,
+            publishedAgo: null,
+            passed: true,
           });
           return;
         }
@@ -419,6 +458,16 @@ export async function checkDependencyTrust(
         );
         allErrors.push(...errors);
         allWarnings.push(...warnings);
+
+        audited.push({
+          name: spec.name,
+          version,
+          registry: "npm",
+          license: facts.license,
+          weeklyDownloads: facts.weeklyDownloads,
+          publishedAgo: formatAge(facts.lastPublish),
+          passed: errors.length === 0,
+        });
       }),
     );
 
@@ -435,6 +484,7 @@ export async function checkDependencyTrust(
   return {
     errors: allErrors,
     warnings: allWarnings,
+    audited,
     passed: allErrors.length === 0,
   };
 }

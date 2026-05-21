@@ -525,7 +525,7 @@ export async function extensionPushPrepare(
     );
   }
 
-  // 6b. Dependency trust audit
+  // 7. Dependency trust audit
   let dependencyTrustResult: DependencyTrustResult;
   const sourceFiles = [
     ...input.allModelFiles,
@@ -545,10 +545,15 @@ export async function extensionPushPrepare(
       );
     }
   } else {
-    dependencyTrustResult = { errors: [], warnings: [], passed: true };
+    dependencyTrustResult = {
+      errors: [],
+      warnings: [],
+      audited: [],
+      passed: true,
+    };
   }
 
-  // 6c. Validate skills and populate content metadata
+  // 8. Validate skills and populate content metadata
   if (input.skillDirs.length > 0) {
     const skillResult = await validateExtensionSkills(input.skillDirs);
     if (skillResult.errors.length > 0) {
@@ -578,14 +583,14 @@ export async function extensionPushPrepare(
     }
   }
 
-  // 7. Resolve deno binary (only needed when building a fresh archive)
+  // 9. Resolve deno binary (only needed when building a fresh archive)
   const usingCachedArchive = input.cachedArchive !== undefined;
   let denoPath = "";
   if (!usingCachedArchive) {
     denoPath = await deps.ensureDenoPath();
   }
 
-  // 8. Quality checks — skip on cache hit (the cached archive was
+  // 10. Quality checks — skip on cache hit (the cached archive was
   // written only after quality checks passed)
   if (!usingCachedArchive) {
     const qualityResult = await deps.checkExtensionQuality(
@@ -601,7 +606,7 @@ export async function extensionPushPrepare(
     }
   }
 
-  // 9. Bundle entry points + build archive — skip on cache hit
+  // 11. Bundle entry points + build archive — skip on cache hit
   let totalBundles: number;
   let archiveBytes: Uint8Array;
   if (usingCachedArchive) {
@@ -615,7 +620,7 @@ export async function extensionPushPrepare(
     archiveBytes = built.archiveBytes;
   }
 
-  // 10. Check version (skip in dry-run)
+  // 12. Check version (skip in dry-run)
   if (!input.dryRun && credentials) {
     const latest = await deps.getLatestVersion(
       credentials.serverUrl,
