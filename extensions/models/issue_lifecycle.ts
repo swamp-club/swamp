@@ -129,8 +129,7 @@ export const model = {
     },
     {
       toVersion: "2026.05.21.1",
-      description:
-        "Add notify phase for external contributors. " +
+      description: "Add notify phase for external contributors. " +
         "ship() and complete() now transition to notify instead of done. " +
         "New notify method posts a thank-you ripple and transitions to done. " +
         "Issue data now includes author field.",
