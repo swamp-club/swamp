@@ -19,6 +19,16 @@
 
 import { UserError } from "../errors.ts";
 
+/** Describes what a sync operation is about. */
+export interface SyncContext {
+  models?: ReadonlyArray<{ modelType: string; modelId: string }>;
+}
+
+/** Capabilities a sync service advertises to swamp core. */
+export interface SyncCapabilities {
+  scopedSync?: boolean;
+}
+
 /** Options accepted by sync service methods. */
 export interface DatastoreSyncOptions {
   /**
@@ -49,6 +59,8 @@ export interface DatastoreSyncOptions {
    * or push consume it.)
    */
   relPath?: string;
+  /** Domain-level sync context, passed when the extension advertises scopedSync. */
+  context?: SyncContext;
 }
 
 /**
@@ -62,6 +74,8 @@ export interface DatastoreSyncService {
   pullChanged(options?: DatastoreSyncOptions): Promise<number | void>;
   /** Push changed files from the local cache to the remote datastore. */
   pushChanged(options?: DatastoreSyncOptions): Promise<number | void>;
+  /** Advertise what this sync service supports. */
+  capabilities?(): SyncCapabilities;
   /**
    * Signal that the local cache has uncommitted work.
    *

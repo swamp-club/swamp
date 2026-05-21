@@ -21,6 +21,7 @@
 import { assertEquals, assertExists } from "jsr:@std/assert@1.0.19";
 import type {
   DatastoreProvider,
+  DatastoreSyncService,
   DatastoreVerifier,
   DistributedLock,
 } from "./datastore_types.ts";
@@ -383,4 +384,93 @@ export async function assertVerifierConformance(
     "string",
     "result.datastoreType must be a string",
   );
+}
+
+/** Options for sync service conformance. */
+export interface SyncServiceConformanceOptions {
+  /** Whether to assert that capabilities() returns scopedSync: true. */
+  expectScopedSync?: boolean;
+}
+
+/**
+ * Asserts that a DatastoreSyncService implementation satisfies the
+ * behavioral contract.
+ *
+ * Tests: pullChanged/pushChanged/markDirty exist and are callable.
+ * When `capabilities()` is present, validates it returns a well-formed
+ * `SyncCapabilities`. When `expectScopedSync` is true, asserts
+ * `scopedSync === true`.
+ *
+ * ```typescript
+ * import { assertSyncServiceConformance } from "@systeminit/swamp-testing";
+ *
+ * Deno.test("s3 sync service contract", async () => {
+ *   const syncService = provider.createSyncService!("/repo", "/cache");
+ *   await assertSyncServiceConformance(syncService);
+ * });
+ * ```
+ */
+export async function assertSyncServiceConformance(
+  syncService: DatastoreSyncService,
+  options?: SyncServiceConformanceOptions,
+): Promise<void> {
+  assertEquals(
+    typeof syncService.pullChanged,
+    "function",
+    "syncService must have pullChanged()",
+  );
+  assertEquals(
+    typeof syncService.pushChanged,
+    "function",
+    "syncService must have pushChanged()",
+  );
+  assertEquals(
+    typeof syncService.markDirty,
+    "function",
+    "syncService must have markDirty()",
+  );
+
+  await syncService.markDirty();
+
+  const pulled = await syncService.pullChanged();
+  if (pulled !== undefined) {
+    assertEquals(
+      typeof pulled,
+      "number",
+      "pullChanged() must return number or void",
+    );
+  }
+
+  const pushed = await syncService.pushChanged();
+  if (pushed !== undefined) {
+    assertEquals(
+      typeof pushed,
+      "number",
+      "pushChanged() must return number or void",
+    );
+  }
+
+  if (syncService.capabilities) {
+    assertEquals(
+      typeof syncService.capabilities,
+      "function",
+      "capabilities must be a function",
+    );
+
+    const caps = syncService.capabilities();
+    assertExists(caps, "capabilities() must return a value");
+    assertEquals(
+      typeof caps.scopedSync,
+      "boolean",
+      "capabilities().scopedSync must be a boolean",
+    );
+
+    if (options?.expectScopedSync) {
+      assertEquals(
+        caps.scopedSync,
+        true,
+        "capabilities().scopedSync must be true when expectScopedSync is set",
+      );
+    }
+  }
 }

@@ -275,6 +275,52 @@ immediately (same directory). On S3 datastores, reads see whatever was last
 synced to the local cache by a write command; users can run
 `swamp datastore sync --pull` to refresh manually.
 
+### SyncContext and SyncCapabilities
+
+Extensions can advertise capabilities by implementing the optional
+`capabilities()` method on `DatastoreSyncService`:
+
+```typescript
+capabilities(): SyncCapabilities {
+  return { scopedSync: true };
+}
+```
+
+When `scopedSync` is `true`, swamp core passes a `SyncContext` to
+`pullChanged()` and `pushChanged()` containing the models being operated on:
+
+```typescript
+interface SyncContext {
+  models: ReadonlyArray<{ modelType: string; modelId: string }>;
+}
+```
+
+Extensions translate this domain context to their own storage model — S3
+extensions filter by key prefix, MongoDB extensions build a query filter, etc.
+
+**Capability gating.** Core only passes context when the extension advertises
+`scopedSync`. Extensions that don't implement `capabilities()` (or return
+`{ scopedSync: false }`) receive `pullChanged()` / `pushChanged()` with no
+arguments — exactly today's behavior.
+
+**Graceful degradation.** If `capabilities()` throws, core catches the error
+and falls back to full sync. The try/catch wraps only the `capabilities()` call,
+not pull/push.
+
+**Per-model loop behavior.** `acquireModelLocks` calls `pullChanged()` once
+per model in the lock acquisition loop. When `scopedSync` is `true`, each call
+receives a context containing only the current model whose lock was just
+acquired. The extension pulls exactly one model per call.
+
+**Push path.** The flush function calls `pushChanged()` once (not per-model)
+under the global lock. When `scopedSync` is `true`, context contains all
+deduplicated models.
+
+**Catalog rebuild invariant.** `synced = true` is set after `pullChanged()`
+succeeds on both the scoped and full paths. This boolean is returned in
+`{ flush, synced }` and checked at 8 call sites across the codebase to trigger
+`catalogStore.invalidate()`. It must never be skipped or moved.
+
 ### Zero-Diff Fast Path (Extension Guidance)
 
 At production scale, most sync invocations are "nothing to do" — the local

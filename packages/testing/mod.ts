@@ -111,22 +111,27 @@ export type {
 export type {
   DatastoreHealthResult,
   DatastoreProvider,
+  DatastoreSyncOptions,
   DatastoreSyncService,
   DatastoreVerifier,
   DistributedLock,
   LockInfo,
   LockOptions,
+  SyncCapabilities,
+  SyncContext,
 } from "./datastore_types.ts";
 
 export {
   assertDatastoreExportConformance,
   assertLockConformance,
+  assertSyncServiceConformance,
   assertVerifierConformance,
 } from "./datastore_conformance.ts";
 
 export type {
   DatastoreExport,
   DatastoreExportConformanceOptions,
+  SyncServiceConformanceOptions,
 } from "./datastore_conformance.ts";
 
 // --- Drivers ---

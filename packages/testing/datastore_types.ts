@@ -66,6 +66,16 @@ export interface DatastoreVerifier {
   verify(): Promise<DatastoreHealthResult>;
 }
 
+/** Describes what a sync operation is about. */
+export interface SyncContext {
+  models?: ReadonlyArray<{ modelType: string; modelId: string }>;
+}
+
+/** Capabilities a sync service advertises to swamp core. */
+export interface SyncCapabilities {
+  scopedSync?: boolean;
+}
+
 /** Options accepted by sync service methods. */
 export interface DatastoreSyncOptions {
   signal?: AbortSignal;
@@ -78,6 +88,8 @@ export interface DatastoreSyncOptions {
    * `DatastoreSyncService.markDirty` JSDoc for the full contract.
    */
   relPath?: string;
+  /** Domain-level sync context, passed when the extension advertises scopedSync. */
+  context?: SyncContext;
 }
 
 /** Interface for datastore synchronization services. */
@@ -85,6 +97,8 @@ export interface DatastoreSyncService {
   pullChanged(options?: DatastoreSyncOptions): Promise<number | void>;
   pushChanged(options?: DatastoreSyncOptions): Promise<number | void>;
   markDirty(options?: DatastoreSyncOptions): Promise<void>;
+  /** Advertise what this sync service supports. */
+  capabilities?(): SyncCapabilities;
 }
 
 /**

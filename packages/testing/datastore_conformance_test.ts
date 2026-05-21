@@ -21,6 +21,7 @@ import { assertThrows } from "@std/assert";
 import {
   assertDatastoreExportConformance,
   assertLockConformance,
+  assertSyncServiceConformance,
   assertVerifierConformance,
 } from "./datastore_conformance.ts";
 import { createDatastoreTestContext } from "./datastore_test_context.ts";
@@ -91,4 +92,31 @@ Deno.test("assertVerifierConformance: passes for unhealthy verifier", async () =
   });
   const verifier = provider.createVerifier();
   await assertVerifierConformance(verifier);
+});
+
+// --- assertSyncServiceConformance ---
+
+Deno.test("assertSyncServiceConformance: passes for basic sync service", async () => {
+  const { provider } = createDatastoreTestContext({ withSyncService: true });
+  const syncService = provider.createSyncService!("/repo", "/cache");
+  await assertSyncServiceConformance(syncService);
+});
+
+Deno.test("assertSyncServiceConformance: passes for sync service with capabilities", async () => {
+  const syncService = {
+    pullChanged: () => Promise.resolve(0),
+    pushChanged: () => Promise.resolve(0),
+    markDirty: () => Promise.resolve(),
+    capabilities: () => ({ scopedSync: true }),
+  };
+  await assertSyncServiceConformance(syncService, { expectScopedSync: true });
+});
+
+Deno.test("assertSyncServiceConformance: passes without capabilities method", async () => {
+  const syncService = {
+    pullChanged: () => Promise.resolve(0),
+    pushChanged: () => Promise.resolve(0),
+    markDirty: () => Promise.resolve(),
+  };
+  await assertSyncServiceConformance(syncService);
 });

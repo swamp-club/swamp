@@ -72,6 +72,8 @@ import type { DatastoreProvider } from "../domain/datastore/datastore_provider.t
 import type {
   DatastoreSyncService,
   MarkDirtyHook,
+  SyncCapabilities,
+  SyncContext,
 } from "../domain/datastore/datastore_sync_service.ts";
 import { datastoreTypeRegistry } from "../domain/datastore/datastore_type_registry.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
@@ -936,7 +938,22 @@ export async function acquireModelLocks(
           type: modelType,
           id: modelId,
         });
-        await customSyncService.pullChanged();
+
+        let caps: SyncCapabilities | undefined;
+        try {
+          caps = customSyncService.capabilities?.();
+        } catch {
+          // Buggy extension — degrade to full sync
+        }
+
+        if (caps?.scopedSync) {
+          const context: SyncContext = {
+            models: [{ modelType, modelId }],
+          };
+          await customSyncService.pullChanged({ context });
+        } else {
+          await customSyncService.pullChanged();
+        }
         synced = true;
       } catch (error) {
         const msg = error instanceof Error ? error.message : String(error);
@@ -962,7 +979,21 @@ export async function acquireModelLocks(
         try {
           await pushLock.acquire();
           logger.info`Pushing changes to datastore...`;
-          const pushed = await customSyncService.pushChanged();
+
+          let caps: SyncCapabilities | undefined;
+          try {
+            caps = customSyncService.capabilities?.();
+          } catch {
+            // Buggy extension — degrade to full sync
+          }
+
+          let pushed: number | void;
+          if (caps?.scopedSync) {
+            const context: SyncContext = { models: unique };
+            pushed = await customSyncService.pushChanged({ context });
+          } else {
+            pushed = await customSyncService.pushChanged();
+          }
           if (pushed && pushed > 0) {
             logger.info("Pushed {count} file(s) to datastore", {
               count: pushed,

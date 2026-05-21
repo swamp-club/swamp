@@ -50,6 +50,8 @@ export {
   type DatastoreSyncOptions,
   type DatastoreSyncService,
   type MarkDirtyHook,
+  type SyncCapabilities,
+  type SyncContext,
   type SyncDirection,
   SyncTimeoutError,
 } from "./datastore_sync_service.ts";
