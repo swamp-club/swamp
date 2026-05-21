@@ -21,6 +21,7 @@ import type { Workflow } from "../../domain/workflows/workflow.ts";
 import type { WorkflowValidationResult } from "../../domain/workflows/validation_service.ts";
 import {
   DefaultWorkflowValidationService,
+  type MethodResolution,
   type ModelMethodResolver,
 } from "../../domain/workflows/validation_service.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
@@ -29,6 +30,7 @@ import type { LibSwampContext } from "../context.ts";
 import { notFound, type SwampError, validationFailed } from "../errors.ts";
 import type { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
+import { ModelType } from "../../domain/models/model_type.ts";
 import { resolveModelType } from "../../domain/extensions/extension_auto_resolver.ts";
 import { getAutoResolver } from "../../domain/extensions/auto_resolver_context.ts";
 import { zodToJsonSchema } from "../types/schema_helpers.ts";
@@ -94,7 +96,11 @@ function createModelMethodResolver(
   definitionRepo: YamlDefinitionRepository,
 ): ModelMethodResolver {
   return {
-    async resolve(modelIdOrName, methodName) {
+    async resolve(modelIdOrName, methodName, modelTypeArg?) {
+      if (modelTypeArg) {
+        return resolveByType(modelTypeArg, methodName);
+      }
+
       const lookupResult = await findDefinitionByIdOrName(
         definitionRepo,
         modelIdOrName,
@@ -136,6 +142,41 @@ function createModelMethodResolver(
       return { status: "resolved", requiredArgs, definitionProvidedArgs };
     },
   };
+}
+
+async function resolveByType(
+  typeArg: string,
+  methodName: string,
+): Promise<MethodResolution> {
+  const type = ModelType.create(typeArg);
+  const modelDef = await resolveModelType(type, getAutoResolver());
+  if (!modelDef) {
+    return { status: "type_unresolvable", modelType: type.normalized };
+  }
+
+  const method = modelDef.methods[methodName];
+  if (!method) {
+    return { status: "method_not_found", modelType: type.normalized };
+  }
+
+  const methodSchema = zodToJsonSchema(method.arguments) as {
+    required?: string[];
+  };
+  const methodRequired = methodSchema.required ?? [];
+
+  const globalRequired: string[] = [];
+  if (modelDef.globalArguments) {
+    const globalSchema = zodToJsonSchema(modelDef.globalArguments) as {
+      required?: string[];
+    };
+    globalRequired.push(...(globalSchema.required ?? []));
+  }
+
+  const requiredArgs = Array.from(
+    new Set([...methodRequired, ...globalRequired]),
+  );
+
+  return { status: "resolved", requiredArgs };
 }
 
 /** Wires real infrastructure into WorkflowValidateDeps. */
