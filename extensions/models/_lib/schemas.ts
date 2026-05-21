@@ -46,6 +46,7 @@ export const Phase = z.enum([
   "pr_open",
   "pr_failed",
   "releasing",
+  "notify",
   "done",
 ]);
 
@@ -66,6 +67,7 @@ export const TRANSITIONS: Record<string, Phase[]> = {
     "pr_open",
     "pr_failed",
     "releasing",
+    "notify",
   ],
   triage: ["triaging"],
   plan: ["classified"],
@@ -79,6 +81,8 @@ export const TRANSITIONS: Record<string, Phase[]> = {
   pr_failed: ["pr_open"],
   ship: ["releasing"],
   complete: ["implementing", "pr_open", "releasing"],
+  notify: ["notify"],
+  skip_notify: ["notify"],
 };
 
 // ---------------------------------------------------------------------------
@@ -106,6 +110,9 @@ export const ContextSchema = z.object({
   body: z.string(),
   type: IssueType,
   status: z.string(),
+  author: z.string().optional().describe(
+    "Username of the issue author (opener). Optional for backwards compatibility with older context data.",
+  ),
   comments: z.array(
     z.object({
       author: z.string(),
