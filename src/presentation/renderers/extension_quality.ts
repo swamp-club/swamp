@@ -73,6 +73,19 @@ class LogExtensionQualityRenderer implements ExtensionQualityRenderer {
             logger.info`      → ${factor.remediation}`;
           }
         }
+        const { dependencyTrustResult } = e.data;
+        if (dependencyTrustResult.errors.length > 0) {
+          logger.error`Dependency trust blockers:`;
+          for (const err of dependencyTrustResult.errors) {
+            logger.error`  ${err.dependency}: ${err.message}`;
+          }
+        }
+        if (dependencyTrustResult.warnings.length > 0) {
+          logger.warn`Dependency trust warnings (non-blocking):`;
+          for (const w of dependencyTrustResult.warnings) {
+            logger.warn`  ${w.dependency}: ${w.message}`;
+          }
+        }
         // `repository-verified` is a structural check on our side — the
         // server does the final HTTP HEAD to confirm the repo is public.
         // Surface that caveat so users know why their local "earned"
@@ -115,7 +128,13 @@ class JsonExtensionQualityRenderer implements ExtensionQualityRenderer {
       cache_hit: () => {},
       scoring: () => {},
       completed: (e) => {
-        const { score, cacheHash, archiveSize, cacheHit } = e.data;
+        const {
+          score,
+          cacheHash,
+          archiveSize,
+          cacheHit,
+          dependencyTrustResult,
+        } = e.data;
         console.log(JSON.stringify(
           {
             status: score.allPassed ? "passed" : "failed",
@@ -125,6 +144,11 @@ class JsonExtensionQualityRenderer implements ExtensionQualityRenderer {
             percentage: score.percentage,
             allPassed: score.allPassed,
             factors: score.factors,
+            dependencyTrust: {
+              passed: dependencyTrustResult.passed,
+              errors: dependencyTrustResult.errors,
+              warnings: dependencyTrustResult.warnings,
+            },
             cacheHash,
             archiveSize,
             cacheHit,

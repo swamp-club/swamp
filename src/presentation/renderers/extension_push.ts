@@ -164,7 +164,7 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
   }
 
   renderDependencyTrustWarnings(warnings: DependencyTrustIssue[]): void {
-    this.logger.warn`Dependency trust warnings:`;
+    this.logger.warn`Dependency trust warnings (non-blocking):`;
     for (const w of warnings) {
       this.logger.warn`  ${w.dependency}: ${w.message}`;
     }
@@ -282,11 +282,11 @@ class JsonExtensionPushRenderer implements ExtensionPushRenderer {
   }
 
   renderSafetyWarnings(warnings: SafetyIssue[]): void {
-    console.log(JSON.stringify({ warnings }, null, 2));
+    console.log(JSON.stringify({ safetyWarnings: warnings }, null, 2));
   }
 
   renderSafetyErrors(errors: SafetyIssue[]): void {
-    console.log(JSON.stringify({ errors }, null, 2));
+    console.log(JSON.stringify({ safetyErrors: errors }, null, 2));
   }
 
   renderCollectiveErrors(

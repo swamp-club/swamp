@@ -458,9 +458,9 @@ function dependencyTrustRow(
 ): RubricFactor {
   const remediation = blockerCount > 0
     ? `${blockerCount} dependency blocker(s) found (deprecated packages or ` +
-      `HIGH/CRITICAL vulnerabilities). Run 'swamp extension quality' to see details, ` +
+      `HIGH/CRITICAL vulnerabilities). See the blocker details above, ` +
       `then update or replace the flagged dependencies.`
-    : "Resolve dependency trust issues — run 'swamp extension quality' for details.";
+    : "Resolve dependency trust issues — update or replace flagged dependencies.";
   return {
     id: "dependency-trust",
     label: "Dependencies pass trust gates",

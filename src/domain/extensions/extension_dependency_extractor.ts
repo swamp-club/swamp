@@ -24,10 +24,33 @@ export interface DependencySpecifier {
   sourceFile: string;
 }
 
-// Matches `from "npm:pkg@version"` or `from "jsr:@scope/name@version"`
-// Also handles import statements without `from` (side-effect imports).
-const IMPORT_SPECIFIER_RE =
+function stripComments(source: string): string {
+  let result = "";
+  let i = 0;
+  while (i < source.length) {
+    if (source[i] === "/" && source[i + 1] === "/") {
+      while (i < source.length && source[i] !== "\n") i++;
+    } else if (source[i] === "/" && source[i + 1] === "*") {
+      i += 2;
+      while (
+        i < source.length - 1 && !(source[i] === "*" && source[i + 1] === "/")
+      ) i++;
+      i += 2;
+    } else {
+      result += source[i];
+      i++;
+    }
+  }
+  return result;
+}
+
+// Matches static imports: `from "npm:..."` and side-effect `import "npm:..."`
+const STATIC_IMPORT_RE =
   /(?:from|import)\s+["'](?<specifier>(?:npm|jsr):[^"']+)["']/g;
+
+// Matches dynamic imports: `import("npm:...")`
+const DYNAMIC_IMPORT_RE =
+  /import\s*\(\s*["'](?<specifier>(?:npm|jsr):[^"']+)["']\s*\)/g;
 
 // Parses `npm:@scope/name@version`, `npm:name@version`, `npm:name`
 const NPM_SPECIFIER_RE =
@@ -67,18 +90,22 @@ export function extractSpecifiersFromSource(
 ): DependencySpecifier[] {
   const seen = new Set<string>();
   const results: DependencySpecifier[] = [];
+  const stripped = stripComments(source);
 
-  for (const match of source.matchAll(IMPORT_SPECIFIER_RE)) {
-    const raw = match.groups?.specifier;
-    if (!raw) continue;
-    const parsed = parseSpecifier(raw);
-    if (!parsed) continue;
+  for (const re of [STATIC_IMPORT_RE, DYNAMIC_IMPORT_RE]) {
+    re.lastIndex = 0;
+    for (const match of stripped.matchAll(re)) {
+      const raw = match.groups?.specifier;
+      if (!raw) continue;
+      const parsed = parseSpecifier(raw);
+      if (!parsed) continue;
 
-    const key = `${parsed.registry}:${parsed.name}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
+      const key = `${parsed.registry}:${parsed.name}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
 
-    results.push({ ...parsed, sourceFile });
+      results.push({ ...parsed, sourceFile });
+    }
   }
 
   return results;

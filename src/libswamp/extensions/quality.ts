@@ -60,6 +60,7 @@ export interface ExtensionQualityData {
   cacheHash: string;
   archiveSize: number;
   cacheHit: boolean;
+  dependencyTrustResult: DependencyTrustResult;
 }
 
 /** Input to run a quality score. */
@@ -181,6 +182,7 @@ export async function* extensionQuality(
           cacheHash: hash,
           archiveSize: archiveBytes.length,
           cacheHit,
+          dependencyTrustResult,
         },
       };
     })(),

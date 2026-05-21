@@ -33,13 +33,11 @@ export interface DependencyTrustResult {
 export interface TrustThresholds {
   minWeeklyDownloads: number;
   maxAgeMonths: number;
-  minMaintenance: number;
 }
 
 export const DEFAULT_TRUST_THRESHOLDS: TrustThresholds = {
   minWeeklyDownloads: 1000,
   maxAgeMonths: 24,
-  minMaintenance: 0.4,
 };
 
 const LICENSE_ALLOWLIST: ReadonlySet<string> = new Set([
@@ -101,9 +99,19 @@ function extractSeverity(vuln: Record<string, unknown>): string {
   }
   const sevArr = vuln.severity;
   if (Array.isArray(sevArr) && sevArr.length > 0) {
-    const first = sevArr[0] as Record<string, unknown>;
-    const score = Number(first.score);
-    if (Number.isFinite(score)) return cvssToSeverity(score);
+    for (const entry of sevArr) {
+      const obj = entry as Record<string, unknown>;
+      if (typeof obj.score === "number" && Number.isFinite(obj.score)) {
+        return cvssToSeverity(obj.score);
+      }
+      if (typeof obj.score === "string") {
+        const numeric = Number(obj.score);
+        if (Number.isFinite(numeric)) return cvssToSeverity(numeric);
+      }
+      if (typeof obj.baseScore === "number" && Number.isFinite(obj.baseScore)) {
+        return cvssToSeverity(obj.baseScore);
+      }
+    }
   }
   return "UNKNOWN";
 }
@@ -142,9 +150,13 @@ async function fetchWithTimeout(
   url: string,
   init: RequestInit,
   fetcher: Fetcher,
+  signal?: AbortSignal,
 ): Promise<Response> {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  if (signal) {
+    signal.addEventListener("abort", () => controller.abort(), { once: true });
+  }
   try {
     return await fetcher(url, { ...init, signal: controller.signal });
   } finally {
@@ -156,17 +168,26 @@ async function queryOsvVulns(
   name: string,
   version: string,
   fetcher: Fetcher,
+  signal?: AbortSignal,
 ): Promise<OsvVuln[]> {
   try {
-    const resp = await fetchWithTimeout(OSV_QUERY_URL, {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        package: { name, ecosystem: "npm" },
-        version,
-      }),
-    }, fetcher);
-    if (!resp.ok) return [];
+    const resp = await fetchWithTimeout(
+      OSV_QUERY_URL,
+      {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({
+          package: { name, ecosystem: "npm" },
+          version,
+        }),
+      },
+      fetcher,
+      signal,
+    );
+    if (!resp.ok) {
+      await resp.body?.cancel();
+      return [];
+    }
     return normaliseVulns(await resp.json());
   } catch {
     return [];
@@ -176,15 +197,20 @@ async function queryOsvVulns(
 async function fetchNpmFacts(
   name: string,
   fetcher: Fetcher,
+  signal?: AbortSignal,
 ): Promise<NpmPackageFacts | null> {
   try {
-    const [manifestResp, downloadsResp] = await Promise.all([
-      fetchWithTimeout(`${NPM_REGISTRY_URL}/${name}/latest`, {}, fetcher),
-      fetchWithTimeout(`${NPM_DOWNLOADS_URL}/${name}`, {}, fetcher),
+    const [pkgResp, downloadsResp] = await Promise.all([
+      fetchWithTimeout(`${NPM_REGISTRY_URL}/${name}`, {}, fetcher, signal),
+      fetchWithTimeout(`${NPM_DOWNLOADS_URL}/${name}`, {}, fetcher, signal),
     ]);
 
-    if (!manifestResp.ok) return null;
-    const manifest = await manifestResp.json() as Record<string, unknown>;
+    if (!pkgResp.ok) {
+      await pkgResp.body?.cancel();
+      await downloadsResp.body?.cancel();
+      return null;
+    }
+    const pkgBody = await pkgResp.json() as Record<string, unknown>;
 
     let weeklyDownloads: number | null = null;
     if (downloadsResp.ok) {
@@ -196,8 +222,15 @@ async function fetchNpmFacts(
       await downloadsResp.body?.cancel();
     }
 
-    const version = String(manifest.version ?? "unknown");
-    const rawLicense = manifest.license;
+    const distTags = pkgBody["dist-tags"] as Record<string, string> | undefined;
+    const latestVersion = distTags?.latest ??
+      String(pkgBody.version ?? "unknown");
+    const versions = pkgBody.versions as
+      | Record<string, Record<string, unknown>>
+      | undefined;
+    const latestManifest = versions?.[latestVersion];
+
+    const rawLicense = latestManifest?.license ?? pkgBody.license;
     const license = typeof rawLicense === "string"
       ? rawLicense
       : (rawLicense && typeof rawLicense === "object" &&
@@ -205,32 +238,15 @@ async function fetchNpmFacts(
       ? (rawLicense as Record<string, unknown>).type as string
       : null;
 
-    const deprecated = !!manifest.deprecated;
-    const maintainers = manifest.maintainers;
+    const deprecated = !!(latestManifest?.deprecated ?? pkgBody.deprecated);
+    const maintainers = latestManifest?.maintainers ?? pkgBody.maintainers;
     const maintainerCount = Array.isArray(maintainers) ? maintainers.length : 0;
 
-    let lastPublish: string | null = null;
-    try {
-      const pkgResp = await fetchWithTimeout(
-        `${NPM_REGISTRY_URL}/${name}`,
-        {},
-        fetcher,
-      );
-      if (pkgResp.ok) {
-        const pkgBody = await pkgResp.json() as Record<string, unknown>;
-        const time = pkgBody.time as Record<string, string> | undefined;
-        if (time) {
-          lastPublish = time[version] ?? time.modified ?? null;
-        }
-      } else {
-        await pkgResp.body?.cancel();
-      }
-    } catch {
-      // publish date is best-effort
-    }
+    const time = pkgBody.time as Record<string, string> | undefined;
+    const lastPublish = time?.[latestVersion] ?? time?.modified ?? null;
 
     return {
-      version,
+      version: latestVersion,
       license,
       deprecated,
       maintainerCount,
@@ -311,6 +327,7 @@ export async function checkDependencyTrust(
   specifiers: DependencySpecifier[],
   fetcher: Fetcher = fetch,
   thresholds: TrustThresholds = DEFAULT_TRUST_THRESHOLDS,
+  signal?: AbortSignal,
 ): Promise<DependencyTrustResult> {
   const allErrors: DependencyTrustIssue[] = [];
   const allWarnings: DependencyTrustIssue[] = [];
@@ -325,7 +342,7 @@ export async function checkDependencyTrust(
     const batch = npmSpecs.slice(i, i + CONCURRENCY);
     const results = await Promise.allSettled(
       batch.map(async (spec) => {
-        const facts = await fetchNpmFacts(spec.name, fetcher);
+        const facts = await fetchNpmFacts(spec.name, fetcher, signal);
         if (!facts) {
           allWarnings.push({
             dependency: spec.name,
@@ -335,7 +352,7 @@ export async function checkDependencyTrust(
         }
 
         const version = spec.version ?? facts.version;
-        const vulns = await queryOsvVulns(spec.name, version, fetcher);
+        const vulns = await queryOsvVulns(spec.name, version, fetcher, signal);
         const { errors, warnings } = evaluateNpmTrustGates(
           spec.name,
           facts,

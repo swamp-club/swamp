@@ -106,6 +106,33 @@ Deno.test("extractSpecifiersFromSource: handles side-effect imports", () => {
   assertEquals(result[0].version, "16.4.5");
 });
 
+Deno.test("extractSpecifiersFromSource: extracts dynamic imports", () => {
+  const source = `const mod = await import("npm:untrusted-pkg@1.0");`;
+  const result = extractSpecifiersFromSource(source, "model.ts");
+
+  assertEquals(result.length, 1);
+  assertEquals(result[0].name, "untrusted-pkg");
+  assertEquals(result[0].version, "1.0");
+});
+
+Deno.test("extractSpecifiersFromSource: ignores commented-out imports", () => {
+  const source = `// import old from "npm:deprecated-pkg@1.0";
+import active from "npm:good-pkg@2.0";`;
+  const result = extractSpecifiersFromSource(source, "model.ts");
+
+  assertEquals(result.length, 1);
+  assertEquals(result[0].name, "good-pkg");
+});
+
+Deno.test("extractSpecifiersFromSource: ignores block-commented imports", () => {
+  const source = `/* import old from "npm:deprecated-pkg@1.0"; */
+import active from "npm:good-pkg@2.0";`;
+  const result = extractSpecifiersFromSource(source, "model.ts");
+
+  assertEquals(result.length, 1);
+  assertEquals(result[0].name, "good-pkg");
+});
+
 Deno.test("extractSpecifiersFromSource: returns empty for no imports", () => {
   const source = `const x = 42;
 export function hello() { return "world"; }`;

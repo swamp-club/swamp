@@ -246,21 +246,23 @@ Deno.test("checkDependencyTrust: passes for healthy npm package", async () => {
   }];
 
   const fetcher = createMockFetcher({
-    "registry.npmjs.org/axios/latest": {
+    "registry.npmjs.org/axios": {
       status: 200,
       body: {
-        version: "1.7.2",
-        license: "MIT",
-        maintainers: [{ name: "a" }, { name: "b" }],
+        "dist-tags": { latest: "1.7.2" },
+        versions: {
+          "1.7.2": {
+            version: "1.7.2",
+            license: "MIT",
+            maintainers: [{ name: "a" }, { name: "b" }],
+          },
+        },
+        time: { "1.7.2": "2026-04-01T00:00:00Z" },
       },
     },
     "api.npmjs.org/downloads": {
       status: 200,
       body: { downloads: 50_000_000 },
-    },
-    "registry.npmjs.org/axios": {
-      status: 200,
-      body: { time: { "1.7.2": "2026-04-01T00:00:00Z" } },
     },
     "api.osv.dev": { status: 200, body: { vulns: [] } },
   });
@@ -279,21 +281,23 @@ Deno.test("checkDependencyTrust: blocks on HIGH vulnerability", async () => {
   }];
 
   const fetcher = createMockFetcher({
-    "registry.npmjs.org/vulnerable-pkg/latest": {
+    "registry.npmjs.org/vulnerable-pkg": {
       status: 200,
       body: {
-        version: "1.0.0",
-        license: "MIT",
-        maintainers: [{ name: "a" }],
+        "dist-tags": { latest: "1.0.0" },
+        versions: {
+          "1.0.0": {
+            version: "1.0.0",
+            license: "MIT",
+            maintainers: [{ name: "a" }],
+          },
+        },
+        time: { "1.0.0": "2026-01-01T00:00:00Z" },
       },
     },
     "api.npmjs.org/downloads": {
       status: 200,
       body: { downloads: 10000 },
-    },
-    "registry.npmjs.org/vulnerable-pkg": {
-      status: 200,
-      body: { time: { "1.0.0": "2026-01-01T00:00:00Z" } },
     },
     "api.osv.dev": {
       status: 200,
