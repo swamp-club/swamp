@@ -210,7 +210,7 @@ Earned when the extension was published from GitHub Actions with a
 Sigstore-signed bundle verified by the server. Currently gated behind a feature
 flag (`PROVENANCE_IN_RUBRIC = false`) because CLI-side signing support has not
 shipped. When the CLI lands provenance support and the flag flips, the rubric
-divisor becomes 14 and extensions published from CI earn an additional point.
+divisor becomes 16 and extensions published from CI earn an additional point.
 
 ## Worked example: a third-party extension that earns 93%
 
