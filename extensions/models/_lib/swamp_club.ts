@@ -240,6 +240,41 @@ export class SwampClubClient {
     return match?.userId ?? null;
   }
 
+  /**
+   * Post a comment (ripple) on the issue. Returns the comment ID on success,
+   * or null if the request fails. Best-effort — callers should not gate on this.
+   */
+  async submitComment(body: string): Promise<string | null> {
+    try {
+      const url =
+        `${this.baseUrl}/api/v1/lab/issues/${this.issueNumber}/comments`;
+      const res = await fetch(url, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "Authorization": `Bearer ${this.#apiKey}`,
+        },
+        body: JSON.stringify({ body }),
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        this.log("swamp-club submit comment failed: {status} {text}", {
+          status: res.status,
+          text,
+        });
+        return null;
+      }
+      const data = await res.json() as { comment?: { id?: string } };
+      return data?.comment?.id ?? null;
+    } catch (err) {
+      this.log("swamp-club submit comment error: {error}", {
+        error: String(err),
+      });
+      return null;
+    }
+  }
+
   /** Update the issue's assignees. Best-effort (same as other PATCH helpers). */
   async updateAssignees(userIds: string[]): Promise<void> {
     await this.patchIssue({ assignees: userIds });

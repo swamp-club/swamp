@@ -319,8 +319,8 @@ Deno.test("model: exposes the new link_pr method definition", () => {
   );
 });
 
-Deno.test("model: version bumped to 2026.04.12.1", () => {
-  assertEquals(model.version, "2026.04.12.1");
+Deno.test("model: version bumped to 2026.05.21.1", () => {
+  assertEquals(model.version, "2026.05.21.1");
 });
 
 // ---------------------------------------------------------------------------
@@ -456,14 +456,14 @@ Deno.test("pr_failed: rejects empty reason via zod schema", async () => {
 // ship
 // ---------------------------------------------------------------------------
 
-Deno.test("ship: transitions state to done", async () => {
+Deno.test("ship: transitions state to notify", async () => {
   const { context, writes, restore } = await buildTestContext(42);
   try {
     await model.methods.ship.execute({}, context);
 
     const stateWrite = writes.find((w) => w.specName === "state");
     assertEquals(stateWrite !== undefined, true);
-    assertEquals(stateWrite!.data.phase, "done");
+    assertEquals(stateWrite!.data.phase, "notify");
     assertEquals(stateWrite!.data.issueNumber, 42);
   } finally {
     await restore();
@@ -851,6 +851,64 @@ Deno.test("start: warns and skips assignment when assignees endpoint returns 403
   }
 });
 
+Deno.test("start: persists author in context-main", async () => {
+  const { context, writes, restore } = await buildStartTestContext(99, {
+    authUsername: "alice",
+    routes: [
+      {
+        urlIncludes: "/api/health",
+        response: { status: 200, body: { ok: true } },
+      },
+      {
+        urlIncludes: "/api/v1/lab/issues/99",
+        method: "GET",
+        response: {
+          status: 200,
+          body: {
+            issue: {
+              number: 99,
+              type: "bug",
+              status: "open",
+              title: "Test",
+              body: "Body",
+              authorUsername: "external-user",
+              comments: [],
+              assignees: [],
+            },
+          },
+        },
+      },
+      {
+        urlIncludes: "/api/v1/lab/issues/99",
+        method: "PATCH",
+        response: { status: 200, body: { issue: {} } },
+      },
+      {
+        urlIncludes: "/api/v1/lab/assignees",
+        method: "GET",
+        response: {
+          status: 200,
+          body: { assignees: [{ userId: "u1", username: "alice" }] },
+        },
+      },
+      {
+        urlIncludes: "/api/v1/lab/issues/99/lifecycle",
+        method: "POST",
+        response: { status: 200, body: {} },
+      },
+    ],
+  });
+  try {
+    await model.methods.start.execute({}, context);
+
+    const contextWrite = writes.find((w) => w.specName === "context");
+    assertEquals(contextWrite !== undefined, true);
+    assertEquals(contextWrite!.data.author, "external-user");
+  } finally {
+    await restore();
+  }
+});
+
 Deno.test("start: succeeds even when PATCH fails", async () => {
   const routes = happyRoutes({
     issueNumber: 99,
@@ -882,4 +940,116 @@ Deno.test("start: succeeds even when PATCH fails", async () => {
   } finally {
     await restore();
   }
+});
+
+// ---------------------------------------------------------------------------
+// notify
+// ---------------------------------------------------------------------------
+
+Deno.test("notify: transitions state to done and reads author from context", async () => {
+  const { context, writes, restore } = await buildTestContext(42, {
+    resources: {
+      "context-main": {
+        title: "Test",
+        body: "Body",
+        type: "bug",
+        status: "open",
+        author: "external-user",
+        comments: [],
+        fetchedAt: "2026-05-21T00:00:00.000Z",
+      },
+    },
+  });
+  try {
+    await model.methods.notify.execute({}, context);
+
+    const stateWrite = writes.find((w) => w.specName === "state");
+    assertEquals(stateWrite !== undefined, true);
+    assertEquals(stateWrite!.data.phase, "done");
+    assertEquals(stateWrite!.data.issueNumber, 42);
+  } finally {
+    await restore();
+  }
+});
+
+Deno.test("notify: transitions to done even when author is missing from context", async () => {
+  const { context, writes, restore } = await buildTestContext(42, {
+    resources: {
+      "context-main": {
+        title: "Test",
+        body: "Body",
+        type: "bug",
+        status: "open",
+        comments: [],
+        fetchedAt: "2026-05-21T00:00:00.000Z",
+      },
+    },
+  });
+  try {
+    await model.methods.notify.execute({}, context);
+
+    const stateWrite = writes.find((w) => w.specName === "state");
+    assertEquals(stateWrite !== undefined, true);
+    assertEquals(stateWrite!.data.phase, "done");
+  } finally {
+    await restore();
+  }
+});
+
+Deno.test("notify: accepts custom message", async () => {
+  const { context, writes, restore } = await buildTestContext(42, {
+    resources: {
+      "context-main": {
+        title: "Test",
+        body: "Body",
+        type: "bug",
+        status: "open",
+        author: "contributor",
+        comments: [],
+        fetchedAt: "2026-05-21T00:00:00.000Z",
+      },
+    },
+  });
+  try {
+    await model.methods.notify.execute(
+      { message: "Custom thanks @contributor!" },
+      context,
+    );
+
+    const stateWrite = writes.find((w) => w.specName === "state");
+    assertEquals(stateWrite !== undefined, true);
+    assertEquals(stateWrite!.data.phase, "done");
+  } finally {
+    await restore();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// skip_notify
+// ---------------------------------------------------------------------------
+
+Deno.test("skip_notify: transitions state to done", async () => {
+  const { context, writes, restore } = await buildTestContext(42);
+  try {
+    await model.methods.skip_notify.execute({}, context);
+
+    const stateWrite = writes.find((w) => w.specName === "state");
+    assertEquals(stateWrite !== undefined, true);
+    assertEquals(stateWrite!.data.phase, "done");
+    assertEquals(stateWrite!.data.issueNumber, 42);
+  } finally {
+    await restore();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// Model registration smoke tests (notify methods)
+// ---------------------------------------------------------------------------
+
+Deno.test("model: exposes notify method definition", () => {
+  assertEquals("notify" in model.methods, true);
+});
+
+Deno.test("model: exposes skip_notify method definition", () => {
+  assertEquals("skip_notify" in model.methods, true);
 });
