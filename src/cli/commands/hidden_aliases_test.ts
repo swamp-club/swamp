@@ -107,23 +107,14 @@ Deno.test("vault type list is registered as a hidden subcommand", async () => {
   );
 });
 
-Deno.test("repo init is registered as a hidden subcommand", async () => {
+Deno.test("repo init is registered as a visible subcommand", async () => {
   const { repoCommand } = await import("./repo_init.ts");
 
-  // getCommand with second arg true includes hidden commands
-  const initCmd = repoCommand.getCommand("init", true);
-  assertEquals(
-    initCmd !== undefined,
-    true,
-    "init command should be registered",
-  );
-
-  // Verify it's hidden: not in getCommands() (which excludes hidden)
   const visibleCommands = repoCommand.getCommands();
   const visibleInit = visibleCommands.find((c) => c.getName() === "init");
   assertEquals(
-    visibleInit,
-    undefined,
-    "init should not appear in visible commands",
+    visibleInit !== undefined,
+    true,
+    "init should appear in visible commands",
   );
 });

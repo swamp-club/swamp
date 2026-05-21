@@ -191,25 +191,9 @@ export const repoUpgradeCommand = new Command()
 
 export const repoCommand = new Command()
   .name("repo")
-  .description("Initialize a swamp repository (or manage existing ones)")
-  .arguments("[path:string]")
-  .option("-f, --force", "Reinitialize if already exists")
-  .type("aiTool", aiToolType)
-  .option("-t, --tool <tool:aiTool>", TOOL_FLAG_DESCRIPTION, { collect: true })
-  .action(repoInitAction)
-  .command(
-    "init",
-    new Command()
-      .description("Initialize a new swamp repository")
-      .hidden()
-      .arguments("[path:string]")
-      .option("-f, --force", "Reinitialize if already exists")
-      .type("aiTool", aiToolType)
-      .option(
-        "-t, --tool <tool:aiTool>",
-        TOOL_FLAG_DESCRIPTION,
-        { collect: true },
-      )
-      .action(repoInitAction),
-  )
+  .description("Manage swamp repositories")
+  .action(function () {
+    this.showHelp();
+  })
+  .command("init", repoInitCommand)
   .command("upgrade", repoUpgradeCommand);

@@ -136,6 +136,16 @@ function buildContextSuggestions(
     suggestions.push(
       `swamp extension pull ${unknownName}`,
     );
+  } else if (parentName === "repo") {
+    suggestions.push(
+      `swamp repo init ${unknownName}`,
+    );
+    suggestions.push(
+      `swamp repo upgrade`,
+    );
+    suggestions.push(
+      `swamp update`,
+    );
   } else {
     // Generic: just list available subcommands
     const subcommands = getSubcommandNames(cmd);
