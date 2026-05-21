@@ -741,6 +741,38 @@ time and stored in the registry. During pull, the downloaded archive's checksum
 is verified against the registry. Legacy extensions that predate checksum
 support are marked as "unverified" but still allowed.
 
+## Dependency Trust Audit
+
+Extension source files are scanned for `npm:` and `jsr:` import specifiers
+during the push prepare phase. Each npm dependency is evaluated against trust
+gates adapted from `@bixu/wheelshop`:
+
+### Hard Errors (block push)
+
+- Deprecated packages
+- HIGH, CRITICAL, or UNKNOWN severity vulnerabilities (via OSV.dev)
+
+### Warnings (shown but don't block)
+
+- MEDIUM severity vulnerabilities
+- License not in the allowlist (MIT, Apache-2.0, BSD-2/3-Clause, ISC, 0BSD,
+  MPL-2.0, Unlicense, CC0-1.0)
+- No maintainers listed
+- Weekly downloads below 1,000
+- Last publish more than 24 months ago
+
+### jsr Dependencies
+
+jsr packages trust jsr's built-in enforcement (SPDX license requirement,
+provenance, no install scripts) and skip gates where data is unavailable.
+
+### Quality Rubric Factor
+
+Dependency trust is a rubric scoring factor (`dependency-trust`, worth 2
+points). It flows through both `swamp extension quality` (CLI) and swamp-club's
+server-side scorer. The factor earns points when all dependencies pass trust
+gates (no hard-error blockers).
+
 ## Registry
 
 Extensions are distributed through the swamp registry at `https://swamp-club.com`.

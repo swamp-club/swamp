@@ -292,9 +292,12 @@ third-party score: **12/13 = 92% (Grade A)**.
 
 Key factors: README in `additionalFiles:`, LICENSE file, JSDoc coverage ≥80%,
 explicit return types, manifest `description:`, `repository:` URL on allowlisted
-host.
+host, dependency trust (no deprecated or vulnerable npm deps).
 
 Run `swamp extension quality manifest.yaml --json` for a local self-check.
+Dependency trust is evaluated automatically — npm dependencies are audited
+against OSV.dev advisories and trust signals (downloads, license, recency,
+maintainer count). HIGH/CRITICAL vulnerabilities block push.
 
 See [references/quality/rubric.md](references/quality/rubric.md) for the full
 rubric and [references/quality/templates.md](references/quality/templates.md)

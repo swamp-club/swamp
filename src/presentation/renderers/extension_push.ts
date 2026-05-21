@@ -28,12 +28,15 @@ import { UserError } from "../../domain/errors.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import type { SafetyIssue } from "../../domain/extensions/extension_safety_analyzer.ts";
 import type { QualityIssue } from "../../domain/extensions/extension_quality_checker.ts";
+import type { DependencyTrustIssue } from "../../domain/extensions/extension_dependency_trust_checker.ts";
 import type { CollectiveMismatch } from "../../domain/extensions/extension_collective_validator.ts";
 import type { CompilationError } from "../../libswamp/mod.ts";
 
 /** Extended renderer with methods for the prepare-phase outputs. */
 export interface ExtensionPushRenderer extends Renderer<ExtensionPushEvent> {
   renderResolved(data: ExtensionPushResolvedData): void;
+  renderDependencyTrustWarnings(warnings: DependencyTrustIssue[]): void;
+  renderDependencyTrustErrors(errors: DependencyTrustIssue[]): void;
   renderSafetyWarnings(warnings: SafetyIssue[]): void;
   renderSafetyErrors(errors: SafetyIssue[]): void;
   renderCollectiveErrors(
@@ -160,6 +163,20 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
     }
   }
 
+  renderDependencyTrustWarnings(warnings: DependencyTrustIssue[]): void {
+    this.logger.warn`Dependency trust warnings:`;
+    for (const w of warnings) {
+      this.logger.warn`  ${w.dependency}: ${w.message}`;
+    }
+  }
+
+  renderDependencyTrustErrors(errors: DependencyTrustIssue[]): void {
+    this.logger.error`Dependency trust errors (push blocked):`;
+    for (const e of errors) {
+      this.logger.error`  ${e.dependency}: ${e.message}`;
+    }
+  }
+
   renderSafetyWarnings(warnings: SafetyIssue[]): void {
     this.logger.warn`Safety warnings:`;
     for (const w of warnings) {
@@ -252,6 +269,16 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
 class JsonExtensionPushRenderer implements ExtensionPushRenderer {
   renderResolved(data: ExtensionPushResolvedData): void {
     console.log(JSON.stringify(data, null, 2));
+  }
+
+  renderDependencyTrustWarnings(warnings: DependencyTrustIssue[]): void {
+    console.log(
+      JSON.stringify({ dependencyTrustWarnings: warnings }, null, 2),
+    );
+  }
+
+  renderDependencyTrustErrors(errors: DependencyTrustIssue[]): void {
+    console.log(JSON.stringify({ dependencyTrustErrors: errors }, null, 2));
   }
 
   renderSafetyWarnings(warnings: SafetyIssue[]): void {

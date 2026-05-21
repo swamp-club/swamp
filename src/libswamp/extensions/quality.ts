@@ -32,6 +32,11 @@ import {
 import { extractTarGz } from "../../infrastructure/archive/tar_archive.ts";
 import { EmbeddedDenoRuntime } from "../../infrastructure/runtime/embedded_deno_runtime.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
+import { extractDependencySpecifiers } from "../../domain/extensions/extension_dependency_extractor.ts";
+import {
+  checkDependencyTrust,
+  type DependencyTrustResult,
+} from "../../domain/extensions/extension_dependency_trust_checker.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import {
@@ -108,6 +113,7 @@ export async function* extensionQuality(
 
       let archiveBytes: Uint8Array;
       let cacheHit = false;
+      let dependencyTrustResult: DependencyTrustResult | undefined = undefined;
 
       const cached = await deps.cache.get(hash);
       if (cached) {
@@ -116,6 +122,20 @@ export async function* extensionQuality(
         ctx.logger
           .debug`Cache hit: reusing ${cached.archiveBytes.length} bytes`;
         yield { kind: "cache_hit", hash };
+
+        const sourceFiles = [
+          ...input.prepareInput.allModelFiles,
+          ...input.prepareInput.allVaultFiles,
+          ...input.prepareInput.allDriverFiles,
+          ...input.prepareInput.allDatastoreFiles,
+          ...input.prepareInput.allReportFiles,
+        ];
+        const specifiers = await extractDependencySpecifiers(sourceFiles);
+        if (specifiers.length > 0) {
+          dependencyTrustResult = await checkDependencyTrust(specifiers);
+        } else {
+          dependencyTrustResult = { errors: [], warnings: [], passed: true };
+        }
       } else {
         yield { kind: "packaging" };
         let prepared: ExtensionPushPrepared;
@@ -130,6 +150,7 @@ export async function* extensionQuality(
           return;
         }
         archiveBytes = prepared.archiveBytes;
+        dependencyTrustResult = prepared.dependencyTrustResult;
         await deps.cache.put(hash, archiveBytes, {
           extensionName: input.prepareInput.manifest.name,
           extensionVersion: input.prepareInput.manifest.version,
@@ -145,6 +166,12 @@ export async function* extensionQuality(
         archiveBytes,
         input.prepareInput.manifest,
         scoreDeps,
+        dependencyTrustResult
+          ? {
+            dependencyTrustPassed: dependencyTrustResult.passed,
+            dependencyTrustBlockerCount: dependencyTrustResult.errors.length,
+          }
+          : undefined,
       );
 
       yield {
