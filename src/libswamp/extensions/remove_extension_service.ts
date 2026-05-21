@@ -21,7 +21,10 @@ import { dirname, join, resolve } from "@std/path";
 import { tombstoneAll } from "../../domain/extensions/extension.ts";
 import type { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
 import type { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
-import { swampPath } from "../../infrastructure/persistence/paths.ts";
+import {
+  bundleNamespace,
+  swampPath,
+} from "../../infrastructure/persistence/paths.ts";
 import { UserError } from "../../domain/errors.ts";
 import { PER_EXTENSION_SCAFFOLD_DIRS } from "./layout.ts";
 
@@ -166,7 +169,29 @@ export class RemoveExtensionService {
       parentDirs.push(join(extensionRoot, scaffoldDir));
     }
 
-    // 6. Prune empty parent directories up to (but not including)
+    // 6. Add the bundle namespace dirs that `pull` creates
+    //    unconditionally for each per-extension kind dir. These are
+    //    never recorded as tracked files when the extension ships no
+    //    content for that bundle kind — same shape as the scaffold-dir
+    //    fix above. Maps source kind → top-level bundle kind, matching
+    //    the five mkdir+copyDir pairs in pull.ts.
+    const BUNDLE_MAPPINGS: ReadonlyArray<[string, string]> = [
+      ["models", "bundles"],
+      ["vaults", "vault-bundles"],
+      ["drivers", "driver-bundles"],
+      ["datastores", "datastore-bundles"],
+      ["reports", "report-bundles"],
+    ];
+    for (const [sourceKind, bundleKind] of BUNDLE_MAPPINGS) {
+      parentDirs.push(
+        join(
+          swampPath(this.repoDir, bundleKind),
+          bundleNamespace(join(extensionRoot, sourceKind), this.repoDir),
+        ),
+      );
+    }
+
+    // 7. Prune empty parent directories up to (but not including)
     //    the repo root.
     const dirsRemoved = await pruneEmptyDirs(parentDirs, this.repoDir);
 
