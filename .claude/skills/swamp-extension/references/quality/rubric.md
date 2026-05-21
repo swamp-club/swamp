@@ -1,7 +1,7 @@
 # Swamp Club scorecard rubric — complete reference
 
-The rubric evaluates an extension against 11 factors, totaling 13 points. The
-displayed percentage is `floor(earned * 100 / 13)`. The letter grade is derived
+The rubric evaluates an extension against 12 factors, totaling 15 points. The
+displayed percentage is `floor(earned * 100 / 15)`. The letter grade is derived
 from the percentage.
 
 ## Grade thresholds
@@ -18,9 +18,9 @@ from the percentage.
 
 | Extension type                  | Ceiling      | Why                                                    |
 | ------------------------------- | ------------ | ------------------------------------------------------ |
-| Third-party, all factors earned | 12/13 = 92%  | `verified-by-swamp` is unearnable without admin review |
-| First-party (`@swamp/*`)        | 13/13 = 100% | First-party namespace auto-earns `verified-by-swamp`   |
-| Admin-curated third-party       | 13/13 = 100% | Admin review endpoint earns the factor                 |
+| Third-party, all factors earned | 14/15 = 93%  | `verified-by-swamp` is unearnable without admin review |
+| First-party (`@swamp/*`)        | 15/15 = 100% | First-party namespace auto-earns `verified-by-swamp`   |
+| Admin-curated third-party       | 15/15 = 100% | Admin review endpoint earns the factor                 |
 
 ## Per-factor reference
 
@@ -165,6 +165,31 @@ public API, which only the SaaS instances of those four hosts expose.
 Verification is cached for 7 days on the extension record. URL changes clear the
 cache and trigger re-verification.
 
+### `dependency-trust` (2 pts)
+
+Earned when all npm dependencies pass the supply-chain trust gates. The CLI
+extracts `npm:` and `jsr:` import specifiers from extension source files and
+audits them against OSV.dev advisories and the npm registry.
+
+**Blockers (prevent push and fail the factor):**
+
+- HIGH or CRITICAL severity vulnerabilities (from OSV.dev)
+- Deprecated packages (npm registry `deprecated` field)
+
+**Warnings (displayed but do not block):**
+
+- MEDIUM severity vulnerabilities
+- Low weekly downloads (< 1000)
+- Stale last-publish (> 2 years)
+- Non-OSI-approved license
+- Single maintainer
+
+jsr packages trust jsr's built-in enforcement and skip gates where npm-specific
+data is unavailable.
+
+If the dependency audit does not run (e.g. cached push without re-audit), the
+factor defaults to `missing` — no free points.
+
 ### `verified-by-swamp` (1 pt)
 
 Earned in one of two ways:
@@ -175,7 +200,7 @@ Earned in one of two ways:
    curation endpoint (not yet built)
 
 Third-party authors should not try to earn this factor. It is the deliberate gap
-between 92% and 100%.
+between 93% and 100%.
 
 ## Factors in the codebase but not currently rendered
 
@@ -187,7 +212,7 @@ flag (`PROVENANCE_IN_RUBRIC = false`) because CLI-side signing support has not
 shipped. When the CLI lands provenance support and the flag flips, the rubric
 divisor becomes 14 and extensions published from CI earn an additional point.
 
-## Worked example: a third-party extension that earns 92%
+## Worked example: a third-party extension that earns 93%
 
 Manifest:
 
@@ -225,9 +250,10 @@ Factor results:
 | platforms-two       | 1/1    | 2 platforms listed                           |
 | has-license         | 1/1    | LICENSE file in additionalFiles              |
 | repository-verified | 2/2    | Public github.com URL                        |
+| dependency-trust    | 2/2    | No deprecated or vulnerable npm deps         |
 | verified-by-swamp   | 0/1    | Third-party, not admin-curated               |
 
-**Total: 12/13 = 92% Grade A.**
+**Total: 14/15 = 93% Grade A.**
 
 ## Ceiling with future provenance
 
@@ -235,10 +261,10 @@ Once `PROVENANCE_IN_RUBRIC` is enabled:
 
 | State                          | Divisor | Third-party ceiling |
 | ------------------------------ | ------- | ------------------- |
-| Flags off (current)            | 13      | 12/13 = 92%         |
-| Provenance on, publish from CI | 14      | 13/14 = 92%         |
-| Provenance on, no CI publish   | 14      | 12/14 = 85%         |
+| Flags off (current)            | 15      | 14/15 = 93%         |
+| Provenance on, publish from CI | 16      | 15/16 = 93%         |
+| Provenance on, no CI publish   | 16      | 14/16 = 87%         |
 
-When the flag flips, extensions not publishing from CI will see an 8%
-regression. Authors who want to stay at 92% will need to switch to publishing
-via GitHub Actions at that point.
+When the flag flips, extensions not publishing from CI will see a 6% regression.
+Authors who want to stay at 93% will need to switch to publishing via GitHub
+Actions at that point.

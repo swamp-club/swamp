@@ -287,8 +287,8 @@ If an extension doesn't appear after creation, delete stale bundles
 
 ## Quality Scorecard
 
-Swamp Club scores published extensions against an 11-factor rubric. Maximum
-third-party score: **12/13 = 92% (Grade A)**.
+Swamp Club scores published extensions against a 12-factor rubric. Maximum
+third-party score: **14/15 = 93% (Grade A)**.
 
 Key factors: README in `additionalFiles:`, LICENSE file, JSDoc coverage ≥80%,
 explicit return types, manifest `description:`, `repository:` URL on allowlisted
