@@ -64,8 +64,8 @@ function makeManifest(
 
 // ── Pure helper tests (mirror server analysis-factors_test.ts) ─────────
 
-Deno.test("RUBRIC_VERSION is 2 (matches swamp-club)", () => {
-  assertEquals(RUBRIC_VERSION, 2);
+Deno.test("RUBRIC_VERSION is 3 (matches swamp-club)", () => {
+  assertEquals(RUBRIC_VERSION, 3);
 });
 
 Deno.test("SLOW_TYPE_CODES contains expected codes", () => {
@@ -381,13 +381,15 @@ function factorsAllEarned(): Parameters<typeof composeScore>[0] {
     readmeLength: 800,
     readmeCodeBlockCount: 3,
     hasLicenseFile: true,
+    dependencyTrustPassed: true,
+    dependencyTrustBlockerCount: 0,
   };
 }
 
-Deno.test("composeScore: perfect extension earns 12/12 (100%)", () => {
+Deno.test("composeScore: perfect extension earns 14/14 (100%)", () => {
   const score = composeScore(factorsAllEarned(), makeManifest());
-  assertEquals(score.earnedPoints, 12);
-  assertEquals(score.maxEarnablePoints, 12);
+  assertEquals(score.earnedPoints, 14);
+  assertEquals(score.maxEarnablePoints, 14);
   assertEquals(score.percentage, 100);
   assertEquals(score.allPassed, true);
 });
@@ -526,17 +528,18 @@ Deno.test("composeScore: factor IDs and order match server", () => {
     "platforms",
     "has-license",
     "repository-verified",
+    "dependency-trust",
   ]);
 });
 
 Deno.test("composeScore: percentage floors (not rounds)", () => {
-  // 11/12 = 91.67 → floor = 91
+  // 13/14 = 92.86 → floor = 92
   const score = composeScore(
     { ...factorsAllEarned(), hasLicenseFile: false },
     makeManifest(),
   );
-  assertEquals(score.earnedPoints, 11);
-  assertEquals(score.percentage, 91);
+  assertEquals(score.earnedPoints, 13);
+  assertEquals(score.percentage, 92);
 });
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -699,6 +702,8 @@ Deno.test(
       readmeLength: readme.length,
       readmeCodeBlockCount: 1,
       hasLicenseFile: false,
+      dependencyTrustPassed: false,
+      dependencyTrustBlockerCount: 0,
     });
   },
 );
@@ -829,6 +834,8 @@ Deno.test("[parity] composeScore: empty everything earns universal-platform only
       readmeLength: null,
       readmeCodeBlockCount: null,
       hasLicenseFile: false,
+      dependencyTrustPassed: false,
+      dependencyTrustBlockerCount: 0,
     },
     makeManifest({
       description: "",
@@ -836,11 +843,11 @@ Deno.test("[parity] composeScore: empty everything earns universal-platform only
       platforms: [],
     }),
   );
-  // Universal platforms earns 2 points (single platforms factor).
+  // Universal platforms earns 2 points only; dependency-trust fails.
   assertEquals(score.earnedPoints, 2);
-  assertEquals(score.percentage, Math.floor((2 * 100) / 12));
-  assertEquals(score.rubricVersion, 2);
-  assertEquals(score.factors.length, 9);
+  assertEquals(score.percentage, Math.floor((2 * 100) / 14));
+  assertEquals(score.rubricVersion, 3);
+  assertEquals(score.factors.length, 10);
   const byId = new Map(score.factors.map((f) => [f.id, f]));
   assertEquals(byId.get("platforms")?.status, "earned");
   assertEquals(byId.get("platforms")?.earnedPoints, 2);
@@ -853,19 +860,19 @@ Deno.test("[parity] composeScore: empty everything earns universal-platform only
 
 Deno.test("[parity] composeScore: perfect score hits 100% without any verification badge", () => {
   const score = composeScore(factorsAllEarned(), makeManifest());
-  // 12/12
-  assertEquals(score.earnedPoints, 12);
+  // 14/14
+  assertEquals(score.earnedPoints, 14);
   assertEquals(score.percentage, 100);
   assertEquals(score.allPassed, true);
 });
 
-Deno.test("[parity] composeScore: percentage floors (11/12 → 91)", () => {
+Deno.test("[parity] composeScore: percentage floors (13/14 → 92)", () => {
   const score = composeScore(
     { ...factorsAllEarned(), hasLicenseFile: false },
     makeManifest(),
   );
-  assertEquals(score.earnedPoints, 11);
-  assertEquals(score.percentage, 91);
+  assertEquals(score.earnedPoints, 13);
+  assertEquals(score.percentage, 92);
 });
 
 Deno.test("[parity] composeScore: platforms factor earns 2 for any count", () => {
@@ -895,4 +902,27 @@ Deno.test("[parity] composeScore: platforms factor earns 2 for any count", () =>
   const m3 = new Map(s3.factors.map((f) => [f.id, f]));
   assertEquals(m3.get("platforms")?.status, "earned");
   assertEquals(m3.get("platforms")?.earnedPoints, 2);
+});
+
+Deno.test("composeScore: dependency-trust is worth 2 points when passing", () => {
+  const score = composeScore(factorsAllEarned(), makeManifest());
+  const factor = score.factors.find((f) => f.id === "dependency-trust")!;
+  assertEquals(factor.maxPoints, 2);
+  assertEquals(factor.earnedPoints, 2);
+  assertEquals(factor.status, "earned");
+});
+
+Deno.test("composeScore: dependency-trust fails with blockers", () => {
+  const score = composeScore(
+    {
+      ...factorsAllEarned(),
+      dependencyTrustPassed: false,
+      dependencyTrustBlockerCount: 3,
+    },
+    makeManifest(),
+  );
+  const factor = score.factors.find((f) => f.id === "dependency-trust")!;
+  assertEquals(factor.earnedPoints, 0);
+  assertEquals(factor.status, "missing");
+  assertStringIncludes(factor.remediation ?? "", "3 dependency blocker(s)");
 });

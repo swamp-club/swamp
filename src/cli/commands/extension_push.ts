@@ -48,6 +48,7 @@ import {
 } from "../../presentation/renderers/extension_push.ts";
 import type { SafetyIssue } from "../../domain/extensions/extension_safety_analyzer.ts";
 import type { QualityIssue } from "../../domain/extensions/extension_quality_checker.ts";
+import type { DependencyTrustIssue } from "../../domain/extensions/extension_dependency_trust_checker.ts";
 import type {
   CollectiveMismatch,
 } from "../../domain/extensions/extension_collective_validator.ts";
@@ -336,6 +337,7 @@ export const extensionPushCommand = new Command()
         additionalFilePaths,
         binaryFilePaths,
         dryRun: options.dryRun ?? false,
+
         releaseNotes: options.releaseNotes,
         denoConfigPath,
         packageJsonDir,
@@ -345,7 +347,11 @@ export const extensionPushCommand = new Command()
       // Handle structured errors from the prepare phase with rich rendering
       if (isSwampError(error)) {
         const details = error.details as Record<string, unknown> | undefined;
-        if (details?.safetyErrors) {
+        if (details?.dependencyTrustErrors) {
+          renderer.renderDependencyTrustErrors(
+            details.dependencyTrustErrors as DependencyTrustIssue[],
+          );
+        } else if (details?.safetyErrors) {
           renderer.renderSafetyErrors(
             details.safetyErrors as SafetyIssue[],
           );
@@ -399,6 +405,7 @@ export const extensionPushCommand = new Command()
                   additionalFilePaths,
                   binaryFilePaths,
                   dryRun: options.dryRun ?? false,
+
                   releaseNotes: options.releaseNotes,
                   denoConfigPath,
                   packageJsonDir,
@@ -447,7 +454,14 @@ export const extensionPushCommand = new Command()
     // 5. Render resolved data
     renderer.renderResolved(prepared.resolvedData);
 
-    // 6. Handle safety warnings
+    // 6. Handle dependency trust warnings
+    if (prepared.dependencyTrustResult.warnings.length > 0) {
+      renderer.renderDependencyTrustWarnings(
+        prepared.dependencyTrustResult.warnings,
+      );
+    }
+
+    // 6b. Handle safety warnings
     if (prepared.safetyWarnings.length > 0) {
       renderer.renderSafetyWarnings(prepared.safetyWarnings);
       if (!options.yes && cliCtx.outputMode === "log") {

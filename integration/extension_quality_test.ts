@@ -180,7 +180,7 @@ past the floor without blowing the fixture up.
 }
 
 Deno.test(
-  "extension quality: fully-documented extension scores 12/12 (100%)",
+  "extension quality: fully-documented extension scores 14/14 (100%)",
   async () => {
     const tmpDir = await initTempRepo();
     try {
@@ -203,9 +203,9 @@ Deno.test(
       }
       const parsed = parseFirstJson(stdout);
       assertEquals(parsed.status, "passed");
-      assertEquals(parsed.rubricVersion, 2);
-      assertEquals(parsed.earnedPoints, 12);
-      assertEquals(parsed.maxEarnablePoints, 12);
+      assertEquals(parsed.rubricVersion, 3);
+      assertEquals(parsed.earnedPoints, 14);
+      assertEquals(parsed.maxEarnablePoints, 14);
       assertEquals(parsed.percentage, 100);
       assertEquals(parsed.allPassed, true);
 
@@ -456,7 +456,7 @@ Deno.test("extension quality: log mode renders per-factor lines", async () => {
     }
     // The renderer logs to stderr via logtape; check both streams.
     const combined = stdout + stderr;
-    assertStringIncludes(combined, "Rubric v2");
+    assertStringIncludes(combined, "Rubric v3");
     assertStringIncludes(combined, "has-readme");
     assertStringIncludes(combined, "fast-check");
     assertStringIncludes(combined, "symbols-docs");

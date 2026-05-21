@@ -51,7 +51,7 @@ import type { ExtensionManifest } from "./extension_manifest.ts";
  */
 
 /** Schema version. Matches swamp-club's RUBRIC_VERSION. */
-export const RUBRIC_VERSION = 2;
+export const RUBRIC_VERSION = 3;
 
 /**
  * Slow-type diagnostic codes emitted by `deno doc --lint`. When any of
@@ -191,6 +191,8 @@ export interface AnalysisFactors {
   readmeLength: number | null;
   readmeCodeBlockCount: number | null;
   hasLicenseFile: boolean;
+  dependencyTrustPassed: boolean;
+  dependencyTrustBlockerCount: number;
 }
 
 /**
@@ -204,6 +206,8 @@ export function computeAnalysisFactors(input: {
   hasLicenseFile: boolean;
   doc: DocOutput;
   rawLintOutput: string;
+  dependencyTrustPassed?: boolean;
+  dependencyTrustBlockerCount?: number;
 }): AnalysisFactors {
   const { entrypointUrls, readme, hasLicenseFile, doc, rawLintOutput } = input;
 
@@ -243,6 +247,8 @@ export function computeAnalysisFactors(input: {
     readmeLength,
     readmeCodeBlockCount,
     hasLicenseFile,
+    dependencyTrustPassed: input.dependencyTrustPassed ?? false,
+    dependencyTrustBlockerCount: input.dependencyTrustBlockerCount ?? 0,
   };
 }
 
@@ -380,6 +386,10 @@ export function composeScore(
           "codeberg.org, or bitbucket.org. Server will verify it resolves publicly.",
       },
     ),
+    dependencyTrustRow(
+      factors.dependencyTrustPassed,
+      factors.dependencyTrustBlockerCount,
+    ),
   ];
 
   const earned = rows.reduce((s, r) => s + r.earnedPoints, 0);
@@ -439,6 +449,25 @@ function richReadmeRow(
     remediation: earned
       ? undefined
       : `Expand README to ≥${RICH_README_MIN_LENGTH} chars with ≥${RICH_README_MIN_CODE_BLOCKS} fenced blocks.`,
+  };
+}
+
+function dependencyTrustRow(
+  passed: boolean,
+  blockerCount: number,
+): RubricFactor {
+  const remediation = blockerCount > 0
+    ? `${blockerCount} dependency blocker(s) found (deprecated packages or ` +
+      `HIGH/CRITICAL vulnerabilities). See the blocker details above, ` +
+      `then update or replace the flagged dependencies.`
+    : "Resolve dependency trust issues — update or replace flagged dependencies.";
+  return {
+    id: "dependency-trust",
+    label: "Dependencies pass trust gates",
+    earnedPoints: passed ? 2 : 0,
+    maxPoints: 2,
+    status: passed ? "earned" : "missing",
+    remediation: passed ? undefined : remediation,
   };
 }
 
@@ -552,6 +581,10 @@ export async function scoreExtensionTarball(
   tarballBytes: Uint8Array,
   manifest: ExtensionManifest,
   deps: RubricScoreDeps,
+  options?: {
+    dependencyTrustPassed?: boolean;
+    dependencyTrustBlockerCount?: number;
+  },
 ): Promise<RubricScore> {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_quality_" });
   try {
@@ -610,6 +643,8 @@ export async function scoreExtensionTarball(
       hasLicenseFile,
       doc,
       rawLintOutput: lintOutput,
+      dependencyTrustPassed: options?.dependencyTrustPassed,
+      dependencyTrustBlockerCount: options?.dependencyTrustBlockerCount,
     });
 
     return composeScore(analysisFactors, manifest);

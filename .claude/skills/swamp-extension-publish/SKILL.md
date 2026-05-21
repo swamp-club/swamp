@@ -139,7 +139,8 @@ swamp extension fmt manifest.yaml --check --json
 details.
 
 **Optional:** Run `swamp extension quality manifest.yaml --json` between States
-6 and 7 for a rubric score. See
+6 and 7 for a rubric score. This now includes dependency trust evaluation — npm
+dependencies are audited against OSV.dev advisories and trust signals. See
 [references/publishing.md](references/publishing.md#quality-self-check) for
 details.
 

@@ -26,6 +26,12 @@ import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 
+function formatDownloads(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return String(n);
+}
+
 /** Renderer interface that also reports pass/fail to the CLI. */
 export interface ExtensionQualityRenderer
   extends Renderer<ExtensionQualityEvent> {
@@ -73,6 +79,38 @@ class LogExtensionQualityRenderer implements ExtensionQualityRenderer {
             logger.info`      → ${factor.remediation}`;
           }
         }
+        const { dependencyTrustResult } = e.data;
+        if (dependencyTrustResult.audited.length > 0) {
+          for (const dep of dependencyTrustResult.audited) {
+            const mark = dep.passed ? "✓" : "✗";
+            const parts: string[] = [];
+            if (dep.registry === "jsr") {
+              parts.push("jsr (trusted)");
+            } else {
+              if (dep.license) parts.push(dep.license);
+              if (dep.weeklyDownloads !== null) {
+                parts.push(`${formatDownloads(dep.weeklyDownloads)}/week`);
+              }
+              if (dep.publishedAgo) parts.push(dep.publishedAgo);
+            }
+            const detail = parts.length > 0 ? ` — ${parts.join(", ")}` : "";
+            logger.info`      ${mark} ${dep.name}@${dep.version}${detail}`;
+          }
+        } else {
+          logger.info`      No npm/jsr dependencies to audit`;
+        }
+        if (dependencyTrustResult.errors.length > 0) {
+          logger.error`Dependency trust blockers (push blocked):`;
+          for (const err of dependencyTrustResult.errors) {
+            logger.error`  ${err.dependency}: ${err.message}`;
+          }
+        }
+        if (dependencyTrustResult.warnings.length > 0) {
+          logger.warn`Dependency trust warnings (non-blocking):`;
+          for (const w of dependencyTrustResult.warnings) {
+            logger.warn`  ${w.dependency}: ${w.message}`;
+          }
+        }
         // `repository-verified` is a structural check on our side — the
         // server does the final HTTP HEAD to confirm the repo is public.
         // Surface that caveat so users know why their local "earned"
@@ -115,7 +153,13 @@ class JsonExtensionQualityRenderer implements ExtensionQualityRenderer {
       cache_hit: () => {},
       scoring: () => {},
       completed: (e) => {
-        const { score, cacheHash, archiveSize, cacheHit } = e.data;
+        const {
+          score,
+          cacheHash,
+          archiveSize,
+          cacheHit,
+          dependencyTrustResult,
+        } = e.data;
         console.log(JSON.stringify(
           {
             status: score.allPassed ? "passed" : "failed",
@@ -125,6 +169,12 @@ class JsonExtensionQualityRenderer implements ExtensionQualityRenderer {
             percentage: score.percentage,
             allPassed: score.allPassed,
             factors: score.factors,
+            dependencyTrust: {
+              passed: dependencyTrustResult.passed,
+              audited: dependencyTrustResult.audited,
+              errors: dependencyTrustResult.errors,
+              warnings: dependencyTrustResult.warnings,
+            },
             cacheHash,
             archiveSize,
             cacheHit,

@@ -31,6 +31,8 @@ import type {
   SafetyIssue,
 } from "../../domain/extensions/extension_safety_analyzer.ts";
 import type { QualityCheckResult } from "../../domain/extensions/extension_quality_checker.ts";
+import type { DependencySpecifier } from "../../domain/extensions/extension_dependency_extractor.ts";
+import type { DependencyTrustResult } from "../../domain/extensions/extension_dependency_trust_checker.ts";
 import type { ExtensionManifest } from "../../domain/extensions/extension_manifest.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
@@ -171,6 +173,7 @@ export interface ExtensionPushPrepareInput {
 export interface ExtensionPushPrepared {
   resolvedData: ExtensionPushResolvedData;
   safetyWarnings: SafetyIssue[];
+  dependencyTrustResult: DependencyTrustResult;
   archiveBytes: Uint8Array;
   manifest: ExtensionManifest;
   contentMetadata: ExtensionContentMetadata | undefined;
@@ -244,6 +247,12 @@ export interface ExtensionPushPrepareDeps {
     denoPath: string,
     options?: { denoConfigPath?: string; packageJsonDir?: string },
   ) => Promise<string>;
+  extractDependencySpecifiers: (
+    sourceFiles: string[],
+  ) => Promise<DependencySpecifier[]>;
+  checkDependencyTrust: (
+    specifiers: DependencySpecifier[],
+  ) => Promise<DependencyTrustResult>;
   ensureDenoPath: () => Promise<string>;
   getLatestVersion: (
     serverUrl: string,
@@ -297,6 +306,8 @@ import {
 import { ExtensionApiClient } from "../../infrastructure/http/extension_api_client.ts";
 import { analyzeExtensionSafety } from "../../domain/extensions/extension_safety_analyzer.ts";
 import { checkExtensionQuality } from "../../domain/extensions/extension_quality_checker.ts";
+import { extractDependencySpecifiers } from "../../domain/extensions/extension_dependency_extractor.ts";
+import { checkDependencyTrust } from "../../domain/extensions/extension_dependency_trust_checker.ts";
 import { bundleExtension } from "../../domain/models/bundle.ts";
 import { extractContentMetadata } from "../../domain/extensions/extension_content_extractor.ts";
 import { EmbeddedDenoRuntime } from "../../infrastructure/runtime/embedded_deno_runtime.ts";
@@ -329,6 +340,8 @@ export function createExtensionPushPrepareDeps(): ExtensionPushPrepareDeps {
     extractContentMetadata,
     analyzeExtensionSafety,
     checkExtensionQuality,
+    extractDependencySpecifiers,
+    checkDependencyTrust,
     bundleEntryPoint: bundleExtension,
     ensureDenoPath: () => denoRuntime.ensureDeno(),
     getLatestVersion: async (serverUrl, name, apiKey) => {
@@ -512,7 +525,35 @@ export async function extensionPushPrepare(
     );
   }
 
-  // 6b. Validate skills and populate content metadata
+  // 7. Dependency trust audit
+  let dependencyTrustResult: DependencyTrustResult;
+  const sourceFiles = [
+    ...input.allModelFiles,
+    ...input.allVaultFiles,
+    ...input.allDriverFiles,
+    ...input.allDatastoreFiles,
+    ...input.allReportFiles,
+  ];
+  const specifiers = await deps.extractDependencySpecifiers(sourceFiles);
+  if (specifiers.length > 0) {
+    ctx.logger.debug`Auditing ${specifiers.length} dependency specifier(s)`;
+    dependencyTrustResult = await deps.checkDependencyTrust(specifiers);
+    if (dependencyTrustResult.errors.length > 0) {
+      throw validationFailed(
+        "Extension has dependency trust errors that must be resolved before pushing.",
+        { dependencyTrustErrors: dependencyTrustResult.errors },
+      );
+    }
+  } else {
+    dependencyTrustResult = {
+      errors: [],
+      warnings: [],
+      audited: [],
+      passed: true,
+    };
+  }
+
+  // 8. Validate skills and populate content metadata
   if (input.skillDirs.length > 0) {
     const skillResult = await validateExtensionSkills(input.skillDirs);
     if (skillResult.errors.length > 0) {
@@ -542,14 +583,14 @@ export async function extensionPushPrepare(
     }
   }
 
-  // 7. Resolve deno binary (only needed when building a fresh archive)
+  // 9. Resolve deno binary (only needed when building a fresh archive)
   const usingCachedArchive = input.cachedArchive !== undefined;
   let denoPath = "";
   if (!usingCachedArchive) {
     denoPath = await deps.ensureDenoPath();
   }
 
-  // 8. Quality checks — skip on cache hit (the cached archive was
+  // 10. Quality checks — skip on cache hit (the cached archive was
   // written only after quality checks passed)
   if (!usingCachedArchive) {
     const qualityResult = await deps.checkExtensionQuality(
@@ -565,7 +606,7 @@ export async function extensionPushPrepare(
     }
   }
 
-  // 9. Bundle entry points + build archive — skip on cache hit
+  // 11. Bundle entry points + build archive — skip on cache hit
   let totalBundles: number;
   let archiveBytes: Uint8Array;
   if (usingCachedArchive) {
@@ -579,7 +620,7 @@ export async function extensionPushPrepare(
     archiveBytes = built.archiveBytes;
   }
 
-  // 10. Check version (skip in dry-run)
+  // 12. Check version (skip in dry-run)
   if (!input.dryRun && credentials) {
     const latest = await deps.getLatestVersion(
       credentials.serverUrl,
@@ -597,6 +638,7 @@ export async function extensionPushPrepare(
   return {
     resolvedData,
     safetyWarnings: safetyResult.warnings,
+    dependencyTrustResult,
     archiveBytes,
     manifest: input.manifest,
     contentMetadata,
