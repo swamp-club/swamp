@@ -19,7 +19,7 @@
 
 import { UserError } from "../errors.ts";
 
-const TRUSTED_ARTIFACT_HOST = "artifacts.systeminit.com";
+const TRUSTED_ARTIFACT_HOST = "artifacts.swamp-club.com";
 
 /**
  * Validate that a redirect URL points to the trusted artifact host over HTTPS.

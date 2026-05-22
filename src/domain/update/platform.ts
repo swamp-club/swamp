@@ -20,7 +20,7 @@
 import { UserError } from "../errors.ts";
 
 const ARTIFACT_BASE_URL =
-  "https://artifacts.systeminit.com/swamp/stable/binary";
+  "https://artifacts.swamp-club.com/swamp/stable/binary";
 
 const SUPPORTED_OS = new Set(["darwin", "linux", "windows"]);
 const SUPPORTED_ARCH = new Set(["aarch64", "x86_64"]);
@@ -77,7 +77,7 @@ export class Platform {
 
   /**
    * Returns the full URL for the stable binary tarball.
-   * e.g. "https://artifacts.systeminit.com/swamp/stable/binary/darwin/aarch64/swamp-stable-binary-darwin-aarch64.tar.gz"
+   * e.g. "https://artifacts.swamp-club.com/swamp/stable/binary/darwin/aarch64/swamp-stable-binary-darwin-aarch64.tar.gz"
    */
   stableUrl(): string {
     return `${ARTIFACT_BASE_URL}/${this.os}/${this.arch}/${this.tarballName}`;

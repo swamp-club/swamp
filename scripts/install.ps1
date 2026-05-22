@@ -111,7 +111,7 @@ function Get-AssetUrl {
     $platform = "$OsType-$CpuType"
     $extension = "zip"
 
-    $url = "https://artifacts.systeminit.com/$BinName/$Version/$type"
+    $url = "https://artifacts.swamp-club.com/$BinName/$Version/$type"
     $url = "$url/$OsType/$CpuType/$BinName-$Version-$type-$platform.$extension"
 
     return $url

@@ -220,7 +220,7 @@ asset_url() {
   type="binary"
   extension="tar.gz"
 
-  asset_url="https://artifacts.systeminit.com/$bin/$version/$type"
+  asset_url="https://artifacts.swamp-club.com/$bin/$version/$type"
   asset_url="$asset_url/$os_type/$cpu_type/$bin-$version-$type-$platform.$extension"
 
   echo "$asset_url"

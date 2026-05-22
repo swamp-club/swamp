@@ -27,7 +27,7 @@ const platform = Platform.from("darwin", "aarch64");
 const currentVersion = "20260207.123456.0-sha.abc12345";
 const newerVersion = "20260208.000000.0-sha.def56789";
 const redirectUrl =
-  `https://artifacts.systeminit.com/swamp/${newerVersion}/binary/darwin/aarch64/swamp-stable-binary-darwin-aarch64.tar.gz`;
+  `https://artifacts.swamp-club.com/swamp/${newerVersion}/binary/darwin/aarch64/swamp-stable-binary-darwin-aarch64.tar.gz`;
 
 function createMockChecker(
   redirect: string | null = null,

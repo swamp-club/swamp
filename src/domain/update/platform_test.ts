@@ -72,7 +72,7 @@ Deno.test("stableUrl returns correct artifact URL for darwin aarch64", () => {
   const platform = Platform.from("darwin", "aarch64");
   assertEquals(
     platform.stableUrl(),
-    "https://artifacts.systeminit.com/swamp/stable/binary/darwin/aarch64/swamp-stable-binary-darwin-aarch64.tar.gz",
+    "https://artifacts.swamp-club.com/swamp/stable/binary/darwin/aarch64/swamp-stable-binary-darwin-aarch64.tar.gz",
   );
 });
 
@@ -80,7 +80,7 @@ Deno.test("stableUrl returns correct artifact URL for darwin x86_64", () => {
   const platform = Platform.from("darwin", "x86_64");
   assertEquals(
     platform.stableUrl(),
-    "https://artifacts.systeminit.com/swamp/stable/binary/darwin/x86_64/swamp-stable-binary-darwin-x86_64.tar.gz",
+    "https://artifacts.swamp-club.com/swamp/stable/binary/darwin/x86_64/swamp-stable-binary-darwin-x86_64.tar.gz",
   );
 });
 
@@ -88,7 +88,7 @@ Deno.test("stableUrl returns correct artifact URL for linux x86_64", () => {
   const platform = Platform.from("linux", "x86_64");
   assertEquals(
     platform.stableUrl(),
-    "https://artifacts.systeminit.com/swamp/stable/binary/linux/x86_64/swamp-stable-binary-linux-x86_64.tar.gz",
+    "https://artifacts.swamp-club.com/swamp/stable/binary/linux/x86_64/swamp-stable-binary-linux-x86_64.tar.gz",
   );
 });
 
@@ -96,7 +96,7 @@ Deno.test("stableUrl returns correct artifact URL for linux aarch64", () => {
   const platform = Platform.from("linux", "aarch64");
   assertEquals(
     platform.stableUrl(),
-    "https://artifacts.systeminit.com/swamp/stable/binary/linux/aarch64/swamp-stable-binary-linux-aarch64.tar.gz",
+    "https://artifacts.swamp-club.com/swamp/stable/binary/linux/aarch64/swamp-stable-binary-linux-aarch64.tar.gz",
   );
 });
 
