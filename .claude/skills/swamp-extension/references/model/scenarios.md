@@ -27,8 +27,8 @@ End-to-end scenarios showing how to build custom extension models.
 ### Decision Tree
 
 ```
-swamp model type search Stripe → no local results
 swamp extension search Stripe → no community extension
+swamp model type search Stripe → no local results
 No existing model → Create extension model
 Need typed input validation → Define Zod schemas
 Store response data for CEL access → Use writeResource
@@ -202,8 +202,8 @@ globalArguments:
 ### Decision Tree
 
 ```
-swamp model type search S3 → no local results
 swamp extension search S3 → no community extension
+swamp model type search S3 → no local results
 No existing model → Create extension model
 Full lifecycle management → create, update, delete methods
 Update reads existing state → Use context.readResource
@@ -517,8 +517,8 @@ jobs:
 ### Decision Tree
 
 ```
-swamp model type search VPC → no local results
 swamp extension search VPC → no community extension
+swamp model type search VPC → no local results
 No existing model → Create extension model
 Discover multiple resources → Factory model pattern
 Each resource needs unique ID → Dynamic instance names
@@ -671,6 +671,7 @@ jobs:
 ### Decision Tree
 
 ```
+swamp extension search shell → no community extension
 swamp model type search command/shell → exists locally
 Want to add methods, not create new type → export const extension
 Cannot change schema → Only add new methods
@@ -782,7 +783,6 @@ Nothing — a community extension already exists.
 ### Decision Tree
 
 ```
-swamp model type search DigitalOcean → no local results
 swamp extension search DigitalOcean → found @swamp/digitalocean
 Community extension exists → Install and use it
 swamp extension pull @swamp/digitalocean → installs the extension
@@ -790,27 +790,20 @@ swamp extension pull @swamp/digitalocean → installs the extension
 
 ### Step-by-Step
 
-**1. Search local types**
-
-```bash
-swamp model type search DigitalOcean --json
-# No results
-```
-
-**2. Search community extensions**
+**1. Search community extensions**
 
 ```bash
 swamp extension search DigitalOcean --json
 # Found: @swamp/digitalocean
 ```
 
-**3. Install the community extension**
+**2. Install the community extension**
 
 ```bash
 swamp extension pull @swamp/digitalocean
 ```
 
-**4. Use the installed model type**
+**3. Use the installed model type**
 
 ```bash
 swamp model type search DigitalOcean --json
@@ -826,5 +819,7 @@ swamp model create @swamp/digitalocean-droplet my-droplet --json
 
 - The agent does NOT offer to create a custom extension model
 - The agent installs the community extension and uses it directly
+- If the extension lacks a needed method, the agent extends it rather than
+  building from scratch
 - The agent only creates a custom model if the community extension is missing or
   does not cover the needed functionality

@@ -91,6 +91,7 @@ function fullEventStream(
       stepId: "step-1",
       modelName: "my-model",
       modelType: "command/shell",
+      modelId: "test-model-id",
       methodName: "run",
     },
     {
@@ -353,6 +354,7 @@ Deno.test("LogWorkflowRunRenderer - handles model_resolved event without error",
       stepId: "step-1",
       modelName: "my-model",
       modelType: "command/shell",
+      modelId: "test-model-id",
       methodName: "run",
     },
     { kind: "step_completed", jobId: "job-1", stepId: "step-1" },
@@ -450,6 +452,7 @@ Deno.test("JsonWorkflowRunRenderer - new step execution events produce no output
         stepId: "step-1",
         modelName: "my-model",
         modelType: "command/shell",
+        modelId: "test-model-id",
         methodName: "run",
       },
       {

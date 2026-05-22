@@ -518,11 +518,11 @@ run concurrently. See
 
 **Steps:**
 
-1. **Search** for the right type: `swamp model type search "shell" --json`
-2. **Search community** if no local type:
-   `swamp extension search <query> --json` — if a matching extension exists,
-   install it with `swamp extension pull <package>` instead of building from
-   scratch
+1. **Search community extensions** first:
+   `swamp extension search <query> --json` — prefer `@swamp/*` official
+   extensions. If a match exists, install with `swamp extension pull <package>`
+   instead of building from scratch
+2. **Search local types**: `swamp model type search "shell" --json`
 3. **Describe** to understand the schema:
    `swamp model type describe command/shell --json`
 4. **Create** an input file: `swamp model create command/shell my-shell --json`

@@ -34,12 +34,17 @@ via `swamp-extension-publish`.
 
 ## Before Creating an Extension
 
-1. `swamp model type search <query>` / `swamp extension search <query>` — does a
-   built-in or community extension already cover it? Use it. Stop.
-2. Trusted collectives (`@swamp/*`, `@si/*`, membership collectives)
-   auto-resolve on first use — `swamp extension trust list` shows which.
-3. For local or private extensions, use `swamp extension source add <path>`.
-4. Only create a new extension if nothing fits.
+1. `swamp extension search <query>` — does a community extension already cover
+   it? Prefer `@swamp/*` official extensions first. Install with
+   `swamp extension pull <package>` and use it. Stop.
+2. `swamp model type search <query>` — check built-in/installed local types.
+3. Extend an existing type (including `@swamp` extensions) if it covers the
+   domain but lacks the method you need.
+4. For local or private extensions, use `swamp extension source add <path>`.
+5. Only create a new extension if nothing fits.
+
+Trusted collectives (`@swamp/*`, `@si/*`, membership collectives) auto-resolve
+on first use — `swamp extension trust list` shows which.
 
 **Never** use `command/shell` to wrap service integrations — build a dedicated
 model.
