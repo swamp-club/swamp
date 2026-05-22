@@ -119,7 +119,7 @@ export class FileLock implements DistributedLock {
   private readonly ttlMs: number;
   private readonly retryIntervalMs: number;
   private readonly maxWaitMs: number;
-  private heartbeatId: number | undefined;
+  private heartbeatId: ReturnType<typeof setInterval> | undefined;
   private held = false;
   private releasing = false;
   private nonce: string | undefined;

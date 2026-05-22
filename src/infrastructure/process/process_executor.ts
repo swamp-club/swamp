@@ -138,7 +138,7 @@ export async function executeProcess(
   if (options.logger) {
     // Streaming mode: log each line in real-time
     const process = command.spawn();
-    let timeoutId: number | undefined;
+    let timeoutId: ReturnType<typeof setTimeout> | undefined;
     let timedOut = false;
 
     if (options.timeoutMs) {

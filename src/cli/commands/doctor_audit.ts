@@ -86,7 +86,7 @@ export async function runChildWithAbort(
   }
   const sigkillAfterMs = opts.sigkillAfterMs ?? DEFAULT_SIGKILL_AFTER_MS;
   const child = cmd.spawn();
-  let escalationTimer: number | undefined;
+  let escalationTimer: ReturnType<typeof setTimeout> | undefined;
   const onAbort = () => {
     try {
       child.kill("SIGTERM");

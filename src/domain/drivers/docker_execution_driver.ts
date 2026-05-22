@@ -114,7 +114,7 @@ export class DockerExecutionDriver implements ExecutionDriver {
   ): Promise<ExecutionResult> {
     const start = performance.now();
     const logs: string[] = [];
-    let killTimeoutId: number | undefined;
+    let killTimeoutId: ReturnType<typeof setTimeout> | undefined;
 
     const run = request.methodArgs.run as string;
     const containerName = `swamp-${crypto.randomUUID().slice(0, 8)}`;
@@ -130,7 +130,7 @@ export class DockerExecutionDriver implements ExecutionDriver {
 
       const process = command.spawn();
       let timedOut = false;
-      let timeoutId: number | undefined;
+      let timeoutId: ReturnType<typeof setTimeout> | undefined;
 
       if (this.config.timeout) {
         timeoutId = setTimeout(() => {
@@ -264,7 +264,7 @@ export class DockerExecutionDriver implements ExecutionDriver {
     const start = performance.now();
     const logs: string[] = [];
     let tempDir: string | undefined;
-    let killTimeoutId: number | undefined;
+    let killTimeoutId: ReturnType<typeof setTimeout> | undefined;
 
     try {
       // Create temp dir with bundle files
@@ -301,7 +301,7 @@ export class DockerExecutionDriver implements ExecutionDriver {
 
       const process = command.spawn();
       let timedOut = false;
-      let timeoutId: number | undefined;
+      let timeoutId: ReturnType<typeof setTimeout> | undefined;
 
       if (this.config.timeout) {
         timeoutId = setTimeout(() => {
