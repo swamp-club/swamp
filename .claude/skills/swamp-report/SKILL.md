@@ -34,6 +34,8 @@ up-to-date CLI schema.
 | Get a stored report      | `swamp report get <report-name> --model <model>`                  |
 | Get report as markdown   | `swamp report get <report-name> --model <model> --markdown`       |
 | Get report as JSON       | `swamp report get <report-name> --model <model> --json`           |
+| Cap total output width   | `swamp report get <report-name> --model <model> --max-width 120`  |
+| Cap column width         | `swamp report get <report-name> --max-col-width 60`               |
 | Run method with reports  | `swamp model method run <model> <method>`                         |
 | Skip all reports         | `swamp model method run <model> <method> --skip-reports`          |
 | Skip report by name      | `swamp model method run <model> <method> --skip-report <n>`       |
@@ -42,10 +44,6 @@ up-to-date CLI schema.
 | Run only labeled reports | `swamp model method run <model> <method> --report-label <l>`      |
 | Workflow with reports    | `swamp workflow run <workflow>`                                   |
 | Workflow skip reports    | `swamp workflow run <workflow> --skip-reports`                    |
-| Get stored report        | `swamp report get <report-name> --model <model> --json`           |
-| Get report as markdown   | `swamp report get <report-name> --model <model> --markdown`       |
-| Cap total output width   | `swamp report get <report-name> --model <model> --max-width 120`  |
-| Cap column width         | `swamp report get <report-name> --max-col-width 60`               |
 
 ## End-to-End Workflow
 
@@ -168,6 +166,18 @@ allowing a push.
 | `--skip-report-label <label>` | Skip reports with this label (repeatable)     |
 | `--report <name>`             | Only run this report (repeatable, inclusion)  |
 | `--report-label <label>`      | Only run reports with this label (repeatable) |
+
+### report get
+
+| Flag                      | Description                                            |
+| ------------------------- | ------------------------------------------------------ |
+| `--model <name>`          | Scope to a specific model                              |
+| `--workflow <name>`       | Scope to a specific workflow                           |
+| `--version <version>`     | Get specific version (default: latest)                 |
+| `--variant <variant>`     | Select a specific forEach variant                      |
+| `--markdown`              | Output as plain markdown instead of terminal-formatted |
+| `--max-width <width>`     | Cap total output width in columns                      |
+| `--max-col-width <width>` | Cap individual table column width in characters        |
 
 ## Report Data Storage
 
