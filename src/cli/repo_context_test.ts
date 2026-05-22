@@ -519,7 +519,9 @@ Deno.test(
       const acquirePromise = acquireModelLocks(datastoreConfig, [
         { modelType: "x", modelId: "y" },
       ], dir);
-      const timeoutHandle: { id: ReturnType<typeof setTimeout> | undefined } = { id: undefined };
+      const timeoutHandle: { id: ReturnType<typeof setTimeout> | undefined } = {
+        id: undefined,
+      };
       const timeoutPromise = new Promise<never>((_, reject) => {
         timeoutHandle.id = setTimeout(
           () =>

@@ -103,8 +103,7 @@ export async function withMockedCommand<T>(
     return new TextEncoder().encode(value);
   }
 
-  // @ts-ignore: replacing Deno.Command for testing
-  Deno.Command = class MockCommand {
+  const MockCommand = class MockCommand {
     #command: string;
     #args: string[];
 
@@ -163,11 +162,20 @@ export async function withMockedCommand<T>(
     }
   };
 
+  Object.defineProperty(Deno, "Command", {
+    value: MockCommand,
+    writable: true,
+    configurable: true,
+  });
+
   try {
     const result = await fn();
     return { result, calls };
   } finally {
-    // @ts-ignore: restoring original Deno.Command
-    Deno.Command = OriginalCommand;
+    Object.defineProperty(Deno, "Command", {
+      value: OriginalCommand,
+      writable: true,
+      configurable: true,
+    });
   }
 }
