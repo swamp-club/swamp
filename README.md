@@ -71,7 +71,7 @@ an external API.
 
 ### Update
 
-Swamp can update itself:
+Swamp can update itself in place:
 
 ```bash
 swamp update
