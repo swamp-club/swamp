@@ -67,7 +67,7 @@ jobs:
       - name: Setup Deno
         uses: denoland/setup-deno@v2
         with:
-          deno-version: v2.x
+          deno-version: v2.7.x
 
       - name: Run deno lint
         run: deno lint
@@ -112,7 +112,7 @@ jobs:
       - name: Setup Deno
         uses: denoland/setup-deno@v2
         with:
-          deno-version: v2.x
+          deno-version: v2.7.x
 
       - name: Scan for known vulnerabilities
         run: deno task audit
@@ -155,7 +155,7 @@ jobs:
       - name: Setup Deno
         uses: denoland/setup-deno@v2
         with:
-          deno-version: v2.x
+          deno-version: v2.7.x
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
@@ -179,7 +179,7 @@ jobs:
       - name: Setup Deno
         uses: denoland/setup-deno@v2
         with:
-          deno-version: v2.x
+          deno-version: v2.7.x
 
       - name: Setup Node.js
         uses: actions/setup-node@v6
