@@ -49,10 +49,12 @@ matching skill (`swamp-model`, `swamp-workflow`, `swamp-vault`, etc.).
 
 **Verify:** The user described a goal. Then find a model type:
 
-1. `swamp model type search <keywords> --json`
-2. If nothing local: `swamp extension search <keywords> --json`
-3. If an extension matches: `swamp extension pull <package>`
-4. If nothing exists, offer a custom extension via `swamp-extension`. Use
+1. `swamp extension search <keywords> --json` — prefer `@swamp/*` official
+   extensions first
+2. If an extension matches: `swamp extension pull <package>`
+3. `swamp model type search <keywords> --json` — check local/installed types
+4. Extend an existing type if it covers the domain but lacks the method you need
+5. If nothing exists, offer a custom extension via `swamp-extension`. Use
    `command/shell` only for genuine one-off ad-hoc commands.
 
 Store the goal — use it to name the model and tailor later examples.
