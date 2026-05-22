@@ -25,7 +25,7 @@ passed.
 
 ```
 start → repo_verified → auth_verified → manifest_validated
-      → versioned → formatted → dry_run_passed → pushed
+      → versioned → formatted → quality_checked → dry_run_passed → pushed
 ```
 
 ## State 1: repo_verified
@@ -138,11 +138,26 @@ swamp extension fmt manifest.yaml --check --json
 [references/publishing.md](references/publishing.md#extension-formatting) for
 details.
 
-**Optional:** Run `swamp extension quality manifest.yaml --json` between States
-6 and 7 for a rubric score. This now includes dependency trust evaluation — npm
-dependencies are audited against OSV.dev advisories and trust signals. See
-[references/publishing.md](references/publishing.md#quality-self-check) for
-details.
+## State 6b: quality_checked
+
+Show the extension's quality score before proceeding. This step is
+**non-blocking** — it does not gate the next state. The score is informational
+so the author sees where they stand before publishing.
+
+**Gate:** State 6 passed (formatting clean).
+
+**Action:**
+
+```bash
+swamp extension quality manifest.yaml --json
+```
+
+**Present:** Show the score and grade to the user (e.g. "Quality: 10/15 (67%),
+Grade B"). If any factors are unearned, list them so the author can decide
+whether to address them. Do not require or suggest they must fix anything —
+these are the author's choices.
+
+**Advance:** Always proceed to State 7 regardless of the score.
 
 ## State 7: dry_run_passed
 

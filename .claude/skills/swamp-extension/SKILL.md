@@ -77,6 +77,11 @@ the start — placeholder prefixes like `@local/` are rejected during push.
 ### Model
 
 ```typescript
+/**
+ * Processes input messages and stores the result.
+ *
+ * @module
+ */
 // extensions/models/my_model.ts
 import { z } from "npm:zod@4";
 
@@ -90,6 +95,7 @@ const OutputSchema = z.object({
   timestamp: z.iso.datetime(),
 });
 
+/** Model definition for processing input messages. */
 export const model = {
   type: "@myorg/my-model",
   version: "2026.02.09.1",
@@ -122,6 +128,11 @@ export const model = {
 ### Vault
 
 ```typescript
+/**
+ * Custom vault provider for retrieving secrets from a backend.
+ *
+ * @module
+ */
 // extensions/vaults/my-vault/mod.ts
 import { z } from "npm:zod@4";
 
@@ -130,6 +141,7 @@ const ConfigSchema = z.object({
   token: z.string(),
 });
 
+/** Vault provider definition. */
 export const vault = {
   type: "@myorg/my-vault",
   name: "My Custom Vault",
@@ -154,6 +166,11 @@ export const vault = {
 ### Driver
 
 ```typescript
+/**
+ * Custom execution driver for running methods on a remote host.
+ *
+ * @module
+ */
 // extensions/drivers/my-driver/mod.ts
 import { z } from "npm:zod@4";
 
@@ -162,6 +179,7 @@ const ConfigSchema = z.object({
   port: z.number().default(22),
 });
 
+/** Execution driver definition. */
 export const driver = {
   type: "@myorg/my-driver",
   name: "My Custom Driver",
@@ -197,6 +215,11 @@ export const driver = {
 ### Datastore
 
 ```typescript
+/**
+ * Custom datastore provider for storing runtime data in a backend.
+ *
+ * @module
+ */
 // extensions/datastores/my-store/mod.ts
 import { z } from "npm:zod@4";
 
@@ -205,6 +228,7 @@ const ConfigSchema = z.object({
   bucket: z.string(),
 });
 
+/** Datastore provider definition. */
 export const datastore = {
   type: "@myorg/my-store",
   name: "My Custom Store",
