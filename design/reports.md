@@ -394,23 +394,27 @@ values.
 
 ## CLI
 
-### `swamp model report`
+### `swamp report get`
 
-Runs reports for a model without executing a method. Uses the evaluated
-(post-CEL) definition when available.
+Retrieves a stored report's content. Reports are persisted automatically after
+method execution; this command reads the stored artifact.
 
 ```bash
-swamp model report my-model
-swamp model report my-model --method create
-swamp model report my-model --label cost
+swamp report get cost-summary --model my-model
+swamp report get cost-summary --model my-model --markdown
+swamp report get cost-summary --model my-model --json
+swamp report get cost-summary --workflow deploy-pipeline
 ```
 
-| Flag               | Description                                     |
-| ------------------ | ----------------------------------------------- |
-| `--method <name>`  | Simulate a method context for report scoping    |
-| `--label <label>`  | Only run reports matching this label (repeatable)|
-
-See `src/cli/commands/model_report.ts`.
+| Flag                    | Description                                          |
+| ----------------------- | ---------------------------------------------------- |
+| `--model <name>`        | Scope to a specific model                            |
+| `--workflow <name>`     | Scope to a specific workflow                         |
+| `--version <version>`   | Get specific version (default: latest)               |
+| `--markdown`            | Output as plain markdown instead of terminal-formatted|
+| `--json`                | Output in JSON format                                |
+| `--max-width <width>`   | Cap total output width in columns                    |
+| `--max-col-width <width>` | Cap individual table column width in characters   |
 
 ### Report Flags on `model method run`
 

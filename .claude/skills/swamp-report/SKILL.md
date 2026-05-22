@@ -24,16 +24,16 @@ aggregate, or analyze model output. If the analysis will be run more than once
 or should be stored alongside model data, a report is the right choice.
 
 **Verify CLI syntax:** If unsure about exact flags or subcommands, run
-`swamp help model report` or `swamp help model method run` for the complete,
+`swamp report --help` or `swamp model method run --help` for the complete,
 up-to-date CLI schema.
 
 ## Quick Reference
 
 | Task                     | Command                                                           |
 | ------------------------ | ----------------------------------------------------------------- |
-| Run reports for a model  | `swamp model report <model>`                                      |
-| Filter by label          | `swamp model report <model> --label cost`                         |
-| Simulate method context  | `swamp model report <model> --method create`                      |
+| Get a stored report      | `swamp report get <report-name> --model <model>`                  |
+| Get report as markdown   | `swamp report get <report-name> --model <model> --markdown`       |
+| Get report as JSON       | `swamp report get <report-name> --model <model> --json`           |
 | Run method with reports  | `swamp model method run <model> <method>`                         |
 | Skip all reports         | `swamp model method run <model> <method> --skip-reports`          |
 | Skip report by name      | `swamp model method run <model> <method> --skip-report <n>`       |
@@ -57,8 +57,9 @@ up-to-date CLI schema.
 3. **Configure in definition YAML** — add the report name to `reports.require:`
    in the model or workflow definition if it should run beyond the model-type
    defaults. Use `reports.skip:` to exclude reports you don't need.
-4. **Run and verify** — execute `swamp model report <model>` to confirm the
-   report produces valid markdown and JSON output without errors.
+4. **Run and verify** — execute a model method, then use
+   `swamp report get <report-name> --model <model>` to confirm the report
+   produces valid markdown and JSON output without errors.
 5. **Check stored output** — run `swamp data query 'tags.type == "report"'` to
    verify the report artifact was persisted correctly.
 
@@ -167,17 +168,6 @@ allowing a push.
 | `--skip-report-label <label>` | Skip reports with this label (repeatable)     |
 | `--report <name>`             | Only run this report (repeatable, inclusion)  |
 | `--report-label <label>`      | Only run reports with this label (repeatable) |
-
-### model report (standalone)
-
-| Flag                | Description                         |
-| ------------------- | ----------------------------------- |
-| `--label <label>`   | Only run reports with this label    |
-| `--method <method>` | Simulate method context for reports |
-
-The standalone `swamp model report` command runs reports without executing a
-method. It builds a `MethodReportContext` with `executionStatus: "succeeded"`
-and empty `dataHandles`.
 
 ## Report Data Storage
 
