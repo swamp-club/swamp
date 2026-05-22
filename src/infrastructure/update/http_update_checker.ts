@@ -101,7 +101,7 @@ async function replaceBinary(
 
 /**
  * HTTP adapter implementing UpdateChecker.
- * Checks artifacts.systeminit.com for the latest swamp binary.
+ * Checks artifacts.swamp-club.com for the latest swamp binary.
  */
 export class HttpUpdateChecker implements UpdateChecker {
   /**

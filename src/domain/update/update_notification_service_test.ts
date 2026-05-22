@@ -189,7 +189,7 @@ Deno.test("getNotification returns null when no cache exists and version is rece
 Deno.test("backgroundCheck writes cache when stale", async () => {
   const cacheRepo = createMockCacheRepo(null); // null = stale
   const redirectUrl =
-    "https://artifacts.systeminit.com/swamp/20260301.120000.0-sha.def456/binary/darwin/aarch64/swamp.tar.gz";
+    "https://artifacts.swamp-club.com/swamp/20260301.120000.0-sha.def456/binary/darwin/aarch64/swamp.tar.gz";
   const checker = createMockChecker(redirectUrl);
   const platform = Platform.from("darwin", "aarch64");
 

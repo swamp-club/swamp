@@ -80,7 +80,7 @@ Deno.test("isDevBuild returns false for version with short sha", () => {
 
 Deno.test("parseVersionFromRedirectUrl extracts version from redirect URL", () => {
   const url =
-    "https://artifacts.systeminit.com/swamp/20260207.123456.0-sha.abc12345/binary/darwin/aarch64/swamp-stable-binary-darwin-aarch64.tar.gz";
+    "https://artifacts.swamp-club.com/swamp/20260207.123456.0-sha.abc12345/binary/darwin/aarch64/swamp-stable-binary-darwin-aarch64.tar.gz";
   assertEquals(
     parseVersionFromRedirectUrl(url),
     "20260207.123456.0-sha.abc12345",
@@ -93,7 +93,7 @@ Deno.test("parseVersionFromRedirectUrl returns null for non-matching URL", () =>
 
 Deno.test("parseVersionFromRedirectUrl handles URL with dev sha", () => {
   const url =
-    "https://artifacts.systeminit.com/swamp/20260206.200442.0-sha./binary/darwin/aarch64/swamp-stable-binary-darwin-aarch64.tar.gz";
+    "https://artifacts.swamp-club.com/swamp/20260206.200442.0-sha./binary/darwin/aarch64/swamp-stable-binary-darwin-aarch64.tar.gz";
   assertEquals(parseVersionFromRedirectUrl(url), "20260206.200442.0-sha.");
 });
 
@@ -115,7 +115,7 @@ Deno.test("check returns up_to_date when no redirect", async () => {
 
 Deno.test("check returns up_to_date when versions match", async () => {
   const redirectUrl =
-    "https://artifacts.systeminit.com/swamp/20260207.123456.0-sha.abc12345/binary/darwin/aarch64/swamp-stable-binary-darwin-aarch64.tar.gz";
+    "https://artifacts.swamp-club.com/swamp/20260207.123456.0-sha.abc12345/binary/darwin/aarch64/swamp-stable-binary-darwin-aarch64.tar.gz";
   const service = new UpdateService(
     createMockChecker(redirectUrl),
     "20260207.123456.0-sha.abc12345",
@@ -128,7 +128,7 @@ Deno.test("check returns up_to_date when versions match", async () => {
 
 Deno.test("check returns update_available when versions differ", async () => {
   const redirectUrl =
-    "https://artifacts.systeminit.com/swamp/20260208.000000.0-sha.def56789/binary/darwin/aarch64/swamp-stable-binary-darwin-aarch64.tar.gz";
+    "https://artifacts.swamp-club.com/swamp/20260208.000000.0-sha.def56789/binary/darwin/aarch64/swamp-stable-binary-darwin-aarch64.tar.gz";
   const service = new UpdateService(
     createMockChecker(redirectUrl),
     "20260207.123456.0-sha.abc12345",
@@ -171,7 +171,7 @@ Deno.test("check has no warning for release build", async () => {
 
 Deno.test("update returns up_to_date when already current", async () => {
   const redirectUrl =
-    "https://artifacts.systeminit.com/swamp/20260207.123456.0-sha.abc12345/binary/darwin/aarch64/swamp-stable-binary-darwin-aarch64.tar.gz";
+    "https://artifacts.swamp-club.com/swamp/20260207.123456.0-sha.abc12345/binary/darwin/aarch64/swamp-stable-binary-darwin-aarch64.tar.gz";
   const service = new UpdateService(
     createMockChecker(redirectUrl),
     "20260207.123456.0-sha.abc12345",
@@ -184,7 +184,7 @@ Deno.test("update returns up_to_date when already current", async () => {
 
 Deno.test("update returns updated when new version available", async () => {
   const redirectUrl =
-    "https://artifacts.systeminit.com/swamp/20260208.000000.0-sha.def56789/binary/darwin/aarch64/swamp-stable-binary-darwin-aarch64.tar.gz";
+    "https://artifacts.swamp-club.com/swamp/20260208.000000.0-sha.def56789/binary/darwin/aarch64/swamp-stable-binary-darwin-aarch64.tar.gz";
   const calls: MockCheckerCalls = {
     downloadUrls: [],
     checksumUrls: [],
@@ -208,7 +208,7 @@ Deno.test("update returns updated when new version available", async () => {
 
 Deno.test("update includes warning for dev build", async () => {
   const redirectUrl =
-    "https://artifacts.systeminit.com/swamp/20260208.000000.0-sha.def56789/binary/darwin/aarch64/swamp-stable-binary-darwin-aarch64.tar.gz";
+    "https://artifacts.swamp-club.com/swamp/20260208.000000.0-sha.def56789/binary/darwin/aarch64/swamp-stable-binary-darwin-aarch64.tar.gz";
   const service = new UpdateService(
     createMockChecker(redirectUrl),
     "20260206.200442.0-sha.",
@@ -259,7 +259,7 @@ Deno.test("update rejects redirect to untrusted host", async () => {
 
 Deno.test("update fetches checksum and passes it to downloadAndInstall", async () => {
   const redirectUrl =
-    "https://artifacts.systeminit.com/swamp/20260208.000000.0-sha.def56789/binary/darwin/aarch64/swamp-stable-binary-darwin-aarch64.tar.gz";
+    "https://artifacts.swamp-club.com/swamp/20260208.000000.0-sha.def56789/binary/darwin/aarch64/swamp-stable-binary-darwin-aarch64.tar.gz";
   const expectedHash = "b".repeat(64);
   const calls: MockCheckerCalls = {
     downloadUrls: [],
@@ -287,7 +287,7 @@ Deno.test("update rejects with UserError when binary path is not writable", asyn
   await Deno.chmod(readOnlyFile, 0o444);
 
   const redirectUrl =
-    "https://artifacts.systeminit.com/swamp/20260208.000000.0-sha.def56789/binary/darwin/aarch64/swamp-stable-binary-darwin-aarch64.tar.gz";
+    "https://artifacts.swamp-club.com/swamp/20260208.000000.0-sha.def56789/binary/darwin/aarch64/swamp-stable-binary-darwin-aarch64.tar.gz";
   const service = new UpdateService(
     createMockChecker(redirectUrl),
     "20260207.123456.0-sha.abc12345",
@@ -312,7 +312,7 @@ Deno.test("update proceeds when binary path is writable", async () => {
   await Deno.writeTextFile(writableFile, "binary");
 
   const redirectUrl =
-    "https://artifacts.systeminit.com/swamp/20260208.000000.0-sha.def56789/binary/darwin/aarch64/swamp-stable-binary-darwin-aarch64.tar.gz";
+    "https://artifacts.swamp-club.com/swamp/20260208.000000.0-sha.def56789/binary/darwin/aarch64/swamp-stable-binary-darwin-aarch64.tar.gz";
   const service = new UpdateService(
     createMockChecker(redirectUrl),
     "20260207.123456.0-sha.abc12345",

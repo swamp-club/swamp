@@ -28,9 +28,9 @@ import {
 
 // --- validateRedirectUrl tests ---
 
-Deno.test("validateRedirectUrl accepts valid artifacts.systeminit.com URL", () => {
+Deno.test("validateRedirectUrl accepts valid artifacts.swamp-club.com URL", () => {
   validateRedirectUrl(
-    "https://artifacts.systeminit.com/swamp/20260207.123456.0-sha.abc12345/binary/darwin/aarch64/swamp.tar.gz",
+    "https://artifacts.swamp-club.com/swamp/20260207.123456.0-sha.abc12345/binary/darwin/aarch64/swamp.tar.gz",
   );
 });
 
@@ -38,7 +38,7 @@ Deno.test("validateRedirectUrl rejects non-HTTPS URL", () => {
   assertThrows(
     () =>
       validateRedirectUrl(
-        "http://artifacts.systeminit.com/swamp/binary.tar.gz",
+        "http://artifacts.swamp-club.com/swamp/binary.tar.gz",
       ),
     UserError,
     "Insecure redirect protocol",
@@ -66,9 +66,9 @@ Deno.test("validateRedirectUrl rejects malformed URL", () => {
 Deno.test("checksumUrlFromTarballUrl appends .sha256", () => {
   assertEquals(
     checksumUrlFromTarballUrl(
-      "https://artifacts.systeminit.com/swamp/v1/binary/darwin/aarch64/swamp.tar.gz",
+      "https://artifacts.swamp-club.com/swamp/v1/binary/darwin/aarch64/swamp.tar.gz",
     ),
-    "https://artifacts.systeminit.com/swamp/v1/binary/darwin/aarch64/swamp.tar.gz.sha256",
+    "https://artifacts.swamp-club.com/swamp/v1/binary/darwin/aarch64/swamp.tar.gz.sha256",
   );
 });
 
