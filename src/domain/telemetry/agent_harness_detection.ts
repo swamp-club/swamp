@@ -52,7 +52,6 @@ interface SpecificSignal {
  * first matching entry wins.
  */
 const SPECIFIC_HARNESS_SIGNALS: readonly SpecificSignal[] = [
-  // Tier-1: well-attested.
   {
     tool: "claude",
     predicate: (env) =>
@@ -63,23 +62,41 @@ const SPECIFIC_HARNESS_SIGNALS: readonly SpecificSignal[] = [
     predicate: (env) =>
       env.TERM_PROGRAM === "cursor" || env.CURSOR_TRACE_ID !== undefined,
   },
-  // Tier-2: best-effort. Refine these as harness vendors publish stable
-  // markers.
-  // TODO(swamp-club#292): confirm Kiro's published env signature.
+  // Confirmed against upstream — see swamp-club#413.
+  // `TERM_PROGRAM=kiro` covers IDE-terminal sessions; `AGENT_CONTEXT_OUT` is
+  // a FIFO path Kiro CLI exports only when its agent is driving a shell
+  // command (see kiro.dev/docs/cli/reference/built-in-tools/). The name is
+  // less vendor-specific than other markers in this list — if a future
+  // harness collides on `AGENT_CONTEXT_OUT`, narrow this predicate then.
   {
     tool: "kiro",
-    predicate: (env) => env.TERM_PROGRAM === "kiro" || env.KIRO_AGENT === "1",
+    predicate: (env) =>
+      env.TERM_PROGRAM === "kiro" ||
+      (env.AGENT_CONTEXT_OUT !== undefined && env.AGENT_CONTEXT_OUT !== ""),
   },
-  // TODO(swamp-club#292): confirm OpenCode's published env signature.
+  // Confirmed against upstream — see swamp-club#413.
+  // opencode sets `OPENCODE=1` at process startup
+  // (anomalyco/opencode packages/opencode/src/index.ts), inherited by every
+  // child process. It also sets `AGENT=1`, so even when this predicate fires
+  // first the generic fallback would have caught the session anonymously.
   {
     tool: "opencode",
-    predicate: (env) =>
-      env.OPENCODE_VERSION !== undefined || env.TERM_PROGRAM === "opencode",
+    predicate: (env) => env.OPENCODE === "1",
   },
-  // TODO(swamp-club#292): confirm Codex's published env signature.
+  // Confirmed against upstream — see swamp-club#413.
+  // Codex `env_clear()`s before each shell-tool spawn and re-adds only its
+  // sandbox markers (openai/codex codex-rs/core/src/spawn.rs and
+  // sandboxing/mod.rs): `CODEX_SANDBOX_NETWORK_DISABLED=1` on any platform
+  // when network sandbox is enabled, and `CODEX_SANDBOX=seatbelt` on macOS.
+  // Known blind spot: if a user runs codex with sandbox fully disabled
+  // (e.g. `--dangerously-bypass-approvals-and-sandbox`), neither var is set
+  // and codex is undetectable from a child process. That requires upstream
+  // to expose a stable identity env var — not fixable from our side.
   {
     tool: "codex",
-    predicate: (env) => env.CODEX_AGENT_HARNESS === "1",
+    predicate: (env) =>
+      env.CODEX_SANDBOX_NETWORK_DISABLED === "1" ||
+      env.CODEX_SANDBOX !== undefined,
   },
 ];
 
@@ -96,9 +113,10 @@ export const RELEVANT_ENV_VARS: readonly string[] = [
   "CLAUDE_CODE_ENTRYPOINT",
   "TERM_PROGRAM",
   "CURSOR_TRACE_ID",
-  "KIRO_AGENT",
-  "OPENCODE_VERSION",
-  "CODEX_AGENT_HARNESS",
+  "AGENT_CONTEXT_OUT",
+  "OPENCODE",
+  "CODEX_SANDBOX_NETWORK_DISABLED",
+  "CODEX_SANDBOX",
   ...GENERIC_AGENT_SIGNALS,
 ];
 

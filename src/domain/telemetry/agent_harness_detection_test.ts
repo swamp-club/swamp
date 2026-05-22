@@ -59,29 +59,62 @@ Deno.test("detectAgentHarness: kiro via TERM_PROGRAM=kiro", () => {
   assertEquals(result.agentSessionDetected, true);
 });
 
-Deno.test("detectAgentHarness: kiro via KIRO_AGENT=1", () => {
-  const result = detectAgentHarness({ KIRO_AGENT: "1" });
+Deno.test("detectAgentHarness: kiro via AGENT_CONTEXT_OUT FIFO path", () => {
+  const result = detectAgentHarness({
+    AGENT_CONTEXT_OUT: "/tmp/kiro-agent-ctx.fifo",
+  });
   assertEquals(result.detectedAiTool, "kiro");
   assertEquals(result.agentSessionDetected, true);
 });
 
-Deno.test("detectAgentHarness: opencode via OPENCODE_VERSION", () => {
-  const result = detectAgentHarness({ OPENCODE_VERSION: "0.1.0" });
+Deno.test(
+  "detectAgentHarness: empty AGENT_CONTEXT_OUT does not match kiro",
+  () => {
+    const result = detectAgentHarness({ AGENT_CONTEXT_OUT: "" });
+    assertEquals(result.detectedAiTool, undefined);
+    assertEquals(result.agentSessionDetected, false);
+  },
+);
+
+Deno.test("detectAgentHarness: opencode via OPENCODE=1", () => {
+  const result = detectAgentHarness({ OPENCODE: "1" });
   assertEquals(result.detectedAiTool, "opencode");
   assertEquals(result.agentSessionDetected, true);
 });
 
-Deno.test("detectAgentHarness: opencode via TERM_PROGRAM=opencode", () => {
-  const result = detectAgentHarness({ TERM_PROGRAM: "opencode" });
-  assertEquals(result.detectedAiTool, "opencode");
-  assertEquals(result.agentSessionDetected, true);
+Deno.test("detectAgentHarness: OPENCODE=0 does not match opencode", () => {
+  const result = detectAgentHarness({ OPENCODE: "0" });
+  assertEquals(result.detectedAiTool, undefined);
+  assertEquals(result.agentSessionDetected, false);
 });
 
-Deno.test("detectAgentHarness: codex via CODEX_AGENT_HARNESS=1", () => {
-  const result = detectAgentHarness({ CODEX_AGENT_HARNESS: "1" });
+Deno.test(
+  "detectAgentHarness: codex via CODEX_SANDBOX_NETWORK_DISABLED=1",
+  () => {
+    const result = detectAgentHarness({ CODEX_SANDBOX_NETWORK_DISABLED: "1" });
+    assertEquals(result.detectedAiTool, "codex");
+    assertEquals(result.agentSessionDetected, true);
+  },
+);
+
+Deno.test("detectAgentHarness: codex via CODEX_SANDBOX=seatbelt", () => {
+  const result = detectAgentHarness({ CODEX_SANDBOX: "seatbelt" });
   assertEquals(result.detectedAiTool, "codex");
   assertEquals(result.agentSessionDetected, true);
 });
+
+// Codex env_clear()s before each shell-tool spawn and only re-adds sandbox
+// markers. When a user disables sandboxing entirely, no codex-identifying
+// env var survives — this test codifies that blind spot so future
+// contributors don't try to invent more signals without upstream cooperation.
+Deno.test(
+  "detectAgentHarness: codex without sandbox is undetectable",
+  () => {
+    const result = detectAgentHarness({});
+    assertEquals(result.detectedAiTool, undefined);
+    assertEquals(result.agentSessionDetected, false);
+  },
+);
 
 Deno.test("detectAgentHarness: generic AGENT fallback fires without specific match", () => {
   const result = detectAgentHarness({ AGENT: "1" });
@@ -136,9 +169,10 @@ Deno.test("RELEVANT_ENV_VARS contains every key any signal references", () => {
     "CLAUDE_CODE_ENTRYPOINT",
     "TERM_PROGRAM",
     "CURSOR_TRACE_ID",
-    "KIRO_AGENT",
-    "OPENCODE_VERSION",
-    "CODEX_AGENT_HARNESS",
+    "AGENT_CONTEXT_OUT",
+    "OPENCODE",
+    "CODEX_SANDBOX_NETWORK_DISABLED",
+    "CODEX_SANDBOX",
     "AGENT",
     "AI_AGENT",
     "IS_AGENT",
