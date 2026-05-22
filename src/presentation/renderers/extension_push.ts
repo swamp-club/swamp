@@ -44,6 +44,7 @@ export interface ExtensionPushRenderer extends Renderer<ExtensionPushEvent> {
     mismatches: CollectiveMismatch[],
   ): void;
   renderQualityErrors(issues: QualityIssue[]): void;
+  renderVersionDriftWarnings(warnings: QualityIssue[]): void;
   renderCompilationErrors(errors: CompilationError[]): void;
   renderDryRun(data: {
     name: string;
@@ -214,6 +215,13 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
       .error`Run 'swamp extension fmt <manifest-path>' to fix these issues.`;
   }
 
+  renderVersionDriftWarnings(warnings: QualityIssue[]): void {
+    this.logger.warn`Version drift warnings (non-blocking):`;
+    for (const w of warnings) {
+      this.logger.warn`  ${w.output}`;
+    }
+  }
+
   renderCompilationErrors(errors: CompilationError[]): void {
     this.logger.error`Bundle compilation failed:`;
     for (const r of errors) {
@@ -304,6 +312,12 @@ class JsonExtensionPushRenderer implements ExtensionPushRenderer {
 
   renderQualityErrors(issues: QualityIssue[]): void {
     console.log(JSON.stringify({ qualityErrors: issues }, null, 2));
+  }
+
+  renderVersionDriftWarnings(warnings: QualityIssue[]): void {
+    console.log(
+      JSON.stringify({ versionDriftWarnings: warnings }, null, 2),
+    );
   }
 
   renderCompilationErrors(errors: CompilationError[]): void {

@@ -300,13 +300,7 @@ export async function checkExtensionQuality(
   };
 }
 
-/**
- * Checks whether model TypeScript files export a version that matches
- * the manifest version. Returns advisory QualityIssue entries for any
- * mismatches — callers should surface these as warnings, not errors,
- * since multi-model extensions may legitimately have models at
- * different versions.
- */
+/** Advisory check — warns on manifest/model version mismatch but never blocks. */
 export async function checkVersionConsistency(
   manifestVersion: string,
   modelFiles: string[],
@@ -317,7 +311,13 @@ export async function checkVersionConsistency(
     let content: string;
     try {
       content = await Deno.readTextFile(file);
-    } catch {
+    } catch (e) {
+      if (!(e instanceof Deno.errors.NotFound)) {
+        issues.push({
+          check: "version-drift",
+          output: `${basename(file)}: could not read file: ${e}`,
+        });
+      }
       continue;
     }
 
@@ -329,7 +329,8 @@ export async function checkVersionConsistency(
         check: "version-drift",
         output:
           `${basename(file)}: model version "${modelVersion}" differs from ` +
-          `manifest version "${manifestVersion}"`,
+          `manifest version "${manifestVersion}" ` +
+          `(update the model's version field to align)`,
       });
     }
   }

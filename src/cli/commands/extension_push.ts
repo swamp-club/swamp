@@ -47,7 +47,10 @@ import {
   renderExtensionPushCancelled,
 } from "../../presentation/renderers/extension_push.ts";
 import type { SafetyIssue } from "../../domain/extensions/extension_safety_analyzer.ts";
-import type { QualityIssue } from "../../domain/extensions/extension_quality_checker.ts";
+import {
+  checkVersionConsistency,
+  type QualityIssue,
+} from "../../domain/extensions/extension_quality_checker.ts";
 import type { DependencyTrustIssue } from "../../domain/extensions/extension_dependency_trust_checker.ts";
 import type {
   CollectiveMismatch,
@@ -473,6 +476,15 @@ export const extensionPushCommand = new Command()
           return;
         }
       }
+    }
+
+    // 6c. Version-drift check (advisory warning only)
+    const versionIssues = await checkVersionConsistency(
+      prepared.manifest.version,
+      allModelFiles,
+    );
+    if (versionIssues.length > 0) {
+      renderer.renderVersionDriftWarnings(versionIssues);
     }
 
     // 7. Dry run — stop here
