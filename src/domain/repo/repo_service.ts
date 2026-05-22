@@ -779,7 +779,7 @@ This repository is managed with [swamp](https://github.com/systeminit/swamp).
 
 ## Rules
 
-1. **Search before you build.** When automating AWS, APIs, or any external service: (a) search local types with \`swamp model type search <query>\`, (b) search community extensions with \`swamp extension search <query>\`, (c) if a community extension exists, install it with \`swamp extension pull <package>\` instead of building from scratch, (d) only create a custom extension model in \`extensions/models/\` if nothing exists. ${
+1. **Search before you build.** When automating AWS, APIs, or any external service: (a) search community extensions with \`swamp extension search <query>\` — prefer \`@swamp/*\` official extensions first, (b) search local/installed types with \`swamp model type search <query>\`, (c) if a community extension exists, install it with \`swamp extension pull <package>\` instead of building from scratch, (d) extend an existing type if it covers the domain but lacks the method you need, (e) only create a custom extension model in \`extensions/models/\` as a last resort. ${
       skillAction("swamp-extension", "Use")
     } for guidance. The \`command/shell\` model is ONLY for ad-hoc one-off shell commands, NEVER for wrapping CLI tools or building integrations.
 2. **Extend, don't be clever.** When a model covers the domain but lacks the method you need, extend it with \`export const extension\` — don't bypass it with shell scripts, CLI tools, or multi-step hacks. One method, one purpose. Use \`swamp model type describe <type> --json\` to check available methods.
