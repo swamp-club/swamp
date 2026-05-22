@@ -87,8 +87,12 @@ encrypted `.meta.enc` files alongside the secret's `.enc` file:
 ```
 .swamp/secrets/local_encryption/{vault-name}/
   my-api-key.enc          # encrypted secret value
-  my-api-key.meta.enc     # encrypted annotation (same AES-GCM key)
+  .annotations/
+    my-api-key.enc        # encrypted annotation (same AES-GCM key)
 ```
+
+Annotations live in a `.annotations/` subdirectory to avoid filename collisions
+with secret keys that might end in `.meta` or similar suffixes.
 
 ### Annotation CLI
 

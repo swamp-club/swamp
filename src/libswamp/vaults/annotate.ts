@@ -60,7 +60,7 @@ export interface VaultAnnotateDeps {
   findVault: (name: string) => Promise<VaultAnnotateConfigInfo | null>;
   listVaultNames: () => Promise<string[]>;
   secretExists: (vaultName: string, key: string) => Promise<boolean>;
-  supportsAnnotations: (vaultName: string) => boolean;
+  supportsAnnotations: (vaultName: string) => Promise<boolean>;
   getAnnotation: (
     vaultName: string,
     key: string,
@@ -109,8 +109,9 @@ export function createVaultAnnotateDeps(
         return false;
       }
     },
-    supportsAnnotations: (_vaultName) => {
-      return true;
+    supportsAnnotations: async (vaultName) => {
+      const svc = await getVaultService();
+      return svc.supportsAnnotations(vaultName);
     },
     getAnnotation: async (vaultName, key) => {
       const svc = await getVaultService();
@@ -183,6 +184,29 @@ export async function* vaultAnnotate(
           kind: "error",
           error: validationFailed(
             `Secret '${input.key}' does not exist in vault '${input.vaultName}'. Store a secret first with: swamp vault put ${input.vaultName} ${input.key}`,
+          ),
+        };
+        return;
+      }
+
+      if (!await deps.supportsAnnotations(input.vaultName)) {
+        yield {
+          kind: "error",
+          error: validationFailed(
+            `Vault '${input.vaultName}' (type: ${config.type}) does not support annotations`,
+          ),
+        };
+        return;
+      }
+
+      if (
+        !input.clear && input.url === undefined &&
+        input.notes === undefined && input.labels === undefined
+      ) {
+        yield {
+          kind: "error",
+          error: validationFailed(
+            "No annotation fields specified. Use --url, --note, --label, or --clear.",
           ),
         };
         return;

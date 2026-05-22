@@ -128,7 +128,7 @@ export async function* vaultInspect(
         yield {
           kind: "error",
           error: validationFailed(
-            `Secret '${secretKey}' does not exist in vault '${vaultName}'.`,
+            `Secret '${secretKey}' does not exist in vault '${vaultName}'. Store a secret first with: swamp vault put ${vaultName} ${secretKey}`,
           ),
         };
         return;

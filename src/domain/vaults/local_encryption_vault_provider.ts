@@ -138,10 +138,7 @@ export class LocalEncryptionVaultProvider
 
     try {
       for await (const entry of Deno.readDir(this.vaultDir)) {
-        if (
-          entry.isFile && entry.name.endsWith(".enc") &&
-          !entry.name.endsWith(".meta.enc")
-        ) {
+        if (entry.isFile && entry.name.endsWith(".enc")) {
           const keyName = entry.name.slice(0, -4);
           secretKeys.push(keyName);
         }
@@ -161,9 +158,17 @@ export class LocalEncryptionVaultProvider
     return secretKeys.sort();
   }
 
+  private get annotationsDir(): string {
+    return join(this.vaultDir, ".annotations");
+  }
+
+  private annotationPath(secretKey: string): string {
+    return join(this.annotationsDir, `${secretKey}.enc`);
+  }
+
   async getAnnotation(secretKey: string): Promise<VaultAnnotation | null> {
     this.validateSecretKey(secretKey);
-    const metaPath = join(this.vaultDir, `${secretKey}.meta.enc`);
+    const metaPath = this.annotationPath(secretKey);
 
     try {
       const encryptedContent = await Deno.readTextFile(metaPath);
@@ -188,14 +193,14 @@ export class LocalEncryptionVaultProvider
     annotation: VaultAnnotation,
   ): Promise<void> {
     this.validateSecretKey(secretKey);
-    await this.ensureVaultDirectory();
+    await this.ensureAnnotationsDirectory();
 
     const json = JSON.stringify(annotation.toData());
     const salt = crypto.getRandomValues(new Uint8Array(16));
     const masterKey = await this.getMasterKey(this.arrayBufferToBase64(salt));
     const encryptedData = await this.encrypt(json, masterKey, salt);
 
-    const metaPath = join(this.vaultDir, `${secretKey}.meta.enc`);
+    const metaPath = this.annotationPath(secretKey);
     await assertSafePath(metaPath, this.secretsBoundary);
     await atomicWriteTextFile(
       metaPath,
@@ -206,7 +211,8 @@ export class LocalEncryptionVaultProvider
 
   async deleteAnnotation(secretKey: string): Promise<void> {
     this.validateSecretKey(secretKey);
-    const metaPath = join(this.vaultDir, `${secretKey}.meta.enc`);
+    const metaPath = this.annotationPath(secretKey);
+    await assertSafePath(metaPath, this.secretsBoundary);
     try {
       await Deno.remove(metaPath);
     } catch (error) {
@@ -223,9 +229,9 @@ export class LocalEncryptionVaultProvider
   async listAnnotations(): Promise<Map<string, VaultAnnotation>> {
     const annotations = new Map<string, VaultAnnotation>();
     try {
-      for await (const entry of Deno.readDir(this.vaultDir)) {
-        if (entry.isFile && entry.name.endsWith(".meta.enc")) {
-          const keyName = entry.name.slice(0, -".meta.enc".length);
+      for await (const entry of Deno.readDir(this.annotationsDir)) {
+        if (entry.isFile && entry.name.endsWith(".enc")) {
+          const keyName = entry.name.slice(0, -4);
           const annotation = await this.getAnnotation(keyName);
           if (annotation) {
             annotations.set(keyName, annotation);
@@ -243,6 +249,22 @@ export class LocalEncryptionVaultProvider
       );
     }
     return annotations;
+  }
+
+  private async ensureAnnotationsDirectory(): Promise<void> {
+    const dir = this.annotationsDir;
+    await assertSafePath(dir, this.secretsBoundary);
+    try {
+      await Deno.mkdir(dir, { recursive: true, mode: 0o700 });
+    } catch (error) {
+      if (!(error instanceof Deno.errors.AlreadyExists)) {
+        throw new Error(
+          `Failed to create annotations directory '${dir}': ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
   }
 
   /**
