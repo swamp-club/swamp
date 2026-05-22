@@ -59,6 +59,48 @@ interface VaultProvider {
 }
 ```
 
+## Vault Annotation Provider Interface
+
+Vault providers can optionally support annotations — metadata attached to
+secrets (URL, notes, labels). Annotation support is opt-in: providers that
+implement `VaultAnnotationProvider` alongside `VaultProvider` gain annotation
+capabilities. Providers that don't implement it continue to work unchanged.
+
+```typescript
+interface VaultAnnotationProvider {
+  getAnnotation(secretKey: string): Promise<VaultAnnotation | null>;
+  putAnnotation(secretKey: string, annotation: VaultAnnotation): Promise<void>;
+  deleteAnnotation(secretKey: string): Promise<void>;
+  listAnnotations(): Promise<Map<string, VaultAnnotation>>;
+}
+```
+
+Detection is via runtime type guard (`isVaultAnnotationProvider()`), not
+compile-time typing. Extension vault providers opt in by having their
+`createProvider` return an object that implements both interfaces.
+
+### Annotation Storage (local_encryption)
+
+For the built-in `local_encryption` provider, annotations are stored as
+encrypted `.meta.enc` files alongside the secret's `.enc` file:
+
+```
+.swamp/secrets/local_encryption/{vault-name}/
+  my-api-key.enc          # encrypted secret value
+  my-api-key.meta.enc     # encrypted annotation (same AES-GCM key)
+```
+
+### Annotation CLI
+
+```
+swamp vault annotate <vault> <key> --url <u> --note <text> --label <k=v>
+swamp vault inspect <vault> <key>
+swamp vault annotate <vault> <key> --clear
+```
+
+Annotations use merge semantics: only the fields specified in flags are updated,
+existing fields are preserved. `--clear` removes all annotations.
+
 ## Expression Syntax
 
 Vaults are accessed in CEL expressions using the `vault.get()` and `vault.put()`

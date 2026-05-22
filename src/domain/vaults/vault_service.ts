@@ -19,6 +19,10 @@
 
 import { getLogger } from "@logtape/logtape";
 import type { VaultConfiguration, VaultProvider } from "./vault_provider.ts";
+import {
+  isVaultAnnotationProvider,
+  type VaultAnnotation,
+} from "./vault_annotation.ts";
 import { getVaultTypes, RENAMED_VAULT_TYPES } from "./vault_types.ts";
 import { vaultTypeRegistry } from "./vault_type_registry.ts";
 import { resolveVaultType } from "../extensions/extension_auto_resolver.ts";
@@ -210,6 +214,60 @@ export class VaultService {
     }
 
     return await provider.list();
+  }
+
+  async getAnnotation(
+    vaultName: string,
+    secretKey: string,
+  ): Promise<VaultAnnotation | null> {
+    const provider = this.requireAnnotationProvider(vaultName);
+    return await provider.getAnnotation(secretKey);
+  }
+
+  async putAnnotation(
+    vaultName: string,
+    secretKey: string,
+    annotation: VaultAnnotation,
+  ): Promise<void> {
+    const provider = this.requireAnnotationProvider(vaultName);
+    await provider.putAnnotation(secretKey, annotation);
+  }
+
+  async deleteAnnotation(
+    vaultName: string,
+    secretKey: string,
+  ): Promise<void> {
+    const provider = this.requireAnnotationProvider(vaultName);
+    await provider.deleteAnnotation(secretKey);
+  }
+
+  supportsAnnotations(vaultName: string): boolean {
+    const provider = this.providers.get(vaultName);
+    if (!provider) return false;
+    return isVaultAnnotationProvider(provider);
+  }
+
+  private requireAnnotationProvider(vaultName: string) {
+    const provider = this.providers.get(vaultName);
+    if (!provider) {
+      const availableVaults = Array.from(this.providers.keys());
+      if (availableVaults.length === 0) {
+        throw new Error(
+          `Vault '${vaultName}' not found. No vaults are configured.`,
+        );
+      }
+      throw new Error(
+        `Vault '${vaultName}' not found. Available vaults: ${
+          availableVaults.join(", ")
+        }`,
+      );
+    }
+    if (!isVaultAnnotationProvider(provider)) {
+      throw new Error(
+        `Vault '${vaultName}' (type: ${provider.getName()}) does not support annotations`,
+      );
+    }
+    return provider;
   }
 
   /**

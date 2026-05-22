@@ -20,6 +20,8 @@
 import { join } from "@std/path";
 import { atomicWriteTextFile } from "../../infrastructure/persistence/atomic_write.ts";
 import type { VaultProvider } from "./vault_provider.ts";
+import type { VaultAnnotationProvider } from "./vault_annotation.ts";
+import { VaultAnnotation } from "./vault_annotation.ts";
 import {
   SWAMP_SUBDIRS,
   swampPath,
@@ -60,7 +62,8 @@ interface EncryptedData {
  * Uses Web Crypto API with AES-GCM encryption and SSH key-based key derivation.
  * Supports both SSH private key files and auto-generated encryption keys.
  */
-export class LocalEncryptionVaultProvider implements VaultProvider {
+export class LocalEncryptionVaultProvider
+  implements VaultProvider, VaultAnnotationProvider {
   private readonly name: string;
   private readonly config: LocalEncryptionConfig;
   private readonly vaultDir: string;
@@ -135,8 +138,10 @@ export class LocalEncryptionVaultProvider implements VaultProvider {
 
     try {
       for await (const entry of Deno.readDir(this.vaultDir)) {
-        if (entry.isFile && entry.name.endsWith(".enc")) {
-          // Remove the .enc extension to get the secret key name
+        if (
+          entry.isFile && entry.name.endsWith(".enc") &&
+          !entry.name.endsWith(".meta.enc")
+        ) {
           const keyName = entry.name.slice(0, -4);
           secretKeys.push(keyName);
         }
@@ -154,6 +159,90 @@ export class LocalEncryptionVaultProvider implements VaultProvider {
     }
 
     return secretKeys.sort();
+  }
+
+  async getAnnotation(secretKey: string): Promise<VaultAnnotation | null> {
+    this.validateSecretKey(secretKey);
+    const metaPath = join(this.vaultDir, `${secretKey}.meta.enc`);
+
+    try {
+      const encryptedContent = await Deno.readTextFile(metaPath);
+      const encryptedData: EncryptedData = JSON.parse(encryptedContent);
+      const masterKey = await this.getMasterKey(encryptedData.salt);
+      const json = await this.decrypt(encryptedData, masterKey);
+      return VaultAnnotation.fromData(JSON.parse(json));
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) {
+        return null;
+      }
+      throw new Error(
+        `Failed to read annotation for '${secretKey}': ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+
+  async putAnnotation(
+    secretKey: string,
+    annotation: VaultAnnotation,
+  ): Promise<void> {
+    this.validateSecretKey(secretKey);
+    await this.ensureVaultDirectory();
+
+    const json = JSON.stringify(annotation.toData());
+    const salt = crypto.getRandomValues(new Uint8Array(16));
+    const masterKey = await this.getMasterKey(this.arrayBufferToBase64(salt));
+    const encryptedData = await this.encrypt(json, masterKey, salt);
+
+    const metaPath = join(this.vaultDir, `${secretKey}.meta.enc`);
+    await assertSafePath(metaPath, this.secretsBoundary);
+    await atomicWriteTextFile(
+      metaPath,
+      JSON.stringify(encryptedData, null, 2),
+      { mode: 0o600 },
+    );
+  }
+
+  async deleteAnnotation(secretKey: string): Promise<void> {
+    this.validateSecretKey(secretKey);
+    const metaPath = join(this.vaultDir, `${secretKey}.meta.enc`);
+    try {
+      await Deno.remove(metaPath);
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) {
+        throw new Error(
+          `Failed to delete annotation for '${secretKey}': ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
+  }
+
+  async listAnnotations(): Promise<Map<string, VaultAnnotation>> {
+    const annotations = new Map<string, VaultAnnotation>();
+    try {
+      for await (const entry of Deno.readDir(this.vaultDir)) {
+        if (entry.isFile && entry.name.endsWith(".meta.enc")) {
+          const keyName = entry.name.slice(0, -".meta.enc".length);
+          const annotation = await this.getAnnotation(keyName);
+          if (annotation) {
+            annotations.set(keyName, annotation);
+          }
+        }
+      }
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) {
+        return annotations;
+      }
+      throw new Error(
+        `Failed to list annotations in vault '${this.name}': ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+    return annotations;
   }
 
   /**

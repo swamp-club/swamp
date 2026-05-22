@@ -883,6 +883,27 @@ export {
   vaultPutPreview,
 } from "./vaults/put.ts";
 
+// Vault annotate operations
+export {
+  createVaultAnnotateDeps,
+  vaultAnnotate,
+  type VaultAnnotateConfigInfo,
+  type VaultAnnotateData,
+  type VaultAnnotateDeps,
+  type VaultAnnotateEvent,
+  type VaultAnnotateInput,
+} from "./vaults/annotate.ts";
+
+// Vault inspect operations
+export {
+  createVaultInspectDeps,
+  vaultInspect,
+  type VaultInspectConfigInfo,
+  type VaultInspectData,
+  type VaultInspectDeps,
+  type VaultInspectEvent,
+} from "./vaults/inspect.ts";
+
 // Data GC operations
 export {
   createDataGcDeps,

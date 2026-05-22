@@ -8,7 +8,8 @@ description: >
   Triggers on "vault", "secret", "secrets", "swamp vault", "store secret",
   "get secret", "vault expression", "aws secrets manager", "credential
   storage", "vault create", "vault put", "vault read-secret", "vault list-keys",
-  "vault migrate".
+  "vault migrate", "vault annotate", "vault inspect", "annotation",
+  "annotate secret", "inspect secret".
 ---
 
 # Swamp Vault Skill
@@ -32,19 +33,22 @@ Correct flow: `swamp vault create <type> <name> --json` → edit config if neede
 
 ## Quick Reference
 
-| Task              | Command                                                |
-| ----------------- | ------------------------------------------------------ |
-| List vault types  | `swamp vault type search --json`                       |
-| Create a vault    | `swamp vault create <type> <name> --json`              |
-| Search vaults     | `swamp vault search [query] --json`                    |
-| Get vault details | `swamp vault get <name_or_id> --json`                  |
-| Edit vault config | `swamp vault edit <name_or_id>`                        |
-| Store a secret    | `swamp vault put <vault> KEY=VALUE --json`             |
-| Store from stdin  | `echo "val" \| swamp vault put <vault> KEY --json`     |
-| Store interactive | `swamp vault put <vault> KEY` (prompts for value)      |
-| Read a secret     | `swamp vault read-secret <vault> <key> --force --json` |
-| List secret keys  | `swamp vault list-keys <vault> --json`                 |
-| Migrate backend   | `swamp vault migrate <vault> --to-type <type>`         |
+| Task               | Command                                                |
+| ------------------ | ------------------------------------------------------ |
+| List vault types   | `swamp vault type search --json`                       |
+| Create a vault     | `swamp vault create <type> <name> --json`              |
+| Search vaults      | `swamp vault search [query] --json`                    |
+| Get vault details  | `swamp vault get <name_or_id> --json`                  |
+| Edit vault config  | `swamp vault edit <name_or_id>`                        |
+| Store a secret     | `swamp vault put <vault> KEY=VALUE --json`             |
+| Store from stdin   | `echo "val" \| swamp vault put <vault> KEY --json`     |
+| Store interactive  | `swamp vault put <vault> KEY` (prompts for value)      |
+| Read a secret      | `swamp vault read-secret <vault> <key> --force --json` |
+| List secret keys   | `swamp vault list-keys <vault> --json`                 |
+| Annotate a secret  | `swamp vault annotate <vault> <key> --url <u>`         |
+| Inspect annotation | `swamp vault inspect <vault> <key> --json`             |
+| Clear annotation   | `swamp vault annotate <vault> <key> --clear`           |
+| Migrate backend    | `swamp vault migrate <vault> --to-type <type>`         |
 
 ## Repository Structure
 
@@ -206,6 +210,51 @@ swamp vault list-keys dev-secrets --json
 {
   "vault": "dev-secrets",
   "keys": ["API_KEY", "DB_PASSWORD"]
+}
+```
+
+## Annotate Secrets
+
+Attach provenance metadata to a stored secret — URL, notes, and key=value
+labels. Annotations use merge semantics: only the fields you specify are
+updated, existing fields are preserved.
+
+```bash
+# Add a URL and notes
+swamp vault annotate my-vault API_KEY \
+  --url https://console.aws.com/iam \
+  --note "Production API key for service X"
+
+# Add labels
+swamp vault annotate my-vault API_KEY \
+  --label env=prod --label team=infra
+
+# Clear all annotations
+swamp vault annotate my-vault API_KEY --clear
+```
+
+## Inspect Secret Annotations
+
+View the metadata attached to a secret:
+
+```bash
+swamp vault inspect my-vault API_KEY --json
+```
+
+**Output shape (--json):**
+
+```json
+{
+  "vaultName": "my-vault",
+  "secretKey": "API_KEY",
+  "vaultType": "local_encryption",
+  "hasAnnotation": true,
+  "annotation": {
+    "url": "https://console.aws.com/iam",
+    "notes": "Production API key for service X",
+    "labels": { "env": "prod", "team": "infra" },
+    "updatedAt": "2026-05-22T21:00:00.000Z"
+  }
 }
 ```
 
