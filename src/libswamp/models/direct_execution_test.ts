@@ -197,7 +197,7 @@ Deno.test("resolveOrCreateDefinition: auto-creates definition with routed global
   }
 });
 
-Deno.test("resolveOrCreateDefinition: reuses existing definition with type match", async () => {
+Deno.test("resolveOrCreateDefinition: updates globalArgs when they differ on existing definition", async () => {
   const modelDef = createTestModelDef(
     z.object({ region: z.string() }),
     { run: z.object({ id: z.string() }) },
@@ -208,6 +208,99 @@ Deno.test("resolveOrCreateDefinition: reuses existing definition with type match
     type: "test/model",
     typeVersion: "2026.01.01.1",
     globalArguments: { region: "us-west-2" },
+  });
+  let saved = false;
+
+  const result = await resolveOrCreateDefinition(
+    {
+      lookupDefinition: () =>
+        Promise.resolve({
+          definition: existingDef,
+          type: resolvedType,
+        }),
+      getModelDef: () => modelDef,
+      saveDefinition: () => {
+        saved = true;
+        return Promise.resolve();
+      },
+      getDefinitionPath: (_type, id) => `/tmp/models/test/model/${id}.yaml`,
+    },
+    "test/model",
+    "existing-model",
+    "run",
+    { region: "us-east-1", id: "abc" },
+    resolvedType,
+    modelDef,
+  );
+
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    assertEquals(result.created, false);
+    assertEquals(result.definition.id, existingDef.id);
+    assertEquals(
+      result.definition.globalArguments as Record<string, unknown>,
+      { region: "us-east-1" },
+    );
+    assertEquals(result.globalArgsUpdated, true);
+    assertEquals(saved, true);
+  }
+});
+
+Deno.test("resolveOrCreateDefinition: does not save when globalArgs match", async () => {
+  const modelDef = createTestModelDef(
+    z.object({ region: z.string() }),
+    { run: z.object({ id: z.string() }) },
+  );
+  const resolvedType = ModelType.create("test/model");
+  const existingDef = Definition.create({
+    name: "existing-model",
+    type: "test/model",
+    typeVersion: "2026.01.01.1",
+    globalArguments: { region: "us-east-1" },
+  });
+  let saved = false;
+
+  const result = await resolveOrCreateDefinition(
+    {
+      lookupDefinition: () =>
+        Promise.resolve({
+          definition: existingDef,
+          type: resolvedType,
+        }),
+      getModelDef: () => modelDef,
+      saveDefinition: () => {
+        saved = true;
+        return Promise.resolve();
+      },
+      getDefinitionPath: (_type, id) => `/tmp/models/test/model/${id}.yaml`,
+    },
+    "test/model",
+    "existing-model",
+    "run",
+    { region: "us-east-1", id: "abc" },
+    resolvedType,
+    modelDef,
+  );
+
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    assertEquals(result.created, false);
+    assertEquals(result.globalArgsUpdated, false);
+    assertEquals(saved, false);
+  }
+});
+
+Deno.test("resolveOrCreateDefinition: removes stale keys when globalArgs change", async () => {
+  const modelDef = createTestModelDef(
+    z.object({ region: z.string() }),
+    { run: z.object({ id: z.string() }) },
+  );
+  const resolvedType = ModelType.create("test/model");
+  const existingDef = Definition.create({
+    name: "existing-model",
+    type: "test/model",
+    typeVersion: "2026.01.01.1",
+    globalArguments: { region: "us-west-2", staleKey: "leftover" },
   });
 
   const result = await resolveOrCreateDefinition(
@@ -231,8 +324,11 @@ Deno.test("resolveOrCreateDefinition: reuses existing definition with type match
 
   assertEquals(result.ok, true);
   if (result.ok) {
-    assertEquals(result.created, false);
-    assertEquals(result.definition.id, existingDef.id);
+    assertEquals(
+      result.definition.globalArguments as Record<string, unknown>,
+      { region: "us-east-1" },
+    );
+    assertEquals(result.globalArgsUpdated, true);
   }
 });
 

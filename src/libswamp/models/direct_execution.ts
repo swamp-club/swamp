@@ -53,7 +53,7 @@ export type DirectExecutionResult =
     created: boolean;
     definitionPath: string;
     routedInputs: RoutedInputs;
-    globalArgsDiffer?: boolean;
+    globalArgsUpdated?: boolean;
   }
   | { ok: false; error: SwampError };
 
@@ -168,6 +168,18 @@ export async function resolveOrCreateDefinition(
         JSON.stringify(storedGlobal?.[k]) === JSON.stringify(v)
       );
 
+    if (globalArgsDiffer) {
+      for (const key of Object.keys(storedGlobal ?? {})) {
+        if (!(key in routedGlobal)) {
+          existing.definition.removeGlobalArgument(key);
+        }
+      }
+      for (const [key, value] of Object.entries(routedGlobal)) {
+        existing.definition.setGlobalArgument(key, value);
+      }
+      await deps.saveDefinition(existing.type, existing.definition);
+    }
+
     return {
       ok: true,
       definition: existing.definition,
@@ -179,7 +191,7 @@ export async function resolveOrCreateDefinition(
         existing.definition.id,
       ),
       routedInputs: routed,
-      globalArgsDiffer,
+      globalArgsUpdated: globalArgsDiffer,
     };
   }
 

@@ -90,9 +90,8 @@ export type ModelMethodRunEvent =
     definitionPath: string;
   }
   | {
-    kind: "global_args_ignored";
+    kind: "global_args_updated";
     definitionName: string;
-    message: string;
   }
   | {
     kind: "model_resolved";
@@ -304,14 +303,10 @@ export async function* modelMethodRun(
           };
         }
 
-        if (result.globalArgsDiffer) {
+        if (result.globalArgsUpdated) {
           yield {
-            kind: "global_args_ignored",
+            kind: "global_args_updated",
             definitionName: result.definition.name,
-            message:
-              "Global argument inputs differ from the stored definition. " +
-              "The stored values are used. To update, delete the definition and re-run, " +
-              "or use 'model create' + 'model edit' for managed definitions.",
           };
         }
 

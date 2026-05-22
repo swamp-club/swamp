@@ -62,10 +62,10 @@ class LogModelMethodRunRenderer implements ModelMethodRunRenderer {
           { path: e.definitionPath },
         );
       },
-      global_args_ignored: (e) => {
-        getRunLogger(this.modelName, this.methodName).warn(
-          "{message}",
-          { message: e.message },
+      global_args_updated: (e) => {
+        getRunLogger(this.modelName, this.methodName).info(
+          "Updated global arguments on definition {name}",
+          { name: e.definitionName },
         );
       },
       model_resolved: (e) => {
@@ -207,11 +207,10 @@ class JsonModelMethodRunRenderer implements ModelMethodRunRenderer {
           definitionPath: e.definitionPath,
         }));
       },
-      global_args_ignored: (e) => {
+      global_args_updated: (e) => {
         console.log(JSON.stringify({
-          warning: "global_args_ignored",
+          event: "global_args_updated",
           definitionName: e.definitionName,
-          message: e.message,
         }));
       },
       model_resolved: () => {},

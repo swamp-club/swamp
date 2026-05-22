@@ -166,7 +166,10 @@ automatically routed between global arguments and method arguments using the
 type's schemas (method arguments take precedence on ambiguous keys).
 
 **Subsequent runs:** Finds `my-vpc`, verifies its type matches
-`@swamp/aws/ec2/vpc` (safety check), and runs. The same command is idempotent.
+`@swamp/aws/ec2/vpc` (safety check), and runs. If the routed global arguments
+differ from the stored definition, the definition is updated and persisted
+automatically — this ensures parameterized workflows that vary inputs per run
+always use the current values.
 
 **Storage:** Auto-created definitions live in `.swamp/auto-definitions/` (not
 `models/`). They are local runtime state, not git-tracked, and do not appear in
