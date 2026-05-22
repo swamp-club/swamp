@@ -48,6 +48,7 @@ export interface VaultInspectDeps {
   findVault: (name: string) => Promise<VaultInspectConfigInfo | null>;
   listVaultNames: () => Promise<string[]>;
   secretExists: (vaultName: string, key: string) => Promise<boolean>;
+  supportsAnnotations: (vaultName: string) => Promise<boolean>;
   getAnnotation: (
     vaultName: string,
     key: string,
@@ -79,6 +80,10 @@ export function createVaultInspectDeps(repoDir: string): VaultInspectDeps {
       } catch {
         return false;
       }
+    },
+    supportsAnnotations: async (vaultName) => {
+      const svc = await getVaultService();
+      return svc.supportsAnnotations(vaultName);
     },
     getAnnotation: async (vaultName, key) => {
       const svc = await getVaultService();
@@ -129,6 +134,16 @@ export async function* vaultInspect(
           kind: "error",
           error: validationFailed(
             `Secret '${secretKey}' does not exist in vault '${vaultName}'. Store a secret first with: swamp vault put ${vaultName} ${secretKey}`,
+          ),
+        };
+        return;
+      }
+
+      if (!await deps.supportsAnnotations(vaultName)) {
+        yield {
+          kind: "error",
+          error: validationFailed(
+            `Vault '${vaultName}' (type: ${config.type}) does not support annotations`,
           ),
         };
         return;

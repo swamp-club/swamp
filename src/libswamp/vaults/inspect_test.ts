@@ -35,6 +35,7 @@ function makeDeps(
       Promise.resolve({ id: "v1", name: "my-vault", type: "env" }),
     listVaultNames: () => Promise.resolve(["my-vault"]),
     secretExists: () => Promise.resolve(true),
+    supportsAnnotations: () => Promise.resolve(true),
     getAnnotation: () => Promise.resolve(null),
     ...overrides,
   };
@@ -76,6 +77,24 @@ Deno.test("vaultInspect: yields validation_failed when secret does not exist", a
   assertEquals(last.error.code, "validation_failed");
   assertStringIncludes(last.error.message, "MISSING_KEY");
   assertStringIncludes(last.error.message, "does not exist");
+});
+
+Deno.test("vaultInspect: yields validation_failed when annotations not supported", async () => {
+  const deps = makeDeps({
+    supportsAnnotations: () => Promise.resolve(false),
+  });
+
+  const events = await collect<VaultInspectEvent>(
+    vaultInspect(createLibSwampContext(), deps, "my-vault", "API_KEY"),
+  );
+
+  const last = events[events.length - 1] as Extract<
+    VaultInspectEvent,
+    { kind: "error" }
+  >;
+  assertEquals(last.kind, "error");
+  assertEquals(last.error.code, "validation_failed");
+  assertStringIncludes(last.error.message, "does not support annotations");
 });
 
 Deno.test("vaultInspect: yields completed with annotation data", async () => {
