@@ -75,6 +75,7 @@ Deno.test("bridge records success entry on method_executing → step_completed",
     stepId: "validate",
     modelName: "shell-step",
     modelType: "@swamp/shell",
+    modelId: "test-model-id",
     methodName: "run",
   });
   await bridge.observe({
@@ -118,6 +119,7 @@ Deno.test("bridge records error entry on method_executing → step_failed (post-
     stepId: "transform",
     modelName: "etl",
     modelType: "@swamp/python",
+    modelId: "test-model-id",
     methodName: "transform",
   });
   await bridge.observe({

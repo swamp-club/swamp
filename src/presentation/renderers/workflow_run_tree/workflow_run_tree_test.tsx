@@ -95,6 +95,7 @@ Deno.test({
       stepId: "s1",
       modelName: "ec2-instance",
       modelType: "aws/ec2",
+      modelId: "test-model-id",
       methodName: "create",
     });
 

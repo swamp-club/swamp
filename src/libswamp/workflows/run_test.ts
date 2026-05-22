@@ -658,6 +658,7 @@ Deno.test("workflowRun forwards model_resolved, method_executing, and method_out
       stepId: "step1",
       modelName: "my-model",
       modelType: "command/shell",
+      modelId: "test-model-id",
       methodName: "run",
     },
     {
@@ -784,6 +785,7 @@ Deno.test("workflowRun collects report_completed events from execution service",
       stepId: "step1",
       modelName: "my-model",
       modelType: "command/shell",
+      modelId: "test-model-id",
       methodName: "run",
     },
     {
