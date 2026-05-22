@@ -37,6 +37,7 @@ import {
   resolveExtensionFiles,
 } from "../resolve_extension_files.ts";
 import { UserError } from "../../domain/errors.ts";
+import { checkVersionConsistency } from "../../domain/extensions/extension_quality_checker.ts";
 
 interface ExtensionFmtOptions extends GlobalOptions {
   repoDir?: string;
@@ -84,6 +85,7 @@ export const extensionFmtCommand = new Command()
       outputMode: cliCtx.outputMode,
     });
     const {
+      manifest,
       allModelFiles,
       allVaultFiles,
       allDriverFiles,
@@ -119,7 +121,16 @@ export const extensionFmtCommand = new Command()
       renderer.handlers(),
     );
 
-    // 5. Throw if quality checks failed
+    // 5. Check for version drift (advisory warning only)
+    const versionIssues = await checkVersionConsistency(
+      manifest.version,
+      allModelFiles,
+    );
+    for (const issue of versionIssues) {
+      cliCtx.logger.warn`${issue.output}`;
+    }
+
+    // 6. Throw if quality checks failed
     if (!renderer.passed()) {
       throw new UserError(renderer.failureMessage());
     }

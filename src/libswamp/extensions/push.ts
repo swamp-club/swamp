@@ -31,6 +31,7 @@ import type {
   SafetyIssue,
 } from "../../domain/extensions/extension_safety_analyzer.ts";
 import type { QualityCheckResult } from "../../domain/extensions/extension_quality_checker.ts";
+import { checkVersionConsistency } from "../../domain/extensions/extension_quality_checker.ts";
 import type { DependencySpecifier } from "../../domain/extensions/extension_dependency_extractor.ts";
 import type { DependencyTrustResult } from "../../domain/extensions/extension_dependency_trust_checker.ts";
 import type { ExtensionManifest } from "../../domain/extensions/extension_manifest.ts";
@@ -604,6 +605,15 @@ export async function extensionPushPrepare(
         { qualityErrors: qualityResult.issues },
       );
     }
+  }
+
+  // 10a. Version-drift check (advisory warning only)
+  const versionIssues = await checkVersionConsistency(
+    input.manifest.version,
+    input.allModelFiles,
+  );
+  for (const issue of versionIssues) {
+    ctx.logger.warn`${issue.output}`;
   }
 
   // 11. Bundle entry points + build archive — skip on cache hit

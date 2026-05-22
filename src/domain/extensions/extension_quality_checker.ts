@@ -17,9 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { basename } from "@std/path";
+import { extractModelVersion } from "./extension_content_extractor.ts";
+
 /** A quality issue found during checking. */
 export interface QualityIssue {
-  check: "fmt" | "lint" | "dynamic-import";
+  check: "fmt" | "lint" | "dynamic-import" | "version-drift";
   output: string;
 }
 
@@ -295,4 +298,41 @@ export async function checkExtensionQuality(
     passed: issues.length === 0,
     issues,
   };
+}
+
+/**
+ * Checks whether model TypeScript files export a version that matches
+ * the manifest version. Returns advisory QualityIssue entries for any
+ * mismatches — callers should surface these as warnings, not errors,
+ * since multi-model extensions may legitimately have models at
+ * different versions.
+ */
+export async function checkVersionConsistency(
+  manifestVersion: string,
+  modelFiles: string[],
+): Promise<QualityIssue[]> {
+  const issues: QualityIssue[] = [];
+
+  for (const file of modelFiles) {
+    let content: string;
+    try {
+      content = await Deno.readTextFile(file);
+    } catch {
+      continue;
+    }
+
+    const modelVersion = extractModelVersion(content);
+    if (!modelVersion) continue;
+
+    if (modelVersion !== manifestVersion) {
+      issues.push({
+        check: "version-drift",
+        output:
+          `${basename(file)}: model version "${modelVersion}" differs from ` +
+          `manifest version "${manifestVersion}"`,
+      });
+    }
+  }
+
+  return issues;
 }
