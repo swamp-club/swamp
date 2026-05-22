@@ -445,6 +445,7 @@ export class DefaultStepExecutor implements StepExecutor {
       stepId: ctx.stepName,
       modelName: originalDefinition.name,
       modelType: modelType.normalized,
+      modelId: originalDefinition.id,
       methodName: task.methodName,
     });
 
@@ -1465,7 +1466,12 @@ export class WorkflowExecutionService {
       // emits as steps execute.
       const modelInfoByStep = new Map<
         string,
-        { modelName: string; modelType: string; methodName: string }
+        {
+          modelName: string;
+          modelType: string;
+          modelId: string;
+          methodName: string;
+        }
       >();
       const stepStatuses = new Map<
         string,
@@ -1501,6 +1507,7 @@ export class WorkflowExecutionService {
             modelInfoByStep.set(key, {
               modelName: event.modelName,
               modelType: event.modelType,
+              modelId: event.modelId,
               methodName: event.methodName,
             });
             stepJobNames.set(key, event.jobId);
@@ -2267,7 +2274,12 @@ export class WorkflowExecutionService {
     run: WorkflowRun,
     modelInfoByStep: Map<
       string,
-      { modelName: string; modelType: string; methodName: string }
+      {
+        modelName: string;
+        modelType: string;
+        modelId: string;
+        methodName: string;
+      }
     >,
     stepStatuses: Map<string, "succeeded" | "failed" | "skipped">,
     stepJobNames: Map<string, string>,
@@ -2289,8 +2301,26 @@ export class WorkflowExecutionService {
       const jobName = stepJobNames.get(key) ?? "";
       const stepName = stepNameFromCompositeKey(key);
 
-      // Prefer the evaluated definition (post-CEL) so report templates see
-      // resolved expression values. Fall back to the raw definition.
+      if (status === "skipped") {
+        stepExecutions.push({
+          jobName,
+          stepName,
+          modelName: info.modelName,
+          modelType: info.modelType,
+          methodName: info.methodName,
+          status,
+          dataHandles: [],
+          methodArgs: {},
+          modelId: info.modelId,
+          globalArgs: {},
+        });
+        continue;
+      }
+
+      // Look up the definition for methodArgs and globalArgs only.
+      // The modelId comes from step execution time (info.modelId),
+      // NOT from this lookup — the lookup can return a stale or
+      // different definition for auto-created models.
       let lookupResult = await this.evaluatedDefRepo.findByNameGlobal(
         info.modelName,
       );
@@ -2301,23 +2331,6 @@ export class WorkflowExecutionService {
         );
       }
 
-      if (!lookupResult || status === "skipped") {
-        stepExecutions.push({
-          jobName,
-          stepName,
-          modelName: info.modelName,
-          modelType: info.modelType,
-          methodName: info.methodName,
-          status,
-          dataHandles: [],
-          methodArgs: {},
-          modelId: "",
-          globalArgs: {},
-        });
-        continue;
-      }
-
-      const { definition } = lookupResult;
       stepExecutions.push({
         jobName,
         stepName,
@@ -2326,9 +2339,11 @@ export class WorkflowExecutionService {
         methodName: info.methodName,
         status,
         dataHandles: dataHandlesByStep.get(key) ?? [],
-        methodArgs: definition.getMethodArguments(info.methodName),
-        modelId: definition.id,
-        globalArgs: definition.globalArguments,
+        methodArgs: lookupResult
+          ? lookupResult.definition.getMethodArguments(info.methodName)
+          : {},
+        modelId: info.modelId,
+        globalArgs: lookupResult ? lookupResult.definition.globalArguments : {},
       });
     }
 

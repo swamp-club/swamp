@@ -85,6 +85,7 @@ export type WorkflowExecutionEvent =
     stepId: string;
     modelName: string;
     modelType: string;
+    modelId: string;
     methodName: string;
   }
   | {

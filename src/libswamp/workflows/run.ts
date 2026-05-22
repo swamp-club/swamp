@@ -103,6 +103,7 @@ export type WorkflowRunEvent =
     stepId: string;
     modelName: string;
     modelType: string;
+    modelId: string;
     methodName: string;
   }
   | {

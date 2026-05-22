@@ -98,6 +98,7 @@ export type ModelMethodRunEvent =
     kind: "model_resolved";
     modelName: string;
     modelType: string;
+    modelId: string;
     methodName: string;
   }
   | {
@@ -406,6 +407,7 @@ export async function* modelMethodRun(
         kind: "model_resolved",
         modelName: definition.name,
         modelType: modelType.normalized,
+        modelId: definition.id,
         methodName: input.methodName,
       };
 
