@@ -309,6 +309,19 @@ export async function findStaleFiles(
           continue;
         }
 
+        // A transient bundle-build failure must not be pinned as a satisfied
+        // fingerprint-matched cache hit. Re-attempt on the next scan so a
+        // later run (e.g. after network is restored) can succeed. Restricted
+        // to BundleBuildFailed: ValidationFailed is deterministic — retrying
+        // it only thrashes — and stays excluded below. The cold-start
+        // ReconcileFromDisk path needs no change: a failed bundle leaves the
+        // catalog populated, so daemon-restart recovery routes through this
+        // warm path.
+        if (catalogEntry.state === "BundleBuildFailed") {
+          stale.push({ absolutePath, relativePath, baseDir: dir });
+          continue;
+        }
+
         if (
           catalogEntry.bundle_path &&
           catalogEntry.state !== "ValidationFailed" &&

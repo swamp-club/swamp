@@ -569,6 +569,46 @@ Deno.test("findStaleFiles: matching fingerprint + missing bundle + state=Validat
   }
 });
 
+Deno.test("findStaleFiles: matching fingerprint + state=BundleBuildFailed → stale (issue #424)", async () => {
+  // A transient bundle-build failure (e.g. npm deps unreachable on a cold
+  // cache at first load) must not be pinned as a fingerprint-matched cache
+  // hit. Before #424, such a row (empty bundle_path, fingerprint unchanged)
+  // slipped past the staleness gate and was never re-bundled, so a serve
+  // daemon stayed permanently broken across restarts. It must now be stale so
+  // the next scan re-attempts the bundle.
+  const dir = await Deno.makeTempDir({ prefix: "swamp_bf_424_buildfail_" });
+  try {
+    const file = join(dir, "needs_npm.ts");
+    await Deno.writeTextFile(file, "export const needsNpm = 1;");
+    const fp = await computeSourceFingerprint(file, dir);
+
+    const catalog = new FakeCatalog();
+    catalog.add({
+      source_path: file,
+      type_normalized: "",
+      kind: "model",
+      bundle_path: "",
+      version: "",
+      description: "",
+      extends_type: "",
+      source_mtime: "",
+      source_fingerprint: fp,
+      state: "BundleBuildFailed",
+    });
+
+    const stale = await findStaleFiles({
+      modelsDir: dir,
+      catalog,
+      discoverFiles: discoverTsFiles,
+      kinds: ["model"],
+    });
+    assertEquals(stale.length, 1);
+    assertEquals(stale[0].relativePath, "needs_npm.ts");
+  } finally {
+    await Deno.remove(dir, { recursive: true });
+  }
+});
+
 Deno.test("findStaleFiles: matching fingerprint + bundle exists → not stale (#212)", async () => {
   const dir = await Deno.makeTempDir({ prefix: "swamp_bf_212_present_" });
   try {
