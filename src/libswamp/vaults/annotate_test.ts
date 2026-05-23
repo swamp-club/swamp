@@ -159,6 +159,33 @@ Deno.test("vaultAnnotate: yields validation_failed when no fields specified", as
   assertStringIncludes(last.error.message, "No annotation fields specified");
 });
 
+Deno.test("vaultAnnotate: removeLabels alone is a valid operation", async () => {
+  const existing = VaultAnnotation.create({
+    labels: { env: "prod", team: "infra" },
+  });
+
+  const deps = makeDeps({
+    getAnnotation: () => Promise.resolve(existing),
+    putAnnotation: () => Promise.resolve(),
+  });
+
+  const events = await collect<VaultAnnotateEvent>(
+    vaultAnnotate(createLibSwampContext(), deps, {
+      vaultName: "my-vault",
+      key: "SECRET",
+      removeLabels: ["team"],
+      clear: false,
+    }),
+  );
+
+  const completed = events[events.length - 1] as Extract<
+    VaultAnnotateEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.kind, "completed");
+  assertEquals(completed.data.fieldsUpdated, ["labels"]);
+});
+
 Deno.test("vaultAnnotate: creates new annotation successfully", async () => {
   let savedVault = "";
   let savedKey = "";
@@ -292,4 +319,98 @@ Deno.test("vaultAnnotate: clears annotation successfully", async () => {
   assertEquals(deletedVault, "my-vault");
   assertEquals(deletedKey, "API_KEY");
   assertEquals(publishedFields, []);
+  assertEquals(completed.data.annotation, null);
+});
+
+Deno.test("vaultAnnotate: completed event includes annotation state", async () => {
+  const deps = makeDeps({
+    putAnnotation: () => Promise.resolve(),
+  });
+
+  const events = await collect<VaultAnnotateEvent>(
+    vaultAnnotate(createLibSwampContext(), deps, {
+      vaultName: "my-vault",
+      key: "API_KEY",
+      url: "https://example.com",
+      notes: "A note",
+      clear: false,
+    }),
+  );
+
+  const completed = events[events.length - 1] as Extract<
+    VaultAnnotateEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.kind, "completed");
+  assertEquals(completed.data.annotation!.url, "https://example.com");
+  assertEquals(completed.data.annotation!.notes, "A note");
+  assertEquals(typeof completed.data.annotation!.updatedAt, "string");
+});
+
+Deno.test("vaultAnnotate: removeLabels removes specified labels", async () => {
+  let savedAnnotation: VaultAnnotation | null = null;
+
+  const existing = VaultAnnotation.create({
+    url: "https://example.com",
+    labels: { env: "prod", team: "infra", region: "us" },
+  });
+
+  const deps = makeDeps({
+    getAnnotation: () => Promise.resolve(existing),
+    putAnnotation: (_vault, _key, annotation) => {
+      savedAnnotation = annotation;
+      return Promise.resolve();
+    },
+  });
+
+  const events = await collect<VaultAnnotateEvent>(
+    vaultAnnotate(createLibSwampContext(), deps, {
+      vaultName: "my-vault",
+      key: "API_KEY",
+      removeLabels: ["team", "region"],
+      clear: false,
+    }),
+  );
+
+  const completed = events[events.length - 1] as Extract<
+    VaultAnnotateEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.kind, "completed");
+  assertEquals(completed.data.fieldsUpdated, ["labels"]);
+  assertEquals(savedAnnotation!.labels, { env: "prod" });
+  assertEquals(savedAnnotation!.url, "https://example.com");
+});
+
+Deno.test("vaultAnnotate: removeLabels applied after label additions", async () => {
+  let savedAnnotation: VaultAnnotation | null = null;
+
+  const existing = VaultAnnotation.create({
+    labels: { env: "prod", team: "infra" },
+  });
+
+  const deps = makeDeps({
+    getAnnotation: () => Promise.resolve(existing),
+    putAnnotation: (_vault, _key, annotation) => {
+      savedAnnotation = annotation;
+      return Promise.resolve();
+    },
+  });
+
+  const events = await collect<VaultAnnotateEvent>(
+    vaultAnnotate(createLibSwampContext(), deps, {
+      vaultName: "my-vault",
+      key: "API_KEY",
+      labels: { region: "us" },
+      removeLabels: ["team"],
+      clear: false,
+    }),
+  );
+
+  const completed = events[events.length - 1] as Extract<
+    VaultAnnotateEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.kind, "completed");
+  assertEquals(savedAnnotation!.labels, { env: "prod", region: "us" });
 });

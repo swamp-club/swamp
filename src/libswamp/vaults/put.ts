@@ -100,12 +100,8 @@ export function createVaultPutDeps(
     },
     secretExists: async (vaultName, key) => {
       const svc = await getVaultService();
-      try {
-        await svc.get(vaultName, key);
-        return true;
-      } catch {
-        return false;
-      }
+      const keys = await svc.list(vaultName);
+      return keys.includes(key);
     },
     putSecret: async (vaultName, key, value) => {
       const svc = await getVaultService();

@@ -97,13 +97,16 @@ with secret keys that might end in `.meta` or similar suffixes.
 ### Annotation CLI
 
 ```
-swamp vault annotate <vault> <key> --url <u> --note <text> --label <k=v>
+swamp vault annotate <vault> <key> --url <u> --notes <text> --label <k=v>
+swamp vault annotate <vault> <key> --remove-label <key>
 swamp vault inspect <vault> <key>
 swamp vault annotate <vault> <key> --clear
 ```
 
 Annotations use merge semantics: only the fields specified in flags are updated,
-existing fields are preserved. `--clear` removes all annotations.
+existing fields are preserved. `--remove-label` removes a single label by key
+(repeatable). `--clear` removes all annotations and cannot be combined with
+other annotation flags.
 
 ## Expression Syntax
 

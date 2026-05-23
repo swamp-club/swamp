@@ -74,12 +74,8 @@ export function createVaultInspectDeps(repoDir: string): VaultInspectDeps {
     },
     secretExists: async (vaultName, key) => {
       const svc = await getVaultService();
-      try {
-        await svc.get(vaultName, key);
-        return true;
-      } catch {
-        return false;
-      }
+      const keys = await svc.list(vaultName);
+      return keys.includes(key);
     },
     supportsAnnotations: async (vaultName) => {
       const svc = await getVaultService();

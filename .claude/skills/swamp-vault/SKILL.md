@@ -33,22 +33,23 @@ Correct flow: `swamp vault create <type> <name> --json` → edit config if neede
 
 ## Quick Reference
 
-| Task               | Command                                                |
-| ------------------ | ------------------------------------------------------ |
-| List vault types   | `swamp vault type search --json`                       |
-| Create a vault     | `swamp vault create <type> <name> --json`              |
-| Search vaults      | `swamp vault search [query] --json`                    |
-| Get vault details  | `swamp vault get <name_or_id> --json`                  |
-| Edit vault config  | `swamp vault edit <name_or_id>`                        |
-| Store a secret     | `swamp vault put <vault> KEY=VALUE --json`             |
-| Store from stdin   | `echo "val" \| swamp vault put <vault> KEY --json`     |
-| Store interactive  | `swamp vault put <vault> KEY` (prompts for value)      |
-| Read a secret      | `swamp vault read-secret <vault> <key> --force --json` |
-| List secret keys   | `swamp vault list-keys <vault> --json`                 |
-| Annotate a secret  | `swamp vault annotate <vault> <key> --url <u>`         |
-| Inspect annotation | `swamp vault inspect <vault> <key> --json`             |
-| Clear annotation   | `swamp vault annotate <vault> <key> --clear`           |
-| Migrate backend    | `swamp vault migrate <vault> --to-type <type>`         |
+| Task               | Command                                                 |
+| ------------------ | ------------------------------------------------------- |
+| List vault types   | `swamp vault type search --json`                        |
+| Create a vault     | `swamp vault create <type> <name> --json`               |
+| Search vaults      | `swamp vault search [query] --json`                     |
+| Get vault details  | `swamp vault get <name_or_id> --json`                   |
+| Edit vault config  | `swamp vault edit <name_or_id>`                         |
+| Store a secret     | `swamp vault put <vault> KEY=VALUE --json`              |
+| Store from stdin   | `echo "val" \| swamp vault put <vault> KEY --json`      |
+| Store interactive  | `swamp vault put <vault> KEY` (prompts for value)       |
+| Read a secret      | `swamp vault read-secret <vault> <key> --force --json`  |
+| List secret keys   | `swamp vault list-keys <vault> --json`                  |
+| Annotate a secret  | `swamp vault annotate <vault> <key> --url <u>`          |
+| Remove a label     | `swamp vault annotate <vault> <key> --remove-label <k>` |
+| Inspect annotation | `swamp vault inspect <vault> <key> --json`              |
+| Clear annotation   | `swamp vault annotate <vault> <key> --clear`            |
+| Migrate backend    | `swamp vault migrate <vault> --to-type <type>`          |
 
 ## Repository Structure
 
@@ -223,11 +224,14 @@ updated, existing fields are preserved.
 # Add a URL and notes
 swamp vault annotate my-vault API_KEY \
   --url https://console.aws.com/iam \
-  --note "Production API key for service X"
+  --notes "Production API key for service X"
 
 # Add labels
 swamp vault annotate my-vault API_KEY \
   --label env=prod --label team=infra
+
+# Remove a single label
+swamp vault annotate my-vault API_KEY --remove-label team
 
 # Clear all annotations
 swamp vault annotate my-vault API_KEY --clear
