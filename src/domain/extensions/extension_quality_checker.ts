@@ -17,10 +17,26 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { basename } from "@std/path";
+import { extractModelVersion } from "./extension_content_extractor.ts";
+
 /** A quality issue found during checking. */
 export interface QualityIssue {
-  check: "fmt" | "lint" | "dynamic-import";
+  check: "fmt" | "lint" | "dynamic-import" | "version-drift";
   output: string;
+}
+
+export function qualityCheckLabel(check: QualityIssue["check"]): string {
+  switch (check) {
+    case "fmt":
+      return "Formatting";
+    case "lint":
+      return "Lint";
+    case "dynamic-import":
+      return "Dynamic import";
+    case "version-drift":
+      return "Version drift";
+  }
 }
 
 /** Result of the quality check. */
@@ -295,4 +311,42 @@ export async function checkExtensionQuality(
     passed: issues.length === 0,
     issues,
   };
+}
+
+/** Advisory check — warns on manifest/model version mismatch but never blocks. */
+export async function checkVersionConsistency(
+  manifestVersion: string,
+  modelFiles: string[],
+): Promise<QualityIssue[]> {
+  const issues: QualityIssue[] = [];
+
+  for (const file of modelFiles) {
+    let content: string;
+    try {
+      content = await Deno.readTextFile(file);
+    } catch (e) {
+      if (!(e instanceof Deno.errors.NotFound)) {
+        issues.push({
+          check: "version-drift",
+          output: `${basename(file)}: could not read file: ${e}`,
+        });
+      }
+      continue;
+    }
+
+    const modelVersion = extractModelVersion(content);
+    if (!modelVersion) continue;
+
+    if (modelVersion !== manifestVersion) {
+      issues.push({
+        check: "version-drift",
+        output:
+          `${basename(file)}: model version "${modelVersion}" differs from ` +
+          `manifest version "${manifestVersion}" ` +
+          `(update the model's version field to align)`,
+      });
+    }
+  }
+
+  return issues;
 }

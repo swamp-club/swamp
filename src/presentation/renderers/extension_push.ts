@@ -27,7 +27,10 @@ import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import type { SafetyIssue } from "../../domain/extensions/extension_safety_analyzer.ts";
-import type { QualityIssue } from "../../domain/extensions/extension_quality_checker.ts";
+import {
+  qualityCheckLabel,
+  type QualityIssue,
+} from "../../domain/extensions/extension_quality_checker.ts";
 import type { DependencyTrustIssue } from "../../domain/extensions/extension_dependency_trust_checker.ts";
 import type { CollectiveMismatch } from "../../domain/extensions/extension_collective_validator.ts";
 import type { CompilationError } from "../../libswamp/mod.ts";
@@ -44,6 +47,7 @@ export interface ExtensionPushRenderer extends Renderer<ExtensionPushEvent> {
     mismatches: CollectiveMismatch[],
   ): void;
   renderQualityErrors(issues: QualityIssue[]): void;
+  renderVersionDriftWarnings(warnings: QualityIssue[]): void;
   renderCompilationErrors(errors: CompilationError[]): void;
   renderDryRun(data: {
     name: string;
@@ -206,12 +210,19 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
   renderQualityErrors(issues: QualityIssue[]): void {
     this.logger.error`Quality checks failed (push blocked):`;
     for (const issue of issues) {
-      const label = issue.check === "fmt" ? "Formatting" : "Lint";
+      const label = qualityCheckLabel(issue.check);
       this.logger.error`  ${label} issues:`;
       this.logger.error`${issue.output}`;
     }
     this.logger
       .error`Run 'swamp extension fmt <manifest-path>' to fix these issues.`;
+  }
+
+  renderVersionDriftWarnings(warnings: QualityIssue[]): void {
+    this.logger.warn`Version drift warnings (non-blocking):`;
+    for (const w of warnings) {
+      this.logger.warn`  ${w.output}`;
+    }
   }
 
   renderCompilationErrors(errors: CompilationError[]): void {
@@ -304,6 +315,12 @@ class JsonExtensionPushRenderer implements ExtensionPushRenderer {
 
   renderQualityErrors(issues: QualityIssue[]): void {
     console.log(JSON.stringify({ qualityErrors: issues }, null, 2));
+  }
+
+  renderVersionDriftWarnings(warnings: QualityIssue[]): void {
+    console.log(
+      JSON.stringify({ versionDriftWarnings: warnings }, null, 2),
+    );
   }
 
   renderCompilationErrors(errors: CompilationError[]): void {

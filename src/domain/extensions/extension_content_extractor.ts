@@ -216,7 +216,7 @@ function extractModelType(content: string): string | null {
  * Extracts the model version string.
  * Matches `version: "YYYY.MM.DD.N"` patterns.
  */
-function extractModelVersion(content: string): string | null {
+export function extractModelVersion(content: string): string | null {
   const match = content.match(/version:\s*["']([^"']+)["']/);
   return match ? match[1] : null;
 }

@@ -20,6 +20,10 @@
 import type { EventHandlers, ExtensionFmtEvent } from "../../libswamp/mod.ts";
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
+import {
+  qualityCheckLabel,
+  type QualityIssue,
+} from "../../domain/extensions/extension_quality_checker.ts";
 import { UserError } from "../../domain/errors.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 
@@ -27,6 +31,7 @@ import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 export interface ExtensionFmtRenderer extends Renderer<ExtensionFmtEvent> {
   passed(): boolean;
   failureMessage(): string;
+  renderVersionDriftWarnings(warnings: QualityIssue[]): void;
 }
 
 class LogExtensionFmtRenderer implements ExtensionFmtRenderer {
@@ -58,7 +63,7 @@ class LogExtensionFmtRenderer implements ExtensionFmtRenderer {
               "Quality checks failed. Run 'swamp extension fmt <manifest-path>' to fix.";
             logger.error`Quality checks failed:`;
             for (const issue of data.issues) {
-              const label = issue.check === "fmt" ? "Formatting" : "Lint";
+              const label = qualityCheckLabel(issue.check);
               logger.error`  ${label} issues:`;
               logger.error`${issue.output}`;
             }
@@ -74,7 +79,7 @@ class LogExtensionFmtRenderer implements ExtensionFmtRenderer {
               "Some issues could not be auto-fixed. See above for details.";
             logger.error`Remaining issues that could not be auto-fixed:`;
             for (const issue of data.remainingIssues) {
-              const label = issue.check === "fmt" ? "Formatting" : "Lint";
+              const label = qualityCheckLabel(issue.check);
               logger.error`  ${label} issues:`;
               logger.error`${issue.output}`;
             }
@@ -85,6 +90,14 @@ class LogExtensionFmtRenderer implements ExtensionFmtRenderer {
         throw new UserError(e.error.message);
       },
     };
+  }
+
+  renderVersionDriftWarnings(warnings: QualityIssue[]): void {
+    const logger = getSwampLogger(["extension", "fmt"]);
+    logger.warn`Version drift warnings (non-blocking):`;
+    for (const w of warnings) {
+      logger.warn`  ${w.output}`;
+    }
   }
 }
 
@@ -146,6 +159,12 @@ class JsonExtensionFmtRenderer implements ExtensionFmtRenderer {
         throw new UserError(e.error.message);
       },
     };
+  }
+
+  renderVersionDriftWarnings(warnings: QualityIssue[]): void {
+    console.log(
+      JSON.stringify({ versionDriftWarnings: warnings }, null, 2),
+    );
   }
 }
 

@@ -17,10 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import {
   checkExtensionQuality,
+  checkVersionConsistency,
   stripCommentsAndStrings,
 } from "./extension_quality_checker.ts";
 
@@ -40,7 +41,7 @@ async function withTempFiles(
     }
     await fn(tmpDir, paths);
   } finally {
-    await Deno.remove(tmpDir, { recursive: true });
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
   }
 }
 
@@ -402,4 +403,79 @@ Deno.test("stripCommentsAndStrings blanks template literal text", () => {
   const result = stripCommentsAndStrings(source);
   assertEquals(result.includes("import"), false);
   assertEquals(result.includes("const x"), true);
+});
+
+// ── checkVersionConsistency tests ────────────────────────────────────
+
+Deno.test("checkVersionConsistency: matching versions produce no issues", async () => {
+  await withTempFiles(
+    {
+      "model.ts":
+        'export const model = {\n  version: "2026.05.22.1",\n  type: "test",\n};\n',
+    },
+    async (_dir, paths) => {
+      const issues = await checkVersionConsistency("2026.05.22.1", paths);
+      assertEquals(issues, []);
+    },
+  );
+});
+
+Deno.test("checkVersionConsistency: mismatched version reports drift", async () => {
+  await withTempFiles(
+    {
+      "model.ts":
+        'export const model = {\n  version: "2026.03.01.1",\n  type: "test",\n};\n',
+    },
+    async (_dir, paths) => {
+      const issues = await checkVersionConsistency("2026.05.22.1", paths);
+      assertEquals(issues.length, 1);
+      assertEquals(issues[0].check, "version-drift");
+      assertStringIncludes(issues[0].output, "2026.03.01.1");
+      assertStringIncludes(issues[0].output, "2026.05.22.1");
+    },
+  );
+});
+
+Deno.test("checkVersionConsistency: multiple models with mixed versions", async () => {
+  await withTempFiles(
+    {
+      "model_a.ts":
+        'export const model = {\n  version: "2026.05.22.1",\n  type: "a",\n};\n',
+      "model_b.ts":
+        'export const model = {\n  version: "2026.04.10.2",\n  type: "b",\n};\n',
+      "model_c.ts":
+        'export const model = {\n  version: "2026.05.22.1",\n  type: "c",\n};\n',
+    },
+    async (_dir, paths) => {
+      const issues = await checkVersionConsistency("2026.05.22.1", paths);
+      assertEquals(issues.length, 1);
+      assertEquals(issues[0].check, "version-drift");
+      assertStringIncludes(issues[0].output, "model_b.ts");
+    },
+  );
+});
+
+Deno.test("checkVersionConsistency: files without version export are skipped", async () => {
+  await withTempFiles(
+    {
+      "helpers.ts":
+        "export function add(a: number, b: number): number {\n  return a + b;\n}\n",
+    },
+    async (_dir, paths) => {
+      const issues = await checkVersionConsistency("2026.05.22.1", paths);
+      assertEquals(issues, []);
+    },
+  );
+});
+
+Deno.test("checkVersionConsistency: empty file list produces no issues", async () => {
+  const issues = await checkVersionConsistency("2026.05.22.1", []);
+  assertEquals(issues, []);
+});
+
+Deno.test("checkVersionConsistency: nonexistent files are skipped", async () => {
+  const issues = await checkVersionConsistency("2026.05.22.1", [
+    "/tmp/does-not-exist-12345.ts",
+  ]);
+  assertEquals(issues, []);
 });
