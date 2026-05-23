@@ -48,6 +48,86 @@ stored keys, getName returns non-empty string. Test keys are prefixed with
 | `keyPrefix` | `"swamp-conformance-test-"` | Namespace for test keys |
 | `cleanup`   | `true`                      | Delete test keys after  |
 
+## Annotation Conformance
+
+For vaults that support `VaultAnnotationProvider`, two additional conformance
+helpers verify the annotation surface.
+
+### Annotation Export Conformance
+
+Verify that `createProvider` returns an object with annotation methods. Call
+this **after** `assertVaultExportConformance`:
+
+```typescript
+import {
+  assertVaultAnnotationExportConformance,
+  assertVaultExportConformance,
+} from "@systeminit/swamp-testing";
+import { vault } from "./my_vault.ts";
+
+Deno.test("vault export conforms with annotations", () => {
+  assertVaultExportConformance(vault, {
+    validConfigs: [{ region: "us-east-1" }],
+  });
+  assertVaultAnnotationExportConformance(vault, {
+    validConfigs: [{ region: "us-east-1" }],
+  });
+});
+```
+
+This verifies: the provider has `getAnnotation`, `putAnnotation`,
+`deleteAnnotation`, and `listAnnotations` methods.
+
+### Annotation Behavioral Conformance
+
+Test the full `VaultAnnotationProvider` contract:
+
+```typescript
+import { assertVaultAnnotationConformance } from "@systeminit/swamp-testing";
+
+Deno.test("vault annotation contract", async () => {
+  const provider = vault.createProvider("test", { region: "us-east-1" });
+  await assertVaultAnnotationConformance(provider);
+});
+```
+
+Tests: putAnnotation/getAnnotation roundtrip, getAnnotation returns null for
+unannotated key, deleteAnnotation clears annotations, listAnnotations includes
+annotated keys only, VaultAnnotation.merge() preserves existing fields,
+toData()/fromData() roundtrip, isEmpty() for empty annotations.
+
+| Option      | Default                     | Description                   |
+| ----------- | --------------------------- | ----------------------------- |
+| `keyPrefix` | `"swamp-conformance-test-"` | Namespace for test keys       |
+| `cleanup`   | `true`                      | Delete test annotations after |
+
+### VaultAnnotation Type
+
+The `VaultAnnotation` class and related types are exported from the testing
+package for use in extension code:
+
+```typescript
+import {
+  VaultAnnotation,
+  type VaultAnnotationData,
+  type VaultAnnotationProvider,
+} from "@systeminit/swamp-testing";
+
+// Create an annotation
+const annotation = VaultAnnotation.create({
+  url: "https://console.aws.amazon.com/...",
+  notes: "Production API key",
+  labels: { env: "prod", team: "platform" },
+});
+
+// Serialize/deserialize
+const data = annotation.toData();
+const restored = VaultAnnotation.fromData(data);
+
+// Merge preserves existing fields and adds new ones
+const updated = annotation.merge({ labels: { version: "2" } });
+```
+
 ## Mocking External Calls
 
 Test the exact production code path by intercepting at the runtime boundary. No

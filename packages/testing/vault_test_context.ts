@@ -17,11 +17,23 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { VaultProvider } from "./vault_types.ts";
+import type {
+  VaultAnnotation,
+  VaultAnnotationProvider,
+  VaultProvider,
+} from "./vault_types.ts";
 
 /** A recorded vault operation for inspection. */
 export interface VaultOperation {
-  method: "get" | "put" | "list" | "getName";
+  method:
+    | "get"
+    | "put"
+    | "list"
+    | "getName"
+    | "getAnnotation"
+    | "putAnnotation"
+    | "deleteAnnotation"
+    | "listAnnotations";
   key?: string;
   value?: string;
   timestamp: number;
@@ -38,12 +50,16 @@ export interface VaultTestContextOptions {
    * If false, get() returns "" for missing keys.
    */
   throwOnMissing?: boolean;
+  /** If true, the vault also implements VaultAnnotationProvider (default: false). */
+  withAnnotations?: boolean;
 }
 
 /** The return value from createVaultTestContext. */
 export interface VaultTestContextResult {
   /** The VaultProvider to pass to code under test. */
   vault: VaultProvider;
+  /** The VaultAnnotationProvider if withAnnotations was true, otherwise undefined. */
+  annotationProvider: VaultAnnotationProvider | undefined;
   /** Returns all secrets currently stored in the vault. */
   getStoredSecrets(): Record<string, string>;
   /** Returns all vault operations recorded during the test. */
@@ -78,9 +94,11 @@ export function createVaultTestContext(
   const secrets = new Map<string, string>(
     Object.entries(options?.secrets ?? {}),
   );
+  const annotations = new Map<string, VaultAnnotation>();
   const operations: VaultOperation[] = [];
   const name = options?.name ?? "test-vault";
   const throwOnMissing = options?.throwOnMissing ?? true;
+  const withAnnotations = options?.withAnnotations ?? false;
 
   function record(
     method: VaultOperation["method"],
@@ -124,8 +142,39 @@ export function createVaultTestContext(
     },
   };
 
+  let annotationProvider: VaultAnnotationProvider | undefined;
+  if (withAnnotations) {
+    annotationProvider = {
+      getAnnotation(secretKey: string): Promise<VaultAnnotation | null> {
+        record("getAnnotation", secretKey);
+        return Promise.resolve(annotations.get(secretKey) ?? null);
+      },
+
+      putAnnotation(
+        secretKey: string,
+        annotation: VaultAnnotation,
+      ): Promise<void> {
+        record("putAnnotation", secretKey);
+        annotations.set(secretKey, annotation);
+        return Promise.resolve();
+      },
+
+      deleteAnnotation(secretKey: string): Promise<void> {
+        record("deleteAnnotation", secretKey);
+        annotations.delete(secretKey);
+        return Promise.resolve();
+      },
+
+      listAnnotations(): Promise<Map<string, VaultAnnotation>> {
+        record("listAnnotations");
+        return Promise.resolve(new Map(annotations));
+      },
+    };
+  }
+
   return {
     vault,
+    annotationProvider,
     getStoredSecrets: () => Object.fromEntries(secrets),
     getOperations: () => [...operations],
     getOperationsByMethod: (method) =>

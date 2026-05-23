@@ -84,14 +84,24 @@ export type {
   VaultTestContextResult,
 } from "./vault_test_context.ts";
 
-export type { VaultProvider } from "./vault_types.ts";
+export {
+  VaultAnnotation,
+  type VaultAnnotationData,
+  type VaultAnnotationProvider,
+  type VaultProvider,
+} from "./vault_types.ts";
 
 export {
+  assertVaultAnnotationConformance,
+  assertVaultAnnotationExportConformance,
   assertVaultConformance,
   assertVaultExportConformance,
 } from "./vault_conformance.ts";
 
 export type {
+  VaultAnnotationConformanceOptions,
+  VaultAnnotationExport,
+  VaultAnnotationExportConformanceOptions,
   VaultConformanceOptions,
   VaultExport,
   VaultExportConformanceOptions,

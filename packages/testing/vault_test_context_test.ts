@@ -19,6 +19,7 @@
 
 import { assertEquals, assertRejects } from "@std/assert";
 import { createVaultTestContext } from "./vault_test_context.ts";
+import { VaultAnnotation } from "./vault_types.ts";
 
 Deno.test("createVaultTestContext: defaults to empty vault named test-vault", () => {
   const { vault, getStoredSecrets } = createVaultTestContext();
@@ -143,4 +144,88 @@ Deno.test("createVaultTestContext: getStoredSecrets returns a copy", async () =>
 
   assertEquals(Object.keys(snap1).length, 1);
   assertEquals(Object.keys(snap2).length, 2);
+});
+
+// --- Annotation support ---
+
+Deno.test("createVaultTestContext: annotationProvider is undefined by default", () => {
+  const { annotationProvider } = createVaultTestContext();
+  assertEquals(annotationProvider, undefined);
+});
+
+Deno.test("createVaultTestContext: annotationProvider is defined when withAnnotations is true", () => {
+  const { annotationProvider } = createVaultTestContext({
+    withAnnotations: true,
+  });
+  assertEquals(annotationProvider !== undefined, true);
+});
+
+Deno.test("createVaultTestContext: getAnnotation returns null for missing key", async () => {
+  const { annotationProvider } = createVaultTestContext({
+    withAnnotations: true,
+  });
+  const result = await annotationProvider!.getAnnotation("nonexistent");
+  assertEquals(result, null);
+});
+
+Deno.test("createVaultTestContext: putAnnotation/getAnnotation roundtrip", async () => {
+  const { annotationProvider } = createVaultTestContext({
+    withAnnotations: true,
+  });
+  const annotation = VaultAnnotation.create({
+    url: "https://example.com",
+    notes: "test note",
+  });
+  await annotationProvider!.putAnnotation("key1", annotation);
+  const retrieved = await annotationProvider!.getAnnotation("key1");
+  assertEquals(retrieved?.url, "https://example.com");
+  assertEquals(retrieved?.notes, "test note");
+});
+
+Deno.test("createVaultTestContext: deleteAnnotation removes annotation", async () => {
+  const { annotationProvider } = createVaultTestContext({
+    withAnnotations: true,
+  });
+  const annotation = VaultAnnotation.create({ notes: "to delete" });
+  await annotationProvider!.putAnnotation("key1", annotation);
+  await annotationProvider!.deleteAnnotation("key1");
+  const result = await annotationProvider!.getAnnotation("key1");
+  assertEquals(result, null);
+});
+
+Deno.test("createVaultTestContext: listAnnotations returns all annotations", async () => {
+  const { annotationProvider } = createVaultTestContext({
+    withAnnotations: true,
+  });
+  await annotationProvider!.putAnnotation(
+    "key1",
+    VaultAnnotation.create({ notes: "first" }),
+  );
+  await annotationProvider!.putAnnotation(
+    "key2",
+    VaultAnnotation.create({ notes: "second" }),
+  );
+  const all = await annotationProvider!.listAnnotations();
+  assertEquals(all.size, 2);
+  assertEquals(all.has("key1"), true);
+  assertEquals(all.has("key2"), true);
+});
+
+Deno.test("createVaultTestContext: annotation operations are recorded", async () => {
+  const { annotationProvider, getOperations, getOperationsByMethod } =
+    createVaultTestContext({ withAnnotations: true });
+
+  await annotationProvider!.putAnnotation(
+    "key1",
+    VaultAnnotation.create({ notes: "test" }),
+  );
+  await annotationProvider!.getAnnotation("key1");
+  await annotationProvider!.listAnnotations();
+  await annotationProvider!.deleteAnnotation("key1");
+
+  assertEquals(getOperations().length, 4);
+  assertEquals(getOperationsByMethod("putAnnotation").length, 1);
+  assertEquals(getOperationsByMethod("getAnnotation").length, 1);
+  assertEquals(getOperationsByMethod("listAnnotations").length, 1);
+  assertEquals(getOperationsByMethod("deleteAnnotation").length, 1);
 });

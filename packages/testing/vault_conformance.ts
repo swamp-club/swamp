@@ -19,7 +19,11 @@
 
 // deno-lint-ignore-file no-import-prefix
 import { assertEquals, assertExists } from "jsr:@std/assert@1.0.19";
-import type { VaultProvider } from "./vault_types.ts";
+import {
+  VaultAnnotation,
+  type VaultAnnotationProvider,
+  type VaultProvider,
+} from "./vault_types.ts";
 
 /**
  * The vault export shape that extension authors must produce.
@@ -261,6 +265,284 @@ export async function assertVaultConformance(
       for (const key of createdKeys) {
         try {
           await provider.put(key, "");
+        } catch {
+          // Ignore cleanup errors
+        }
+      }
+    }
+  }
+}
+
+/**
+ * The vault export shape for vaults that support annotations.
+ * Extends the base VaultExport with annotation provider methods.
+ */
+export interface VaultAnnotationExport {
+  type: string;
+  name: string;
+  description: string;
+  configSchema: { safeParse: (v: unknown) => { success: boolean } };
+  createProvider: (
+    name: string,
+    config: Record<string, unknown>,
+  ) => VaultProvider & VaultAnnotationProvider;
+}
+
+/** Options for vault annotation export conformance. */
+export interface VaultAnnotationExportConformanceOptions {
+  /** Configs that should pass schema validation. At least one required. */
+  validConfigs: Record<string, unknown>[];
+}
+
+/**
+ * Asserts that a vault export's createProvider returns an object that
+ * implements VaultAnnotationProvider methods.
+ *
+ * Call this **after** `assertVaultExportConformance` to additionally verify
+ * annotation support. This is a separate call because annotation support
+ * is opt-in — not all vault providers implement it.
+ *
+ * ```typescript
+ * import {
+ *   assertVaultExportConformance,
+ *   assertVaultAnnotationExportConformance,
+ * } from "@systeminit/swamp-testing";
+ * import { vault } from "./my_vault.ts";
+ *
+ * Deno.test("vault export conforms with annotations", () => {
+ *   assertVaultExportConformance(vault, {
+ *     validConfigs: [{ region: "us-east-1" }],
+ *   });
+ *   assertVaultAnnotationExportConformance(vault, {
+ *     validConfigs: [{ region: "us-east-1" }],
+ *   });
+ * });
+ * ```
+ */
+export function assertVaultAnnotationExportConformance(
+  vaultExport: VaultAnnotationExport,
+  options: VaultAnnotationExportConformanceOptions,
+): void {
+  assertEquals(
+    options.validConfigs.length > 0,
+    true,
+    "At least one valid config must be provided",
+  );
+
+  const provider = vaultExport.createProvider(
+    "annotation-conformance-test",
+    options.validConfigs[0],
+  );
+  assertExists(provider, "createProvider must return a provider");
+  assertEquals(
+    typeof provider.getAnnotation,
+    "function",
+    "provider must have getAnnotation()",
+  );
+  assertEquals(
+    typeof provider.putAnnotation,
+    "function",
+    "provider must have putAnnotation()",
+  );
+  assertEquals(
+    typeof provider.deleteAnnotation,
+    "function",
+    "provider must have deleteAnnotation()",
+  );
+  assertEquals(
+    typeof provider.listAnnotations,
+    "function",
+    "provider must have listAnnotations()",
+  );
+}
+
+/** Options for vault annotation behavioral conformance. */
+export interface VaultAnnotationConformanceOptions {
+  /** Prefix for test keys to avoid collisions (default: "swamp-conformance-test-"). */
+  keyPrefix?: string;
+  /** Delete test annotations after the test (default: true). */
+  cleanup?: boolean;
+}
+
+/**
+ * Asserts that a VaultAnnotationProvider implementation satisfies the
+ * behavioral contract.
+ *
+ * Tests: putAnnotation/getAnnotation roundtrip, getAnnotation returns null
+ * for unannotated key, deleteAnnotation clears annotations, listAnnotations
+ * includes annotated keys, VaultAnnotation.merge() preserves existing fields,
+ * toData()/fromData() roundtrip, isEmpty() for empty annotations.
+ *
+ * **Warning**: This hits real infrastructure. Test keys are prefixed and
+ * cleaned up by default.
+ *
+ * ```typescript
+ * import { assertVaultAnnotationConformance } from "@systeminit/swamp-testing";
+ *
+ * Deno.test("vault annotation contract", async () => {
+ *   const provider = vault.createProvider("test", { region: "us-east-1" });
+ *   await assertVaultAnnotationConformance(provider);
+ * });
+ * ```
+ */
+export async function assertVaultAnnotationConformance(
+  provider: VaultAnnotationProvider,
+  options?: VaultAnnotationConformanceOptions,
+): Promise<void> {
+  const prefix = options?.keyPrefix ?? "swamp-conformance-test-";
+  const cleanup = options?.cleanup ?? true;
+
+  const testKey1 = `${prefix}${crypto.randomUUID().slice(0, 8)}`;
+  const testKey2 = `${prefix}${crypto.randomUUID().slice(0, 8)}`;
+  const annotatedKeys: string[] = [];
+
+  try {
+    // getAnnotation returns null for unannotated key
+    const missing = await provider.getAnnotation(testKey1);
+    assertEquals(
+      missing,
+      null,
+      "getAnnotation() must return null for a key with no annotation",
+    );
+
+    // putAnnotation/getAnnotation roundtrip
+    const annotation1 = VaultAnnotation.create({
+      url: "https://example.com/secret-1",
+      notes: "conformance test annotation",
+      labels: { env: "test", team: "platform" },
+    });
+    await provider.putAnnotation(testKey1, annotation1);
+    annotatedKeys.push(testKey1);
+
+    const retrieved = await provider.getAnnotation(testKey1);
+    assertExists(
+      retrieved,
+      "getAnnotation() must return the annotation that was put",
+    );
+    assertEquals(
+      retrieved.url,
+      "https://example.com/secret-1",
+      "getAnnotation().url must match what was put",
+    );
+    assertEquals(
+      retrieved.notes,
+      "conformance test annotation",
+      "getAnnotation().notes must match what was put",
+    );
+    assertEquals(
+      retrieved.labels["env"],
+      "test",
+      "getAnnotation().labels must match what was put",
+    );
+    assertEquals(
+      retrieved.labels["team"],
+      "platform",
+      "getAnnotation().labels must match what was put",
+    );
+
+    // toData()/fromData() roundtrip
+    const data = retrieved.toData();
+    assertExists(data.updatedAt, "toData().updatedAt must exist");
+    const restored = VaultAnnotation.fromData(data);
+    assertEquals(
+      restored.url,
+      retrieved.url,
+      "fromData(toData()) must preserve url",
+    );
+    assertEquals(
+      restored.notes,
+      retrieved.notes,
+      "fromData(toData()) must preserve notes",
+    );
+
+    // merge() preserves existing fields and adds new ones
+    const merged = retrieved.merge({
+      labels: { version: "2" },
+    });
+    assertEquals(
+      merged.url,
+      retrieved.url,
+      "merge() must preserve unmodified fields",
+    );
+    assertEquals(
+      merged.labels["env"],
+      "test",
+      "merge() must preserve existing labels",
+    );
+    assertEquals(
+      merged.labels["version"],
+      "2",
+      "merge() must add new labels",
+    );
+
+    // isEmpty() returns true for empty annotations
+    const empty = VaultAnnotation.create({});
+    assertEquals(
+      empty.isEmpty(),
+      true,
+      "isEmpty() must return true for annotation with no fields",
+    );
+    assertEquals(
+      annotation1.isEmpty(),
+      false,
+      "isEmpty() must return false for annotation with fields",
+    );
+
+    // Second annotation on a different key
+    const annotation2 = VaultAnnotation.create({
+      notes: "second annotation",
+    });
+    await provider.putAnnotation(testKey2, annotation2);
+    annotatedKeys.push(testKey2);
+
+    // listAnnotations includes annotated keys
+    const annotations = await provider.listAnnotations();
+    assertEquals(
+      annotations instanceof Map,
+      true,
+      "listAnnotations() must return a Map",
+    );
+    assertEquals(
+      annotations.has(testKey1),
+      true,
+      `listAnnotations() must include "${testKey1}"`,
+    );
+    assertEquals(
+      annotations.has(testKey2),
+      true,
+      `listAnnotations() must include "${testKey2}"`,
+    );
+
+    // deleteAnnotation clears the annotation
+    await provider.deleteAnnotation(testKey1);
+    const afterDelete = await provider.getAnnotation(testKey1);
+    assertEquals(
+      afterDelete,
+      null,
+      "getAnnotation() must return null after deleteAnnotation()",
+    );
+
+    // listAnnotations no longer includes deleted key
+    const annotationsAfterDelete = await provider.listAnnotations();
+    assertEquals(
+      annotationsAfterDelete.has(testKey1),
+      false,
+      "listAnnotations() must not include deleted key",
+    );
+    assertEquals(
+      annotationsAfterDelete.has(testKey2),
+      true,
+      "listAnnotations() must still include non-deleted key",
+    );
+
+    // Remove testKey1 from cleanup list since it's already deleted
+    const idx = annotatedKeys.indexOf(testKey1);
+    if (idx !== -1) annotatedKeys.splice(idx, 1);
+  } finally {
+    if (cleanup) {
+      for (const key of annotatedKeys) {
+        try {
+          await provider.deleteAnnotation(key);
         } catch {
           // Ignore cleanup errors
         }
