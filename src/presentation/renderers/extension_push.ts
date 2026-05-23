@@ -27,7 +27,10 @@ import type { OutputMode } from "../output/output.ts";
 import { UserError } from "../../domain/errors.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import type { SafetyIssue } from "../../domain/extensions/extension_safety_analyzer.ts";
-import type { QualityIssue } from "../../domain/extensions/extension_quality_checker.ts";
+import {
+  qualityCheckLabel,
+  type QualityIssue,
+} from "../../domain/extensions/extension_quality_checker.ts";
 import type { DependencyTrustIssue } from "../../domain/extensions/extension_dependency_trust_checker.ts";
 import type { CollectiveMismatch } from "../../domain/extensions/extension_collective_validator.ts";
 import type { CompilationError } from "../../libswamp/mod.ts";
@@ -207,7 +210,7 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
   renderQualityErrors(issues: QualityIssue[]): void {
     this.logger.error`Quality checks failed (push blocked):`;
     for (const issue of issues) {
-      const label = issue.check === "fmt" ? "Formatting" : "Lint";
+      const label = qualityCheckLabel(issue.check);
       this.logger.error`  ${label} issues:`;
       this.logger.error`${issue.output}`;
     }

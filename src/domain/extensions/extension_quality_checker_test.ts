@@ -41,7 +41,7 @@ async function withTempFiles(
     }
     await fn(tmpDir, paths);
   } finally {
-    await Deno.remove(tmpDir, { recursive: true });
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
   }
 }
 

@@ -127,15 +127,7 @@ export const extensionFmtCommand = new Command()
       allModelFiles,
     );
     if (versionIssues.length > 0) {
-      if (cliCtx.outputMode === "json") {
-        console.log(
-          JSON.stringify({ versionDriftWarnings: versionIssues }, null, 2),
-        );
-      } else {
-        for (const issue of versionIssues) {
-          cliCtx.logger.warn`${issue.output}`;
-        }
-      }
+      renderer.renderVersionDriftWarnings(versionIssues);
     }
 
     // 6. Throw if quality checks failed

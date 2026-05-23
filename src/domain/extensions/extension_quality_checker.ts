@@ -26,6 +26,19 @@ export interface QualityIssue {
   output: string;
 }
 
+export function qualityCheckLabel(check: QualityIssue["check"]): string {
+  switch (check) {
+    case "fmt":
+      return "Formatting";
+    case "lint":
+      return "Lint";
+    case "dynamic-import":
+      return "Dynamic import";
+    case "version-drift":
+      return "Version drift";
+  }
+}
+
 /** Result of the quality check. */
 export interface QualityCheckResult {
   passed: boolean;
