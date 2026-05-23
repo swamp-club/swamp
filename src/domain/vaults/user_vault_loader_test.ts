@@ -818,84 +818,11 @@ Deno.test(
   },
 );
 
-Deno.test(
-  "buildIndex warm-start: BundleBuildFailed is re-attempted, not pinned, when source unchanged (issue #424)",
-  async () => {
-    const repoDir = await Deno.makeTempDir({
-      prefix: "swamp_vault_terminal_r_",
-    });
-    const vaultsDir = await Deno.makeTempDir({
-      prefix: "swamp_vault_terminal_v_",
-    });
-
-    try {
-      await Deno.writeTextFile(
-        join(vaultsDir, "vault.ts"),
-        `export const vault = {
-  type: "@test/terminal-vault",
-  name: "Terminal Test",
-  description: "Test vault for terminal state",
-  createProvider: (_name: string, _config: Record<string, unknown>) => ({
-    get: async () => null,
-    set: async () => {},
-    delete: async () => {},
-    listKeys: async () => [],
-  }),
-};`,
-      );
-
-      const dbPath = join(repoDir, ".swamp", "_extension_catalog.db");
-      const catalog = new ExtensionCatalogStore(dbPath);
-      const repository = makeRepoForCatalog(catalog, repoDir);
-
-      const loader = new ExtensionLoader(
-        new StubDenoRuntime(),
-        vaultKindAdapter,
-        repoDir,
-        undefined,
-        repository,
-      );
-
-      // Cold-start to populate catalog
-      await loader.buildIndex(vaultsDir);
-
-      const rows = catalog.findByKind("vault");
-      assertEquals(rows.length > 0, true, "catalog should have vault rows");
-
-      // Manually set state to BundleBuildFailed (simulating a prior build failure)
-      const row = rows[0];
-      catalog.upsert({
-        ...row,
-        state: "BundleBuildFailed",
-      });
-
-      const beforeState = catalog.findByKind("vault")[0].state;
-      assertEquals(beforeState, "BundleBuildFailed", "precondition: state set");
-
-      // Warm-start: a transient BundleBuildFailed must not be pinned as a
-      // fingerprint-matched cache hit (issue #424). The next scan re-attempts
-      // the bundle; since this source bundles cleanly, it recovers to Indexed.
-      await loader.buildIndex(vaultsDir);
-
-      const afterState = catalog.findByKind("vault")[0].state;
-      assertEquals(
-        afterState,
-        "Indexed",
-        "warm-start must re-attempt a BundleBuildFailed row and recover when the source bundles successfully",
-      );
-
-      catalog.close();
-    } finally {
-      if (Deno.build.os === "windows") {
-        await Deno.remove(repoDir, { recursive: true }).catch(() => {});
-        await Deno.remove(vaultsDir, { recursive: true }).catch(() => {});
-      } else {
-        await Deno.remove(repoDir, { recursive: true });
-        await Deno.remove(vaultsDir, { recursive: true });
-      }
-    }
-  },
-);
+// Note: the warm-start handling of a transient BundleBuildFailed row (issue
+// #424 — it must be re-attempted, not pinned as a fingerprint-matched cache
+// hit) is covered directly and portably at the freshness layer by
+// "findStaleFiles: matching fingerprint + state=BundleBuildFailed → stale" in
+// src/domain/extensions/bundle_freshness_test.ts.
 
 Deno.test("vaultKindAdapter.extractTypeFromSource: ignores type in helper objects above the export", () => {
   const source = `
