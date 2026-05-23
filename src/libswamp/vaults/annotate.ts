@@ -17,7 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { VaultAnnotation } from "../../domain/vaults/vault_annotation.ts";
+import {
+  VaultAnnotation,
+  type VaultAnnotationData,
+} from "../../domain/vaults/vault_annotation.ts";
 import { VaultService } from "../../domain/vaults/vault_service.ts";
 import { createVaultSecretAnnotated } from "../../domain/events/types.ts";
 import type { EventBus } from "../../domain/events/event_bus.ts";
@@ -40,6 +43,7 @@ export interface VaultAnnotateData {
   fieldsUpdated: string[];
   cleared: boolean;
   timestamp: string;
+  annotation: VaultAnnotationData | null;
 }
 
 export type VaultAnnotateEvent =
@@ -53,6 +57,7 @@ export interface VaultAnnotateInput {
   url?: string;
   notes?: string;
   labels?: Record<string, string>;
+  removeLabels?: string[];
   clear: boolean;
 }
 
@@ -102,12 +107,8 @@ export function createVaultAnnotateDeps(
     },
     secretExists: async (vaultName, key) => {
       const svc = await getVaultService();
-      try {
-        await svc.get(vaultName, key);
-        return true;
-      } catch {
-        return false;
-      }
+      const keys = await svc.list(vaultName);
+      return keys.includes(key);
     },
     supportsAnnotations: async (vaultName) => {
       const svc = await getVaultService();
@@ -201,12 +202,13 @@ export async function* vaultAnnotate(
 
       if (
         !input.clear && input.url === undefined &&
-        input.notes === undefined && input.labels === undefined
+        input.notes === undefined && input.labels === undefined &&
+        input.removeLabels === undefined
       ) {
         yield {
           kind: "error",
           error: validationFailed(
-            "No annotation fields specified. Use --url, --note, --label, or --clear.",
+            "No annotation fields specified. Use --url, --notes, --label, --remove-label, or --clear.",
           ),
         };
         return;
@@ -233,6 +235,7 @@ export async function* vaultAnnotate(
             fieldsUpdated: [],
             cleared: true,
             timestamp: new Date().toISOString(),
+            annotation: null,
           },
         };
         return;
@@ -241,10 +244,12 @@ export async function* vaultAnnotate(
       const fieldsUpdated: string[] = [];
       if (input.url !== undefined) fieldsUpdated.push("url");
       if (input.notes !== undefined) fieldsUpdated.push("notes");
-      if (input.labels !== undefined) fieldsUpdated.push("labels");
+      if (input.labels !== undefined || input.removeLabels !== undefined) {
+        fieldsUpdated.push("labels");
+      }
 
       const existing = await deps.getAnnotation(input.vaultName, input.key);
-      const annotation = existing
+      let annotation = existing
         ? existing.merge({
           url: input.url,
           notes: input.notes,
@@ -255,6 +260,10 @@ export async function* vaultAnnotate(
           notes: input.notes,
           labels: input.labels,
         });
+
+      if (input.removeLabels !== undefined && input.removeLabels.length > 0) {
+        annotation = annotation.removeLabels(input.removeLabels);
+      }
 
       await deps.putAnnotation(input.vaultName, input.key, annotation);
       ctx.logger.debug`Annotation updated for ${input.key}`;
@@ -276,6 +285,7 @@ export async function* vaultAnnotate(
           fieldsUpdated,
           cleared: false,
           timestamp: new Date().toISOString(),
+          annotation: annotation.toData(),
         },
       };
     })(),

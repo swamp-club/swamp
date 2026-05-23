@@ -72,7 +72,7 @@ existing fields are preserved. Use --clear to remove all annotations.`,
   .arguments("<vault_name:string> <key:string>")
   .example(
     "Add a URL and notes",
-    'swamp vault annotate my-vault API_KEY --url https://console.aws.com/iam --note "Production API key"',
+    'swamp vault annotate my-vault API_KEY --url https://console.aws.com/iam --notes "Production API key"',
   )
   .example(
     "Add labels",
@@ -87,13 +87,18 @@ existing fields are preserved. Use --clear to remove all annotations.`,
     "Repository directory (env: SWAMP_REPO_DIR)",
   )
   .option("--url <url:string>", "URL associated with this secret")
-  .option("--note <note:string>", "Free-text notes about this secret")
+  .option("--notes <notes:string>", "Free-text notes about this secret")
   .option(
     "--label <label:string>",
     "Key=value label (repeatable)",
     { collect: true },
   )
   .option("--clear", "Remove all annotations from this secret")
+  .option(
+    "--remove-label <key:string>",
+    "Remove a label by key (repeatable)",
+    { collect: true },
+  )
   .action(async function (
     options: AnyOptions,
     vaultName: string,
@@ -112,13 +117,25 @@ existing fields are preserved. Use --clear to remove all annotations.`,
 
     const clear = options.clear === true;
     const labels = parseLabels(options.label);
+    const notes: string | undefined = options.notes;
+    const removeLabels: string[] | undefined = options.removeLabel;
 
     if (
-      !clear && options.url === undefined && options.note === undefined &&
-      labels === undefined
+      clear &&
+      (options.url !== undefined || notes !== undefined ||
+        labels !== undefined || removeLabels !== undefined)
     ) {
       throw new UserError(
-        "No annotation fields specified. Use --url, --note, --label, or --clear.",
+        "--clear cannot be combined with --url, --notes, --label, or --remove-label. Use --clear alone to remove all annotations.",
+      );
+    }
+
+    if (
+      !clear && options.url === undefined && notes === undefined &&
+      labels === undefined && removeLabels === undefined
+    ) {
+      throw new UserError(
+        "No annotation fields specified. Use --url, --notes, --label, --remove-label, or --clear.",
       );
     }
 
@@ -131,8 +148,9 @@ existing fields are preserved. Use --clear to remove all annotations.`,
         vaultName,
         key,
         url: options.url,
-        notes: options.note,
+        notes,
         labels,
+        removeLabels,
         clear,
       }),
       renderer.handlers(),

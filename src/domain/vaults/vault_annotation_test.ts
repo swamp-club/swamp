@@ -86,6 +86,32 @@ Deno.test("VaultAnnotation.merge: merges labels additively", () => {
   });
 });
 
+Deno.test("VaultAnnotation.removeLabels: removes specified keys", () => {
+  const original = VaultAnnotation.create({
+    url: "https://example.com",
+    labels: { env: "prod", team: "infra", region: "us" },
+  });
+  const result = original.removeLabels(["team", "region"]);
+  assertEquals(result.url, "https://example.com");
+  assertEquals(result.labels, { env: "prod" });
+});
+
+Deno.test("VaultAnnotation.removeLabels: ignores nonexistent keys", () => {
+  const original = VaultAnnotation.create({
+    labels: { env: "prod" },
+  });
+  const result = original.removeLabels(["missing"]);
+  assertEquals(result.labels, { env: "prod" });
+});
+
+Deno.test("VaultAnnotation.removeLabels: removing all keys leaves empty labels", () => {
+  const original = VaultAnnotation.create({
+    labels: { env: "prod" },
+  });
+  const result = original.removeLabels(["env"]);
+  assertEquals(result.labels, {});
+});
+
 Deno.test("VaultAnnotation.isEmpty: true when no fields set", () => {
   const a = VaultAnnotation.create({});
   assertEquals(a.isEmpty(), true);

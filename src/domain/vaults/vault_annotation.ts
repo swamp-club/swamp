@@ -97,6 +97,19 @@ export class VaultAnnotation {
     );
   }
 
+  removeLabels(keys: string[]): VaultAnnotation {
+    const newLabels = { ...this.labels };
+    for (const key of keys) {
+      delete newLabels[key];
+    }
+    return new VaultAnnotation(
+      this.url,
+      this.notes,
+      newLabels,
+      new Date(),
+    );
+  }
+
   isEmpty(): boolean {
     return this.url === undefined &&
       this.notes === undefined &&
