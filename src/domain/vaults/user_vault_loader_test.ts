@@ -819,7 +819,7 @@ Deno.test(
 );
 
 Deno.test(
-  "buildIndex warm-start: BundleBuildFailed state preserved when source unchanged",
+  "buildIndex warm-start: BundleBuildFailed is re-attempted, not pinned, when source unchanged (issue #424)",
   async () => {
     const repoDir = await Deno.makeTempDir({
       prefix: "swamp_vault_terminal_r_",
@@ -872,14 +872,16 @@ Deno.test(
       const beforeState = catalog.findByKind("vault")[0].state;
       assertEquals(beforeState, "BundleBuildFailed", "precondition: state set");
 
-      // Warm-start: source unchanged, fingerprint matches — should NOT rebundle
+      // Warm-start: a transient BundleBuildFailed must not be pinned as a
+      // fingerprint-matched cache hit (issue #424). The next scan re-attempts
+      // the bundle; since this source bundles cleanly, it recovers to Indexed.
       await loader.buildIndex(vaultsDir);
 
       const afterState = catalog.findByKind("vault")[0].state;
       assertEquals(
         afterState,
-        "BundleBuildFailed",
-        "warm-start must preserve BundleBuildFailed when source is unchanged",
+        "Indexed",
+        "warm-start must re-attempt a BundleBuildFailed row and recover when the source bundles successfully",
       );
 
       catalog.close();

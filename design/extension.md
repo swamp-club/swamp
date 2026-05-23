@@ -1144,7 +1144,13 @@ concerns:
      `isPopulated` flag is false).
    - **Warm-start / hot path:** `findStaleFiles` (preserved from
      pre-W3). Incremental fingerprint comparison. Fires per-loader
-     `buildIndex` when the catalog is already populated.
+     `buildIndex` when the catalog is already populated. A
+     fingerprint-matched `BundleBuildFailed` row is treated as **stale**
+     (re-attempted on the next scan), not a satisfied cache hit — a
+     transient build failure (e.g. npm deps unreachable on a cold cache at
+     first load) must recover once conditions change rather than pin the
+     type permanently across restarts (issue #424). Deterministic
+     `ValidationFailed` rows stay excluded — re-bundling them only thrashes.
 
 The original W3 plan targeted slimming `findStaleFiles` to a ~20 LOC
 deletion-sweep shim. Ground truth showed that warm-start incremental
