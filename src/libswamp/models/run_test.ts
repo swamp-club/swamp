@@ -787,3 +787,49 @@ Deno.test("modelMethodRun: direct execution resolves @-prefixed type from regist
     assertEquals(autoCreated.modelType, "@myorg/custom-model");
   }
 });
+
+Deno.test("modelMethodRun: direct execution strips @ fallback for repo-local types", async () => {
+  const localType = ModelType.create("sandbox/coder-server");
+  const modelDef: ModelDefinition = {
+    type: localType,
+    version: "2026.01.01.1",
+    methods: {
+      status: {
+        description: "Check status",
+        arguments: z.object({}),
+        execute: (_args, _ctx) => Promise.resolve({ dataHandles: [] }),
+      },
+    },
+  };
+
+  const deps: ModelMethodRunDeps = {
+    ...createTestDeps(null, undefined),
+    getModelDef: (type) => {
+      const key = typeof type === "string"
+        ? ModelType.create(type).normalized
+        : type.normalized;
+      if (key === localType.normalized) return modelDef;
+      return undefined;
+    },
+    createAndSaveDefinition: async (_type, _def) => {},
+    getDefinitionPath: (_type, id) => `/tmp/auto/${id}.yaml`,
+  };
+
+  const ctx = createLibSwampContext();
+  const events = await collect(
+    modelMethodRun(ctx, deps, {
+      modelIdOrName: "my-server",
+      methodName: "status",
+      inputs: {},
+      lastEvaluated: false,
+      typeArg: "@sandbox/coder-server",
+      definitionName: "my-server",
+    }),
+  );
+
+  const autoCreated = events.find((e) => e.kind === "auto_created");
+  assertEquals(autoCreated !== undefined, true);
+  if (autoCreated && autoCreated.kind === "auto_created") {
+    assertEquals(autoCreated.modelType, "sandbox/coder-server");
+  }
+});

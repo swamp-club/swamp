@@ -109,6 +109,24 @@ export const model = {
 };
 `;
 
+const LOCAL_TYPE_MODEL_CODE = `
+import { z } from "npm:zod@4";
+
+export const model = {
+  type: "sandbox/coder-server",
+  version: "2026.01.01.1",
+  methods: {
+    status: {
+      description: "Check server status",
+      arguments: z.object({}),
+      execute: async () => {
+        return { status: "running" };
+      },
+    },
+  },
+};
+`;
+
 // Regression test for swamp-club#349: direct type execution with @-prefixed
 // types must resolve locally without falling through to the auto-resolver.
 Deno.test("direct type execution: model @type resolves local extension without auto-resolver cascade", async () => {
@@ -203,6 +221,94 @@ Deno.test("direct type execution: workflow step with @type resolves local extens
       code,
       0,
       `Workflow with direct type execution failed: ${stderr}`,
+    );
+  });
+});
+
+// Regression test for swamp-club#433: direct type execution with @prefix must
+// resolve repo-local extensions whose types are registered without @.
+Deno.test("direct type execution: @prefix resolves repo-local type registered without @", async () => {
+  await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
+
+    const extDir = join(repoDir, "extensions", "models");
+    await ensureDir(extDir);
+    await Deno.writeTextFile(
+      join(extDir, "sandbox_coder_server.ts"),
+      LOCAL_TYPE_MODEL_CODE,
+    );
+
+    const { code, stderr } = await runCliCommand(
+      [
+        "model",
+        "@sandbox/coder-server",
+        "method",
+        "run",
+        "status",
+        "my-server",
+        "--repo-dir",
+        repoDir,
+      ],
+      repoDir,
+    );
+
+    assertEquals(
+      code,
+      0,
+      `Direct type execution with local type failed: ${stderr}`,
+    );
+  });
+});
+
+// Verify the workflow path also handles the @-stripping fallback for local types.
+Deno.test("direct type execution: workflow step with @prefix resolves repo-local type without @", async () => {
+  await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
+
+    const extDir = join(repoDir, "extensions", "models");
+    await ensureDir(extDir);
+    await Deno.writeTextFile(
+      join(extDir, "sandbox_coder_server.ts"),
+      LOCAL_TYPE_MODEL_CODE,
+    );
+
+    const workflowRepo = new YamlWorkflowRepository(repoDir);
+    const workflow = Workflow.create({
+      name: "local-type-workflow",
+      jobs: [
+        Job.create({
+          name: "local-job",
+          steps: [
+            Step.create({
+              name: "local-step",
+              task: StepTask.directExecution(
+                "@sandbox/coder-server",
+                "wf-local-instance",
+                "status",
+                {},
+              ),
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    const { code, stderr } = await runCliCommand(
+      [
+        "workflow",
+        "run",
+        "local-type-workflow",
+        "--repo-dir",
+        repoDir,
+      ],
+      repoDir,
+    );
+
+    assertEquals(
+      code,
+      0,
+      `Workflow with local type direct execution failed: ${stderr}`,
     );
   });
 });
