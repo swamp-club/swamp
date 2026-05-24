@@ -38,6 +38,17 @@ function formatToolsList(tools: readonly string[]): string {
   return tools.length === 0 ? "none" : tools.join(", ");
 }
 
+const TOOL_NEXT_STEPS: Record<string, string> = {
+  claude: "Start Claude Code and run /swamp-getting-started",
+  cursor: "Open this project in Cursor and run /swamp-getting-started",
+  codex: "Run `codex` and invoke $swamp-getting-started",
+  copilot:
+    'Open this project in VS Code with Copilot and say "I am new to swamp"',
+  opencode: 'Run `opencode` in this directory and say "I am new to swamp"',
+  kiro:
+    "Open this project in Kiro and select swamp-getting-started from the / menu",
+};
+
 /**
  * On-disk paths that swamp's scaffolding writes for each tool. Used to tell
  * the user which files were left behind when a tool is dropped from the
@@ -131,6 +142,19 @@ class LogRepoInitRenderer implements Renderer<RepoInitEvent> {
               `remove them by hand if desired.`,
           );
         }
+
+        const steps = data.tools
+          .map((t) => TOOL_NEXT_STEPS[t])
+          .filter((s): s is string => s !== undefined);
+        if (steps.length === 0) {
+          steps.push("Run `swamp --help` to see available commands");
+        }
+        console.log("");
+        logger.info("What's next:");
+        for (const step of steps) {
+          logger.info(`  → ${step}`);
+        }
+        logger.info("  → Read the manual at https://swamp-club.com/manual");
       },
       error: (e) => {
         throw new UserError(e.error.message);
@@ -144,7 +168,13 @@ class JsonRepoInitRenderer implements Renderer<RepoInitEvent> {
     return {
       initializing: () => {},
       completed: (e) => {
-        console.log(JSON.stringify(e.data, null, 2));
+        const steps = e.data.tools
+          .map((t) => TOOL_NEXT_STEPS[t])
+          .filter((s): s is string => s !== undefined);
+        if (steps.length === 0) {
+          steps.push("Run `swamp --help` to see available commands");
+        }
+        console.log(JSON.stringify({ ...e.data, nextSteps: steps }, null, 2));
       },
       error: (e) => {
         throw new UserError(e.error.message);
