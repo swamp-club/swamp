@@ -264,6 +264,7 @@ export interface RepositoryContext {
   vaultConfigRepo: YamlVaultConfigRepository;
   catalogStore: CatalogStore;
   dataQueryService: DataQueryService;
+  markDirty?: MarkDirtyHook;
 }
 
 /**
@@ -376,5 +377,6 @@ export function createRepositoryContext(
     vaultConfigRepo,
     catalogStore,
     dataQueryService,
+    markDirty,
   };
 }
