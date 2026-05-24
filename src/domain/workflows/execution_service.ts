@@ -50,6 +50,7 @@ import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistenc
 import { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import type { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
+import type { MarkDirtyHook } from "../datastore/datastore_sync_service.ts";
 import { DataQueryService } from "../data/data_query_service.ts";
 import {
   fromFileHandle,
@@ -252,6 +253,7 @@ export class DefaultStepExecutor implements StepExecutor {
   constructor(
     private readonly injectedDeps?: StepExecutorDeps,
     directTypeResolver?: DirectTypeResolver,
+    private readonly markDirty?: MarkDirtyHook,
   ) {
     this._directTypeResolver = directTypeResolver;
   }
@@ -267,6 +269,7 @@ export class DefaultStepExecutor implements StepExecutor {
     opts: {
       dataBaseDir?: string;
       catalogStore: CatalogStore;
+      markDirty?: MarkDirtyHook;
     },
   ): Promise<DefaultStepExecutor> {
     return new DefaultStepExecutor(
@@ -286,6 +289,7 @@ export class DefaultStepExecutor implements StepExecutor {
     const deps = await DefaultStepExecutor.buildDeps(ctx.repoDir, {
       dataBaseDir: ctx.dataBaseDir,
       catalogStore: ctx.catalogStore,
+      markDirty: this.markDirty,
     });
     if (this._directTypeResolver) {
       deps.directTypeResolver = this._directTypeResolver;
@@ -295,13 +299,18 @@ export class DefaultStepExecutor implements StepExecutor {
 
   private static async buildDeps(
     repoDir: string,
-    opts: { dataBaseDir?: string; catalogStore: CatalogStore },
+    opts: {
+      dataBaseDir?: string;
+      catalogStore: CatalogStore;
+      markDirty?: MarkDirtyHook;
+    },
   ): Promise<StepExecutorDeps> {
     const definitionRepo = new YamlDefinitionRepository(repoDir);
     const unifiedDataRepo = new FileSystemUnifiedDataRepository(
       repoDir,
       opts.dataBaseDir,
       opts.catalogStore,
+      opts.markDirty,
     );
     const dataQueryService = new DataQueryService(
       opts.catalogStore,
@@ -311,8 +320,12 @@ export class DefaultStepExecutor implements StepExecutor {
       definitionRepo,
       unifiedDataRepo,
       dataQueryService,
-      outputRepo: new YamlOutputRepository(repoDir),
-      evaluatedDefRepo: new YamlEvaluatedDefinitionRepository(repoDir),
+      outputRepo: new YamlOutputRepository(repoDir, undefined, opts.markDirty),
+      evaluatedDefRepo: new YamlEvaluatedDefinitionRepository(
+        repoDir,
+        undefined,
+        opts.markDirty,
+      ),
       methodExecutionService: new DefaultMethodExecutionService(),
       vaultService: await VaultService.fromRepository(repoDir),
       expressionEvaluator: new ExpressionEvaluationService(
@@ -1239,17 +1252,23 @@ export class WorkflowExecutionService {
     dataBaseDir: string | undefined,
     catalogStore: CatalogStore,
     private readonly directTypeResolver?: DirectTypeResolver,
+    private readonly markDirty?: MarkDirtyHook,
   ) {
     this.executor = executor ??
-      new DefaultStepExecutor(undefined, directTypeResolver);
+      new DefaultStepExecutor(undefined, directTypeResolver, markDirty);
     this.dataBaseDir = dataBaseDir;
     this.catalogStore = catalogStore;
     this.definitionRepo = new YamlDefinitionRepository(repoDir);
-    this.evaluatedDefRepo = new YamlEvaluatedDefinitionRepository(repoDir);
+    this.evaluatedDefRepo = new YamlEvaluatedDefinitionRepository(
+      repoDir,
+      undefined,
+      markDirty,
+    );
     this.dataRepo = new FileSystemUnifiedDataRepository(
       repoDir,
       dataBaseDir,
       catalogStore,
+      markDirty,
     );
     const dataQueryService = new DataQueryService(catalogStore, this.dataRepo);
     this.modelResolver = new ModelResolver(this.definitionRepo, {
@@ -2160,6 +2179,8 @@ export class WorkflowExecutionService {
       this.executor,
       this.dataBaseDir,
       this.catalogStore,
+      undefined,
+      this.markDirty,
     );
 
     let childRun: WorkflowRun | undefined;

@@ -57,6 +57,7 @@ import {
 } from "../infrastructure/persistence/datastore_sync_coordinator.ts";
 import { summarizeSyncError } from "../infrastructure/persistence/sync_error_diagnostic.ts";
 import { FileLock } from "../infrastructure/persistence/file_lock.ts";
+import { swampPath } from "../infrastructure/persistence/paths.ts";
 import {
   type DistributedLock,
   type LockInfo,
@@ -136,16 +137,27 @@ async function resolveCustomProvider(
  * normalize. Forward-slash on the wire is the cross-platform key
  * convention (matching `.datastore-index.json`); extensions consuming
  * `relPath` for disk access on Windows convert back to native separators.
+ *
+ * When the path is outside cacheRoot (e.g. repo-local `.swamp/outputs/`
+ * vs a remote cache at `~/.swamp/repos/<id>/`), the relative result starts
+ * with `..`. In that case we fall back to `relative(repoSwampDir, absPath)`
+ * — both trees share the same internal layout, so either root produces a
+ * usable cache-relative key.
  */
 function buildMarkDirtyHook(
   syncService: DatastoreSyncService,
   cacheRoot: string,
+  repoDir: string,
 ): MarkDirtyHook {
+  const repoSwampDir = swampPath(repoDir);
   return (absPath?: string) => {
     if (absPath === undefined) {
       return syncService.markDirty();
     }
-    const rel = relative(cacheRoot, absPath);
+    let rel = relative(cacheRoot, absPath);
+    if (rel.startsWith("..")) {
+      rel = relative(repoSwampDir, absPath);
+    }
     const relPath = SEPARATOR === "/" ? rel : rel.split(SEPARATOR).join("/");
     return syncService.markDirty({ relPath });
   };
@@ -485,7 +497,11 @@ export function requireInitializedRepo(
       datastoreResolver,
       markDirty: syncService && isCustomDatastoreConfig(datastoreConfig) &&
           datastoreConfig.cachePath
-        ? buildMarkDirtyHook(syncService, datastoreConfig.cachePath)
+        ? buildMarkDirtyHook(
+          syncService,
+          datastoreConfig.cachePath,
+          repoPath.value,
+        )
         : undefined,
       ...factoryConfig,
     });
@@ -617,7 +633,11 @@ export async function requireInitializedRepoUnlocked(
     datastoreResolver,
     markDirty: syncService && isCustomDatastoreConfig(datastoreConfig) &&
         datastoreConfig.cachePath
-      ? buildMarkDirtyHook(syncService, datastoreConfig.cachePath)
+      ? buildMarkDirtyHook(
+        syncService,
+        datastoreConfig.cachePath,
+        repoPath.value,
+      )
       : undefined,
     ...factoryConfig,
   });

@@ -85,6 +85,8 @@ export async function createWorkflowRunDeps(
         undefined,
         undefined,
         catalogStore,
+        undefined,
+        repoContext.markDirty,
       ),
     catalogStore: repoContext.catalogStore,
     dataRepo: repoContext.unifiedDataRepo,

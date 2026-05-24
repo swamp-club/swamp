@@ -359,6 +359,7 @@ export const workflowRunCommand = new Command()
             unlocked.datastoreResolver.resolvePath(SWAMP_SUBDIRS.data),
             catalogStore,
             directResolver,
+            repoContext.markDirty,
           );
         },
         catalogStore: repoContext.catalogStore,
