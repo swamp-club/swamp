@@ -309,11 +309,26 @@ export const workflowRunCommand = new Command()
             inputs,
           ) => {
             const typeStr = typeArg;
-            const resolvedType = ModelType.create(typeStr);
-            const modelDef = await resolveModelType(
+            let resolvedType = ModelType.create(typeStr);
+            let modelDef = await resolveModelType(
               resolvedType,
               getAutoResolver(),
             );
+
+            // Fallback: @ is the CLI syntax marker but repo-local extensions
+            // register types without @. Try stripping it.
+            if (!modelDef && typeStr.startsWith("@")) {
+              const strippedType = ModelType.create(typeStr.slice(1));
+              const strippedDef = await resolveModelType(
+                strippedType,
+                getAutoResolver(),
+              );
+              if (strippedDef) {
+                resolvedType = strippedType;
+                modelDef = strippedDef;
+              }
+            }
+
             if (!modelDef) {
               throw new Error(
                 `Unknown model type: ${resolvedType.normalized}`,

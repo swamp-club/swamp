@@ -251,11 +251,25 @@ export async function* modelMethodRun(
       if (input.typeArg && input.definitionName) {
         // Direct type execution path: auto-create-then-run
         const typeArg = input.typeArg;
-        const resolvedType = ModelType.create(typeArg);
+        let resolvedType = ModelType.create(typeArg);
 
-        const resolvedModelDef = await Promise.resolve(
+        let resolvedModelDef = await Promise.resolve(
           deps.getModelDef(resolvedType),
         );
+
+        // Fallback: the @ prefix is the CLI syntax marker for direct execution
+        // but repo-local extensions register types without @. Try stripping it.
+        if (!resolvedModelDef && typeArg.startsWith("@")) {
+          const strippedType = ModelType.create(typeArg.slice(1));
+          const strippedDef = await Promise.resolve(
+            deps.getModelDef(strippedType),
+          );
+          if (strippedDef) {
+            resolvedType = strippedType;
+            resolvedModelDef = strippedDef;
+          }
+        }
+
         if (!resolvedModelDef) {
           yield {
             kind: "error",
