@@ -21,41 +21,61 @@ type ConsoleMethod = (...args: unknown[]) => void;
 
 const CAPTURED_METHODS = ["log", "info", "debug", "warn", "error"] as const;
 
+const REAL_CONSOLE = new Map<string, ConsoleMethod>(
+  CAPTURED_METHODS.map((m) => [m, console[m] as ConsoleMethod]),
+);
+
+const STDERR_WRITER = new TextEncoder();
+
+function writeStderr(line: string): void {
+  Deno.stderr.writeSync(STDERR_WRITER.encode(line + "\n"));
+}
+
+let activeGuards = 0;
+const allActiveLogs: Set<string[]> = new Set();
+
 /**
  * Executes an async function with console methods redirected to a capture array.
- * All output is restored on completion (success or throw) via try/finally.
- * Captured lines are relayed to stderr after execution so extension developers
- * still see their debug output without polluting stdout.
+ * Safe for concurrent use — uses a shared refcount and module-scoped originals.
+ * The first guard installs the intercept; the last guard restores the originals.
+ * All concurrent guards' logs arrays receive captured output.
  */
 export async function withConsoleGuard<T>(
   fn: () => T | Promise<T>,
   logs: string[],
 ): Promise<T> {
-  const originals = new Map<string, ConsoleMethod>();
-
-  for (const method of CAPTURED_METHODS) {
-    originals.set(method, console[method] as ConsoleMethod);
-    // deno-lint-ignore no-explicit-any
-    (console as any)[method] = (...args: unknown[]) => {
-      const line = args.map((a) =>
-        typeof a === "string" ? a : JSON.stringify(a)
-      ).join(" ");
-      logs.push(`[${method}] ${line}`);
-    };
+  allActiveLogs.add(logs);
+  if (activeGuards === 0) {
+    for (const method of CAPTURED_METHODS) {
+      // deno-lint-ignore no-explicit-any
+      (console as any)[method] = (...args: unknown[]) => {
+        const line = args.map((a) =>
+          typeof a === "string" ? a : JSON.stringify(a)
+        ).join(" ");
+        for (const logArray of allActiveLogs) {
+          logArray.push(`[${method}] ${line}`);
+        }
+      };
+    }
   }
+  activeGuards++;
 
   try {
     return await fn();
   } finally {
-    for (const method of CAPTURED_METHODS) {
-      // deno-lint-ignore no-explicit-any
-      (console as any)[method] = originals.get(method)!;
+    activeGuards--;
+    allActiveLogs.delete(logs);
+
+    if (activeGuards === 0) {
+      for (const method of CAPTURED_METHODS) {
+        // deno-lint-ignore no-explicit-any
+        (console as any)[method] = REAL_CONSOLE.get(method)!;
+      }
     }
 
     if (logs.length > 0) {
-      const originalError = originals.get("error")!;
       for (const line of logs) {
-        originalError(line);
+        writeStderr(line);
       }
     }
   }

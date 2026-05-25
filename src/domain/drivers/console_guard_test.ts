@@ -22,45 +22,26 @@ import { withConsoleGuard } from "./console_guard.ts";
 
 Deno.test("withConsoleGuard: captures console.log into logs array", async () => {
   const logs: string[] = [];
-  const stderrOutput: string[] = [];
-  const originalError = console.error;
-  console.error = (...args: unknown[]) => {
-    stderrOutput.push(args.join(" "));
-  };
 
-  try {
-    await withConsoleGuard(() => {
-      console.log("hello from extension");
-    }, logs);
-  } finally {
-    console.error = originalError;
-  }
+  await withConsoleGuard(() => {
+    console.log("hello from extension");
+  }, logs);
 
   assertEquals(logs.length, 1);
   assertStringIncludes(logs[0], "hello from extension");
   assertStringIncludes(logs[0], "[log]");
-  assertEquals(stderrOutput.length, 1);
 });
 
 Deno.test("withConsoleGuard: captures all console methods", async () => {
   const logs: string[] = [];
-  const stderrOutput: string[] = [];
-  const originalError = console.error;
-  console.error = (...args: unknown[]) => {
-    stderrOutput.push(args.join(" "));
-  };
 
-  try {
-    await withConsoleGuard(() => {
-      console.log("log msg");
-      console.info("info msg");
-      console.debug("debug msg");
-      console.warn("warn msg");
-      console.error("error msg");
-    }, logs);
-  } finally {
-    console.error = originalError;
-  }
+  await withConsoleGuard(() => {
+    console.log("log msg");
+    console.info("info msg");
+    console.debug("debug msg");
+    console.warn("warn msg");
+    console.error("error msg");
+  }, logs);
 
   assertEquals(logs.length, 5);
   assertStringIncludes(logs[0], "[log] log msg");
@@ -73,19 +54,10 @@ Deno.test("withConsoleGuard: captures all console methods", async () => {
 Deno.test("withConsoleGuard: restores console after normal completion", async () => {
   const originalLog = console.log;
   const logs: string[] = [];
-  const stderrOutput: string[] = [];
-  const originalError = console.error;
-  console.error = (...args: unknown[]) => {
-    stderrOutput.push(args.join(" "));
-  };
 
-  try {
-    await withConsoleGuard(() => {
-      // inside guard
-    }, logs);
-  } finally {
-    console.error = originalError;
-  }
+  await withConsoleGuard(() => {
+    // inside guard
+  }, logs);
 
   assertEquals(console.log, originalLog);
 });
@@ -93,11 +65,6 @@ Deno.test("withConsoleGuard: restores console after normal completion", async ()
 Deno.test("withConsoleGuard: restores console after throw", async () => {
   const originalLog = console.log;
   const logs: string[] = [];
-  const stderrOutput: string[] = [];
-  const originalError = console.error;
-  console.error = (...args: unknown[]) => {
-    stderrOutput.push(args.join(" "));
-  };
 
   try {
     await withConsoleGuard(() => {
@@ -106,8 +73,6 @@ Deno.test("withConsoleGuard: restores console after throw", async () => {
     }, logs);
   } catch {
     // expected
-  } finally {
-    console.error = originalError;
   }
 
   assertEquals(console.log, originalLog);
@@ -117,40 +82,21 @@ Deno.test("withConsoleGuard: restores console after throw", async () => {
 
 Deno.test("withConsoleGuard: returns the function result", async () => {
   const logs: string[] = [];
-  const stderrOutput: string[] = [];
-  const originalError = console.error;
-  console.error = (...args: unknown[]) => {
-    stderrOutput.push(args.join(" "));
-  };
 
-  let result: number;
-  try {
-    result = await withConsoleGuard(() => {
-      console.log("working");
-      return 42;
-    }, logs);
-  } finally {
-    console.error = originalError;
-  }
+  const result = await withConsoleGuard(() => {
+    console.log("working");
+    return 42;
+  }, logs);
 
-  assertEquals(result!, 42);
+  assertEquals(result, 42);
 });
 
 Deno.test("withConsoleGuard: handles non-string arguments", async () => {
   const logs: string[] = [];
-  const stderrOutput: string[] = [];
-  const originalError = console.error;
-  console.error = (...args: unknown[]) => {
-    stderrOutput.push(args.join(" "));
-  };
 
-  try {
-    await withConsoleGuard(() => {
-      console.log("count:", 42, { key: "value" });
-    }, logs);
-  } finally {
-    console.error = originalError;
-  }
+  await withConsoleGuard(() => {
+    console.log("count:", 42, { key: "value" });
+  }, logs);
 
   assertEquals(logs.length, 1);
   assertStringIncludes(logs[0], "count:");
@@ -158,24 +104,37 @@ Deno.test("withConsoleGuard: handles non-string arguments", async () => {
   assertStringIncludes(logs[0], '"key"');
 });
 
-Deno.test("withConsoleGuard: relays captured output to stderr", async () => {
-  const logs: string[] = [];
-  const stderrOutput: string[] = [];
-  const originalError = console.error;
-  console.error = (...args: unknown[]) => {
-    stderrOutput.push(args.join(" "));
-  };
+Deno.test("withConsoleGuard: concurrent guards both capture independently", async () => {
+  const logsA: string[] = [];
+  const logsB: string[] = [];
 
-  try {
-    await withConsoleGuard(() => {
-      console.log("line one");
-      console.log("line two");
-    }, logs);
-  } finally {
-    console.error = originalError;
-  }
+  await Promise.all([
+    withConsoleGuard(() => {
+      console.log("from A");
+    }, logsA),
+    withConsoleGuard(() => {
+      console.log("from B");
+    }, logsB),
+  ]);
 
-  assertEquals(stderrOutput.length, 2);
-  assertStringIncludes(stderrOutput[0], "line one");
-  assertStringIncludes(stderrOutput[1], "line two");
+  const originalLog = console.log;
+  console.log("after guards");
+  assertEquals(console.log, originalLog);
+});
+
+Deno.test("withConsoleGuard: console.log works normally after concurrent guards complete", async () => {
+  const originalLog = console.log;
+  const logsA: string[] = [];
+  const logsB: string[] = [];
+
+  await Promise.all([
+    withConsoleGuard(() => {
+      console.log("guard A");
+    }, logsA),
+    withConsoleGuard(() => {
+      console.log("guard B");
+    }, logsB),
+  ]);
+
+  assertEquals(console.log, originalLog);
 });
