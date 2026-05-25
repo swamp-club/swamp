@@ -17,29 +17,28 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { Command } from "@cliffy/command";
-import { groupCommandAction } from "../group_action.ts";
-import { typeDescribeCommand } from "./type_describe.ts";
-import { typeSearchAction, typeSearchCommand } from "./type_search.ts";
+import type { Command } from "@cliffy/command";
+import { getOutputModeFromArgs } from "./context.ts";
 
 /**
- * Parent command for model type operations.
+ * Action handler for group commands (commands that only have subcommands).
+ * In JSON mode, emits a JSON error object instead of dumping help text to stdout.
+ * Must be used as a regular function (not arrow) so Cliffy can bind `this`.
  */
-export const modelTypeCommand = new Command()
-  .name("type")
-  .description("Inspect model types")
-  .action(groupCommandAction)
-  .command("describe", typeDescribeCommand)
-  .command("search", typeSearchCommand)
-  .command(
-    "list",
-    new Command()
-      .description("Alias for type search")
-      .hidden()
-      .arguments("[query:string]")
-      .option(
-        "--repo-dir <dir:string>",
-        "Repository directory (env: SWAMP_REPO_DIR; not required for type search)",
-      )
-      .action(typeSearchAction),
-  );
+// deno-lint-ignore no-explicit-any
+export function groupCommandAction(this: Command<any>): void {
+  if (getOutputModeFromArgs(Deno.args) === "json") {
+    const commands = this.getCommands(false).map((cmd) => cmd.getName());
+    // deno-lint-ignore no-console
+    console.log(JSON.stringify(
+      {
+        error: "No subcommand specified",
+        availableCommands: commands,
+      },
+      null,
+      2,
+    ));
+    Deno.exit(1);
+  }
+  this.showHelp();
+}

@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import { groupCommandAction } from "../group_action.ts";
 import { authLoginCommand } from "./auth_login.ts";
 import { authLogoutCommand } from "./auth_logout.ts";
 import { authWhoamiCommand } from "./auth_whoami.ts";
@@ -25,9 +26,7 @@ import { authWhoamiCommand } from "./auth_whoami.ts";
 export const authCommand = new Command()
   .name("auth")
   .description("Manage swamp-club authentication")
-  .action(function () {
-    this.showHelp();
-  })
+  .action(groupCommandAction)
   .command("login", authLoginCommand)
   .command("logout", authLogoutCommand)
   .command("whoami", authWhoamiCommand);

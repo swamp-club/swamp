@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import { groupCommandAction } from "../group_action.ts";
 import { workflowHistoryGetCommand } from "./workflow_history_get.ts";
 import {
   workflowHistorySearchAction,
@@ -28,9 +29,7 @@ import { workflowHistoryLogsCommand } from "./workflow_history_logs.ts";
 export const workflowHistoryCommand = new Command()
   .name("history")
   .description("Workflow run history commands")
-  .action(function () {
-    this.showHelp();
-  })
+  .action(groupCommandAction)
   .command("get", workflowHistoryGetCommand)
   .command("search", workflowHistorySearchCommand)
   .command("logs", workflowHistoryLogsCommand)

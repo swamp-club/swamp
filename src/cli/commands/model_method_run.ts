@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import { groupCommandAction } from "../group_action.ts";
 import {
   createContext,
   type GlobalOptions,
@@ -423,9 +424,7 @@ export const modelMethodCommand = new Command()
   .name("method")
   .description("Execute model methods")
   .error(unknownCommandErrorHandler)
-  .action(function () {
-    this.showHelp();
-  })
+  .action(groupCommandAction)
   .command("run", modelMethodRunCommand)
   .command("describe", modelMethodDescribeCommand)
   .command("history", modelMethodHistoryCommand);

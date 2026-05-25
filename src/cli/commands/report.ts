@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import { groupCommandAction } from "../group_action.ts";
 import { reportSearchAction, reportSearchCommand } from "./report_search.ts";
 import { reportGetCommand } from "./report_get.ts";
 import { reportDescribeCommand } from "./report_describe.ts";
@@ -30,9 +31,7 @@ import { unknownCommandErrorHandler } from "../unknown_command_handler.ts";
 export const reportTypeCommand = new Command()
   .name("type")
   .description("Inspect report types")
-  .action(function () {
-    this.showHelp();
-  })
+  .action(groupCommandAction)
   .command("search", reportTypeSearchCommand)
   .command(
     "list",
@@ -47,9 +46,7 @@ export const reportCommand = new Command()
   .name("report")
   .description("Browse and view stored report results")
   .error(unknownCommandErrorHandler)
-  .action(function () {
-    this.showHelp();
-  })
+  .action(groupCommandAction)
   .command("type", reportTypeCommand)
   .command("search", reportSearchCommand)
   .command("get", reportGetCommand)

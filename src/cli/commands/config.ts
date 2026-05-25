@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import { groupCommandAction } from "../group_action.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { UpdatePreferencesFileRepository } from "../../infrastructure/update/update_preferences_file_repository.ts";
 import { createScheduler } from "../../infrastructure/update/scheduler_factory.ts";
@@ -178,9 +179,7 @@ const configListCommand = new Command()
 
 export const configCommand = new Command()
   .description("Manage swamp configuration")
-  .action(function () {
-    this.showHelp();
-  })
+  .action(groupCommandAction)
   .command("get", configGetCommand)
   .command("set", configSetCommand)
   .command("list", configListCommand);

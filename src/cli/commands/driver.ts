@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import { groupCommandAction } from "../group_action.ts";
 import {
   driverTypeSearchAction,
   driverTypeSearchCommand,
@@ -27,9 +28,7 @@ import { unknownCommandErrorHandler } from "../unknown_command_handler.ts";
 export const driverTypeCommand = new Command()
   .name("type")
   .description("Inspect driver types")
-  .action(function () {
-    this.showHelp();
-  })
+  .action(groupCommandAction)
   .command("search", driverTypeSearchCommand)
   .command(
     "list",
@@ -44,7 +43,5 @@ export const driverCommand = new Command()
   .name("driver")
   .description("Manage execution drivers")
   .error(unknownCommandErrorHandler)
-  .action(function () {
-    this.showHelp();
-  })
+  .action(groupCommandAction)
   .command("type", driverTypeCommand);

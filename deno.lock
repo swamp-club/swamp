@@ -1,6 +1,7 @@
 {
   "version": "5",
   "specifiers": {
+    "jsr:@cliffy/command@1.0.1": "1.0.1",
     "jsr:@cliffy/command@^1.0.1": "1.0.1",
     "jsr:@cliffy/flags@1.0.1": "1.0.1",
     "jsr:@cliffy/internal@1.0.1": "1.0.1",

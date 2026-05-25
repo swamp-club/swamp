@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import { groupCommandAction } from "../group_action.ts";
 import { datastoreStatusCommand } from "./datastore_status.ts";
 import { datastoreSetupCommand } from "./datastore_setup.ts";
 import { datastoreSyncCommand } from "./datastore_sync.ts";
@@ -32,9 +33,7 @@ import { unknownCommandErrorHandler } from "../unknown_command_handler.ts";
 export const datastoreTypeCommand = new Command()
   .name("type")
   .description("Inspect datastore types")
-  .action(function () {
-    this.showHelp();
-  })
+  .action(groupCommandAction)
   .command("search", datastoreTypeSearchCommand)
   .command(
     "list",
@@ -48,9 +47,7 @@ export const datastoreTypeCommand = new Command()
 export const datastoreCommand = new Command()
   .description("Manage datastore configuration")
   .error(unknownCommandErrorHandler)
-  .action(function () {
-    this.showHelp();
-  })
+  .action(groupCommandAction)
   .command("type", datastoreTypeCommand)
   .command("status", datastoreStatusCommand)
   .command("setup", datastoreSetupCommand)
