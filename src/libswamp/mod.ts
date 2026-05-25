@@ -662,6 +662,14 @@ export {
   type ExtensionVersionInput,
 } from "./extensions/version.ts";
 export {
+  createExtensionInfoDeps,
+  extensionInfo,
+  type ExtensionInfoData,
+  type ExtensionInfoDeps,
+  type ExtensionInfoEvent,
+  type ExtensionInfoInput,
+} from "./extensions/info.ts";
+export {
   type DatastoreAutoUpdateDeps,
   type DatastoreAutoUpdateResult,
   maybeAutoUpdateDatastoreExtension,
