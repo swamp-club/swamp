@@ -104,7 +104,34 @@ Deno.test("withConsoleGuard: handles non-string arguments", async () => {
   assertStringIncludes(logs[0], '"key"');
 });
 
-Deno.test("withConsoleGuard: concurrent guards both capture independently", async () => {
+Deno.test("withConsoleGuard: handles circular objects without throwing", async () => {
+  const logs: string[] = [];
+
+  await withConsoleGuard(() => {
+    const obj: Record<string, unknown> = { name: "test" };
+    obj.self = obj;
+    console.log("circular:", obj);
+  }, logs);
+
+  assertEquals(logs.length, 1);
+  assertStringIncludes(logs[0], "[log] circular:");
+  assertStringIncludes(logs[0], "name");
+});
+
+Deno.test("withConsoleGuard: handles undefined and function arguments", async () => {
+  const logs: string[] = [];
+
+  await withConsoleGuard(() => {
+    console.log("undef:", undefined, "fn:", () => {});
+  }, logs);
+
+  assertEquals(logs.length, 1);
+  assertStringIncludes(logs[0], "undef:");
+  assertStringIncludes(logs[0], "undefined");
+});
+
+Deno.test("withConsoleGuard: concurrent guards restore console after both complete", async () => {
+  const originalLog = console.log;
   const logsA: string[] = [];
   const logsB: string[] = [];
 
@@ -114,25 +141,6 @@ Deno.test("withConsoleGuard: concurrent guards both capture independently", asyn
     }, logsA),
     withConsoleGuard(() => {
       console.log("from B");
-    }, logsB),
-  ]);
-
-  const originalLog = console.log;
-  console.log("after guards");
-  assertEquals(console.log, originalLog);
-});
-
-Deno.test("withConsoleGuard: console.log works normally after concurrent guards complete", async () => {
-  const originalLog = console.log;
-  const logsA: string[] = [];
-  const logsB: string[] = [];
-
-  await Promise.all([
-    withConsoleGuard(() => {
-      console.log("guard A");
-    }, logsA),
-    withConsoleGuard(() => {
-      console.log("guard B");
     }, logsB),
   ]);
 

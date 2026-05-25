@@ -19,25 +19,17 @@
 
 import type { Command } from "@cliffy/command";
 import { getOutputModeFromArgs } from "./context.ts";
+import { buildErrorJson } from "../presentation/output/error_output.ts";
 
-/**
- * Action handler for group commands (commands that only have subcommands).
- * In JSON mode, emits a JSON error object instead of dumping help text to stdout.
- * Must be used as a regular function (not arrow) so Cliffy can bind `this`.
- */
+// JSON-aware showHelp action for group commands. Must be a regular function (not arrow) for Cliffy `this` binding.
 // deno-lint-ignore no-explicit-any
 export function groupCommandAction(this: Command<any>): void {
   if (getOutputModeFromArgs(Deno.args) === "json") {
     const commands = this.getCommands(false).map((cmd) => cmd.getName());
+    const json = buildErrorJson(new Error("No subcommand specified"));
+    json.availableCommands = commands;
     // deno-lint-ignore no-console
-    console.log(JSON.stringify(
-      {
-        error: "No subcommand specified",
-        availableCommands: commands,
-      },
-      null,
-      2,
-    ));
+    console.log(JSON.stringify(json, null, 2));
     Deno.exit(1);
   }
   this.showHelp();

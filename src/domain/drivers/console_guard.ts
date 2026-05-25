@@ -31,15 +31,19 @@ function writeStderr(line: string): void {
   Deno.stderr.writeSync(STDERR_WRITER.encode(line + "\n"));
 }
 
+function formatArg(a: unknown): string {
+  if (typeof a === "string") return a;
+  try {
+    return JSON.stringify(a) ?? Deno.inspect(a);
+  } catch {
+    return Deno.inspect(a);
+  }
+}
+
 let activeGuards = 0;
 const allActiveLogs: Set<string[]> = new Set();
 
-/**
- * Executes an async function with console methods redirected to a capture array.
- * Safe for concurrent use — uses a shared refcount and module-scoped originals.
- * The first guard installs the intercept; the last guard restores the originals.
- * All concurrent guards' logs arrays receive captured output.
- */
+// Redirects console methods to a capture array during fn execution.
 export async function withConsoleGuard<T>(
   fn: () => T | Promise<T>,
   logs: string[],
@@ -49,9 +53,7 @@ export async function withConsoleGuard<T>(
     for (const method of CAPTURED_METHODS) {
       // deno-lint-ignore no-explicit-any
       (console as any)[method] = (...args: unknown[]) => {
-        const line = args.map((a) =>
-          typeof a === "string" ? a : JSON.stringify(a)
-        ).join(" ");
+        const line = args.map(formatArg).join(" ");
         for (const logArray of allActiveLogs) {
           logArray.push(`[${method}] ${line}`);
         }
