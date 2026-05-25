@@ -50,6 +50,7 @@ import { createExtensionSearchRenderer } from "../../presentation/renderers/exte
 import { resolveSkillsDir } from "../../domain/repo/skill_dirs.ts";
 import { resolvePrimaryTool } from "../../domain/repo/primary_tool.ts";
 import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
+import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
 
 /**
  * Resolves the registry server URL.
@@ -142,6 +143,7 @@ export const extensionSearchCommand = new Command()
       );
     }
 
+    const credentials = await new AuthRepository().load();
     const serverUrl = resolveServerUrl();
     const client = new ExtensionApiClient(serverUrl);
     const effectiveMode = interactiveOutputMode(ctx);
@@ -151,15 +153,18 @@ export const extensionSearchCommand = new Command()
 
     const deps: ExtensionSearchDeps = {
       searchExtensions: (params) =>
-        client.searchExtensions({
-          ...params,
-          sort: params.sort as
-            | "name"
-            | "relevance"
-            | "new"
-            | "updated"
-            | undefined,
-        }),
+        client.searchExtensions(
+          {
+            ...params,
+            sort: params.sort as
+              | "name"
+              | "relevance"
+              | "new"
+              | "updated"
+              | undefined,
+          },
+          credentials?.apiKey,
+        ),
     };
 
     const renderer = createExtensionSearchRenderer(effectiveMode);

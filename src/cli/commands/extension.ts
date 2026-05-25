@@ -22,6 +22,7 @@ import { extensionPushCommand } from "./extension_push.ts";
 import { extensionPullCommand } from "./extension_pull.ts";
 import { extensionInstallCommand } from "./extension_install.ts";
 import { extensionFmtCommand } from "./extension_fmt.ts";
+import { extensionInfoCommand } from "./extension_info.ts";
 import { extensionQualityCommand } from "./extension_quality.ts";
 import { extensionRemoveCommand } from "./extension_rm.ts";
 import { extensionListCommand } from "./extension_list.ts";
@@ -43,6 +44,7 @@ export const extensionCommand = new Command()
     this.showHelp();
   })
   .command("push", extensionPushCommand)
+  .command("info", extensionInfoCommand)
   .command("fmt", extensionFmtCommand)
   .command("quality", extensionQualityCommand)
   .command("pull", extensionPullCommand)

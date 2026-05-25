@@ -59,11 +59,42 @@ export interface LatestVersionInfo {
   publishedAt: string;
 }
 
-/** Extension metadata. */
+/** Extension author metadata. */
+export interface ExtensionAuthor {
+  username: string;
+  displayName: string;
+}
+
+/** Quality score summary. */
+export interface ExtensionScoreSummary {
+  percentage: number;
+  grade: string;
+}
+
+/** Full extension metadata from the registry. */
 export interface ExtensionInfo {
+  id: string;
   name: string;
+  namespace: string | null;
   description: string;
+  repository: string | null;
+  homepageUrl: string | null;
+  license: string | null;
+  platforms: string[];
+  labels: string[];
+  contentTypes: string[];
+  contentNames: string[];
   latestVersion: string;
+  author: ExtensionAuthor | null;
+  createdAt: string;
+  updatedAt: string;
+  yankedAt: string | null;
+  yankReason: string | null;
+  repositoryVerified: boolean | null;
+  repositoryVerifiedAt: string | null;
+  repositoryVerifiedUrl: string | null;
+  pullCount: number;
+  score: ExtensionScoreSummary | null;
 }
 
 /** Parameters for the extension search endpoint. */
@@ -244,6 +275,7 @@ export class ExtensionApiClient {
    */
   async searchExtensions(
     params: ExtensionSearchParams,
+    apiKey?: string,
   ): Promise<ExtensionSearchResponse> {
     const qs = new URLSearchParams();
     if (params.q) qs.set("q", params.q);
@@ -259,8 +291,9 @@ export class ExtensionApiClient {
 
     const query = qs.toString();
     const path = `/api/v1/extensions/search${query ? `?${query}` : ""}`;
+    const headers = apiKey ? this.authHeaders(apiKey) : {};
 
-    const res = await this.fetch(path, { method: "GET" });
+    const res = await this.fetch(path, { method: "GET", headers });
     await this.checkResponse(res);
     return await res.json();
   }
