@@ -120,6 +120,7 @@ export interface ExtensionSearchEntry {
   latestVersion: string;
   createdAt: string;
   updatedAt: string;
+  score?: ExtensionScoreSummary | null;
 }
 
 /** Response from the extension search endpoint. */

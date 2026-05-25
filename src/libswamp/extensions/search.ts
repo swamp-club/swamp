@@ -31,6 +31,7 @@ export interface ExtensionSearchItem {
   contentTypes: string[];
   createdAt: string;
   updatedAt: string;
+  score?: { percentage: number; grade: string } | null;
 }
 
 /** Pagination metadata for search results. */
@@ -80,6 +81,7 @@ export interface ExtensionSearchDeps {
       contentTypes?: string[];
       createdAt: string;
       updatedAt: string;
+      score?: { percentage: number; grade: string } | null;
     }>;
     meta: { total: number; page: number; perPage: number };
   }>;
@@ -126,6 +128,7 @@ export async function* extensionSearch(
             contentTypes: ext.contentTypes ?? [],
             createdAt: ext.createdAt,
             updatedAt: ext.updatedAt,
+            score: ext.score ?? null,
           })),
           meta: response.meta,
         },

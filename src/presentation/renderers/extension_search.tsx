@@ -52,10 +52,14 @@ class JsonExtensionSearchRenderer implements ExtensionSearchRenderer {
       completed: (e) => {
         const output = {
           query: e.data.query,
-          extensions: e.data.results.map((ext) => {
-            const { platforms, labels, contentTypes, ...rest } = ext;
-            return { ...rest, platforms, labels, contentTypes };
-          }),
+          extensions: e.data.results.map((ext) => ({
+            name: ext.name,
+            description: ext.description.length > DESCRIPTION_MAX
+              ? ext.description.slice(0, DESCRIPTION_MAX) + "…"
+              : ext.description,
+            latestVersion: ext.latestVersion,
+            score: ext.score ?? null,
+          })),
           meta: e.data.meta,
         };
         console.log(JSON.stringify(output, null, 2));
@@ -86,7 +90,7 @@ class InkExtensionSearchRenderer implements ExtensionSearchRenderer {
         const result = await renderInteractivePicker<ExtensionSearchItem>(
           e.data.results,
           e.data.query,
-          (item) => `${item.name} ${item.description} ${item.labels.join(" ")}`,
+          (item) => `${item.name} ${item.description}`,
           renderExtensionResultLine,
           renderExtensionPreview,
           renderExtensionScrollback,
@@ -135,15 +139,13 @@ function renderExtensionResultLine(
     ? item.description.slice(0, DESCRIPTION_MAX) + "\u2026"
     : item.description;
 
-  const labelsStr = item.labels.length > 0
-    ? ` [${item.labels.join(", ")}]`
-    : "";
+  const grade = item.score?.grade;
   return (
     <Text>
       {`${item.name} `}
       <Text dimColor>{`v${item.latestVersion}`}</Text>
       {truncatedDesc && <Text dimColor>{` ${EM_DASH} ${truncatedDesc}`}</Text>}
-      {labelsStr && <Text color="blue">{labelsStr}</Text>}
+      {grade && <Text color="green">{` ${grade}`}</Text>}
     </Text>
   );
 }
@@ -192,6 +194,15 @@ function renderExtensionPreview(
     lines.push(
       <Text key="contentTypes" wrap="truncate-end">
         <Text bold>Content Types:</Text> {item.contentTypes.join(", ")}
+      </Text>,
+    );
+  }
+
+  if (item.score) {
+    lines.push(<Text key="score-gap" />);
+    lines.push(
+      <Text key="score" wrap="truncate-end">
+        <Text bold>Quality:</Text> {item.score.grade} ({item.score.percentage}%)
       </Text>,
     );
   }
