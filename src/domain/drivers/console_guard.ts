@@ -33,6 +33,7 @@ function writeStderr(line: string): void {
 
 function formatArg(a: unknown): string {
   if (typeof a === "string") return a;
+  if (typeof a === "number") return String(a);
   try {
     return JSON.stringify(a) ?? Deno.inspect(a);
   } catch {

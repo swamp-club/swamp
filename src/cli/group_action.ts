@@ -20,13 +20,14 @@
 import type { Command } from "@cliffy/command";
 import { getOutputModeFromArgs } from "./context.ts";
 import { buildErrorJson } from "../presentation/output/error_output.ts";
+import { UserError } from "../domain/errors.ts";
 
 // JSON-aware showHelp action for group commands. Must be a regular function (not arrow) for Cliffy `this` binding.
 // deno-lint-ignore no-explicit-any
 export function groupCommandAction(this: Command<any>): void {
   if (getOutputModeFromArgs(Deno.args) === "json") {
     const commands = this.getCommands(false).map((cmd) => cmd.getName());
-    const json = buildErrorJson(new Error("No subcommand specified"));
+    const json = buildErrorJson(new UserError("No subcommand specified"));
     json.availableCommands = commands;
     // deno-lint-ignore no-console
     console.log(JSON.stringify(json, null, 2));
