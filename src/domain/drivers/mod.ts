@@ -53,5 +53,7 @@ export {
 
 export { DOCKER_RUNNER_SCRIPT } from "./docker_runner.ts";
 
+export { setConsoleGuardJsonMode } from "./console_guard.ts";
+
 export { ExtensionLoader } from "../extensions/extension_loader.ts";
 export { driverKindAdapter } from "../extensions/driver_kind_adapter.ts";

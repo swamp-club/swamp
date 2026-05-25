@@ -74,6 +74,7 @@ import { reportKindAdapter } from "../domain/extensions/report_kind_adapter.ts";
 import { modelRegistry } from "../domain/models/model.ts";
 import { vaultTypeRegistry } from "../domain/vaults/vault_type_registry.ts";
 import { driverTypeRegistry } from "../domain/drivers/driver_type_registry.ts";
+import { setConsoleGuardJsonMode } from "../domain/drivers/console_guard.ts";
 import { datastoreTypeRegistry } from "../domain/datastore/datastore_type_registry.ts";
 import { reportRegistry } from "../domain/reports/report_registry.ts";
 
@@ -1169,6 +1170,8 @@ export async function runCli(args: string[]): Promise<void> {
     )
     .globalOption("--no-color", "Disable colored output")
     .globalAction(async function (options: GlobalOptions) {
+      setConsoleGuardJsonMode(options.json ?? false);
+
       const noColor = options.color === false ||
         Deno.env.get("NO_COLOR") !== undefined;
       if (noColor) {

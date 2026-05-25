@@ -23,9 +23,13 @@ import { withConsoleGuard } from "./console_guard.ts";
 Deno.test("withConsoleGuard: captures console.log into logs array", async () => {
   const logs: string[] = [];
 
-  await withConsoleGuard(() => {
-    console.log("hello from extension");
-  }, logs);
+  await withConsoleGuard(
+    () => {
+      console.log("hello from extension");
+    },
+    logs,
+    { jsonMode: true },
+  );
 
   assertEquals(logs.length, 1);
   assertStringIncludes(logs[0], "hello from extension");
@@ -35,13 +39,17 @@ Deno.test("withConsoleGuard: captures console.log into logs array", async () => 
 Deno.test("withConsoleGuard: captures all console methods", async () => {
   const logs: string[] = [];
 
-  await withConsoleGuard(() => {
-    console.log("log msg");
-    console.info("info msg");
-    console.debug("debug msg");
-    console.warn("warn msg");
-    console.error("error msg");
-  }, logs);
+  await withConsoleGuard(
+    () => {
+      console.log("log msg");
+      console.info("info msg");
+      console.debug("debug msg");
+      console.warn("warn msg");
+      console.error("error msg");
+    },
+    logs,
+    { jsonMode: true },
+  );
 
   assertEquals(logs.length, 5);
   assertStringIncludes(logs[0], "[log] log msg");
@@ -55,9 +63,13 @@ Deno.test("withConsoleGuard: restores console after normal completion", async ()
   const originalLog = console.log;
   const logs: string[] = [];
 
-  await withConsoleGuard(() => {
-    // inside guard
-  }, logs);
+  await withConsoleGuard(
+    () => {
+      // inside guard
+    },
+    logs,
+    { jsonMode: true },
+  );
 
   assertEquals(console.log, originalLog);
 });
@@ -67,10 +79,14 @@ Deno.test("withConsoleGuard: restores console after throw", async () => {
   const logs: string[] = [];
 
   try {
-    await withConsoleGuard(() => {
-      console.log("before throw");
-      throw new Error("extension failure");
-    }, logs);
+    await withConsoleGuard(
+      () => {
+        console.log("before throw");
+        throw new Error("extension failure");
+      },
+      logs,
+      { jsonMode: true },
+    );
   } catch {
     // expected
   }
@@ -83,10 +99,14 @@ Deno.test("withConsoleGuard: restores console after throw", async () => {
 Deno.test("withConsoleGuard: returns the function result", async () => {
   const logs: string[] = [];
 
-  const result = await withConsoleGuard(() => {
-    console.log("working");
-    return 42;
-  }, logs);
+  const result = await withConsoleGuard(
+    () => {
+      console.log("working");
+      return 42;
+    },
+    logs,
+    { jsonMode: true },
+  );
 
   assertEquals(result, 42);
 });
@@ -94,9 +114,13 @@ Deno.test("withConsoleGuard: returns the function result", async () => {
 Deno.test("withConsoleGuard: handles non-string arguments", async () => {
   const logs: string[] = [];
 
-  await withConsoleGuard(() => {
-    console.log("count:", 42, { key: "value" });
-  }, logs);
+  await withConsoleGuard(
+    () => {
+      console.log("count:", 42, { key: "value" });
+    },
+    logs,
+    { jsonMode: true },
+  );
 
   assertEquals(logs.length, 1);
   assertStringIncludes(logs[0], "count:");
@@ -107,11 +131,15 @@ Deno.test("withConsoleGuard: handles non-string arguments", async () => {
 Deno.test("withConsoleGuard: handles circular objects without throwing", async () => {
   const logs: string[] = [];
 
-  await withConsoleGuard(() => {
-    const obj: Record<string, unknown> = { name: "test" };
-    obj.self = obj;
-    console.log("circular:", obj);
-  }, logs);
+  await withConsoleGuard(
+    () => {
+      const obj: Record<string, unknown> = { name: "test" };
+      obj.self = obj;
+      console.log("circular:", obj);
+    },
+    logs,
+    { jsonMode: true },
+  );
 
   assertEquals(logs.length, 1);
   assertStringIncludes(logs[0], "[log] circular:");
@@ -121,9 +149,13 @@ Deno.test("withConsoleGuard: handles circular objects without throwing", async (
 Deno.test("withConsoleGuard: handles undefined and function arguments", async () => {
   const logs: string[] = [];
 
-  await withConsoleGuard(() => {
-    console.log("undef:", undefined, "fn:", () => {});
-  }, logs);
+  await withConsoleGuard(
+    () => {
+      console.log("undef:", undefined, "fn:", () => {});
+    },
+    logs,
+    { jsonMode: true },
+  );
 
   assertEquals(logs.length, 1);
   assertStringIncludes(logs[0], "undef:");
@@ -136,13 +168,36 @@ Deno.test("withConsoleGuard: concurrent guards restore console after both comple
   const logsB: string[] = [];
 
   await Promise.all([
-    withConsoleGuard(() => {
-      console.log("from A");
-    }, logsA),
-    withConsoleGuard(() => {
-      console.log("from B");
-    }, logsB),
+    withConsoleGuard(
+      () => {
+        console.log("from A");
+      },
+      logsA,
+      { jsonMode: true },
+    ),
+    withConsoleGuard(
+      () => {
+        console.log("from B");
+      },
+      logsB,
+      { jsonMode: true },
+    ),
   ]);
 
   assertEquals(console.log, originalLog);
+});
+
+Deno.test("withConsoleGuard: skips capture in non-JSON mode", async () => {
+  const logs: string[] = [];
+
+  const result = await withConsoleGuard(
+    () => {
+      return 99;
+    },
+    logs,
+    { jsonMode: false },
+  );
+
+  assertEquals(result, 99);
+  assertEquals(logs.length, 0);
 });

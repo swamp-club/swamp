@@ -31,6 +31,12 @@ function writeStderr(line: string): void {
   Deno.stderr.writeSync(STDERR_WRITER.encode(line + "\n"));
 }
 
+let _jsonMode = false;
+
+export function setConsoleGuardJsonMode(enabled: boolean): void {
+  _jsonMode = enabled;
+}
+
 function formatArg(a: unknown): string {
   if (typeof a === "string") return a;
   if (typeof a === "number") return String(a);
@@ -44,11 +50,24 @@ function formatArg(a: unknown): string {
 let activeGuards = 0;
 const allActiveLogs: Set<string[]> = new Set();
 
+export interface ConsoleGuardOptions {
+  jsonMode?: boolean;
+}
+
 // Redirects console methods to a capture array during fn execution.
+// In JSON mode, captured output is replayed to stderr to prevent stdout
+// pollution. In non-JSON mode, console output flows to stdout normally.
 export async function withConsoleGuard<T>(
   fn: () => T | Promise<T>,
   logs: string[],
+  options?: ConsoleGuardOptions,
 ): Promise<T> {
+  const effectiveJsonMode = options?.jsonMode ?? _jsonMode;
+
+  if (!effectiveJsonMode) {
+    return await fn();
+  }
+
   allActiveLogs.add(logs);
   if (activeGuards === 0) {
     for (const method of CAPTURED_METHODS) {
