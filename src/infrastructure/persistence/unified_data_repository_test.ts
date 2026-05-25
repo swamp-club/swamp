@@ -918,3 +918,129 @@ Deno.test("findAllForModel: accepts string type parameter", async () => {
     }
   }
 });
+
+Deno.test("getContent: calls hydrateFile hook when raw file is missing", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const catalogStore = new CatalogStore(join(tmpDir, "_catalog.db"));
+    const expectedContent = new TextEncoder().encode("hydrated-content");
+
+    const hydrateFile = async (absPath: string): Promise<boolean> => {
+      // Hook receives absolute path (same pattern as MarkDirtyHook)
+      await Deno.mkdir(join(absPath, ".."), { recursive: true });
+      await Deno.writeFile(absPath, expectedContent);
+      return true;
+    };
+
+    const repo = new FileSystemUnifiedDataRepository(
+      tmpDir,
+      undefined,
+      catalogStore,
+      undefined,
+      hydrateFile,
+    );
+
+    // Create a data item with content, then delete the raw file to simulate
+    // lazy hydration state (metadata exists but raw is missing)
+    const data = makeData("hydrate-test");
+    await repo.save(testType, "model-1", data, expectedContent);
+    const contentPath = repo.getContentPath(
+      testType,
+      "model-1",
+      "hydrate-test",
+      1,
+    );
+    await Deno.remove(contentPath);
+
+    // getContent should call hydrateFile and return the content
+    const result = await repo.getContent(
+      testType,
+      "model-1",
+      "hydrate-test",
+      1,
+    );
+    assertExists(result);
+    assertEquals(new TextDecoder().decode(result), "hydrated-content");
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  }
+});
+
+Deno.test("getContent: returns null when hydrateFile returns false", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const catalogStore = new CatalogStore(join(tmpDir, "_catalog.db"));
+
+    const hydrateFile = (_absPath: string): Promise<boolean> => {
+      return Promise.resolve(false);
+    };
+
+    const repo = new FileSystemUnifiedDataRepository(
+      tmpDir,
+      undefined,
+      catalogStore,
+      undefined,
+      hydrateFile,
+    );
+
+    // Create a data item then delete the raw file
+    const data = makeData("hydrate-fail");
+    const content = new TextEncoder().encode("temp");
+    await repo.save(testType, "model-1", data, content);
+    const contentPath = repo.getContentPath(
+      testType,
+      "model-1",
+      "hydrate-fail",
+      1,
+    );
+    await Deno.remove(contentPath);
+
+    // getContent should return null since hydrateFile returned false
+    const result = await repo.getContent(
+      testType,
+      "model-1",
+      "hydrate-fail",
+      1,
+    );
+    assertEquals(result, null);
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  }
+});
+
+Deno.test("getContent: returns null without hook when raw file is missing", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const catalogStore = new CatalogStore(join(tmpDir, "_catalog.db"));
+    const repo = new FileSystemUnifiedDataRepository(
+      tmpDir,
+      undefined,
+      catalogStore,
+    );
+
+    // Create a data item then delete the raw file
+    const data = makeData("no-hook");
+    const content = new TextEncoder().encode("temp");
+    await repo.save(testType, "model-1", data, content);
+    const contentPath = repo.getContentPath(testType, "model-1", "no-hook", 1);
+    await Deno.remove(contentPath);
+
+    // Without hydrateFile hook, getContent returns null
+    const result = await repo.getContent(testType, "model-1", "no-hook", 1);
+    assertEquals(result, null);
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  }
+});

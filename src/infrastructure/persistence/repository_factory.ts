@@ -64,7 +64,10 @@ import type { RepoIndexService } from "../../domain/repo/repo_index_service.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import { YamlVaultConfigRepository } from "./yaml_vault_config_repository.ts";
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
-import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
+import type {
+  HydrateFileHook,
+  MarkDirtyHook,
+} from "../../domain/datastore/datastore_sync_service.ts";
 import { SWAMP_SUBDIRS, swampPath } from "./paths.ts";
 import { CatalogStore } from "./catalog_store.ts";
 import { DataQueryService } from "../../domain/data/data_query_service.ts";
@@ -246,6 +249,7 @@ export interface RepositoryFactoryConfig {
    * correct for datastores without a fast-path. See `design/datastores.md`.
    */
   markDirty?: MarkDirtyHook;
+  hydrateFile?: HydrateFileHook;
 }
 
 /**
@@ -286,6 +290,7 @@ export function createRepositoryContext(
     vaultsDir,
     datastoreResolver,
     markDirty,
+    hydrateFile,
   } = config;
 
   // Helper to resolve datastore-tier base directories
@@ -343,6 +348,7 @@ export function createRepositoryContext(
     dsPath(SWAMP_SUBDIRS.data),
     catalogStore,
     markDirty,
+    hydrateFile,
   );
 
   // Construct the query service alongside its dependencies so consumers

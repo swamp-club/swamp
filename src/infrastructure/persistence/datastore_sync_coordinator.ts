@@ -67,6 +67,12 @@ export interface RegisterDatastoreSyncOptions {
    * service is registered.
    */
   syncTimeoutMs?: number;
+  /**
+   * When `true`, the initial pull passes `{ metadataOnly: true }` to
+   * `pullChanged`, signalling the extension to skip content files.
+   * Used when `hydrationStrategy` is `"lazy"`.
+   */
+  metadataOnly?: boolean;
 }
 
 /** Internal entry tracking a single lock/sync pair. */
@@ -234,7 +240,7 @@ export async function registerDatastoreSyncNamed(
   key: string,
   options: RegisterDatastoreSyncOptions,
 ): Promise<void> {
-  const { service, lock } = options;
+  const { service, lock, metadataOnly } = options;
   const label = options.label ?? "datastore";
   const syncTimeoutMs = options.syncTimeoutMs ?? DEFAULT_SYNC_TIMEOUT_MS;
   const entry: SyncEntry = { service, lock, label, syncTimeoutMs };
@@ -300,7 +306,11 @@ export async function registerDatastoreSyncNamed(
         label,
         "pull",
         syncTimeoutMs,
-        (signal) => service.pullChanged({ signal }),
+        (signal) =>
+          service.pullChanged({
+            signal,
+            ...(metadataOnly ? { metadataOnly } : {}),
+          }),
       );
       if (pulled && pulled > 0) {
         syncSpan.setAttribute("sync.file_count", pulled);

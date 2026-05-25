@@ -849,6 +849,142 @@ Deno.test(
   },
 );
 
+Deno.test(
+  "requireInitializedRepo - hydrateFile hook converts absolute path to cache-relative",
+  async () => {
+    const { datastoreTypeRegistry } = await import(
+      "../domain/datastore/datastore_type_registry.ts"
+    );
+    const { Data } = await import("../domain/data/data.ts");
+    const { ModelType } = await import("../domain/models/model_type.ts");
+
+    const typeName = "test-hydratefile-relpath";
+    const hydrateFileCalls: string[] = [];
+
+    if (!datastoreTypeRegistry.has(typeName)) {
+      datastoreTypeRegistry.register({
+        type: typeName,
+        name: "Test hydrateFile relPath wiring",
+        description:
+          "Captures hydrateFile relPath to assert absolute→cache-relative conversion",
+        isBuiltIn: false,
+        createProvider: () => ({
+          createLock: () => ({
+            acquire: () => Promise.resolve(),
+            release: () => Promise.resolve(),
+            withLock: <T>(fn: () => Promise<T>) => fn(),
+            inspect: () => Promise.resolve(null),
+            forceRelease: () => Promise.resolve(true),
+          }),
+          createVerifier: () => ({
+            verify: () =>
+              Promise.resolve({
+                healthy: true,
+                message: "ok",
+                latencyMs: 1,
+                datastoreType: typeName,
+              }),
+          }),
+          resolveDatastorePath: (repoDir: string) => `${repoDir}/.test-store`,
+          resolveCachePath: (repoDir: string) => `${repoDir}/.test-cache`,
+          createSyncService: (_repoDir: string, cachePath: string) => ({
+            pullChanged: () => Promise.resolve(0),
+            pushChanged: () => Promise.resolve(0),
+            markDirty: () => Promise.resolve(),
+            hydrateFile: (relPath: string) => {
+              hydrateFileCalls.push(relPath);
+              // Write the file so getContent retries successfully
+              const absPath = join(cachePath, ...relPath.split("/"));
+              Deno.mkdirSync(join(absPath, ".."), { recursive: true });
+              Deno.writeFileSync(
+                absPath,
+                new TextEncoder().encode("hydrated"),
+              );
+              return Promise.resolve(true);
+            },
+            capabilities: () => ({ scopedSync: true, lazyHydration: true }),
+          }),
+        }),
+      });
+    }
+
+    await withTempDir(async (dir) => {
+      await initializeRepo(dir);
+      await configureExtensionDatastore(dir, typeName);
+
+      hydrateFileCalls.length = 0;
+
+      const repo = await requireInitializedRepo({
+        repoDir: dir,
+        outputMode: "json",
+        skipImplicitSync: true,
+      });
+
+      const testType = ModelType.create("test/hydrate");
+      const data = Data.create({
+        name: "hydrate-probe",
+        contentType: "text/plain",
+        lifetime: "infinite",
+        garbageCollection: 100,
+        tags: { type: "test" },
+        ownerDefinition: {
+          ownerType: "manual",
+          ownerRef: "test-user",
+        },
+      });
+
+      // Save data then delete the raw file to simulate lazy hydration state
+      await repo.repoContext.unifiedDataRepo.save(
+        testType,
+        "model-h",
+        data,
+        new TextEncoder().encode("original"),
+      );
+      const contentPath = repo.repoContext.unifiedDataRepo.getContentPath(
+        testType,
+        "model-h",
+        "hydrate-probe",
+        1,
+      );
+      await Deno.remove(contentPath);
+
+      // getContent should trigger hydrateFile through the wired hook
+      const result = await repo.repoContext.unifiedDataRepo.getContent(
+        testType,
+        "model-h",
+        "hydrate-probe",
+        1,
+      );
+
+      assertExists(result);
+      assertEquals(new TextDecoder().decode(result), "hydrated");
+
+      // The hydrateFile call must receive a cache-relative, forward-slash path
+      assertEquals(hydrateFileCalls.length, 1);
+      const relPath = hydrateFileCalls[0];
+
+      // Must be cache-relative (not absolute)
+      if (relPath.startsWith("/") || relPath.includes(":")) {
+        throw new Error(
+          `hydrateFile relPath must be cache-relative, got: ${relPath}`,
+        );
+      }
+      // Must be forward-slash normalized
+      if (relPath.includes("\\")) {
+        throw new Error(
+          `hydrateFile relPath must be forward-slash normalized, got: ${relPath}`,
+        );
+      }
+      // Must include the data/ prefix so extensions can map to S3 keys
+      assertStringIncludes(relPath, "data/");
+      // Must end with /raw (the content file)
+      assertStringIncludes(relPath, "/raw");
+
+      await flushDatastoreSync();
+    });
+  },
+);
+
 // ============================================================================
 // waitForPerModelLocks Tests
 // ============================================================================

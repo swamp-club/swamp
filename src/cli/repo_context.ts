@@ -72,6 +72,7 @@ import {
 import type { DatastoreProvider } from "../domain/datastore/datastore_provider.ts";
 import type {
   DatastoreSyncService,
+  HydrateFileHook,
   MarkDirtyHook,
   SyncCapabilities,
   SyncContext,
@@ -160,6 +161,23 @@ function buildMarkDirtyHook(
     }
     const relPath = SEPARATOR === "/" ? rel : rel.split(SEPARATOR).join("/");
     return syncService.markDirty({ relPath });
+  };
+}
+
+function buildHydrateFileHook(
+  syncService: DatastoreSyncService,
+  cacheRoot: string,
+  repoDir: string,
+): HydrateFileHook | undefined {
+  if (!syncService.hydrateFile) return undefined;
+  const repoSwampDir = swampPath(repoDir);
+  return (absPath: string) => {
+    let rel = relative(cacheRoot, absPath);
+    if (rel.startsWith("..")) {
+      rel = relative(repoSwampDir, absPath);
+    }
+    const relPath = SEPARATOR === "/" ? rel : rel.split(SEPARATOR).join("/");
+    return syncService.hydrateFile!(relPath);
   };
 }
 
@@ -266,11 +284,34 @@ export async function requireInitializedRepoReadOnly(
     datastoreConfig,
   );
 
+  // Sync service used solely for on-demand content hydration (no lock, no
+  // pull/push lifecycle). Only created when the extension advertises
+  // lazyHydration and the config enables it.
+  let hydrateFileHook: HydrateFileHook | undefined;
+
   // Verify datastore is accessible
   if (isCustomDatastoreConfig(datastoreConfig)) {
     // Ensure cache/datastore dir exists — no health check or lock on read-only path
     if (datastoreConfig.cachePath) {
       await ensureDir(datastoreConfig.cachePath);
+    }
+
+    if (
+      datastoreConfig.hydrationStrategy === "lazy" &&
+      datastoreConfig.cachePath
+    ) {
+      const provider = await resolveCustomProvider(datastoreConfig);
+      const syncService = provider.createSyncService?.(
+        repoPath.value,
+        datastoreConfig.cachePath,
+      );
+      if (syncService?.hydrateFile) {
+        hydrateFileHook = buildHydrateFileHook(
+          syncService,
+          datastoreConfig.cachePath,
+          repoPath.value,
+        );
+      }
     }
   } else if (datastoreConfig.type === "filesystem") {
     try {
@@ -325,6 +366,7 @@ export async function requireInitializedRepoReadOnly(
     yamlWorkflowsDir,
     vaultsDir,
     datastoreResolver,
+    hydrateFile: hydrateFileHook,
     ...factoryConfig,
   });
 
@@ -412,6 +454,7 @@ export function requireInitializedRepo(
         lock,
         label: datastoreConfig.type,
         syncTimeoutMs: resolveSyncTimeoutMs(datastoreConfig),
+        metadataOnly: datastoreConfig.hydrationStrategy === "lazy",
       });
       // Invalidate catalog after pull so next query backfills from fresh data
       if (registerService) {
@@ -498,6 +541,14 @@ export function requireInitializedRepo(
       markDirty: syncService && isCustomDatastoreConfig(datastoreConfig) &&
           datastoreConfig.cachePath
         ? buildMarkDirtyHook(
+          syncService,
+          datastoreConfig.cachePath,
+          repoPath.value,
+        )
+        : undefined,
+      hydrateFile: syncService && isCustomDatastoreConfig(datastoreConfig) &&
+          datastoreConfig.cachePath
+        ? buildHydrateFileHook(
           syncService,
           datastoreConfig.cachePath,
           repoPath.value,
@@ -634,6 +685,14 @@ export async function requireInitializedRepoUnlocked(
     markDirty: syncService && isCustomDatastoreConfig(datastoreConfig) &&
         datastoreConfig.cachePath
       ? buildMarkDirtyHook(
+        syncService,
+        datastoreConfig.cachePath,
+        repoPath.value,
+      )
+      : undefined,
+    hydrateFile: syncService && isCustomDatastoreConfig(datastoreConfig) &&
+        datastoreConfig.cachePath
+      ? buildHydrateFileHook(
         syncService,
         datastoreConfig.cachePath,
         repoPath.value,

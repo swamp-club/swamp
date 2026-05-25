@@ -128,6 +128,10 @@ const datastoreSetupExtensionCommand = new Command()
     "--skip-migration",
     "Skip pushing local .swamp/ data to the remote (does not skip remote→local cache hydration, which always runs)",
   )
+  .option(
+    "--hydration-strategy <strategy:string>",
+    'Content download strategy: "full" (default, download everything) or "lazy" (metadata only, download content on demand)',
+  )
   .action(async function (options: AnyOptions, type: string) {
     const cliCtx = createContext(options as GlobalOptions, [
       "datastore",
@@ -177,6 +181,19 @@ const datastoreSetupExtensionCommand = new Command()
     const deps = createDatastoreSetupDeps(repoDir);
     const renderer = createDatastoreSetupRenderer(cliCtx.outputMode);
 
+    const hydrationStrategy = options.hydrationStrategy as
+      | "full"
+      | "lazy"
+      | undefined;
+    if (
+      hydrationStrategy !== undefined && hydrationStrategy !== "full" &&
+      hydrationStrategy !== "lazy"
+    ) {
+      throw new UserError(
+        `Invalid --hydration-strategy: "${hydrationStrategy}". Must be "full" or "lazy".`,
+      );
+    }
+
     await consumeStream(
       datastoreSetupExtension(ctx, deps, {
         type: resolvedType,
@@ -184,6 +201,7 @@ const datastoreSetupExtensionCommand = new Command()
         repoDir,
         repoId: marker?.repoId,
         skipMigration: !!options.skipMigration,
+        hydrationStrategy,
       }),
       renderer.handlers(),
     );

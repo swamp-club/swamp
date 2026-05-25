@@ -292,6 +292,10 @@ export async function parseDatastoreEnvVar(
           config,
           datastorePath,
           cachePath,
+          hydrationStrategy: config.hydrationStrategy as
+            | "full"
+            | "lazy"
+            | undefined,
         };
       }
 
@@ -362,6 +366,10 @@ export async function parseDatastoreEnvVar(
     config,
     datastorePath,
     cachePath,
+    hydrationStrategy: config.hydrationStrategy as
+      | "full"
+      | "lazy"
+      | undefined,
   };
 }
 
@@ -453,6 +461,7 @@ export async function resolveDatastoreConfig(
           cachePath,
           directories: ds.directories,
           exclude: ds.exclude,
+          hydrationStrategy: ds.hydrationStrategy,
         };
       }
 
@@ -529,6 +538,7 @@ export async function resolveDatastoreConfig(
       cachePath,
       directories: ds.directories,
       exclude: ds.exclude,
+      hydrationStrategy: ds.hydrationStrategy,
     };
   }
 

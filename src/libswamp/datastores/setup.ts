@@ -240,6 +240,7 @@ export interface DatastoreSetupExtensionInput {
   repoDir: string;
   repoId?: string;
   skipMigration: boolean;
+  hydrationStrategy?: "full" | "lazy";
 }
 
 /** Sets up an extension-provided datastore. */
@@ -404,7 +405,13 @@ export async function* datastoreSetupExtension(
             input.type,
             "pull",
             timeoutMs,
-            (signal) => syncService.pullChanged({ signal }),
+            (signal) =>
+              syncService.pullChanged({
+                signal,
+                ...(input.hydrationStrategy === "lazy"
+                  ? { metadataOnly: true }
+                  : {}),
+              }),
           );
           filesPulled = typeof pulled === "number" ? pulled : 0;
           ctx.logger.debug`Hydration complete: ${filesPulled} file(s) pulled`;
@@ -440,6 +447,9 @@ export async function* datastoreSetupExtension(
         await deps.updateRepoConfig(input.repoDir, {
           type: input.type,
           config: input.config,
+          ...(input.hydrationStrategy
+            ? { hydrationStrategy: input.hydrationStrategy }
+            : {}),
         });
       }
 

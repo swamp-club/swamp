@@ -540,3 +540,88 @@ Deno.test("DataQueryService: select version without history opt-in returns lates
   assertEquals(versions, [3]);
   catalog.close();
 });
+
+Deno.test("DataQueryService: catalog backfill works with metadata-only files (no raw)", async () => {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-lazy-hydration-test-" });
+  try {
+    // Create the data directory structure with metadata.yaml + latest but NO raw file
+    // This simulates lazy hydration state after a metadata-only pull
+    const dataDir = join(
+      dir,
+      ".swamp",
+      "data",
+      "test",
+      "model",
+      "my-model-id",
+      "lazy-data",
+      "1",
+    );
+    ensureDirSync(dataDir);
+
+    // Write metadata.yaml with all required fields (id, version included)
+    const metadata = {
+      name: "lazy-data",
+      id: "00000000-0000-1000-8000-000000000001",
+      version: 1,
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 100,
+      streaming: false,
+      tags: { type: "resource", specName: "result", modelName: "lazy-model" },
+      ownerDefinition: {
+        ownerType: "model-method",
+        ownerRef: "test/model:run",
+      },
+      createdAt: "2026-01-15T10:00:00.000Z",
+      size: 42,
+      checksum: "abc123",
+    };
+    Deno.writeTextFileSync(
+      join(dataDir, "metadata.yaml"),
+      stringifyYaml(metadata as Record<string, unknown>),
+    );
+
+    // Write the latest marker pointing to version 1
+    const dataNameDir = join(
+      dir,
+      ".swamp",
+      "data",
+      "test",
+      "model",
+      "my-model-id",
+      "lazy-data",
+    );
+    Deno.writeTextFileSync(join(dataNameDir, "latest"), "1");
+
+    // Do NOT create a "raw" file — this is the key: lazy hydration skips raw
+
+    // Create catalog and repo with no pre-populated catalog (forces backfill)
+    const dbPath = join(dir, ".swamp", "data", "_catalog.db");
+    const catalogObj = new CatalogStore(dbPath);
+    const dataRepo = new FileSystemUnifiedDataRepository(
+      dir,
+      undefined,
+      catalogObj,
+    );
+    const svc = new DataQueryService(catalogObj, dataRepo);
+
+    // Query with a predicate that doesn't need content — should trigger
+    // backfill from metadata.yaml and return the item
+    const results = await svc.query("true") as DataRecord[];
+    assertEquals(results.length, 1);
+    assertEquals(results[0].name, "lazy-data");
+    assertEquals(results[0].modelType, "test/model");
+    assertEquals(results[0].version, 1);
+    assertEquals(results[0].isLatest, true);
+    assertEquals(results[0].tags.type, "resource");
+    assertEquals(results[0].tags.modelName, "lazy-model");
+
+    catalogObj.close();
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+});

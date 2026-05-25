@@ -27,6 +27,7 @@ export interface SyncContext {
 /** Capabilities a sync service advertises to swamp core. */
 export interface SyncCapabilities {
   scopedSync?: boolean;
+  lazyHydration?: boolean;
 }
 
 /** Options accepted by sync service methods. */
@@ -61,6 +62,18 @@ export interface DatastoreSyncOptions {
   relPath?: string;
   /** Domain-level sync context, passed when the extension advertises scopedSync. */
   context?: SyncContext;
+  /**
+   * When `true`, `pullChanged` downloads only metadata files
+   * (`metadata.yaml`, `latest` markers, partition indexes) and skips
+   * content files (`raw`) under `data/`. Extensions that advertise
+   * `lazyHydration` in their capabilities SHOULD honor this flag;
+   * extensions that don't can safely ignore it.
+   *
+   * Set by swamp core when `hydrationStrategy` is `"lazy"` on the
+   * initial setup/hydration pull. Not set on subsequent scoped pulls
+   * (those always download everything the partition lists).
+   */
+  metadataOnly?: boolean;
 }
 
 /**
@@ -135,6 +148,30 @@ export interface DatastoreSyncService {
    *    set's contents.
    */
   markDirty(options?: DatastoreSyncOptions): Promise<void>;
+
+  /**
+   * Download a single file from the remote datastore by cache-relative path.
+   *
+   * Used for transparent content hydration when `hydrationStrategy` is
+   * `"lazy"`: the initial pull downloads only metadata files, and individual
+   * content files are fetched on demand when first accessed.
+   *
+   * Returns `true` if the file was downloaded successfully, `false` if the
+   * file does not exist on the remote. Implementations MUST write the file
+   * atomically (write to a temporary path, then rename) to avoid partial
+   * reads from concurrent consumers.
+   *
+   * `relPath` is forward-slash-normalized and cache-relative (same
+   * convention as `DatastoreSyncOptions.relPath`). Extensions consuming
+   * it for disk access on Windows MUST convert to native separators.
+   *
+   * Optional — extensions without lazy hydration support do not implement
+   * this method. Core checks for its presence before calling.
+   */
+  hydrateFile?(
+    relPath: string,
+    options?: DatastoreSyncOptions,
+  ): Promise<boolean>;
 }
 
 /** Direction of a sync operation. */
@@ -159,6 +196,26 @@ export type SyncDirection = "push" | "pull";
  * is documented on `DatastoreSyncService.markDirty`.
  */
 export type MarkDirtyHook = (relPath?: string) => Promise<void>;
+
+/**
+ * Callback invoked by repositories when content is missing from the local cache.
+ *
+ * Thin indirection over {@link DatastoreSyncService.hydrateFile} so repositories
+ * do not need a handle on the full sync service. Undefined when the datastore
+ * does not support lazy hydration — callers treat absence as "file is genuinely
+ * missing."
+ *
+ * **Internal vs public contract.** Repositories pass an absolute path —
+ * they don't have the cache root in scope. The composition root in
+ * `repo_context.ts` wraps this hook with a helper that converts the absolute
+ * path to a forward-slash cache-relative string and forwards it to
+ * {@link DatastoreSyncService.hydrateFile}. Same pattern as
+ * {@link MarkDirtyHook}.
+ *
+ * Returns `true` if the file was successfully downloaded, `false` if the
+ * file does not exist on the remote.
+ */
+export type HydrateFileHook = (absPath: string) => Promise<boolean>;
 
 /**
  * Thrown when a datastore sync operation exceeds the configured timeout.

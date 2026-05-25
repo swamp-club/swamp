@@ -37,7 +37,10 @@ import {
   ModelType,
   type ModelTypeInput,
 } from "../../domain/models/model_type.ts";
-import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
+import type {
+  HydrateFileHook,
+  MarkDirtyHook,
+} from "../../domain/datastore/datastore_sync_service.ts";
 import type { CatalogStore } from "./catalog_store.ts";
 import {
   type GarbageCollectionResult,
@@ -76,6 +79,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     baseDir: string | undefined,
     private readonly catalogStore: CatalogStore,
     private readonly markDirty?: MarkDirtyHook,
+    private readonly hydrateFile?: HydrateFileHook,
   ) {
     this.baseDir = baseDir ?? swampPath(repoDir, SWAMP_SUBDIRS.data);
   }
@@ -674,6 +678,12 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       return await Deno.readFile(contentPath);
     } catch (error) {
       if (error instanceof Deno.errors.NotFound) {
+        if (this.hydrateFile) {
+          const hydrated = await this.hydrateFile(contentPath);
+          if (hydrated) {
+            return await Deno.readFile(contentPath);
+          }
+        }
         return null;
       }
       throw error;

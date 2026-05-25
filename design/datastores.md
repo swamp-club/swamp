@@ -452,6 +452,77 @@ itself has not changed. Cache integrity is the verifier's job; use
 `DatastoreVerifier.verify()` when integrity needs to be re-established, or
 `rm -rf` the cache and re-pull.
 
+### Lazy Hydration
+
+When `hydrationStrategy: "lazy"` is configured on a custom datastore, the
+initial pull downloads only metadata files (`metadata.yaml`, `latest` markers,
+partition indexes) and skips content files (`raw`) under `data/`. This gives
+full catalog visibility — `data list`, `data query`, and CEL expressions all
+work immediately — while deferring the expensive content download until the data
+is actually needed.
+
+#### How it works
+
+1. **Setup/initial pull**: The extension's `pullChanged` filters files by
+   suffix. Files ending in `/metadata.yaml` or `/latest` under `data/` are
+   downloaded. Files ending in `/raw` under `data/` are skipped, but their
+   parent directories are created so the catalog backfill walker (which uses
+   `readdir`) finds the version directories. Files outside `data/` (outputs,
+   workflow-runs, definitions-evaluated) are downloaded fully — they have no
+   metadata/raw split.
+
+2. **Model runs / workflow runs**: `acquireModelLocks` performs a scoped pull via
+   `pullChanged({ context })`. The pull reads the partition file, compares
+   against local files, sees `raw` is missing, and downloads it. No new code
+   needed — the existing Phase 2 scoped sync handles this.
+
+3. **`data get` (read-only, no sync)**: `UnifiedDataRepository.getContent()`
+   attempts to read the `raw` file. If missing and a `HydrateFileHook` is
+   wired, it calls the hook to download just that file from the remote, then
+   retries the read.
+
+#### `HydrateFileHook` contract
+
+`HydrateFileHook` mirrors `MarkDirtyHook` — a thin callback injected into
+repositories so they do not need a handle on the full sync service.
+Repositories pass an absolute path; the composition root in `repo_context.ts`
+wraps `DatastoreSyncService.hydrateFile` with path normalization
+(absolute → cache-relative, forward-slash-normalized). Same contract as
+`MarkDirtyHook` — repositories never convert paths themselves.
+
+- Wired in `requireInitializedRepo`, `requireInitializedRepoUnlocked`, and
+  `requireInitializedRepoReadOnly` (the read-only variant creates a lightweight
+  sync service without a lock, solely for single-file downloads).
+- Returns `true` if the file was downloaded, `false` if it does not exist on the
+  remote.
+- Implementations MUST write atomically (tmp + rename) to avoid partial reads
+  from concurrent consumers.
+
+#### `getContentSync` limitation
+
+`getContentSync()` is synchronous and cannot call the async `HydrateFileHook`.
+It is used in two places:
+
+- `data_record_mapper.ts` — query predicate attribute/content loading during
+  `data query --where` evaluation.
+- `model_resolver.ts` — CEL expression resolution during model runs.
+
+The `model_resolver.ts` path is safe: model runs go through `acquireModelLocks`
+→ scoped pull, which downloads `raw` files before CEL evaluation begins.
+
+The `data_record_mapper.ts` path means `data query` predicates referencing
+`attributes` or `content` on un-hydrated data will see `null` values. This is a
+documented limitation of lazy hydration — queries that filter only on metadata
+fields (tags, version, owner, etc.) work correctly.
+
+#### Configuration
+
+- `CustomDatastoreConfig.hydrationStrategy` — `"full"` (default) or `"lazy"`.
+- `SyncCapabilities.lazyHydration` — advertised by extensions that support
+  selective pull and single-file hydration.
+- `DatastoreSyncService.hydrateFile` — optional method; extensions without lazy
+  hydration do not implement it.
+
 ### Index
 
 A metadata index (`.datastore-index.json`) tracks all files in the S3 bucket.

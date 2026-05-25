@@ -112,6 +112,18 @@ export interface CustomDatastoreConfig {
    * `resolveSyncTimeoutMs`.
    */
   readonly syncTimeoutMs?: number;
+  /**
+   * Controls how the initial pull populates the local cache.
+   *
+   * - `"full"` (default): download all files including content (`raw`).
+   * - `"lazy"`: download only metadata (`metadata.yaml`, `latest` markers,
+   *   partition indexes) and hydrate content on demand when first accessed.
+   *
+   * Lazy hydration gives full catalog visibility (`data list`, `data query`,
+   * CEL expressions) immediately while deferring the expensive content
+   * download until the data is actually needed.
+   */
+  readonly hydrationStrategy?: "full" | "lazy";
 }
 
 /**
@@ -144,6 +156,7 @@ export interface DatastoreConfigData {
   config?: Record<string, unknown>;
   directories?: string[];
   exclude?: string[];
+  hydrationStrategy?: "full" | "lazy";
 }
 
 /**

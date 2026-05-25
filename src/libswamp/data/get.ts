@@ -171,11 +171,12 @@ export interface DataGetDeps {
 export function createDataGetDeps(
   repoDir: string,
   datastoreResolver?: DatastorePathResolver,
+  injectedDataRepo?: FileSystemUnifiedDataRepository,
 ): DataGetDeps {
   const dsPath = (subdir: string): string | undefined =>
     datastoreResolver?.resolvePath(subdir);
   const definitionRepo = new YamlDefinitionRepository(repoDir);
-  const dataRepo = new FileSystemUnifiedDataRepository(
+  const dataRepo = injectedDataRepo ?? new FileSystemUnifiedDataRepository(
     repoDir,
     dsPath(SWAMP_SUBDIRS.data),
     createCatalogStore(repoDir, datastoreResolver),

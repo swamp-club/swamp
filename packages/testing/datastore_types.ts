@@ -74,6 +74,7 @@ export interface SyncContext {
 /** Capabilities a sync service advertises to swamp core. */
 export interface SyncCapabilities {
   scopedSync?: boolean;
+  lazyHydration?: boolean;
 }
 
 /** Options accepted by sync service methods. */
@@ -90,6 +91,12 @@ export interface DatastoreSyncOptions {
   relPath?: string;
   /** Domain-level sync context, passed when the extension advertises scopedSync. */
   context?: SyncContext;
+  /**
+   * When `true`, `pullChanged` should download only metadata files
+   * and skip content (`raw`) files under `data/`. Set by swamp core
+   * when `hydrationStrategy` is `"lazy"` on the initial pull.
+   */
+  metadataOnly?: boolean;
 }
 
 /** Interface for datastore synchronization services. */
@@ -99,6 +106,14 @@ export interface DatastoreSyncService {
   markDirty(options?: DatastoreSyncOptions): Promise<void>;
   /** Advertise what this sync service supports. */
   capabilities?(): SyncCapabilities;
+  /**
+   * Download a single file from the remote datastore by cache-relative path.
+   * Used for transparent content hydration when `hydrationStrategy` is `"lazy"`.
+   */
+  hydrateFile?(
+    relPath: string,
+    options?: DatastoreSyncOptions,
+  ): Promise<boolean>;
 }
 
 /**
