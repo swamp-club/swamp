@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import { groupCommandAction } from "../group_action.ts";
 import {
   consumeStream,
   createLibSwampContext,
@@ -95,9 +96,7 @@ export const modelCommand = new Command()
   .name("model")
   .description("Manage models")
   .error(unknownCommandErrorHandler)
-  .action(function () {
-    this.showHelp();
-  })
+  .action(groupCommandAction)
   .command("create", modelCreateCommand)
   .command("delete", modelDeleteCommand)
   .command("edit", modelEditCommand)

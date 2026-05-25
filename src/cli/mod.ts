@@ -49,6 +49,7 @@ import { serveCommand } from "./commands/serve.ts";
 import { openCommand } from "./commands/open.ts";
 import { createHelpCommand } from "./commands/help.ts";
 import { unknownCommandErrorHandler } from "./unknown_command_handler.ts";
+import { groupCommandAction } from "./group_action.ts";
 import {
   getExtensionsDirFromArgs,
   getRepoDirFromArgs,
@@ -1208,9 +1209,7 @@ export async function runCli(args: string[]): Promise<void> {
       }
     })
     .error(unknownCommandErrorHandler)
-    .action(function () {
-      this.showHelp();
-    })
+    .action(groupCommandAction)
     .command("version", versionCommand)
     .command("model", modelCommand)
     .command("init", repoInitCommand)

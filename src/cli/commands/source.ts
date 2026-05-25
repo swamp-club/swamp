@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import { groupCommandAction } from "../group_action.ts";
 import { sourceFetchCommand } from "./source_fetch.ts";
 import { sourcePathCommand } from "./source_path.ts";
 import { sourceCleanCommand } from "./source_clean.ts";
@@ -25,9 +26,7 @@ import { sourceCleanCommand } from "./source_clean.ts";
 export const sourceCommand = new Command()
   .name("source")
   .description("Manage swamp source code for troubleshooting")
-  .action(function () {
-    this.showHelp();
-  })
+  .action(groupCommandAction)
   .command("fetch", sourceFetchCommand)
   .command("path", sourcePathCommand)
   .command("clean", sourceCleanCommand);

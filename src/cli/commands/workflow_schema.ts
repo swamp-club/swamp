@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import { groupCommandAction } from "../group_action.ts";
 import {
   consumeStream,
   createLibSwampContext,
@@ -49,7 +50,5 @@ export const workflowSchemaGetCommand = new Command()
 export const workflowSchemaCommand = new Command()
   .name("schema")
   .description("Workflow schema commands")
-  .action(function () {
-    this.showHelp();
-  })
+  .action(groupCommandAction)
   .command("get", workflowSchemaGetCommand);

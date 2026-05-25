@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import { groupCommandAction } from "../group_action.ts";
 import { extensionPushCommand } from "./extension_push.ts";
 import { extensionPullCommand } from "./extension_pull.ts";
 import { extensionInstallCommand } from "./extension_install.ts";
@@ -40,9 +41,7 @@ export const extensionCommand = new Command()
   .name("extension")
   .description("Manage swamp extensions")
   .error(unknownCommandErrorHandler)
-  .action(function () {
-    this.showHelp();
-  })
+  .action(groupCommandAction)
   .command("push", extensionPushCommand)
   .command("info", extensionInfoCommand)
   .command("fmt", extensionFmtCommand)

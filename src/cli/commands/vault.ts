@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import { groupCommandAction } from "../group_action.ts";
 import {
   vaultTypeSearchAction,
   vaultTypeSearchCommand,
@@ -41,9 +42,7 @@ import { unknownCommandErrorHandler } from "../unknown_command_handler.ts";
 export const vaultTypeCommand = new Command()
   .name("type")
   .description("Inspect vault types")
-  .action(function () {
-    this.showHelp();
-  })
+  .action(groupCommandAction)
   .command("search", vaultTypeSearchCommand)
   .command(
     "list",
@@ -61,9 +60,7 @@ export const vaultCommand = new Command()
   .name("vault")
   .description("Manage vault configurations")
   .error(unknownCommandErrorHandler)
-  .action(function () {
-    this.showHelp();
-  })
+  .action(groupCommandAction)
   .command("type", vaultTypeCommand)
   .command("create", vaultCreateCommand)
   .command("search", vaultSearchCommand)

@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import { groupCommandAction } from "../group_action.ts";
 import { typeDescribeCommand } from "./type_describe.ts";
 import { typeSearchAction, typeSearchCommand } from "./type_search.ts";
 
@@ -27,9 +28,7 @@ import { typeSearchAction, typeSearchCommand } from "./type_search.ts";
 export const modelTypeCommand = new Command()
   .name("type")
   .description("Inspect model types")
-  .action(function () {
-    this.showHelp();
-  })
+  .action(groupCommandAction)
   .command("describe", typeDescribeCommand)
   .command("search", typeSearchCommand)
   .command(

@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import { groupCommandAction } from "../group_action.ts";
 import { modelOutputGetCommand } from "./model_output_get.ts";
 import {
   modelOutputSearchAction,
@@ -29,9 +30,7 @@ import { modelOutputDataCommand } from "./model_output_data.ts";
 export const modelOutputCommand = new Command()
   .name("output")
   .description("Manage model outputs")
-  .action(function () {
-    this.showHelp();
-  })
+  .action(groupCommandAction)
   .command("get", modelOutputGetCommand)
   .command("search", modelOutputSearchCommand)
   .command("logs", modelOutputLogsCommand)

@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import { groupCommandAction } from "../group_action.ts";
 import { extensionTrustListCommand } from "./extension_trust_list.ts";
 import { extensionTrustAddCommand } from "./extension_trust_add.ts";
 import { extensionTrustRmCommand } from "./extension_trust_rm.ts";
@@ -28,9 +29,7 @@ export const extensionTrustCommand = new Command()
   .name("trust")
   .description("Manage trusted collectives for extension auto-resolution")
   .error(unknownCommandErrorHandler)
-  .action(function () {
-    this.showHelp();
-  })
+  .action(groupCommandAction)
   .command("list", extensionTrustListCommand)
   .command("add", extensionTrustAddCommand)
   .command("rm", extensionTrustRmCommand)

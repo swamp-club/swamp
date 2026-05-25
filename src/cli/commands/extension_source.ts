@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import { groupCommandAction } from "../group_action.ts";
 import { extensionSourceListCommand } from "./extension_source_list.ts";
 import { extensionSourceAddCommand } from "./extension_source_add.ts";
 import { extensionSourceRmCommand } from "./extension_source_rm.ts";
@@ -27,9 +28,7 @@ export const extensionSourceCommand = new Command()
   .name("source")
   .description("Manage local extension sources")
   .error(unknownCommandErrorHandler)
-  .action(function () {
-    this.showHelp();
-  })
+  .action(groupCommandAction)
   .command("list", extensionSourceListCommand)
   .command("add", extensionSourceAddCommand)
   .command("rm", extensionSourceRmCommand);

@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import { groupCommandAction } from "../group_action.ts";
 import { modelMethodHistoryGetCommand } from "./model_method_history_get.ts";
 import {
   modelMethodHistorySearchAction,
@@ -28,9 +29,7 @@ import { modelMethodHistoryLogsCommand } from "./model_method_history_logs.ts";
 export const modelMethodHistoryCommand = new Command()
   .name("history")
   .description("Model method run history commands")
-  .action(function () {
-    this.showHelp();
-  })
+  .action(groupCommandAction)
   .command("get", modelMethodHistoryGetCommand)
   .command("search", modelMethodHistorySearchCommand)
   .command("logs", modelMethodHistoryLogsCommand)

@@ -36,6 +36,7 @@ import {
   createResourceWriter,
 } from "../models/data_writer.ts";
 import { DataAccessService } from "../data/data_access_service.ts";
+import { withConsoleGuard } from "./console_guard.ts";
 
 function restoreEnv(key: string, saved: string | undefined): void {
   if (saved !== undefined) {
@@ -177,10 +178,14 @@ export class RawExecutionDriver implements ExecutionDriver {
         }
       }
 
-      const result = await this.executor.execute(
-        this.definition,
-        this.method,
-        this.contextWithWriters,
+      const result = await withConsoleGuard(
+        () =>
+          this.executor.execute(
+            this.definition,
+            this.method,
+            this.contextWithWriters!,
+          ),
+        logs,
       );
 
       const durationMs = performance.now() - start;

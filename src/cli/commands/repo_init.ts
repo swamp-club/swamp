@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command, EnumType } from "@cliffy/command";
+import { groupCommandAction } from "../group_action.ts";
 import {
   consumeStream,
   createLibSwampContext,
@@ -192,8 +193,6 @@ export const repoUpgradeCommand = new Command()
 export const repoCommand = new Command()
   .name("repo")
   .description("Manage swamp repositories")
-  .action(function () {
-    this.showHelp();
-  })
+  .action(groupCommandAction)
   .command("init", repoInitCommand)
   .command("upgrade", repoUpgradeCommand);

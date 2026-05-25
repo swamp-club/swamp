@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import { groupCommandAction } from "../group_action.ts";
 import { issueBugCommand } from "./issue_bug.ts";
 import { issueFeatureCommand } from "./issue_feature.ts";
 import { issueGetCommand } from "./issue_get.ts";
@@ -29,9 +30,7 @@ export const issueCommand = new Command()
   .description(
     "Fetch issue details, submit bug reports, feature requests, security reports, and ripples (comments)",
   )
-  .action(function () {
-    this.showHelp();
-  })
+  .action(groupCommandAction)
   .command("get", issueGetCommand)
   .command("bug", issueBugCommand)
   .command("feature", issueFeatureCommand)

@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import { groupCommandAction } from "../group_action.ts";
 import { doctorAuditCommand } from "./doctor_audit.ts";
 import { doctorExtensionsCommand } from "./doctor_extensions.ts";
 import { doctorInstallCommand } from "./doctor_install.ts";
@@ -54,9 +55,7 @@ export const doctorCommand = new Command()
     "--repo-dir <dir:string>",
     "Repository directory (env: SWAMP_REPO_DIR)",
   )
-  .action(function () {
-    this.showHelp();
-  })
+  .action(groupCommandAction)
   .command("audit", doctorAuditCommand)
   .command("extensions", doctorExtensionsCommand)
   .command("install", doctorInstallCommand)
