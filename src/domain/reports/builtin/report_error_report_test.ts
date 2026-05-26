@@ -57,3 +57,39 @@ Deno.test("buildReportErrorResult: works for method scope", () => {
   assertEquals(result.json.scope, "method");
   assertEquals(result.json.reportName, "@org/cost-check");
 });
+
+Deno.test("buildReportErrorResult: includes stack trace in markdown when provided", () => {
+  const stack =
+    "TypeError: foo\n    at bar (file.ts:10:5)\n    at baz (file.ts:20:3)";
+  const result = buildReportErrorResult(
+    "@example/my-audit",
+    "workflow",
+    "foo",
+    stack,
+  );
+
+  assertStringIncludes(result.markdown, "## Stack Trace");
+  assertStringIncludes(result.markdown, stack);
+});
+
+Deno.test("buildReportErrorResult: includes stack in json when provided", () => {
+  const stack = "TypeError: foo\n    at bar (file.ts:10:5)";
+  const result = buildReportErrorResult(
+    "@example/my-audit",
+    "workflow",
+    "foo",
+    stack,
+  );
+
+  assertEquals(result.json.stack, stack);
+});
+
+Deno.test("buildReportErrorResult: omits stack from json when not provided", () => {
+  const result = buildReportErrorResult(
+    "@example/my-audit",
+    "workflow",
+    "foo",
+  );
+
+  assertEquals(result.json.stack, undefined);
+});

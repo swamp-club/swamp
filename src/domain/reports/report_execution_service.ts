@@ -427,6 +427,7 @@ export async function executeReports(
       const errorMessage = error instanceof Error
         ? error.message
         : String(error);
+      const errorStack = error instanceof Error ? error.stack : undefined;
 
       // Persist a fallback error artifact so diagnostic data is not lost.
       let errorDataHandles: DataHandle[] | undefined;
@@ -435,6 +436,7 @@ export async function executeReports(
           name,
           report.scope,
           errorMessage,
+          errorStack,
         );
         errorDataHandles = await persistReportData(
           context.dataRepository,
