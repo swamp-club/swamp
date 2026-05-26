@@ -37,7 +37,7 @@ import { SkillAssets } from "../../infrastructure/assets/skill_assets.ts";
 import { assertNever, UserError } from "../errors.ts";
 import { resolvePrimaryTool } from "./primary_tool.ts";
 import { resolveSkillsDir } from "./skill_dirs.ts";
-import type { ToolConfig } from "./custom_tool.ts";
+import { assertPathContained, type ToolConfig } from "./custom_tool.ts";
 import { ToolResolver } from "./tool_resolver.ts";
 import { readCustomTools } from "../../infrastructure/persistence/custom_tools_repository.ts";
 
@@ -449,6 +449,17 @@ export class RepoService {
       };
     }
 
+    if (!config.isBuiltIn) {
+      assertPathContained(repoPath.value, config.skillsDir, "skillsDir");
+      if (config.instructionsFile) {
+        assertPathContained(
+          repoPath.value,
+          config.instructionsFile,
+          "instructionsFile",
+        );
+      }
+    }
+
     // Copy skills to tool-appropriate directory
     const skillsDir = join(repoPath.value, config.skillsDir);
     await this.skillAssets.copySkillsTo(skillsDir);
@@ -722,14 +733,6 @@ export class RepoService {
     const suffix = after.length > 0 ? after : "\n";
 
     return prefix + newSection + "\n" + suffix;
-  }
-
-  /**
-   * Returns true if the tool shares its instructions file with user content
-   * (CLAUDE.md, AGENTS.md) and needs section markers to avoid overwriting.
-   */
-  private usesSharedInstructionsFile(config: ToolConfig): boolean {
-    return config.instructionsMode === "shared";
   }
 
   /**

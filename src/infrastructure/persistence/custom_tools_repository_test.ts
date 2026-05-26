@@ -168,3 +168,43 @@ Deno.test("findCustomTool: returns undefined for missing tool", async () => {
     await Deno.remove(dir, { recursive: true }).catch(() => {});
   }
 });
+
+Deno.test("readCustomTools: rejects entry with missing name", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const yaml = `tools:
+  - skillsDir: .foo/skills
+    instructionsFile: AGENTS.md
+    instructionsMode: shared
+    skillReferenceStyle: path
+`;
+    await Deno.writeTextFile(`${dir}/.swamp-custom-tools.yaml`, yaml);
+    await assertRejects(
+      () => readCustomTools(dir),
+      UserError,
+      '"name"',
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("readCustomTools: rejects entry with missing skillsDir", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    const yaml = `tools:
+  - name: mytool
+    instructionsFile: AGENTS.md
+    instructionsMode: shared
+    skillReferenceStyle: path
+`;
+    await Deno.writeTextFile(`${dir}/.swamp-custom-tools.yaml`, yaml);
+    await assertRejects(
+      () => readCustomTools(dir),
+      UserError,
+      '"skillsDir"',
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
+});

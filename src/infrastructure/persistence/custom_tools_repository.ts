@@ -57,7 +57,21 @@ function validateRefStyle(
   }
 }
 
+function validateRequiredString(
+  value: unknown,
+  field: string,
+): asserts value is string {
+  if (typeof value !== "string" || !value) {
+    throw new UserError(
+      `Missing or empty "${field}" in .swamp-custom-tools.yaml.`,
+    );
+  }
+}
+
 function toDefinition(data: CustomToolDefinitionData): CustomToolDefinition {
+  validateRequiredString(data.name, "name");
+  validateRequiredString(data.skillsDir, "skillsDir");
+  validateRequiredString(data.instructionsFile, "instructionsFile");
   validateMode(data.instructionsMode);
   validateRefStyle(data.skillReferenceStyle);
   return {

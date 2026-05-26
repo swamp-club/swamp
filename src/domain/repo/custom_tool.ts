@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { join, resolve } from "@std/path";
 import type { AiTool } from "./ai_tool.ts";
 import { UserError } from "../errors.ts";
 
@@ -41,7 +42,7 @@ export interface ToolConfig {
   gitignoreEntries?: string;
 }
 
-const BUILT_IN_TOOLS: ReadonlySet<string> = new Set<string>([
+export const BUILT_IN_TOOL_NAMES: readonly string[] = [
   "claude",
   "cursor",
   "opencode",
@@ -49,7 +50,11 @@ const BUILT_IN_TOOLS: ReadonlySet<string> = new Set<string>([
   "copilot",
   "kiro",
   "none",
-]);
+];
+
+const BUILT_IN_TOOLS: ReadonlySet<string> = new Set<string>(
+  BUILT_IN_TOOL_NAMES,
+);
 
 export function isBuiltInTool(name: string): name is AiTool {
   return BUILT_IN_TOOLS.has(name);
@@ -67,6 +72,22 @@ export function validateCustomToolName(name: string): void {
     throw new UserError(
       `Invalid custom tool name "${name}". ` +
         "Names must be alphanumeric with hyphens (e.g. windsurf, Pi, my-tool).",
+    );
+  }
+}
+
+export function assertPathContained(
+  repoRoot: string,
+  relativePath: string,
+  label: string,
+): void {
+  const resolved = resolve(join(repoRoot, relativePath));
+  const normalizedRoot = resolve(repoRoot);
+  if (
+    !resolved.startsWith(normalizedRoot + "/") && resolved !== normalizedRoot
+  ) {
+    throw new UserError(
+      `${label} "${relativePath}" escapes the repository root.`,
     );
   }
 }
@@ -222,7 +243,7 @@ export async function detectToolConfig(
   const result: DetectionResult = { subdirs: [], rootFiles: [] };
 
   const configDirName = `.${toolName}`;
-  const configDirPath = `${repoDir}/${configDirName}`;
+  const configDirPath = join(repoDir, configDirName);
   try {
     const stat = await Deno.stat(configDirPath);
     if (stat.isDirectory) {
@@ -230,7 +251,7 @@ export async function detectToolConfig(
 
       for (const subdir of KNOWN_SUBDIRS) {
         try {
-          const subStat = await Deno.stat(`${configDirPath}/${subdir}`);
+          const subStat = await Deno.stat(join(configDirPath, subdir));
           if (subStat.isDirectory) {
             result.subdirs.push(subdir);
           }
@@ -245,7 +266,7 @@ export async function detectToolConfig(
 
   for (const file of KNOWN_ROOT_FILES) {
     try {
-      const stat = await Deno.stat(`${repoDir}/${file}`);
+      const stat = await Deno.stat(join(repoDir, file));
       if (stat.isFile) {
         result.rootFiles.push(file);
       }
@@ -256,7 +277,7 @@ export async function detectToolConfig(
 
   // Check for a bare skills/ directory (e.g. deepAgents convention)
   try {
-    const stat = await Deno.stat(`${repoDir}/skills`);
+    const stat = await Deno.stat(join(repoDir, "skills"));
     if (stat.isDirectory) {
       result.skillsDir = "skills";
     }

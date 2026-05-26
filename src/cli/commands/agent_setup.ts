@@ -35,6 +35,7 @@ import {
   type GlobalOptions,
   resolveRepoDir,
 } from "../context.ts";
+import { UserError } from "../../domain/errors.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -98,6 +99,12 @@ export const agentSetupCommand = new Command()
     const cliCtx = createContext(options as GlobalOptions, ["agent", "setup"]);
     const repoDir = resolveRepoDir(undefined);
 
+    if (cliCtx.outputMode === "json") {
+      throw new UserError(
+        "agent setup requires interactive mode. Remove --json to run the wizard.",
+      );
+    }
+
     await Deno.stdout.write(encoder.encode(`
 To set up a custom agent you'll need to know three things about your tool:
 
@@ -115,8 +122,7 @@ the scanner at it and swamp will detect what it can.
 
     const name = await promptLine("Agent name: ");
     if (!name) {
-      console.error("No name provided.");
-      Deno.exit(1);
+      throw new UserError("No agent name provided.");
     }
     validateCustomToolName(name);
 
@@ -236,6 +242,12 @@ export const agentListCommand = new Command()
     const repoDir = resolveRepoDir(undefined);
 
     const tools = await readCustomTools(repoDir);
+
+    if (cliCtx.outputMode === "json") {
+      console.log(JSON.stringify({ tools }, null, 2));
+      return;
+    }
+
     if (tools.length === 0) {
       console.log(
         "No custom tools defined. Run `swamp agent setup` to create one.",
@@ -266,19 +278,27 @@ export const agentRemoveCommand = new Command()
     const cliCtx = createContext(options as GlobalOptions, ["agent", "rm"]);
     const repoDir = resolveRepoDir(undefined);
 
-    const confirmed = await promptConfirmation(
-      `Remove custom tool "${name}" from .swamp-custom-tools.yaml?`,
-    );
-    if (!confirmed) {
-      console.log("Cancelled.");
-      return;
+    if (cliCtx.outputMode !== "json") {
+      const confirmed = await promptConfirmation(
+        `Remove custom tool "${name}" from .swamp-custom-tools.yaml?`,
+      );
+      if (!confirmed) {
+        console.log("Cancelled.");
+        return;
+      }
     }
 
     const removed = await removeCustomTool(repoDir, name);
+
+    if (cliCtx.outputMode === "json") {
+      console.log(JSON.stringify({ name, removed }, null, 2));
+      return;
+    }
+
     if (removed) {
       console.log(`Removed custom tool "${name}".`);
     } else {
-      console.log(`Custom tool "${name}" not found.`);
+      throw new UserError(`Custom tool "${name}" not found.`);
     }
 
     cliCtx.logger.debug`Agent rm completed for ${name}`;

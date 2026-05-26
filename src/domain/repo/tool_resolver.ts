@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import {
+  BUILT_IN_TOOL_NAMES,
   builtInToolConfig,
   customToolConfig,
   type CustomToolDefinition,
@@ -29,16 +30,6 @@ import { UserError } from "../errors.ts";
 export type CustomToolLoader = (
   repoDir: string,
 ) => Promise<CustomToolDefinition[]>;
-
-const VALID_BUILT_IN_NAMES = [
-  "claude",
-  "cursor",
-  "opencode",
-  "codex",
-  "copilot",
-  "kiro",
-  "none",
-];
 
 export class ToolResolver {
   private customTools: CustomToolDefinition[] | null = null;
@@ -74,7 +65,7 @@ export class ToolResolver {
   async allKnownNames(): Promise<string[]> {
     const customs = await this.loadCustomTools();
     return [
-      ...VALID_BUILT_IN_NAMES.filter((n) => n !== "none"),
+      ...BUILT_IN_TOOL_NAMES.filter((n) => n !== "none"),
       ...customs.map((c) => c.name),
     ];
   }

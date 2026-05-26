@@ -19,6 +19,7 @@
 
 import { assertEquals, assertThrows } from "@std/assert";
 import {
+  assertPathContained,
   buildInstructionsChoices,
   buildSkillsDirChoices,
   builtInToolConfig,
@@ -311,4 +312,28 @@ Deno.test("buildSkillsDirChoices: deduplicates when derived matches detected", (
     "skills",
   );
   assertEquals(choices, ["skills"]);
+});
+
+Deno.test("assertPathContained: allows paths within repo", () => {
+  assertPathContained("/repo", "skills", "skillsDir");
+  assertPathContained("/repo", ".foo/skills", "skillsDir");
+  assertPathContained("/repo", "AGENTS.md", "instructionsFile");
+});
+
+Deno.test("assertPathContained: rejects path traversal", () => {
+  assertThrows(
+    () => assertPathContained("/repo", "../../etc/foo", "skillsDir"),
+    UserError,
+    "escapes the repository root",
+  );
+  assertThrows(
+    () =>
+      assertPathContained(
+        "/repo",
+        "../.ssh/authorized_keys",
+        "instructionsFile",
+      ),
+    UserError,
+    "escapes the repository root",
+  );
 });
