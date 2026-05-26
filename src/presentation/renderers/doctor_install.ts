@@ -23,6 +23,7 @@ import type {
   SchedulerTypeLabel,
 } from "../../domain/update/install_health.ts";
 import type { OutputMode } from "../output/output.ts";
+import { writeOutput } from "../../infrastructure/logging/logger.ts";
 
 function schedulerTypeDisplayLabel(type: SchedulerTypeLabel): string {
   switch (type) {
@@ -40,7 +41,6 @@ function schedulerTypeDisplayLabel(type: SchedulerTypeLabel): string {
       return "cron (user)";
   }
 }
-import { writeOutput } from "../../infrastructure/logging/logger.ts";
 
 export type InstallHealthStatus = "healthy" | "unhealthy";
 

@@ -17,7 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { join } from "@std/path";
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions, isStdinTty } from "../context.ts";
 import { VERSION } from "./version.ts";
@@ -32,7 +31,11 @@ import { createUpdateCheckRenderer } from "../../presentation/renderers/update_c
 import { Spinner } from "../../presentation/spinner.ts";
 import { UpdatePreferencesFileRepository } from "../../infrastructure/update/update_preferences_file_repository.ts";
 import { AutoupdateLogFileRepository } from "../../infrastructure/update/autoupdate_log_file_repository.ts";
-import { autoupdateLogPath } from "../../infrastructure/update/launchd_scheduler.ts";
+import {
+  autoupdateLogPath,
+  type LaunchdMode,
+} from "../../infrastructure/update/launchd_scheduler.ts";
+import { cronLogPath } from "../../infrastructure/update/cron_scheduler.ts";
 import {
   createScheduler,
   isRunningAsRoot,
@@ -76,9 +79,7 @@ function userSchedulerDescription(): string {
   }
 }
 
-function schedulerTypeLabel(
-  mode: import("../../infrastructure/update/launchd_scheduler.ts").LaunchdMode,
-): string | undefined {
+function schedulerTypeDisplayLabel(mode: LaunchdMode): string | undefined {
   if (mode === "agent") {
     switch (Deno.build.os) {
       case "darwin":
@@ -99,16 +100,20 @@ function schedulerTypeLabel(
   }
 }
 
-function resolvePrivilegedLogPath(
-  mode: import("../../infrastructure/update/launchd_scheduler.ts").LaunchdMode,
-): string | undefined {
+function schedulerTypeId(mode: LaunchdMode): string | undefined {
+  if (Deno.build.os === "darwin") return mode;
+  if (Deno.build.os === "linux") return mode;
+  return undefined;
+}
+
+function resolvePrivilegedLogPath(mode: LaunchdMode): string | undefined {
   if (mode !== "daemon") return undefined;
 
   switch (Deno.build.os) {
     case "darwin":
       return autoupdateLogPath("daemon");
     case "linux":
-      return join("/var", "log", "swamp", "autoupdate-cron.log");
+      return cronLogPath("daemon");
     default:
       return undefined;
   }
@@ -126,7 +131,7 @@ function backgroundLogFilePath(): string | undefined {
   }
 
   if (Deno.build.os === "linux") {
-    return join("/var", "log", "swamp", "autoupdate-cron.log");
+    return cronLogPath("daemon");
   }
 
   return undefined;
@@ -269,7 +274,7 @@ async function runSetupAuto(
       JSON.stringify({
         enabled: true,
         cadence,
-        schedulerType: schedulerTypeLabel(launchdMode),
+        schedulerType: schedulerTypeId(launchdMode),
       }),
     );
   } else {
@@ -339,7 +344,7 @@ async function runSetupAutoStatus(
         enabled: prefs.enabled,
         cadence: prefs.cadence,
         schedulerInstalled: scheduleStatus.installed,
-        schedulerType: schedulerTypeLabel(launchdMode),
+        schedulerType: schedulerTypeId(launchdMode),
         lastUpdate: lastEntry,
       },
       null,
@@ -360,7 +365,7 @@ async function runSetupAutoStatus(
   logger.info`Autoupdate: enabled`;
   logger.info`Cadence: ${prefs.cadence}`;
 
-  const typeLabel = schedulerTypeLabel(launchdMode);
+  const typeLabel = schedulerTypeDisplayLabel(launchdMode);
   if (typeLabel) {
     logger.info`Scheduler type: ${typeLabel}`;
   }

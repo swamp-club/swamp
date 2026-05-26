@@ -45,7 +45,7 @@ function crontabCommand(
   args: string[],
 ): { command: string; args: string[] } {
   if (mode === "daemon") {
-    return { command: "sudo", args: ["crontab", ...args] };
+    return { command: "sudo", args: ["-n", "crontab", ...args] };
   }
   return { command: "crontab", args };
 }
@@ -54,7 +54,7 @@ function crontabCommandForUser(
   user: string,
   args: string[],
 ): { command: string; args: string[] } {
-  return { command: "sudo", args: ["-u", user, "crontab", ...args] };
+  return { command: "sudo", args: ["-n", "-u", user, "crontab", ...args] };
 }
 
 async function readCrontab(mode: LaunchdMode = "agent"): Promise<string> {

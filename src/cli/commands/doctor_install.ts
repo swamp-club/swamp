@@ -28,7 +28,6 @@ import { UpdatePreferencesFileRepository } from "../../infrastructure/update/upd
 import { AutoupdateLogFileRepository } from "../../infrastructure/update/autoupdate_log_file_repository.ts";
 import {
   createScheduler,
-  detectInstalledLinuxMode,
   resolveLaunchdMode,
 } from "../../infrastructure/update/scheduler_factory.ts";
 import {
@@ -36,7 +35,10 @@ import {
   detectInstalledLaunchdMode,
 } from "../../infrastructure/update/launchd_scheduler.ts";
 import { detectInstalledSystemdMode } from "../../infrastructure/update/systemd_scheduler.ts";
-import { cronLogPath } from "../../infrastructure/update/cron_scheduler.ts";
+import {
+  cronLogPath,
+  detectInstalledCronMode,
+} from "../../infrastructure/update/cron_scheduler.ts";
 import type { SchedulerTypeLabel } from "../../domain/update/install_health.ts";
 import { createDoctorInstallRenderer } from "../../presentation/renderers/doctor_install.ts";
 
@@ -88,13 +90,14 @@ function createProductionDeps(): InstallHealthDeps {
         return await detectInstalledLaunchdMode();
       }
       if (Deno.build.os === "linux") {
-        const mode = await detectInstalledLinuxMode();
-        if (!mode) return null;
-        const isSystemd = await detectInstalledSystemdMode() !== null;
-        if (isSystemd) {
-          return mode === "daemon" ? "systemd-system" : "systemd-user";
+        const systemdMode = await detectInstalledSystemdMode();
+        if (systemdMode) {
+          return systemdMode === "daemon" ? "systemd-system" : "systemd-user";
         }
-        return mode === "daemon" ? "cron-root" : "cron-user";
+        const cronMode = await detectInstalledCronMode();
+        if (cronMode) {
+          return cronMode === "daemon" ? "cron-root" : "cron-user";
+        }
       }
       return null;
     },

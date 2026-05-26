@@ -211,7 +211,14 @@ export class SystemdScheduler implements AutoupdateScheduler {
     }
 
     const sudoUser = Deno.env.get("SUDO_USER");
+    const sudoUid = Deno.env.get("SUDO_UID");
     if (sudoUser) {
+      // systemctl --user needs XDG_RUNTIME_DIR for the target user's
+      // D-Bus session, which is absent under sudo.
+      const env: Record<string, string> = {};
+      if (sudoUid) {
+        env["XDG_RUNTIME_DIR"] = `/run/user/${sudoUid}`;
+      }
       const cmd = new Deno.Command("sudo", {
         args: [
           "-u",
@@ -222,6 +229,7 @@ export class SystemdScheduler implements AutoupdateScheduler {
           "--now",
           `${UNIT_NAME}.timer`,
         ],
+        env,
         stdout: "null",
         stderr: "null",
       });
