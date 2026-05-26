@@ -17,7 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { AiTool } from "../../../repo/repo_service.ts";
 import type { PreflightCheck } from "../check.ts";
 import { binaryNameFor, type ResolveBinary } from "./resolve_binary.ts";
 

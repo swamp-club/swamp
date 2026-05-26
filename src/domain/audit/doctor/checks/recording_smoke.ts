@@ -18,7 +18,6 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { ensureDir } from "@std/fs";
-import type { AiTool } from "../../../repo/repo_service.ts";
 import { todaysAuditFilePath } from "../../audit_path.ts";
 import type { PreflightCheck } from "../check.ts";
 import { syntheticPayloadFor } from "../synthetic_payloads.ts";

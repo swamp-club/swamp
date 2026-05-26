@@ -17,7 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { AiTool } from "../repo/ai_tool.ts";
 import type { DetectableAiTool } from "./agent_harness_detection.ts";
 
 /**

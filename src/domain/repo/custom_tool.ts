@@ -94,7 +94,6 @@ export function builtInToolConfig(tool: AiTool): ToolConfig {
         frontmatter:
           "---\ndescription: Swamp automation rules\nalwaysApply: true\n---\n",
         skillReferenceStyle: "path",
-        gitignoreEntries: "# Cursor skills (managed by swamp)\n.cursor/skills/",
       };
     case "opencode":
       return {
@@ -104,7 +103,6 @@ export function builtInToolConfig(tool: AiTool): ToolConfig {
         instructionsFile: "AGENTS.md",
         instructionsMode: "shared",
         skillReferenceStyle: "path",
-        gitignoreEntries: "# Agent skills (managed by swamp)\n.agents/skills/",
       };
     case "codex":
       return {
@@ -114,7 +112,6 @@ export function builtInToolConfig(tool: AiTool): ToolConfig {
         instructionsFile: "AGENTS.md",
         instructionsMode: "shared",
         skillReferenceStyle: "path",
-        gitignoreEntries: "# Agent skills (managed by swamp)\n.agents/skills/",
       };
     case "copilot":
       return {
@@ -124,7 +121,6 @@ export function builtInToolConfig(tool: AiTool): ToolConfig {
         instructionsFile: "AGENTS.md",
         instructionsMode: "shared",
         skillReferenceStyle: "path",
-        gitignoreEntries: "# Agent skills (managed by swamp)\n.agents/skills/",
       };
     case "kiro":
       return {
@@ -135,7 +131,6 @@ export function builtInToolConfig(tool: AiTool): ToolConfig {
         instructionsMode: "owned",
         frontmatter: "---\ninclusion: always\n---\n",
         skillReferenceStyle: "path",
-        gitignoreEntries: "# Kiro skills (managed by swamp)\n.kiro/skills/",
       };
     case "none":
       return {

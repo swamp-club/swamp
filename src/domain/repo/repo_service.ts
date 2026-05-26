@@ -36,12 +36,8 @@ import {
 import { SkillAssets } from "../../infrastructure/assets/skill_assets.ts";
 import { assertNever, UserError } from "../errors.ts";
 import { resolvePrimaryTool } from "./primary_tool.ts";
-import { resolveSkillsDir, SKILL_DIRS } from "./skill_dirs.ts";
-import {
-  builtInToolConfig,
-  isBuiltInTool,
-  type ToolConfig,
-} from "./custom_tool.ts";
+import { resolveSkillsDir } from "./skill_dirs.ts";
+import type { ToolConfig } from "./custom_tool.ts";
 import { ToolResolver } from "./tool_resolver.ts";
 import { readCustomTools } from "../../infrastructure/persistence/custom_tools_repository.ts";
 
@@ -67,20 +63,6 @@ const LEGACY_INSTRUCTIONS_SIGNATURE = "This repository is managed with [swamp]";
  * - "skipped": gitignore management was not opted in
  */
 export type GitignoreAction = "created" | "updated" | "unchanged" | "skipped";
-
-const INSTRUCTIONS_FILES: Partial<Record<AiTool, string>> = {
-  claude: "CLAUDE.md",
-  cursor: ".cursor/rules/swamp.mdc",
-  opencode: "AGENTS.md",
-  codex: "AGENTS.md",
-  copilot: "AGENTS.md",
-  kiro: ".kiro/steering/swamp-rules.md",
-};
-
-const GITIGNORE_TOOL_ENTRIES: Partial<Record<AiTool, string>> = {
-  claude:
-    "# Claude Code configuration (managed by swamp)\n.claude/worktrees/\n.claude/settings.local.json\n.claude/scheduled_tasks.lock\n.claude/scheduled_tasks.json",
-};
 
 /**
  * Dedupes a tools list while preserving first-seen order, so set semantics

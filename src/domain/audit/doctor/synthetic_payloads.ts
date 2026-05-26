@@ -44,7 +44,6 @@
  *   https://opencode.ai/docs/plugins (plugin emits normalized JSON on stdin)
  */
 
-import type { AiTool } from "../../repo/repo_service.ts";
 import { DIAGNOSTIC_COMMAND_PREFIX } from "../audit_service.ts";
 
 /**

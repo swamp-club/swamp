@@ -18,7 +18,6 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { UserError } from "../../errors.ts";
-import type { AiTool } from "../../repo/ai_tool.ts";
 
 /**
  * Types and ports for the `swamp doctor audit` preflight diagnostic.

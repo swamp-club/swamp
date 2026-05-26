@@ -26,7 +26,7 @@ import {
   RELEVANT_ENV_VARS,
 } from "../domain/telemetry/mod.ts";
 import type { TelemetryService } from "../domain/telemetry/telemetry_service.ts";
-import type { AiTool } from "../infrastructure/persistence/repo_marker_repository.ts";
+
 import type { DatastoreConfigData } from "../domain/datastore/datastore_config.ts";
 
 /**
