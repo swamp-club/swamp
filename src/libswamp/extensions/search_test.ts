@@ -42,6 +42,7 @@ function makeDeps(
             contentTypes: ["models"],
             createdAt: "2026-01-01T00:00:00Z",
             updatedAt: "2026-01-02T00:00:00Z",
+            score: { percentage: 85, grade: "B" },
           },
           {
             name: "@ns/aws-s3",
@@ -76,7 +77,9 @@ Deno.test("extensionSearch: returns results from API", async () => {
   assertEquals(completed.data.query, "aws");
   assertEquals(completed.data.results.length, 2);
   assertEquals(completed.data.results[0].name, "@ns/aws-ec2");
+  assertEquals(completed.data.results[0].score, { percentage: 85, grade: "B" });
   assertEquals(completed.data.results[1].name, "@ns/aws-s3");
+  assertEquals(completed.data.results[1].score, null);
   assertEquals(completed.data.meta.total, 2);
   assertEquals(completed.data.meta.page, 1);
   assertEquals(completed.data.meta.perPage, 20);

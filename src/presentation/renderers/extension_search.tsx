@@ -54,9 +54,7 @@ class JsonExtensionSearchRenderer implements ExtensionSearchRenderer {
           query: e.data.query,
           extensions: e.data.results.map((ext) => ({
             name: ext.name,
-            description: ext.description.length > DESCRIPTION_MAX
-              ? ext.description.slice(0, DESCRIPTION_MAX) + "…"
-              : ext.description,
+            description: ext.description,
             latestVersion: ext.latestVersion,
             score: ext.score ?? null,
           })),
@@ -90,7 +88,7 @@ class InkExtensionSearchRenderer implements ExtensionSearchRenderer {
         const result = await renderInteractivePicker<ExtensionSearchItem>(
           e.data.results,
           e.data.query,
-          (item) => `${item.name} ${item.description}`,
+          (item) => `${item.name} ${item.description} ${item.labels.join(" ")}`,
           renderExtensionResultLine,
           renderExtensionPreview,
           renderExtensionScrollback,
@@ -248,6 +246,10 @@ function renderExtensionScrollback(
 
   if (item.contentTypes.length > 0) {
     lines.push(`Content Types: ${item.contentTypes.join(", ")}`);
+  }
+
+  if (item.score) {
+    lines.push(`Quality: ${item.score.grade} (${item.score.percentage}%)`);
   }
 
   return lines.join("\n");
