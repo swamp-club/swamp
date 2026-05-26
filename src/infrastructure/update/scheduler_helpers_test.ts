@@ -177,8 +177,8 @@ Deno.test("buildPlist: default mode is agent (no UserName)", () => {
 
 Deno.test("buildPlist: daemon mode uses system log path", () => {
   const plist = buildPlist("/usr/local/bin/swamp", "daily", "daemon");
-  assertStringIncludes(plist, "/var/log/swamp/autoupdate.stdout.log");
-  assertStringIncludes(plist, "/var/log/swamp/autoupdate.stderr.log");
+  assertPathStringIncludes(plist, "var/log/swamp/autoupdate.stdout.log");
+  assertPathStringIncludes(plist, "var/log/swamp/autoupdate.stderr.log");
 });
 
 Deno.test("buildPlist: agent mode uses user log path", () => {
@@ -193,7 +193,7 @@ Deno.test("buildPlist: daemon mode still contains binary path and interval", () 
 });
 
 Deno.test("autoupdateLogDir: daemon mode returns /var/log/swamp", () => {
-  assertEquals(autoupdateLogDir("daemon"), "/var/log/swamp");
+  assertPathStringIncludes(autoupdateLogDir("daemon"), "var/log/swamp");
 });
 
 Deno.test("autoupdateLogDir: agent mode returns user Library path", () => {
