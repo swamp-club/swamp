@@ -29,38 +29,16 @@ import { UpdatePreferencesFileRepository } from "../../infrastructure/update/upd
 import { AutoupdateLogFileRepository } from "../../infrastructure/update/autoupdate_log_file_repository.ts";
 import {
   createScheduler,
-  detectBinaryOwnership,
+  resolveLaunchdMode,
 } from "../../infrastructure/update/scheduler_factory.ts";
 import {
   autoupdateLogDir,
   detectInstalledLaunchdMode,
-  type LaunchdMode,
 } from "../../infrastructure/update/launchd_scheduler.ts";
 import { createDoctorInstallRenderer } from "../../presentation/renderers/doctor_install.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
-
-async function resolveLaunchdMode(
-  binaryPath: string,
-): Promise<LaunchdMode> {
-  if (Deno.build.os !== "darwin") return "agent";
-
-  const installed = await detectInstalledLaunchdMode();
-  if (installed) return installed;
-
-  let currentUid: number | null = null;
-  let binaryUid: number | null = null;
-  try {
-    currentUid = Deno.uid();
-    const stat = await Deno.stat(binaryPath);
-    binaryUid = stat.uid;
-  } catch {
-    return "agent";
-  }
-
-  return detectBinaryOwnership(binaryUid, currentUid);
-}
 
 function createProductionDeps(): InstallHealthDeps {
   const binaryPath = Deno.execPath();
@@ -98,7 +76,7 @@ function createProductionDeps(): InstallHealthDeps {
       return await repo.read();
     },
     getSchedulerStatus: async () => {
-      const launchdMode = await resolveLaunchdMode(binaryPath);
+      const launchdMode = await resolveLaunchdMode();
       const scheduler = await createScheduler({ launchdMode });
       return await scheduler.status();
     },
@@ -107,7 +85,7 @@ function createProductionDeps(): InstallHealthDeps {
       return await detectInstalledLaunchdMode();
     },
     getLastLogEntry: async () => {
-      const mode = await resolveLaunchdMode(binaryPath);
+      const mode = await resolveLaunchdMode();
       const logPath = mode === "daemon"
         ? join(autoupdateLogDir("daemon"), "autoupdate.log")
         : undefined;

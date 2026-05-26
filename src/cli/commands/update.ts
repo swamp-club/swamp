@@ -35,10 +35,8 @@ import { AutoupdateLogFileRepository } from "../../infrastructure/update/autoupd
 import { autoupdateLogDir } from "../../infrastructure/update/launchd_scheduler.ts";
 import {
   createScheduler,
-  detectBinaryOwnership,
+  resolveLaunchdMode,
 } from "../../infrastructure/update/scheduler_factory.ts";
-import type { LaunchdMode } from "../../infrastructure/update/launchd_scheduler.ts";
-import { detectInstalledLaunchdMode } from "../../infrastructure/update/launchd_scheduler.ts";
 import {
   isValidCadence,
   type UpdateCadence,
@@ -133,30 +131,6 @@ function promptCadence(defaultCadence: UpdateCadence): UpdateCadence {
   }
 }
 
-async function detectLaunchdMode(): Promise<LaunchdMode> {
-  if (Deno.build.os !== "darwin") {
-    return "agent";
-  }
-
-  let currentUid: number | null = null;
-  let binaryUid: number | null = null;
-
-  try {
-    currentUid = Deno.uid();
-  } catch {
-    return "agent";
-  }
-
-  try {
-    const stat = await Deno.stat(Deno.execPath());
-    binaryUid = stat.uid;
-  } catch {
-    return "agent";
-  }
-
-  return detectBinaryOwnership(binaryUid, currentUid);
-}
-
 async function runSetupAuto(
   ctx: { logger: ReturnType<typeof getSwampLogger>; outputMode: string },
 ): Promise<void> {
@@ -167,7 +141,7 @@ async function runSetupAuto(
   }
 
   const binaryPath = Deno.execPath();
-  const launchdMode = await detectLaunchdMode();
+  const launchdMode = await resolveLaunchdMode();
 
   let isRoot = false;
   try {
@@ -247,11 +221,9 @@ async function runDisableAuto(
   const prefsRepo = new UpdatePreferencesFileRepository();
   const prefs = await prefsRepo.read();
 
-  const installedMode = Deno.build.os === "darwin"
-    ? await detectInstalledLaunchdMode()
-    : null;
+  const launchdMode = await resolveLaunchdMode();
 
-  if (installedMode === "daemon") {
+  if (launchdMode === "daemon") {
     let isRoot = false;
     try {
       isRoot = Deno.uid() === 0;
@@ -265,8 +237,6 @@ async function runDisableAuto(
       );
     }
   }
-
-  const launchdMode = installedMode ?? await detectLaunchdMode();
   const scheduler = await createScheduler({ launchdMode });
   await scheduler.remove();
 
@@ -287,10 +257,7 @@ async function runSetupAutoStatus(
   const prefsRepo = new UpdatePreferencesFileRepository();
   const prefs = await prefsRepo.read();
 
-  const installedMode = Deno.build.os === "darwin"
-    ? await detectInstalledLaunchdMode()
-    : null;
-  const launchdMode = installedMode ?? await detectLaunchdMode();
+  const launchdMode = await resolveLaunchdMode();
 
   const logPath = launchdMode === "daemon"
     ? join(autoupdateLogDir("daemon"), "autoupdate.log")
