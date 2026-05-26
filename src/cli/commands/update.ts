@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { join } from "@std/path";
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions, isStdinTty } from "../context.ts";
 import { VERSION } from "./version.ts";
@@ -53,14 +54,81 @@ type AnyOptions = any;
 
 const BACKGROUND_TIMEOUT_MS = 5 * 60 * 1000;
 
-function backgroundLogFilePath(): string | undefined {
-  if (Deno.build.os !== "darwin") return undefined;
+function privilegedSchedulerDescription(): string {
+  switch (Deno.build.os) {
+    case "darwin":
+      return "system LaunchDaemon";
+    case "linux":
+      return "system-level scheduler";
+    default:
+      return "system-level scheduler";
+  }
+}
 
-  try {
-    if (Deno.uid() === 0) {
-      return autoupdateLogPath("daemon");
+function userSchedulerDescription(): string {
+  switch (Deno.build.os) {
+    case "darwin":
+      return "LaunchAgent";
+    case "linux":
+      return "user-level scheduler";
+    default:
+      return "user-level scheduler";
+  }
+}
+
+function schedulerTypeLabel(
+  mode: import("../../infrastructure/update/launchd_scheduler.ts").LaunchdMode,
+): string | undefined {
+  if (mode === "agent") {
+    switch (Deno.build.os) {
+      case "darwin":
+        return "LaunchAgent (user)";
+      case "linux":
+        return "user timer";
+      default:
+        return undefined;
     }
-  } catch { /* uid not available */ }
+  }
+  switch (Deno.build.os) {
+    case "darwin":
+      return "LaunchDaemon (system)";
+    case "linux":
+      return "system timer";
+    default:
+      return undefined;
+  }
+}
+
+function resolvePrivilegedLogPath(
+  mode: import("../../infrastructure/update/launchd_scheduler.ts").LaunchdMode,
+): string | undefined {
+  if (mode !== "daemon") return undefined;
+
+  switch (Deno.build.os) {
+    case "darwin":
+      return autoupdateLogPath("daemon");
+    case "linux":
+      return join("/var", "log", "swamp", "autoupdate-cron.log");
+    default:
+      return undefined;
+  }
+}
+
+function backgroundLogFilePath(): string | undefined {
+  try {
+    if (Deno.uid() !== 0) return undefined;
+  } catch {
+    return undefined;
+  }
+
+  if (Deno.build.os === "darwin") {
+    return autoupdateLogPath("daemon");
+  }
+
+  if (Deno.build.os === "linux") {
+    return join("/var", "log", "swamp", "autoupdate-cron.log");
+  }
+
   return undefined;
 }
 
@@ -146,18 +214,20 @@ async function runSetupAuto(
   const isRoot = isRunningAsRoot();
 
   if (launchdMode === "daemon" && !isRoot) {
+    const schedulerDesc = privilegedSchedulerDescription();
     throw new UserError(
       `The swamp binary at ${binaryPath} is owned by root.\n` +
-        `To set up autoupdate, the scheduler must be installed as a system LaunchDaemon.\n` +
+        `To set up autoupdate, the scheduler must be installed as a ${schedulerDesc}.\n` +
         `Re-run with sudo:\n\n` +
         `  sudo swamp update --setup-auto`,
     );
   }
 
   if (launchdMode === "agent" && isRoot) {
+    const schedulerDesc = userSchedulerDescription();
     throw new UserError(
       `Cannot set up autoupdate while running as root.\n` +
-        `The binary is owned by your user, so the scheduler runs as a LaunchAgent.\n` +
+        `The binary is owned by your user, so the scheduler runs as a ${schedulerDesc}.\n` +
         `Run this command without sudo:\n\n` +
         `  swamp update --setup-auto`,
     );
@@ -199,14 +269,15 @@ async function runSetupAuto(
       JSON.stringify({
         enabled: true,
         cadence,
-        schedulerType: Deno.build.os === "darwin" ? launchdMode : undefined,
+        schedulerType: schedulerTypeLabel(launchdMode),
       }),
     );
   } else {
     logger.info`Autoupdate enabled with ${cadence} checks`;
 
     if (launchdMode === "daemon") {
-      logger.info("Installed as system LaunchDaemon (root-owned binary)");
+      const desc = privilegedSchedulerDescription();
+      logger.info`Installed as ${desc} (root-owned binary)`;
     }
 
     const status = await scheduler.status();
@@ -225,8 +296,9 @@ async function runDisableAuto(
   const launchdMode = await resolveLaunchdMode();
 
   if (launchdMode === "daemon" && !isRunningAsRoot()) {
+    const desc = privilegedSchedulerDescription();
     throw new UserError(
-      `Autoupdate is installed as a system LaunchDaemon (root-owned binary).\n` +
+      `Autoupdate is installed as a ${desc} (root-owned binary).\n` +
         `Re-run with sudo to disable:\n\n` +
         `  sudo swamp update --setup-auto disable`,
     );
@@ -253,9 +325,7 @@ async function runSetupAutoStatus(
 
   const launchdMode = await resolveLaunchdMode();
 
-  const logPath = launchdMode === "daemon"
-    ? autoupdateLogPath("daemon")
-    : undefined;
+  const logPath = resolvePrivilegedLogPath(launchdMode);
 
   if (ctx.outputMode === "json") {
     const scheduler = await createScheduler({ launchdMode });
@@ -269,7 +339,7 @@ async function runSetupAutoStatus(
         enabled: prefs.enabled,
         cadence: prefs.cadence,
         schedulerInstalled: scheduleStatus.installed,
-        schedulerType: Deno.build.os === "darwin" ? launchdMode : undefined,
+        schedulerType: schedulerTypeLabel(launchdMode),
         lastUpdate: lastEntry,
       },
       null,
@@ -290,10 +360,8 @@ async function runSetupAutoStatus(
   logger.info`Autoupdate: enabled`;
   logger.info`Cadence: ${prefs.cadence}`;
 
-  if (Deno.build.os === "darwin") {
-    const typeLabel = launchdMode === "daemon"
-      ? "LaunchDaemon (system)"
-      : "LaunchAgent (user)";
+  const typeLabel = schedulerTypeLabel(launchdMode);
+  if (typeLabel) {
     logger.info`Scheduler type: ${typeLabel}`;
   }
 

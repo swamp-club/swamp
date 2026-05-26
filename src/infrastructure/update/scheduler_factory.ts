@@ -24,13 +24,16 @@ import {
   type LaunchdMode,
   LaunchdScheduler,
 } from "./launchd_scheduler.ts";
-import { SystemdScheduler } from "./systemd_scheduler.ts";
-import { CronScheduler } from "./cron_scheduler.ts";
+import {
+  detectInstalledSystemdMode,
+  SystemdScheduler,
+} from "./systemd_scheduler.ts";
+import { CronScheduler, detectInstalledCronMode } from "./cron_scheduler.ts";
 
 async function hasSystemctl(): Promise<boolean> {
   try {
     const cmd = new Deno.Command("systemctl", {
-      args: ["--user", "--version"],
+      args: ["--version"],
       stdout: "null",
       stderr: "null",
     });
@@ -48,14 +51,15 @@ export interface SchedulerOptions {
 export async function createScheduler(
   options?: SchedulerOptions,
 ): Promise<AutoupdateScheduler> {
+  const mode = options?.launchdMode ?? "agent";
   switch (Deno.build.os) {
     case "darwin":
-      return new LaunchdScheduler(options?.launchdMode ?? "agent");
+      return new LaunchdScheduler(mode);
     case "linux":
       if (await hasSystemctl()) {
-        return new SystemdScheduler();
+        return new SystemdScheduler(mode);
       }
-      return new CronScheduler();
+      return new CronScheduler(mode);
     default:
       throw new UserError(
         `Background autoupdate is not yet supported on ${Deno.build.os}`,
@@ -63,10 +67,11 @@ export async function createScheduler(
   }
 }
 
+// Resolves scheduler privilege level across all platforms, not just launchd.
+// Returns "daemon" when the binary is root-owned (privileged scheduler needed),
+// "agent" otherwise (user-level scheduler).
 export async function resolveLaunchdMode(): Promise<LaunchdMode> {
-  if (Deno.build.os !== "darwin") return "agent";
-
-  const installed = await detectInstalledLaunchdMode();
+  const installed = await detectInstalledMode();
   if (installed) return installed;
 
   let currentUid: number | null = null;
@@ -90,6 +95,24 @@ export async function resolveLaunchdMode(): Promise<LaunchdMode> {
     );
   }
   return result;
+}
+
+async function detectInstalledMode(): Promise<LaunchdMode | null> {
+  switch (Deno.build.os) {
+    case "darwin":
+      return await detectInstalledLaunchdMode();
+    case "linux":
+      return await detectInstalledLinuxMode();
+    default:
+      return null;
+  }
+}
+
+export async function detectInstalledLinuxMode(): Promise<LaunchdMode | null> {
+  const systemd = await detectInstalledSystemdMode();
+  if (systemd) return systemd;
+
+  return await detectInstalledCronMode();
 }
 
 export function detectBinaryOwnership(

@@ -22,10 +22,13 @@ import type {
   AutoupdateScheduler,
   ScheduleStatus,
 } from "../../domain/update/autoupdate_scheduler.ts";
+import type { LaunchdMode } from "./launchd_scheduler.ts";
 import type { UpdateCadence } from "../../domain/update/update_preferences.ts";
 import { atomicWriteTextFile } from "../persistence/atomic_write.ts";
 
 const UNIT_NAME = "swamp-autoupdate";
+
+const SYSTEM_UNIT_DIR = "/etc/systemd/system";
 
 function systemdUserDir(): string {
   const xdgConfigHome = Deno.env.get("XDG_CONFIG_HOME");
@@ -37,12 +40,40 @@ function systemdUserDir(): string {
   return join(base, "systemd", "user");
 }
 
-function servicePath(): string {
-  return join(systemdUserDir(), `${UNIT_NAME}.service`);
+function systemdUserDirForHome(home: string): string {
+  return join(home, ".config", "systemd", "user");
 }
 
-function timerPath(): string {
-  return join(systemdUserDir(), `${UNIT_NAME}.timer`);
+export function systemdUnitDir(mode: LaunchdMode): string {
+  return mode === "daemon" ? SYSTEM_UNIT_DIR : systemdUserDir();
+}
+
+function servicePath(mode: LaunchdMode = "agent"): string {
+  return join(systemdUnitDir(mode), `${UNIT_NAME}.service`);
+}
+
+function timerPath(mode: LaunchdMode = "agent"): string {
+  return join(systemdUnitDir(mode), `${UNIT_NAME}.timer`);
+}
+
+async function linuxSudoUserHome(): Promise<string | null> {
+  const sudoUser = Deno.env.get("SUDO_USER");
+  if (!sudoUser) return null;
+
+  try {
+    const cmd = new Deno.Command("getent", {
+      args: ["passwd", sudoUser],
+      stdout: "piped",
+      stderr: "null",
+    });
+    const result = await cmd.output();
+    if (!result.success) return null;
+    const output = new TextDecoder().decode(result.stdout).trim();
+    const fields = output.split(":");
+    return fields.length >= 6 ? fields[5] : null;
+  } catch {
+    return null;
+  }
 }
 
 export function escapeSystemdPath(s: string): string {
@@ -75,9 +106,13 @@ WantedBy=timers.target
 `;
 }
 
-async function systemctl(...args: string[]): Promise<boolean> {
+async function systemctl(
+  mode: LaunchdMode,
+  ...args: string[]
+): Promise<boolean> {
+  const modeArgs = mode === "agent" ? ["--user"] : [];
   const cmd = new Deno.Command("systemctl", {
-    args: ["--user", ...args],
+    args: [...modeArgs, ...args],
     stdout: "null",
     stderr: "null",
   });
@@ -86,17 +121,38 @@ async function systemctl(...args: string[]): Promise<boolean> {
 }
 
 export class SystemdScheduler implements AutoupdateScheduler {
+  readonly mode: LaunchdMode;
+
+  constructor(mode: LaunchdMode = "agent") {
+    this.mode = mode;
+  }
+
   async install(binaryPath: string, cadence: UpdateCadence): Promise<void> {
     await this.remove();
 
-    const dir = systemdUserDir();
+    if (this.mode === "daemon") {
+      await this.removeUserTimerForOriginalUser();
+    } else {
+      const otherScheduler = new SystemdScheduler("daemon");
+      await otherScheduler.remove();
+    }
+
+    const dir = systemdUnitDir(this.mode);
     await Deno.mkdir(dir, { recursive: true });
 
-    await atomicWriteTextFile(servicePath(), buildService(binaryPath));
-    await atomicWriteTextFile(timerPath(), buildTimer(cadence));
+    await atomicWriteTextFile(
+      servicePath(this.mode),
+      buildService(binaryPath),
+    );
+    await atomicWriteTextFile(timerPath(this.mode), buildTimer(cadence));
 
-    await systemctl("daemon-reload");
-    const started = await systemctl("enable", "--now", `${UNIT_NAME}.timer`);
+    await systemctl(this.mode, "daemon-reload");
+    const started = await systemctl(
+      this.mode,
+      "enable",
+      "--now",
+      `${UNIT_NAME}.timer`,
+    );
     if (!started) {
       throw new Error(
         `Failed to enable systemd timer ${UNIT_NAME}.timer`,
@@ -105,23 +161,24 @@ export class SystemdScheduler implements AutoupdateScheduler {
   }
 
   async remove(): Promise<void> {
-    await systemctl("disable", "--now", `${UNIT_NAME}.timer`);
-    await systemctl("daemon-reload");
+    await systemctl(this.mode, "disable", "--now", `${UNIT_NAME}.timer`);
+    await systemctl(this.mode, "daemon-reload");
 
-    await Deno.remove(timerPath()).catch(() => {});
-    await Deno.remove(servicePath()).catch(() => {});
+    await Deno.remove(timerPath(this.mode)).catch(() => {});
+    await Deno.remove(servicePath(this.mode)).catch(() => {});
   }
 
   async status(): Promise<ScheduleStatus> {
     try {
-      const content = await Deno.readTextFile(timerPath());
+      const content = await Deno.readTextFile(timerPath(this.mode));
       const calendarMatch = content.match(/OnCalendar=(\w+)/);
       const cadence: UpdateCadence = calendarMatch?.[1] === "weekly"
         ? "weekly"
         : "daily";
 
+      const modeArgs = this.mode === "agent" ? ["--user"] : [];
       const cmd = new Deno.Command("systemctl", {
-        args: ["--user", "is-active", `${UNIT_NAME}.timer`],
+        args: [...modeArgs, "is-active", `${UNIT_NAME}.timer`],
         stdout: "piped",
         stderr: "null",
       });
@@ -138,4 +195,56 @@ export class SystemdScheduler implements AutoupdateScheduler {
       return { installed: false };
     }
   }
+
+  private async removeUserTimerForOriginalUser(): Promise<void> {
+    const realHome = await linuxSudoUserHome();
+    if (!realHome) return;
+
+    const userDir = systemdUserDirForHome(realHome);
+    const userTimerPath = join(userDir, `${UNIT_NAME}.timer`);
+    const userServicePath = join(userDir, `${UNIT_NAME}.service`);
+
+    try {
+      await Deno.stat(userTimerPath);
+    } catch {
+      return;
+    }
+
+    const sudoUser = Deno.env.get("SUDO_USER");
+    if (sudoUser) {
+      const cmd = new Deno.Command("sudo", {
+        args: [
+          "-u",
+          sudoUser,
+          "systemctl",
+          "--user",
+          "disable",
+          "--now",
+          `${UNIT_NAME}.timer`,
+        ],
+        stdout: "null",
+        stderr: "null",
+      });
+      await cmd.output();
+    }
+
+    await Deno.remove(userTimerPath).catch(() => {});
+    await Deno.remove(userServicePath).catch(() => {});
+  }
+}
+
+export async function detectInstalledSystemdMode(): Promise<
+  LaunchdMode | null
+> {
+  try {
+    await Deno.stat(join(SYSTEM_UNIT_DIR, `${UNIT_NAME}.timer`));
+    return "daemon";
+  } catch { /* not found */ }
+
+  try {
+    await Deno.stat(timerPath("agent"));
+    return "agent";
+  } catch { /* not found */ }
+
+  return null;
 }

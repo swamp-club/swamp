@@ -28,12 +28,16 @@ import { UpdatePreferencesFileRepository } from "../../infrastructure/update/upd
 import { AutoupdateLogFileRepository } from "../../infrastructure/update/autoupdate_log_file_repository.ts";
 import {
   createScheduler,
+  detectInstalledLinuxMode,
   resolveLaunchdMode,
 } from "../../infrastructure/update/scheduler_factory.ts";
 import {
   autoupdateLogPath,
   detectInstalledLaunchdMode,
 } from "../../infrastructure/update/launchd_scheduler.ts";
+import { detectInstalledSystemdMode } from "../../infrastructure/update/systemd_scheduler.ts";
+import { cronLogPath } from "../../infrastructure/update/cron_scheduler.ts";
+import type { SchedulerTypeLabel } from "../../domain/update/install_health.ts";
 import { createDoctorInstallRenderer } from "../../presentation/renderers/doctor_install.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -79,15 +83,31 @@ function createProductionDeps(): InstallHealthDeps {
       const scheduler = await createScheduler({ launchdMode });
       return await scheduler.status();
     },
-    getSchedulerType: async () => {
-      if (Deno.build.os !== "darwin") return null;
-      return await detectInstalledLaunchdMode();
+    getSchedulerType: async (): Promise<SchedulerTypeLabel | null> => {
+      if (Deno.build.os === "darwin") {
+        return await detectInstalledLaunchdMode();
+      }
+      if (Deno.build.os === "linux") {
+        const mode = await detectInstalledLinuxMode();
+        if (!mode) return null;
+        const isSystemd = await detectInstalledSystemdMode() !== null;
+        if (isSystemd) {
+          return mode === "daemon" ? "systemd-system" : "systemd-user";
+        }
+        return mode === "daemon" ? "cron-root" : "cron-user";
+      }
+      return null;
     },
     getLastLogEntry: async () => {
       const mode = await resolveLaunchdMode();
-      const logPath = mode === "daemon"
-        ? autoupdateLogPath("daemon")
-        : undefined;
+      let logPath: string | undefined;
+      if (mode === "daemon") {
+        if (Deno.build.os === "darwin") {
+          logPath = autoupdateLogPath("daemon");
+        } else if (Deno.build.os === "linux") {
+          logPath = cronLogPath("daemon");
+        }
+      }
       const logRepo = new AutoupdateLogFileRepository(logPath);
       const entries = await logRepo.readAll();
       return entries.length > 0 ? entries[entries.length - 1] : null;
