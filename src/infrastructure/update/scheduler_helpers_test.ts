@@ -29,6 +29,7 @@ import {
   cadenceFromInterval,
   escapeXml,
 } from "./launchd_scheduler.ts";
+import { detectBinaryOwnership } from "./scheduler_factory.ts";
 import {
   buildService,
   buildTimer,
@@ -154,4 +155,78 @@ Deno.test("cronLogPath: returns an absolute path", () => {
   const path = cronLogPath();
   assertNotEquals(path, "");
   assertPathStringIncludes(path, "autoupdate-cron.log");
+});
+
+// --- LaunchDaemon (daemon mode) tests ---
+
+Deno.test("buildPlist: daemon mode includes UserName key", () => {
+  const plist = buildPlist("/usr/local/bin/swamp", "daily", "daemon");
+  assertStringIncludes(plist, "<key>UserName</key>");
+  assertStringIncludes(plist, "<string>root</string>");
+});
+
+Deno.test("buildPlist: agent mode does not include UserName key", () => {
+  const plist = buildPlist("/usr/local/bin/swamp", "daily", "agent");
+  assertEquals(plist.includes("UserName"), false);
+});
+
+Deno.test("buildPlist: default mode is agent (no UserName)", () => {
+  const plist = buildPlist("/usr/local/bin/swamp", "daily");
+  assertEquals(plist.includes("UserName"), false);
+});
+
+Deno.test("buildPlist: daemon mode uses system log path", () => {
+  const plist = buildPlist("/usr/local/bin/swamp", "daily", "daemon");
+  assertStringIncludes(plist, "/var/log/swamp/autoupdate.stdout.log");
+  assertStringIncludes(plist, "/var/log/swamp/autoupdate.stderr.log");
+});
+
+Deno.test("buildPlist: agent mode uses user log path", () => {
+  const plist = buildPlist("/usr/local/bin/swamp", "daily", "agent");
+  assertPathStringIncludes(plist, "Library/Logs/swamp/autoupdate.stdout.log");
+});
+
+Deno.test("buildPlist: daemon mode still contains binary path and interval", () => {
+  const plist = buildPlist("/usr/local/bin/swamp", "weekly", "daemon");
+  assertStringIncludes(plist, "<string>/usr/local/bin/swamp</string>");
+  assertStringIncludes(plist, "<integer>604800</integer>");
+});
+
+Deno.test("autoupdateLogDir: daemon mode returns /var/log/swamp", () => {
+  assertEquals(autoupdateLogDir("daemon"), "/var/log/swamp");
+});
+
+Deno.test("autoupdateLogDir: agent mode returns user Library path", () => {
+  const dir = autoupdateLogDir("agent");
+  assertPathStringIncludes(dir, "Library/Logs/swamp");
+});
+
+// --- Binary ownership detection tests ---
+
+Deno.test("detectBinaryOwnership: user-owned binary returns agent", () => {
+  assertEquals(detectBinaryOwnership(501, 501), "agent");
+});
+
+Deno.test("detectBinaryOwnership: root-owned binary with non-root user returns daemon", () => {
+  assertEquals(detectBinaryOwnership(0, 501), "daemon");
+});
+
+Deno.test("detectBinaryOwnership: binary owned by different non-root user returns daemon", () => {
+  assertEquals(detectBinaryOwnership(502, 501), "daemon");
+});
+
+Deno.test("detectBinaryOwnership: null binary uid returns agent", () => {
+  assertEquals(detectBinaryOwnership(null, 501), "agent");
+});
+
+Deno.test("detectBinaryOwnership: null current uid returns agent", () => {
+  assertEquals(detectBinaryOwnership(0, null), "agent");
+});
+
+Deno.test("detectBinaryOwnership: both null returns agent", () => {
+  assertEquals(detectBinaryOwnership(null, null), "agent");
+});
+
+Deno.test("detectBinaryOwnership: root-owned binary with root user returns daemon", () => {
+  assertEquals(detectBinaryOwnership(0, 0), "daemon");
 });

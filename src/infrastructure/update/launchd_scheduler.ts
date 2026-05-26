@@ -28,8 +28,18 @@ import { homeDirectory } from "../persistence/paths.ts";
 
 const LABEL = "club.swamp.autoupdate";
 
-function plistPath(): string {
+export type LaunchdMode = "agent" | "daemon";
+
+function agentPlistPath(): string {
   return join(homeDirectory(), "Library", "LaunchAgents", `${LABEL}.plist`);
+}
+
+function daemonPlistPath(): string {
+  return join("/Library", "LaunchDaemons", `${LABEL}.plist`);
+}
+
+function plistPathForMode(mode: LaunchdMode): string {
+  return mode === "agent" ? agentPlistPath() : daemonPlistPath();
 }
 
 export function escapeXml(s: string): string {
@@ -41,16 +51,27 @@ export function escapeXml(s: string): string {
     .replace(/'/g, "&apos;");
 }
 
-export function autoupdateLogDir(): string {
+export function autoupdateLogDir(mode: LaunchdMode = "agent"): string {
+  if (mode === "daemon") {
+    return join("/var", "log", "swamp");
+  }
   return join(homeDirectory(), "Library", "Logs", "swamp");
 }
 
-export function buildPlist(binaryPath: string, cadence: UpdateCadence): string {
+export function buildPlist(
+  binaryPath: string,
+  cadence: UpdateCadence,
+  mode: LaunchdMode = "agent",
+): string {
   const interval = cadence === "daily" ? 86400 : 604800;
   const escapedPath = escapeXml(binaryPath);
-  const logDir = autoupdateLogDir();
+  const logDir = autoupdateLogDir(mode);
   const stdoutLog = escapeXml(join(logDir, "autoupdate.stdout.log"));
   const stderrLog = escapeXml(join(logDir, "autoupdate.stderr.log"));
+
+  const userNameEntry = mode === "daemon"
+    ? `\n  <key>UserName</key>\n  <string>root</string>`
+    : "";
 
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -67,7 +88,7 @@ export function buildPlist(binaryPath: string, cadence: UpdateCadence): string {
   <key>StartInterval</key>
   <integer>${interval}</integer>
   <key>RunAtLoad</key>
-  <true/>
+  <true/>${userNameEntry}
   <key>StandardOutPath</key>
   <string>${stdoutLog}</string>
   <key>StandardErrorPath</key>
@@ -92,17 +113,28 @@ async function getUid(): Promise<string> {
 }
 
 export class LaunchdScheduler implements AutoupdateScheduler {
+  readonly mode: LaunchdMode;
+
+  constructor(mode: LaunchdMode = "agent") {
+    this.mode = mode;
+  }
+
   async install(binaryPath: string, cadence: UpdateCadence): Promise<void> {
     await this.remove();
 
-    const path = plistPath();
-    await Deno.mkdir(dirname(path), { recursive: true });
-    await Deno.mkdir(autoupdateLogDir(), { recursive: true });
-    await atomicWriteTextFile(path, buildPlist(binaryPath, cadence));
+    // When switching modes, also remove the other scheduler type
+    const otherMode: LaunchdMode = this.mode === "agent" ? "daemon" : "agent";
+    const otherScheduler = new LaunchdScheduler(otherMode);
+    await otherScheduler.remove();
 
-    const uid = await getUid();
+    const path = plistPathForMode(this.mode);
+    await Deno.mkdir(dirname(path), { recursive: true });
+    await Deno.mkdir(autoupdateLogDir(this.mode), { recursive: true });
+    await atomicWriteTextFile(path, buildPlist(binaryPath, cadence, this.mode));
+
+    const domain = await this.launchctlDomain();
     const cmd = new Deno.Command("launchctl", {
-      args: ["bootstrap", `gui/${uid}`, path],
+      args: ["bootstrap", domain, path],
       stdout: "null",
       stderr: "null",
     });
@@ -115,16 +147,16 @@ export class LaunchdScheduler implements AutoupdateScheduler {
   }
 
   async remove(): Promise<void> {
-    const path = plistPath();
+    const path = plistPathForMode(this.mode);
     try {
       await Deno.stat(path);
     } catch {
       return;
     }
 
-    const uid = await getUid();
+    const domain = await this.launchctlDomain();
     const cmd = new Deno.Command("launchctl", {
-      args: ["bootout", `gui/${uid}/${LABEL}`],
+      args: ["bootout", `${domain}/${LABEL}`],
       stdout: "null",
       stderr: "null",
     });
@@ -134,7 +166,7 @@ export class LaunchdScheduler implements AutoupdateScheduler {
   }
 
   async status(): Promise<ScheduleStatus> {
-    const path = plistPath();
+    const path = plistPathForMode(this.mode);
     try {
       const content = await Deno.readTextFile(path);
       const intervalMatch = content.match(
@@ -149,4 +181,28 @@ export class LaunchdScheduler implements AutoupdateScheduler {
       return { installed: false };
     }
   }
+
+  private async launchctlDomain(): Promise<string> {
+    if (this.mode === "daemon") {
+      return "system";
+    }
+    const uid = await getUid();
+    return `gui/${uid}`;
+  }
+}
+
+export async function detectInstalledLaunchdMode(): Promise<
+  LaunchdMode | null
+> {
+  try {
+    await Deno.stat(daemonPlistPath());
+    return "daemon";
+  } catch { /* not found */ }
+
+  try {
+    await Deno.stat(agentPlistPath());
+    return "agent";
+  } catch { /* not found */ }
+
+  return null;
 }

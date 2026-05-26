@@ -19,7 +19,7 @@
 
 import type { AutoupdateScheduler } from "../../domain/update/autoupdate_scheduler.ts";
 import { UserError } from "../../domain/errors.ts";
-import { LaunchdScheduler } from "./launchd_scheduler.ts";
+import { type LaunchdMode, LaunchdScheduler } from "./launchd_scheduler.ts";
 import { SystemdScheduler } from "./systemd_scheduler.ts";
 import { CronScheduler } from "./cron_scheduler.ts";
 
@@ -37,10 +37,16 @@ async function hasSystemctl(): Promise<boolean> {
   }
 }
 
-export async function createScheduler(): Promise<AutoupdateScheduler> {
+export interface SchedulerOptions {
+  launchdMode?: LaunchdMode;
+}
+
+export async function createScheduler(
+  options?: SchedulerOptions,
+): Promise<AutoupdateScheduler> {
   switch (Deno.build.os) {
     case "darwin":
-      return new LaunchdScheduler();
+      return new LaunchdScheduler(options?.launchdMode ?? "agent");
     case "linux":
       if (await hasSystemctl()) {
         return new SystemdScheduler();
@@ -51,4 +57,20 @@ export async function createScheduler(): Promise<AutoupdateScheduler> {
         `Background autoupdate is not yet supported on ${Deno.build.os}`,
       );
   }
+}
+
+export function detectBinaryOwnership(
+  binaryUid: number | null,
+  currentUid: number | null,
+): LaunchdMode {
+  if (binaryUid === null || currentUid === null) {
+    return "agent";
+  }
+  if (binaryUid === 0) {
+    return "daemon";
+  }
+  if (binaryUid !== currentUid) {
+    return "daemon";
+  }
+  return "agent";
 }

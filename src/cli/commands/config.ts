@@ -21,12 +21,39 @@ import { Command } from "@cliffy/command";
 import { groupCommandAction } from "../group_action.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { UpdatePreferencesFileRepository } from "../../infrastructure/update/update_preferences_file_repository.ts";
-import { createScheduler } from "../../infrastructure/update/scheduler_factory.ts";
+import {
+  createScheduler,
+  detectBinaryOwnership,
+} from "../../infrastructure/update/scheduler_factory.ts";
+import { detectInstalledLaunchdMode } from "../../infrastructure/update/launchd_scheduler.ts";
 import type { UpdateCadence } from "../../domain/update/update_preferences.ts";
 import { UserError } from "../../domain/errors.ts";
 
+import type { LaunchdMode } from "../../infrastructure/update/launchd_scheduler.ts";
+
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
+
+async function detectConfigLaunchdMode(): Promise<LaunchdMode> {
+  if (Deno.build.os !== "darwin") {
+    return "agent";
+  }
+
+  const installed = await detectInstalledLaunchdMode();
+  if (installed) return installed;
+
+  let currentUid: number | null = null;
+  let binaryUid: number | null = null;
+  try {
+    currentUid = Deno.uid();
+    const stat = await Deno.stat(Deno.execPath());
+    binaryUid = stat.uid;
+  } catch {
+    return "agent";
+  }
+
+  return detectBinaryOwnership(binaryUid, currentUid);
+}
 
 const CONFIG_KEYS: Record<string, { description: string; values?: string[] }> =
   {
@@ -104,11 +131,13 @@ const configSetCommand = new Command()
     const prefsRepo = new UpdatePreferencesFileRepository();
     const prefs = await prefsRepo.read();
 
+    const launchdMode = await detectConfigLaunchdMode();
+
     switch (key) {
       case "update.auto": {
         const enabling = value === "enabled";
 
-        const scheduler = await createScheduler();
+        const scheduler = await createScheduler({ launchdMode });
         if (enabling) {
           await scheduler.install(Deno.execPath(), prefs.cadence);
         } else {
@@ -131,7 +160,7 @@ const configSetCommand = new Command()
       case "update.cadence": {
         const cadence = value as UpdateCadence;
         if (prefs.enabled) {
-          const scheduler = await createScheduler();
+          const scheduler = await createScheduler({ launchdMode });
           await scheduler.install(Deno.execPath(), cadence);
         }
 

@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { join } from "@std/path";
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { VERSION } from "./version.ts";
@@ -26,11 +27,40 @@ import {
 } from "../../domain/update/install_health.ts";
 import { UpdatePreferencesFileRepository } from "../../infrastructure/update/update_preferences_file_repository.ts";
 import { AutoupdateLogFileRepository } from "../../infrastructure/update/autoupdate_log_file_repository.ts";
-import { createScheduler } from "../../infrastructure/update/scheduler_factory.ts";
+import {
+  createScheduler,
+  detectBinaryOwnership,
+} from "../../infrastructure/update/scheduler_factory.ts";
+import {
+  autoupdateLogDir,
+  detectInstalledLaunchdMode,
+  type LaunchdMode,
+} from "../../infrastructure/update/launchd_scheduler.ts";
 import { createDoctorInstallRenderer } from "../../presentation/renderers/doctor_install.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
+
+async function resolveLaunchdMode(
+  binaryPath: string,
+): Promise<LaunchdMode> {
+  if (Deno.build.os !== "darwin") return "agent";
+
+  const installed = await detectInstalledLaunchdMode();
+  if (installed) return installed;
+
+  let currentUid: number | null = null;
+  let binaryUid: number | null = null;
+  try {
+    currentUid = Deno.uid();
+    const stat = await Deno.stat(binaryPath);
+    binaryUid = stat.uid;
+  } catch {
+    return "agent";
+  }
+
+  return detectBinaryOwnership(binaryUid, currentUid);
+}
 
 function createProductionDeps(): InstallHealthDeps {
   const binaryPath = Deno.execPath();
@@ -68,11 +98,20 @@ function createProductionDeps(): InstallHealthDeps {
       return await repo.read();
     },
     getSchedulerStatus: async () => {
-      const scheduler = await createScheduler();
+      const launchdMode = await resolveLaunchdMode(binaryPath);
+      const scheduler = await createScheduler({ launchdMode });
       return await scheduler.status();
     },
+    getSchedulerType: async () => {
+      if (Deno.build.os !== "darwin") return null;
+      return await detectInstalledLaunchdMode();
+    },
     getLastLogEntry: async () => {
-      const logRepo = new AutoupdateLogFileRepository();
+      const mode = await resolveLaunchdMode(binaryPath);
+      const logPath = mode === "daemon"
+        ? join(autoupdateLogDir("daemon"), "autoupdate.log")
+        : undefined;
+      const logRepo = new AutoupdateLogFileRepository(logPath);
       const entries = await logRepo.readAll();
       return entries.length > 0 ? entries[entries.length - 1] : null;
     },
