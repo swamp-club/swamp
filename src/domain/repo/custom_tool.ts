@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { join, resolve } from "@std/path";
+import { join, resolve, SEPARATOR } from "@std/path";
 import type { AiTool } from "./ai_tool.ts";
 import { UserError } from "../errors.ts";
 
@@ -84,7 +84,8 @@ export function assertPathContained(
   const resolved = resolve(join(repoRoot, relativePath));
   const normalizedRoot = resolve(repoRoot);
   if (
-    !resolved.startsWith(normalizedRoot + "/") && resolved !== normalizedRoot
+    !resolved.startsWith(normalizedRoot + SEPARATOR) &&
+    resolved !== normalizedRoot
   ) {
     throw new UserError(
       `${label} "${relativePath}" escapes the repository root.`,

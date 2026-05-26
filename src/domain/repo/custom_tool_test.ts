@@ -314,26 +314,36 @@ Deno.test("buildSkillsDirChoices: deduplicates when derived matches detected", (
   assertEquals(choices, ["skills"]);
 });
 
-Deno.test("assertPathContained: allows paths within repo", () => {
-  assertPathContained("/repo", "skills", "skillsDir");
-  assertPathContained("/repo", ".foo/skills", "skillsDir");
-  assertPathContained("/repo", "AGENTS.md", "instructionsFile");
+Deno.test("assertPathContained: allows paths within repo", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    assertPathContained(dir, "skills", "skillsDir");
+    assertPathContained(dir, ".foo/skills", "skillsDir");
+    assertPathContained(dir, "AGENTS.md", "instructionsFile");
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
 });
 
-Deno.test("assertPathContained: rejects path traversal", () => {
-  assertThrows(
-    () => assertPathContained("/repo", "../../etc/foo", "skillsDir"),
-    UserError,
-    "escapes the repository root",
-  );
-  assertThrows(
-    () =>
-      assertPathContained(
-        "/repo",
-        "../.ssh/authorized_keys",
-        "instructionsFile",
-      ),
-    UserError,
-    "escapes the repository root",
-  );
+Deno.test("assertPathContained: rejects path traversal", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    assertThrows(
+      () => assertPathContained(dir, "../../etc/foo", "skillsDir"),
+      UserError,
+      "escapes the repository root",
+    );
+    assertThrows(
+      () =>
+        assertPathContained(
+          dir,
+          "../.ssh/authorized_keys",
+          "instructionsFile",
+        ),
+      UserError,
+      "escapes the repository root",
+    );
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
 });
