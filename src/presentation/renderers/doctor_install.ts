@@ -18,9 +18,29 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { bold, cyan, dim, green, red, yellow } from "@std/fmt/colors";
-import type { InstallHealthReport } from "../../domain/update/install_health.ts";
+import type {
+  InstallHealthReport,
+  SchedulerTypeLabel,
+} from "../../domain/update/install_health.ts";
 import type { OutputMode } from "../output/output.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
+
+function schedulerTypeDisplayLabel(type: SchedulerTypeLabel): string {
+  switch (type) {
+    case "daemon":
+      return "LaunchDaemon (system)";
+    case "agent":
+      return "LaunchAgent (user)";
+    case "systemd-system":
+      return "systemd timer (system)";
+    case "systemd-user":
+      return "systemd timer (user)";
+    case "cron-root":
+      return "cron (root)";
+    case "cron-user":
+      return "cron (user)";
+  }
+}
 
 export type InstallHealthStatus = "healthy" | "unhealthy";
 
@@ -59,9 +79,9 @@ class LogDoctorInstallRenderer implements DoctorInstallRenderer {
     if (report.autoupdate.enabled) {
       writeOutput(`  Cadence:        ${report.autoupdate.cadence}`);
       if (report.autoupdate.schedulerType) {
-        const typeLabel = report.autoupdate.schedulerType === "daemon"
-          ? "LaunchDaemon (system)"
-          : "LaunchAgent (user)";
+        const typeLabel = schedulerTypeDisplayLabel(
+          report.autoupdate.schedulerType,
+        );
         writeOutput(`  Scheduler type: ${typeLabel}`);
       }
       writeOutput(

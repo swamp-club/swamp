@@ -38,11 +38,19 @@ export interface BinaryOwner {
   isRoot: boolean;
 }
 
+export type SchedulerTypeLabel =
+  | "agent"
+  | "daemon"
+  | "systemd-user"
+  | "systemd-system"
+  | "cron-user"
+  | "cron-root";
+
 export interface AutoupdateHealth {
   enabled: boolean;
   cadence: UpdateCadence;
   schedulerInstalled: boolean;
-  schedulerType?: "agent" | "daemon";
+  schedulerType?: SchedulerTypeLabel;
   lastEntry: AutoupdateLogEntry | null;
 }
 
@@ -55,7 +63,7 @@ export interface InstallHealthDeps {
   getCurrentUsername(): string | null;
   getPreferences(): Promise<{ enabled: boolean; cadence: UpdateCadence }>;
   getSchedulerStatus(): Promise<ScheduleStatus>;
-  getSchedulerType?(): Promise<"agent" | "daemon" | null>;
+  getSchedulerType?(): Promise<SchedulerTypeLabel | null>;
   getLastLogEntry(): Promise<AutoupdateLogEntry | null>;
 }
 

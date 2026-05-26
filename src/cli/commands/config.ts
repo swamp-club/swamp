@@ -111,8 +111,11 @@ const configSetCommand = new Command()
     const launchdMode = await resolveLaunchdMode();
 
     if (launchdMode === "daemon" && !isRunningAsRoot()) {
+      const schedulerDesc = Deno.build.os === "darwin"
+        ? "system LaunchDaemon"
+        : "system-level scheduler";
       throw new UserError(
-        `Autoupdate is configured as a system LaunchDaemon (root-owned binary).\n` +
+        `Autoupdate is configured as a ${schedulerDesc} (root-owned binary).\n` +
           `Re-run with sudo to modify:\n\n` +
           `  sudo swamp config set ${key} ${value}`,
       );

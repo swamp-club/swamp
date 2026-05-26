@@ -34,6 +34,7 @@ import {
   buildService,
   buildTimer,
   escapeSystemdPath,
+  systemdUnitDir,
 } from "./systemd_scheduler.ts";
 import {
   cadenceFromSchedule,
@@ -229,4 +230,36 @@ Deno.test("detectBinaryOwnership: both null returns agent", () => {
 
 Deno.test("detectBinaryOwnership: root-owned binary with root user returns daemon", () => {
   assertEquals(detectBinaryOwnership(0, 0), "daemon");
+});
+
+// --- Systemd system mode tests (Linux/macOS only — systemdUserDir needs HOME) ---
+
+Deno.test({
+  name: "systemdUnitDir: agent mode returns user config path",
+  ignore: Deno.build.os === "windows",
+  fn() {
+    const dir = systemdUnitDir("agent");
+    assertPathStringIncludes(dir, "systemd/user");
+  },
+});
+
+Deno.test("systemdUnitDir: daemon mode returns /etc/systemd/system", () => {
+  assertEquals(systemdUnitDir("daemon"), "/etc/systemd/system");
+});
+
+// --- Cron root mode tests ---
+
+Deno.test({
+  name: "cronLogPath: agent mode returns user data dir path",
+  ignore: Deno.build.os === "windows",
+  fn() {
+    const path = cronLogPath("agent");
+    assertPathStringIncludes(path, "autoupdate-cron.log");
+    assertEquals(path.startsWith("/var/log/swamp"), false);
+  },
+});
+
+Deno.test("cronLogPath: daemon mode returns /var/log/swamp path", () => {
+  assertPathStringIncludes(cronLogPath("daemon"), "var/log/swamp");
+  assertPathStringIncludes(cronLogPath("daemon"), "autoupdate-cron.log");
 });

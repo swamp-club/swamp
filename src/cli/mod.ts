@@ -132,6 +132,8 @@ import {
   autoupdateLogPath,
   detectInstalledLaunchdMode,
 } from "../infrastructure/update/launchd_scheduler.ts";
+import { detectInstalledLinuxMode } from "../infrastructure/update/scheduler_factory.ts";
+import { cronLogPath } from "../infrastructure/update/cron_scheduler.ts";
 import { getOutputModeFromArgs, isQuietFromArgs } from "./context.ts";
 import { flushDatastoreSync } from "../infrastructure/persistence/datastore_sync_coordinator.ts";
 import { getTracer, withSpan } from "../infrastructure/tracing/mod.ts";
@@ -1302,6 +1304,11 @@ export async function runCli(args: string[]): Promise<void> {
                 const installedMode = await detectInstalledLaunchdMode();
                 if (installedMode === "daemon") {
                   logPath = autoupdateLogPath("daemon");
+                }
+              } else if (Deno.build.os === "linux") {
+                const installedMode = await detectInstalledLinuxMode();
+                if (installedMode === "daemon") {
+                  logPath = cronLogPath("daemon");
                 }
               }
               const logRepo = new AutoupdateLogFileRepository(logPath);
