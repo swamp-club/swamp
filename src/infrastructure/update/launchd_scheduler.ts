@@ -30,8 +30,32 @@ const LABEL = "club.swamp.autoupdate";
 
 export type LaunchdMode = "agent" | "daemon";
 
+async function sudoUserHome(): Promise<string | null> {
+  const sudoUser = Deno.env.get("SUDO_USER");
+  if (!sudoUser) return null;
+
+  try {
+    const cmd = new Deno.Command("dscl", {
+      args: [".", "-read", `/Users/${sudoUser}`, "NFSHomeDirectory"],
+      stdout: "piped",
+      stderr: "null",
+    });
+    const result = await cmd.output();
+    if (!result.success) return null;
+    const output = new TextDecoder().decode(result.stdout).trim();
+    const match = output.match(/NFSHomeDirectory:\s*(.+)/);
+    return match ? match[1].trim() : null;
+  } catch {
+    return null;
+  }
+}
+
 function agentPlistPath(): string {
   return join(homeDirectory(), "Library", "LaunchAgents", `${LABEL}.plist`);
+}
+
+function agentPlistPathForHome(home: string): string {
+  return join(home, "Library", "LaunchAgents", `${LABEL}.plist`);
 }
 
 function daemonPlistPath(): string {
@@ -56,6 +80,10 @@ export function autoupdateLogDir(mode: LaunchdMode = "agent"): string {
     return join("/var", "log", "swamp");
   }
   return join(homeDirectory(), "Library", "Logs", "swamp");
+}
+
+export function autoupdateLogPath(mode: LaunchdMode): string {
+  return join(autoupdateLogDir(mode), "autoupdate.log");
 }
 
 export function buildPlist(
@@ -122,10 +150,15 @@ export class LaunchdScheduler implements AutoupdateScheduler {
   async install(binaryPath: string, cadence: UpdateCadence): Promise<void> {
     await this.remove();
 
-    // When switching modes, also remove the other scheduler type
-    const otherMode: LaunchdMode = this.mode === "agent" ? "daemon" : "agent";
-    const otherScheduler = new LaunchdScheduler(otherMode);
-    await otherScheduler.remove();
+    // When switching modes, also remove the other scheduler type.
+    // Under sudo, $HOME is /var/root — resolve the original user's
+    // home via $SUDO_USER to find their agent plist.
+    if (this.mode === "daemon") {
+      await this.removeAgentPlistForOriginalUser();
+    } else {
+      const otherScheduler = new LaunchdScheduler("daemon");
+      await otherScheduler.remove();
+    }
 
     const path = plistPathForMode(this.mode);
     await Deno.mkdir(dirname(path), { recursive: true });
@@ -182,6 +215,39 @@ export class LaunchdScheduler implements AutoupdateScheduler {
     }
   }
 
+  private async removeAgentPlistForOriginalUser(): Promise<void> {
+    const paths: string[] = [];
+
+    // Check the agent path from current $HOME (may be /var/root under sudo)
+    try {
+      paths.push(agentPlistPath());
+    } catch { /* homeDirectory() may throw */ }
+
+    // Also check the original user's home via $SUDO_USER
+    const realHome = await sudoUserHome();
+    if (realHome) {
+      paths.push(agentPlistPathForHome(realHome));
+    }
+
+    for (const path of new Set(paths)) {
+      try {
+        await Deno.stat(path);
+      } catch {
+        continue;
+      }
+      const sudoUid = Deno.env.get("SUDO_UID");
+      if (sudoUid) {
+        const cmd = new Deno.Command("launchctl", {
+          args: ["bootout", `gui/${sudoUid}/${LABEL}`],
+          stdout: "null",
+          stderr: "null",
+        });
+        await cmd.output();
+      }
+      await Deno.remove(path).catch(() => {});
+    }
+  }
+
   private async launchctlDomain(): Promise<string> {
     if (this.mode === "daemon") {
       return "system";
@@ -199,10 +265,20 @@ export async function detectInstalledLaunchdMode(): Promise<
     return "daemon";
   } catch { /* not found */ }
 
+  // Check agent plist at current $HOME
   try {
     await Deno.stat(agentPlistPath());
     return "agent";
   } catch { /* not found */ }
+
+  // Under sudo, $HOME is /var/root — also check the original user's home
+  const realHome = await sudoUserHome();
+  if (realHome) {
+    try {
+      await Deno.stat(agentPlistPathForHome(realHome));
+      return "agent";
+    } catch { /* not found */ }
+  }
 
   return null;
 }

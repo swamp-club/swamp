@@ -85,8 +85,8 @@ export async function resolveLaunchdMode(): Promise<LaunchdMode> {
       `The swamp binary at ${Deno.execPath()} is owned by uid ${binaryUid}, ` +
         `not the current user or root.\n` +
         `Fix the installation so the binary is owned by your user or root:\n\n` +
-        `  sudo chown $(whoami) ${Deno.execPath()}\n` +
-        `  sudo chown root ${Deno.execPath()}`,
+        `  Option 1: sudo chown $(whoami) ${Deno.execPath()}\n` +
+        `  Option 2: sudo chown root ${Deno.execPath()}`,
     );
   }
   return result;

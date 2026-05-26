@@ -17,7 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { join } from "@std/path";
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions, isStdinTty } from "../context.ts";
 import { VERSION } from "./version.ts";
@@ -32,7 +31,7 @@ import { createUpdateCheckRenderer } from "../../presentation/renderers/update_c
 import { Spinner } from "../../presentation/spinner.ts";
 import { UpdatePreferencesFileRepository } from "../../infrastructure/update/update_preferences_file_repository.ts";
 import { AutoupdateLogFileRepository } from "../../infrastructure/update/autoupdate_log_file_repository.ts";
-import { autoupdateLogDir } from "../../infrastructure/update/launchd_scheduler.ts";
+import { autoupdateLogPath } from "../../infrastructure/update/launchd_scheduler.ts";
 import {
   createScheduler,
   isRunningAsRoot,
@@ -59,7 +58,7 @@ function backgroundLogFilePath(): string | undefined {
 
   try {
     if (Deno.uid() === 0) {
-      return join(autoupdateLogDir("daemon"), "autoupdate.log");
+      return autoupdateLogPath("daemon");
     }
   } catch { /* uid not available */ }
   return undefined;
@@ -197,7 +196,11 @@ async function runSetupAuto(
 
   if (ctx.outputMode === "json") {
     console.log(
-      JSON.stringify({ enabled: true, cadence, schedulerType: launchdMode }),
+      JSON.stringify({
+        enabled: true,
+        cadence,
+        schedulerType: Deno.build.os === "darwin" ? launchdMode : undefined,
+      }),
     );
   } else {
     logger.info`Autoupdate enabled with ${cadence} checks`;
@@ -251,7 +254,7 @@ async function runSetupAutoStatus(
   const launchdMode = await resolveLaunchdMode();
 
   const logPath = launchdMode === "daemon"
-    ? join(autoupdateLogDir("daemon"), "autoupdate.log")
+    ? autoupdateLogPath("daemon")
     : undefined;
 
   if (ctx.outputMode === "json") {

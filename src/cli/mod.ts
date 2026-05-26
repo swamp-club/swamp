@@ -128,7 +128,7 @@ import { renderUpdateNotification } from "../presentation/renderers/update_notif
 import { UpdatePreferencesFileRepository } from "../infrastructure/update/update_preferences_file_repository.ts";
 import { AutoupdateLogFileRepository } from "../infrastructure/update/autoupdate_log_file_repository.ts";
 import {
-  autoupdateLogDir,
+  autoupdateLogPath,
   detectInstalledLaunchdMode,
 } from "../infrastructure/update/launchd_scheduler.ts";
 import { getOutputModeFromArgs, isQuietFromArgs } from "./context.ts";
@@ -1299,10 +1299,7 @@ export async function runCli(args: string[]): Promise<void> {
               if (Deno.build.os === "darwin") {
                 const installedMode = await detectInstalledLaunchdMode();
                 if (installedMode === "daemon") {
-                  logPath = join(
-                    autoupdateLogDir("daemon"),
-                    "autoupdate.log",
-                  );
+                  logPath = autoupdateLogPath("daemon");
                 }
               }
               const logRepo = new AutoupdateLogFileRepository(logPath);

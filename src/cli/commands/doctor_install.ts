@@ -17,7 +17,6 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { join } from "@std/path";
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { VERSION } from "./version.ts";
@@ -32,7 +31,7 @@ import {
   resolveLaunchdMode,
 } from "../../infrastructure/update/scheduler_factory.ts";
 import {
-  autoupdateLogDir,
+  autoupdateLogPath,
   detectInstalledLaunchdMode,
 } from "../../infrastructure/update/launchd_scheduler.ts";
 import { createDoctorInstallRenderer } from "../../presentation/renderers/doctor_install.ts";
@@ -87,7 +86,7 @@ function createProductionDeps(): InstallHealthDeps {
     getLastLogEntry: async () => {
       const mode = await resolveLaunchdMode();
       const logPath = mode === "daemon"
-        ? join(autoupdateLogDir("daemon"), "autoupdate.log")
+        ? autoupdateLogPath("daemon")
         : undefined;
       const logRepo = new AutoupdateLogFileRepository(logPath);
       const entries = await logRepo.readAll();
