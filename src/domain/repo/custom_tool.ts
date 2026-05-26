@@ -173,13 +173,16 @@ export function deriveDefaults(
   name: string,
   instructionsPath: string,
   detectedConfigDir?: string,
+  detectedSkillsDir?: string,
 ): CustomToolDefinition {
   const isRootFile = !instructionsPath.includes("/") &&
     !instructionsPath.includes("\\");
   const isShared = isRootFile && ROOT_LEVEL_SHARED_FILES.has(instructionsPath);
 
   let skillsDir: string;
-  if (!isRootFile) {
+  if (detectedSkillsDir) {
+    skillsDir = detectedSkillsDir;
+  } else if (!isRootFile) {
     const topDir = instructionsPath.split("/")[0];
     if (topDir.startsWith(".")) {
       skillsDir = `${topDir}/skills`;
@@ -211,6 +214,7 @@ export interface DetectionResult {
   configDir?: string;
   subdirs: string[];
   rootFiles: string[];
+  skillsDir?: string;
 }
 
 const KNOWN_SUBDIRS = ["rules", "guidelines", "steering"];
@@ -255,6 +259,16 @@ export async function detectToolConfig(
     }
   }
 
+  // Check for a bare skills/ directory (e.g. deepAgents convention)
+  try {
+    const stat = await Deno.stat(`${repoDir}/skills`);
+    if (stat.isDirectory) {
+      result.skillsDir = "skills";
+    }
+  } catch {
+    // skills dir doesn't exist
+  }
+
   return result;
 }
 
@@ -279,6 +293,31 @@ export function buildInstructionsChoices(
 
   if (choices.length === 0) {
     choices.push("AGENTS.md");
+  }
+
+  return choices;
+}
+
+export function buildSkillsDirChoices(
+  detection: DetectionResult,
+  derivedDefault: string,
+): string[] {
+  const seen = new Set<string>();
+  const choices: string[] = [];
+
+  choices.push(derivedDefault);
+  seen.add(derivedDefault);
+
+  if (detection.skillsDir && !seen.has(detection.skillsDir)) {
+    choices.push(detection.skillsDir);
+    seen.add(detection.skillsDir);
+  }
+
+  if (detection.configDir) {
+    const configSkills = `${detection.configDir}/skills`;
+    if (!seen.has(configSkills)) {
+      choices.push(configSkills);
+    }
   }
 
   return choices;

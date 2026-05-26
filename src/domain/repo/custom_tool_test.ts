@@ -20,6 +20,7 @@
 import { assertEquals, assertThrows } from "@std/assert";
 import {
   buildInstructionsChoices,
+  buildSkillsDirChoices,
   builtInToolConfig,
   customToolConfig,
   deriveDefaults,
@@ -194,6 +195,7 @@ Deno.test("detectToolConfig: empty directory returns no detections", async () =>
     assertEquals(result.configDir, undefined);
     assertEquals(result.subdirs, []);
     assertEquals(result.rootFiles, []);
+    assertEquals(result.skillsDir, undefined);
   } finally {
     await Deno.remove(dir, { recursive: true }).catch(() => {});
   }
@@ -251,4 +253,62 @@ Deno.test("buildInstructionsChoices: config dir without known subdirs suggests r
     "tabnine",
   );
   assertEquals(choices.includes(".tabnine/rules/swamp.md"), true);
+});
+
+Deno.test("detectToolConfig: detects bare skills/ directory", async () => {
+  const dir = await Deno.makeTempDir();
+  try {
+    await Deno.mkdir(`${dir}/skills`, { recursive: true });
+    const result = await detectToolConfig(dir, "deepagents");
+    assertEquals(result.skillsDir, "skills");
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("deriveDefaults: uses detectedSkillsDir when provided", () => {
+  const def = deriveDefaults("deepagents", "AGENTS.md", undefined, "skills");
+  assertEquals(def.skillsDir, "skills");
+  assertEquals(def.instructionsMode, "shared");
+  assertEquals(
+    def.gitignoreEntries,
+    "# Deepagents skills (managed by swamp)\nskills/",
+  );
+});
+
+Deno.test("deriveDefaults: detectedSkillsDir takes priority over configDir", () => {
+  const def = deriveDefaults("mytool", "AGENTS.md", ".mytool", "skills");
+  assertEquals(def.skillsDir, "skills");
+});
+
+Deno.test("buildSkillsDirChoices: single choice when no detection", () => {
+  const choices = buildSkillsDirChoices(
+    { subdirs: [], rootFiles: [] },
+    ".deepagents/skills",
+  );
+  assertEquals(choices, [".deepagents/skills"]);
+});
+
+Deno.test("buildSkillsDirChoices: includes detected skillsDir", () => {
+  const choices = buildSkillsDirChoices(
+    { subdirs: [], rootFiles: [], skillsDir: "skills" },
+    ".deepagents/skills",
+  );
+  assertEquals(choices, [".deepagents/skills", "skills"]);
+});
+
+Deno.test("buildSkillsDirChoices: includes configDir/skills", () => {
+  const choices = buildSkillsDirChoices(
+    { configDir: ".mytool", subdirs: [], rootFiles: [] },
+    "other/skills",
+  );
+  assertEquals(choices, ["other/skills", ".mytool/skills"]);
+});
+
+Deno.test("buildSkillsDirChoices: deduplicates when derived matches detected", () => {
+  const choices = buildSkillsDirChoices(
+    { subdirs: [], rootFiles: [], skillsDir: "skills" },
+    "skills",
+  );
+  assertEquals(choices, ["skills"]);
 });

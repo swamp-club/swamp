@@ -20,6 +20,7 @@
 import { Command } from "@cliffy/command";
 import {
   buildInstructionsChoices,
+  buildSkillsDirChoices,
   deriveDefaults,
   detectToolConfig,
   validateCustomToolName,
@@ -97,7 +98,22 @@ export const agentSetupCommand = new Command()
     const cliCtx = createContext(options as GlobalOptions, ["agent", "setup"]);
     const repoDir = resolveRepoDir(undefined);
 
-    const name = await promptLine("\nAgent name: ");
+    await Deno.stdout.write(encoder.encode(`
+To set up a custom agent you'll need to know three things about your tool:
+
+  1. Where it reads instructions/rules from (e.g. AGENTS.md, .toolname/rules/)
+  2. Whether it needs a header block to auto-load rules (like Cursor's):
+       ---
+       alwaysApply: true
+       ---
+  3. Where it expects skills/context files to live
+
+If you have an existing repo where the tool is already configured, point
+the scanner at it and swamp will detect what it can.
+
+`));
+
+    const name = await promptLine("Agent name: ");
     if (!name) {
       console.error("No name provided.");
       Deno.exit(1);
@@ -164,9 +180,36 @@ Some tools need a header like this to auto-load rules:
       name,
       instructionsPath,
       detection.configDir,
+      detection.skillsDir,
     );
     if (frontmatter) {
       def.frontmatter = frontmatter;
+    }
+
+    const skillsDirChoices = buildSkillsDirChoices(detection, def.skillsDir);
+    let chosenSkillsDir: string | undefined;
+    if (skillsDirChoices.length > 1) {
+      const chosen = await promptChoice(
+        `\nWhere should swamp write skills for ${name}?`,
+        skillsDirChoices,
+      );
+      if (chosen !== def.skillsDir) {
+        chosenSkillsDir = chosen;
+      }
+    } else {
+      const override = await promptLine(
+        `\nSkills directory: ${def.skillsDir}/  (Enter to accept, or type a path): `,
+      );
+      if (override) {
+        chosenSkillsDir = override;
+      }
+    }
+    if (chosenSkillsDir) {
+      const normalized = chosenSkillsDir.replace(/\/+$/, "");
+      def.skillsDir = normalized;
+      const gitignoreComment = name.charAt(0).toUpperCase() + name.slice(1);
+      def.gitignoreEntries =
+        `# ${gitignoreComment} skills (managed by swamp)\n${normalized}/`;
     }
 
     await addCustomTool(repoDir, def);
