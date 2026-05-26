@@ -284,12 +284,22 @@ export class ExtensionAutoResolver {
   }
 
   /**
-   * Builds candidate extension names by stripping trailing segments.
+   * Builds candidate extension names by trying the full type first, then
+   * stripping trailing segments.
    * For "@swamp/aws/ec2/instance":
-   *   ["@swamp/aws/ec2", "@swamp/aws"]
+   *   ["@swamp/aws/ec2/instance", "@swamp/aws/ec2", "@swamp/aws"]
+   * For "@keeb/mongodb-datastore":
+   *   ["@keeb/mongodb-datastore"]
    */
   private buildCandidateNames(normalizedType: string): string[] {
     const candidates: string[] = [];
+
+    if (ModelType.getSegmentCount(normalizedType) >= 2) {
+      const full = normalizedType.startsWith("@")
+        ? normalizedType
+        : `@${normalizedType}`;
+      candidates.push(full);
+    }
 
     let current = normalizedType;
     while (true) {

@@ -248,6 +248,49 @@ export async function resolveDatastoreForRepo(
 }
 
 /**
+ * Result of lightweight repo marker validation.
+ * Contains just the repo directory and marker — no datastore config,
+ * lock, or sync. Used by extension commands that manage local files
+ * and don't need the datastore.
+ */
+export interface RepoMarkerResult {
+  repoDir: string;
+  marker: RepoMarkerData | null;
+}
+
+/**
+ * Validates that a directory is an initialized swamp repository and reads
+ * the repo marker, without resolving the datastore config, acquiring locks,
+ * or registering sync.
+ *
+ * Use this for extension management commands (pull, update, rm, search)
+ * that operate on local files in pulled-extensions/ and don't interact
+ * with the datastore.
+ *
+ * @param repoDir - The repository directory to validate
+ * @returns The validated repo directory and marker
+ * @throws UserError if not initialized
+ */
+export async function requireRepoMarker(
+  repoDir: string,
+): Promise<RepoMarkerResult> {
+  const repoPath = RepoPath.create(repoDir);
+  const service = new RepoService(VERSION);
+  const isInit = await service.isInitialized(repoPath);
+
+  if (!isInit) {
+    throw new UserError(
+      `Not a swamp repository: ${repoPath.value}. To initialize a new repository, run 'swamp repo init', or specify an existing repository with 'swamp <command> --repo-dir /path/to/repo'.`,
+    );
+  }
+
+  const markerRepo = new RepoMarkerRepository();
+  const marker = await markerRepo.read(repoPath);
+
+  return { repoDir: repoPath.value, marker };
+}
+
+/**
  * Validates that a directory is an initialized swamp repository without
  * acquiring the datastore lock or performing sync operations.
  *

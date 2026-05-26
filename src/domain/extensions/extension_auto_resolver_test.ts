@@ -190,8 +190,9 @@ Deno.test("ExtensionAutoResolver - tries intermediate candidates before shorter 
   });
 
   await resolver.resolve("@swamp/aws/ec2/instance");
-  // Should try @swamp/aws/ec2 first, then @swamp/aws
-  assertEquals(lookupCalls[0], "@swamp/aws/ec2");
+  // Full type tried first, then stripped candidates longest-to-shortest
+  assertEquals(lookupCalls[0], "@swamp/aws/ec2/instance");
+  assertEquals(lookupCalls[1], "@swamp/aws/ec2");
 });
 
 Deno.test("ExtensionAutoResolver - falls back to search when direct lookup fails", async () => {
@@ -552,9 +553,8 @@ Deno.test("ExtensionAutoResolver - buildCandidateNames preserves forward-slash s
   });
 
   // Input is `@user/aws/ec2`; with collective "user" allowlisted, we
-  // expect the candidate progression `@user/aws` (single intermediate
-  // because dropping one more segment would land below the 2-segment
-  // floor).
+  // expect the candidate progression `@user/aws/ec2` (full type),
+  // then `@user/aws` (stripped).
   await resolver.resolve("@user/aws/ec2");
 
   // Every observed candidate must be forward-slash separated.
@@ -577,11 +577,66 @@ Deno.test("ExtensionAutoResolver - buildCandidateNames preserves forward-slash s
       `candidate must remain @-prefixed; got: ${candidate}`,
     );
   }
-  // Pin the specific candidate so a refactor that flattens or extends
-  // the segmentation rule will fail.
+  // Pin candidates: full type first, then stripped.
+  assertEquals(
+    lookupCalls.includes("@user/aws/ec2"),
+    true,
+    `expected @user/aws/ec2 among candidates; got: ${
+      JSON.stringify(lookupCalls)
+    }`,
+  );
   assertEquals(
     lookupCalls.includes("@user/aws"),
     true,
     `expected @user/aws among candidates; got: ${JSON.stringify(lookupCalls)}`,
+  );
+});
+
+// --- Issue #445: 2-segment datastore types must be tried as direct candidates ---
+
+Deno.test("ExtensionAutoResolver - resolves 2-segment datastore type via direct lookup", async () => {
+  const output = createMockOutput();
+  const installer = createMockInstaller();
+  const resolver = new ExtensionAutoResolver({
+    allowedCollectives: ["keeb"],
+    extensionLookup: createMockLookup({
+      "@keeb/mongodb-datastore": {
+        description: "MongoDB datastore",
+        latestVersion: "2026.05.01.1",
+      },
+    }),
+    extensionInstaller: installer,
+    output,
+  });
+
+  const result = await resolver.resolve("@keeb/mongodb-datastore");
+  assertEquals(result, true);
+  assertEquals(installer.installCalls, ["@keeb/mongodb-datastore"]);
+});
+
+Deno.test("ExtensionAutoResolver - 2-segment type generates full type as only candidate", async () => {
+  const lookupCalls: string[] = [];
+  const lookup: ExtensionLookupPort = {
+    getExtension(name: string) {
+      lookupCalls.push(name);
+      return Promise.resolve(null);
+    },
+    searchExtensions() {
+      return Promise.resolve({ extensions: [] });
+    },
+  };
+
+  const resolver = new ExtensionAutoResolver({
+    allowedCollectives: ["keeb"],
+    extensionLookup: lookup,
+    extensionInstaller: createMockInstaller(),
+    output: createMockOutput(),
+  });
+
+  await resolver.resolve("@keeb/mongodb-datastore");
+  assertEquals(
+    lookupCalls,
+    ["@keeb/mongodb-datastore"],
+    "2-segment type should produce exactly one direct-lookup candidate (the full type)",
   );
 });

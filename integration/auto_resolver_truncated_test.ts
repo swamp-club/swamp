@@ -164,11 +164,13 @@ Deno.test("integration: auto-resolver surfaces truncated error and leaves the tr
         allowedCollectives: ["test"],
         extensionLookup: {
           getExtension: (name: string) =>
-            Promise.resolve({
-              name,
-              description: "Truncated fixture",
-              latestVersion: "2026.01.01.1",
-            }),
+            name === extensionName
+              ? Promise.resolve({
+                name,
+                description: "Truncated fixture",
+                latestVersion: "2026.01.01.1",
+              })
+              : Promise.resolve(null),
           searchExtensions: () => Promise.resolve({ extensions: [] }),
         },
         extensionInstaller: adapter,

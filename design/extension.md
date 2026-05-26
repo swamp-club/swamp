@@ -616,9 +616,11 @@ swamp extension trust auto-trust <on|off> # Enable/disable membership auto-trust
 ### Resolution Algorithm
 
 1. **Local registry** — check if the type is already registered locally.
-2. **Direct lookup** — strip trailing path segments from the type to derive the
-   extension name (e.g., `@swamp/aws/ec2/instance` → `@swamp/aws/ec2` →
-   `@swamp/aws`) and look up each candidate directly in the registry.
+2. **Direct lookup** — try the full type as an extension name first, then strip
+   trailing path segments to derive shorter candidates (e.g.,
+   `@swamp/aws/ec2/instance` → `@swamp/aws/ec2/instance` → `@swamp/aws/ec2` →
+   `@swamp/aws`). For two-segment types like `@keeb/mongodb-datastore`, the full
+   type is the only candidate — stripping further would leave a bare collective.
 3. **Search fallback** — if direct lookup fails, search the registry for
    matching extensions.
 

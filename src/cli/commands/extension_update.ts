@@ -24,12 +24,8 @@ import {
   type GlobalOptions,
   resolveRepoDir,
 } from "../context.ts";
-import { requireInitializedRepo } from "../repo_context.ts";
+import { requireRepoMarker } from "../repo_context.ts";
 import { resolveModelsDir } from "../resolve_models_dir.ts";
-import {
-  RepoMarkerRepository,
-} from "../../infrastructure/persistence/repo_marker_repository.ts";
-import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { createInstallContext, parseExtensionRef } from "./extension_pull.ts";
 import {
   consumeStream,
@@ -74,17 +70,11 @@ export const extensionUpdateCommand = new Command()
     ]);
     cliCtx.logger.debug`Starting extension update`;
 
-    // 1. Validate repo
-    const repoDir = resolveRepoDir(options.repoDir);
-    await requireInitializedRepo({
-      repoDir,
-      outputMode: cliCtx.outputMode,
-    });
-
-    // 2. Resolve dirs from .swamp.yaml
-    const repoPath = RepoPath.create(repoDir);
-    const markerRepo = new RepoMarkerRepository();
-    const marker = await markerRepo.read(repoPath);
+    // 1. Validate repo (lightweight — no datastore resolution, so updating
+    // the repo's own datastore extension doesn't circular-fail; see #445)
+    const { repoDir, marker } = await requireRepoMarker(
+      resolveRepoDir(options.repoDir),
+    );
     const modelsDir = resolveModelsDir(marker);
     const absoluteModelsDir = resolve(repoDir, modelsDir);
     const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");

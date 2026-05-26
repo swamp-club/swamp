@@ -24,12 +24,8 @@ import {
   type GlobalOptions,
   resolveRepoDir,
 } from "../context.ts";
-import { requireInitializedRepo } from "../repo_context.ts";
+import { requireRepoMarker } from "../repo_context.ts";
 import { resolveModelsDir } from "../resolve_models_dir.ts";
-import {
-  RepoMarkerRepository,
-} from "../../infrastructure/persistence/repo_marker_repository.ts";
-import { RepoPath } from "../../domain/repo/repo_path.ts";
 import {
   consumeStream,
   createExtensionRmDeps,
@@ -78,20 +74,13 @@ export const extensionRemoveCommand = new Command()
     const ctx = createContext(options as GlobalOptions, ["extension", "rm"]);
     ctx.logger.debug`Starting extension remove`;
 
-    const repoDir = resolveRepoDir(options.repoDir);
-    await requireInitializedRepo({
-      repoDir,
-      outputMode: ctx.outputMode,
-    });
+    const { repoDir, marker } = await requireRepoMarker(
+      resolveRepoDir(options.repoDir),
+    );
 
     // Parse extension reference (ignore version if provided)
     const ref = parseExtensionRef(extension);
     validateExtensionName(ref.name);
-
-    // Resolve models dir from .swamp.yaml
-    const repoPath = RepoPath.create(repoDir);
-    const markerRepo = new RepoMarkerRepository();
-    const marker = await markerRepo.read(repoPath);
     const modelsDir = resolveModelsDir(marker);
     const absoluteModelsDir = resolve(repoDir, modelsDir);
     const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");

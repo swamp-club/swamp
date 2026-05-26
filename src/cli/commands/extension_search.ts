@@ -24,12 +24,8 @@ import {
   type GlobalOptions,
   interactiveOutputMode,
 } from "../context.ts";
-import { requireInitializedRepo } from "../repo_context.ts";
+import { requireRepoMarker } from "../repo_context.ts";
 import { resolveModelsDir } from "../resolve_models_dir.ts";
-import {
-  RepoMarkerRepository,
-} from "../../infrastructure/persistence/repo_marker_repository.ts";
-import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { UserError } from "../../domain/errors.ts";
 import {
   ExtensionApiClient,
@@ -190,16 +186,9 @@ export const extensionSearchCommand = new Command()
     const action = renderer.selectedAction();
 
     if (selected && action === "install") {
-      // Install writes files to the repo, so acquire the datastore lock
-      const repoDir = ".";
-      await requireInitializedRepo({
-        repoDir,
-        outputMode: ctx.outputMode,
-      });
-
-      const repoPath = RepoPath.create(repoDir);
-      const markerRepo = new RepoMarkerRepository();
-      const marker = await markerRepo.read(repoPath);
+      // Extension install writes to local files only (pulled-extensions/,
+      // lockfile) — no datastore needed; see #445.
+      const { repoDir, marker } = await requireRepoMarker(".");
       const modelsDir = resolveModelsDir(marker);
       const absoluteModelsDir = resolve(repoDir, modelsDir);
       const lockfilePath = join(
