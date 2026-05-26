@@ -18,7 +18,6 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { ensureDir } from "@std/fs";
-import type { AiTool } from "../../../repo/repo_service.ts";
 import { todaysAuditFilePath } from "../../audit_path.ts";
 import type { PreflightCheck } from "../check.ts";
 import { syntheticPayloadFor } from "../synthetic_payloads.ts";
@@ -35,7 +34,7 @@ import { syntheticPayloadFor } from "../synthetic_payloads.ts";
  * throws by design (to avoid disrupting the user's coding session).
  */
 
-function appliesTo(tool: AiTool): boolean {
+function appliesTo(tool: string): boolean {
   return tool === "claude" || tool === "cursor" || tool === "kiro" ||
     tool === "opencode";
 }

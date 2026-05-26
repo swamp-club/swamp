@@ -24,7 +24,7 @@ import {
   NoToolConfiguredError,
   type SpawnFn,
 } from "../../libswamp/mod.ts";
-import type { AiTool } from "../../infrastructure/persistence/repo_marker_repository.ts";
+
 import {
   SWAMP_SUBDIRS,
   swampPath,
@@ -48,8 +48,8 @@ import { resolveDatastoreForRepo } from "../repo_context.ts";
  */
 export function resolveTargetTool(
   flagTool: string | undefined,
-  markerTool: AiTool | undefined,
-): AiTool {
+  markerTool: string | undefined,
+): string {
   const overrideTool = flagTool ? parseAiToolOrThrow(flagTool) : undefined;
   const resolved = overrideTool ?? markerTool;
   if (!resolved) {

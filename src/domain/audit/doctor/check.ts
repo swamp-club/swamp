@@ -18,7 +18,6 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { UserError } from "../../errors.ts";
-import type { AiTool } from "../../repo/repo_service.ts";
 
 /**
  * Types and ports for the `swamp doctor audit` preflight diagnostic.
@@ -88,7 +87,7 @@ export interface CheckContext {
   /** Absolute path to the `.swamp/audit` directory inside the repo. */
   auditDir: string;
   /** The AI tool whose integration is under test. */
-  tool: AiTool;
+  tool: string;
   /** Cancellation signal for long-running checks. */
   abortSignal: AbortSignal;
   /** Spawn the swamp binary. Production wires the real binary; tests inject a fake. */
@@ -100,7 +99,7 @@ export interface PreflightCheck {
   readonly name: PreflightCheckName;
   readonly description: string;
   /** Whether this check applies to the given AI tool. */
-  appliesTo(tool: AiTool): boolean;
+  appliesTo(tool: string): boolean;
   /** Execute the check. Must not throw — return a `fail` result instead. */
   run(ctx: CheckContext): Promise<CheckResult>;
 }
@@ -110,7 +109,7 @@ export type OverallStatus = "pass" | "warn" | "fail";
 
 /** The aggregated result of running every applicable preflight check. */
 export interface AuditDoctorReport {
-  tool: AiTool;
+  tool: string;
   overallStatus: OverallStatus;
   checks: CheckResult[];
 }

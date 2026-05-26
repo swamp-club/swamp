@@ -35,3 +35,5 @@ export type AiTool =
   | "copilot"
   | "kiro"
   | "none";
+
+export { isBuiltInTool } from "./custom_tool.ts";

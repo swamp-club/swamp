@@ -18,7 +18,6 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { join } from "@std/path";
-import type { AiTool } from "../../../repo/repo_service.ts";
 import type { CheckContext, CheckResult, PreflightCheck } from "../check.ts";
 
 /**
@@ -235,7 +234,7 @@ async function checkOpenCode(ctx: CheckContext): Promise<CheckResult> {
   };
 }
 
-function appliesTo(tool: AiTool): boolean {
+function appliesTo(tool: string): boolean {
   return tool in CONFIG_FILES;
 }
 

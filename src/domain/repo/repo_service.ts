@@ -36,7 +36,10 @@ import {
 import { SkillAssets } from "../../infrastructure/assets/skill_assets.ts";
 import { assertNever, UserError } from "../errors.ts";
 import { resolvePrimaryTool } from "./primary_tool.ts";
-import { resolveSkillsDir, SKILL_DIRS } from "./skill_dirs.ts";
+import { resolveSkillsDir } from "./skill_dirs.ts";
+import { assertPathContained, type ToolConfig } from "./custom_tool.ts";
+import { ToolResolver } from "./tool_resolver.ts";
+import { readCustomTools } from "../../infrastructure/persistence/custom_tools_repository.ts";
 
 const logger = getLogger(["swamp", "repo", "service"]);
 
@@ -61,27 +64,13 @@ const LEGACY_INSTRUCTIONS_SIGNATURE = "This repository is managed with [swamp]";
  */
 export type GitignoreAction = "created" | "updated" | "unchanged" | "skipped";
 
-const INSTRUCTIONS_FILES: Partial<Record<AiTool, string>> = {
-  claude: "CLAUDE.md",
-  cursor: ".cursor/rules/swamp.mdc",
-  opencode: "AGENTS.md",
-  codex: "AGENTS.md",
-  copilot: "AGENTS.md",
-  kiro: ".kiro/steering/swamp-rules.md",
-};
-
-const GITIGNORE_TOOL_ENTRIES: Partial<Record<AiTool, string>> = {
-  claude:
-    "# Claude Code configuration (managed by swamp)\n.claude/worktrees/\n.claude/settings.local.json\n.claude/scheduled_tasks.lock\n.claude/scheduled_tasks.json",
-};
-
 /**
  * Dedupes a tools list while preserving first-seen order, so set semantics
  * on `marker.tools` are enforced at the domain boundary.
  */
-function normalizeToolsList(tools: AiTool[]): AiTool[] {
-  const seen = new Set<AiTool>();
-  const result: AiTool[] = [];
+function normalizeToolsList(tools: string[]): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
   for (const tool of tools) {
     if (!seen.has(tool)) {
       seen.add(tool);
@@ -95,7 +84,7 @@ function normalizeToolsList(tools: AiTool[]): AiTool[] {
  * Renders a tools list for human-readable error/diagnostic messages.
  * Empty list renders as "none" so output is never ambiguous.
  */
-function formatToolsList(tools: AiTool[]): string {
+function formatToolsList(tools: string[]): string {
   return tools.length === 0 ? "none" : tools.join(", ");
 }
 
@@ -142,7 +131,7 @@ export async function detectSupersededSkills(
  * for the new tool.
  */
 export interface ExtensionsToReinstall {
-  tool: AiTool;
+  tool: string;
   names: string[];
 }
 
@@ -157,12 +146,12 @@ export interface RepoInitResult {
   instructionsFileCreated: boolean;
   settingsCreated: boolean;
   gitignoreAction: GitignoreAction;
-  tools: AiTool[];
+  tools: string[];
   /**
    * Tools previously enrolled (when `--force` reinit drops some) whose
    * scaffolding files were left on disk. Empty for fresh inits.
    */
-  removedTools: AiTool[];
+  removedTools: string[];
 }
 
 /**
@@ -178,10 +167,10 @@ export interface RepoUpgradeResult {
   settingsUpdated: boolean;
   gitignoreAction: GitignoreAction;
   /** Enrolled tools as recorded by `marker.tools` BEFORE this upgrade. */
-  previousTools: AiTool[];
-  tools: AiTool[];
-  addedTools: AiTool[];
-  removedTools: AiTool[];
+  previousTools: string[];
+  tools: string[];
+  addedTools: string[];
+  removedTools: string[];
   extensionsToReinstall: ExtensionsToReinstall[];
 }
 
@@ -191,7 +180,7 @@ export interface RepoUpgradeResult {
  */
 export interface RepoInitOptions {
   force?: boolean;
-  tools?: AiTool[];
+  tools?: string[];
 }
 
 /**
@@ -201,7 +190,7 @@ export interface RepoInitOptions {
  *  - [list]: replace
  */
 export interface RepoUpgradeOptions {
-  tools?: AiTool[];
+  tools?: string[];
   includeGitignore?: boolean;
 }
 
@@ -240,7 +229,7 @@ export class RepoService {
     const tools = normalizeToolsList(options.tools ?? ["claude"]);
     const isAlreadyInit = await this.isInitialized(repoPath);
 
-    let removedTools: AiTool[] = [];
+    let removedTools: string[] = [];
 
     if (isAlreadyInit) {
       const existingMarker = await this.markerRepo.read(repoPath);
@@ -270,20 +259,31 @@ export class RepoService {
     // Create data directory structure
     await this.createDataDirectoryStructure(repoPath);
 
-    // Run scaffolding for each enrolled tool
+    // Resolve tools to configs and run scaffolding
+    const resolver = new ToolResolver(repoPath.value, readCustomTools);
+    const resolvedConfigs: ToolConfig[] = [];
     let skillsCopied: string[] = [];
     let instructionsFileCreated = false;
     let settingsCreated = false;
     for (const tool of tools) {
-      const r = await this.applyToolScaffolding(repoPath, tool, isAlreadyInit);
+      const config = await resolver.resolve(tool);
+      resolvedConfigs.push(config);
+      const r = await this.applyToolScaffolding(
+        repoPath,
+        config,
+        isAlreadyInit,
+      );
       if (r.skillsCopied.length > 0) skillsCopied = r.skillsCopied;
       instructionsFileCreated = instructionsFileCreated ||
         r.instructionsFileChanged;
       settingsCreated = settingsCreated || r.settingsChanged;
     }
 
-    // Always manage .gitignore on init (single call with the full tools list)
-    const gitignoreAction = await this.ensureGitignoreSection(repoPath, tools);
+    // Always manage .gitignore on init (single call with resolved configs)
+    const gitignoreAction = await this.ensureGitignoreSection(
+      repoPath,
+      resolvedConfigs,
+    );
     markerData.gitignoreManaged = true;
 
     await this.markerRepo.write(repoPath, markerData);
@@ -360,12 +360,16 @@ export class RepoService {
     );
     updatedMarker.tools = tools;
 
-    // Run scaffolding for each currently-enrolled tool
+    // Resolve tools to configs and run scaffolding
+    const resolver = new ToolResolver(repoPath.value, readCustomTools);
+    const resolvedConfigs: ToolConfig[] = [];
     let skillsUpdated: string[] = [];
     let instructionsUpdated = false;
     let settingsUpdated = false;
     for (const tool of tools) {
-      const r = await this.applyToolScaffolding(repoPath, tool, true);
+      const config = await resolver.resolve(tool);
+      resolvedConfigs.push(config);
+      const r = await this.applyToolScaffolding(repoPath, config, true);
       if (r.skillsCopied.length > 0) skillsUpdated = r.skillsCopied;
       instructionsUpdated = instructionsUpdated || r.instructionsFileChanged;
       settingsUpdated = settingsUpdated || r.settingsChanged;
@@ -382,7 +386,10 @@ export class RepoService {
 
     let gitignoreAction: GitignoreAction;
     if (shouldManageGitignore) {
-      gitignoreAction = await this.ensureGitignoreSection(repoPath, tools);
+      gitignoreAction = await this.ensureGitignoreSection(
+        repoPath,
+        resolvedConfigs,
+      );
     } else {
       gitignoreAction = "skipped";
     }
@@ -427,14 +434,14 @@ export class RepoService {
    */
   private async applyToolScaffolding(
     repoPath: RepoPath,
-    tool: AiTool,
+    config: ToolConfig,
     alreadyExists: boolean,
   ): Promise<{
     skillsCopied: string[];
     instructionsFileChanged: boolean;
     settingsChanged: boolean;
   }> {
-    if (tool === "none") {
+    if (config.name === "none") {
       return {
         skillsCopied: [],
         instructionsFileChanged: false,
@@ -442,8 +449,19 @@ export class RepoService {
       };
     }
 
+    if (!config.isBuiltIn) {
+      assertPathContained(repoPath.value, config.skillsDir, "skillsDir");
+      if (config.instructionsFile) {
+        assertPathContained(
+          repoPath.value,
+          config.instructionsFile,
+          "instructionsFile",
+        );
+      }
+    }
+
     // Copy skills to tool-appropriate directory
-    const skillsDir = join(repoPath.value, SKILL_DIRS[tool]!);
+    const skillsDir = join(repoPath.value, config.skillsDir);
     await this.skillAssets.copySkillsTo(skillsDir);
     const skillsCopied = this.skillAssets.getSkillNames();
 
@@ -452,46 +470,50 @@ export class RepoService {
 
     // Create or update instructions file
     const instructionsFileChanged = alreadyExists
-      ? await this.updateInstructionsFile(repoPath, tool)
-      : await this.createInstructionsFileIfNotExists(repoPath, tool);
+      ? await this.updateInstructionsFile(repoPath, config)
+      : await this.createInstructionsFileIfNotExists(repoPath, config);
 
-    // Create or update tool-specific settings
+    // Create or update tool-specific settings (built-in tools only)
     let settingsChanged = false;
-    switch (tool) {
-      case "claude":
-        settingsChanged = alreadyExists
-          ? await this.updateClaudeSettings(repoPath)
-          : await this.createClaudeSettingsIfNotExists(repoPath);
-        break;
-      case "cursor":
-        settingsChanged = alreadyExists
-          ? await this.updateCursorHooks(repoPath)
-          : await this.createCursorHooksIfNotExists(repoPath);
-        break;
-      case "kiro": {
-        const s = alreadyExists
-          ? await this.updateKiroSettings(repoPath)
-          : await this.createKiroSettingsIfNotExists(repoPath);
-        const h = alreadyExists
-          ? await this.updateKiroHooks(repoPath)
-          : await this.createKiroHooksIfNotExists(repoPath);
-        const a = alreadyExists
-          ? await this.updateKiroAgentConfig(repoPath)
-          : await this.createKiroAgentConfigIfNotExists(repoPath);
-        const c = await this.ensureKiroCliDefaultAgent(repoPath);
-        settingsChanged = s || h || a || c;
-        break;
+    if (config.isBuiltIn) {
+      const tool = config.name as AiTool;
+      switch (tool) {
+        case "claude":
+          settingsChanged = alreadyExists
+            ? await this.updateClaudeSettings(repoPath)
+            : await this.createClaudeSettingsIfNotExists(repoPath);
+          break;
+        case "cursor":
+          settingsChanged = alreadyExists
+            ? await this.updateCursorHooks(repoPath)
+            : await this.createCursorHooksIfNotExists(repoPath);
+          break;
+        case "kiro": {
+          const s = alreadyExists
+            ? await this.updateKiroSettings(repoPath)
+            : await this.createKiroSettingsIfNotExists(repoPath);
+          const h = alreadyExists
+            ? await this.updateKiroHooks(repoPath)
+            : await this.createKiroHooksIfNotExists(repoPath);
+          const a = alreadyExists
+            ? await this.updateKiroAgentConfig(repoPath)
+            : await this.createKiroAgentConfigIfNotExists(repoPath);
+          const c = await this.ensureKiroCliDefaultAgent(repoPath);
+          settingsChanged = s || h || a || c;
+          break;
+        }
+        case "opencode":
+          settingsChanged = alreadyExists
+            ? await this.updateOpenCodePlugin(repoPath)
+            : await this.createOpenCodePluginIfNotExists(repoPath);
+          break;
+        case "codex":
+        case "copilot":
+        case "none":
+          break;
+        default:
+          assertNever(tool);
       }
-      case "opencode":
-        settingsChanged = alreadyExists
-          ? await this.updateOpenCodePlugin(repoPath)
-          : await this.createOpenCodePluginIfNotExists(repoPath);
-        break;
-      case "codex":
-      case "copilot":
-        break;
-      default:
-        assertNever(tool);
     }
 
     return { skillsCopied, instructionsFileChanged, settingsChanged };
@@ -534,14 +556,13 @@ export class RepoService {
    */
   private async createInstructionsFileIfNotExists(
     repoPath: RepoPath,
-    tool: AiTool,
+    config: ToolConfig,
   ): Promise<boolean> {
-    const filePath = join(repoPath.value, INSTRUCTIONS_FILES[tool]!);
+    if (!config.instructionsFile) return false;
+    const filePath = join(repoPath.value, config.instructionsFile);
 
-    // For shared-file tools, always ensure the managed section exists
-    // (merges into existing file or creates new one)
-    if (this.usesSharedInstructionsFile(tool)) {
-      return this.ensureInstructionsSection(filePath, tool);
+    if (config.instructionsMode === "shared") {
+      return this.ensureInstructionsSection(filePath, config);
     }
 
     // For tool-specific files, only create if missing
@@ -554,7 +575,7 @@ export class RepoService {
         await ensureDir(parentDir);
         await Deno.writeTextFile(
           filePath,
-          this.generateInstructionsContent(tool),
+          this.generateInstructionsContent(config),
         );
         return true;
       }
@@ -569,16 +590,17 @@ export class RepoService {
    */
   private updateInstructionsFile(
     repoPath: RepoPath,
-    tool: AiTool,
+    config: ToolConfig,
   ): Promise<boolean> {
-    const filePath = join(repoPath.value, INSTRUCTIONS_FILES[tool]!);
-    if (!this.usesSharedInstructionsFile(tool)) {
+    if (!config.instructionsFile) return Promise.resolve(false);
+    const filePath = join(repoPath.value, config.instructionsFile);
+    if (config.instructionsMode !== "shared") {
       return this.overwriteIfChanged(
         filePath,
-        this.generateInstructionsContent(tool),
+        this.generateInstructionsContent(config),
       );
     }
-    return this.ensureInstructionsSection(filePath, tool);
+    return this.ensureInstructionsSection(filePath, config);
   }
 
   /**
@@ -591,9 +613,9 @@ export class RepoService {
    */
   private async ensureInstructionsSection(
     filePath: string,
-    tool: AiTool,
+    config: ToolConfig,
   ): Promise<boolean> {
-    const newSection = this.buildInstructionsSection(tool);
+    const newSection = this.buildInstructionsSection(config);
 
     let existingContent: string | null = null;
     try {
@@ -714,32 +736,11 @@ export class RepoService {
   }
 
   /**
-   * Returns true if the tool shares its instructions file with user content
-   * (CLAUDE.md, AGENTS.md) and needs section markers to avoid overwriting.
-   */
-  private usesSharedInstructionsFile(tool: AiTool): boolean {
-    switch (tool) {
-      case "claude":
-      case "opencode":
-      case "codex":
-      case "copilot":
-        return true;
-      case "cursor":
-      case "kiro":
-        return false;
-      case "none":
-        return false;
-      default:
-        assertNever(tool);
-    }
-  }
-
-  /**
    * Generates the raw instructions body without any frontmatter or markers.
    */
-  private generateInstructionsBody(tool: AiTool): string {
-    const skillsDir = SKILL_DIRS[tool] ?? ".agents/skills";
-    const useSkillNames = tool === "claude";
+  private generateInstructionsBody(config: ToolConfig): string {
+    const skillsDir = config.skillsDir;
+    const useSkillNames = config.skillReferenceStyle === "name";
 
     const skillAction = (name: string, verb: string): string =>
       useSkillNames
@@ -864,8 +865,8 @@ the full tree, and \`swamp help model method run\` scopes to a subtree.
   /**
    * Wraps the instructions body in BEGIN/END markers for shared files.
    */
-  private buildInstructionsSection(tool: AiTool): string {
-    const body = this.generateInstructionsBody(tool);
+  private buildInstructionsSection(config: ToolConfig): string {
+    const body = this.generateInstructionsBody(config);
     return INSTRUCTIONS_SECTION_BEGIN + "\n" + body +
       INSTRUCTIONS_SECTION_END;
   }
@@ -874,31 +875,12 @@ the full tree, and \`swamp help model method run\` scopes to a subtree.
    * Generates the full instructions content for tool-specific files (cursor/kiro).
    * Shared-file tools should use buildInstructionsSection() instead.
    */
-  private generateInstructionsContent(tool: AiTool): string {
-    const body = this.generateInstructionsBody(tool);
-
-    switch (tool) {
-      case "cursor":
-        return `---
-description: Swamp automation rules
-alwaysApply: true
----
-${body}`;
-      case "kiro":
-        return `---
-inclusion: always
----
-${body}`;
-      case "claude":
-      case "opencode":
-      case "codex":
-      case "copilot":
-        return body;
-      case "none":
-        return body;
-      default:
-        assertNever(tool);
+  private generateInstructionsContent(config: ToolConfig): string {
+    const body = this.generateInstructionsBody(config);
+    if (config.frontmatter) {
+      return config.frontmatter + body;
     }
+    return body;
   }
 
   /**
@@ -911,10 +893,10 @@ ${body}`;
    */
   private async ensureGitignoreSection(
     repoPath: RepoPath,
-    tools: AiTool[],
+    configs: ToolConfig[],
   ): Promise<GitignoreAction> {
     const gitignorePath = join(repoPath.value, GITIGNORE_FILENAME);
-    const newSection = this.buildGitignoreSection(tools);
+    const newSection = this.buildGitignoreSection(configs);
 
     let existingContent: string | null = null;
     try {
@@ -968,8 +950,8 @@ ${body}`;
   /**
    * Builds the full managed section including BEGIN/END markers.
    */
-  private buildGitignoreSection(tools: AiTool[]): string {
-    const body = this.generateGitignoreSectionBody(tools);
+  private buildGitignoreSection(configs: ToolConfig[]): string {
+    const body = this.generateGitignoreSectionBody(configs);
     return GITIGNORE_SECTION_BEGIN + "\n" + body + GITIGNORE_SECTION_END;
   }
 
@@ -978,7 +960,7 @@ ${body}`;
    * Emits one entry per enrolled tool that has tool-specific gitignore
    * entries (currently only Claude for local config files).
    */
-  private generateGitignoreSectionBody(tools: AiTool[]): string {
+  private generateGitignoreSectionBody(configs: ToolConfig[]): string {
     const lines = [
       "",
       "# Runtime data (not needed in version control)",
@@ -989,8 +971,8 @@ ${body}`;
     ];
 
     const seenEntries = new Set<string>();
-    for (const tool of tools) {
-      const toolEntry = GITIGNORE_TOOL_ENTRIES[tool];
+    for (const config of configs) {
+      const toolEntry = config.gitignoreEntries;
       if (toolEntry && !seenEntries.has(toolEntry)) {
         seenEntries.add(toolEntry);
         lines.push("", toolEntry);

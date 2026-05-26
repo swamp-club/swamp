@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { SwampError } from "../../../libswamp/errors.ts";
-import type { AiTool } from "../../repo/repo_service.ts";
+import { isBuiltInTool } from "../../repo/custom_tool.ts";
 import type {
   AuditDoctorReport,
   CheckResult,
@@ -50,7 +50,7 @@ export type AuditDoctorEvent =
 export interface AuditDoctorDeps {
   repoPath: string;
   auditDir: string;
-  tool: AiTool;
+  tool: string;
   spawnSwamp: SpawnFn;
   abortSignal: AbortSignal;
   /**
@@ -114,7 +114,11 @@ export async function* auditDoctor(
   const { tool, abortSignal } = deps;
 
   // Tools without audit hook integration: short-circuit cleanly.
-  if (tool === "codex" || tool === "copilot" || tool === "none") {
+  // Custom tools (non-built-in) also skip — they have no audit hooks.
+  if (
+    !isBuiltInTool(tool) || tool === "codex" || tool === "copilot" ||
+    tool === "none"
+  ) {
     const skipResult: CheckResult = {
       name: "recording-smoke-test",
       status: "skip",

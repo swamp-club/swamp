@@ -49,7 +49,7 @@ export interface RepoMarkerData {
   telemetryEndpoint?: string;
   telemetryDisabled?: boolean;
   telemetryKeepFlushed?: boolean;
-  tools?: AiTool[];
+  tools?: string[];
   /** @deprecated legacy single-tool field; promoted to `tools` on read. */
   tool?: AiTool;
   logLevel?: string;

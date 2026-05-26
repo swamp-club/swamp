@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { Command, EnumType } from "@cliffy/command";
+import { type ArgumentValue, Command, StringType } from "@cliffy/command";
 import { groupCommandAction } from "../group_action.ts";
 import {
   consumeStream,
@@ -43,15 +43,15 @@ import { VERSION } from "./version.ts";
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-const aiToolType = new EnumType([
-  "claude",
-  "cursor",
-  "opencode",
-  "codex",
-  "copilot",
-  "kiro",
-  "none",
-]);
+class ToolNameType extends StringType {
+  override complete(): string[] {
+    return ["claude", "cursor", "opencode", "codex", "copilot", "kiro", "none"];
+  }
+
+  override parse(type: ArgumentValue): string {
+    return type.value;
+  }
+}
 
 /**
  * Resolves a Cliffy `--tool` collect array into the `tools` list passed
@@ -117,8 +117,9 @@ const TOOL_FLAG_DESCRIPTION =
   "AI coding tool to configure for. Repeat to enroll multiple tools " +
   "(e.g. `--tool claude --tool kiro`). Duplicates are collapsed. " +
   "Use `--tool none` (alone) to skip tool scaffolding. Defaults to " +
-  "`claude` when omitted. Valid values: claude, cursor, opencode, codex, " +
-  "copilot, kiro, none.";
+  "`claude` when omitted. Built-in: claude, cursor, opencode, codex, " +
+  "copilot, kiro, none. Custom tools defined via `swamp agent setup` " +
+  "are also accepted.";
 
 export const repoInitCommand = new Command()
   .description("Initialize a new swamp repository")
@@ -131,8 +132,10 @@ export const repoInitCommand = new Command()
   .example("Force reinitialize", "swamp repo init --force")
   .arguments("[path:string]")
   .option("-f, --force", "Reinitialize if already exists")
-  .type("aiTool", aiToolType)
-  .option("-t, --tool <tool:aiTool>", TOOL_FLAG_DESCRIPTION, { collect: true })
+  .type("toolName", new ToolNameType())
+  .option("-t, --tool <tool:toolName>", TOOL_FLAG_DESCRIPTION, {
+    collect: true,
+  })
   .action(repoInitAction);
 
 export const repoUpgradeCommand = new Command()
@@ -146,9 +149,9 @@ export const repoUpgradeCommand = new Command()
     "swamp repo upgrade --tool claude --tool kiro",
   )
   .arguments("[path:string]")
-  .type("aiTool", aiToolType)
+  .type("toolName", new ToolNameType())
   .option(
-    "-t, --tool <tool:aiTool>",
+    "-t, --tool <tool:toolName>",
     "Replace the enrolled tool list. Repeat to enroll multiple tools " +
       "(e.g. `--tool claude --tool kiro`). Omit to preserve the existing " +
       "list and just bump the swamp version. `--tool none` clears.",

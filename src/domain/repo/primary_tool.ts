@@ -17,10 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type {
-  AiTool,
-  RepoMarkerData,
-} from "../../infrastructure/persistence/repo_marker_repository.ts";
+import type { RepoMarkerData } from "../../infrastructure/persistence/repo_marker_repository.ts";
 
 /**
  * Resolves the primary AI tool for a repository.
@@ -35,6 +32,6 @@ import type {
  * "no tools enrolled" (represented as `tools: []`); it never appears inside
  * `tools` and is therefore never returned.
  */
-export function resolvePrimaryTool(marker: RepoMarkerData | null): AiTool {
+export function resolvePrimaryTool(marker: RepoMarkerData | null): string {
   return marker?.tools?.[0] ?? "claude";
 }

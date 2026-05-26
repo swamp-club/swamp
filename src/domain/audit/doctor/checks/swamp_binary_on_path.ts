@@ -18,7 +18,6 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { join } from "@std/path";
-import type { AiTool } from "../../../repo/repo_service.ts";
 import type { CheckContext, CheckResult, PreflightCheck } from "../check.ts";
 import type { ResolveBinary } from "./resolve_binary.ts";
 
@@ -34,7 +33,7 @@ import type { ResolveBinary } from "./resolve_binary.ts";
  * This check surfaces both conditions.
  */
 
-function appliesTo(tool: AiTool): boolean {
+function appliesTo(tool: string): boolean {
   return tool === "claude" || tool === "cursor" || tool === "kiro" ||
     tool === "opencode";
 }
