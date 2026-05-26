@@ -31,7 +31,12 @@ import { createUpdateCheckRenderer } from "../../presentation/renderers/update_c
 import { Spinner } from "../../presentation/spinner.ts";
 import { UpdatePreferencesFileRepository } from "../../infrastructure/update/update_preferences_file_repository.ts";
 import { AutoupdateLogFileRepository } from "../../infrastructure/update/autoupdate_log_file_repository.ts";
-import { createScheduler } from "../../infrastructure/update/scheduler_factory.ts";
+import { autoupdateLogPath } from "../../infrastructure/update/launchd_scheduler.ts";
+import {
+  createScheduler,
+  isRunningAsRoot,
+  resolveLaunchdMode,
+} from "../../infrastructure/update/scheduler_factory.ts";
 import {
   isValidCadence,
   type UpdateCadence,
@@ -48,11 +53,22 @@ type AnyOptions = any;
 
 const BACKGROUND_TIMEOUT_MS = 5 * 60 * 1000;
 
+function backgroundLogFilePath(): string | undefined {
+  if (Deno.build.os !== "darwin") return undefined;
+
+  try {
+    if (Deno.uid() === 0) {
+      return autoupdateLogPath("daemon");
+    }
+  } catch { /* uid not available */ }
+  return undefined;
+}
+
 async function runBackgroundUpdate(
   ctx: { logger: ReturnType<typeof getSwampLogger> },
 ): Promise<void> {
   const platform = Platform.detect();
-  const logRepo = new AutoupdateLogFileRepository();
+  const logRepo = new AutoupdateLogFileRepository(backgroundLogFilePath());
   const deps = createUpdateCheckDeps(VERSION, Deno.execPath());
 
   const entry: AutoupdateLogEntry = {
@@ -125,21 +141,26 @@ async function runSetupAuto(
   }
 
   const binaryPath = Deno.execPath();
+  const launchdMode = await resolveLaunchdMode();
 
-  // On POSIX, detect the case where setup is running as root (via sudo)
-  // but the scheduler will run as the unprivileged user.
-  try {
-    if (Deno.uid() === 0) {
-      throw new UserError(
-        `Cannot set up autoupdate while running as root.\n` +
-          `The background scheduler runs as your normal user, not as root.\n` +
-          `Run this command without sudo:\n\n` +
-          `  swamp update --setup-auto`,
-      );
-    }
-  } catch (e) {
-    if (e instanceof UserError) throw e;
-    // Deno.uid() not available (e.g. Windows) — skip this check
+  const isRoot = isRunningAsRoot();
+
+  if (launchdMode === "daemon" && !isRoot) {
+    throw new UserError(
+      `The swamp binary at ${binaryPath} is owned by root.\n` +
+        `To set up autoupdate, the scheduler must be installed as a system LaunchDaemon.\n` +
+        `Re-run with sudo:\n\n` +
+        `  sudo swamp update --setup-auto`,
+    );
+  }
+
+  if (launchdMode === "agent" && isRoot) {
+    throw new UserError(
+      `Cannot set up autoupdate while running as root.\n` +
+        `The binary is owned by your user, so the scheduler runs as a LaunchAgent.\n` +
+        `Run this command without sudo:\n\n` +
+        `  swamp update --setup-auto`,
+    );
   }
 
   const probeFile = binaryPath + ".swamp-write-test";
@@ -150,7 +171,7 @@ async function runSetupAuto(
     if (error instanceof Deno.errors.PermissionDenied) {
       throw new UserError(
         `Cannot set up autoupdate: the directory containing ${binaryPath} is not writable.\n` +
-          `The background scheduler runs as your user and cannot replace the binary.\n\n` +
+          `The background scheduler cannot replace the binary.\n\n` +
           `Options:\n` +
           `  • Change ownership:  sudo chown ${
             Deno.env.get("USER") ?? "$(whoami)"
@@ -168,15 +189,25 @@ async function runSetupAuto(
 
   const cadence = promptCadence(prefs.cadence);
 
-  const scheduler = await createScheduler();
+  const scheduler = await createScheduler({ launchdMode });
   await scheduler.install(binaryPath, cadence);
 
   await prefsRepo.write({ ...prefs, enabled: true, cadence });
 
   if (ctx.outputMode === "json") {
-    console.log(JSON.stringify({ enabled: true, cadence }));
+    console.log(
+      JSON.stringify({
+        enabled: true,
+        cadence,
+        schedulerType: Deno.build.os === "darwin" ? launchdMode : undefined,
+      }),
+    );
   } else {
     logger.info`Autoupdate enabled with ${cadence} checks`;
+
+    if (launchdMode === "daemon") {
+      logger.info("Installed as system LaunchDaemon (root-owned binary)");
+    }
 
     const status = await scheduler.status();
     if (status.installed) {
@@ -191,7 +222,16 @@ async function runDisableAuto(
   const prefsRepo = new UpdatePreferencesFileRepository();
   const prefs = await prefsRepo.read();
 
-  const scheduler = await createScheduler();
+  const launchdMode = await resolveLaunchdMode();
+
+  if (launchdMode === "daemon" && !isRunningAsRoot()) {
+    throw new UserError(
+      `Autoupdate is installed as a system LaunchDaemon (root-owned binary).\n` +
+        `Re-run with sudo to disable:\n\n` +
+        `  sudo swamp update --setup-auto disable`,
+    );
+  }
+  const scheduler = await createScheduler({ launchdMode });
   await scheduler.remove();
 
   await prefsRepo.write({ ...prefs, enabled: false });
@@ -211,10 +251,16 @@ async function runSetupAutoStatus(
   const prefsRepo = new UpdatePreferencesFileRepository();
   const prefs = await prefsRepo.read();
 
+  const launchdMode = await resolveLaunchdMode();
+
+  const logPath = launchdMode === "daemon"
+    ? autoupdateLogPath("daemon")
+    : undefined;
+
   if (ctx.outputMode === "json") {
-    const scheduler = await createScheduler();
+    const scheduler = await createScheduler({ launchdMode });
     const scheduleStatus = await scheduler.status();
-    const logRepo = new AutoupdateLogFileRepository();
+    const logRepo = new AutoupdateLogFileRepository(logPath);
     const entries = await logRepo.readAll();
     const lastEntry = entries.length > 0 ? entries[entries.length - 1] : null;
 
@@ -223,6 +269,7 @@ async function runSetupAutoStatus(
         enabled: prefs.enabled,
         cadence: prefs.cadence,
         schedulerInstalled: scheduleStatus.installed,
+        schedulerType: Deno.build.os === "darwin" ? launchdMode : undefined,
         lastUpdate: lastEntry,
       },
       null,
@@ -243,11 +290,18 @@ async function runSetupAutoStatus(
   logger.info`Autoupdate: enabled`;
   logger.info`Cadence: ${prefs.cadence}`;
 
-  const scheduler = await createScheduler();
+  if (Deno.build.os === "darwin") {
+    const typeLabel = launchdMode === "daemon"
+      ? "LaunchDaemon (system)"
+      : "LaunchAgent (user)";
+    logger.info`Scheduler type: ${typeLabel}`;
+  }
+
+  const scheduler = await createScheduler({ launchdMode });
   const scheduleStatus = await scheduler.status();
   logger.info`Scheduler installed: ${scheduleStatus.installed}`;
 
-  const logRepo = new AutoupdateLogFileRepository();
+  const logRepo = new AutoupdateLogFileRepository(logPath);
   const entries = await logRepo.readAll();
   if (entries.length > 0) {
     const last = entries[entries.length - 1];

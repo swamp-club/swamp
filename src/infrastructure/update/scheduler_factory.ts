@@ -19,7 +19,11 @@
 
 import type { AutoupdateScheduler } from "../../domain/update/autoupdate_scheduler.ts";
 import { UserError } from "../../domain/errors.ts";
-import { LaunchdScheduler } from "./launchd_scheduler.ts";
+import {
+  detectInstalledLaunchdMode,
+  type LaunchdMode,
+  LaunchdScheduler,
+} from "./launchd_scheduler.ts";
 import { SystemdScheduler } from "./systemd_scheduler.ts";
 import { CronScheduler } from "./cron_scheduler.ts";
 
@@ -37,10 +41,16 @@ async function hasSystemctl(): Promise<boolean> {
   }
 }
 
-export async function createScheduler(): Promise<AutoupdateScheduler> {
+export interface SchedulerOptions {
+  launchdMode?: LaunchdMode;
+}
+
+export async function createScheduler(
+  options?: SchedulerOptions,
+): Promise<AutoupdateScheduler> {
   switch (Deno.build.os) {
     case "darwin":
-      return new LaunchdScheduler();
+      return new LaunchdScheduler(options?.launchdMode ?? "agent");
     case "linux":
       if (await hasSystemctl()) {
         return new SystemdScheduler();
@@ -50,5 +60,58 @@ export async function createScheduler(): Promise<AutoupdateScheduler> {
       throw new UserError(
         `Background autoupdate is not yet supported on ${Deno.build.os}`,
       );
+  }
+}
+
+export async function resolveLaunchdMode(): Promise<LaunchdMode> {
+  if (Deno.build.os !== "darwin") return "agent";
+
+  const installed = await detectInstalledLaunchdMode();
+  if (installed) return installed;
+
+  let currentUid: number | null = null;
+  let binaryUid: number | null = null;
+  try {
+    currentUid = Deno.uid();
+    const stat = await Deno.stat(Deno.execPath());
+    binaryUid = stat.uid;
+  } catch {
+    return "agent";
+  }
+
+  const result = detectBinaryOwnership(binaryUid, currentUid);
+  if (result === "foreign") {
+    throw new UserError(
+      `The swamp binary at ${Deno.execPath()} is owned by uid ${binaryUid}, ` +
+        `not the current user or root.\n` +
+        `Fix the installation so the binary is owned by your user or root:\n\n` +
+        `  Option 1: sudo chown $(whoami) ${Deno.execPath()}\n` +
+        `  Option 2: sudo chown root ${Deno.execPath()}`,
+    );
+  }
+  return result;
+}
+
+export function detectBinaryOwnership(
+  binaryUid: number | null,
+  currentUid: number | null,
+): LaunchdMode | "foreign" {
+  if (binaryUid === null || currentUid === null) {
+    return "agent";
+  }
+  if (binaryUid === 0) {
+    return "daemon";
+  }
+  if (binaryUid !== currentUid) {
+    return "foreign";
+  }
+  return "agent";
+}
+
+export function isRunningAsRoot(): boolean {
+  try {
+    return Deno.uid() === 0;
+  } catch {
+    return false;
   }
 }

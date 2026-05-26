@@ -26,7 +26,14 @@ import {
 } from "../../domain/update/install_health.ts";
 import { UpdatePreferencesFileRepository } from "../../infrastructure/update/update_preferences_file_repository.ts";
 import { AutoupdateLogFileRepository } from "../../infrastructure/update/autoupdate_log_file_repository.ts";
-import { createScheduler } from "../../infrastructure/update/scheduler_factory.ts";
+import {
+  createScheduler,
+  resolveLaunchdMode,
+} from "../../infrastructure/update/scheduler_factory.ts";
+import {
+  autoupdateLogPath,
+  detectInstalledLaunchdMode,
+} from "../../infrastructure/update/launchd_scheduler.ts";
 import { createDoctorInstallRenderer } from "../../presentation/renderers/doctor_install.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -68,11 +75,20 @@ function createProductionDeps(): InstallHealthDeps {
       return await repo.read();
     },
     getSchedulerStatus: async () => {
-      const scheduler = await createScheduler();
+      const launchdMode = await resolveLaunchdMode();
+      const scheduler = await createScheduler({ launchdMode });
       return await scheduler.status();
     },
+    getSchedulerType: async () => {
+      if (Deno.build.os !== "darwin") return null;
+      return await detectInstalledLaunchdMode();
+    },
     getLastLogEntry: async () => {
-      const logRepo = new AutoupdateLogFileRepository();
+      const mode = await resolveLaunchdMode();
+      const logPath = mode === "daemon"
+        ? autoupdateLogPath("daemon")
+        : undefined;
+      const logRepo = new AutoupdateLogFileRepository(logPath);
       const entries = await logRepo.readAll();
       return entries.length > 0 ? entries[entries.length - 1] : null;
     },

@@ -42,6 +42,7 @@ export interface AutoupdateHealth {
   enabled: boolean;
   cadence: UpdateCadence;
   schedulerInstalled: boolean;
+  schedulerType?: "agent" | "daemon";
   lastEntry: AutoupdateLogEntry | null;
 }
 
@@ -54,6 +55,7 @@ export interface InstallHealthDeps {
   getCurrentUsername(): string | null;
   getPreferences(): Promise<{ enabled: boolean; cadence: UpdateCadence }>;
   getSchedulerStatus(): Promise<ScheduleStatus>;
+  getSchedulerType?(): Promise<"agent" | "daemon" | null>;
   getLastLogEntry(): Promise<AutoupdateLogEntry | null>;
 }
 
@@ -94,6 +96,9 @@ export async function checkInstallHealth(
 
   const prefs = await deps.getPreferences();
   const schedulerStatus = await deps.getSchedulerStatus();
+  const schedulerType = deps.getSchedulerType
+    ? await deps.getSchedulerType()
+    : null;
   const lastEntry = await deps.getLastLogEntry();
 
   let username: string | null = deps.getCurrentUsername();
@@ -115,6 +120,7 @@ export async function checkInstallHealth(
       enabled: prefs.enabled,
       cadence: prefs.cadence,
       schedulerInstalled: schedulerStatus.installed,
+      schedulerType: schedulerType ?? undefined,
       lastEntry,
     },
   };

@@ -58,6 +58,12 @@ class LogDoctorInstallRenderer implements DoctorInstallRenderer {
     );
     if (report.autoupdate.enabled) {
       writeOutput(`  Cadence:        ${report.autoupdate.cadence}`);
+      if (report.autoupdate.schedulerType) {
+        const typeLabel = report.autoupdate.schedulerType === "daemon"
+          ? "LaunchDaemon (system)"
+          : "LaunchAgent (user)";
+        writeOutput(`  Scheduler type: ${typeLabel}`);
+      }
       writeOutput(
         `  Scheduler:      ${
           report.autoupdate.schedulerInstalled

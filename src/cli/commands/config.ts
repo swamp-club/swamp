@@ -21,7 +21,11 @@ import { Command } from "@cliffy/command";
 import { groupCommandAction } from "../group_action.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { UpdatePreferencesFileRepository } from "../../infrastructure/update/update_preferences_file_repository.ts";
-import { createScheduler } from "../../infrastructure/update/scheduler_factory.ts";
+import {
+  createScheduler,
+  isRunningAsRoot,
+  resolveLaunchdMode,
+} from "../../infrastructure/update/scheduler_factory.ts";
 import type { UpdateCadence } from "../../domain/update/update_preferences.ts";
 import { UserError } from "../../domain/errors.ts";
 
@@ -104,11 +108,21 @@ const configSetCommand = new Command()
     const prefsRepo = new UpdatePreferencesFileRepository();
     const prefs = await prefsRepo.read();
 
+    const launchdMode = await resolveLaunchdMode();
+
+    if (launchdMode === "daemon" && !isRunningAsRoot()) {
+      throw new UserError(
+        `Autoupdate is configured as a system LaunchDaemon (root-owned binary).\n` +
+          `Re-run with sudo to modify:\n\n` +
+          `  sudo swamp config set ${key} ${value}`,
+      );
+    }
+
     switch (key) {
       case "update.auto": {
         const enabling = value === "enabled";
 
-        const scheduler = await createScheduler();
+        const scheduler = await createScheduler({ launchdMode });
         if (enabling) {
           await scheduler.install(Deno.execPath(), prefs.cadence);
         } else {
@@ -131,7 +145,7 @@ const configSetCommand = new Command()
       case "update.cadence": {
         const cadence = value as UpdateCadence;
         if (prefs.enabled) {
-          const scheduler = await createScheduler();
+          const scheduler = await createScheduler({ launchdMode });
           await scheduler.install(Deno.execPath(), cadence);
         }
 

@@ -127,6 +127,10 @@ import { Platform } from "../domain/update/platform.ts";
 import { renderUpdateNotification } from "../presentation/renderers/update_notification.ts";
 import { UpdatePreferencesFileRepository } from "../infrastructure/update/update_preferences_file_repository.ts";
 import { AutoupdateLogFileRepository } from "../infrastructure/update/autoupdate_log_file_repository.ts";
+import {
+  autoupdateLogPath,
+  detectInstalledLaunchdMode,
+} from "../infrastructure/update/launchd_scheduler.ts";
 import { getOutputModeFromArgs, isQuietFromArgs } from "./context.ts";
 import { flushDatastoreSync } from "../infrastructure/persistence/datastore_sync_coordinator.ts";
 import { getTracer, withSpan } from "../infrastructure/tracing/mod.ts";
@@ -1291,7 +1295,14 @@ export async function runCli(args: string[]): Promise<void> {
             const prefs = await prefsRepo.read();
 
             if (prefs.enabled) {
-              const logRepo = new AutoupdateLogFileRepository();
+              let logPath: string | undefined;
+              if (Deno.build.os === "darwin") {
+                const installedMode = await detectInstalledLaunchdMode();
+                if (installedMode === "daemon") {
+                  logPath = autoupdateLogPath("daemon");
+                }
+              }
+              const logRepo = new AutoupdateLogFileRepository(logPath);
               const entries = await logRepo.readAll();
               let prefsChanged = false;
               const updatedPrefs = { ...prefs };
