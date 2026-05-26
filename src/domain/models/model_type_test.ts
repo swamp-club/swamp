@@ -214,3 +214,41 @@ Deno.test("ModelType.create: multi-segment input always normalizes with forward 
   assertEquals(t2.normalized.includes("/"), true);
   assertEquals(t2.normalized.includes("\\"), false);
 });
+
+// --- Non-string input guard tests ---
+
+Deno.test("ModelType.create: throws TypeError for undefined input", () => {
+  assertThrows(
+    // deno-lint-ignore no-explicit-any
+    () => ModelType.create(undefined as any),
+    TypeError,
+    "ModelType.create() expected a string but received undefined",
+  );
+});
+
+Deno.test("ModelType.create: throws TypeError for null input", () => {
+  assertThrows(
+    // deno-lint-ignore no-explicit-any
+    () => ModelType.create(null as any),
+    TypeError,
+    "ModelType.create() expected a string but received object",
+  );
+});
+
+Deno.test("ModelType.create: throws TypeError for number input", () => {
+  assertThrows(
+    // deno-lint-ignore no-explicit-any
+    () => ModelType.create(42 as any),
+    TypeError,
+    "ModelType.create() expected a string but received number: 42",
+  );
+});
+
+Deno.test("ModelType.create: throws TypeError for object input", () => {
+  assertThrows(
+    // deno-lint-ignore no-explicit-any
+    () => ModelType.create({ raw: "test" } as any),
+    TypeError,
+    "ModelType.create() expected a string but received object",
+  );
+});

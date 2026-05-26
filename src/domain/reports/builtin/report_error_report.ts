@@ -24,8 +24,9 @@ export function buildReportErrorResult(
   reportName: string,
   scope: ReportScope,
   errorMessage: string,
+  errorStack?: string,
 ): ReportResult {
-  const markdown = [
+  const lines = [
     `# Report Error: ${reportName}`,
     "",
     `The report \`${reportName}\` (scope: ${scope}) threw an error during execution.`,
@@ -33,13 +34,20 @@ export function buildReportErrorResult(
     "## Error",
     "",
     errorMessage,
-  ].join("\n");
+  ];
+
+  if (errorStack) {
+    lines.push("", "## Stack Trace", "", "```", errorStack, "```");
+  }
+
+  const markdown = lines.join("\n");
 
   const json: Record<string, unknown> = {
     error: true,
     reportName,
     scope,
     message: errorMessage,
+    ...(errorStack ? { stack: errorStack } : {}),
   };
 
   return { markdown, json };

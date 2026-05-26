@@ -38,6 +38,13 @@ export class ModelType {
    * @throws Error if the raw type is empty or invalid
    */
   static create(rawType: string): ModelType {
+    if (typeof rawType !== "string") {
+      throw new TypeError(
+        `ModelType.create() expected a string but received ${typeof rawType}: ${
+          String(rawType)
+        }`,
+      );
+    }
     const trimmed = rawType.trim();
     if (trimmed.length === 0) {
       throw new Error("Model type cannot be empty");
