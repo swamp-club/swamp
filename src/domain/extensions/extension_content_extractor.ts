@@ -213,11 +213,17 @@ function extractModelType(content: string): string | null {
 }
 
 /**
- * Extracts the model version string.
- * Matches `version: "YYYY.MM.DD.N"` patterns.
+ * Extracts the model version string from the `export const model` body.
  */
 export function extractModelVersion(content: string): string | null {
-  const match = content.match(/version:\s*["']([^"']+)["']/);
+  const modelExportMatch = content.match(/export\s+const\s+model\s*=\s*\{/);
+  if (!modelExportMatch || modelExportMatch.index === undefined) return null;
+
+  const bodyStart = modelExportMatch.index + modelExportMatch[0].length;
+  const body = extractBalancedBraces(content, bodyStart);
+  if (!body) return null;
+
+  const match = body.match(/version:\s*["']([^"']+)["']/);
   return match ? match[1] : null;
 }
 

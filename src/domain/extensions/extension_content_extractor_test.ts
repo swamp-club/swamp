@@ -73,6 +73,40 @@ Deno.test("extractContentMetadata extracts model type from ModelType.create", as
   }
 });
 
+Deno.test("extractContentMetadata extracts version from model export, not earlier literals", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const modelsDir = join(tmpDir, "models");
+    await Deno.mkdir(modelsDir, { recursive: true });
+
+    const modelFile = join(modelsDir, "card.ts");
+    await Deno.writeTextFile(
+      modelFile,
+      [
+        'const SCHEMA_TEMPLATE = { version: "1.0.0", fields: [] };',
+        "",
+        "export const model = {",
+        '  type: "@test/card",',
+        '  version: "2026.05.26.1",',
+        "  methods: {",
+        "    run: {",
+        '      description: "Run",',
+        "      arguments: z.object({}),",
+        "      execute: async () => ({ dataHandles: [] }),",
+        "    },",
+        "  },",
+        "};",
+      ].join("\n"),
+    );
+
+    const result = await extractContentMetadata([modelFile], modelsDir, []);
+    assertEquals(result.models.length, 1);
+    assertEquals(result.models[0].version, "2026.05.26.1");
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
 Deno.test("extractContentMetadata extracts model type from string literal", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {

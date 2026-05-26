@@ -420,6 +420,19 @@ Deno.test("checkVersionConsistency: matching versions produce no issues", async 
   );
 });
 
+Deno.test("checkVersionConsistency: earlier version literal does not cause false positive", async () => {
+  await withTempFiles(
+    {
+      "card.ts":
+        'const SCHEMA_TEMPLATE = { version: "1.0.0" };\n\nexport const model = {\n  version: "2026.05.22.1",\n  type: "test",\n};\n',
+    },
+    async (_dir, paths) => {
+      const issues = await checkVersionConsistency("2026.05.22.1", paths);
+      assertEquals(issues, []);
+    },
+  );
+});
+
 Deno.test("checkVersionConsistency: mismatched version reports drift", async () => {
   await withTempFiles(
     {
