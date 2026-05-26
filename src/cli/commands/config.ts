@@ -23,6 +23,7 @@ import { createContext, type GlobalOptions } from "../context.ts";
 import { UpdatePreferencesFileRepository } from "../../infrastructure/update/update_preferences_file_repository.ts";
 import {
   createScheduler,
+  isRunningAsRoot,
   resolveLaunchdMode,
 } from "../../infrastructure/update/scheduler_factory.ts";
 import type { UpdateCadence } from "../../domain/update/update_preferences.ts";
@@ -109,19 +110,12 @@ const configSetCommand = new Command()
 
     const launchdMode = await resolveLaunchdMode();
 
-    if (launchdMode === "daemon") {
-      let isRoot = false;
-      try {
-        isRoot = Deno.uid() === 0;
-      } catch { /* not available */ }
-
-      if (!isRoot) {
-        throw new UserError(
-          `Autoupdate is configured as a system LaunchDaemon (root-owned binary).\n` +
-            `Re-run with sudo to modify:\n\n` +
-            `  sudo swamp config set ${key} ${value}`,
-        );
-      }
+    if (launchdMode === "daemon" && !isRunningAsRoot()) {
+      throw new UserError(
+        `Autoupdate is configured as a system LaunchDaemon (root-owned binary).\n` +
+          `Re-run with sudo to modify:\n\n` +
+          `  sudo swamp config set ${key} ${value}`,
+      );
     }
 
     switch (key) {

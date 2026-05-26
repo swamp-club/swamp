@@ -211,8 +211,8 @@ Deno.test("detectBinaryOwnership: root-owned binary with non-root user returns d
   assertEquals(detectBinaryOwnership(0, 501), "daemon");
 });
 
-Deno.test("detectBinaryOwnership: binary owned by different non-root user returns daemon", () => {
-  assertEquals(detectBinaryOwnership(502, 501), "daemon");
+Deno.test("detectBinaryOwnership: binary owned by different non-root user returns foreign", () => {
+  assertEquals(detectBinaryOwnership(502, 501), "foreign");
 });
 
 Deno.test("detectBinaryOwnership: null binary uid returns agent", () => {

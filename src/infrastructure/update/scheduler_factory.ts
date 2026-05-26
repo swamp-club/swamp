@@ -79,13 +79,23 @@ export async function resolveLaunchdMode(): Promise<LaunchdMode> {
     return "agent";
   }
 
-  return detectBinaryOwnership(binaryUid, currentUid);
+  const result = detectBinaryOwnership(binaryUid, currentUid);
+  if (result === "foreign") {
+    throw new UserError(
+      `The swamp binary at ${Deno.execPath()} is owned by uid ${binaryUid}, ` +
+        `not the current user or root.\n` +
+        `Fix the installation so the binary is owned by your user or root:\n\n` +
+        `  sudo chown $(whoami) ${Deno.execPath()}\n` +
+        `  sudo chown root ${Deno.execPath()}`,
+    );
+  }
+  return result;
 }
 
 export function detectBinaryOwnership(
   binaryUid: number | null,
   currentUid: number | null,
-): LaunchdMode {
+): LaunchdMode | "foreign" {
   if (binaryUid === null || currentUid === null) {
     return "agent";
   }
@@ -93,7 +103,15 @@ export function detectBinaryOwnership(
     return "daemon";
   }
   if (binaryUid !== currentUid) {
-    return "daemon";
+    return "foreign";
   }
   return "agent";
+}
+
+export function isRunningAsRoot(): boolean {
+  try {
+    return Deno.uid() === 0;
+  } catch {
+    return false;
+  }
 }

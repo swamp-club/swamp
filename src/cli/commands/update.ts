@@ -35,6 +35,7 @@ import { AutoupdateLogFileRepository } from "../../infrastructure/update/autoupd
 import { autoupdateLogDir } from "../../infrastructure/update/launchd_scheduler.ts";
 import {
   createScheduler,
+  isRunningAsRoot,
   resolveLaunchdMode,
 } from "../../infrastructure/update/scheduler_factory.ts";
 import {
@@ -143,12 +144,7 @@ async function runSetupAuto(
   const binaryPath = Deno.execPath();
   const launchdMode = await resolveLaunchdMode();
 
-  let isRoot = false;
-  try {
-    isRoot = Deno.uid() === 0;
-  } catch {
-    // Deno.uid() not available (e.g. Windows) — skip this check
-  }
+  const isRoot = isRunningAsRoot();
 
   if (launchdMode === "daemon" && !isRoot) {
     throw new UserError(
@@ -200,7 +196,9 @@ async function runSetupAuto(
   await prefsRepo.write({ ...prefs, enabled: true, cadence });
 
   if (ctx.outputMode === "json") {
-    console.log(JSON.stringify({ enabled: true, cadence, launchdMode }));
+    console.log(
+      JSON.stringify({ enabled: true, cadence, schedulerType: launchdMode }),
+    );
   } else {
     logger.info`Autoupdate enabled with ${cadence} checks`;
 
@@ -223,19 +221,12 @@ async function runDisableAuto(
 
   const launchdMode = await resolveLaunchdMode();
 
-  if (launchdMode === "daemon") {
-    let isRoot = false;
-    try {
-      isRoot = Deno.uid() === 0;
-    } catch { /* not available */ }
-
-    if (!isRoot) {
-      throw new UserError(
-        `Autoupdate is installed as a system LaunchDaemon (root-owned binary).\n` +
-          `Re-run with sudo to disable:\n\n` +
-          `  sudo swamp update --setup-auto disable`,
-      );
-    }
+  if (launchdMode === "daemon" && !isRunningAsRoot()) {
+    throw new UserError(
+      `Autoupdate is installed as a system LaunchDaemon (root-owned binary).\n` +
+        `Re-run with sudo to disable:\n\n` +
+        `  sudo swamp update --setup-auto disable`,
+    );
   }
   const scheduler = await createScheduler({ launchdMode });
   await scheduler.remove();
