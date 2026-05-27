@@ -46,7 +46,7 @@ import { createExtensionSearchRenderer } from "../../presentation/renderers/exte
 import { resolveSkillsDir } from "../../domain/repo/skill_dirs.ts";
 import { resolvePrimaryTool } from "../../domain/repo/primary_tool.ts";
 import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
-import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
+import { loadIdentity } from "../load_identity.ts";
 
 /**
  * Resolves the registry server URL.
@@ -139,9 +139,9 @@ export const extensionSearchCommand = new Command()
       );
     }
 
-    const credentials = await new AuthRepository().load();
+    const identity = await loadIdentity();
     const serverUrl = resolveServerUrl();
-    const client = new ExtensionApiClient(serverUrl);
+    const client = new ExtensionApiClient(serverUrl, identity);
     const effectiveMode = interactiveOutputMode(ctx);
     const libCtx = createLibSwampContext();
 
@@ -159,7 +159,7 @@ export const extensionSearchCommand = new Command()
               | "updated"
               | undefined,
           },
-          credentials?.apiKey,
+          identity.bearerToken,
         ),
     };
 

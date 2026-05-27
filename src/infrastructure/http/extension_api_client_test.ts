@@ -608,3 +608,195 @@ Deno.test("ExtensionApiClient: 429 on getDownloadUrl is preferred over 404 fallt
     await server.shutdown();
   }
 });
+
+// ── Identity header injection ─────────────────────────────────────────
+
+Deno.test("ExtensionApiClient sends both identity headers when constructed with bearerToken and distinctId", async () => {
+  const captured: Record<string, string | null> = {};
+  const server = Deno.serve({ port: 0, onListen: () => {} }, (req) => {
+    captured.authorization = req.headers.get("authorization");
+    captured.distinctId = req.headers.get("swamp-distinct-id");
+    return new Response(
+      JSON.stringify({
+        extensions: [],
+        meta: { total: 0, page: 1, perPage: 20 },
+      }),
+      { headers: { "content-type": "application/json" } },
+    );
+  });
+  try {
+    const client = new ExtensionApiClient(
+      `http://localhost:${server.addr.port}`,
+      { bearerToken: "swamp_test-key", distinctId: "device-uuid-abc" },
+    );
+    await client.searchExtensions({});
+    assertEquals(captured.authorization, "Bearer swamp_test-key");
+    assertEquals(captured.distinctId, "device-uuid-abc");
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("ExtensionApiClient sends only Swamp-Distinct-Id when bearerToken is absent", async () => {
+  const captured: Record<string, string | null> = {};
+  const server = Deno.serve({ port: 0, onListen: () => {} }, (req) => {
+    captured.authorization = req.headers.get("authorization");
+    captured.distinctId = req.headers.get("swamp-distinct-id");
+    return new Response(
+      JSON.stringify({
+        extensions: [],
+        meta: { total: 0, page: 1, perPage: 20 },
+      }),
+      { headers: { "content-type": "application/json" } },
+    );
+  });
+  try {
+    const client = new ExtensionApiClient(
+      `http://localhost:${server.addr.port}`,
+      { distinctId: "device-uuid-xyz" },
+    );
+    await client.searchExtensions({});
+    assertEquals(captured.authorization, null);
+    assertEquals(captured.distinctId, "device-uuid-xyz");
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("ExtensionApiClient sends no identity headers when constructed without identity", async () => {
+  const captured: Record<string, string | null> = {};
+  const server = Deno.serve({ port: 0, onListen: () => {} }, (req) => {
+    captured.authorization = req.headers.get("authorization");
+    captured.distinctId = req.headers.get("swamp-distinct-id");
+    return new Response(
+      JSON.stringify({
+        extensions: [],
+        meta: { total: 0, page: 1, perPage: 20 },
+      }),
+      { headers: { "content-type": "application/json" } },
+    );
+  });
+  try {
+    const client = new ExtensionApiClient(
+      `http://localhost:${server.addr.port}`,
+    );
+    await client.searchExtensions({});
+    assertEquals(captured.authorization, null);
+    assertEquals(captured.distinctId, null);
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("ExtensionApiClient sends constructor bearer when no caller Authorization is set", async () => {
+  // Half (a) of the precedence contract: when nothing on the call sets
+  // Authorization, the constructor-supplied bearer goes out.
+  const captured: Record<string, string | null> = {};
+  const server = Deno.serve({ port: 0, onListen: () => {} }, (req) => {
+    captured.authorization = req.headers.get("authorization");
+    return new Response(
+      JSON.stringify({
+        extensions: [],
+        meta: { total: 0, page: 1, perPage: 20 },
+      }),
+      { headers: { "content-type": "application/json" } },
+    );
+  });
+  try {
+    const client = new ExtensionApiClient(
+      `http://localhost:${server.addr.port}`,
+      { bearerToken: "swamp_only-from-constructor" },
+    );
+    await client.searchExtensions({});
+    assertEquals(captured.authorization, "Bearer swamp_only-from-constructor");
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("ExtensionApiClient lets caller-supplied x-api-key coexist with constructor identity", async () => {
+  // Half (b) of the precedence contract: per-method `apiKey` paths
+  // (push/yank/etc.) set their own `x-api-key` header. Constructor
+  // identity adds Authorization Bearer + Swamp-Distinct-Id, but the
+  // caller's `x-api-key` is preserved unchanged.
+  const captured: Record<string, string | null> = {};
+  const server = Deno.serve({ port: 0, onListen: () => {} }, (req) => {
+    captured.authorization = req.headers.get("authorization");
+    captured.xApiKey = req.headers.get("x-api-key");
+    captured.distinctId = req.headers.get("swamp-distinct-id");
+    return new Response(
+      JSON.stringify({ message: "yanked" }),
+      { headers: { "content-type": "application/json" } },
+    );
+  });
+  try {
+    const client = new ExtensionApiClient(
+      `http://localhost:${server.addr.port}`,
+      { bearerToken: "swamp_ctor", distinctId: "device-1" },
+    );
+    await client.yankExtension(
+      "@test/ext",
+      "2026.01.01.1",
+      "test reason",
+      "swamp_caller-key",
+    );
+    assertEquals(captured.xApiKey, "swamp_caller-key");
+    assertEquals(captured.authorization, "Bearer swamp_ctor");
+    assertEquals(captured.distinctId, "device-1");
+  } finally {
+    await server.shutdown();
+  }
+});
+
+Deno.test("ExtensionApiClient.downloadArchive does NOT send identity headers to the S3 presigned URL", async () => {
+  // Locks in the S3 hop contract: identity headers attach to the
+  // swamp-club /download call, but the subsequent fetch of the
+  // presigned URL must be bare. Sending identity to S3 breaks the
+  // presigned signature and leaks the bearer to S3 access logs.
+  const swampClubHeaders: Record<string, string | null> = {};
+  const s3Headers: Record<string, string | null> = {};
+
+  const s3Server = Deno.serve({ port: 0, onListen: () => {} }, (req) => {
+    s3Headers.authorization = req.headers.get("authorization");
+    s3Headers.distinctId = req.headers.get("swamp-distinct-id");
+    return new Response(new Uint8Array([1, 2, 3, 4]), {
+      headers: { "content-type": "application/gzip" },
+    });
+  });
+  const s3Addr = s3Server.addr;
+  const s3Url = `http://localhost:${s3Addr.port}/presigned-archive.tar.gz`;
+
+  const swampClubServer = Deno.serve(
+    { port: 0, onListen: () => {} },
+    (req) => {
+      swampClubHeaders.authorization = req.headers.get("authorization");
+      swampClubHeaders.distinctId = req.headers.get("swamp-distinct-id");
+      // /download returns 302 with Location pointing at the presigned URL.
+      return new Response(null, {
+        status: 302,
+        headers: { location: s3Url },
+      });
+    },
+  );
+
+  try {
+    const client = new ExtensionApiClient(
+      `http://localhost:${swampClubServer.addr.port}`,
+      { bearerToken: "swamp_secret-key", distinctId: "device-leak-canary" },
+    );
+    const bytes = await client.downloadArchive("@test/ext", "2026.01.01.1");
+    assertEquals(bytes.length, 4);
+    // swamp-club hop carries identity.
+    assertEquals(
+      swampClubHeaders.authorization,
+      "Bearer swamp_secret-key",
+    );
+    assertEquals(swampClubHeaders.distinctId, "device-leak-canary");
+    // S3 hop is bare — no identity, no token leak.
+    assertEquals(s3Headers.authorization, null);
+    assertEquals(s3Headers.distinctId, null);
+  } finally {
+    await swampClubServer.shutdown();
+    await s3Server.shutdown();
+  }
+});

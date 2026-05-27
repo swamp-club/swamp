@@ -19,7 +19,13 @@
 
 import { UserError } from "../../domain/errors.ts";
 import type { ExtensionContentMetadata } from "../../domain/extensions/extension_content.ts";
+import {
+  type ClientIdentity,
+  mergeIdentityHeaders,
+} from "./client_identity.ts";
 import { parseRetryAfter, rateLimitError } from "./rate_limit.ts";
+
+export type { ClientIdentity };
 
 /** Metadata sent during push initiation and confirmation. */
 export interface PushMetadata {
@@ -155,7 +161,10 @@ export interface UnyankResult {
  * as SwampClubClient for auth operations.
  */
 export class ExtensionApiClient {
-  constructor(private readonly serverUrl: string) {}
+  constructor(
+    private readonly serverUrl: string,
+    private readonly identity: ClientIdentity = {},
+  ) {}
 
   /**
    * Pre-flight: check latest published version.
@@ -544,9 +553,15 @@ export class ExtensionApiClient {
 
   private async fetch(path: string, init: RequestInit): Promise<Response> {
     const url = `${this.serverUrl}${path}`;
+    // Merge identity headers FIRST so any caller-supplied header in
+    // init.headers wins on conflict. Required so per-call x-api-key /
+    // Authorization values from callers (e.g. push/yank, getCurrentUser)
+    // override the constructor identity.
+    const headers = mergeIdentityHeaders(this.identity, init.headers);
     try {
       return await fetch(url, {
         ...init,
+        headers,
         signal: init.signal ?? AbortSignal.timeout(15_000),
       });
     } catch (error) {

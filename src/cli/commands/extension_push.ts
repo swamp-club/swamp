@@ -56,6 +56,7 @@ import type {
   CollectiveMismatch,
 } from "../../domain/extensions/extension_collective_validator.ts";
 import type { CompilationError, SwampError } from "../../libswamp/mod.ts";
+import { loadIdentity } from "../load_identity.ts";
 
 interface ExtensionPushOptions extends GlobalOptions {
   repoDir?: string;
@@ -281,7 +282,8 @@ export const extensionPushCommand = new Command()
 
     // 3. Create libswamp context and deps
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const prepareDeps = createExtensionPushPrepareDeps();
+    const identity = await loadIdentity();
+    const prepareDeps = createExtensionPushPrepareDeps(identity);
     const renderer = createExtensionPushRenderer(cliCtx.outputMode);
     const cache = new ExtensionPackageCache(defaultPackageCacheRoot(repoDir));
 
@@ -509,7 +511,7 @@ export const extensionPushCommand = new Command()
     }
 
     // 9. Execute push
-    const executeDeps = createExtensionPushExecuteDeps();
+    const executeDeps = createExtensionPushExecuteDeps(identity);
     await consumeStream(
       extensionPush(ctx, executeDeps, {
         manifest: prepared.manifest,

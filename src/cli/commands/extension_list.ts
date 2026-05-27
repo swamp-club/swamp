@@ -43,6 +43,7 @@ import {
   type EnrichedExtensionListEntry,
 } from "../../presentation/renderers/extension_list.ts";
 import { ExtensionApiClient } from "../../infrastructure/http/extension_api_client.ts";
+import { loadIdentity } from "../load_identity.ts";
 import { FileExtensionUpdateCheckRepository } from "../../infrastructure/persistence/extension_update_check_repository.ts";
 import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
 import {
@@ -142,7 +143,8 @@ export const extensionListCommand = new Command()
     if (enrich && baseEntries.length > 0) {
       const swampDir = join(resolve(repoDir), ".swamp");
       const cacheRepository = new FileExtensionUpdateCheckRepository(swampDir);
-      const apiClient = new ExtensionApiClient(resolveServerUrl());
+      const identity = await loadIdentity();
+      const apiClient = new ExtensionApiClient(resolveServerUrl(), identity);
       const freshnessDeps: ExtensionListFreshnessDeps = {
         getLatestVersion: async (name) => {
           try {

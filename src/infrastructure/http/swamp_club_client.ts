@@ -18,7 +18,13 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { UserError } from "../../domain/errors.ts";
+import {
+  type ClientIdentity,
+  mergeIdentityHeaders,
+} from "./client_identity.ts";
 import { parseRetryAfter, rateLimitError } from "./rate_limit.ts";
+
+export type { ClientIdentity };
 
 /** Response from BetterAuth sign-in endpoint. */
 export interface SignInResponse {
@@ -83,7 +89,10 @@ export interface FetchIssueResponse {
  * Used by auth commands to sign in, create API keys, and verify identity.
  */
 export class SwampClubClient {
-  constructor(private readonly serverUrl: string) {}
+  constructor(
+    private readonly serverUrl: string,
+    private readonly identity: ClientIdentity = {},
+  ) {}
 
   /**
    * Sign in with email/username and password.
@@ -355,8 +364,13 @@ export class SwampClubClient {
     const signal = callerSignal
       ? AbortSignal.any([callerSignal, timeoutSignal])
       : timeoutSignal;
+    // Merge identity headers FIRST so any caller-supplied header in
+    // init.headers wins on conflict. Required so per-call x-api-key /
+    // Authorization values (e.g. signIn, getCurrentUser session token,
+    // whoami) override the constructor identity.
+    const headers = mergeIdentityHeaders(this.identity, init.headers);
     try {
-      const res = await fetch(url, { ...init, signal });
+      const res = await fetch(url, { ...init, headers, signal });
       if (res.status === 429) {
         const retryAfter = parseRetryAfter(res.headers.get("retry-after"));
         await res.body?.cancel();

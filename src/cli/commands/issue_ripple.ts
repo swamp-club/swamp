@@ -34,6 +34,7 @@ import { EditorService } from "../../infrastructure/editor/editor_service.ts";
 import { UserError } from "../../domain/errors.ts";
 import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
 import { SwampClubClient } from "../../infrastructure/http/swamp_club_client.ts";
+import { loadIdentity } from "../load_identity.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -145,7 +146,8 @@ export const issueRippleCommand = new Command()
 
     const libCtx = createLibSwampContext({ logger: ctx.logger });
     const renderer = createIssueCommentRenderer(ctx.outputMode);
-    const client = new SwampClubClient(credentials.serverUrl);
+    const identity = await loadIdentity();
+    const client = new SwampClubClient(credentials.serverUrl, identity);
     const deps: IssueCommentDeps = {
       submitToLab: async (input) => {
         const result = await client.submitComment(

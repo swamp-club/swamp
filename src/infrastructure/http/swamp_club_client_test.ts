@@ -308,3 +308,117 @@ Deno.test("SwampClubClient - 429 without Retry-After still surfaces sign-in hint
     await mock.shutdown();
   }
 });
+
+// ── Identity header injection ─────────────────────────────────────────
+
+Deno.test("SwampClubClient sends both identity headers when constructed with bearerToken and distinctId", async () => {
+  const captured: Record<string, string | null> = {};
+  const mock = startMockServer((req) => {
+    captured.authorization = req.headers.get("authorization");
+    captured.distinctId = req.headers.get("swamp-distinct-id");
+    return Response.json({
+      issue: { number: 1, title: "x", type: "bug", status: "open" },
+    });
+  });
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`, {
+      bearerToken: "swamp_test-key",
+      distinctId: "device-uuid-abc",
+    });
+    await client.fetchIssue("swamp_test-key", 1);
+    assertEquals(captured.authorization, "Bearer swamp_test-key");
+    assertEquals(captured.distinctId, "device-uuid-abc");
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("SwampClubClient sends only Swamp-Distinct-Id when bearerToken is absent", async () => {
+  const captured: Record<string, string | null> = {};
+  const mock = startMockServer((req) => {
+    captured.authorization = req.headers.get("authorization");
+    captured.distinctId = req.headers.get("swamp-distinct-id");
+    return Response.json({
+      issue: { number: 1, title: "x", type: "bug", status: "open" },
+    });
+  });
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`, {
+      distinctId: "device-uuid-xyz",
+    });
+    await client.fetchIssue(undefined, 1);
+    assertEquals(captured.authorization, null);
+    assertEquals(captured.distinctId, "device-uuid-xyz");
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("SwampClubClient sends no identity headers when constructed without identity", async () => {
+  const captured: Record<string, string | null> = {};
+  const mock = startMockServer((req) => {
+    captured.authorization = req.headers.get("authorization");
+    captured.distinctId = req.headers.get("swamp-distinct-id");
+    return Response.json({
+      issue: { number: 1, title: "x", type: "bug", status: "open" },
+    });
+  });
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    await client.fetchIssue(undefined, 1);
+    assertEquals(captured.authorization, null);
+    assertEquals(captured.distinctId, null);
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("SwampClubClient sends constructor bearer when no caller Authorization is set", async () => {
+  // Half (a) of the precedence contract: when nothing on the call sets
+  // Authorization, the constructor-supplied bearer goes out.
+  const captured: Record<string, string | null> = {};
+  const mock = startMockServer((req) => {
+    captured.authorization = req.headers.get("authorization");
+    return Response.json({
+      issue: { number: 1, title: "x", type: "bug", status: "open" },
+    });
+  });
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`, {
+      bearerToken: "swamp_only-from-constructor",
+    });
+    // fetchIssue passes apiKey via `x-api-key`, NOT Authorization, so the
+    // constructor's Authorization Bearer is the only one set on this call.
+    await client.fetchIssue(undefined, 1);
+    assertEquals(captured.authorization, "Bearer swamp_only-from-constructor");
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("SwampClubClient lets caller-supplied Authorization win over constructor identity", async () => {
+  // Half (b) of the precedence contract: createApiKey() sends its own
+  // Authorization header carrying the BetterAuth session token. That
+  // caller-supplied header must win over the constructor's personal-key
+  // bearer or the user-session flow breaks.
+  const captured: Record<string, string | null> = {};
+  const mock = startMockServer((req) => {
+    captured.authorization = req.headers.get("authorization");
+    captured.distinctId = req.headers.get("swamp-distinct-id");
+    return Response.json({ id: "key-id", key: "swamp_new-key" });
+  });
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`, {
+      bearerToken: "swamp_ctor-bearer",
+      distinctId: "device-1",
+    });
+    await client.createApiKey("session-token-xyz", "my-laptop");
+    // Caller's session-token Authorization wins.
+    assertEquals(captured.authorization, "Bearer session-token-xyz");
+    // Constructor's distinctId still goes out — the caller didn't set
+    // Swamp-Distinct-Id, so there is no conflict.
+    assertEquals(captured.distinctId, "device-1");
+  } finally {
+    await mock.shutdown();
+  }
+});

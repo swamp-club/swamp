@@ -19,6 +19,7 @@
 
 import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
 import { ExtensionApiClient } from "../../infrastructure/http/extension_api_client.ts";
+import type { ClientIdentity } from "../../infrastructure/http/client_identity.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { notAuthenticated, validationFailed } from "../errors.ts";
@@ -73,7 +74,9 @@ export interface ExtensionUnyankDeps {
 }
 
 /** Wires real infrastructure into ExtensionUnyankDeps. */
-export function createExtensionUnyankDeps(): ExtensionUnyankDeps {
+export function createExtensionUnyankDeps(
+  identity?: ClientIdentity,
+): ExtensionUnyankDeps {
   const authRepo = new AuthRepository();
   return {
     loadCredentials: async () => {
@@ -91,7 +94,7 @@ export function createExtensionUnyankDeps(): ExtensionUnyankDeps {
       reason: string | null,
       apiKey: string,
     ) => {
-      const client = new ExtensionApiClient(serverUrl);
+      const client = new ExtensionApiClient(serverUrl, identity);
       await client.unyankExtension(name, version, reason, apiKey);
     },
   };

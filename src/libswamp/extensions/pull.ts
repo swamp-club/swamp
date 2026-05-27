@@ -29,6 +29,7 @@ import { UserError } from "../../domain/errors.ts";
 import { parseExtensionManifest } from "../../domain/extensions/extension_manifest.ts";
 import { analyzeExtensionSafety } from "../../domain/extensions/extension_safety_analyzer.ts";
 import { ExtensionApiClient } from "../../infrastructure/http/extension_api_client.ts";
+import type { ClientIdentity } from "../../infrastructure/http/client_identity.ts";
 import { pruneOrphanFiles } from "../../infrastructure/persistence/directory_cleanup.ts";
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import type { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
@@ -1225,9 +1226,13 @@ export async function createExtensionPullDeps(
   lockfilePath: string,
   skillsDir: string,
   repoDir: string,
-  args?: { denoRuntime?: DenoRuntime; repository?: ExtensionRepository },
+  args?: {
+    denoRuntime?: DenoRuntime;
+    repository?: ExtensionRepository;
+    identity?: ClientIdentity;
+  },
 ): Promise<ExtensionPullDeps> {
-  const client = new ExtensionApiClient(serverUrl);
+  const client = new ExtensionApiClient(serverUrl, args?.identity);
   const lockfileRepository = await LockfileRepository.create(lockfilePath);
   return {
     getExtension: (name) => client.getExtension(name),
@@ -1258,9 +1263,10 @@ export async function createInstallContext(
     repoDir: string;
     force: boolean;
     logger?: Logger;
+    identity?: ClientIdentity;
   },
 ): Promise<InstallContext> {
-  const client = new ExtensionApiClient(serverUrl);
+  const client = new ExtensionApiClient(serverUrl, opts.identity);
   const lockfileRepository = await LockfileRepository.create(opts.lockfilePath);
   return {
     getExtension: (name) => client.getExtension(name),

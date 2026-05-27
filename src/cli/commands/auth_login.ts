@@ -29,6 +29,7 @@ import { createAuthLoginRenderer } from "../../presentation/renderers/auth_login
 import { createContext, type GlobalOptions, isStdinTty } from "../context.ts";
 import { UserError } from "../../domain/errors.ts";
 import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
+import { loadIdentity } from "../load_identity.ts";
 
 /** Resolve server URL: env var > default */
 function resolveServerUrl(): string {
@@ -79,7 +80,8 @@ export const authLoginCommand = new Command()
     const showSpinner = cliCtx.outputMode !== "json" && !useStdinFlow;
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createAuthLoginDeps();
+    const identity = await loadIdentity();
+    const deps = createAuthLoginDeps(identity);
     const input: AuthLoginInput = {
       serverUrl,
       useBrowserFlow: !useStdinFlow,

@@ -22,6 +22,7 @@ import {
   getCollectives,
   SwampClubClient,
 } from "../../infrastructure/http/swamp_club_client.ts";
+import type { ClientIdentity } from "../../infrastructure/http/client_identity.ts";
 import { startCallbackServer } from "../../infrastructure/http/callback_server.ts";
 import { openBrowser } from "../../infrastructure/process/browser.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -140,8 +141,17 @@ async function readPassword(prompt: string): Promise<string> {
   }
 }
 
-/** Wires real infrastructure into AuthLoginDeps. */
-export function createAuthLoginDeps(): AuthLoginDeps {
+/**
+ * Wires real infrastructure into AuthLoginDeps.
+ *
+ * Identity is optional and bearerToken will normally be undefined here —
+ * the login flow runs *before* the user has a personal API key.
+ * distinctId is the per-device UUID and should be passed when available
+ * so the login handshake's HTTP traffic still attributes to a device.
+ */
+export function createAuthLoginDeps(
+  identity?: ClientIdentity,
+): AuthLoginDeps {
   const repo = new AuthRepository();
   return {
     openBrowser: async (url: string): Promise<string | null> => {
@@ -159,7 +169,7 @@ export function createAuthLoginDeps(): AuthLoginDeps {
     startCallbackServer: (state: string, serverUrl: string) =>
       startCallbackServer(state, serverUrl),
     signIn: async (serverUrl: string, username: string, password: string) => {
-      const client = new SwampClubClient(serverUrl);
+      const client = new SwampClubClient(serverUrl, identity);
       const result = await client.signIn(username, password);
       return { token: result.token, username: result.user.username };
     },
@@ -173,11 +183,11 @@ export function createAuthLoginDeps(): AuthLoginDeps {
       sessionToken: string,
       keyName: string,
     ) => {
-      const client = new SwampClubClient(serverUrl);
+      const client = new SwampClubClient(serverUrl, identity);
       return await client.createApiKey(sessionToken, keyName);
     },
     whoami: async (serverUrl: string, apiKey: string) => {
-      const client = new SwampClubClient(serverUrl);
+      const client = new SwampClubClient(serverUrl, identity);
       const result = await client.whoami(apiKey);
       return {
         username: result.username,

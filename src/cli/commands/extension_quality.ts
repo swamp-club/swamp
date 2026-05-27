@@ -40,6 +40,7 @@ import {
   resolveExtensionFiles,
 } from "../resolve_extension_files.ts";
 import { UserError } from "../../domain/errors.ts";
+import { loadIdentity } from "../load_identity.ts";
 
 interface ExtensionQualityOptions extends GlobalOptions {
   repoDir?: string;
@@ -125,7 +126,8 @@ export const extensionQualityCommand = new Command()
       );
 
       const ctx = createLibSwampContext({ logger: cliCtx.logger });
-      const prepareDeps = createExtensionPushPrepareDeps();
+      const identity = await loadIdentity();
+      const prepareDeps = createExtensionPushPrepareDeps(identity);
       const cache = new ExtensionPackageCache(defaultPackageCacheRoot(repoDir));
       const deps = createExtensionQualityDeps(prepareDeps, cache);
       const renderer = createExtensionQualityRenderer(cliCtx.outputMode);

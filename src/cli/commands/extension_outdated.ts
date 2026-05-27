@@ -39,6 +39,7 @@ import {
 import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
 import type { ExtensionUpdateStatus } from "../../domain/extensions/extension_update_service.ts";
 import { createExtensionOutdatedRenderer } from "../../presentation/renderers/extension_outdated.ts";
+import { loadIdentity } from "../load_identity.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -118,9 +119,11 @@ export const extensionOutdatedCommand = new Command()
     const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
+    const identity = await loadIdentity();
     const deps = await createExtensionUpdateDeps({
       lockfilePath,
       serverUrl: resolveServerUrl(),
+      identity,
       // outdated is read-only — installation is wired but never invoked
       // because checkOnly=true short-circuits before any update path.
       installExtension: () => {

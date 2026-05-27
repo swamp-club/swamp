@@ -19,6 +19,7 @@
 
 import { CalVer } from "../../domain/models/calver.ts";
 import { ExtensionApiClient } from "../../infrastructure/http/extension_api_client.ts";
+import type { ClientIdentity } from "../../infrastructure/http/client_identity.ts";
 import { resolveServerUrl } from "./pull.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
@@ -54,9 +55,11 @@ export interface ExtensionVersionDeps {
 }
 
 /** Wires real infrastructure into ExtensionVersionDeps. No authentication required. */
-export function createExtensionVersionDeps(): ExtensionVersionDeps {
+export function createExtensionVersionDeps(
+  identity?: ClientIdentity,
+): ExtensionVersionDeps {
   const serverUrl = resolveServerUrl();
-  const client = new ExtensionApiClient(serverUrl);
+  const client = new ExtensionApiClient(serverUrl, identity);
   return {
     getLatestVersion: async (name: string) => {
       const info = await client.getExtension(name);

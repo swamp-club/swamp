@@ -32,6 +32,7 @@ import {
 import { createContext, type GlobalOptions } from "../context.ts";
 import { UserError } from "../../domain/errors.ts";
 import { parseExtensionRef } from "./extension_pull.ts";
+import { loadIdentity } from "../load_identity.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -81,7 +82,8 @@ export const extensionUnyankCommand = new Command()
     const resolvedVersion = version ?? ref.version ?? null;
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createExtensionUnyankDeps();
+    const identity = await loadIdentity();
+    const deps = createExtensionUnyankDeps(identity);
     const input = {
       extensionName: ref.name,
       version: resolvedVersion,

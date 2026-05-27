@@ -28,6 +28,7 @@ import {
 import { createIssueGetRenderer } from "../../presentation/renderers/issue_get.ts";
 import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
 import { SwampClubClient } from "../../infrastructure/http/swamp_club_client.ts";
+import { loadIdentity } from "../load_identity.ts";
 import { UserError } from "../../domain/errors.ts";
 import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
 
@@ -48,10 +49,11 @@ export const issueGetCommand = new Command()
     }
 
     const credentials = await new AuthRepository().load();
+    const identity = await loadIdentity();
     const serverUrl = credentials?.serverUrl ??
       Deno.env.get("SWAMP_CLUB_URL") ?? DEFAULT_SWAMP_CLUB_URL;
 
-    const client = new SwampClubClient(serverUrl);
+    const client = new SwampClubClient(serverUrl, identity);
     const deps: IssueGetDeps = {
       fetchIssue: async (num) => {
         const issue = await client.fetchIssue(credentials?.apiKey, num);

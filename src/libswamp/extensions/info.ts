@@ -23,6 +23,7 @@ import type {
   ExtensionScoreSummary,
 } from "../../infrastructure/http/extension_api_client.ts";
 import { ExtensionApiClient } from "../../infrastructure/http/extension_api_client.ts";
+import type { ClientIdentity } from "../../infrastructure/http/client_identity.ts";
 import { resolveServerUrl } from "./pull.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
@@ -69,9 +70,10 @@ export interface ExtensionInfoDeps {
 
 export function createExtensionInfoDeps(
   apiKey?: string,
+  identity?: ClientIdentity,
 ): ExtensionInfoDeps {
   const serverUrl = resolveServerUrl();
-  const client = new ExtensionApiClient(serverUrl);
+  const client = new ExtensionApiClient(serverUrl, identity);
   return {
     getExtension: (name: string) => client.getExtension(name, apiKey),
   };

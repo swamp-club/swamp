@@ -24,6 +24,7 @@ import { resolveSkillsDir } from "../domain/repo/skill_dirs.ts";
 import { resolvePrimaryTool } from "../domain/repo/primary_tool.ts";
 import { RepoMarkerRepository } from "../infrastructure/persistence/repo_marker_repository.ts";
 import { ExtensionApiClient } from "../infrastructure/http/extension_api_client.ts";
+import { loadIdentity } from "./load_identity.ts";
 import {
   type ExtensionInstallDeps,
   LockfileRepository,
@@ -67,7 +68,8 @@ export async function createExtensionInstallDeps(
   const skillsDirRelative = relative(absoluteRepoDir, absoluteSkillsDir);
 
   const serverUrl = resolveServerUrl();
-  const client = new ExtensionApiClient(serverUrl);
+  const identity = await loadIdentity();
+  const client = new ExtensionApiClient(serverUrl, identity);
 
   return {
     lockfilePath,

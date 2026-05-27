@@ -43,6 +43,7 @@ import {
 } from "../../presentation/renderers/issue_create.ts";
 import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
 import { SwampClubClient } from "../../infrastructure/http/swamp_club_client.ts";
+import { loadIdentity } from "../load_identity.ts";
 import { openBrowser } from "../../infrastructure/process/browser.ts";
 import { UserError } from "../../domain/errors.ts";
 import type { AuthCredentials } from "../../domain/auth/auth_credentials.ts";
@@ -255,7 +256,11 @@ export async function submitIssue(
   }
 
   // Lab submission (both plain and @swamp-extension paths).
-  const client = new SwampClubClient(destination.credentials.serverUrl);
+  const identity = await loadIdentity();
+  const client = new SwampClubClient(
+    destination.credentials.serverUrl,
+    identity,
+  );
   const deps: IssueCreateDeps = {
     submitToLab: async (params) => {
       const result = await client.submitIssue(

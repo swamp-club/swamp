@@ -33,6 +33,7 @@ import { driverTypeRegistry } from "../../domain/drivers/driver_type_registry.ts
 import { reportRegistry } from "../../domain/reports/report_registry.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import { ExtensionApiClient } from "../../infrastructure/http/extension_api_client.ts";
+import { loadIdentity } from "../load_identity.ts";
 import { openBrowser } from "../../infrastructure/process/browser.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
 import {
@@ -176,8 +177,10 @@ export const openCommand = new Command()
       reportRegistry.ensureLoaded(),
     ]);
 
+    const identity = await loadIdentity();
     const extClient = new ExtensionApiClient(
       Deno.env.get("SWAMP_CLUB_URL") ?? DEFAULT_SWAMP_CLUB_URL,
+      identity,
     );
 
     const state: OpenServerState = {

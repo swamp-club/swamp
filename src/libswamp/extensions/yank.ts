@@ -19,6 +19,7 @@
 
 import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
 import { ExtensionApiClient } from "../../infrastructure/http/extension_api_client.ts";
+import type { ClientIdentity } from "../../infrastructure/http/client_identity.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { notAuthenticated, validationFailed } from "../errors.ts";
@@ -67,7 +68,9 @@ export interface ExtensionYankDeps {
 }
 
 /** Wires real infrastructure into ExtensionYankDeps. */
-export function createExtensionYankDeps(): ExtensionYankDeps {
+export function createExtensionYankDeps(
+  identity?: ClientIdentity,
+): ExtensionYankDeps {
   const authRepo = new AuthRepository();
   return {
     loadCredentials: async () => {
@@ -85,7 +88,7 @@ export function createExtensionYankDeps(): ExtensionYankDeps {
       reason: string,
       apiKey: string,
     ) => {
-      const client = new ExtensionApiClient(serverUrl);
+      const client = new ExtensionApiClient(serverUrl, identity);
       await client.yankExtension(name, version, reason, apiKey);
     },
   };

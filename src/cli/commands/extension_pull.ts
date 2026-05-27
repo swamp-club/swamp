@@ -36,6 +36,7 @@ import { resolveModelsDir } from "../resolve_models_dir.ts";
 import { UserError } from "../../domain/errors.ts";
 import { resolveSkillsDir } from "../../domain/repo/skill_dirs.ts";
 import { resolvePrimaryTool } from "../../domain/repo/primary_tool.ts";
+import { loadIdentity } from "../load_identity.ts";
 import {
   ConflictError,
   consumeStream,
@@ -227,11 +228,13 @@ export const extensionPullCommand = new Command()
     );
     try {
       const serverUrl = resolveServerUrl();
+      const identity = await loadIdentity();
       const deps = await createExtensionPullDeps(
         serverUrl,
         lockfilePath,
         skillsDir,
         repoDir,
+        { identity },
       );
       const repository = new ExtensionRepository({
         catalog,

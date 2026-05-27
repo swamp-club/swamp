@@ -43,6 +43,7 @@ import { createExtensionUpdateRenderer } from "../../presentation/renderers/exte
 import { resolveSkillsDir } from "../../domain/repo/skill_dirs.ts";
 import { resolvePrimaryTool } from "../../domain/repo/primary_tool.ts";
 import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
+import { loadIdentity } from "../load_identity.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -114,9 +115,11 @@ export const extensionUpdateCommand = new Command()
       swampPath(repoDir, "_extension_catalog.db"),
     );
     try {
+      const identity = await loadIdentity();
       const deps = await createExtensionUpdateDeps({
         lockfilePath,
         serverUrl,
+        identity,
         installExtension: async (name: string, version: string) => {
           // Construct a fresh InstallContext per upgrade — captures a
           // current snapshot of the lockfile per the
@@ -128,6 +131,7 @@ export const extensionUpdateCommand = new Command()
             skillsDir,
             repoDir,
             force: true,
+            identity,
           });
           // Build a fresh ExtensionRepository per upgrade so its lockfile
           // snapshot lines up with the InstallContext's. Catalog is

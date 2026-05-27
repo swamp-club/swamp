@@ -97,6 +97,8 @@ import { resolvePrimaryTool } from "../domain/repo/primary_tool.ts";
 import { SKILL_DIRS } from "../domain/repo/skill_dirs.ts";
 import { ExtensionAutoResolver } from "../domain/extensions/extension_auto_resolver.ts";
 import { ExtensionApiClient } from "../infrastructure/http/extension_api_client.ts";
+import type { ClientIdentity } from "../infrastructure/http/client_identity.ts";
+import { loadIdentity } from "./load_identity.ts";
 import { DEFAULT_SWAMP_CLUB_URL } from "../domain/auth/auth_credentials.ts";
 import { setAutoResolver } from "./auto_resolver_context.ts";
 import {
@@ -391,6 +393,7 @@ export function configureExtensionAutoResolver(
   marker: RepoMarkerData | null,
   authCollectives: string[] | undefined,
   outputMode: "log" | "json",
+  identity: ClientIdentity = {},
 ): void {
   const trustedCollectives = resolveTrustedCollectives(marker, authCollectives);
   if (trustedCollectives.length === 0 || !marker) {
@@ -398,7 +401,7 @@ export function configureExtensionAutoResolver(
     return;
   }
   const serverUrl = Deno.env.get("SWAMP_CLUB_URL") ?? DEFAULT_SWAMP_CLUB_URL;
-  const extensionClient = new ExtensionApiClient(serverUrl);
+  const extensionClient = new ExtensionApiClient(serverUrl, identity);
   const modelsDir = resolveModelsDir(marker);
   const denoRuntime = new EmbeddedDenoRuntime();
   setAutoResolver(
@@ -1148,11 +1151,13 @@ export async function runCli(args: string[]): Promise<void> {
   }
 
   // Create auto-resolver for trusted collectives (merging membership collectives)
+  const autoResolverIdentity = await loadIdentity();
   configureExtensionAutoResolver(
     repoDir,
     marker,
     authCollectives,
     getOutputModeFromArgs(args),
+    autoResolverIdentity,
   );
 
   const cli = new Command()

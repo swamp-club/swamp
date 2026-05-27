@@ -26,6 +26,7 @@ import {
   whoami,
 } from "../../libswamp/mod.ts";
 import { createAuthWhoamiRenderer } from "../../presentation/renderers/auth_whoami.ts";
+import { loadIdentity } from "../load_identity.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -41,8 +42,10 @@ export const authWhoamiCommand = new Command()
     cliCtx.logger.debug("Executing auth whoami command");
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
+    const identity = await loadIdentity();
     const deps = createAuthDeps({
       serverUrlOverride: Deno.env.get("SWAMP_CLUB_URL"),
+      identity,
     });
 
     const renderer = createAuthWhoamiRenderer(cliCtx.outputMode);

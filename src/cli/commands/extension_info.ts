@@ -26,7 +26,7 @@ import {
   extensionInfo,
 } from "../../libswamp/mod.ts";
 import { createExtensionInfoRenderer } from "../../presentation/renderers/extension_info.ts";
-import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
+import { loadIdentity } from "../load_identity.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -52,9 +52,9 @@ export const extensionInfoCommand = new Command()
         "info",
       ]);
 
-      const credentials = await new AuthRepository().load();
+      const identity = await loadIdentity();
       const ctx = createLibSwampContext({ logger: cliCtx.logger });
-      const deps = createExtensionInfoDeps(credentials?.apiKey);
+      const deps = createExtensionInfoDeps(identity.bearerToken, identity);
       const renderer = createExtensionInfoRenderer(cliCtx.outputMode);
 
       await consumeStream(

@@ -87,6 +87,7 @@ import type { DatastoreSyncService } from "../../domain/datastore/datastore_sync
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { OPEN_UI_HTML } from "./ui.ts";
 import { FAVICON_SVG } from "./favicon.ts";
+import { loadIdentity } from "../../cli/load_identity.ts";
 
 const logger = getSwampLogger(["serve", "open"]);
 
@@ -1394,7 +1395,8 @@ async function handleHistory(
 
 async function handleWhoami(): Promise<Response> {
   const ctx = createLibSwampContext();
-  const deps = createAuthDeps();
+  const identity = await loadIdentity();
+  const deps = createAuthDeps({ identity });
   const fallbackOsUser = () =>
     Deno.env.get("USER") ?? Deno.env.get("USERNAME") ?? null;
   try {

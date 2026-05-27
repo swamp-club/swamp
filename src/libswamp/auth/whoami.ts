@@ -23,6 +23,7 @@ import {
   getCollectives,
   SwampClubClient,
 } from "../../infrastructure/http/swamp_club_client.ts";
+import type { ClientIdentity } from "../../infrastructure/http/client_identity.ts";
 import {
   AuthRepository,
   type AuthRepositoryOptions,
@@ -71,6 +72,7 @@ export interface AuthDeps {
 export interface CreateAuthDepsOptions {
   serverUrlOverride?: string;
   repo?: AuthRepositoryOptions;
+  identity?: ClientIdentity;
 }
 
 /** Wires real infrastructure into AuthDeps. */
@@ -87,7 +89,7 @@ export function createAuthDeps(options: CreateAuthDepsOptions = {}): AuthDeps {
     saveCredentials: (credentials) =>
       getApiKey() ? Promise.resolve() : repo.save(credentials),
     fetchWhoami: (serverUrl, apiKey, signal) => {
-      const client = new SwampClubClient(serverUrl);
+      const client = new SwampClubClient(serverUrl, options.identity);
       return client.whoami(apiKey, signal);
     },
     serverUrlOverride: options.serverUrlOverride,

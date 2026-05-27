@@ -44,6 +44,7 @@ import { getAutoResolver } from "../domain/extensions/auto_resolver_context.ts";
 import { maybeAutoUpdateDatastoreExtension } from "../libswamp/extensions/datastore_auto_update.ts";
 import { FileExtensionUpdateCheckRepository } from "../infrastructure/persistence/extension_update_check_repository.ts";
 import { ExtensionApiClient } from "../infrastructure/http/extension_api_client.ts";
+import { loadIdentity } from "./load_identity.ts";
 import { DEFAULT_SWAMP_CLUB_URL } from "../domain/auth/auth_credentials.ts";
 import {
   detectLocalEditsForExtension,
@@ -98,7 +99,8 @@ async function maybeAutoUpdateSwampDatastore(
       path: lockfilePath,
     });
     const serverUrl = Deno.env.get("SWAMP_CLUB_URL") ?? DEFAULT_SWAMP_CLUB_URL;
-    const extensionClient = new ExtensionApiClient(serverUrl);
+    const identity = await loadIdentity();
+    const extensionClient = new ExtensionApiClient(serverUrl, identity);
     const cacheRepository = new FileExtensionUpdateCheckRepository(swampDir);
 
     const result = await maybeAutoUpdateDatastoreExtension(type, {

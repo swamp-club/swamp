@@ -28,6 +28,7 @@ import {
   extensionVersion,
 } from "../../libswamp/mod.ts";
 import { createExtensionVersionRenderer } from "../../presentation/renderers/extension_version.ts";
+import { loadIdentity } from "../load_identity.ts";
 
 interface ExtensionVersionOptions extends GlobalOptions {
   manifest?: string;
@@ -58,7 +59,8 @@ export const extensionVersionCommand = new Command()
       const extensionName = await resolveExtensionName(name, options.manifest);
 
       const ctx = createLibSwampContext({ logger: cliCtx.logger });
-      const deps = createExtensionVersionDeps();
+      const identity = await loadIdentity();
+      const deps = createExtensionVersionDeps(identity);
       const renderer = createExtensionVersionRenderer(cliCtx.outputMode);
 
       await consumeStream(

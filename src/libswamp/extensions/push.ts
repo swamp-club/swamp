@@ -304,6 +304,7 @@ import {
   SwampClubClient,
 } from "../../infrastructure/http/swamp_club_client.ts";
 import { ExtensionApiClient } from "../../infrastructure/http/extension_api_client.ts";
+import type { ClientIdentity } from "../../infrastructure/http/client_identity.ts";
 import { analyzeExtensionSafety } from "../../domain/extensions/extension_safety_analyzer.ts";
 import { checkExtensionQuality } from "../../domain/extensions/extension_quality_checker.ts";
 import { extractDependencySpecifiers } from "../../domain/extensions/extension_dependency_extractor.ts";
@@ -318,7 +319,9 @@ function resolveServerUrl(): string {
 }
 
 /** Wires real infrastructure into ExtensionPushPrepareDeps. */
-export function createExtensionPushPrepareDeps(): ExtensionPushPrepareDeps {
+export function createExtensionPushPrepareDeps(
+  identity?: ClientIdentity,
+): ExtensionPushPrepareDeps {
   const authRepo = new AuthRepository();
   const denoRuntime = new EmbeddedDenoRuntime();
 
@@ -333,7 +336,7 @@ export function createExtensionPushPrepareDeps(): ExtensionPushPrepareDeps {
       };
     },
     fetchCollectives: async (serverUrl, apiKey) => {
-      const client = new SwampClubClient(serverUrl);
+      const client = new SwampClubClient(serverUrl, identity);
       const whoami = await client.whoami(apiKey);
       return getCollectives(whoami);
     },
@@ -345,7 +348,7 @@ export function createExtensionPushPrepareDeps(): ExtensionPushPrepareDeps {
     bundleEntryPoint: bundleExtension,
     ensureDenoPath: () => denoRuntime.ensureDeno(),
     getLatestVersion: async (serverUrl, name, apiKey) => {
-      const client = new ExtensionApiClient(serverUrl);
+      const client = new ExtensionApiClient(serverUrl, identity);
       const result = await client.getLatestVersion(name, apiKey);
       if (!result) return null;
       return { version: result.version };
@@ -354,7 +357,9 @@ export function createExtensionPushPrepareDeps(): ExtensionPushPrepareDeps {
 }
 
 /** Wires real infrastructure into ExtensionPushExecuteDeps. */
-export function createExtensionPushExecuteDeps(): ExtensionPushExecuteDeps {
+export function createExtensionPushExecuteDeps(
+  identity?: ClientIdentity,
+): ExtensionPushExecuteDeps {
   const authRepo = new AuthRepository();
 
   return {
@@ -367,16 +372,20 @@ export function createExtensionPushExecuteDeps(): ExtensionPushExecuteDeps {
       };
     },
     initiatePush: async (serverUrl, metadata, apiKey) => {
-      const client = new ExtensionApiClient(serverUrl);
+      const client = new ExtensionApiClient(serverUrl, identity);
       const result = await client.initiatePush(metadata, apiKey);
       return { uploadUrl: result.uploadUrl };
     },
     uploadArchive: async (uploadUrl, archiveBytes) => {
+      // No identity here — uploadArchive bypasses the client's fetch
+      // wrapper and PUTs directly to a presigned S3 URL. Sending
+      // identity headers to S3 breaks the presigned signature and
+      // would leak the bearer token to S3 access logs.
       const client = new ExtensionApiClient("");
       await client.uploadArchive(uploadUrl, archiveBytes);
     },
     confirmPush: async (serverUrl, metadata, apiKey) => {
-      const client = new ExtensionApiClient(serverUrl);
+      const client = new ExtensionApiClient(serverUrl, identity);
       return await client.confirmPush(metadata, apiKey);
     },
   };
