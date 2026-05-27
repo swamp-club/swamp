@@ -19,7 +19,7 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
-import { renderDataGcPreview } from "./data_gc.ts";
+import { createDataGcRenderer, renderDataGcPreview } from "./data_gc.ts";
 
 await initializeLogging({});
 
@@ -120,6 +120,46 @@ Deno.test("renderDataGcPreview: log mode includes version-gc data when present",
       },
     ],
   }, "log");
+});
+
+Deno.test("createDataGcRenderer: json completed handler includes versionsDeleted and bytesReclaimed", () => {
+  const renderer = createDataGcRenderer("json");
+  const handlers = renderer.handlers();
+  const out = captureStdout(() =>
+    handlers.completed({
+      kind: "completed",
+      data: {
+        dataEntriesExpired: 3,
+        versionsDeleted: 42,
+        bytesReclaimed: 8192,
+        dryRun: false,
+        expiredEntries: [],
+        walPagesTotal: 0,
+        walPagesCheckpointed: 0,
+      },
+    })
+  );
+  const parsed = JSON.parse(out);
+  assertEquals(parsed.versionsDeleted, 42);
+  assertEquals(parsed.bytesReclaimed, 8192);
+  assertEquals(parsed.dataEntriesExpired, 3);
+});
+
+Deno.test("createDataGcRenderer: log completed handler does not throw", () => {
+  const renderer = createDataGcRenderer("log");
+  const handlers = renderer.handlers();
+  handlers.completed({
+    kind: "completed",
+    data: {
+      dataEntriesExpired: 5,
+      versionsDeleted: 100,
+      bytesReclaimed: 16384,
+      dryRun: false,
+      expiredEntries: [],
+      walPagesTotal: 0,
+      walPagesCheckpointed: 0,
+    },
+  });
 });
 
 Deno.test("renderDataGcPreview: json output is valid JSON", () => {
