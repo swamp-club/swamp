@@ -1125,7 +1125,7 @@ export async function runCli(args: string[]): Promise<void> {
   // Warnings are logged directly by the loaders (logging is initialized
   // by the time ensureLoaded() runs inside command .action() handlers).
   const deferredWarnings: DeferredWarning[] = [];
-  if (commandNeedsLoaderSetup(args)) {
+  if (commandNeedsLoaderSetup(args) && marker !== null) {
     const loaderSpan = getTracer().startSpan(
       "swamp.cli.configure_extension_loaders",
     );

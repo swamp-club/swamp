@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
 import { detectSupersededSkills, RepoService } from "./repo_service.ts";
 import { RepoPath } from "./repo_path.ts";
@@ -2510,4 +2511,55 @@ Deno.test("detectSupersededSkills: detects superseded skill directories", async 
 Deno.test("detectSupersededSkills: returns empty for nonexistent directory", async () => {
   const result = await detectSupersededSkills("/tmp/nonexistent-dir-326");
   assertEquals(result, []);
+});
+
+// ============================================================================
+// hasOrphanedSwampDir Tests
+// ============================================================================
+
+Deno.test("hasOrphanedSwampDir: returns true when .swamp/ exists without .swamp.yaml", async () => {
+  await withTempDir(async (tempDir) => {
+    await ensureDir(join(tempDir, ".swamp"));
+
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    assertEquals(await service.hasOrphanedSwampDir(repoPath), true);
+  });
+});
+
+Deno.test("hasOrphanedSwampDir: returns false when neither .swamp/ nor .swamp.yaml exist", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    assertEquals(await service.hasOrphanedSwampDir(repoPath), false);
+  });
+});
+
+Deno.test("hasOrphanedSwampDir: returns true even when fully initialized (caller gates on isInitialized first)", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+    await service.init(repoPath);
+
+    assertEquals(await service.hasOrphanedSwampDir(repoPath), true);
+  });
+});
+
+Deno.test("upgrade: throws orphan-specific error when .swamp/ exists without marker", async () => {
+  await withTempDir(async (tempDir) => {
+    await ensureDir(join(tempDir, ".swamp"));
+
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    const error = await assertRejects(
+      () => service.upgrade(repoPath),
+      Error,
+    );
+
+    assertStringIncludes(error.message, "Found a .swamp/ directory");
+    assertStringIncludes(error.message, "no .swamp.yaml marker");
+  });
 });

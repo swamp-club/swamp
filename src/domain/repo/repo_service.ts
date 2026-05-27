@@ -216,6 +216,19 @@ export class RepoService {
   }
 
   /**
+   * Checks whether a `.swamp/` runtime directory exists without a
+   * `.swamp.yaml` marker — i.e. a partially initialized or corrupted repo.
+   */
+  async hasOrphanedSwampDir(repoPath: RepoPath): Promise<boolean> {
+    try {
+      const stat = await Deno.stat(swampPath(repoPath.value));
+      return stat.isDirectory;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
    * Initializes a new swamp repository.
    *
    * @param repoPath - The path to initialize
@@ -315,6 +328,15 @@ export class RepoService {
     const existingMarker = await this.markerRepo.read(repoPath);
 
     if (!existingMarker) {
+      if (await this.hasOrphanedSwampDir(repoPath)) {
+        throw new UserError(
+          `Found a .swamp/ directory at ${repoPath.value} but no .swamp.yaml marker — ` +
+            "the repository appears partially initialized or corrupted. " +
+            "If you previously used a remote datastore, re-initializing with " +
+            "'swamp repo init' will not reconnect to it. Restore .swamp.yaml " +
+            "from version control or re-initialize with the correct --datastore flag.",
+        );
+      }
       throw new UserError(
         `Not a swamp repository: ${repoPath.value}. Run 'swamp repo init' first.`,
       );

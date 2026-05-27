@@ -337,11 +337,9 @@ Deno.test("requireInitializedRepoReadOnly - passes factory config", async () => 
 // Marker File Edge Cases
 // ============================================================================
 
-Deno.test("requireInitializedRepo - checks .swamp marker file", async () => {
+Deno.test("requireInitializedRepo - orphaned .swamp/ without marker reports distinct error", async () => {
   await withTempDir(async (dir) => {
-    // Create a directory with some files but NOT a valid swamp repo
     await ensureDir(join(dir, ".swamp"));
-    // Missing the marker file, so it should not be considered initialized
 
     const error = await assertRejects(
       () =>
@@ -352,7 +350,23 @@ Deno.test("requireInitializedRepo - checks .swamp marker file", async () => {
       UserError,
     );
 
-    assertStringIncludes(error.message, "Not a swamp repository");
+    assertStringIncludes(error.message, "Found a .swamp/ directory");
+    assertStringIncludes(error.message, "no .swamp.yaml marker");
+    assertStringIncludes(error.message, "remote datastore");
+  });
+});
+
+Deno.test("resolveDatastoreForRepo - orphaned .swamp/ without marker reports distinct error", async () => {
+  await withTempDir(async (dir) => {
+    await ensureDir(join(dir, ".swamp"));
+
+    const error = await assertRejects(
+      () => resolveDatastoreForRepo(dir),
+      UserError,
+    );
+
+    assertStringIncludes(error.message, "Found a .swamp/ directory");
+    assertStringIncludes(error.message, "no .swamp.yaml marker");
   });
 });
 
