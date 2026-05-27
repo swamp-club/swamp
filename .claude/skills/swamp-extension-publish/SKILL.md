@@ -1,16 +1,19 @@
 ---
 name: swamp-extension-publish
 description: >
-  Publish swamp extensions to the registry with an enforced state-machine
-  checklist that verifies repo initialization, authentication, manifest
-  validation, collective ownership, version bumping, formatting, and dry-run
-  before allowing a push. Do NOT use for creating extensions (that is
-  swamp-extension), improving quality scores (that is swamp-extension), or
-  smoke testing extensions before push (that is swamp-extension). Use when
-  publishing, pushing, or releasing extensions. Triggers on "publish
-  extension", "push extension", "extension push", "publish to registry",
-  "swamp extension push", "release extension", "prepare for publishing",
-  "extension-publish".
+  Publish swamp extensions to the registry and manage post-publication
+  lifecycle (deprecation). Enforces a state-machine checklist that verifies
+  repo initialization, authentication, manifest validation, collective
+  ownership, version bumping, formatting, and dry-run before allowing a push.
+  Also covers deprecating and undeprecating published extensions. Do NOT use
+  for creating extensions (that is swamp-extension), improving quality scores
+  (that is swamp-extension), or smoke testing extensions before push (that is
+  swamp-extension). Use when publishing, pushing, releasing, deprecating, or
+  undeprecating extensions. Triggers on "publish extension", "push extension",
+  "extension push", "publish to registry", "swamp extension push", "release
+  extension", "prepare for publishing", "extension-publish", "deprecate
+  extension", "undeprecate extension", "mark extension deprecated", "remove
+  deprecation", "extension deprecated", "superseded by".
 ---
 
 # Swamp Extension Publish
@@ -199,6 +202,44 @@ swamp extension push manifest.yaml --yes --json
 - Version already exists → bump the MICRO component and retry
 - Network error → check connectivity and retry
 - Auth error → re-run `swamp auth login` (go back to State 2)
+
+## Post-Publication: Deprecation
+
+Deprecate or undeprecate a published extension. Deprecated extensions remain
+pullable — this is a soft lifecycle signal, not a deletion.
+
+**Prerequisites:** Authenticated (`swamp auth whoami`) and authorized for the
+extension's collective.
+
+### Deprecate
+
+```bash
+swamp extension deprecate @collective/name --reason "No longer maintained" --json
+
+# Point users to a replacement
+swamp extension deprecate @collective/name \
+  --reason "Merged into collective extension" \
+  --superseded-by @other/replacement --json
+```
+
+| Option            | Required | Description                     |
+| ----------------- | -------- | ------------------------------- |
+| `--reason`        | Yes      | Why the extension is deprecated |
+| `--superseded-by` | No       | Replacement extension name      |
+| `-y, --yes`       | No       | Skip confirmation prompt        |
+
+### Undeprecate
+
+```bash
+swamp extension undeprecate @collective/name --json
+```
+
+Removes deprecation status. Accepts `-y, --yes` to skip confirmation.
+
+### Where deprecation surfaces
+
+`search` shows `[deprecated]`, `info` shows reason/successor/timestamp, `pull`
+prints a warning, `outdated` and `list --check-updates` flag the extension.
 
 ## References
 

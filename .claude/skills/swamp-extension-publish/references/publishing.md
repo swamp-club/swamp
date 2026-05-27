@@ -505,31 +505,34 @@ swamp extension version --manifest manifest.yaml --json
 
 ## Common Errors and Fixes
 
-| Error                           | Fix                                                                               |
-| ------------------------------- | --------------------------------------------------------------------------------- |
-| "Not a swamp repository"        | Run `swamp repo init --json` in the extension directory                           |
-| "Not authenticated"             | Run `swamp auth login` first                                                      |
-| "collective does not match"     | Manifest `name` must use `@your-username/...`                                     |
-| "CalVer format" error           | Use `YYYY.MM.DD.MICRO` (e.g., `2026.02.26.1`)                                     |
-| "at least one model, workflow…" | Add a `models`, `workflows`, `vaults`, `drivers`, `datastores`, or `skills` array |
-| "Model file not found"          | Check path is relative to `extensions/models/`                                    |
-| "Workflow file not found"       | Check path is relative to `workflows/`                                            |
-| "eval() or new Function()"      | Remove dynamic code execution from your models                                    |
-| "Version already exists"        | Bump the MICRO component or let CLI auto-bump                                     |
-| "Missing manifestVersion"       | Add `manifestVersion: 1` to your manifest                                         |
-| "Bundle compilation failed"     | Fix TypeScript errors in your model files                                         |
+| Error                             | Fix                                                                               |
+| --------------------------------- | --------------------------------------------------------------------------------- |
+| "Not a swamp repository"          | Run `swamp repo init --json` in the extension directory                           |
+| "Not authenticated"               | Run `swamp auth login` first                                                      |
+| "collective does not match"       | Manifest `name` must use `@your-username/...`                                     |
+| "CalVer format" error             | Use `YYYY.MM.DD.MICRO` (e.g., `2026.02.26.1`)                                     |
+| "at least one model, workflow…"   | Add a `models`, `workflows`, `vaults`, `drivers`, `datastores`, or `skills` array |
+| "Model file not found"            | Check path is relative to `extensions/models/`                                    |
+| "Workflow file not found"         | Check path is relative to `workflows/`                                            |
+| "eval() or new Function()"        | Remove dynamic code execution from your models                                    |
+| "Version already exists"          | Bump the MICRO component or let CLI auto-bump                                     |
+| "Missing manifestVersion"         | Add `manifestVersion: 1` to your manifest                                         |
+| "Bundle compilation failed"       | Fix TypeScript errors in your model files                                         |
+| "Extension is already deprecated" | Already deprecated — use `undeprecate` first if re-deprecating with new reason    |
+| "Extension is not deprecated"     | Nothing to undeprecate — extension is not currently deprecated                    |
 
 ## Related Skills
 
-| Need                               | Use Skill         |
-| ---------------------------------- | ----------------- |
-| Create custom models               | `swamp-extension` |
-| Create custom vaults               | `swamp-extension` |
-| Create custom datastores           | `swamp-extension` |
-| Create custom execution drivers    | `swamp-extension` |
-| Repository setup and management    | `swamp-repo`      |
-| Create reports                     | `swamp-report`    |
-| Quality scorecard & best practices | `swamp-extension` |
+| Need                               | Use Skill                 |
+| ---------------------------------- | ------------------------- |
+| Create custom models               | `swamp-extension`         |
+| Create custom vaults               | `swamp-extension`         |
+| Create custom datastores           | `swamp-extension`         |
+| Create custom execution drivers    | `swamp-extension`         |
+| Repository setup and management    | `swamp-repo`              |
+| Create reports                     | `swamp-report`            |
+| Quality scorecard & best practices | `swamp-extension`         |
+| Deprecate/undeprecate extensions   | `swamp-extension-publish` |
 
 ## Quality Self-Check
 
