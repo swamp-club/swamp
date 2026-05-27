@@ -71,7 +71,14 @@ export interface ExtensionUpdateDeps {
   /** Get extension info from registry (latest version). */
   getExtension: (
     name: string,
-  ) => Promise<{ latestVersion: string | null } | null>;
+  ) => Promise<
+    {
+      latestVersion: string | null;
+      deprecatedAt?: string | null;
+      deprecationReason?: string | null;
+      supersededBy?: string | null;
+    } | null
+  >;
   /**
    * Install/update a specific extension to a version. Returns the
    * `InstallResult` so the update path can surface the pruned orphan
@@ -102,7 +109,12 @@ export async function createExtensionUpdateDeps(options: {
       try {
         const info = await extensionClient.getExtension(name);
         if (!info) return null;
-        return { latestVersion: info.latestVersion ?? null };
+        return {
+          latestVersion: info.latestVersion ?? null,
+          deprecatedAt: info.deprecatedAt ?? null,
+          deprecationReason: info.deprecationReason ?? null,
+          supersededBy: info.supersededBy ?? null,
+        };
       } catch {
         return null;
       }
@@ -172,7 +184,11 @@ export async function* extensionUpdate(
         }
 
         statuses.push(
-          checkExtensionVersion(name, installedVersion, extInfo.latestVersion),
+          checkExtensionVersion(name, installedVersion, extInfo.latestVersion, {
+            deprecatedAt: extInfo.deprecatedAt ?? null,
+            deprecationReason: extInfo.deprecationReason ?? null,
+            supersededBy: extInfo.supersededBy ?? null,
+          }),
         );
       }
 

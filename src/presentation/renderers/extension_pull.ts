@@ -209,6 +209,16 @@ class LogExtensionPullRenderer implements ExtensionPullRenderer {
   handlers(): EventHandlers<ExtensionPullEvent> {
     return {
       installing: () => {},
+      deprecated_warning: (e) => {
+        this.#logger.warn`Extension ${e.name} is deprecated`;
+        if (e.reason) {
+          this.#logger.warn`Reason: ${e.reason}`;
+        }
+        if (e.supersededBy) {
+          this.#logger
+            .warn`Consider switching to ${e.supersededBy}`;
+        }
+      },
       "orphans-pruned": (e) => {
         this.#logger
           .info`Removed ${
@@ -240,6 +250,18 @@ class JsonExtensionPullRenderer implements ExtensionPullRenderer {
   handlers(): EventHandlers<ExtensionPullEvent> {
     return {
       installing: () => {},
+      deprecated_warning: (e) => {
+        console.log(JSON.stringify(
+          {
+            status: "deprecated",
+            name: e.name,
+            reason: e.reason,
+            supersededBy: e.supersededBy,
+          },
+          null,
+          2,
+        ));
+      },
       "orphans-pruned": (e) => {
         console.log(JSON.stringify(
           {

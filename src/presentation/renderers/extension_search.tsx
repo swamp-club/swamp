@@ -138,10 +138,12 @@ function renderExtensionResultLine(
   const labelsStr = item.labels.length > 0
     ? ` [${item.labels.join(", ")}]`
     : "";
+  const deprecated = item.deprecatedAt != null;
   return (
     <Text>
       {`${item.name} `}
       <Text dimColor>{`v${item.latestVersion}`}</Text>
+      {deprecated && <Text color="yellow">[deprecated]</Text>}
       {truncatedDesc && <Text dimColor>{` ${EM_DASH} ${truncatedDesc}`}</Text>}
       {labelsStr && <Text color="blue">{labelsStr}</Text>}
     </Text>
@@ -196,6 +198,23 @@ function renderExtensionPreview(
     );
   }
 
+  if (item.deprecatedAt != null) {
+    lines.push(<Text key="dep-gap" />);
+    lines.push(
+      <Text key="deprecated" color="yellow" wrap="truncate-end">
+        <Text bold>Deprecated:</Text>{" "}
+        {item.deprecationReason ?? "No reason given"}
+      </Text>,
+    );
+    if (item.supersededBy) {
+      lines.push(
+        <Text key="successor" color="yellow" wrap="truncate-end">
+          <Text bold>Superseded by:</Text> {item.supersededBy}
+        </Text>,
+      );
+    }
+  }
+
   lines.push(<Text key="dates-gap" />);
   lines.push(
     <Text key="created" dimColor wrap="truncate-end">
@@ -237,6 +256,15 @@ function renderExtensionScrollback(
 
   if (item.contentTypes.length > 0) {
     lines.push(`Content Types: ${item.contentTypes.join(", ")}`);
+  }
+
+  if (item.deprecatedAt != null) {
+    lines.push(
+      `Deprecated: ${item.deprecationReason ?? "No reason given"}`,
+    );
+    if (item.supersededBy) {
+      lines.push(`Superseded by: ${item.supersededBy}`);
+    }
   }
 
   return lines.join("\n");

@@ -155,6 +155,15 @@ function renderCheckLog(result: ExtensionUpdateResult, logger: Logger): void {
             `${paddedName}  v${ext.installedVersion}  (update failed: ${ext.error})`,
         });
         break;
+      case "deprecated": {
+        let line = `${paddedName}  v${ext.installedVersion}  (deprecated`;
+        if (ext.supersededBy) {
+          line += ` — use ${ext.supersededBy} instead`;
+        }
+        line += ")";
+        logger.warn("{line}", { line });
+        break;
+      }
     }
   }
 
@@ -199,6 +208,14 @@ function renderUpdateLog(result: ExtensionUpdateResult, logger: Logger): void {
           line: `${ext.name}: ${ext.error}`,
         });
         break;
+      case "deprecated": {
+        let line = `${ext.name}: deprecated`;
+        if (ext.supersededBy) {
+          line += ` — use ${ext.supersededBy} instead`;
+        }
+        logger.warn("{line}", { line });
+        break;
+      }
     }
   }
 

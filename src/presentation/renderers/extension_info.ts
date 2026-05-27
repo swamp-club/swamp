@@ -92,6 +92,17 @@ class LogExtensionInfoRenderer implements Renderer<ExtensionInfoEvent> {
             logger.warn`Reason:      ${d.yankReason}`;
           }
         }
+
+        if (d.deprecatedAt) {
+          logger.info``;
+          logger.warn`Deprecated:  ${d.deprecatedAt}`;
+          if (d.deprecationReason) {
+            logger.warn`Reason:      ${d.deprecationReason}`;
+          }
+          if (d.supersededBy) {
+            logger.warn`Superseded by: ${d.supersededBy}`;
+          }
+        }
       },
       not_found: (e) => {
         const basename = extractBasename(e.extensionName);

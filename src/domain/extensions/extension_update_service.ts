@@ -59,13 +59,23 @@ export interface FailedStatus {
   error: string;
 }
 
+/** Extension is deprecated in the registry. */
+export interface DeprecatedStatus {
+  status: "deprecated";
+  name: string;
+  installedVersion: string;
+  deprecationReason: string | null;
+  supersededBy: string | null;
+}
+
 /** Discriminated union of all possible update statuses. */
 export type ExtensionUpdateStatus =
   | UpToDateStatus
   | UpdateAvailableStatus
   | UpdatedStatus
   | NotFoundStatus
-  | FailedStatus;
+  | FailedStatus
+  | DeprecatedStatus;
 
 /** Summary counts for the update operation. */
 export interface UpdateSummary {
@@ -93,13 +103,28 @@ export function checkExtensionVersion(
   name: string,
   installedVersion: string,
   latestVersion: string | null,
-): UpToDateStatus | UpdateAvailableStatus | NotFoundStatus {
+  deprecation?: {
+    deprecatedAt: string | null;
+    deprecationReason: string | null;
+    supersededBy: string | null;
+  },
+): UpToDateStatus | UpdateAvailableStatus | NotFoundStatus | DeprecatedStatus {
   if (latestVersion === null) {
     return {
       status: "not_found",
       name,
       installedVersion,
       error: `Extension ${name} not found in the registry.`,
+    };
+  }
+
+  if (deprecation?.deprecatedAt != null) {
+    return {
+      status: "deprecated",
+      name,
+      installedVersion,
+      deprecationReason: deprecation.deprecationReason,
+      supersededBy: deprecation.supersededBy,
     };
   }
 
@@ -148,6 +173,8 @@ export function buildUpdateResult(
       case "not_found":
       case "failed":
         failed++;
+        break;
+      case "deprecated":
         break;
     }
   }

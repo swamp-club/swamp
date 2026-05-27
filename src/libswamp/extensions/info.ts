@@ -46,6 +46,10 @@ export interface ExtensionInfoData {
   updatedAt: string;
   yankedAt: string | null;
   yankReason: string | null;
+  deprecatedAt: string | null;
+  deprecatedByUserId: string | null;
+  deprecationReason: string | null;
+  supersededBy: string | null;
   repositoryVerified: boolean | null;
   repositoryVerifiedAt: string | null;
   repositoryVerifiedUrl: string | null;
@@ -119,6 +123,10 @@ export async function* extensionInfo(
             updatedAt: info.updatedAt,
             yankedAt: info.yankedAt,
             yankReason: info.yankReason,
+            deprecatedAt: info.deprecatedAt ?? null,
+            deprecatedByUserId: info.deprecatedByUserId ?? null,
+            deprecationReason: info.deprecationReason ?? null,
+            supersededBy: info.supersededBy ?? null,
             repositoryVerified: info.repositoryVerified,
             repositoryVerifiedAt: info.repositoryVerifiedAt,
             repositoryVerifiedUrl: info.repositoryVerifiedUrl,

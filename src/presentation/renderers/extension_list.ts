@@ -42,7 +42,11 @@ const logger = getSwampLogger(["extension", "list"]);
  */
 export interface EnrichedExtensionListEntry extends ExtensionListEntry {
   latestVersion?: string | null;
-  updateStatus?: "up_to_date" | "update_available" | "unknown_offline";
+  updateStatus?:
+    | "up_to_date"
+    | "update_available"
+    | "unknown_offline"
+    | "deprecated";
 }
 
 class LogExtensionListRenderer implements Renderer<EnrichedExtensionListEvent> {
@@ -99,6 +103,8 @@ class LogExtensionListRenderer implements Renderer<EnrichedExtensionListEvent> {
               line += "  (update available)";
             } else if (ext.updateStatus === "unknown_offline") {
               line += "  (offline — last check failed)";
+            } else if (ext.updateStatus === "deprecated") {
+              line += "  (deprecated)";
             }
           }
           line += `  (pulled ${ext.pulledAt})`;

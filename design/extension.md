@@ -82,6 +82,38 @@ exit-code semantic is a public contract: broadening it later (to also
 fail on not_found/failed) would silently break pipelines built on the
 strict semantic.
 
+### Deprecation
+
+Extensions can be deprecated in the registry without being yanked.
+Deprecation is a soft lifecycle state: deprecated extensions remain
+pullable and resolvable — existing workflows don't break.
+
+`swamp extension deprecate` marks an entire extension (not individual
+versions) as deprecated. An optional `--superseded-by` flag points
+users to a replacement extension. `swamp extension undeprecate` reverses
+the state.
+
+Deprecation surfaces in five places:
+
+- `swamp extension search` shows a `[deprecated]` indicator next to
+  deprecated extensions.
+- `swamp extension info` displays deprecation timestamp, reason, and
+  successor (if set).
+- `swamp extension pull` prints a warning when pulling a deprecated
+  extension, including the successor pointer.
+- `swamp extension outdated` includes a `deprecated` status alongside
+  `update_available`, `not_found`, and `failed`. Deprecated extensions
+  do NOT fail the exit code (same rationale as not_found/failed: the
+  extension still works, it's informational).
+- `swamp extension list --check-updates` marks deprecated extensions
+  with `(deprecated)` when the enrichment status is available.
+
+Registry API endpoints: `POST /api/v1/extensions/{name}/deprecate`
+(body: `{reason, supersededBy?}`) and
+`POST /api/v1/extensions/{name}/undeprecate` (no body). The extension
+info view returns `deprecatedAt`, `deprecatedByUserId`,
+`deprecationReason`, and `supersededBy` fields.
+
 ### Cache and registry behavior
 
 Both surfaces share a 24-hour on-disk cache stored at

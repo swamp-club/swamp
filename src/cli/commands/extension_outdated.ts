@@ -59,7 +59,8 @@ export function filterOutdated(
   return statuses.filter((s) =>
     s.status === "update_available" ||
     s.status === "not_found" ||
-    s.status === "failed"
+    s.status === "failed" ||
+    s.status === "deprecated"
   );
 }
 

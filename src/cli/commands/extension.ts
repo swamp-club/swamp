@@ -33,6 +33,8 @@ import { extensionOutdatedCommand } from "./extension_outdated.ts";
 import { extensionVersionCommand } from "./extension_version.ts";
 import { extensionYankCommand } from "./extension_yank.ts";
 import { extensionUnyankCommand } from "./extension_unyank.ts";
+import { extensionDeprecateCommand } from "./extension_deprecate.ts";
+import { extensionUndeprecateCommand } from "./extension_undeprecate.ts";
 import { extensionTrustCommand } from "./extension_trust.ts";
 import { extensionSourceCommand } from "./extension_source.ts";
 import { unknownCommandErrorHandler } from "../unknown_command_handler.ts";
@@ -56,5 +58,7 @@ export const extensionCommand = new Command()
   .command("version", extensionVersionCommand)
   .command("yank", extensionYankCommand)
   .command("unyank", extensionUnyankCommand)
+  .command("deprecate", extensionDeprecateCommand)
+  .command("undeprecate", extensionUndeprecateCommand)
   .command("trust", extensionTrustCommand)
   .command("source", extensionSourceCommand);

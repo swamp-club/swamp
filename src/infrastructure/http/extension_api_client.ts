@@ -90,6 +90,10 @@ export interface ExtensionInfo {
   updatedAt: string;
   yankedAt: string | null;
   yankReason: string | null;
+  deprecatedAt: string | null;
+  deprecatedByUserId: string | null;
+  deprecationReason: string | null;
+  supersededBy: string | null;
   repositoryVerified: boolean | null;
   repositoryVerifiedAt: string | null;
   repositoryVerifiedUrl: string | null;
@@ -120,6 +124,9 @@ export interface ExtensionSearchEntry {
   latestVersion: string;
   createdAt: string;
   updatedAt: string;
+  deprecatedAt?: string | null;
+  deprecationReason?: string | null;
+  supersededBy?: string | null;
 }
 
 /** Response from the extension search endpoint. */
@@ -145,6 +152,16 @@ export interface YankResult {
  * server logs the unyank without a reason and still returns a message.
  */
 export interface UnyankResult {
+  message: string;
+}
+
+/** Response from the deprecate endpoint. */
+export interface DeprecateResult {
+  message: string;
+}
+
+/** Response from the undeprecate endpoint. */
+export interface UndeprecateResult {
   message: string;
 }
 
@@ -481,6 +498,46 @@ export class ExtensionApiClient {
       };
 
     const res = await this.fetch(path, init);
+    await this.checkResponse(res);
+    return await res.json();
+  }
+
+  async deprecateExtension(
+    name: string,
+    reason: string,
+    supersededBy: string | null,
+    apiKey: string,
+  ): Promise<DeprecateResult> {
+    const encodedName = encodeURIComponent(name);
+    const path = `/api/v1/extensions/${encodedName}/deprecate`;
+    const body: Record<string, string> = { reason };
+    if (supersededBy !== null) {
+      body.supersededBy = supersededBy;
+    }
+    const res = await this.fetch(path, {
+      method: "POST",
+      headers: {
+        ...this.authHeaders(apiKey),
+        "Content-Type": "application/json",
+      },
+      body: JSON.stringify(body),
+    });
+
+    await this.checkResponse(res);
+    return await res.json();
+  }
+
+  async undeprecateExtension(
+    name: string,
+    apiKey: string,
+  ): Promise<UndeprecateResult> {
+    const encodedName = encodeURIComponent(name);
+    const path = `/api/v1/extensions/${encodedName}/undeprecate`;
+    const res = await this.fetch(path, {
+      method: "POST",
+      headers: this.authHeaders(apiKey),
+    });
+
     await this.checkResponse(res);
     return await res.json();
   }

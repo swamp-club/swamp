@@ -627,6 +627,26 @@ export {
   extensionUnyankPreview,
 } from "./extensions/unyank.ts";
 export {
+  createExtensionDeprecateDeps,
+  extensionDeprecate,
+  type ExtensionDeprecateData,
+  type ExtensionDeprecateDeps,
+  type ExtensionDeprecateEvent,
+  type ExtensionDeprecateInput,
+  type ExtensionDeprecatePreview,
+  extensionDeprecatePreview,
+} from "./extensions/deprecate.ts";
+export {
+  createExtensionUndeprecateDeps,
+  extensionUndeprecate,
+  type ExtensionUndeprecateData,
+  type ExtensionUndeprecateDeps,
+  type ExtensionUndeprecateEvent,
+  type ExtensionUndeprecateInput,
+  type ExtensionUndeprecatePreview,
+  extensionUndeprecatePreview,
+} from "./extensions/undeprecate.ts";
+export {
   createExtensionQualityDeps,
   extensionQuality,
   type ExtensionQualityData,

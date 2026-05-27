@@ -31,6 +31,9 @@ export interface ExtensionSearchItem {
   contentTypes: string[];
   createdAt: string;
   updatedAt: string;
+  deprecatedAt?: string | null;
+  deprecationReason?: string | null;
+  supersededBy?: string | null;
 }
 
 /** Pagination metadata for search results. */
