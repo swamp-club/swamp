@@ -210,6 +210,76 @@ Deno.test("buildUpdateResult handles mixed statuses including failed", () => {
   assertEquals(result.summary.failed, 2);
 });
 
+Deno.test("checkExtensionVersion returns deprecated when up-to-date and deprecated", () => {
+  const result = checkExtensionVersion(
+    "@test/ext",
+    "2026.01.15.1",
+    "2026.01.15.1",
+    {
+      deprecatedAt: "2026-01-01T00:00:00Z",
+      deprecationReason: "EOL",
+      supersededBy: "@other/ext",
+    },
+  );
+  assertEquals(result.status, "deprecated");
+  if (result.status === "deprecated") {
+    assertEquals(result.name, "@test/ext");
+    assertEquals(result.installedVersion, "2026.01.15.1");
+    assertEquals(result.deprecationReason, "EOL");
+    assertEquals(result.supersededBy, "@other/ext");
+  }
+});
+
+Deno.test("checkExtensionVersion returns update_available when deprecated with newer version", () => {
+  const result = checkExtensionVersion(
+    "@test/ext",
+    "2026.01.15.1",
+    "2026.02.01.1",
+    {
+      deprecatedAt: "2026-01-01T00:00:00Z",
+      deprecationReason: "EOL",
+      supersededBy: "@other/ext",
+    },
+  );
+  assertEquals(result.status, "update_available");
+});
+
+Deno.test("checkExtensionVersion falls through to normal comparison when deprecatedAt is null", () => {
+  const result = checkExtensionVersion(
+    "@test/ext",
+    "2026.01.15.1",
+    "2026.01.15.1",
+    {
+      deprecatedAt: null,
+      deprecationReason: null,
+      supersededBy: null,
+    },
+  );
+  assertEquals(result.status, "up_to_date");
+});
+
+Deno.test("buildUpdateResult counts deprecated as total but not upToDate, updated, or failed", () => {
+  const result = buildUpdateResult([
+    {
+      status: "deprecated",
+      name: "@test/a",
+      installedVersion: "2026.01.01.1",
+      deprecationReason: "EOL",
+      supersededBy: "@other/a",
+    },
+    {
+      status: "up_to_date",
+      name: "@test/b",
+      installedVersion: "2026.01.01.1",
+      latestVersion: "2026.01.01.1",
+    },
+  ]);
+  assertEquals(result.summary.total, 2);
+  assertEquals(result.summary.upToDate, 1);
+  assertEquals(result.summary.updated, 0);
+  assertEquals(result.summary.failed, 0);
+});
+
 Deno.test("buildUpdateResult handles empty array", () => {
   const result = buildUpdateResult([]);
   assertEquals(result.summary.total, 0);

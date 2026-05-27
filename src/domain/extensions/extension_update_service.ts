@@ -118,6 +118,23 @@ export function checkExtensionVersion(
     };
   }
 
+  const installed = CalVer.create(installedVersion);
+  const latest = CalVer.create(latestVersion);
+  const cmp = CalVer.compare(installed, latest);
+
+  // Version comparison takes precedence over deprecation so that
+  // security patches and updates are never silently skipped.
+  // Deprecation is only surfaced when the extension is already
+  // up-to-date — the pull warning covers the deprecated+update case.
+  if (cmp < 0) {
+    return {
+      status: "update_available",
+      name,
+      installedVersion,
+      latestVersion,
+    };
+  }
+
   if (deprecation?.deprecatedAt != null) {
     return {
       status: "deprecated",
@@ -128,21 +145,8 @@ export function checkExtensionVersion(
     };
   }
 
-  const installed = CalVer.create(installedVersion);
-  const latest = CalVer.create(latestVersion);
-  const cmp = CalVer.compare(installed, latest);
-
-  if (cmp >= 0) {
-    return {
-      status: "up_to_date",
-      name,
-      installedVersion,
-      latestVersion,
-    };
-  }
-
   return {
-    status: "update_available",
+    status: "up_to_date",
     name,
     installedVersion,
     latestVersion,

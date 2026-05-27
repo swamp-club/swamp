@@ -30,6 +30,7 @@ import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 export interface ExtensionOutdatedResult {
   extensions: ExtensionUpdateStatus[];
   hasUpdateAvailable: boolean;
+  hasDeprecated: boolean;
 }
 
 export type ExtensionOutdatedEvent = {
@@ -113,6 +114,7 @@ class JsonExtensionOutdatedRenderer
             {
               extensions: e.data.extensions,
               hasUpdateAvailable: e.data.hasUpdateAvailable,
+              hasDeprecated: e.data.hasDeprecated,
             },
             null,
             2,

@@ -1167,18 +1167,21 @@ export async function* extensionPull(
     (async function* () {
       yield { kind: "installing" } as const;
 
-      const extMeta = await deps.getExtension(input.ref.name);
-      if (extMeta?.deprecatedAt != null) {
+      const prefetchedInfo = await deps.getExtension(input.ref.name);
+      if (prefetchedInfo?.deprecatedAt != null) {
         yield {
           kind: "deprecated_warning" as const,
           name: input.ref.name,
-          reason: extMeta.deprecationReason ?? null,
-          supersededBy: extMeta.supersededBy ?? null,
+          reason: prefetchedInfo.deprecationReason ?? null,
+          supersededBy: prefetchedInfo.supersededBy ?? null,
         };
       }
 
       const installCtx: InstallContext = {
-        getExtension: deps.getExtension,
+        getExtension: (name) =>
+          name === input.ref.name && prefetchedInfo
+            ? Promise.resolve(prefetchedInfo)
+            : deps.getExtension(name),
         downloadArchive: deps.downloadArchive,
         getChecksum: deps.getChecksum,
         logger: ctx.logger,

@@ -100,7 +100,7 @@ class LogExtensionInfoRenderer implements Renderer<ExtensionInfoEvent> {
             logger.warn`Reason:      ${d.deprecationReason}`;
           }
           if (d.supersededBy) {
-            logger.warn`Superseded by: ${d.supersededBy}`;
+            logger.warn`Superseded:  ${d.supersededBy}`;
           }
         }
       },

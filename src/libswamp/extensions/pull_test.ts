@@ -328,3 +328,39 @@ Deno.test(
     await Deno.remove(deps.repoDir, { recursive: true });
   },
 );
+
+Deno.test(
+  "extensionPull: emits deprecated_warning when extension is deprecated",
+  async () => {
+    const ref: ExtensionRef = { name: "@stub/ext", version: "1.0.0" };
+    const deps = await makeStubDeps(() =>
+      Promise.resolve(makeStubInstallResult(ref))
+    );
+    deps.getExtension = () =>
+      Promise.resolve({
+        name: "@stub/ext",
+        description: "stub",
+        latestVersion: "1.0.0",
+        deprecatedAt: "2026-01-01T00:00:00Z",
+        deprecationReason: "Merged into collective",
+        supersededBy: "@collective/ext",
+      });
+
+    const events = await collectEvents(
+      extensionPull(createLibSwampContext(), deps, { ref, force: false }),
+    );
+
+    assertEquals(events.length, 3);
+    assertEquals(events[0].kind, "installing");
+    assertEquals(events[1].kind, "deprecated_warning");
+    assertEquals(events[2].kind, "completed");
+
+    if (events[1].kind === "deprecated_warning") {
+      assertEquals(events[1].name, "@stub/ext");
+      assertEquals(events[1].reason, "Merged into collective");
+      assertEquals(events[1].supersededBy, "@collective/ext");
+    }
+
+    await Deno.remove(deps.repoDir, { recursive: true }).catch(() => {});
+  },
+);
