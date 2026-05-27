@@ -34,7 +34,7 @@ class LogDataGcRenderer implements Renderer<DataGcEvent> {
       collecting: () => {},
       completed: (e) => {
         logger
-          .info`GC complete: deleted ${e.data.dataEntriesExpired} items`;
+          .info`GC complete: deleted ${e.data.dataEntriesExpired} expired items, ${e.data.versionsDeleted} excess versions reclaimed (${e.data.bytesReclaimed} bytes)`;
         if (!e.data.dryRun) {
           // wal_checkpoint(TRUNCATE) returns (0,0,0) on full success.
           if (

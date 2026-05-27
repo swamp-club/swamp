@@ -36,6 +36,8 @@ import { Definition } from "../src/domain/definitions/definition.ts";
 import { FileSystemUnifiedDataRepository } from "../src/infrastructure/persistence/unified_data_repository.ts";
 import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
 import { ModelResolver } from "../src/domain/expressions/model_resolver.ts";
+import { DefaultDataLifecycleService } from "../src/domain/data/data_lifecycle_service.ts";
+import { YamlWorkflowRunRepository } from "../src/infrastructure/persistence/yaml_workflow_run_repository.ts";
 import { CatalogStore } from "../src/infrastructure/persistence/catalog_store.ts";
 import { DataQueryService } from "../src/domain/data/data_query_service.ts";
 
@@ -814,5 +816,192 @@ Deno.test("Data Versioning: delete all versions", async () => {
 
     const versions = await repo.listVersions(type, modelId, "delete-all-test");
     assertEquals(versions, []);
+  });
+});
+
+// ============================================================================
+// End-to-end: deleteExpiredData Phase 1 + Phase 2 interaction (issue #458)
+// ============================================================================
+
+Deno.test("Data Versioning: deleteExpiredData removes excess version directories from disk", async () => {
+  await withTempDir(async (repoDir) => {
+    await setupRepoDir(repoDir);
+    await ensureDir(join(repoDir, ".swamp", "workflow-runs"));
+    const catalogStore = new CatalogStore(join(repoDir, "_catalog.db"));
+    const repo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      catalogStore,
+    );
+    const workflowRunRepo = new YamlWorkflowRunRepository(repoDir);
+    const service = new DefaultDataLifecycleService(repo, workflowRunRepo);
+
+    const type = ModelType.create("test/gc-e2e");
+    const modelId = crypto.randomUUID();
+    const owner = createOwner("test/gc-e2e:run");
+
+    // Data item with gc=5, lifetime=infinite — should keep 5 most recent
+    const data = Data.create({
+      name: "findings",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 5,
+      tags: { type: "resource" },
+      ownerDefinition: owner,
+    });
+
+    // Write 25 versions (simulating repeated method runs)
+    for (let i = 1; i <= 25; i++) {
+      await repo.save(
+        type,
+        modelId,
+        data,
+        new TextEncoder().encode(JSON.stringify({ run: i })),
+      );
+    }
+
+    // Verify all 25 version directories exist on disk
+    const dataNameDir = repo.getDataNameDir(type, modelId, "findings");
+    let versionDirsBefore = 0;
+    for await (const entry of Deno.readDir(dataNameDir)) {
+      if (entry.isDirectory && entry.name !== "latest") versionDirsBefore++;
+    }
+    assertEquals(versionDirsBefore, 25);
+
+    // Run deleteExpiredData (the full Phase 1 + Phase 2 flow)
+    const result = await service.deleteExpiredData();
+
+    // Phase 1: nothing expired (lifetime: infinite)
+    assertEquals(result.dataEntriesExpired, 0);
+    // Phase 2: should remove 20 excess versions (25 - 5)
+    assertEquals(result.versionsDeleted, 20);
+
+    // Verify PHYSICAL version directories were deleted
+    let versionDirsAfter = 0;
+    for await (const entry of Deno.readDir(dataNameDir)) {
+      if (entry.isDirectory && entry.name !== "latest") versionDirsAfter++;
+    }
+    assertEquals(
+      versionDirsAfter,
+      5,
+      `Expected 5 version dirs after GC, got ${versionDirsAfter} — physical deletion failed`,
+    );
+
+    // Verify correct versions survive (21-25)
+    const survivingVersions = await repo.listVersions(
+      type,
+      modelId,
+      "findings",
+    );
+    assertEquals(survivingVersions, [21, 22, 23, 24, 25]);
+  });
+});
+
+Deno.test("Data Versioning: deleteExpiredData with expired + excess versions", async () => {
+  await withTempDir(async (repoDir) => {
+    await setupRepoDir(repoDir);
+    await ensureDir(join(repoDir, ".swamp", "workflow-runs"));
+    const catalogStore = new CatalogStore(join(repoDir, "_catalog.db"));
+    const repo = new FileSystemUnifiedDataRepository(
+      repoDir,
+      undefined,
+      catalogStore,
+    );
+    const workflowRunRepo = new YamlWorkflowRunRepository(repoDir);
+    const service = new DefaultDataLifecycleService(repo, workflowRunRepo);
+
+    const type = ModelType.create("test/gc-mixed");
+    const modelId = crypto.randomUUID();
+    const owner = createOwner("test/gc-mixed:run");
+
+    // Data item A: short lifetime (will be expired), gc=5
+    const expiredData = Data.create({
+      name: "expired-item",
+      contentType: "text/plain",
+      lifetime: "1m",
+      garbageCollection: 5,
+      tags: { type: "resource" },
+      ownerDefinition: owner,
+    });
+
+    // Data item B: infinite lifetime, gc=3 — should have excess versions pruned
+    const gcData = Data.create({
+      name: "gc-target",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 3,
+      tags: { type: "resource" },
+      ownerDefinition: owner,
+    });
+
+    // Write versions for both items
+    for (let i = 1; i <= 10; i++) {
+      await repo.save(
+        type,
+        modelId,
+        expiredData,
+        new TextEncoder().encode(`expired-v${i}`),
+      );
+      await repo.save(
+        type,
+        modelId,
+        gcData,
+        new TextEncoder().encode(`gc-v${i}`),
+      );
+    }
+
+    // Backdate expired-item metadata to make it actually expired
+    const expiredDataNameDir = repo.getDataNameDir(
+      type,
+      modelId,
+      "expired-item",
+    );
+    for (let v = 1; v <= 10; v++) {
+      const metaPath = join(
+        repo.getPath(type, modelId, "expired-item", v),
+        "metadata.yaml",
+      );
+      const content = await Deno.readTextFile(metaPath);
+      const backdated = content.replace(
+        /createdAt: .*/,
+        "createdAt: '2020-01-01T00:00:00.000Z'",
+      );
+      await Deno.writeTextFile(metaPath, backdated);
+    }
+
+    // Verify initial state
+    const gcDataNameDir = repo.getDataNameDir(type, modelId, "gc-target");
+    let gcVersionsBefore = 0;
+    for await (const entry of Deno.readDir(gcDataNameDir)) {
+      if (entry.isDirectory && entry.name !== "latest") gcVersionsBefore++;
+    }
+    assertEquals(gcVersionsBefore, 10);
+
+    // Run deleteExpiredData (Phase 1 + Phase 2)
+    const result = await service.deleteExpiredData();
+
+    // Phase 1 should expire the backdated item
+    assertEquals(result.dataEntriesExpired, 1);
+
+    // Verify expired-item directory was completely removed by Phase 1
+    assertEquals(existsSync(expiredDataNameDir), false);
+
+    // Verify gc-target had excess versions pruned by Phase 2
+    let gcVersionsAfter = 0;
+    for await (const entry of Deno.readDir(gcDataNameDir)) {
+      if (entry.isDirectory && entry.name !== "latest") gcVersionsAfter++;
+    }
+    assertEquals(
+      gcVersionsAfter,
+      3,
+      `Expected 3 version dirs for gc-target after GC, got ${gcVersionsAfter}`,
+    );
+
+    const survivingVersions = await repo.listVersions(
+      type,
+      modelId,
+      "gc-target",
+    );
+    assertEquals(survivingVersions, [8, 9, 10]);
   });
 });
