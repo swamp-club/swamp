@@ -39,10 +39,12 @@ Deno.test("JsonExtensionOutdatedRenderer - emits extensions and hasUpdateAvailab
           },
         ],
         hasUpdateAvailable: true,
+        hasDeprecated: false,
       },
     });
     const parsed = JSON.parse(logs[0]);
     assertEquals(parsed.hasUpdateAvailable, true);
+    assertEquals(parsed.hasDeprecated, false);
     assertEquals(parsed.extensions.length, 1);
     assertEquals(parsed.extensions[0].status, "update_available");
   } finally {
@@ -59,7 +61,7 @@ Deno.test("JsonExtensionOutdatedRenderer - empty extensions still emits structur
     const renderer = createExtensionOutdatedRenderer("json");
     await renderer.handlers().completed({
       kind: "completed",
-      data: { extensions: [], hasUpdateAvailable: false },
+      data: { extensions: [], hasUpdateAvailable: false, hasDeprecated: false },
     });
     const parsed = JSON.parse(logs[0]);
     assertEquals(parsed.extensions, []);
