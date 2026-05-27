@@ -34,6 +34,7 @@ import { modelRegistry } from "../../domain/models/model.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
 import { driverTypeRegistry } from "../../domain/drivers/driver_type_registry.ts";
 import { reportRegistry } from "../../domain/reports/report_registry.ts";
+import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -103,6 +104,7 @@ export const serveCommand = new Command()
       modelRegistry.ensureLoaded(),
       vaultTypeRegistry.ensureLoaded(),
       driverTypeRegistry.ensureLoaded(),
+      datastoreTypeRegistry.ensureLoaded(),
       reportRegistry.ensureLoaded(),
     ]);
 
