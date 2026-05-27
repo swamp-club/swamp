@@ -546,8 +546,12 @@ async function loadUserModels(
           .warn`Failed to load user model ${failure.file}: ${failure.error}`;
       }
     }
-  } catch {
-    // Not in a swamp repo or models dir doesn't exist — not an error
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return;
+    logger
+      .warn`Failed to load user model extensions: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
   }
 }
 
@@ -615,8 +619,12 @@ async function loadUserVaults(
           .warn`Failed to load user vault ${failure.file}: ${failure.error}`;
       }
     }
-  } catch {
-    // Not in a swamp repo or vaults dir doesn't exist — not an error
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return;
+    logger
+      .warn`Failed to load user vault extensions: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
   }
 }
 
@@ -680,8 +688,12 @@ async function loadUserDrivers(
           .warn`Failed to load user driver ${failure.file}: ${failure.error}`;
       }
     }
-  } catch {
-    // Not in a swamp repo or drivers dir doesn't exist — not an error
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return;
+    logger
+      .warn`Failed to load user driver extensions: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
   }
 }
 
@@ -746,8 +758,12 @@ async function loadUserDatastores(
           .warn`Failed to load user datastore ${failure.file}: ${failure.error}`;
       }
     }
-  } catch {
-    // Not in a swamp repo or datastores dir doesn't exist — not an error
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return;
+    logger
+      .warn`Failed to load user datastore extensions: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
   }
 }
 
@@ -811,8 +827,12 @@ async function loadUserReports(
           .warn`Failed to load user report ${failure.file}: ${failure.error}`;
       }
     }
-  } catch {
-    // Not in a swamp repo or reports dir doesn't exist — not an error
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return;
+    logger
+      .warn`Failed to load user report extensions: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
   }
 }
 
