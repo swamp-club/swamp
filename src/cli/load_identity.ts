@@ -34,12 +34,25 @@ import { UserIdentityRepository } from "../infrastructure/persistence/user_ident
  *
  * This helper is the composition root for identity. libswamp and the
  * HTTP clients themselves never touch the file system to discover it.
+ *
+ * Errors swallowed: AuthRepository.load() re-throws anything other
+ * than NotFound (including the "HOME environment variable is not set"
+ * thrown by getSwampConfigDir() on minimal Windows test envs that
+ * have USERPROFILE but no HOME). Identity resolution is best-effort
+ * — every CLI command runs through this, so a missing config-dir env
+ * must never crash the CLI. Returns `{}` on any failure.
  */
 export async function loadIdentity(): Promise<ClientIdentity> {
-  const credentials = await new AuthRepository().load();
+  let bearerToken: string | undefined;
+  try {
+    const credentials = await new AuthRepository().load();
+    bearerToken = credentials?.apiKey;
+  } catch {
+    bearerToken = undefined;
+  }
   const distinctId = await new UserIdentityRepository().getUserId();
   return {
-    bearerToken: credentials?.apiKey,
+    bearerToken,
     distinctId: distinctId ?? undefined,
   };
 }
