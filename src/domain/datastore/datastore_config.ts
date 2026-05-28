@@ -91,6 +91,8 @@ export interface FilesystemDatastoreConfig {
   readonly directories?: string[];
   /** Gitignore-style patterns to exclude files from the datastore */
   readonly exclude?: string[];
+  /** Namespace for giga-swamp multi-repo shared datastores */
+  readonly namespace?: string;
 }
 
 /**
@@ -124,6 +126,8 @@ export interface CustomDatastoreConfig {
    * download until the data is actually needed.
    */
   readonly hydrationStrategy?: "full" | "lazy";
+  /** Namespace for giga-swamp multi-repo shared datastores */
+  readonly namespace?: string;
 }
 
 /**
@@ -157,6 +161,7 @@ export interface DatastoreConfigData {
   directories?: string[];
   exclude?: string[];
   hydrationStrategy?: "full" | "lazy";
+  namespace?: string;
 }
 
 /**

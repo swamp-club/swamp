@@ -49,3 +49,12 @@ export {
 } from "./workflow_data_service.ts";
 
 export { composeDataName } from "./composite_name.ts";
+
+export {
+  createNamespace,
+  isEmptyNamespace,
+  type Namespace,
+  type NamespacedModelName,
+  parseNamespacedModelName,
+  SOLO_NAMESPACE,
+} from "./namespace.ts";

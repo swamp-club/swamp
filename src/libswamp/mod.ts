@@ -305,6 +305,14 @@ export {
   type ProjectedData,
 } from "./data/query.ts";
 export type { DataRecord } from "../domain/data/data_record.ts";
+export {
+  createNamespace,
+  isEmptyNamespace,
+  type Namespace,
+  type NamespacedModelName,
+  parseNamespacedModelName,
+  SOLO_NAMESPACE,
+} from "../domain/data/namespace.ts";
 
 // Extension trust operations
 export {

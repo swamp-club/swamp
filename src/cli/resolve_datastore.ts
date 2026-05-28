@@ -464,6 +464,7 @@ export async function resolveDatastoreConfig(
           directories: ds.directories,
           exclude: ds.exclude,
           hydrationStrategy: ds.hydrationStrategy,
+          namespace: ds.namespace,
         };
       }
 
@@ -485,6 +486,7 @@ export async function resolveDatastoreConfig(
         path: expandEnvVars(ds.path),
         directories: ds.directories,
         exclude: ds.exclude,
+        namespace: ds.namespace,
       };
     }
 
@@ -541,6 +543,7 @@ export async function resolveDatastoreConfig(
       directories: ds.directories,
       exclude: ds.exclude,
       hydrationStrategy: ds.hydrationStrategy,
+      namespace: ds.namespace,
     };
   }
 
