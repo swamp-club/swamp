@@ -40,7 +40,7 @@ run.
 | Approve step       | `swamp workflow approve <workflow> <step>`                    |
 | Reject step        | `swamp workflow reject <workflow> <step>`                     |
 | Resume workflow    | `swamp workflow resume <workflow>`                            |
-| List approvals     | `swamp workflow approvals --json`                             |
+| List approvals     | `swamp workflow approvals`                                    |
 | View run history   | `swamp workflow history search --json`                        |
 | Get latest run     | `swamp workflow history get <workflow> --json`                |
 | View run logs      | `swamp workflow history logs <run_or_workflow> --json`        |

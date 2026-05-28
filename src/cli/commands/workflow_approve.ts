@@ -70,7 +70,7 @@ export const workflowApproveCommand = new Command()
       const workflowRepo = new YamlWorkflowRepository(repoDir);
       const runRepo = new YamlWorkflowRunRepository(repoDir);
 
-      const { run, workflowName } = await resolveSuspendedRun(
+      const { run, workflowName, workflow } = await resolveSuspendedRun(
         workflowRepo,
         runRepo,
         workflowIdOrName,
@@ -95,11 +95,7 @@ export const workflowApproveCommand = new Command()
         );
       }
 
-      const workflow = await workflowRepo.findByName(workflowIdOrName) ??
-        await workflowRepo.findById(
-          createWorkflowId(workflowIdOrName),
-        );
-      if (workflow) {
+      {
         const wfJob = workflow.jobs.find((j) => j.name === jobName);
         const wfStep = wfJob?.steps.find((s) => s.name === stepName);
         if (
@@ -142,7 +138,8 @@ export const workflowApproveCommand = new Command()
       } else {
         cliCtx.logger
           .info`Approved step ${stepName} in workflow ${workflowName}`;
-        cliCtx.logger.info`Run: swamp workflow resume ${workflowName}`;
+        cliCtx.logger
+          .info`After approval: swamp workflow resume ${workflowName}`;
       }
     },
   );

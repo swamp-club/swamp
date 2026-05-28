@@ -311,7 +311,19 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
         console.log(JSON.stringify(e.run, null, 2));
       },
       suspended: (e) => {
-        console.log(JSON.stringify(e.run, null, 2));
+        console.log(JSON.stringify(
+          {
+            ...e.run,
+            approvalRequired: {
+              stepId: e.stepId,
+              jobId: e.jobId,
+              prompt: e.prompt,
+              timeout: e.timeout,
+            },
+          },
+          null,
+          2,
+        ));
       },
       error: (e) => {
         throw new UserError(e.error.message, e.error.code);

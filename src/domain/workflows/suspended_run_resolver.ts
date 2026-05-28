@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { Workflow } from "./workflow.ts";
 import type { WorkflowRun } from "./workflow_run.ts";
 import type {
   WorkflowRepository,
@@ -28,6 +29,7 @@ import { UserError } from "../errors.ts";
 export interface SuspendedRunInfo {
   workflowName: string;
   workflowId: string;
+  workflow: Workflow;
   run: WorkflowRun;
 }
 
@@ -56,7 +58,12 @@ export async function resolveSuspendedRun(
         `Run ${runId} is not suspended (status: ${run.status})`,
       );
     }
-    return { workflowName: workflow.name, workflowId: workflow.id, run };
+    return {
+      workflowName: workflow.name,
+      workflowId: workflow.id,
+      workflow,
+      run,
+    };
   }
 
   const allRuns = await runRepo.findAllByWorkflowId(workflow.id);
@@ -78,6 +85,7 @@ export async function resolveSuspendedRun(
   return {
     workflowName: workflow.name,
     workflowId: workflow.id,
+    workflow,
     run: suspendedRuns[0],
   };
 }

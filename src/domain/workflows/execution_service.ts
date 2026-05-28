@@ -118,8 +118,14 @@ import { createRepoMarkerLoader } from "../../infrastructure/persistence/repo_ma
 import { extractSensitiveFieldValues } from "../models/sensitive_field_extractor.ts";
 
 /**
- * Thrown when a manual_approval step suspends the workflow.
- * Caught by the run() generator to yield a suspended terminal event.
+ * Thrown when a manual_approval step suspends the workflow. Uses an
+ * exception for control flow because the generator stack (runStep →
+ * runJob → merge → run) has no other way to unwind cleanly — yield
+ * can only travel one frame up, but suspension must exit the entire
+ * execution. Caught by run() and resume() to yield the terminal
+ * suspended event. Also re-detected after mergeWithConcurrency via
+ * run.status === "suspended" since merge() swallows errors from
+ * parallel streams.
  */
 export class WorkflowSuspendedError extends Error {
   constructor(
@@ -1335,13 +1341,13 @@ export class WorkflowExecutionService {
     });
 
     let workflowRun: WorkflowRun | undefined;
+    let workflowLogCategory: string[] | undefined;
     try {
       const wfSetupSpan = tracer.startSpan("swamp.workflow.setup");
       let workflow: Workflow;
       let expressionContext: ExpressionContext | undefined;
       let run: WorkflowRun;
       let workflowLogPath: string;
-      let workflowLogCategory: string[];
       const secretRedactor = new SecretRedactor();
 
       try {
@@ -1630,6 +1636,9 @@ export class WorkflowExecutionService {
       runSpan.setStatus({ code: SpanStatusCode.OK });
     } catch (error) {
       if (error instanceof WorkflowSuspendedError && workflowRun) {
+        if (workflowLogCategory) {
+          runFileSink.unregister(workflowLogCategory);
+        }
         yield {
           kind: "suspended" as const,
           run: workflowRun,
@@ -1639,7 +1648,6 @@ export class WorkflowExecutionService {
           timeout: error.timeout,
         };
         runSpan.setStatus({ code: SpanStatusCode.OK });
-        runSpan.end();
         return;
       }
       runSpan.setStatus({
@@ -1670,6 +1678,7 @@ export class WorkflowExecutionService {
     let result: WorkflowRun | undefined;
     for await (const event of this.run(idOrName, options)) {
       if (event.kind === "completed") result = event.run;
+      if (event.kind === "suspended") result = event.run;
     }
     if (!result) throw new Error("Workflow run did not complete");
     return result;
@@ -1722,9 +1731,6 @@ export class WorkflowExecutionService {
     await this.saveRun(workflow.id, existingRun);
 
     const expressionContext = await this.modelResolver.buildContext();
-    if (options?.runtimeTags) {
-      expressionContext.inputs = expressionContext.inputs ?? {};
-    }
 
     const evaluator = new WorkflowExpressionEvaluator(
       new CelEvaluator(),

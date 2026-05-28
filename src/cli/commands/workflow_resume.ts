@@ -163,6 +163,7 @@ export const workflowResumeCommand = new Command()
         datastoreResolver?.resolvePath(SWAMP_SUBDIRS.data),
         repoContext.catalogStore,
         directResolver,
+        repoContext.markDirty,
       );
 
       const renderer = createWorkflowRunRenderer(cliCtx.outputMode, {

@@ -118,6 +118,7 @@ export const workflowRejectCommand = new Command()
           approved: false,
           decidedBy,
           reason: options.reason ?? null,
+          runStatus: "failed",
         }));
       } else {
         cliCtx.logger
