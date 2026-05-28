@@ -237,9 +237,10 @@ for the canonical reference.
 
 ## Auto-Resolution Failures
 
-Extensions from trusted collectives (explicit `trustedCollectives` in
-`.swamp.yaml` plus your membership collectives) auto-resolve on first use. If
-auto-resolution fails:
+Extensions from trusted collectives (the explicit `trustedCollectives` list in
+`.swamp.yaml`; only `swamp` by default) auto-resolve on first use. Membership
+collectives are not trusted automatically — run
+`swamp extension trust add <collective>` first. If auto-resolution fails:
 
 | Symptom                       | Cause                                      | Fix                                                                              |
 | ----------------------------- | ------------------------------------------ | -------------------------------------------------------------------------------- |

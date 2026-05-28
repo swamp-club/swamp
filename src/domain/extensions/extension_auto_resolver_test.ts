@@ -62,6 +62,9 @@ function createMockOutput(): AutoResolveOutputPort & { calls: string[] } {
         `alreadyInstalledTruncated:${ext}:${path}:${missing.join(",")}`,
       );
     },
+    collectiveNotTrusted(collective: string, type: string) {
+      calls.push(`collectiveNotTrusted:${collective}:${type}`);
+    },
   };
 }
 
@@ -137,7 +140,29 @@ Deno.test("ExtensionAutoResolver - skips non-allowlisted collectives", async () 
 
   const result = await resolver.resolve("@foo/bar/baz");
   assertEquals(result, false);
-  assertEquals(output.calls.length, 0); // No output — silently skipped
+  // Untrusted @collective/* references surface an actionable trust hint rather
+  // than installing or failing silently (swamp-club#465).
+  assertEquals(output.calls, ["collectiveNotTrusted:foo:@foo/bar/baz"]);
+});
+
+Deno.test("ExtensionAutoResolver - untrusted collective emits trust hint but does not install", async () => {
+  const output = createMockOutput();
+  const installer = createMockInstaller();
+  const resolver = new ExtensionAutoResolver({
+    allowedCollectives: ["swamp"],
+    extensionLookup: createMockLookup({
+      "@myorg/tools": { description: "x", latestVersion: "2026.03.16.1" },
+    }),
+    extensionInstaller: installer,
+    output,
+  });
+
+  const result = await resolver.resolve("@myorg/tools/widget");
+  assertEquals(result, false);
+  assertEquals(installer.installCalls, []);
+  assertEquals(output.calls, [
+    "collectiveNotTrusted:myorg:@myorg/tools/widget",
+  ]);
 });
 
 Deno.test("ExtensionAutoResolver - resolves via direct lookup", async () => {
@@ -639,4 +664,46 @@ Deno.test("ExtensionAutoResolver - 2-segment type generates full type as only ca
     ["@keeb/mongodb-datastore"],
     "2-segment type should produce exactly one direct-lookup candidate (the full type)",
   );
+});
+
+Deno.test("ExtensionAutoResolver - untrusted collective hint is emitted once per collective", async () => {
+  const output = createMockOutput();
+  const resolver = new ExtensionAutoResolver({
+    allowedCollectives: ["swamp"],
+    extensionLookup: createMockLookup(),
+    extensionInstaller: createMockInstaller(),
+    output,
+  });
+
+  await resolver.resolve("@myorg/tools/widget");
+  await resolver.resolve("@myorg/tools/gizmo");
+  await resolver.resolve("@myorg/utils/helper");
+
+  // One hint for the whole collective, not one per referenced type.
+  assertEquals(output.calls, [
+    "collectiveNotTrusted:myorg:@myorg/tools/widget",
+  ]);
+});
+
+Deno.test("ExtensionAutoResolver - installing message reports the pinned version, not latest", async () => {
+  const output = createMockOutput();
+  const installer = createMockInstaller(
+    true,
+    "2026.01.01.1", // installer reports the pinned version it installed
+    { state: "missing", lockedVersion: "2026.01.01.1" },
+  );
+  const resolver = new ExtensionAutoResolver({
+    allowedCollectives: ["swamp"],
+    extensionLookup: createMockLookup({
+      "@swamp/aws": { description: "AWS", latestVersion: "2026.09.09.9" },
+    }),
+    extensionInstaller: installer,
+    output,
+  });
+
+  const result = await resolver.resolve("@swamp/aws/ec2/instance");
+  assertEquals(result, true);
+  // "installing" must show the pinned version (from the lockfile), not latest.
+  assertEquals(output.calls[1], "installing:@swamp/aws@2026.01.01.1");
+  assertEquals(output.calls[2], "installed:@swamp/aws@2026.01.01.1:3");
 });

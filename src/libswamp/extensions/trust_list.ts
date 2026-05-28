@@ -73,7 +73,9 @@ export async function* trustList(
   const authCollectives = await deps.loadAuthCollectives();
 
   const explicit = marker?.trustedCollectives ?? DEFAULT_TRUSTED;
-  const trustMemberCollectives = marker?.trustMemberCollectives !== false;
+  // Membership collectives are trusted only when explicitly opted in
+  // (swamp-club#465); the default is no membership trust.
+  const trustMemberCollectives = marker?.trustMemberCollectives === true;
   const resolved = resolveTrustedCollectives(marker, authCollectives);
 
   const membership = trustMemberCollectives && authCollectives

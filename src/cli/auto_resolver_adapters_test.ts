@@ -301,7 +301,9 @@ Deno.test("auto_resolver_adapters: inspectInstallation returns missing when dire
     });
 
     const result = await adapter.inspectInstallation("@fake/deleted-on-disk");
-    assertEquals(result, { state: "missing" });
+    // Carries the pinned version so the install progress line reports the
+    // version that will actually be installed (swamp-club#465).
+    assertEquals(result, { state: "missing", lockedVersion: "2026.01.01.1" });
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }

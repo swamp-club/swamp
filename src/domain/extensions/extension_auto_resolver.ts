@@ -65,7 +65,11 @@ export interface ExtensionInstallResultInfo {
  * Tri-state result describing the on-disk state of a pulled extension.
  *
  * - `missing`: no lockfile entry, or the per-extension directory does
- *   not exist. The auto-resolver should proceed to install.
+ *   not exist. The auto-resolver should proceed to install. When a lockfile
+ *   entry exists but the directory is absent (a fresh checkout, since
+ *   `.swamp/pulled-extensions` is gitignored), `lockedVersion` carries the
+ *   pinned version that will be installed — so progress output reports the
+ *   version that actually lands, not registry-latest (swamp-club#465).
  * - `intact`: lockfile entry exists, the directory exists, and every
  *   file listed in the lockfile is present on disk. If the type still
  *   failed to register, the cause is local (e.g. user edits with a
@@ -77,7 +81,7 @@ export interface ExtensionInstallResultInfo {
  *   swamp-club#133.
  */
 export type InstallationInspection =
-  | { state: "missing" }
+  | { state: "missing"; lockedVersion?: string }
   | { state: "intact"; path: string }
   | { state: "truncated"; path: string; missing: string[] };
 
@@ -138,6 +142,14 @@ export interface AutoResolveOutputPort {
     path: string,
     missing: string[],
   ): void;
+  /**
+   * Emitted when a referenced `@collective/*` type cannot auto-resolve
+   * because its collective is not trusted (swamp-club#465). Membership
+   * collectives are not trusted by default; this surfaces the actionable
+   * `swamp extension trust add <collective>` opt-in instead of letting the
+   * caller fail with an opaque "unknown type" error.
+   */
+  collectiveNotTrusted(collective: string, type: string): void;
 }
 
 /**
@@ -158,6 +170,12 @@ export interface ExtensionAutoResolverConfig {
 export class ExtensionAutoResolver {
   private readonly config: ExtensionAutoResolverConfig;
   private readonly resolving = new Set<string>();
+  /**
+   * Collectives already warned about as untrusted this process, so multiple
+   * types from the same untrusted collective surface the
+   * `swamp extension trust add` hint once rather than once per type.
+   */
+  private readonly warnedUntrusted = new Set<string>();
 
   constructor(config: ExtensionAutoResolverConfig) {
     this.config = config;
@@ -187,6 +205,19 @@ export class ExtensionAutoResolver {
     if (!this.config.allowedCollectives.includes(collective)) {
       logger
         .debug`Collective '${collective}' not in trusted list, skipping auto-resolution`;
+      // Surface an actionable trust hint for `@collective/*` references so the
+      // caller doesn't dead-end on an opaque "unknown type" error. Restricted
+      // to user-namespace (`@`) types to avoid false positives on local or
+      // built-in `a/b` type names, and emitted once per collective per process
+      // so multiple types from the same collective don't repeat it
+      // (swamp-club#465).
+      if (
+        ModelType.isUserNamespace(normalizedType) &&
+        !this.warnedUntrusted.has(collective)
+      ) {
+        this.warnedUntrusted.add(collective);
+        this.config.output.collectiveNotTrusted(collective, normalizedType);
+      }
       return false;
     }
 
@@ -383,9 +414,14 @@ export class ExtensionAutoResolver {
       );
       return false;
     }
-    // inspection.state === "missing" — proceed to install.
+    // inspection.state === "missing" — proceed to install. Report the version
+    // that will actually be installed: the lockfile-pinned version when one
+    // exists (the installer honors it), otherwise registry-latest. Without
+    // this the progress line would announce latest while a pinned older
+    // version is what lands (swamp-club#465).
+    const versionToInstall = inspection.lockedVersion ?? version;
 
-    output.installing(extensionName, version, extInfo.description);
+    output.installing(extensionName, versionToInstall, extInfo.description);
 
     // Install the extension
     let installResult: ExtensionInstallResultInfo | null;

@@ -43,8 +43,9 @@ via `swamp-extension-publish`.
 4. For local or private extensions, use `swamp extension source add <path>`.
 5. Only create a new extension if nothing fits.
 
-Trusted collectives (`@swamp/*`, `@si/*`, membership collectives) auto-resolve
-on first use — `swamp extension trust list` shows which.
+Trusted collectives auto-resolve on first use. Only `@swamp/*` is trusted by
+default; trust others explicitly with `swamp extension trust add <collective>`
+(`swamp extension trust list` shows which).
 
 **Never** use `command/shell` to wrap service integrations — build a dedicated
 model.

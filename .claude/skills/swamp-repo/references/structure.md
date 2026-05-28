@@ -112,18 +112,23 @@ workflowsDir: "extensions/workflows" # optional, default shown
 vaultsDir: "extensions/vaults" # optional, default shown
 driversDir: "extensions/drivers" # optional, default shown
 datastoresDir: "extensions/datastores" # optional, default shown
-trustedCollectives: # optional, default: ["swamp", "si"]
+trustedCollectives: # optional, default: ["swamp"]
   - swamp
-  - si
-trustMemberCollectives: true # optional, default: true
+  - myorg
+trustMemberCollectives: false # optional, default: false
 ```
 
 `trustedCollectives` controls which extension collectives auto-resolve on first
-use. The `swamp` and `si` collectives are trusted by default.
+use. Only the first-party `swamp` collective is trusted by default.
 
-Additionally, collectives the user belongs to (cached during `auth login` /
-`auth whoami`) are automatically trusted. Set `trustMemberCollectives: false` to
-disable this and only trust the explicit list.
+Collectives the user belongs to (cached during `auth login` / `auth whoami`) are
+NOT trusted automatically (swamp-club#465) — trust each one explicitly with
+`swamp extension trust add <collective>`. Set `trustMemberCollectives: true` to
+opt into trusting every membership collective at once. Once a collective is
+trusted, its extensions auto-resolve but are pinned to the version recorded in
+the committed `upstream_extensions.json` lockfile, so a trusted collective
+cannot silently push an updated version — moving versions requires an explicit
+`swamp extension pull` / `swamp extension update`.
 
 Manage trusted collectives via the CLI:
 

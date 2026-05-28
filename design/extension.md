@@ -618,28 +618,39 @@ it, and continues.
 
 ### Trusted Collectives
 
-The `swamp` and `si` collectives are trusted by default. Extensions from
-`@swamp/*` and `@si/*` auto-resolve with no configuration required.
+Only the first-party `swamp` collective is trusted by default. Extensions from
+`@swamp/*` auto-resolve with no configuration required.
 
-Default trusted collectives: `["swamp", "si"]`.
+Default trusted collectives: `["swamp"]`.
 
-Additionally, collectives the user belongs to are automatically trusted. Membership
-collectives are cached in `auth.json` during `auth login` and `auth whoami`, and
-merged with the explicit list at CLI startup. This means if a user is a member of
-`@myorg`, extensions from `@myorg/*` auto-resolve without any configuration.
+**Membership collectives are NOT trusted automatically** (swamp-club#465).
+Belonging to a collective lets you _publish_ to it; it does not silently grant
+_install_ consent on the consumer side. A compromised or careless member
+publish must not be able to execute code in every repo that references the
+collective's types. To use a collective's extensions, trust it explicitly:
 
-Configurable via `trustedCollectives` in `.swamp.yaml`:
+```bash
+swamp extension trust add myorg
+```
+
+which records it in `trustedCollectives` in `.swamp.yaml`:
 
 ```yaml
 trustedCollectives:
   - swamp
-  - si
   - myorg
 ```
 
-Set `trustMemberCollectives: false` to disable membership-based trust and only
-use the explicit `trustedCollectives` list. Set `trustedCollectives` to `[]` and
-`trustMemberCollectives: false` to disable automatic resolution entirely.
+Membership collectives are cached in `auth.json` during `auth login` and
+`auth whoami`. To trust _every_ collective you belong to at once (the previous
+default behavior), opt in explicitly with `trustMemberCollectives: true` — but
+prefer trusting individual collectives. Set `trustedCollectives` to `[]` to
+disable automatic resolution entirely.
+
+Once a collective is trusted, its extensions auto-resolve, but the installed
+version is **pinned to the committed lockfile** — see
+[Version pinning on auto-resolve](#version-pinning-on-auto-resolve) below — so a
+trusted collective still cannot silently push an _updated_ version into a repo.
 
 #### CLI Management
 
@@ -649,8 +660,29 @@ Trusted collectives can be managed via the `swamp extension trust` commands:
 swamp extension trust list                # Show explicit, membership, and resolved collectives
 swamp extension trust add <collective>    # Add a collective to the trusted list
 swamp extension trust rm <collective>     # Remove a collective from the trusted list
-swamp extension trust auto-trust <on|off> # Enable/disable membership auto-trust
+swamp extension trust auto-trust <on|off> # Opt in/out of trusting all membership collectives
 ```
+
+### Version pinning on auto-resolve
+
+When auto-resolve installs an extension that already has an entry in the
+committed `upstream_extensions.json` lockfile, it installs the **pinned
+version** recorded there and verifies the download against the recorded
+**checksum** — the same integrity-anchored path `swamp extension install` uses —
+rather than fetching whatever is latest (swamp-club#465).
+
+This matters on a fresh checkout: `.swamp/pulled-extensions/` is gitignored but
+the lockfile is committed, so without pinning the first reference to a type
+would silently re-fetch the latest published version. Pinning means a trusted
+collective cannot push an unreviewed _update_ into a repo through auto-resolve —
+moving to a newer version requires an explicit `swamp extension pull` /
+`swamp extension update`. A checksum that no longer matches the registry
+(content drift) fails the install with actionable guidance instead of silently
+installing the changed bytes.
+
+The first-ever resolve of an extension (no lockfile entry yet) installs the
+latest version and writes the entry, which becomes the pin for subsequent
+resolves.
 
 ### Resolution Algorithm
 
