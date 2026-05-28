@@ -25,6 +25,11 @@ import {
   coerceMethodArgs,
   getObjectShape,
 } from "../../domain/models/zod_type_coercion.ts";
+import { stripExpressionFields } from "../../domain/expressions/expression_parser.ts";
+import {
+  findLiteralSensitiveGlobalArgs,
+  literalSensitiveGlobalArgsMessage,
+} from "../../domain/models/sensitive_field_extractor.ts";
 import type { SwampError } from "../errors.ts";
 import { validationFailed } from "../errors.ts";
 
@@ -177,6 +182,18 @@ export async function resolveOrCreateDefinition(
       for (const [key, value] of Object.entries(routedGlobal)) {
         existing.definition.setGlobalArgument(key, value);
       }
+      const leakedArgs = findLiteralSensitiveGlobalArgs(
+        modelDef.globalArguments,
+        existing.definition.globalArguments,
+      );
+      if (leakedArgs.length > 0) {
+        return {
+          ok: false,
+          error: validationFailed(
+            literalSensitiveGlobalArgsMessage(leakedArgs),
+          ),
+        };
+      }
       await deps.saveDefinition(existing.type, existing.definition);
     }
 
@@ -204,7 +221,12 @@ export async function resolveOrCreateDefinition(
     const lenient = "partial" in schema && typeof schema.partial === "function"
       ? (schema.partial() as z.ZodTypeAny)
       : schema;
-    const result = lenient.safeParse(routed.globalArguments);
+    // Validate only the static fields. Fields holding a `${{ ... }}` expression
+    // (e.g. a `vault.get(...)` reference) are resolved and validated at runtime;
+    // checking them now would reject a sentinel string against a constrained
+    // field, blocking the vault remediation for a sensitive argument.
+    const staticArgs = stripExpressionFields(routed.globalArguments);
+    const result = lenient.safeParse(staticArgs);
     if (!result.success) {
       const issues = result.error.issues.map((i: z.ZodIssue) => {
         const path = i.path.length > 0 ? `${i.path.join(".")}: ` : "";
@@ -217,6 +239,20 @@ export async function resolveOrCreateDefinition(
         ),
       };
     }
+  }
+
+  // Refuse a literal value for a sensitive global argument before persisting it
+  // in cleartext (enforced for every writer at the persistence chokepoint; done
+  // here too for a clean, typed error). Expression values (vault.get) pass.
+  const leakedArgs = findLiteralSensitiveGlobalArgs(
+    modelDef.globalArguments,
+    routed.globalArguments,
+  );
+  if (leakedArgs.length > 0) {
+    return {
+      ok: false,
+      error: validationFailed(literalSensitiveGlobalArgsMessage(leakedArgs)),
+    };
   }
 
   // Auto-create the definition

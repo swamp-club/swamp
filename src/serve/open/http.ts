@@ -72,6 +72,7 @@ import { SecretRedactor } from "../../domain/secrets/mod.ts";
 import type { ExtensionApiClient } from "../../infrastructure/http/extension_api_client.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
+import { UserError } from "../../domain/errors.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { createRepoMarkerLoader } from "../../infrastructure/persistence/repo_marker_loader.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
@@ -1190,9 +1191,12 @@ async function handleDefinitionUpdate(
   try {
     await deps.repoContext.definitionRepo.save(type, def);
   } catch (e) {
+    // A rejected sensitive-literal (and other UserErrors) is client input error,
+    // not a server fault — surface it as 4xx with the remediation message.
+    const status = e instanceof UserError ? 400 : 500;
     return Response.json(
       { error: { message: e instanceof Error ? e.message : String(e) } },
-      { status: 500 },
+      { status },
     );
   }
   return Response.json({

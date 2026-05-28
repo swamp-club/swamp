@@ -435,3 +435,119 @@ Deno.test("resolveOrCreateDefinition: still rejects invalid types on provided gl
     assertStringIncludes(result.error.message, "Invalid global arguments");
   }
 });
+
+Deno.test("resolveOrCreateDefinition: refuses a literal sensitive global arg on auto-create", async () => {
+  const modelDef = createTestModelDef(
+    z.object({
+      apiKey: z.string().meta({ sensitive: true }),
+      region: z.string(),
+    }),
+    { run: z.object({}) },
+  );
+  const resolvedType = ModelType.create("test/model");
+  let saved = false;
+
+  const result = await resolveOrCreateDefinition(
+    {
+      lookupDefinition: () => Promise.resolve(null),
+      getModelDef: () => modelDef,
+      saveDefinition: () => {
+        saved = true;
+        return Promise.resolve();
+      },
+      getDefinitionPath: (_type, id) => `/tmp/models/test/model/${id}.yaml`,
+    },
+    "test/model",
+    "leaky",
+    "run",
+    { apiKey: "SUPERSECRET123", region: "us-east-1" },
+    resolvedType,
+    modelDef,
+  );
+
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertStringIncludes(result.error.message, "apiKey");
+    assertStringIncludes(result.error.message, "vault.get");
+  }
+  assertEquals(saved, false);
+});
+
+Deno.test("resolveOrCreateDefinition: refuses a literal sensitive global arg on update", async () => {
+  const modelDef = createTestModelDef(
+    z.object({
+      apiKey: z.string().meta({ sensitive: true }),
+      region: z.string(),
+    }),
+    { run: z.object({}) },
+  );
+  const resolvedType = ModelType.create("test/model");
+  const existingDef = Definition.create({
+    name: "existing-model",
+    type: "test/model",
+    typeVersion: "2026.01.01.1",
+    globalArguments: {
+      apiKey: "${{ vault.get('v', 'k') }}",
+      region: "us-west-2",
+    },
+  });
+  let saved = false;
+
+  const result = await resolveOrCreateDefinition(
+    {
+      lookupDefinition: () =>
+        Promise.resolve({ definition: existingDef, type: resolvedType }),
+      getModelDef: () => modelDef,
+      saveDefinition: () => {
+        saved = true;
+        return Promise.resolve();
+      },
+      getDefinitionPath: (_type, id) => `/tmp/models/test/model/${id}.yaml`,
+    },
+    "test/model",
+    "existing-model",
+    "run",
+    { apiKey: "NOW-A-LITERAL", region: "us-west-2" },
+    resolvedType,
+    modelDef,
+  );
+
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertStringIncludes(result.error.message, "apiKey");
+  }
+  assertEquals(saved, false);
+});
+
+Deno.test("resolveOrCreateDefinition: accepts a vault.get expression for a sensitive global arg", async () => {
+  const modelDef = createTestModelDef(
+    z.object({
+      apiKey: z.string().meta({ sensitive: true }),
+      region: z.string(),
+    }),
+    { run: z.object({}) },
+  );
+  const resolvedType = ModelType.create("test/model");
+  let saved = false;
+
+  const result = await resolveOrCreateDefinition(
+    {
+      lookupDefinition: () => Promise.resolve(null),
+      getModelDef: () => modelDef,
+      saveDefinition: () => {
+        saved = true;
+        return Promise.resolve();
+      },
+      getDefinitionPath: (_type, id) => `/tmp/models/test/model/${id}.yaml`,
+    },
+    "test/model",
+    "vaulted",
+    "run",
+    { apiKey: "${{ vault.get('creds', 'apiKey') }}", region: "us-east-1" },
+    resolvedType,
+    modelDef,
+  );
+
+  assertEquals(result.ok, true);
+  assertEquals(saved, true);
+});

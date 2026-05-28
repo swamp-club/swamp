@@ -17,12 +17,14 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { z } from "zod";
 import {
   extractSensitiveFields,
   extractSensitiveFieldValues,
+  findLiteralSensitiveGlobalArgs,
   getNestedValue,
+  literalSensitiveGlobalArgsMessage,
   redactSensitiveValues,
   setNestedValue,
 } from "./sensitive_field_extractor.ts";
@@ -346,4 +348,161 @@ Deno.test("redactSensitiveValues: does not mutate the input", () => {
   redactSensitiveValues(schema, input);
 
   assertEquals(input.apiKey, "SUPERSECRET123");
+});
+
+Deno.test("findLiteralSensitiveGlobalArgs: flags a literal string secret", () => {
+  const schema = z.object({
+    apiKey: z.string().meta({ sensitive: true }),
+    region: z.string(),
+  });
+
+  assertEquals(
+    findLiteralSensitiveGlobalArgs(schema, {
+      apiKey: "SUPERSECRET123",
+      region: "us-east-1",
+    }),
+    ["apiKey"],
+  );
+});
+
+Deno.test("findLiteralSensitiveGlobalArgs: allows a pure vault.get expression", () => {
+  const schema = z.object({
+    apiKey: z.string().meta({ sensitive: true }),
+  });
+
+  assertEquals(
+    findLiteralSensitiveGlobalArgs(schema, {
+      apiKey: "${{ vault.get('creds', 'apiKey') }}",
+    }),
+    [],
+  );
+});
+
+Deno.test("findLiteralSensitiveGlobalArgs: allows multiple whitespace-separated expressions", () => {
+  const schema = z.object({
+    token: z.string().meta({ sensitive: true }),
+  });
+
+  assertEquals(
+    findLiteralSensitiveGlobalArgs(schema, {
+      token: "${{ vault.get('a', 'x') }} ${{ vault.get('b', 'y') }}",
+    }),
+    [],
+  );
+});
+
+Deno.test("findLiteralSensitiveGlobalArgs: refuses mixed literal + expression (partial leak)", () => {
+  const schema = z.object({
+    apiKey: z.string().meta({ sensitive: true }),
+  });
+
+  assertEquals(
+    findLiteralSensitiveGlobalArgs(schema, {
+      apiKey: "prefix-${{ vault.get('creds', 'apiKey') }}",
+    }),
+    ["apiKey"],
+  );
+});
+
+Deno.test("findLiteralSensitiveGlobalArgs: refuses a non-string literal (number)", () => {
+  const schema = z.object({
+    secretPort: z.number().meta({ sensitive: true }),
+  });
+
+  assertEquals(
+    findLiteralSensitiveGlobalArgs(schema, { secretPort: 5432 }),
+    ["secretPort"],
+  );
+});
+
+Deno.test("findLiteralSensitiveGlobalArgs: refuses a boolean literal", () => {
+  const schema = z.object({
+    secretFlag: z.boolean().meta({ sensitive: true }),
+  });
+
+  assertEquals(
+    findLiteralSensitiveGlobalArgs(schema, { secretFlag: true }),
+    ["secretFlag"],
+  );
+});
+
+Deno.test("findLiteralSensitiveGlobalArgs: handles nested dot-paths", () => {
+  const schema = z.object({
+    credentials: z.object({
+      apiKey: z.string().meta({ sensitive: true }),
+    }),
+  });
+
+  assertEquals(
+    findLiteralSensitiveGlobalArgs(schema, {
+      credentials: { apiKey: "SECRET" },
+    }),
+    ["credentials.apiKey"],
+  );
+});
+
+Deno.test("findLiteralSensitiveGlobalArgs: ignores non-sensitive literals", () => {
+  const schema = z.object({
+    apiKey: z.string().meta({ sensitive: true }),
+    region: z.string(),
+  });
+
+  assertEquals(
+    findLiteralSensitiveGlobalArgs(schema, { region: "us-east-1" }),
+    [],
+  );
+});
+
+Deno.test("findLiteralSensitiveGlobalArgs: reports every offending field", () => {
+  const schema = z.object({
+    apiKey: z.string().meta({ sensitive: true }),
+    apiSecret: z.string().meta({ sensitive: true }),
+  });
+
+  assertEquals(
+    findLiteralSensitiveGlobalArgs(schema, {
+      apiKey: "AAA",
+      apiSecret: "BBB",
+    }),
+    ["apiKey", "apiSecret"],
+  );
+});
+
+Deno.test("findLiteralSensitiveGlobalArgs: skips empty / whitespace-only strings", () => {
+  const schema = z.object({
+    apiKey: z.string().meta({ sensitive: true }),
+  });
+
+  assertEquals(findLiteralSensitiveGlobalArgs(schema, { apiKey: "" }), []);
+  assertEquals(findLiteralSensitiveGlobalArgs(schema, { apiKey: "   " }), []);
+});
+
+Deno.test("findLiteralSensitiveGlobalArgs: returns [] for undefined schema or args", () => {
+  const schema = z.object({
+    apiKey: z.string().meta({ sensitive: true }),
+  });
+
+  assertEquals(findLiteralSensitiveGlobalArgs(undefined, { apiKey: "x" }), []);
+  assertEquals(findLiteralSensitiveGlobalArgs(schema, undefined), []);
+});
+
+Deno.test("findLiteralSensitiveGlobalArgs: returns [] for a non-object schema (documented residual)", () => {
+  // extractSensitiveFields only walks object shapes; a record schema is not
+  // inspected, so a sensitive value nested in it is not detected. This mirrors
+  // the redaction primitives' limitation and is an accepted best-effort gap.
+  const schema = z.record(z.string(), z.string());
+
+  assertEquals(
+    findLiteralSensitiveGlobalArgs(schema, { apiKey: "SECRET" }),
+    [],
+  );
+});
+
+Deno.test("literalSensitiveGlobalArgsMessage: names fields and gives vault remediation", () => {
+  const single = literalSensitiveGlobalArgsMessage(["apiKey"]);
+  assertStringIncludes(single, "'apiKey' is marked sensitive");
+  assertStringIncludes(single, "vault.get");
+
+  const multi = literalSensitiveGlobalArgsMessage(["apiKey", "apiSecret"]);
+  assertStringIncludes(multi, "'apiKey', 'apiSecret' are");
 });

@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { z } from "zod";
+import { containsExpression } from "../expressions/expression_parser.ts";
 
 /**
  * Information about a sensitive field extracted from a Zod schema.
@@ -178,6 +179,113 @@ export function extractSensitiveFields(
 
   return results;
 }
+
+/**
+ * Determines whether a string is composed solely of CEL template expressions
+ * (one or more `${{ ... }}`) with only whitespace around or between them.
+ *
+ * Such a value carries no cleartext secret — the secret is resolved at runtime
+ * from a vault/env reference. A string mixing a literal with an expression
+ * (e.g. `prefix-${{ vault.get(...) }}`) is NOT expression-only: the literal
+ * portion would still be persisted in cleartext.
+ */
+function isExpressionOnly(value: string): boolean {
+  if (!containsExpression(value)) {
+    return false;
+  }
+  return value.replace(/\$\{\{.+?\}\}/g, "").trim() === "";
+}
+
+/**
+ * Reports whether a value supplied for a sensitive field is a literal secret
+ * that would be persisted in cleartext.
+ *
+ * - `undefined`/`null` and empty/whitespace-only strings carry no secret.
+ * - A string that is composed solely of `${{ ... }}` expressions (e.g. a
+ *   `vault.get(...)` reference) is resolved at runtime and is safe.
+ * - Any other present value — a non-expression string, a string mixing literal
+ *   text with an expression, or any number/boolean/array/object — is treated as
+ *   a literal secret. Non-string values cannot be expression references, so they
+ *   are always literals; this fails closed rather than risk leaking a typed
+ *   secret.
+ */
+function isLiteralSecret(value: unknown): boolean {
+  if (value === undefined || value === null) {
+    return false;
+  }
+  if (typeof value === "string") {
+    if (value.trim() === "") {
+      return false;
+    }
+    return !isExpressionOnly(value);
+  }
+  return true;
+}
+
+/**
+ * Returns the dot-paths of global-argument fields marked `{ sensitive: true }`
+ * in `schema` whose value in `args` is a literal secret (see
+ * {@link isLiteralSecret}). An empty result means every sensitive global
+ * argument is either absent or a runtime expression and is safe to persist.
+ *
+ * This is the shared rule enforced at every seam that persists user-supplied
+ * `globalArguments` — primarily the persistence chokepoint
+ * (`YamlDefinitionRepository.save`), and additionally `model create` /
+ * direct-execution for an earlier, friendlier error. A literal value supplied
+ * for a sensitive global argument would otherwise be written in cleartext into
+ * the definition YAML.
+ *
+ * Sensitive fields nested inside non-object schemas (e.g. records/unions) are
+ * not detected — `extractSensitiveFields` only walks object shapes — so callers
+ * should treat this as a best-effort guard, consistent with the redaction
+ * primitives in this module.
+ *
+ * @param schema - The global-arguments Zod schema for the model type
+ * @param args - The supplied global-argument values
+ * @returns Dot-paths of sensitive fields holding a literal secret
+ */
+export function findLiteralSensitiveGlobalArgs(
+  schema: z.ZodTypeAny | undefined,
+  args: Record<string, unknown> | undefined,
+): string[] {
+  if (!schema || !args) {
+    return [];
+  }
+  const fields = extractSensitiveFields(schema);
+  if (fields.length === 0) {
+    return [];
+  }
+
+  const offending: string[] = [];
+  for (const field of fields) {
+    if (isLiteralSecret(getNestedValue(args, field.path))) {
+      offending.push(field.path);
+    }
+  }
+  return offending;
+}
+
+/**
+ * Builds the user-facing remediation message for one or more sensitive global
+ * arguments that were supplied as literal values. Shared by every call site so
+ * the guidance is identical whether the rejection comes from the persistence
+ * chokepoint, `model create`, or direct execution.
+ */
+export function literalSensitiveGlobalArgsMessage(paths: string[]): string {
+  const fieldList = paths.map((p) => `'${p}'`).join(", ");
+  const subject = paths.length > 1
+    ? `Global arguments ${fieldList} are`
+    : `Global argument ${fieldList} is`;
+  return (
+    `${subject} marked sensitive and cannot be set to a literal value — ` +
+    `it would be stored in cleartext in the definition YAML. Store the secret ` +
+    `in a vault and reference it with a vault.get expression, e.g. ` +
+    `--global-arg "apiKey=\${{ vault.get('my-vault', 'api-key') }}".`
+  );
+}
+
+/** Machine-readable error code for a rejected literal sensitive global argument. */
+export const LITERAL_SENSITIVE_GLOBAL_ARG_CODE = "literal_sensitive_global_arg";
 
 /**
  * Returns a redacted clone of `data` with every field marked `{ sensitive: true }`

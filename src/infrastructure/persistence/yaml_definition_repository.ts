@@ -34,6 +34,12 @@ import {
   type DefinitionId,
 } from "../../domain/definitions/definition.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
+import {
+  findLiteralSensitiveGlobalArgs,
+  LITERAL_SENSITIVE_GLOBAL_ARG_CODE,
+  literalSensitiveGlobalArgsMessage,
+} from "../../domain/models/sensitive_field_extractor.ts";
+import { UserError } from "../../domain/errors.ts";
 import type { EventBus } from "../../domain/events/event_bus.ts";
 import {
   createDefinitionCreated,
@@ -322,8 +328,41 @@ export class YamlDefinitionRepository implements DefinitionRepository {
     // Ensure type metadata is always present in persisted YAML
     data.type = type.normalized;
     await modelRegistry.ensureTypeLoaded(type);
-    const modelDef = modelRegistry.get(type);
+    let modelDef = modelRegistry.get(type);
+    // ensureTypeLoaded only imports types already registered as lazy. A command
+    // that never populated the registry (e.g. `model edit`, which resolves the
+    // type only from the YAML on disk) leaves an extension type unresolved here,
+    // which would silently bypass the sensitive-arg guard below. Fall back to a
+    // full extension load so the schema is available. ensureLoaded is memoized,
+    // so commands that already loaded the registry (create/run/serve) pay
+    // nothing, and this only does real work the first time an unloaded type is
+    // written.
+    if (!modelDef) {
+      await modelRegistry.ensureLoaded();
+      await modelRegistry.ensureTypeLoaded(type);
+      modelDef = modelRegistry.get(type);
+    }
     data.typeVersion = modelDef?.version ?? data.typeVersion;
+
+    // Fail closed before writing: a global argument marked `{ sensitive: true }`
+    // must never be persisted as a literal value — it would sit in cleartext in
+    // the definition YAML, readable by anyone with repo/filesystem access. This
+    // is the single chokepoint every source-definition writer funnels through
+    // (model create/edit/run/workflow auto-definitions and the serve API), so
+    // enforcing it here covers them all. Literal values must instead be supplied
+    // as a `vault.get(...)` expression, which is resolved at runtime and stored
+    // unevaluated. Throwing before the write leaves no partial file behind.
+    const leakedArgs = findLiteralSensitiveGlobalArgs(
+      modelDef?.globalArguments,
+      data.globalArguments,
+    );
+    if (leakedArgs.length > 0) {
+      throw new UserError(
+        literalSensitiveGlobalArgsMessage(leakedArgs),
+        LITERAL_SENSITIVE_GLOBAL_ARG_CODE,
+      );
+    }
+
     // Remove undefined values since YAML can't stringify them
     const cleanData = JSON.parse(JSON.stringify(data));
     const content = stringifyYaml(cleanData as Record<string, unknown>);

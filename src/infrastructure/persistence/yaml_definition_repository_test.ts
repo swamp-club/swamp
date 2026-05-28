@@ -17,13 +17,21 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertNotEquals } from "@std/assert";
+import {
+  assertEquals,
+  assertNotEquals,
+  assertRejects,
+  assertStringIncludes,
+} from "@std/assert";
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
+import { z } from "zod";
 import { YamlDefinitionRepository } from "./yaml_definition_repository.ts";
 import { Definition } from "../../domain/definitions/definition.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
+import { defineModel } from "../../domain/models/model.ts";
+import { UserError } from "../../domain/errors.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const tempDir = await Deno.makeTempDir();
@@ -558,5 +566,98 @@ Deno.test("YamlDefinitionRepository.findById falls back to secondary dir", async
     const found = await repo.findById(testType, def.id);
     assertNotEquals(found, null);
     assertEquals(found!.name, "by-id-def");
+  });
+});
+
+// --- Sensitive global-argument chokepoint guard ---
+//
+// save() is the single seam every source-definition writer funnels through, so
+// the guard that refuses a literal value for a `{ sensitive: true }` global
+// argument is enforced here. It resolves the schema from the model registry, so
+// these tests register a real type via defineModel.
+
+const SENSITIVE_SAVE_TYPE = ModelType.create("test/sensitive-save");
+defineModel({
+  type: SENSITIVE_SAVE_TYPE,
+  version: "2026.05.29.1",
+  globalArguments: z.object({
+    apiKey: z.string().meta({ sensitive: true }),
+    region: z.string(),
+  }),
+  methods: {},
+});
+
+Deno.test("YamlDefinitionRepository.save refuses a literal sensitive global arg and writes no file", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const definition = Definition.create({
+      name: "leaky",
+      type: SENSITIVE_SAVE_TYPE.normalized,
+      globalArguments: { apiKey: "SUPERSECRET123", region: "us-east-1" },
+    });
+
+    const error = await assertRejects(
+      () => repo.save(SENSITIVE_SAVE_TYPE, definition),
+      UserError,
+    );
+    assertStringIncludes(error.message, "apiKey");
+    assertStringIncludes(error.message, "vault.get");
+
+    // Fail-closed before the write: nothing landed on disk.
+    assertEquals(await repo.findById(SENSITIVE_SAVE_TYPE, definition.id), null);
+  });
+});
+
+Deno.test("YamlDefinitionRepository.save accepts a vault.get expression for a sensitive global arg", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const expr = "${{ vault.get('creds', 'apiKey') }}";
+    const definition = Definition.create({
+      name: "vaulted",
+      type: SENSITIVE_SAVE_TYPE.normalized,
+      globalArguments: { apiKey: expr, region: "us-east-1" },
+    });
+
+    await repo.save(SENSITIVE_SAVE_TYPE, definition);
+
+    const loaded = await repo.findById(SENSITIVE_SAVE_TYPE, definition.id);
+    assertNotEquals(loaded, null);
+    // The expression is persisted verbatim, unevaluated.
+    assertEquals(loaded!.globalArguments.apiKey, expr);
+  });
+});
+
+Deno.test("YamlDefinitionRepository.save is unaffected when no sensitive field carries a literal", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    const definition = Definition.create({
+      name: "no-secret",
+      type: SENSITIVE_SAVE_TYPE.normalized,
+      globalArguments: { region: "us-east-1" },
+    });
+
+    await repo.save(SENSITIVE_SAVE_TYPE, definition);
+
+    assertNotEquals(
+      await repo.findById(SENSITIVE_SAVE_TYPE, definition.id),
+      null,
+    );
+  });
+});
+
+Deno.test("YamlDefinitionRepository.save passes through an unregistered type (schema unknown)", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new YamlDefinitionRepository(dir);
+    // testType is not registered, so the schema is unknown and sensitivity
+    // cannot be determined — the write proceeds (matches model get behavior).
+    const definition = Definition.create({
+      name: "unknown-type",
+      type: testType.normalized,
+      globalArguments: { key: "value" },
+    });
+
+    await repo.save(testType, definition);
+
+    assertNotEquals(await repo.findById(testType, definition.id), null);
   });
 });

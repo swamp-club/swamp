@@ -37,6 +37,11 @@ import {
   coerceMethodArgs,
   getObjectShape,
 } from "../../domain/models/zod_type_coercion.ts";
+import { stripExpressionFields } from "../../domain/expressions/expression_parser.ts";
+import {
+  findLiteralSensitiveGlobalArgs,
+  literalSensitiveGlobalArgsMessage,
+} from "../../domain/models/sensitive_field_extractor.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /**
@@ -180,21 +185,52 @@ export async function* modelCreate(
             return;
           }
         }
-        const result = globalArgsSchema.safeParse(globalArguments);
-        if (!result.success) {
-          const issues = result.error.issues.map((i) => {
-            const path = i.path.length > 0 ? `${i.path.join(".")}: ` : "";
-            return `  ${path}${i.message}`;
-          }).join("\n");
+        // Validate only the static (non-expression) fields against the schema.
+        // Fields holding a `${{ ... }}` expression (e.g. a `vault.get(...)`
+        // reference) are resolved at runtime and validated then — running them
+        // through the schema now would reject a sentinel string against a
+        // constrained field (e.g. `z.string().min(20)`), making the vault
+        // remediation for a sensitive argument impossible. Mirrors the
+        // strip-then-validate behavior in validation_service.
+        const staticArgs = stripExpressionFields(globalArguments);
+        const hasExpressionArgs =
+          Object.keys(staticArgs).length < Object.keys(globalArguments).length;
+        if (!hasExpressionArgs) {
+          const result = globalArgsSchema.safeParse(globalArguments);
+          if (!result.success) {
+            const issues = result.error.issues.map((i) => {
+              const path = i.path.length > 0 ? `${i.path.join(".")}: ` : "";
+              return `  ${path}${i.message}`;
+            }).join("\n");
+            yield {
+              kind: "error",
+              error: validationFailed(
+                `Invalid global arguments for type '${modelType.normalized}':\n${issues}`,
+              ),
+            };
+            return;
+          }
+          globalArguments = result.data as Record<string, unknown>;
+        }
+
+        // Refuse a literal value for a sensitive global argument before it is
+        // persisted in cleartext. The persistence chokepoint
+        // (YamlDefinitionRepository.save) enforces this for every writer; doing
+        // it here as well gives `model create` a clean, typed error instead of
+        // a raw thrown one. Expression values (vault.get) pass through.
+        const leakedArgs = findLiteralSensitiveGlobalArgs(
+          modelDef.globalArguments,
+          globalArguments,
+        );
+        if (leakedArgs.length > 0) {
           yield {
             kind: "error",
             error: validationFailed(
-              `Invalid global arguments for type '${modelType.normalized}':\n${issues}`,
+              literalSensitiveGlobalArgsMessage(leakedArgs),
             ),
           };
           return;
         }
-        globalArguments = result.data as Record<string, unknown>;
       }
 
       // Create and save the definition

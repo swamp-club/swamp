@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { z } from "zod";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
@@ -442,6 +442,112 @@ Deno.test("modelCreate: coerces Zod v3-style schema global arguments", async () 
       typeArg: "test/v3-schema",
       name: "my-model",
       globalArguments: { count: "42" },
+    }),
+  );
+
+  const completed = events[events.length - 1] as Extract<
+    ModelCreateEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.kind, "completed");
+});
+
+Deno.test("modelCreate: refuses a literal value for a sensitive global arg and does not persist", async () => {
+  let saved = false;
+  const deps = makeDeps({
+    getModelDef: () => ({
+      type: { normalized: "test/sensitive" },
+      version: "1.0.0",
+      globalArguments: z.object({
+        apiKey: z.string().meta({ sensitive: true }),
+        region: z.string(),
+      }),
+      methods: {},
+      resources: {},
+    } as unknown as ModelDefinition),
+    createAndSave: () => {
+      saved = true;
+      return Promise.resolve(
+        { id: "def-1", name: "my-model" } as unknown as Awaited<
+          ReturnType<ModelCreateDeps["createAndSave"]>
+        >,
+      );
+    },
+  });
+
+  const events = await collect<ModelCreateEvent>(
+    modelCreate(createLibSwampContext(), deps, {
+      typeArg: "test/sensitive",
+      name: "my-model",
+      globalArguments: { apiKey: "SUPERSECRET123", region: "us-east-1" },
+    }),
+  );
+
+  const last = events[events.length - 1] as Extract<
+    ModelCreateEvent,
+    { kind: "error" }
+  >;
+  assertEquals(last.kind, "error");
+  assertEquals(last.error.code, "validation_failed");
+  assertStringIncludes(last.error.message, "apiKey");
+  assertStringIncludes(last.error.message, "vault.get");
+  // Fail-closed: the definition was never created/persisted.
+  assertEquals(saved, false);
+});
+
+Deno.test("modelCreate: accepts a vault.get expression for a sensitive global arg", async () => {
+  const deps = makeDeps({
+    getModelDef: () => ({
+      type: { normalized: "test/sensitive" },
+      version: "1.0.0",
+      globalArguments: z.object({
+        apiKey: z.string().meta({ sensitive: true }),
+        region: z.string(),
+      }),
+      methods: {},
+      resources: {},
+    } as unknown as ModelDefinition),
+  });
+
+  const events = await collect<ModelCreateEvent>(
+    modelCreate(createLibSwampContext(), deps, {
+      typeArg: "test/sensitive",
+      name: "my-model",
+      globalArguments: {
+        apiKey: "${{ vault.get('creds', 'apiKey') }}",
+        region: "us-east-1",
+      },
+    }),
+  );
+
+  const completed = events[events.length - 1] as Extract<
+    ModelCreateEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.kind, "completed");
+});
+
+Deno.test("modelCreate: accepts a vault.get expression for a CONSTRAINED sensitive field (ADV-3)", async () => {
+  // The vault.get sentinel is far shorter than min(20); without stripping
+  // expression fields before schema validation this would be wrongly rejected,
+  // making the vault remediation impossible.
+  const deps = makeDeps({
+    getModelDef: () => ({
+      type: { normalized: "test/sensitive-constrained" },
+      version: "1.0.0",
+      globalArguments: z.object({
+        apiKey: z.string().min(20).meta({ sensitive: true }),
+      }),
+      methods: {},
+      resources: {},
+    } as unknown as ModelDefinition),
+  });
+
+  const events = await collect<ModelCreateEvent>(
+    modelCreate(createLibSwampContext(), deps, {
+      typeArg: "test/sensitive-constrained",
+      name: "my-model",
+      globalArguments: { apiKey: "${{ vault.get('v', 'k') }}" },
     }),
   );
 
