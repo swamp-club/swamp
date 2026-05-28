@@ -190,19 +190,34 @@ function renderRepairLog(report: RepairReport): void {
   }
 
   const pastTense = report.mode === "applied";
-  writeOutput(
-    `  ${report.prunedRowCount} catalog row(s) ${
+  const parts = [
+    `${report.prunedRowCount} catalog row(s) ${
       pastTense ? "pruned" : "to prune"
-    }, ${report.evictedFileCount} bundle file(s) ${
+    }`,
+    `${report.evictedFileCount} bundle file(s) ${
       pastTense ? "evicted" : "to evict"
     }`,
-  );
+  ];
+  if (report.repulledExtensionCount > 0) {
+    parts.push(
+      `${report.repulledExtensionCount} extension(s) ${
+        pastTense ? "re-pulled" : "to re-pull"
+      }`,
+    );
+  }
+  writeOutput(`  ${parts.join(", ")}`);
   writeOutput("");
 
   for (const op of report.operations) {
-    const icon = op.kind === "catalog-row-pruned" ? "x" : "-";
+    const icon = op.kind === "catalog-row-pruned"
+      ? "x"
+      : op.kind === "pulled-extension-repulled"
+      ? "+"
+      : "-";
     const label = op.kind === "catalog-row-pruned"
       ? dim("[row]")
+      : op.kind === "pulled-extension-repulled"
+      ? dim("[pull]")
       : dim("[file]");
     writeOutput(`  ${icon} ${label} ${op.path}`);
     writeOutput(`     ${dim(op.reason)}`);

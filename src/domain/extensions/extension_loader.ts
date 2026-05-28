@@ -298,6 +298,10 @@ export class ExtensionLoader {
       this.logger
         .warn`Catalog invalidated for ${this.adapter.kind} rescan: ${guard.reason}`;
       catalog.invalidate(this.adapter.kind);
+
+      if (guard.reason === "layout-version-mismatch") {
+        await this.evictStaleBundles();
+      }
     }
 
     if (catalog.isPopulated(this.adapter.kind)) {
@@ -702,14 +706,28 @@ export class ExtensionLoader {
   }
 
   private registerLazyFromCatalog(catalog: ExtensionCatalogStore): void {
+    const skippedExtensions = new Set<string>();
     for (const kind of this.adapter.catalogKinds) {
       if (kind !== this.adapter.catalogKinds[0]) continue;
       const entries = catalog.findByKind(kind);
       for (const entry of entries) {
-        if (entry.state === "ValidationFailed") continue;
+        if (
+          entry.state === "ValidationFailed" ||
+          entry.state === "BundleBuildFailed"
+        ) {
+          const name = entry.extension_name || entry.type_normalized;
+          if (name && !skippedExtensions.has(name)) {
+            skippedExtensions.add(name);
+          }
+          continue;
+        }
         if (!entry.type_normalized) continue;
         this.adapter.registerLazy(entry);
       }
+    }
+    for (const name of skippedExtensions) {
+      this.logger
+        .warn`Extension ${name} has broken bundles and is not available. Run 'swamp doctor extensions --repair' or 'swamp extension pull ${name} --force' to fix.`;
     }
   }
 
@@ -935,6 +953,21 @@ export class ExtensionLoader {
       this.adapter.bundleSubdir,
       ...segments,
     );
+  }
+
+  private async evictStaleBundles(): Promise<void> {
+    const bundleDir = this.resolveBundlePath();
+    if (!bundleDir) return;
+    try {
+      await Deno.remove(bundleDir, { recursive: true });
+      this.logger
+        .info`Evicted stale bundles for ${this.adapter.kind}: ${bundleDir}`;
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) {
+        this.logger
+          .warn`Failed to evict stale bundles for ${this.adapter.kind}: ${error}`;
+      }
+    }
   }
 
   private getBundlePath(relativePath: string, baseDir: string): string {

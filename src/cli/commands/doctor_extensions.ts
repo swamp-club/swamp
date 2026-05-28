@@ -48,13 +48,17 @@ import { isAbsolute, join, relative, resolve } from "@std/path";
 import {
   buildAggregateState,
   consumeStream,
+  createExtensionPullDeps,
   doctorExtensions,
   type DoctorRegistryDeps,
   ReconcileFromDiskService,
   type ReconcileTransition,
   repairExtensions,
+  resolveServerUrl,
 } from "../../libswamp/mod.ts";
 import { EmbeddedDenoRuntime } from "../../infrastructure/runtime/embedded_deno_runtime.ts";
+import { pullExtension } from "./extension_pull.ts";
+import { loadIdentity } from "../load_identity.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
 import { driverTypeRegistry } from "../../domain/drivers/driver_type_registry.ts";
@@ -316,10 +320,62 @@ export const doctorExtensionsCommand = new Command()
               lockfileRepository: repairLockfileRepo,
               repoRoot: repoDir,
             });
+            const repullExtension = async (name: string): Promise<boolean> => {
+              try {
+                const serverUrl = resolveServerUrl();
+                const identity = await loadIdentity();
+                const pullLockfileRepo = await LockfileRepository.create(
+                  lockfilePath,
+                );
+                const tool = resolvePrimaryTool(marker);
+                const skillsDir = resolveSkillsDir(repoDir, tool);
+                const denoRuntime = new EmbeddedDenoRuntime();
+                const pullCatalog = new ExtensionCatalogStore(catalogDbPath);
+                try {
+                  const pullRepo = new ExtensionRepository({
+                    catalog: pullCatalog,
+                    lockfileRepository: pullLockfileRepo,
+                    repoRoot: repoDir,
+                    localManifestIdentity: readLocalManifestIdentity(repoDir),
+                  });
+                  const deps = await createExtensionPullDeps(
+                    serverUrl,
+                    lockfilePath,
+                    skillsDir,
+                    repoDir,
+                    { identity },
+                  );
+                  await pullExtension(
+                    { name, version: null },
+                    {
+                      getExtension: deps.getExtension,
+                      downloadArchive: deps.downloadArchive,
+                      getChecksum: deps.getChecksum,
+                      logger: cliCtx.logger,
+                      lockfileRepository: deps.lockfileRepository,
+                      skillsDir,
+                      repoDir,
+                      force: true,
+                      outputMode: cliCtx.outputMode,
+                      alreadyPulled: new Set(),
+                      depth: 0,
+                      denoRuntime,
+                      repository: pullRepo,
+                    },
+                  );
+                  return true;
+                } finally {
+                  pullCatalog.close();
+                }
+              } catch {
+                return false;
+              }
+            };
             try {
               return repairExtensions({
                 aggregateReport,
                 deleteBySourcePaths: (paths) => repo.deleteBySourcePaths(paths),
+                repullExtension,
                 apply: !dryRun,
               });
             } finally {

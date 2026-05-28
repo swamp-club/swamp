@@ -963,6 +963,33 @@ extension on top of itself — cross-extension collisions cannot happen.
 macOS resource fork files (`._*`) are skipped during both push (via
 `COPYFILE_DISABLE=1`) and pull.
 
+### Bundle staleness and recovery
+
+Bundles can become stale after a swamp upgrade when `BUNDLE_LAYOUT_VERSION`
+changes. The `ExtensionLoader.buildIndex` invalidation guards detect the
+layout-version mismatch and evict stale bundle files from disk before
+reconciliation runs. This prevents the `bundleWithCache` fallback from reusing
+bundles compiled against an incompatible runtime.
+
+Pulled extensions cannot rebundle locally — they use bare specifiers (e.g.,
+`from "zod"`) and ship without a `deno.json`, so `deno bundle` always fails.
+They rely entirely on pre-built bundles shipped with the registry package. When
+a stale bundle is evicted, the extension enters `BundleBuildFailed` state and
+becomes unavailable until re-pulled.
+
+Recovery paths:
+
+- **`swamp doctor extensions --repair`** detects pulled extensions in
+  `BundleBuildFailed` or `ValidationFailed` state and re-pulls them from the
+  registry automatically.
+- **`swamp extension pull <name> --force`** manually re-downloads the extension
+  including its pre-built bundle.
+- **User-facing warning:** `registerLazyFromCatalog` warns when extensions are
+  skipped due to failure states, directing users to the recovery commands.
+
+`BUNDLE_LAYOUT_VERSION` must be bumped whenever a change to the bundler, runtime
+interface, or zod global shape would make existing bundles incompatible.
+
 ## Layout Migration
 
 Existing repos that installed extensions under older layouts migrate via

@@ -22,7 +22,10 @@ import type { DoctorAggregateReport } from "./doctor_aggregate.ts";
 
 const logger = getLogger(["swamp", "doctor", "repair"]);
 
-export type RepairOperationKind = "catalog-row-pruned" | "bundle-file-evicted";
+export type RepairOperationKind =
+  | "catalog-row-pruned"
+  | "bundle-file-evicted"
+  | "pulled-extension-repulled";
 
 export interface RepairOperation {
   readonly kind: RepairOperationKind;
@@ -35,20 +38,24 @@ export interface RepairReport {
   readonly operations: readonly RepairOperation[];
   readonly prunedRowCount: number;
   readonly evictedFileCount: number;
+  readonly repulledExtensionCount: number;
 }
 
 export interface RepairDeps {
   readonly aggregateReport: DoctorAggregateReport;
   readonly deleteBySourcePaths: (paths: readonly string[]) => number;
+  readonly repullExtension?: (name: string) => Promise<boolean>;
   readonly apply: boolean;
 }
 
 /**
  * Computes and optionally executes repair operations based on the
- * aggregate state report. Only touches cleanup-eligible state:
+ * aggregate state report. Handles three categories:
  *
  * - Catalog rows in Tombstoned state (no transitions out; safe to prune).
  * - Bundle files not referenced by any catalog row.
+ * - Pulled extensions with BundleBuildFailed or ValidationFailed sources
+ *   (re-pulled from registry to restore pre-built bundles).
  *
  * NEVER touches Indexed, Bundled, or OrphanedBundleOnly rows.
  * OrphanedBundleOnly is excluded because those rows still reference a
@@ -90,8 +97,26 @@ export async function repairExtensions(
     });
   }
 
+  // Phase 3: Identify pulled extensions with broken bundles.
+  const extensionsToRepull = new Set<string>();
+  for (const agg of report.aggregates) {
+    if (agg.origin !== "pulled") continue;
+    const failedCount = (agg.stateDistribution.BundleBuildFailed ?? 0) +
+      (agg.stateDistribution.ValidationFailed ?? 0);
+    if (failedCount > 0) {
+      extensionsToRepull.add(agg.name);
+      operations.push({
+        kind: "pulled-extension-repulled",
+        path: agg.name,
+        reason:
+          `Pulled extension has ${failedCount} broken bundle(s) — re-pulling from registry`,
+      });
+    }
+  }
+
   let actualPruned = rowsToPrune.length;
   let actualEvicted = filesToEvict.length;
+  let actualRepulled = extensionsToRepull.size;
 
   if (deps.apply) {
     if (rowsToPrune.length > 0) {
@@ -110,6 +135,24 @@ export async function repairExtensions(
         }
       }
     }
+    if (deps.repullExtension) {
+      actualRepulled = 0;
+      for (const name of extensionsToRepull) {
+        try {
+          const ok = await deps.repullExtension(name);
+          if (ok) {
+            actualRepulled++;
+            logger.info`Re-pulled extension: ${name}`;
+          } else {
+            logger
+              .warn`Failed to re-pull extension ${name} — run 'swamp extension pull ${name} --force' manually`;
+          }
+        } catch (error) {
+          logger
+            .warn`Failed to re-pull extension ${name}: ${error}`;
+        }
+      }
+    }
   }
 
   return {
@@ -117,5 +160,6 @@ export async function repairExtensions(
     operations,
     prunedRowCount: actualPruned,
     evictedFileCount: actualEvicted,
+    repulledExtensionCount: actualRepulled,
   };
 }

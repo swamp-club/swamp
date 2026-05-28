@@ -237,4 +237,219 @@ Deno.test("repairExtensions: idempotent — clean state yields zero operations",
   assertEquals(result.operations.length, 0);
   assertEquals(result.prunedRowCount, 0);
   assertEquals(result.evictedFileCount, 0);
+  assertEquals(result.repulledExtensionCount, 0);
+});
+
+Deno.test("repairExtensions: identifies pulled extensions with BundleBuildFailed for re-pull", async () => {
+  const report = makeEmptyReport({
+    aggregates: [
+      {
+        name: "@swamp/ssh",
+        version: "2026.05.25.1",
+        origin: "pulled",
+        sourceCount: 1,
+        stateDistribution: {
+          Indexed: 0,
+          Bundled: 0,
+          BundleBuildFailed: 1,
+          ValidationFailed: 0,
+          EntryPointUnreadable: 0,
+          OrphanedBundleOnly: 0,
+          Tombstoned: 0,
+        },
+      },
+    ],
+  });
+
+  const repulled: string[] = [];
+  const result = await repairExtensions({
+    aggregateReport: report,
+    deleteBySourcePaths: () => 0,
+    repullExtension: (name) => {
+      repulled.push(name);
+      return Promise.resolve(true);
+    },
+    apply: true,
+  });
+
+  assertEquals(result.repulledExtensionCount, 1);
+  assertEquals(repulled, ["@swamp/ssh"]);
+  assertEquals(
+    result.operations.some((op) => op.kind === "pulled-extension-repulled"),
+    true,
+  );
+});
+
+Deno.test("repairExtensions: identifies pulled extensions with ValidationFailed for re-pull", async () => {
+  const report = makeEmptyReport({
+    aggregates: [
+      {
+        name: "@swamp/ssh",
+        version: "2026.05.25.1",
+        origin: "pulled",
+        sourceCount: 1,
+        stateDistribution: {
+          Indexed: 0,
+          Bundled: 0,
+          BundleBuildFailed: 0,
+          ValidationFailed: 1,
+          EntryPointUnreadable: 0,
+          OrphanedBundleOnly: 0,
+          Tombstoned: 0,
+        },
+      },
+    ],
+  });
+
+  const repulled: string[] = [];
+  const result = await repairExtensions({
+    aggregateReport: report,
+    deleteBySourcePaths: () => 0,
+    repullExtension: (name) => {
+      repulled.push(name);
+      return Promise.resolve(true);
+    },
+    apply: true,
+  });
+
+  assertEquals(result.repulledExtensionCount, 1);
+  assertEquals(repulled, ["@swamp/ssh"]);
+});
+
+Deno.test("repairExtensions: skips local extensions with broken bundles", async () => {
+  const report = makeEmptyReport({
+    aggregates: [
+      {
+        name: "my-local-model",
+        version: "1.0.0",
+        origin: "local",
+        sourceCount: 1,
+        stateDistribution: {
+          Indexed: 0,
+          Bundled: 0,
+          BundleBuildFailed: 1,
+          ValidationFailed: 0,
+          EntryPointUnreadable: 0,
+          OrphanedBundleOnly: 0,
+          Tombstoned: 0,
+        },
+      },
+    ],
+  });
+
+  const repulled: string[] = [];
+  const result = await repairExtensions({
+    aggregateReport: report,
+    deleteBySourcePaths: () => 0,
+    repullExtension: (name) => {
+      repulled.push(name);
+      return Promise.resolve(true);
+    },
+    apply: true,
+  });
+
+  assertEquals(result.repulledExtensionCount, 0);
+  assertEquals(repulled, []);
+});
+
+Deno.test("repairExtensions: handles re-pull failure gracefully", async () => {
+  const report = makeEmptyReport({
+    aggregates: [
+      {
+        name: "@swamp/ssh",
+        version: "2026.05.25.1",
+        origin: "pulled",
+        sourceCount: 1,
+        stateDistribution: {
+          Indexed: 0,
+          Bundled: 0,
+          BundleBuildFailed: 1,
+          ValidationFailed: 0,
+          EntryPointUnreadable: 0,
+          OrphanedBundleOnly: 0,
+          Tombstoned: 0,
+        },
+      },
+    ],
+  });
+
+  const result = await repairExtensions({
+    aggregateReport: report,
+    deleteBySourcePaths: () => 0,
+    repullExtension: () => Promise.resolve(false),
+    apply: true,
+  });
+
+  assertEquals(result.repulledExtensionCount, 0);
+});
+
+Deno.test("repairExtensions: dry-run does not call repullExtension", async () => {
+  const report = makeEmptyReport({
+    aggregates: [
+      {
+        name: "@swamp/ssh",
+        version: "2026.05.25.1",
+        origin: "pulled",
+        sourceCount: 1,
+        stateDistribution: {
+          Indexed: 0,
+          Bundled: 0,
+          BundleBuildFailed: 1,
+          ValidationFailed: 0,
+          EntryPointUnreadable: 0,
+          OrphanedBundleOnly: 0,
+          Tombstoned: 0,
+        },
+      },
+    ],
+  });
+
+  let repullCalled = false;
+  const result = await repairExtensions({
+    aggregateReport: report,
+    deleteBySourcePaths: () => 0,
+    repullExtension: () => {
+      repullCalled = true;
+      return Promise.resolve(true);
+    },
+    apply: false,
+  });
+
+  assertEquals(result.mode, "dry-run");
+  assertEquals(result.repulledExtensionCount, 1);
+  assertFalse(repullCalled);
+});
+
+Deno.test("repairExtensions: works without repullExtension callback", async () => {
+  const report = makeEmptyReport({
+    aggregates: [
+      {
+        name: "@swamp/ssh",
+        version: "2026.05.25.1",
+        origin: "pulled",
+        sourceCount: 1,
+        stateDistribution: {
+          Indexed: 0,
+          Bundled: 0,
+          BundleBuildFailed: 1,
+          ValidationFailed: 0,
+          EntryPointUnreadable: 0,
+          OrphanedBundleOnly: 0,
+          Tombstoned: 0,
+        },
+      },
+    ],
+  });
+
+  const result = await repairExtensions({
+    aggregateReport: report,
+    deleteBySourcePaths: () => 0,
+    apply: true,
+  });
+
+  assertEquals(result.repulledExtensionCount, 1);
+  assertEquals(
+    result.operations.some((op) => op.kind === "pulled-extension-repulled"),
+    true,
+  );
 });
