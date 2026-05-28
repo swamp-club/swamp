@@ -19,7 +19,7 @@
 
 export type Namespace = string & { readonly _brand: unique symbol };
 
-const NAMESPACE_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
+const NAMESPACE_PATTERN = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/;
 const NAMESPACE_MAX_LENGTH = 64;
 
 export function createNamespace(slug: string): Namespace {
@@ -51,6 +51,10 @@ export interface NamespacedModelName {
 }
 
 export function parseNamespacedModelName(input: string): NamespacedModelName {
+  if (input === "") {
+    throw new Error("Invalid namespaced model name: input is empty");
+  }
+
   const colonIndex = input.indexOf(":");
   if (colonIndex === -1) {
     return { namespace: undefined, modelName: input };

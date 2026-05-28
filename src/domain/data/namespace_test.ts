@@ -108,6 +108,22 @@ Deno.test("createNamespace: throws on leading hyphen", () => {
   );
 });
 
+Deno.test("createNamespace: throws on trailing hyphen", () => {
+  assertThrows(
+    () => createNamespace("infra-"),
+    Error,
+    "Namespace must match",
+  );
+});
+
+Deno.test("createNamespace: throws on consecutive hyphens at end", () => {
+  assertThrows(
+    () => createNamespace("team--"),
+    Error,
+    "Namespace must match",
+  );
+});
+
 Deno.test("createNamespace: throws on slash", () => {
   assertThrows(
     () => createNamespace("a/b"),
@@ -186,6 +202,14 @@ Deno.test("parseNamespacedModelName: throws on empty model name", () => {
     () => parseNamespacedModelName("ns:"),
     Error,
     "model name is empty",
+  );
+});
+
+Deno.test("parseNamespacedModelName: throws on empty input", () => {
+  assertThrows(
+    () => parseNamespacedModelName(""),
+    Error,
+    "input is empty",
   );
 });
 
