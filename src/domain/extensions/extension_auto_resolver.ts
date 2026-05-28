@@ -65,7 +65,11 @@ export interface ExtensionInstallResultInfo {
  * Tri-state result describing the on-disk state of a pulled extension.
  *
  * - `missing`: no lockfile entry, or the per-extension directory does
- *   not exist. The auto-resolver should proceed to install.
+ *   not exist. The auto-resolver should proceed to install. When a lockfile
+ *   entry exists but the directory is absent (a fresh checkout, since
+ *   `.swamp/pulled-extensions` is gitignored), `lockedVersion` carries the
+ *   pinned version that will be installed — so progress output reports the
+ *   version that actually lands, not registry-latest (swamp-club#465).
  * - `intact`: lockfile entry exists, the directory exists, and every
  *   file listed in the lockfile is present on disk. If the type still
  *   failed to register, the cause is local (e.g. user edits with a
@@ -77,7 +81,7 @@ export interface ExtensionInstallResultInfo {
  *   swamp-club#133.
  */
 export type InstallationInspection =
-  | { state: "missing" }
+  | { state: "missing"; lockedVersion?: string }
   | { state: "intact"; path: string }
   | { state: "truncated"; path: string; missing: string[] };
 
@@ -410,9 +414,14 @@ export class ExtensionAutoResolver {
       );
       return false;
     }
-    // inspection.state === "missing" — proceed to install.
+    // inspection.state === "missing" — proceed to install. Report the version
+    // that will actually be installed: the lockfile-pinned version when one
+    // exists (the installer honors it), otherwise registry-latest. Without
+    // this the progress line would announce latest while a pinned older
+    // version is what lands (swamp-club#465).
+    const versionToInstall = inspection.lockedVersion ?? version;
 
-    output.installing(extensionName, version, extInfo.description);
+    output.installing(extensionName, versionToInstall, extInfo.description);
 
     // Install the extension
     let installResult: ExtensionInstallResultInfo | null;

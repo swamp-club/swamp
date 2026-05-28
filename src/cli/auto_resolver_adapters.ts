@@ -142,12 +142,17 @@ export function createAutoResolveInstallerAdapter(
       const inspectLockfileRepo = await LockfileRepository.create(lockfilePath);
       const entry = inspectLockfileRepo.getEntry(extensionName);
       if (!entry) return { state: "missing" };
+      // A lockfile entry exists; carry its pinned version so the installer's
+      // progress output reports the version that will actually be installed
+      // (the install path pins to it) rather than registry-latest.
       const path = swampPath(repoDir, "pulled-extensions", extensionName);
       try {
         const stat = await Deno.stat(path);
-        if (!stat.isDirectory) return { state: "missing" };
+        if (!stat.isDirectory) {
+          return { state: "missing", lockedVersion: entry.version };
+        }
       } catch {
-        return { state: "missing" };
+        return { state: "missing", lockedVersion: entry.version };
       }
       // Pre-anchor lockfile entries (grandfather path in
       // UpstreamExtensionEntry) may omit `files`. Treat an absent or

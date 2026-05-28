@@ -684,3 +684,26 @@ Deno.test("ExtensionAutoResolver - untrusted collective hint is emitted once per
     "collectiveNotTrusted:myorg:@myorg/tools/widget",
   ]);
 });
+
+Deno.test("ExtensionAutoResolver - installing message reports the pinned version, not latest", async () => {
+  const output = createMockOutput();
+  const installer = createMockInstaller(
+    true,
+    "2026.01.01.1", // installer reports the pinned version it installed
+    { state: "missing", lockedVersion: "2026.01.01.1" },
+  );
+  const resolver = new ExtensionAutoResolver({
+    allowedCollectives: ["swamp"],
+    extensionLookup: createMockLookup({
+      "@swamp/aws": { description: "AWS", latestVersion: "2026.09.09.9" },
+    }),
+    extensionInstaller: installer,
+    output,
+  });
+
+  const result = await resolver.resolve("@swamp/aws/ec2/instance");
+  assertEquals(result, true);
+  // "installing" must show the pinned version (from the lockfile), not latest.
+  assertEquals(output.calls[1], "installing:@swamp/aws@2026.01.01.1");
+  assertEquals(output.calls[2], "installed:@swamp/aws@2026.01.01.1:3");
+});
