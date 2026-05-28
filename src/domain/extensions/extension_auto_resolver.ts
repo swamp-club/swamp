@@ -138,6 +138,14 @@ export interface AutoResolveOutputPort {
     path: string,
     missing: string[],
   ): void;
+  /**
+   * Emitted when a referenced `@collective/*` type cannot auto-resolve
+   * because its collective is not trusted (swamp-club#465). Membership
+   * collectives are not trusted by default; this surfaces the actionable
+   * `swamp extension trust add <collective>` opt-in instead of letting the
+   * caller fail with an opaque "unknown type" error.
+   */
+  collectiveNotTrusted(collective: string, type: string): void;
 }
 
 /**
@@ -187,6 +195,13 @@ export class ExtensionAutoResolver {
     if (!this.config.allowedCollectives.includes(collective)) {
       logger
         .debug`Collective '${collective}' not in trusted list, skipping auto-resolution`;
+      // Surface an actionable trust hint for `@collective/*` references so the
+      // caller doesn't dead-end on an opaque "unknown type" error. Restricted
+      // to user-namespace (`@`) types to avoid false positives on local or
+      // built-in `a/b` type names (swamp-club#465).
+      if (ModelType.isUserNamespace(normalizedType)) {
+        this.config.output.collectiveNotTrusted(collective, normalizedType);
+      }
       return false;
     }
 

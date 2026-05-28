@@ -54,10 +54,10 @@ Deno.test("trust list shows defaults when no marker exists", async () => {
     {
       kind: "completed",
       data: {
-        explicit: ["swamp", "si"],
+        explicit: ["swamp"],
         membership: [],
-        resolved: ["swamp", "si"],
-        trustMemberCollectives: true,
+        resolved: ["swamp"],
+        trustMemberCollectives: false,
       },
     },
   ]);
@@ -79,10 +79,10 @@ Deno.test("trust list shows explicit collectives from marker", async () => {
   assertEquals(completed.data.resolved, ["swamp", "si", "myorg"]);
 });
 
-Deno.test("trust list merges membership collectives", async () => {
+Deno.test("trust list merges membership collectives when opted in", async () => {
   const ctx = createLibSwampContext();
   const deps = makeDeps({
-    marker: baseMarker,
+    marker: { ...baseMarker, trustMemberCollectives: true },
     authCollectives: ["teamorg"],
   });
 
@@ -92,16 +92,16 @@ Deno.test("trust list merges membership collectives", async () => {
     TrustListEvent,
     { kind: "completed" }
   >;
-  assertEquals(completed.data.explicit, ["swamp", "si"]);
+  assertEquals(completed.data.explicit, ["swamp"]);
   assertEquals(completed.data.membership, ["teamorg"]);
-  assertEquals(completed.data.resolved, ["swamp", "si", "teamorg"]);
+  assertEquals(completed.data.resolved, ["swamp", "teamorg"]);
   assertEquals(completed.data.trustMemberCollectives, true);
 });
 
-Deno.test("trust list excludes membership when trustMemberCollectives is false", async () => {
+Deno.test("trust list excludes membership by default (no opt-in)", async () => {
   const ctx = createLibSwampContext();
   const deps = makeDeps({
-    marker: { ...baseMarker, trustMemberCollectives: false },
+    marker: baseMarker,
     authCollectives: ["teamorg"],
   });
 
@@ -112,14 +112,14 @@ Deno.test("trust list excludes membership when trustMemberCollectives is false",
     { kind: "completed" }
   >;
   assertEquals(completed.data.membership, []);
-  assertEquals(completed.data.resolved, ["swamp", "si"]);
+  assertEquals(completed.data.resolved, ["swamp"]);
   assertEquals(completed.data.trustMemberCollectives, false);
 });
 
-Deno.test("trust list deduplicates membership collectives that overlap with explicit", async () => {
+Deno.test("trust list deduplicates membership collectives that overlap with explicit when opted in", async () => {
   const ctx = createLibSwampContext();
   const deps = makeDeps({
-    marker: baseMarker,
+    marker: { ...baseMarker, trustMemberCollectives: true },
     authCollectives: ["swamp", "neworg"],
   });
 
@@ -130,5 +130,5 @@ Deno.test("trust list deduplicates membership collectives that overlap with expl
     { kind: "completed" }
   >;
   assertEquals(completed.data.membership, ["neworg"]);
-  assertEquals(completed.data.resolved, ["swamp", "si", "neworg"]);
+  assertEquals(completed.data.resolved, ["swamp", "neworg"]);
 });

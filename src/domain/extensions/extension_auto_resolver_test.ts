@@ -62,6 +62,9 @@ function createMockOutput(): AutoResolveOutputPort & { calls: string[] } {
         `alreadyInstalledTruncated:${ext}:${path}:${missing.join(",")}`,
       );
     },
+    collectiveNotTrusted(collective: string, type: string) {
+      calls.push(`collectiveNotTrusted:${collective}:${type}`);
+    },
   };
 }
 
@@ -137,7 +140,29 @@ Deno.test("ExtensionAutoResolver - skips non-allowlisted collectives", async () 
 
   const result = await resolver.resolve("@foo/bar/baz");
   assertEquals(result, false);
-  assertEquals(output.calls.length, 0); // No output — silently skipped
+  // Untrusted @collective/* references surface an actionable trust hint rather
+  // than installing or failing silently (swamp-club#465).
+  assertEquals(output.calls, ["collectiveNotTrusted:foo:@foo/bar/baz"]);
+});
+
+Deno.test("ExtensionAutoResolver - untrusted collective emits trust hint but does not install", async () => {
+  const output = createMockOutput();
+  const installer = createMockInstaller();
+  const resolver = new ExtensionAutoResolver({
+    allowedCollectives: ["swamp"],
+    extensionLookup: createMockLookup({
+      "@myorg/tools": { description: "x", latestVersion: "2026.03.16.1" },
+    }),
+    extensionInstaller: installer,
+    output,
+  });
+
+  const result = await resolver.resolve("@myorg/tools/widget");
+  assertEquals(result, false);
+  assertEquals(installer.installCalls, []);
+  assertEquals(output.calls, [
+    "collectiveNotTrusted:myorg:@myorg/tools/widget",
+  ]);
 });
 
 Deno.test("ExtensionAutoResolver - resolves via direct lookup", async () => {

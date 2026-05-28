@@ -187,6 +187,34 @@ export function renderAutoResolveTruncated(
 }
 
 /**
+ * Renders an actionable error when a referenced `@collective/*` type cannot
+ * auto-resolve because its collective is not trusted (swamp-club#465).
+ * Membership collectives are not trusted by default — this tells the user how
+ * to opt in instead of dead-ending on an opaque "unknown type" error.
+ */
+export function renderAutoResolveCollectiveNotTrusted(
+  collective: string,
+  type: string,
+  mode: OutputMode,
+): void {
+  if (mode === "json") {
+    console.log(
+      JSON.stringify({
+        event: "auto_resolve",
+        status: "collective_not_trusted",
+        type,
+        collective,
+      }),
+    );
+  } else {
+    logger
+      .warn`Type ${type} is from collective ${collective}, which is not trusted, so it was not auto-resolved.`;
+    logger
+      .warn`To allow its extensions to auto-resolve, run: swamp extension trust add ${collective}`;
+  }
+}
+
+/**
  * Renders an error message when auto-resolution fails due to a network error.
  */
 export function renderAutoResolveNetworkError(

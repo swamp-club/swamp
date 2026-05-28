@@ -20,9 +20,9 @@
 import { assertEquals } from "@std/assert";
 import { resolveTrustedCollectives } from "./trust.ts";
 
-Deno.test("resolveTrustedCollectives returns defaults when no marker", () => {
+Deno.test("resolveTrustedCollectives returns swamp-only default when no marker", () => {
   const result = resolveTrustedCollectives(null);
-  assertEquals(result, ["swamp", "si"]);
+  assertEquals(result, ["swamp"]);
 });
 
 Deno.test("resolveTrustedCollectives returns explicit collectives from marker", () => {
@@ -35,22 +35,35 @@ Deno.test("resolveTrustedCollectives returns explicit collectives from marker", 
   assertEquals(result, ["myorg"]);
 });
 
-Deno.test("resolveTrustedCollectives merges auth collectives with defaults", () => {
+Deno.test("resolveTrustedCollectives does NOT trust membership collectives by default", () => {
+  // No trustMemberCollectives opt-in → auth collectives are ignored.
   const result = resolveTrustedCollectives(null, ["myorg", "other"]);
-  assertEquals(result, ["swamp", "si", "myorg", "other"]);
+  assertEquals(result, ["swamp"]);
 });
 
-Deno.test("resolveTrustedCollectives deduplicates merged collectives", () => {
+Deno.test("resolveTrustedCollectives merges membership collectives only when opted in", () => {
   const marker = {
     swampVersion: "0.1.0",
     initializedAt: "2024-01-01T00:00:00Z",
-    trustedCollectives: ["swamp", "si", "myorg"],
+    trustedCollectives: ["swamp"],
+    trustMemberCollectives: true,
   };
-  const result = resolveTrustedCollectives(marker, ["myorg", "neworg"]);
-  assertEquals(result, ["swamp", "si", "myorg", "neworg"]);
+  const result = resolveTrustedCollectives(marker, ["myorg", "other"]);
+  assertEquals(result, ["swamp", "myorg", "other"]);
 });
 
-Deno.test("resolveTrustedCollectives respects trustMemberCollectives false", () => {
+Deno.test("resolveTrustedCollectives deduplicates when opted in", () => {
+  const marker = {
+    swampVersion: "0.1.0",
+    initializedAt: "2024-01-01T00:00:00Z",
+    trustedCollectives: ["swamp", "myorg"],
+    trustMemberCollectives: true,
+  };
+  const result = resolveTrustedCollectives(marker, ["myorg", "neworg"]);
+  assertEquals(result, ["swamp", "myorg", "neworg"]);
+});
+
+Deno.test("resolveTrustedCollectives ignores membership collectives when opt-in is false", () => {
   const marker = {
     swampVersion: "0.1.0",
     initializedAt: "2024-01-01T00:00:00Z",
@@ -61,14 +74,15 @@ Deno.test("resolveTrustedCollectives respects trustMemberCollectives false", () 
   assertEquals(result, ["swamp"]);
 });
 
-Deno.test("resolveTrustedCollectives merges when trustMemberCollectives is true", () => {
+Deno.test("resolveTrustedCollectives explicit trust add works without membership opt-in", () => {
+  // The opt-in escape hatch is per-collective: adding myorg to the explicit
+  // list trusts it without trusting every membership collective.
   const marker = {
     swampVersion: "0.1.0",
     initializedAt: "2024-01-01T00:00:00Z",
-    trustedCollectives: ["swamp"],
-    trustMemberCollectives: true,
+    trustedCollectives: ["swamp", "myorg"],
   };
-  const result = resolveTrustedCollectives(marker, ["myorg"]);
+  const result = resolveTrustedCollectives(marker, ["myorg", "other"]);
   assertEquals(result, ["swamp", "myorg"]);
 });
 
@@ -76,13 +90,14 @@ Deno.test("resolveTrustedCollectives handles undefined auth collectives", () => 
   const marker = {
     swampVersion: "0.1.0",
     initializedAt: "2024-01-01T00:00:00Z",
-    trustedCollectives: ["swamp", "si"],
+    trustedCollectives: ["swamp"],
+    trustMemberCollectives: true,
   };
   const result = resolveTrustedCollectives(marker, undefined);
-  assertEquals(result, ["swamp", "si"]);
+  assertEquals(result, ["swamp"]);
 });
 
 Deno.test("resolveTrustedCollectives handles empty auth collectives", () => {
   const result = resolveTrustedCollectives(null, []);
-  assertEquals(result, ["swamp", "si"]);
+  assertEquals(result, ["swamp"]);
 });

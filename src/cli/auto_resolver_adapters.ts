@@ -47,6 +47,7 @@ import { modelRegistry } from "../domain/models/model.ts";
 import type { OutputMode } from "../presentation/output/output.ts";
 import {
   renderAutoResolveAlreadyInstalled,
+  renderAutoResolveCollectiveNotTrusted,
   renderAutoResolveInstalled,
   renderAutoResolveInstalling,
   renderAutoResolveNetworkError,
@@ -184,6 +185,20 @@ export function createAutoResolveInstallerAdapter(
         const lockfileRepository = await LockfileRepository.create(
           lockfilePath,
         );
+        // Honor the committed lockfile pin (swamp-club#465): when an entry
+        // already exists for this extension, install the recorded version and
+        // verify the download against the recorded checksum — the same
+        // integrity-anchored restore path `swamp extension install` uses —
+        // rather than silently fetching latest. This stops a fresh checkout
+        // (where .swamp/pulled-extensions is gitignored but the lockfile is
+        // committed) from pulling an unreviewed newer version. First-ever
+        // installs have no entry and fall back to latest (version: null),
+        // which then becomes the pin for next time.
+        const pinnedEntry = lockfileRepository.getEntry(extensionName);
+        const ref = {
+          name: extensionName,
+          version: pinnedEntry?.version ?? null,
+        };
         const installCtx = {
           getExtension,
           downloadArchive,
@@ -195,6 +210,9 @@ export function createAutoResolveInstallerAdapter(
           force: false,
           alreadyPulled: new Set<string>(),
           depth: 0,
+          ...(pinnedEntry?.checksum
+            ? { expectedChecksum: pinnedEntry.checksum }
+            : {}),
         };
         // W2 (commit 3): route through InstallExtensionService when an
         // ExtensionRepository is available so phase 8 fires (catalog
@@ -204,11 +222,8 @@ export function createAutoResolveInstallerAdapter(
         // catalog gets populated lazily on next loader pass.
         const result = repository !== undefined
           ? await new InstallExtensionService({ denoRuntime, repository })
-            .execute({ name: extensionName, version: null }, installCtx)
-          : await installExtension(
-            { name: extensionName, version: null },
-            installCtx,
-          );
+            .execute(ref, installCtx)
+          : await installExtension(ref, installCtx);
         if (!result) return null;
         return { version: result.version };
       } catch (error) {
@@ -352,6 +367,9 @@ export function createAutoResolveOutputAdapter(
       missing: string[],
     ) {
       renderAutoResolveTruncated(extension, path, missing, mode);
+    },
+    collectiveNotTrusted(collective: string, type: string) {
+      renderAutoResolveCollectiveNotTrusted(collective, type, mode);
     },
   };
 }

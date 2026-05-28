@@ -20,8 +20,14 @@
 import type { RepoMarkerData } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import type { SwampError } from "../errors.ts";
 
-/** Default trusted collectives when none are configured in .swamp.yaml. */
-export const DEFAULT_TRUSTED: string[] = ["swamp", "si"];
+/**
+ * Default trusted collectives when none are configured in .swamp.yaml. Only
+ * the first-party `swamp` collective is trusted by default. Every other
+ * collective — including ones the user is a member of — must be trusted
+ * explicitly via `swamp extension trust add <collective>` before its
+ * extensions will auto-resolve (swamp-club#465).
+ */
+export const DEFAULT_TRUSTED: string[] = ["swamp"];
 
 /** Result data for trust add/rm operations. */
 export interface TrustModifyData {
@@ -37,9 +43,14 @@ export type TrustModifyEvent =
   | { kind: "error"; error: SwampError };
 
 /**
- * Resolves the full list of trusted collectives by merging explicit
- * trustedCollectives from .swamp.yaml with the user's membership collectives
- * from cached auth credentials.
+ * Resolves the full list of trusted collectives.
+ *
+ * The explicit `trustedCollectives` list from .swamp.yaml (defaulting to
+ * {@link DEFAULT_TRUSTED}) is always trusted. Membership collectives from
+ * cached auth are NOT trusted by default — a user must opt in by setting
+ * `trustMemberCollectives: true`, which trusts every collective they belong
+ * to (swamp-club#465). Without that opt-in, only the explicit list resolves,
+ * so a compromised member collective cannot silently auto-resolve into a repo.
  */
 export function resolveTrustedCollectives(
   marker: RepoMarkerData | null,
@@ -47,13 +58,12 @@ export function resolveTrustedCollectives(
 ): string[] {
   const explicit = marker?.trustedCollectives ?? DEFAULT_TRUSTED;
 
-  // If opt-out is set, only use explicit list
-  if (marker?.trustMemberCollectives === false) {
-    return explicit;
-  }
-
-  // Merge membership collectives (deduplicated)
-  if (authCollectives && authCollectives.length > 0) {
+  // Membership collectives are trusted only when explicitly opted in.
+  if (
+    marker?.trustMemberCollectives === true &&
+    authCollectives &&
+    authCollectives.length > 0
+  ) {
     return [...new Set([...explicit, ...authCollectives])];
   }
 

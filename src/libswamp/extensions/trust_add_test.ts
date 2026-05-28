@@ -58,11 +58,11 @@ Deno.test("trust add adds a collective to the list", async () => {
       data: {
         action: "added",
         collective: "myorg",
-        trustedCollectives: ["swamp", "si", "myorg"],
+        trustedCollectives: ["swamp", "myorg"],
       },
     },
   ]);
-  assertEquals(writtenMarker?.trustedCollectives, ["swamp", "si", "myorg"]);
+  assertEquals(writtenMarker?.trustedCollectives, ["swamp", "myorg"]);
 });
 
 Deno.test("trust add errors on invalid collective name", async () => {
@@ -122,6 +122,6 @@ Deno.test("trust add initializes from defaults when trustedCollectives is undefi
     TrustModifyEvent,
     { kind: "completed" }
   >;
-  assertEquals(completed.data.trustedCollectives, ["swamp", "si", "neworg"]);
-  assertEquals(writtenMarker?.trustedCollectives, ["swamp", "si", "neworg"]);
+  assertEquals(completed.data.trustedCollectives, ["swamp", "neworg"]);
+  assertEquals(writtenMarker?.trustedCollectives, ["swamp", "neworg"]);
 });
