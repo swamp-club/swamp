@@ -372,9 +372,10 @@ redactSensitiveArgs?(
 ): Record<string, unknown>;
 ```
 
-The helper uses `extractSensitiveFields` from
-`src/domain/models/sensitive_field_extractor.ts` to walk the model type's Zod
-schema, then deep-clones the args and replaces matching values with `"***"`.
+The helper delegates to the shared `redactSensitiveValues(schema, data)`
+primitive in `src/domain/models/sensitive_field_extractor.ts`, which walks the
+model type's Zod schema via `extractSensitiveFields`, deep-clones the args, and
+replaces matching values with `"***"`.
 
 - **Method/model scope** — looks up the schema via `modelRegistry.get(modelType)`
   and returns a redacted clone.
@@ -385,6 +386,15 @@ Reports that include argument values in their output should call
 `context.redactSensitiveArgs(args, kind)` to avoid persisting secrets. The
 builtin `@swamp/method-summary` report uses this for both global and method
 arguments.
+
+`redactSensitiveValues` is the single redaction primitive shared across the
+surfaces that honor the `sensitive: true` flag. `swamp model get` applies it to a
+model's global arguments in the libswamp read path
+(`src/libswamp/models/get.ts`) before assembling `ModelGetData`, so both the log
+and JSON renderers — and `swamp model search`, which routes through the same
+read path — display `"***"` instead of literal sensitive values. When the model
+type is unavailable the schema is unknown, so values pass through unredacted,
+matching the report path's "no schema found" behavior.
 
 Additionally, report contexts receive **pre-vault** arguments — args are
 captured before `resolveRuntimeExpressionsInDefinition` replaces vault
