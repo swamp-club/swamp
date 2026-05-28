@@ -27,6 +27,7 @@ import { join } from "@std/path";
 import { FileSystemUnifiedDataRepository } from "./unified_data_repository.ts";
 import { CatalogStore } from "./catalog_store.ts";
 import { Data } from "../../domain/data/mod.ts";
+import { createNamespace, SOLO_NAMESPACE } from "../../domain/data/mod.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 
 const testType = ModelType.create("test/model");
@@ -353,6 +354,71 @@ Deno.test("getLatestVersionSync returns null for missing data", () => {
     "missing-data",
   );
   assertEquals(result, null);
+});
+
+Deno.test("namespace defaults to SOLO_NAMESPACE and stamps catalog rows", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const catalogStore = new CatalogStore(join(tmpDir, "_catalog.db"));
+    const repo = new FileSystemUnifiedDataRepository(
+      tmpDir,
+      undefined,
+      catalogStore,
+    );
+    assertEquals(repo.namespace, SOLO_NAMESPACE);
+
+    await repo.save(
+      testType,
+      "model-1",
+      makeData("solo-data"),
+      new TextEncoder().encode("hi"),
+    );
+
+    const rows = [...catalogStore.iterate()];
+    assertEquals(rows.length, 1);
+    assertEquals(rows[0].namespace, "");
+    catalogStore.close();
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  }
+});
+
+Deno.test("configured namespace round-trips into the catalog row", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const catalogStore = new CatalogStore(join(tmpDir, "_catalog.db"));
+    const repo = new FileSystemUnifiedDataRepository(
+      tmpDir,
+      undefined,
+      catalogStore,
+      undefined,
+      undefined,
+      createNamespace("infra"),
+    );
+    assertEquals(repo.namespace, "infra");
+
+    await repo.save(
+      testType,
+      "model-1",
+      makeData("ns-data"),
+      new TextEncoder().encode("hello"),
+    );
+
+    const rows = [...catalogStore.iterate()];
+    assertEquals(rows.length, 1);
+    assertEquals(rows[0].namespace, "infra");
+    catalogStore.close();
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  }
 });
 
 Deno.test("findByNameSync reads metadata", async () => {

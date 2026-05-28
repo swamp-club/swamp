@@ -42,6 +42,7 @@ import type {
   MarkDirtyHook,
 } from "../../domain/datastore/datastore_sync_service.ts";
 import type { CatalogStore } from "./catalog_store.ts";
+import { type Namespace, SOLO_NAMESPACE } from "../../domain/data/namespace.ts";
 import {
   type GarbageCollectionResult,
   OwnershipValidationError,
@@ -80,6 +81,20 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     private readonly catalogStore: CatalogStore,
     private readonly markDirty?: MarkDirtyHook,
     private readonly hydrateFile?: HydrateFileHook,
+    /**
+     * The namespace this repository writes as (giga-swamp Phase 2). All catalog
+     * rows written here are stamped with this namespace. Defaults to
+     * SOLO_NAMESPACE ('') — the correct value for solo mode and for the ~15
+     * direct construction sites that do not yet resolve a configured namespace.
+     *
+     * PHASE 3 DEPENDENCY: those direct construction sites (libswamp/models/*,
+     * libswamp/data/*, libswamp/workflows/evaluate, domain/workflows/
+     * execution_service, etc.) must thread the configured namespace through in
+     * lockstep with the path resolver prefixing storage paths. Until then they
+     * intentionally default to SOLO_NAMESPACE and write to an un-namespaced
+     * filesystem layout. This is a tracked dependency, not an oversight.
+     */
+    public readonly namespace: Namespace = SOLO_NAMESPACE,
   ) {
     this.baseDir = baseDir ?? swampPath(repoDir, SWAMP_SUBDIRS.data);
   }
@@ -113,6 +128,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
    */
   private catalogUpsert(type: ModelType, modelId: string, data: Data): void {
     this.catalogStore.upsertNewVersion({
+      namespace: this.namespace,
       type_normalized: type.normalized,
       model_id: modelId,
       data_name: data.name,
@@ -143,7 +159,12 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     modelId: string,
     dataName: string,
   ): void {
-    this.catalogStore.remove(type.normalized, modelId, dataName);
+    this.catalogStore.remove(
+      this.namespace,
+      type.normalized,
+      modelId,
+      dataName,
+    );
   }
 
   async findAllGlobal(): Promise<
@@ -719,6 +740,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       // marker — leaves the catalog in a valid state even if the follow-up
       // latest update fails.
       this.catalogStore.removeVersion(
+        this.namespace,
         type.normalized,
         modelId,
         dataName,
@@ -1409,6 +1431,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
       if (!dryRun && versionsToRemove.length > 0) {
         // Drop catalog rows for all removed versions in one transaction.
         this.catalogStore.bulkRemoveVersions(
+          this.namespace,
           type.normalized,
           modelId,
           data.name,

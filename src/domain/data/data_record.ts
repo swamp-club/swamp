@@ -32,6 +32,9 @@ export interface DataRecord {
   version: number;
   isLatest: boolean;
   createdAt: string;
+  // Provenance namespace (giga-swamp Phase 2). Identifies which repo produced
+  // this data within a shared datastore. Empty string ('') in solo mode.
+  namespace: string;
   attributes: Record<string, unknown>;
   tags: Record<string, string>;
   modelName: string;

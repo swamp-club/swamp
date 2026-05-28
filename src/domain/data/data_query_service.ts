@@ -320,6 +320,7 @@ export class DataQueryService {
     isLatest: boolean,
   ): CatalogRow {
     return {
+      namespace: this.dataRepo.namespace,
       type_normalized: modelType.normalized,
       model_id: modelId,
       data_name: data.name,

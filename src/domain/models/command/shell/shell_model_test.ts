@@ -30,6 +30,7 @@ import {
 } from "./shell_model.ts";
 import type { DataHandle, DataWriter, MethodContext } from "../../model.ts";
 import type { UnifiedDataRepository } from "../../../data/repositories.ts";
+import { SOLO_NAMESPACE } from "../../../data/namespace.ts";
 import type { DefinitionRepository } from "../../../definitions/repositories.ts";
 import { type DataId, generateDataId } from "../../../data/data_id.ts";
 import { getLogger } from "@logtape/logtape";
@@ -213,6 +214,7 @@ function getOutputLogContent(results: MockWriterResult[]): string {
  */
 function createMockDataRepo(): UnifiedDataRepository {
   return {
+    namespace: SOLO_NAMESPACE,
     findAllGlobal: () => Promise.resolve([]),
     findByName: () => Promise.resolve(null),
     findById: () => Promise.resolve(null),

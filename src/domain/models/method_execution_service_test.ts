@@ -31,6 +31,7 @@ import type {
 } from "./model.ts";
 import { z } from "zod";
 import type { UnifiedDataRepository } from "../data/repositories.ts";
+import { SOLO_NAMESPACE } from "../data/namespace.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
 import { type DataId, generateDataId } from "../data/data_id.ts";
 import { Data } from "../data/data.ts";
@@ -200,6 +201,7 @@ function createMockWriters(): {
  */
 function createMockDataRepo(): UnifiedDataRepository {
   return {
+    namespace: SOLO_NAMESPACE,
     findAllGlobal: () => Promise.resolve([]),
     findByName: () => Promise.resolve(null),
     findById: () => Promise.resolve(null),

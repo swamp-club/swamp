@@ -28,6 +28,7 @@ const encoder = new TextEncoder();
 
 function createRow(overrides?: Partial<CatalogRow>): CatalogRow {
   return {
+    namespace: "",
     type_normalized: "test/model",
     model_id: "model-123",
     data_name: "test-data",
@@ -59,6 +60,7 @@ function stubRepo(
   asyncContent?: Uint8Array | null,
 ): UnifiedDataRepository {
   return {
+    namespace: "",
     getContentSync: () => syncContent ?? null,
     getContent: () => Promise.resolve(asyncContent ?? syncContent ?? null),
   } as unknown as UnifiedDataRepository;
@@ -155,6 +157,13 @@ Deno.test("fromRow: maps all catalog row fields to DataRecord", () => {
   assertEquals(record.jobName, "job-1");
   assertEquals(record.stepName, "step-1");
   assertEquals(record.source, "test");
+  assertEquals(record.namespace, "");
+});
+
+Deno.test("fromRow: maps the namespace column to DataRecord.namespace", () => {
+  const repo = stubRepo(null);
+  const record = fromRow(createRow({ namespace: "infra" }), repo, false, false);
+  assertEquals(record.namespace, "infra");
 });
 
 Deno.test("fromRow: converts streaming integer to boolean", () => {
@@ -243,6 +252,34 @@ Deno.test("fromData: parses JSON content and resolves attributes", async () => {
   assertEquals(record!.modelType, "test/model");
   assertEquals(record!.specName, "my-spec");
   assertEquals(record!.modelName, "my-model");
+  assertEquals(record!.namespace, "");
+});
+
+Deno.test("fromData: stamps the repository namespace onto the record", async () => {
+  const data = Data.create({
+    name: "my-data",
+    contentType: "application/octet-stream",
+    lifetime: "infinite",
+    garbageCollection: 10,
+    tags: { type: "resource" },
+    ownerDefinition: owner,
+  });
+
+  // Repo configured with a non-solo namespace — the record must report it.
+  const repo = {
+    namespace: "infra",
+    getContentSync: () => null,
+    getContent: () => Promise.resolve(null),
+  } as unknown as UnifiedDataRepository;
+
+  const record = await fromData(
+    data,
+    ModelType.create("test/model"),
+    "model-123",
+    repo,
+  );
+
+  assertEquals(record!.namespace, "infra");
 });
 
 Deno.test("fromData: returns empty attributes for non-text content", async () => {

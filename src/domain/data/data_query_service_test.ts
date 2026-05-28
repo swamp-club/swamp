@@ -28,10 +28,12 @@ import {
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import { DataQueryService } from "./data_query_service.ts";
 import type { DataRecord } from "./data_record.ts";
+import { createNamespace } from "./namespace.ts";
 import { UserError } from "../errors.ts";
 
 function makeRow(overrides: Partial<CatalogRow> = {}): CatalogRow {
   return {
+    namespace: "",
     type_normalized: "test-model",
     model_id: "model-001",
     data_name: "my-data",
@@ -417,6 +419,63 @@ Deno.test("DataQueryService: backfill triggers on unpopulated catalog", async ()
   assertEquals(results.length, 1);
   assertEquals(results[0].modelName, "ingest");
   assertEquals(catalog.isPopulated(), true);
+  catalog.close();
+});
+
+Deno.test("DataQueryService: backfill stamps the repo namespace onto rebuilt rows", async () => {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-query-backfill-ns-" });
+  const dbPath = join(dir, ".swamp", "data", "_catalog.db");
+  const catalog = new CatalogStore(dbPath);
+  // Do NOT mark as populated — query must trigger a backfill from disk.
+
+  const dataDir = join(
+    dir,
+    ".swamp",
+    "data",
+    "test-model",
+    "model-001",
+    "my-data",
+    "1",
+  );
+  ensureDirSync(dataDir);
+  Deno.writeTextFileSync(
+    join(dataDir, "raw"),
+    JSON.stringify({ hello: "world" }),
+  );
+  Deno.writeTextFileSync(
+    join(dataDir, "metadata.yaml"),
+    stringifyYaml({
+      name: "my-data",
+      id: "00000000-0000-1000-8000-000000000001",
+      version: 1,
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      streaming: false,
+      tags: { type: "resource", specName: "result", modelName: "ingest" },
+      ownerDefinition: { ownerType: "model-method", ownerRef: "test" },
+      createdAt: "2026-01-01T00:00:00.000Z",
+    }),
+  );
+  Deno.writeTextFileSync(
+    join(dir, ".swamp", "data", "test-model", "model-001", "my-data", "latest"),
+    "1",
+  );
+
+  // Repo configured with a non-solo namespace — the backfill must stamp it.
+  const dataRepo = new FileSystemUnifiedDataRepository(
+    dir,
+    undefined,
+    catalog,
+    undefined,
+    undefined,
+    createNamespace("infra"),
+  );
+  const service = new DataQueryService(catalog, dataRepo);
+
+  const results = await service.query('modelName == "ingest"') as DataRecord[];
+  assertEquals(results.length, 1);
+  assertEquals(results[0].namespace, "infra");
   catalog.close();
 });
 

@@ -30,6 +30,7 @@ import {
 import { ModelType } from "./model_type.ts";
 import type { ResourceOutputSpec } from "./model.ts";
 import type { UnifiedDataRepository } from "../data/repositories.ts";
+import { SOLO_NAMESPACE } from "../data/namespace.ts";
 import { generateDataId } from "../data/data_id.ts";
 import { VaultService } from "../vaults/vault_service.ts";
 
@@ -38,6 +39,7 @@ import { VaultService } from "../vaults/vault_service.ts";
  */
 function createMockRepo(): UnifiedDataRepository {
   return {
+    namespace: SOLO_NAMESPACE,
     findAllGlobal: () => Promise.resolve([]),
     findByName: () => Promise.resolve(null),
     findById: () => Promise.resolve(null),

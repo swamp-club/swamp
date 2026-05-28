@@ -56,6 +56,11 @@ import { YamlOutputRepository } from "./yaml_output_repository.ts";
 import { YamlDefinitionRepository } from "./yaml_definition_repository.ts";
 import { YamlEvaluatedDefinitionRepository } from "./yaml_evaluated_definition_repository.ts";
 import { FileSystemUnifiedDataRepository } from "./unified_data_repository.ts";
+import {
+  createNamespace,
+  type Namespace,
+  SOLO_NAMESPACE,
+} from "../../domain/data/namespace.ts";
 import { ExtensionWorkflowRepository } from "./extension_workflow_repository.ts";
 import { CompositeWorkflowRepository } from "./composite_workflow_repository.ts";
 import { EventBus } from "../../domain/events/event_bus.ts";
@@ -153,12 +158,15 @@ export function createUnifiedDataRepository(
   catalogStore: CatalogStore,
   baseDir?: string,
   markDirty?: MarkDirtyHook,
+  namespace: Namespace = SOLO_NAMESPACE,
 ): FileSystemUnifiedDataRepository {
   return new FileSystemUnifiedDataRepository(
     repoDir,
     baseDir,
     catalogStore,
     markDirty,
+    undefined,
+    namespace,
   );
 }
 
@@ -250,6 +258,12 @@ export interface RepositoryFactoryConfig {
    */
   markDirty?: MarkDirtyHook;
   hydrateFile?: HydrateFileHook;
+  /**
+   * Namespace slug from the resolved datastore config (giga-swamp Phase 2).
+   * Translated into the Namespace value object and stamped onto every catalog
+   * row written by the unified data repository. Absent/empty → SOLO_NAMESPACE.
+   */
+  namespace?: string;
 }
 
 /**
@@ -292,6 +306,13 @@ export function createRepositoryContext(
     markDirty,
     hydrateFile,
   } = config;
+
+  // Translate the raw config namespace slug into the Namespace value object
+  // exactly once — this factory is the single composition root where config
+  // becomes a domain value. Empty/absent → SOLO_NAMESPACE (solo mode).
+  const namespace: Namespace = config.namespace
+    ? createNamespace(config.namespace)
+    : SOLO_NAMESPACE;
 
   // Helper to resolve datastore-tier base directories
   const dsPath = (subdir: string): string | undefined =>
@@ -349,6 +370,7 @@ export function createRepositoryContext(
     catalogStore,
     markDirty,
     hydrateFile,
+    namespace,
   );
 
   // Construct the query service alongside its dependencies so consumers

@@ -1081,11 +1081,13 @@ Deno.test("validateModel loads lazy types before resolving cross-model reference
 
 import type { CheckValidationContext } from "./validation_service.ts";
 import type { UnifiedDataRepository } from "../data/repositories.ts";
+import { SOLO_NAMESPACE } from "../data/namespace.ts";
 import { generateDataId } from "../data/data_id.ts";
 import { createDefinitionId } from "../definitions/definition.ts";
 
 function createMockDataRepo(): UnifiedDataRepository {
   return {
+    namespace: SOLO_NAMESPACE,
     findAllGlobal: () => Promise.resolve([]),
     findByName: () => Promise.resolve(null),
     findById: () => Promise.resolve(null),

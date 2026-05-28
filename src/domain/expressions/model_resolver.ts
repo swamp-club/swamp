@@ -788,6 +788,7 @@ export class ModelResolver {
       // record here is by construction the latest.
       isLatest: true,
       createdAt: data.createdAt.toISOString(),
+      namespace: this.dataRepo.namespace,
       attributes,
       tags: { ...data.tags },
       modelName: resolvedModelName,

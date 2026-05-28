@@ -20,6 +20,7 @@
 import type { Data } from "./data.ts";
 import type { DataId } from "./data_id.ts";
 import type { ModelType, ModelTypeInput } from "../models/model_type.ts";
+import type { Namespace } from "./namespace.ts";
 
 /**
  * Error thrown when ownership validation fails.
@@ -51,6 +52,13 @@ export interface GarbageCollectionResult {
  * Repository interface for unified Data storage with versioning.
  */
 export interface UnifiedDataRepository {
+  /**
+   * The namespace this repository writes as (giga-swamp Phase 2). Catalog rows
+   * produced by this repository — both at runtime and during backfill — are
+   * stamped with this namespace. SOLO_NAMESPACE ('') in solo mode.
+   */
+  readonly namespace: Namespace;
+
   /**
    * Finds all data across all model types and models.
    *

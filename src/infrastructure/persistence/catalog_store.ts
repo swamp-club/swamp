@@ -27,9 +27,10 @@ const logger = getLogger(["swamp", "persistence", "catalog"]);
 /**
  * A single row in the catalog table, representing one version of a data
  * artifact. The `is_latest` flag is set on exactly one row per
- * (type_normalized, model_id, data_name) triple.
+ * (namespace, type_normalized, model_id, data_name) triple.
  */
 export interface CatalogRow {
+  namespace: string;
   type_normalized: string;
   model_id: string;
   data_name: string;
@@ -80,7 +81,7 @@ export interface CatalogCheckpointStats {
  * On startup, if the stored version differs, the catalog is dropped and
  * rebuilt via self-healing backfill.
  */
-export const CATALOG_SCHEMA_VERSION = "3";
+export const CATALOG_SCHEMA_VERSION = "4";
 
 export class CatalogStore {
   private readonly db: DatabaseSync;
@@ -138,6 +139,7 @@ export class CatalogStore {
   private createSchema(): void {
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS catalog (
+        namespace       TEXT NOT NULL DEFAULT '',
         type_normalized TEXT NOT NULL,
         model_id        TEXT NOT NULL,
         data_name       TEXT NOT NULL,
@@ -160,7 +162,7 @@ export class CatalogStore {
         job_name        TEXT NOT NULL DEFAULT '',
         step_name       TEXT NOT NULL DEFAULT '',
         source          TEXT NOT NULL DEFAULT '',
-        PRIMARY KEY (type_normalized, model_id, data_name, version)
+        PRIMARY KEY (namespace, type_normalized, model_id, data_name, version)
       );
 
       CREATE INDEX IF NOT EXISTS idx_catalog_model_name      ON catalog(model_name);
@@ -169,7 +171,8 @@ export class CatalogStore {
       CREATE INDEX IF NOT EXISTS idx_catalog_created_at      ON catalog(created_at);
       CREATE INDEX IF NOT EXISTS idx_catalog_workflow_run_id ON catalog(workflow_run_id);
       CREATE INDEX IF NOT EXISTS idx_catalog_step_name       ON catalog(step_name);
-      CREATE INDEX IF NOT EXISTS idx_catalog_is_latest       ON catalog(type_normalized, model_id, data_name, is_latest);
+      CREATE INDEX IF NOT EXISTS idx_namespace               ON catalog(namespace);
+      CREATE INDEX IF NOT EXISTS idx_catalog_is_latest       ON catalog(namespace, type_normalized, model_id, data_name, is_latest);
 
       CREATE TABLE IF NOT EXISTS catalog_meta (
         key   TEXT PRIMARY KEY,
@@ -202,7 +205,7 @@ export class CatalogStore {
 
   /**
    * Upserts a row into the catalog. Replaces any existing row with the
-   * same primary key (type_normalized, model_id, data_name, version).
+   * same primary key (namespace, type_normalized, model_id, data_name, version).
    *
    * Writes `is_latest` exactly as supplied. Backfill uses this because it
    * knows the correct `is_latest` for every version up front. Runtime writes
@@ -212,13 +215,14 @@ export class CatalogStore {
   upsert(row: CatalogRow): void {
     const stmt = this.db.prepare(`
       INSERT OR REPLACE INTO catalog (
-        type_normalized, model_id, data_name, id, version, is_latest, model_name,
+        namespace, type_normalized, model_id, data_name, id, version, is_latest, model_name,
         spec_name, data_type, content_type, lifetime, owner_type,
         streaming, size, created_at, tags,
         owner_ref, workflow_run_id, workflow_name, job_name, step_name, source
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     stmt.run(
+      row.namespace,
       row.type_normalized,
       row.model_id,
       row.data_name,
@@ -257,9 +261,9 @@ export class CatalogStore {
     try {
       this.db.prepare(
         `UPDATE catalog SET is_latest = 0
-         WHERE type_normalized = ? AND model_id = ? AND data_name = ?
+         WHERE namespace = ? AND type_normalized = ? AND model_id = ? AND data_name = ?
            AND is_latest = 1`,
-      ).run(row.type_normalized, row.model_id, row.data_name);
+      ).run(row.namespace, row.type_normalized, row.model_id, row.data_name);
       this.upsert({ ...row, is_latest: 1 });
       this.db.exec("COMMIT");
     } catch (error) {
@@ -281,14 +285,15 @@ export class CatalogStore {
       this.db.exec("DELETE FROM catalog");
       const stmt = this.db.prepare(`
         INSERT INTO catalog (
-          type_normalized, model_id, data_name, id, version, is_latest, model_name,
+          namespace, type_normalized, model_id, data_name, id, version, is_latest, model_name,
           spec_name, data_type, content_type, lifetime, owner_type,
           streaming, size, created_at, tags,
           owner_ref, workflow_run_id, workflow_name, job_name, step_name, source
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
       for (const row of rows) {
         stmt.run(
+          row.namespace,
           row.type_normalized,
           row.model_id,
           row.data_name,
@@ -321,14 +326,19 @@ export class CatalogStore {
   }
 
   /**
-   * Removes all rows for (type, model, name) regardless of version.
+   * Removes all rows for (namespace, type, model, name) regardless of version.
    * Used when an entire data item is deleted or tombstoned.
    */
-  remove(typeNormalized: string, modelId: string, dataName: string): void {
+  remove(
+    namespace: string,
+    typeNormalized: string,
+    modelId: string,
+    dataName: string,
+  ): void {
     const stmt = this.db.prepare(
-      "DELETE FROM catalog WHERE type_normalized = ? AND model_id = ? AND data_name = ?",
+      "DELETE FROM catalog WHERE namespace = ? AND type_normalized = ? AND model_id = ? AND data_name = ?",
     );
-    stmt.run(typeNormalized, modelId, dataName);
+    stmt.run(namespace, typeNormalized, modelId, dataName);
   }
 
   /**
@@ -339,6 +349,7 @@ export class CatalogStore {
    * not promote a surviving row on its own.
    */
   removeVersion(
+    namespace: string,
     typeNormalized: string,
     modelId: string,
     dataName: string,
@@ -346,9 +357,9 @@ export class CatalogStore {
   ): void {
     const stmt = this.db.prepare(
       `DELETE FROM catalog
-       WHERE type_normalized = ? AND model_id = ? AND data_name = ? AND version = ?`,
+       WHERE namespace = ? AND type_normalized = ? AND model_id = ? AND data_name = ? AND version = ?`,
     );
-    stmt.run(typeNormalized, modelId, dataName, version);
+    stmt.run(namespace, typeNormalized, modelId, dataName, version);
   }
 
   /**
@@ -534,6 +545,7 @@ export class CatalogStore {
    * individual removeVersion() calls if needed.
    */
   bulkRemoveVersions(
+    namespace: string,
     typeNormalized: string,
     modelId: string,
     dataName: string,
@@ -544,10 +556,10 @@ export class CatalogStore {
     try {
       const stmt = this.db.prepare(
         `DELETE FROM catalog
-         WHERE type_normalized = ? AND model_id = ? AND data_name = ? AND version = ?`,
+         WHERE namespace = ? AND type_normalized = ? AND model_id = ? AND data_name = ? AND version = ?`,
       );
       for (const version of versions) {
-        stmt.run(typeNormalized, modelId, dataName, version);
+        stmt.run(namespace, typeNormalized, modelId, dataName, version);
       }
       this.db.exec("COMMIT");
     } catch (error) {

@@ -423,6 +423,7 @@ export async function requireInitializedRepoReadOnly(
     yamlWorkflowsDir,
     vaultsDir,
     datastoreResolver,
+    namespace: datastoreConfig.namespace,
     hydrateFile: hydrateFileHook,
     ...factoryConfig,
   });
@@ -611,6 +612,7 @@ export function requireInitializedRepo(
           repoPath.value,
         )
         : undefined,
+      namespace: datastoreConfig.namespace,
       ...factoryConfig,
     });
 
@@ -755,6 +757,7 @@ export async function requireInitializedRepoUnlocked(
         repoPath.value,
       )
       : undefined,
+    namespace: datastoreConfig.namespace,
     ...factoryConfig,
   });
 

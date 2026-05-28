@@ -33,6 +33,7 @@ function makeTempDbPath(): string {
 
 function makeRow(overrides: Partial<CatalogRow> = {}): CatalogRow {
   return {
+    namespace: "",
     type_normalized: "test-model",
     model_id: "model-001",
     data_name: "my-data",
@@ -170,7 +171,7 @@ Deno.test("CatalogStore: removeVersion deletes a single version row", () => {
   store.upsertNewVersion(makeRow({ version: 2 }));
   store.upsertNewVersion(makeRow({ version: 3 }));
 
-  store.removeVersion("test-model", "model-001", "my-data", 2);
+  store.removeVersion("", "test-model", "model-001", "my-data", 2);
 
   const rows = [...store.iterate()];
   assertEquals(rows.length, 2);
@@ -186,7 +187,7 @@ Deno.test("CatalogStore: remove deletes every version of a data name", () => {
   store.upsertNewVersion(makeRow({ version: 2 }));
   store.upsertNewVersion(makeRow({ version: 3 }));
 
-  store.remove("test-model", "model-001", "my-data");
+  store.remove("", "test-model", "model-001", "my-data");
 
   assertEquals(store.count(), 0);
   store.close();
@@ -199,7 +200,7 @@ Deno.test("CatalogStore: remove deletes row", () => {
   store.upsert(makeRow());
   assertEquals(store.count(), 1);
 
-  store.remove("test-model", "model-001", "my-data");
+  store.remove("", "test-model", "model-001", "my-data");
   assertEquals(store.count(), 0);
   assertEquals([...store.iterate()].length, 0);
   store.close();
@@ -209,7 +210,7 @@ Deno.test("CatalogStore: remove nonexistent row is a no-op", () => {
   const dbPath = makeTempDbPath();
   const store = new CatalogStore(dbPath);
 
-  store.remove("nonexistent", "nope", "nothing");
+  store.remove("", "nonexistent", "nope", "nothing");
   assertEquals(store.count(), 0);
   store.close();
 });
@@ -250,7 +251,7 @@ Deno.test("CatalogStore: multiple rows with different keys", () => {
 
   assertEquals(store.count(), 3);
 
-  store.remove("test-model", "m1", "alpha");
+  store.remove("", "test-model", "m1", "alpha");
   assertEquals(store.count(), 2);
 
   store.close();
@@ -531,7 +532,7 @@ Deno.test("CatalogStore: bulkRemoveVersions deletes all specified versions atomi
   store.upsertNewVersion(makeRow({ version: 3 }));
   store.upsertNewVersion(makeRow({ version: 4 }));
 
-  store.bulkRemoveVersions("test-model", "model-001", "my-data", [1, 2, 3]);
+  store.bulkRemoveVersions("", "test-model", "model-001", "my-data", [1, 2, 3]);
 
   const rows = [...store.iterate()];
   assertEquals(rows.length, 1);
@@ -544,7 +545,7 @@ Deno.test("CatalogStore: bulkRemoveVersions is a no-op for empty array", () => {
   const store = new CatalogStore(dbPath);
 
   store.upsertNewVersion(makeRow({ version: 1 }));
-  store.bulkRemoveVersions("test-model", "model-001", "my-data", []);
+  store.bulkRemoveVersions("", "test-model", "model-001", "my-data", []);
 
   assertEquals(store.count(), 1);
   store.close();
@@ -606,5 +607,127 @@ Deno.test("CatalogStore: invalidate clears populated flag but keeps data", () =>
   assertEquals(store.isPopulated(), false);
   // Data rows are preserved — backfill will replace them
   assertEquals(store.count(), 1);
+  store.close();
+});
+
+Deno.test("CatalogStore: namespace round-trips through upsert and iterate", () => {
+  const dbPath = makeTempDbPath();
+  const store = new CatalogStore(dbPath);
+
+  store.upsert(makeRow({ namespace: "infra" }));
+
+  const rows = [...store.iterate()];
+  assertEquals(rows.length, 1);
+  assertEquals(rows[0].namespace, "infra");
+  store.close();
+});
+
+Deno.test("CatalogStore: namespace is part of the primary key", () => {
+  const dbPath = makeTempDbPath();
+  const store = new CatalogStore(dbPath);
+
+  // Same (type, model, name, version) in two namespaces must coexist as
+  // distinct rows — namespace is the outermost PK dimension.
+  store.upsert(makeRow({ namespace: "infra" }));
+  store.upsert(makeRow({ namespace: "security" }));
+
+  assertEquals(store.count(), 2);
+  store.close();
+});
+
+Deno.test("CatalogStore: upsertNewVersion does not clear is_latest across namespaces", () => {
+  const dbPath = makeTempDbPath();
+  const store = new CatalogStore(dbPath);
+
+  // infra's latest must survive when security promotes a new latest for the
+  // same (type, model, name) — the is_latest-clearing UPDATE is namespace-scoped.
+  store.upsertNewVersion(makeRow({ namespace: "infra", version: 1 }));
+  store.upsertNewVersion(makeRow({ namespace: "security", version: 1 }));
+  store.upsertNewVersion(makeRow({ namespace: "security", version: 2 }));
+
+  const rows = [...store.iterate()];
+  const infra = rows.filter((r) => r.namespace === "infra");
+  assertEquals(infra.length, 1);
+  assertEquals(infra[0].is_latest, 1, "infra latest must be untouched");
+
+  const security = rows.filter((r) => r.namespace === "security");
+  const securityLatest = security.filter((r) => r.is_latest === 1);
+  assertEquals(securityLatest.length, 1);
+  assertEquals(securityLatest[0].version, 2);
+  store.close();
+});
+
+Deno.test("CatalogStore: removeVersion is scoped to a namespace", () => {
+  const dbPath = makeTempDbPath();
+  const store = new CatalogStore(dbPath);
+
+  store.upsert(makeRow({ namespace: "infra", version: 1 }));
+  store.upsert(makeRow({ namespace: "security", version: 1 }));
+
+  store.removeVersion("infra", "test-model", "model-001", "my-data", 1);
+
+  const rows = [...store.iterate()];
+  assertEquals(rows.length, 1);
+  assertEquals(rows[0].namespace, "security");
+  store.close();
+});
+
+Deno.test("CatalogStore: migrates v3 catalog DB to v4 with namespace column", () => {
+  const dbPath = makeTempDbPath();
+
+  // Pre-create a v3 catalog DB: no namespace column, schema_version=3, with a
+  // pre-existing row and the populated flag set. This mirrors every existing
+  // repo at the moment it is first opened by a v4 build.
+  const db = new DatabaseSync(dbPath);
+  db.exec("PRAGMA busy_timeout=5000");
+  db.exec("PRAGMA journal_mode=WAL");
+  db.exec(`
+    CREATE TABLE IF NOT EXISTS catalog (
+      type_normalized TEXT NOT NULL,
+      model_id        TEXT NOT NULL,
+      data_name       TEXT NOT NULL,
+      id              TEXT NOT NULL,
+      version         INTEGER NOT NULL,
+      is_latest       INTEGER NOT NULL DEFAULT 1,
+      model_name      TEXT NOT NULL,
+      spec_name       TEXT NOT NULL DEFAULT '',
+      data_type       TEXT NOT NULL DEFAULT '',
+      content_type    TEXT NOT NULL DEFAULT '',
+      lifetime        TEXT NOT NULL DEFAULT '',
+      owner_type      TEXT NOT NULL DEFAULT '',
+      streaming       INTEGER NOT NULL DEFAULT 0,
+      size            INTEGER NOT NULL DEFAULT 0,
+      created_at      TEXT NOT NULL,
+      tags            TEXT NOT NULL DEFAULT '{}',
+      owner_ref       TEXT NOT NULL DEFAULT '',
+      workflow_run_id TEXT NOT NULL DEFAULT '',
+      workflow_name   TEXT NOT NULL DEFAULT '',
+      job_name        TEXT NOT NULL DEFAULT '',
+      step_name       TEXT NOT NULL DEFAULT '',
+      source          TEXT NOT NULL DEFAULT '',
+      PRIMARY KEY (type_normalized, model_id, data_name, version)
+    );
+    CREATE TABLE IF NOT EXISTS catalog_meta (
+      key   TEXT PRIMARY KEY,
+      value TEXT NOT NULL
+    );
+    INSERT INTO catalog (type_normalized, model_id, data_name, id, version, model_name, created_at)
+      VALUES ('test-model', 'm1', 'd1', 'id1', 1, 'name', '2026-01-01T00:00:00.000Z');
+    INSERT OR REPLACE INTO catalog_meta (key, value) VALUES ('schema_version', '3');
+    INSERT OR REPLACE INTO catalog_meta (key, value) VALUES ('populated', 'true');
+  `);
+  db.close();
+
+  // Opening with CatalogStore drops and recreates the table for v4 and clears
+  // the populated flag so the next query triggers a backfill.
+  const store = new CatalogStore(dbPath);
+  assertEquals(store.count(), 0, "migration drops and recreates the table");
+  assertEquals(store.isPopulated(), false, "populated cleared for backfill");
+
+  // The rebuilt table accepts namespace-stamped rows.
+  store.upsert(makeRow({ namespace: "infra" }));
+  const rows = [...store.iterate()];
+  assertEquals(rows.length, 1);
+  assertEquals(rows[0].namespace, "infra");
   store.close();
 });
