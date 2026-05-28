@@ -39,7 +39,13 @@ export type StepReport =
 
 export interface StepState {
   id: string;
-  status: "pending" | "running" | "completed" | "failed" | "skipped";
+  status:
+    | "pending"
+    | "running"
+    | "waiting_approval"
+    | "completed"
+    | "failed"
+    | "skipped";
   modelName: string | null;
   methodName: string | null;
   startedAt: number | null;
@@ -47,6 +53,7 @@ export interface StepState {
   error: string | null;
   allowedFailure: boolean;
   reports: StepReport[];
+  approvalPrompt: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -171,6 +178,7 @@ function getOrCreateStep(job: JobState, stepId: string): StepState {
     error: null,
     allowedFailure: false,
     reports: [],
+    approvalPrompt: null,
   };
 }
 
@@ -571,11 +579,38 @@ function treeReducerSingle(
       };
     }
 
+    case "approval_requested": {
+      const job = state.jobs.get(event.jobId);
+      if (!job) return state;
+
+      const step = job.steps.get(event.stepId) ??
+        getOrCreateStep(job, event.stepId);
+      const steps = new Map(job.steps);
+      steps.set(event.stepId, {
+        ...step,
+        status: "waiting_approval",
+        approvalPrompt: event.prompt,
+      });
+
+      const jobs = updateJob(state.jobs, event.jobId, { steps });
+      return { ...state, jobs };
+    }
+
     case "completed": {
       return {
         ...state,
         phase: "done",
         failed: event.run.status === "failed",
+        finalRun: event.run,
+        activeReport: null,
+      };
+    }
+
+    case "suspended": {
+      return {
+        ...state,
+        phase: "done",
+        failed: false,
         finalRun: event.run,
         activeReport: null,
       };

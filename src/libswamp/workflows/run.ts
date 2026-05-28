@@ -83,6 +83,14 @@ export type WorkflowRunEvent =
   | { kind: "step_completed"; jobId: string; stepId: string }
   | { kind: "step_skipped"; jobId: string; stepId: string }
   | {
+    kind: "approval_requested";
+    runId: string;
+    jobId: string;
+    stepId: string;
+    prompt: string;
+    timeout?: number;
+  }
+  | {
     kind: "step_failed";
     jobId: string;
     stepId: string;
@@ -168,6 +176,14 @@ export type WorkflowRunEvent =
     stepId?: string;
   }
   | { kind: "completed"; run: WorkflowRunView }
+  | {
+    kind: "suspended";
+    run: WorkflowRunView;
+    jobId: string;
+    stepId: string;
+    prompt: string;
+    timeout?: number;
+  }
   | { kind: "error"; error: SwampError };
 
 /**
@@ -383,12 +399,28 @@ function mapEvent(
       const data = toRunData(event.run, path, input.verbose);
       return { kind: "completed", run: data };
     }
+    case "suspended": {
+      const path = deps.runRepo.getPath(
+        createWorkflowId(event.run.workflowId),
+        createWorkflowRunId(event.run.id),
+      );
+      const data = toRunData(event.run, path, input.verbose);
+      return {
+        kind: "suspended",
+        run: data,
+        jobId: event.jobId,
+        stepId: event.stepId,
+        prompt: event.prompt,
+        timeout: event.timeout,
+      };
+    }
     case "job_started":
     case "job_completed":
     case "job_skipped":
     case "step_started":
     case "step_completed":
     case "step_skipped":
+    case "approval_requested":
     case "step_failed":
     case "model_resolved":
     case "env_var_warning":
@@ -533,7 +565,10 @@ export async function* workflowRun(
             await telemetryBridge.observe(mapped);
           }
 
-          if (mapped.kind === "completed" && reportResults.length > 0) {
+          if (
+            (mapped.kind === "completed" || mapped.kind === "suspended") &&
+            reportResults.length > 0
+          ) {
             mapped = {
               ...mapped,
               run: { ...mapped.run, reports: reportResults },

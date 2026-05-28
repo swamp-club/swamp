@@ -47,7 +47,13 @@ export interface DataArtifactRefData {
 
 export interface StepRunView {
   name: string;
-  status: "pending" | "running" | "succeeded" | "failed" | "skipped";
+  status:
+    | "pending"
+    | "running"
+    | "waiting_approval"
+    | "succeeded"
+    | "failed"
+    | "skipped";
   error?: string;
   duration?: number;
   /** Output ID if this step produced an output (for model methods) */
@@ -62,7 +68,13 @@ export interface StepRunView {
 
 export interface JobRunView {
   name: string;
-  status: "pending" | "running" | "succeeded" | "failed" | "skipped";
+  status:
+    | "pending"
+    | "running"
+    | "waiting_approval"
+    | "succeeded"
+    | "failed"
+    | "skipped";
   steps: StepRunView[];
   duration?: number;
 }
@@ -71,7 +83,7 @@ export interface WorkflowRunView {
   id: string;
   workflowId: string;
   workflowName: string;
-  status: "pending" | "running" | "succeeded" | "failed";
+  status: "pending" | "running" | "suspended" | "succeeded" | "failed";
   jobs: JobRunView[];
   duration?: number;
   path?: string;

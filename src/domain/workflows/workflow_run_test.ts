@@ -560,3 +560,78 @@ Deno.test("WorkflowRun roundtrip preserves workflowDataArtifacts", () => {
     "@swamp/workflow-summary",
   );
 });
+
+// Manual approval state transition tests
+
+Deno.test("StepRun: waitForApproval transitions from running to waiting_approval", () => {
+  const step = StepRun.pending("approval-step");
+  step.start();
+  assertEquals(step.status, "running");
+  step.waitForApproval();
+  assertEquals(step.status, "waiting_approval");
+});
+
+Deno.test("StepRun: succeed from waiting_approval transitions to succeeded", () => {
+  const step = StepRun.pending("approval-step");
+  step.start();
+  step.waitForApproval();
+  step.succeed();
+  assertEquals(step.status, "succeeded");
+});
+
+Deno.test("StepRun: fail from waiting_approval transitions to failed", () => {
+  const step = StepRun.pending("approval-step");
+  step.start();
+  step.waitForApproval();
+  step.fail("Approval rejected");
+  assertEquals(step.status, "failed");
+  assertEquals(step.error, "Approval rejected");
+});
+
+Deno.test("StepRun: waiting_approval round-trips through serialization", () => {
+  const step = StepRun.pending("approval-step");
+  step.start();
+  step.waitForApproval();
+  const data = step.toData();
+  assertEquals(data.status, "waiting_approval");
+  const restored = StepRun.fromData(data);
+  assertEquals(restored.status, "waiting_approval");
+});
+
+Deno.test("WorkflowRun: suspend sets status to suspended", () => {
+  const workflow = createTestWorkflow();
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  run.suspend();
+  assertEquals(run.status, "suspended");
+});
+
+Deno.test("WorkflowRun: suspended round-trips through serialization", () => {
+  const workflow = createTestWorkflow();
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  run.suspend();
+  const data = run.toData();
+  assertEquals(data.status, "suspended");
+  const restored = WorkflowRun.fromData(data);
+  assertEquals(restored.status, "suspended");
+});
+
+Deno.test("WorkflowRun: findWaitingApprovalStep finds the correct step", () => {
+  const workflow = createTestWorkflow();
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  const job = run.getJob("job1")!;
+  const step = job.getStep("step1")!;
+  step.start();
+  step.waitForApproval();
+  const found = run.findWaitingApprovalStep();
+  assertEquals(found, { jobName: "job1", stepName: "step1" });
+});
+
+Deno.test("WorkflowRun: findWaitingApprovalStep returns undefined when none waiting", () => {
+  const workflow = createTestWorkflow();
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  assertEquals(run.findWaitingApprovalStep(), undefined);
+});

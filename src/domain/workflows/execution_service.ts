@@ -31,7 +31,11 @@ import {
   type GraphNode,
   TopologicalSortService,
 } from "./topological_sort_service.ts";
-import { createWorkflowId, type WorkflowId } from "./workflow_id.ts";
+import {
+  createWorkflowId,
+  createWorkflowRunId,
+  type WorkflowId,
+} from "./workflow_id.ts";
 import type {
   WorkflowRepository,
   WorkflowRunRepository,
@@ -112,6 +116,22 @@ import {
 } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { createRepoMarkerLoader } from "../../infrastructure/persistence/repo_marker_loader.ts";
 import { extractSensitiveFieldValues } from "../models/sensitive_field_extractor.ts";
+
+/**
+ * Thrown when a manual_approval step suspends the workflow.
+ * Caught by the run() generator to yield a suspended terminal event.
+ */
+export class WorkflowSuspendedError extends Error {
+  constructor(
+    readonly jobId: string,
+    readonly stepId: string,
+    readonly prompt: string,
+    readonly timeout?: number,
+  ) {
+    super(`Workflow suspended at step "${stepId}" — awaiting manual approval`);
+    this.name = "WorkflowSuspendedError";
+  }
+}
 
 /**
  * Context for step execution.
@@ -1314,6 +1334,7 @@ export class WorkflowExecutionService {
       attributes: { "workflow.name": idOrName },
     });
 
+    let workflowRun: WorkflowRun | undefined;
     try {
       const wfSetupSpan = tracer.startSpan("swamp.workflow.setup");
       let workflow: Workflow;
@@ -1389,6 +1410,7 @@ export class WorkflowExecutionService {
           ...(options?.runtimeTags ?? {}),
         };
         run = WorkflowRun.create(workflow, mergedTags);
+        workflowRun = run;
 
         // workflowRunId is set here for backward compat; the structured
         // run namespace is populated after run.start() below so that
@@ -1585,6 +1607,19 @@ export class WorkflowExecutionService {
       }
       runSpan.setStatus({ code: SpanStatusCode.OK });
     } catch (error) {
+      if (error instanceof WorkflowSuspendedError && workflowRun) {
+        yield {
+          kind: "suspended" as const,
+          run: workflowRun,
+          jobId: error.jobId,
+          stepId: error.stepId,
+          prompt: error.prompt,
+          timeout: error.timeout,
+        };
+        runSpan.setStatus({ code: SpanStatusCode.OK });
+        runSpan.end();
+        return;
+      }
       runSpan.setStatus({
         code: SpanStatusCode.ERROR,
         message: error instanceof Error ? error.message : String(error),
@@ -1616,6 +1651,209 @@ export class WorkflowExecutionService {
     }
     if (!result) throw new Error("Workflow run did not complete");
     return result;
+  }
+
+  /**
+   * Resumes a suspended workflow run from the point where it was paused.
+   * The approval step must already be marked as succeeded (by the approve command).
+   * Skips completed/failed/skipped steps and executes remaining pending ones.
+   */
+  async *resume(
+    workflowIdOrName: string,
+    runId: string,
+    options?: {
+      signal?: AbortSignal;
+      driver?: string;
+      runtimeTags?: Record<string, string>;
+      reportFilterOptions?: ReportFilterOptions;
+      swampSha?: string;
+    },
+  ): AsyncGenerator<WorkflowExecutionEvent> {
+    const workflow = await this.workflowRepo.findByName(workflowIdOrName) ??
+      await this.workflowRepo.findById(createWorkflowId(workflowIdOrName));
+    if (!workflow) {
+      throw new UserError(`Workflow not found: ${workflowIdOrName}`);
+    }
+
+    const existingRun = await this.runRepo.findById(
+      workflow.id,
+      createWorkflowRunId(runId),
+    );
+    if (!existingRun) {
+      throw new UserError(`Workflow run not found: ${runId}`);
+    }
+    if (existingRun.status !== "suspended") {
+      throw new UserError(
+        `Run ${runId} is not suspended (status: ${existingRun.status})`,
+      );
+    }
+
+    const waiting = existingRun.findWaitingApprovalStep();
+    if (waiting) {
+      throw new UserError(
+        `Step "${waiting.stepName}" in job "${waiting.jobName}" is still awaiting approval. ` +
+          `Run "swamp workflow approve ${workflowIdOrName} ${waiting.stepName}" first.`,
+      );
+    }
+
+    existingRun.resumeFromSuspended();
+    await this.saveRun(workflow.id, existingRun);
+
+    const expressionContext = await this.modelResolver.buildContext();
+    if (options?.runtimeTags) {
+      expressionContext.inputs = expressionContext.inputs ?? {};
+    }
+
+    const evaluator = new WorkflowExpressionEvaluator(
+      new CelEvaluator(),
+    );
+    const evaluated = await evaluator.evaluate(workflow, expressionContext);
+    const resolvedWorkflow = evaluated.workflow;
+
+    const secretRedactor = new SecretRedactor();
+
+    // Re-register the log file sink so resume output is captured
+    const workflowLogPath = existingRun.logFile ??
+      join(
+        swampPath(this.repoDir, SWAMP_SUBDIRS.workflowRuns),
+        workflow.id,
+        `workflow-run-${existingRun.id}.log`,
+      );
+    const workflowLogCategory: string[] = [];
+    await runFileSink.register(
+      workflowLogCategory,
+      workflowLogPath,
+      secretRedactor,
+      swampPath(this.repoDir),
+    );
+
+    yield {
+      kind: "started",
+      runId: existingRun.id,
+      workflowName: resolvedWorkflow.name,
+      logPath: workflowLogPath,
+      jobs: resolvedWorkflow.jobs.map((job) => ({
+        id: job.name,
+        stepCount: job.steps.length,
+        dependsOn: job.getDependencyNames(),
+      })),
+    };
+
+    const stepOpts: StepOptions = {
+      workflowTags: resolvedWorkflow.tags,
+      runtimeTags: options?.runtimeTags,
+      secretRedactor,
+      signal: options?.signal,
+      driver: options?.driver,
+      reportFilterOptions: options?.reportFilterOptions,
+      swampSha: options?.swampSha,
+    };
+
+    const jobNodes: GraphNode[] = resolvedWorkflow.jobs.map((job) => ({
+      name: job.name,
+      weight: job.weight,
+      dependencies: job.getDependencyNames(),
+    }));
+    const sortedJobs = this.sortService.sort(jobNodes);
+    const jobConcurrency = resolvedWorkflow.concurrency;
+
+    const modelInfoByStep = new Map<
+      string,
+      {
+        modelName: string;
+        modelType: string;
+        modelId: string;
+        methodName: string;
+      }
+    >();
+    const stepStatuses = new Map<string, "succeeded" | "failed" | "skipped">();
+    const stepJobNames = new Map<string, string>();
+    const dataHandlesByStep = new Map<
+      string,
+      import("../models/model.ts").DataHandle[]
+    >();
+
+    try {
+      for (const level of sortedJobs.levels) {
+        const jobStreams = level.map((jobName: string) => {
+          const jobRun = existingRun.getJob(jobName);
+          if (
+            jobRun &&
+            (jobRun.status === "succeeded" || jobRun.status === "failed" ||
+              jobRun.status === "skipped")
+          ) {
+            return (async function* () {})();
+          }
+          return this.runJob(
+            resolvedWorkflow,
+            existingRun,
+            jobName,
+            expressionContext,
+            stepOpts,
+          );
+        });
+        for await (
+          const event of mergeWithConcurrency(
+            jobStreams,
+            jobConcurrency,
+            options?.signal,
+          )
+        ) {
+          if (event.kind === "model_resolved") {
+            const key = `${event.jobId}:${event.stepId}`;
+            modelInfoByStep.set(key, {
+              modelName: event.modelName,
+              modelType: event.modelType,
+              modelId: event.modelId,
+              methodName: event.methodName,
+            });
+            stepJobNames.set(key, event.jobId);
+          } else if (event.kind === "step_completed") {
+            const key = `${event.jobId}:${event.stepId}`;
+            stepStatuses.set(key, "succeeded");
+            if (event.dataHandles) {
+              dataHandlesByStep.set(key, event.dataHandles);
+            }
+          } else if (event.kind === "step_failed") {
+            stepStatuses.set(`${event.jobId}:${event.stepId}`, "failed");
+          } else if (event.kind === "step_skipped") {
+            stepStatuses.set(`${event.jobId}:${event.stepId}`, "skipped");
+          }
+          yield event as WorkflowExecutionEvent;
+        }
+        await this.saveRun(workflow.id, existingRun);
+      }
+
+      existingRun.complete();
+
+      yield* this.runWorkflowReports(
+        resolvedWorkflow,
+        existingRun,
+        modelInfoByStep,
+        stepStatuses,
+        stepJobNames,
+        dataHandlesByStep,
+        options?.reportFilterOptions,
+      );
+
+      yield { kind: "completed", run: existingRun };
+      await this.saveRun(workflow.id, existingRun);
+      runFileSink.unregister(workflowLogCategory);
+    } catch (error) {
+      runFileSink.unregister(workflowLogCategory);
+      if (error instanceof WorkflowSuspendedError) {
+        yield {
+          kind: "suspended" as const,
+          run: existingRun,
+          jobId: error.jobId,
+          stepId: error.stepId,
+          prompt: error.prompt,
+          timeout: error.timeout,
+        };
+        return;
+      }
+      throw error;
+    }
   }
 
   private async *runJob(
@@ -1650,8 +1888,10 @@ export class WorkflowExecutionService {
         return;
       }
 
-      // Start job
-      jobRun.start();
+      // Start job (skip if already running from a resumed suspended run)
+      if (jobRun.status !== "running") {
+        jobRun.start();
+      }
       yield { kind: "job_started", jobId: jobName };
 
       // Expand forEach steps if we have expression context.
@@ -1843,6 +2083,16 @@ export class WorkflowExecutionService {
       jobRun.addExpandedStep(stepName);
       stepRun = jobRun.getStep(stepName);
     }
+    // Skip steps that already completed (during resume from suspended state)
+    if (
+      stepRun &&
+      (stepRun.status === "succeeded" || stepRun.status === "failed" ||
+        stepRun.status === "skipped")
+    ) {
+      stepSpan.end();
+      return;
+    }
+
     if (!stepRun) {
       stepSpan.end();
       throw new Error(`Step run not found: ${stepName}`);
@@ -1892,6 +2142,27 @@ export class WorkflowExecutionService {
       }
 
       const task = step.task.data;
+
+      // Handle manual approval tasks — suspend the workflow
+      if (task.type === "manual_approval") {
+        stepRun.waitForApproval();
+        yield {
+          kind: "approval_requested",
+          runId: run.id,
+          jobId: job.name,
+          stepId: stepName,
+          prompt: task.prompt,
+          timeout: task.timeout,
+        };
+        run.suspend();
+        await this.saveRun(workflow.id, run);
+        throw new WorkflowSuspendedError(
+          job.name,
+          stepName,
+          task.prompt,
+          task.timeout,
+        );
+      }
 
       // Handle workflow tasks inline to forward nested workflow events
       if (task.type === "workflow") {
@@ -2041,6 +2312,10 @@ export class WorkflowExecutionService {
         dataHandles: stepDataHandles,
       };
     } catch (error) {
+      if (error instanceof WorkflowSuspendedError) {
+        stepSpan.end();
+        throw error;
+      }
       // Record data artifacts that were written before the throw so they
       // survive in the workflow run record for later data get --workflow.
       const errorArtifacts = (error as Record<string, unknown>).dataArtifacts as

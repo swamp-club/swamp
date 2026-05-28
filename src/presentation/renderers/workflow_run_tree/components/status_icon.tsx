@@ -27,6 +27,7 @@ interface StatusIconProps {
     | "waiting"
     | "blocked"
     | "running"
+    | "waiting_approval"
     | "completed"
     | "failed"
     | "skipped"
@@ -43,6 +44,8 @@ export function StatusIcon({ status, spinnerFrame }: StatusIconProps) {
       return <Text color="red">✗</Text>;
     case "running":
       return <Text color="cyan">{(spinnerFrame ?? "\u280B") + " "}</Text>;
+    case "waiting_approval":
+      return <Text color="yellow">\u23F8</Text>;
     case "pending":
     case "waiting":
     case "blocked":

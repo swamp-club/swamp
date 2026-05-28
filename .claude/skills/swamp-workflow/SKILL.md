@@ -37,6 +37,10 @@ run.
 | Run a workflow     | `swamp workflow run <id_or_name>`                             |
 | Run with inputs    | `swamp workflow run <id_or_name> --input key=value`           |
 | Run from stdin     | `echo '{"k":"v"}' \| swamp workflow run <id_or_name> --stdin` |
+| Approve step       | `swamp workflow approve <workflow> <step>`                    |
+| Reject step        | `swamp workflow reject <workflow> <step>`                     |
+| Resume workflow    | `swamp workflow resume <workflow>`                            |
+| List approvals     | `swamp workflow approvals --json`                             |
 | View run history   | `swamp workflow history search --json`                        |
 | Get latest run     | `swamp workflow history get <workflow> --json`                |
 | View run logs      | `swamp workflow history logs <run_or_workflow> --json`        |
@@ -494,7 +498,7 @@ steps:
 
 ## Step Task Types
 
-Steps support two task types:
+Steps support three task types:
 
 **`model_method`** — prefer `modelType` + `modelName` (direct type execution)
 for dynamic inputs. Use `modelIdOrName` only for persistent definitions with CEL
@@ -532,6 +536,24 @@ task:
 ```
 
 Nested workflows have a max depth of 10 and cycle detection is enforced.
+
+**`manual_approval`** - Suspend workflow and wait for operator approval:
+
+```yaml
+task:
+  type: manual_approval
+  prompt: "Verify SSH access before proceeding"
+  timeout: 3600 # Optional: seconds before approve is rejected
+```
+
+The workflow suspends to disk. Approve, reject, or resume from CLI:
+
+```
+swamp workflow approve <workflow-name> <step-name>
+swamp workflow reject  <workflow-name> <step-name> --reason "Not ready"
+swamp workflow resume  <workflow-name>
+swamp workflow approvals  # list all pending approvals
+```
 
 ## Working with Vaults
 

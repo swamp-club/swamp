@@ -71,6 +71,50 @@ For `forEach` steps, `modelName` supports CEL template expressions:
       host: ${{ self.host }}
 ```
 
+### Manual Approval (`manual_approval`)
+
+Suspends workflow execution at a step boundary and persists the run to disk. The
+operator (or another user) approves or rejects via CLI, then the original
+operator resumes the workflow to continue executing remaining steps.
+
+```yaml
+steps:
+  - name: verify-ssh
+    task:
+      type: manual_approval
+      prompt: "Verify Tailscale SSH access from your laptop before proceeding"
+      timeout: 3600
+```
+
+**Fields:**
+
+- `prompt` (required, string) — message displayed to the operator.
+- `timeout` (optional, number) — seconds. Checked at approve time against the
+  suspension timestamp. When expired, approve is rejected.
+
+**Lifecycle: suspend → approve → resume**
+
+1. `swamp workflow run` executes until hitting a `manual_approval` step. The step
+   is marked `waiting_approval`, the run is saved as `suspended`, and the CLI
+   exits.
+2. `swamp workflow approve <workflow> <step>` marks the step as succeeded in the
+   persisted run record. Lightweight — no execution, any authorized user.
+3. `swamp workflow resume <workflow>` re-enters the executor, skips completed
+   steps, and runs remaining pending steps.
+
+`swamp workflow reject <workflow> <step>` marks the step as failed and the run as
+failed. No resume needed.
+
+`swamp workflow approvals` lists all suspended runs awaiting approval.
+
+**Persistence:** The run record survives process restarts. The approval and
+resume can happen from any machine with access to the repo (or synced
+datastore).
+
+**forEach compatibility:** A `forEach` expansion of a `manual_approval` step
+creates N parallel approval gates, each independently approvable via its expanded
+step name.
+
 ## Concurrency Limits
 
 By default, all jobs in a topological level and all steps in a topological level

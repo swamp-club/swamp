@@ -82,6 +82,7 @@ export type TriggerConditionData =
 export type RunStatus =
   | "pending"
   | "running"
+  | "waiting_approval"
   | "succeeded"
   | "failed"
   | "skipped";

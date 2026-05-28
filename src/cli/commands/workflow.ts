@@ -32,6 +32,10 @@ import {
 } from "./workflow_search.ts";
 import { workflowRunCommand } from "./workflow_run.ts";
 import { workflowSchemaCommand } from "./workflow_schema.ts";
+import { workflowApproveCommand } from "./workflow_approve.ts";
+import { workflowRejectCommand } from "./workflow_reject.ts";
+import { workflowResumeCommand } from "./workflow_resume.ts";
+import { workflowApprovalsCommand } from "./workflow_approvals.ts";
 import { unknownCommandErrorHandler } from "../unknown_command_handler.ts";
 
 export const workflowCommand = new Command()
@@ -48,6 +52,10 @@ export const workflowCommand = new Command()
   .command("validate", workflowValidateCommand)
   .command("search", workflowSearchCommand)
   .command("run", workflowRunCommand)
+  .command("approve", workflowApproveCommand)
+  .command("reject", workflowRejectCommand)
+  .command("resume", workflowResumeCommand)
+  .command("approvals", workflowApprovalsCommand)
   .command("schema", workflowSchemaCommand)
   .command(
     "list",

@@ -284,6 +284,69 @@ Deno.test("StepTaskSchema rejects neither modelIdOrName nor modelType", () => {
   );
 });
 
+// Manual approval tests
+
+Deno.test("StepTask.manualApproval creates manual approval task", () => {
+  const task = StepTask.manualApproval("Verify SSH access before proceeding");
+  assertEquals(task.data, {
+    type: "manual_approval",
+    prompt: "Verify SSH access before proceeding",
+    timeout: undefined,
+  });
+  assertEquals(task.isManualApproval(), true);
+  assertEquals(task.isModelMethod(), false);
+  assertEquals(task.isWorkflow(), false);
+});
+
+Deno.test("StepTask.manualApproval creates task with timeout", () => {
+  const task = StepTask.manualApproval("Approve deployment", 3600);
+  assertEquals(task.data, {
+    type: "manual_approval",
+    prompt: "Approve deployment",
+    timeout: 3600,
+  });
+});
+
+Deno.test("StepTask.fromData creates manual approval task", () => {
+  const task = StepTask.fromData({
+    type: "manual_approval",
+    prompt: "Check the dashboard",
+  });
+  assertEquals(task.isManualApproval(), true);
+});
+
+Deno.test("StepTask.toData returns correct structure for manual approval task", () => {
+  const task = StepTask.manualApproval("Verify deploy", 300);
+  const data = task.toData();
+  assertEquals(data, {
+    type: "manual_approval",
+    prompt: "Verify deploy",
+    timeout: 300,
+  });
+});
+
+Deno.test("StepTask.equals returns true for identical manual approval tasks", () => {
+  const task1 = StepTask.manualApproval("Check", 60);
+  const task2 = StepTask.manualApproval("Check", 60);
+  assertEquals(task1.equals(task2), true);
+});
+
+Deno.test("StepTaskSchema rejects empty prompt for manual_approval", () => {
+  assertThrows(() => {
+    StepTaskSchema.parse({ type: "manual_approval", prompt: "" });
+  });
+});
+
+Deno.test("StepTaskSchema rejects negative timeout for manual_approval", () => {
+  assertThrows(() => {
+    StepTaskSchema.parse({
+      type: "manual_approval",
+      prompt: "Check",
+      timeout: -1,
+    });
+  });
+});
+
 Deno.test("StepTaskSchema throws clear error for arguments instead of inputs", () => {
   assertThrows(
     () => {

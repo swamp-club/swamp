@@ -84,11 +84,18 @@ function renderLogWorkflowRun(data: WorkflowRunView): void {
 }
 
 function statusIcon(
-  status: "pending" | "running" | "succeeded" | "failed" | "skipped",
+  status:
+    | "pending"
+    | "running"
+    | "waiting_approval"
+    | "succeeded"
+    | "failed"
+    | "skipped",
 ): string {
   const icons: Record<string, string> = {
     pending: "\u25CB",
     running: "\u25D0",
+    waiting_approval: "\u23F8",
     succeeded: "\u2713",
     failed: "\u2717",
     skipped: "\u2298",

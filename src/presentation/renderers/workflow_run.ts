@@ -96,6 +96,24 @@ class LogWorkflowRunRenderer implements WorkflowRunRenderer {
           { error: e.error },
         );
       },
+      approval_requested: (e) => {
+        const logger = getWorkflowRunLogger(
+          this.workflowName,
+          e.jobId,
+          e.stepId,
+        );
+        logger.info("Awaiting manual approval: {prompt}", {
+          prompt: e.prompt,
+        });
+        logger.info(
+          "To approve: swamp workflow approve {workflowName} {stepName}",
+          { workflowName: this.workflowName, stepName: e.stepId },
+        );
+        logger.info(
+          "To reject:  swamp workflow reject {workflowName} {stepName}",
+          { workflowName: this.workflowName, stepName: e.stepId },
+        );
+      },
       model_resolved: (e) => {
         getRunLogger(e.modelName, e.methodName).info(
           "Found model {name} ({type})",
@@ -189,6 +207,26 @@ class LogWorkflowRunRenderer implements WorkflowRunRenderer {
           this.renderDataArtifactHints(e.run, wfLogger);
         }
       },
+      suspended: (e) => {
+        const wfLogger = getWorkflowRunLogger(this.workflowName);
+        wfLogger.info("Workflow suspended — awaiting approval on step {step}", {
+          step: e.stepId,
+        });
+        wfLogger.info("");
+        wfLogger.info(
+          "  swamp workflow approve {workflowName} {stepName}",
+          { workflowName: this.workflowName, stepName: e.stepId },
+        );
+        wfLogger.info(
+          "  swamp workflow reject  {workflowName} {stepName}",
+          { workflowName: this.workflowName, stepName: e.stepId },
+        );
+        wfLogger.info("");
+        wfLogger.info(
+          "After approval: swamp workflow resume {workflowName}",
+          { workflowName: this.workflowName },
+        );
+      },
       error: (e) => {
         throw new UserError(e.error.message, e.error.code);
       },
@@ -251,6 +289,7 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
       step_completed: () => {},
       step_skipped: () => {},
       step_failed: () => {},
+      approval_requested: () => {},
       model_resolved: () => {},
       env_var_warning: () => {},
       method_executing: () => {},
@@ -269,6 +308,9 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
       report_failed: () => {},
       completed: (e) => {
         if (e.run.status === "failed") this._failed = true;
+        console.log(JSON.stringify(e.run, null, 2));
+      },
+      suspended: (e) => {
         console.log(JSON.stringify(e.run, null, 2));
       },
       error: (e) => {

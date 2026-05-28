@@ -46,10 +46,15 @@ export function StepLine({ step, prefix }: StepLineProps) {
 
   const duration = elapsed > 0 ? formatDuration(elapsed) : "";
 
+  const approvalHint = step.status === "waiting_approval" && step.approvalPrompt
+    ? ` — ${step.approvalPrompt}`
+    : "";
+
   return (
     <Box>
       <Text dimColor>{prefix}</Text>
       <Text>{label}</Text>
+      {approvalHint ? <Text color="yellow">{approvalHint}</Text> : null}
       <Box flexGrow={1} />
       <Text>
         <StatusIcon status={step.status} spinnerFrame={spinnerFrame} />

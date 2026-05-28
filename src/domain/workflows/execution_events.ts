@@ -62,6 +62,14 @@ export type WorkflowExecutionEvent =
   }
   | { kind: "step_skipped"; jobId: string; stepId: string }
   | {
+    kind: "approval_requested";
+    runId: string;
+    jobId: string;
+    stepId: string;
+    prompt: string;
+    timeout?: number;
+  }
+  | {
     kind: "step_failed";
     jobId: string;
     stepId: string;
@@ -150,4 +158,12 @@ export type WorkflowExecutionEvent =
     jobId?: string;
     stepId?: string;
   }
-  | { kind: "completed"; run: WorkflowRun };
+  | { kind: "completed"; run: WorkflowRun }
+  | {
+    kind: "suspended";
+    run: WorkflowRun;
+    jobId: string;
+    stepId: string;
+    prompt: string;
+    timeout?: number;
+  };

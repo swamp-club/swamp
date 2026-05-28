@@ -40,6 +40,11 @@ const StepTaskRawSchema = z.discriminatedUnion("type", [
     workflowIdOrName: z.string().min(1),
     inputs: z.record(z.string(), z.unknown()).optional(),
   }),
+  z.object({
+    type: z.literal("manual_approval"),
+    prompt: z.string().min(1),
+    timeout: z.number().positive().optional(),
+  }),
 ]);
 
 /**
@@ -180,6 +185,20 @@ export class StepTask {
   }
 
   /**
+   * Creates a manual approval task.
+   */
+  static manualApproval(
+    prompt: string,
+    timeout?: number,
+  ): StepTask {
+    return new StepTask({
+      type: "manual_approval",
+      prompt,
+      timeout,
+    });
+  }
+
+  /**
    * Returns true if this is a model method task.
    */
   isModelMethod(): boolean {
@@ -199,6 +218,13 @@ export class StepTask {
    */
   isWorkflow(): boolean {
     return this.data.type === "workflow";
+  }
+
+  /**
+   * Returns true if this is a manual approval task.
+   */
+  isManualApproval(): boolean {
+    return this.data.type === "manual_approval";
   }
 
   /**

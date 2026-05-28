@@ -28,17 +28,37 @@ import { DataArtifactRefSchema } from "../models/model_output.ts";
 import type { DataArtifactRef } from "../models/model_output.ts";
 
 /**
+ * Zod schema for an approval decision recorded on a manual_approval step.
+ */
+export const ApprovalDecisionSchema = z.object({
+  approved: z.boolean(),
+  reason: z.string().optional(),
+  decidedBy: z.string().optional(),
+  decidedAt: z.string().datetime(),
+});
+
+export type ApprovalDecisionData = z.infer<typeof ApprovalDecisionSchema>;
+
+/**
  * Zod schema for step run.
  */
 export const StepRunSchema = z.object({
   stepName: z.string().min(1),
-  status: z.enum(["pending", "running", "succeeded", "failed", "skipped"]),
+  status: z.enum([
+    "pending",
+    "running",
+    "waiting_approval",
+    "succeeded",
+    "failed",
+    "skipped",
+  ]),
   startedAt: z.string().datetime().optional(),
   completedAt: z.string().datetime().optional(),
   error: z.string().optional(),
   output: z.unknown().optional(),
   dataArtifacts: z.array(DataArtifactRefSchema).optional(),
   allowedFailure: z.boolean().optional(),
+  approvalDecision: ApprovalDecisionSchema.optional(),
 });
 
 /**
@@ -51,7 +71,14 @@ export type StepRunData = z.infer<typeof StepRunSchema>;
  */
 export const JobRunSchema = z.object({
   jobName: z.string().min(1),
-  status: z.enum(["pending", "running", "succeeded", "failed", "skipped"]),
+  status: z.enum([
+    "pending",
+    "running",
+    "waiting_approval",
+    "succeeded",
+    "failed",
+    "skipped",
+  ]),
   startedAt: z.string().datetime().optional(),
   completedAt: z.string().datetime().optional(),
   steps: z.array(StepRunSchema),
@@ -69,7 +96,7 @@ export const WorkflowRunSchema = z.object({
   id: z.string().uuid(),
   workflowId: z.string().uuid(),
   workflowName: z.string().min(1),
-  status: z.enum(["pending", "running", "succeeded", "failed"]),
+  status: z.enum(["pending", "running", "suspended", "succeeded", "failed"]),
   startedAt: z.string().datetime().optional(),
   completedAt: z.string().datetime().optional(),
   jobs: z.array(JobRunSchema),
@@ -101,6 +128,7 @@ export class StepRun {
     private _output: unknown,
     private _dataArtifacts: DataArtifactRef[] = [],
     private _allowedFailure: boolean = false,
+    private _approvalDecision: ApprovalDecisionData | undefined = undefined,
   ) {}
 
   /**
@@ -133,6 +161,7 @@ export class StepRun {
       validated.output,
       validated.dataArtifacts ?? [],
       validated.allowedFailure ?? false,
+      validated.approvalDecision,
     );
   }
 
@@ -170,6 +199,17 @@ export class StepRun {
     return this._allowedFailure;
   }
 
+  get approvalDecision(): ApprovalDecisionData | undefined {
+    return this._approvalDecision;
+  }
+
+  /**
+   * Records an approval or rejection decision on this step.
+   */
+  recordApprovalDecision(decision: ApprovalDecisionData): void {
+    this._approvalDecision = decision;
+  }
+
   /**
    * Marks this step's failure as allowed.
    */
@@ -190,6 +230,13 @@ export class StepRun {
   start(): void {
     this._status = "running";
     this._startedAt = new Date();
+  }
+
+  /**
+   * Marks the step as waiting for manual approval.
+   */
+  waitForApproval(): void {
+    this._status = "waiting_approval";
   }
 
   /**
@@ -237,6 +284,9 @@ export class StepRun {
     }
     if (this._allowedFailure) {
       data.allowedFailure = true;
+    }
+    if (this._approvalDecision) {
+      data.approvalDecision = { ...this._approvalDecision };
     }
     return data;
   }
@@ -410,7 +460,12 @@ export class WorkflowRun implements TriggerEvaluationContext {
     readonly id: WorkflowRunId,
     readonly workflowId: string,
     readonly workflowName: string,
-    private _status: "pending" | "running" | "succeeded" | "failed",
+    private _status:
+      | "pending"
+      | "running"
+      | "suspended"
+      | "succeeded"
+      | "failed",
     private _startedAt: Date | undefined,
     private _completedAt: Date | undefined,
     private _jobs: JobRun[],
@@ -469,7 +524,12 @@ export class WorkflowRun implements TriggerEvaluationContext {
     );
   }
 
-  get status(): "pending" | "running" | "succeeded" | "failed" {
+  get status():
+    | "pending"
+    | "running"
+    | "suspended"
+    | "succeeded"
+    | "failed" {
     return this._status;
   }
 
@@ -550,6 +610,35 @@ export class WorkflowRun implements TriggerEvaluationContext {
     const anyFailed = this._jobs.some((j) => j.status === "failed");
     this._status = anyFailed ? "failed" : "succeeded";
     this._completedAt = new Date();
+  }
+
+  /**
+   * Marks the workflow run as suspended (waiting for manual approval).
+   */
+  suspend(): void {
+    this._status = "suspended";
+  }
+
+  /**
+   * Resumes a suspended workflow run without overwriting startedAt.
+   */
+  resumeFromSuspended(): void {
+    this._status = "running";
+    this._completedAt = undefined;
+  }
+
+  /**
+   * Finds the step that is currently waiting for approval.
+   */
+  findWaitingApprovalStep(): { jobName: string; stepName: string } | undefined {
+    for (const job of this._jobs) {
+      for (const step of job.steps) {
+        if (step.status === "waiting_approval") {
+          return { jobName: job.jobName, stepName: step.stepName };
+        }
+      }
+    }
+    return undefined;
   }
 
   /**
