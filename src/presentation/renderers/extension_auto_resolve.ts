@@ -201,8 +201,9 @@ export function renderAutoResolveCollectiveNotTrusted(
     console.log(
       JSON.stringify({
         event: "auto_resolve",
-        status: "collective_not_trusted",
+        status: "failed",
         type,
+        reason: "collective_not_trusted",
         collective,
       }),
     );

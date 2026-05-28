@@ -166,6 +166,12 @@ export interface ExtensionAutoResolverConfig {
 export class ExtensionAutoResolver {
   private readonly config: ExtensionAutoResolverConfig;
   private readonly resolving = new Set<string>();
+  /**
+   * Collectives already warned about as untrusted this process, so multiple
+   * types from the same untrusted collective surface the
+   * `swamp extension trust add` hint once rather than once per type.
+   */
+  private readonly warnedUntrusted = new Set<string>();
 
   constructor(config: ExtensionAutoResolverConfig) {
     this.config = config;
@@ -198,8 +204,14 @@ export class ExtensionAutoResolver {
       // Surface an actionable trust hint for `@collective/*` references so the
       // caller doesn't dead-end on an opaque "unknown type" error. Restricted
       // to user-namespace (`@`) types to avoid false positives on local or
-      // built-in `a/b` type names (swamp-club#465).
-      if (ModelType.isUserNamespace(normalizedType)) {
+      // built-in `a/b` type names, and emitted once per collective per process
+      // so multiple types from the same collective don't repeat it
+      // (swamp-club#465).
+      if (
+        ModelType.isUserNamespace(normalizedType) &&
+        !this.warnedUntrusted.has(collective)
+      ) {
+        this.warnedUntrusted.add(collective);
         this.config.output.collectiveNotTrusted(collective, normalizedType);
       }
       return false;

@@ -665,3 +665,22 @@ Deno.test("ExtensionAutoResolver - 2-segment type generates full type as only ca
     "2-segment type should produce exactly one direct-lookup candidate (the full type)",
   );
 });
+
+Deno.test("ExtensionAutoResolver - untrusted collective hint is emitted once per collective", async () => {
+  const output = createMockOutput();
+  const resolver = new ExtensionAutoResolver({
+    allowedCollectives: ["swamp"],
+    extensionLookup: createMockLookup(),
+    extensionInstaller: createMockInstaller(),
+    output,
+  });
+
+  await resolver.resolve("@myorg/tools/widget");
+  await resolver.resolve("@myorg/tools/gizmo");
+  await resolver.resolve("@myorg/utils/helper");
+
+  // One hint for the whole collective, not one per referenced type.
+  assertEquals(output.calls, [
+    "collectiveNotTrusted:myorg:@myorg/tools/widget",
+  ]);
+});
