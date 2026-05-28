@@ -50,6 +50,7 @@ export const workflowApproveCommand = new Command()
     "Repository directory (env: SWAMP_REPO_DIR)",
   )
   .option("--reason <reason:string>", "Reason for approval")
+  .option("--run <run_id:string>", "Target a specific run ID")
   .action(
     async function (
       options: AnyOptions,
@@ -73,19 +74,25 @@ export const workflowApproveCommand = new Command()
         workflowRepo,
         runRepo,
         workflowIdOrName,
+        options.run,
       );
 
-      const waiting = run.findWaitingApprovalStep();
-      if (!waiting || waiting.stepName !== stepName) {
+      let step:
+        | import("../../domain/workflows/workflow_run.ts").StepRun
+        | undefined;
+      let jobName: string | undefined;
+      for (const job of run.jobs) {
+        const s = job.getStep(stepName);
+        if (s && s.status === "waiting_approval") {
+          step = s;
+          jobName = job.jobName;
+          break;
+        }
+      }
+      if (!step || !jobName) {
         throw new UserError(
           `Step "${stepName}" is not awaiting approval in the suspended run`,
         );
-      }
-
-      const job = run.getJob(waiting.jobName);
-      const step = job?.getStep(stepName);
-      if (!step) {
-        throw new UserError(`Step "${stepName}" not found in run`);
       }
 
       const workflow = await workflowRepo.findByName(workflowIdOrName) ??
@@ -93,7 +100,7 @@ export const workflowApproveCommand = new Command()
           createWorkflowId(workflowIdOrName),
         );
       if (workflow) {
-        const wfJob = workflow.jobs.find((j) => j.name === waiting.jobName);
+        const wfJob = workflow.jobs.find((j) => j.name === jobName);
         const wfStep = wfJob?.steps.find((s) => s.name === stepName);
         if (
           wfStep?.task.data.type === "manual_approval" &&
@@ -129,6 +136,7 @@ export const workflowApproveCommand = new Command()
           workflowName,
           stepName,
           approved: true,
+          decidedBy,
           reason: options.reason ?? null,
         }));
       } else {

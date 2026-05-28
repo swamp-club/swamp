@@ -93,7 +93,20 @@ export class InkWorkflowRunRenderer implements WorkflowRunRenderer {
       suspended: (e) => {
         forward(e);
         this.bridge.close();
-        setTimeout(() => this.cleanup?.(), 100);
+        setTimeout(() => {
+          this.cleanup?.();
+          const wf = this.workflowName;
+          const step = e.stepId;
+          console.log("");
+          console.log(
+            `Workflow suspended — awaiting approval on step "${step}"`,
+          );
+          console.log("");
+          console.log(`  swamp workflow approve ${wf} ${step}`);
+          console.log(`  swamp workflow reject  ${wf} ${step}`);
+          console.log("");
+          console.log(`After approval: swamp workflow resume ${wf}`);
+        }, 100);
       },
       error: (e) => {
         forward(e);

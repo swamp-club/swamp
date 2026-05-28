@@ -45,7 +45,7 @@ import { resolveModelType } from "../../domain/extensions/extension_auto_resolve
 import { getAutoResolver } from "../auto_resolver_context.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { consumeStream } from "../../libswamp/mod.ts";
-import type { WorkflowRunEvent } from "../../libswamp/workflows/run.ts";
+import type { WorkflowRunEvent } from "../../libswamp/mod.ts";
 import { GIT_SHA } from "./version.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -64,6 +64,7 @@ export const workflowResumeCommand = new Command()
     "Repository directory (env: SWAMP_REPO_DIR)",
   )
   .option("--driver <driver:string>", "Override execution driver")
+  .option("--run <run_id:string>", "Target a specific run ID")
   .action(
     async function (
       options: AnyOptions,
@@ -87,6 +88,7 @@ export const workflowResumeCommand = new Command()
         workflowRepo,
         runRepo,
         workflowIdOrName,
+        options.run,
       );
 
       const waiting = run.findWaitingApprovalStep();

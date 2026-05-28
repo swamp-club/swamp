@@ -22,7 +22,7 @@ import type {
   WorkflowRepository,
   WorkflowRunRepository,
 } from "./repositories.ts";
-import { createWorkflowId } from "./workflow_id.ts";
+import { createWorkflowId, createWorkflowRunId } from "./workflow_id.ts";
 import { UserError } from "../errors.ts";
 
 export interface SuspendedRunInfo {
@@ -35,11 +35,28 @@ export async function resolveSuspendedRun(
   workflowRepo: WorkflowRepository,
   runRepo: WorkflowRunRepository,
   workflowIdOrName: string,
+  runId?: string,
 ): Promise<SuspendedRunInfo> {
   const workflow = await workflowRepo.findByName(workflowIdOrName) ??
     await workflowRepo.findById(createWorkflowId(workflowIdOrName));
   if (!workflow) {
     throw new UserError(`Workflow not found: ${workflowIdOrName}`);
+  }
+
+  if (runId) {
+    const run = await runRepo.findById(
+      workflow.id,
+      createWorkflowRunId(runId),
+    );
+    if (!run) {
+      throw new UserError(`Workflow run not found: ${runId}`);
+    }
+    if (run.status !== "suspended") {
+      throw new UserError(
+        `Run ${runId} is not suspended (status: ${run.status})`,
+      );
+    }
+    return { workflowName: workflow.name, workflowId: workflow.id, run };
   }
 
   const allRuns = await runRepo.findAllByWorkflowId(workflow.id);
@@ -51,10 +68,10 @@ export async function resolveSuspendedRun(
     );
   }
   if (suspendedRuns.length > 1) {
-    const ids = suspendedRuns.map((r) => r.id).join(", ");
+    const ids = suspendedRuns.map((r) => r.id).join("\n  ");
     throw new UserError(
-      `Multiple suspended runs found for workflow "${workflow.name}": ${ids}. ` +
-        `Specify a run ID instead of the workflow name.`,
+      `Multiple suspended runs found for workflow "${workflow.name}":\n  ${ids}\n` +
+        `Use --run <run-id> to specify which run to target.`,
     );
   }
 

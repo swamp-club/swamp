@@ -107,10 +107,15 @@ export const workflowApprovalsCommand = new Command()
           );
           cliCtx.logger.info(
             "  swamp workflow approve {workflowName} {stepName}",
-            {
-              workflowName: item.workflowName,
-              stepName: item.stepName,
-            },
+            { workflowName: item.workflowName, stepName: item.stepName },
+          );
+          cliCtx.logger.info(
+            "  swamp workflow reject  {workflowName} {stepName}",
+            { workflowName: item.workflowName, stepName: item.stepName },
+          );
+          cliCtx.logger.info(
+            "  After approval: swamp workflow resume {workflowName}",
+            { workflowName: item.workflowName },
           );
         }
       }

@@ -1566,6 +1566,28 @@ export class WorkflowExecutionService {
           yield event;
         }
         await this.saveRun(workflow.id, run);
+
+        // If a manual_approval step suspended the run during parallel
+        // execution, merge() swallows the WorkflowSuspendedError. Detect
+        // this by checking the run status and re-throwing so the outer
+        // catch handler yields the suspended terminal event.
+        if (run.status === "suspended") {
+          const waiting = run.findWaitingApprovalStep();
+          if (waiting) {
+            const wfStep = workflow.jobs
+              .find((j) => j.name === waiting.jobName)?.steps
+              .find((s) => s.name === waiting.stepName);
+            const taskData = wfStep?.task.data;
+            throw new WorkflowSuspendedError(
+              waiting.jobName,
+              waiting.stepName,
+              taskData?.type === "manual_approval" ? taskData.prompt : "",
+              taskData?.type === "manual_approval"
+                ? taskData.timeout
+                : undefined,
+            );
+          }
+        }
       }
 
       // Complete workflow
@@ -1822,6 +1844,24 @@ export class WorkflowExecutionService {
           yield event as WorkflowExecutionEvent;
         }
         await this.saveRun(workflow.id, existingRun);
+
+        if (existingRun.status === "suspended") {
+          const waiting = existingRun.findWaitingApprovalStep();
+          if (waiting) {
+            const wfStep = resolvedWorkflow.jobs
+              .find((j) => j.name === waiting.jobName)?.steps
+              .find((s) => s.name === waiting.stepName);
+            const taskData = wfStep?.task.data;
+            throw new WorkflowSuspendedError(
+              waiting.jobName,
+              waiting.stepName,
+              taskData?.type === "manual_approval" ? taskData.prompt : "",
+              taskData?.type === "manual_approval"
+                ? taskData.timeout
+                : undefined,
+            );
+          }
+        }
       }
 
       existingRun.complete();
@@ -2018,6 +2058,24 @@ export class WorkflowExecutionService {
           yield event;
           if (event.kind === "step_failed" && !event.allowedFailure) {
             jobFailed = true;
+          }
+        }
+
+        if (run.status === "suspended") {
+          const waiting = run.findWaitingApprovalStep();
+          if (waiting) {
+            const wfStep = workflow.jobs
+              .find((j) => j.name === job.name)?.steps
+              .find((s) => s.name === waiting.stepName);
+            const taskData = wfStep?.task.data;
+            throw new WorkflowSuspendedError(
+              job.name,
+              waiting.stepName,
+              taskData?.type === "manual_approval" ? taskData.prompt : "",
+              taskData?.type === "manual_approval"
+                ? taskData.timeout
+                : undefined,
+            );
           }
         }
       }

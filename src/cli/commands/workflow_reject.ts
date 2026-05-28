@@ -50,6 +50,7 @@ export const workflowRejectCommand = new Command()
     "Repository directory (env: SWAMP_REPO_DIR)",
   )
   .option("--reason <reason:string>", "Reason for rejection")
+  .option("--run <run_id:string>", "Target a specific run ID")
   .action(
     async function (
       options: AnyOptions,
@@ -73,19 +74,27 @@ export const workflowRejectCommand = new Command()
         workflowRepo,
         runRepo,
         workflowIdOrName,
+        options.run,
       );
 
-      const waiting = run.findWaitingApprovalStep();
-      if (!waiting || waiting.stepName !== stepName) {
+      let step:
+        | import("../../domain/workflows/workflow_run.ts").StepRun
+        | undefined;
+      let matchedJob:
+        | import("../../domain/workflows/workflow_run.ts").JobRun
+        | undefined;
+      for (const job of run.jobs) {
+        const s = job.getStep(stepName);
+        if (s && s.status === "waiting_approval") {
+          step = s;
+          matchedJob = job;
+          break;
+        }
+      }
+      if (!step || !matchedJob) {
         throw new UserError(
           `Step "${stepName}" is not awaiting approval in the suspended run`,
         );
-      }
-
-      const job = run.getJob(waiting.jobName);
-      const step = job?.getStep(stepName);
-      if (!step) {
-        throw new UserError(`Step "${stepName}" not found in run`);
       }
 
       const decidedBy = Deno.env.get("USER") ??
@@ -97,7 +106,7 @@ export const workflowRejectCommand = new Command()
         decidedAt: new Date().toISOString(),
       });
       step.fail(options.reason ?? "Approval rejected");
-      job!.fail();
+      matchedJob.fail();
       run.complete();
       await runRepo.save(createWorkflowId(workflowId), run);
 
@@ -107,11 +116,13 @@ export const workflowRejectCommand = new Command()
           workflowName,
           stepName,
           approved: false,
+          decidedBy,
           reason: options.reason ?? null,
         }));
       } else {
         cliCtx.logger
           .info`Rejected step ${stepName} in workflow ${workflowName}`;
+        cliCtx.logger.info("Workflow run marked as failed.");
       }
     },
   );
