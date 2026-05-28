@@ -327,6 +327,97 @@ Deno.test(
 );
 
 Deno.test(
+  "round-trip: paths.base=manifest bundles skills from manifest-relative dir",
+  async () => {
+    const src = await Deno.makeTempDir({ prefix: "rt-skill-src-" });
+    const dst = await Deno.makeTempDir({ prefix: "rt-skill-dst-" });
+    try {
+      // Per-extension-subdir layout with a skill next to the manifest.
+      const extDir = join(src, "sub");
+      await Deno.mkdir(extDir, { recursive: true });
+      await Deno.writeTextFile(
+        join(extDir, "echo.ts"),
+        'export const model = { type: "@t/skill-rt", version: "1.0.0" };',
+      );
+
+      // Skill lives at sub/.claude/skills/my-skill/
+      const skillDir = join(extDir, ".claude", "skills", "my-skill");
+      await Deno.mkdir(skillDir, { recursive: true });
+      await Deno.writeTextFile(
+        join(skillDir, "SKILL.md"),
+        "---\nname: my-skill\ndescription: test skill\n---\n\nSkill body.\n",
+      );
+      const refDir = join(skillDir, "references");
+      await Deno.mkdir(refDir, { recursive: true });
+      await Deno.writeTextFile(join(refDir, "detail.md"), "# Detail");
+
+      const manifest = makeManifest({
+        paths: { base: "manifest" },
+        models: ["echo.ts"],
+        skills: ["my-skill"],
+      });
+
+      const input: ExtensionPushPrepareInput = {
+        manifest,
+        repoDir: src,
+        modelsDir: extDir,
+        allModelFiles: [join(extDir, "echo.ts")],
+        modelEntryPoints: [join(extDir, "echo.ts")],
+        vaultsDir: extDir,
+        allVaultFiles: [],
+        vaultEntryPoints: [],
+        driversDir: extDir,
+        allDriverFiles: [],
+        driverEntryPoints: [],
+        datastoresDir: extDir,
+        allDatastoreFiles: [],
+        datastoreEntryPoints: [],
+        reportsDir: extDir,
+        allReportFiles: [],
+        reportEntryPoints: [],
+        workflowFiles: [],
+        skillDirs: [{ name: "my-skill", absolutePath: skillDir }],
+        allSkillFiles: [
+          join(skillDir, "SKILL.md"),
+          join(refDir, "detail.md"),
+        ],
+        includeFilePaths: [],
+        additionalFilePaths: [],
+        binaryFilePaths: [],
+        dryRun: true,
+      };
+
+      const ctx = createLibSwampContext();
+      const prepared = await extensionPushPrepare(
+        ctx,
+        makePrepareDeps(),
+        input,
+      );
+
+      await untarArchiveTo(prepared.archiveBytes, dst);
+
+      // Skill files land under extension/skills/<name>/ with structure preserved.
+      const archiveSkillDir = join(dst, "extension", "skills", "my-skill");
+      await Deno.stat(join(archiveSkillDir, "SKILL.md"));
+      await Deno.stat(join(archiveSkillDir, "references", "detail.md"));
+
+      const skillContent = await Deno.readTextFile(
+        join(archiveSkillDir, "SKILL.md"),
+      );
+      assertEquals(skillContent.includes("name: my-skill"), true);
+
+      const refContent = await Deno.readTextFile(
+        join(archiveSkillDir, "references", "detail.md"),
+      );
+      assertEquals(refContent, "# Detail");
+    } finally {
+      await Deno.remove(src, { recursive: true }).catch(() => {});
+      await Deno.remove(dst, { recursive: true }).catch(() => {});
+    }
+  },
+);
+
+Deno.test(
   "round-trip: binaries field survives push → extract in archive manifest",
   async () => {
     const { parse: parseYaml } = await import("@std/yaml");

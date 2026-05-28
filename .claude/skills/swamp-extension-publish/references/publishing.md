@@ -48,26 +48,26 @@ dependencies:
 
 ### Field Reference
 
-| Field             | Required | Description                                                                                                                                       |
-| ----------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `manifestVersion` | Yes      | Must be `1`                                                                                                                                       |
-| `name`            | Yes      | Scoped name: `@collective/name` or `@collective/name/sub/path` (lowercase, hyphens, underscores)                                                  |
-| `version`         | Yes      | CalVer format: `YYYY.MM.DD.MICRO`                                                                                                                 |
-| `description`     | No       | Human-readable description                                                                                                                        |
-| `repository`      | No       | HTTPS URL of the upstream repository. Required for users to file issues via `swamp issue --extension` — `swamp extension push` warns when absent. |
-| `paths.base`      | No       | Path resolution mode for typed keys + `additionalFiles`. `typedDir` (default) or `manifest`. See "Path resolution".                               |
-| `models`          | No*      | Model file paths. Resolved via `paths.base`.                                                                                                      |
-| `workflows`       | No*      | Workflow file paths. Workflows use a multi-base lookup and ignore `paths.base`.                                                                   |
-| `vaults`          | No*      | Vault file paths. Resolved via `paths.base`.                                                                                                      |
-| `drivers`         | No*      | Driver file paths. Resolved via `paths.base`.                                                                                                     |
-| `datastores`      | No*      | Datastore file paths. Resolved via `paths.base`.                                                                                                  |
-| `reports`         | No*      | Report file paths. Resolved via `paths.base`.                                                                                                     |
-| `skills`          | No*      | Skill directory names resolved from the tool's skill directory (e.g., `.claude/skills/`). Skills ignore `paths.base`.                             |
-| `include`         | No       | Helper TypeScript files copied alongside models without bundling. Resolved via `paths.base`.                                                      |
-| `additionalFiles` | No       | Extra files (README, LICENSE, etc.) relative to the manifest's own directory.                                                                     |
-| `platforms`       | No       | OS/architecture hints (e.g. `darwin-aarch64`, `linux-x86_64`)                                                                                     |
-| `labels`          | No       | Categorization labels (e.g. `aws`, `kubernetes`, `security`)                                                                                      |
-| `dependencies`    | No       | Other extensions this one depends on                                                                                                              |
+| Field             | Required | Description                                                                                                                                                   |
+| ----------------- | -------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `manifestVersion` | Yes      | Must be `1`                                                                                                                                                   |
+| `name`            | Yes      | Scoped name: `@collective/name` or `@collective/name/sub/path` (lowercase, hyphens, underscores)                                                              |
+| `version`         | Yes      | CalVer format: `YYYY.MM.DD.MICRO`                                                                                                                             |
+| `description`     | No       | Human-readable description                                                                                                                                    |
+| `repository`      | No       | HTTPS URL of the upstream repository. Required for users to file issues via `swamp issue --extension` — `swamp extension push` warns when absent.             |
+| `paths.base`      | No       | Path resolution mode for typed keys + `additionalFiles`. `typedDir` (default) or `manifest`. See "Path resolution".                                           |
+| `models`          | No*      | Model file paths. Resolved via `paths.base`.                                                                                                                  |
+| `workflows`       | No*      | Workflow file paths. Workflows use a multi-base lookup and ignore `paths.base`.                                                                               |
+| `vaults`          | No*      | Vault file paths. Resolved via `paths.base`.                                                                                                                  |
+| `drivers`         | No*      | Driver file paths. Resolved via `paths.base`.                                                                                                                 |
+| `datastores`      | No*      | Datastore file paths. Resolved via `paths.base`.                                                                                                              |
+| `reports`         | No*      | Report file paths. Resolved via `paths.base`.                                                                                                                 |
+| `skills`          | No*      | Skill directory names. Honours `paths.base: manifest` (manifest-relative first, then project-local, then global). Multi-tool repos search all enrolled tools. |
+| `include`         | No       | Helper TypeScript files copied alongside models without bundling. Resolved via `paths.base`.                                                                  |
+| `additionalFiles` | No       | Extra files (README, LICENSE, etc.) relative to the manifest's own directory.                                                                                 |
+| `platforms`       | No       | OS/architecture hints (e.g. `darwin-aarch64`, `linux-x86_64`)                                                                                                 |
+| `labels`          | No       | Categorization labels (e.g. `aws`, `kubernetes`, `security`)                                                                                                  |
+| `dependencies`    | No       | Other extensions this one depends on                                                                                                                          |
 
 *At least one of `models`, `workflows`, `vaults`, `drivers`, `datastores`,
 `reports`, or `skills` must be present with entries.
@@ -198,8 +198,11 @@ additionalFiles:
 - The archive layout under each typed dir mirrors your manifest entries
   verbatim: `models: [echo.ts]` lands at `extension/models/echo.ts` in the
   archive (not at `extension/models/my-ext/echo.ts`).
-- Workflows and skills keep their own multi-base lookup. `paths.base` does not
-  apply to those keys.
+- Workflows keep their own multi-base lookup. `paths.base` does not apply to
+  workflows.
+- Skills honour `paths.base: manifest` — manifest-relative directories are
+  searched first, then project-local, then global. All enrolled tools are
+  searched at each level.
 
 ### Name Rules
 

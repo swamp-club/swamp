@@ -928,3 +928,233 @@ Deno.test("resolveExtensionFiles: rejects .js file with UserError", async () => 
     );
   });
 });
+
+// ── skill resolution with paths.base and multi-tool ──────────────────────
+
+async function withTempRepoWithTools(
+  tools: string[],
+  fn: (dir: string) => Promise<void>,
+): Promise<void> {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-resolve-ext-test-" });
+  try {
+    await Deno.writeTextFile(
+      join(dir, ".swamp.yaml"),
+      stringifyYaml({ swampVersion: "0.1.0", tools }),
+    );
+    await Deno.mkdir(join(dir, "extensions", "models"), { recursive: true });
+    await fn(dir);
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
+}
+
+const MINIMAL_SKILL_MD = `---
+name: demo-skill
+description: A demo skill for testing
+---
+
+Demo skill content.
+`;
+
+async function createSkillDir(
+  baseDir: string,
+  skillName: string,
+): Promise<void> {
+  const skillDir = join(baseDir, skillName);
+  await Deno.mkdir(skillDir, { recursive: true });
+  await Deno.writeTextFile(
+    join(skillDir, "SKILL.md"),
+    MINIMAL_SKILL_MD.replace("demo-skill", skillName),
+  );
+}
+
+Deno.test("resolveExtensionFiles paths.base=manifest resolves skills from manifest-relative dir", async () => {
+  await withTempRepoWithTools(["claude"], async (dir) => {
+    const subdir = join(dir, "sub");
+    await Deno.mkdir(subdir, { recursive: true });
+
+    await createSkillDir(join(subdir, ".claude", "skills"), "my-skill");
+
+    await Deno.writeTextFile(
+      join(subdir, "model.ts"),
+      'export const name = "model";',
+    );
+    const manifestPath = join(subdir, "manifest.yaml");
+    await Deno.writeTextFile(
+      manifestPath,
+      stringifyYaml({
+        manifestVersion: 1,
+        name: "@test/skill-manifest-base",
+        version: "2026.05.28.1",
+        paths: { base: "manifest" },
+        models: ["model.ts"],
+        skills: ["my-skill"],
+      }),
+    );
+
+    const result = await resolveExtensionFiles({
+      repoDir: dir,
+      manifestPath,
+      repoContext: stubRepoContext,
+      logger,
+    });
+
+    assertEquals(result.skillDirs.length, 1);
+    assertEquals(result.skillDirs[0].name, "my-skill");
+    assertEquals(
+      result.skillDirs[0].absolutePath,
+      join(subdir, ".claude", "skills", "my-skill"),
+    );
+  });
+});
+
+Deno.test("resolveExtensionFiles default paths.base resolves skills from repo root", async () => {
+  await withTempRepoWithTools(["claude"], async (dir) => {
+    await createSkillDir(join(dir, ".claude", "skills"), "root-skill");
+
+    const manifestPath = join(dir, "manifest.yaml");
+    await Deno.writeTextFile(
+      manifestPath,
+      stringifyYaml({
+        manifestVersion: 1,
+        name: "@test/skill-typeddir",
+        version: "2026.05.28.1",
+        models: ["dummy.ts"],
+        skills: ["root-skill"],
+      }),
+    );
+    await Deno.writeTextFile(
+      join(dir, "extensions", "models", "dummy.ts"),
+      'export const name = "dummy";',
+    );
+
+    const result = await resolveExtensionFiles({
+      repoDir: dir,
+      manifestPath,
+      repoContext: stubRepoContext,
+      logger,
+    });
+
+    assertEquals(result.skillDirs.length, 1);
+    assertEquals(result.skillDirs[0].name, "root-skill");
+    assertEquals(
+      result.skillDirs[0].absolutePath,
+      join(dir, ".claude", "skills", "root-skill"),
+    );
+  });
+});
+
+Deno.test("resolveExtensionFiles paths.base=manifest prefers manifest-relative over repo root", async () => {
+  await withTempRepoWithTools(["claude"], async (dir) => {
+    const subdir = join(dir, "sub");
+    await Deno.mkdir(subdir, { recursive: true });
+
+    // Skill exists in both locations
+    await createSkillDir(join(dir, ".claude", "skills"), "shared-skill");
+    await createSkillDir(join(subdir, ".claude", "skills"), "shared-skill");
+
+    await Deno.writeTextFile(
+      join(subdir, "model.ts"),
+      'export const name = "model";',
+    );
+    const manifestPath = join(subdir, "manifest.yaml");
+    await Deno.writeTextFile(
+      manifestPath,
+      stringifyYaml({
+        manifestVersion: 1,
+        name: "@test/skill-precedence",
+        version: "2026.05.28.1",
+        paths: { base: "manifest" },
+        models: ["model.ts"],
+        skills: ["shared-skill"],
+      }),
+    );
+
+    const result = await resolveExtensionFiles({
+      repoDir: dir,
+      manifestPath,
+      repoContext: stubRepoContext,
+      logger,
+    });
+
+    assertEquals(result.skillDirs.length, 1);
+    assertEquals(
+      result.skillDirs[0].absolutePath,
+      join(subdir, ".claude", "skills", "shared-skill"),
+    );
+  });
+});
+
+Deno.test("resolveExtensionFiles multi-tool repo finds skill in secondary tool dir", async () => {
+  await withTempRepoWithTools(["claude", "cursor"], async (dir) => {
+    // Skill only exists in .cursor/skills, not .claude/skills
+    await createSkillDir(join(dir, ".cursor", "skills"), "cursor-skill");
+
+    await Deno.writeTextFile(
+      join(dir, "extensions", "models", "dummy.ts"),
+      'export const name = "dummy";',
+    );
+    const manifestPath = join(dir, "manifest.yaml");
+    await Deno.writeTextFile(
+      manifestPath,
+      stringifyYaml({
+        manifestVersion: 1,
+        name: "@test/skill-multitool",
+        version: "2026.05.28.1",
+        skills: ["cursor-skill"],
+        models: ["dummy.ts"],
+      }),
+    );
+
+    const result = await resolveExtensionFiles({
+      repoDir: dir,
+      manifestPath,
+      repoContext: stubRepoContext,
+      logger,
+    });
+
+    assertEquals(result.skillDirs.length, 1);
+    assertEquals(result.skillDirs[0].name, "cursor-skill");
+    assertEquals(
+      result.skillDirs[0].absolutePath,
+      join(dir, ".cursor", "skills", "cursor-skill"),
+    );
+  });
+});
+
+Deno.test("resolveExtensionFiles multi-tool deduplicates shared SKILL_DIRS paths", async () => {
+  // opencode and codex both map to .agents/skills
+  await withTempRepoWithTools(["opencode", "codex"], async (dir) => {
+    await createSkillDir(join(dir, ".agents", "skills"), "agent-skill");
+
+    await Deno.writeTextFile(
+      join(dir, "extensions", "models", "dummy.ts"),
+      'export const name = "dummy";',
+    );
+    const manifestPath = join(dir, "manifest.yaml");
+    await Deno.writeTextFile(
+      manifestPath,
+      stringifyYaml({
+        manifestVersion: 1,
+        name: "@test/skill-dedup",
+        version: "2026.05.28.1",
+        skills: ["agent-skill"],
+        models: ["dummy.ts"],
+      }),
+    );
+
+    const result = await resolveExtensionFiles({
+      repoDir: dir,
+      manifestPath,
+      repoContext: stubRepoContext,
+      logger,
+    });
+
+    assertEquals(result.skillDirs.length, 1);
+    assertEquals(result.skillDirs[0].name, "agent-skill");
+    assertEquals(
+      result.skillDirs[0].absolutePath,
+      join(dir, ".agents", "skills", "agent-skill"),
+    );
+  });
+});

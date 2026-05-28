@@ -99,12 +99,15 @@ dependencies:
   - "@webframp/redmine"
 ```
 
-Each entry is a skill directory name resolved from:
+Each entry is a skill directory name resolved in priority order:
 
-1. **Project-local skill directory** — e.g., `.claude/skills/create-story/`
-2. **Global skill directory** — e.g., `~/.claude/skills/create-story/`
+1. **Manifest-relative** (only when `paths.base: manifest`) — e.g.,
+   `sub/.claude/skills/create-story/` where `sub/` is the manifest's directory
+2. **Project-local skill directory** — e.g., `.claude/skills/create-story/`
+3. **Global skill directory** — e.g., `~/.claude/skills/create-story/`
 
-The tool determines the skill directory path:
+In multi-tool repos, all enrolled tools' directories are searched at each
+priority level. The tool determines the skill directory path:
 
 | Tool     | Skill Directory   |
 | -------- | ----------------- |

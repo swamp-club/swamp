@@ -46,7 +46,6 @@ import { resolveDriversDir } from "./resolve_drivers_dir.ts";
 import { resolveDatastoresDir } from "./resolve_datastores_dir.ts";
 import { resolveReportsDir } from "./resolve_reports_dir.ts";
 import { SKILL_DIRS } from "../domain/repo/skill_dirs.ts";
-import { resolvePrimaryTool } from "../domain/repo/primary_tool.ts";
 
 export interface ResolveExtensionFilesContext {
   repoDir: string;
@@ -417,48 +416,61 @@ export async function resolveExtensionFiles(
   const skillDirs: Array<{ name: string; absolutePath: string }> = [];
   const allSkillFiles: string[] = [];
   if (manifest.skills.length > 0) {
-    const tool = resolvePrimaryTool(marker);
-    const projectSkillDir = SKILL_DIRS[tool]
-      ? resolve(repoDir, SKILL_DIRS[tool])
-      : null;
-
+    const tools = marker?.tools?.length ? marker.tools : ["claude"];
     const home = Deno.env.get("HOME") ?? Deno.env.get("USERPROFILE");
-    const globalSkillDir = home && SKILL_DIRS[tool]
-      ? join(home, SKILL_DIRS[tool])
-      : null;
 
-    if (!projectSkillDir && !globalSkillDir) {
+    // Build deduplicated candidate base directories in priority order:
+    // manifest-relative (if paths.base=manifest) > project-local > global
+    const seen = new Set<string>();
+    const candidateBases: string[] = [];
+    const addCandidate = (dir: string) => {
+      if (!seen.has(dir)) {
+        seen.add(dir);
+        candidateBases.push(dir);
+      }
+    };
+
+    for (const tool of tools) {
+      const rel = SKILL_DIRS[tool];
+      if (!rel) continue;
+      if (useManifestBase) addCandidate(resolve(manifestDir, rel));
+    }
+    for (const tool of tools) {
+      const rel = SKILL_DIRS[tool];
+      if (!rel) continue;
+      addCandidate(resolve(repoDir, rel));
+    }
+    for (const tool of tools) {
+      const rel = SKILL_DIRS[tool];
+      if (!rel || !home) continue;
+      addCandidate(join(home, rel));
+    }
+
+    if (candidateBases.length === 0) {
       throw new UserError(
-        `Cannot package skills when tool is '${tool}'. Set a tool with: swamp repo upgrade --tool <claude|cursor|kiro|opencode|codex>`,
+        `Cannot package skills: no enrolled tools have skill directories. Set a tool with: swamp repo upgrade --tool <claude|cursor|kiro|opencode|codex>`,
       );
     }
 
     for (const skillName of manifest.skills) {
       let skillPath: string | null = null;
 
-      // Try project-local first
-      if (projectSkillDir) {
-        const candidate = join(projectSkillDir, skillName);
+      for (const base of candidateBases) {
+        const candidate = join(base, skillName);
         try {
           const stat = await Deno.stat(candidate);
-          if (stat.isDirectory) skillPath = candidate;
+          if (stat.isDirectory) {
+            skillPath = candidate;
+            break;
+          }
         } catch { /* not found here */ }
       }
 
-      // Fall back to global
-      if (!skillPath && globalSkillDir) {
-        const candidate = join(globalSkillDir, skillName);
-        try {
-          const stat = await Deno.stat(candidate);
-          if (stat.isDirectory) skillPath = candidate;
-        } catch { /* not found here either */ }
-      }
-
       if (!skillPath) {
-        const locations = [projectSkillDir, globalSkillDir].filter(Boolean)
-          .join(" and ");
         throw new UserError(
-          `Skill directory not found: ${skillName} (looked in ${locations})`,
+          `Skill directory not found: ${skillName} (looked in ${
+            candidateBases.join(", ")
+          })`,
         );
       }
 

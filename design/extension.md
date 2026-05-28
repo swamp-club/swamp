@@ -214,11 +214,14 @@ containing `..` or starting with `/`.
   Resolved via `paths.base`.
 - `reports`: Array of relative paths to TypeScript report files. Resolved
   via `paths.base`.
-- `skills`: Array of skill directory names resolved from the tool's skill
-  directory (e.g., `.claude/skills/`). Each directory must contain a `SKILL.md`
-  with YAML frontmatter declaring `name` and `description`. Skills are passive
-  markdown guidance documents — swamp never executes them. Skills are not
-  affected by `paths.base`.
+- `skills`: Array of skill directory names. Each directory must contain a
+  `SKILL.md` with YAML frontmatter declaring `name` and `description`. Skills
+  are passive markdown guidance documents — swamp never executes them. Under
+  `paths.base: manifest`, skills resolve relative to the manifest's own
+  directory first (e.g., `sub/.claude/skills/<name>/`), then fall back to the
+  repo-root skill directory and global user-level directory. Under the default
+  `paths.base: typedDir`, skills resolve from repo-root and global only. In
+  multi-tool repos, all enrolled tools' skill directories are searched.
 - `include`: Array of relative paths to TypeScript files that should be
   included in the archive alongside models but not bundled. Used for
   helper scripts that are executed via `Deno.Command` subprocess rather
@@ -276,10 +279,14 @@ The `paths.base` field selects the directory typed-key entries
   `extensions/models/myext/manifest.yaml` next to `myext/echo.ts` and
   `myext/README.md`).
 
-Workflows and skills keep their bespoke multi-base lookup (workflows
-fall back from the indexer dir to the extension workflows dir; skills
-look up project-local then global). `paths.base` does not apply to
-those keys.
+Workflows keep their bespoke multi-base lookup (fall back from the
+indexer dir to the extension workflows dir). `paths.base` does not
+apply to workflows.
+
+Skills honour `paths.base: manifest` — when set, the manifest's own
+directory is searched first (e.g. `sub/.claude/skills/<name>/`), then
+project-local, then global. All enrolled tools are searched, not just
+the primary tool.
 
 The on-wire manifest in the archive preserves the field strings
 verbatim — no path rewriting, no normalization. WYSIWYG between what

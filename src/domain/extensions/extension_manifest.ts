@@ -57,10 +57,14 @@ const safePathString = z.string().refine(isSafeRelativePath, {
  *   per-extension-subdir layouts where manifest, source, README, and
  *   LICENSE all live alongside each other.
  *
- * Workflows and skills keep their own multi-base resolution (workflows
- * fall back from the indexer dir to the extension workflows dir;
- * skills look up project-local then global). `paths.base` does not
- * apply to those keys.
+ * Workflows keep their own multi-base resolution (fall back from the
+ * indexer dir to the extension workflows dir). `paths.base` does not
+ * apply to workflows.
+ *
+ * Skills honour `paths.base: manifest` — when set, the manifest's own
+ * directory is searched first (e.g. `<manifestDir>/.claude/skills/`),
+ * before project-local and global skill directories. All enrolled
+ * tools are searched, not just the primary tool.
  */
 const PathsBaseSchema = z.enum(["typedDir", "manifest"]);
 
