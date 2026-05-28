@@ -18,9 +18,18 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
+import { z } from "zod";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import { modelGet, type ModelGetDeps, type ModelGetEvent } from "./get.ts";
+
+function completedData(events: ModelGetEvent[]) {
+  const completed = events.find((e) => e.kind === "completed");
+  if (!completed || completed.kind !== "completed") {
+    throw new Error("expected a completed event");
+  }
+  return completed.data;
+}
 
 function makeDeps(overrides: {
   lookupResult?: { definition: object; type: object } | null;
@@ -77,6 +86,62 @@ Deno.test("modelGet yields resolving -> completed with model data on success", a
       },
     },
   ]);
+});
+
+Deno.test("modelGet redacts sensitive global arguments when the schema is known", async () => {
+  const deps = makeDeps({
+    lookupResult: {
+      definition: {
+        id: "def-2",
+        name: "secret-model",
+        version: 1,
+        tags: {},
+        globalArguments: { apiKey: "SUPERSECRET123", region: "us-east-1" },
+      },
+      type: { normalized: "acme/widget" },
+    },
+    modelDef: {
+      version: "2026.05.28.1",
+      globalArguments: z.object({
+        apiKey: z.string().meta({ sensitive: true }),
+        region: z.string(),
+      }),
+      methods: {},
+    },
+  });
+
+  const events = await collect<ModelGetEvent>(
+    modelGet(createLibSwampContext(), deps, "secret-model"),
+  );
+
+  assertEquals(completedData(events).globalArguments, {
+    apiKey: "***",
+    region: "us-east-1",
+  });
+});
+
+Deno.test("modelGet passes global arguments through unredacted when the model type is unavailable", async () => {
+  const deps = makeDeps({
+    lookupResult: {
+      definition: {
+        id: "def-3",
+        name: "uninstalled-model",
+        version: 1,
+        tags: {},
+        globalArguments: { apiKey: "SUPERSECRET123" },
+      },
+      type: { normalized: "acme/widget" },
+    },
+    modelDef: undefined,
+  });
+
+  const events = await collect<ModelGetEvent>(
+    modelGet(createLibSwampContext(), deps, "uninstalled-model"),
+  );
+
+  assertEquals(completedData(events).globalArguments, {
+    apiKey: "SUPERSECRET123",
+  });
 });
 
 Deno.test("modelGet yields resolving -> error with not_found when model does not exist", async () => {

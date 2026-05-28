@@ -23,6 +23,7 @@ import {
   extractSensitiveFields,
   extractSensitiveFieldValues,
   getNestedValue,
+  redactSensitiveValues,
   setNestedValue,
 } from "./sensitive_field_extractor.ts";
 
@@ -268,4 +269,81 @@ Deno.test("setNestedValue: creates intermediate objects", () => {
     ((obj.a as Record<string, unknown>).b as Record<string, unknown>).c,
     "value",
   );
+});
+
+Deno.test("redactSensitiveValues: redacts top-level sensitive literal", () => {
+  const schema = z.object({
+    apiKey: z.string().meta({ sensitive: true }),
+    name: z.string(),
+  });
+
+  const redacted = redactSensitiveValues(schema, {
+    apiKey: "SUPERSECRET123",
+    name: "hello",
+  });
+
+  assertEquals(redacted, { apiKey: "***", name: "hello" });
+});
+
+Deno.test("redactSensitiveValues: leaves non-sensitive fields untouched", () => {
+  const schema = z.object({
+    region: z.string(),
+  });
+
+  const redacted = redactSensitiveValues(schema, { region: "us-east-1" });
+
+  assertEquals(redacted, { region: "us-east-1" });
+});
+
+Deno.test("redactSensitiveValues: redacts nested sensitive field", () => {
+  const schema = z.object({
+    credentials: z.object({
+      apiKey: z.string().meta({ sensitive: true }),
+    }),
+    name: z.string(),
+  });
+
+  const redacted = redactSensitiveValues(schema, {
+    credentials: { apiKey: "SECRET" },
+    name: "hello",
+  });
+
+  assertEquals(redacted, {
+    credentials: { apiKey: "***" },
+    name: "hello",
+  });
+});
+
+Deno.test("redactSensitiveValues: skips sensitive field absent from data", () => {
+  const schema = z.object({
+    apiKey: z.string().meta({ sensitive: true }).optional(),
+    name: z.string(),
+  });
+
+  const redacted = redactSensitiveValues(schema, { name: "hello" });
+
+  assertEquals(redacted, { name: "hello" });
+});
+
+Deno.test("redactSensitiveValues: redacts vault.get() expressions too (blanket)", () => {
+  const schema = z.object({
+    apiKey: z.string().meta({ sensitive: true }),
+  });
+
+  const redacted = redactSensitiveValues(schema, {
+    apiKey: '${{ vault.get("creds", "apiKey") }}',
+  });
+
+  assertEquals(redacted, { apiKey: "***" });
+});
+
+Deno.test("redactSensitiveValues: does not mutate the input", () => {
+  const schema = z.object({
+    apiKey: z.string().meta({ sensitive: true }),
+  });
+  const input = { apiKey: "SUPERSECRET123" };
+
+  redactSensitiveValues(schema, input);
+
+  assertEquals(input.apiKey, "SUPERSECRET123");
 });

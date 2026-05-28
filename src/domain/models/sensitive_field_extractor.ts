@@ -180,6 +180,39 @@ export function extractSensitiveFields(
 }
 
 /**
+ * Returns a redacted clone of `data` with every field marked `{ sensitive: true }`
+ * in `schema` replaced by `"***"`.
+ *
+ * This is the canonical redaction primitive shared by every surface that must
+ * scrub sensitive values before display or persistence (reports, `model get`).
+ * It does not mutate the input — callers receive a deep clone. Only fields that
+ * are actually present in `data` are redacted; absent sensitive fields are left
+ * untouched. Nested sensitive fields are handled because `extractSensitiveFields`
+ * walks the schema recursively and returns dot-separated paths.
+ *
+ * @param schema - A Zod schema (typically a global-arguments or method-argument schema)
+ * @param data - The data object to redact
+ * @returns A deep clone of `data` with sensitive fields set to `"***"`
+ */
+export function redactSensitiveValues(
+  schema: z.ZodTypeAny,
+  data: Record<string, unknown>,
+): Record<string, unknown> {
+  const fields = extractSensitiveFields(schema);
+  if (fields.length === 0) {
+    return data;
+  }
+
+  const redacted = structuredClone(data);
+  for (const field of fields) {
+    if (getNestedValue(redacted, field.path) !== undefined) {
+      setNestedValue(redacted, field.path, "***");
+    }
+  }
+  return redacted;
+}
+
+/**
  * Extracts the runtime secret values from a data object based on its Zod schema.
  *
  * For each field marked `{ sensitive: true }` in the schema:

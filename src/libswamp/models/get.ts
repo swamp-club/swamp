@@ -22,6 +22,7 @@ import type { ModelDefinition } from "../../domain/models/model.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import type { ModelType } from "../../domain/models/model_type.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
+import { redactSensitiveValues } from "../../domain/models/sensitive_field_extractor.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
@@ -100,13 +101,25 @@ export async function* modelGet(
       const { definition, type: modelType } = result;
       const modelDef = await deps.getModelDef(modelType);
 
+      // Redact global arguments marked `{ sensitive: true }` before they enter
+      // the read model, so every output mode (log, json) and every consumer of
+      // ModelGetData — including `model search` — inherits the redaction. When
+      // the model type is unavailable the schema is unknown, so values pass
+      // through unredacted (matching the report path's behavior).
+      const globalArguments = modelDef?.globalArguments
+        ? redactSensitiveValues(
+          modelDef.globalArguments,
+          definition.globalArguments,
+        )
+        : definition.globalArguments;
+
       const data: ModelGetData = {
         id: definition.id,
         name: definition.name,
         type: modelType.normalized,
         version: definition.version,
         tags: definition.tags,
-        globalArguments: definition.globalArguments,
+        globalArguments,
         typeVersion: modelDef?.version,
         globalArgumentsSchema: modelDef?.globalArguments
           ? zodToJsonSchema(modelDef.globalArguments)

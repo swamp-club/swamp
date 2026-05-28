@@ -26,11 +26,7 @@ import type { ModelType } from "../models/model_type.ts";
 import type { UnifiedDataRepository } from "../data/repositories.ts";
 import { DefaultDataWriter } from "../models/data_writer.ts";
 import { modelRegistry } from "../models/model.ts";
-import {
-  extractSensitiveFields,
-  getNestedValue,
-  setNestedValue,
-} from "../models/sensitive_field_extractor.ts";
+import { redactSensitiveValues } from "../models/sensitive_field_extractor.ts";
 import { buildReportErrorResult } from "./builtin/report_error_report.ts";
 
 /**
@@ -310,16 +306,7 @@ function buildRedactSensitiveArgs(
       : modelDef.methods[context.methodName]?.arguments;
     if (!schema) return args;
 
-    const fields = extractSensitiveFields(schema);
-    if (fields.length === 0) return args;
-
-    const redacted = structuredClone(args);
-    for (const field of fields) {
-      if (getNestedValue(redacted, field.path) !== undefined) {
-        setNestedValue(redacted, field.path, "***");
-      }
-    }
-    return redacted;
+    return redactSensitiveValues(schema, args);
   };
 }
 
