@@ -3177,3 +3177,124 @@ Deno.test(
     }
   },
 );
+
+// Issue #467: resume --input merges override inputs over the inputs captured
+// when the run suspended.
+Deno.test("resume merges override inputs over the suspended run's inputs", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+
+    // Captures the expression context seen by the post-gate step.
+    class ContextCapturingExecutor implements StepExecutor {
+      captured: Array<{ step: Step; ctx: StepExecutionContext }> = [];
+      execute(step: Step, ctx: StepExecutionContext): Promise<unknown> {
+        this.captured.push({ step, ctx });
+        return Promise.resolve({ executed: true });
+      }
+    }
+    const executor = new ContextCapturingExecutor();
+
+    // Gate suspends the run; the deploy step after it consumes inputs.* once
+    // resumed.
+    const workflow = Workflow.create({
+      name: "deploy-with-gate",
+      jobs: [
+        Job.create({
+          name: "rollout",
+          steps: [
+            Step.create({
+              name: "verify",
+              task: StepTask.manualApproval("Verify SSH before harden"),
+            }),
+            Step.create({
+              name: "harden",
+              task: StepTask.model("harden-model", "run", {
+                // Both inputs are declared at the original run (strict
+                // evaluation requires referenced inputs to exist). Resume
+                // supplies updated values that the merge applies.
+                region: "${{ inputs.region }}",
+                authKey: "${{ inputs.authKey }}",
+              }),
+              dependsOn: [
+                { step: "verify", condition: TriggerCondition.succeeded() },
+              ],
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      catalogStore,
+    );
+
+    // Original run declares all referenced inputs; authKey starts as a
+    // placeholder whose real value is only minted during the gate.
+    const suspended = await service.execute(workflow.name, {
+      inputs: { region: "us-east", env: "prod", authKey: "PENDING" },
+    });
+
+    assertEquals(suspended.status, "suspended");
+    // Effective inputs are captured at suspend so they survive to resume.
+    assertEquals(suspended.inputs, {
+      region: "us-east",
+      env: "prod",
+      authKey: "PENDING",
+    });
+    assertEquals(suspended.resumeInputs, []);
+    // The gate has not reached the executor.
+    assertEquals(executor.captured.length, 0);
+
+    // Approve: mark the gate step succeeded so resume can proceed.
+    const toApprove = await runRepo.findById(workflow.id, suspended.id);
+    const waiting = toApprove!.findWaitingApprovalStep()!;
+    toApprove!.getJob(waiting.jobName)!.getStep(waiting.stepName)!.succeed();
+    await runRepo.save(workflow.id, toApprove!);
+
+    // Resume with the freshly minted auth key and a region override.
+    let resumedRun: WorkflowRun | undefined;
+    for await (
+      const event of service.resume(workflow.name, suspended.id, {
+        inputs: { region: "us-west", authKey: "tskey-abc123" },
+      })
+    ) {
+      if (event.kind === "completed") resumedRun = event.run;
+    }
+
+    assertEquals(resumedRun?.status, "succeeded");
+
+    // The harden step ran and saw the merged inputs: resume overrides win on
+    // `region` and `authKey`, while the original `env` is preserved.
+    assertEquals(executor.captured.length, 1);
+    assertEquals(executor.captured[0].step.name, "harden");
+    assertEquals(executor.captured[0].ctx.expressionContext?.inputs, {
+      region: "us-west",
+      env: "prod",
+      authKey: "tskey-abc123",
+    });
+
+    // The overrides propagate into the resolved task inputs forwarded to the
+    // step: both `region` and `authKey` resolved to the resume values.
+    const hardenTask = executor.captured[0].step.task.data;
+    if (hardenTask.type === "model_method") {
+      assertEquals(hardenTask.inputs?.region, "us-west");
+      assertEquals(hardenTask.inputs?.authKey, "tskey-abc123");
+    }
+
+    // Audit records only the resume-time KEY NAMES, never the secret values.
+    const persisted = await runRepo.findById(workflow.id, suspended.id);
+    assertEquals([...persisted!.resumeInputs].sort(), ["authKey", "region"]);
+    assertEquals(
+      JSON.stringify(persisted!.resumeInputs).includes("tskey-abc123"),
+      false,
+    );
+  });
+});

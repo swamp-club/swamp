@@ -635,3 +635,85 @@ Deno.test("WorkflowRun: findWaitingApprovalStep returns undefined when none wait
   run.start();
   assertEquals(run.findWaitingApprovalStep(), undefined);
 });
+
+// WorkflowRun inputs / resumeInputs tests
+
+Deno.test("WorkflowRun: a fresh run has empty inputs and resumeInputs", () => {
+  const run = WorkflowRun.create(createTestWorkflow());
+  assertEquals(run.inputs, {});
+  assertEquals(run.resumeInputs, []);
+});
+
+Deno.test("WorkflowRun.suspend captures the effective inputs", () => {
+  const run = WorkflowRun.create(createTestWorkflow());
+  run.start();
+  run.suspend({ region: "us-east", count: 3 });
+  assertEquals(run.status, "suspended");
+  assertEquals(run.inputs, { region: "us-east", count: 3 });
+});
+
+Deno.test("WorkflowRun.suspend without inputs leaves inputs empty", () => {
+  const run = WorkflowRun.create(createTestWorkflow());
+  run.start();
+  run.suspend();
+  assertEquals(run.status, "suspended");
+  assertEquals(run.inputs, {});
+});
+
+Deno.test("WorkflowRun.recordResumeInputs appends and de-duplicates key names", () => {
+  const run = WorkflowRun.create(createTestWorkflow());
+  run.recordResumeInputs(["authKey", "region"]);
+  run.recordResumeInputs(["authKey", "token"]);
+  assertEquals(run.resumeInputs, ["authKey", "region", "token"]);
+});
+
+Deno.test("WorkflowRun.toData omits inputs and resumeInputs when empty", () => {
+  const run = WorkflowRun.create(createTestWorkflow());
+  run.start();
+  const data = run.toData();
+  assertEquals("inputs" in data, false);
+  assertEquals("resumeInputs" in data, false);
+});
+
+Deno.test("WorkflowRun.toData includes inputs and resumeInputs when present", () => {
+  const run = WorkflowRun.create(createTestWorkflow());
+  run.start();
+  run.suspend({ region: "us-east" });
+  run.recordResumeInputs(["authKey"]);
+  const data = run.toData();
+  assertEquals(data.inputs, { region: "us-east" });
+  assertEquals(data.resumeInputs, ["authKey"]);
+});
+
+Deno.test("WorkflowRun: inputs and resumeInputs round-trip through fromData/toData", () => {
+  const run = WorkflowRun.create(createTestWorkflow());
+  run.start();
+  run.suspend({ region: "us-east", nested: { a: 1 } });
+  run.recordResumeInputs(["authKey", "region"]);
+
+  const restored = WorkflowRun.fromData(run.toData());
+  assertEquals(restored.inputs, { region: "us-east", nested: { a: 1 } });
+  assertEquals(restored.resumeInputs, ["authKey", "region"]);
+});
+
+Deno.test("WorkflowRun.fromData tolerates legacy records lacking inputs/resumeInputs", () => {
+  // A run persisted before these fields existed.
+  const legacy = {
+    id: "550e8400-e29b-41d4-a716-446655440099",
+    workflowId: "550e8400-e29b-41d4-a716-446655440000",
+    workflowName: "test-workflow",
+    status: "suspended" as const,
+    startedAt: new Date().toISOString(),
+    jobs: [
+      {
+        jobName: "job1",
+        status: "running" as const,
+        steps: [{ stepName: "step1", status: "waiting_approval" as const }],
+      },
+    ],
+  };
+
+  const run = WorkflowRun.fromData(legacy);
+  assertEquals(run.inputs, {});
+  assertEquals(run.resumeInputs, []);
+});

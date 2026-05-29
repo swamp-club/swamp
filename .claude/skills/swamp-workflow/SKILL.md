@@ -39,7 +39,7 @@ run.
 | Run from stdin     | `echo '{"k":"v"}' \| swamp workflow run <id_or_name> --stdin` |
 | Approve step       | `swamp workflow approve <workflow> <step>`                    |
 | Reject step        | `swamp workflow reject <workflow> <step>`                     |
-| Resume workflow    | `swamp workflow resume <workflow>`                            |
+| Resume workflow    | `swamp workflow resume <workflow> [--input k=v]`              |
 | List approvals     | `swamp workflow approvals`                                    |
 | View run history   | `swamp workflow history search --json`                        |
 | Get latest run     | `swamp workflow history get <workflow> --json`                |
@@ -552,8 +552,17 @@ The workflow suspends to disk. Approve, reject, or resume from CLI:
 swamp workflow approve <workflow-name> <step-name>
 swamp workflow reject  <workflow-name> <step-name> --reason "Not ready"
 swamp workflow resume  <workflow-name>
+swamp workflow resume  <workflow-name> --input authKey=tskey-abc123
 swamp workflow approvals  # list all pending approvals
 ```
+
+Resume accepts `--input`/`--input-file`/`--stdin` (same parsing as
+`workflow run`). Resume inputs merge over the inputs the run had when it
+suspended, with a resume `--input` winning on a key collision. Evaluation stays
+strict, so a workflow must declare the inputs it references at run time: declare
+the input at run (e.g. a placeholder) and supply or override its value at
+resume. The run record records the resume input key names (not values) for
+audit.
 
 ## Working with Vaults
 
