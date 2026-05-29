@@ -2168,3 +2168,92 @@ Deno.test("CLI: workflow resume rejects multi-item stdin", async () => {
     assertStringIncludes(output, "single run");
   });
 });
+
+Deno.test("CLI: workflow resume warns which inputs are overridden vs added", async () => {
+  await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
+
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    await definitionRepo.save(
+      SHELL_MODEL_TYPE,
+      Definition.create({ name: "deployer", methods: {} }),
+    );
+    const repo = new YamlWorkflowRepository(repoDir);
+    const workflow = Workflow.create({
+      name: "warn-gate",
+      jobs: [
+        Job.create({
+          name: "rollout",
+          steps: [
+            Step.create({
+              name: "verify",
+              task: StepTask.manualApproval("Verify"),
+            }),
+            Step.create({
+              name: "harden",
+              // Does not echo any input, so the only place a value could
+              // appear in output is the warning — which must not leak it.
+              task: StepTask.model("deployer", "execute", {
+                run: "echo hardened",
+              }),
+              dependsOn: [
+                { step: "verify", condition: TriggerCondition.succeeded() },
+              ],
+            }),
+          ],
+        }),
+      ],
+    });
+    await repo.save(workflow);
+
+    await runCliCommand(
+      [
+        "workflow",
+        "run",
+        "warn-gate",
+        "--input",
+        "region=us-east",
+        "--repo-dir",
+        repoDir,
+        "--json",
+      ],
+      Deno.cwd(),
+    );
+    await runCliCommand(
+      [
+        "workflow",
+        "approve",
+        "warn-gate",
+        "verify",
+        "--repo-dir",
+        repoDir,
+        "--json",
+      ],
+      Deno.cwd(),
+    );
+
+    // Resume in log mode: override the declared `region` and add an unreferenced
+    // `extra` key. The warning lists key names only — never values.
+    const resume = await runCliCommand(
+      [
+        "workflow",
+        "resume",
+        "warn-gate",
+        "--input",
+        "region=us-west",
+        "--input",
+        "extra=ignored",
+        "--repo-dir",
+        repoDir,
+      ],
+      Deno.cwd(),
+    );
+
+    const output = resume.stdout + resume.stderr;
+    assertStringIncludes(output, 'overriding existing input(s): "region"');
+    assertStringIncludes(output, 'adding input(s): "extra"');
+    // Key names only — the values are never logged.
+    assertEquals(output.includes("us-west"), false);
+    assertEquals(output.includes("ignored"), false);
+  });
+});
