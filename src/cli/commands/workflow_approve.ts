@@ -26,6 +26,7 @@ import {
 import { requireInitializedRepo } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import { resolveSuspendedRun } from "../../domain/workflows/suspended_run_resolver.ts";
+import { evaluateApprovalTimeout } from "../../domain/workflows/approval_timeout.ts";
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
 import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
 import { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
@@ -98,20 +99,18 @@ export const workflowApproveCommand = new Command()
       {
         const wfJob = workflow.jobs.find((j) => j.name === jobName);
         const wfStep = wfJob?.steps.find((s) => s.name === stepName);
-        if (
-          wfStep?.task.data.type === "manual_approval" &&
-          wfStep.task.data.timeout &&
-          step.startedAt
-        ) {
-          const elapsedSeconds = (Date.now() - step.startedAt.getTime()) / 1000;
-          if (elapsedSeconds > wfStep.task.data.timeout) {
-            throw new UserError(
-              `Approval timed out: step "${stepName}" has been waiting ${
-                Math.round(elapsedSeconds)
-              }s ` +
-                `(timeout: ${wfStep.task.data.timeout}s)`,
-            );
-          }
+        const timeout = evaluateApprovalTimeout(
+          step.startedAt,
+          wfStep?.task.data,
+          new Date(),
+        );
+        if (timeout?.expired) {
+          throw new UserError(
+            `Approval timed out: step "${stepName}" has been waiting ${
+              Math.round(timeout.elapsedSeconds)
+            }s ` +
+              `(timeout: ${timeout.timeoutSeconds}s)`,
+          );
         }
       }
 
