@@ -77,11 +77,40 @@ export async function initializeTestRepo(repoDir: string): Promise<void> {
 
 /**
  * Runs a CLI command via `deno task dev`.
+ *
+ * When `stdin` is provided, it is piped to the child process and the writer is
+ * closed before awaiting output — required to drive commands that read from
+ * stdin (e.g. `model edit`). When omitted, stdin is left at its default so
+ * existing call sites are unaffected.
  */
 export async function runCliCommand(
   args: string[],
   cwd: string,
+  stdin?: string,
 ): Promise<{ stdout: string; stderr: string; code: number }> {
+  const decoder = new TextDecoder();
+
+  if (stdin !== undefined) {
+    const child = new Deno.Command(Deno.execPath(), {
+      args: [...CLI_ARGS, ...args],
+      stdin: "piped",
+      stdout: "piped",
+      stderr: "piped",
+      cwd,
+    }).spawn();
+
+    const writer = child.stdin.getWriter();
+    await writer.write(new TextEncoder().encode(stdin));
+    await writer.close();
+
+    const { code, stdout, stderr } = await child.output();
+    return {
+      stdout: decoder.decode(stdout),
+      stderr: decoder.decode(stderr),
+      code,
+    };
+  }
+
   const command = new Deno.Command(Deno.execPath(), {
     args: [...CLI_ARGS, ...args],
     stdout: "piped",
@@ -91,8 +120,8 @@ export async function runCliCommand(
 
   const { code, stdout, stderr } = await command.output();
   return {
-    stdout: new TextDecoder().decode(stdout),
-    stderr: new TextDecoder().decode(stderr),
+    stdout: decoder.decode(stdout),
+    stderr: decoder.decode(stderr),
     code,
   };
 }
