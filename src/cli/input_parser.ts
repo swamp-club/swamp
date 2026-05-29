@@ -20,9 +20,12 @@
 import { parse as parseYaml } from "@std/yaml";
 import { UserError } from "../domain/errors.ts";
 import { homeDirectory } from "../infrastructure/persistence/paths.ts";
+import { deepMerge } from "../domain/inputs/input_merge.ts";
 
 // Re-export coerceInputTypes from domain layer for backward compatibility
 export { coerceInputTypes } from "../domain/inputs/input_coercion.ts";
+// Re-export deepMerge from domain layer for backward compatibility
+export { deepMerge } from "../domain/inputs/input_merge.ts";
 
 /**
  * Result of parsing inputs.
@@ -168,37 +171,6 @@ export async function parseKeyValueInputs(
   }
 
   return result;
-}
-
-/**
- * Deep merges two objects. Override values take precedence.
- * Only merges plain objects recursively; arrays and primitives are replaced.
- */
-export function deepMerge(
-  base: Record<string, unknown>,
-  overrides: Record<string, unknown>,
-): Record<string, unknown> {
-  const result: Record<string, unknown> = { ...base };
-
-  for (const [key, overrideValue] of Object.entries(overrides)) {
-    const baseValue = result[key];
-    if (
-      isPlainObject(baseValue) && isPlainObject(overrideValue)
-    ) {
-      result[key] = deepMerge(
-        baseValue as Record<string, unknown>,
-        overrideValue as Record<string, unknown>,
-      );
-    } else {
-      result[key] = overrideValue;
-    }
-  }
-
-  return result;
-}
-
-function isPlainObject(value: unknown): value is Record<string, unknown> {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 /**

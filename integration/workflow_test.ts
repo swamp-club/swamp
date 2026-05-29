@@ -25,7 +25,7 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import { assertPathStringIncludes } from "../src/infrastructure/persistence/path_test_helpers.ts";
 import { join } from "@std/path";
 import { ensureDir } from "@std/fs";
-import { stringify as stringifyYaml } from "@std/yaml";
+import { parse as parseYaml, stringify as stringifyYaml } from "@std/yaml";
 import { CLI_ARGS } from "./test_helpers.ts";
 import { Workflow } from "../src/domain/workflows/workflow.ts";
 import { Job } from "../src/domain/workflows/job.ts";
@@ -1948,5 +1948,223 @@ Deno.test("CLI: workflow run detects direct workflow cycle", async () => {
       true,
       `Self-calling workflow should fail. stdout: ${result.stdout}`,
     );
+  });
+});
+
+// workflow resume --input tests (issue #467)
+
+Deno.test("CLI: workflow resume --input merges override inputs into the resumed run", async () => {
+  await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
+
+    // Shell model whose command echoes the inputs so resolved values are
+    // observable in the step output.
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    await definitionRepo.save(
+      SHELL_MODEL_TYPE,
+      Definition.create({ name: "deployer", methods: {} }),
+    );
+
+    const repo = new YamlWorkflowRepository(repoDir);
+    const workflow = Workflow.create({
+      name: "deploy-with-gate",
+      jobs: [
+        Job.create({
+          name: "rollout",
+          steps: [
+            Step.create({
+              name: "verify",
+              task: StepTask.manualApproval("Verify before hardening"),
+            }),
+            Step.create({
+              name: "harden",
+              // Both inputs are declared at the original run; resume supplies
+              // updated values that the merge applies.
+              task: StepTask.model("deployer", "execute", {
+                run:
+                  "echo RESOLVED region=${{ inputs.region }} authKey=${{ inputs.authKey }}",
+              }),
+              dependsOn: [
+                { step: "verify", condition: TriggerCondition.succeeded() },
+              ],
+            }),
+          ],
+        }),
+      ],
+    });
+    await repo.save(workflow);
+
+    // Original run declares both inputs (authKey as a placeholder); suspends
+    // at the gate.
+    const runResult = await runCliCommand(
+      [
+        "workflow",
+        "run",
+        "deploy-with-gate",
+        "--input",
+        "region=us-east",
+        "--input",
+        "authKey=PENDING",
+        "--repo-dir",
+        repoDir,
+        "--json",
+      ],
+      Deno.cwd(),
+    );
+    assertEquals(
+      runResult.code,
+      0,
+      `run should suspend cleanly. stderr: ${runResult.stderr}`,
+    );
+    assertStringIncludes(runResult.stdout, "approvalRequired");
+
+    // Approve the gate.
+    const approveResult = await runCliCommand(
+      [
+        "workflow",
+        "approve",
+        "deploy-with-gate",
+        "verify",
+        "--repo-dir",
+        repoDir,
+        "--json",
+      ],
+      Deno.cwd(),
+    );
+    assertEquals(approveResult.code, 0, approveResult.stderr);
+
+    // Resume with an override (region) and a brand-new resume-only input.
+    const resumeResult = await runCliCommand(
+      [
+        "workflow",
+        "resume",
+        "deploy-with-gate",
+        "--input",
+        "region=us-west",
+        "--input",
+        "authKey=tskey-abc123",
+        "--repo-dir",
+        repoDir,
+        "--json",
+      ],
+      Deno.cwd(),
+    );
+    assertEquals(
+      resumeResult.code,
+      0,
+      `resume should succeed. stderr: ${resumeResult.stderr}`,
+    );
+    assertStringIncludes(JSON.parse(resumeResult.stdout).status, "succeeded");
+
+    // The shell step's output shows the merged inputs resolved through CEL:
+    // both region and authKey overridden by the resume inputs.
+    const dataResult = await runCliCommand(
+      ["data", "get", "deployer", "log", "--repo-dir", repoDir, "--json"],
+      Deno.cwd(),
+    );
+    assertEquals(dataResult.code, 0, dataResult.stderr);
+    assertStringIncludes(
+      JSON.parse(dataResult.stdout).content as string,
+      "RESOLVED region=us-west authKey=tskey-abc123",
+    );
+
+    // The run record's audit fields record the resume input KEY NAMES, never
+    // the values. (The resolved step command may legitimately contain the
+    // value because the user echoed it — that is the user's choice and a
+    // separate concern from this feature's audit trail.)
+    const runsDir = join(repoDir, ".swamp", "workflow-runs", workflow.id);
+    let runYaml = "";
+    for await (const entry of Deno.readDir(runsDir)) {
+      if (entry.isFile && entry.name.endsWith(".yaml")) {
+        runYaml = await Deno.readTextFile(join(runsDir, entry.name));
+      }
+    }
+    const record = parseYaml(runYaml) as {
+      inputs?: Record<string, unknown>;
+      resumeInputs?: string[];
+    };
+    // Audit: resume input key names only.
+    assertEquals([...(record.resumeInputs ?? [])].sort(), [
+      "authKey",
+      "region",
+    ]);
+    // The persisted inputs (captured at suspend) hold the original declared
+    // values, not the resume-time overrides.
+    assertEquals(record.inputs, { region: "us-east", authKey: "PENDING" });
+  });
+});
+
+Deno.test("CLI: workflow resume rejects multi-item stdin", async () => {
+  await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
+
+    const definitionRepo = new YamlDefinitionRepository(repoDir);
+    await definitionRepo.save(
+      SHELL_MODEL_TYPE,
+      Definition.create({ name: "deployer", methods: {} }),
+    );
+    const repo = new YamlWorkflowRepository(repoDir);
+    const workflow = Workflow.create({
+      name: "gate-only",
+      jobs: [
+        Job.create({
+          name: "rollout",
+          steps: [
+            Step.create({
+              name: "verify",
+              task: StepTask.manualApproval("Verify"),
+            }),
+          ],
+        }),
+      ],
+    });
+    await repo.save(workflow);
+
+    await runCliCommand(
+      ["workflow", "run", "gate-only", "--repo-dir", repoDir, "--json"],
+      Deno.cwd(),
+    );
+    await runCliCommand(
+      [
+        "workflow",
+        "approve",
+        "gate-only",
+        "verify",
+        "--repo-dir",
+        repoDir,
+        "--json",
+      ],
+      Deno.cwd(),
+    );
+
+    // Two NDJSON items on stdin — resume targets a single run, so this errors.
+    const command = new Deno.Command(Deno.execPath(), {
+      args: [
+        ...CLI_ARGS,
+        "workflow",
+        "resume",
+        "gate-only",
+        "--stdin",
+        "--repo-dir",
+        repoDir,
+        "--json",
+      ],
+      stdin: "piped",
+      stdout: "piped",
+      stderr: "piped",
+      cwd: Deno.cwd(),
+    });
+    const child = command.spawn();
+    const writer = child.stdin.getWriter();
+    await writer.write(
+      new TextEncoder().encode('{"a":1}\n{"b":2}\n'),
+    );
+    await writer.close();
+    const { code, stdout, stderr } = await child.output();
+    const output = new TextDecoder().decode(stdout) +
+      new TextDecoder().decode(stderr);
+
+    assertEquals(code !== 0, true, "multi-item stdin should be rejected");
+    assertStringIncludes(output, "single run");
   });
 });

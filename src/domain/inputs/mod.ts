@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 export { coerceInputTypes } from "./input_coercion.ts";
+export { deepMerge } from "./input_merge.ts";
 export {
   type InputValidationError,
   type InputValidationResult,

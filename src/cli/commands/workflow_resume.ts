@@ -50,6 +50,8 @@ import {
 } from "../../libswamp/mod.ts";
 import type { WorkflowRunEvent } from "../../libswamp/mod.ts";
 import { GIT_SHA } from "./version.ts";
+import { deepMerge, parseInputs, parseStdinContent } from "../input_parser.ts";
+import { readStdin } from "../../infrastructure/io/stdin_reader.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -61,6 +63,10 @@ export const workflowResumeCommand = new Command()
     "Resume by workflow name",
     "swamp workflow resume deploy-with-gate",
   )
+  .example(
+    "Resume with an override input minted during the gate",
+    "swamp workflow resume deploy-with-gate --input authKey=tskey-abc123",
+  )
   .arguments("<workflow_id_or_name:string>")
   .option(
     "--repo-dir <dir:string>",
@@ -68,6 +74,18 @@ export const workflowResumeCommand = new Command()
   )
   .option("--driver <driver:string>", "Override execution driver")
   .option("--run <run_id:string>", "Target a specific run ID")
+  .option(
+    "--input <value:string>",
+    "Override/additional input for the resumed run (key=value or JSON); merged over the original run inputs",
+    { collect: true },
+  )
+  .option(
+    "--input-file <file:string>",
+    "Override inputs from a YAML file (cannot combine with --stdin)",
+  )
+  .option("--stdin", "Read override inputs from stdin (piped data)", {
+    default: false,
+  })
   .action(
     async function (
       options: AnyOptions,
@@ -83,6 +101,36 @@ export const workflowResumeCommand = new Command()
           repoDir: resolveRepoDir(options.repoDir),
           outputMode: cliCtx.outputMode,
         });
+
+      // Parse override inputs. Resume targets a single run, so unlike
+      // `workflow run` (which fans out one run per stdin item) stdin must
+      // resolve to a single override set.
+      const stdinContent = options.stdin ? await readStdin() : null;
+      let stdinInputs: Record<string, unknown> = {};
+      if (stdinContent !== null) {
+        if (options.inputFile) {
+          throw new UserError("Cannot combine --stdin with --input-file.");
+        }
+        const stdinItems = parseStdinContent(stdinContent);
+        if (stdinItems.length > 1) {
+          throw new UserError(
+            `--stdin provided ${stdinItems.length} items, but resume targets a single run. ` +
+              `Provide a single inputs object on stdin.`,
+          );
+        }
+        stdinInputs = stdinItems[0] ?? {};
+      }
+
+      const { inputs: cliInputs } = await parseInputs({
+        input: options.input as string[] | undefined,
+        inputFile: stdinContent !== null
+          ? undefined
+          : options.inputFile as string | undefined,
+      });
+
+      const resumeInputs = Object.keys(stdinInputs).length > 0
+        ? deepMerge(stdinInputs, cliInputs)
+        : cliInputs;
 
       const workflowRepo = new YamlWorkflowRepository(repoDir);
       const runRepo = new YamlWorkflowRunRepository(repoDir);
@@ -180,6 +228,7 @@ export const workflowResumeCommand = new Command()
             signal: AbortSignal.timeout(600_000),
             driver: options.driver,
             swampSha: GIT_SHA,
+            inputs: resumeInputs,
           })
         ) {
           yield mapWorkflowExecutionEvent(event, runRepo);

@@ -107,6 +107,26 @@ failed. No resume needed.
 
 `swamp workflow approvals` lists all suspended runs awaiting approval.
 
+**Resume inputs (`--input`):** `swamp workflow resume` accepts `--input`,
+`--input-file`, and `--stdin` (same parsing as `swamp workflow run`). These let
+an operator supply values that were not available at the original run time —
+elevated credentials, environment-specific overrides, or a freshly minted auth
+key issued during the gate. Resume inputs **merge** over the inputs captured
+when the run suspended: existing keys are preserved and a resume `--input` wins
+on a key collision. The merged set is placed on the expression context before
+evaluation, so post-gate `inputs.*` expressions resolve to the updated values.
+Workflow evaluation remains **strict**: a workflow must declare (at run time)
+every input it references, so the pattern is _declare the input at run, supply
+or override its value at resume_ — e.g. start with `authKey` set to a
+placeholder and pass the real key at resume. For audit, the run record captures
+the **key names** of resume-time inputs (never their values, so secrets are not
+written to the persisted run).
+
+**Input persistence:** A run's effective inputs are persisted to the run record
+when it **suspends** (not at run start), so steps after the gate can resolve
+`inputs.*` on resume. Runs that never suspend do not write their input values to
+disk.
+
 **Persistence:** The run record survives process restarts. The approval and
 resume can happen from any machine with access to the repo (or synced
 datastore).

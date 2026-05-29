@@ -103,6 +103,14 @@ export const WorkflowRunSchema = z.object({
   workflowDataArtifacts: z.array(DataArtifactRefSchema).optional(),
   logFile: z.string().optional(),
   tags: z.record(z.string(), z.string()).default({}),
+  // Effective workflow inputs captured when a run suspends, so post-resume
+  // steps can resolve `inputs.*`. Optional for backward compatibility with
+  // runs persisted before this field existed.
+  inputs: z.record(z.string(), z.unknown()).optional(),
+  // Key NAMES of inputs supplied at resume time, recorded for audit. Values are
+  // deliberately NOT persisted to avoid writing secrets (e.g. a freshly minted
+  // auth key) to the plaintext run record.
+  resumeInputs: z.array(z.string()).optional(),
 });
 
 /**
@@ -472,6 +480,8 @@ export class WorkflowRun implements TriggerEvaluationContext {
     private _logFile: string | undefined,
     private readonly _tags: Record<string, string>,
     private _workflowDataArtifacts: DataArtifactRef[] = [],
+    private _inputs: Record<string, unknown> = {},
+    private _resumeInputs: string[] = [],
   ) {}
 
   /**
@@ -521,6 +531,8 @@ export class WorkflowRun implements TriggerEvaluationContext {
       validated.logFile,
       validated.tags,
       validated.workflowDataArtifacts ?? [],
+      validated.inputs ?? {},
+      validated.resumeInputs ?? [],
     );
   }
 
@@ -614,9 +626,45 @@ export class WorkflowRun implements TriggerEvaluationContext {
 
   /**
    * Marks the workflow run as suspended (waiting for manual approval).
+   *
+   * The effective workflow inputs are captured here so that, on resume, steps
+   * that run after the gate can still resolve `inputs.*`. Inputs are recorded
+   * only at suspend (not at run creation) so runs that never suspend never
+   * write their input values to the persisted run record.
    */
-  suspend(): void {
+  suspend(inputs?: Record<string, unknown>): void {
     this._status = "suspended";
+    if (inputs) {
+      this._inputs = inputs;
+    }
+  }
+
+  /**
+   * The effective workflow inputs persisted when this run last suspended.
+   * Empty for runs that have never suspended.
+   */
+  get inputs(): Readonly<Record<string, unknown>> {
+    return this._inputs;
+  }
+
+  /**
+   * The key names of inputs supplied across resume invocations, for audit.
+   * Values are never recorded.
+   */
+  get resumeInputs(): ReadonlyArray<string> {
+    return this._resumeInputs;
+  }
+
+  /**
+   * Records the key names of inputs supplied at resume time. Appends and
+   * de-duplicates so multiple resume cycles accumulate a complete audit trail.
+   */
+  recordResumeInputs(keys: string[]): void {
+    for (const key of keys) {
+      if (!this._resumeInputs.includes(key)) {
+        this._resumeInputs.push(key);
+      }
+    }
   }
 
   /**
@@ -662,6 +710,12 @@ export class WorkflowRun implements TriggerEvaluationContext {
       data.workflowDataArtifacts = this._workflowDataArtifacts.map((a) => ({
         ...a,
       }));
+    }
+    if (Object.keys(this._inputs).length > 0) {
+      data.inputs = { ...this._inputs };
+    }
+    if (this._resumeInputs.length > 0) {
+      data.resumeInputs = [...this._resumeInputs];
     }
     return data;
   }

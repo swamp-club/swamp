@@ -25,6 +25,7 @@ import {
   ForEachExpansionService,
 } from "./for_each_expansion_service.ts";
 import { coerceToSuffix } from "./data_suffix.ts";
+import { deepMerge } from "../inputs/input_merge.ts";
 // deno-lint-ignore verbatim-module-syntax
 import { JobRun, WorkflowRun } from "./workflow_run.ts";
 import {
@@ -1713,6 +1714,8 @@ export class WorkflowExecutionService {
       runtimeTags?: Record<string, string>;
       reportFilterOptions?: ReportFilterOptions;
       swampSha?: string;
+      /** Additional/override inputs supplied at resume time (CLI --input). */
+      inputs?: Record<string, unknown>;
     },
   ): AsyncGenerator<WorkflowExecutionEvent> {
     const workflow = await this.workflowRepo.findByName(workflowIdOrName) ??
@@ -1742,10 +1745,26 @@ export class WorkflowExecutionService {
       );
     }
 
+    // Record the key names of any resume-time inputs for audit (never the
+    // values — they may be secrets such as a freshly minted auth key). Done
+    // before the save below so the audit trail persists immediately.
+    const resumeInputs = options?.inputs ?? {};
+    if (Object.keys(resumeInputs).length > 0) {
+      existingRun.recordResumeInputs(Object.keys(resumeInputs));
+    }
+
     existingRun.resumeFromSuspended();
     await this.saveRun(workflow.id, existingRun);
 
     const expressionContext = await this.modelResolver.buildContext();
+
+    // Merge resume-time inputs over the inputs captured when the run suspended.
+    // Resume overrides win on key collision; new keys are additive. Set before
+    // evaluation so workflow- and step-level `inputs.*` expressions resolve.
+    expressionContext.inputs = deepMerge(
+      { ...existingRun.inputs },
+      resumeInputs,
+    );
 
     const evaluator = new WorkflowExpressionEvaluator(
       new CelEvaluator(),
@@ -2233,7 +2252,11 @@ export class WorkflowExecutionService {
           prompt: task.prompt,
           timeout: task.timeout,
         };
-        run.suspend();
+        // Capture the effective workflow inputs so steps after the gate can
+        // resolve `inputs.*` once the run is resumed. This is the manual_approval
+        // branch, which runs before any step-level input augmentation, so
+        // `inputs` here is the clean workflow-level set.
+        run.suspend(stepExprContext?.inputs);
         await this.saveRun(workflow.id, run);
         throw new WorkflowSuspendedError(
           job.name,
