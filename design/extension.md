@@ -118,9 +118,11 @@ info view returns `deprecatedAt`, `deprecatedByUserId`,
 
 Both surfaces share a 24-hour on-disk cache stored at
 `.swamp/extension-update-checks.json`. The TTL matches the
-`CHECK_INTERVAL_MS` constant in `src/domain/update/update_check_cache.ts`
-already used by datastore auto-update. Within the 24h window,
-freshness data is served from cache without contacting the registry.
+`CHECK_INTERVAL_MS` constant in `src/domain/update/update_check_cache.ts`.
+These surfaces only ever read the registry to report available updates —
+no extension kind is auto-pulled or upgraded as a side effect. Within
+the 24h window, freshness data is served from cache without contacting
+the registry.
 
 On registry failure for a stale entry, the cache is stamped with
 `latestVersion: installedVersion` to suppress retries for the next

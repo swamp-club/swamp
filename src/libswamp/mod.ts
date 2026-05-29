@@ -698,11 +698,6 @@ export {
   type ExtensionInfoInput,
 } from "./extensions/info.ts";
 export {
-  type DatastoreAutoUpdateDeps,
-  type DatastoreAutoUpdateResult,
-  maybeAutoUpdateDatastoreExtension,
-} from "./extensions/datastore_auto_update.ts";
-export {
   detectLocalEditsForExtension,
   LocalEditsError,
   type LocalEditsStatus,

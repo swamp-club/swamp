@@ -31,7 +31,7 @@
  * Default: filesystem datastore at `{repoDir}/.swamp/` (full backward compatibility)
  */
 
-import { join, resolve } from "@std/path";
+import { join } from "@std/path";
 import { getLogger } from "@logtape/logtape";
 import type { RepoMarkerData } from "../infrastructure/persistence/repo_marker_repository.ts";
 import type { DatastoreConfig } from "../domain/datastore/datastore_config.ts";
@@ -41,25 +41,6 @@ import { datastoreTypeRegistry } from "../domain/datastore/datastore_type_regist
 import { UserError } from "../domain/errors.ts";
 import { resolveDatastoreType } from "../domain/extensions/extension_auto_resolver.ts";
 import { getAutoResolver } from "../domain/extensions/auto_resolver_context.ts";
-import { maybeAutoUpdateDatastoreExtension } from "../libswamp/extensions/datastore_auto_update.ts";
-import { FileExtensionUpdateCheckRepository } from "../infrastructure/persistence/extension_update_check_repository.ts";
-import { ExtensionApiClient } from "../infrastructure/http/extension_api_client.ts";
-import { loadIdentity } from "./load_identity.ts";
-import { DEFAULT_SWAMP_CLUB_URL } from "../domain/auth/auth_credentials.ts";
-import {
-  detectLocalEditsForExtension,
-  enumeratePulledExtensionDirs,
-  InstallExtensionService,
-  LockfileRepository,
-} from "../libswamp/mod.ts";
-import { ExtensionRepository } from "../infrastructure/persistence/extension_repository.ts";
-import { ExtensionCatalogStore } from "../infrastructure/persistence/extension_catalog_store.ts";
-import { ExtensionLoader } from "../domain/extensions/extension_loader.ts";
-import { datastoreKindAdapter } from "../domain/extensions/datastore_kind_adapter.ts";
-import { EmbeddedDenoRuntime } from "../infrastructure/runtime/embedded_deno_runtime.ts";
-import { swampPath } from "../infrastructure/persistence/paths.ts";
-import { SWAMP_SUBDIRS } from "../infrastructure/persistence/paths.ts";
-import { resolveModelsDir } from "./resolve_models_dir.ts";
 
 const logger = getLogger(["swamp", "datastore", "resolve"]);
 
@@ -70,157 +51,6 @@ const logger = getLogger(["swamp", "datastore", "resolve"]);
 export const RENAMED_DATASTORE_TYPES: Record<string, string> = {
   "s3": "@swamp/s3-datastore",
 };
-
-/**
- * Checks if a @swamp/ datastore extension has an update available and
- * auto-pulls if so. Called from all @swamp/ resolution paths, placed
- * after resolveDatastoreType() but before createProvider().
- *
- * Never throws — failures are logged and silently ignored.
- */
-async function maybeAutoUpdateSwampDatastore(
-  type: string,
-  repoDir: string,
-  marker: RepoMarkerData | null,
-): Promise<void> {
-  if (!type.startsWith("@swamp/")) return;
-
-  try {
-    const resolvedRepoDir = resolve(repoDir);
-    const swampDir = join(resolvedRepoDir, ".swamp");
-    const modelsDir = resolveModelsDir(marker);
-    const lockfilePath = join(
-      resolvedRepoDir,
-      modelsDir,
-      "upstream_extensions.json",
-    );
-    logger.debug("Auto-update check for {type}, lockfile: {path}", {
-      type,
-      path: lockfilePath,
-    });
-    const serverUrl = Deno.env.get("SWAMP_CLUB_URL") ?? DEFAULT_SWAMP_CLUB_URL;
-    const identity = await loadIdentity();
-    const extensionClient = new ExtensionApiClient(serverUrl, identity);
-    const cacheRepository = new FileExtensionUpdateCheckRepository(swampDir);
-
-    const result = await maybeAutoUpdateDatastoreExtension(type, {
-      getInstalledVersion: async (name) => {
-        const installedRepo = await LockfileRepository.create(lockfilePath);
-        return installedRepo.getLockedVersion(name);
-      },
-      getLatestVersion: async (name) => {
-        try {
-          const info = await extensionClient.getExtension(name);
-          return info?.latestVersion ?? null;
-        } catch {
-          return null;
-        }
-      },
-      detectLocalEdits: (name) =>
-        detectLocalEditsForExtension(repoDir, name, lockfilePath),
-      pullExtension: async (name, version) => {
-        const resolvedRepoDir = resolve(repoDir);
-
-        // Pull the extension with the specific version. installExtension
-        // derives per-extension destinations (models/workflows/vaults/
-        // drivers/datastores/reports) from `name`; only skillsDir is
-        // caller-owned because skills land in a tool-specific dir.
-        // Construct a fresh LockfileRepository per install to capture
-        // a current snapshot — the InstallContext is single-use.
-        const lockfileRepository = await LockfileRepository.create(
-          lockfilePath,
-        );
-        // W2 (commit 3): route through InstallExtensionService so phase 8
-        // fires (catalog populated synchronously, I-Repo-1 fires on
-        // `(kind, type)` collision, FS rollback on conflict).
-        const denoRuntime = new EmbeddedDenoRuntime();
-        const catalog = new ExtensionCatalogStore(
-          swampPath(resolvedRepoDir, "_extension_catalog.db"),
-        );
-        try {
-          const repository = new ExtensionRepository({
-            catalog,
-            lockfileRepository,
-            repoRoot: resolvedRepoDir,
-          });
-          await new InstallExtensionService({ denoRuntime, repository })
-            .execute({ name, version }, {
-              getExtension: (n) => extensionClient.getExtension(n),
-              downloadArchive: (n, v) => extensionClient.downloadArchive(n, v),
-              getChecksum: (n, v) => extensionClient.getChecksum(n, v),
-              logger,
-              lockfileRepository,
-              skillsDir: swampPath(
-                resolvedRepoDir,
-                SWAMP_SUBDIRS.pulledSkills,
-              ),
-              repoDir: resolvedRepoDir,
-              force: true,
-              alreadyPulled: new Set(),
-              depth: 0,
-            });
-        } finally {
-          catalog.close();
-        }
-
-        // Hot-reload the datastore type from the updated extension.
-        // Under the per-extension layout the loader walks each installed
-        // extension's datastores subdir via enumeratePulledExtensionDirs
-        // rather than a single shared dir.
-        const pulledDirs = await enumeratePulledExtensionDirs(
-          lockfilePath,
-          resolvedRepoDir,
-          "datastores",
-        );
-        if (pulledDirs.length > 0) {
-          const denoRuntime = new EmbeddedDenoRuntime();
-          const loader = new ExtensionLoader(
-            denoRuntime,
-            datastoreKindAdapter,
-            resolvedRepoDir,
-          );
-          const [primary, ...rest] = pulledDirs;
-          await loader.load(primary, {
-            skipAlreadyRegistered: false,
-            additionalDirs: rest,
-          });
-        }
-      },
-      cacheRepository,
-    });
-
-    if (result?.updated) {
-      logger.info(
-        "Updated {name} {from} → {to}",
-        { name: type, from: result.previousVersion, to: result.newVersion },
-      );
-    } else if (result?.skipped === "local_edits") {
-      // Caller-layer surface for the auto-update refusal. The service
-      // returns a structured result (not an exception) specifically so
-      // this path bypasses the outer catch and reaches the user via
-      // logtape WARN. Mirrors the #121 auto-resolver refusal message.
-      logger.warn(buildLocalEditsWarning(type, result));
-    }
-  } catch {
-    // Never block command execution for auto-update failures
-  }
-}
-
-/**
- * Renders the user-visible warning for an auto-update that was refused
- * because local edits were detected. Exported so the message shape can be
- * unit-tested without having to mock the full datastore-resolution stack.
- */
-export function buildLocalEditsWarning(
-  type: string,
-  result: { previousVersion?: string; newVersion?: string },
-): string {
-  return (
-    `Not auto-updating ${type} ${result.previousVersion} → ${result.newVersion}: ` +
-    `local edits detected under .swamp/pulled-extensions/${type}/. ` +
-    `Run \`swamp extension pull ${type} --force\` to discard your edits and install the latest version.`
-  );
-}
 
 /**
  * Parses the SWAMP_DATASTORE env var format into a DatastoreConfig.
@@ -267,7 +97,6 @@ export async function parseDatastoreEnvVar(
       // Ensure lazy-loaded extensions are loaded before auto-resolve
       await datastoreTypeRegistry.ensureLoaded();
       await resolveDatastoreType(renamedTo, getAutoResolver());
-      await maybeAutoUpdateSwampDatastore(renamedTo, repoDir ?? ".", null);
 
       await datastoreTypeRegistry.ensureTypeLoaded(renamedTo);
       const typeInfo = datastoreTypeRegistry.get(renamedTo);
@@ -316,7 +145,6 @@ export async function parseDatastoreEnvVar(
   // Auto-resolve extension types (only fires if type is genuinely missing)
   if (type.startsWith("@")) {
     await resolveDatastoreType(type, getAutoResolver());
-    await maybeAutoUpdateSwampDatastore(type, repoDir ?? ".", null);
   }
 
   // Custom datastore type: value is JSON config
@@ -423,11 +251,6 @@ export async function resolveDatastoreConfig(
       // Ensure lazy-loaded extensions are loaded before auto-resolve
       await datastoreTypeRegistry.ensureLoaded();
       await resolveDatastoreType(renamedTo, getAutoResolver());
-      await maybeAutoUpdateSwampDatastore(
-        renamedTo,
-        repoDir ?? ".",
-        marker ?? null,
-      );
 
       await datastoreTypeRegistry.ensureTypeLoaded(renamedTo);
       const typeInfo = datastoreTypeRegistry.get(renamedTo);
@@ -499,7 +322,6 @@ export async function resolveDatastoreConfig(
     // Auto-resolve extension types (only fires if type is genuinely missing)
     if (dsType.startsWith("@")) {
       await resolveDatastoreType(dsType, getAutoResolver());
-      await maybeAutoUpdateSwampDatastore(dsType, repoDir ?? ".", marker);
     }
 
     // Custom datastore type from YAML config
