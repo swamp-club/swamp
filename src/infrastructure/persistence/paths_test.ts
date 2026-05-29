@@ -23,6 +23,7 @@ import {
   getSwampConfigDir,
   getSwampDataDir,
   homeDirectory,
+  homeDirectoryIsSet,
   SWAMP_DATA_DIR,
   SWAMP_MARKER_FILE,
   SWAMP_SUBDIRS,
@@ -292,6 +293,54 @@ Deno.test("homeDirectory: throws when neither HOME nor USERPROFILE is set", () =
       Error,
       "Cannot determine home directory: neither HOME nor USERPROFILE is set",
     );
+  } finally {
+    if (originalHome !== undefined) Deno.env.set("HOME", originalHome);
+    else Deno.env.delete("HOME");
+    if (originalProfile !== undefined) {
+      Deno.env.set("USERPROFILE", originalProfile);
+    } else Deno.env.delete("USERPROFILE");
+  }
+});
+
+Deno.test("homeDirectoryIsSet: true when HOME is set", () => {
+  const originalHome = Deno.env.get("HOME");
+  const originalProfile = Deno.env.get("USERPROFILE");
+  try {
+    Deno.env.set("HOME", "/home/testuser");
+    Deno.env.delete("USERPROFILE");
+    assertEquals(homeDirectoryIsSet(), true);
+  } finally {
+    if (originalHome !== undefined) Deno.env.set("HOME", originalHome);
+    else Deno.env.delete("HOME");
+    if (originalProfile !== undefined) {
+      Deno.env.set("USERPROFILE", originalProfile);
+    } else Deno.env.delete("USERPROFILE");
+  }
+});
+
+Deno.test("homeDirectoryIsSet: true when only USERPROFILE is set", () => {
+  const originalHome = Deno.env.get("HOME");
+  const originalProfile = Deno.env.get("USERPROFILE");
+  try {
+    Deno.env.delete("HOME");
+    Deno.env.set("USERPROFILE", "C:\\Users\\testuser");
+    assertEquals(homeDirectoryIsSet(), true);
+  } finally {
+    if (originalHome !== undefined) Deno.env.set("HOME", originalHome);
+    else Deno.env.delete("HOME");
+    if (originalProfile !== undefined) {
+      Deno.env.set("USERPROFILE", originalProfile);
+    } else Deno.env.delete("USERPROFILE");
+  }
+});
+
+Deno.test("homeDirectoryIsSet: false when neither HOME nor USERPROFILE is set", () => {
+  const originalHome = Deno.env.get("HOME");
+  const originalProfile = Deno.env.get("USERPROFILE");
+  try {
+    Deno.env.delete("HOME");
+    Deno.env.delete("USERPROFILE");
+    assertEquals(homeDirectoryIsSet(), false);
   } finally {
     if (originalHome !== undefined) Deno.env.set("HOME", originalHome);
     else Deno.env.delete("HOME");

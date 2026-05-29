@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 
 // Initialize logging for tests
@@ -30,10 +30,14 @@ Deno.test("serveCommand module loads", async () => {
 
 Deno.test("serveCommand has correct description", async () => {
   const { serveCommand } = await import("./serve.ts");
-  assertEquals(
-    serveCommand.getDescription(),
+  const description = serveCommand.getDescription();
+  assertStringIncludes(
+    description,
     "Start a WebSocket API server for workflow and model execution",
   );
+  // Service deployments need HOME set; the description documents this so the
+  // guidance is discoverable via `swamp serve --help` (see swamp-club#463).
+  assertStringIncludes(description, "HOME");
 });
 
 Deno.test("serveCommand has --port option", async () => {
