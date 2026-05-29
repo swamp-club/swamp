@@ -44,9 +44,8 @@ export interface ExtensionListFreshnessDeps {
  * Reads the 24h cache; for any stale entries, queries the registry in
  * parallel with bounded concurrency. Cache writes are aggregated into a
  * single atomic write at the end. On registry failure, the cache is
- * stamped with `latestVersion: installedVersion` (mirroring
- * datastore_auto_update.ts) to suppress retries for 24h, and the
- * in-memory enriched entry receives `updateStatus: "unknown_offline"`
+ * stamped with `latestVersion: installedVersion` to suppress retries for
+ * 24h, and the in-memory enriched entry receives `updateStatus: "unknown_offline"`
  * with `latestVersion: null` so JSON consumers can distinguish "didn't
  * try" (fields absent on the bare entry) from "tried and failed".
  *
@@ -117,7 +116,7 @@ export async function enrichExtensionList(
     cache[r.name] = {
       checkedAt: checkedAtIso,
       // On registry failure, stamp with installedVersion to suppress
-      // retries for 24h (mirrors datastore_auto_update.ts).
+      // retries for 24h.
       latestVersion: r.latestVersion ?? entries[r.index].version,
     };
   }
