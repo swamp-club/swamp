@@ -288,6 +288,66 @@ export function literalSensitiveGlobalArgsMessage(paths: string[]): string {
 export const LITERAL_SENSITIVE_GLOBAL_ARG_CODE = "literal_sensitive_global_arg";
 
 /**
+ * Value-free remediation guidance for a single sensitive global argument found
+ * holding a cleartext literal. Carries only the field path and the vault
+ * coordinates to migrate the secret to — never the secret value itself.
+ */
+export interface SensitiveArgRemediation {
+  /** Dot-path of the offending sensitive global argument. */
+  path: string;
+  /** Suggested vault name to store the secret under. */
+  vaultName: string;
+  /** Suggested vault key to store the secret under. */
+  vaultKey: string;
+  /** The `vault.get(...)` expression to set as the argument's value. */
+  expression: string;
+}
+
+/** Fallback vault name used when a sensitive field declares no `vaultName`. */
+const DEFAULT_REMEDIATION_VAULT = "my-vault";
+
+/**
+ * Builds value-free remediation guidance for sensitive global arguments that
+ * were found holding a literal secret (see {@link findLiteralSensitiveGlobalArgs}).
+ *
+ * This is the structured sibling of {@link literalSensitiveGlobalArgsMessage}:
+ * both point the user at the same fix — store the secret in a vault and
+ * reference it with a `vault.get(...)` expression — but this returns per-path
+ * coordinates a diagnostic can render as concrete commands.
+ *
+ * The output never contains the secret value: only the field path and the
+ * suggested vault name/key. When a field declares `vaultName`/`vaultKey`
+ * metadata, those are used; otherwise the vault name falls back to
+ * `"my-vault"` and the key to the field's leaf path segment.
+ *
+ * @param leakedPaths - Dot-paths returned by `findLiteralSensitiveGlobalArgs`
+ * @param schema - The global-arguments schema, read for vault metadata overrides
+ * @returns One remediation per leaked path, in input order
+ */
+export function buildSensitiveArgRemediations(
+  leakedPaths: string[],
+  schema?: z.ZodTypeAny,
+): SensitiveArgRemediation[] {
+  const fieldsByPath = new Map<string, SensitiveFieldInfo>();
+  if (schema) {
+    for (const field of extractSensitiveFields(schema)) {
+      fieldsByPath.set(field.path, field);
+    }
+  }
+  return leakedPaths.map((path) => {
+    const meta = fieldsByPath.get(path);
+    const vaultName = meta?.vaultName ?? DEFAULT_REMEDIATION_VAULT;
+    const vaultKey = meta?.vaultKey ?? path.split(".").at(-1) ?? path;
+    return {
+      path,
+      vaultName,
+      vaultKey,
+      expression: `\${{ vault.get('${vaultName}', '${vaultKey}') }}`,
+    };
+  });
+}
+
+/**
  * Returns a redacted clone of `data` with every field marked `{ sensitive: true }`
  * in `schema` replaced by `"***"`.
  *

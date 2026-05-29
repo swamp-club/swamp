@@ -193,6 +193,16 @@ export {
   type ModelSearchItem,
 } from "./models/search.ts";
 export {
+  createDoctorSecretsDeps,
+  doctorSecrets,
+  type DoctorSecretsData,
+  type DoctorSecretsDeps,
+  type DoctorSecretsEvent,
+  type SensitiveArgRemediation,
+  type SensitiveLeakFinding,
+  type UnresolvedDefinition,
+} from "./models/doctor_secrets.ts";
+export {
   modelOutputSearch,
   type ModelOutputSearchData,
   type ModelOutputSearchDeps,

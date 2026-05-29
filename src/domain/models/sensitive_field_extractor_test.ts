@@ -20,6 +20,7 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { z } from "zod";
 import {
+  buildSensitiveArgRemediations,
   extractSensitiveFields,
   extractSensitiveFieldValues,
   findLiteralSensitiveGlobalArgs,
@@ -505,4 +506,66 @@ Deno.test("literalSensitiveGlobalArgsMessage: names fields and gives vault remed
 
   const multi = literalSensitiveGlobalArgsMessage(["apiKey", "apiSecret"]);
   assertStringIncludes(multi, "'apiKey', 'apiSecret' are");
+});
+
+Deno.test("buildSensitiveArgRemediations: derives vault key from leaf path segment", () => {
+  const schema = z.object({
+    credentials: z.object({
+      apiKey: z.string().meta({ sensitive: true }),
+    }),
+  });
+
+  const remediations = buildSensitiveArgRemediations(
+    ["credentials.apiKey"],
+    schema,
+  );
+
+  assertEquals(remediations.length, 1);
+  assertEquals(remediations[0].path, "credentials.apiKey");
+  assertEquals(remediations[0].vaultName, "my-vault");
+  assertEquals(remediations[0].vaultKey, "apiKey");
+  assertEquals(
+    remediations[0].expression,
+    "${{ vault.get('my-vault', 'apiKey') }}",
+  );
+});
+
+Deno.test("buildSensitiveArgRemediations: honors vaultName/vaultKey metadata overrides", () => {
+  const schema = z.object({
+    apiKey: z.string().meta({
+      sensitive: true,
+      vaultName: "prod-creds",
+      vaultKey: "stripe-key",
+    }),
+  });
+
+  const remediations = buildSensitiveArgRemediations(["apiKey"], schema);
+
+  assertEquals(remediations[0].vaultName, "prod-creds");
+  assertEquals(remediations[0].vaultKey, "stripe-key");
+  assertEquals(
+    remediations[0].expression,
+    "${{ vault.get('prod-creds', 'stripe-key') }}",
+  );
+});
+
+Deno.test("buildSensitiveArgRemediations: never contains the secret value", () => {
+  const schema = z.object({
+    apiKey: z.string().meta({ sensitive: true }),
+  });
+
+  const remediations = buildSensitiveArgRemediations(["apiKey"], schema);
+
+  // The builder only ever receives field paths, never values — assert the
+  // rendered guidance carries no secret material.
+  const serialized = JSON.stringify(remediations);
+  assertEquals(serialized.includes("SUPERSECRET"), false);
+  assertStringIncludes(remediations[0].expression, "vault.get");
+});
+
+Deno.test("buildSensitiveArgRemediations: falls back to my-vault without a schema", () => {
+  const remediations = buildSensitiveArgRemediations(["apiKey"]);
+
+  assertEquals(remediations[0].vaultName, "my-vault");
+  assertEquals(remediations[0].vaultKey, "apiKey");
 });

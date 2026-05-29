@@ -22,6 +22,7 @@ import { groupCommandAction } from "../group_action.ts";
 import { doctorAuditCommand } from "./doctor_audit.ts";
 import { doctorExtensionsCommand } from "./doctor_extensions.ts";
 import { doctorInstallCommand } from "./doctor_install.ts";
+import { doctorSecretsCommand } from "./doctor_secrets.ts";
 import { doctorWorkflowsCommand } from "./doctor_workflows.ts";
 
 export const doctorCommand = new Command()
@@ -48,6 +49,10 @@ export const doctorCommand = new Command()
     "Check that workflow YAML files load cleanly",
     "swamp doctor workflows",
   )
+  .example(
+    "Scan for cleartext sensitive global arguments",
+    "swamp doctor secrets",
+  )
   // `--repo-dir` is accepted on the top-level command for consistency
   // with subcommands and other repo-scoped commands. The top-level
   // action only shows help; subcommands consume the option.
@@ -59,4 +64,5 @@ export const doctorCommand = new Command()
   .command("audit", doctorAuditCommand)
   .command("extensions", doctorExtensionsCommand)
   .command("install", doctorInstallCommand)
+  .command("secrets", doctorSecretsCommand)
   .command("workflows", doctorWorkflowsCommand);
