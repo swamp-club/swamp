@@ -44,7 +44,10 @@ import type { DefinitionId } from "../../domain/definitions/definition.ts";
 import { resolveModelType } from "../../domain/extensions/extension_auto_resolver.ts";
 import { getAutoResolver } from "../auto_resolver_context.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
-import { consumeStream } from "../../libswamp/mod.ts";
+import {
+  consumeStream,
+  mapWorkflowExecutionEvent,
+} from "../../libswamp/mod.ts";
 import type { WorkflowRunEvent } from "../../libswamp/mod.ts";
 import { GIT_SHA } from "./version.ts";
 
@@ -178,7 +181,7 @@ export const workflowResumeCommand = new Command()
             swampSha: GIT_SHA,
           })
         ) {
-          yield event as WorkflowRunEvent;
+          yield mapWorkflowExecutionEvent(event, runRepo);
         }
       }
 

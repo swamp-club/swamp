@@ -63,6 +63,7 @@ export {
 export {
   extractStepArtifacts,
   inputValidationFailed,
+  mapWorkflowExecutionEvent,
   toRunData,
   workflowExecutionFailed,
   workflowNotFound,

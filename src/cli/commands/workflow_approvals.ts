@@ -24,6 +24,7 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoUnlocked } from "../repo_context.ts";
+import { evaluateApprovalTimeout } from "../../domain/workflows/approval_timeout.ts";
 import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
 import { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
 
@@ -76,6 +77,17 @@ export const workflowApprovalsCommand = new Command()
         const taskData = workflow.jobs
           .find((j) => j.name === waiting.jobName)?.steps
           .find((s) => s.name === waiting.stepName)?.task.data;
+
+        // A run whose approval deadline has lapsed is no longer actionable —
+        // `swamp workflow approve` would reject it — so apply the same
+        // deadline check here and drop expired entries from the listing.
+        const timeout = evaluateApprovalTimeout(
+          step?.startedAt,
+          taskData,
+          new Date(),
+        );
+        if (timeout?.expired) continue;
+
         const prompt = taskData && taskData.type === "manual_approval"
           ? taskData.prompt
           : undefined;

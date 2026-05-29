@@ -372,11 +372,16 @@ export function toRunData(
 
 /**
  * Maps a domain WorkflowExecutionEvent to a libswamp WorkflowRunEvent.
+ *
+ * Shared by the `run` and `resume` paths so both emit the identical
+ * `WorkflowRunView` envelope — in particular, the canonical un-prefixed
+ * `status`/`startedAt`/`jobs` keys rather than the `WorkflowRun` class's
+ * private `_status` fields leaking through `JSON.stringify`.
  */
-function mapEvent(
+export function mapWorkflowExecutionEvent(
   event: WorkflowExecutionEvent,
-  deps: WorkflowRunDeps,
-  input: WorkflowRunInput,
+  runRepo: WorkflowRunRepository,
+  verbose?: boolean,
 ): WorkflowRunEvent {
   switch (event.kind) {
     case "started":
@@ -392,19 +397,19 @@ function mapEvent(
         })),
       };
     case "completed": {
-      const path = deps.runRepo.getPath(
+      const path = runRepo.getPath(
         createWorkflowId(event.run.workflowId),
         createWorkflowRunId(event.run.id),
       );
-      const data = toRunData(event.run, path, input.verbose);
+      const data = toRunData(event.run, path, verbose);
       return { kind: "completed", run: data };
     }
     case "suspended": {
-      const path = deps.runRepo.getPath(
+      const path = runRepo.getPath(
         createWorkflowId(event.run.workflowId),
         createWorkflowRunId(event.run.id),
       );
-      const data = toRunData(event.run, path, input.verbose);
+      const data = toRunData(event.run, path, verbose);
       return {
         kind: "suspended",
         run: data,
@@ -557,7 +562,11 @@ export async function* workflowRun(
             });
           }
 
-          let mapped = mapEvent(event, deps, resolvedInput);
+          let mapped = mapWorkflowExecutionEvent(
+            event,
+            deps.runRepo,
+            resolvedInput.verbose,
+          );
 
           // Per-method telemetry observer — runs alongside existing
           // event handling. Skipped when telemetry is disabled.
