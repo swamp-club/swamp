@@ -43,12 +43,20 @@ export class DefaultDatastorePathResolver implements DatastorePathResolver {
   private readonly datastoreSubdirs: ReadonlySet<string>;
   private readonly compiledExclude: ReturnType<typeof compilePatterns>;
   private readonly datastoreBasePath: string;
+  /**
+   * Giga-swamp namespace slug. When non-empty, it is prepended as the
+   * outermost segment of every datastore-tier path so repos sharing a
+   * datastore land their data under `{datastore}/{namespace}/...`. Empty
+   * string is solo mode: paths are byte-identical to a non-namespaced repo.
+   */
+  private readonly namespace: string;
 
   constructor(repoDir: string, datastoreConfig: DatastoreConfig) {
     this.repoDir = repoDir;
     this.datastoreConfig = datastoreConfig;
     this.datastoreSubdirs = new Set(getDatastoreDirectories(datastoreConfig));
     this.compiledExclude = compilePatterns(datastoreConfig.exclude ?? []);
+    this.namespace = datastoreConfig.namespace ?? "";
 
     // Determine the base path for the datastore
     if (isCustomDatastoreConfig(datastoreConfig)) {
@@ -68,6 +76,14 @@ export class DefaultDatastorePathResolver implements DatastorePathResolver {
   }
 
   datastorePath(...segments: string[]): string {
+    // Giga-swamp: the namespace is the OUTERMOST segment of the datastore
+    // tier — `{base}/{namespace}/data/...`, never `{base}/data/{namespace}/`.
+    // Solo mode (empty namespace) produces byte-identical paths to before.
+    // Built with `join` so an empty namespace can never slip a stray
+    // separator into the result.
+    if (this.namespace.length > 0) {
+      return join(this.datastoreBasePath, this.namespace, ...segments);
+    }
     return join(this.datastoreBasePath, ...segments);
   }
 

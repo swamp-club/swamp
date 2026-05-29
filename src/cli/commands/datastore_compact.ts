@@ -31,12 +31,10 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
-import { createCatalogStore } from "../../infrastructure/persistence/repository_factory.ts";
 import {
-  SWAMP_SUBDIRS,
-  swampPath,
-} from "../../infrastructure/persistence/paths.ts";
-import { join } from "@std/path";
+  catalogDbPath,
+  createCatalogStore,
+} from "../../infrastructure/persistence/repository_factory.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -70,16 +68,16 @@ export const datastoreCompactCommand = new Command()
     });
 
     const catalogStore = createCatalogStore(repoDir, datastoreResolver);
-    const dataBaseDir = datastoreResolver?.resolvePath(SWAMP_SUBDIRS.data) ??
-      swampPath(repoDir, SWAMP_SUBDIRS.data);
-    const catalogDbPath = join(dataBaseDir, "_catalog.db");
+    // Use the centralized catalog-path helper — the catalog is repo-local and
+    // its location must match createCatalogStore exactly, never be recomputed.
+    const dbPath = catalogDbPath(repoDir, datastoreResolver);
 
     const deps: DatastoreCompactDeps = {
       checkpoint: () => catalogStore.checkpoint(),
       vacuum: () => catalogStore.vacuum(),
       catalogDbSize: async () => {
         try {
-          const stat = await Deno.stat(catalogDbPath);
+          const stat = await Deno.stat(dbPath);
           return stat.size;
         } catch {
           return 0;

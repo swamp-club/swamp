@@ -167,6 +167,7 @@ export const workflowResumeCommand = new Command()
         repoContext.catalogStore,
         directResolver,
         repoContext.markDirty,
+        repoContext.unifiedDataRepo.namespace,
       );
 
       const renderer = createWorkflowRunRenderer(cliCtx.outputMode, {

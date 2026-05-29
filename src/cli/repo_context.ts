@@ -61,6 +61,7 @@ import { swampPath } from "../infrastructure/persistence/paths.ts";
 import {
   type DistributedLock,
   type LockInfo,
+  type LockOptions,
   LockTimeoutError,
 } from "../domain/datastore/distributed_lock.ts";
 import {
@@ -485,7 +486,10 @@ export function requireInitializedRepo(
     // Verify datastore is accessible
     if (isCustomDatastoreConfig(datastoreConfig)) {
       const provider = await resolveCustomProvider(datastoreConfig);
-      const lock = provider.createLock(datastoreConfig.datastorePath);
+      const lock = provider.createLock(
+        datastoreConfig.datastorePath,
+        datastoreGlobalLockOptions(datastoreConfig),
+      );
 
       // If the custom provider supports sync, register sync service too
       syncService = datastoreConfig.cachePath
@@ -553,7 +557,10 @@ export function requireInitializedRepo(
       // first drain may have acquired a per-model lock between the drain
       // ending and this acquisition, so its in-flight write would still
       // race our structural work.
-      const lock = new FileLock(datastoreConfig.path);
+      const lock = new FileLock(
+        datastoreConfig.path,
+        datastoreGlobalLockOptions(datastoreConfig),
+      );
       await registerDatastoreSync({ lock });
 
       // Second drain: with the global lock now held, wait for any such
@@ -954,8 +961,15 @@ export async function acquireModelLocks(
 
   // Wait for global lock to be released (if held by a structural command).
   // Use the cached provider for custom types so all locks share the same instance.
+  // The inspected key MUST match the namespaced key the structural command
+  // acquires (datastoreGlobalLockOptions), or the symmetric drain silently
+  // coordinates against the wrong lock. createDatastoreLock applies the same
+  // options for the filesystem branch.
   const globalLock = customProvider && isCustomDatastoreConfig(config)
-    ? customProvider.createLock(config.datastorePath)
+    ? customProvider.createLock(
+      config.datastorePath,
+      datastoreGlobalLockOptions(config),
+    )
     : await createDatastoreLock(config);
   const globalInfo = await globalLock.inspect();
   if (globalInfo) {
@@ -986,7 +1000,7 @@ export async function acquireModelLocks(
       const globalElapsed = Date.now() - globalWaitStart;
       if (globalElapsed >= globalMaxWaitMs) {
         throw new LockTimeoutError(
-          ".datastore.lock",
+          datastoreGlobalLockOptions(config)?.lockKey ?? ".datastore.lock",
           info,
           globalElapsed,
         );
@@ -1066,7 +1080,7 @@ export async function acquireModelLocks(
         const retryElapsed = Date.now() - retryWaitStart;
         if (retryElapsed >= retryMaxWaitMs) {
           throw new LockTimeoutError(
-            ".datastore.lock",
+            datastoreGlobalLockOptions(config)?.lockKey ?? ".datastore.lock",
             info,
             retryElapsed,
           );
@@ -1116,7 +1130,10 @@ export async function acquireModelLocks(
       if (
         customSyncService && customProvider && isCustomDatastoreConfig(config)
       ) {
-        const pushLock = customProvider.createLock(config.datastorePath);
+        const pushLock = customProvider.createLock(
+          config.datastorePath,
+          datastoreGlobalLockOptions(config),
+        );
         try {
           await pushLock.acquire();
           logger.info`Pushing changes to datastore...`;
@@ -1164,6 +1181,33 @@ export async function acquireModelLocks(
 }
 
 /**
+ * Lock options selecting the global datastore lock for a config's namespace
+ * (giga-swamp Phase 3).
+ *
+ * Solo mode (no namespace) returns `undefined`, so the lock falls back to the
+ * single shared `.datastore.lock` — byte-identical to before. When a namespace
+ * is configured, the global lock moves to `.locks/{namespace}.lock` so repos
+ * sharing a datastore never contend on structural commands. This is a PATH
+ * change only: the lock lifecycle (symmetric drain, TOCTOU rechecks) is
+ * unchanged. `FileLock` lazily creates the `.locks/` directory on first
+ * acquire via `ensureDir(dirname(lockPath))`.
+ *
+ * Every construction of the GLOBAL datastore lock — the structural-command
+ * acquire, the `acquireModelLocks` drain-coordination inspect, the per-model
+ * flush push lock, and the breakglass status/release commands — must pass
+ * these options so they all agree on the same namespaced key. A mismatch
+ * would make the symmetric drain silently inspect a different lock than the
+ * one held.
+ */
+export function datastoreGlobalLockOptions(
+  config: DatastoreConfig,
+): LockOptions | undefined {
+  const namespace = config.namespace ?? "";
+  if (namespace.length === 0) return undefined;
+  return { lockKey: `.locks/${namespace}.lock` };
+}
+
+/**
  * Creates the appropriate distributed lock for a datastore configuration.
  *
  * Used by the lock breakglass commands to inspect/release locks without
@@ -1172,9 +1216,10 @@ export async function acquireModelLocks(
 export async function createDatastoreLock(
   config: DatastoreConfig,
 ): Promise<DistributedLock> {
+  const options = datastoreGlobalLockOptions(config);
   if (isCustomDatastoreConfig(config)) {
     const provider = await resolveCustomProvider(config);
-    return provider.createLock(config.datastorePath);
+    return provider.createLock(config.datastorePath, options);
   }
-  return new FileLock(config.path);
+  return new FileLock(config.path, options);
 }

@@ -375,6 +375,7 @@ export const workflowRunCommand = new Command()
             catalogStore,
             directResolver,
             repoContext.markDirty,
+            repoContext.unifiedDataRepo.namespace,
           );
         },
         catalogStore: repoContext.catalogStore,

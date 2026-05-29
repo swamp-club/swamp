@@ -29,6 +29,7 @@ import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import {
   acquireModelLocks,
   createModelLock,
+  datastoreGlobalLockOptions,
   requireInitializedRepo,
   requireInitializedRepoReadOnly,
   requireInitializedRepoUnlocked,
@@ -37,7 +38,10 @@ import {
   waitForPerModelLocks,
 } from "./repo_context.ts";
 import { flushDatastoreSync } from "../infrastructure/persistence/datastore_sync_coordinator.ts";
-import { isCustomDatastoreConfig } from "../domain/datastore/datastore_config.ts";
+import {
+  type DatastoreConfig,
+  isCustomDatastoreConfig,
+} from "../domain/datastore/datastore_config.ts";
 import { RepoPath } from "../domain/repo/repo_path.ts";
 import { RepoService } from "../domain/repo/repo_service.ts";
 import { UserError } from "../domain/errors.ts";
@@ -1552,5 +1556,42 @@ Deno.test("acquireModelLocks - scopedSync deduplicates models in context", async
     );
 
     await lockResult.flush();
+  });
+});
+
+// ── Giga-swamp per-namespace global lock (Phase 3) ──────────────────────────
+
+Deno.test("datastoreGlobalLockOptions: solo mode falls back to the single .datastore.lock", () => {
+  const solo: DatastoreConfig = { type: "filesystem", path: "/ds" };
+  const explicitEmpty: DatastoreConfig = {
+    type: "filesystem",
+    path: "/ds",
+    namespace: "",
+  };
+  // undefined → FileLock uses the default `.datastore.lock` key.
+  assertEquals(datastoreGlobalLockOptions(solo), undefined);
+  assertEquals(datastoreGlobalLockOptions(explicitEmpty), undefined);
+});
+
+Deno.test("datastoreGlobalLockOptions: namespaced repo uses .locks/{namespace}.lock", () => {
+  const config: DatastoreConfig = {
+    type: "filesystem",
+    path: "/ds",
+    namespace: "infra",
+  };
+  assertEquals(datastoreGlobalLockOptions(config), {
+    lockKey: ".locks/infra.lock",
+  });
+});
+
+Deno.test("datastoreGlobalLockOptions: applies to custom datastores too", () => {
+  const config: DatastoreConfig = {
+    type: "s3",
+    config: { bucket: "b" },
+    datastorePath: "/cache",
+    namespace: "security",
+  };
+  assertEquals(datastoreGlobalLockOptions(config), {
+    lockKey: ".locks/security.lock",
   });
 });

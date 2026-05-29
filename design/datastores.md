@@ -217,6 +217,29 @@ extension datastores (e.g., S3), this returns `{datastorePath}/{subdir}/...`
 (typically the local cache path). The `DefaultDatastorePathResolver`
 pre-compiles exclude patterns at construction time.
 
+### Namespace prefixing (giga-swamp)
+
+When a `namespace` is configured (giga-swamp multi-repo shared datastores), the
+resolver prepends it as the **outermost** segment of the datastore tier:
+`{base}/{namespace}/{subdir}/...` — never `{base}/{subdir}/{namespace}/...`.
+This is applied at the single `datastorePath()` chokepoint, so it covers every
+datastore-tier subdir uniformly. Solo mode (empty namespace) produces
+byte-identical paths to a non-namespaced repo — no prefix, no stray separator.
+The local tier (`localPath`, `.swamp/`) is never namespaced.
+
+Two things are deliberately **not** namespaced:
+
+- **The `_catalog.db` catalog** is repo-local at `{repoDir}/.swamp/data/`,
+  resolved via the centralized `catalogDbPath` helper (not `resolvePath`).
+  Under a shared datastore each repo owns a private catalog, so per-repo
+  full-replace backfill never clobbers another repo's rows; the catalog's
+  `namespace` column distinguishes own rows from foreign rows pulled in a later
+  phase.
+- **Secrets and vault bundles** are written through `swampPath`/`localPath`
+  (`.swamp/secrets`, `.swamp/vault-bundles`), never through `resolvePath`, so
+  the namespace prefix cannot reach them — vaults stay repo-local by
+  construction.
+
 ## Remote Datastore Sync
 
 When a remote datastore (e.g., S3 via `@swamp/s3-datastore`) is configured,
@@ -606,9 +629,33 @@ atomic lock acquisition with background heartbeat.
 ### FileLock
 
 Uses advisory lockfiles (`Deno.open({ createNew: true })`) for atomic
-check-and-create. The lockfile is at `{datastorePath}/.datastore.lock`. A
-background heartbeat rewrites the lockfile content with a fresh timestamp.
-Stale locks (where `acquiredAt + ttlMs < now`) are removed and retried.
+check-and-create. The lockfile is at `{datastorePath}/.datastore.lock` in solo
+mode. A background heartbeat rewrites the lockfile content with a fresh
+timestamp. Stale locks (where `acquiredAt + ttlMs < now`) are removed and
+retried.
+
+When a `namespace` is configured, the **global** lock key moves to
+`{datastorePath}/.locks/{namespace}.lock` (`datastoreGlobalLockOptions`), so two
+repos writing to different namespaces of a shared datastore never contend on
+structural commands. `FileLock` lazily creates the `.locks/` directory on first
+acquire. This is a lock-**path** change only — the lifecycle protocol below is
+unchanged. Per-model lock keys (`data/{type}/{modelId}/.lock`) are **not**
+namespaced: model ids are UUIDs, so they are already globally unique across
+namespaces.
+
+Known cosmetic consequence of leaving per-model lock keys un-namespaced: in a
+namespaced repo the lock lives at `{datastore}/data/{type}/{modelId}/.lock`
+(un-namespaced tier) while the data it guards lives at
+`{datastore}/{namespace}/data/{type}/{modelId}/...`. Because `FileLock.acquire`
+runs `ensureDir(dirname(lockPath))`, acquiring the lock leaves an **empty**
+`{datastore}/data/{type}/{modelId}/` directory behind in the un-namespaced
+tier after release. This is harmless — no data, no catalog rows, and `data
+list`/`data query` (which read the repo-local catalog) are unaffected; the
+empty dirs are never confused with data because they contain no `raw`/metadata.
+Co-locating the lock with the namespaced data would require namespace-scoping
+`parseModelLockKey`/`scanModelLocks`/`waitForPerModelLocks` (which anchor on
+`data` as the first path segment), so it is deferred to the per-model lock
+namespacing work rather than expanding this phase's scope for a cosmetic issue.
 
 ### Lock Lifecycle
 
@@ -621,10 +668,23 @@ lifecycle as a global singleton:
 Per-model commands (`model method run`, `workflow run`) acquire only
 per-model locks via `acquireModelLocks`; they do not acquire the global
 lock but do `inspect()` it to wait out any in-flight structural command.
-When a stale global lock is observed during this wait, `acquireModelLocks`
-calls `forceRelease(expectedNonce)` to clear it — without this, the
-post-acquire TOCTOU re-check would re-detect the same stale lock on every
-iteration and recurse indefinitely.
+The `inspect()` must target the **same** namespaced global-lock key the
+structural command acquires (`datastoreGlobalLockOptions`); otherwise the
+drain coordination would inspect a different lock than the one held and
+silently become a no-op in namespaced mode. When a stale global lock is
+observed during this wait, `acquireModelLocks` calls
+`forceRelease(expectedNonce)` to clear it — without this, the post-acquire
+TOCTOU re-check would re-detect the same stale lock on every iteration and
+recurse indefinitely.
+
+Because per-model lock keys are not namespaced, `waitForPerModelLocks`
+(which walks the datastore root) drains in-flight per-model writers across
+**all** namespaces, not just the structural command's own. This is a
+conservative over-wait, not a correctness issue: data dirs are
+namespace-partitioned, catalogs are repo-local, and global locks are
+namespaced, so there is no shared mutable state for a cross-namespace writer
+to corrupt. Structural commands are infrequent; namespacing per-model locks
+can be revisited if real contention appears.
 
 #### Symmetric Drain (structural commands)
 

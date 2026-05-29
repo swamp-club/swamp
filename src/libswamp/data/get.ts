@@ -30,7 +30,10 @@ import {
   SWAMP_SUBDIRS,
   toRelativePath,
 } from "../../infrastructure/persistence/paths.ts";
-import { createCatalogStore } from "../../infrastructure/persistence/repository_factory.ts";
+import {
+  createCatalogStore,
+  namespaceFromResolver,
+} from "../../infrastructure/persistence/repository_factory.ts";
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
@@ -180,6 +183,9 @@ export function createDataGetDeps(
     repoDir,
     dsPath(SWAMP_SUBDIRS.data),
     createCatalogStore(repoDir, datastoreResolver),
+    undefined,
+    undefined,
+    namespaceFromResolver(datastoreResolver),
   );
   const workflowRepo = new YamlWorkflowRepository(repoDir);
   const runRepo = new YamlWorkflowRunRepository(

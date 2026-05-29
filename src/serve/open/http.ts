@@ -1611,6 +1611,7 @@ async function handleWorkflowRun(
         catalogStore,
         undefined,
         deps.repoContext.markDirty,
+        deps.repoContext.unifiedDataRepo.namespace,
       ),
     catalogStore: deps.repoContext.catalogStore,
     dataRepo: deps.repoContext.unifiedDataRepo,
