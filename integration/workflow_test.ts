@@ -2063,10 +2063,11 @@ Deno.test("CLI: workflow resume --input merges override inputs into the resumed 
       Deno.cwd(),
     );
     assertEquals(dataResult.code, 0, dataResult.stderr);
-    assertStringIncludes(
-      JSON.parse(dataResult.stdout).content as string,
-      "RESOLVED region=us-west authKey=tskey-abc123",
-    );
+    // Assert the resolved values individually — `echo` separates tokens with
+    // newlines rather than spaces on Windows, so don't match the whole line.
+    const hardenOutput = JSON.parse(dataResult.stdout).content as string;
+    assertStringIncludes(hardenOutput, "region=us-west");
+    assertStringIncludes(hardenOutput, "authKey=tskey-abc123");
 
     // The run record's audit fields record the resume input KEY NAMES, never
     // the values. (The resolved step command may legitimately contain the
