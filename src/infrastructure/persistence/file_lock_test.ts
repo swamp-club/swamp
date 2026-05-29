@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertRejects } from "@std/assert";
+import { join } from "@std/path";
 import { FileLock } from "./file_lock.ts";
 import type { LockInfo } from "../../domain/datastore/distributed_lock.ts";
 import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
@@ -272,5 +273,53 @@ Deno.test("FileLock - custom lock key", async () => {
     assertEquals(stat.isFile, true);
 
     await lock.release();
+  });
+});
+
+Deno.test("FileLock - namespaced lock key lazily creates the .locks directory", async () => {
+  await withTempDir(async (dir) => {
+    // Giga-swamp per-namespace global lock key: `.locks/{namespace}.lock`.
+    const lock = new FileLock(dir, {
+      lockKey: ".locks/infra.lock",
+      ttlMs: 5000,
+    });
+
+    // The `.locks` directory must NOT exist before acquisition.
+    await assertRejects(() => Deno.stat(join(dir, ".locks")));
+
+    await lock.acquire();
+
+    // Acquiring lazily creates `.locks/` and the namespaced lock file.
+    const dirStat = await Deno.stat(join(dir, ".locks"));
+    assertEquals(dirStat.isDirectory, true);
+    const fileStat = await Deno.stat(join(dir, ".locks", "infra.lock"));
+    assertEquals(fileStat.isFile, true);
+
+    await lock.release();
+  });
+});
+
+Deno.test("FileLock - different namespaces acquire their locks concurrently", async () => {
+  await withTempDir(async (dir) => {
+    // Two repos sharing a datastore but in different namespaces must not
+    // contend on the global lock.
+    const infra = new FileLock(dir, {
+      lockKey: ".locks/infra.lock",
+      ttlMs: 5000,
+    });
+    const security = new FileLock(dir, {
+      lockKey: ".locks/security.lock",
+      ttlMs: 5000,
+    });
+
+    await infra.acquire();
+    // Acquiring the other namespace's lock must not block on infra's lock.
+    await security.acquire();
+
+    assertEquals((await infra.inspect()) !== null, true);
+    assertEquals((await security.inspect()) !== null, true);
+
+    await infra.release();
+    await security.release();
   });
 });

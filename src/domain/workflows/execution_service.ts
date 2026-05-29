@@ -53,6 +53,7 @@ import { YamlEvaluatedDefinitionRepository } from "../../infrastructure/persiste
 import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistence/yaml_evaluated_workflow_repository.ts";
 import { YamlOutputRepository } from "../../infrastructure/persistence/yaml_output_repository.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
+import { type Namespace, SOLO_NAMESPACE } from "../data/namespace.ts";
 import type { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
 import type { MarkDirtyHook } from "../datastore/datastore_sync_service.ts";
 import { DataQueryService } from "../data/data_query_service.ts";
@@ -200,6 +201,12 @@ export interface StepExecutionContext {
   dataBaseDir?: string;
   /** Catalog store for write-through indexing */
   catalogStore: CatalogStore;
+  /**
+   * Giga-swamp namespace stamped on data this step writes. Defaults to
+   * SOLO_NAMESPACE when unset, keeping the catalog stamp in lockstep with the
+   * namespaced data path.
+   */
+  namespace?: Namespace;
 }
 
 /**
@@ -296,6 +303,7 @@ export class DefaultStepExecutor implements StepExecutor {
       dataBaseDir?: string;
       catalogStore: CatalogStore;
       markDirty?: MarkDirtyHook;
+      namespace?: Namespace;
     },
   ): Promise<DefaultStepExecutor> {
     return new DefaultStepExecutor(
@@ -316,6 +324,7 @@ export class DefaultStepExecutor implements StepExecutor {
       dataBaseDir: ctx.dataBaseDir,
       catalogStore: ctx.catalogStore,
       markDirty: this.markDirty,
+      namespace: ctx.namespace,
     });
     if (this._directTypeResolver) {
       deps.directTypeResolver = this._directTypeResolver;
@@ -329,6 +338,7 @@ export class DefaultStepExecutor implements StepExecutor {
       dataBaseDir?: string;
       catalogStore: CatalogStore;
       markDirty?: MarkDirtyHook;
+      namespace?: Namespace;
     },
   ): Promise<StepExecutorDeps> {
     const definitionRepo = new YamlDefinitionRepository(repoDir);
@@ -337,6 +347,8 @@ export class DefaultStepExecutor implements StepExecutor {
       opts.dataBaseDir,
       opts.catalogStore,
       opts.markDirty,
+      undefined,
+      opts.namespace ?? SOLO_NAMESPACE,
     );
     const dataQueryService = new DataQueryService(
       opts.catalogStore,
@@ -1279,6 +1291,7 @@ export class WorkflowExecutionService {
     catalogStore: CatalogStore,
     private readonly directTypeResolver?: DirectTypeResolver,
     private readonly markDirty?: MarkDirtyHook,
+    private readonly namespace: Namespace = SOLO_NAMESPACE,
   ) {
     this.executor = executor ??
       new DefaultStepExecutor(undefined, directTypeResolver, markDirty);
@@ -1295,6 +1308,8 @@ export class WorkflowExecutionService {
       dataBaseDir,
       catalogStore,
       markDirty,
+      undefined,
+      namespace,
     );
     const dataQueryService = new DataQueryService(catalogStore, this.dataRepo);
     this.modelResolver = new ModelResolver(this.definitionRepo, {
@@ -2292,6 +2307,7 @@ export class WorkflowExecutionService {
           skipAllChecks: options.skipAllChecks,
           dataBaseDir: this.dataBaseDir,
           catalogStore: this.catalogStore,
+          namespace: this.namespace,
         };
         return this.executor.execute(step, ctx);
       });
@@ -2520,6 +2536,7 @@ export class WorkflowExecutionService {
       this.catalogStore,
       undefined,
       this.markDirty,
+      this.namespace,
     );
 
     let childRun: WorkflowRun | undefined;

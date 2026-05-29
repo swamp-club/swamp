@@ -83,6 +83,52 @@ import { join } from "@std/path";
 // =============================================================================
 
 /**
+ * Resolves the on-disk path of the `_catalog.db` SQLite read-model.
+ *
+ * The catalog is **repo-local**: it always lives under the repo's own
+ * `.swamp/data/` directory, never in the (possibly shared, possibly
+ * namespaced) datastore tier. Under giga-swamp, multiple repos can share a
+ * single datastore; a per-repo catalog lets each one own a private index
+ * instead of clobbering the others' rows via full-replace backfill. The
+ * resolver's `localPath` is never namespace-prefixed, so this is identical
+ * across solo and namespaced repos.
+ *
+ * This is the single source of truth for the catalog path — callers that need
+ * the path (e.g. `datastore compact`) must use this helper rather than
+ * recomputing it, so the location can never silently drift.
+ *
+ * @param repoDir - The repository directory path
+ * @param datastoreResolver - Optional datastore path resolver
+ * @returns The absolute path to `_catalog.db`
+ */
+export function catalogDbPath(
+  repoDir: string,
+  datastoreResolver?: DatastorePathResolver,
+): string {
+  const dataBaseDir = datastoreResolver?.localPath(SWAMP_SUBDIRS.data) ??
+    swampPath(repoDir, SWAMP_SUBDIRS.data);
+  return join(dataBaseDir, "_catalog.db");
+}
+
+/**
+ * Derives the giga-swamp {@link Namespace} value from a datastore path
+ * resolver's config.
+ *
+ * Construction sites that build a {@link FileSystemUnifiedDataRepository}
+ * directly (outside {@link createRepositoryContext}) use this so the catalog
+ * namespace stamp stays in lockstep with the namespaced data path the same
+ * resolver produces. Returns {@link SOLO_NAMESPACE} when no namespace is
+ * configured. Centralizing the derivation keeps the ~13 direct sites from
+ * drifting into a split-brain (namespaced path, solo stamp, or vice versa).
+ */
+export function namespaceFromResolver(
+  datastoreResolver?: DatastorePathResolver,
+): Namespace {
+  const slug = datastoreResolver?.config().namespace ?? "";
+  return slug.length > 0 ? createNamespace(slug) : SOLO_NAMESPACE;
+}
+
+/**
  * Creates a CatalogStore for the given repository.
  *
  * Centralizes the three-step pattern: resolve data base dir, build DB path,
@@ -97,10 +143,7 @@ export function createCatalogStore(
   repoDir: string,
   datastoreResolver?: DatastorePathResolver,
 ): CatalogStore {
-  const dataBaseDir = datastoreResolver?.resolvePath(SWAMP_SUBDIRS.data) ??
-    swampPath(repoDir, SWAMP_SUBDIRS.data);
-  const catalogDbPath = join(dataBaseDir, "_catalog.db");
-  return new CatalogStore(catalogDbPath);
+  return new CatalogStore(catalogDbPath(repoDir, datastoreResolver));
 }
 
 // =============================================================================

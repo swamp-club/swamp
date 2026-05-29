@@ -254,3 +254,92 @@ Deno.test("DefaultDatastorePathResolver - filesystem datastore resolves bundles 
     "/repo/.swamp/bundles/2e4ea9ae/aws/logs.js",
   );
 });
+
+// ── Giga-swamp namespace prefixing (Phase 3) ────────────────────────────────
+
+Deno.test("DefaultDatastorePathResolver - namespace prepends as outermost datastore segment", () => {
+  const config: DatastoreConfig = {
+    type: "filesystem",
+    path: "/data/store",
+    namespace: "infra",
+  };
+  const resolver = new DefaultDatastorePathResolver("/repo", config);
+  // {base}/{namespace}/data/... — NOT {base}/data/{namespace}/...
+  assertPathEquals(
+    resolver.datastorePath("data", "aws/ec2/vpc"),
+    "/data/store/infra/data/aws/ec2/vpc",
+  );
+  assertPathEquals(
+    resolver.resolvePath("data", "aws/ec2/vpc"),
+    "/data/store/infra/data/aws/ec2/vpc",
+  );
+});
+
+Deno.test("DefaultDatastorePathResolver - empty namespace is byte-identical to solo mode", () => {
+  const solo: DatastoreConfig = { type: "filesystem", path: "/data/store" };
+  const explicit: DatastoreConfig = {
+    type: "filesystem",
+    path: "/data/store",
+    namespace: "",
+  };
+  const soloResolver = new DefaultDatastorePathResolver("/repo", solo);
+  const explicitResolver = new DefaultDatastorePathResolver("/repo", explicit);
+
+  // No prefix, no leading separator, no double slash.
+  assertPathEquals(soloResolver.datastorePath("data"), "/data/store/data");
+  assertPathEquals(explicitResolver.datastorePath("data"), "/data/store/data");
+  assertPathEquals(
+    explicitResolver.resolvePath("outputs", "run-1"),
+    "/data/store/outputs/run-1",
+  );
+});
+
+Deno.test("DefaultDatastorePathResolver - namespace never affects localPath (.swamp)", () => {
+  const config: DatastoreConfig = {
+    type: "filesystem",
+    path: "/data/store",
+    namespace: "security",
+  };
+  const resolver = new DefaultDatastorePathResolver("/repo", config);
+  // The repo-local tier is private to the repo and never namespaced.
+  assertPathEquals(
+    resolver.localPath("secrets", "vault", "key"),
+    "/repo/.swamp/secrets/vault/key",
+  );
+});
+
+Deno.test("DefaultDatastorePathResolver - namespace prefixes the custom-datastore cache tier", () => {
+  const config: DatastoreConfig = {
+    type: "s3",
+    config: { bucket: "my-bucket" },
+    datastorePath: "/home/user/.swamp/repos/abc",
+    cachePath: "/home/user/.swamp/repos/abc",
+    namespace: "platform",
+  };
+  const resolver = new DefaultDatastorePathResolver("/repo", config);
+  // Cache mirrors the namespaced remote layout so sync needs no translation.
+  assertPathEquals(
+    resolver.resolvePath("data", "result"),
+    "/home/user/.swamp/repos/abc/platform/data/result",
+  );
+});
+
+Deno.test("DefaultDatastorePathResolver - exclude patterns match the un-prefixed relative path under a namespace", () => {
+  const config: DatastoreConfig = {
+    type: "filesystem",
+    path: "/data/store",
+    namespace: "infra",
+    exclude: ["data/scratch/**"],
+  };
+  const resolver = new DefaultDatastorePathResolver("/repo", config);
+  // Excluded paths fall back to local tier (and are therefore not namespaced).
+  assertPathEquals(
+    resolver.resolvePath("data", "scratch", "tmp.json"),
+    "/repo/.swamp/data/scratch/tmp.json",
+  );
+  // Non-excluded data is namespaced in the datastore tier.
+  assertPathEquals(
+    resolver.resolvePath("data", "keep", "v.json"),
+    "/data/store/infra/data/keep/v.json",
+  );
+});

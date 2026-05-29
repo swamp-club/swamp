@@ -27,7 +27,10 @@ import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_
 import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
 import { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
 import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
-import { createCatalogStore } from "../../infrastructure/persistence/repository_factory.ts";
+import {
+  createCatalogStore,
+  namespaceFromResolver,
+} from "../../infrastructure/persistence/repository_factory.ts";
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import type { LibSwampContext } from "../context.ts";
 import { notFound, type SwampError, validationFailed } from "../errors.ts";
@@ -170,6 +173,9 @@ export function createDataListDeps(
     repoDir,
     dsPath(SWAMP_SUBDIRS.data),
     createCatalogStore(repoDir, datastoreResolver),
+    undefined,
+    undefined,
+    namespaceFromResolver(datastoreResolver),
   );
   const workflowRepo = new YamlWorkflowRepository(repoDir);
   const runRepo = new YamlWorkflowRunRepository(

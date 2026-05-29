@@ -41,7 +41,10 @@ import { YamlEvaluatedWorkflowRepository } from "../../infrastructure/persistenc
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
-import { createCatalogStore } from "../../infrastructure/persistence/repository_factory.ts";
+import {
+  createCatalogStore,
+  namespaceFromResolver,
+} from "../../infrastructure/persistence/repository_factory.ts";
 import { DataQueryService } from "../../domain/data/data_query_service.ts";
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import type { LibSwampContext } from "../context.ts";
@@ -120,6 +123,9 @@ export function createWorkflowEvaluateDeps(
     repoDir,
     dsPath(SWAMP_SUBDIRS.data),
     catalogStore,
+    undefined,
+    undefined,
+    namespaceFromResolver(datastoreResolver),
   );
   const dataQueryService = new DataQueryService(catalogStore, dataRepo);
   const evaluatedWorkflowRepo = new YamlEvaluatedWorkflowRepository(
