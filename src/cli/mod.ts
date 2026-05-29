@@ -86,6 +86,7 @@ import "../domain/datastore/datastore_types.ts";
 // Import builtin reports to trigger registration
 import "../domain/reports/builtin/mod.ts";
 import { EmbeddedDenoRuntime } from "../infrastructure/runtime/embedded_deno_runtime.ts";
+import { homeDirectoryIsSet } from "../infrastructure/persistence/paths.ts";
 import { ReconcileFromDiskService } from "../libswamp/mod.ts";
 import {
   type RepoMarkerData,
@@ -260,6 +261,31 @@ export async function configureExtensionLoaders(
   extensionsDir?: string,
 ): Promise<void> {
   const effectiveExtDir = extensionsDir ?? repoDir;
+
+  // Every extension — including already-pulled repo bundles — is loaded
+  // through an embedded runtime that lives under the user's home directory
+  // (~/.swamp). When neither HOME nor USERPROFILE is set (common for
+  // service managers like systemd that start swamp serve without HOME), that
+  // resolution throws deep inside each loader and surfaces as five
+  // misleading "Failed to load user X extensions" warnings, followed by
+  // "Unknown model type" at run time. Detect the condition once, up front,
+  // and emit a single actionable warning instead.
+  if (!homeDirectoryIsSet()) {
+    deferredWarnings.push({
+      kind: "extensions",
+      file: "",
+      error:
+        "Extension loading is unavailable: no home directory found (neither " +
+        "HOME nor USERPROFILE is set). swamp loads all extensions — including " +
+        "already-pulled repo extensions — through an embedded runtime under " +
+        "~/.swamp, which requires a home directory. If you run swamp under a " +
+        "service manager such as systemd, set HOME (or USERPROFILE) in the " +
+        "unit environment, e.g. `Environment=HOME=/root`. Until then, pulled " +
+        "and user extensions are unavailable and workflows that reference " +
+        'them fail with "Unknown model type".',
+    });
+  }
+
   const denoRuntime = new EmbeddedDenoRuntime();
   const sourceModelsDirs = collectDirsForKind(resolvedSources, "models");
   const sourceVaultsDirs = collectDirsForKind(resolvedSources, "vaults");
@@ -466,6 +492,16 @@ export interface DeferredWarning {
 }
 
 /**
+ * Detects the "neither HOME nor USERPROFILE is set" failure raised by the
+ * home-directory path helpers. Used to suppress the misleading per-kind
+ * loader warnings in favour of the single actionable warning emitted by
+ * {@link configureExtensionLoaders}.
+ */
+function isMissingHomeError(error: unknown): boolean {
+  return error instanceof Error && error.message.includes("home directory");
+}
+
+/**
  * Load user models from configured directory.
  * Uses the bundle catalog for lazy per-bundle loading when available.
  */
@@ -548,6 +584,9 @@ async function loadUserModels(
     }
   } catch (error) {
     if (error instanceof Deno.errors.NotFound) return;
+    // configureExtensionLoaders already emitted one actionable warning for
+    // the missing-home case; suppress the misleading per-kind duplicate.
+    if (isMissingHomeError(error)) return;
     logger
       .warn`Failed to load user model extensions: ${
       error instanceof Error ? error.message : String(error)
@@ -621,6 +660,7 @@ async function loadUserVaults(
     }
   } catch (error) {
     if (error instanceof Deno.errors.NotFound) return;
+    if (isMissingHomeError(error)) return;
     logger
       .warn`Failed to load user vault extensions: ${
       error instanceof Error ? error.message : String(error)
@@ -690,6 +730,7 @@ async function loadUserDrivers(
     }
   } catch (error) {
     if (error instanceof Deno.errors.NotFound) return;
+    if (isMissingHomeError(error)) return;
     logger
       .warn`Failed to load user driver extensions: ${
       error instanceof Error ? error.message : String(error)
@@ -760,6 +801,7 @@ async function loadUserDatastores(
     }
   } catch (error) {
     if (error instanceof Deno.errors.NotFound) return;
+    if (isMissingHomeError(error)) return;
     logger
       .warn`Failed to load user datastore extensions: ${
       error instanceof Error ? error.message : String(error)
@@ -829,6 +871,7 @@ async function loadUserReports(
     }
   } catch (error) {
     if (error instanceof Deno.errors.NotFound) return;
+    if (isMissingHomeError(error)) return;
     logger
       .warn`Failed to load user report extensions: ${
       error instanceof Error ? error.message : String(error)

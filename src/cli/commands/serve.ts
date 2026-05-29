@@ -43,7 +43,16 @@ const logger = getSwampLogger(["serve"]);
 
 export const serveCommand = new Command()
   .name("serve")
-  .description("Start a WebSocket API server for workflow and model execution")
+  .description(
+    "Start a WebSocket API server for workflow and model execution.\n\n" +
+      "Service deployments: swamp loads all extensions — including " +
+      "already-pulled repo extensions — through an embedded runtime under the " +
+      "user's home directory (~/.swamp). When running under a service manager " +
+      "such as systemd, ensure HOME (or USERPROFILE on Windows) is set in the " +
+      "unit environment, e.g. `Environment=HOME=/root`. Without it, scheduled " +
+      'workflow runs fail with "Unknown model type" for pulled extension ' +
+      "types.",
+  )
   .example("Start server", "swamp serve")
   .example("Custom port", "swamp serve --port 8080")
   .example(
