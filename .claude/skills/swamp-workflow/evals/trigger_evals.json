@@ -16,7 +16,7 @@
     "should_trigger": true
   },
   {
-    "query": "Create an automated job that runs the data sync every night",
+    "query": "Create a swamp workflow that runs the data-sync model every night.",
     "should_trigger": true
   },
   {
@@ -69,5 +69,20 @@
     "query": "How do I install swamp in CI to run workflows on every PR?",
     "should_trigger": false,
     "note": "CI installation → swamp-repo"
+  },
+  {
+    "query": "create a workflow to run these three steps for me",
+    "should_trigger": false,
+    "note": "Generic agent task plan, not a swamp workflow → Claude Code Workflow tool / TaskCreate"
+  },
+  {
+    "query": "schedule a recurring agent to run nightly",
+    "should_trigger": false,
+    "note": "Cron/remote-agent scheduling, not a swamp workflow → CronCreate"
+  },
+  {
+    "query": "set up a worktree workflow",
+    "should_trigger": false,
+    "note": "Worktree-based agent task, not a swamp workflow → EnterWorktree"
   }
 ]
