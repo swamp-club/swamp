@@ -99,7 +99,7 @@ import { SKILL_DIRS } from "../domain/repo/skill_dirs.ts";
 import { ExtensionAutoResolver } from "../domain/extensions/extension_auto_resolver.ts";
 import { ExtensionApiClient } from "../infrastructure/http/extension_api_client.ts";
 import type { ClientIdentity } from "../infrastructure/http/client_identity.ts";
-import { loadIdentity } from "./load_identity.ts";
+import { loadIdentity, USER_AGENT } from "./load_identity.ts";
 import { DEFAULT_SWAMP_CLUB_URL } from "../domain/auth/auth_credentials.ts";
 import { setAutoResolver } from "./auto_resolver_context.ts";
 import {
@@ -1342,7 +1342,10 @@ export async function runCli(args: string[]): Promise<void> {
         // Flush telemetry to remote endpoint with a 2-second cancellation
         // timeout. If the endpoint is slow or unreachable, data stays local
         // and will be flushed on the next invocation.
-        const sender = new HttpTelemetrySender(telemetryCtx.telemetryEndpoint);
+        const sender = new HttpTelemetrySender(
+          telemetryCtx.telemetryEndpoint,
+          USER_AGENT,
+        );
         await telemetryCtx.service.flushTelemetry({
           sender,
           distinctId: telemetryCtx.userId ?? telemetryCtx.repoId,
@@ -1470,7 +1473,10 @@ export async function runCli(args: string[]): Promise<void> {
     if (telemetryCtx && error instanceof Error) {
       await telemetryCtx.service.recordError(commandInfo, startTime, error);
 
-      const sender = new HttpTelemetrySender(telemetryCtx.telemetryEndpoint);
+      const sender = new HttpTelemetrySender(
+        telemetryCtx.telemetryEndpoint,
+        USER_AGENT,
+      );
       await telemetryCtx.service.flushTelemetry({
         sender,
         distinctId: telemetryCtx.userId ?? telemetryCtx.repoId,

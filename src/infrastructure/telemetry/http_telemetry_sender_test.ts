@@ -231,6 +231,33 @@ Deno.test("HttpTelemetrySender.sendBatch omits x-api-key header when authToken n
   await server.shutdown();
 });
 
+Deno.test("HttpTelemetrySender.sendBatch includes User-Agent header when provided", async () => {
+  let capturedUserAgent: string | null = null;
+
+  const server = Deno.serve({ port: 0 }, async (req: Request) => {
+    capturedUserAgent = req.headers.get("user-agent");
+    await req.body?.cancel();
+    return new Response(JSON.stringify({ accepted: 1 }), { status: 202 });
+  });
+
+  const port = server.addr.port;
+  const sender = new HttpTelemetrySender(
+    `http://localhost:${port}`,
+    "swamp-cli/1.2.3",
+  );
+  const entry = createTestEntry(
+    "test-uuid-1",
+    new Date("2024-03-10T10:00:00Z"),
+  );
+
+  const result = await sender.sendBatch([entry], "user-uuid-123");
+
+  assertEquals(result, true);
+  assertEquals(capturedUserAgent, "swamp-cli/1.2.3");
+
+  await server.shutdown();
+});
+
 Deno.test("HttpTelemetrySender.sendBatch lands invocationContext at properties.invocationContext", async () => {
   // Wire-shape contract: TelemetryEntry.toData() is splatted into properties
   // verbatim, so the swamp-club consumer side queries

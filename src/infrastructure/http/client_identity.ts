@@ -29,10 +29,15 @@
  *   per-device UUID lazily created by `UserIdentityRepository.getUserId()`
  *   and stored at `~/.config/swamp/identity.json`. The header name is
  *   vendor-prefixed per RFC 6648 (no `X-` prefix).
+ * - `userAgent` adds `User-Agent: <value>`. The value is
+ *   `swamp-cli/<version>`, built at the composition root from the CLI
+ *   `VERSION` constant so swamp-club can attribute traffic by client
+ *   version.
  */
 export interface ClientIdentity {
   bearerToken?: string;
   distinctId?: string;
+  userAgent?: string;
 }
 
 /**
@@ -59,6 +64,9 @@ export function mergeIdentityHeaders(
   }
   if (identity.distinctId) {
     merged.set("Swamp-Distinct-Id", identity.distinctId);
+  }
+  if (identity.userAgent) {
+    merged.set("User-Agent", identity.userAgent);
   }
   if (callerHeaders) {
     new Headers(callerHeaders).forEach((value, key) => {

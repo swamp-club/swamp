@@ -20,6 +20,10 @@
 import type { ClientIdentity } from "../infrastructure/http/client_identity.ts";
 import { AuthRepository } from "../infrastructure/persistence/auth_repository.ts";
 import { UserIdentityRepository } from "../infrastructure/persistence/user_identity_repository.ts";
+import { VERSION } from "./commands/version.ts";
+
+/** `User-Agent` sent on every swamp-club request, e.g. `swamp-cli/<version>`. */
+export const USER_AGENT = `swamp-cli/${VERSION}`;
 
 /**
  * Resolve the device/user identity to attach to outbound swamp-club
@@ -31,6 +35,10 @@ import { UserIdentityRepository } from "../infrastructure/persistence/user_ident
  * login, only distinctId) and rare "no identity at all" flows
  * (UserIdentityRepository read failed and no auth) are both supported
  * by the downstream `ClientIdentity` shape.
+ *
+ * Always sets `userAgent` (`swamp-cli/<version>`) regardless of whether
+ * the auth/device identity resolves — version attribution is independent
+ * of the file system and must survive the best-effort failure paths.
  *
  * This helper is the composition root for identity. libswamp and the
  * HTTP clients themselves never touch the file system to discover it.
@@ -54,5 +62,6 @@ export async function loadIdentity(): Promise<ClientIdentity> {
   return {
     bearerToken,
     distinctId: distinctId ?? undefined,
+    userAgent: USER_AGENT,
   };
 }
