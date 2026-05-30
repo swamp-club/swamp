@@ -814,6 +814,9 @@ This repository is managed with [swamp](https://github.com/systeminit/swamp).
 8. **Reports for reusable data pipelines.** When the task involves building a repeatable pipeline to transform, aggregate, or analyze model output (security reports, cost analysis, compliance checks, summaries), create a report extension. ${
       skillAction("swamp-report", "Use")
     } for guidance.
+9. **"Workflow" means a swamp workflow.** In this repository the word "workflow" (and "create/run/execute/validate/debug workflow", "automate", "orchestrate", "automated/nightly job") refers to a swamp workflow — a declarative YAML DAG of model-method steps authored via \`swamp workflow create\`. ${
+      skillAction("swamp-workflow", "Load and follow")
+    } for these requests. Do NOT interpret these as a request to build an agent task list, spin up worktrees, or schedule a cron/remote agent. Only use those orchestration mechanisms when the user explicitly names one (e.g. "task list", "subagent", "worktree", "cron", "remote agent") or explicitly asks you to do the work yourself step by step rather than author a swamp workflow.
 
 ## Skills
 
@@ -834,7 +837,7 @@ ${
 ${
       skillListEntry(
         "swamp-workflow",
-        "Work with workflows (creating, editing, running)",
+        'Work with swamp workflows — the default meaning of "workflow" here (see Rule 9)',
       )
     }
 ${skillListEntry("swamp-vault", "Manage secrets and credentials")}

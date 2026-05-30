@@ -7,6 +7,21 @@ Deno based CLI for doing AI Native Automation.
 When planning new features, always use the `ddd` skill to inform the
 architecture.
 
+## Workflows
+
+In this repository the word "workflow" — including "create/run/execute/validate/
+debug workflow", "automate", "orchestrate", and "automated/nightly job" — refers
+to a swamp workflow: a declarative YAML DAG of model-method steps authored via
+`swamp workflow create`. This is swamp's own first-class concept, implemented in
+this codebase, and it is the default meaning here. Load and follow the
+`swamp-workflow` skill for these requests. Do NOT interpret them as a request to
+build a Claude Code agent task list, spin up worktrees, or schedule a
+cron/remote agent. Only reach for the harness orchestration tools
+(TaskCreate/TaskList, EnterWorktree, CronCreate, RemoteTrigger) when the user
+explicitly names that mechanism (e.g. "task list", "subagent", "worktree",
+"cron", "remote agent") or explicitly asks you to do the work yourself step by
+step rather than author a swamp workflow.
+
 ## Skills
 
 Skills live in `.claude/skills/<skill-name>/`.

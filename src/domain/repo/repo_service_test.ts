@@ -449,6 +449,22 @@ Deno.test("RepoService.init generates CLAUDE.md with extension search guidance",
   });
 });
 
+Deno.test("RepoService.init generates CLAUDE.md disambiguating workflow to swamp workflow", async () => {
+  await withTempDir(async (tempDir) => {
+    const service = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+
+    await service.init(repoPath);
+
+    const claudeMdPath = join(tempDir, "CLAUDE.md");
+    const content = await Deno.readTextFile(claudeMdPath);
+
+    assertStringIncludes(content, '"Workflow" means a swamp workflow');
+    assertStringIncludes(content, "swamp workflow create");
+    assertStringIncludes(content, "do the work yourself step by step");
+  });
+});
+
 Deno.test("RepoService.init always creates .gitignore with managed section", async () => {
   await withTempDir(async (tempDir) => {
     const service = new RepoService("0.1.0");

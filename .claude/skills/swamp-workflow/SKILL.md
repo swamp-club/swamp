@@ -1,6 +1,6 @@
 ---
 name: swamp-workflow
-description: Work with swamp workflows for AI-native automation — define jobs and steps in YAML, wire models together with dependencies, validate DAGs, and inspect run history. Use when searching for workflows, creating new workflows, validating workflow definitions, running workflows, or viewing run history. Triggers on "swamp workflow", "run workflow", "create workflow", "automate", "automation", "orchestrate", "run history", "execute workflow", "workflow logs", "workflow failure", "debug workflow".
+description: Work with swamp workflows for AI-native automation — define jobs and steps in YAML, wire models together with dependencies, validate DAGs, and inspect run history. Use when searching for workflows, creating new workflows, validating workflow definitions, running workflows, or viewing run history. Triggers on "swamp workflow", "swamp workflow create", "swamp workflow run", "swamp workflow validate", "workflow YAML", "workflow DAG", "wire models together", "model_method step", "workflows/*.yaml", "swamp run history", "swamp workflow logs", "debug swamp workflow". Use ONLY for swamp's declarative YAML workflow artifacts created via swamp workflow create — NOT for the Claude Code Workflow tool, multi-step agent task lists, worktrees, or cron/scheduled agent runs.
 ---
 
 # Swamp Workflow Skill
@@ -21,6 +21,15 @@ machine-readable output.
 
 Correct flow: `swamp workflow create <name> --json` → edit the YAML → validate →
 run.
+
+## Skill boundary
+
+This skill produces a durable swamp workflow YAML under `workflows/` via
+`swamp workflow create`. It is unrelated to the Claude Code Workflow tool /
+dynamic workflows, to agent task lists (`TaskCreate`), to worktrees
+(`EnterWorktree`), or to cron/remote-agent scheduling
+(`CronCreate`/`RemoteTrigger`). If the user wants any of those, do not use this
+skill.
 
 ## Quick Reference
 
