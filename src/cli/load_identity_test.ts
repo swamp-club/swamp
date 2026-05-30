@@ -17,8 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
-import { loadIdentity } from "./load_identity.ts";
+import { assertEquals, assertStringIncludes } from "@std/assert";
+import { loadIdentity, USER_AGENT } from "./load_identity.ts";
+
+Deno.test("USER_AGENT identifies the CLI and carries the version", () => {
+  assertStringIncludes(USER_AGENT, "swamp-cli/");
+});
 
 Deno.test("loadIdentity returns empty identity when config dir is unresolvable", async () => {
   // Reproduces the Windows test-env scenario where HOME is not set
@@ -35,6 +39,9 @@ Deno.test("loadIdentity returns empty identity when config dir is unresolvable",
     const identity = await loadIdentity();
     assertEquals(identity.bearerToken, undefined);
     assertEquals(identity.distinctId, undefined);
+    // User-Agent is independent of the file system and must always be set,
+    // even when device/auth identity resolution fails.
+    assertEquals(identity.userAgent, USER_AGENT);
   } finally {
     if (homeBefore !== undefined) Deno.env.set("HOME", homeBefore);
     if (userProfileBefore !== undefined) {

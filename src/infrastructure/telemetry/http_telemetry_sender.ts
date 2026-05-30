@@ -23,9 +23,17 @@ import type { TelemetryEntry } from "../../domain/telemetry/telemetry_entry.ts";
 /**
  * HTTP adapter implementing TelemetrySender.
  * Sends telemetry events to a remote /ingest endpoint.
+ *
+ * `userAgent` (e.g. `swamp-cli/<version>`) is optional so unit tests can
+ * construct the sender without it; the composition root passes it so the
+ * telemetry endpoint can attribute traffic by client version, matching
+ * the swamp-club API clients.
  */
 export class HttpTelemetrySender implements TelemetrySender {
-  constructor(private readonly endpointUrl: string) {}
+  constructor(
+    private readonly endpointUrl: string,
+    private readonly userAgent?: string,
+  ) {}
 
   async sendBatch(
     entries: TelemetryEntry[],
@@ -51,6 +59,7 @@ export class HttpTelemetrySender implements TelemetrySender {
       const headers: Record<string, string> = {
         "Content-Type": "application/json",
         ...(authToken ? { "x-api-key": authToken } : {}),
+        ...(this.userAgent ? { "User-Agent": this.userAgent } : {}),
       };
 
       // Combine caller's signal with a hard 5-second ceiling
