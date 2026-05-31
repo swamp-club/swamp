@@ -49,7 +49,7 @@ class LogDatastoreCompactRenderer implements Renderer<DatastoreCompactEvent> {
         }
         if (e.data.vacuumSkipped) {
           logger
-            .warn`VACUUM skipped (runtime limitation) — WAL checkpoint still reclaimed space`;
+            .warn`Catalog rebuild skipped — WAL checkpoint still reclaimed space`;
         } else if (e.data.dbBytesReclaimed > 0) {
           logger
             .info`Catalog compacted: reclaimed ${e.data.dbBytesReclaimed} bytes`;

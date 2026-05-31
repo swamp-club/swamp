@@ -83,14 +83,35 @@ export interface CatalogCheckpointStats {
  */
 export const CATALOG_SCHEMA_VERSION = "4";
 
+/**
+ * A value SQLite can round-trip when copying rows generically during
+ * compaction. Mirrors node:sqlite's supported bind/output value union.
+ */
+type SqlValue = null | number | bigint | string | Uint8Array;
+
 export class CatalogStore {
-  private readonly db: DatabaseSync;
+  private db: DatabaseSync;
+  private readonly dbPath: string;
+  private closed = false;
 
   constructor(dbPath: string) {
-    ensureDirSync(dirname(dbPath));
-    this.db = new DatabaseSync(dbPath);
-    this.db.exec("PRAGMA busy_timeout=5000");
+    this.dbPath = dbPath;
+    this.db = this.openConnection(dbPath);
     this.initializeWithRetry();
+  }
+
+  /**
+   * Opens a SQLite connection at `path` and applies the baseline pragma shared
+   * by initial construction and the post-compaction reopen. WAL mode is
+   * established separately — with retry by {@link initializeWithRetry} on the
+   * constructor path, and explicitly on the reopen path in {@link vacuum} — so
+   * this helper only sets `busy_timeout`.
+   */
+  private openConnection(path: string): DatabaseSync {
+    ensureDirSync(dirname(path));
+    const db = new DatabaseSync(path);
+    db.exec("PRAGMA busy_timeout=5000");
+    return db;
   }
 
   /**
@@ -569,30 +590,162 @@ export class CatalogStore {
   }
 
   /**
-   * Runs VACUUM to rebuild the database file and reclaim freed pages.
+   * Rebuilds the database file to reclaim freed pages — a manual VACUUM.
    *
-   * Must be called outside any open transaction. Acquires an exclusive lock
-   * and rewrites the entire database file — on a large catalog this may take
-   * several seconds. Safe to call only when no other connections are active.
+   * SQLite's native `VACUUM` (and `VACUUM INTO`) cannot run under Deno's
+   * node:sqlite binding: both ATTACH a temporary database internally, but the
+   * binding hardcodes `SQLITE_LIMIT_ATTACHED` to 0, so the attach is rejected
+   * with "too many attached databases - max 0". Instead we rebuild manually:
+   * copy the schema and stream every row into a fresh single-file database via
+   * a second connection (no ATTACH), then atomically swap it into place.
    *
-   * Returns `true` if VACUUM succeeded, `false` if it was skipped due to a
-   * runtime limitation (e.g. SQLITE_LIMIT_ATTACHED=0 in the canary Deno
-   * runtime).
+   * The rows are paged by rowid in {@link ITERATE_PAGE_SIZE} batches so a large
+   * catalog is never loaded into memory at once. The rebuild transiently needs
+   * roughly twice the catalog size in free disk (old file plus the temp file)
+   * — the same requirement as native VACUUM.
+   *
+   * Must be called outside any open transaction and only when no other
+   * connection is writing the catalog — the compact command holds the
+   * datastore-global lock for this reason. Returns `true` on success, or
+   * `false` (after logging a warning) if the rebuild failed, preserving the
+   * graceful-degradation contract: the WAL checkpoint already reclaimed space.
    */
   vacuum(): boolean {
+    const tmpPath = `${this.dbPath}.compact`;
     try {
-      this.db.exec("VACUUM");
-      return true;
+      this.rebuildInto(tmpPath);
     } catch (error) {
       logger.warn`VACUUM skipped: ${error}`;
+      this.removeDbFiles(tmpPath);
       return false;
+    }
+
+    // Swap the rebuilt file into place. Close first so Windows releases the
+    // handle, then drop the stale WAL/SHM sidecars of the old file before the
+    // rename so they cannot shadow the new database.
+    this.db.close();
+    this.removeDbFiles(this.dbPath, { keepMain: true });
+    try {
+      // POSIX renameSync atomically replaces the destination.
+      Deno.renameSync(tmpPath, this.dbPath);
+    } catch {
+      // Windows rejects rename onto an existing file — remove then rename.
+      try {
+        Deno.removeSync(this.dbPath);
+      } catch {
+        // Already gone — nothing to remove.
+      }
+      Deno.renameSync(tmpPath, this.dbPath);
+    }
+
+    // Reopen so the store stays valid for the caller, restoring WAL mode. No
+    // other process can be opening concurrently (compact holds the global
+    // lock), so WAL can be set eagerly without the constructor's retry.
+    this.db = this.openConnection(this.dbPath);
+    this.db.exec("PRAGMA journal_mode=WAL");
+    return true;
+  }
+
+  /**
+   * Rebuilds the catalog into a fresh database at `targetPath`. Copies all DDL
+   * (tables before indexes/triggers/views) then streams every row of every
+   * user table inside a single transaction. Throws on any failure; the caller
+   * cleans up `targetPath`.
+   */
+  private rebuildInto(targetPath: string): void {
+    // Clear any stale temp artifacts from a previous interrupted run.
+    this.removeDbFiles(targetPath);
+
+    // Default rollback-journal mode keeps the rebuilt DB to a single file (no
+    // -wal/-shm to orphan), which the swap then moves atomically.
+    const dst = new DatabaseSync(targetPath);
+    try {
+      const ddl = this.db.prepare(
+        `SELECT sql FROM sqlite_master
+         WHERE sql IS NOT NULL AND type IN ('table', 'index', 'trigger', 'view')
+         ORDER BY CASE type WHEN 'table' THEN 0 ELSE 1 END`,
+      ).all() as { sql: string }[];
+      for (const { sql } of ddl) dst.exec(sql);
+
+      const tables = this.db.prepare(
+        `SELECT name FROM sqlite_master
+         WHERE type = 'table' AND name NOT LIKE 'sqlite_%'`,
+      ).all() as { name: string }[];
+
+      dst.exec("BEGIN IMMEDIATE");
+      try {
+        for (const { name } of tables) {
+          this.copyTableRows(dst, name);
+        }
+        dst.exec("COMMIT");
+      } catch (error) {
+        dst.exec("ROLLBACK");
+        throw error;
+      }
+    } finally {
+      dst.close();
     }
   }
 
   /**
-   * Closes the database connection.
+   * Streams every row of `table` from this database into `dst`, paging by
+   * rowid in {@link ITERATE_PAGE_SIZE} batches so the full table is never
+   * materialized in memory. Assumes a rowid table — both `catalog` and
+   * `catalog_meta` are ordinary rowid tables; a WITHOUT ROWID table would
+   * break this cursor.
+   */
+  private copyTableRows(dst: DatabaseSync, table: string): void {
+    const columns = (this.db.prepare(`PRAGMA table_info("${table}")`)
+      .all() as { name: string }[]).map((c) => c.name);
+    const colList = columns.map((c) => `"${c}"`).join(", ");
+    const placeholders = columns.map(() => "?").join(", ");
+    const insert = dst.prepare(
+      `INSERT INTO "${table}" (${colList}) VALUES (${placeholders})`,
+    );
+    const page = this.db.prepare(
+      `SELECT rowid AS __rowid, ${colList} FROM "${table}"
+       WHERE rowid > ? ORDER BY rowid LIMIT ?`,
+    );
+
+    let lastRowid = 0;
+    for (;;) {
+      const rows = page.all(lastRowid, ITERATE_PAGE_SIZE) as Record<
+        string,
+        SqlValue
+      >[];
+      if (rows.length === 0) break;
+      for (const row of rows) {
+        insert.run(...columns.map((c) => row[c]));
+        lastRowid = Number(row.__rowid);
+      }
+      if (rows.length < ITERATE_PAGE_SIZE) break;
+    }
+  }
+
+  /**
+   * Removes a SQLite database file and its WAL/SHM sidecars, ignoring any that
+   * are already absent. Pass `keepMain` to drop only the sidecars.
+   */
+  private removeDbFiles(path: string, opts: { keepMain?: boolean } = {}): void {
+    const targets = opts.keepMain ? [] : [path];
+    targets.push(`${path}-wal`, `${path}-shm`);
+    for (const target of targets) {
+      try {
+        Deno.removeSync(target);
+      } catch {
+        // Missing file — nothing to remove.
+      }
+    }
+  }
+
+  /**
+   * Closes the database connection. Idempotent — a second call is a no-op, so
+   * a `finally { close() }` cannot mask an earlier reopen failure (node:sqlite
+   * throws "database is not open" on double-close).
    */
   close(): void {
+    if (this.closed) return;
+    this.closed = true;
     this.db.close();
   }
 }

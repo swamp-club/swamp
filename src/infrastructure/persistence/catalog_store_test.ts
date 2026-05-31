@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assert, assertEquals, assertLess } from "@std/assert";
 import { dirname, fromFileUrl, join } from "@std/path";
 import { DatabaseSync } from "node:sqlite";
 import {
@@ -591,6 +591,73 @@ Deno.test("CatalogStore: vacuum returns boolean and does not throw", () => {
   const result = store.vacuum();
   assertEquals(typeof result, "boolean");
 
+  store.close();
+});
+
+Deno.test("CatalogStore: vacuum reclaims space and preserves rows", () => {
+  const dbPath = makeTempDbPath();
+  const store = new CatalogStore(dbPath);
+
+  // Insert enough fragmentation that the rebuild measurably shrinks the file,
+  // and enough rows to span multiple ITERATE_PAGE_SIZE batches.
+  const bloat = "x".repeat(400);
+  const total = ITERATE_PAGE_SIZE * 3 + 7;
+  for (let version = 1; version <= total; version++) {
+    store.upsert(makeRow({ version, id: `id-${version}`, tags: bloat }));
+  }
+  // Delete the even versions to free pages and fragment the file.
+  for (let version = 2; version <= total; version += 2) {
+    store.removeVersion("", "test-model", "model-001", "my-data", version);
+  }
+  store.checkpoint();
+
+  const before = Deno.statSync(dbPath).size;
+  const survivors = store.count();
+
+  assertEquals(store.vacuum(), true);
+
+  const after = Deno.statSync(dbPath).size;
+  assertLess(after, before);
+  // No data lost: the same rows remain and are still queryable.
+  assertEquals(store.count(), survivors);
+  store.close();
+
+  // The swapped-in file is intact: a fresh store sees identical data.
+  const reopened = new CatalogStore(dbPath);
+  assertEquals(reopened.count(), survivors);
+  const versions = [...reopened.iterate()].map((r) => r.version).sort((a, b) =>
+    a - b
+  );
+  assertEquals(versions[0], 1);
+  assert(versions.every((v) => v % 2 === 1));
+  reopened.close();
+});
+
+Deno.test("CatalogStore: vacuum on an empty catalog returns true and keeps schema", () => {
+  const dbPath = makeTempDbPath();
+  const store = new CatalogStore(dbPath);
+
+  assertEquals(store.vacuum(), true);
+
+  // Schema survived the rebuild — the store is still writable and readable.
+  store.upsert(makeRow());
+  assertEquals(store.count(), 1);
+  store.close();
+});
+
+Deno.test("CatalogStore: store is usable after vacuum and close is idempotent", () => {
+  const dbPath = makeTempDbPath();
+  const store = new CatalogStore(dbPath);
+  store.upsert(makeRow({ version: 1 }));
+
+  assertEquals(store.vacuum(), true);
+
+  // The reopened connection accepts further writes and reads.
+  store.upsert(makeRow({ version: 2 }));
+  assertEquals(store.count(), 2);
+
+  store.close();
+  // A second close must not throw (node:sqlite errors on double-close).
   store.close();
 });
 
