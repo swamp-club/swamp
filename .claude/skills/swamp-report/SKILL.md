@@ -31,8 +31,6 @@ up-to-date CLI schema.
 
 | Task                     | Command                                                           |
 | ------------------------ | ----------------------------------------------------------------- |
-| Browse stored reports    | `swamp report search`                                             |
-| Search reports by type   | `swamp report search --type <report-name>`                        |
 | Get a stored report      | `swamp report get <report-name> --model <model>`                  |
 | Get report as markdown   | `swamp report get <report-name> --model <model> --markdown`       |
 | Get report as JSON       | `swamp report get <report-name> --model <model> --json`           |
@@ -171,22 +169,18 @@ allowing a push.
 
 ### report search
 
-Browse stored report results across all models and workflows. An optional
-positional `[query]` does a case-insensitive substring match across report name,
-data name, and forEach variant suffix. The flags below narrow the results
-further (each is an exact match):
+Browse stored report results across all models and workflows. Pass an optional
+`[query]` argument for a case-insensitive substring match; the flags below are
+exact matches.
 
-| Flag                | Description                                                 |
-| ------------------- | ----------------------------------------------------------- |
-| `--model <name>`    | Filter to a specific model                                  |
-| `--workflow <name>` | Filter to a specific workflow                               |
-| `--scope <scope>`   | Filter by report scope (`method`, `model`, `workflow`)      |
-| `--type <name>`     | Filter by exact report type name (e.g. `@myorg/cost-audit`) |
-| `--label <label>`   | Filter by report label (repeatable)                         |
-
-`--type` is exact-match on the report type name, unlike the positional `[query]`
-which matches substrings. Use `--type` when you know the precise report name and
-want only that type across every model and workflow.
+| Flag                | Description                                            |
+| ------------------- | ------------------------------------------------------ |
+| `[query]`           | Substring match on report name, data name, or variant  |
+| `--model <name>`    | Filter to a specific model                             |
+| `--workflow <name>` | Filter to a specific workflow                          |
+| `--scope <scope>`   | Filter by report scope (`method`, `model`, `workflow`) |
+| `--type <name>`     | Filter by exact report type name (e.g. `@myorg/cost`)  |
+| `--label <label>`   | Filter by report label (repeatable)                    |
 
 ### report get
 
