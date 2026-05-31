@@ -191,6 +191,7 @@ export async function reportSearchAction(
       model: options.model as string | undefined,
       workflow: options.workflow as string | undefined,
       scope: options.scope as string | undefined,
+      type: options.type as string | undefined,
       labels: options.label as string[] | undefined,
     }),
     searchRenderer.handlers(),
@@ -229,6 +230,10 @@ export const reportSearchCommand = new Command()
   .option(
     "--scope <scope:string>",
     "Filter by report scope (method, model, workflow)",
+  )
+  .option(
+    "--type <name:string>",
+    "Filter by exact report type name (e.g. @webframp/cost-audit-report)",
   )
   .option(
     "--label <label:string>",

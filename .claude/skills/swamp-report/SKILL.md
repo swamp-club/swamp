@@ -167,6 +167,21 @@ allowing a push.
 | `--report <name>`             | Only run this report (repeatable, inclusion)  |
 | `--report-label <label>`      | Only run reports with this label (repeatable) |
 
+### report search
+
+Browse stored report results across all models and workflows. Pass an optional
+`[query]` argument for a case-insensitive substring match; the flags below are
+exact matches.
+
+| Flag                | Description                                            |
+| ------------------- | ------------------------------------------------------ |
+| `[query]`           | Substring match on report name, data name, or variant  |
+| `--model <name>`    | Filter to a specific model                             |
+| `--workflow <name>` | Filter to a specific workflow                          |
+| `--scope <scope>`   | Filter by report scope (`method`, `model`, `workflow`) |
+| `--type <name>`     | Filter by exact report type name (e.g. `@myorg/cost`)  |
+| `--label <label>`   | Filter by report label (repeatable)                    |
+
 ### report get
 
 | Flag                      | Description                                            |

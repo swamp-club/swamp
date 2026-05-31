@@ -133,6 +133,99 @@ Deno.test("reportSearch - filters by scope", async () => {
   }
 });
 
+Deno.test("reportSearch - filters by exact report type", async () => {
+  const modelType = ModelType.create("aws/ec2");
+  const costReport = makeReportData(
+    "report-cost",
+    "@webframp/cost-audit-report",
+    "model",
+  );
+  const secReport = makeReportData(
+    "report-security",
+    "@webframp/security-report",
+    "model",
+  );
+
+  const deps = makeDeps([
+    { data: costReport, modelType, modelId: "test-id" },
+    { data: secReport, modelType, modelId: "test-id" },
+  ]);
+
+  const ctx = createLibSwampContext();
+  const events = await collect(
+    reportSearch(ctx, deps, { type: "@webframp/cost-audit-report" }),
+  );
+  const last = events[events.length - 1];
+
+  assertEquals(last.kind, "completed");
+  if (last.kind === "completed") {
+    assertEquals(last.data.reports.length, 1);
+    assertEquals(
+      last.data.reports[0].reportName,
+      "@webframp/cost-audit-report",
+    );
+  }
+});
+
+Deno.test("reportSearch - type filter is exact, not substring", async () => {
+  const modelType = ModelType.create("aws/ec2");
+  const costReport = makeReportData(
+    "report-cost",
+    "@webframp/cost-audit-report",
+    "model",
+  );
+
+  const deps = makeDeps([
+    { data: costReport, modelType, modelId: "test-id" },
+  ]);
+
+  const ctx = createLibSwampContext();
+  // A substring of the type name must not match — exact matching only.
+  const events = await collect(
+    reportSearch(ctx, deps, { type: "cost-audit-report" }),
+  );
+  const last = events[events.length - 1];
+
+  assertEquals(last.kind, "completed");
+  if (last.kind === "completed") {
+    assertEquals(last.data.reports.length, 0);
+  }
+});
+
+Deno.test("reportSearch - type filter composes with scope filter", async () => {
+  const modelType = ModelType.create("aws/ec2");
+  const costModel = makeReportData(
+    "report-cost-model",
+    "@webframp/cost-audit-report",
+    "model",
+  );
+  const costMethod = makeReportData(
+    "report-cost-method",
+    "@webframp/cost-audit-report",
+    "method",
+  );
+
+  const deps = makeDeps([
+    { data: costModel, modelType, modelId: "test-id" },
+    { data: costMethod, modelType, modelId: "test-id" },
+  ]);
+
+  const ctx = createLibSwampContext();
+  const events = await collect(
+    reportSearch(ctx, deps, {
+      type: "@webframp/cost-audit-report",
+      scope: "method",
+    }),
+  );
+  const last = events[events.length - 1];
+
+  assertEquals(last.kind, "completed");
+  if (last.kind === "completed") {
+    assertEquals(last.data.reports.length, 1);
+    assertEquals(last.data.reports[0].reportScope, "method");
+  }
+});
+
 Deno.test("reportSearch - filters by query", async () => {
   const modelType = ModelType.create("aws/ec2");
   const costReport = makeReportData("report-cost", "cost-report", "model");
