@@ -26,8 +26,6 @@ import {
 import { requireInitializedRepo } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import { resolveSuspendedRun } from "../../domain/workflows/suspended_run_resolver.ts";
-import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
-import { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import {
   type DirectTypeResolver,
@@ -132,8 +130,14 @@ export const workflowResumeCommand = new Command()
         ? deepMerge(stdinInputs, cliInputs)
         : cliInputs;
 
-      const workflowRepo = new YamlWorkflowRepository(repoDir);
-      const runRepo = new YamlWorkflowRunRepository(repoDir);
+      // Use the datastore-aware repositories from the RepositoryContext so the
+      // suspended-run lookup and the resumed-run persistence (this runRepo is
+      // also handed to WorkflowExecutionService below) resolve the same
+      // workflow-runs path the run was written to. Constructing
+      // YamlWorkflowRunRepository(repoDir) directly would bind to repo-local
+      // .swamp/workflow-runs/ and miss runs stored in a configured datastore.
+      const workflowRepo = repoContext.workflowRepo;
+      const runRepo = repoContext.workflowRunRepo;
 
       const { run, workflowName } = await resolveSuspendedRun(
         workflowRepo,

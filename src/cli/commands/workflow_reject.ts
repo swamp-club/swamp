@@ -27,8 +27,6 @@ import { requireInitializedRepo } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import { resolveSuspendedRun } from "../../domain/workflows/suspended_run_resolver.ts";
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
-import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
-import { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -62,13 +60,18 @@ export const workflowRejectCommand = new Command()
         "reject",
       ]);
 
-      const { repoDir } = await requireInitializedRepo({
+      const { repoContext } = await requireInitializedRepo({
         repoDir: resolveRepoDir(options.repoDir),
         outputMode: cliCtx.outputMode,
       });
 
-      const workflowRepo = new YamlWorkflowRepository(repoDir);
-      const runRepo = new YamlWorkflowRunRepository(repoDir);
+      // Use the datastore-aware repositories from the RepositoryContext so the
+      // suspended-run lookup (and the post-rejection save) resolve the same
+      // workflow-runs path the run was written to. Constructing
+      // YamlWorkflowRunRepository(repoDir) directly would bind to repo-local
+      // .swamp/workflow-runs/ and miss runs stored in a configured datastore.
+      const workflowRepo = repoContext.workflowRepo;
+      const runRepo = repoContext.workflowRunRepo;
 
       const { run, workflowName, workflowId } = await resolveSuspendedRun(
         workflowRepo,

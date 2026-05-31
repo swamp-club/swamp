@@ -25,8 +25,6 @@ import {
 } from "../context.ts";
 import { requireInitializedRepoUnlocked } from "../repo_context.ts";
 import { evaluateApprovalTimeout } from "../../domain/workflows/approval_timeout.ts";
-import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
-import { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -45,13 +43,18 @@ export const workflowApprovalsCommand = new Command()
       "approvals",
     ]);
 
-    const { repoDir } = await requireInitializedRepoUnlocked({
+    const { repoContext } = await requireInitializedRepoUnlocked({
       repoDir: resolveRepoDir(options.repoDir),
       outputMode: cliCtx.outputMode,
     });
 
-    const workflowRepo = new YamlWorkflowRepository(repoDir);
-    const runRepo = new YamlWorkflowRunRepository(repoDir);
+    // Use the datastore-aware repositories from the RepositoryContext so the
+    // pending-approval scan reads the same workflow-runs path suspended runs
+    // are written to. Constructing YamlWorkflowRunRepository(repoDir) directly
+    // would bind to repo-local .swamp/workflow-runs/ and miss runs stored in a
+    // configured datastore, yielding an empty approvals list.
+    const workflowRepo = repoContext.workflowRepo;
+    const runRepo = repoContext.workflowRunRepo;
 
     const workflows = await workflowRepo.findAll();
 
