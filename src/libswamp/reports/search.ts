@@ -48,6 +48,7 @@ export interface ReportSearchInput {
   model?: string;
   workflow?: string;
   scope?: string;
+  type?: string;
   labels?: string[];
 }
 
@@ -190,6 +191,17 @@ export async function* reportSearch(
       if (input.scope) {
         candidates = candidates.filter(
           (c) => c.data.tags.reportScope === input.scope,
+        );
+      }
+
+      // Apply report type filter — exact match on the report type name. Runs
+      // before the label filter to shrink the candidate set ahead of the
+      // per-candidate definition lookups the label filter performs. Compares
+      // against the reportName tag directly (no fallback to data.name), so
+      // entries missing the tag are excluded.
+      if (input.type) {
+        candidates = candidates.filter(
+          (c) => c.data.tags.reportName === input.type,
         );
       }
 

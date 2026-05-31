@@ -31,6 +31,8 @@ up-to-date CLI schema.
 
 | Task                     | Command                                                           |
 | ------------------------ | ----------------------------------------------------------------- |
+| Browse stored reports    | `swamp report search`                                             |
+| Search reports by type   | `swamp report search --type <report-name>`                        |
 | Get a stored report      | `swamp report get <report-name> --model <model>`                  |
 | Get report as markdown   | `swamp report get <report-name> --model <model> --markdown`       |
 | Get report as JSON       | `swamp report get <report-name> --model <model> --json`           |
@@ -166,6 +168,25 @@ allowing a push.
 | `--skip-report-label <label>` | Skip reports with this label (repeatable)     |
 | `--report <name>`             | Only run this report (repeatable, inclusion)  |
 | `--report-label <label>`      | Only run reports with this label (repeatable) |
+
+### report search
+
+Browse stored report results across all models and workflows. An optional
+positional `[query]` does a case-insensitive substring match across report name,
+data name, and forEach variant suffix. The flags below narrow the results
+further (each is an exact match):
+
+| Flag                | Description                                                 |
+| ------------------- | ----------------------------------------------------------- |
+| `--model <name>`    | Filter to a specific model                                  |
+| `--workflow <name>` | Filter to a specific workflow                               |
+| `--scope <scope>`   | Filter by report scope (`method`, `model`, `workflow`)      |
+| `--type <name>`     | Filter by exact report type name (e.g. `@myorg/cost-audit`) |
+| `--label <label>`   | Filter by report label (repeatable)                         |
+
+`--type` is exact-match on the report type name, unlike the positional `[query]`
+which matches substrings. Use `--type` when you know the precise report name and
+want only that type across every model and workflow.
 
 ### report get
 
