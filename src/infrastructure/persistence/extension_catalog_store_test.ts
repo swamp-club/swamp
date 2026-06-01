@@ -1668,3 +1668,62 @@ Deno.test("ExtensionCatalogStore: W1b drop-validation_failed migration ROLLBACKs
 
   store.close();
 });
+
+Deno.test({
+  name:
+    "ExtensionCatalogStore: recovers from read-only catalog by deleting and recreating",
+  ignore: Deno.build.os === "windows",
+  fn() {
+    const dbPath = makeTempDbPath();
+
+    // Seed an old-schema catalog missing the 'last_error' column.
+    const seed = new DatabaseSync(dbPath);
+    seed.exec("PRAGMA journal_mode=WAL");
+    seed.exec(`
+      CREATE TABLE bundle_types (
+        source_path        TEXT NOT NULL PRIMARY KEY,
+        type_normalized    TEXT NOT NULL,
+        kind               TEXT NOT NULL DEFAULT 'model',
+        bundle_path        TEXT NOT NULL,
+        version            TEXT NOT NULL DEFAULT '',
+        description        TEXT NOT NULL DEFAULT '',
+        extends_type       TEXT NOT NULL DEFAULT '',
+        source_mtime       TEXT NOT NULL DEFAULT '',
+        source_fingerprint TEXT NOT NULL DEFAULT '',
+        state              TEXT NOT NULL DEFAULT 'Indexed',
+        extension_name     TEXT NOT NULL DEFAULT '',
+        extension_version  TEXT NOT NULL DEFAULT ''
+      );
+      CREATE TABLE bundle_meta (
+        key   TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
+    `);
+    seed.exec(
+      "INSERT INTO bundle_meta (key, value) VALUES ('migration_applied:per-extension-aggregate-v3', 'true')",
+    );
+    seed.exec(
+      "INSERT INTO bundle_meta (key, value) VALUES ('migration_applied:validation-failed-dropped-v1', 'true')",
+    );
+    seed.close();
+
+    // Make the file read-only so schema migration fails.
+    Deno.chmodSync(dbPath, 0o444);
+
+    // Construction should recover: delete the stale file, recreate.
+    const store = new ExtensionCatalogStore(dbPath);
+
+    // The recovered store should be fully functional.
+    store.upsert(makeRow({ source_path: "/test/echo.ts" }));
+    const rows = store.findByKind("model");
+    assertEquals(rows.length, 1);
+    assertEquals(rows[0].source_path, "/test/echo.ts");
+
+    store.close();
+
+    // Restore permissions for cleanup.
+    try {
+      Deno.removeSync(dbPath);
+    } catch { /* withTempDir handles cleanup */ }
+  },
+});
