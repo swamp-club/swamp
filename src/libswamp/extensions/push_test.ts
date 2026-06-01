@@ -118,6 +118,8 @@ function makePrepareDeps(
     extractDependencySpecifiers: () => Promise.resolve([]),
     checkDependencyTrust: () =>
       Promise.resolve({ errors: [], warnings: [], audited: [], passed: true }),
+    checkReviewRules: () =>
+      Promise.resolve({ errors: [], warnings: [], passed: true }),
     bundleEntryPoint: () => Promise.resolve("/* bundled */"),
     ensureDenoPath: () => Promise.resolve("/usr/bin/deno"),
     getLatestVersion: () => Promise.resolve(null),
@@ -253,6 +255,60 @@ Deno.test("extensionPushPrepare: safety warnings are returned in result", async 
   const result = await extensionPushPrepare(ctx, deps, input);
   assertEquals(result.safetyWarnings.length, 1);
   assertEquals(result.safetyWarnings[0].file, "cmd.ts");
+});
+
+Deno.test("extensionPushPrepare: review-rule errors throw SwampError", async () => {
+  const deps = makePrepareDeps({
+    checkReviewRules: () =>
+      Promise.resolve({
+        errors: [{
+          ruleId: "always-high",
+          dimension: "Schema strictness",
+          severity: "high" as const,
+          file: "model.ts",
+          message: "blocking issue",
+        }],
+        warnings: [],
+        passed: false,
+      }),
+  });
+  const input = makePrepareInput();
+
+  const error = await assertRejects(
+    () => extensionPushPrepare(ctx, deps, input),
+  ) as SwampError;
+  assertEquals(error.code, "validation_failed");
+  assertEquals(
+    Array.isArray(
+      (error.details as Record<string, unknown>).reviewRuleErrors,
+    ),
+    true,
+  );
+});
+
+Deno.test("extensionPushPrepare: review-rule warnings are returned in result", async () => {
+  const deps = makePrepareDeps({
+    checkReviewRules: () =>
+      Promise.resolve({
+        errors: [],
+        warnings: [{
+          ruleId: "testing-completeness",
+          dimension: "Testing Completeness",
+          severity: "medium" as const,
+          file: "model.ts",
+          message: "no sibling test",
+        }],
+        passed: true,
+      }),
+  });
+  const input = makePrepareInput();
+
+  const result = await extensionPushPrepare(ctx, deps, input);
+  assertEquals(result.reviewRulesResult.warnings.length, 1);
+  assertEquals(
+    result.reviewRulesResult.warnings[0].ruleId,
+    "testing-completeness",
+  );
 });
 
 Deno.test("extensionPushPrepare: skips auth for dry run", async () => {

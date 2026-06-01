@@ -33,6 +33,17 @@ import type {
 import type { QualityCheckResult } from "../../domain/extensions/extension_quality_checker.ts";
 import type { DependencySpecifier } from "../../domain/extensions/extension_dependency_extractor.ts";
 import type { DependencyTrustResult } from "../../domain/extensions/extension_dependency_trust_checker.ts";
+import type {
+  ExtensionContentKind,
+  ExtensionReviewInput,
+  ReviewFileRef,
+  ReviewRulesResult,
+} from "../../domain/extensions/extension_review_rules.ts";
+import {
+  applicableDimensions,
+  buildReviewReportSkeleton,
+  reviewReportPath,
+} from "../../domain/extensions/extension_review_rules.ts";
 import type { ExtensionManifest } from "../../domain/extensions/extension_manifest.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
@@ -159,6 +170,12 @@ export interface ExtensionPushPrepareInput {
   denoConfigPath?: string;
   packageJsonDir?: string;
   /**
+   * Content hash of the resolved source tree (the package cache hash). When
+   * provided, push verifies a content-hash-bound adversarial-review report.
+   * Omitted by non-push callers (e.g. quality packaging).
+   */
+  contentHash?: string;
+  /**
    * If provided, reuse these archive bytes instead of bundling and
    * tarring from source. Callers supply this when a prior
    * `swamp extension quality` run left a cached tarball whose source
@@ -174,6 +191,7 @@ export interface ExtensionPushPrepared {
   resolvedData: ExtensionPushResolvedData;
   safetyWarnings: SafetyIssue[];
   dependencyTrustResult: DependencyTrustResult;
+  reviewRulesResult: ReviewRulesResult;
   archiveBytes: Uint8Array;
   manifest: ExtensionManifest;
   contentMetadata: ExtensionContentMetadata | undefined;
@@ -253,6 +271,9 @@ export interface ExtensionPushPrepareDeps {
   checkDependencyTrust: (
     specifiers: DependencySpecifier[],
   ) => Promise<DependencyTrustResult>;
+  checkReviewRules: (
+    input: ExtensionReviewInput,
+  ) => Promise<ReviewRulesResult>;
   ensureDenoPath: () => Promise<string>;
   getLatestVersion: (
     serverUrl: string,
@@ -309,6 +330,7 @@ import { analyzeExtensionSafety } from "../../domain/extensions/extension_safety
 import { checkExtensionQuality } from "../../domain/extensions/extension_quality_checker.ts";
 import { extractDependencySpecifiers } from "../../domain/extensions/extension_dependency_extractor.ts";
 import { checkDependencyTrust } from "../../domain/extensions/extension_dependency_trust_checker.ts";
+import { checkReviewRules as checkReviewRulesImpl } from "../../domain/extensions/extension_review_rules.ts";
 import { bundleExtension } from "../../domain/models/bundle.ts";
 import { extractContentMetadata } from "../../domain/extensions/extension_content_extractor.ts";
 import { EmbeddedDenoRuntime } from "../../infrastructure/runtime/embedded_deno_runtime.ts";
@@ -345,6 +367,7 @@ export function createExtensionPushPrepareDeps(
     checkExtensionQuality,
     extractDependencySpecifiers,
     checkDependencyTrust,
+    checkReviewRules: checkReviewRulesImpl,
     bundleEntryPoint: bundleExtension,
     ensureDenoPath: () => denoRuntime.ensureDeno(),
     getLatestVersion: async (serverUrl, name, apiKey) => {
@@ -392,6 +415,58 @@ export function createExtensionPushExecuteDeps(
 }
 
 // ── Prepare function ──────────────────────────────────────────────────
+
+/**
+ * Builds the flat list of source files for the adversarial review, tagging
+ * each with its content kind and whether it is an entry point. Entry points
+ * are the main implementation files; the remaining `all*Files` are helpers.
+ */
+function buildReviewFileRefs(
+  input: ExtensionPushPrepareInput,
+): ReviewFileRef[] {
+  const refs: ReviewFileRef[] = [];
+  const groups: Array<
+    { kind: ReviewFileRef["kind"]; all: string[]; entry: string[] }
+  > = [
+    { kind: "model", all: input.allModelFiles, entry: input.modelEntryPoints },
+    { kind: "vault", all: input.allVaultFiles, entry: input.vaultEntryPoints },
+    {
+      kind: "driver",
+      all: input.allDriverFiles,
+      entry: input.driverEntryPoints,
+    },
+    {
+      kind: "datastore",
+      all: input.allDatastoreFiles,
+      entry: input.datastoreEntryPoints,
+    },
+    {
+      kind: "report",
+      all: input.allReportFiles,
+      entry: input.reportEntryPoints,
+    },
+  ];
+  for (const group of groups) {
+    const entrySet = new Set(group.entry);
+    for (const path of group.all) {
+      refs.push({ path, kind: group.kind, isEntryPoint: entrySet.has(path) });
+    }
+  }
+  return refs;
+}
+
+/** The reviewable content kinds present in the extension. */
+function contentKindsPresent(
+  input: ExtensionPushPrepareInput,
+): ExtensionContentKind[] {
+  const kinds: ExtensionContentKind[] = [];
+  if (input.allModelFiles.length > 0) kinds.push("model");
+  if (input.allVaultFiles.length > 0) kinds.push("vault");
+  if (input.allDriverFiles.length > 0) kinds.push("driver");
+  if (input.allDatastoreFiles.length > 0) kinds.push("datastore");
+  if (input.allReportFiles.length > 0) kinds.push("report");
+  return kinds;
+}
 
 /**
  * Performs the extension push prepare phase: validates auth & collectives,
@@ -615,6 +690,39 @@ export async function extensionPushPrepare(
     }
   }
 
+  // 10b. Review — runs after the mechanical gates (safety/deps/fmt) so those
+  // fire first. Two parts: deterministic static file rules (NOT the adversarial
+  // review — those only warn), and validation of the adversarial-review report
+  // (the agent/CI judgment pass). Report findings are warnings: a missing or
+  // stale report surfaces the "continue despite warnings?" prompt rather than a
+  // hard block, so a benign version bump nudges the reviewer instead of bricking
+  // the push.
+  const reviewInput: ExtensionReviewInput = {
+    files: buildReviewFileRefs(input),
+  };
+  const reviewKinds = contentKindsPresent(input);
+  if (input.contentHash && reviewKinds.length > 0) {
+    const dims = applicableDimensions(reviewKinds);
+    reviewInput.report = {
+      reportPath: reviewReportPath(input.manifest.name, input.contentHash),
+      extensionName: input.manifest.name,
+      extensionVersion: input.manifest.version,
+      applicableDimensions: dims,
+      skeleton: buildReviewReportSkeleton(
+        input.manifest.name,
+        input.manifest.version,
+        dims,
+      ),
+    };
+  }
+  const reviewRulesResult = await deps.checkReviewRules(reviewInput);
+  if (reviewRulesResult.errors.length > 0) {
+    throw validationFailed(
+      "Extension review found issues that must be resolved before pushing.",
+      { reviewRuleErrors: reviewRulesResult.errors },
+    );
+  }
+
   // 11. Bundle entry points + build archive — skip on cache hit
   let totalBundles: number;
   let archiveBytes: Uint8Array;
@@ -648,6 +756,7 @@ export async function extensionPushPrepare(
     resolvedData,
     safetyWarnings: safetyResult.warnings,
     dependencyTrustResult,
+    reviewRulesResult,
     archiveBytes,
     manifest: input.manifest,
     contentMetadata,

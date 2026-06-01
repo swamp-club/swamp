@@ -88,6 +88,8 @@ function makePrepareDeps(
     extractDependencySpecifiers: () => Promise.resolve([]),
     checkDependencyTrust: () =>
       Promise.resolve({ errors: [], warnings: [], audited: [], passed: true }),
+    checkReviewRules: () =>
+      Promise.resolve({ errors: [], warnings: [], passed: true }),
     bundleEntryPoint: () => Promise.resolve("/* bundled */"),
     ensureDenoPath: () => Promise.resolve("/usr/bin/deno"),
     getLatestVersion: () => Promise.resolve(null),

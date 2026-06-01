@@ -279,15 +279,28 @@ All extension types follow the same lifecycle:
 
 ### Adversarial Review Gate
 
-> **STOP — do not skip.**
+> **`swamp extension push` checks for this.**
+>
+> `swamp extension push` warns and prompts for confirmation unless a complete,
+> content-hash-bound review report exists for the exact code being pushed. The
+> prompt is the gate — do not answer it blindly or pass `--yes` to dodge the
+> review. Editing any source (or bumping the version) changes the content hash
+> and asks for a fresh report.
 >
 > After authoring or **significantly modifying** extension code, and BEFORE
 > running smoke tests or unit tests:
 >
 > 1. Read [references/adversarial-review.md](references/adversarial-review.md)
->    and self-review against every applicable dimension.
-> 2. Produce the structured findings report described in that file.
-> 3. Present the report to the user and wait for acknowledgement.
+>    and review against every applicable dimension.
+> 2. Run `swamp extension push manifest.yaml --dry-run`. When no report exists,
+>    it prints the exact report path (a content-hash-bound file under the temp
+>    directory) and a JSON skeleton listing every applicable dimension.
+> 3. Write that skeleton to the printed path, setting each dimension's `verdict`
+>    to `pass`, `issue`, or `na` (with a `note` for anything not `pass`). Set
+>    `reviewedAt` to the current ISO-8601 timestamp.
+> 4. Present the findings to the user, then re-run the push. A missing, stale,
+>    or incomplete report (or any `issue` verdict) surfaces as a warning to
+>    confirm.
 
 ## Key Rules (All Types)
 

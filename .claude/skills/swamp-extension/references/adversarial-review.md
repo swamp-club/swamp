@@ -18,6 +18,55 @@ and 6 (unit tests).
   dimensions)
 - Before publishing with `swamp extension push`
 
+## Recording the Review (checked at push)
+
+`swamp extension push` checks for this review. A missing, stale, or incomplete
+report surfaces as a warning the user must confirm before the push proceeds (it
+is not a hard block — a benign version bump should not brick a push). The report
+is bound to a content hash: any source change (or version bump) moves the report
+path, so a prior review no longer matches and a fresh one is requested.
+
+Workflow:
+
+1. Review the code against every applicable dimension below.
+2. Run `swamp extension push manifest.yaml --dry-run`. When no report exists,
+   the push prints the exact report path (a content-hash-bound JSON file under
+   the system temp directory) and a fill-in skeleton listing every applicable
+   dimension with `"verdict": "pending"`.
+3. Write the skeleton to the printed path, setting each dimension's `verdict`:
+   - `pass` — the dimension is satisfied.
+   - `issue` — a problem was found; add a `note`. (Surfaces as a push warning,
+     does not block.)
+   - `na` — the dimension does not apply (e.g. `api-contracts` for an extension
+     making no HTTP calls).
+   - Leave none as `pending` — a `pending` or missing verdict surfaces as a push
+     warning to confirm.
+   - Set `reviewedAt` to the current ISO-8601 timestamp.
+4. Present the findings to the user, then run `swamp extension push`.
+
+Report schema (the skeleton already has the right shape):
+
+```json
+{
+  "extension": "@collective/name",
+  "version": "2026.05.31.1",
+  "reviewedAt": "2026-05-31T21:00:00Z",
+  "dimensions": [
+    { "id": "credentials-secrets", "verdict": "pass" },
+    {
+      "id": "error-handling",
+      "verdict": "issue",
+      "note": "delete swallows 404"
+    }
+  ]
+}
+```
+
+The applicable dimension `id`s are the universal set plus the type-specific set
+for the content kinds present (the skeleton lists exactly these). The push gate
+checks that the report matches the extension name/version, covers every
+applicable dimension, and has no `pending` verdicts.
+
 ## Output Format
 
 Produce a structured findings report with one line per applicable dimension.

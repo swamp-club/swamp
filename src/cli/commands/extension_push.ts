@@ -52,6 +52,7 @@ import {
   type QualityIssue,
 } from "../../domain/extensions/extension_quality_checker.ts";
 import type { DependencyTrustIssue } from "../../domain/extensions/extension_dependency_trust_checker.ts";
+import type { ReviewFinding } from "../../domain/extensions/extension_review_rules.ts";
 import type {
   CollectiveMismatch,
 } from "../../domain/extensions/extension_collective_validator.ts";
@@ -346,6 +347,7 @@ export const extensionPushCommand = new Command()
         releaseNotes: options.releaseNotes,
         denoConfigPath,
         packageJsonDir,
+        contentHash: cacheHash,
         cachedArchive: cached?.archiveBytes,
       });
     } catch (error) {
@@ -355,6 +357,10 @@ export const extensionPushCommand = new Command()
         if (details?.dependencyTrustErrors) {
           renderer.renderDependencyTrustErrors(
             details.dependencyTrustErrors as DependencyTrustIssue[],
+          );
+        } else if (details?.reviewRuleErrors) {
+          renderer.renderReviewRuleErrors(
+            details.reviewRuleErrors as ReviewFinding[],
           );
         } else if (details?.safetyErrors) {
           renderer.renderSafetyErrors(
@@ -383,6 +389,9 @@ export const extensionPushCommand = new Command()
             );
             if (confirmed) {
               manifest.version = bumped.value;
+              // The version is part of the content hash, so bumping it
+              // changes the hash and therefore the review-report path.
+              const bumpedHash = await computePackageCacheHash(cacheHashInput);
               // Re-run prepare with bumped version
               try {
                 prepared = await extensionPushPrepare(ctx, prepareDeps, {
@@ -414,6 +423,7 @@ export const extensionPushCommand = new Command()
                   releaseNotes: options.releaseNotes,
                   denoConfigPath,
                   packageJsonDir,
+                  contentHash: bumpedHash,
                 });
               } catch (retryError) {
                 if (isSwampError(retryError)) {
@@ -466,17 +476,33 @@ export const extensionPushCommand = new Command()
       );
     }
 
+    // 6a. Handle review-rule warnings
+    if (prepared.reviewRulesResult.warnings.length > 0) {
+      renderer.renderReviewRuleWarnings(
+        prepared.reviewRulesResult.warnings,
+      );
+    }
+
     // 6b. Handle safety warnings
     if (prepared.safetyWarnings.length > 0) {
       renderer.renderSafetyWarnings(prepared.safetyWarnings);
-      if (!options.yes && cliCtx.outputMode === "log") {
-        const confirmed = await promptConfirmation(
-          "Continue with push despite warnings?",
-        );
-        if (!confirmed) {
-          renderExtensionPushCancelled(cliCtx.outputMode);
-          return;
-        }
+    }
+
+    // 6c. A single consolidated confirmation covers safety and review-rule
+    // warnings, so the user isn't prompted twice. Skipped on --dry-run, which
+    // performs no push and so has nothing to confirm.
+    const hasBlockableWarnings = prepared.safetyWarnings.length > 0 ||
+      prepared.reviewRulesResult.warnings.length > 0;
+    if (
+      hasBlockableWarnings && !prepared.isDryRun && !options.yes &&
+      cliCtx.outputMode === "log"
+    ) {
+      const confirmed = await promptConfirmation(
+        "Continue with push despite warnings?",
+      );
+      if (!confirmed) {
+        renderExtensionPushCancelled(cliCtx.outputMode);
+        return;
       }
     }
 

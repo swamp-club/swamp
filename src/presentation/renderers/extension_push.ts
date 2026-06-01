@@ -32,6 +32,7 @@ import {
   type QualityIssue,
 } from "../../domain/extensions/extension_quality_checker.ts";
 import type { DependencyTrustIssue } from "../../domain/extensions/extension_dependency_trust_checker.ts";
+import type { ReviewFinding } from "../../domain/extensions/extension_review_rules.ts";
 import type { CollectiveMismatch } from "../../domain/extensions/extension_collective_validator.ts";
 import type { CompilationError } from "../../libswamp/mod.ts";
 
@@ -40,6 +41,8 @@ export interface ExtensionPushRenderer extends Renderer<ExtensionPushEvent> {
   renderResolved(data: ExtensionPushResolvedData): void;
   renderDependencyTrustWarnings(warnings: DependencyTrustIssue[]): void;
   renderDependencyTrustErrors(errors: DependencyTrustIssue[]): void;
+  renderReviewRuleWarnings(warnings: ReviewFinding[]): void;
+  renderReviewRuleErrors(errors: ReviewFinding[]): void;
   renderSafetyWarnings(warnings: SafetyIssue[]): void;
   renderSafetyErrors(errors: SafetyIssue[]): void;
   renderCollectiveErrors(
@@ -181,6 +184,26 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
     }
   }
 
+  renderReviewRuleWarnings(warnings: ReviewFinding[]): void {
+    this.logger.warn`Extension review rule warnings (non-blocking):`;
+    for (const w of warnings) {
+      // Render the first line only; multi-line detail (e.g. the report
+      // skeleton) stays in the JSON output.
+      const summary = w.message.split("\n")[0];
+      this.logger
+        .warn`  [${w.severity}] ${w.dimension} — ${w.file}: ${summary}`;
+    }
+  }
+
+  renderReviewRuleErrors(errors: ReviewFinding[]): void {
+    this.logger.error`Extension review rule errors (push blocked):`;
+    for (const e of errors) {
+      const summary = e.message.split("\n")[0];
+      this.logger
+        .error`  [${e.severity}] ${e.dimension} — ${e.file}: ${summary}`;
+    }
+  }
+
   renderSafetyWarnings(warnings: SafetyIssue[]): void {
     this.logger.warn`Safety warnings:`;
     for (const w of warnings) {
@@ -290,6 +313,16 @@ class JsonExtensionPushRenderer implements ExtensionPushRenderer {
 
   renderDependencyTrustErrors(errors: DependencyTrustIssue[]): void {
     console.log(JSON.stringify({ dependencyTrustErrors: errors }, null, 2));
+  }
+
+  renderReviewRuleWarnings(warnings: ReviewFinding[]): void {
+    console.log(
+      JSON.stringify({ reviewRuleWarnings: warnings }, null, 2),
+    );
+  }
+
+  renderReviewRuleErrors(errors: ReviewFinding[]): void {
+    console.log(JSON.stringify({ reviewRuleErrors: errors }, null, 2));
   }
 
   renderSafetyWarnings(warnings: SafetyIssue[]): void {

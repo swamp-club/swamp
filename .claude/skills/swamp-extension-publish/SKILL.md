@@ -176,7 +176,10 @@ swamp extension push manifest.yaml --dry-run --json
 
 **Verify:** Exit code 0. Confirm any warnings with the user.
 
-**On Failure:** See
+**On Failure:** If the dry-run reports a missing or incomplete adversarial
+review report, the review gate is unsatisfied. Complete the **Adversarial Review
+Gate** in the `swamp-extension` skill (write the content-hash-bound review
+report at the path the dry-run prints), then re-run. For other failures see
 [references/publishing.md](references/publishing.md#safety-rules).
 
 ## State 8: pushed
