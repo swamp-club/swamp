@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { runCli } from "./src/cli/mod.ts";
+import { configureTlsTrust } from "./src/infrastructure/runtime/tls_trust.ts";
 import { initializeLogging } from "./src/infrastructure/logging/logger.ts";
 import { renderError } from "./src/presentation/output/error_output.ts";
 import { flushDatastoreSync } from "./src/infrastructure/persistence/datastore_sync_coordinator.ts";
@@ -29,6 +30,10 @@ import {
 } from "./src/infrastructure/tracing/mod.ts";
 
 if (import.meta.main) {
+  // Configure TLS trust before any network I/O so Deno honors the OS trust
+  // store (and SSL_CERT_FILE) when it first builds its TLS root store.
+  configureTlsTrust();
+
   const parentCtx = await initTracing();
   try {
     await runWithParentTrace(parentCtx, () => runCli(Deno.args));
