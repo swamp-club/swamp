@@ -973,6 +973,42 @@ Deno.test("ModelRegistry.ensureTypeLoaded: concurrent callers share same promise
   assertEquals(registry.get("@myorg/echo")?.version, "2026.02.09.1");
 });
 
+Deno.test("ModelRegistry.ensureTypeLoaded: concurrent caller waits for extensions during load", async () => {
+  const registry = new ModelRegistry();
+  registry.registerLazy(createLazyEntry("@myorg/echo"));
+
+  // Simulate loadSingleType: register base type, yield, then extend.
+  // A concurrent caller arriving between promoteFromLazy and extend
+  // must wait for the full load to complete (swamp-club#521).
+  registry.setTypeLoader(async (type) => {
+    registry.promoteFromLazy(createTestModel(type));
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    registry.extend(type, {
+      extension_method: {
+        description: "Extension method",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({}),
+      },
+    });
+  });
+
+  // Caller 1: starts loading (triggers the type loader)
+  const promise1 = registry.ensureTypeLoaded("@myorg/echo");
+
+  // Wait for promoteFromLazy but NOT extend
+  await new Promise((resolve) => setTimeout(resolve, 10));
+
+  // Caller 2: must see extensions after awaiting
+  await registry.ensureTypeLoaded("@myorg/echo");
+
+  const modelDef = registry.get("@myorg/echo");
+  assertEquals(modelDef !== undefined, true);
+  assertEquals("extension_method" in modelDef!.methods, true);
+  assertEquals("write" in modelDef!.methods, true);
+
+  await promise1;
+});
+
 Deno.test("ModelRegistry.ensureTypeLoaded: retries after transient failure", async () => {
   const registry = new ModelRegistry();
   registry.registerLazy(createLazyEntry("@myorg/echo"));

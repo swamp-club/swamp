@@ -1443,7 +1443,11 @@ the model registry is wired up initially.
    type.
 
 4. Concurrent callers requesting the same type share a single load promise
-   (per-type memoization).
+   (per-type memoization). Additionally, `ensureTypeLoaded` awaits any
+   pending load promise even when the type is already in the registry —
+   `loadSingleType` registers the base type via `promoteFromLazy` before
+   attaching extensions, so a concurrent caller arriving between those two
+   steps must wait for extensions to be merged (swamp-club#521).
 
 ### Self-Healing
 

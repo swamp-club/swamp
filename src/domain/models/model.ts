@@ -810,8 +810,16 @@ export class ModelRegistry {
     const modelType = typeof type === "string" ? ModelType.create(type) : type;
     const key = modelType.normalized;
 
-    // Already fully loaded
-    if (this.models.has(key)) return;
+    // Already fully loaded — but only if no concurrent load is still in
+    // progress. loadSingleType registers the base type (promoteFromLazy)
+    // before attaching extensions; a pending promise means extensions may
+    // not yet be merged. Await the pending promise to avoid returning a
+    // base-only definition. (swamp-club#521)
+    if (this.models.has(key)) {
+      const pending = this.typeLoadPromises.get(key);
+      if (pending) await pending;
+      return;
+    }
 
     // Not known at all — nothing to load
     if (!this.lazyTypes.has(key)) return;
