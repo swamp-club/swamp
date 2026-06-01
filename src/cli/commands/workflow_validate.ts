@@ -31,6 +31,7 @@ import {
   workflowValidate,
 } from "../../libswamp/mod.ts";
 import { createWorkflowValidateRenderer } from "../../presentation/renderers/workflow_validate.ts";
+import { modelRegistry } from "../../domain/models/model.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -54,6 +55,12 @@ export const workflowValidateCommand = new Command()
       repoDir: resolveRepoDir(options.repoDir),
       outputMode: cliCtx.outputMode,
     });
+
+    // Hot-load pulled/local extensions so step-input validation can resolve
+    // their model types. Without this, pulled extension types are skipped as
+    // "not resolved" and the step silently passes (parity with `type describe`
+    // and `model validate`, which both call ensureLoaded before resolving).
+    await modelRegistry.ensureLoaded();
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
     const deps = createWorkflowValidateDeps(

@@ -70,6 +70,34 @@ Deno.test("workflowValidate single workflow yields completed", async () => {
   assertEquals(data.passed, true);
 });
 
+Deno.test("workflowValidate single workflow with a failing validation reports passed=false", async () => {
+  // Guards the exit-code path: a failing validation result (e.g. an
+  // unresolvable step-input type, see swamp-club#506) must surface as
+  // passed=false so the CLI exits non-zero rather than reporting PASSED.
+  const deps = makeDeps({
+    validate: () =>
+      Promise.resolve([
+        WorkflowValidationResult.pass("schema"),
+        WorkflowValidationResult.fail(
+          "step inputs",
+          "type could not be resolved",
+        ),
+      ]),
+  });
+  const events = await collect<WorkflowValidateEvent>(
+    workflowValidate(createLibSwampContext(), deps, {
+      workflowIdOrName: "my-workflow",
+    }),
+  );
+
+  const completed = events[1] as Extract<
+    WorkflowValidateEvent,
+    { kind: "completed" }
+  >;
+  const data = completed.data as WorkflowValidateData;
+  assertEquals(data.passed, false);
+});
+
 Deno.test("workflowValidate all workflows yields aggregate", async () => {
   const deps = makeDeps();
   const events = await collect<WorkflowValidateEvent>(

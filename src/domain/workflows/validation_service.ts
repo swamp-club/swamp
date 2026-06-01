@@ -435,6 +435,10 @@ export class DefaultWorkflowValidationService
 
     switch (resolution.status) {
       case "model_not_found":
+        // A step may reference a model created at run time (by an upstream
+        // direct-execution step or out-of-band), so a missing model instance
+        // is skipped rather than failed. This differs from an unresolvable
+        // model *type* below, which is always a real authoring error.
         return [
           WorkflowValidationResult.pass(
             checkName +
@@ -443,9 +447,11 @@ export class DefaultWorkflowValidationService
         ];
       case "type_unresolvable":
         return [
-          WorkflowValidationResult.pass(
-            checkName +
-              ` (model type '${resolution.modelType}' not resolved, skipped)`,
+          WorkflowValidationResult.fail(
+            checkName,
+            `Model type '${resolution.modelType}' could not be resolved — ` +
+              `ensure the extension is pulled and available so its step ` +
+              `inputs can be validated`,
           ),
         ];
       case "method_not_found":

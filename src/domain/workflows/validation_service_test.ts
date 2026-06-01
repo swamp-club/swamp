@@ -720,6 +720,8 @@ Deno.test("validateStepInputs: model not found produces passing result with skip
 
   const results = await svc.validate(workflow);
   const inputResult = results.find((r) => r.name.includes("Step inputs"));
+  // A missing model *instance* is skipped (it may be created at run time),
+  // unlike an unresolvable model *type*, which fails. See swamp-club#506.
   assertEquals(inputResult?.passed, true);
   assertEquals(inputResult?.name.includes("skipped"), true);
 });
@@ -1198,7 +1200,7 @@ Deno.test("validateStepInputs: direct-execution step with missing required args 
   assertEquals(inputResult?.error?.includes("version"), true);
 });
 
-Deno.test("validateStepInputs: direct-execution step with unresolvable type produces descriptive skip", async () => {
+Deno.test("validateStepInputs: direct-execution step with unresolvable type fails validation", async () => {
   const resolver = mockResolverWithType({
     "type:@swamp/nonexistent/type.deploy": {
       status: "type_unresolvable",
@@ -1228,9 +1230,41 @@ Deno.test("validateStepInputs: direct-execution step with unresolvable type prod
 
   const results = await svc.validate(workflow);
   const inputResult = results.find((r) => r.name.includes("Step inputs"));
-  assertEquals(inputResult?.passed, true);
-  assertEquals(inputResult?.name.includes("not resolved"), true);
-  assertEquals(inputResult?.name.includes("model not found"), false);
+  // An unresolvable type must NOT silently pass — it hides real contract bugs
+  // (non-existent methods, wrong arg keys). See swamp-club#506.
+  assertEquals(inputResult?.passed, false);
+  assertEquals(inputResult?.error?.includes("could not be resolved"), true);
+  assertEquals(inputResult?.error?.includes("@swamp/nonexistent/type"), true);
+});
+
+Deno.test("validateStepInputs: name-referenced step with unresolvable type fails validation", async () => {
+  const resolver = mockResolver({
+    "http-poll.pollUrl": {
+      status: "type_unresolvable",
+      modelType: "@hivemq/http-poll",
+    },
+  });
+  const svc = new DefaultWorkflowValidationService(resolver);
+
+  const workflow = Workflow.create({
+    name: "test",
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: [
+          Step.create({
+            name: "step1",
+            task: StepTask.model("http-poll", "pollUrl"),
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await svc.validate(workflow);
+  const inputResult = results.find((r) => r.name.includes("Step inputs"));
+  assertEquals(inputResult?.passed, false);
+  assertEquals(inputResult?.error?.includes("could not be resolved"), true);
 });
 
 Deno.test("validateStepInputs: direct-execution step with CEL in modelType skips validation", async () => {
