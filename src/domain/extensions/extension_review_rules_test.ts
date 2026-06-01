@@ -315,8 +315,11 @@ Deno.test("evaluateReviewReport: missing report is a warning (prompt), never a h
   assertEquals(findings[0].severity, "medium");
   // The report path must be carried on the finding (rendered in log mode).
   assertEquals(findings[0].file, "/tmp/review.json");
-  // The first message line is self-sufficient; the skeleton follows.
-  assert(!findings[0].message.split("\n")[0].includes("{"));
+  // The message is a single, self-sufficient line (no embedded skeleton).
+  assertEquals(findings[0].message.includes("\n"), false);
+  assert(!findings[0].message.includes("{"));
+  // The skeleton rides on its own field for JSON consumers.
+  assertEquals(findings[0].skeleton, "{}");
 });
 
 Deno.test("evaluateReviewReport: name/version mismatch warns (e.g. manual version bump)", () => {

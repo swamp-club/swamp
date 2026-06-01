@@ -80,6 +80,12 @@ export interface ReviewFinding {
   file: string;
   /** Actionable description of the issue. */
   message: string;
+  /**
+   * Optional fill-in report skeleton (JSON). Set only on the missing-report
+   * finding so JSON consumers get it as a discrete field rather than parsing
+   * it out of `message`.
+   */
+  skeleton?: string;
 }
 
 /**
@@ -509,12 +515,15 @@ export function evaluateReviewReport(
       dimension: REVIEW_REPORT_DIMENSION,
       severity: gate,
       file: ctx.reportPath,
-      // First line is self-sufficient (the path is the finding's `file`); the
-      // bulky skeleton follows for --json consumers. Log mode shows line one.
+      // Single-line, self-sufficient message (the path is the finding's
+      // `file`); the skeleton rides on its own field for JSON consumers.
+      // `--dry-run --json` is the safe incantation — `--json` alone would
+      // bypass the confirmation prompt and push without the review.
       message:
         "No adversarial review recorded for the current code — perform the " +
-        "review and write the report here (run with --json, or see the " +
-        `swamp-extension skill, for the fill-in skeleton).\n\nSkeleton:\n${ctx.skeleton}`,
+        "review and write the report here (run with --dry-run --json for the " +
+        "fill-in skeleton, or see the swamp-extension skill).",
+      skeleton: ctx.skeleton,
     });
     return findings;
   }

@@ -185,7 +185,9 @@ class LogExtensionPushRenderer implements ExtensionPushRenderer {
   }
 
   renderReviewRuleWarnings(warnings: ReviewFinding[]): void {
-    this.logger.warn`Extension review rule warnings (non-blocking):`;
+    // No "(non-blocking)" qualifier — these warnings do trigger the push
+    // confirmation prompt, matching the `Safety warnings:` style.
+    this.logger.warn`Extension review warnings:`;
     for (const w of warnings) {
       // Render the first line only; multi-line detail (e.g. the report
       // skeleton) stays in the JSON output.
