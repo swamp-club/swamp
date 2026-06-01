@@ -15,17 +15,9 @@ description: >
 
 Create and run reports that analyze model and workflow executions. Reports
 produce markdown (human-readable) and JSON (machine-readable) output. All
-commands support `--json` for machine-readable output.
-
-## When to Create a Report
-
-Create a report extension when you need a **repeatable pipeline** to transform,
-aggregate, or analyze model output. If the analysis will be run more than once
-or should be stored alongside model data, a report is the right choice.
-
-**Verify CLI syntax:** If unsure about exact flags or subcommands, run
-`swamp report --help` or `swamp model method run --help` for the complete,
-up-to-date CLI schema.
+commands support `--json`. If unsure about exact flags or subcommands, run
+`swamp report --help` or `swamp model method run --help` for the up-to-date
+schema.
 
 ## Quick Reference
 
@@ -67,73 +59,19 @@ To create a new report extension, use the `swamp-extension` skill. It covers the
 TypeScript authoring workflow, export contract, scopes, reading execution data,
 and testing.
 
-## Three-Level Report Control Model
+## Report Control (Three Levels)
 
-Reports are controlled at three levels, from most general to most specific:
+Reports are selected at three levels, most general to most specific:
 
-### 1. Model Type Defaults (TypeScript `ModelDefinition`)
+1. **Model-type defaults** — `reports: [...]` on the model definition.
+2. **Definition YAML** — `reports.require` adds, `reports.skip` removes.
+3. **Workflow YAML** — workflow-scope reports plus per-run overrides.
 
-The `reports` field on model definitions lists standalone report names that are
-defaults for any model of this type:
-
-```typescript
-// extensions/models/my_model.ts
-export const model = {
-  type: "@myorg/ec2",
-  version: "2026.03.01.1",
-  reports: ["@myorg/cost-report", "@myorg/drift-report"],
-  // ... methods, resources, etc.
-};
-```
-
-### 2. Definition YAML Overrides (`reportSelection`)
-
-The `reports:` field in definition YAML provides per-definition overrides.
-`require` adds reports beyond model-type defaults. `skip` removes reports from
-the defaults.
-
-```yaml
-# definitions/my-vpc.yaml
-id: 550e8400-e29b-41d4-a716-446655440000
-name: my-vpc
-version: 1
-tags: {}
-reports:
-  require:
-    - "@myorg/compliance-report" # adds to model-type defaults
-    - name: security-audit # only run for these methods
-      methods: ["create", "delete"]
-  skip:
-    - "@myorg/drift-report" # removes from model-type defaults
-globalArguments:
-  cidrBlock: "10.0.0.0/16"
-methods:
-  create:
-    arguments: {}
-```
-
-### 3. Workflow YAML Overrides
-
-The `reports:` field in workflow YAML controls workflow-scope reports and can
-also override model-level reports for the workflow run.
-
-```yaml
-# workflows/deploy.yaml
-name: deploy
-reports:
-  require:
-    - "@myorg/workflow-summary" # workflow-scope report
-  skip:
-    - "@myorg/cost-report" # skip for all models in this workflow
-```
-
-### Filtering Semantics and Precedence
-
-The candidate set is built from model-type defaults plus `require`, minus
-`skip`, with CLI flags applied last. `skip` always wins over `require`, and
-`require` makes a report immune to CLI skip flags. See
-[references/filtering.md](references/filtering.md) for the full set composition
-and precedence rules.
+CLI flags apply last. `skip` always wins over `require`, and `require` makes a
+report immune to CLI skip flags. See
+[references/control-model.md](references/control-model.md) for the configuration
+examples at each level, and [references/filtering.md](references/filtering.md)
+for the full set composition and precedence rules.
 
 ## Publishing Reports
 
@@ -238,6 +176,9 @@ combine. Env vars: `SWAMP_REPORT_MAX_WIDTH`, `SWAMP_REPORT_MAX_COL_WIDTH`.
 - **Report API**: See [references/report-types.md](references/report-types.md)
   for full `ReportDefinition`, `ReportContext`, `ReportRegistry`, and
   `ReportSelection` type definitions
+- **Control model**: See
+  [references/control-model.md](references/control-model.md) for the
+  configuration examples at each of the three control levels
 - **Filtering**: See [references/filtering.md](references/filtering.md) for the
   full filtering semantics and precedence rules
 - **Testing**: See [references/testing.md](references/testing.md) for unit
