@@ -143,7 +143,7 @@ export interface ExtensionTypeRow {
  * populated flag is not set.
  */
 export class ExtensionCatalogStore {
-  private readonly db: DatabaseSync;
+  private db: DatabaseSync;
   private readonly dbPath: string;
 
   constructor(dbPath: string) {
@@ -151,7 +151,21 @@ export class ExtensionCatalogStore {
     this.dbPath = dbPath;
     this.db = new DatabaseSync(dbPath);
     this.db.exec("PRAGMA busy_timeout=5000");
-    this.initializeWithRetry();
+    try {
+      this.initializeWithRetry();
+    } catch (error: unknown) {
+      if (isReadOnlyError(error)) {
+        logger
+          .warn`Catalog DB is read-only during schema migration; recreating from scratch`;
+        this.db.close();
+        removeCatalogFiles(dbPath);
+        this.db = new DatabaseSync(dbPath);
+        this.db.exec("PRAGMA busy_timeout=5000");
+        this.initializeWithRetry();
+      } else {
+        throw error;
+      }
+    }
   }
 
   /**
@@ -1179,4 +1193,21 @@ export function sourceDirsFingerprint(
  */
 function inferRepoRootFromDbPath(dbPath: string): string {
   return dirname(dirname(dbPath));
+}
+
+function isReadOnlyError(error: unknown): boolean {
+  return error instanceof Error &&
+    /attempt to write a readonly database/i.test(error.message);
+}
+
+function removeCatalogFiles(dbPath: string): void {
+  const sidecars = [`${dbPath}-wal`, `${dbPath}-shm`, `${dbPath}-journal`];
+  try {
+    Deno.removeSync(dbPath);
+  } catch { /* file may already be gone */ }
+  for (const sidecar of sidecars) {
+    try {
+      Deno.removeSync(sidecar);
+    } catch { /* ok */ }
+  }
 }
