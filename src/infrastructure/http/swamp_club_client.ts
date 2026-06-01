@@ -84,6 +84,22 @@ export interface FetchIssueResponse {
   commentCount: number;
 }
 
+/** Filters for the issue search endpoint. */
+export interface SearchIssuesFilter {
+  q?: string;
+  type?: string;
+  status?: string;
+  source?: string;
+  limit?: number;
+  offset?: number;
+}
+
+/** Response from the issue search/list endpoint. */
+export interface SearchIssuesResponse {
+  issues: FetchIssueResponse[];
+  total: number;
+}
+
 /**
  * HTTP client for swamp-club API interactions.
  * Used by auth commands to sign in, create API keys, and verify identity.
@@ -407,6 +423,63 @@ export class SwampClubClient {
         .map((a: Record<string, string>) => a.username),
       commentCount: (issue.comments ?? []).length,
     };
+  }
+
+  /**
+   * Search or list Lab issues with optional filters.
+   * When an API key is provided, authenticates using the x-api-key header.
+   */
+  async searchIssues(
+    apiKey: string | undefined,
+    filter?: SearchIssuesFilter,
+  ): Promise<SearchIssuesResponse> {
+    const params = new URLSearchParams();
+    if (filter?.q) params.set("q", filter.q);
+    if (filter?.type) params.set("type", filter.type);
+    if (filter?.status) params.set("status", filter.status);
+    if (filter?.source) params.set("source", filter.source);
+    if (filter?.limit !== undefined) {
+      params.set("limit", String(filter.limit));
+    }
+    if (filter?.offset !== undefined) {
+      params.set("offset", String(filter.offset));
+    }
+    const qs = params.toString();
+    const path = `/api/v1/lab/issues${qs ? `?${qs}` : ""}`;
+
+    const headers: Record<string, string> = {};
+    if (apiKey) {
+      headers["x-api-key"] = apiKey;
+    }
+    const res = await this.fetch(path, { method: "GET", headers });
+
+    if (!res.ok) {
+      const text = await res.text();
+      throw new UserError(
+        `Failed to search issues (HTTP ${res.status}): ${text}`,
+      );
+    }
+
+    const data = await res.json();
+    const issues: FetchIssueResponse[] = (data.issues ?? []).map(
+      // deno-lint-ignore no-explicit-any
+      (issue: any) => ({
+        number: issue.number,
+        title: issue.title ?? "",
+        type: issue.type ?? "feature",
+        status: issue.status ?? "open",
+        author: issue.authorUsername ?? "unknown",
+        body: issue.body ?? "",
+        assignees: (issue.assignees ?? [])
+          .filter(
+            (a: Record<string, unknown>) => typeof a.username === "string",
+          )
+          .map((a: Record<string, string>) => a.username),
+        commentCount: (issue.comments ?? []).length,
+      }),
+    );
+
+    return { issues, total: data.total ?? issues.length };
   }
 
   private async fetch(

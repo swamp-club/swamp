@@ -1125,6 +1125,14 @@ export {
   type IssueEditEvent,
   type IssueEditInput,
 } from "./issues/edit.ts";
+export {
+  issueSearch,
+  type IssueSearchData,
+  type IssueSearchDeps,
+  type IssueSearchEvent,
+  type IssueSearchInput,
+  type IssueSearchItem,
+} from "./issues/search.ts";
 
 // Audit operations
 export {

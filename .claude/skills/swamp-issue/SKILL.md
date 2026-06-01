@@ -1,6 +1,6 @@
 ---
 name: swamp-issue
-description: Fetch, edit, and submit issues to swamp Lab — view details, edit title/body, file bugs/features/security reports, post ripples (comments) with close/reopen, route to extension publishers. Triggers on "bug report", "feature request", "security report", "report bug", "file bug", "submit bug", "swamp bug", "swamp feature", "feedback", "report issue", "file issue", "extension bug", "ripple", "comment on issue", "close issue", "reopen issue", "get issue", "view issue", "fetch issue", "show issue", "edit issue", "update issue", "change issue title".
+description: Fetch, edit, search, and submit issues to swamp Lab — view details, edit title/body, search/list issues, file bugs/features/security reports, post ripples (comments) with close/reopen, route to extension publishers. Triggers on "bug report", "feature request", "security report", "report bug", "file bug", "submit bug", "swamp bug", "swamp feature", "feedback", "report issue", "file issue", "extension bug", "ripple", "comment on issue", "close issue", "reopen issue", "get issue", "view issue", "fetch issue", "show issue", "edit issue", "update issue", "change issue title", "search issues", "list issues", "find issue", "issue search".
 ---
 
 # Swamp Issue Skill
@@ -41,6 +41,7 @@ directly.
 
 | Command                       | Purpose                                                                                       |
 | ----------------------------- | --------------------------------------------------------------------------------------------- |
+| `swamp issue search [query]`  | Search or list issues by keyword, with optional `--type`, `--status`, `--source`, `--limit`   |
 | `swamp issue get <number>`    | Fetch and display issue details (title, type, status, author, body, assignees, comment count) |
 | `swamp issue edit <number>`   | Edit title and/or body of an existing issue (author or admin only)                            |
 | `swamp issue bug`             | Title, description, steps to reproduce, environment                                           |
@@ -51,6 +52,9 @@ directly.
 **Basic non-interactive examples:**
 
 ```bash
+swamp issue search vault
+swamp issue search --type bug --status open
+swamp issue search --source swamp --limit 10 --json
 swamp issue get 42
 swamp issue get 42 --json
 swamp issue edit 42

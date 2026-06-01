@@ -24,14 +24,16 @@ import { issueEditCommand } from "./issue_edit.ts";
 import { issueFeatureCommand } from "./issue_feature.ts";
 import { issueGetCommand } from "./issue_get.ts";
 import { issueRippleCommand } from "./issue_ripple.ts";
+import { issueSearchCommand } from "./issue_search.ts";
 import { issueSecurityCommand } from "./issue_security.ts";
 
 export const issueCommand = new Command()
   .name("issue")
   .description(
-    "Fetch issue details, submit bug reports, feature requests, security reports, and ripples (comments)",
+    "Search, fetch, submit, and comment on swamp-club Lab issues",
   )
   .action(groupCommandAction)
+  .command("search", issueSearchCommand)
   .command("get", issueGetCommand)
   .command("edit", issueEditCommand)
   .command("bug", issueBugCommand)
