@@ -1,6 +1,6 @@
 ---
 name: swamp-issue
-description: Fetch issue details and submit issues to the swamp Lab or route them to the publisher's repository — fetch issue details, file bug reports, feature requests, and security vulnerability reports against swamp itself or against a specific extension, and post follow-up ripples (comments) on existing Lab issues with optional close/reopen. Use when the user wants to view an issue, report a bug, request a feature, disclose a vulnerability, comment on an existing issue, close or reopen an issue, or provide feedback about swamp. Triggers on "bug report", "feature request", "security report", "vulnerability", "report bug", "request feature", "file bug", "submit bug", "swamp bug", "swamp feature", "feedback", "report issue", "file issue", "report against extension", "extension bug", "ripple", "comment on issue", "reply to issue", "follow up on issue", "add comment to issue", "close issue", "reopen issue", "get issue", "view issue", "fetch issue", "issue details", "show issue".
+description: Fetch, edit, and submit issues to swamp Lab — view details, edit title/body, file bugs/features/security reports, post ripples (comments) with close/reopen, route to extension publishers. Triggers on "bug report", "feature request", "security report", "report bug", "file bug", "submit bug", "swamp bug", "swamp feature", "feedback", "report issue", "file issue", "extension bug", "ripple", "comment on issue", "close issue", "reopen issue", "get issue", "view issue", "fetch issue", "show issue", "edit issue", "update issue", "change issue title".
 ---
 
 # Swamp Issue Skill
@@ -14,6 +14,10 @@ flag skips straight to a pre-filled email.
 To view an existing issue, use `swamp issue get <number>` — this fetches and
 displays the issue's title, type, status, author, body, assignees, and comment
 count.
+
+To edit an existing issue's title or body, use `swamp issue edit <number>`. This
+opens `$EDITOR` pre-filled with the current title and body. Use `--title` and/or
+`--body` flags to skip the editor. Only the issue author (or admins) can edit.
 
 With `--extension <name>`, reports are routed to the extension's publisher
 instead — either as a tagged swamp.club Lab issue (for `@swamp/*` extensions) or
@@ -38,6 +42,7 @@ directly.
 | Command                       | Purpose                                                                                       |
 | ----------------------------- | --------------------------------------------------------------------------------------------- |
 | `swamp issue get <number>`    | Fetch and display issue details (title, type, status, author, body, assignees, comment count) |
+| `swamp issue edit <number>`   | Edit title and/or body of an existing issue (author or admin only)                            |
 | `swamp issue bug`             | Title, description, steps to reproduce, environment                                           |
 | `swamp issue feature`         | Title, problem statement, proposed solution, alternatives                                     |
 | `swamp issue security`        | Title, description, reproduction, affected components, impact                                 |
@@ -48,6 +53,9 @@ directly.
 ```bash
 swamp issue get 42
 swamp issue get 42 --json
+swamp issue edit 42
+swamp issue edit 42 --title "Updated title"
+swamp issue edit 42 --title "Updated title" --body "Updated body" --json
 swamp issue bug --title "CLI crashes on empty input" --body "When running..." --json
 swamp issue feature --title "Add dark mode" --body "I'd like..." --json
 swamp issue security --title "..." --body "..." --json

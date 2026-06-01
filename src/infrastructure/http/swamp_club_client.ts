@@ -310,6 +310,61 @@ export class SwampClubClient {
   }
 
   /**
+   * Update the title and/or body of an existing Lab issue.
+   * Authenticates using the x-api-key header.
+   */
+  async updateIssue(
+    apiKey: string,
+    issueNumber: number,
+    fields: { title?: string; body?: string },
+  ): Promise<{ title: string; body: string }> {
+    const res = await this.fetch(
+      `/api/v1/lab/issues/${issueNumber}`,
+      {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": apiKey,
+        },
+        body: JSON.stringify(fields),
+      },
+    );
+
+    if (!res.ok) {
+      const text = await res.text();
+      if (res.status === 404) {
+        throw new UserError(`Issue #${issueNumber} not found.`);
+      }
+      if (res.status === 403) {
+        throw new UserError(
+          `You do not have permission to edit issue #${issueNumber}.`,
+        );
+      }
+      if (res.status === 422) {
+        try {
+          const parsed = JSON.parse(text);
+          if (
+            parsed?.error && Array.isArray(parsed.flagged) &&
+            parsed.flagged.length > 0
+          ) {
+            throw new UserError(
+              `${parsed.error}: ${parsed.flagged.join(", ")}`,
+            );
+          }
+        } catch (err) {
+          if (err instanceof UserError) throw err;
+        }
+      }
+      throw new UserError(
+        `Failed to update issue #${issueNumber} (HTTP ${res.status}): ${text}`,
+      );
+    }
+
+    const data = await res.json();
+    return { title: data.issue.title, body: data.issue.body };
+  }
+
+  /**
    * Fetch an existing Lab issue by number.
    * When an API key is provided, authenticates using the x-api-key header.
    */

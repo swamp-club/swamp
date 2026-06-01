@@ -1118,6 +1118,13 @@ export {
   type IssueGetEvent,
   type IssueGetInput,
 } from "./issues/get.ts";
+export {
+  issueEdit,
+  type IssueEditData,
+  type IssueEditDeps,
+  type IssueEditEvent,
+  type IssueEditInput,
+} from "./issues/edit.ts";
 
 // Audit operations
 export {

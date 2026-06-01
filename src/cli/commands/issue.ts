@@ -20,6 +20,7 @@
 import { Command } from "@cliffy/command";
 import { groupCommandAction } from "../group_action.ts";
 import { issueBugCommand } from "./issue_bug.ts";
+import { issueEditCommand } from "./issue_edit.ts";
 import { issueFeatureCommand } from "./issue_feature.ts";
 import { issueGetCommand } from "./issue_get.ts";
 import { issueRippleCommand } from "./issue_ripple.ts";
@@ -32,6 +33,7 @@ export const issueCommand = new Command()
   )
   .action(groupCommandAction)
   .command("get", issueGetCommand)
+  .command("edit", issueEditCommand)
   .command("bug", issueBugCommand)
   .command("feature", issueFeatureCommand)
   .command("security", issueSecurityCommand)

@@ -270,6 +270,104 @@ Deno.test("SwampClubClient - updateIssueStatus throws on failure", async () => {
   }
 });
 
+Deno.test("SwampClubClient - updateIssue sends PATCH with title and body", async () => {
+  let capturedMethod = "";
+  let capturedBody: Record<string, unknown> = {};
+  let capturedApiKey = "";
+  const mock = startMockServer(async (req) => {
+    capturedMethod = req.method;
+    capturedApiKey = req.headers.get("x-api-key") ?? "";
+    capturedBody = await req.json();
+    return Response.json({
+      issue: { number: 42, title: "New title", body: "New body" },
+    });
+  });
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    const result = await client.updateIssue("my-key", 42, {
+      title: "New title",
+      body: "New body",
+    });
+    assertEquals(capturedMethod, "PATCH");
+    assertEquals(capturedApiKey, "my-key");
+    assertEquals(capturedBody.title, "New title");
+    assertEquals(capturedBody.body, "New body");
+    assertEquals(result.title, "New title");
+    assertEquals(result.body, "New body");
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("SwampClubClient - updateIssue sends only provided fields", async () => {
+  let capturedBody: Record<string, unknown> = {};
+  const mock = startMockServer(async (req) => {
+    capturedBody = await req.json();
+    return Response.json({
+      issue: { number: 1, title: "Updated title", body: "Same body" },
+    });
+  });
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    await client.updateIssue("key", 1, { title: "Updated title" });
+    assertEquals(capturedBody.title, "Updated title");
+    assertEquals(capturedBody.body, undefined);
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("SwampClubClient - updateIssue throws on 404", async () => {
+  const mock = startMockServer((_req) =>
+    new Response("Not found", { status: 404 })
+  );
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    await assertRejects(
+      () => client.updateIssue("key", 999, { title: "x" }),
+      UserError,
+      "Issue #999 not found",
+    );
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("SwampClubClient - updateIssue throws on 403", async () => {
+  const mock = startMockServer((_req) =>
+    new Response("Forbidden", { status: 403 })
+  );
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    await assertRejects(
+      () => client.updateIssue("key", 42, { title: "x" }),
+      UserError,
+      "do not have permission",
+    );
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("SwampClubClient - updateIssue surfaces profanity on 422", async () => {
+  const mock = startMockServer((_req) =>
+    Response.json(
+      { error: "Profanity detected", flagged: ["badword"] },
+      { status: 422 },
+    )
+  );
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    await assertRejects(
+      () => client.updateIssue("key", 42, { title: "badword" }),
+      UserError,
+      "badword",
+    );
+  } finally {
+    await mock.shutdown();
+  }
+});
+
 Deno.test("SwampClubClient - 429 surfaces Retry-After in UserError", async () => {
   const mock = startMockServer((_req) =>
     new Response("rate limited", {

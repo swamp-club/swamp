@@ -111,8 +111,19 @@ export function createIssueCreateRenderer(
 
 /** Data structure for issue editor cancelled output. */
 export interface IssueCancelledData {
-  type: "bug" | "feature" | "security" | "ripple";
+  type: "bug" | "feature" | "security" | "ripple" | "edit";
   reason: "empty" | "cancelled";
+}
+
+function cancelledAction(type: IssueCancelledData["type"]): string {
+  switch (type) {
+    case "ripple":
+      return "Ripple";
+    case "edit":
+      return "Issue edit";
+    default:
+      return "Issue creation";
+  }
 }
 
 export function renderIssueCancelled(
@@ -123,7 +134,7 @@ export function renderIssueCancelled(
     console.log(JSON.stringify({ status: "cancelled", ...data }, null, 2));
   } else {
     const logger = getSwampLogger(["issue", "create"]);
-    const action = data.type === "ripple" ? "Ripple" : "Issue creation";
+    const action = cancelledAction(data.type);
     if (data.reason === "empty") {
       logger.info(`${action} cancelled: no content provided`);
     } else {
