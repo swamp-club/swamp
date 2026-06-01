@@ -684,3 +684,51 @@ Deno.test("DataQueryService: catalog backfill works with metadata-only files (no
     }
   }
 });
+
+Deno.test("DataQueryService: ns field is queryable for namespace filtering", () => {
+  const { catalog, service } = setupTest();
+  catalog.upsert(makeRow({ namespace: "", model_name: "solo-model" }));
+  catalog.upsert(
+    makeRow({
+      namespace: "infra",
+      model_name: "infra-model",
+      data_name: "infra-data",
+      id: "uuid-infra",
+    }),
+  );
+  catalog.upsert(
+    makeRow({
+      namespace: "security",
+      model_name: "sec-model",
+      data_name: "sec-data",
+      id: "uuid-sec",
+    }),
+  );
+
+  const infraResults = service.querySync(
+    'ns == "infra"',
+  ) as DataRecord[];
+  assertEquals(infraResults.length, 1);
+  assertEquals(infraResults[0].namespace, "infra");
+  assertEquals(infraResults[0].modelName, "infra-model");
+
+  const soloResults = service.querySync('ns == ""') as DataRecord[];
+  assertEquals(soloResults.length, 1);
+  assertEquals(soloResults[0].namespace, "");
+  assertEquals(soloResults[0].modelName, "solo-model");
+
+  const allResults = service.querySync(
+    'modelName == "solo-model" || modelName == "infra-model" || modelName == "sec-model"',
+  ) as DataRecord[];
+  assertEquals(allResults.length, 3);
+
+  // ns must also work in select projections
+  const projected = service.querySync(
+    'ns == "infra"',
+    { select: "ns" },
+  ) as string[];
+  assertEquals(projected.length, 1);
+  assertEquals(projected[0], "infra");
+
+  catalog.close();
+});

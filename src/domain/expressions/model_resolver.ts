@@ -28,6 +28,9 @@ import type { DataRecord } from "../data/data_record.ts";
 import type { DataQueryService } from "../data/data_query_service.ts";
 import { isTextContentType } from "../data/content_type.ts";
 import { ModelNotFoundError } from "./errors.ts";
+import { parseNamespacedModelName } from "../data/namespace.ts";
+import type { Namespace } from "../data/namespace.ts";
+import { UserError } from "../errors.ts";
 import { VaultService } from "../vaults/vault_service.ts";
 import type { SecretRedactor } from "../secrets/mod.ts";
 import type { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
@@ -58,6 +61,65 @@ export type { DataRecord, FileDataRecord } from "../data/data_record.ts";
 /** Escapes a string for safe embedding in a CEL string literal. */
 function escapeCelString(s: string): string {
   return s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+}
+
+interface NamespaceRouting {
+  modelName: string;
+  namespacePredicate: string;
+  isWildcard: boolean;
+}
+
+/**
+ * Parses a possibly-namespaced model name and returns the bare model name,
+ * the CEL predicate fragment for namespace scoping, and whether the lookup
+ * is a wildcard query.
+ *
+ * - No prefix ("model") → own-namespace only: `namespace == "{ownNs}"`
+ * - Specific prefix ("ns:model") → target namespace: `namespace == "ns"`
+ * - Wildcard ("*:model") → all namespaces, no filter (caller must check ambiguity)
+ */
+function routeNamespace(
+  rawModelName: string,
+  ownNamespace: Namespace,
+): NamespaceRouting {
+  const parsed = parseNamespacedModelName(rawModelName);
+  if (parsed.namespace === undefined) {
+    return {
+      modelName: parsed.modelName,
+      namespacePredicate: ` && ns == "${escapeCelString(ownNamespace)}"`,
+      isWildcard: false,
+    };
+  }
+  if (parsed.namespace === "*") {
+    return {
+      modelName: parsed.modelName,
+      namespacePredicate: "",
+      isWildcard: true,
+    };
+  }
+  return {
+    modelName: parsed.modelName,
+    namespacePredicate: ` && ns == "${escapeCelString(parsed.namespace)}"`,
+    isWildcard: false,
+  };
+}
+
+/**
+ * Throws if wildcard query results span multiple namespaces.
+ */
+function checkWildcardAmbiguity(
+  results: DataRecord[],
+  rawModelName: string,
+): void {
+  if (results.length === 0) return;
+  const namespaces = new Set(results.map((r) => r.namespace));
+  if (namespaces.size > 1) {
+    const sorted = [...namespaces].sort();
+    throw new UserError(
+      `Ambiguous: "${rawModelName.slice(2)}" exists in namespaces ` +
+        `[${sorted.join(", ")}], qualify with a namespace prefix`,
+    );
+  }
 }
 
 /**
@@ -545,47 +607,73 @@ export class ModelResolver {
     // The query service owns the implicit `isLatest == true` injection, so
     // helpers compose predicates as if the catalog exposed history directly.
     //
+    // Point-lookup helpers (latest, version, findBySpec, findByTag,
+    // listVersions) default to own-namespace scoping. Cross-namespace access
+    // uses "ns:model" prefix syntax; wildcard "*:model" queries all namespaces
+    // with an ambiguity check. data.query() spans all namespaces by default.
+    //
     // Most helpers are async because the query path resolves vault
     // references in result attributes. Callers in sync CEL contexts (e.g.
     // `forEach.in`) must go through `CelEvaluator.evaluateAsync`, which
     // cel-js natively propagates Promises through.
+    const ownNamespace = this.dataRepo?.namespace ?? ("" as Namespace);
     context.data = {
       version: async (
-        modelName: string,
+        rawModelName: string,
         dataName: string,
         version: number,
       ): Promise<DataRecord | null> => {
         if (!this.dataQueryService) return null;
-        const predicate = `modelName == "${escapeCelString(modelName)}" ` +
-          `&& name == "${escapeCelString(dataName)}" && version == ${version}`;
+        const ns = routeNamespace(rawModelName, ownNamespace);
+        const predicate = `modelName == "${escapeCelString(ns.modelName)}" ` +
+          `&& name == "${escapeCelString(dataName)}" && version == ${version}` +
+          ns.namespacePredicate;
         const results = await this.dataQueryService.query(predicate, {
-          limit: 1,
+          limit: ns.isWildcard ? undefined : 1,
           loadAttributes: true,
         }) as DataRecord[];
+        if (ns.isWildcard) {
+          checkWildcardAmbiguity(results, rawModelName);
+        }
         return results.length > 0 ? results[0] : null;
       },
       latest: async (
-        modelName: string,
+        rawModelName: string,
         dataName: string,
       ): Promise<DataRecord | null> => {
         if (!this.dataQueryService) return null;
-        const predicate = `modelName == "${escapeCelString(modelName)}" ` +
-          `&& name == "${escapeCelString(dataName)}"`;
+        const ns = routeNamespace(rawModelName, ownNamespace);
+        const predicate = `modelName == "${escapeCelString(ns.modelName)}" ` +
+          `&& name == "${escapeCelString(dataName)}"` +
+          ns.namespacePredicate;
         const results = await this.dataQueryService.query(predicate, {
-          limit: 1,
+          limit: ns.isWildcard ? undefined : 1,
           loadAttributes: true,
         }) as DataRecord[];
+        if (ns.isWildcard) {
+          checkWildcardAmbiguity(results, rawModelName);
+        }
         return results.length > 0 ? results[0] : null;
       },
-      listVersions: (modelName: string, dataName: string): number[] => {
+      listVersions: (rawModelName: string, dataName: string): number[] => {
         if (!this.dataQueryService) return [];
+        const ns = routeNamespace(rawModelName, ownNamespace);
         // `version >= 0` is the history opt-in: it suppresses the implicit
         // `isLatest == true` injection so every version of this data item
         // is returned. The select projection extracts just the version
         // numbers. querySync is used so this helper can be called from
         // synchronous CEL contexts.
-        const predicate = `modelName == "${escapeCelString(modelName)}" ` +
-          `&& name == "${escapeCelString(dataName)}" && version >= 0`;
+        const predicate = `modelName == "${escapeCelString(ns.modelName)}" ` +
+          `&& name == "${escapeCelString(dataName)}" && version >= 0` +
+          ns.namespacePredicate;
+        if (ns.isWildcard) {
+          // Can't check ambiguity on projected number[], so query records first.
+          const records = this.dataQueryService.querySync(
+            predicate,
+          ) as DataRecord[];
+          checkWildcardAmbiguity(records, rawModelName);
+          return records.map((r) => r.version).sort((a, b) => a - b);
+        }
         const results = this.dataQueryService.querySync(predicate, {
           select: "version",
         }) as number[];
@@ -596,24 +684,30 @@ export class ModelResolver {
         tagValue: string,
       ): Promise<DataRecord[]> => {
         if (!this.dataQueryService) return [];
-        const predicate = `tags.${escapeCelString(tagKey)} == "${
-          escapeCelString(tagValue)
-        }"`;
+        const nsPredicate = ` && ns == "${escapeCelString(ownNamespace)}"`;
+        const predicate =
+          `tags.${escapeCelString(tagKey)} == "${escapeCelString(tagValue)}"` +
+          nsPredicate;
         const results = await this.dataQueryService.query(predicate, {
           loadAttributes: true,
         }) as DataRecord[];
         return deduplicateByName(results);
       },
       findBySpec: async (
-        specModelName: string,
+        rawSpecModelName: string,
         specName: string,
       ): Promise<DataRecord[]> => {
         if (!this.dataQueryService) return [];
-        const predicate = `modelName == "${escapeCelString(specModelName)}" ` +
-          `&& specName == "${escapeCelString(specName)}"`;
+        const ns = routeNamespace(rawSpecModelName, ownNamespace);
+        const predicate = `modelName == "${escapeCelString(ns.modelName)}" ` +
+          `&& specName == "${escapeCelString(specName)}"` +
+          ns.namespacePredicate;
         const results = await this.dataQueryService.query(predicate, {
           loadAttributes: true,
         }) as DataRecord[];
+        if (ns.isWildcard) {
+          checkWildcardAmbiguity(results, rawSpecModelName);
+        }
         return deduplicateByName(results);
       },
       query: async (

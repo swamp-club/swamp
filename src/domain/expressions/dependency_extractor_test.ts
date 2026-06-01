@@ -381,3 +381,41 @@ Deno.test("hasStepOutputDependency returns true for data.findBySpec calls", () =
     true,
   );
 });
+
+// Tests for namespace prefix stripping in data function extraction
+
+Deno.test("extractModelRefs strips namespace prefix from data.latest", () => {
+  const expr = "data.latest('security:scanner', 'result').attributes.value";
+  const refs = extractModelRefs(expr);
+  assertEquals(refs.length, 1);
+  assertEquals(refs.includes("scanner"), true);
+});
+
+Deno.test("extractModelRefs strips wildcard prefix from data.latest", () => {
+  const expr = "data.latest('*:scanner', 'result').attributes.value";
+  const refs = extractModelRefs(expr);
+  assertEquals(refs.length, 1);
+  assertEquals(refs.includes("scanner"), true);
+});
+
+Deno.test("extractModelRefs preserves bare model name from data.latest", () => {
+  const expr = "data.latest('scanner', 'result').attributes.value";
+  const refs = extractModelRefs(expr);
+  assertEquals(refs.length, 1);
+  assertEquals(refs.includes("scanner"), true);
+});
+
+Deno.test("extractDataFunctionDependencies strips namespace prefix", () => {
+  const expr = "data.version('infra:vpc-model', 'state', 1)";
+  const refs = extractDataFunctionDependencies(expr);
+  assertEquals(refs.length, 1);
+  assertEquals(refs.includes("vpc-model"), true);
+});
+
+Deno.test("extractArtifactDependencies strips namespace prefix from data calls", () => {
+  const expr = "data.latest('security:scanner', 'output').attributes.id";
+  const deps = extractArtifactDependencies(expr);
+  assertEquals(deps.length, 1);
+  assertEquals(deps[0].modelRef, "scanner");
+  assertEquals(deps[0].type, "data");
+});

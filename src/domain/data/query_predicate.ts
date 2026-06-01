@@ -44,6 +44,7 @@ export const QUERY_FIELDS = new Set([
   "jobName",
   "stepName",
   "source",
+  "ns",
 ]);
 
 /**

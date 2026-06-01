@@ -185,12 +185,18 @@ export class DataQueryService {
       if (!needsContent) needsContent = referencesContent(selectAst);
     }
 
-    // Iterate catalog rows and evaluate predicate
+    // Iterate catalog rows and evaluate predicate.
+    // CEL reserves "namespace" as an identifier, so we expose an "ns" alias
+    // via a prototype-chain overlay — the record itself is not mutated.
     const results: DataRecord[] = [];
     for (const row of this.catalogStore.iterate()) {
       const record = this.rowToRecord(row, needsAttributes, needsContent);
+      const ctx = Object.create(
+        record as unknown as Record<string, unknown>,
+      ) as Record<string, unknown>;
+      ctx["ns"] = record.namespace;
       try {
-        const match = parsed(record as unknown as Record<string, unknown>);
+        const match = parsed(ctx);
         if (match === true) {
           results.push(record);
           if (results.length >= limit) break;
@@ -206,10 +212,15 @@ export class DataQueryService {
     // Apply projection if select expression provided.
     // Per-record errors (e.g. missing attribute keys) produce null instead of
     // failing the entire query, so partial results are still useful.
+    // The ns alias must be available in select expressions too.
     if (selectParsed) {
       return results.map((r) => {
         try {
-          return selectParsed(r as unknown as Record<string, unknown>);
+          const selectCtx = Object.create(
+            r as unknown as Record<string, unknown>,
+          ) as Record<string, unknown>;
+          selectCtx["ns"] = r.namespace;
+          return selectParsed(selectCtx);
         } catch {
           return null;
         }

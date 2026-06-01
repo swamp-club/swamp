@@ -238,6 +238,39 @@ inputs:
 
 The 2-argument forms continue to work for data stored without vary dimensions.
 
+### Cross-Namespace Queries
+
+Point-lookup helpers support namespace-prefixed model names for cross-namespace
+data access. The syntax uses a colon separator: `namespace:model-name`.
+
+```yaml
+attributes:
+  # Own namespace (default — same as today):
+  result: ${{ data.latest('scanner', 'result').attributes.value }}
+
+  # Specific namespace:
+  infraResult: ${{ data.latest('infra:scanner', 'result').attributes.value }}
+
+  # All namespaces (errors if model exists in multiple):
+  anyResult: ${{ data.latest('*:scanner', 'result').attributes.value }}
+```
+
+`data.findByTag()` does not take a model name, so it always queries the own
+namespace. `data.query()` spans all namespaces by default — use the `ns` field
+to filter:
+
+```yaml
+attributes:
+  # All namespaces:
+  allVpcs: ${{ data.query('modelType == "aws/ec2/vpc"') }}
+
+  # Specific namespace:
+  secVpcs: ${{ data.query('ns == "security" && modelType == "aws/ec2/vpc"') }}
+```
+
+The `ns` field name (not `namespace`) is used because `namespace` is a reserved
+identifier in the CEL language.
+
 ### Combined Example
 
 ```yaml

@@ -26,6 +26,8 @@ import type { Data } from "./data.ts";
 import type { DataRecord } from "./data_record.ts";
 import type { DataQueryService } from "./data_query_service.ts";
 import { fromData } from "./data_record_mapper.ts";
+import { parseNamespacedModelName } from "./namespace.ts";
+import { getLogger } from "@logtape/logtape";
 
 /**
  * A data item with its origin model coordinates, used to track
@@ -106,19 +108,34 @@ export class DataAccessService {
     modelName: string,
     specName?: string,
   ): Promise<DataRecord[]> {
+    const parsed = parseNamespacedModelName(modelName);
+
     if (this.dataQueryService) {
-      // Delegate to catalog-backed query — vault resolution handled there
       const escape = (s: string) =>
         s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
-      let predicate = `modelName == "${escape(modelName)}"`;
+      let predicate = `modelName == "${escape(parsed.modelName)}"`;
       if (specName) {
         predicate += ` && specName == "${escape(specName)}"`;
+      }
+      if (parsed.namespace === undefined) {
+        const ownNs = this.dataRepo.namespace;
+        predicate += ` && ns == "${escape(ownNs)}"`;
+      } else if (parsed.namespace !== "*") {
+        predicate += ` && ns == "${escape(parsed.namespace)}"`;
       }
       return await this.dataQueryService.query(predicate) as DataRecord[];
     }
 
+    if (parsed.namespace !== undefined && parsed.namespace !== "*") {
+      getLogger(["data", "access"]).warn(
+        "Cross-namespace read {ns}:{model} falling back to own-namespace " +
+          "(filesystem path does not support cross-namespace resolution)",
+        { ns: parsed.namespace, model: parsed.modelName },
+      );
+    }
+
     // Fallback: file-system-based access (no catalog available)
-    const resolved = await this.resolveModel(modelName);
+    const resolved = await this.resolveModel(parsed.modelName);
     if (!resolved) {
       return [];
     }

@@ -49,6 +49,29 @@ key, or history access beyond a single version.
 Results from any shortcut are structurally identical to the equivalent
 `data.query()` call — same `DataRecord[]` type, same fields, same semantics.
 
+### Cross-namespace queries (giga-swamp Phase 4)
+
+Point-lookup helpers (`data.latest`, `data.version`, `data.findBySpec`,
+`data.findByTag`, `data.listVersions`) support namespace-prefixed model names:
+
+| Syntax | Scope |
+| --- | --- |
+| `data.latest("model", "name")` | Own namespace only (default) |
+| `data.latest("infra:model", "name")` | Target namespace `infra` |
+| `data.latest("*:model", "name")` | All namespaces (errors if ambiguous) |
+
+`data.query()` spans all namespaces by default — no implicit namespace filter
+is injected. Use the `ns` field to filter explicitly:
+
+| Query | Scope |
+| --- | --- |
+| `data.query('modelType == "aws/ec2/vpc"')` | All namespaces |
+| `data.query('ns == "security"')` | Security namespace only |
+| `data.query('ns == ""')` | Solo-mode data only |
+
+The `ns` field name (not `namespace`) is used because `namespace` is a reserved
+identifier in CEL.
+
 ## DataRecord
 
 `data.query()` returns `DataRecord[]` — the same type returned by
@@ -128,6 +151,7 @@ filterable fields:
 | `jobName` | string | Job name (`""` outside workflows) |
 | `stepName` | string | Step name (`""` outside workflows) |
 | `source` | string | Provenance source (e.g. `"step-output"`, `""`) |
+| `ns` | string | Namespace slug (`""` in solo mode). Alias for `DataRecord.namespace` — CEL reserves `namespace` as an identifier |
 
 All fields except `attributes` and `content` are metadata stored in the
 catalog. `attributes` and `content` are loaded from disk on demand when the

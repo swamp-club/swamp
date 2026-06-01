@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { parseNamespacedModelName } from "../data/namespace.ts";
+
 /**
  * Type of model reference in an expression.
  */
@@ -112,9 +114,11 @@ export function extractModelRefs(expression: string): string[] {
   }
 
   // Extract from data.version('model', ...), data.latest('model', ...), etc.
+  // Strip namespace prefix ("ns:model" → "model", "*:model" → "model")
   const dataMatches = expression.matchAll(DATA_FUNCTION_PATTERN);
   for (const match of dataMatches) {
-    refs.add(match[2]);
+    const parsed = parseNamespacedModelName(match[2]);
+    refs.add(parsed.modelName);
   }
 
   // Extract from file.contents('model', ...)
@@ -177,9 +181,11 @@ export function extractArtifactDependencies(
   }
 
   // Extract from data function calls (all data functions create data dependencies)
+  // Strip namespace prefix ("ns:model" → "model")
   const dataMatches = expression.matchAll(DATA_FUNCTION_PATTERN);
   for (const match of dataMatches) {
-    const modelRef = match[2];
+    const parsed = parseNamespacedModelName(match[2]);
+    const modelRef = parsed.modelName;
     const key = `${modelRef}:data`;
 
     if (!seen.has(key)) {
@@ -242,7 +248,8 @@ export function extractDataFunctionDependencies(expression: string): string[] {
 
   const dataMatches = expression.matchAll(DATA_FUNCTION_PATTERN);
   for (const match of dataMatches) {
-    refs.add(match[2]);
+    const parsed = parseNamespacedModelName(match[2]);
+    refs.add(parsed.modelName);
   }
 
   return [...refs];
