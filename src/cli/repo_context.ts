@@ -346,6 +346,11 @@ export async function requireInitializedRepoReadOnly(
   // pull/push lifecycle). Only created when the extension advertises
   // lazyHydration and the config enables it.
   let hydrateFileHook: HydrateFileHook | undefined;
+  let readOnlySyncService:
+    | ReturnType<
+      NonNullable<DatastoreProvider["createSyncService"]>
+    >
+    | undefined;
 
   // Verify datastore is accessible
   if (isCustomDatastoreConfig(datastoreConfig)) {
@@ -354,18 +359,18 @@ export async function requireInitializedRepoReadOnly(
       await ensureDir(datastoreConfig.cachePath);
     }
 
-    if (
-      datastoreConfig.hydrationStrategy === "lazy" &&
-      datastoreConfig.cachePath
-    ) {
+    if (datastoreConfig.cachePath) {
       const provider = await resolveCustomProvider(datastoreConfig);
-      const syncService = provider.createSyncService?.(
+      readOnlySyncService = provider.createSyncService?.(
         repoPath.value,
         datastoreConfig.cachePath,
       );
-      if (syncService?.hydrateFile) {
+      if (
+        datastoreConfig.hydrationStrategy === "lazy" &&
+        readOnlySyncService?.hydrateFile
+      ) {
         hydrateFileHook = buildHydrateFileHook(
-          syncService,
+          readOnlySyncService,
           datastoreConfig.cachePath,
           repoPath.value,
         );
@@ -428,6 +433,13 @@ export async function requireInitializedRepoReadOnly(
     hydrateFile: hydrateFileHook,
     ...factoryConfig,
   });
+
+  if (readOnlySyncService?.fetchForeignContent) {
+    const svc = readOnlySyncService;
+    repoContext.dataQueryService.setForeignContentFetcher(
+      (namespace, relPath) => svc.fetchForeignContent!(namespace, relPath),
+    );
+  }
 
   return {
     repoDir: repoPath.value,
@@ -628,6 +640,13 @@ export function requireInitializedRepo(
     // next query backfills from the freshly-pulled local cache.
     if (needsCatalogInvalidation) {
       repoContext.catalogStore.invalidate();
+    }
+
+    if (syncService?.fetchForeignContent) {
+      const svc = syncService;
+      repoContext.dataQueryService.setForeignContentFetcher(
+        (namespace, relPath) => svc.fetchForeignContent!(namespace, relPath),
+      );
     }
 
     return {
