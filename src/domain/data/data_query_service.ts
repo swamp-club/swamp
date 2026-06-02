@@ -132,7 +132,7 @@ export class DataQueryService {
             record.contentType === "application/json"
           ) {
             const relPath =
-              `data/${record.modelType}/${record.modelName}/${record.name}/${record.version}/raw`;
+              `data/${record.modelType}/${record.modelId}/${record.name}/${record.version}/raw`;
             const cacheKey = `${record.namespace}:${relPath}`;
             let bytes: Uint8Array | null;
             if (this.foreignContentCache.has(cacheKey)) {

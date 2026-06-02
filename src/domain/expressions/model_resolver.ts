@@ -886,6 +886,7 @@ export class ModelResolver {
       attributes,
       tags: { ...data.tags },
       modelName: resolvedModelName,
+      modelId: modelId,
       modelType: modelType.normalized,
       specName: data.tags["specName"] ?? "",
       dataType: data.tags["type"] ?? "",

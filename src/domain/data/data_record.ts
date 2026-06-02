@@ -38,6 +38,7 @@ export interface DataRecord {
   attributes: Record<string, unknown>;
   tags: Record<string, string>;
   modelName: string;
+  modelId: string;
   modelType: string;
   specName: string;
   dataType: string;
