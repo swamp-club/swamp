@@ -57,6 +57,25 @@ These variants are mutually exclusive — a step cannot have both `modelIdOrName
 and `modelType`. Auto-created definitions are stored in
 `.swamp/auto-definitions/`.
 
+An optional `globalArgs` field passes global arguments explicitly, bypassing
+schema-based input routing. When present, `inputs` are treated as method
+arguments only:
+
+```yaml
+task:
+  type: model_method
+  modelType: "@myorg/deployer"
+  modelName: my-deployer
+  methodName: deploy
+  globalArgs:
+    region: us-east-1
+  inputs:
+    version: "1.0"
+```
+
+`globalArgs` is only valid with direct type execution — the schema rejects it
+for `modelIdOrName` tasks.
+
 For `forEach` steps, `modelName` supports CEL template expressions:
 
 ```yaml

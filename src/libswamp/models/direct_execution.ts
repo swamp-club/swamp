@@ -142,11 +142,41 @@ export async function resolveOrCreateDefinition(
   inputs: Record<string, unknown>,
   resolvedType: ModelType,
   modelDef: ModelDefinition,
+  explicitGlobalArgs?: Record<string, unknown>,
 ): Promise<DirectExecutionResult> {
-  // Route inputs
-  const routed = routeInputsBySchema(inputs, methodName, modelDef);
-  if ("error" in routed) {
-    return { ok: false, error: routed.error };
+  // When explicit globalArgs are provided, skip routing — treat inputs as
+  // method args only and use the explicit values as global args.
+  let routed: RoutedInputs;
+  if (explicitGlobalArgs) {
+    const method = modelDef.methods[methodName];
+    if (!method) {
+      return {
+        ok: false,
+        error: {
+          code: "unknown_method",
+          message: `Unknown method '${methodName}'. Available methods: ${
+            Object.keys(modelDef.methods).join(", ") || "none"
+          }`,
+        },
+      };
+    }
+    if (modelDef.globalArguments) {
+      const coerced = coerceMethodArgs(
+        explicitGlobalArgs,
+        modelDef.globalArguments,
+      );
+      Object.assign(explicitGlobalArgs, coerced);
+    }
+    routed = {
+      globalArguments: explicitGlobalArgs,
+      methodArguments: inputs,
+    };
+  } else {
+    const routeResult = routeInputsBySchema(inputs, methodName, modelDef);
+    if ("error" in routeResult) {
+      return { ok: false, error: routeResult.error };
+    }
+    routed = routeResult;
   }
 
   // Look up existing definition

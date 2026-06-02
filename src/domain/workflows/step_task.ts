@@ -34,6 +34,7 @@ const StepTaskRawSchema = z.discriminatedUnion("type", [
     modelName: z.string().min(1).optional(),
     methodName: z.string().min(1),
     inputs: z.record(z.string(), z.unknown()).optional(),
+    globalArgs: z.record(z.string(), z.unknown()).optional(),
   }),
   z.object({
     type: z.literal("workflow"),
@@ -99,6 +100,12 @@ export const StepTaskSchema = z.preprocess((data) => {
           `modelType requires modelName to name the auto-created definition.`,
         );
       }
+      if ("globalArgs" in d && d.globalArgs && !hasDirect) {
+        throw new Error(
+          `globalArgs is only valid with direct type execution (modelType + modelName). ` +
+            `For existing definitions, set global arguments in the definition YAML instead.`,
+        );
+      }
     }
   }
   return data;
@@ -160,6 +167,7 @@ export class StepTask {
     modelName: string,
     methodName: string,
     inputs?: Record<string, unknown>,
+    globalArgs?: Record<string, unknown>,
   ): StepTask {
     return new StepTask({
       type: "model_method",
@@ -167,6 +175,7 @@ export class StepTask {
       modelName,
       methodName,
       inputs,
+      globalArgs,
     });
   }
 

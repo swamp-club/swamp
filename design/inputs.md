@@ -289,3 +289,30 @@ and handles both Zod v3 and v4.
 This routing happens at definition creation time. The routed global arguments
 are stored in the auto-created definition; the routed method arguments are
 passed to the method's execute function.
+
+### Explicit `globalArgs` in Workflow Steps
+
+Workflow step tasks using direct type execution can also pass global arguments
+explicitly via a `globalArgs` field, bypassing the implicit routing:
+
+```yaml
+task:
+  type: model_method
+  modelType: "@myorg/deployer"
+  modelName: "deployer-${{ self.env.name }}"
+  methodName: deploy
+  globalArgs:
+    region: ${{ self.env.region }}
+    account: ${{ self.env.account }}
+  inputs:
+    version: ${{ inputs.version }}
+```
+
+When `globalArgs` is present, `inputs` are treated as method arguments only — no
+schema-based routing is performed. The `globalArgs` values are passed directly to
+the auto-created definition's `globalArguments`. This is particularly useful for
+`forEach` fan-out, where each iteration needs distinct connection or
+configuration global args.
+
+`globalArgs` is only valid with direct type execution (`modelType` + `modelName`)
+and is rejected for existing definitions (`modelIdOrName`).

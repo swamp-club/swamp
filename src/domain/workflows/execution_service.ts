@@ -262,6 +262,7 @@ export type DirectTypeResolver = (
   definitionName: string,
   methodName: string,
   inputs: Record<string, unknown>,
+  globalArgs?: Record<string, unknown>,
 ) => Promise<DirectTypeResolveResult>;
 
 export interface StepExecutorDeps {
@@ -397,6 +398,7 @@ export class DefaultStepExecutor implements StepExecutor {
       modelName?: string;
       methodName: string;
       inputs?: Record<string, unknown>;
+      globalArgs?: Record<string, unknown>;
     },
     ctx: StepExecutionContext,
   ): Promise<unknown> {
@@ -458,6 +460,7 @@ export class DefaultStepExecutor implements StepExecutor {
         task.modelName,
         task.methodName,
         task.inputs ?? {},
+        task.globalArgs,
       );
 
       originalDefinition = result.definition;

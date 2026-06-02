@@ -284,6 +284,73 @@ Deno.test("StepTaskSchema rejects neither modelIdOrName nor modelType", () => {
   );
 });
 
+// globalArgs tests for direct type execution
+
+Deno.test("StepTaskSchema parses globalArgs with modelType + modelName", () => {
+  const result = StepTaskSchema.parse({
+    type: "model_method",
+    modelType: "@test/deployer",
+    modelName: "my-deployer",
+    methodName: "deploy",
+    globalArgs: { region: "us-east-1", account: "123456" },
+    inputs: { target: "prod" },
+  });
+  assertEquals(result.type, "model_method");
+  if (result.type === "model_method") {
+    assertEquals(result.globalArgs, {
+      region: "us-east-1",
+      account: "123456",
+    });
+    assertEquals(result.inputs, { target: "prod" });
+  }
+});
+
+Deno.test("StepTaskSchema rejects globalArgs with modelIdOrName", () => {
+  assertThrows(
+    () => {
+      StepTaskSchema.parse({
+        type: "model_method",
+        modelIdOrName: "my-model",
+        methodName: "run",
+        globalArgs: { region: "us-east-1" },
+      });
+    },
+    Error,
+    "globalArgs",
+  );
+});
+
+Deno.test("StepTask.directExecution creates task with globalArgs", () => {
+  const task = StepTask.directExecution(
+    "@test/deployer",
+    "my-deployer",
+    "deploy",
+    { target: "prod" },
+    { region: "us-east-1" },
+  );
+  assertEquals(task.data.type, "model_method");
+  assertEquals(task.isDirectExecution(), true);
+  if (task.data.type === "model_method") {
+    assertEquals(task.data.globalArgs, { region: "us-east-1" });
+    assertEquals(task.data.inputs, { target: "prod" });
+  }
+});
+
+Deno.test("StepTaskSchema parses globalArgs without inputs", () => {
+  const result = StepTaskSchema.parse({
+    type: "model_method",
+    modelType: "@test/deployer",
+    modelName: "my-deployer",
+    methodName: "deploy",
+    globalArgs: { region: "us-east-1" },
+  });
+  assertEquals(result.type, "model_method");
+  if (result.type === "model_method") {
+    assertEquals(result.globalArgs, { region: "us-east-1" });
+    assertEquals(result.inputs, undefined);
+  }
+});
+
 // Manual approval tests
 
 Deno.test("StepTask.manualApproval creates manual approval task", () => {

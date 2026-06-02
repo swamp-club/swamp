@@ -519,6 +519,95 @@ Deno.test("resolveOrCreateDefinition: refuses a literal sensitive global arg on 
   assertEquals(saved, false);
 });
 
+Deno.test("resolveOrCreateDefinition: uses explicit globalArgs and treats inputs as method-only", async () => {
+  const modelDef = createTestModelDef(
+    z.object({ region: z.string(), account: z.string() }),
+    { deploy: z.object({ target: z.string() }) },
+  );
+  const resolvedType = ModelType.create("test/deploy");
+  let savedDefinition: Definition | null = null;
+
+  const result = await resolveOrCreateDefinition(
+    {
+      lookupDefinition: () => Promise.resolve(null),
+      getModelDef: () => modelDef,
+      saveDefinition: (_type, def) => {
+        savedDefinition = def;
+        return Promise.resolve();
+      },
+      getDefinitionPath: (_type, id) => `/tmp/models/test/deploy/${id}.yaml`,
+    },
+    "test/deploy",
+    "my-deployer",
+    "deploy",
+    { target: "prod" },
+    resolvedType,
+    modelDef,
+    { region: "us-east-1", account: "123456" },
+  );
+
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    assertEquals(result.created, true);
+    assertEquals(result.routedInputs.globalArguments, {
+      region: "us-east-1",
+      account: "123456",
+    });
+    assertEquals(result.routedInputs.methodArguments, { target: "prod" });
+    assertEquals(savedDefinition !== null, true);
+    assertEquals(
+      savedDefinition!.globalArguments as Record<string, unknown>,
+      { region: "us-east-1", account: "123456" },
+    );
+  }
+});
+
+Deno.test("resolveOrCreateDefinition: explicit globalArgs updates existing definition", async () => {
+  const modelDef = createTestModelDef(
+    z.object({ region: z.string() }),
+    { run: z.object({ id: z.string() }) },
+  );
+  const resolvedType = ModelType.create("test/model");
+  const existingDef = Definition.create({
+    name: "existing-model",
+    type: "test/model",
+    typeVersion: "2026.01.01.1",
+    globalArguments: { region: "us-west-2" },
+  });
+  let saved = false;
+
+  const result = await resolveOrCreateDefinition(
+    {
+      lookupDefinition: () =>
+        Promise.resolve({ definition: existingDef, type: resolvedType }),
+      getModelDef: () => modelDef,
+      saveDefinition: () => {
+        saved = true;
+        return Promise.resolve();
+      },
+      getDefinitionPath: (_type, id) => `/tmp/models/test/model/${id}.yaml`,
+    },
+    "test/model",
+    "existing-model",
+    "run",
+    { id: "abc" },
+    resolvedType,
+    modelDef,
+    { region: "us-east-1" },
+  );
+
+  assertEquals(result.ok, true);
+  if (result.ok) {
+    assertEquals(result.created, false);
+    assertEquals(result.globalArgsUpdated, true);
+    assertEquals(
+      result.definition.globalArguments as Record<string, unknown>,
+      { region: "us-east-1" },
+    );
+    assertEquals(saved, true);
+  }
+});
+
 Deno.test("resolveOrCreateDefinition: accepts a vault.get expression for a sensitive global arg", async () => {
   const modelDef = createTestModelDef(
     z.object({

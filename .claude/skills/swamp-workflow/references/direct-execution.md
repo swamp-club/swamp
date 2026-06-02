@@ -24,6 +24,30 @@ task:
 - Auto-created definitions are stored in `.swamp/auto-definitions/`.
 - Inputs are routed between global args and method args using the type's schemas
   (method args take precedence on ambiguous keys).
+- An optional `globalArgs` field passes global arguments explicitly, bypassing
+  the implicit routing. When present, `inputs` are treated as method arguments
+  only. `globalArgs` is only valid with direct type execution.
+
+## Explicit Global Arguments
+
+Use `globalArgs` when you want to separate global arguments from method inputs
+explicitly — especially useful for `forEach` fan-out where each iteration needs
+distinct configuration:
+
+```yaml
+- name: deploy-${{self.env.name}}
+  forEach: { item: env, in: "${{ inputs.environments }}" }
+  task:
+    type: model_method
+    modelType: "@myorg/deployer"
+    modelName: "deployer-${{ self.env.name }}"
+    methodName: deploy
+    globalArgs:
+      region: ${{ self.env.region }}
+      account: ${{ self.env.account }}
+    inputs:
+      version: ${{ inputs.version }}
+```
 
 ## forEach Support
 

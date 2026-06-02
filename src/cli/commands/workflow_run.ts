@@ -307,6 +307,7 @@ export const workflowRunCommand = new Command()
             defName,
             methodName,
             inputs,
+            globalArgs,
           ) => {
             const typeStr = typeArg;
             let resolvedType = ModelType.create(typeStr);
@@ -356,6 +357,7 @@ export const workflowRunCommand = new Command()
               inputs,
               resolvedType,
               modelDef,
+              globalArgs,
             );
             if (!result.ok) throw new Error(result.error.message);
             return {
