@@ -57,10 +57,21 @@ export interface DataQueryOptions {
  * predicate against each row, and optionally lazy-load JSON content for
  * predicates that reference `attributes`.
  */
+/**
+ * Callback for fetching content from a foreign namespace on-demand.
+ * Returns raw bytes, or null if unavailable.
+ */
+export type ForeignContentFetcher = (
+  namespace: string,
+  relPath: string,
+) => Promise<Uint8Array | null>;
+
 export class DataQueryService {
   private readonly queryEnv: Environment;
   private vaultService?: VaultService;
   private redactor?: SecretRedactor;
+  private foreignContentFetcher?: ForeignContentFetcher;
+  private readonly foreignContentCache = new Map<string, Uint8Array | null>();
 
   constructor(
     private readonly catalogStore: CatalogStore,
@@ -82,6 +93,16 @@ export class DataQueryService {
   }
 
   /**
+   * Configures foreign content fetch for cross-namespace attribute access.
+   * When set, query results from foreign namespaces that have no local
+   * content will attempt to fetch it on-demand. Fetched content is cached
+   * in-memory for the lifetime of this service instance (command duration).
+   */
+  setForeignContentFetcher(fetcher: ForeignContentFetcher): void {
+    this.foreignContentFetcher = fetcher;
+  }
+
+  /**
    * Queries data artifacts matching a CEL predicate.
    * Triggers backfill if the catalog is not yet populated.
    * Vault references in JSON attributes are resolved when a VaultService
@@ -95,6 +116,53 @@ export class DataQueryService {
       await this.backfillAsync();
     }
     const results = this.executeQuery(predicate, options);
+
+    // Hydrate foreign namespace records whose content isn't available locally.
+    if (this.foreignContentFetcher && Array.isArray(results)) {
+      const ownNamespace = this.dataRepo.namespace;
+      for (const item of results) {
+        if (
+          typeof item === "object" && item !== null && "attributes" in item
+        ) {
+          const record = item as DataRecord;
+          if (
+            record.namespace !== ownNamespace &&
+            record.namespace !== "" &&
+            Object.keys(record.attributes).length === 0 &&
+            record.contentType === "application/json"
+          ) {
+            const relPath =
+              `data/${record.modelType}/${record.modelId}/${record.name}/${record.version}/raw`;
+            const cacheKey = `${record.namespace}:${relPath}`;
+            let bytes: Uint8Array | null;
+            if (this.foreignContentCache.has(cacheKey)) {
+              bytes = this.foreignContentCache.get(cacheKey)!;
+            } else {
+              try {
+                bytes = await this.foreignContentFetcher(
+                  record.namespace,
+                  relPath,
+                );
+              } catch {
+                bytes = null;
+              }
+              this.foreignContentCache.set(cacheKey, bytes);
+            }
+            if (bytes) {
+              try {
+                const text = new TextDecoder().decode(bytes);
+                record.attributes = JSON.parse(text) as Record<
+                  string,
+                  unknown
+                >;
+              } catch {
+                // Invalid JSON — leave attributes empty
+              }
+            }
+          }
+        }
+      }
+    }
 
     // Resolve vault references in result attributes
     if (this.vaultService && Array.isArray(results)) {

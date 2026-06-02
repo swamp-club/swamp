@@ -32,6 +32,7 @@ import {
   DEFAULT_SYNC_TIMEOUT_MS,
   resolveSyncTimeoutMs,
 } from "../../domain/datastore/datastore_config.ts";
+import type { DatastoreSyncOptions } from "../../domain/datastore/datastore_sync_service.ts";
 import { SyncTimeoutError } from "../../domain/datastore/datastore_sync_service.ts";
 import { UserError } from "../../domain/errors.ts";
 
@@ -538,6 +539,79 @@ Deno.test("flushDatastoreSync: config timeout is honored end-to-end", async () =
   const elapsed = Date.now() - started;
   // Proves config → resolveSyncTimeoutMs → registerDatastoreSync → runBoundedSync.
   assertEquals(elapsed < 1_000, true, `timed out after ${elapsed}ms`);
+});
+
+// --- Namespace threading ---
+
+Deno.test("registerDatastoreSyncNamed: namespace is passed to pullChanged", async () => {
+  let pullOptions: DatastoreSyncOptions | undefined;
+  const service = {
+    pullChanged: (opts?: DatastoreSyncOptions) => {
+      pullOptions = opts;
+      return Promise.resolve(0);
+    },
+    pushChanged: () => Promise.resolve(0),
+    markDirty: () => Promise.resolve(),
+  };
+
+  await registerDatastoreSyncNamed("ns-pull", {
+    service,
+    label: "@test/ns-pull",
+    namespace: "infra",
+  });
+
+  assertEquals(pullOptions?.namespace, "infra");
+
+  await flushDatastoreSyncNamed("ns-pull");
+});
+
+Deno.test("flushDatastoreSyncNamed: namespace is passed to pushChanged", async () => {
+  let pushOptions: DatastoreSyncOptions | undefined;
+  const service = {
+    pullChanged: () => Promise.resolve(0),
+    pushChanged: (opts?: DatastoreSyncOptions) => {
+      pushOptions = opts;
+      return Promise.resolve(0);
+    },
+    markDirty: () => Promise.resolve(),
+  };
+
+  await registerDatastoreSyncNamed("ns-push", {
+    service,
+    label: "@test/ns-push",
+    namespace: "security",
+  });
+
+  await flushDatastoreSyncNamed("ns-push");
+
+  assertEquals(pushOptions?.namespace, "security");
+});
+
+Deno.test("registerDatastoreSyncNamed: no namespace means pull/push omit it", async () => {
+  let pullOptions: DatastoreSyncOptions | undefined;
+  let pushOptions: DatastoreSyncOptions | undefined;
+  const service = {
+    pullChanged: (opts?: DatastoreSyncOptions) => {
+      pullOptions = opts;
+      return Promise.resolve(0);
+    },
+    pushChanged: (opts?: DatastoreSyncOptions) => {
+      pushOptions = opts;
+      return Promise.resolve(0);
+    },
+    markDirty: () => Promise.resolve(),
+  };
+
+  await registerDatastoreSyncNamed("no-ns", {
+    service,
+    label: "@test/no-ns",
+  });
+
+  assertEquals(pullOptions?.namespace, undefined);
+
+  await flushDatastoreSyncNamed("no-ns");
+
+  assertEquals(pushOptions?.namespace, undefined);
 });
 
 // --- Stream-0 regression net: SIGINT releases locks within 5s deadline ---

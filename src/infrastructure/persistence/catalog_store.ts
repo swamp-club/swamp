@@ -347,6 +347,139 @@ export class CatalogStore {
   }
 
   /**
+   * Replaces all rows for a single namespace while preserving rows from
+   * other namespaces. Used for namespace-scoped backfill in giga-swamp:
+   * delete own-namespace rows, insert own rows, leave foreign rows intact.
+   * The global "populated" flag is NOT touched — callers manage it.
+   */
+  bulkReplaceNamespace(
+    namespace: string,
+    rows: readonly CatalogRow[],
+  ): void {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const del = this.db.prepare(
+        "DELETE FROM catalog WHERE namespace = ?",
+      );
+      del.run(namespace);
+      const stmt = this.db.prepare(`
+        INSERT INTO catalog (
+          namespace, type_normalized, model_id, data_name, id, version, is_latest, model_name,
+          spec_name, data_type, content_type, lifetime, owner_type,
+          streaming, size, created_at, tags,
+          owner_ref, workflow_run_id, workflow_name, job_name, step_name, source
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      for (const row of rows) {
+        stmt.run(
+          row.namespace,
+          row.type_normalized,
+          row.model_id,
+          row.data_name,
+          row.id,
+          row.version,
+          row.is_latest,
+          row.model_name,
+          row.spec_name,
+          row.data_type,
+          row.content_type,
+          row.lifetime,
+          row.owner_type,
+          row.streaming,
+          row.size,
+          row.created_at,
+          row.tags,
+          row.owner_ref,
+          row.workflow_run_id,
+          row.workflow_name,
+          row.job_name,
+          row.step_name,
+          row.source,
+        );
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  /**
+   * Upserts foreign catalog rows from a catalog export. Uses INSERT OR
+   * REPLACE so existing foreign rows are updated in place. Records the
+   * sync timestamp in catalog_meta as `foreign_synced:{namespace}`.
+   * Does NOT touch the global "populated" flag.
+   */
+  bulkUpsertForeign(
+    namespace: string,
+    rows: readonly CatalogRow[],
+  ): void {
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      const stmt = this.db.prepare(`
+        INSERT OR REPLACE INTO catalog (
+          namespace, type_normalized, model_id, data_name, id, version, is_latest, model_name,
+          spec_name, data_type, content_type, lifetime, owner_type,
+          streaming, size, created_at, tags,
+          owner_ref, workflow_run_id, workflow_name, job_name, step_name, source
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `);
+      for (const row of rows) {
+        stmt.run(
+          row.namespace,
+          row.type_normalized,
+          row.model_id,
+          row.data_name,
+          row.id,
+          row.version,
+          row.is_latest,
+          row.model_name,
+          row.spec_name,
+          row.data_type,
+          row.content_type,
+          row.lifetime,
+          row.owner_type,
+          row.streaming,
+          row.size,
+          row.created_at,
+          row.tags,
+          row.owner_ref,
+          row.workflow_run_id,
+          row.workflow_name,
+          row.job_name,
+          row.step_name,
+          row.source,
+        );
+      }
+      const meta = this.db.prepare(
+        "INSERT OR REPLACE INTO catalog_meta (key, value) VALUES (?, ?)",
+      );
+      meta.run(
+        `foreign_synced:${namespace}`,
+        new Date().toISOString(),
+      );
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
+  /**
+   * Returns the last sync timestamp for a foreign namespace's catalog,
+   * or null if never synced.
+   */
+  foreignSyncedAt(namespace: string): string | null {
+    const stmt = this.db.prepare(
+      "SELECT value FROM catalog_meta WHERE key = ?",
+    );
+    const row = stmt.get(`foreign_synced:${namespace}`) as
+      | { value: string }
+      | undefined;
+    return row?.value ?? null;
+  }
+
+  /**
    * Removes all rows for (namespace, type, model, name) regardless of version.
    * Used when an entire data item is deleted or tombstoned.
    */

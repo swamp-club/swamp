@@ -1595,3 +1595,113 @@ Deno.test("datastoreGlobalLockOptions: applies to custom datastores too", () => 
     lockKey: ".locks/security.lock",
   });
 });
+
+// ── Phase 6b: namespace-scoped sync regression gates ────────────────────────
+
+Deno.test("acquireModelLocks - namespace is threaded to pull and push", async () => {
+  const { datastoreTypeRegistry } = await import(
+    "../domain/datastore/datastore_type_registry.ts"
+  );
+
+  const typeName = "test-ns-sync";
+  const pullArgs: unknown[] = [];
+  const pushArgs: unknown[] = [];
+
+  if (!datastoreTypeRegistry.has(typeName)) {
+    datastoreTypeRegistry.register({
+      type: typeName,
+      name: "Test namespace sync",
+      description: "Test extension for namespace threading",
+      isBuiltIn: false,
+      createProvider: () => ({
+        createLock: () => ({
+          acquire: () => Promise.resolve(),
+          release: () => Promise.resolve(),
+          withLock: <T>(fn: () => Promise<T>) => fn(),
+          inspect: () => Promise.resolve(null),
+          forceRelease: () => Promise.resolve(true),
+        }),
+        createVerifier: () => ({
+          verify: () =>
+            Promise.resolve({
+              healthy: true,
+              message: "ok",
+              latencyMs: 1,
+              datastoreType: typeName,
+            }),
+        }),
+        resolveDatastorePath: (repoDir: string) => `${repoDir}/.test-store`,
+        resolveCachePath: (repoDir: string) => `${repoDir}/.test-cache`,
+        createSyncService: () => ({
+          pullChanged: (options?: unknown) => {
+            pullArgs.push(options);
+            return Promise.resolve(1);
+          },
+          pushChanged: (options?: unknown) => {
+            pushArgs.push(options);
+            return Promise.resolve(0);
+          },
+          markDirty: () => Promise.resolve(),
+          capabilities: () => ({ scopedSync: true, namespacedSync: true }),
+        }),
+      }),
+    });
+  }
+
+  await withTempDir(async (dir) => {
+    await initializeRepo(dir);
+
+    const markerPath = join(dir, ".swamp.yaml");
+    const existing = await Deno.readTextFile(markerPath);
+    const datastoreYaml = [
+      "datastore:",
+      `  type: '${typeName}'`,
+      "  config:",
+      "    bucket: test-bucket",
+      "  namespace: infra",
+    ].join("\n");
+    await Deno.writeTextFile(
+      markerPath,
+      existing.trimEnd() + "\n" + datastoreYaml + "\n",
+    );
+
+    pullArgs.length = 0;
+    pushArgs.length = 0;
+
+    const { datastoreConfig } = await resolveDatastoreForRepo(dir);
+    const lockResult = await acquireModelLocks(datastoreConfig, [
+      { modelType: "aws-ec2", modelId: "server-1" },
+    ], dir);
+
+    // PR #1386 regression gate: synced must be true after namespace-scoped
+    // pull so callers fire catalogStore.invalidate(). A false here means
+    // pulled files land in cache but the catalog is never re-indexed.
+    assertEquals(lockResult.synced, true);
+
+    assertEquals(pullArgs.length, 1);
+    const pullOpts = pullArgs[0] as {
+      context?: { models: unknown[] };
+      namespace?: string;
+    };
+    assertEquals(
+      pullOpts?.namespace,
+      "infra",
+      "pullChanged must receive namespace from config",
+    );
+    assertExists(pullOpts?.context, "pullChanged must still receive context");
+
+    await lockResult.flush();
+
+    assertEquals(pushArgs.length, 1);
+    const pushOpts = pushArgs[0] as {
+      context?: { models: unknown[] };
+      namespace?: string;
+    };
+    assertEquals(
+      pushOpts?.namespace,
+      "infra",
+      "pushChanged must receive namespace from config",
+    );
+    assertExists(pushOpts?.context, "pushChanged must still receive context");
+  });
+});

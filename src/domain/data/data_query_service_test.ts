@@ -732,3 +732,116 @@ Deno.test("DataQueryService: ns field is queryable for namespace filtering", () 
 
   catalog.close();
 });
+
+// ── Phase 6d: foreign content fetch ─────────────────────────────────────────
+
+Deno.test("DataQueryService: foreign content fetcher hydrates attributes for foreign rows", async () => {
+  const { catalog, service } = setupTest();
+
+  catalog.upsert(makeRow({
+    namespace: "security",
+    model_name: "scanner",
+    data_name: "results",
+    content_type: "application/json",
+  }));
+
+  const fetchCalls: Array<{ namespace: string; relPath: string }> = [];
+  service.setForeignContentFetcher(
+    (namespace: string, relPath: string) => {
+      fetchCalls.push({ namespace, relPath });
+      const content = JSON.stringify({ severity: "high", count: 42 });
+      return Promise.resolve(new TextEncoder().encode(content));
+    },
+  );
+
+  const results = await service.query(
+    'modelName == "scanner"',
+    { loadAttributes: true },
+  ) as DataRecord[];
+
+  assertEquals(results.length, 1);
+  assertEquals(results[0].attributes.severity, "high");
+  assertEquals(results[0].attributes.count, 42);
+  assertEquals(fetchCalls.length, 1);
+  assertEquals(fetchCalls[0].namespace, "security");
+
+  catalog.close();
+});
+
+Deno.test("DataQueryService: foreign content fetcher caches results across queries", async () => {
+  const { catalog, service } = setupTest();
+
+  catalog.upsert(makeRow({
+    namespace: "foreign",
+    model_name: "model-a",
+    data_name: "data-a",
+    content_type: "application/json",
+  }));
+
+  let fetchCount = 0;
+  service.setForeignContentFetcher(() => {
+    fetchCount++;
+    return Promise.resolve(
+      new TextEncoder().encode(JSON.stringify({ cached: true })),
+    );
+  });
+
+  await service.query('ns == "foreign"', { loadAttributes: true });
+  assertEquals(fetchCount, 1);
+
+  // Second query should hit the cache, not fetch again
+  await service.query('ns == "foreign"', { loadAttributes: true });
+  assertEquals(fetchCount, 1);
+
+  catalog.close();
+});
+
+Deno.test("DataQueryService: foreign content fetcher returns null gracefully", async () => {
+  const { catalog, service } = setupTest();
+
+  catalog.upsert(makeRow({
+    namespace: "unavailable",
+    model_name: "missing",
+    data_name: "data",
+    content_type: "application/json",
+  }));
+
+  service.setForeignContentFetcher(() => Promise.resolve(null));
+
+  const results = await service.query(
+    'modelName == "missing"',
+    { loadAttributes: true },
+  ) as DataRecord[];
+
+  assertEquals(results.length, 1);
+  assertEquals(Object.keys(results[0].attributes).length, 0);
+
+  catalog.close();
+});
+
+Deno.test("DataQueryService: foreign content fetcher does not fire for own namespace", async () => {
+  const { catalog, service } = setupTest();
+
+  // Own namespace is "" (solo mode)
+  catalog.upsert(makeRow({
+    namespace: "",
+    model_name: "local",
+    data_name: "data",
+    content_type: "application/json",
+  }));
+
+  let fetched = false;
+  service.setForeignContentFetcher(() => {
+    fetched = true;
+    return Promise.resolve(null);
+  });
+
+  await service.query(
+    'modelName == "local"',
+    { loadAttributes: true },
+  );
+
+  assertEquals(fetched, false);
+
+  catalog.close();
+});

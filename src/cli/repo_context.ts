@@ -346,6 +346,11 @@ export async function requireInitializedRepoReadOnly(
   // pull/push lifecycle). Only created when the extension advertises
   // lazyHydration and the config enables it.
   let hydrateFileHook: HydrateFileHook | undefined;
+  let readOnlySyncService:
+    | ReturnType<
+      NonNullable<DatastoreProvider["createSyncService"]>
+    >
+    | undefined;
 
   // Verify datastore is accessible
   if (isCustomDatastoreConfig(datastoreConfig)) {
@@ -354,18 +359,18 @@ export async function requireInitializedRepoReadOnly(
       await ensureDir(datastoreConfig.cachePath);
     }
 
-    if (
-      datastoreConfig.hydrationStrategy === "lazy" &&
-      datastoreConfig.cachePath
-    ) {
+    if (datastoreConfig.cachePath) {
       const provider = await resolveCustomProvider(datastoreConfig);
-      const syncService = provider.createSyncService?.(
+      readOnlySyncService = provider.createSyncService?.(
         repoPath.value,
         datastoreConfig.cachePath,
       );
-      if (syncService?.hydrateFile) {
+      if (
+        datastoreConfig.hydrationStrategy === "lazy" &&
+        readOnlySyncService?.hydrateFile
+      ) {
         hydrateFileHook = buildHydrateFileHook(
-          syncService,
+          readOnlySyncService,
           datastoreConfig.cachePath,
           repoPath.value,
         );
@@ -428,6 +433,13 @@ export async function requireInitializedRepoReadOnly(
     hydrateFile: hydrateFileHook,
     ...factoryConfig,
   });
+
+  if (readOnlySyncService?.fetchForeignContent) {
+    const svc = readOnlySyncService;
+    repoContext.dataQueryService.setForeignContentFetcher(
+      (namespace, relPath) => svc.fetchForeignContent!(namespace, relPath),
+    );
+  }
 
   return {
     repoDir: repoPath.value,
@@ -517,6 +529,7 @@ export function requireInitializedRepo(
         label: datastoreConfig.type,
         syncTimeoutMs: resolveSyncTimeoutMs(datastoreConfig),
         metadataOnly: datastoreConfig.hydrationStrategy === "lazy",
+        namespace: datastoreConfig.namespace,
       });
       // Invalidate catalog after pull so next query backfills from fresh data
       if (registerService) {
@@ -627,6 +640,13 @@ export function requireInitializedRepo(
     // next query backfills from the freshly-pulled local cache.
     if (needsCatalogInvalidation) {
       repoContext.catalogStore.invalidate();
+    }
+
+    if (syncService?.fetchForeignContent) {
+      const svc = syncService;
+      repoContext.dataQueryService.setForeignContentFetcher(
+        (namespace, relPath) => svc.fetchForeignContent!(namespace, relPath),
+      );
     }
 
     return {
@@ -1101,11 +1121,19 @@ export async function acquireModelLocks(
           id: modelId,
         });
 
+        const ns = isCustomDatastoreConfig(config)
+          ? config.namespace
+          : undefined;
         if (caps?.scopedSync) {
           const context: SyncContext = {
             models: [{ modelType, modelId }],
           };
-          await customSyncService.pullChanged({ context });
+          await customSyncService.pullChanged({
+            context,
+            ...(ns ? { namespace: ns } : {}),
+          });
+        } else if (ns) {
+          await customSyncService.pullChanged({ namespace: ns });
         } else {
           await customSyncService.pullChanged();
         }
@@ -1139,9 +1167,17 @@ export async function acquireModelLocks(
           logger.info`Pushing changes to datastore...`;
 
           let pushed: number | void;
+          const pushNs = isCustomDatastoreConfig(config)
+            ? config.namespace
+            : undefined;
           if (caps?.scopedSync) {
             const context: SyncContext = { models: unique };
-            pushed = await customSyncService.pushChanged({ context });
+            pushed = await customSyncService.pushChanged({
+              context,
+              ...(pushNs ? { namespace: pushNs } : {}),
+            });
+          } else if (pushNs) {
+            pushed = await customSyncService.pushChanged({ namespace: pushNs });
           } else {
             pushed = await customSyncService.pushChanged();
           }

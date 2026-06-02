@@ -28,6 +28,14 @@ export interface SyncContext {
 export interface SyncCapabilities {
   scopedSync?: boolean;
   lazyHydration?: boolean;
+  /**
+   * When `true`, the extension correctly handles the `namespace` field
+   * on `DatastoreSyncOptions` — scoping its index walk and upload to
+   * `{namespace}/` in the remote datastore. Extensions that don't
+   * advertise this capability still receive the namespace field but
+   * are expected to ignore it and sync everything (solo-mode behavior).
+   */
+  namespacedSync?: boolean;
 }
 
 /** Options accepted by sync service methods. */
@@ -62,6 +70,17 @@ export interface DatastoreSyncOptions {
   relPath?: string;
   /** Domain-level sync context, passed when the extension advertises scopedSync. */
   context?: SyncContext;
+  /**
+   * Namespace whose data subtree this sync operation targets.
+   * When set, extensions SHOULD restrict their index walk / upload to
+   * the `{namespace}/` prefix in the remote datastore. When
+   * `undefined` or empty, the extension syncs everything — identical
+   * to pre-namespace behavior (solo mode).
+   *
+   * Orthogonal to `context`: namespace scopes *which namespace subtree*
+   * to sync; `context` scopes *which models* within that subtree.
+   */
+  namespace?: string;
   /**
    * When `true`, `pullChanged` downloads only metadata files
    * (`metadata.yaml`, `latest` markers, partition indexes) and skips
@@ -172,6 +191,79 @@ export interface DatastoreSyncService {
     relPath: string,
     options?: DatastoreSyncOptions,
   ): Promise<boolean>;
+
+  /**
+   * Export the local catalog for the given namespace as a flat JSON array
+   * at `{namespace}/.catalog-export.json` in the remote datastore.
+   *
+   * Called after `pushChanged` so the export reflects the latest state.
+   * Extensions that don't support catalog export omit this method.
+   */
+  exportCatalog?(namespace: string): Promise<void>;
+
+  /**
+   * Pull catalog exports from the given foreign namespaces and return
+   * the parsed rows. Each namespace's export lives at
+   * `{namespace}/.catalog-export.json` in the remote datastore.
+   *
+   * Returns one entry per namespace that was successfully fetched.
+   * Missing exports (namespace has no data yet) are silently skipped.
+   */
+  pullForeignCatalogs?(
+    namespaces: readonly string[],
+  ): Promise<CatalogExportEntry[]>;
+
+  /**
+   * Download a single file from a foreign namespace in the remote
+   * datastore. Used for on-demand cross-namespace content access when
+   * a CEL expression references another namespace's data attributes.
+   *
+   * Returns the file contents, or `null` if the file does not exist.
+   * Fetched content is NOT persisted locally — it is ephemeral, cached
+   * only for the duration of the current command.
+   */
+  fetchForeignContent?(
+    namespace: string,
+    relPath: string,
+  ): Promise<Uint8Array | null>;
+}
+
+/** A single foreign catalog export: the namespace it came from and its rows. */
+export interface CatalogExportEntry {
+  namespace: string;
+  rows: readonly CatalogExportRow[];
+}
+
+/**
+ * Portable catalog row used in `.catalog-export.json`. Contains the
+ * metadata fields needed for cross-namespace queries but omits the
+ * content. This is a flat serializable form — extensions write it as
+ * JSON; core upserts it into the local catalog.
+ */
+export interface CatalogExportRow {
+  namespace: string;
+  type_normalized: string;
+  model_id: string;
+  data_name: string;
+  id: string;
+  version: number;
+  is_latest: number;
+  model_name: string;
+  spec_name: string;
+  data_type: string;
+  content_type: string;
+  lifetime: string;
+  owner_type: string;
+  streaming: number;
+  size: number;
+  created_at: string;
+  tags: string;
+  owner_ref: string;
+  workflow_run_id: string;
+  workflow_name: string;
+  job_name: string;
+  step_name: string;
+  source: string;
 }
 
 /** Direction of a sync operation. */
