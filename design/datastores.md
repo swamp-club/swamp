@@ -305,9 +305,15 @@ Extensions can advertise capabilities by implementing the optional
 
 ```typescript
 capabilities(): SyncCapabilities {
-  return { scopedSync: true };
+  return { scopedSync: true, namespacedSync: true };
 }
 ```
+
+**`namespacedSync`** (Phase 6): when `true`, the extension correctly handles
+the `namespace` field on `DatastoreSyncOptions` — scoping its index walk and
+upload to `{namespace}/` in the remote datastore. Extensions that don't
+advertise this capability still receive the namespace field but are expected to
+ignore it and sync everything (solo-mode behavior).
 
 When `scopedSync` is `true`, swamp core passes a `SyncContext` to
 `pullChanged()` and `pushChanged()` containing the models being operated on:
@@ -396,6 +402,12 @@ interface DatastoreSyncOptions {
   signal?: AbortSignal;
   /** Cache-relative path of the file about to be written or removed. */
   relPath?: string;
+  /** Domain-level sync context, passed when the extension advertises scopedSync. */
+  context?: SyncContext;
+  /** Namespace whose data subtree this sync operation targets (Phase 6). */
+  namespace?: string;
+  /** When true, pull downloads only metadata files (lazy hydration). */
+  metadataOnly?: boolean;
 }
 ```
 
@@ -474,6 +486,41 @@ truncated write after a crash) can slip through the fast path if the index
 itself has not changed. Cache integrity is the verifier's job; use
 `DatastoreVerifier.verify()` when integrity needs to be re-established, or
 `rm -rf` the cache and re-pull.
+
+### Foreign Catalog Export/Pull (Phase 6)
+
+In a giga-swamp, each namespace publishes a `.catalog-export.json` after each
+push — a flat JSON array of catalog rows for that namespace. Foreign catalog
+pull fetches these exports from other namespaces and upserts into the local
+catalog.
+
+**Interface methods** (optional on `DatastoreSyncService`):
+
+```typescript
+exportCatalog?(namespace: string): Promise<void>;
+pullForeignCatalogs?(namespaces: readonly string[]): Promise<CatalogExportEntry[]>;
+fetchForeignContent?(namespace: string, relPath: string): Promise<Uint8Array | null>;
+```
+
+- `exportCatalog` — writes `{namespace}/.catalog-export.json` to the remote
+- `pullForeignCatalogs` — fetches exports from named namespaces, returns rows
+- `fetchForeignContent` — downloads a single file from a foreign namespace
+
+**Catalog backfill** is namespace-scoped: `bulkReplaceNamespace(namespace, rows)`
+deletes only the own namespace's rows and inserts fresh ones, preserving foreign
+rows. The global `populated` flag stays global. Foreign rows are upserted via
+`bulkUpsertForeign` which records a `foreign_synced:{namespace}` timestamp in
+`catalog_meta`.
+
+**On-demand content fetch** (Phase 6d): when a cross-namespace CEL expression
+accesses `attributes` and the content is not locally available, the
+`DataQueryService` calls `fetchForeignContent` through its `ForeignContentFetcher`
+callback. Fetched content is cached in-memory for the command duration, not
+persisted. Missing content or errors leave attributes empty (graceful
+degradation).
+
+**CLI**: `swamp datastore catalog pull --namespaces infra,security` pulls
+foreign catalog metadata from the specified namespaces.
 
 ### Lazy Hydration
 
