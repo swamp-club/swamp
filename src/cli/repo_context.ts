@@ -517,6 +517,7 @@ export function requireInitializedRepo(
         label: datastoreConfig.type,
         syncTimeoutMs: resolveSyncTimeoutMs(datastoreConfig),
         metadataOnly: datastoreConfig.hydrationStrategy === "lazy",
+        namespace: datastoreConfig.namespace,
       });
       // Invalidate catalog after pull so next query backfills from fresh data
       if (registerService) {
@@ -1101,13 +1102,21 @@ export async function acquireModelLocks(
           id: modelId,
         });
 
+        const ns = isCustomDatastoreConfig(config)
+          ? config.namespace
+          : undefined;
         if (caps?.scopedSync) {
           const context: SyncContext = {
             models: [{ modelType, modelId }],
           };
-          await customSyncService.pullChanged({ context });
+          await customSyncService.pullChanged({
+            context,
+            ...(ns ? { namespace: ns } : {}),
+          });
         } else {
-          await customSyncService.pullChanged();
+          await customSyncService.pullChanged({
+            ...(ns ? { namespace: ns } : {}),
+          });
         }
         synced = true;
       } catch (error) {
@@ -1139,11 +1148,19 @@ export async function acquireModelLocks(
           logger.info`Pushing changes to datastore...`;
 
           let pushed: number | void;
+          const pushNs = isCustomDatastoreConfig(config)
+            ? config.namespace
+            : undefined;
           if (caps?.scopedSync) {
             const context: SyncContext = { models: unique };
-            pushed = await customSyncService.pushChanged({ context });
+            pushed = await customSyncService.pushChanged({
+              context,
+              ...(pushNs ? { namespace: pushNs } : {}),
+            });
           } else {
-            pushed = await customSyncService.pushChanged();
+            pushed = await customSyncService.pushChanged({
+              ...(pushNs ? { namespace: pushNs } : {}),
+            });
           }
           if (pushed && pushed > 0) {
             logger.info("Pushed {count} file(s) to datastore", {

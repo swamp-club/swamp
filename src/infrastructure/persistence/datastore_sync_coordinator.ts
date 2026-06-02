@@ -73,6 +73,13 @@ export interface RegisterDatastoreSyncOptions {
    * Used when `hydrationStrategy` is `"lazy"`.
    */
   metadataOnly?: boolean;
+  /**
+   * Namespace whose data subtree this sync lifecycle targets.
+   * Passed through to `pullChanged` and `pushChanged` so extensions
+   * can scope their index walk to `{namespace}/`. When `undefined` or
+   * empty, the extension syncs everything (solo mode).
+   */
+  namespace?: string;
 }
 
 /** Internal entry tracking a single lock/sync pair. */
@@ -81,6 +88,7 @@ interface SyncEntry {
   lock?: DistributedLock;
   label: string;
   syncTimeoutMs: number;
+  namespace?: string;
 }
 
 /** Key used by the global (structural) lock. */
@@ -240,10 +248,10 @@ export async function registerDatastoreSyncNamed(
   key: string,
   options: RegisterDatastoreSyncOptions,
 ): Promise<void> {
-  const { service, lock, metadataOnly } = options;
+  const { service, lock, metadataOnly, namespace } = options;
   const label = options.label ?? "datastore";
   const syncTimeoutMs = options.syncTimeoutMs ?? DEFAULT_SYNC_TIMEOUT_MS;
-  const entry: SyncEntry = { service, lock, label, syncTimeoutMs };
+  const entry: SyncEntry = { service, lock, label, syncTimeoutMs, namespace };
   entries.set(key, entry);
 
   // Tracks what must be unwound if register fails. Critical: the outer
@@ -310,6 +318,7 @@ export async function registerDatastoreSyncNamed(
           service.pullChanged({
             signal,
             ...(metadataOnly ? { metadataOnly } : {}),
+            ...(namespace ? { namespace } : {}),
           }),
       );
       if (pulled && pulled > 0) {
@@ -406,7 +415,11 @@ export async function flushDatastoreSyncNamed(key: string): Promise<void> {
         label,
         "push",
         entry.syncTimeoutMs,
-        (signal) => service.pushChanged({ signal }),
+        (signal) =>
+          service.pushChanged({
+            signal,
+            ...(entry.namespace ? { namespace: entry.namespace } : {}),
+          }),
       );
       if (pushed && pushed > 0) {
         syncSpan.setAttribute("sync.file_count", pushed);

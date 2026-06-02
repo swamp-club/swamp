@@ -63,6 +63,17 @@ export interface DatastoreSyncOptions {
   /** Domain-level sync context, passed when the extension advertises scopedSync. */
   context?: SyncContext;
   /**
+   * Namespace whose data subtree this sync operation targets.
+   * When set, extensions SHOULD restrict their index walk / upload to
+   * the `{namespace}/` prefix in the remote datastore. When
+   * `undefined` or empty, the extension syncs everything — identical
+   * to pre-namespace behavior (solo mode).
+   *
+   * Orthogonal to `context`: namespace scopes *which namespace subtree*
+   * to sync; `context` scopes *which models* within that subtree.
+   */
+  namespace?: string;
+  /**
    * When `true`, `pullChanged` downloads only metadata files
    * (`metadata.yaml`, `latest` markers, partition indexes) and skips
    * content files (`raw`) under `data/`. Extensions that advertise
