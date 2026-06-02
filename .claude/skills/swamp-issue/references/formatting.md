@@ -1,5 +1,10 @@
 # Formatting Issue Content
 
+Format the content first, then sanitize. Do not pre-sanitize during gathering —
+the original context (paths, error messages, identifiers) is needed for
+diagnosis and formatting. Once the draft is ready, run the sanitization step
+from [sanitization.md](sanitization.md) before submission.
+
 ## Bug Reports
 
 Provide a summary of the work involved to fix the bug:

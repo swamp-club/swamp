@@ -81,6 +81,10 @@ Ripples (described in the intro) have these submission rules:
 - `--close` and `--reopen` are mutually exclusive. The ripple is posted first;
   the status change is a separate operation. If the status change fails, the
   ripple is still posted (partial success).
+- Before posting, sanitize the body for secrets, identifiers, and paths per
+  [references/sanitization.md](references/sanitization.md). Ripple bodies often
+  contain quoted error output from working sessions — redact identifying parts
+  while preserving diagnostic structure.
 
 **Output shape** (with `--json`):
 
@@ -139,7 +143,7 @@ A state machine. Each state gates the next — do not advance until the current
 state's **Verify** passes. If Verify fails, run **On Failure** and re-verify.
 
 ```
-gather_details → version_check → submit → verify
+gather_details → sanitize → version_check → submit → verify
 ```
 
 ### State 1: gather_details
@@ -157,9 +161,26 @@ are relevant to the bug (for the version check in the next state).
 
 **On Failure:** Ask the user for more details.
 
-### State 2: version_check
+### State 2: sanitize
 
-**Gate:** State 1 passed (title, body, and diagnosed file paths are known).
+**Gate:** State 1 passed (title and body are drafted).
+
+**Action:** Scan the drafted title and body for secrets, org-specific
+identifiers, and local paths. See
+[references/sanitization.md](references/sanitization.md) for the full pattern
+list, placeholders, and judgment calls.
+
+**Verify:** One of two outcomes:
+
+- **No findings** — content is clean. Advance silently.
+- **Findings exist** — present the redactions to the user and get confirmation
+  before advancing.
+
+**On Failure:** If the user rejects a redaction, adjust and re-verify.
+
+### State 3: version_check
+
+**Gate:** State 2 passed (title, body, and diagnosed file paths are known).
 
 **Action:** Check if the bug was already fixed in a newer version. Read
 [references/version_check.md](references/version_check.md) for the full
@@ -177,9 +198,9 @@ procedure.
 **On Failure:** If `swamp update --check` or `swamp source fetch` fails, treat
 as inconclusive and advance.
 
-### State 3: submit
+### State 4: submit
 
-**Gate:** State 2 passed with `bug_present` or `inconclusive`.
+**Gate:** State 3 passed with `bug_present` or `inconclusive`.
 
 **Action:** Verify syntax with `swamp help issue bug`. Run the command.
 
@@ -187,9 +208,9 @@ as inconclusive and advance.
 
 **On Failure:** See Error Recovery table below.
 
-### State 4: verify
+### State 5: verify
 
-**Gate:** State 3 passed.
+**Gate:** State 4 passed.
 
 **Action:** Confirm the returned issue number / URL with the user (or relay
 refusal guidance).
@@ -201,10 +222,13 @@ refusal guidance).
 Feature requests and security reports use a linear flow (no version check):
 
 1. Gather details from the user.
-2. For extension-scoped reports, confirm the extension is pulled locally.
-3. Verify syntax with `swamp help issue`.
-4. Run the appropriate command.
-5. Verify with the returned issue number / URL.
+2. Sanitize the drafted title and body — scan for secrets, identifiers, and
+   paths per [references/sanitization.md](references/sanitization.md). Present
+   any findings to the user for confirmation before proceeding.
+3. For extension-scoped reports, confirm the extension is pulled locally.
+4. Verify syntax with `swamp help issue`.
+5. Run the appropriate command.
+6. Verify with the returned issue number / URL.
 
 ## Error Recovery
 
