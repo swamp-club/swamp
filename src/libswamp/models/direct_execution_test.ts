@@ -640,3 +640,34 @@ Deno.test("resolveOrCreateDefinition: accepts a vault.get expression for a sensi
   assertEquals(result.ok, true);
   assertEquals(saved, true);
 });
+
+Deno.test("resolveOrCreateDefinition: explicit globalArgs object is not mutated by coercion", async () => {
+  const modelDef = createTestModelDef(
+    z.object({ port: z.number() }),
+    { run: z.object({ id: z.string() }) },
+  );
+  const resolvedType = ModelType.create("test/repro");
+  const callerGlobalArgs: Record<string, unknown> = { port: "42" };
+
+  await resolveOrCreateDefinition(
+    {
+      lookupDefinition: () => Promise.resolve(null),
+      getModelDef: () => modelDef,
+      saveDefinition: () => Promise.resolve(),
+      getDefinitionPath: (_type, id) => `/tmp/models/test/repro/${id}.yaml`,
+    },
+    "test/repro",
+    "repro-model",
+    "run",
+    { id: "abc" },
+    resolvedType,
+    modelDef,
+    callerGlobalArgs,
+  );
+
+  assertEquals(
+    callerGlobalArgs.port,
+    "42",
+    "caller's explicitGlobalArgs must not be mutated by coercion",
+  );
+});

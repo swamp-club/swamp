@@ -160,15 +160,16 @@ export async function resolveOrCreateDefinition(
         },
       };
     }
+    const globalArgs = { ...explicitGlobalArgs };
     if (modelDef.globalArguments) {
       const coerced = coerceMethodArgs(
-        explicitGlobalArgs,
+        globalArgs,
         modelDef.globalArguments,
       );
-      Object.assign(explicitGlobalArgs, coerced);
+      Object.assign(globalArgs, coerced);
     }
     routed = {
-      globalArguments: explicitGlobalArgs,
+      globalArguments: globalArgs,
       methodArguments: inputs,
     };
   } else {
