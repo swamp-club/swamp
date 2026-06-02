@@ -1113,10 +1113,10 @@ export async function acquireModelLocks(
             context,
             ...(ns ? { namespace: ns } : {}),
           });
+        } else if (ns) {
+          await customSyncService.pullChanged({ namespace: ns });
         } else {
-          await customSyncService.pullChanged({
-            ...(ns ? { namespace: ns } : {}),
-          });
+          await customSyncService.pullChanged();
         }
         synced = true;
       } catch (error) {
@@ -1157,10 +1157,10 @@ export async function acquireModelLocks(
               context,
               ...(pushNs ? { namespace: pushNs } : {}),
             });
+          } else if (pushNs) {
+            pushed = await customSyncService.pushChanged({ namespace: pushNs });
           } else {
-            pushed = await customSyncService.pushChanged({
-              ...(pushNs ? { namespace: pushNs } : {}),
-            });
+            pushed = await customSyncService.pushChanged();
           }
           if (pushed && pushed > 0) {
             logger.info("Pushed {count} file(s) to datastore", {

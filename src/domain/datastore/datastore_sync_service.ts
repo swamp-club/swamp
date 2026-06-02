@@ -28,6 +28,14 @@ export interface SyncContext {
 export interface SyncCapabilities {
   scopedSync?: boolean;
   lazyHydration?: boolean;
+  /**
+   * When `true`, the extension correctly handles the `namespace` field
+   * on `DatastoreSyncOptions` — scoping its index walk and upload to
+   * `{namespace}/` in the remote datastore. Extensions that don't
+   * advertise this capability still receive the namespace field but
+   * are expected to ignore it and sync everything (solo-mode behavior).
+   */
+  namespacedSync?: boolean;
 }
 
 /** Options accepted by sync service methods. */
