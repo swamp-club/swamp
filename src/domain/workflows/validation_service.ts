@@ -440,7 +440,7 @@ export class DefaultWorkflowValidationService
         return [
           WorkflowValidationResult.warning(
             checkName +
-              " (model not found, skipped)",
+              " (model not found)",
             "Model instance not found — may be created at runtime, " +
               "or could be a typo",
           ),

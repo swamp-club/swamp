@@ -700,7 +700,7 @@ Deno.test("validateStepInputs: skipped when no resolver provided", async () => {
   assertEquals(inputResults.length, 0);
 });
 
-Deno.test("validateStepInputs: model not found produces warning with skip note", async () => {
+Deno.test("validateStepInputs: model not found produces warning", async () => {
   const resolver = mockResolver({});
   const svc = new DefaultWorkflowValidationService(resolver);
 
@@ -725,7 +725,8 @@ Deno.test("validateStepInputs: model not found produces warning with skip note",
   // unlike an unresolvable model *type*, which fails. See swamp-club#506/#517.
   assertEquals(inputResult?.passed, true);
   assertEquals(inputResult?.warning, true);
-  assertEquals(inputResult?.name.includes("skipped"), true);
+  assertEquals(inputResult?.name.includes("skipped"), false);
+  assertEquals(inputResult?.name.includes("model not found"), true);
   assertEquals(inputResult?.error?.includes("not found"), true);
 });
 
