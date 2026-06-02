@@ -24,6 +24,7 @@ import { datastoreSetupCommand } from "./datastore_setup.ts";
 import { datastoreSyncCommand } from "./datastore_sync.ts";
 import { datastoreLockCommand } from "./datastore_lock.ts";
 import { datastoreCompactCommand } from "./datastore_compact.ts";
+import { datastoreCatalogPullCommand } from "./datastore_catalog_pull.ts";
 import {
   datastoreTypeSearchAction,
   datastoreTypeSearchCommand,
@@ -44,6 +45,12 @@ export const datastoreTypeCommand = new Command()
       .action(datastoreTypeSearchAction),
   );
 
+const datastoreCatalogCommand = new Command()
+  .name("catalog")
+  .description("Manage datastore catalog")
+  .action(groupCommandAction)
+  .command("pull", datastoreCatalogPullCommand);
+
 export const datastoreCommand = new Command()
   .description("Manage datastore configuration")
   .error(unknownCommandErrorHandler)
@@ -53,4 +60,5 @@ export const datastoreCommand = new Command()
   .command("setup", datastoreSetupCommand)
   .command("sync", datastoreSyncCommand)
   .command("lock", datastoreLockCommand)
-  .command("compact", datastoreCompactCommand);
+  .command("compact", datastoreCompactCommand)
+  .command("catalog", datastoreCatalogCommand);

@@ -47,6 +47,8 @@ export {
 export { type DatastorePathResolver } from "./datastore_path_resolver.ts";
 
 export {
+  type CatalogExportEntry,
+  type CatalogExportRow,
   type DatastoreSyncOptions,
   type DatastoreSyncService,
   type MarkDirtyHook,
