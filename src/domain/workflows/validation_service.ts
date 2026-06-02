@@ -35,30 +35,27 @@ export class WorkflowValidationResult {
   private constructor(
     readonly name: string,
     readonly passed: boolean,
+    readonly warning: boolean,
     readonly error?: string,
   ) {}
 
-  /**
-   * Creates a passing validation result.
-   */
   static pass(name: string): WorkflowValidationResult {
-    return new WorkflowValidationResult(name, true);
+    return new WorkflowValidationResult(name, true, false);
   }
 
-  /**
-   * Creates a failing validation result.
-   */
+  static warning(name: string, message: string): WorkflowValidationResult {
+    return new WorkflowValidationResult(name, true, true, message);
+  }
+
   static fail(name: string, error: string): WorkflowValidationResult {
-    return new WorkflowValidationResult(name, false, error);
+    return new WorkflowValidationResult(name, false, false, error);
   }
 
-  /**
-   * Value equality comparison.
-   */
   equals(other: WorkflowValidationResult): boolean {
     return (
       this.name === other.name &&
       this.passed === other.passed &&
+      this.warning === other.warning &&
       this.error === other.error
     );
   }
@@ -437,12 +434,15 @@ export class DefaultWorkflowValidationService
       case "model_not_found":
         // A step may reference a model created at run time (by an upstream
         // direct-execution step or out-of-band), so a missing model instance
-        // is skipped rather than failed. This differs from an unresolvable
-        // model *type* below, which is always a real authoring error.
+        // is a warning rather than a failure. This differs from an
+        // unresolvable model *type* below, which is always a real authoring
+        // error.
         return [
-          WorkflowValidationResult.pass(
+          WorkflowValidationResult.warning(
             checkName +
               " (model not found, skipped)",
+            "Model instance not found — may be created at runtime, " +
+              "or could be a typo",
           ),
         ];
       case "type_unresolvable":

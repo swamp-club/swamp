@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { bold, cyan, green, red } from "@std/fmt/colors";
+import { bold, cyan, green, red, yellow } from "@std/fmt/colors";
 import {
   type EventHandlers,
   isWorkflowValidateAllData,
@@ -34,13 +34,19 @@ import { UserError } from "../../domain/errors.ts";
 const checkmark = "\u2713";
 const cross = "\u2717";
 const arrow = "\u2192";
+const warningSign = "\u26a0";
 
 function formatValidationLines(
   validations: WorkflowValidationItemData[],
 ): string[] {
   const lines: string[] = [];
   for (const v of validations) {
-    if (v.passed) {
+    if (v.warning) {
+      lines.push(`  ${yellow(warningSign)} ${v.name}`);
+      if (v.error) {
+        lines.push(`    ${yellow(arrow)} ${v.error}`);
+      }
+    } else if (v.passed) {
       lines.push(`  ${green(checkmark)} ${v.name}`);
     } else {
       lines.push(`  ${red(cross)} ${v.name}`);
@@ -50,6 +56,22 @@ function formatValidationLines(
     }
   }
   return lines;
+}
+
+function formatSummary(
+  validations: WorkflowValidationItemData[],
+  totalWarnings: number,
+): string {
+  const passedCount = validations.filter((v) => v.passed && !v.warning).length;
+  const failedCount = validations.filter((v) => !v.passed).length;
+  const parts = [`${passedCount} passed`];
+  if (totalWarnings > 0) {
+    parts.push(`${totalWarnings} warning(s)`);
+  }
+  if (failedCount > 0) {
+    parts.push(`${failedCount} failed`);
+  }
+  return parts.join(", ");
 }
 
 function formatResult(passed: boolean, label: string): string {
@@ -94,12 +116,10 @@ class LogWorkflowValidateRenderer implements WorkflowValidateRenderer {
     );
     lines.push(...formatValidationLines(data.validations));
 
-    const passedCount = data.validations.filter((v) => v.passed).length;
-    const totalCount = data.validations.length;
     lines.push(
-      `${
-        bold(cyan("Summary:"))
-      } ${passedCount}/${totalCount} validations passed`,
+      `${bold(cyan("Summary:"))} ${
+        formatSummary(data.validations, data.totalWarnings)
+      }`,
     );
     lines.push(formatResult(data.passed, "Result"));
     writeOutput(lines.join("\n"));
@@ -118,11 +138,13 @@ class LogWorkflowValidateRenderer implements WorkflowValidateRenderer {
     }
 
     lines.push("");
-    lines.push(
-      `${
-        bold(cyan("Summary:"))
-      } ${data.totalPassed}/${data.workflows.length} workflows passed`,
-    );
+    const parts = [
+      `${data.totalPassed}/${data.workflows.length} workflows passed`,
+    ];
+    if (data.totalWarnings > 0) {
+      parts.push(`${data.totalWarnings} warning(s)`);
+    }
+    lines.push(`${bold(cyan("Summary:"))} ${parts.join(", ")}`);
     lines.push(formatResult(data.passed, "Overall"));
     writeOutput(lines.join("\n"));
   }

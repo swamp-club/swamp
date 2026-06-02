@@ -49,6 +49,7 @@ export function isUuid(value: string): boolean {
 export interface ValidationItemData {
   name: string;
   passed: boolean;
+  warning?: boolean;
   error?: string;
 }
 
@@ -57,6 +58,7 @@ export interface WorkflowValidateData {
   workflowId: string;
   workflowName: string;
   validations: ValidationItemData[];
+  totalWarnings: number;
   passed: boolean;
 }
 
@@ -65,6 +67,7 @@ export interface WorkflowValidateAllData {
   workflows: WorkflowValidateData[];
   totalPassed: number;
   totalFailed: number;
+  totalWarnings: number;
   passed: boolean;
 }
 
@@ -206,6 +209,7 @@ function toValidationItemData(
   return results.map((r) => ({
     name: r.name,
     passed: r.passed,
+    ...(r.warning ? { warning: true } : {}),
     error: r.error,
   }));
 }
@@ -236,17 +240,20 @@ async function* validateAll(
     const validationResults = await deps.validate(workflow);
     const validations = toValidationItemData(validationResults);
     const allPassed = validationResults.every((r) => r.passed);
+    const warningCount = validationResults.filter((r) => r.warning).length;
 
     results.push({
       workflowId: workflow.id,
       workflowName: workflow.name,
       validations,
+      totalWarnings: warningCount,
       passed: allPassed,
     });
   }
 
   const totalPassed = results.filter((w) => w.passed).length;
   const totalFailed = results.length - totalPassed;
+  const totalWarnings = results.reduce((sum, w) => sum + w.totalWarnings, 0);
 
   yield {
     kind: "completed",
@@ -254,6 +261,7 @@ async function* validateAll(
       workflows: results,
       totalPassed,
       totalFailed,
+      totalWarnings,
       passed: totalFailed === 0,
     },
   };
@@ -283,6 +291,7 @@ async function* validateSingle(
   const results = await deps.validate(workflow);
   const validations = toValidationItemData(results);
   const allPassed = results.every((r) => r.passed);
+  const warningCount = results.filter((r) => r.warning).length;
 
   yield {
     kind: "completed",
@@ -290,6 +299,7 @@ async function* validateSingle(
       workflowId: workflow.id,
       workflowName: workflow.name,
       validations,
+      totalWarnings: warningCount,
       passed: allPassed,
     },
   };

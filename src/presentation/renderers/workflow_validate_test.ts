@@ -47,6 +47,7 @@ Deno.test("JsonWorkflowValidateRenderer - single outputs JSON", async () => {
             workflowId: "wf-1",
             workflowName: "my-wf",
             validations: [{ name: "schema", passed: true }],
+            totalWarnings: 0,
             passed: true,
           },
         },

@@ -187,6 +187,14 @@ hot-loads pulled and local extensions (`modelRegistry.ensureLoaded()`), matching
 the resolution available to `swamp model type describe` and
 `swamp model validate`.
 
+Validation results have three severity levels:
+
+- **Pass** (green ✓) — the check succeeded.
+- **Warning** (yellow ⚠) — the check passed but something looks suspicious.
+  Warnings do not fail validation or affect the exit code.
+- **Fail** (red ✗) — the check failed. At least one failure causes non-zero
+  exit.
+
 Step-input checks fail when the resolved method does not exist
 (`method_not_found`) or when a required argument is missing. A step whose model
 **type cannot be resolved** also fails: an unresolvable type is reported as a
@@ -194,8 +202,10 @@ validation failure (non-zero exit), never silently skipped as a pass — a silen
 skip would mask real contract bugs such as non-existent method names or wrong
 argument keys. Dynamic CEL references (`${{ ... }}`) in model/type names are
 skipped, since they can only be resolved at run time. A step that references a
-model **instance** which does not exist locally (`model_not_found`) is also
-skipped, because the instance may be created by an upstream step during the run.
+model **instance** which does not exist locally (`model_not_found`) produces a
+**warning**: the instance may be created by an upstream step during the run, but
+it could also be a typo. The warning surfaces the reference without failing
+validation.
 
 ## Workflow Definition
 

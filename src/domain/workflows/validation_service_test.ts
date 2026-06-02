@@ -22,6 +22,7 @@ import {
   DefaultWorkflowValidationService,
   type MethodResolution,
   type ModelMethodResolver,
+  WorkflowValidationResult,
 } from "./validation_service.ts";
 import { Workflow } from "./workflow.ts";
 import { Job } from "./job.ts";
@@ -699,7 +700,7 @@ Deno.test("validateStepInputs: skipped when no resolver provided", async () => {
   assertEquals(inputResults.length, 0);
 });
 
-Deno.test("validateStepInputs: model not found produces passing result with skip note", async () => {
+Deno.test("validateStepInputs: model not found produces warning with skip note", async () => {
   const resolver = mockResolver({});
   const svc = new DefaultWorkflowValidationService(resolver);
 
@@ -720,10 +721,39 @@ Deno.test("validateStepInputs: model not found produces passing result with skip
 
   const results = await svc.validate(workflow);
   const inputResult = results.find((r) => r.name.includes("Step inputs"));
-  // A missing model *instance* is skipped (it may be created at run time),
-  // unlike an unresolvable model *type*, which fails. See swamp-club#506.
+  // A missing model *instance* is a warning (it may be created at run time),
+  // unlike an unresolvable model *type*, which fails. See swamp-club#506/#517.
   assertEquals(inputResult?.passed, true);
+  assertEquals(inputResult?.warning, true);
   assertEquals(inputResult?.name.includes("skipped"), true);
+  assertEquals(inputResult?.error?.includes("not found"), true);
+});
+
+Deno.test("WorkflowValidationResult.warning: creates result with passed=true and warning=true", () => {
+  const result = WorkflowValidationResult.warning("check", "something");
+  assertEquals(result.passed, true);
+  assertEquals(result.warning, true);
+  assertEquals(result.error, "something");
+});
+
+Deno.test("WorkflowValidationResult.pass: has warning=false", () => {
+  const result = WorkflowValidationResult.pass("check");
+  assertEquals(result.passed, true);
+  assertEquals(result.warning, false);
+  assertEquals(result.error, undefined);
+});
+
+Deno.test("WorkflowValidationResult.fail: has warning=false", () => {
+  const result = WorkflowValidationResult.fail("check", "error");
+  assertEquals(result.passed, false);
+  assertEquals(result.warning, false);
+  assertEquals(result.error, "error");
+});
+
+Deno.test("WorkflowValidationResult.equals: distinguishes warning from pass", () => {
+  const warn = WorkflowValidationResult.warning("check", "msg");
+  const pass = WorkflowValidationResult.pass("check");
+  assertEquals(warn.equals(pass), false);
 });
 
 Deno.test("validateStepInputs: method not found on model produces failure", async () => {

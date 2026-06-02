@@ -130,6 +130,36 @@ Deno.test("workflowValidate by UUID uses findById", async () => {
   assertEquals(usedFindById, true);
 });
 
+Deno.test("workflowValidate: warning does not affect passed aggregation", async () => {
+  const deps = makeDeps({
+    validate: () =>
+      Promise.resolve([
+        WorkflowValidationResult.pass("schema"),
+        WorkflowValidationResult.warning(
+          "step inputs (model not found, skipped)",
+          "Model instance not found",
+        ),
+      ]),
+  });
+  const events = await collect<WorkflowValidateEvent>(
+    workflowValidate(createLibSwampContext(), deps, {
+      workflowIdOrName: "my-workflow",
+    }),
+  );
+
+  const completed = events[1] as Extract<
+    WorkflowValidateEvent,
+    { kind: "completed" }
+  >;
+  const data = completed.data as WorkflowValidateData;
+  assertEquals(data.passed, true);
+  assertEquals(data.totalWarnings, 1);
+  const warningItem = data.validations.find((v) => v.warning);
+  assertEquals(warningItem?.passed, true);
+  assertEquals(warningItem?.warning, true);
+  assertEquals(warningItem?.error?.includes("not found"), true);
+});
+
 Deno.test("workflowValidate yields error when not found", async () => {
   const deps = makeDeps({
     findWorkflowByName: () => Promise.resolve(null),
