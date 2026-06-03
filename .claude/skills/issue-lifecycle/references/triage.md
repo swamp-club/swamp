@@ -69,7 +69,7 @@ on affected files to see if they were recently changed.
 
 ```
 swamp model @swamp/issue-lifecycle method run triage issue-<N> \
-  --input type=<bug|feature|security> \
+  --input type=<bug|feature|platform|security> \
   --input confidence=<high|medium|low> \
   --input reasoning="<your analysis>"
 ```
@@ -78,6 +78,7 @@ swamp model @swamp/issue-lifecycle method run triage issue-<N> \
 
 - `bug` — something is broken or behaving incorrectly
 - `feature` — a request for new functionality or enhancement
+- `platform` — admin-only platform infrastructure work
 - `security` — security vulnerability, hardening, or compliance work
 
 Add `--input isRegression=true` when the bug previously worked. Look for signals
