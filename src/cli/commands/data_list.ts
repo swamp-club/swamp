@@ -71,13 +71,15 @@ export const dataListCommand = new Command()
       );
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
+    const namespace = datastoreResolver.config().namespace;
     const deps = createDataListDeps(
       repoDir,
       datastoreResolver,
       repoContext.unifiedDataRepo,
+      namespace,
     );
 
-    const renderer = createDataListRenderer(cliCtx.outputMode);
+    const renderer = createDataListRenderer(cliCtx.outputMode, !!namespace);
     await consumeStream(
       dataList(ctx, deps, {
         modelIdOrName,

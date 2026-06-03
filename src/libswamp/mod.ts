@@ -318,6 +318,7 @@ export {
 export type { DataRecord } from "../domain/data/data_record.ts";
 export {
   createNamespace,
+  formatNamespacedModelName,
   isEmptyNamespace,
   type Namespace,
   type NamespacedModelName,
@@ -1234,3 +1235,23 @@ export {
   type DatastoreCompactDeps,
   type DatastoreCompactEvent,
 } from "./datastores/compact.ts";
+export {
+  datastoreNamespaceSet,
+  type NamespaceSetData,
+  type NamespaceSetDeps,
+  type NamespaceSetEvent,
+  type NamespaceSetInput,
+} from "./datastores/namespace_set.ts";
+export {
+  datastoreNamespaceUnset,
+  type NamespaceUnsetData,
+  type NamespaceUnsetDeps,
+  type NamespaceUnsetEvent,
+} from "./datastores/namespace_unset.ts";
+export {
+  datastoreNamespaceList,
+  type NamespaceInfo,
+  type NamespaceListData,
+  type NamespaceListDeps,
+  type NamespaceListEvent,
+} from "./datastores/namespace_list.ts";

@@ -73,27 +73,40 @@ function markdownTable(
  * scaled at ~3ms per row — fine for the TUI's bounded result set, fatal
  * for `--limit 100000` on a real catalog.
  */
-function renderDefaultTable(data: DataQueryData): string {
+function renderDefaultTable(
+  data: DataQueryData,
+  showNamespace = false,
+): string {
   if (data.results.length === 0) {
     return "No matching data found.";
   }
 
-  const headers = [
-    "name",
-    "modelName",
-    "specName",
-    "dataType",
-    "version",
-    "size",
-  ];
-  const rows = data.results.map((r) => [
-    r.name,
-    r.modelName,
-    r.specName,
-    r.dataType,
-    String(r.version),
-    formatSize(r.size),
-  ]);
+  const hasNamespace = showNamespace &&
+    data.results.some((r) => r.namespace !== "");
+
+  const headers = hasNamespace
+    ? [
+      "namespace",
+      "name",
+      "modelName",
+      "specName",
+      "dataType",
+      "version",
+      "size",
+    ]
+    : ["name", "modelName", "specName", "dataType", "version", "size"];
+
+  const rows = data.results.map((r) => {
+    const base = [
+      r.name,
+      r.modelName,
+      r.specName,
+      r.dataType,
+      String(r.version),
+      formatSize(r.size),
+    ];
+    return hasNamespace ? [r.namespace, ...base] : base;
+  });
 
   const table = new Table()
     .header(headers.map((h) => bold(h)))
@@ -213,8 +226,13 @@ function renderJson(data: DataQueryData): void {
  * (`--select`) path; the default table path bypasses markdown entirely and
  * builds ANSI output directly via {@link renderQueryResultsTerminal}.
  */
-export function renderQueryResultsMarkdown(data: DataQueryData): string {
-  return data.projected ? renderProjected(data) : renderDefaultTable(data);
+export function renderQueryResultsMarkdown(
+  data: DataQueryData,
+  showNamespace = false,
+): string {
+  return data.projected
+    ? renderProjected(data)
+    : renderDefaultTable(data, showNamespace);
 }
 
 /**
@@ -228,15 +246,21 @@ export function renderQueryResultsMarkdown(data: DataQueryData): string {
  * branch is bounded by the markdown parser and should only be used for
  * small result sets.
  */
-export function renderQueryResultsTerminal(data: DataQueryData): string {
+export function renderQueryResultsTerminal(
+  data: DataQueryData,
+  showNamespace = false,
+): string {
   if (data.projected) {
-    return renderMarkdownToTerminal(renderQueryResultsMarkdown(data));
+    return renderMarkdownToTerminal(
+      renderQueryResultsMarkdown(data, showNamespace),
+    );
   }
-  return renderDefaultTable(data);
+  return renderDefaultTable(data, showNamespace);
 }
 
 export function createDataQueryRenderer(
   outputMode: OutputMode,
+  showNamespace = false,
 ): { handlers: () => EventHandlers<DataQueryEvent> } {
   return {
     handlers: () => ({
@@ -248,7 +272,7 @@ export function createDataQueryRenderer(
           renderJson(event.data);
           return;
         }
-        writeOutput(renderQueryResultsTerminal(event.data));
+        writeOutput(renderQueryResultsTerminal(event.data, showNamespace));
       },
       error: (event: DataQueryEvent & { kind: "error" }) => {
         throw new UserError(event.error.message);

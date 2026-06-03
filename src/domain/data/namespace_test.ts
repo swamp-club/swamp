@@ -20,6 +20,7 @@
 import { assertEquals, assertThrows } from "@std/assert";
 import {
   createNamespace,
+  formatNamespacedModelName,
   isEmptyNamespace,
   parseNamespacedModelName,
   SOLO_NAMESPACE,
@@ -221,4 +222,27 @@ Deno.test("parseNamespacedModelName: handles model name with slashes", () => {
 Deno.test("parseNamespacedModelName: plain model name with no special chars", () => {
   const result = parseNamespacedModelName("my-model");
   assertEquals(result, { namespace: undefined, modelName: "my-model" });
+});
+
+// --- formatNamespacedModelName ---
+
+Deno.test("formatNamespacedModelName: returns bare name when namespace undefined", () => {
+  assertEquals(formatNamespacedModelName(undefined, "scanner"), "scanner");
+});
+
+Deno.test("formatNamespacedModelName: returns bare name when namespace empty", () => {
+  assertEquals(formatNamespacedModelName("", "scanner"), "scanner");
+});
+
+Deno.test("formatNamespacedModelName: prefixes namespace with colon", () => {
+  assertEquals(
+    formatNamespacedModelName("security", "scanner"),
+    "security:scanner",
+  );
+});
+
+Deno.test("formatNamespacedModelName: round-trips with parseNamespacedModelName", () => {
+  const formatted = formatNamespacedModelName("infra", "@swamp/echo");
+  const parsed = parseNamespacedModelName(formatted);
+  assertEquals(parsed, { namespace: "infra", modelName: "@swamp/echo" });
 });

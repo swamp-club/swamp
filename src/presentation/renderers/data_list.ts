@@ -44,6 +44,8 @@ function isWorkflowData(
 }
 
 class LogDataListRenderer implements Renderer<DataListEvent> {
+  constructor(private showNamespace: boolean) {}
+
   handlers(): EventHandlers<DataListEvent> {
     return {
       resolving: () => {},
@@ -62,7 +64,10 @@ class LogDataListRenderer implements Renderer<DataListEvent> {
 
   private renderModel(data: DataListData): void {
     const cols = getTerminalColumns();
-    console.log(`Data for ${data.modelName} (${data.modelType})`);
+    const header = this.showNamespace && data.namespace
+      ? `Data for ${data.namespace}:${data.modelName} (${data.modelType})`
+      : `Data for ${data.modelName} (${data.modelType})`;
+    console.log(header);
     console.log();
 
     for (const group of data.groups) {
@@ -114,11 +119,18 @@ class LogDataListRenderer implements Renderer<DataListEvent> {
 }
 
 class JsonDataListRenderer implements Renderer<DataListEvent> {
+  constructor(private showNamespace: boolean) {}
+
   handlers(): EventHandlers<DataListEvent> {
     return {
       resolving: () => {},
       completed: (e) => {
-        console.log(JSON.stringify(e.data, null, 2));
+        if (!this.showNamespace && !isWorkflowData(e.data)) {
+          const { namespace: _ns, ...rest } = e.data;
+          console.log(JSON.stringify(rest, null, 2));
+        } else {
+          console.log(JSON.stringify(e.data, null, 2));
+        }
       },
       error: (e) => {
         throw new UserError(e.error.message);
@@ -129,11 +141,12 @@ class JsonDataListRenderer implements Renderer<DataListEvent> {
 
 export function createDataListRenderer(
   mode: OutputMode,
+  showNamespace = false,
 ): Renderer<DataListEvent> {
   switch (mode) {
     case "json":
-      return new JsonDataListRenderer();
+      return new JsonDataListRenderer(showNamespace);
     case "log":
-      return new LogDataListRenderer();
+      return new LogDataListRenderer(showNamespace);
   }
 }

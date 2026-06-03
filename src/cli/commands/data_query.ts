@@ -71,10 +71,12 @@ export const dataQueryCommand = new Command()
   .action(async function (options: AnyOptions, predicate?: string) {
     const ctx = createContext(options as GlobalOptions, ["data", "query"]);
 
-    const { repoContext } = await requireInitializedRepoReadOnly({
-      repoDir: resolveRepoDir(options.repoDir),
-      outputMode: ctx.outputMode,
-    });
+    const { repoContext, datastoreResolver } =
+      await requireInitializedRepoReadOnly({
+        repoDir: resolveRepoDir(options.repoDir),
+        outputMode: ctx.outputMode,
+      });
+    const showNamespace = !!datastoreResolver.config().namespace;
 
     if (!repoContext.catalogStore) {
       throw new UserError(
@@ -114,7 +116,7 @@ export const dataQueryCommand = new Command()
 
     const libCtx = createLibSwampContext();
 
-    const renderer = createDataQueryRenderer(ctx.outputMode);
+    const renderer = createDataQueryRenderer(ctx.outputMode, showNamespace);
     await consumeStream(
       dataQuery(libCtx, deps, {
         predicate,

@@ -26,6 +26,11 @@ import { datastoreLockCommand } from "./datastore_lock.ts";
 import { datastoreCompactCommand } from "./datastore_compact.ts";
 import { datastoreCatalogPullCommand } from "./datastore_catalog_pull.ts";
 import {
+  datastoreNamespaceSetCommand,
+  datastoreNamespaceUnsetCommand,
+} from "./datastore_namespace.ts";
+import { datastoreNamespacesCommand } from "./datastore_namespaces.ts";
+import {
   datastoreTypeSearchAction,
   datastoreTypeSearchCommand,
 } from "./datastore_type_search.ts";
@@ -51,6 +56,14 @@ const datastoreCatalogCommand = new Command()
   .action(groupCommandAction)
   .command("pull", datastoreCatalogPullCommand);
 
+const datastoreNamespaceCommand = new Command()
+  .name("namespace")
+  .description("Manage datastore namespace")
+  .action(groupCommandAction)
+  .command("set", datastoreNamespaceSetCommand)
+  .command("unset", datastoreNamespaceUnsetCommand)
+  .command("list", datastoreNamespacesCommand);
+
 export const datastoreCommand = new Command()
   .description("Manage datastore configuration")
   .error(unknownCommandErrorHandler)
@@ -61,4 +74,5 @@ export const datastoreCommand = new Command()
   .command("sync", datastoreSyncCommand)
   .command("lock", datastoreLockCommand)
   .command("compact", datastoreCompactCommand)
-  .command("catalog", datastoreCatalogCommand);
+  .command("catalog", datastoreCatalogCommand)
+  .command("namespace", datastoreNamespaceCommand);

@@ -77,3 +77,11 @@ export function parseNamespacedModelName(input: string): NamespacedModelName {
 
   return { namespace, modelName };
 }
+
+export function formatNamespacedModelName(
+  namespace: string | undefined,
+  modelName: string,
+): string {
+  if (namespace === undefined || namespace === "") return modelName;
+  return `${namespace}:${modelName}`;
+}

@@ -59,6 +59,7 @@ export interface DataListData {
   modelId: string;
   modelName: string;
   modelType: string;
+  namespace: string;
   groups: DataGroupedByType[];
   total: number;
 }
@@ -158,6 +159,7 @@ export interface DataListDeps {
     workflowId: string,
     runId: string,
   ) => Promise<WorkflowDataEntry[]>;
+  namespace?: string;
 }
 
 /** Wires real infrastructure into DataListDeps. */
@@ -165,6 +167,7 @@ export function createDataListDeps(
   repoDir: string,
   datastoreResolver?: DatastorePathResolver,
   injectedDataRepo?: FileSystemUnifiedDataRepository,
+  namespace?: string,
 ): DataListDeps {
   const dsPath = (subdir: string): string | undefined =>
     datastoreResolver?.resolvePath(subdir);
@@ -188,6 +191,7 @@ export function createDataListDeps(
     dataRepo,
   );
   return {
+    namespace,
     lookupDefinition: (idOrName) =>
       findDefinitionByIdOrName(definitionRepo, idOrName),
     findAllForModel: (type, definitionId) =>
@@ -386,6 +390,7 @@ async function* modelScopedList(
       modelId: definition.id,
       modelName: definition.name,
       modelType: modelType.normalized,
+      namespace: deps.namespace ?? "",
       groups,
       total: filteredData.length,
     },
