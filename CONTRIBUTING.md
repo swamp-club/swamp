@@ -1,17 +1,17 @@
 # Contributing Code to Swamp
 
-Only employees of System Initiative, Inc. are allowed to contribute code to
+Only employees of Elder Swamp Club, Inc. are allowed to contribute code to
 Swamp.
 
 There are no exceptions. All pull requests to this repository not made by
-employees of System Initiative will be closed immediately.
+employees of Elder Swamp Club will be closed immediately.
 
 # Contributing Bug Reports and Feature Requests
 
 We are thrilled to receive your bug reports and feature requests, which we will
 implement for you (and maintain over time) at our discretion. By including any
 source code in a bug report or feature request, you grant a full copyright
-license to System Initiative, Inc.
+license to Elder Swamp Club, Inc.
 
 # Why?
 
@@ -34,7 +34,7 @@ co-author on the pull request we generate at your request.
 # Copyright
 
 This does _not_ imply that we share the copyright ownership of the work - the
-resulting software will be the exclusive copyright of System Initiative, Inc.
+resulting software will be the exclusive copyright of Elder Swamp Club, Inc.
 
 # No Exceptions
 

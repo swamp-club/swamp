@@ -105,7 +105,7 @@ With `--close`: adds `"statusChanged": "closed"`. With `--reopen`: adds
 1. **Logged in** → submits to Lab API → returns issue number and URL
 2. **Not logged in** → prompts: log in now, or send via email
 3. **`--email` flag** → opens email client with pre-filled subject/body to
-   `support@systeminit.com`
+   `support@swamp-club.com`
 
 **Output shape** (Lab submission with `--json`):
 

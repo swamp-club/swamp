@@ -37,7 +37,7 @@
 These are the policies for upholding our community’s standards of conduct. If
 you feel that a thread needs moderation, please inform an admin on
 [Discord](https://discord.com/invite/swamp-club) or email
-<code_of_conduct@systeminit.com>.
+<code_of_conduct@swamp-club.com>.
 
 The team at System Initiative is repsonsible for community moderation.
 

@@ -17,7 +17,7 @@ All contributions endeavoring to maintain the safety of our platform are
 appreciated but not at all are eligble for reward.
 
 The associated rules, qualifications, and rewards for this program may be
-revised at any time and any decisions made by security@systeminit.com will be
+revised at any time and any decisions made by security@swamp-club.com will be
 considered final.
 
 # Contained within this document:
@@ -72,7 +72,7 @@ news articles are less likely to be rewarded.
 ### Key Points
 
 Please submit all reports to
-[security@systeminit.com](mailto:security@systeminit.com) with the following
+[security@swamp-club.com](mailto:security@swamp-club.com) with the following
 headings:
 
 - Executive Summary
@@ -98,7 +98,7 @@ finding a vulnerability.
 **If you encounter Personally Identifiable Information (PII):**
 
 - Contact us immediately at
-  [security@systeminit.com](mailto:security@systeminit.com).
+  [security@swamp-club.com](mailto:security@swamp-club.com).
 - Do not proceed with accessing or retaining local copies.
 
 **Limits/Additional Considerations:**
@@ -265,5 +265,5 @@ Examples include:
 | ------------------------ | ---------- | ----------- | ------------------- | ----------------------- | ------------------------ | --------------------------- | --------------------- | ------------ | ----------- | ----------------------- | ----------------------- |
 | telemetry.swamp-club.com | API        |             | true                | true                    |                          |                             |                       | critical     | production  | 2026-11-02 13:45:00 UTC | 2026-11-02 13:45:00 UTC |
 | swamp-club.com           | WEB APP    |             | true                | true                    |                          |                             |                       | critical     | production  | 2026-11-02 13:45:00 UTC | 2026-11-02 13:45:00 UTC |
-| systeminit.com           | WEB APP    |             | true                | true                    |                          |                             |                       | medium       | production  | 2024-11-28 13:45:00 UTC | 2024-11-28 13:45:00 UTC |
+| swamp-club.com           | WEB APP    |             | true                | true                    |                          |                             |                       | medium       | production  | 2024-11-28 13:45:00 UTC | 2024-11-28 13:45:00 UTC |
 | swamp CLI (stable)       | OTHER      |             | true                | true                    |                          |                             |                       | high         | production  | 2026-02-12 00:00:00 UTC | 2026-02-12 00:00:00 UTC |

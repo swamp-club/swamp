@@ -1,5 +1,5 @@
 // Swamp, an Automation Framework
-// Copyright (C) 2026 System Initiative, Inc.
+// Copyright (C) 2026 Elder Swamp Club, Inc.
 //
 // This file is part of Swamp.
 //
@@ -21,7 +21,7 @@ import { assertEquals } from "@std/assert";
 import { GitHubIssueService } from "./github_issue_service.ts";
 
 Deno.test("issue URL parsing extracts issue number", () => {
-  const url = "https://github.com/systeminit/swamp/issues/123";
+  const url = "https://github.com/swamp-club/swamp/issues/123";
   const match = url.match(/\/issues\/(\d+)$/);
   const number = match ? parseInt(match[1], 10) : 0;
   assertEquals(number, 123);
@@ -46,7 +46,7 @@ Deno.test("getNewIssueUrl uses default repo with labels", () => {
   const url = service.getNewIssueUrl({ labels: ["bug", "needs-triage"] });
   assertEquals(
     url,
-    "https://github.com/systeminit/swamp/issues/new?labels=bug%2Cneeds-triage",
+    "https://github.com/swamp-club/swamp/issues/new?labels=bug%2Cneeds-triage",
   );
 });
 
@@ -65,5 +65,5 @@ Deno.test("getNewIssueUrl uses custom repo", () => {
 Deno.test("getNewIssueUrl with no labels omits query string", () => {
   const service = new GitHubIssueService();
   const url = service.getNewIssueUrl({ labels: [] });
-  assertEquals(url, "https://github.com/systeminit/swamp/issues/new");
+  assertEquals(url, "https://github.com/swamp-club/swamp/issues/new");
 });

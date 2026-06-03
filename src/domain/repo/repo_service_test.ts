@@ -1,5 +1,5 @@
 // Swamp, an Automation Framework
-// Copyright (C) 2026 System Initiative, Inc.
+// Copyright (C) 2026 Elder Swamp Club, Inc.
 //
 // This file is part of Swamp.
 //
@@ -1880,7 +1880,7 @@ Deno.test("RepoService.upgrade migrates legacy content (template-only) to marker
     const claudeMdPath = join(tempDir, "CLAUDE.md");
     const legacyContent = `# Project
 
-This repository is managed with [swamp](https://github.com/systeminit/swamp).
+This repository is managed with [swamp](https://github.com/swamp-club/swamp).
 
 ## Rules
 
@@ -1928,7 +1928,7 @@ Deno.test("RepoService.upgrade migrates legacy content and preserves user additi
     const claudeMdPath = join(tempDir, "CLAUDE.md");
     const legacyWithUserContent = `# Project
 
-This repository is managed with [swamp](https://github.com/systeminit/swamp).
+This repository is managed with [swamp](https://github.com/swamp-club/swamp).
 
 ## Commands
 
@@ -1971,7 +1971,7 @@ Run npm install first.
 
 # Project
 
-This repository is managed with [swamp](https://github.com/systeminit/swamp).
+This repository is managed with [swamp](https://github.com/swamp-club/swamp).
 
 ## Commands
 
@@ -2139,7 +2139,7 @@ Deno.test("RepoService.upgrade legacy migration with partial template match pres
     const claudeMdPath = join(tempDir, "CLAUDE.md");
     const legacyWithEditedEnd = `# Project
 
-This repository is managed with [swamp](https://github.com/systeminit/swamp).
+This repository is managed with [swamp](https://github.com/swamp-club/swamp).
 
 ## Commands
 

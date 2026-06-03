@@ -1,5 +1,5 @@
 // Swamp, an Automation Framework
-// Copyright (C) 2026 System Initiative, Inc.
+// Copyright (C) 2026 Elder Swamp Club, Inc.
 //
 // This file is part of Swamp.
 //
@@ -238,13 +238,13 @@ Deno.test("issueCreate: extension body contains Upstream repository line when se
     type: "bug",
     extensionName: "@swamp/aws",
     extensionVersion: "2026.04.22.1",
-    repositoryUrl: "https://github.com/systeminit/swamp-aws",
+    repositoryUrl: "https://github.com/swamp-club/swamp-aws",
     reporterContext: SAMPLE_CONTEXT,
   }));
 
   assertStringIncludes(
     captured?.body ?? "",
-    "Upstream repository: https://github.com/systeminit/swamp-aws",
+    "Upstream repository: https://github.com/swamp-club/swamp-aws",
   );
 });
 

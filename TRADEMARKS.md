@@ -227,8 +227,8 @@ Also, if you are using our Marks in a way described in the sections "Uses for
 which we are granting a license," please put following notice at the foot of the
 page where you have used the Mark (or, if in a book, on the credits page), on
 any packaging or labeling, and on advertising or marketing materials: "System
-Initiative is trademark of System Initiative, Inc., registered in the United
-States and other countries. Used with permission from System Initiative, Inc."
+Initiative is trademark of Elder Swamp Club, Inc., registered in the United
+States and other countries. Used with permission from Elder Swamp Club, Inc."
 
 ### What to do when you see abuse
 
@@ -241,7 +241,7 @@ described below so that we can investigate it further.
 If you have any questions about this Policy, would like to speak with us about
 the use of our Marks in ways not described in the Policy, or see any abuse of
 our Marks, please email
-<a href="mailto:legal@systeminit.com">legal@systeminit.com</a>.
+<a href="mailto:legal@swamp-club.com">legal@swamp-club.com</a>.
 
 ### General considerations about trademarks and their use
 

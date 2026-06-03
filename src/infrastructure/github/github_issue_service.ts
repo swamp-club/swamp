@@ -1,5 +1,5 @@
 // Swamp, an Automation Framework
-// Copyright (C) 2026 System Initiative, Inc.
+// Copyright (C) 2026 Elder Swamp Club, Inc.
 //
 // This file is part of Swamp.
 //
@@ -48,7 +48,7 @@ export interface CreateIssueOptions {
  * Service for interacting with GitHub issues via the gh CLI.
  */
 export class GitHubIssueService {
-  private readonly defaultRepo = "systeminit/swamp";
+  private readonly defaultRepo = "swamp-club/swamp";
 
   /**
    * Checks if the gh CLI is installed and authenticated.

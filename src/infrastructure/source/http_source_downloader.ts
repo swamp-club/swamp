@@ -1,5 +1,5 @@
 // Swamp, an Automation Framework
-// Copyright (C) 2026 System Initiative, Inc.
+// Copyright (C) 2026 Elder Swamp Club, Inc.
 //
 // This file is part of Swamp.
 //
@@ -28,7 +28,7 @@ import { extractTarGz } from "../archive/tar_archive.ts";
  */
 export class HttpSourceDownloader implements SourceDownloader {
   private static readonly GITHUB_BASE =
-    "https://github.com/systeminit/swamp/archive/refs";
+    "https://github.com/swamp-club/swamp/archive/refs";
 
   /**
    * Get the GitHub archive URL for a version.

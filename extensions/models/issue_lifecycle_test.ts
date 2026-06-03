@@ -1,4 +1,4 @@
-// Swamp, an Automation Framework Copyright (C) 2026 System Initiative, Inc.
+// Swamp, an Automation Framework Copyright (C) 2026 Elder Swamp Club, Inc.
 //
 // This file is part of Swamp.
 //
@@ -106,7 +106,7 @@ Deno.test("link_pr: writes pullRequest-main resource with url, attempt, and link
   const { context, writes, restore } = await buildTestContext(42);
   try {
     await model.methods.link_pr.execute(
-      { url: "https://github.com/systeminit/swamp/pull/1141" },
+      { url: "https://github.com/swamp-club/swamp/pull/1141" },
       context,
     );
 
@@ -119,7 +119,7 @@ Deno.test("link_pr: writes pullRequest-main resource with url, attempt, and link
     );
     assertEquals(
       prWrite!.data.url,
-      "https://github.com/systeminit/swamp/pull/1141",
+      "https://github.com/swamp-club/swamp/pull/1141",
     );
     assertEquals(prWrite!.data.attempt, 1);
     assertEquals(typeof prWrite!.data.linkedAt, "string");
@@ -132,7 +132,7 @@ Deno.test("link_pr: transitions state to pr_open", async () => {
   const { context, writes, restore } = await buildTestContext(42);
   try {
     await model.methods.link_pr.execute(
-      { url: "https://github.com/systeminit/swamp/pull/1141" },
+      { url: "https://github.com/swamp-club/swamp/pull/1141" },
       context,
     );
 
@@ -150,11 +150,11 @@ Deno.test("link_pr: is idempotent — second call increments attempt", async () 
   const { context, writes, restore } = await buildTestContext(42);
   try {
     await model.methods.link_pr.execute(
-      { url: "https://github.com/systeminit/swamp/pull/1141" },
+      { url: "https://github.com/swamp-club/swamp/pull/1141" },
       context,
     );
     await model.methods.link_pr.execute(
-      { url: "https://github.com/systeminit/swamp/pull/1142" },
+      { url: "https://github.com/swamp-club/swamp/pull/1142" },
       context,
     );
 
@@ -167,7 +167,7 @@ Deno.test("link_pr: is idempotent — second call increments attempt", async () 
     );
     assertEquals(
       prWrites[1].data.url,
-      "https://github.com/systeminit/swamp/pull/1142",
+      "https://github.com/swamp-club/swamp/pull/1142",
     );
     assertEquals(prWrites[0].data.attempt, 1);
     assertEquals(prWrites[1].data.attempt, 2);
@@ -186,7 +186,7 @@ Deno.test("link_pr: from pr_failed clears failure fields and increments attempt"
   const { context, writes, restore } = await buildTestContext(42, {
     resources: {
       "pullRequest-main": {
-        url: "https://github.com/systeminit/swamp/pull/1141",
+        url: "https://github.com/swamp-club/swamp/pull/1141",
         attempt: 1,
         linkedAt: "2026-04-09T10:00:00.000Z",
         failedAt: "2026-04-09T10:05:00.000Z",
@@ -196,7 +196,7 @@ Deno.test("link_pr: from pr_failed clears failure fields and increments attempt"
   });
   try {
     await model.methods.link_pr.execute(
-      { url: "https://github.com/systeminit/swamp/pull/1142" },
+      { url: "https://github.com/swamp-club/swamp/pull/1142" },
       context,
     );
 
@@ -204,7 +204,7 @@ Deno.test("link_pr: from pr_failed clears failure fields and increments attempt"
     assertEquals(prWrite !== undefined, true);
     assertEquals(
       prWrite!.data.url,
-      "https://github.com/systeminit/swamp/pull/1142",
+      "https://github.com/swamp-club/swamp/pull/1142",
     );
     assertEquals(prWrite!.data.attempt, 2);
     // link_pr overwrites the entire resource — failure fields are absent
@@ -233,7 +233,7 @@ Deno.test("pr-cooldown: rejects when PR was linked too recently", async () => {
           return Promise.resolve(
             new TextEncoder().encode(
               JSON.stringify({
-                url: "https://github.com/systeminit/swamp/pull/1",
+                url: "https://github.com/swamp-club/swamp/pull/1",
                 linkedAt: recentLinkedAt,
               }),
             ),
@@ -267,7 +267,7 @@ Deno.test("pr-cooldown: passes when enough time has elapsed", async () => {
           return Promise.resolve(
             new TextEncoder().encode(
               JSON.stringify({
-                url: "https://github.com/systeminit/swamp/pull/1",
+                url: "https://github.com/swamp-club/swamp/pull/1",
                 linkedAt: oldLinkedAt,
               }),
             ),
@@ -331,7 +331,7 @@ Deno.test("pr_merged: transitions state to releasing and writes mergedAt with at
   const { context, writes, restore } = await buildTestContext(42, {
     resources: {
       "pullRequest-main": {
-        url: "https://github.com/systeminit/swamp/pull/1141",
+        url: "https://github.com/swamp-club/swamp/pull/1141",
         attempt: 2,
         linkedAt: "2026-04-09T10:00:00.000Z",
       },
@@ -349,7 +349,7 @@ Deno.test("pr_merged: transitions state to releasing and writes mergedAt with at
     assertEquals(prWrite !== undefined, true);
     assertEquals(
       prWrite!.data.url,
-      "https://github.com/systeminit/swamp/pull/1141",
+      "https://github.com/swamp-club/swamp/pull/1141",
     );
     assertEquals(prWrite!.data.attempt, 2);
     assertEquals(typeof prWrite!.data.mergedAt, "string");
@@ -362,7 +362,7 @@ Deno.test("pr_merged: uses provided mergedAt when given", async () => {
   const { context, writes, restore } = await buildTestContext(42, {
     resources: {
       "pullRequest-main": {
-        url: "https://github.com/systeminit/swamp/pull/1141",
+        url: "https://github.com/swamp-club/swamp/pull/1141",
         attempt: 1,
         linkedAt: "2026-04-09T10:00:00.000Z",
       },
@@ -402,7 +402,7 @@ Deno.test("pr_failed: transitions state to pr_failed and writes failure info wit
   const { context, writes, restore } = await buildTestContext(42, {
     resources: {
       "pullRequest-main": {
-        url: "https://github.com/systeminit/swamp/pull/1141",
+        url: "https://github.com/swamp-club/swamp/pull/1141",
         attempt: 1,
         linkedAt: "2026-04-09T10:00:00.000Z",
       },
@@ -476,7 +476,7 @@ Deno.test("ship: accepts optional releaseUrl and releaseNotes", async () => {
     // Should not throw
     await model.methods.ship.execute(
       {
-        releaseUrl: "https://github.com/systeminit/swamp/releases/tag/v1.0.0",
+        releaseUrl: "https://github.com/swamp-club/swamp/releases/tag/v1.0.0",
         releaseNotes: "Bug fix release",
       },
       context,

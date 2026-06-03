@@ -38,7 +38,7 @@ to assert on results programmatically.
 ```json
 {
   "method": "email",
-  "to": "support@systeminit.com",
+  "to": "support@swamp-club.com",
   "subject": "...",
   "body": "..."
 }

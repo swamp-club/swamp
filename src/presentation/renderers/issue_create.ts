@@ -1,5 +1,5 @@
 // Swamp, an Automation Framework
-// Copyright (C) 2026 System Initiative, Inc.
+// Copyright (C) 2026 Elder Swamp Club, Inc.
 //
 // This file is part of Swamp.
 //
@@ -74,7 +74,7 @@ class LogIssueCreateRenderer implements Renderer<IssueCreateEvent> {
           );
           logger.info(
             "If your email client did not open, send manually to {email}",
-            { email: "support@systeminit.com" },
+            { email: "support@swamp-club.com" },
           );
         }
       },

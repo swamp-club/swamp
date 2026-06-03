@@ -31,7 +31,7 @@ cleanup's own failure shadows the original error.
 Is the testing strategy sufficient? Are edge cases covered? Are there
 integration test gaps? Is there over-reliance on unit tests? Was the UAT
 assessment thorough — are there end-to-end CLI or adversarial test gaps that
-should be filed in `systeminit/swamp-uat`?
+should be filed in `swamp-club/swamp-uat`?
 
 ## Complexity
 

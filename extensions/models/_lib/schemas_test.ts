@@ -1,4 +1,4 @@
-// Swamp, an Automation Framework Copyright (C) 2026 System Initiative, Inc.
+// Swamp, an Automation Framework Copyright (C) 2026 Elder Swamp Club, Inc.
 //
 // This file is part of Swamp.
 //
@@ -79,7 +79,7 @@ Deno.test("TRANSITIONS: link_pr is rejected from earlier lifecycle phases", () =
 Deno.test("PullRequestSchema: accepts any non-empty URL string", () => {
   // URLs are opaque to the model — GitHub, GitLab, Gitea, Forgejo, etc.
   const samples = [
-    "https://github.com/systeminit/swamp/pull/1141",
+    "https://github.com/swamp-club/swamp/pull/1141",
     "https://gitlab.com/group/project/-/merge_requests/42",
     "https://codeberg.org/user/repo/pulls/7",
     "https://git.internal/project/+/123",
@@ -105,7 +105,7 @@ Deno.test("PullRequestSchema: rejects empty url string", () => {
 
 Deno.test("PullRequestSchema: requires linkedAt", () => {
   const result = PullRequestSchema.safeParse({
-    url: "https://github.com/systeminit/swamp/pull/1",
+    url: "https://github.com/swamp-club/swamp/pull/1",
   });
   assertEquals(result.success, false);
 });

@@ -1,5 +1,5 @@
 // Swamp, an Automation Framework
-// Copyright (C) 2026 System Initiative, Inc.
+// Copyright (C) 2026 Elder Swamp Club, Inc.
 //
 // This file is part of Swamp.
 //
@@ -22,7 +22,7 @@
  *
  * Verifies that globalArgument expressions referencing unprovided inputs
  * are skipped during workflow execution, matching the CLI path behavior.
- * See: https://github.com/systeminit/swamp/issues/653
+ * See: https://github.com/swamp-club/swamp/issues/653
  */
 
 import { assertEquals } from "@std/assert";

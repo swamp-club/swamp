@@ -97,7 +97,7 @@ Use `deno run` to get a complete list of custom tasks.
   to recompile swamp.
 - When a PR fixes a GitHub issue filed by an external contributor (not a repo
   collaborator), add them as a co-author to the commit. Check with
-  `gh api /repos/systeminit/swamp/collaborators --jq '.[].login'` to determine
+  `gh api /repos/swamp-club/swamp/collaborators --jq '.[].login'` to determine
   if the issue author is a team member. If they are not, add
   `Co-authored-by: Name <email>` to the commit. Use `gh api /users/<username>`
   to look up their name, and use `<username>@users.noreply.github.com` as the

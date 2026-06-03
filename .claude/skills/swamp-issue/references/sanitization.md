@@ -31,7 +31,7 @@ context is needed for diagnosis. Sanitize the final draft.
   `acme-corp/internal-tools`)
 - Internal hostnames and domains (e.g. `jenkins.internal.acme.com`)
 - Private IP addresses (RFC 1918: `10.x.x.x`, `172.16-31.x.x`, `192.168.x.x`)
-- Email addresses (except generic ones like `support@systeminit.com`)
+- Email addresses (except generic ones like `support@swamp-club.com`)
 - Usernames that identify real people
 
 **Placeholders:** `<ORG>`, `<INTERNAL_HOST>`, `<PRIVATE_IP>`, `<EMAIL>`,
@@ -63,7 +63,7 @@ distinct paths appear)
 
 - **Generic system paths** (`/usr/local/bin/swamp`, `/tmp/repro/`) are safe — do
   not redact.
-- **Public repository names** (`systeminit/swamp`, well-known open-source
+- **Public repository names** (`swamp-club/swamp`, well-known open-source
   projects) are safe.
 - **Quoted error output** often contains paths or identifiers from the user's
   environment. Redact the identifying parts while preserving the error structure

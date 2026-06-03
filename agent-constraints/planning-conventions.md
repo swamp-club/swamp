@@ -16,7 +16,7 @@ renamed types or methods referenced in skill examples.
 ## User Acceptance Testing (UAT) Assessment
 
 Evaluate whether the change requires end-to-end UAT coverage in the
-`systeminit/swamp-uat` repo. That repo has two categories of tests:
+`swamp-club/swamp-uat` repo. That repo has two categories of tests:
 
 - **CLI UAT tests** (`tests/cli/`) — verify CLI commands, flags, and output from
   a user's perspective. File paths mirror CLI command paths (e.g.
@@ -28,7 +28,7 @@ Evaluate whether the change requires end-to-end UAT coverage in the
 First, check if existing UAT coverage exists:
 
 ```
-gh api repos/systeminit/swamp-uat/contents/tests/cli --jq '.[].name'
+gh api repos/swamp-club/swamp-uat/contents/tests/cli --jq '.[].name'
 ```
 
 Then assess:
@@ -43,7 +43,7 @@ Then assess:
   existing adversarial test covers it → flag this to the human.
 - If the human agrees a UAT gap exists, file an issue in `swamp-uat`:
   ```
-  gh issue create --repo systeminit/swamp-uat \
+  gh issue create --repo swamp-club/swamp-uat \
     --title "UAT: <describe the missing test scenario>" \
     --body "<reproduction steps, expected behavior, which CLI commands to test>"
   ```
@@ -54,7 +54,7 @@ Then assess:
 ## Manual Documentation Assessment
 
 Evaluate whether the change requires updates to the user-facing documentation in
-the `systeminit/swamp-club` repo under `content/manual/`. That directory follows
+the `swamp-club/swamp-club` repo under `content/manual/`. That directory follows
 the Diátaxis framework:
 
 - **How-to guides** (`content/manual/how-to/`) — task-oriented guides (e.g.
@@ -70,10 +70,10 @@ the Diátaxis framework:
 First, check what documentation exists:
 
 ```
-gh api repos/systeminit/swamp-club/contents/content/manual/reference --jq '.[].name'
-gh api repos/systeminit/swamp-club/contents/content/manual/how-to --jq '.[].name'
-gh api repos/systeminit/swamp-club/contents/content/manual/explanation --jq '.[].name'
-gh api repos/systeminit/swamp-club/contents/content/manual/tutorials --jq '.[].name'
+gh api repos/swamp-club/swamp-club/contents/content/manual/reference --jq '.[].name'
+gh api repos/swamp-club/swamp-club/contents/content/manual/how-to --jq '.[].name'
+gh api repos/swamp-club/swamp-club/contents/content/manual/explanation --jq '.[].name'
+gh api repos/swamp-club/swamp-club/contents/content/manual/tutorials --jq '.[].name'
 ```
 
 Then assess:
@@ -91,7 +91,7 @@ Then assess:
   flag the doc that needs updating or removal.
 - If the human agrees a documentation gap exists, file an issue in `swamp-club`:
   ```
-  gh issue create --repo systeminit/swamp-club \
+  gh issue create --repo swamp-club/swamp-club \
     --title "Docs: <describe the documentation gap>" \
     --body "<what changed, which manual page needs updating, suggested content>"
   ```

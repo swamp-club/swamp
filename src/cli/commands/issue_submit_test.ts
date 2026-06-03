@@ -1,5 +1,5 @@
 // Swamp, an Automation Framework
-// Copyright (C) 2026 System Initiative, Inc.
+// Copyright (C) 2026 Elder Swamp Club, Inc.
 //
 // This file is part of Swamp.
 //
@@ -22,7 +22,7 @@ import { buildMailtoUrl } from "./issue_submit.ts";
 
 Deno.test("buildMailtoUrl: builds correct mailto URL for bug", () => {
   const url = buildMailtoUrl("bug", "CLI crash", "Steps to reproduce");
-  assertEquals(url.startsWith("mailto:support@systeminit.com?"), true);
+  assertEquals(url.startsWith("mailto:support@swamp-club.com?"), true);
   assertEquals(url.includes("subject=%5Bbug%5D%20CLI%20crash"), true);
   assertEquals(url.includes("body=Steps%20to%20reproduce"), true);
   // Verify no + encoding (RFC 6068 requires %20)

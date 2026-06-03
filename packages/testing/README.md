@@ -1,6 +1,6 @@
 # @systeminit/swamp-testing
 
-Test utilities for [swamp](https://github.com/systeminit/swamp) extensions.
+Test utilities for [swamp](https://github.com/swamp-club/swamp) extensions.
 Provides test factories for all extension types — models, vaults, datastores,
 execution drivers, and reports — for unit testing without real infrastructure.
 
@@ -59,7 +59,7 @@ cel-js Environment seeded with the same baseline registrations as production.
 Extensions that use CEL evaluation in their `execute` methods can be unit-tested
 with no extra setup. See the
 [Custom CEL Evaluation section in the model API
-reference](https://github.com/systeminit/swamp/blob/main/.claude/skills/swamp-extension/references/model/api.md#custom-cel-evaluation)
+reference](https://github.com/swamp-club/swamp/blob/main/.claude/skills/swamp-extension/references/model/api.md#custom-cel-evaluation)
 for usage patterns.
 
 ## Inspection Helpers
@@ -255,11 +255,11 @@ export const model = {
 No change is required for models whose tests don't import the source — the
 unannotated default form in the swamp-extension-model skill still applies. See
 the
-[`references/typing.md`](https://github.com/systeminit/swamp/blob/main/.claude/skills/swamp-extension-model/references/typing.md)
+[`references/typing.md`](https://github.com/swamp-club/swamp/blob/main/.claude/skills/swamp-extension-model/references/typing.md)
 guide in the swamp-extension-model skill for the full rationale, worked example,
 and the `defineModel` function-form alternative.
 
 ## License
 
 AGPL-3.0-only — see
-[LICENSE](https://github.com/systeminit/swamp/blob/main/LICENSE).
+[LICENSE](https://github.com/swamp-club/swamp/blob/main/LICENSE).

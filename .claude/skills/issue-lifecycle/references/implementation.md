@@ -134,7 +134,7 @@ After `ship` or `complete`, the phase is `notify`. Check whether the issue
 author is an external contributor:
 
 ```
-gh api /repos/systeminit/swamp/collaborators --jq '.[].login' | grep -qx '<author>'
+gh api /repos/swamp-club/swamp/collaborators --jq '.[].login' | grep -qx '<author>'
 ```
 
 - **External** (not a collaborator): call `notify` to post a thank-you ripple:

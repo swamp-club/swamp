@@ -1,5 +1,5 @@
 // Swamp, an Automation Framework
-// Copyright (C) 2026 System Initiative, Inc.
+// Copyright (C) 2026 Elder Swamp Club, Inc.
 //
 // This file is part of Swamp.
 //
@@ -61,7 +61,7 @@ export type UsableExtensionTarget = Exclude<
   { kind: "refused" }
 >;
 
-const SUPPORT_EMAIL = "support@systeminit.com";
+const SUPPORT_EMAIL = "support@swamp-club.com";
 
 /** The resolved submission destination. */
 export type SubmitDestination =

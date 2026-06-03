@@ -86,7 +86,7 @@ where you decide whether to thank the issue author:
 Check collaborator status with:
 
 ```
-gh api /repos/systeminit/swamp/collaborators --jq '.[].login' | grep -qx '<author>'
+gh api /repos/swamp-club/swamp/collaborators --jq '.[].login' | grep -qx '<author>'
 ```
 
 If the author is NOT in the collaborator list, they are external — call

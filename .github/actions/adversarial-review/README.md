@@ -19,7 +19,7 @@ jobs:
       pull-requests: write
     steps:
       - uses: actions/checkout@v6
-      - uses: systeminit/swamp/.github/actions/adversarial-review@COMMIT_SHA
+      - uses: swamp-club/swamp/.github/actions/adversarial-review@COMMIT_SHA
         with:
           github_token: ${{ secrets.GITHUB_TOKEN }}
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
@@ -74,7 +74,7 @@ Add project-specific dimensions with the `extra_dimensions` input.
 ## Adding Custom Dimensions
 
 ```yaml
-- uses: systeminit/swamp/.github/actions/adversarial-review@COMMIT_SHA
+- uses: swamp-club/swamp/.github/actions/adversarial-review@COMMIT_SHA
   with:
     github_token: ${{ secrets.GITHUB_TOKEN }}
     anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}

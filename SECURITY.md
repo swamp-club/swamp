@@ -13,7 +13,7 @@ so the community can track progress and discuss.
 
 If the vulnerability involves **secret or credential exposure, data
 exfiltration, or any issue where public disclosure could put users at risk**,
-please email [security@systeminit.com](mailto:security@systeminit.com) instead.
+please email [security@swamp-club.com](mailto:security@swamp-club.com) instead.
 
 ### What to Include
 
@@ -42,4 +42,4 @@ The following are examples of issues that should be reported privately:
 
 Everything else — general bugs, feature requests, and non-sensitive defects —
 should be filed as a
-[public issue](https://github.com/systeminit/swamp/issues/new).
+[public issue](https://github.com/swamp-club/swamp/issues/new).

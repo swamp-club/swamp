@@ -1,5 +1,5 @@
 // Swamp, an Automation Framework
-// Copyright (C) 2026 System Initiative, Inc.
+// Copyright (C) 2026 Elder Swamp Club, Inc.
 //
 // This file is part of Swamp.
 //
@@ -128,7 +128,7 @@ Deno.test("JsonlAuditRepository.findByTimeRange returns entries in range", async
 });
 
 Deno.test("JsonlAuditRepository.findByTimeRange reads correct UTC-dated file for same-day queries", async () => {
-  // Regression test for https://github.com/systeminit/swamp/issues/659
+  // Regression test for https://github.com/swamp-club/swamp/issues/659
   // Ensures date iteration uses UTC dates to match filenames written by append().
   // The bug: setHours(0,0,0,0) uses local time, so in UTC+ timezones,
   // toISOString() would produce the previous day's date, missing today's file.

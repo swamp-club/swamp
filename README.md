@@ -166,8 +166,8 @@ development process.
    confirms bugs by tracing through the codebase, and generates a detailed
    implementation plan. Plans are revised interactively until the approach is
    solid.
-3. **We build it** — System Initiative engineers (with AI agents under our
-   direct control) implement the plan, with full test coverage and code review.
+3. **We build it** — Elder Swamp Club engineers (with AI agents under our direct
+   control) implement the plan, with full test coverage and code review.
 4. **You get credit** — We're happy to include you as a co-author on any PR
    generated from your request.
 
