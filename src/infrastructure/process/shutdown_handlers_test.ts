@@ -1,5 +1,5 @@
 // Swamp, an Automation Framework
-// Copyright (C) 2026 System Initiative, Inc.
+// Copyright (C) 2026 Elder Swamp Club, Inc.
 //
 // This file is part of Swamp.
 //
