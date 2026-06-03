@@ -82,7 +82,11 @@ export function resolveKeyValue(
   }
 
   if (stdinContent !== null) {
-    const value = stdinContent.replace(/\n$/, "");
+    const hasInternalNewlines = stdinContent.indexOf("\n") <
+      stdinContent.length - 1;
+    const value = hasInternalNewlines
+      ? stdinContent
+      : stdinContent.replace(/\n$/, "");
     return { key, value };
   }
 

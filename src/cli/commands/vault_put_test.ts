@@ -82,14 +82,21 @@ Deno.test("resolveKeyValue - strips trailing newline from stdin", () => {
   assertEquals(result, { key: "API_KEY", value: "piped-secret" });
 });
 
-Deno.test("resolveKeyValue - strips only one trailing newline", () => {
+Deno.test("resolveKeyValue - preserves multiline content exactly (PEM keys, certificates)", () => {
   const result = resolveKeyValue("API_KEY", "line1\nline2\n");
-  assertEquals(result, { key: "API_KEY", value: "line1\nline2" });
+  assertEquals(result, { key: "API_KEY", value: "line1\nline2\n" });
 });
 
 Deno.test("resolveKeyValue - preserves value with no trailing newline", () => {
   const result = resolveKeyValue("API_KEY", "exact-value");
   assertEquals(result, { key: "API_KEY", value: "exact-value" });
+});
+
+Deno.test("resolveKeyValue - preserves PEM key with trailing newline", () => {
+  const pem =
+    "-----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXk=\n-----END OPENSSH PRIVATE KEY-----\n";
+  const result = resolveKeyValue("SSH_KEY", pem);
+  assertEquals(result, { key: "SSH_KEY", value: pem });
 });
 
 Deno.test("resolveKeyValue - error when no = and no stdin", () => {

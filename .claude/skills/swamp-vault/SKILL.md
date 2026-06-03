@@ -153,8 +153,9 @@ swamp vault put dev-secrets API_KEY
 ```
 
 Interactive mode (TTY, no `=`, no pipe) prompts with echo suppressed; piped
-stdin reads the value and strips one trailing newline. Not available in `--json`
-mode.
+stdin reads the value and strips a trailing newline for single-line values (the
+`echo` artifact). Multiline content (PEM keys, certificates) is preserved
+exactly. Not available in `--json` mode.
 
 **IMPORTANT — agent security:** Never ask the user to paste or type a secret
 value into conversation. Instead, instruct them to run `vault put` directly in
