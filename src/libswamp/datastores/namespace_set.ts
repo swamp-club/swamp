@@ -1,0 +1,133 @@
+// Swamp, an Automation Framework
+// Copyright (C) 2026 System Initiative, Inc.
+//
+// This file is part of Swamp.
+//
+// Swamp is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License version 3
+// as published by the Free Software Foundation, with the Swamp
+// Extension and Definition Exception (found in the "COPYING-EXCEPTION"
+// file).
+//
+// Swamp is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
+
+import type { LibSwampContext } from "../context.ts";
+import type { SwampError } from "../errors.ts";
+import { validationFailed } from "../errors.ts";
+import { createNamespace } from "../../domain/data/namespace.ts";
+import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
+
+export interface NamespaceSetData {
+  namespace: string;
+  datastorePath: string;
+  warning: string;
+  registrationSkipped?: boolean;
+}
+
+export type NamespaceSetEvent =
+  | { kind: "completed"; data: NamespaceSetData }
+  | { kind: "error"; error: SwampError };
+
+export interface NamespaceSetInput {
+  slug: string;
+}
+
+export interface NamespaceSetDeps {
+  getDatastorePath: () => string;
+  getCurrentNamespace: () => string | undefined;
+  listNamespaces: () => Promise<string[]>;
+  registerNamespace: (namespace: string, repoId: string) => Promise<void>;
+  updateMarkerNamespace: (namespace: string) => Promise<void>;
+  getRepoId: () => string;
+  supportsRegistration: boolean;
+}
+
+export async function* datastoreNamespaceSet(
+  ctx: LibSwampContext,
+  deps: NamespaceSetDeps,
+  input: NamespaceSetInput,
+): AsyncIterable<NamespaceSetEvent> {
+  yield* withGeneratorSpan(
+    "swamp.datastore.namespace.set",
+    { "namespace.slug": input.slug },
+    (async function* () {
+      let ns;
+      try {
+        ns = createNamespace(input.slug);
+      } catch (error) {
+        yield {
+          kind: "error",
+          error: validationFailed(
+            error instanceof Error ? error.message : String(error),
+          ),
+        };
+        return;
+      }
+
+      const current = deps.getCurrentNamespace();
+      if (current === (ns as string)) {
+        yield {
+          kind: "error",
+          error: validationFailed(
+            `Namespace is already set to "${ns}".`,
+          ),
+        };
+        return;
+      }
+
+      const datastorePath = deps.getDatastorePath();
+      const repoId = deps.getRepoId();
+      let registrationSkipped = false;
+
+      if (deps.supportsRegistration) {
+        const existing = await deps.listNamespaces();
+        if (existing.includes(ns as string)) {
+          yield {
+            kind: "error",
+            error: validationFailed(
+              `Namespace "${ns}" is already registered in this datastore by another repo.`,
+            ),
+          };
+          return;
+        }
+        await deps.registerNamespace(ns as string, repoId);
+      } else {
+        registrationSkipped = true;
+        ctx.logger.warn(
+          "Datastore backend does not support namespace registration — conflict detection is unavailable",
+        );
+      }
+
+      await deps.updateMarkerNamespace(ns as string);
+
+      ctx.logger.info("Namespace set to {namespace}", {
+        namespace: ns as string,
+      });
+
+      let warning =
+        "Existing data will remain at the old path and won't be visible. " +
+        "Use `swamp datastore namespace migrate` (coming in a future version) to move it.";
+      if (registrationSkipped) {
+        warning +=
+          "\n\nThis datastore backend does not support namespace registration. " +
+          `Conflict detection is unavailable — ensure no other repo uses the namespace "${ns}" in this datastore.`;
+      }
+
+      yield {
+        kind: "completed",
+        data: {
+          namespace: ns as string,
+          datastorePath,
+          warning,
+          registrationSkipped,
+        },
+      };
+    })(),
+  );
+}

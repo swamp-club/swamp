@@ -51,4 +51,28 @@ export interface DatastoreProvider {
    * inferred from a missing property.
    */
   resolveCachePath?(repoDir: string): string | undefined;
+
+  /**
+   * Register a namespace in the datastore.
+   *
+   * Writes a namespace manifest so the namespace is discoverable by
+   * `listNamespaces`. Fails if the slug is already claimed.
+   *
+   * Optional — solo-mode backends that don't support namespaces omit this.
+   */
+  registerNamespace?(
+    datastorePath: string,
+    namespace: string,
+    repoId: string,
+  ): Promise<void>;
+
+  /**
+   * List all registered namespaces in the datastore.
+   *
+   * Returns the namespace slugs discovered from namespace manifests.
+   * An empty array means solo mode (no namespaces registered).
+   *
+   * Optional — solo-mode backends that don't support namespaces omit this.
+   */
+  listNamespaces?(datastorePath: string): Promise<string[]>;
 }

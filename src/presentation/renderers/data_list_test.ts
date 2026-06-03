@@ -47,6 +47,7 @@ Deno.test("JsonDataListRenderer - completed outputs JSON", async () => {
             modelId: "def-1",
             modelName: "my-model",
             modelType: "aws/ec2",
+            namespace: "",
             groups: [],
             total: 0,
           },
