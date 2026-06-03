@@ -290,15 +290,18 @@ All extension types follow the same lifecycle:
 > After authoring or **significantly modifying** extension code, and BEFORE
 > running smoke tests or unit tests:
 >
-> 1. Read [references/adversarial-review.md](references/adversarial-review.md)
->    and review against every applicable dimension.
-> 2. Run `swamp extension push manifest.yaml --dry-run`. When no report exists,
+> 1. Read [references/adversarial-review.md](references/adversarial-review.md).
+>    Execute the **Mandatory Mechanical Verification** checks first — these
+>    catch schema/write mismatches that dimensional review misses. Fix any
+>    failures before proceeding.
+> 2. Review against every applicable dimension.
+> 3. Run `swamp extension push manifest.yaml --dry-run`. When no report exists,
 >    it prints the exact report path (a content-hash-bound file under the temp
 >    directory) and a JSON skeleton listing every applicable dimension.
-> 3. Write that skeleton to the printed path, setting each dimension's `verdict`
+> 4. Write that skeleton to the printed path, setting each dimension's `verdict`
 >    to `pass`, `issue`, or `na` (with a `note` for anything not `pass`). Set
 >    `reviewedAt` to the current ISO-8601 timestamp.
-> 4. Present the findings to the user, then re-run the push. A missing, stale,
+> 5. Present the findings to the user, then re-run the push. A missing, stale,
 >    or incomplete report (or any `issue` verdict) surfaces as a warning to
 >    confirm.
 

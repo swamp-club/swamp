@@ -67,6 +67,71 @@ for the content kinds present (the skeleton lists exactly these). The push gate
 checks that the report matches the extension name/version, covers every
 applicable dimension, and has no `pending` verdicts.
 
+## Mandatory Mechanical Verification
+
+Execute these checks **before** the dimensional review. They catch structural
+mismatches between schemas and writes that judgment-based review consistently
+misses. Each check is binary — fix any failure before proceeding.
+
+### 1. Schema-Write Conformance
+
+For every `writeResource` call in every method:
+
+1. Identify which spec the call targets (the spec name argument).
+2. Read that spec's Zod schema — list every field.
+3. Read the data object passed to `writeResource` — list every field.
+4. Verify:
+   - Every schema field appears in the data object.
+   - No data field is absent from the schema.
+   - No field is hardcoded to a placeholder (`[]`, `""`, `0`, `false`, `null`,
+     `"TODO"`) when the schema implies real data.
+   - The spec name matches the intent — a method writing seat data should target
+     the seats spec, not a differently-shaped spec.
+
+### 2. Truncation Honesty
+
+For every method that paginates or caps results:
+
+1. Find the pagination loop or result cap.
+2. Verify the output spec schema includes a `truncated` (or equivalent) boolean
+   field.
+3. Verify the `writeResource` call sets that field — `true` when results were
+   capped, `false` otherwise.
+
+### 3. Instance Name Consistency
+
+For every spec that multiple methods can write to:
+
+1. List all methods that call `writeResource` for that spec.
+2. Verify each method writes data conforming to the same schema shape.
+3. Verify instance names don't collide across methods writing incompatible data.
+
+This reinforces the "Instance names" dimension under Models — the mechanical
+check here is to explicitly enumerate and compare, not rely on a judgment call.
+
+### 4. Schema Field Coverage
+
+For every spec in the extension:
+
+1. Count the schema fields.
+2. Count the fields actually written across all methods that target that spec.
+3. Confirm 1:1 coverage — no schema field is never written, no written field is
+   absent from the schema.
+4. For optional or conditional fields, verify the code path that populates them
+   exists (not just that the field is declared).
+
+### Reporting Mechanical Failures
+
+Any mechanical check failure is a blocker — fix the code before starting the
+dimensional review. In the findings report, prefix mechanical failures with
+`MECHANICAL:` so they are visually distinct:
+
+```markdown
+- Schema-Write Conformance: MECHANICAL: `sync` writes `byUser: []` but
+  ByUserSchema expects `{ login, role, lastActive }` — placeholder never
+  populated.
+```
+
 ## Output Format
 
 Produce a structured findings report with one line per applicable dimension.
