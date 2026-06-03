@@ -202,6 +202,7 @@ const datastoreSetupExtensionCommand = new Command()
         repoId: marker?.repoId,
         skipMigration: !!options.skipMigration,
         hydrationStrategy,
+        namespace: marker?.datastore?.namespace,
       }),
       renderer.handlers(),
     );
