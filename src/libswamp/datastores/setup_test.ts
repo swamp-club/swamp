@@ -31,6 +31,7 @@ import {
 } from "./setup.ts";
 import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
 import type { DatastoreProvider } from "../../domain/datastore/datastore_provider.ts";
+import type { DatastoreSyncOptions } from "../../domain/datastore/datastore_sync_service.ts";
 
 function makeDeps(
   overrides: Partial<DatastoreSetupDeps> = {},
@@ -705,4 +706,109 @@ Deno.test("datastoreSetupExtension: ensures cachePath exists before hydration pu
       JSON.stringify(ensureDirCalls)
     }`,
   );
+});
+
+// ============================================================================
+// Namespace threading tests (issue #536)
+// ============================================================================
+
+const setupSyncSpyCalls: {
+  method: string;
+  options: DatastoreSyncOptions | undefined;
+}[] = [];
+
+const SETUP_NS_TYPE = "test-ext-ns-threading";
+
+if (!datastoreTypeRegistry.has(SETUP_NS_TYPE)) {
+  datastoreTypeRegistry.register({
+    type: SETUP_NS_TYPE,
+    name: "Setup NS Test",
+    description: "Test datastore for setup namespace threading",
+    isBuiltIn: false,
+    createProvider: () => ({
+      createLock: () => ({
+        acquire: () => Promise.resolve(),
+        release: () => Promise.resolve(),
+        withLock: <T>(fn: () => Promise<T>) => fn(),
+        inspect: () => Promise.resolve(null),
+        forceRelease: () => Promise.resolve(true),
+      }),
+      createVerifier: () => ({
+        verify: () =>
+          Promise.resolve({
+            healthy: true,
+            message: "ok",
+            latencyMs: 1,
+            datastoreType: SETUP_NS_TYPE,
+          }),
+      }),
+      resolveDatastorePath: (repoDir: string) => `${repoDir}/.store`,
+      resolveCachePath: (repoDir: string) => `${repoDir}/.cache`,
+      createSyncService: () => ({
+        pullChanged: (opts?: DatastoreSyncOptions) => {
+          setupSyncSpyCalls.push({ method: "pullChanged", options: opts });
+          return Promise.resolve(1);
+        },
+        pushChanged: (opts?: DatastoreSyncOptions) => {
+          setupSyncSpyCalls.push({ method: "pushChanged", options: opts });
+          return Promise.resolve(2);
+        },
+        markDirty: () => Promise.resolve(),
+      }),
+    }),
+  });
+}
+
+Deno.test("datastoreSetupExtension: threads namespace into push and pull", async () => {
+  setupSyncSpyCalls.length = 0;
+  const deps = makeDeps();
+  const input = makeExtensionInput({
+    type: SETUP_NS_TYPE,
+    namespace: "infra",
+  });
+
+  await collect<DatastoreSetupEvent>(
+    datastoreSetupExtension(createLibSwampContext(), deps, input),
+  );
+
+  const push = setupSyncSpyCalls.find((c) => c.method === "pushChanged");
+  const pull = setupSyncSpyCalls.find((c) => c.method === "pullChanged");
+  assertEquals(push?.options?.namespace, "infra");
+  assertEquals(pull?.options?.namespace, "infra");
+});
+
+Deno.test("datastoreSetupExtension: omits namespace when not configured", async () => {
+  setupSyncSpyCalls.length = 0;
+  const deps = makeDeps();
+  const input = makeExtensionInput({
+    type: SETUP_NS_TYPE,
+  });
+
+  await collect<DatastoreSetupEvent>(
+    datastoreSetupExtension(createLibSwampContext(), deps, input),
+  );
+
+  const push = setupSyncSpyCalls.find((c) => c.method === "pushChanged");
+  const pull = setupSyncSpyCalls.find((c) => c.method === "pullChanged");
+  assertEquals(push?.options?.namespace, undefined);
+  assertEquals(pull?.options?.namespace, undefined);
+});
+
+Deno.test("datastoreSetupExtension: threads namespace on skip-migration pull-only path", async () => {
+  setupSyncSpyCalls.length = 0;
+  const deps = makeDeps();
+  const input = makeExtensionInput({
+    type: SETUP_NS_TYPE,
+    skipMigration: true,
+    namespace: "staging",
+  });
+
+  await collect<DatastoreSetupEvent>(
+    datastoreSetupExtension(createLibSwampContext(), deps, input),
+  );
+
+  const push = setupSyncSpyCalls.find((c) => c.method === "pushChanged");
+  const pull = setupSyncSpyCalls.find((c) => c.method === "pullChanged");
+  assertEquals(push, undefined, "skip-migration should not push");
+  assertEquals(pull?.options?.namespace, "staging");
 });

@@ -241,6 +241,7 @@ export interface DatastoreSetupExtensionInput {
   repoId?: string;
   skipMigration: boolean;
   hydrationStrategy?: "full" | "lazy";
+  namespace?: string;
 }
 
 /** Sets up an extension-provided datastore. */
@@ -338,6 +339,7 @@ export async function* datastoreSetupExtension(
         input.repoDir,
         cachePath,
       );
+      const ns = input.namespace;
 
       let migrationResult:
         | {
@@ -370,7 +372,11 @@ export async function* datastoreSetupExtension(
               input.type,
               "push",
               timeoutMs,
-              (signal) => syncService.pushChanged({ signal }),
+              (signal) =>
+                syncService.pushChanged({
+                  signal,
+                  ...(ns ? { namespace: ns } : {}),
+                }),
             );
             ctx.logger.debug`Push complete`;
           } catch (error) {
@@ -408,6 +414,7 @@ export async function* datastoreSetupExtension(
             (signal) =>
               syncService.pullChanged({
                 signal,
+                ...(ns ? { namespace: ns } : {}),
                 ...(input.hydrationStrategy === "lazy"
                   ? { metadataOnly: true }
                   : {}),
