@@ -186,7 +186,7 @@ jobs:
         uses: peter-evans/repository-dispatch@ff45666b9427631e3450c54a1bcbee4d9ff4d7c0 # v3
         with:
           token: ${{ secrets.UAT_TRIGGER_TOKEN }}
-          repository: systeminit/swamp-uat
+          repository: swamp-club/swamp-uat
           event-type: run-uat
           client-payload: '{"version": "${{ steps.version.outputs.version }}"}'
 
