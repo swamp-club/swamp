@@ -1,12 +1,12 @@
-# Bug Bounty at System Initiative
+# Bug Bounty at Swamp Club
 
 **Launch Date:** 27th November, 2024 | **Last updated:** 11th February, 2026
 
-Welcome to the **System Initiative Bug Bounty** guidelines. This document serves
-as a comprehensive reference for security researchers and stakeholders
-participating in our bug bounty program. It outlines our commitment to security,
-the rules of engagement, reward structures, and the scope of eligible and
-ineligible vulnerabilities.
+Welcome to the **Swamp Club Bug Bounty** guidelines. This document serves as a
+comprehensive reference for security researchers and stakeholders participating
+in our bug bounty program. It outlines our commitment to security, the rules of
+engagement, reward structures, and the scope of eligible and ineligible
+vulnerabilities.
 
 Our goal is to foster collaboration with the security community to identify and
 resolve potential vulnerabilities in our systems. By following this guide, you
@@ -28,19 +28,19 @@ considered final.
 - **Ineligible Findings**: Specific exclusions from the policy.
 - **Scope**: Details about what assets are in and out of scope.
 
-System Initiative's Bounty Standards set expectations for both System Initiative
-and hackers when assessing the reward for a report. The standards begin with a
-relevant rating system such as [CVSS](https://nvd.nist.gov/vuln-metrics/cvss)
-for report assessments and then additionally consider additional adjustments
-("bumps") for discrepancies between associated rating scores and actual business
-impact. This ensures more accurate correlations between vulnerability impact
-evaluations to reward bounties.
+Swamp Club's Bounty Standards set expectations for both Swamp Club and hackers
+when assessing the reward for a report. The standards begin with a relevant
+rating system such as [CVSS](https://nvd.nist.gov/vuln-metrics/cvss) for report
+assessments and then additionally consider additional adjustments ("bumps") for
+discrepancies between associated rating scores and actual business impact. This
+ensures more accurate correlations between vulnerability impact evaluations to
+reward bounties.
 
 These Platform Standards aim to ensure consistency, fairness, and the best
 results for all program participants.
 
-We value your expertise and collaboration in helping make System Initiative more
-secure for everyone.
+We value your expertise and collaboration in helping make Swamp Club more secure
+for everyone.
 
 ---
 
@@ -93,7 +93,7 @@ Vulnerabilities are classified by **risk level** and **impact**:
 **Do not pivot further** into the network or alternative account/workspace after
 finding a vulnerability.
 
-- Avoid testing third-party service providers or non-System Initiative assets.
+- Avoid testing third-party service providers or non-Swamp Club assets.
 
 **If you encounter Personally Identifiable Information (PII):**
 
@@ -109,25 +109,25 @@ finding a vulnerability.
 - Aggressive testing causing service degradation or unnecessarily deep service
   penetration will result in permanent ineligibility from the program.
 - Multiple reports of the same vulnerability class on similar endpoints will pay
-  for the value received. However, reports that alert System Initiative to a
-  systemic issue across its assets will be considered for a discretionary bonus.
+  for the value received. However, reports that alert Swamp Club to a systemic
+  issue across its assets will be considered for a discretionary bonus.
 - Reports demonstrating significant security issues through chained
-  vulnerabilities will be evaluated based on overall impact. System Initiative
-  will issue bonuses for distinct reports that comprise a serious vulnerability
+  vulnerabilities will be evaluated based on overall impact. Swamp Club will
+  issue bonuses for distinct reports that comprise a serious vulnerability
   chain.
 - Vulnerabilities allowing attackers to bypass encryption in client applications
   (e.g., Adversary In The Middle attacks) will be prioritized. Vulnerabilities
   requiring attackers to disable certificate pinning are not valid.
 - Hackers must report vulnerabilities in third-party components to the component
-  owner before disclosing them to System Initiative. System Initiative will
-  reward valid reports for vulnerabilities in third-party components that lead
-  to urgent fixes or drive value outside regular patching schedules or SLA's.
+  owner before disclosing them to Swamp Club. Swamp Club will reward valid
+  reports for vulnerabilities in third-party components that lead to urgent
+  fixes or drive value outside regular patching schedules or SLA's.
 - Reports exposing sensitive PII for multiple users will be rated Critical.
   Sensitive PII includes Social Security numbers, passport numbers, driver’s
   license numbers, hashed passwords, and credit card numbers.
-- System Initiative will reward valid reports of leaked credentials unknown to
-  the program or monitoring tools. Hackers must include the leak's source and
-  avoid testing beyond authenticating and deauthenticating.
+- Swamp Club will reward valid reports of leaked credentials unknown to the
+  program or monitoring tools. Hackers must include the leak's source and avoid
+  testing beyond authenticating and deauthenticating.
 - A bypass of a resolved vulnerability will be treated as a new report. System
   Initiative will consider awarding bonuses for reports providing additional
   bypass information
@@ -146,20 +146,20 @@ finding a vulnerability.
 Reports for vulnerabilities that were either recently disclosed to the public or
 where a patch was recently released may not be eligible for a reward. "Recently"
 can be assumed to be 90 calendar days before the current point in time. This is
-because **System Initiative** already tracks many of these announcements and
-needs an appropriate amount of time to test and implement patches and safeguards
-before a report with the same information can provide value. However, each
-submission is evaluated on a case-by-case basis, and those providing significant
-value or new information such as more simplistic mitigation steps may still be
-eligible for a reward.
+because **Swamp Club** already tracks many of these announcements and needs an
+appropriate amount of time to test and implement patches and safeguards before a
+report with the same information can provide value. However, each submission is
+evaluated on a case-by-case basis, and those providing significant value or new
+information such as more simplistic mitigation steps may still be eligible for a
+reward.
 
 ---
 
 # Rewards
 
-**System Initiative** rewards findings based on **security impact** and **CVSS
-3.0 base score**. These values are guidelines only and depend on both the
-quality of the report and the potential impact
+**Swamp Club** rewards findings based on **security impact** and **CVSS 3.0 base
+score**. These values are guidelines only and depend on both the quality of the
+report and the potential impact
 
 ### Severity Levels
 

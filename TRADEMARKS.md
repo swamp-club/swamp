@@ -2,11 +2,11 @@
 
 ## Introduction
 
-This document, the "Policy," outlines the System Initiative project's (the
-"Project") policy for the use of our trademarks. While our software is available
-under a free and open source software license, the copyright license does not
-include any right, express or implied, to use our trademarks. These guidelines
-are where we describe how you may use our trademarks.
+This document, the "Policy," outlines the Swamp Club project's (the "Project")
+policy for the use of our trademarks. While our software is available under a
+free and open source software license, the copyright license does not include
+any right, express or implied, to use our trademarks. These guidelines are where
+we describe how you may use our trademarks.
 
 The role of trademarks is to provide assurance about the quality of the products
 or services with which the trademark is associated. But because an open source
@@ -47,15 +47,14 @@ This Policy covers:
 
 1. Our word trademarks and service marks (the "Marks"):
 
-| Mark              | Common descriptive name for the goods or services |
-| ----------------- | ------------------------------------------------- |
-| SYSTEM INITIATIVE | software platform                                 |
-| SI                | software platform                                 |
-| Swamp             | software platform                                 |
-| swamp             | software platform                                 |
-| Swamp Club        | software platform                                 |
-| swamp.club        | software platform                                 |
-| swamp-club.com    | software platform                                 |
+| Mark           | Common descriptive name for the goods or services |
+| -------------- | ------------------------------------------------- |
+| Swamp Club     | software platform                                 |
+| SWAMP CLUB     | software platform                                 |
+| Swamp          | software platform                                 |
+| swamp          | software platform                                 |
+| swamp.club     | software platform                                 |
+| swamp-club.com | software platform                                 |
 
 Some Marks may not be registered, but registration does not equal ownership of
 trademarks. This Policy covers our Marks whether they are registered or not.
@@ -77,15 +76,15 @@ mislead anyone, either directly or by omission, about exactly what they are
 getting and from whom. The law reflects this requirement in two major ways
 described in more detail below: it prohibits creating a "likelihood of
 confusion" but allows for "nominative use." For example, you cannot say you are
-distributing the System Initiative software when you're distributing a modified
-version of it, because people would be confused when they are not getting the
-same features and functionality they would get if they downloaded the software
+distributing the Swamp Club software when you're distributing a modified version
+of it, because people would be confused when they are not getting the same
+features and functionality they would get if they downloaded the software
 directly from us. You also cannot use our logo on your website in a way that
 suggests that your website is an official website or that we endorse your
-website. You can, though, say you like the System Initiative software, that you
-participate in the System Initiative community, that you are providing the
-binary of the ~Mark software obtained from the Project, or that you wrote a book
-describing how to use the System Initiative software.
+website. You can, though, say you like the Swamp Club software, that you
+participate in the Swamp Club community, that you are providing the binary of
+the ~Mark software obtained from the Project, or that you wrote a book
+describing how to use the Swamp Club software.
 
 This fundamental requirement, that it is always clear to people what they are
 getting and from whom, is reflected throughout this Policy. It should also serve
@@ -107,9 +106,8 @@ Marks or any phonetic equivalent, foreign language equivalent, takeoff, or
 abbreviation for a similar or compatible product or service. We would consider
 the following too similar to one of our Marks:
 
-- Network Initiative
-- NI
 - Swamp Team
+- SwampClub
 - [any logo similar to our own]
 
 You agree that you will not acquire any rights in the Marks and that any
@@ -136,17 +134,16 @@ changed in any way.
 You may use the Marks to truthfully describe the relationship between your
 software and ours. Our Mark should be used after a verb or preposition that
 describes the relationship between your software and ours. So you may say, for
-example, "Terry’s plugin for the System Initiative software" but may not say
-"Terry's System Initiative software." Some other examples that may work for you
-are:
+example, "Terry’s plugin for the Swamp Club software" but may not say "Terry’s
+Swamp Club software." Some other examples that may work for you are:
 
-- [Your software] works with System Initiative software
-- [Your software] uses System Initiative software
-- [Your software] is compatible with System Initiative software
-- [Your software] is for use with System Initiative software
-- [Your software] for System Initiative software
+- [Your software] works with Swamp Club software
+- [Your software] uses Swamp Club software
+- [Your software] is compatible with Swamp Club software
+- [Your software] is for use with Swamp Club software
+- [Your software] for Swamp Club software
 - [Your software] is compatible with Swamp software
-- [Your software] is compatible with for use with Swamp software
+- [Your software] is for use with Swamp software
 
 ## Uses for which we are granting a license
 
@@ -226,9 +223,9 @@ Trademark List for the correct symbol to use.
 Also, if you are using our Marks in a way described in the sections "Uses for
 which we are granting a license," please put following notice at the foot of the
 page where you have used the Mark (or, if in a book, on the credits page), on
-any packaging or labeling, and on advertising or marketing materials: "System
-Initiative is trademark of Elder Swamp Club, Inc., registered in the United
-States and other countries. Used with permission from Elder Swamp Club, Inc."
+any packaging or labeling, and on advertising or marketing materials: "Swamp
+Club is trademark of Elder Swamp Club, Inc., registered in the United States and
+other countries. Used with permission from Elder Swamp Club, Inc."
 
 ### What to do when you see abuse
 
@@ -311,44 +308,42 @@ Use of trademarks in text
 
 - Always distinguish trademarks from surrounding text with at least initial
   capital letters or in all capital letters.
-- Unacceptable: system initiative
-- Acceptable: System Initiative, SYSTEM INITIATIVE
+- Unacceptable: swamp club
+- Acceptable: Swamp Club, SWAMP CLUB
 
 Always use trademarks in their exact form with the correct spelling, neither
 abbreviated, hyphenated, or combined with any other word or words.
 
-- Unacceptable: SystemInitiative, Sys Int
-- Acceptable: System Initiative
+- Unacceptable: SwampClub, SC
+- Acceptable: Swamp Club
 
 Don't pluralize a trademark.
 
-- Unacceptable: I have seventeen System Initiatives running in my lab.
-- Acceptable: I have seventeen System Initiative installations running in my
-  lab.
+- Unacceptable: I have seventeen Swamp Clubs running in my lab.
+- Acceptable: I have seventeen Swamp Club installations running in my lab.
 
 Always use a trademark as an adjective modifying a noun.* You can see the nouns
 we prefer under "Our trademarks."
 
-- Unacceptable: This is a System Initiative. Anyone can install it.
-- Acceptable: This is a System Initiative instance. Anyone can install it.
+- Unacceptable: This is a Swamp Club. Anyone can install it.
+- Acceptable: This is a Swamp Club instance. Anyone can install it.
 
 Don't use a trademark as a verb. Trademarks are products or services, never
 actions.
 
-- Unacceptable: I System Initiated my computer today!
-- Acceptable: I installed System Initiative software on my computer today!
+- Unacceptable: I Swamp Clubbed my computer today!
+- Acceptable: I installed Swamp Club software on my computer today!
 
 Don't use a trademark as a possessive. Instead, the following noun should be
 used in possessive form or the sentence reworded so there is no possessive.
 
-- Unacceptable: System Initiative's desktop interface is very clean.
-- Acceptable: The System Initiative desktop's interface is very clean.
+- Unacceptable: Swamp Club's desktop interface is very clean.
+- Acceptable: The Swamp Club desktop's interface is very clean.
 
 Don't translate a trademark into another language.
 
-- Unacceptable: Quiero instalar el software Iniciativa del Sistema en mi
-  sistema.
-- Acceptable: Quiero instalar System Initiative software en mi sistema.
+- Unacceptable: Quiero instalar el software Club del Pantano en mi sistema.
+- Acceptable: Quiero instalar Swamp Club software en mi sistema.
 
 These guidelines are based on the Model Trademark Guidelines, available at
 http://www.modeltrademarkguidelines.org

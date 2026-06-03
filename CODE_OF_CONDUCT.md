@@ -39,12 +39,11 @@ you feel that a thread needs moderation, please inform an admin on
 [Discord](https://discord.com/invite/swamp-club) or email
 <code_of_conduct@swamp-club.com>.
 
-The team at System Initiative is repsonsible for community moderation.
+The team at Swamp Club is repsonsible for community moderation.
 
-- Remarks that violate the System Initiative standards of conduct, including
-  hateful, hurtful, oppressive, or exclusionary remarks, are not allowed.
-  (Cursing is allowed, but never targeting another user, and never in a hateful
-  manner.)
+- Remarks that violate the Swamp Club standards of conduct, including hateful,
+  hurtful, oppressive, or exclusionary remarks, are not allowed. (Cursing is
+  allowed, but never targeting another user, and never in a hateful manner.)
 - Remarks that moderators find inappropriate, whether listed in the code of
   conduct or not, are also not allowed.
 - Moderators will first respond to such remarks with a warning.
@@ -61,12 +60,12 @@ The team at System Initiative is repsonsible for community moderation.
   moderator creates an inappropriate situation, they should expect less leeway
   than others.
 
-In the System Initiative community, we strive to go the extra step to look out
-for each other. Don’t just aim to be technically unimpeachable, try to be your
-best self. In particular, avoid flirting with offensive or sensitive issues,
-particularly if they’re off-topic; this all too often leads to unnecessary
-fights, hurt feelings, and damaged trust; worse, it can drive people away from
-the community entirely.
+In the Swamp Club community, we strive to go the extra step to look out for each
+other. Don’t just aim to be technically unimpeachable, try to be your best self.
+In particular, avoid flirting with offensive or sensitive issues, particularly
+if they’re off-topic; this all too often leads to unnecessary fights, hurt
+feelings, and damaged trust; worse, it can drive people away from the community
+entirely.
 
 And if someone takes issue with something you said or did, resist the urge to be
 defensive. Just stop doing what it was they complained about and apologize. Even
@@ -77,8 +76,8 @@ to get along and we are all here first and foremost because we want to talk
 about cool technology. You will find that people will be eager to assume good
 intent and forgive as long as you earn their trust.
 
-The enforcement policies listed above apply to all official System Initiative
-venues; including [Discord channels](https://discord.com/invite/swamp-club), all
+The enforcement policies listed above apply to all official Swamp Club venues;
+including [Discord channels](https://discord.com/invite/swamp-club), all
 repositories owned by this GitHub organization, and all other public mediums.
 
 _Adapted from the

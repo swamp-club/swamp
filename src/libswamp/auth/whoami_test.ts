@@ -1,5 +1,5 @@
 // Swamp, an Automation Framework
-// Copyright (C) 2026 System Initiative, Inc.
+// Copyright (C) 2026 Elder Swamp Club, Inc.
 //
 // This file is part of Swamp.
 //
@@ -63,7 +63,7 @@ const testWhoamiResponse: WhoamiResponse = {
   email: "adam@example.com",
   name: "Adam",
   organizations: [
-    { slug: "si", name: "System Initiative", role: "admin", personal: false },
+    { slug: "si", name: "Swamp Club", role: "admin", personal: false },
   ],
 };
 
