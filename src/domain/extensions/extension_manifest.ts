@@ -57,9 +57,9 @@ const safePathString = z.string().refine(isSafeRelativePath, {
  *   per-extension-subdir layouts where manifest, source, README, and
  *   LICENSE all live alongside each other.
  *
- * Workflows keep their own multi-base resolution (fall back from the
- * indexer dir to the extension workflows dir). `paths.base` does not
- * apply to workflows.
+ * Workflows honour `paths.base: manifest` — when set, the manifest's
+ * own directory is searched first, falling back to the repo-root
+ * `workflows/` and `extensions/workflows/` directories.
  *
  * Skills honour `paths.base: manifest` — when set, the manifest's own
  * directory is searched first (e.g. `<manifestDir>/.claude/skills/`),

@@ -1158,3 +1158,102 @@ Deno.test("resolveExtensionFiles multi-tool deduplicates shared SKILL_DIRS paths
     );
   });
 });
+
+const stubWorkflowRepoContext = {
+  workflowRepo: { findByName: () => Promise.resolve(null) },
+  definitionRepo: { findByNameGlobal: () => Promise.resolve(null) },
+} as unknown as RepositoryContext;
+
+Deno.test("resolveExtensionFiles paths.base=manifest resolves workflows from manifest dir", async () => {
+  await withTempRepo(async (dir) => {
+    const subdir = join(dir, "sub");
+    await Deno.mkdir(join(subdir, "extensions", "workflows"), {
+      recursive: true,
+    });
+    await Deno.mkdir(join(subdir, "extensions", "models"), { recursive: true });
+    await Deno.writeTextFile(
+      join(subdir, "extensions", "models", "dummy.ts"),
+      'export const name = "dummy";',
+    );
+    await Deno.writeTextFile(
+      join(subdir, "extensions", "workflows", "test-wf.yaml"),
+      "name: test-wf\njobs: {}",
+    );
+    const manifestPath = join(subdir, "manifest.yaml");
+    await Deno.writeTextFile(
+      manifestPath,
+      stringifyYaml({
+        manifestVersion: 1,
+        name: "@test/wf-manifest-base",
+        version: "2026.06.03.1",
+        paths: { base: "manifest" },
+        models: ["extensions/models/dummy.ts"],
+        workflows: ["extensions/workflows/test-wf.yaml"],
+      }),
+    );
+
+    const result = await resolveExtensionFiles({
+      repoDir: dir,
+      manifestPath,
+      repoContext: stubWorkflowRepoContext,
+      logger,
+    });
+
+    assertEquals(result.workflowFiles.length, 1);
+    const wfRealPath = await Deno.realPath(
+      join(subdir, "extensions", "workflows", "test-wf.yaml"),
+    );
+    assertEquals(result.workflowFiles[0].sourcePath, wfRealPath);
+  });
+});
+
+Deno.test("resolveExtensionFiles paths.base=manifest prefers manifest-relative for workflows", async () => {
+  await withTempRepo(async (dir) => {
+    const subdir = join(dir, "sub");
+    await Deno.mkdir(join(subdir, "extensions", "models"), { recursive: true });
+    await Deno.writeTextFile(
+      join(subdir, "extensions", "models", "dummy.ts"),
+      'export const name = "dummy";',
+    );
+    // Workflow in manifest-relative location
+    await Deno.mkdir(join(subdir, "extensions", "workflows"), {
+      recursive: true,
+    });
+    await Deno.writeTextFile(
+      join(subdir, "extensions", "workflows", "shared.yaml"),
+      "name: manifest-relative\njobs: {}",
+    );
+    // Workflow with same name at repo root
+    await Deno.mkdir(join(dir, "extensions", "workflows"), { recursive: true });
+    await Deno.writeTextFile(
+      join(dir, "extensions", "workflows", "shared.yaml"),
+      "name: repo-root\njobs: {}",
+    );
+
+    const manifestPath = join(subdir, "manifest.yaml");
+    await Deno.writeTextFile(
+      manifestPath,
+      stringifyYaml({
+        manifestVersion: 1,
+        name: "@test/wf-priority",
+        version: "2026.06.03.1",
+        paths: { base: "manifest" },
+        models: ["extensions/models/dummy.ts"],
+        workflows: ["extensions/workflows/shared.yaml"],
+      }),
+    );
+
+    const result = await resolveExtensionFiles({
+      repoDir: dir,
+      manifestPath,
+      repoContext: stubWorkflowRepoContext,
+      logger,
+    });
+
+    assertEquals(result.workflowFiles.length, 1);
+    const manifestRelativePath = await Deno.realPath(
+      join(subdir, "extensions", "workflows", "shared.yaml"),
+    );
+    assertEquals(result.workflowFiles[0].sourcePath, manifestRelativePath);
+  });
+});

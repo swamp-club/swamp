@@ -487,3 +487,84 @@ Deno.test(
     }
   },
 );
+
+Deno.test(
+  "round-trip: paths.base=manifest bundles workflows from manifest-relative dir",
+  async () => {
+    const { parse: parseYaml } = await import("@std/yaml");
+    const src = await Deno.makeTempDir({ prefix: "rt-wf-src-" });
+    const dst = await Deno.makeTempDir({ prefix: "rt-wf-dst-" });
+    try {
+      const extDir = join(src, "sub");
+      await Deno.mkdir(extDir, { recursive: true });
+      await Deno.writeTextFile(
+        join(extDir, "echo.ts"),
+        'export const model = { type: "@t/wf-rt", version: "1.0.0" };',
+      );
+
+      await Deno.mkdir(join(extDir, "extensions", "workflows"), {
+        recursive: true,
+      });
+      const wfPath = join(extDir, "extensions", "workflows", "deploy.yaml");
+      await Deno.writeTextFile(wfPath, "name: deploy\njobs: {}");
+
+      const wfRealPath = await Deno.realPath(wfPath);
+
+      const manifest = makeManifest({
+        paths: { base: "manifest" },
+        models: ["echo.ts"],
+        workflows: ["extensions/workflows/deploy.yaml"],
+      });
+
+      const input: ExtensionPushPrepareInput = {
+        manifest,
+        repoDir: src,
+        modelsDir: extDir,
+        allModelFiles: [join(extDir, "echo.ts")],
+        modelEntryPoints: [join(extDir, "echo.ts")],
+        vaultsDir: extDir,
+        allVaultFiles: [],
+        vaultEntryPoints: [],
+        driversDir: extDir,
+        allDriverFiles: [],
+        driverEntryPoints: [],
+        datastoresDir: extDir,
+        allDatastoreFiles: [],
+        datastoreEntryPoints: [],
+        reportsDir: extDir,
+        allReportFiles: [],
+        reportEntryPoints: [],
+        workflowFiles: [{ sourcePath: wfRealPath, archiveName: "deploy.yaml" }],
+        skillDirs: [],
+        allSkillFiles: [],
+        includeFilePaths: [],
+        additionalFilePaths: [],
+        binaryFilePaths: [],
+        dryRun: true,
+      };
+
+      const ctx = createLibSwampContext();
+      const prepared = await extensionPushPrepare(
+        ctx,
+        makePrepareDeps(),
+        input,
+      );
+
+      await untarArchiveTo(prepared.archiveBytes, dst);
+
+      // Workflow file lands under extension/workflows/ in the archive
+      await Deno.stat(join(dst, "extension", "workflows", "deploy.yaml"));
+
+      const onWire = parseYaml(
+        await Deno.readTextFile(join(dst, "extension", "manifest.yaml")),
+      ) as Record<string, unknown>;
+      assertEquals(
+        onWire.workflows,
+        ["extensions/workflows/deploy.yaml"],
+      );
+    } finally {
+      await Deno.remove(src, { recursive: true }).catch(() => {});
+      await Deno.remove(dst, { recursive: true }).catch(() => {});
+    }
+  },
+);

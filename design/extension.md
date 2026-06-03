@@ -205,9 +205,10 @@ containing `..` or starting with `/`.
   and LICENSE all sit alongside each other. See "Path resolution" below.
 - `models`: Array of relative paths to TypeScript model files (e.g.,
   `["aws/ec2/instance.ts"]`). Resolved via `paths.base`.
-- `workflows`: Array of relative paths to YAML workflow files. Workflows
-  use a multi-base lookup (indexer dir then extension workflows dir) and
-  are not affected by `paths.base`.
+- `workflows`: Array of relative paths to YAML workflow files. Resolved
+  via `paths.base`. Under `paths.base: manifest`, workflows resolve
+  relative to the manifest's own directory first, falling back to the
+  repo-root `workflows/` and `extensions/workflows/` directories.
 - `vaults`: Array of relative paths to TypeScript vault files. Resolved
   via `paths.base`.
 - `drivers`: Array of relative paths to TypeScript driver files. Resolved
@@ -281,9 +282,11 @@ The `paths.base` field selects the directory typed-key entries
   `extensions/models/myext/manifest.yaml` next to `myext/echo.ts` and
   `myext/README.md`).
 
-Workflows keep their bespoke multi-base lookup (fall back from the
-indexer dir to the extension workflows dir). `paths.base` does not
-apply to workflows.
+Workflows honour `paths.base: manifest` — when set, the manifest's own
+directory is searched first, falling back to the repo-root `workflows/`
+and `extensions/workflows/` directories. Under the default
+`paths.base: typedDir`, workflows resolve only from the repo-root
+locations.
 
 Skills honour `paths.base: manifest` — when set, the manifest's own
 directory is searched first (e.g. `sub/.claude/skills/<name>/`), then

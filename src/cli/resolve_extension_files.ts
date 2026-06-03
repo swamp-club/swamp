@@ -229,33 +229,35 @@ export async function resolveExtensionFiles(
   // 5. Resolve workflow dependencies if workflows present
   const workflowFiles: Array<{ sourcePath: string; archiveName: string }> = [];
   if (manifest.workflows.length > 0) {
-    const indexerWorkflowsDir = resolve(repoDir, "workflows");
-    const extensionWorkflowsDir = resolve(
-      repoDir,
-      resolveWorkflowsDir(marker),
-    );
+    const wfCandidateDirs: string[] = [];
+    const seenWfDir = new Set<string>();
+    const addWfCandidate = (dir: string) => {
+      if (!seenWfDir.has(dir)) {
+        seenWfDir.add(dir);
+        wfCandidateDirs.push(dir);
+      }
+    };
+    if (useManifestBase) addWfCandidate(manifestDir);
+    addWfCandidate(resolve(repoDir, "workflows"));
+    addWfCandidate(resolve(repoDir, resolveWorkflowsDir(marker)));
+
     // Validate workflow files exist and resolve symlinks
     const wfNames: string[] = [];
     for (const wfRef of manifest.workflows) {
       let realPath: string | null = null;
 
-      // Try indexer symlinks first (workflows/)
-      try {
-        realPath = await Deno.realPath(resolve(indexerWorkflowsDir, wfRef));
-      } catch { /* not found here */ }
-
-      // Fall back to extension workflows dir
-      if (!realPath) {
+      for (const candidateDir of wfCandidateDirs) {
         try {
-          realPath = await Deno.realPath(
-            resolve(extensionWorkflowsDir, wfRef),
-          );
-        } catch { /* not found here either */ }
+          realPath = await Deno.realPath(resolve(candidateDir, wfRef));
+          break;
+        } catch { /* not found here */ }
       }
 
       if (!realPath) {
         throw new UserError(
-          `Workflow file not found: ${wfRef} (looked in ${indexerWorkflowsDir} and ${extensionWorkflowsDir})`,
+          `Workflow file not found: ${wfRef} (looked in ${
+            wfCandidateDirs.join(", ")
+          })`,
         );
       }
       // Derive a unique archive name from the manifest reference directory
