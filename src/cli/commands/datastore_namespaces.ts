@@ -48,7 +48,7 @@ type AnyOptions = any;
 
 export const datastoreNamespacesCommand = new Command()
   .description("List all namespaces in the datastore")
-  .example("List namespaces", "swamp datastore namespaces")
+  .example("List namespaces", "swamp datastore namespace list")
   .option(
     "--repo-dir <dir:string>",
     "Repository directory (env: SWAMP_REPO_DIR)",
