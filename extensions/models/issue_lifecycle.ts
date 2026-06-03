@@ -556,7 +556,7 @@ export const model = {
       }),
       execute: async (
         args: {
-          type: "bug" | "feature" | "security";
+          type: "bug" | "feature" | "platform" | "security";
           confidence: "high" | "medium" | "low";
           reasoning: string;
           isRegression?: boolean;

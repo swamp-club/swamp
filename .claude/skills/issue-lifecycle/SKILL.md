@@ -94,11 +94,12 @@ If the author is NOT in the collaborator list, they are external — call
 
 ## Classification Types
 
-The `triage` method classifies issues into one of three types (matching
+The `triage` method classifies issues into one of four types (matching
 swamp-club):
 
 - `bug` — something is broken or behaving incorrectly
 - `feature` — a request for new functionality or enhancement
+- `platform` — admin-only platform infrastructure work
 - `security` — security vulnerability or hardening work
 
 Two additional classification details are captured in the classification record

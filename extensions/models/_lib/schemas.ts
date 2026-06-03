@@ -90,7 +90,7 @@ export const TRANSITIONS: Record<string, Phase[]> = {
 // ---------------------------------------------------------------------------
 
 /** Issue types supported by swamp-club. */
-export const IssueType = z.enum(["bug", "feature", "security"]);
+export const IssueType = z.enum(["bug", "feature", "platform", "security"]);
 export type IssueType = z.infer<typeof IssueType>;
 
 // ---------------------------------------------------------------------------
