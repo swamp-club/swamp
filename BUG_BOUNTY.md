@@ -128,9 +128,9 @@ finding a vulnerability.
 - Swamp Club will reward valid reports of leaked credentials unknown to the
   program or monitoring tools. Hackers must include the leak's source and avoid
   testing beyond authenticating and deauthenticating.
-- A bypass of a resolved vulnerability will be treated as a new report. System
-  Initiative will consider awarding bonuses for reports providing additional
-  bypass information
+- A bypass of a resolved vulnerability will be treated as a new report. Swamp
+  Club will consider awarding bonuses for reports providing additional bypass
+  information
 - Reporters must not have:
   - Conducted phishing, vishing, smashing, or any other active user misleading.
   - Accessed data not owned by the reporter.
@@ -181,7 +181,7 @@ report and the potential impact
 
 5. **Informational Issues**
    - These are not eligible for rewards but may receive a goodwill $50 USD
-     gesture or a piece of highly sought after System Initiatve swag.
+     gesture or a piece of highly sought after Swamp Club swag.
 
 # Core Ineligible Findings
 
@@ -265,5 +265,5 @@ Examples include:
 | ------------------------ | ---------- | ----------- | ------------------- | ----------------------- | ------------------------ | --------------------------- | --------------------- | ------------ | ----------- | ----------------------- | ----------------------- |
 | telemetry.swamp-club.com | API        |             | true                | true                    |                          |                             |                       | critical     | production  | 2026-11-02 13:45:00 UTC | 2026-11-02 13:45:00 UTC |
 | swamp-club.com           | WEB APP    |             | true                | true                    |                          |                             |                       | critical     | production  | 2026-11-02 13:45:00 UTC | 2026-11-02 13:45:00 UTC |
-| swamp-club.com           | WEB APP    |             | true                | true                    |                          |                             |                       | medium       | production  | 2024-11-28 13:45:00 UTC | 2024-11-28 13:45:00 UTC |
+| systeminit.com           | WEB APP    |             | true                | true                    |                          |                             |                       | medium       | production  | 2024-11-28 13:45:00 UTC | 2024-11-28 13:45:00 UTC |
 | swamp CLI (stable)       | OTHER      |             | true                | true                    |                          |                             |                       | high         | production  | 2026-02-12 00:00:00 UTC | 2026-02-12 00:00:00 UTC |
