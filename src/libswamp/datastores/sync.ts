@@ -112,6 +112,7 @@ export async function createDatastoreSyncDeps(
       options.syncTimeoutMsOverride,
     );
     const label = config.type;
+    const ns = config.namespace;
     return {
       validateSyncSupport: () =>
         Promise.resolve({ supported: true, type: config.type }),
@@ -120,7 +121,11 @@ export async function createDatastoreSyncDeps(
           label,
           "push",
           timeoutMs,
-          (signal) => syncService.pushChanged({ signal }),
+          (signal) =>
+            syncService.pushChanged({
+              signal,
+              ...(ns ? { namespace: ns } : {}),
+            }),
         );
         return { filesPushed: typeof count === "number" ? count : 0 };
       },
@@ -129,7 +134,11 @@ export async function createDatastoreSyncDeps(
           label,
           "pull",
           timeoutMs,
-          (signal) => syncService.pullChanged({ signal }),
+          (signal) =>
+            syncService.pullChanged({
+              signal,
+              ...(ns ? { namespace: ns } : {}),
+            }),
         );
         return { filesPulled: typeof count === "number" ? count : 0 };
       },
@@ -138,13 +147,21 @@ export async function createDatastoreSyncDeps(
           label,
           "pull",
           timeoutMs,
-          (signal) => syncService.pullChanged({ signal }),
+          (signal) =>
+            syncService.pullChanged({
+              signal,
+              ...(ns ? { namespace: ns } : {}),
+            }),
         );
         const pushed = await runBoundedSync(
           label,
           "push",
           timeoutMs,
-          (signal) => syncService.pushChanged({ signal }),
+          (signal) =>
+            syncService.pushChanged({
+              signal,
+              ...(ns ? { namespace: ns } : {}),
+            }),
         );
         return {
           filesPulled: typeof pulled === "number" ? pulled : 0,
