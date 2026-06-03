@@ -32,20 +32,16 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { resolveDatastoreForRepo } from "../repo_context.ts";
+import { datastoreBasePath } from "../resolve_datastore.ts";
 import {
   listNamespaceManifests,
 } from "../../infrastructure/persistence/namespace_manifest.ts";
 import {
   type CustomDatastoreConfig,
-  type DatastoreConfig,
   isCustomDatastoreConfig,
 } from "../../domain/datastore/datastore_config.ts";
 import type { DatastoreProvider } from "../../domain/datastore/datastore_provider.ts";
 import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
-
-function datastoreBasePath(config: DatastoreConfig): string {
-  return isCustomDatastoreConfig(config) ? config.datastorePath : config.path;
-}
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;

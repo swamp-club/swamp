@@ -36,6 +36,7 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { resolveDatastoreForRepo } from "../repo_context.ts";
+import { datastoreBasePath } from "../resolve_datastore.ts";
 import {
   RepoMarkerRepository,
 } from "../../infrastructure/persistence/repo_marker_repository.ts";
@@ -46,15 +47,11 @@ import {
 } from "../../infrastructure/persistence/namespace_manifest.ts";
 import {
   type CustomDatastoreConfig,
-  type DatastoreConfig,
   isCustomDatastoreConfig,
 } from "../../domain/datastore/datastore_config.ts";
 import type { DatastoreProvider } from "../../domain/datastore/datastore_provider.ts";
 import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
-
-function datastoreBasePath(config: DatastoreConfig): string {
-  return isCustomDatastoreConfig(config) ? config.datastorePath : config.path;
-}
+import { UserError } from "../../domain/errors.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -99,12 +96,16 @@ export const datastoreNamespaceSetCommand = new Command()
       supportsRegistration,
       listNamespaces: async () => {
         if (resolvedProvider?.listNamespaces) {
-          return await resolvedProvider.listNamespaces(
+          const slugs = await resolvedProvider.listNamespaces(
             (datastoreConfig as CustomDatastoreConfig).datastorePath,
           );
+          return slugs.map((ns) => ({ namespace: ns, repoId: "" }));
         }
         const manifests = await listNamespaceManifests(dsBasePath);
-        return manifests.map((m) => m.namespace);
+        return manifests.map((m) => ({
+          namespace: m.namespace,
+          repoId: m.repoId,
+        }));
       },
       registerNamespace: async (namespace: string, rId: string) => {
         if (resolvedProvider?.registerNamespace) {
@@ -119,11 +120,14 @@ export const datastoreNamespaceSetCommand = new Command()
       },
       updateMarkerNamespace: async (namespace: string) => {
         const current = await markerRepo.read(repoPath);
-        if (current) {
-          current.datastore = current.datastore ?? { type: "filesystem" };
-          current.datastore.namespace = namespace;
-          await markerRepo.write(repoPath, current);
+        if (!current) {
+          throw new UserError(
+            "Cannot update namespace: .swamp.yaml marker not found.",
+          );
         }
+        current.datastore = current.datastore ?? { type: "filesystem" };
+        current.datastore.namespace = namespace;
+        await markerRepo.write(repoPath, current);
       },
       getRepoId: () => repoId,
     };

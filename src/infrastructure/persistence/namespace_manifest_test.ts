@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertNotEquals } from "@std/assert";
+import { join } from "@std/path";
 import {
   listNamespaceManifests,
   readNamespaceManifest,
@@ -75,7 +76,7 @@ Deno.test("listNamespaceManifests: returns empty for nonexistent directory", asy
 Deno.test("listNamespaceManifests: skips directories without manifests", async () => {
   await withTempDir(async (dir) => {
     await writeNamespaceManifest(dir, "infra", "repo-1");
-    await Deno.mkdir(dir + "/data", { recursive: true });
+    await Deno.mkdir(join(dir, "data"), { recursive: true });
 
     const manifests = await listNamespaceManifests(dir);
     assertEquals(manifests.length, 1);
@@ -86,7 +87,7 @@ Deno.test("listNamespaceManifests: skips directories without manifests", async (
 Deno.test("listNamespaceManifests: skips dot-prefixed directories", async () => {
   await withTempDir(async (dir) => {
     await writeNamespaceManifest(dir, "infra", "repo-1");
-    await Deno.mkdir(dir + "/.locks", { recursive: true });
+    await Deno.mkdir(join(dir, ".locks"), { recursive: true });
 
     const manifests = await listNamespaceManifests(dir);
     assertEquals(manifests.length, 1);

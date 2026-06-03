@@ -38,10 +38,15 @@ export interface NamespaceSetInput {
   slug: string;
 }
 
+export interface NamespaceRegistration {
+  namespace: string;
+  repoId: string;
+}
+
 export interface NamespaceSetDeps {
   getDatastorePath: () => string;
   getCurrentNamespace: () => string | undefined;
-  listNamespaces: () => Promise<string[]>;
+  listNamespaces: () => Promise<NamespaceRegistration[]>;
   registerNamespace: (namespace: string, repoId: string) => Promise<void>;
   updateMarkerNamespace: (namespace: string) => Promise<void>;
   getRepoId: () => string;
@@ -70,15 +75,23 @@ export async function* datastoreNamespaceSet(
         return;
       }
 
+      const slug: string = ns as string;
       const current = deps.getCurrentNamespace();
-      if (current === (ns as string)) {
+      if (current === slug) {
         yield {
           kind: "error",
           error: validationFailed(
-            `Namespace is already set to "${ns}".`,
+            `Namespace is already set to "${slug}".`,
           ),
         };
         return;
+      }
+
+      if (current) {
+        ctx.logger.info(
+          "Changing namespace from {old} to {new}",
+          { old: current, new: slug },
+        );
       }
 
       const datastorePath = deps.getDatastorePath();
@@ -87,16 +100,16 @@ export async function* datastoreNamespaceSet(
 
       if (deps.supportsRegistration) {
         const existing = await deps.listNamespaces();
-        if (existing.includes(ns as string)) {
+        const conflict = existing.find((r) => r.namespace === slug);
+        if (conflict && conflict.repoId !== repoId) {
           yield {
             kind: "error",
             error: validationFailed(
-              `Namespace "${ns}" is already registered in this datastore by another repo.`,
+              `Namespace "${slug}" is already registered in this datastore by repo ${conflict.repoId}.`,
             ),
           };
           return;
         }
-        await deps.registerNamespace(ns as string, repoId);
       } else {
         registrationSkipped = true;
         ctx.logger.warn(
@@ -104,25 +117,27 @@ export async function* datastoreNamespaceSet(
         );
       }
 
-      await deps.updateMarkerNamespace(ns as string);
+      await deps.updateMarkerNamespace(slug);
 
-      ctx.logger.info("Namespace set to {namespace}", {
-        namespace: ns as string,
-      });
+      if (deps.supportsRegistration) {
+        await deps.registerNamespace(slug, repoId);
+      }
+
+      ctx.logger.info("Namespace set to {namespace}", { namespace: slug });
 
       let warning =
-        "Existing data will remain at the old path and won't be visible. " +
-        "Use `swamp datastore namespace migrate` (coming in a future version) to move it.";
+        "Existing data will remain at the old path and won't be visible until " +
+        "migration tooling is available in a future version.";
       if (registrationSkipped) {
         warning +=
           "\n\nThis datastore backend does not support namespace registration. " +
-          `Conflict detection is unavailable — ensure no other repo uses the namespace "${ns}" in this datastore.`;
+          `Conflict detection is unavailable — ensure no other repo uses the namespace "${slug}" in this datastore.`;
       }
 
       yield {
         kind: "completed",
         data: {
-          namespace: ns as string,
+          namespace: slug,
           datastorePath,
           warning,
           registrationSkipped,

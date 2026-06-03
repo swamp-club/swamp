@@ -34,7 +34,10 @@
 import { join } from "@std/path";
 import { getLogger } from "@logtape/logtape";
 import type { RepoMarkerData } from "../infrastructure/persistence/repo_marker_repository.ts";
-import type { DatastoreConfig } from "../domain/datastore/datastore_config.ts";
+import {
+  type DatastoreConfig,
+  isCustomDatastoreConfig,
+} from "../domain/datastore/datastore_config.ts";
 import { getSwampDataDir } from "../infrastructure/persistence/paths.ts";
 import { expandEnvVars } from "../infrastructure/persistence/env_path.ts";
 import { datastoreTypeRegistry } from "../domain/datastore/datastore_type_registry.ts";
@@ -43,6 +46,10 @@ import { resolveDatastoreType } from "../domain/extensions/extension_auto_resolv
 import { getAutoResolver } from "../domain/extensions/auto_resolver_context.ts";
 
 const logger = getLogger(["swamp", "datastore", "resolve"]);
+
+export function datastoreBasePath(config: DatastoreConfig): string {
+  return isCustomDatastoreConfig(config) ? config.datastorePath : config.path;
+}
 
 /**
  * Maps old built-in datastore type names to their extension replacements.
