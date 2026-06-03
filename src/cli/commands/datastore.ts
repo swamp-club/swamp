@@ -61,7 +61,8 @@ const datastoreNamespaceCommand = new Command()
   .description("Manage datastore namespace")
   .action(groupCommandAction)
   .command("set", datastoreNamespaceSetCommand)
-  .command("unset", datastoreNamespaceUnsetCommand);
+  .command("unset", datastoreNamespaceUnsetCommand)
+  .command("list", datastoreNamespacesCommand);
 
 export const datastoreCommand = new Command()
   .description("Manage datastore configuration")
@@ -74,5 +75,4 @@ export const datastoreCommand = new Command()
   .command("lock", datastoreLockCommand)
   .command("compact", datastoreCompactCommand)
   .command("catalog", datastoreCatalogCommand)
-  .command("namespace", datastoreNamespaceCommand)
-  .command("namespaces", datastoreNamespacesCommand);
+  .command("namespace", datastoreNamespaceCommand);

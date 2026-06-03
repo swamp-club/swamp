@@ -78,11 +78,8 @@ class LogDataListRenderer implements Renderer<DataListEvent> {
       for (const item of group.items) {
         const size = formatSize(item.size);
         const date = item.createdAt.slice(0, 10);
-        const nsPrefix = this.showNamespace && data.namespace
-          ? `[${data.namespace}]  `
-          : "";
         let line =
-          `  ${nsPrefix}${item.name}  v${item.version}  ${item.contentType}  ${size}  ${date}`;
+          `  ${item.name}  v${item.version}  ${item.contentType}  ${size}  ${date}`;
         if (line.length > cols) {
           line = line.substring(0, cols - 1) + "…";
         }
