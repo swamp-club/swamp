@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
-import { join } from "@std/path";
+import { basename, join } from "@std/path";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
@@ -78,8 +78,7 @@ Deno.test("datastoreNamespaceMigrate: dry-run yields preview and completed with 
   const ctx = createLibSwampContext({});
   const existingDirs = new Set(["data", "outputs"]);
   const deps = makeDeps({
-    dirExists: (path) =>
-      Promise.resolve(existingDirs.has(path.split("/").pop()!)),
+    dirExists: (path) => Promise.resolve(existingDirs.has(basename(path))),
     dirSize: () => Promise.resolve({ fileCount: 10, totalBytes: 5000 }),
   });
 
@@ -115,8 +114,7 @@ Deno.test("datastoreNamespaceMigrate: confirm executes forward migration", async
   let catalogInvalidated = false;
 
   const deps = makeDeps({
-    dirExists: (path) =>
-      Promise.resolve(existingDirs.has(path.split("/").pop()!)),
+    dirExists: (path) => Promise.resolve(existingDirs.has(basename(path))),
     dirSize: () => Promise.resolve({ fileCount: 5, totalBytes: 2000 }),
     renameDir: (source, destination) => {
       renamed.push({ source, destination });
@@ -216,8 +214,7 @@ Deno.test("datastoreNamespaceMigrate: partial failure reports succeeded and fail
   let callCount = 0;
 
   const deps = makeDeps({
-    dirExists: (path) =>
-      Promise.resolve(existingDirs.has(path.split("/").pop()!)),
+    dirExists: (path) => Promise.resolve(existingDirs.has(basename(path))),
     dirSize: () => Promise.resolve({ fileCount: 5, totalBytes: 2000 }),
     renameDir: () => {
       callCount++;
@@ -247,8 +244,7 @@ Deno.test("datastoreNamespaceMigrate: extension datastore calls markDirtyBulk", 
   let markedDirty = false;
 
   const deps = makeDeps({
-    dirExists: (path) =>
-      Promise.resolve(existingDirs.has(path.split("/").pop()!)),
+    dirExists: (path) => Promise.resolve(existingDirs.has(basename(path))),
     dirSize: () => Promise.resolve({ fileCount: 1, totalBytes: 100 }),
     isExtensionDatastore: true,
     markDirtyBulk: () => {
