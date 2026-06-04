@@ -36,6 +36,7 @@ export interface NamespaceMigratePreviewData {
   namespace: string;
   datastorePath: string;
   reverse: boolean;
+  confirm: boolean;
   directories: SubdirPreview[];
   totalFiles: number;
   totalBytes: number;
@@ -178,6 +179,7 @@ export async function* datastoreNamespaceMigrate(
           namespace,
           datastorePath,
           reverse: input.reverse,
+          confirm: input.confirm,
           directories,
           totalFiles,
           totalBytes,
@@ -221,6 +223,9 @@ export async function* datastoreNamespaceMigrate(
           ctx.logger
             .info`Migrated ${dir.subdir}: ${dir.source} → ${dir.destination}`;
         } catch (err) {
+          if (succeeded.length > 0) {
+            deps.invalidateCatalog();
+          }
           yield {
             kind: "error",
             error: validationFailed(

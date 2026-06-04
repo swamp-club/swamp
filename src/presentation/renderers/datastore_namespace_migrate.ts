@@ -60,9 +60,11 @@ class LogNamespaceMigrateRenderer implements Renderer<NamespaceMigrateEvent> {
           `Total: ${e.data.totalFiles} file(s), ${
             formatBytes(e.data.totalBytes)
           }`,
-          "",
-          yellow("Add --confirm to execute this migration."),
         );
+
+        if (!e.data.confirm) {
+          lines.push("", yellow("Add --confirm to execute this migration."));
+        }
 
         writeOutput(lines.join("\n"));
       },
@@ -131,6 +133,17 @@ class JsonNamespaceMigrateRenderer implements Renderer<NamespaceMigrateEvent> {
         }
       },
       error: (e) => {
+        if (e.succeededDirectories.length > 0 || e.failedDirectory) {
+          writeOutput(JSON.stringify(
+            {
+              error: e.error.message,
+              succeededDirectories: e.succeededDirectories,
+              failedDirectory: e.failedDirectory ?? null,
+            },
+            null,
+            2,
+          ));
+        }
         throw new UserError(e.error.message);
       },
     };

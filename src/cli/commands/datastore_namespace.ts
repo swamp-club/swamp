@@ -348,7 +348,7 @@ function buildMigrateDeps(
 }
 
 export const datastoreNamespaceMigrateCommand = new Command()
-  .description("Migrate data between solo and namespaced layouts")
+  .description("Migrate data to namespaced layout (use --reverse to undo)")
   .example(
     "Preview migration",
     "swamp datastore namespace migrate",
