@@ -19,7 +19,10 @@
 
 import { assertEquals } from "@std/assert";
 import { join } from "@std/path";
-import { analyzeExtensionSafety } from "./extension_safety_analyzer.ts";
+import {
+  analyzeExtensionSafety,
+  type ContentRule,
+} from "./extension_safety_analyzer.ts";
 
 async function withTempFiles(
   files: Record<string, string>,
@@ -257,4 +260,175 @@ Deno.test("analyzeExtensionSafety: exempt files still checked for size limit", a
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }
+});
+
+// ── Content rule framework tests ─────────────────────────────────────
+
+Deno.test("analyzeExtensionSafety: content rule fires on matching file extension", async () => {
+  const rule: ContentRule = {
+    id: "test-rule",
+    severity: "warning",
+    fileExtensions: new Set([".md"]),
+    detect: (content) => content.includes("SECRET") ? ["Found SECRET"] : [],
+  };
+  await withTempFiles(
+    { "README.md": "Contains SECRET value" },
+    async (_dir, paths) => {
+      const result = await analyzeExtensionSafety(paths, undefined, [rule]);
+      assertEquals(result.warnings.length, 1);
+      assertEquals(result.warnings[0].message, "Found SECRET");
+    },
+  );
+});
+
+Deno.test("analyzeExtensionSafety: content rule does not fire on non-matching extension", async () => {
+  const rule: ContentRule = {
+    id: "md-only",
+    severity: "warning",
+    fileExtensions: new Set([".md"]),
+    detect: () => ["always fires"],
+  };
+  await withTempFiles(
+    { "config.json": '{"key": "value"}' },
+    async (_dir, paths) => {
+      const result = await analyzeExtensionSafety(paths, undefined, [rule]);
+      assertEquals(result.warnings, []);
+    },
+  );
+});
+
+Deno.test("analyzeExtensionSafety: content rule with error severity routes to errors", async () => {
+  const rule: ContentRule = {
+    id: "blocker",
+    severity: "error",
+    fileExtensions: new Set([".md"]),
+    detect: () => ["blocked"],
+  };
+  await withTempFiles(
+    { "README.md": "anything" },
+    async (_dir, paths) => {
+      const result = await analyzeExtensionSafety(paths, undefined, [rule]);
+      assertEquals(result.errors.length, 1);
+      assertEquals(result.errors[0].message, "blocked");
+      assertEquals(result.warnings, []);
+    },
+  );
+});
+
+Deno.test("analyzeExtensionSafety: content rules do not run on .ts files", async () => {
+  const rule: ContentRule = {
+    id: "no-ts",
+    severity: "warning",
+    fileExtensions: new Set([".ts"]),
+    detect: () => ["should not appear"],
+  };
+  await withTempFiles(
+    { "model.ts": "export const x = 1;\n" },
+    async (_dir, paths) => {
+      const result = await analyzeExtensionSafety(paths, undefined, [rule]);
+      assertEquals(result.warnings, []);
+    },
+  );
+});
+
+// ── IPv4 address detection tests ─────────────────────────────────────
+
+Deno.test("analyzeExtensionSafety: warns on RFC 1918 IP in .md", async () => {
+  await withTempFiles(
+    { "README.md": "Connect to host: 10.0.1.50\n" },
+    async (_dir, paths) => {
+      const result = await analyzeExtensionSafety(paths);
+      assertEquals(result.errors, []);
+      assertEquals(result.warnings.length, 1);
+      assertEquals(result.warnings[0].message.includes("10.0.1.50"), true);
+      assertEquals(
+        result.warnings[0].message.includes("RFC 5737"),
+        true,
+      );
+    },
+  );
+});
+
+Deno.test("analyzeExtensionSafety: warns on RFC 1918 IP in .txt", async () => {
+  await withTempFiles(
+    { "notes.txt": "Server at 192.168.1.100\n" },
+    async (_dir, paths) => {
+      const result = await analyzeExtensionSafety(paths);
+      assertEquals(result.warnings.length, 1);
+      assertEquals(
+        result.warnings[0].message.includes("192.168.1.100"),
+        true,
+      );
+    },
+  );
+});
+
+Deno.test("analyzeExtensionSafety: RFC 5737 documentation IPs pass clean", async () => {
+  await withTempFiles(
+    {
+      "README.md":
+        "Example: 192.0.2.1\nAnother: 198.51.100.5\nThird: 203.0.113.10\n",
+    },
+    async (_dir, paths) => {
+      const result = await analyzeExtensionSafety(paths);
+      assertEquals(result.warnings, []);
+    },
+  );
+});
+
+Deno.test("analyzeExtensionSafety: loopback and unspecified IPs pass clean", async () => {
+  await withTempFiles(
+    { "README.md": "Loopback: 127.0.0.1\nBind: 0.0.0.0\n" },
+    async (_dir, paths) => {
+      const result = await analyzeExtensionSafety(paths);
+      assertEquals(result.warnings, []);
+    },
+  );
+});
+
+Deno.test("analyzeExtensionSafety: link-local IPs pass clean", async () => {
+  await withTempFiles(
+    { "README.md": "Link-local: 169.254.1.1\n" },
+    async (_dir, paths) => {
+      const result = await analyzeExtensionSafety(paths);
+      assertEquals(result.warnings, []);
+    },
+  );
+});
+
+Deno.test("analyzeExtensionSafety: clean .md without IPs passes", async () => {
+  await withTempFiles(
+    { "README.md": "# My Extension\n\nThis does things.\n" },
+    async (_dir, paths) => {
+      const result = await analyzeExtensionSafety(paths);
+      assertEquals(result.errors, []);
+      assertEquals(result.warnings, []);
+    },
+  );
+});
+
+Deno.test("analyzeExtensionSafety: multiple IPs in one .md produce one warning", async () => {
+  await withTempFiles(
+    { "README.md": "Host: 10.0.1.50\nJump: 172.16.0.1\nSubnet: 192.168.0.0\n" },
+    async (_dir, paths) => {
+      const result = await analyzeExtensionSafety(paths);
+      assertEquals(result.warnings.length, 1);
+      assertEquals(result.warnings[0].message.includes("10.0.1.50"), true);
+      assertEquals(result.warnings[0].message.includes("172.16.0.1"), true);
+      assertEquals(result.warnings[0].message.includes("192.168.0.0"), true);
+    },
+  );
+});
+
+Deno.test("analyzeExtensionSafety: IP detection does not fire on .ts files", async () => {
+  await withTempFiles(
+    { "model.ts": 'const host = "10.0.1.50";\n' },
+    async (_dir, paths) => {
+      const result = await analyzeExtensionSafety(paths);
+      assertEquals(
+        result.warnings.filter((w) => w.message.includes("IPv4")).length,
+        0,
+      );
+    },
+  );
 });

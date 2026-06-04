@@ -33,6 +33,75 @@ export interface SafetyCheckResult {
   warnings: SafetyIssue[];
 }
 
+// ── Content rule framework ───────────────────────────────────────────
+
+/**
+ * A pluggable content hygiene rule for non-code files. Each rule declares
+ * which file extensions it inspects and a pure detect function that returns
+ * one message per issue found. Append new rules to
+ * {@link DEFAULT_CONTENT_RULES} to grow the enforced set.
+ */
+export interface ContentRule {
+  /** Stable identifier, e.g. `ipv4-address-literals`. */
+  id: string;
+  /** Whether findings block the push (`"error"`) or only warn (`"warning"`). */
+  severity: "error" | "warning";
+  /** File extensions this rule inspects, e.g. `new Set([".md", ".txt"])`. */
+  fileExtensions: Set<string>;
+  /** Returns one message per issue found; empty array means the file passes. */
+  detect: (content: string, file: string) => string[];
+}
+
+// ── IPv4 detection helpers ───────────────────────────────────────────
+
+const IPV4_PATTERN =
+  /(?<![.\w])(?:(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]\d|\d)\.){3}(?:25[0-5]|2[0-4]\d|1\d{2}|[1-9]\d|\d)(?![.\w])/g;
+
+function isDocumentationIp(ip: string): boolean {
+  const octets = ip.split(".").map(Number);
+  // RFC 5737 documentation ranges
+  if (octets[0] === 192 && octets[1] === 0 && octets[2] === 2) return true;
+  if (octets[0] === 198 && octets[1] === 51 && octets[2] === 100) return true;
+  if (octets[0] === 203 && octets[1] === 0 && octets[2] === 113) return true;
+  // Loopback (127.x.x.x)
+  if (octets[0] === 127) return true;
+  // Unspecified (0.0.0.0)
+  if (octets.every((o) => o === 0)) return true;
+  // Link-local (169.254.x.x)
+  if (octets[0] === 169 && octets[1] === 254) return true;
+  return false;
+}
+
+// ── Default content rules ────────────────────────────────────────────
+
+export const DEFAULT_CONTENT_RULES: ContentRule[] = [
+  {
+    id: "ipv4-address-literals",
+    severity: "warning",
+    fileExtensions: new Set([".md", ".txt"]),
+    detect: (content: string): string[] => {
+      const found: string[] = [];
+      for (const match of content.matchAll(IPV4_PATTERN)) {
+        if (!isDocumentationIp(match[0])) {
+          found.push(match[0]);
+        }
+      }
+      if (found.length === 0) return [];
+      const unique = [...new Set(found)];
+      const listed = unique.length <= 3
+        ? unique.join(", ")
+        : `${unique.slice(0, 3).join(", ")}, and ${unique.length - 3} more`;
+      return [
+        `Contains IPv4 address literals (${listed}) that may be real ` +
+        "infrastructure identifiers. Use RFC 5737 documentation ranges " +
+        "(192.0.2.x, 198.51.100.x, 203.0.113.x) or example.com for examples.",
+      ];
+    },
+  },
+];
+
+// ── Constants ────────────────────────────────────────────────────────
+
 const ALLOWED_EXTENSIONS = new Set([
   ".ts",
   ".json",
@@ -59,6 +128,7 @@ const BASE64_PATTERN = /[A-Za-z0-9+/=]{100,}/;
 export async function analyzeExtensionSafety(
   files: string[],
   exemptFromExtensionCheck?: Set<string>,
+  contentRules: ContentRule[] = DEFAULT_CONTENT_RULES,
 ): Promise<SafetyCheckResult> {
   const errors: SafetyIssue[] = [];
   const warnings: SafetyIssue[] = [];
@@ -177,6 +247,31 @@ export async function analyzeExtensionSafety(
           file,
           message: "File uses Deno.Command() to spawn subprocesses.",
         });
+      }
+    }
+
+    // Content rules for non-.ts files
+    if (ext !== ".ts") {
+      const matchingRules = contentRules.filter((r) =>
+        r.fileExtensions.has(ext)
+      );
+      if (matchingRules.length > 0) {
+        let content: string;
+        try {
+          content = await Deno.readTextFile(file);
+        } catch {
+          continue;
+        }
+        for (const rule of matchingRules) {
+          for (const message of rule.detect(content, file)) {
+            const issue: SafetyIssue = { file, message };
+            if (rule.severity === "error") {
+              errors.push(issue);
+            } else {
+              warnings.push(issue);
+            }
+          }
+        }
       }
     }
   }

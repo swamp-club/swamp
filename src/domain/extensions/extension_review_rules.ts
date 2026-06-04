@@ -318,6 +318,11 @@ export const REVIEW_DIMENSIONS: ReviewDimension[] = [
   },
   { id: "api-contracts", label: "API Contracts", appliesTo: "all" },
   { id: "resource-management", label: "Resource Management", appliesTo: "all" },
+  {
+    id: "published-surface-hygiene",
+    label: "Published-Surface Hygiene",
+    appliesTo: "all",
+  },
   // Models
   { id: "schema-strictness", label: "Schema strictness", appliesTo: ["model"] },
   { id: "lifetime-gc", label: "Lifetime & GC", appliesTo: ["model"] },

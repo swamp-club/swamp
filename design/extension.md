@@ -800,6 +800,9 @@ after pull.
 - Lines with more than 500 non-whitespace characters
 - Base64-like strings (100+ consecutive base64 characters)
 - Use of `Deno.Command()` for subprocess spawning
+- IPv4 address literals in `.md` and `.txt` files that are not in RFC 5737
+  documentation ranges, loopback, or link-local ranges (detected by the
+  extensible content rule framework)
 
 ### Binaries
 
