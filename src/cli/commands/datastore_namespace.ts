@@ -134,7 +134,8 @@ export const datastoreNamespaceSetCommand = new Command()
             "Cannot update namespace: .swamp.yaml marker not found.",
           );
         }
-        current.datastore = current.datastore ?? { type: "filesystem" };
+        current.datastore = current.datastore ??
+          { type: "filesystem", path: ".swamp" };
         current.datastore.namespace = namespace;
         await markerRepo.write(repoPath, current);
       },
