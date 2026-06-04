@@ -18,12 +18,17 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
+import { ensureDir, walk } from "@std/fs";
 import {
   consumeStream,
   createLibSwampContext,
+  datastoreNamespaceMigrate,
   datastoreNamespaceSet,
   datastoreNamespaceUnset,
 } from "../../libswamp/mod.ts";
+import {
+  createNamespaceMigrateRenderer,
+} from "../../presentation/renderers/datastore_namespace_migrate.ts";
 import {
   createNamespaceSetRenderer,
 } from "../../presentation/renderers/datastore_namespace_set.ts";
@@ -42,7 +47,11 @@ import {
 } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import {
+  createCatalogStore,
+} from "../../infrastructure/persistence/repository_factory.ts";
+import {
   listNamespaceManifests,
+  removeNamespaceManifest,
   writeNamespaceManifest,
 } from "../../infrastructure/persistence/namespace_manifest.ts";
 import {
@@ -142,9 +151,21 @@ export const datastoreNamespaceSetCommand = new Command()
 export const datastoreNamespaceUnsetCommand = new Command()
   .description("Remove namespace from this repository")
   .example("Unset namespace", "swamp datastore namespace unset")
+  .example(
+    "Unset and reverse-migrate data",
+    "swamp datastore namespace unset --migrate --confirm",
+  )
   .option(
     "--repo-dir <dir:string>",
     "Repository directory (env: SWAMP_REPO_DIR)",
+  )
+  .option(
+    "--migrate",
+    "Also reverse-migrate data back to un-namespaced layout",
+  )
+  .option(
+    "--confirm",
+    "Execute the migration (required with --migrate, ignored otherwise)",
   )
   .action(async function (options: AnyOptions) {
     const cliCtx = createContext(options as GlobalOptions, [
@@ -166,6 +187,45 @@ export const datastoreNamespaceUnsetCommand = new Command()
       await datastoreTypeRegistry.ensureTypeLoaded(datastoreConfig.type);
       const typeInfo = datastoreTypeRegistry.get(datastoreConfig.type);
       unsetProvider = typeInfo?.createProvider?.(datastoreConfig.config);
+    }
+
+    if (options.migrate) {
+      const savedNamespace = datastoreConfig.namespace;
+      if (!savedNamespace) {
+        throw new UserError(
+          "No namespace is configured. Nothing to unset or migrate.",
+        );
+      }
+
+      const ctx = createLibSwampContext({ logger: cliCtx.logger });
+      const migrateDeps = buildMigrateDeps(
+        repoDir,
+        dsBasePath,
+        datastoreConfig,
+        savedNamespace,
+        unsetProvider,
+      );
+
+      const migrateRenderer = createNamespaceMigrateRenderer(
+        cliCtx.outputMode,
+      );
+      await consumeStream(
+        datastoreNamespaceMigrate(ctx, migrateDeps, {
+          confirm: !!options.confirm,
+          reverse: true,
+        }),
+        migrateRenderer.handlers(),
+      );
+
+      if (options.confirm) {
+        const current = await markerRepo.read(repoPath);
+        if (current?.datastore) {
+          delete current.datastore.namespace;
+          await markerRepo.write(repoPath, current);
+        }
+      }
+
+      return;
     }
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
@@ -192,6 +252,143 @@ export const datastoreNamespaceUnsetCommand = new Command()
     const renderer = createNamespaceUnsetRenderer(cliCtx.outputMode);
     await consumeStream(
       datastoreNamespaceUnset(ctx, deps),
+      renderer.handlers(),
+    );
+  });
+
+async function dirSize(
+  path: string,
+): Promise<{ fileCount: number; totalBytes: number }> {
+  let fileCount = 0;
+  let totalBytes = 0;
+  for await (
+    const entry of walk(path, { includeFiles: true, includeDirs: false })
+  ) {
+    fileCount++;
+    try {
+      const stat = await Deno.stat(entry.path);
+      totalBytes += stat.size;
+    } catch {
+      // Skip files that can't be stat'd
+    }
+  }
+  return { fileCount, totalBytes };
+}
+
+function buildMigrateDeps(
+  repoDir: string,
+  dsBasePath: string,
+  datastoreConfig: { namespace?: string; type: string },
+  namespace: string,
+  provider: DatastoreProvider | undefined,
+): Parameters<typeof datastoreNamespaceMigrate>[1] {
+  const isExtension = isCustomDatastoreConfig(
+    datastoreConfig as Parameters<typeof isCustomDatastoreConfig>[0],
+  );
+  const catalogStore = createCatalogStore(repoDir);
+
+  return {
+    getDatastorePath: () => dsBasePath,
+    getNamespace: () => namespace,
+    dirExists: async (path: string) => {
+      try {
+        const stat = await Deno.stat(path);
+        return stat.isDirectory;
+      } catch {
+        return false;
+      }
+    },
+    dirSize,
+    renameDir: (source: string, destination: string) =>
+      Deno.rename(source, destination),
+    ensureDir: (path: string) => ensureDir(path),
+    invalidateCatalog: () => {
+      catalogStore.invalidate();
+      catalogStore.close();
+    },
+    markDirtyBulk: async () => {
+      if (!provider?.createSyncService) return;
+      const customConfig = datastoreConfig as CustomDatastoreConfig;
+      const syncService = provider.createSyncService(
+        repoDir,
+        customConfig.cachePath ?? customConfig.datastorePath,
+      );
+      await syncService.markDirty();
+    },
+    removeNamespaceManifest: (ns: string) =>
+      removeNamespaceManifest(dsBasePath, ns),
+    isExtensionDatastore: isExtension,
+  };
+}
+
+export const datastoreNamespaceMigrateCommand = new Command()
+  .description("Migrate data between solo and namespaced layouts")
+  .example(
+    "Preview migration",
+    "swamp datastore namespace migrate",
+  )
+  .example(
+    "Execute migration",
+    "swamp datastore namespace migrate --confirm",
+  )
+  .example(
+    "Reverse migration (namespaced → solo)",
+    "swamp datastore namespace migrate --reverse --confirm",
+  )
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
+  .option(
+    "--confirm",
+    "Execute the migration (without this flag, only a preview is shown)",
+  )
+  .option(
+    "--reverse",
+    "Reverse-migrate from namespaced layout back to solo layout",
+  )
+  .action(async function (options: AnyOptions) {
+    const cliCtx = createContext(options as GlobalOptions, [
+      "datastore",
+      "namespace",
+      "migrate",
+    ]);
+    cliCtx.logger.debug("Executing datastore namespace migrate command");
+
+    const repoDir = resolveRepoDir(options.repoDir);
+    const { datastoreConfig } = await resolveDatastoreForRepo(repoDir);
+    const dsBasePath = datastoreBasePath(datastoreConfig);
+    const namespace = datastoreConfig.namespace;
+
+    if (!namespace) {
+      throw new UserError(
+        "No namespace is configured. Run 'swamp datastore namespace set <slug>' first.",
+      );
+    }
+
+    let migrateProvider: DatastoreProvider | undefined;
+    if (isCustomDatastoreConfig(datastoreConfig)) {
+      await datastoreTypeRegistry.ensureLoaded();
+      await datastoreTypeRegistry.ensureTypeLoaded(datastoreConfig.type);
+      const typeInfo = datastoreTypeRegistry.get(datastoreConfig.type);
+      migrateProvider = typeInfo?.createProvider?.(datastoreConfig.config);
+    }
+
+    const ctx = createLibSwampContext({ logger: cliCtx.logger });
+    const deps = buildMigrateDeps(
+      repoDir,
+      dsBasePath,
+      datastoreConfig,
+      namespace,
+      migrateProvider,
+    );
+
+    const renderer = createNamespaceMigrateRenderer(cliCtx.outputMode);
+    await consumeStream(
+      datastoreNamespaceMigrate(ctx, deps, {
+        confirm: !!options.confirm,
+        reverse: !!options.reverse,
+      }),
       renderer.handlers(),
     );
   });

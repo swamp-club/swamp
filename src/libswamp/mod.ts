@@ -1255,3 +1255,13 @@ export {
   type NamespaceListDeps,
   type NamespaceListEvent,
 } from "./datastores/namespace_list.ts";
+export {
+  datastoreNamespaceMigrate,
+  type NamespaceMigrateCompletedData,
+  type NamespaceMigrateDeps,
+  type NamespaceMigrateEvent,
+  type NamespaceMigrateInput,
+  type NamespaceMigratePreviewData,
+  type NamespaceMigrateProgressData,
+  type SubdirPreview,
+} from "./datastores/namespace_migrate.ts";

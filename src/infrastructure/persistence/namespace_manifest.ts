@@ -67,6 +67,19 @@ export async function readNamespaceManifest(
   }
 }
 
+export async function removeNamespaceManifest(
+  datastorePath: string,
+  namespace: string,
+): Promise<void> {
+  const path = namespaceManifestPath(datastorePath, namespace);
+  try {
+    await Deno.remove(path);
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return;
+    throw error;
+  }
+}
+
 export async function listNamespaceManifests(
   datastorePath: string,
 ): Promise<NamespaceManifest[]> {

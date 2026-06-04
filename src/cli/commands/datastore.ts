@@ -26,6 +26,7 @@ import { datastoreLockCommand } from "./datastore_lock.ts";
 import { datastoreCompactCommand } from "./datastore_compact.ts";
 import { datastoreCatalogPullCommand } from "./datastore_catalog_pull.ts";
 import {
+  datastoreNamespaceMigrateCommand,
   datastoreNamespaceSetCommand,
   datastoreNamespaceUnsetCommand,
 } from "./datastore_namespace.ts";
@@ -62,6 +63,7 @@ const datastoreNamespaceCommand = new Command()
   .action(groupCommandAction)
   .command("set", datastoreNamespaceSetCommand)
   .command("unset", datastoreNamespaceUnsetCommand)
+  .command("migrate", datastoreNamespaceMigrateCommand)
   .command("list", datastoreNamespacesCommand);
 
 export const datastoreCommand = new Command()

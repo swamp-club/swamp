@@ -62,9 +62,8 @@ Deno.test("datastoreNamespaceSet: valid slug succeeds", async () => {
       data: {
         namespace: "infra",
         datastorePath: "/tmp/ds",
-        warning:
-          "Existing data will remain at the old path and won't be visible until " +
-          "migration tooling is available in a future version.",
+        warning: "Existing data remains at the old un-namespaced path. " +
+          "Run 'swamp datastore namespace migrate --confirm' to move it to the namespaced layout.",
         registrationSkipped: false,
       },
     },

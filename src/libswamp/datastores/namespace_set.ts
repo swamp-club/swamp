@@ -125,9 +125,8 @@ export async function* datastoreNamespaceSet(
 
       ctx.logger.info("Namespace set to {namespace}", { namespace: slug });
 
-      let warning =
-        "Existing data will remain at the old path and won't be visible until " +
-        "migration tooling is available in a future version.";
+      let warning = "Existing data remains at the old un-namespaced path. " +
+        "Run 'swamp datastore namespace migrate --confirm' to move it to the namespaced layout.";
       if (registrationSkipped) {
         warning +=
           "\n\nThis datastore backend does not support namespace registration. " +

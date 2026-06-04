@@ -227,6 +227,18 @@ datastore-tier subdir uniformly. Solo mode (empty namespace) produces
 byte-identical paths to a non-namespaced repo — no prefix, no stray separator.
 The local tier (`localPath`, `.swamp/`) is never namespaced.
 
+#### Migration
+
+`swamp datastore namespace migrate` re-keys data from the solo layout to the
+namespaced layout. For each directory in `DEFAULT_DATASTORE_SUBDIRS` that exists
+at the un-namespaced path `{base}/{subdir}/`, it moves it to
+`{base}/{namespace}/{subdir}/` via `Deno.rename()`. The catalog is invalidated
+after migration so backfill rebuilds from the new paths.
+
+The reverse (`--reverse`) flattens namespaced paths back to solo layout, with
+conflict detection — it refuses if the un-namespaced path already contains data.
+`swamp datastore namespace unset --migrate` combines unset + reverse migration.
+
 Two things are deliberately **not** namespaced:
 
 - **The `_catalog.db` catalog** is repo-local at `{repoDir}/.swamp/data/`,
