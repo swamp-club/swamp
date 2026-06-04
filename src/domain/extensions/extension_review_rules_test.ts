@@ -264,10 +264,12 @@ Deno.test("checkReviewRules: entry point without sibling test warns", async () =
 Deno.test("applicableDimensions: universal always present; type-specific gated by kind", () => {
   const modelOnly = applicableDimensions(["model"]).map((d) => d.id);
   assert(modelOnly.includes("credentials-secrets")); // universal
+  assert(modelOnly.includes("published-surface-hygiene")); // universal
   assert(modelOnly.includes("schema-strictness")); // model-specific
   assertEquals(modelOnly.includes("vault-getname"), false); // vault-specific
   const vaultOnly = applicableDimensions(["vault"]).map((d) => d.id);
   assert(vaultOnly.includes("vault-getname"));
+  assert(vaultOnly.includes("published-surface-hygiene")); // universal
   assertEquals(vaultOnly.includes("schema-strictness"), false);
 });
 

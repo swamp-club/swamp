@@ -257,6 +257,24 @@ These apply to **all** extension types (models, drivers, vaults, datastores).
 - Methods that create cloud resources should track resource IDs so they can be
   referenced for later cleanup or deletion.
 
+### 8. Published-Surface Hygiene
+
+- **README examples, `additionalFiles`, and test fixtures** must use placeholder
+  values, not real infrastructure identifiers. Check for:
+  - Real IP addresses — use RFC 5737 documentation ranges (`192.0.2.x`,
+    `198.51.100.x`, `203.0.113.x`) instead
+  - Internal hostnames, bastion/jump addresses, `.internal`/`.local`/`.corp`
+    domains — use `example.com`, `host.example.net` instead
+  - Internal subnet topology (real CIDR blocks, VLAN IDs, real cloud VPC/subnet
+    identifiers)
+  - Cloud account IDs, project numbers, or tenant identifiers
+- The push-time safety analyzer automatically warns on IPv4 address literals in
+  `.md` and `.txt` files. This dimension covers what the automated check cannot
+  reliably detect: hostnames, topology descriptions, and identifiers in code
+  blocks and test fixtures.
+- Common safe replacements: RFC 5737 IPs, `example.com`/`example.net`/
+  `example.org` (RFC 2606), `ACME-ACCOUNT-ID`, `vpc-example`, `subnet-example`.
+
 ## Type-Specific Dimensions
 
 ### Models
