@@ -163,7 +163,7 @@ const datastoreSetupExtensionCommand = new Command()
       );
     }
 
-    // Parse config JSON
+    // Parse config JSON and extract namespace before provider validation
     let config: Record<string, unknown>;
     try {
       config = JSON.parse(options.config) as Record<string, unknown>;
@@ -172,6 +172,8 @@ const datastoreSetupExtensionCommand = new Command()
         `Invalid JSON in --config: ${options.config}`,
       );
     }
+
+    const { namespace: configNamespace, ...providerConfig } = config;
 
     const { repoDir, marker } = await resolveDatastoreForRepo(
       resolveRepoDir(options.repoDir),
@@ -194,15 +196,19 @@ const datastoreSetupExtensionCommand = new Command()
       );
     }
 
+    const namespace = typeof configNamespace === "string"
+      ? configNamespace
+      : marker?.datastore?.namespace;
+
     await consumeStream(
       datastoreSetupExtension(ctx, deps, {
         type: resolvedType,
-        config,
+        config: providerConfig,
         repoDir,
         repoId: marker?.repoId,
         skipMigration: !!options.skipMigration,
         hydrationStrategy,
-        namespace: marker?.datastore?.namespace,
+        namespace,
       }),
       renderer.handlers(),
     );
