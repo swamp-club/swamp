@@ -129,18 +129,17 @@ export async function* datastoreNamespaceMigrate(
           continue;
         }
 
-        if (input.reverse) {
-          if (await deps.dirExists(destination)) {
-            yield {
-              kind: "error",
-              error: validationFailed(
-                `Cannot reverse-migrate: "${subdir}" already exists at the ` +
-                  `un-namespaced path "${destination}". Remove or rename it first.`,
-              ),
-              succeededDirectories: [],
-            };
-            return;
-          }
+        if (await deps.dirExists(destination)) {
+          const direction = input.reverse ? "reverse-migrate" : "migrate";
+          yield {
+            kind: "error",
+            error: validationFailed(
+              `Cannot ${direction}: "${subdir}" already exists at ` +
+                `"${destination}". Remove or rename it first.`,
+            ),
+            succeededDirectories: [],
+          };
+          return;
         }
 
         const size = await deps.dirSize(source);

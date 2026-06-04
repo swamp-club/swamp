@@ -1257,6 +1257,7 @@ export {
 } from "./datastores/namespace_list.ts";
 export {
   datastoreNamespaceMigrate,
+  type DirSize,
   type NamespaceMigrateCompletedData,
   type NamespaceMigrateDeps,
   type NamespaceMigrateEvent,

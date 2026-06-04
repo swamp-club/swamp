@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
-import { basename, join } from "@std/path";
+import { join } from "@std/path";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
@@ -76,9 +76,12 @@ Deno.test("datastoreNamespaceMigrate: errors when no data directories exist", as
 
 Deno.test("datastoreNamespaceMigrate: dry-run yields preview and completed with no migrations", async () => {
   const ctx = createLibSwampContext({});
-  const existingDirs = new Set(["data", "outputs"]);
+  const sourcePaths = new Set([
+    join(DS_PATH, "data"),
+    join(DS_PATH, "outputs"),
+  ]);
   const deps = makeDeps({
-    dirExists: (path) => Promise.resolve(existingDirs.has(basename(path))),
+    dirExists: (path) => Promise.resolve(sourcePaths.has(path)),
     dirSize: () => Promise.resolve({ fileCount: 10, totalBytes: 5000 }),
   });
 
@@ -108,13 +111,16 @@ Deno.test("datastoreNamespaceMigrate: dry-run yields preview and completed with 
 
 Deno.test("datastoreNamespaceMigrate: confirm executes forward migration", async () => {
   const ctx = createLibSwampContext({});
-  const existingDirs = new Set(["data", "outputs"]);
+  const sourcePaths = new Set([
+    join(DS_PATH, "data"),
+    join(DS_PATH, "outputs"),
+  ]);
   const renamed: Array<{ source: string; destination: string }> = [];
   const ensured: string[] = [];
   let catalogInvalidated = false;
 
   const deps = makeDeps({
-    dirExists: (path) => Promise.resolve(existingDirs.has(basename(path))),
+    dirExists: (path) => Promise.resolve(sourcePaths.has(path)),
     dirSize: () => Promise.resolve({ fileCount: 5, totalBytes: 2000 }),
     renameDir: (source, destination) => {
       renamed.push({ source, destination });
@@ -210,11 +216,14 @@ Deno.test("datastoreNamespaceMigrate: reverse refuses when un-namespaced path ha
 
 Deno.test("datastoreNamespaceMigrate: partial failure reports succeeded and failed directories", async () => {
   const ctx = createLibSwampContext({});
-  const existingDirs = new Set(["data", "outputs"]);
+  const sourcePaths = new Set([
+    join(DS_PATH, "data"),
+    join(DS_PATH, "outputs"),
+  ]);
   let callCount = 0;
 
   const deps = makeDeps({
-    dirExists: (path) => Promise.resolve(existingDirs.has(basename(path))),
+    dirExists: (path) => Promise.resolve(sourcePaths.has(path)),
     dirSize: () => Promise.resolve({ fileCount: 5, totalBytes: 2000 }),
     renameDir: () => {
       callCount++;
@@ -240,11 +249,11 @@ Deno.test("datastoreNamespaceMigrate: partial failure reports succeeded and fail
 
 Deno.test("datastoreNamespaceMigrate: extension datastore calls markDirtyBulk", async () => {
   const ctx = createLibSwampContext({});
-  const existingDirs = new Set(["data"]);
+  const sourcePaths = new Set([join(DS_PATH, "data")]);
   let markedDirty = false;
 
   const deps = makeDeps({
-    dirExists: (path) => Promise.resolve(existingDirs.has(basename(path))),
+    dirExists: (path) => Promise.resolve(sourcePaths.has(path)),
     dirSize: () => Promise.resolve({ fileCount: 1, totalBytes: 100 }),
     isExtensionDatastore: true,
     markDirtyBulk: () => {
@@ -267,8 +276,9 @@ Deno.test("datastoreNamespaceMigrate: extension datastore calls markDirtyBulk", 
 
 Deno.test("datastoreNamespaceMigrate: skips nonexistent subdirs", async () => {
   const ctx = createLibSwampContext({});
+  const sourcePaths = new Set([join(DS_PATH, "data")]);
   const deps = makeDeps({
-    dirExists: (path) => Promise.resolve(path.endsWith("data")),
+    dirExists: (path) => Promise.resolve(sourcePaths.has(path)),
     dirSize: () => Promise.resolve({ fileCount: 1, totalBytes: 100 }),
   });
 

@@ -197,6 +197,21 @@ export const datastoreNamespaceUnsetCommand = new Command()
         );
       }
 
+      const namespaces = unsetProvider?.listNamespaces
+        ? await unsetProvider.listNamespaces(
+          (datastoreConfig as CustomDatastoreConfig).datastorePath,
+        )
+        : (await listNamespaceManifests(dsBasePath)).map((m) => m.namespace);
+
+      if (namespaces.length > 1) {
+        throw new UserError(
+          `Cannot unset namespace: datastore contains ${namespaces.length} namespaces ` +
+            `(${
+              namespaces.join(", ")
+            }). Unsetting is only allowed when a single namespace exists.`,
+        );
+      }
+
       const ctx = createLibSwampContext({ logger: cliCtx.logger });
       const migrateDeps = buildMigrateDeps(
         repoDir,
@@ -311,8 +326,11 @@ function buildMigrateDeps(
     ensureDir: (path: string) => ensureDir(path),
     invalidateCatalog: () => {
       catalogStore = createCatalogStore(repoDir);
-      catalogStore.invalidate();
-      catalogStore.close();
+      try {
+        catalogStore.invalidate();
+      } finally {
+        catalogStore.close();
+      }
     },
     markDirtyBulk: async () => {
       if (!provider?.createSyncService) return;
