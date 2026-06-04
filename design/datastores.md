@@ -362,6 +362,80 @@ succeeds on both the scoped and full paths. This boolean is returned in
 `{ flush, synced }` and checked at 8 call sites across the codebase to trigger
 `catalogStore.invalidate()`. It must never be skipped or moved.
 
+### Namespace-Scoped Sync
+
+When a repo has a `namespace` configured in `.swamp.yaml`, the sync lifecycle
+scopes push and pull to the namespace's subtree in the remote datastore. This
+is how two repos sharing a single S3 bucket avoid syncing each other's data.
+
+#### How namespace flows through sync
+
+1. **Config → coordinator.** `repo_context.ts` reads `datastoreConfig.namespace`
+   and passes it to `registerDatastoreSync({ namespace })`. The coordinator
+   stores it on the `SyncEntry`.
+2. **Coordinator → extension.** On pull, the coordinator passes
+   `{ signal, namespace }` to `pullChanged()`. On push (flush), it passes
+   `{ signal, namespace }` to `pushChanged()`. The namespace field is only
+   included when non-empty — solo-mode calls omit it entirely.
+3. **Per-model path.** `acquireModelLocks` reads `datastoreConfig.namespace`
+   and passes it alongside the `SyncContext` (model list). When
+   `namespacedSync` is advertised, both namespace and context are passed; when
+   only namespace is available (no `scopedSync`), the extension receives
+   `{ namespace }` alone.
+
+#### Per-namespace index partitioning
+
+Extensions that advertise `namespacedSync: true` partition their remote index
+per namespace:
+
+- **Pull**: fetch `{namespace}/.datastore-index.json`, walk only keys under
+  `{namespace}/`.
+- **Push**: upload only files under `{namespace}/`, write
+  `{namespace}/.datastore-index.json`.
+- **Solo mode** (no namespace): use the global `.datastore-index.json` and
+  walk all keys — identical to pre-namespace behavior.
+
+The zero-diff fast path (sidecar fingerprint + dirty flag) operates
+per-namespace: the sidecar caches the ETag of the namespace's index, not the
+global index. A repo that hasn't written anything skips sync in O(1)
+regardless of how much data other namespaces contain.
+
+Push must never delete keys outside the namespace prefix. A namespace-scoped
+push uploads files under `{namespace}/` and updates only that namespace's
+index. Keys belonging to other namespaces are invisible to the walk and
+untouched.
+
+#### Namespace manifests
+
+Each namespace writes a `.namespace.json` manifest to the datastore on
+registration (`swamp datastore namespace set`):
+
+```json
+{
+  "namespace": "infra",
+  "repoId": "uuid-of-the-repo",
+  "registeredAt": "2026-06-03T00:00:00.000Z"
+}
+```
+
+The manifest lives at `{namespace}/.namespace.json` in the remote datastore
+(for extension backends) or at `{datastorePath}/{namespace}/.namespace.json`
+(for filesystem). It serves two purposes:
+
+- **Conflict detection**: before registering a namespace, the system checks
+  if a manifest already exists with a different `repoId`. If so, the
+  registration fails with a clear error.
+- **Discovery**: `swamp datastore namespaces` lists all registered
+  namespaces by scanning for `.namespace.json` files.
+
+For extension datastores, `DatastoreProvider.registerNamespace()` and
+`DatastoreProvider.listNamespaces()` manage manifests via the remote API
+(S3 PUT/GET, GCS equivalent). For filesystem datastores, the built-in
+`namespace_manifest.ts` utility reads and writes manifest files directly.
+Both methods are optional on `DatastoreProvider` — when the extension does
+not implement them, the CLI warns that conflict detection is unavailable and
+proceeds with only the `.swamp.yaml` update.
+
 ### Zero-Diff Fast Path (Extension Guidance)
 
 At production scale, most sync invocations are "nothing to do" — the local
