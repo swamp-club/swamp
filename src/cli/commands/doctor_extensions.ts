@@ -163,32 +163,26 @@ export const doctorExtensionsCommand = new Command()
       : resolve(repoDir, modelsDir);
     const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
 
-    // Invalidate the catalog and run reconcile so failure states
-    // (BundleBuildFailed, EntryPointUnreadable, OrphanedBundleOnly)
-    // are written through the Extension aggregate and surface in
-    // sourceDetails[]. Without reconcile, failures only land in
-    // registries.<kind>.failures[] via the legacy buildIndex path.
-    //
-    // This repository instance and the loaders' repository (constructed
-    // at mod.ts startup) are two separate ExtensionRepository objects
-    // pointing at the same SQLite DB. Writes here are process-wide-
-    // visible to the loaders regardless of close ordering; the close
-    // is connection hygiene, not synchronization.
-    const localManifestIdentity = readLocalManifestIdentity(repoDir);
-    let reconcileTransitions: readonly ReconcileTransition[] = [];
+    // A single shared catalog connection for all doctor phases
+    // (reconcile, aggregate state, repair, re-pull). Previous code
+    // opened up to 4 separate connections to the same SQLite file,
+    // which contributed to cross-process lock contention.
+    const catalogDbPath = swampPath(repoDir, "_extension_catalog.db");
+    const sharedCatalog = new ExtensionCatalogStore(catalogDbPath);
+
     try {
-      const reconcileLockfileRepo = await LockfileRepository.create(
-        lockfilePath,
-      );
-      const rescanRepo = new ExtensionRepository({
-        catalog: new ExtensionCatalogStore(
-          swampPath(repoDir, "_extension_catalog.db"),
-        ),
-        lockfileRepository: reconcileLockfileRepo,
-        repoRoot: repoDir,
-        localManifestIdentity,
-      });
+      const localManifestIdentity = readLocalManifestIdentity(repoDir);
+      let reconcileTransitions: readonly ReconcileTransition[] = [];
       try {
+        const reconcileLockfileRepo = await LockfileRepository.create(
+          lockfilePath,
+        );
+        const rescanRepo = new ExtensionRepository({
+          catalog: sharedCatalog,
+          lockfileRepository: reconcileLockfileRepo,
+          repoRoot: repoDir,
+          localManifestIdentity,
+        });
         rescanRepo.invalidateAll();
         const denoRuntime = new EmbeddedDenoRuntime();
         const reconciler = new ReconcileFromDiskService({
@@ -200,140 +194,131 @@ export const doctorExtensionsCommand = new Command()
         });
         const result = await reconciler.execute();
         reconcileTransitions = result.transitions;
-      } finally {
-        rescanRepo.close();
+      } catch {
+        // Best-effort — the loader will bootstrap a fresh catalog if this fails.
       }
-    } catch {
-      // Best-effort — the loader will bootstrap a fresh catalog if this fails.
-    }
 
-    const registries: ReadonlyArray<DoctorRegistryDeps> = [
-      {
-        registry: "model",
-        ensureLoaded: () => modelRegistry.ensureLoaded(),
-        resetLoadedFlag: () => modelRegistry.resetLoadedFlag(),
-      },
-      {
-        registry: "vault",
-        ensureLoaded: () => vaultTypeRegistry.ensureLoaded(),
-        resetLoadedFlag: () => vaultTypeRegistry.resetLoadedFlag(),
-      },
-      {
-        registry: "driver",
-        ensureLoaded: () => driverTypeRegistry.ensureLoaded(),
-        resetLoadedFlag: () => driverTypeRegistry.resetLoadedFlag(),
-      },
-      {
-        registry: "datastore",
-        ensureLoaded: () => datastoreTypeRegistry.ensureLoaded(),
-        resetLoadedFlag: () => datastoreTypeRegistry.resetLoadedFlag(),
-      },
-      {
-        registry: "report",
-        ensureLoaded: () => reportRegistry.ensureLoaded(),
-        resetLoadedFlag: () => reportRegistry.resetLoadedFlag(),
-      },
-    ];
-
-    // Resolve skills paths so the orphan-detection phase can walk the
-    // per-extension roots referenced by the lockfile. (lockfilePath /
-    // marker / repoPath / modelsDir / absoluteModelsDir are hoisted
-    // above the rescan call earlier in this function.)
-    const tool = resolvePrimaryTool(marker);
-    const absoluteSkillsDir = resolveSkillsDir(repoDir, tool);
-    // detectOrphanFiles wants a repo-relative skills dir so it can
-    // compare against entry.files[] paths (which are repo-relative).
-    const repoRelativeSkillsDir = relative(repoDir, absoluteSkillsDir);
-
-    const controller = new AbortController();
-    const renderer = createDoctorExtensionsRenderer(cliCtx.outputMode, {
-      verbose,
-    });
-
-    const catalogDbPath = swampPath(repoDir, "_extension_catalog.db");
-
-    const doctorLockfileRepo = await LockfileRepository.create(lockfilePath);
-    await consumeStream(
-      doctorExtensions({
-        registries,
-        lockfileRepository: doctorLockfileRepo,
-        repoDir,
-        skillsDir: repoRelativeSkillsDir,
-        abortSignal: controller.signal,
-        buildAggregateState: async () => {
-          const aggLockfileRepo = await LockfileRepository.create(
-            lockfilePath,
-          );
-          const localIdentity = readLocalManifestIdentity(repoDir);
-          const repo = new ExtensionRepository({
-            catalog: new ExtensionCatalogStore(catalogDbPath),
-            lockfileRepository: aggLockfileRepo,
-            repoRoot: repoDir,
-            localManifestIdentity: localIdentity,
-          });
-          try {
-            const extensions = repo.loadAll();
-            return buildAggregateState({ extensions, repoDir });
-          } finally {
-            repo.close();
-          }
+      const registries: ReadonlyArray<DoctorRegistryDeps> = [
+        {
+          registry: "model",
+          ensureLoaded: () => modelRegistry.ensureLoaded(),
+          resetLoadedFlag: () => modelRegistry.resetLoadedFlag(),
         },
-        getRecentTransitions: () => reconcileTransitions,
-        getWarnings: () =>
-          getExtensionLoadWarnings().map((w) => ({
-            sourcePath: w.file,
-            category: "TypeExtractionFailed",
-            message: w.error,
-          })),
-        resetWarnings: resetExtensionLoadWarnings,
-        runRepair: repair
-          ? async (aggregateReport) => {
-            // In interactive mode without --force, preview first and prompt.
-            if (needsPrompt) {
-              const preview = await repairExtensions({
-                aggregateReport,
-                deleteBySourcePaths: () => 0,
-                apply: false,
-              });
-              if (preview.operations.length === 0) {
-                return preview;
-              }
-              const n = preview.operations.length;
-              writeOutput(
-                `\n${bold(`${n} repair operation(s) planned`)} ${
-                  dim("(use --dry-run to see details without prompting)")
-                }`,
-              );
-              const confirmed = await promptConfirmation(
-                "Proceed with repair?",
-              );
-              if (!confirmed) {
-                writeOutput(dim("Repair cancelled."));
-                return preview;
-              }
-            }
-            const repairLockfileRepo = await LockfileRepository.create(
+        {
+          registry: "vault",
+          ensureLoaded: () => vaultTypeRegistry.ensureLoaded(),
+          resetLoadedFlag: () => vaultTypeRegistry.resetLoadedFlag(),
+        },
+        {
+          registry: "driver",
+          ensureLoaded: () => driverTypeRegistry.ensureLoaded(),
+          resetLoadedFlag: () => driverTypeRegistry.resetLoadedFlag(),
+        },
+        {
+          registry: "datastore",
+          ensureLoaded: () => datastoreTypeRegistry.ensureLoaded(),
+          resetLoadedFlag: () => datastoreTypeRegistry.resetLoadedFlag(),
+        },
+        {
+          registry: "report",
+          ensureLoaded: () => reportRegistry.ensureLoaded(),
+          resetLoadedFlag: () => reportRegistry.resetLoadedFlag(),
+        },
+      ];
+
+      // Resolve skills paths so the orphan-detection phase can walk the
+      // per-extension roots referenced by the lockfile. (lockfilePath /
+      // marker / repoPath / modelsDir / absoluteModelsDir are hoisted
+      // above the rescan call earlier in this function.)
+      const tool = resolvePrimaryTool(marker);
+      const absoluteSkillsDir = resolveSkillsDir(repoDir, tool);
+      // detectOrphanFiles wants a repo-relative skills dir so it can
+      // compare against entry.files[] paths (which are repo-relative).
+      const repoRelativeSkillsDir = relative(repoDir, absoluteSkillsDir);
+
+      const controller = new AbortController();
+      const renderer = createDoctorExtensionsRenderer(cliCtx.outputMode, {
+        verbose,
+      });
+
+      const doctorLockfileRepo = await LockfileRepository.create(lockfilePath);
+      await consumeStream(
+        doctorExtensions({
+          registries,
+          lockfileRepository: doctorLockfileRepo,
+          repoDir,
+          skillsDir: repoRelativeSkillsDir,
+          abortSignal: controller.signal,
+          buildAggregateState: async () => {
+            const aggLockfileRepo = await LockfileRepository.create(
               lockfilePath,
             );
+            const localIdentity = readLocalManifestIdentity(repoDir);
             const repo = new ExtensionRepository({
-              catalog: new ExtensionCatalogStore(catalogDbPath),
-              lockfileRepository: repairLockfileRepo,
+              catalog: sharedCatalog,
+              lockfileRepository: aggLockfileRepo,
               repoRoot: repoDir,
+              localManifestIdentity: localIdentity,
             });
-            const repullExtension = async (name: string): Promise<boolean> => {
-              try {
-                const serverUrl = resolveServerUrl();
-                const identity = await loadIdentity();
-                const pullLockfileRepo = await LockfileRepository.create(
-                  lockfilePath,
+            const extensions = repo.loadAll();
+            return buildAggregateState({ extensions, repoDir });
+          },
+          getRecentTransitions: () => reconcileTransitions,
+          getWarnings: () =>
+            getExtensionLoadWarnings().map((w) => ({
+              sourcePath: w.file,
+              category: "TypeExtractionFailed",
+              message: w.error,
+            })),
+          resetWarnings: resetExtensionLoadWarnings,
+          runRepair: repair
+            ? async (aggregateReport) => {
+              // In interactive mode without --force, preview first and prompt.
+              if (needsPrompt) {
+                const preview = await repairExtensions({
+                  aggregateReport,
+                  deleteBySourcePaths: () => 0,
+                  apply: false,
+                });
+                if (preview.operations.length === 0) {
+                  return preview;
+                }
+                const n = preview.operations.length;
+                writeOutput(
+                  `\n${bold(`${n} repair operation(s) planned`)} ${
+                    dim("(use --dry-run to see details without prompting)")
+                  }`,
                 );
-                const tool = resolvePrimaryTool(marker);
-                const skillsDir = resolveSkillsDir(repoDir, tool);
-                const denoRuntime = new EmbeddedDenoRuntime();
-                const pullCatalog = new ExtensionCatalogStore(catalogDbPath);
+                const confirmed = await promptConfirmation(
+                  "Proceed with repair?",
+                );
+                if (!confirmed) {
+                  writeOutput(dim("Repair cancelled."));
+                  return preview;
+                }
+              }
+              const repairLockfileRepo = await LockfileRepository.create(
+                lockfilePath,
+              );
+              const repo = new ExtensionRepository({
+                catalog: sharedCatalog,
+                lockfileRepository: repairLockfileRepo,
+                repoRoot: repoDir,
+              });
+              const repullExtension = async (
+                name: string,
+              ): Promise<boolean> => {
                 try {
+                  const serverUrl = resolveServerUrl();
+                  const identity = await loadIdentity();
+                  const pullLockfileRepo = await LockfileRepository.create(
+                    lockfilePath,
+                  );
+                  const pullTool = resolvePrimaryTool(marker);
+                  const skillsDir = resolveSkillsDir(repoDir, pullTool);
+                  const denoRuntime = new EmbeddedDenoRuntime();
                   const pullRepo = new ExtensionRepository({
-                    catalog: pullCatalog,
+                    catalog: sharedCatalog,
                     lockfileRepository: pullLockfileRepo,
                     repoRoot: repoDir,
                     localManifestIdentity: readLocalManifestIdentity(repoDir),
@@ -364,32 +349,28 @@ export const doctorExtensionsCommand = new Command()
                     },
                   );
                   return true;
-                } finally {
-                  pullCatalog.close();
+                } catch {
+                  return false;
                 }
-              } catch {
-                return false;
-              }
-            };
-            try {
+              };
               return repairExtensions({
                 aggregateReport,
                 deleteBySourcePaths: (paths) => repo.deleteBySourcePaths(paths),
                 repullExtension,
                 apply: !dryRun,
               });
-            } finally {
-              repo.close();
             }
-          }
-          : undefined,
-      }),
-      renderer.handlers(),
-    );
+            : undefined,
+        }),
+        renderer.handlers(),
+      );
 
-    cliCtx.logger.debug("doctor extensions command completed");
+      cliCtx.logger.debug("doctor extensions command completed");
 
-    if (renderer.overallStatus === "fail") {
-      Deno.exit(1);
+      if (renderer.overallStatus === "fail") {
+        Deno.exit(1);
+      }
+    } finally {
+      sharedCatalog.close();
     }
   });

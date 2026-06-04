@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assert, assertEquals } from "@std/assert";
+import { assert, assertEquals, assertThrows } from "@std/assert";
 import { DatabaseSync } from "node:sqlite";
 import { dirname, join } from "@std/path";
 import { ensureDirSync } from "@std/fs";
@@ -1726,4 +1726,74 @@ Deno.test({
       Deno.removeSync(dbPath);
     } catch { /* withTempDir handles cleanup */ }
   },
+});
+
+Deno.test("ExtensionCatalogStore: runInTransaction retries on database-is-locked then succeeds", () => {
+  const dbPath = makeTempDbPath();
+  const store = new ExtensionCatalogStore(dbPath);
+
+  let callCount = 0;
+  try {
+    store.runInTransaction(() => {
+      callCount++;
+      if (callCount <= 2) {
+        throw new Error("ERR_SQLITE_ERROR: database is locked");
+      }
+      store.upsert(makeRow({
+        type_normalized: "@org/retry-test",
+        source_path: "/repo/retry.ts",
+      }));
+    });
+
+    assert(
+      callCount === 3,
+      `fn should have been called 3 times, got ${callCount}`,
+    );
+    const row = store.findByType("@org/retry-test", "model");
+    assert(row !== undefined, "row should exist after retried transaction");
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("ExtensionCatalogStore: runInTransaction gives up after MAX_RETRIES on persistent lock", () => {
+  const dbPath = makeTempDbPath();
+  const store = new ExtensionCatalogStore(dbPath);
+
+  let callCount = 0;
+  try {
+    assertThrows(
+      () => {
+        store.runInTransaction(() => {
+          callCount++;
+          throw new Error("ERR_SQLITE_ERROR: database is locked");
+        });
+      },
+      Error,
+      "database is locked",
+    );
+    // MAX_RETRIES is 5, so fn runs 6 times (attempt 0 through 5).
+    assertEquals(callCount, 6);
+  } finally {
+    store.close();
+  }
+});
+
+Deno.test("ExtensionCatalogStore: runInTransaction throws non-lock errors immediately", () => {
+  const dbPath = makeTempDbPath();
+  const store = new ExtensionCatalogStore(dbPath);
+
+  try {
+    assertThrows(
+      () => {
+        store.runInTransaction(() => {
+          throw new Error("application-level failure");
+        });
+      },
+      Error,
+      "application-level failure",
+    );
+  } finally {
+    store.close();
+  }
 });

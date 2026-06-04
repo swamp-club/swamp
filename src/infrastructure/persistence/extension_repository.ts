@@ -280,10 +280,15 @@ export class ExtensionRepository {
    * flag for every known kind. Replaces the standalone
    * `forceCatalogRescan` helper.
    *
-   * **Best-effort semantics** — a failure to invalidate any one kind is
-   * logged and swallowed so callers (open.ts, doctor_extensions.ts)
-   * don't crash on a missing or corrupt catalog. The next loader pass
-   * bootstraps a fresh catalog from disk.
+   * **Best-effort semantics** — a failure to invalidate is logged and
+   * swallowed so callers (open.ts, doctor_extensions.ts) don't crash on
+   * a missing or corrupt catalog. The next loader pass bootstraps a
+   * fresh catalog from disk.
+   *
+   * Runs inside a transaction so all five kinds are invalidated
+   * atomically — a partial invalidation (some kinds cleared, others
+   * not) leaves the catalog in an inconsistent state that can cause
+   * BundleBuildFailed errors on the next run.
    */
   invalidateAll(): void {
     const kinds: ExtensionKind[] = [
@@ -293,12 +298,14 @@ export class ExtensionRepository {
       "datastore",
       "report",
     ];
-    for (const kind of kinds) {
-      try {
-        this.catalog.invalidate(kind);
-      } catch (error) {
-        logger.warn`invalidateAll: failed to invalidate ${kind} (${error})`;
-      }
+    try {
+      this.catalog.runInTransaction(() => {
+        for (const kind of kinds) {
+          this.catalog.invalidate(kind);
+        }
+      });
+    } catch (error) {
+      logger.warn`invalidateAll: failed to invalidate (${error})`;
     }
   }
 

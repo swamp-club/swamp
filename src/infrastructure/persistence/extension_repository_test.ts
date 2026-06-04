@@ -675,6 +675,37 @@ Deno.test("ExtensionRepository: invalidateAll on missing DB does not throw", () 
   }
 });
 
+Deno.test("ExtensionRepository: invalidateAll is atomic — all kinds or none", () => {
+  const { repoRoot, dbPath } = makeTempLayout();
+  const { repository, catalog } = makeStubRepository({ dbPath, repoRoot });
+  try {
+    // Populate all five kinds so isPopulated returns true for each.
+    const kinds = ["model", "vault", "driver", "datastore", "report"] as const;
+    for (const kind of kinds) {
+      catalog.markPopulated(kind);
+    }
+    for (const kind of kinds) {
+      assert(
+        catalog.isPopulated(kind),
+        `${kind} should be populated before invalidateAll`,
+      );
+    }
+
+    // invalidateAll should clear all five atomically.
+    repository.invalidateAll();
+
+    for (const kind of kinds) {
+      assertFalse(
+        catalog.isPopulated(kind),
+        `${kind} should not be populated after invalidateAll`,
+      );
+    }
+  } finally {
+    catalog.close();
+    Deno.removeSync(repoRoot, { recursive: true });
+  }
+});
+
 Deno.test("ExtensionRepository: invalidateAll on corrupt DB does not throw", () => {
   // Write garbage bytes into the .db file before opening — opening will
   // throw, but the standalone forceCatalogRescan was best-effort. The

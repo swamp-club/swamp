@@ -1142,21 +1142,47 @@ export class ExtensionCatalogStore {
    *
    * The `node:sqlite` driver auto-commits each statement by default, so
    * an explicit transaction is required around the multi-statement diff.
+   *
+   * Retries with exponential backoff on transient "database is locked"
+   * errors caused by cross-process contention (e.g. rapid successive
+   * `swamp doctor extensions` invocations). Uses the same retry strategy
+   * as {@link initializeWithRetry}.
    */
   runInTransaction<T>(fn: () => T): T {
-    this.db.exec("BEGIN");
-    try {
-      const result = fn();
-      this.db.exec("COMMIT");
-      return result;
-    } catch (error) {
+    const MAX_RETRIES = 5;
+    for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       try {
-        this.db.exec("ROLLBACK");
-      } catch {
-        // Best-effort: a failed ROLLBACK shouldn't shadow the original error.
+        this.db.exec("BEGIN");
+        try {
+          const result = fn();
+          this.db.exec("COMMIT");
+          return result;
+        } catch (error) {
+          try {
+            this.db.exec("ROLLBACK");
+          } catch {
+            // Best-effort: a failed ROLLBACK shouldn't shadow the original error.
+          }
+          throw error;
+        }
+      } catch (error: unknown) {
+        const isLock = error instanceof Error &&
+          /database is (locked|busy)/i.test(error.message);
+        if (isLock && attempt < MAX_RETRIES) {
+          const delay = 100 * Math.pow(2, attempt) +
+            Math.floor(Math.random() * 50);
+          Atomics.wait(
+            new Int32Array(new SharedArrayBuffer(4)),
+            0,
+            0,
+            delay,
+          );
+          continue;
+        }
+        throw error;
       }
-      throw error;
     }
+    throw new Error("runInTransaction: unreachable");
   }
 }
 
