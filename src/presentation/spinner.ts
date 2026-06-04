@@ -27,7 +27,7 @@ const INTERVAL_MS = 80;
  * No-ops when stderr is not a TTY.
  */
 export class Spinner {
-  #intervalId: number | undefined;
+  #intervalId: ReturnType<typeof setInterval> | undefined;
   #frameIndex = 0;
   #message = "";
   #encoder = new TextEncoder();

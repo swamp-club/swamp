@@ -151,7 +151,7 @@ async function runBackgroundUpdate(
     outcome: "up_to_date",
   };
 
-  let timeoutId: number;
+  let timeoutId: ReturnType<typeof setTimeout>;
   try {
     const timeout = new Promise<never>((_, reject) => {
       timeoutId = setTimeout(

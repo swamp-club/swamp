@@ -103,71 +103,77 @@ export async function withMockedCommand<T>(
     return new TextEncoder().encode(value);
   }
 
-  // @ts-ignore: replacing Deno.Command for testing
-  Deno.Command = class MockCommand {
-    #command: string;
-    #args: string[];
+  Object.defineProperty(Deno, "Command", {
+    value: class MockCommand {
+      #command: string;
+      #args: string[];
 
-    constructor(
-      command: string | URL,
-      options?: { args?: string[]; [key: string]: unknown },
-    ) {
-      this.#command = command.toString();
-      this.#args = (options?.args as string[]) ?? [];
-    }
+      constructor(
+        command: string | URL,
+        options?: { args?: string[]; [key: string]: unknown },
+      ) {
+        this.#command = command.toString();
+        this.#args = (options?.args as string[]) ?? [];
+      }
 
-    output(): Promise<Deno.CommandOutput> {
-      calls.push({
-        command: this.#command,
-        args: this.#args,
-        timestamp: Date.now(),
-      });
+      output(): Promise<Deno.CommandOutput> {
+        calls.push({
+          command: this.#command,
+          args: this.#args,
+          timestamp: Date.now(),
+        });
 
-      const getOutput = async (): Promise<CommandOutput> => {
-        if (outputs) {
-          if (callIndex >= outputs.length) {
-            throw new Error(
-              `withMockedCommand: no more outputs (got ${
-                callIndex + 1
-              } calls, ` +
-                `only ${outputs.length} outputs queued). ` +
-                `Last call: ${this.#command} ${this.#args.join(" ")}`,
-            );
+        const getOutput = async (): Promise<CommandOutput> => {
+          if (outputs) {
+            if (callIndex >= outputs.length) {
+              throw new Error(
+                `withMockedCommand: no more outputs (got ${
+                  callIndex + 1
+                } calls, ` +
+                  `only ${outputs.length} outputs queued). ` +
+                  `Last call: ${this.#command} ${this.#args.join(" ")}`,
+              );
+            }
+            return outputs[callIndex++];
           }
-          return outputs[callIndex++];
-        }
-        return await handler!(this.#command, this.#args);
-      };
+          return await handler!(this.#command, this.#args);
+        };
 
-      return getOutput().then((out) => ({
-        code: out.code,
-        signal: null,
-        success: out.code === 0,
-        stdout: toBytes(out.stdout),
-        stderr: toBytes(out.stderr),
-      })) as Promise<Deno.CommandOutput>;
-    }
+        return getOutput().then((out) => ({
+          code: out.code,
+          signal: null,
+          success: out.code === 0,
+          stdout: toBytes(out.stdout),
+          stderr: toBytes(out.stderr),
+        })) as Promise<Deno.CommandOutput>;
+      }
 
-    spawn(): Deno.ChildProcess {
-      throw new Error(
-        "withMockedCommand: spawn() is not supported in mock mode. " +
-          "Use output() instead.",
-      );
-    }
+      spawn(): Deno.ChildProcess {
+        throw new Error(
+          "withMockedCommand: spawn() is not supported in mock mode. " +
+            "Use output() instead.",
+        );
+      }
 
-    outputSync(): Deno.CommandOutput {
-      throw new Error(
-        "withMockedCommand: outputSync() is not supported in mock mode. " +
-          "Use output() instead.",
-      );
-    }
-  };
+      outputSync(): Deno.CommandOutput {
+        throw new Error(
+          "withMockedCommand: outputSync() is not supported in mock mode. " +
+            "Use output() instead.",
+        );
+      }
+    },
+    configurable: true,
+    writable: true,
+  });
 
   try {
     const result = await fn();
     return { result, calls };
   } finally {
-    // @ts-ignore: restoring original Deno.Command
-    Deno.Command = OriginalCommand;
+    Object.defineProperty(Deno, "Command", {
+      value: OriginalCommand,
+      configurable: true,
+      writable: true,
+    });
   }
 }

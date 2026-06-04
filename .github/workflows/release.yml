@@ -28,34 +28,10 @@ jobs:
         with:
           ref: main
 
-      # CANARY-BRIDGE: install the host Deno used by `deno compile` directly
-      # from the canary SHA pinned in scripts/deno_canary.txt. denoland/setup-deno
-      # only accepts `canary` (latest, non-reproducible) — passing `canary-<sha>`
-      # is parsed as a semver range and fails with "The passed version range is
-      # not valid". We fetch the artifact ourselves to keep the pin reproducible.
-      # Without pinning the host, `deno compile` runs under stable v2.x and
-      # bakes `denort-<stable>` into the swamp CLI binary, which is the runtime
-      # that executes workflows (and panics on the tls_wrap.rs unwrap until
-      # v2.8.0 ships). See scripts/deno_canary.txt for the back-out checklist.
-      - name: Install pinned canary Deno
-        run: |
-          sha=$(grep -v '^[[:space:]]*#' scripts/deno_canary.txt | grep -v '^[[:space:]]*$' | head -n1 | tr -d '[:space:]')
-          if [ -z "$sha" ]; then
-            echo "scripts/deno_canary.txt has no SHA" >&2
-            exit 1
-          fi
-          echo "Pinned Deno canary: $sha"
-
-          install_dir="$RUNNER_TEMP/deno-canary"
-          mkdir -p "$install_dir"
-          url="https://dl.deno.land/canary/${sha}/deno-x86_64-unknown-linux-gnu.zip"
-          echo "Downloading $url"
-          curl -fsSL "$url" -o "$install_dir/deno.zip"
-          unzip -q "$install_dir/deno.zip" -d "$install_dir"
-          chmod +x "$install_dir/deno"
-
-          echo "$install_dir" >> "$GITHUB_PATH"
-          "$install_dir/deno" --version
+      - name: Setup Deno
+        uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.8.x
 
       - name: Generate version
         id: version
