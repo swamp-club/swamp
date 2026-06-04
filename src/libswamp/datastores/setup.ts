@@ -59,6 +59,7 @@ export interface DatastoreSetupData {
   directoriesMigrated: string[];
   errors: string[];
   retryHint?: string;
+  namespace?: string;
 }
 
 export type DatastoreSetupEvent =
@@ -484,8 +485,13 @@ export async function* datastoreSetupExtension(
       if (errors.length === 0 && ns && input.repoId) {
         const datastorePath = provider.resolveDatastorePath(input.repoDir);
         if (provider.registerNamespace) {
-          await provider.registerNamespace(datastorePath, ns, input.repoId);
-          ctx.logger.info`Registered namespace ${ns} in datastore`;
+          try {
+            await provider.registerNamespace(datastorePath, ns, input.repoId);
+            ctx.logger.info`Registered namespace ${ns} in datastore`;
+          } catch (error) {
+            const msg = error instanceof Error ? error.message : String(error);
+            errors.push(`Namespace registration failed: ${msg}`);
+          }
         } else {
           ctx.logger
             .warn`Datastore backend does not support namespace registration — conflict detection is unavailable`;
@@ -501,6 +507,7 @@ export async function* datastoreSetupExtension(
           bytesCopied: 0,
           directoriesMigrated: [],
           errors,
+          ...(ns ? { namespace: ns } : {}),
           ...(errors.length > 0
             ? {
               retryHint:

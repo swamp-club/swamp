@@ -964,6 +964,89 @@ Deno.test("datastoreSetupExtension: skips registerNamespace when repoId is missi
   );
 });
 
+Deno.test("datastoreSetupExtension: includes namespace in completed data", async () => {
+  ensureTestExtensionType("test-ext-ns-completed");
+  const deps = makeDeps();
+  const input = makeExtensionInput({
+    type: "test-ext-ns-completed",
+    namespace: "infra",
+    skipMigration: true,
+  });
+
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupExtension(createLibSwampContext(), deps, input),
+  );
+
+  const completed = events[events.length - 1] as Extract<
+    DatastoreSetupEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.kind, "completed");
+  assertEquals(completed.data.namespace, "infra");
+});
+
+Deno.test("datastoreSetupExtension: omits namespace from completed data when not set", async () => {
+  ensureTestExtensionType("test-ext-ns-completed-none");
+  const deps = makeDeps();
+  const input = makeExtensionInput({
+    type: "test-ext-ns-completed-none",
+    skipMigration: true,
+  });
+
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupExtension(createLibSwampContext(), deps, input),
+  );
+
+  const completed = events[events.length - 1] as Extract<
+    DatastoreSetupEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.kind, "completed");
+  assertEquals(completed.data.namespace, undefined);
+});
+
+Deno.test("datastoreSetupExtension: registerNamespace failure surfaces in errors", async () => {
+  const NS_REG_FAIL_TYPE = "test-ext-ns-reg-fail";
+  if (!datastoreTypeRegistry.has(NS_REG_FAIL_TYPE)) {
+    datastoreTypeRegistry.register({
+      type: NS_REG_FAIL_TYPE,
+      name: "NS Register Fail Test",
+      description: "Test namespace registration failure",
+      isBuiltIn: false,
+      createProvider: () => ({
+        ...createStubProvider(),
+        registerNamespace: () => {
+          return Promise.reject(new Error("permission denied"));
+        },
+      }),
+    });
+  }
+
+  const deps = makeDeps();
+  const input = makeExtensionInput({
+    type: NS_REG_FAIL_TYPE,
+    namespace: "infra",
+    repoId: "repo-123",
+    skipMigration: true,
+  });
+
+  const events = await collect<DatastoreSetupEvent>(
+    datastoreSetupExtension(createLibSwampContext(), deps, input),
+  );
+
+  const completed = events[events.length - 1] as Extract<
+    DatastoreSetupEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.kind, "completed");
+  assertEquals(completed.data.errors.length, 1);
+  assertStringIncludes(
+    completed.data.errors[0],
+    "Namespace registration failed",
+  );
+  assertStringIncludes(completed.data.errors[0], "permission denied");
+});
+
 Deno.test("datastoreSetupExtension: rejects invalid namespace slug", async () => {
   ensureTestExtensionType("test-ext-ns-invalid");
   const deps = makeDeps();

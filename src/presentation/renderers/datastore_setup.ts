@@ -51,6 +51,9 @@ class LogDatastoreSetupRenderer implements Renderer<DatastoreSetupEvent> {
         if (data.path) {
           lines.push(`  Path:     ${data.path}`);
         }
+        if (data.namespace) {
+          lines.push(`  Namespace: ${data.namespace}`);
+        }
         lines.push(
           `  Files:    ${data.filesCopied} copied (${
             formatBytes(data.bytesCopied)
