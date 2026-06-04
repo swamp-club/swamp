@@ -261,16 +261,23 @@ async function dirSize(
 ): Promise<{ fileCount: number; totalBytes: number }> {
   let fileCount = 0;
   let totalBytes = 0;
-  for await (
-    const entry of walk(path, { includeFiles: true, includeDirs: false })
-  ) {
-    fileCount++;
-    try {
-      const stat = await Deno.stat(entry.path);
-      totalBytes += stat.size;
-    } catch {
-      // Skip files that can't be stat'd
+  try {
+    for await (
+      const entry of walk(path, { includeFiles: true, includeDirs: false })
+    ) {
+      fileCount++;
+      try {
+        const stat = await Deno.stat(entry.path);
+        totalBytes += stat.size;
+      } catch {
+        // Skip files that can't be stat'd
+      }
     }
+  } catch (e) {
+    if (e instanceof Deno.errors.NotFound) {
+      return { fileCount: 0, totalBytes: 0 };
+    }
+    throw e;
   }
   return { fileCount, totalBytes };
 }
@@ -285,7 +292,7 @@ function buildMigrateDeps(
   const isExtension = isCustomDatastoreConfig(
     datastoreConfig as Parameters<typeof isCustomDatastoreConfig>[0],
   );
-  const catalogStore = createCatalogStore(repoDir);
+  let catalogStore: ReturnType<typeof createCatalogStore> | null = null;
 
   return {
     getDatastorePath: () => dsBasePath,
@@ -303,6 +310,7 @@ function buildMigrateDeps(
       Deno.rename(source, destination),
     ensureDir: (path: string) => ensureDir(path),
     invalidateCatalog: () => {
+      catalogStore = createCatalogStore(repoDir);
       catalogStore.invalidate();
       catalogStore.close();
     },

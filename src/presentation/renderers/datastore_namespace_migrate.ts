@@ -21,6 +21,7 @@ import { bold, dim, green, yellow } from "@std/fmt/colors";
 import type {
   EventHandlers,
   NamespaceMigrateEvent,
+  NamespaceMigratePreviewData,
 } from "../../libswamp/mod.ts";
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
@@ -60,7 +61,7 @@ class LogNamespaceMigrateRenderer implements Renderer<NamespaceMigrateEvent> {
             formatBytes(e.data.totalBytes)
           }`,
           "",
-          yellow("Run with --confirm to execute this migration."),
+          yellow("Add --confirm to execute this migration."),
         );
 
         writeOutput(lines.join("\n"));
@@ -114,15 +115,19 @@ class LogNamespaceMigrateRenderer implements Renderer<NamespaceMigrateEvent> {
 }
 
 class JsonNamespaceMigrateRenderer implements Renderer<NamespaceMigrateEvent> {
+  #previewData: NamespaceMigratePreviewData | null = null;
+
   handlers(): EventHandlers<NamespaceMigrateEvent> {
     return {
       preview: (e) => {
-        writeOutput(JSON.stringify(e.data, null, 2));
+        this.#previewData = e.data;
       },
       progress: () => {},
       completed: (e) => {
         if (e.data.migratedDirectories.length > 0) {
           writeOutput(JSON.stringify(e.data, null, 2));
+        } else {
+          writeOutput(JSON.stringify(this.#previewData, null, 2));
         }
       },
       error: (e) => {
