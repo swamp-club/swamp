@@ -30,6 +30,7 @@ import {
   verifyMigration,
 } from "../../domain/datastore/datastore_migration_service.ts";
 import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
+import { createNamespace } from "../../domain/data/namespace.ts";
 import { UserError } from "../../domain/errors.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { collapseEnvVars } from "../../infrastructure/persistence/env_path.ts";
@@ -58,6 +59,7 @@ export interface DatastoreSetupData {
   directoriesMigrated: string[];
   errors: string[];
   retryHint?: string;
+  namespace?: string;
 }
 
 export type DatastoreSetupEvent =
@@ -341,6 +343,23 @@ export async function* datastoreSetupExtension(
       );
       const ns = input.namespace;
 
+      if (ns) {
+        try {
+          createNamespace(ns);
+        } catch (error) {
+          yield {
+            kind: "error",
+            error: {
+              code: "validation_failed",
+              message: `Invalid namespace: ${
+                error instanceof Error ? error.message : String(error)
+              }`,
+            },
+          };
+          return;
+        }
+      }
+
       let migrationResult:
         | {
           filesCopied: number;
@@ -457,7 +476,26 @@ export async function* datastoreSetupExtension(
           ...(input.hydrationStrategy
             ? { hydrationStrategy: input.hydrationStrategy }
             : {}),
+          ...(ns ? { namespace: ns } : {}),
         });
+      }
+
+      // Register namespace manifest after config is persisted.
+      // provider.registerNamespace handles conflict detection internally.
+      if (errors.length === 0 && ns && input.repoId) {
+        const datastorePath = provider.resolveDatastorePath(input.repoDir);
+        if (provider.registerNamespace) {
+          try {
+            await provider.registerNamespace(datastorePath, ns, input.repoId);
+            ctx.logger.info`Registered namespace ${ns} in datastore`;
+          } catch (error) {
+            const msg = error instanceof Error ? error.message : String(error);
+            errors.push(`Namespace registration failed: ${msg}`);
+          }
+        } else {
+          ctx.logger
+            .warn`Datastore backend does not support namespace registration — conflict detection is unavailable`;
+        }
       }
 
       yield {
@@ -469,6 +507,7 @@ export async function* datastoreSetupExtension(
           bytesCopied: 0,
           directoriesMigrated: [],
           errors,
+          ...(ns ? { namespace: ns } : {}),
           ...(errors.length > 0
             ? {
               retryHint:
