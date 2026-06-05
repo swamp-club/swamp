@@ -203,6 +203,15 @@ export {
   type UnresolvedDefinition,
 } from "./models/doctor_secrets.ts";
 export {
+  createDoctorVaultsDeps,
+  doctorVaults,
+  type DoctorVaultsData,
+  type DoctorVaultsDeps,
+  type DoctorVaultsEvent,
+  type UnresolvedVaultDefinition,
+  type VaultRequiredFinding,
+} from "./models/doctor_vaults.ts";
+export {
   modelOutputSearch,
   type ModelOutputSearchData,
   type ModelOutputSearchDeps,

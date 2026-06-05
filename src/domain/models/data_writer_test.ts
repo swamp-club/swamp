@@ -23,6 +23,7 @@ import {
   createFileWriterFactory,
   createResourceReader,
   createResourceWriter,
+  modelRequiresVault,
   processSensitiveResourceData,
   resolveVaultRefsInData,
   sanitizeVaultKey,
@@ -1280,4 +1281,124 @@ Deno.test("processSensitiveResourceData: handles namespaced model types (#447)",
 
   const stored = await vaultService.get("test-vault", expectedKey);
   assertEquals(stored, "-----BEGIN RSA PRIVATE KEY-----");
+});
+
+// --- modelRequiresVault tests ---
+
+Deno.test("modelRequiresVault: returns false for undefined resources", () => {
+  assertEquals(modelRequiresVault(undefined), false);
+});
+
+Deno.test("modelRequiresVault: returns false for resources without sensitive fields", () => {
+  const resources: Record<string, ResourceOutputSpec> = {
+    output: {
+      schema: z.object({ name: z.string(), count: z.number() }),
+      lifetime: "infinite",
+      garbageCollection: 5,
+    },
+  };
+  assertEquals(modelRequiresVault(resources), false);
+});
+
+Deno.test("modelRequiresVault: returns true for schema with sensitive metadata", () => {
+  const resources: Record<string, ResourceOutputSpec> = {
+    creds: {
+      schema: z.object({
+        apiKey: z.string().meta({ sensitive: true }),
+        endpoint: z.string(),
+      }),
+      lifetime: "infinite",
+      garbageCollection: 5,
+    },
+  };
+  assertEquals(modelRequiresVault(resources), true);
+});
+
+Deno.test("modelRequiresVault: returns true for sensitiveOutput flag", () => {
+  const resources: Record<string, ResourceOutputSpec> = {
+    secret: {
+      schema: z.object({ data: z.string() }),
+      lifetime: "infinite",
+      garbageCollection: 5,
+      sensitiveOutput: true,
+    },
+  };
+  assertEquals(modelRequiresVault(resources), true);
+});
+
+Deno.test("modelRequiresVault: returns false when no spec is sensitive", () => {
+  const resources: Record<string, ResourceOutputSpec> = {
+    a: {
+      schema: z.object({ x: z.string() }),
+      lifetime: "infinite",
+      garbageCollection: 5,
+    },
+    b: {
+      schema: z.object({ y: z.number() }),
+      lifetime: "infinite",
+      garbageCollection: 5,
+    },
+  };
+  assertEquals(modelRequiresVault(resources), false);
+});
+
+// --- createResourceWriter defense-in-depth tests ---
+
+Deno.test("createResourceWriter: throws when sensitive fields present but no vaultService", async () => {
+  const resources: Record<string, ResourceOutputSpec> = {
+    creds: {
+      schema: z.object({
+        apiKey: z.string().meta({ sensitive: true }),
+        endpoint: z.string(),
+      }),
+      lifetime: "infinite",
+      garbageCollection: 5,
+    },
+  };
+
+  const { writeResource } = createResourceWriter(
+    createMockRepo(),
+    modelType,
+    modelId,
+    resources,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined,
+    undefined, // no vaultService
+    "create",
+  );
+
+  await assertRejects(
+    () =>
+      writeResource("creds", "main", {
+        apiKey: "secret-value",
+        endpoint: "https://example.com",
+      }),
+    Error,
+    "no vault is configured",
+  );
+});
+
+Deno.test("createResourceWriter: succeeds for non-sensitive resources without vaultService", async () => {
+  const resources: Record<string, ResourceOutputSpec> = {
+    output: {
+      schema: z.object({ name: z.string() }),
+      lifetime: "infinite",
+      garbageCollection: 5,
+    },
+  };
+
+  const { writeResource } = createResourceWriter(
+    createMockRepo(),
+    modelType,
+    modelId,
+    resources,
+  );
+
+  const handle = await writeResource("output", "main", {
+    name: "test",
+  });
+  assertEquals(handle.name, "main");
 });
