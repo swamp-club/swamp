@@ -1,0 +1,106 @@
+[
+  {
+    "query": "Search for model types that handle payments",
+    "expected_guide": "model"
+  },
+  {
+    "query": "Run the validate method on the payment-processor model",
+    "expected_guide": "model"
+  },
+  {
+    "query": "How do I delete a model definition?",
+    "expected_guide": "model"
+  },
+  {
+    "query": "How do I define a workflow in YAML that orchestrates multiple models?",
+    "expected_guide": "workflow"
+  },
+  {
+    "query": "Show me the run history for the deployment workflow",
+    "expected_guide": "workflow"
+  },
+  {
+    "query": "Validate that my workflow doesn't have circular dependencies",
+    "expected_guide": "workflow"
+  },
+  {
+    "query": "Show me all the model data currently stored in swamp",
+    "expected_guide": "data"
+  },
+  {
+    "query": "Find all data where the status attribute is failed",
+    "expected_guide": "data"
+  },
+  {
+    "query": "Run garbage collection to clean up expired data",
+    "expected_guide": "data"
+  },
+  {
+    "query": "How do I store my database password securely in swamp?",
+    "expected_guide": "vault"
+  },
+  {
+    "query": "List all secrets stored in the vault",
+    "expected_guide": "vault"
+  },
+  {
+    "query": "How do I create a custom model using TypeScript and Zod?",
+    "expected_guide": "extension"
+  },
+  {
+    "query": "How do I implement a custom DatastoreProvider for MongoDB?",
+    "expected_guide": "extension"
+  },
+  {
+    "query": "How do I improve my extension's quality score?",
+    "expected_guide": "extension"
+  },
+  {
+    "query": "How do I smoke test my extension model before pushing?",
+    "expected_guide": "extension"
+  },
+  {
+    "query": "Publish my extension to the registry",
+    "expected_guide": "extension-publish"
+  },
+  {
+    "query": "How do I swamp extension push my model?",
+    "expected_guide": "extension-publish"
+  },
+  {
+    "query": "I want to deprecate my old extension in favor of a new one",
+    "expected_guide": "extension-publish"
+  },
+  {
+    "query": "How do I initialize a new swamp repository?",
+    "expected_guide": "repo"
+  },
+  {
+    "query": "How do I install swamp in a GitHub Actions CI pipeline?",
+    "expected_guide": "repo"
+  },
+  {
+    "query": "Run a report to show all workflow executions from last week",
+    "expected_guide": "report"
+  },
+  {
+    "query": "Filter reports by label when running a model method",
+    "expected_guide": "report"
+  },
+  {
+    "query": "The datastore sync is hanging and timing out",
+    "expected_guide": "troubleshooting"
+  },
+  {
+    "query": "swamp model get is giving me 'Error: ENOENT: no such file or directory'",
+    "expected_guide": "troubleshooting"
+  },
+  {
+    "query": "File a bug report — swamp vault get crashes with a segfault",
+    "expected_guide": "issue"
+  },
+  {
+    "query": "Submit a feature request for better error messages",
+    "expected_guide": "issue"
+  }
+]

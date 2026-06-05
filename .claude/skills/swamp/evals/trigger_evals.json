@@ -1,0 +1,182 @@
+[
+  {
+    "query": "Search for model types that handle payments",
+    "should_trigger": true,
+    "note": "model domain — type search"
+  },
+  {
+    "query": "Run the validate method on the payment-processor model with amount=100",
+    "should_trigger": true,
+    "note": "model domain — method execution"
+  },
+  {
+    "query": "How do I create an input for the validate method?",
+    "should_trigger": true,
+    "note": "model domain — create input"
+  },
+  {
+    "query": "How do I define a workflow in YAML that orchestrates multiple models?",
+    "should_trigger": true,
+    "note": "workflow domain — workflow creation"
+  },
+  {
+    "query": "Run the production workflow and monitor for failures",
+    "should_trigger": true,
+    "note": "workflow domain — workflow execution"
+  },
+  {
+    "query": "Show me the run history for the deployment workflow",
+    "should_trigger": true,
+    "note": "workflow domain — run history"
+  },
+  {
+    "query": "Show me all the model data currently stored in swamp",
+    "should_trigger": true,
+    "note": "data domain — list data"
+  },
+  {
+    "query": "Find all data where the status attribute is failed",
+    "should_trigger": true,
+    "note": "data domain — CEL query"
+  },
+  {
+    "query": "Run garbage collection to clean up expired data",
+    "should_trigger": true,
+    "note": "data domain — gc"
+  },
+  {
+    "query": "How do I store my database password securely in swamp?",
+    "should_trigger": true,
+    "note": "vault domain — store secret"
+  },
+  {
+    "query": "How do I reference a vault secret inside a workflow step?",
+    "should_trigger": true,
+    "note": "vault domain — vault expressions"
+  },
+  {
+    "query": "How do I create a custom model using TypeScript and Zod?",
+    "should_trigger": true,
+    "note": "extension domain — create model"
+  },
+  {
+    "query": "How do I implement a custom DatastoreProvider for MongoDB?",
+    "should_trigger": true,
+    "note": "extension domain — custom datastore"
+  },
+  {
+    "query": "How do I improve my extension's quality score?",
+    "should_trigger": true,
+    "note": "extension domain — quality scorecard"
+  },
+  {
+    "query": "Publish my extension to the registry",
+    "should_trigger": true,
+    "note": "extension-publish domain"
+  },
+  {
+    "query": "How do I swamp extension push my model?",
+    "should_trigger": true,
+    "note": "extension-publish domain — push command"
+  },
+  {
+    "query": "How do I initialize a new swamp repository?",
+    "should_trigger": true,
+    "note": "repo domain — init"
+  },
+  {
+    "query": "How do I install swamp in a GitHub Actions CI pipeline?",
+    "should_trigger": true,
+    "note": "repo domain — CI integration"
+  },
+  {
+    "query": "Release a stuck lock that's blocking datastore writes",
+    "should_trigger": true,
+    "note": "repo domain — stuck lock"
+  },
+  {
+    "query": "Run a report to show all workflow executions from last week",
+    "should_trigger": true,
+    "note": "report domain — run report"
+  },
+  {
+    "query": "Filter reports by label when running a model method",
+    "should_trigger": true,
+    "note": "report domain — report filtering"
+  },
+  {
+    "query": "Debug why my deploy-infra workflow is failing on the second step",
+    "should_trigger": true,
+    "note": "troubleshooting domain — workflow error"
+  },
+  {
+    "query": "The datastore sync is hanging and timing out",
+    "should_trigger": true,
+    "note": "troubleshooting domain — performance"
+  },
+  {
+    "query": "File a bug report — swamp vault get crashes with a segfault",
+    "should_trigger": true,
+    "note": "issue domain — bug report"
+  },
+  {
+    "query": "Submit a feature request for better error messages",
+    "should_trigger": true,
+    "note": "issue domain — feature request"
+  },
+  {
+    "query": "I'm new to swamp, help me get started",
+    "should_trigger": false,
+    "note": "Onboarding -> swamp-getting-started skill"
+  },
+  {
+    "query": "Just installed swamp, what do I do?",
+    "should_trigger": false,
+    "note": "Onboarding -> swamp-getting-started skill"
+  },
+  {
+    "query": "How do CEL expressions work for referencing model data?",
+    "should_trigger": true,
+    "note": "cross-domain — CEL expressions"
+  },
+  {
+    "query": "Help me plan the architecture for a new feature",
+    "should_trigger": false,
+    "note": "Architecture planning -> ddd skill"
+  },
+  {
+    "query": "Create and submit a pull request with my fix",
+    "should_trigger": false,
+    "note": "Creating/submitting PRs -> github-pr skill"
+  },
+  {
+    "query": "Format the output of this CLI command",
+    "should_trigger": false,
+    "note": "Formatting output -> terminal-output skill"
+  },
+  {
+    "query": "create a workflow to run these three steps for me",
+    "should_trigger": false,
+    "note": "Generic agent task plan, not a swamp workflow -> Claude Code Workflow tool"
+  },
+  {
+    "query": "schedule a recurring agent to run nightly",
+    "should_trigger": false,
+    "note": "Cron/remote-agent scheduling, not a swamp workflow -> CronCreate"
+  },
+  {
+    "query": "set up a worktree workflow",
+    "should_trigger": false,
+    "note": "Worktree-based agent task, not a swamp workflow -> EnterWorktree"
+  },
+  {
+    "query": "How do I write a React component for this page?",
+    "should_trigger": false,
+    "note": "General coding, not swamp"
+  },
+  {
+    "query": "What's the best way to parse JSON in Python?",
+    "should_trigger": false,
+    "note": "General coding, not swamp"
+  }
+]
