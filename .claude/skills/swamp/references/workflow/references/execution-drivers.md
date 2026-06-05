@@ -75,4 +75,4 @@ interfere with each other's file system or processes.
 ## Design Reference
 
 For architecture details, Docker driver configuration schema, and implementation
-files, see [design/execution-drivers.md](design/execution-drivers.md).
+files, see `design/execution-drivers.md` in the swamp source repo.

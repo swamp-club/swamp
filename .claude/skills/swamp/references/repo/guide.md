@@ -382,6 +382,6 @@ pointing at your local development copy — your local version loads instead.
 - **Troubleshooting**: See
   [references/troubleshooting.md](references/troubleshooting.md) for config
   problems and recovery procedures
-- **Repository design**: See [design/repo.md](design/repo.md)
-- **Model structure**: See [design/models.md](design/models.md)
-- **Datastore design**: See [design/datastores.md](design/datastores.md)
+- **Repository design**: See `design/repo.md` in the swamp source repo
+- **Model structure**: See `design/models.md` in the swamp source repo
+- **Datastore design**: See `design/datastores.md` in the swamp source repo

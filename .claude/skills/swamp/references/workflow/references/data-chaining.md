@@ -433,7 +433,7 @@ named instances. Instead of maintaining 4 separate subnet model definitions, you
 define one `prod-subnet` model and call it 4 times with different inputs.
 
 For a complete walkthrough, see the
-[swamp-model scenarios](../../swamp-model/references/scenarios.md#scenario-5-factory-pattern-for-model-reuse).
+[model scenarios](../../model/references/scenarios.md#scenario-5-factory-pattern-for-model-reuse).
 
 ### Calling One Model Multiple Times
 

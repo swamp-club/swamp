@@ -196,7 +196,7 @@ actual data bytes, then parse as needed (e.g.
 
 The `dataHandles` array contains handles returned by `writeResource` /
 `createFileWriter` during method execution. See the
-[extension model API reference](../swamp-extension-model/references/api.md#datahandle-structure)
+[extension model API reference](../../extension/references/model/api.md#datahandle-structure)
 for the full structure.
 
 **`metadata` sub-fields:**
