@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertRejects } from "@std/assert";
-import { join } from "@std/path";
+import { join, resolve } from "@std/path";
 import {
   parseDatastoreEnvVar,
   RENAMED_DATASTORE_TYPES,
@@ -382,28 +382,30 @@ Deno.test("resolveCachePath: concrete return is used as-is", async () => {
 // ============================================================================
 
 Deno.test("parseDatastoreEnvVar: resolves relative filesystem path against repoDir", async () => {
+  const repoDir = resolve("/my/repo");
   const config = await parseDatastoreEnvVar(
     "filesystem:.swamp",
     undefined,
-    "/my/repo",
+    repoDir,
   );
   assertEquals(config.type, "filesystem");
   if (!isCustomDatastoreConfig(config) && config.type === "filesystem") {
-    assertPathEquals(config.path, "/my/repo/.swamp");
+    assertPathEquals(config.path, resolve(repoDir, ".swamp"));
   }
 });
 
 Deno.test("resolveDatastoreConfig: resolves relative YAML path against repoDir", async () => {
+  const repoDir = resolve("/my/repo");
   const marker: RepoMarkerData = {
     swampVersion: "0.1.0",
     initializedAt: "2024-01-01",
     repoId: "test-repo",
     datastore: { type: "filesystem", path: ".swamp" },
   };
-  const config = await resolveDatastoreConfig(marker, undefined, "/my/repo");
+  const config = await resolveDatastoreConfig(marker, undefined, repoDir);
   assertEquals(config.type, "filesystem");
   if (!isCustomDatastoreConfig(config) && config.type === "filesystem") {
-    assertPathEquals(config.path, "/my/repo/.swamp");
+    assertPathEquals(config.path, resolve(repoDir, ".swamp"));
   }
 });
 
