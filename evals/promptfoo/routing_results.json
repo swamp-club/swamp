@@ -1,0 +1,2693 @@
+{
+  "evalId": "eval-6u8-2026-06-05T18:20:43",
+  "results": {
+    "version": 3,
+    "timestamp": "2026-06-05T18:20:43.451Z",
+    "prompts": [
+      {
+        "id": "8868fc514e5f7bd1a350480c5a825cd0f5b47b6c0c8da0ca62be71158f638c23",
+        "raw": "{{query}}",
+        "label": "{{query}}",
+        "provider": "anthropic:messages:claude-opus-4-6",
+        "metrics": {
+          "score": 26,
+          "testPassCount": 26,
+          "testFailCount": 0,
+          "testErrorCount": 0,
+          "assertPassCount": 26,
+          "assertFailCount": 0,
+          "totalLatencyMs": 59647,
+          "tokenUsage": {
+            "prompt": 38141,
+            "completion": 1315,
+            "cached": 0,
+            "total": 39456,
+            "numRequests": 26,
+            "completionDetails": {
+              "reasoning": 0,
+              "acceptedPrediction": 0,
+              "rejectedPrediction": 0,
+              "cacheReadInputTokens": 0,
+              "cacheCreationInputTokens": 0
+            },
+            "assertions": {
+              "total": 0,
+              "prompt": 0,
+              "completion": 0,
+              "cached": 0,
+              "numRequests": 0,
+              "completionDetails": {
+                "reasoning": 0,
+                "acceptedPrediction": 0,
+                "rejectedPrediction": 0,
+                "cacheReadInputTokens": 0,
+                "cacheCreationInputTokens": 0
+              }
+            }
+          },
+          "namedScores": {},
+          "namedScoresCount": {},
+          "namedScoreWeights": {},
+          "cost": 0.22358
+        }
+      }
+    ],
+    "results": [
+      {
+        "cost": 0.00844,
+        "gradingResult": {
+          "pass": true,
+          "score": 1,
+          "reason": "All assertions passed",
+          "namedScores": {},
+          "tokensUsed": {
+            "total": 0,
+            "prompt": 0,
+            "completion": 0,
+            "cached": 0,
+            "numRequests": 0
+          },
+          "componentResults": [
+            {
+              "pass": true,
+              "score": 1,
+              "reason": "Assertion passed",
+              "assertion": {
+                "type": "javascript",
+                "value": "const needle = 'load_model_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+              }
+            }
+          ]
+        },
+        "id": "3ca0b882-a595-45d7-a501-d770cd1b628c",
+        "latencyMs": 3027,
+        "namedScores": {},
+        "prompt": {
+          "raw": "Search for model types that handle payments",
+          "label": "{{query}}",
+          "config": {}
+        },
+        "promptId": "8868fc514e5f7bd1a350480c5a825cd0f5b47b6c0c8da0ca62be71158f638c23",
+        "promptIdx": 0,
+        "provider": {
+          "id": "anthropic:messages:claude-opus-4-6",
+          "label": ""
+        },
+        "response": {
+          "output": "{\"type\":\"tool_use\",\"id\":\"toolu_014H7vzEYZ2KNCTfCndMc3nB\",\"name\":\"load_model_guide\",\"input\":{\"query\":\"search model types that handle payments\"},\"caller\":{\"type\":\"direct\"}}",
+          "tokenUsage": {
+            "total": 1508,
+            "prompt": 1463,
+            "completion": 45,
+            "completionDetails": {
+              "cacheReadInputTokens": 0,
+              "cacheCreationInputTokens": 0
+            }
+          },
+          "finishReason": "tool_calls",
+          "cost": 0.00844
+        },
+        "score": 1,
+        "success": true,
+        "testCase": {
+          "description": "[model] Search for model types that handle payments",
+          "vars": {
+            "query": "Search for model types that handle payments"
+          },
+          "assert": [
+            {
+              "type": "javascript",
+              "value": "const needle = 'load_model_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+            }
+          ],
+          "options": {},
+          "metadata": {}
+        },
+        "testIdx": 0,
+        "vars": {
+          "query": "Search for model types that handle payments"
+        },
+        "metadata": {
+          "_promptfooFileMetadata": {}
+        },
+        "failureReason": 0
+      },
+      {
+        "cost": 0.008555,
+        "gradingResult": {
+          "pass": true,
+          "score": 1,
+          "reason": "All assertions passed",
+          "namedScores": {},
+          "tokensUsed": {
+            "total": 0,
+            "prompt": 0,
+            "completion": 0,
+            "cached": 0,
+            "numRequests": 0
+          },
+          "componentResults": [
+            {
+              "pass": true,
+              "score": 1,
+              "reason": "Assertion passed",
+              "assertion": {
+                "type": "javascript",
+                "value": "const needle = 'load_model_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+              }
+            }
+          ]
+        },
+        "id": "03387278-af98-4a26-a54c-49a764abc2e4",
+        "latencyMs": 2097,
+        "namedScores": {},
+        "prompt": {
+          "raw": "Run the validate method on the payment-processor model",
+          "label": "{{query}}",
+          "config": {}
+        },
+        "promptId": "8868fc514e5f7bd1a350480c5a825cd0f5b47b6c0c8da0ca62be71158f638c23",
+        "promptIdx": 0,
+        "provider": {
+          "id": "anthropic:messages:claude-opus-4-6",
+          "label": ""
+        },
+        "response": {
+          "output": "{\"type\":\"tool_use\",\"id\":\"toolu_017Sps7pS1D5hhTJ3HskNbGw\",\"name\":\"load_model_guide\",\"input\":{\"query\":\"Run the validate method on the payment-processor model\"},\"caller\":{\"type\":\"direct\"}}",
+          "tokenUsage": {
+            "total": 1515,
+            "prompt": 1466,
+            "completion": 49,
+            "completionDetails": {
+              "cacheReadInputTokens": 0,
+              "cacheCreationInputTokens": 0
+            }
+          },
+          "finishReason": "tool_calls",
+          "cost": 0.008555
+        },
+        "score": 1,
+        "success": true,
+        "testCase": {
+          "description": "[model] Run the validate method on the payment-processor model",
+          "vars": {
+            "query": "Run the validate method on the payment-processor model"
+          },
+          "assert": [
+            {
+              "type": "javascript",
+              "value": "const needle = 'load_model_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+            }
+          ],
+          "options": {},
+          "metadata": {}
+        },
+        "testIdx": 1,
+        "vars": {
+          "query": "Run the validate method on the payment-processor model"
+        },
+        "metadata": {
+          "_promptfooFileMetadata": {}
+        },
+        "failureReason": 0
+      },
+      {
+        "cost": 0.008495,
+        "gradingResult": {
+          "pass": true,
+          "score": 1,
+          "reason": "All assertions passed",
+          "namedScores": {},
+          "tokensUsed": {
+            "total": 0,
+            "prompt": 0,
+            "completion": 0,
+            "cached": 0,
+            "numRequests": 0
+          },
+          "componentResults": [
+            {
+              "pass": true,
+              "score": 1,
+              "reason": "Assertion passed",
+              "assertion": {
+                "type": "javascript",
+                "value": "const needle = 'load_model_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+              }
+            }
+          ]
+        },
+        "id": "aa61a57c-a6fa-4413-896a-faa321c7bdff",
+        "latencyMs": 1768,
+        "namedScores": {},
+        "prompt": {
+          "raw": "How do I delete a model definition?",
+          "label": "{{query}}",
+          "config": {}
+        },
+        "promptId": "8868fc514e5f7bd1a350480c5a825cd0f5b47b6c0c8da0ca62be71158f638c23",
+        "promptIdx": 0,
+        "provider": {
+          "id": "anthropic:messages:claude-opus-4-6",
+          "label": ""
+        },
+        "response": {
+          "output": "{\"type\":\"tool_use\",\"id\":\"toolu_01V25UW7uTAA8BAECYcpS5jD\",\"name\":\"load_model_guide\",\"input\":{\"query\":\"How do I delete a model definition?\"},\"caller\":{\"type\":\"direct\"}}",
+          "tokenUsage": {
+            "total": 1511,
+            "prompt": 1464,
+            "completion": 47,
+            "completionDetails": {
+              "cacheReadInputTokens": 0,
+              "cacheCreationInputTokens": 0
+            }
+          },
+          "finishReason": "tool_calls",
+          "cost": 0.008495
+        },
+        "score": 1,
+        "success": true,
+        "testCase": {
+          "description": "[model] How do I delete a model definition?",
+          "vars": {
+            "query": "How do I delete a model definition?"
+          },
+          "assert": [
+            {
+              "type": "javascript",
+              "value": "const needle = 'load_model_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+            }
+          ],
+          "options": {},
+          "metadata": {}
+        },
+        "testIdx": 2,
+        "vars": {
+          "query": "How do I delete a model definition?"
+        },
+        "metadata": {
+          "_promptfooFileMetadata": {}
+        },
+        "failureReason": 0
+      },
+      {
+        "cost": 0.008705000000000001,
+        "gradingResult": {
+          "pass": true,
+          "score": 1,
+          "reason": "All assertions passed",
+          "namedScores": {},
+          "tokensUsed": {
+            "total": 0,
+            "prompt": 0,
+            "completion": 0,
+            "cached": 0,
+            "numRequests": 0
+          },
+          "componentResults": [
+            {
+              "pass": true,
+              "score": 1,
+              "reason": "Assertion passed",
+              "assertion": {
+                "type": "javascript",
+                "value": "const needle = 'load_workflow_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+              }
+            }
+          ]
+        },
+        "id": "f7d022b8-6a3a-4a86-844a-0763878ae1c2",
+        "latencyMs": 3114,
+        "namedScores": {},
+        "prompt": {
+          "raw": "How do I define a workflow in YAML that orchestrates multiple models?",
+          "label": "{{query}}",
+          "config": {}
+        },
+        "promptId": "8868fc514e5f7bd1a350480c5a825cd0f5b47b6c0c8da0ca62be71158f638c23",
+        "promptIdx": 0,
+        "provider": {
+          "id": "anthropic:messages:claude-opus-4-6",
+          "label": ""
+        },
+        "response": {
+          "output": "{\"type\":\"tool_use\",\"id\":\"toolu_01RiNFcgBJtHk3pys3vhMrDH\",\"name\":\"load_workflow_guide\",\"input\":{\"query\":\"How do I define a workflow in YAML that orchestrates multiple models?\"},\"caller\":{\"type\":\"direct\"}}",
+          "tokenUsage": {
+            "total": 1525,
+            "prompt": 1471,
+            "completion": 54,
+            "completionDetails": {
+              "cacheReadInputTokens": 0,
+              "cacheCreationInputTokens": 0
+            }
+          },
+          "finishReason": "tool_calls",
+          "cost": 0.008705000000000001
+        },
+        "score": 1,
+        "success": true,
+        "testCase": {
+          "description": "[workflow] How do I define a workflow in YAML that orchestrates multipl",
+          "vars": {
+            "query": "How do I define a workflow in YAML that orchestrates multiple models?"
+          },
+          "assert": [
+            {
+              "type": "javascript",
+              "value": "const needle = 'load_workflow_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+            }
+          ],
+          "options": {},
+          "metadata": {}
+        },
+        "testIdx": 3,
+        "vars": {
+          "query": "How do I define a workflow in YAML that orchestrates multiple models?"
+        },
+        "metadata": {
+          "_promptfooFileMetadata": {}
+        },
+        "failureReason": 0
+      },
+      {
+        "cost": 0.008525000000000001,
+        "gradingResult": {
+          "pass": true,
+          "score": 1,
+          "reason": "All assertions passed",
+          "namedScores": {},
+          "tokensUsed": {
+            "total": 0,
+            "prompt": 0,
+            "completion": 0,
+            "cached": 0,
+            "numRequests": 0
+          },
+          "componentResults": [
+            {
+              "pass": true,
+              "score": 1,
+              "reason": "Assertion passed",
+              "assertion": {
+                "type": "javascript",
+                "value": "const needle = 'load_workflow_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+              }
+            }
+          ]
+        },
+        "id": "2a593978-97cf-437d-a7e4-e2ba59305715",
+        "latencyMs": 2459,
+        "namedScores": {},
+        "prompt": {
+          "raw": "Show me the run history for the deployment workflow",
+          "label": "{{query}}",
+          "config": {}
+        },
+        "promptId": "8868fc514e5f7bd1a350480c5a825cd0f5b47b6c0c8da0ca62be71158f638c23",
+        "promptIdx": 0,
+        "provider": {
+          "id": "anthropic:messages:claude-opus-4-6",
+          "label": ""
+        },
+        "response": {
+          "output": "{\"type\":\"tool_use\",\"id\":\"toolu_01QafRh2B5YenbseLEFTBHeR\",\"name\":\"load_workflow_guide\",\"input\":{\"query\":\"Show me the run history for the deployment workflow\"},\"caller\":{\"type\":\"direct\"}}",
+          "tokenUsage": {
+            "total": 1513,
+            "prompt": 1465,
+            "completion": 48,
+            "completionDetails": {
+              "cacheReadInputTokens": 0,
+              "cacheCreationInputTokens": 0
+            }
+          },
+          "finishReason": "tool_calls",
+          "cost": 0.008525000000000001
+        },
+        "score": 1,
+        "success": true,
+        "testCase": {
+          "description": "[workflow] Show me the run history for the deployment workflow",
+          "vars": {
+            "query": "Show me the run history for the deployment workflow"
+          },
+          "assert": [
+            {
+              "type": "javascript",
+              "value": "const needle = 'load_workflow_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+            }
+          ],
+          "options": {},
+          "metadata": {}
+        },
+        "testIdx": 4,
+        "vars": {
+          "query": "Show me the run history for the deployment workflow"
+        },
+        "metadata": {
+          "_promptfooFileMetadata": {}
+        },
+        "failureReason": 0
+      },
+      {
+        "cost": 0.008455,
+        "gradingResult": {
+          "pass": true,
+          "score": 1,
+          "reason": "All assertions passed",
+          "namedScores": {},
+          "tokensUsed": {
+            "total": 0,
+            "prompt": 0,
+            "completion": 0,
+            "cached": 0,
+            "numRequests": 0
+          },
+          "componentResults": [
+            {
+              "pass": true,
+              "score": 1,
+              "reason": "Assertion passed",
+              "assertion": {
+                "type": "javascript",
+                "value": "const needle = 'load_workflow_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+              }
+            }
+          ]
+        },
+        "id": "e8d52fd0-fbec-4aa5-bcd4-ce9a109d444e",
+        "latencyMs": 1725,
+        "namedScores": {},
+        "prompt": {
+          "raw": "Validate that my workflow doesn't have circular dependencies",
+          "label": "{{query}}",
+          "config": {}
+        },
+        "promptId": "8868fc514e5f7bd1a350480c5a825cd0f5b47b6c0c8da0ca62be71158f638c23",
+        "promptIdx": 0,
+        "provider": {
+          "id": "anthropic:messages:claude-opus-4-6",
+          "label": ""
+        },
+        "response": {
+          "output": "{\"type\":\"tool_use\",\"id\":\"toolu_012tnaopyWk8WtfFBWGXYg1Z\",\"name\":\"load_workflow_guide\",\"input\":{\"query\":\"validate workflow circular dependencies DAG\"},\"caller\":{\"type\":\"direct\"}}",
+          "tokenUsage": {
+            "total": 1511,
+            "prompt": 1466,
+            "completion": 45,
+            "completionDetails": {
+              "cacheReadInputTokens": 0,
+              "cacheCreationInputTokens": 0
+            }
+          },
+          "finishReason": "tool_calls",
+          "cost": 0.008455
+        },
+        "score": 1,
+        "success": true,
+        "testCase": {
+          "description": "[workflow] Validate that my workflow doesn't have circular dependencies",
+          "vars": {
+            "query": "Validate that my workflow doesn't have circular dependencies"
+          },
+          "assert": [
+            {
+              "type": "javascript",
+              "value": "const needle = 'load_workflow_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+            }
+          ],
+          "options": {},
+          "metadata": {}
+        },
+        "testIdx": 5,
+        "vars": {
+          "query": "Validate that my workflow doesn't have circular dependencies"
+        },
+        "metadata": {
+          "_promptfooFileMetadata": {}
+        },
+        "failureReason": 0
+      },
+      {
+        "cost": 0.00851,
+        "gradingResult": {
+          "pass": true,
+          "score": 1,
+          "reason": "All assertions passed",
+          "namedScores": {},
+          "tokensUsed": {
+            "total": 0,
+            "prompt": 0,
+            "completion": 0,
+            "cached": 0,
+            "numRequests": 0
+          },
+          "componentResults": [
+            {
+              "pass": true,
+              "score": 1,
+              "reason": "Assertion passed",
+              "assertion": {
+                "type": "javascript",
+                "value": "const needle = 'load_data_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+              }
+            }
+          ]
+        },
+        "id": "8b92625b-9842-49e1-8ca6-e0e5c6ffc970",
+        "latencyMs": 2320,
+        "namedScores": {},
+        "prompt": {
+          "raw": "Show me all the model data currently stored in swamp",
+          "label": "{{query}}",
+          "config": {}
+        },
+        "promptId": "8868fc514e5f7bd1a350480c5a825cd0f5b47b6c0c8da0ca62be71158f638c23",
+        "promptIdx": 0,
+        "provider": {
+          "id": "anthropic:messages:claude-opus-4-6",
+          "label": ""
+        },
+        "response": {
+          "output": "{\"type\":\"tool_use\",\"id\":\"toolu_01BdARmzePWQyH2kRXaecf6B\",\"name\":\"load_data_guide\",\"input\":{\"query\":\"list all model data stored in swamp\"},\"caller\":{\"type\":\"direct\"}}",
+          "tokenUsage": {
+            "total": 1514,
+            "prompt": 1467,
+            "completion": 47,
+            "completionDetails": {
+              "cacheReadInputTokens": 0,
+              "cacheCreationInputTokens": 0
+            }
+          },
+          "finishReason": "tool_calls",
+          "cost": 0.00851
+        },
+        "score": 1,
+        "success": true,
+        "testCase": {
+          "description": "[data] Show me all the model data currently stored in swamp",
+          "vars": {
+            "query": "Show me all the model data currently stored in swamp"
+          },
+          "assert": [
+            {
+              "type": "javascript",
+              "value": "const needle = 'load_data_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+            }
+          ],
+          "options": {},
+          "metadata": {}
+        },
+        "testIdx": 6,
+        "vars": {
+          "query": "Show me all the model data currently stored in swamp"
+        },
+        "metadata": {
+          "_promptfooFileMetadata": {}
+        },
+        "failureReason": 0
+      },
+      {
+        "cost": 0.008525000000000001,
+        "gradingResult": {
+          "pass": true,
+          "score": 1,
+          "reason": "All assertions passed",
+          "namedScores": {},
+          "tokensUsed": {
+            "total": 0,
+            "prompt": 0,
+            "completion": 0,
+            "cached": 0,
+            "numRequests": 0
+          },
+          "componentResults": [
+            {
+              "pass": true,
+              "score": 1,
+              "reason": "Assertion passed",
+              "assertion": {
+                "type": "javascript",
+                "value": "const needle = 'load_data_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+              }
+            }
+          ]
+        },
+        "id": "5f5e36ae-6a25-46fc-b667-9ddf417774a2",
+        "latencyMs": 1782,
+        "namedScores": {},
+        "prompt": {
+          "raw": "Find all data where the status attribute is failed",
+          "label": "{{query}}",
+          "config": {}
+        },
+        "promptId": "8868fc514e5f7bd1a350480c5a825cd0f5b47b6c0c8da0ca62be71158f638c23",
+        "promptIdx": 0,
+        "provider": {
+          "id": "anthropic:messages:claude-opus-4-6",
+          "label": ""
+        },
+        "response": {
+          "output": "{\"type\":\"tool_use\",\"id\":\"toolu_01JaBFCxktYxF56YrvJQwNWa\",\"name\":\"load_data_guide\",\"input\":{\"query\":\"Find all data where the status attribute is failed\"},\"caller\":{\"type\":\"direct\"}}",
+          "tokenUsage": {
+            "total": 1513,
+            "prompt": 1465,
+            "completion": 48,
+            "completionDetails": {
+              "cacheReadInputTokens": 0,
+              "cacheCreationInputTokens": 0
+            }
+          },
+          "finishReason": "tool_calls",
+          "cost": 0.008525000000000001
+        },
+        "score": 1,
+        "success": true,
+        "testCase": {
+          "description": "[data] Find all data where the status attribute is failed",
+          "vars": {
+            "query": "Find all data where the status attribute is failed"
+          },
+          "assert": [
+            {
+              "type": "javascript",
+              "value": "const needle = 'load_data_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+            }
+          ],
+          "options": {},
+          "metadata": {}
+        },
+        "testIdx": 7,
+        "vars": {
+          "query": "Find all data where the status attribute is failed"
+        },
+        "metadata": {
+          "_promptfooFileMetadata": {}
+        },
+        "failureReason": 0
+      },
+      {
+        "cost": 0.008445000000000001,
+        "gradingResult": {
+          "pass": true,
+          "score": 1,
+          "reason": "All assertions passed",
+          "namedScores": {},
+          "tokensUsed": {
+            "total": 0,
+            "prompt": 0,
+            "completion": 0,
+            "cached": 0,
+            "numRequests": 0
+          },
+          "componentResults": [
+            {
+              "pass": true,
+              "score": 1,
+              "reason": "Assertion passed",
+              "assertion": {
+                "type": "javascript",
+                "value": "const needle = 'load_data_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+              }
+            }
+          ]
+        },
+        "id": "e6c6e330-3a4d-47eb-aeef-408ab1df62ef",
+        "latencyMs": 2485,
+        "namedScores": {},
+        "prompt": {
+          "raw": "Run garbage collection to clean up expired data",
+          "label": "{{query}}",
+          "config": {}
+        },
+        "promptId": "8868fc514e5f7bd1a350480c5a825cd0f5b47b6c0c8da0ca62be71158f638c23",
+        "promptIdx": 0,
+        "provider": {
+          "id": "anthropic:messages:claude-opus-4-6",
+          "label": ""
+        },
+        "response": {
+          "output": "{\"type\":\"tool_use\",\"id\":\"toolu_01Uq3oxY4rJ3w14qUdumHapf\",\"name\":\"load_data_guide\",\"input\":{\"query\":\"garbage collection clean up expired data\"},\"caller\":{\"type\":\"direct\"}}",
+          "tokenUsage": {
+            "total": 1509,
+            "prompt": 1464,
+            "completion": 45,
+            "completionDetails": {
+              "cacheReadInputTokens": 0,
+              "cacheCreationInputTokens": 0
+            }
+          },
+          "finishReason": "tool_calls",
+          "cost": 0.008445000000000001
+        },
+        "score": 1,
+        "success": true,
+        "testCase": {
+          "description": "[data] Run garbage collection to clean up expired data",
+          "vars": {
+            "query": "Run garbage collection to clean up expired data"
+          },
+          "assert": [
+            {
+              "type": "javascript",
+              "value": "const needle = 'load_data_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+            }
+          ],
+          "options": {},
+          "metadata": {}
+        },
+        "testIdx": 8,
+        "vars": {
+          "query": "Run garbage collection to clean up expired data"
+        },
+        "metadata": {
+          "_promptfooFileMetadata": {}
+        },
+        "failureReason": 0
+      },
+      {
+        "cost": 0.008645000000000002,
+        "gradingResult": {
+          "pass": true,
+          "score": 1,
+          "reason": "All assertions passed",
+          "namedScores": {},
+          "tokensUsed": {
+            "total": 0,
+            "prompt": 0,
+            "completion": 0,
+            "cached": 0,
+            "numRequests": 0
+          },
+          "componentResults": [
+            {
+              "pass": true,
+              "score": 1,
+              "reason": "Assertion passed",
+              "assertion": {
+                "type": "javascript",
+                "value": "const needle = 'load_vault_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+              }
+            }
+          ]
+        },
+        "id": "0da49b5b-b083-4a20-a1eb-aeba1c5e8c0a",
+        "latencyMs": 2577,
+        "namedScores": {},
+        "prompt": {
+          "raw": "How do I store my database password securely in swamp?",
+          "label": "{{query}}",
+          "config": {}
+        },
+        "promptId": "8868fc514e5f7bd1a350480c5a825cd0f5b47b6c0c8da0ca62be71158f638c23",
+        "promptIdx": 0,
+        "provider": {
+          "id": "anthropic:messages:claude-opus-4-6",
+          "label": ""
+        },
+        "response": {
+          "output": "{\"type\":\"tool_use\",\"id\":\"toolu_01Lyhkn3B2K2oe7oQvYUAJg4\",\"name\":\"load_vault_guide\",\"input\":{\"query\":\"How do I store my database password securely in swamp?\"},\"caller\":{\"type\":\"direct\"}}",
+          "tokenUsage": {
+            "total": 1521,
+            "prompt": 1469,
+            "completion": 52,
+            "completionDetails": {
+              "cacheReadInputTokens": 0,
+              "cacheCreationInputTokens": 0
+            }
+          },
+          "finishReason": "tool_calls",
+          "cost": 0.008645000000000002
+        },
+        "score": 1,
+        "success": true,
+        "testCase": {
+          "description": "[vault] How do I store my database password securely in swamp?",
+          "vars": {
+            "query": "How do I store my database password securely in swamp?"
+          },
+          "assert": [
+            {
+              "type": "javascript",
+              "value": "const needle = 'load_vault_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+            }
+          ],
+          "options": {},
+          "metadata": {}
+        },
+        "testIdx": 9,
+        "vars": {
+          "query": "How do I store my database password securely in swamp?"
+        },
+        "metadata": {
+          "_promptfooFileMetadata": {}
+        },
+        "failureReason": 0
+      },
+      {
+        "cost": 0.008465,
+        "gradingResult": {
+          "pass": true,
+          "score": 1,
+          "reason": "All assertions passed",
+          "namedScores": {},
+          "tokensUsed": {
+            "total": 0,
+            "prompt": 0,
+            "completion": 0,
+            "cached": 0,
+            "numRequests": 0
+          },
+          "componentResults": [
+            {
+              "pass": true,
+              "score": 1,
+              "reason": "Assertion passed",
+              "assertion": {
+                "type": "javascript",
+                "value": "const needle = 'load_vault_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+              }
+            }
+          ]
+        },
+        "id": "425026f8-f596-478f-9a1a-260fb15dcf8f",
+        "latencyMs": 2496,
+        "namedScores": {},
+        "prompt": {
+          "raw": "List all secrets stored in the vault",
+          "label": "{{query}}",
+          "config": {}
+        },
+        "promptId": "8868fc514e5f7bd1a350480c5a825cd0f5b47b6c0c8da0ca62be71158f638c23",
+        "promptIdx": 0,
+        "provider": {
+          "id": "anthropic:messages:claude-opus-4-6",
+          "label": ""
+        },
+        "response": {
+          "output": "{\"type\":\"tool_use\",\"id\":\"toolu_01Jd2m3UhhTkc5WMoa2kmRG1\",\"name\":\"load_vault_guide\",\"input\":{\"query\":\"list all secrets stored in the vault\"},\"caller\":{\"type\":\"direct\"}}",
+          "tokenUsage": {
+            "total": 1509,
+            "prompt": 1463,
+            "completion": 46,
+            "completionDetails": {
+              "cacheReadInputTokens": 0,
+              "cacheCreationInputTokens": 0
+            }
+          },
+          "finishReason": "tool_calls",
+          "cost": 0.008465
+        },
+        "score": 1,
+        "success": true,
+        "testCase": {
+          "description": "[vault] List all secrets stored in the vault",
+          "vars": {
+            "query": "List all secrets stored in the vault"
+          },
+          "assert": [
+            {
+              "type": "javascript",
+              "value": "const needle = 'load_vault_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+            }
+          ],
+          "options": {},
+          "metadata": {}
+        },
+        "testIdx": 10,
+        "vars": {
+          "query": "List all secrets stored in the vault"
+        },
+        "metadata": {
+          "_promptfooFileMetadata": {}
+        },
+        "failureReason": 0
+      },
+      {
+        "cost": 0.00858,
+        "gradingResult": {
+          "pass": true,
+          "score": 1,
+          "reason": "All assertions passed",
+          "namedScores": {},
+          "tokensUsed": {
+            "total": 0,
+            "prompt": 0,
+            "completion": 0,
+            "cached": 0,
+            "numRequests": 0
+          },
+          "componentResults": [
+            {
+              "pass": true,
+              "score": 1,
+              "reason": "Assertion passed",
+              "assertion": {
+                "type": "javascript",
+                "value": "const needle = 'load_extension_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+              }
+            }
+          ]
+        },
+        "id": "7e5e6c36-1e1b-4c20-98e7-e3b57a8acfeb",
+        "latencyMs": 1752,
+        "namedScores": {},
+        "prompt": {
+          "raw": "How do I create a custom model using TypeScript and Zod?",
+          "label": "{{query}}",
+          "config": {}
+        },
+        "promptId": "8868fc514e5f7bd1a350480c5a825cd0f5b47b6c0c8da0ca62be71158f638c23",
+        "promptIdx": 0,
+        "provider": {
+          "id": "anthropic:messages:claude-opus-4-6",
+          "label": ""
+        },
+        "response": {
+          "output": "{\"type\":\"tool_use\",\"id\":\"toolu_01EQvZBPxy9GVhpVJDrZiihS\",\"name\":\"load_extension_guide\",\"input\":{\"query\":\"create custom model using TypeScript and Zod\"},\"caller\":{\"type\":\"direct\"}}",
+          "tokenUsage": {
+            "total": 1520,
+            "prompt": 1471,
+            "completion": 49,
+            "completionDetails": {
+              "cacheReadInputTokens": 0,
+              "cacheCreationInputTokens": 0
+            }
+          },
+          "finishReason": "tool_calls",
+          "cost": 0.00858
+        },
+        "score": 1,
+        "success": true,
+        "testCase": {
+          "description": "[extension] How do I create a custom model using TypeScript and Zod?",
+          "vars": {
+            "query": "How do I create a custom model using TypeScript and Zod?"
+          },
+          "assert": [
+            {
+              "type": "javascript",
+              "value": "const needle = 'load_extension_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+            }
+          ],
+          "options": {},
+          "metadata": {}
+        },
+        "testIdx": 11,
+        "vars": {
+          "query": "How do I create a custom model using TypeScript and Zod?"
+        },
+        "metadata": {
+          "_promptfooFileMetadata": {}
+        },
+        "failureReason": 0
+      },
+      {
+        "cost": 0.008645000000000002,
+        "gradingResult": {
+          "pass": true,
+          "score": 1,
+          "reason": "All assertions passed",
+          "namedScores": {},
+          "tokensUsed": {
+            "total": 0,
+            "prompt": 0,
+            "completion": 0,
+            "cached": 0,
+            "numRequests": 0
+          },
+          "componentResults": [
+            {
+              "pass": true,
+              "score": 1,
+              "reason": "Assertion passed",
+              "assertion": {
+                "type": "javascript",
+                "value": "const needle = 'load_extension_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+              }
+            }
+          ]
+        },
+        "id": "45384e53-1fa2-4712-96c7-4a5eaf089b6c",
+        "latencyMs": 2249,
+        "namedScores": {},
+        "prompt": {
+          "raw": "How do I implement a custom DatastoreProvider for MongoDB?",
+          "label": "{{query}}",
+          "config": {}
+        },
+        "promptId": "8868fc514e5f7bd1a350480c5a825cd0f5b47b6c0c8da0ca62be71158f638c23",
+        "promptIdx": 0,
+        "provider": {
+          "id": "anthropic:messages:claude-opus-4-6",
+          "label": ""
+        },
+        "response": {
+          "output": "{\"type\":\"tool_use\",\"id\":\"toolu_01UKDg4g4bPMCrsjEdBWEBeS\",\"name\":\"load_extension_guide\",\"input\":{\"query\":\"How do I implement a custom DatastoreProvider for MongoDB?\"},\"caller\":{\"type\":\"direct\"}}",
+          "tokenUsage": {
+            "total": 1521,
+            "prompt": 1469,
+            "completion": 52,
+            "completionDetails": {
+              "cacheReadInputTokens": 0,
+              "cacheCreationInputTokens": 0
+            }
+          },
+          "finishReason": "tool_calls",
+          "cost": 0.008645000000000002
+        },
+        "score": 1,
+        "success": true,
+        "testCase": {
+          "description": "[extension] How do I implement a custom DatastoreProvider for MongoDB?",
+          "vars": {
+            "query": "How do I implement a custom DatastoreProvider for MongoDB?"
+          },
+          "assert": [
+            {
+              "type": "javascript",
+              "value": "const needle = 'load_extension_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+            }
+          ],
+          "options": {},
+          "metadata": {}
+        },
+        "testIdx": 12,
+        "vars": {
+          "query": "How do I implement a custom DatastoreProvider for MongoDB?"
+        },
+        "metadata": {
+          "_promptfooFileMetadata": {}
+        },
+        "failureReason": 0
+      },
+      {
+        "cost": 0.008480000000000001,
+        "gradingResult": {
+          "pass": true,
+          "score": 1,
+          "reason": "All assertions passed",
+          "namedScores": {},
+          "tokensUsed": {
+            "total": 0,
+            "prompt": 0,
+            "completion": 0,
+            "cached": 0,
+            "numRequests": 0
+          },
+          "componentResults": [
+            {
+              "pass": true,
+              "score": 1,
+              "reason": "Assertion passed",
+              "assertion": {
+                "type": "javascript",
+                "value": "const needle = 'load_extension_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+              }
+            }
+          ]
+        },
+        "id": "4f1dc2b5-dd0c-42f1-a008-d49860af7f95",
+        "latencyMs": 1691,
+        "namedScores": {},
+        "prompt": {
+          "raw": "How do I improve my extension's quality score?",
+          "label": "{{query}}",
+          "config": {}
+        },
+        "promptId": "8868fc514e5f7bd1a350480c5a825cd0f5b47b6c0c8da0ca62be71158f638c23",
+        "promptIdx": 0,
+        "provider": {
+          "id": "anthropic:messages:claude-opus-4-6",
+          "label": ""
+        },
+        "response": {
+          "output": "{\"type\":\"tool_use\",\"id\":\"toolu_01WkFqiWyxwvKZdfe8t3xbAP\",\"name\":\"load_extension_guide\",\"input\":{\"query\":\"quality scorecard improve extension quality score\"},\"caller\":{\"type\":\"direct\"}}",
+          "tokenUsage": {
+            "total": 1512,
+            "prompt": 1466,
+            "completion": 46,
+            "completionDetails": {
+              "cacheReadInputTokens": 0,
+              "cacheCreationInputTokens": 0
+            }
+          },
+          "finishReason": "tool_calls",
+          "cost": 0.008480000000000001
+        },
+        "score": 1,
+        "success": true,
+        "testCase": {
+          "description": "[extension] How do I improve my extension's quality score?",
+          "vars": {
+            "query": "How do I improve my extension's quality score?"
+          },
+          "assert": [
+            {
+              "type": "javascript",
+              "value": "const needle = 'load_extension_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+            }
+          ],
+          "options": {},
+          "metadata": {}
+        },
+        "testIdx": 13,
+        "vars": {
+          "query": "How do I improve my extension's quality score?"
+        },
+        "metadata": {
+          "_promptfooFileMetadata": {}
+        },
+        "failureReason": 0
+      },
+      {
+        "cost": 0.00841,
+        "gradingResult": {
+          "pass": true,
+          "score": 1,
+          "reason": "All assertions passed",
+          "namedScores": {},
+          "tokensUsed": {
+            "total": 0,
+            "prompt": 0,
+            "completion": 0,
+            "cached": 0,
+            "numRequests": 0
+          },
+          "componentResults": [
+            {
+              "pass": true,
+              "score": 1,
+              "reason": "Assertion passed",
+              "assertion": {
+                "type": "javascript",
+                "value": "const needle = 'load_extension_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+              }
+            }
+          ]
+        },
+        "id": "5524ab77-bd51-4f90-ad93-27942f4775db",
+        "latencyMs": 3316,
+        "namedScores": {},
+        "prompt": {
+          "raw": "How do I smoke test my extension model before pushing?",
+          "label": "{{query}}",
+          "config": {}
+        },
+        "promptId": "8868fc514e5f7bd1a350480c5a825cd0f5b47b6c0c8da0ca62be71158f638c23",
+        "promptIdx": 0,
+        "provider": {
+          "id": "anthropic:messages:claude-opus-4-6",
+          "label": ""
+        },
+        "response": {
+          "output": "{\"type\":\"tool_use\",\"id\":\"toolu_01SSgvrEhRn1tWuRvVEsSC2a\",\"name\":\"load_extension_guide\",\"input\":{\"query\":\"smoke testing extension model\"},\"caller\":{\"type\":\"direct\"}}",
+          "tokenUsage": {
+            "total": 1510,
+            "prompt": 1467,
+            "completion": 43,
+            "completionDetails": {
+              "cacheReadInputTokens": 0,
+              "cacheCreationInputTokens": 0
+            }
+          },
+          "finishReason": "tool_calls",
+          "cost": 0.00841
+        },
+        "score": 1,
+        "success": true,
+        "testCase": {
+          "description": "[extension] How do I smoke test my extension model before pushing?",
+          "vars": {
+            "query": "How do I smoke test my extension model before pushing?"
+          },
+          "assert": [
+            {
+              "type": "javascript",
+              "value": "const needle = 'load_extension_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+            }
+          ],
+          "options": {},
+          "metadata": {}
+        },
+        "testIdx": 14,
+        "vars": {
+          "query": "How do I smoke test my extension model before pushing?"
+        },
+        "metadata": {
+          "_promptfooFileMetadata": {}
+        },
+        "failureReason": 0
+      },
+      {
+        "cost": 0.008515,
+        "gradingResult": {
+          "pass": true,
+          "score": 1,
+          "reason": "All assertions passed",
+          "namedScores": {},
+          "tokensUsed": {
+            "total": 0,
+            "prompt": 0,
+            "completion": 0,
+            "cached": 0,
+            "numRequests": 0
+          },
+          "componentResults": [
+            {
+              "pass": true,
+              "score": 1,
+              "reason": "Assertion passed",
+              "assertion": {
+                "type": "javascript",
+                "value": "const needle = 'load_extension_publish_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+              }
+            }
+          ]
+        },
+        "id": "155c91c0-a08e-436f-908a-426d1f72ca91",
+        "latencyMs": 2684,
+        "namedScores": {},
+        "prompt": {
+          "raw": "Publish my extension to the registry",
+          "label": "{{query}}",
+          "config": {}
+        },
+        "promptId": "8868fc514e5f7bd1a350480c5a825cd0f5b47b6c0c8da0ca62be71158f638c23",
+        "promptIdx": 0,
+        "provider": {
+          "id": "anthropic:messages:claude-opus-4-6",
+          "label": ""
+        },
+        "response": {
+          "output": "{\"type\":\"tool_use\",\"id\":\"toolu_013Mx8skCQT5smCM7qgGypXu\",\"name\":\"load_extension_publish_guide\",\"input\":{\"query\":\"Publish my extension to the registry\"},\"caller\":{\"type\":\"direct\"}}",
+          "tokenUsage": {
+            "total": 1511,
+            "prompt": 1463,
+            "completion": 48,
+            "completionDetails": {
+              "cacheReadInputTokens": 0,
+              "cacheCreationInputTokens": 0
+            }
+          },
+          "finishReason": "tool_calls",
+          "cost": 0.008515
+        },
+        "score": 1,
+        "success": true,
+        "testCase": {
+          "description": "[extension-publish] Publish my extension to the registry",
+          "vars": {
+            "query": "Publish my extension to the registry"
+          },
+          "assert": [
+            {
+              "type": "javascript",
+              "value": "const needle = 'load_extension_publish_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+            }
+          ],
+          "options": {},
+          "metadata": {}
+        },
+        "testIdx": 15,
+        "vars": {
+          "query": "Publish my extension to the registry"
+        },
+        "metadata": {
+          "_promptfooFileMetadata": {}
+        },
+        "failureReason": 0
+      },
+      {
+        "cost": 0.00863,
+        "gradingResult": {
+          "pass": true,
+          "score": 1,
+          "reason": "All assertions passed",
+          "namedScores": {},
+          "tokensUsed": {
+            "total": 0,
+            "prompt": 0,
+            "completion": 0,
+            "cached": 0,
+            "numRequests": 0
+          },
+          "componentResults": [
+            {
+              "pass": true,
+              "score": 1,
+              "reason": "Assertion passed",
+              "assertion": {
+                "type": "javascript",
+                "value": "const needle = 'load_extension_publish_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+              }
+            }
+          ]
+        },
+        "id": "292bfdd0-14e7-4c9b-9962-c635d77bb26c",
+        "latencyMs": 2856,
+        "namedScores": {},
+        "prompt": {
+          "raw": "How do I swamp extension push my model?",
+          "label": "{{query}}",
+          "config": {}
+        },
+        "promptId": "8868fc514e5f7bd1a350480c5a825cd0f5b47b6c0c8da0ca62be71158f638c23",
+        "promptIdx": 0,
+        "provider": {
+          "id": "anthropic:messages:claude-opus-4-6",
+          "label": ""
+        },
+        "response": {
+          "output": "{\"type\":\"tool_use\",\"id\":\"toolu_01X136XZyFPSKNTqQhRecmhn\",\"name\":\"load_extension_publish_guide\",\"input\":{\"query\":\"How do I push my model extension to the registry?\"},\"caller\":{\"type\":\"direct\"}}",
+          "tokenUsage": {
+            "total": 1518,
+            "prompt": 1466,
+            "completion": 52,
+            "completionDetails": {
+              "cacheReadInputTokens": 0,
+              "cacheCreationInputTokens": 0
+            }
+          },
+          "finishReason": "tool_calls",
+          "cost": 0.00863
+        },
+        "score": 1,
+        "success": true,
+        "testCase": {
+          "description": "[extension-publish] How do I swamp extension push my model?",
+          "vars": {
+            "query": "How do I swamp extension push my model?"
+          },
+          "assert": [
+            {
+              "type": "javascript",
+              "value": "const needle = 'load_extension_publish_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+            }
+          ],
+          "options": {},
+          "metadata": {}
+        },
+        "testIdx": 16,
+        "vars": {
+          "query": "How do I swamp extension push my model?"
+        },
+        "metadata": {
+          "_promptfooFileMetadata": {}
+        },
+        "failureReason": 0
+      },
+      {
+        "cost": 0.0086,
+        "gradingResult": {
+          "pass": true,
+          "score": 1,
+          "reason": "All assertions passed",
+          "namedScores": {},
+          "tokensUsed": {
+            "total": 0,
+            "prompt": 0,
+            "completion": 0,
+            "cached": 0,
+            "numRequests": 0
+          },
+          "componentResults": [
+            {
+              "pass": true,
+              "score": 1,
+              "reason": "Assertion passed",
+              "assertion": {
+                "type": "javascript",
+                "value": "const needle = 'load_extension_publish_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+              }
+            }
+          ]
+        },
+        "id": "d7e01afd-3289-4c59-a560-41632815a6d0",
+        "latencyMs": 2864,
+        "namedScores": {},
+        "prompt": {
+          "raw": "I want to deprecate my old extension in favor of a new one",
+          "label": "{{query}}",
+          "config": {}
+        },
+        "promptId": "8868fc514e5f7bd1a350480c5a825cd0f5b47b6c0c8da0ca62be71158f638c23",
+        "promptIdx": 0,
+        "provider": {
+          "id": "anthropic:messages:claude-opus-4-6",
+          "label": ""
+        },
+        "response": {
+          "output": "{\"type\":\"tool_use\",\"id\":\"toolu_01TTkDci3SCXVYKQA4ss2VaL\",\"name\":\"load_extension_publish_guide\",\"input\":{\"query\":\"deprecate extension in favor of a new one\"},\"caller\":{\"type\":\"direct\"}}",
+          "tokenUsage": {
+            "total": 1520,
+            "prompt": 1470,
+            "completion": 50,
+            "completionDetails": {
+              "cacheReadInputTokens": 0,
+              "cacheCreationInputTokens": 0
+            }
+          },
+          "finishReason": "tool_calls",
+          "cost": 0.0086
+        },
+        "score": 1,
+        "success": true,
+        "testCase": {
+          "description": "[extension-publish] I want to deprecate my old extension in favor of a new one",
+          "vars": {
+            "query": "I want to deprecate my old extension in favor of a new one"
+          },
+          "assert": [
+            {
+              "type": "javascript",
+              "value": "const needle = 'load_extension_publish_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+            }
+          ],
+          "options": {},
+          "metadata": {}
+        },
+        "testIdx": 17,
+        "vars": {
+          "query": "I want to deprecate my old extension in favor of a new one"
+        },
+        "metadata": {
+          "_promptfooFileMetadata": {}
+        },
+        "failureReason": 0
+      },
+      {
+        "cost": 0.008555,
+        "gradingResult": {
+          "pass": true,
+          "score": 1,
+          "reason": "All assertions passed",
+          "namedScores": {},
+          "tokensUsed": {
+            "total": 0,
+            "prompt": 0,
+            "completion": 0,
+            "cached": 0,
+            "numRequests": 0
+          },
+          "componentResults": [
+            {
+              "pass": true,
+              "score": 1,
+              "reason": "Assertion passed",
+              "assertion": {
+                "type": "javascript",
+                "value": "const needle = 'load_repo_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+              }
+            }
+          ]
+        },
+        "id": "6186c4ec-8c9b-4d15-bd35-3f53d637f464",
+        "latencyMs": 1834,
+        "namedScores": {},
+        "prompt": {
+          "raw": "How do I initialize a new swamp repository?",
+          "label": "{{query}}",
+          "config": {}
+        },
+        "promptId": "8868fc514e5f7bd1a350480c5a825cd0f5b47b6c0c8da0ca62be71158f638c23",
+        "promptIdx": 0,
+        "provider": {
+          "id": "anthropic:messages:claude-opus-4-6",
+          "label": ""
+        },
+        "response": {
+          "output": "{\"type\":\"tool_use\",\"id\":\"toolu_016SP4Z482mhH9EgwvG36rpH\",\"name\":\"load_repo_guide\",\"input\":{\"query\":\"How do I initialize a new swamp repository?\"},\"caller\":{\"type\":\"direct\"}}",
+          "tokenUsage": {
+            "total": 1515,
+            "prompt": 1466,
+            "completion": 49,
+            "completionDetails": {
+              "cacheReadInputTokens": 0,
+              "cacheCreationInputTokens": 0
+            }
+          },
+          "finishReason": "tool_calls",
+          "cost": 0.008555
+        },
+        "score": 1,
+        "success": true,
+        "testCase": {
+          "description": "[repo] How do I initialize a new swamp repository?",
+          "vars": {
+            "query": "How do I initialize a new swamp repository?"
+          },
+          "assert": [
+            {
+              "type": "javascript",
+              "value": "const needle = 'load_repo_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+            }
+          ],
+          "options": {},
+          "metadata": {}
+        },
+        "testIdx": 18,
+        "vars": {
+          "query": "How do I initialize a new swamp repository?"
+        },
+        "metadata": {
+          "_promptfooFileMetadata": {}
+        },
+        "failureReason": 0
+      },
+      {
+        "cost": 0.008520000000000002,
+        "gradingResult": {
+          "pass": true,
+          "score": 1,
+          "reason": "All assertions passed",
+          "namedScores": {},
+          "tokensUsed": {
+            "total": 0,
+            "prompt": 0,
+            "completion": 0,
+            "cached": 0,
+            "numRequests": 0
+          },
+          "componentResults": [
+            {
+              "pass": true,
+              "score": 1,
+              "reason": "Assertion passed",
+              "assertion": {
+                "type": "javascript",
+                "value": "const needle = 'load_repo_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+              }
+            }
+          ]
+        },
+        "id": "6199c644-4e4c-47e2-aeb8-8999df3c1327",
+        "latencyMs": 2241,
+        "namedScores": {},
+        "prompt": {
+          "raw": "How do I install swamp in a GitHub Actions CI pipeline?",
+          "label": "{{query}}",
+          "config": {}
+        },
+        "promptId": "8868fc514e5f7bd1a350480c5a825cd0f5b47b6c0c8da0ca62be71158f638c23",
+        "promptIdx": 0,
+        "provider": {
+          "id": "anthropic:messages:claude-opus-4-6",
+          "label": ""
+        },
+        "response": {
+          "output": "{\"type\":\"tool_use\",\"id\":\"toolu_01WLeEmtK85rkNGZPgnL4uf8\",\"name\":\"load_repo_guide\",\"input\":{\"query\":\"install swamp in GitHub Actions CI pipeline\"},\"caller\":{\"type\":\"direct\"}}",
+          "tokenUsage": {
+            "total": 1516,
+            "prompt": 1469,
+            "completion": 47,
+            "completionDetails": {
+              "cacheReadInputTokens": 0,
+              "cacheCreationInputTokens": 0
+            }
+          },
+          "finishReason": "tool_calls",
+          "cost": 0.008520000000000002
+        },
+        "score": 1,
+        "success": true,
+        "testCase": {
+          "description": "[repo] How do I install swamp in a GitHub Actions CI pipeline?",
+          "vars": {
+            "query": "How do I install swamp in a GitHub Actions CI pipeline?"
+          },
+          "assert": [
+            {
+              "type": "javascript",
+              "value": "const needle = 'load_repo_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+            }
+          ],
+          "options": {},
+          "metadata": {}
+        },
+        "testIdx": 19,
+        "vars": {
+          "query": "How do I install swamp in a GitHub Actions CI pipeline?"
+        },
+        "metadata": {
+          "_promptfooFileMetadata": {}
+        },
+        "failureReason": 0
+      },
+      {
+        "cost": 0.008615000000000001,
+        "gradingResult": {
+          "pass": true,
+          "score": 1,
+          "reason": "All assertions passed",
+          "namedScores": {},
+          "tokensUsed": {
+            "total": 0,
+            "prompt": 0,
+            "completion": 0,
+            "cached": 0,
+            "numRequests": 0
+          },
+          "componentResults": [
+            {
+              "pass": true,
+              "score": 1,
+              "reason": "Assertion passed",
+              "assertion": {
+                "type": "javascript",
+                "value": "const needle = 'load_report_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+              }
+            }
+          ]
+        },
+        "id": "51cd5fc8-2216-426d-8de7-ceba8e08de3e",
+        "latencyMs": 1852,
+        "namedScores": {},
+        "prompt": {
+          "raw": "Run a report to show all workflow executions from last week",
+          "label": "{{query}}",
+          "config": {}
+        },
+        "promptId": "8868fc514e5f7bd1a350480c5a825cd0f5b47b6c0c8da0ca62be71158f638c23",
+        "promptIdx": 0,
+        "provider": {
+          "id": "anthropic:messages:claude-opus-4-6",
+          "label": ""
+        },
+        "response": {
+          "output": "{\"type\":\"tool_use\",\"id\":\"toolu_01BXruUvMRqj2mJTNQiqnQDu\",\"name\":\"load_report_guide\",\"input\":{\"query\":\"Run a report to show all workflow executions from last week\"},\"caller\":{\"type\":\"direct\"}}",
+          "tokenUsage": {
+            "total": 1519,
+            "prompt": 1468,
+            "completion": 51,
+            "completionDetails": {
+              "cacheReadInputTokens": 0,
+              "cacheCreationInputTokens": 0
+            }
+          },
+          "finishReason": "tool_calls",
+          "cost": 0.008615000000000001
+        },
+        "score": 1,
+        "success": true,
+        "testCase": {
+          "description": "[report] Run a report to show all workflow executions from last week",
+          "vars": {
+            "query": "Run a report to show all workflow executions from last week"
+          },
+          "assert": [
+            {
+              "type": "javascript",
+              "value": "const needle = 'load_report_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+            }
+          ],
+          "options": {},
+          "metadata": {}
+        },
+        "testIdx": 20,
+        "vars": {
+          "query": "Run a report to show all workflow executions from last week"
+        },
+        "metadata": {
+          "_promptfooFileMetadata": {}
+        },
+        "failureReason": 0
+      },
+      {
+        "cost": 0.009675000000000001,
+        "gradingResult": {
+          "pass": true,
+          "score": 1,
+          "reason": "All assertions passed",
+          "namedScores": {},
+          "tokensUsed": {
+            "total": 0,
+            "prompt": 0,
+            "completion": 0,
+            "cached": 0,
+            "numRequests": 0
+          },
+          "componentResults": [
+            {
+              "pass": true,
+              "score": 1,
+              "reason": "Assertion passed",
+              "assertion": {
+                "type": "javascript",
+                "value": "const needle = 'load_report_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+              }
+            }
+          ]
+        },
+        "id": "7d972e07-7639-476a-aed0-ee347d39606a",
+        "latencyMs": 2380,
+        "namedScores": {},
+        "prompt": {
+          "raw": "Filter reports by label when running a model method",
+          "label": "{{query}}",
+          "config": {}
+        },
+        "promptId": "8868fc514e5f7bd1a350480c5a825cd0f5b47b6c0c8da0ca62be71158f638c23",
+        "promptIdx": 0,
+        "provider": {
+          "id": "anthropic:messages:claude-opus-4-6",
+          "label": ""
+        },
+        "response": {
+          "output": "{\"type\":\"tool_use\",\"id\":\"toolu_01XzeGMXYzNeE5v9BY9sCVi5\",\"name\":\"load_report_guide\",\"input\":{\"query\":\"Filter reports by label when running a model method\"},\"caller\":{\"type\":\"direct\"}}\n\n{\"type\":\"tool_use\",\"id\":\"toolu_01TbK6R2CWDYB4AoJZqAV63o\",\"name\":\"load_model_guide\",\"input\":{\"query\":\"Filter reports by label when running a model method\"},\"caller\":{\"type\":\"direct\"}}",
+          "tokenUsage": {
+            "total": 1559,
+            "prompt": 1465,
+            "completion": 94,
+            "completionDetails": {
+              "cacheReadInputTokens": 0,
+              "cacheCreationInputTokens": 0
+            }
+          },
+          "finishReason": "tool_calls",
+          "cost": 0.009675000000000001
+        },
+        "score": 1,
+        "success": true,
+        "testCase": {
+          "description": "[report] Filter reports by label when running a model method",
+          "vars": {
+            "query": "Filter reports by label when running a model method"
+          },
+          "assert": [
+            {
+              "type": "javascript",
+              "value": "const needle = 'load_report_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+            }
+          ],
+          "options": {},
+          "metadata": {}
+        },
+        "testIdx": 21,
+        "vars": {
+          "query": "Filter reports by label when running a model method"
+        },
+        "metadata": {
+          "_promptfooFileMetadata": {}
+        },
+        "failureReason": 0
+      },
+      {
+        "cost": 0.00855,
+        "gradingResult": {
+          "pass": true,
+          "score": 1,
+          "reason": "All assertions passed",
+          "namedScores": {},
+          "tokensUsed": {
+            "total": 0,
+            "prompt": 0,
+            "completion": 0,
+            "cached": 0,
+            "numRequests": 0
+          },
+          "componentResults": [
+            {
+              "pass": true,
+              "score": 1,
+              "reason": "Assertion passed",
+              "assertion": {
+                "type": "javascript",
+                "value": "const needle = 'load_troubleshooting_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+              }
+            }
+          ]
+        },
+        "id": "b3380abb-5961-4b84-a5f1-426db063f082",
+        "latencyMs": 2071,
+        "namedScores": {},
+        "prompt": {
+          "raw": "The datastore sync is hanging and timing out",
+          "label": "{{query}}",
+          "config": {}
+        },
+        "promptId": "8868fc514e5f7bd1a350480c5a825cd0f5b47b6c0c8da0ca62be71158f638c23",
+        "promptIdx": 0,
+        "provider": {
+          "id": "anthropic:messages:claude-opus-4-6",
+          "label": ""
+        },
+        "response": {
+          "output": "{\"type\":\"tool_use\",\"id\":\"toolu_01FtzrzB14My5Wgd2rV9EhcW\",\"name\":\"load_troubleshooting_guide\",\"input\":{\"query\":\"datastore sync hanging and timing out\"},\"caller\":{\"type\":\"direct\"}}",
+          "tokenUsage": {
+            "total": 1514,
+            "prompt": 1465,
+            "completion": 49,
+            "completionDetails": {
+              "cacheReadInputTokens": 0,
+              "cacheCreationInputTokens": 0
+            }
+          },
+          "finishReason": "tool_calls",
+          "cost": 0.00855
+        },
+        "score": 1,
+        "success": true,
+        "testCase": {
+          "description": "[troubleshooting] The datastore sync is hanging and timing out",
+          "vars": {
+            "query": "The datastore sync is hanging and timing out"
+          },
+          "assert": [
+            {
+              "type": "javascript",
+              "value": "const needle = 'load_troubleshooting_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+            }
+          ],
+          "options": {},
+          "metadata": {}
+        },
+        "testIdx": 22,
+        "vars": {
+          "query": "The datastore sync is hanging and timing out"
+        },
+        "metadata": {
+          "_promptfooFileMetadata": {}
+        },
+        "failureReason": 0
+      },
+      {
+        "cost": 0.00884,
+        "gradingResult": {
+          "pass": true,
+          "score": 1,
+          "reason": "All assertions passed",
+          "namedScores": {},
+          "tokensUsed": {
+            "total": 0,
+            "prompt": 0,
+            "completion": 0,
+            "cached": 0,
+            "numRequests": 0
+          },
+          "componentResults": [
+            {
+              "pass": true,
+              "score": 1,
+              "reason": "Assertion passed",
+              "assertion": {
+                "type": "javascript",
+                "value": "const needle = 'load_troubleshooting_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+              }
+            }
+          ]
+        },
+        "id": "c8fdcb99-baef-49f4-a73d-db13f83834da",
+        "latencyMs": 2343,
+        "namedScores": {},
+        "prompt": {
+          "raw": "swamp model get is giving me 'Error: ENOENT: no such file or directory'",
+          "label": "{{query}}",
+          "config": {}
+        },
+        "promptId": "8868fc514e5f7bd1a350480c5a825cd0f5b47b6c0c8da0ca62be71158f638c23",
+        "promptIdx": 0,
+        "provider": {
+          "id": "anthropic:messages:claude-opus-4-6",
+          "label": ""
+        },
+        "response": {
+          "output": "{\"type\":\"tool_use\",\"id\":\"toolu_019z1xuU8ctvBPmSic85qhjy\",\"name\":\"load_troubleshooting_guide\",\"input\":{\"query\":\"Error: ENOENT: no such file or directory when running model get\"},\"caller\":{\"type\":\"direct\"}}",
+          "tokenUsage": {
+            "total": 1536,
+            "prompt": 1478,
+            "completion": 58,
+            "completionDetails": {
+              "cacheReadInputTokens": 0,
+              "cacheCreationInputTokens": 0
+            }
+          },
+          "finishReason": "tool_calls",
+          "cost": 0.00884
+        },
+        "score": 1,
+        "success": true,
+        "testCase": {
+          "description": "[troubleshooting] swamp model get is giving me 'Error: ENOENT: no such file or",
+          "vars": {
+            "query": "swamp model get is giving me 'Error: ENOENT: no such file or directory'"
+          },
+          "assert": [
+            {
+              "type": "javascript",
+              "value": "const needle = 'load_troubleshooting_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+            }
+          ],
+          "options": {},
+          "metadata": {}
+        },
+        "testIdx": 23,
+        "vars": {
+          "query": "swamp model get is giving me 'Error: ENOENT: no such file or directory'"
+        },
+        "metadata": {
+          "_promptfooFileMetadata": {}
+        },
+        "failureReason": 0
+      },
+      {
+        "cost": 0.008705000000000001,
+        "gradingResult": {
+          "pass": true,
+          "score": 1,
+          "reason": "All assertions passed",
+          "namedScores": {},
+          "tokensUsed": {
+            "total": 0,
+            "prompt": 0,
+            "completion": 0,
+            "cached": 0,
+            "numRequests": 0
+          },
+          "componentResults": [
+            {
+              "pass": true,
+              "score": 1,
+              "reason": "Assertion passed",
+              "assertion": {
+                "type": "javascript",
+                "value": "const needle = 'load_issue_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+              }
+            }
+          ]
+        },
+        "id": "0fe07501-2ec5-4366-b6d6-ef914fc88d00",
+        "latencyMs": 1412,
+        "namedScores": {},
+        "prompt": {
+          "raw": "File a bug report — swamp vault get crashes with a segfault",
+          "label": "{{query}}",
+          "config": {}
+        },
+        "promptId": "8868fc514e5f7bd1a350480c5a825cd0f5b47b6c0c8da0ca62be71158f638c23",
+        "promptIdx": 0,
+        "provider": {
+          "id": "anthropic:messages:claude-opus-4-6",
+          "label": ""
+        },
+        "response": {
+          "output": "{\"type\":\"tool_use\",\"id\":\"toolu_01SF4c3wcysqkzsMj6gzZnx9\",\"name\":\"load_issue_guide\",\"input\":{\"query\":\"File a bug report — swamp vault get crashes with a segfault\"},\"caller\":{\"type\":\"direct\"}}",
+          "tokenUsage": {
+            "total": 1525,
+            "prompt": 1471,
+            "completion": 54,
+            "completionDetails": {
+              "cacheReadInputTokens": 0,
+              "cacheCreationInputTokens": 0
+            }
+          },
+          "finishReason": "tool_calls",
+          "cost": 0.008705000000000001
+        },
+        "score": 1,
+        "success": true,
+        "testCase": {
+          "description": "[issue] File a bug report — swamp vault get crashes with a segfault",
+          "vars": {
+            "query": "File a bug report — swamp vault get crashes with a segfault"
+          },
+          "assert": [
+            {
+              "type": "javascript",
+              "value": "const needle = 'load_issue_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+            }
+          ],
+          "options": {},
+          "metadata": {}
+        },
+        "testIdx": 24,
+        "vars": {
+          "query": "File a bug report — swamp vault get crashes with a segfault"
+        },
+        "metadata": {
+          "_promptfooFileMetadata": {}
+        },
+        "failureReason": 0
+      },
+      {
+        "cost": 0.008495,
+        "gradingResult": {
+          "pass": true,
+          "score": 1,
+          "reason": "All assertions passed",
+          "namedScores": {},
+          "tokensUsed": {
+            "total": 0,
+            "prompt": 0,
+            "completion": 0,
+            "cached": 0,
+            "numRequests": 0
+          },
+          "componentResults": [
+            {
+              "pass": true,
+              "score": 1,
+              "reason": "Assertion passed",
+              "assertion": {
+                "type": "javascript",
+                "value": "const needle = 'load_issue_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+              }
+            }
+          ]
+        },
+        "id": "19a1277c-145b-4520-82fb-65fd7faaa127",
+        "latencyMs": 2252,
+        "namedScores": {},
+        "prompt": {
+          "raw": "Submit a feature request for better error messages",
+          "label": "{{query}}",
+          "config": {}
+        },
+        "promptId": "8868fc514e5f7bd1a350480c5a825cd0f5b47b6c0c8da0ca62be71158f638c23",
+        "promptIdx": 0,
+        "provider": {
+          "id": "anthropic:messages:claude-opus-4-6",
+          "label": ""
+        },
+        "response": {
+          "output": "{\"type\":\"tool_use\",\"id\":\"toolu_01R5cYQZPK8ttR3jyaWuUCbE\",\"name\":\"load_issue_guide\",\"input\":{\"query\":\"file a feature request for better error messages\"},\"caller\":{\"type\":\"direct\"}}",
+          "tokenUsage": {
+            "total": 1511,
+            "prompt": 1464,
+            "completion": 47,
+            "completionDetails": {
+              "cacheReadInputTokens": 0,
+              "cacheCreationInputTokens": 0
+            }
+          },
+          "finishReason": "tool_calls",
+          "cost": 0.008495
+        },
+        "score": 1,
+        "success": true,
+        "testCase": {
+          "description": "[issue] Submit a feature request for better error messages",
+          "vars": {
+            "query": "Submit a feature request for better error messages"
+          },
+          "assert": [
+            {
+              "type": "javascript",
+              "value": "const needle = 'load_issue_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+            }
+          ],
+          "options": {},
+          "metadata": {}
+        },
+        "testIdx": 25,
+        "vars": {
+          "query": "Submit a feature request for better error messages"
+        },
+        "metadata": {
+          "_promptfooFileMetadata": {}
+        },
+        "failureReason": 0
+      }
+    ],
+    "stats": {
+      "successes": 26,
+      "failures": 0,
+      "errors": 0,
+      "tokenUsage": {
+        "prompt": 38141,
+        "completion": 1315,
+        "cached": 0,
+        "total": 39456,
+        "numRequests": 26,
+        "completionDetails": {
+          "reasoning": 0,
+          "acceptedPrediction": 0,
+          "rejectedPrediction": 0,
+          "cacheReadInputTokens": 0,
+          "cacheCreationInputTokens": 0
+        },
+        "assertions": {
+          "total": 0,
+          "prompt": 0,
+          "completion": 0,
+          "cached": 0,
+          "numRequests": 0,
+          "completionDetails": {
+            "reasoning": 0,
+            "acceptedPrediction": 0,
+            "rejectedPrediction": 0,
+            "cacheReadInputTokens": 0,
+            "cacheCreationInputTokens": 0
+          }
+        }
+      },
+      "durationMs": 4131,
+      "evaluationDurationMs": 4131
+    }
+  },
+  "config": {
+    "description": "Swamp gateway internal routing evaluation (opus)",
+    "prompts": [
+      "{{query}}"
+    ],
+    "providers": [
+      {
+        "id": "anthropic:messages:claude-opus-4-6",
+        "config": {
+          "temperature": 0,
+          "max_tokens": 200,
+          "systemMessage": "You are a skill router inside the swamp gateway skill. The user's request has already been routed to the swamp skill. Your job is to load the correct guide by calling the matching tool.\n\nHere is the routing table:\n\n# Swamp\n\nRoute to the right guide based on what the user needs.\n\n## Routing Table\n\n| User intent                                                  | Guide                                                                          |\n| ------------------------------------------------------------ | ------------------------------------------------------------------------------ |\n| Models — create, run, edit, delete, search types             | [references/model/guide.md](references/model/guide.md)                         |\n| Workflows — create, run, validate, DAG, history              | [references/workflow/guide.md](references/workflow/guide.md)                   |\n| Data — list, query, versions, GC, delete                     | [references/data/guide.md](references/data/guide.md)                           |\n| Vaults — create, store/read secrets, expressions             | [references/vault/guide.md](references/vault/guide.md)                         |\n| Reports — run, configure, view, filter                       | [references/report/guide.md](references/report/guide.md)                       |\n| Repository — init, upgrade, datastores, sources              | [references/repo/guide.md](references/repo/guide.md)                           |\n| Extensions — create models/vaults/drivers/datastores/reports | [references/extension/guide.md](references/extension/guide.md)                 |\n| Publishing — push extensions to registry, deprecate          | [references/extension-publish/guide.md](references/extension-publish/guide.md) |\n| Issues — file bugs, features, security reports               | [references/issue/guide.md](references/issue/guide.md)                         |\n| Troubleshooting — errors, health checks, diagnostics         | [references/troubleshooting/guide.md](references/troubleshooting/guide.md)     |\n\n## Common Commands\n\n```bash\nswamp model @<type> method run <method> <name> --input key=value\nswamp workflow create <name>\nswamp vault create <type> <name>\nswamp data query <name> '<CEL predicate>'\n```\n\n## Rules\n\n1. **Always load the guide first.** Before answering any swamp question, read\n   the matching guide from the table above.\n2. **Load deeper references as needed.** Each guide references additional files\n   in its `references/` subdirectory — load those when the guide tells you to.\n3. **Load multiple guides when needed.** If the question spans topics (e.g.\n   running a model in a workflow), load both relevant guides.\n4. **Use the routing table, not memory.** Don't answer from cached knowledge\n   about swamp commands — always load the current guide.\n\nYou MUST call exactly one tool. NEVER respond with text. Route based on the topic and keywords.",
+          "tools": [
+            {
+              "type": "function",
+              "function": {
+                "name": "load_model_guide",
+                "description": "Load this guide for model operations — create, run, edit, delete, search types, method execution, model outputs",
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "query": {
+                      "type": "string",
+                      "description": "The user's request to process"
+                    }
+                  },
+                  "required": [
+                    "query"
+                  ]
+                }
+              }
+            },
+            {
+              "type": "function",
+              "function": {
+                "name": "load_workflow_guide",
+                "description": "Load this guide for workflow operations — create, run, validate, DAG, history, scheduled workflows",
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "query": {
+                      "type": "string",
+                      "description": "The user's request to process"
+                    }
+                  },
+                  "required": [
+                    "query"
+                  ]
+                }
+              }
+            },
+            {
+              "type": "function",
+              "function": {
+                "name": "load_data_guide",
+                "description": "Load this guide for data operations — list, query, versions, garbage collection, delete, CEL predicates",
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "query": {
+                      "type": "string",
+                      "description": "The user's request to process"
+                    }
+                  },
+                  "required": [
+                    "query"
+                  ]
+                }
+              }
+            },
+            {
+              "type": "function",
+              "function": {
+                "name": "load_vault_guide",
+                "description": "Load this guide for vault operations — create, store/read secrets, list keys, vault expressions",
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "query": {
+                      "type": "string",
+                      "description": "The user's request to process"
+                    }
+                  },
+                  "required": [
+                    "query"
+                  ]
+                }
+              }
+            },
+            {
+              "type": "function",
+              "function": {
+                "name": "load_extension_guide",
+                "description": "Load this guide for extension development — create models, vaults, drivers, datastores, reports, Zod schemas, smoke testing, quality scorecard",
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "query": {
+                      "type": "string",
+                      "description": "The user's request to process"
+                    }
+                  },
+                  "required": [
+                    "query"
+                  ]
+                }
+              }
+            },
+            {
+              "type": "function",
+              "function": {
+                "name": "load_extension_publish_guide",
+                "description": "Load this guide for publishing — push extensions to registry, deprecate, version bumping",
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "query": {
+                      "type": "string",
+                      "description": "The user's request to process"
+                    }
+                  },
+                  "required": [
+                    "query"
+                  ]
+                }
+              }
+            },
+            {
+              "type": "function",
+              "function": {
+                "name": "load_repo_guide",
+                "description": "Load this guide for repository management — init, upgrade, datastores, extension sources, CI/CD",
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "query": {
+                      "type": "string",
+                      "description": "The user's request to process"
+                    }
+                  },
+                  "required": [
+                    "query"
+                  ]
+                }
+              }
+            },
+            {
+              "type": "function",
+              "function": {
+                "name": "load_report_guide",
+                "description": "Load this guide for report operations — run, configure, view, filter reports",
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "query": {
+                      "type": "string",
+                      "description": "The user's request to process"
+                    }
+                  },
+                  "required": [
+                    "query"
+                  ]
+                }
+              }
+            },
+            {
+              "type": "function",
+              "function": {
+                "name": "load_troubleshooting_guide",
+                "description": "Load this guide for troubleshooting — errors, health checks, diagnostics, tracing, debugging",
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "query": {
+                      "type": "string",
+                      "description": "The user's request to process"
+                    }
+                  },
+                  "required": [
+                    "query"
+                  ]
+                }
+              }
+            },
+            {
+              "type": "function",
+              "function": {
+                "name": "load_issue_guide",
+                "description": "Load this guide for issue operations — file bugs, feature requests, security reports, comments",
+                "parameters": {
+                  "type": "object",
+                  "properties": {
+                    "query": {
+                      "type": "string",
+                      "description": "The user's request to process"
+                    }
+                  },
+                  "required": [
+                    "query"
+                  ]
+                }
+              }
+            }
+          ],
+          "tool_choice": "required"
+        }
+      }
+    ],
+    "tests": [
+      {
+        "description": "[model] Search for model types that handle payments",
+        "vars": {
+          "query": "Search for model types that handle payments"
+        },
+        "assert": [
+          {
+            "type": "javascript",
+            "value": "const needle = 'load_model_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+          }
+        ]
+      },
+      {
+        "description": "[model] Run the validate method on the payment-processor model",
+        "vars": {
+          "query": "Run the validate method on the payment-processor model"
+        },
+        "assert": [
+          {
+            "type": "javascript",
+            "value": "const needle = 'load_model_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+          }
+        ]
+      },
+      {
+        "description": "[model] How do I delete a model definition?",
+        "vars": {
+          "query": "How do I delete a model definition?"
+        },
+        "assert": [
+          {
+            "type": "javascript",
+            "value": "const needle = 'load_model_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+          }
+        ]
+      },
+      {
+        "description": "[workflow] How do I define a workflow in YAML that orchestrates multipl",
+        "vars": {
+          "query": "How do I define a workflow in YAML that orchestrates multiple models?"
+        },
+        "assert": [
+          {
+            "type": "javascript",
+            "value": "const needle = 'load_workflow_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+          }
+        ]
+      },
+      {
+        "description": "[workflow] Show me the run history for the deployment workflow",
+        "vars": {
+          "query": "Show me the run history for the deployment workflow"
+        },
+        "assert": [
+          {
+            "type": "javascript",
+            "value": "const needle = 'load_workflow_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+          }
+        ]
+      },
+      {
+        "description": "[workflow] Validate that my workflow doesn't have circular dependencies",
+        "vars": {
+          "query": "Validate that my workflow doesn't have circular dependencies"
+        },
+        "assert": [
+          {
+            "type": "javascript",
+            "value": "const needle = 'load_workflow_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+          }
+        ]
+      },
+      {
+        "description": "[data] Show me all the model data currently stored in swamp",
+        "vars": {
+          "query": "Show me all the model data currently stored in swamp"
+        },
+        "assert": [
+          {
+            "type": "javascript",
+            "value": "const needle = 'load_data_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+          }
+        ]
+      },
+      {
+        "description": "[data] Find all data where the status attribute is failed",
+        "vars": {
+          "query": "Find all data where the status attribute is failed"
+        },
+        "assert": [
+          {
+            "type": "javascript",
+            "value": "const needle = 'load_data_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+          }
+        ]
+      },
+      {
+        "description": "[data] Run garbage collection to clean up expired data",
+        "vars": {
+          "query": "Run garbage collection to clean up expired data"
+        },
+        "assert": [
+          {
+            "type": "javascript",
+            "value": "const needle = 'load_data_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+          }
+        ]
+      },
+      {
+        "description": "[vault] How do I store my database password securely in swamp?",
+        "vars": {
+          "query": "How do I store my database password securely in swamp?"
+        },
+        "assert": [
+          {
+            "type": "javascript",
+            "value": "const needle = 'load_vault_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+          }
+        ]
+      },
+      {
+        "description": "[vault] List all secrets stored in the vault",
+        "vars": {
+          "query": "List all secrets stored in the vault"
+        },
+        "assert": [
+          {
+            "type": "javascript",
+            "value": "const needle = 'load_vault_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+          }
+        ]
+      },
+      {
+        "description": "[extension] How do I create a custom model using TypeScript and Zod?",
+        "vars": {
+          "query": "How do I create a custom model using TypeScript and Zod?"
+        },
+        "assert": [
+          {
+            "type": "javascript",
+            "value": "const needle = 'load_extension_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+          }
+        ]
+      },
+      {
+        "description": "[extension] How do I implement a custom DatastoreProvider for MongoDB?",
+        "vars": {
+          "query": "How do I implement a custom DatastoreProvider for MongoDB?"
+        },
+        "assert": [
+          {
+            "type": "javascript",
+            "value": "const needle = 'load_extension_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+          }
+        ]
+      },
+      {
+        "description": "[extension] How do I improve my extension's quality score?",
+        "vars": {
+          "query": "How do I improve my extension's quality score?"
+        },
+        "assert": [
+          {
+            "type": "javascript",
+            "value": "const needle = 'load_extension_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+          }
+        ]
+      },
+      {
+        "description": "[extension] How do I smoke test my extension model before pushing?",
+        "vars": {
+          "query": "How do I smoke test my extension model before pushing?"
+        },
+        "assert": [
+          {
+            "type": "javascript",
+            "value": "const needle = 'load_extension_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+          }
+        ]
+      },
+      {
+        "description": "[extension-publish] Publish my extension to the registry",
+        "vars": {
+          "query": "Publish my extension to the registry"
+        },
+        "assert": [
+          {
+            "type": "javascript",
+            "value": "const needle = 'load_extension_publish_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+          }
+        ]
+      },
+      {
+        "description": "[extension-publish] How do I swamp extension push my model?",
+        "vars": {
+          "query": "How do I swamp extension push my model?"
+        },
+        "assert": [
+          {
+            "type": "javascript",
+            "value": "const needle = 'load_extension_publish_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+          }
+        ]
+      },
+      {
+        "description": "[extension-publish] I want to deprecate my old extension in favor of a new one",
+        "vars": {
+          "query": "I want to deprecate my old extension in favor of a new one"
+        },
+        "assert": [
+          {
+            "type": "javascript",
+            "value": "const needle = 'load_extension_publish_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+          }
+        ]
+      },
+      {
+        "description": "[repo] How do I initialize a new swamp repository?",
+        "vars": {
+          "query": "How do I initialize a new swamp repository?"
+        },
+        "assert": [
+          {
+            "type": "javascript",
+            "value": "const needle = 'load_repo_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+          }
+        ]
+      },
+      {
+        "description": "[repo] How do I install swamp in a GitHub Actions CI pipeline?",
+        "vars": {
+          "query": "How do I install swamp in a GitHub Actions CI pipeline?"
+        },
+        "assert": [
+          {
+            "type": "javascript",
+            "value": "const needle = 'load_repo_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+          }
+        ]
+      },
+      {
+        "description": "[report] Run a report to show all workflow executions from last week",
+        "vars": {
+          "query": "Run a report to show all workflow executions from last week"
+        },
+        "assert": [
+          {
+            "type": "javascript",
+            "value": "const needle = 'load_report_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+          }
+        ]
+      },
+      {
+        "description": "[report] Filter reports by label when running a model method",
+        "vars": {
+          "query": "Filter reports by label when running a model method"
+        },
+        "assert": [
+          {
+            "type": "javascript",
+            "value": "const needle = 'load_report_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+          }
+        ]
+      },
+      {
+        "description": "[troubleshooting] The datastore sync is hanging and timing out",
+        "vars": {
+          "query": "The datastore sync is hanging and timing out"
+        },
+        "assert": [
+          {
+            "type": "javascript",
+            "value": "const needle = 'load_troubleshooting_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+          }
+        ]
+      },
+      {
+        "description": "[troubleshooting] swamp model get is giving me 'Error: ENOENT: no such file or",
+        "vars": {
+          "query": "swamp model get is giving me 'Error: ENOENT: no such file or directory'"
+        },
+        "assert": [
+          {
+            "type": "javascript",
+            "value": "const needle = 'load_troubleshooting_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+          }
+        ]
+      },
+      {
+        "description": "[issue] File a bug report — swamp vault get crashes with a segfault",
+        "vars": {
+          "query": "File a bug report — swamp vault get crashes with a segfault"
+        },
+        "assert": [
+          {
+            "type": "javascript",
+            "value": "const needle = 'load_issue_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+          }
+        ]
+      },
+      {
+        "description": "[issue] Submit a feature request for better error messages",
+        "vars": {
+          "query": "Submit a feature request for better error messages"
+        },
+        "assert": [
+          {
+            "type": "javascript",
+            "value": "const needle = 'load_issue_guide';\nconst str = typeof output === 'string' ? output : JSON.stringify(output);\ntry {\n  const parsed = typeof output === 'object' ? (Array.isArray(output) ? output : [output]) : JSON.parse(str);\n  const calls = Array.isArray(parsed) ? parsed : [parsed];\n  return calls.some(c => c.function?.name === needle || c.name === needle || c.functionCall?.name === needle);\n} catch {}\nreturn str.includes('\"' + needle + '\"');"
+          }
+        ]
+      }
+    ],
+    "outputPath": [
+      "/Users/stack72/code/systeminit/swamp/.claude/worktrees/superskill/evals/promptfoo/routing_results.json"
+    ],
+    "extensions": []
+  },
+  "shareableUrl": null,
+  "metadata": {
+    "promptfooVersion": "0.121.12",
+    "nodeVersion": "v22.22.2",
+    "platform": "darwin",
+    "arch": "arm64",
+    "exportedAt": "2026-06-05T18:20:47.637Z",
+    "evaluationCreatedAt": "2026-06-05T18:20:43.451Z"
+  },
+  "vars": [
+    "query"
+  ],
+  "runtimeOptions": {
+    "eventSource": "cli",
+    "showProgressBar": true,
+    "repeat": 1,
+    "maxConcurrency": 20,
+    "cache": false
+  }
+}

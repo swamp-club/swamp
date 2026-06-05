@@ -128,8 +128,8 @@ swamp repo upgrade --tool cursor
 Extend Swamp with custom TypeScript models. Place them in `extensions/models/`
 (or configure via `SWAMP_MODELS_DIR` or `.swamp.yaml`).
 
-See the extension model skill in your skills directory (e.g.
-`.claude/skills/swamp-extension-model/SKILL.md` for Claude Code) for details.
+See the swamp skill in your skills directory (e.g.
+`.claude/skills/swamp/SKILL.md` for Claude Code) for details.
 
 ## Developer Guide
 

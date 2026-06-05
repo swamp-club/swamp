@@ -391,8 +391,8 @@ export class CelEvaluator {
             "synchronously-evaluated contexts like forEach.in. " +
             "Move the async call into a parent workflow's task.inputs " +
             "(which IS awaited) and pass the resolved value to a child " +
-            "workflow. See: .claude/skills/swamp-workflow/references/" +
-            "nested-workflows.md#when-to-use-nested-workflows",
+            "workflow. See: .claude/skills/swamp/references/workflow/" +
+            "references/nested-workflows.md#when-to-use-nested-workflows",
           expression,
         );
       }

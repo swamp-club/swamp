@@ -46,26 +46,26 @@
   {
     "query": "Create a model for me",
     "should_trigger": false,
-    "note": "Model creation -> swamp-model"
+    "note": "Model creation -> swamp skill"
   },
   {
     "query": "How do I publish my extension?",
     "should_trigger": false,
-    "note": "Publishing -> swamp-extension-publish"
+    "note": "Publishing -> swamp skill"
   },
   {
     "query": "Create a vault for my AWS secrets",
     "should_trigger": false,
-    "note": "Vault management -> swamp-vault"
+    "note": "Vault management -> swamp skill"
   },
   {
     "query": "Run my workflow",
     "should_trigger": false,
-    "note": "Workflow execution -> swamp-workflow"
+    "note": "Workflow execution -> swamp skill"
   },
   {
     "query": "Initialize a swamp repo",
     "should_trigger": false,
-    "note": "Repo init -> swamp-repo"
+    "note": "Repo init -> swamp skill"
   }
 ]

@@ -23,9 +23,9 @@ import { join } from "@std/path";
  * Represents a skill that can be bundled with swamp.
  */
 export interface SkillInfo {
-  /** Relative path from .claude/skills (e.g., "swamp-model/SKILL.md") */
+  /** Relative path from .claude/skills (e.g., "swamp/SKILL.md") */
   relativePath: string;
-  /** Skill name derived from directory (e.g., "swamp-model") */
+  /** Skill name derived from directory (e.g., "swamp") */
   name: string;
 }
 
@@ -33,298 +33,336 @@ export interface SkillInfo {
  * List of skills to bundle with the swamp binary.
  */
 const BUNDLED_SKILLS: SkillInfo[] = [
-  { relativePath: "swamp-data/SKILL.md", name: "swamp-data" },
+  // Gateway skill
+  { relativePath: "swamp/SKILL.md", name: "swamp" },
+  // data
+  { relativePath: "swamp/references/data/guide.md", name: "swamp" },
   {
-    relativePath: "swamp-data/references/concepts.md",
-    name: "swamp-data",
+    relativePath: "swamp/references/data/references/concepts.md",
+    name: "swamp",
   },
   {
-    relativePath: "swamp-data/references/data-ownership.md",
-    name: "swamp-data",
+    relativePath: "swamp/references/data/references/data-ownership.md",
+    name: "swamp",
   },
   {
-    relativePath: "swamp-data/references/examples.md",
-    name: "swamp-data",
+    relativePath: "swamp/references/data/references/examples.md",
+    name: "swamp",
   },
   {
-    relativePath: "swamp-data/references/expressions.md",
-    name: "swamp-data",
+    relativePath: "swamp/references/data/references/expressions.md",
+    name: "swamp",
   },
+  { relativePath: "swamp/references/data/references/fields.md", name: "swamp" },
   {
-    relativePath: "swamp-data/references/output-shapes.md",
-    name: "swamp-data",
+    relativePath: "swamp/references/data/references/output-shapes.md",
+    name: "swamp",
   },
   {
-    relativePath: "swamp-data/references/troubleshooting.md",
-    name: "swamp-data",
+    relativePath: "swamp/references/data/references/troubleshooting.md",
+    name: "swamp",
   },
+  // model
+  { relativePath: "swamp/references/model/guide.md", name: "swamp" },
   {
-    relativePath: "swamp-data/references/fields.md",
-    name: "swamp-data",
+    relativePath: "swamp/references/model/references/data-chaining.md",
+    name: "swamp",
   },
-  { relativePath: "swamp-model/SKILL.md", name: "swamp-model" },
   {
-    relativePath: "swamp-model/references/data-chaining.md",
-    name: "swamp-model",
+    relativePath: "swamp/references/model/references/data-ownership.md",
+    name: "swamp",
   },
   {
-    relativePath: "swamp-model/references/data-ownership.md",
-    name: "swamp-model",
+    relativePath: "swamp/references/model/references/direct-execution.md",
+    name: "swamp",
   },
   {
-    relativePath: "swamp-model/references/examples.md",
-    name: "swamp-model",
+    relativePath: "swamp/references/model/references/examples.md",
+    name: "swamp",
   },
   {
-    relativePath: "swamp-model/references/expressions.md",
-    name: "swamp-model",
+    relativePath: "swamp/references/model/references/execution-drivers.md",
+    name: "swamp",
   },
   {
-    relativePath: "swamp-model/references/troubleshooting.md",
-    name: "swamp-model",
+    relativePath: "swamp/references/model/references/expressions.md",
+    name: "swamp",
   },
   {
-    relativePath: "swamp-model/references/scenarios.md",
-    name: "swamp-model",
+    relativePath: "swamp/references/model/references/outputs.md",
+    name: "swamp",
   },
   {
-    relativePath: "swamp-model/references/outputs.md",
-    name: "swamp-model",
+    relativePath: "swamp/references/model/references/scenarios.md",
+    name: "swamp",
   },
-  { relativePath: "swamp-repo/SKILL.md", name: "swamp-repo" },
   {
-    relativePath: "swamp-repo/references/structure.md",
-    name: "swamp-repo",
+    relativePath: "swamp/references/model/references/troubleshooting.md",
+    name: "swamp",
   },
+  // workflow
+  { relativePath: "swamp/references/workflow/guide.md", name: "swamp" },
   {
-    relativePath: "swamp-repo/references/troubleshooting.md",
-    name: "swamp-repo",
+    relativePath: "swamp/references/workflow/references/data-chaining.md",
+    name: "swamp",
   },
   {
-    relativePath: "swamp-repo/references/ci-integration.md",
-    name: "swamp-repo",
+    relativePath: "swamp/references/workflow/references/direct-execution.md",
+    name: "swamp",
   },
   {
-    relativePath: "swamp-report/SKILL.md",
-    name: "swamp-report",
+    relativePath: "swamp/references/workflow/references/execution-drivers.md",
+    name: "swamp",
   },
   {
-    relativePath: "swamp-report/references/report-types.md",
-    name: "swamp-report",
+    relativePath:
+      "swamp/references/workflow/references/expressions-and-foreach.md",
+    name: "swamp",
   },
   {
-    relativePath: "swamp-report/references/testing.md",
-    name: "swamp-report",
+    relativePath: "swamp/references/workflow/references/nested-workflows.md",
+    name: "swamp",
   },
-  { relativePath: "swamp-workflow/SKILL.md", name: "swamp-workflow" },
   {
-    relativePath: "swamp-workflow/references/data-chaining.md",
-    name: "swamp-workflow",
+    relativePath: "swamp/references/workflow/references/scenarios.md",
+    name: "swamp",
   },
+  // repo
+  { relativePath: "swamp/references/repo/guide.md", name: "swamp" },
   {
-    relativePath: "swamp-workflow/references/scenarios.md",
-    name: "swamp-workflow",
+    relativePath: "swamp/references/repo/references/ci-integration.md",
+    name: "swamp",
   },
   {
-    relativePath: "swamp-workflow/references/nested-workflows.md",
-    name: "swamp-workflow",
+    relativePath: "swamp/references/repo/references/structure.md",
+    name: "swamp",
   },
   {
-    relativePath: "swamp-workflow/references/expressions-and-foreach.md",
-    name: "swamp-workflow",
+    relativePath: "swamp/references/repo/references/troubleshooting.md",
+    name: "swamp",
   },
+  // report
+  { relativePath: "swamp/references/report/guide.md", name: "swamp" },
   {
-    relativePath: "swamp-extension/SKILL.md",
-    name: "swamp-extension",
+    relativePath: "swamp/references/report/references/control-model.md",
+    name: "swamp",
   },
   {
-    relativePath: "swamp-extension/references/adversarial-review.md",
-    name: "swamp-extension",
+    relativePath: "swamp/references/report/references/filtering.md",
+    name: "swamp",
   },
   {
-    relativePath: "swamp-extension/references/model/api.md",
-    name: "swamp-extension",
+    relativePath: "swamp/references/report/references/report-types.md",
+    name: "swamp",
   },
   {
-    relativePath: "swamp-extension/references/model/checks.md",
-    name: "swamp-extension",
+    relativePath: "swamp/references/report/references/testing.md",
+    name: "swamp",
   },
+  // extension
+  { relativePath: "swamp/references/extension/guide.md", name: "swamp" },
   {
-    relativePath: "swamp-extension/references/model/docker-execution.md",
-    name: "swamp-extension",
+    relativePath: "swamp/references/extension/references/adversarial-review.md",
+    name: "swamp",
   },
   {
-    relativePath: "swamp-extension/references/model/examples.md",
-    name: "swamp-extension",
+    relativePath: "swamp/references/extension/references/datastore/api.md",
+    name: "swamp",
   },
   {
-    relativePath: "swamp-extension/references/model/scenarios.md",
-    name: "swamp-extension",
+    relativePath: "swamp/references/extension/references/datastore/examples.md",
+    name: "swamp",
   },
   {
-    relativePath: "swamp-extension/references/model/skills.md",
-    name: "swamp-extension",
+    relativePath: "swamp/references/extension/references/datastore/testing.md",
+    name: "swamp",
   },
   {
-    relativePath: "swamp-extension/references/model/smoke_testing.md",
-    name: "swamp-extension",
+    relativePath:
+      "swamp/references/extension/references/datastore/troubleshooting.md",
+    name: "swamp",
   },
   {
-    relativePath: "swamp-extension/references/model/testing.md",
-    name: "swamp-extension",
+    relativePath: "swamp/references/extension/references/driver/api.md",
+    name: "swamp",
   },
   {
-    relativePath: "swamp-extension/references/model/troubleshooting.md",
-    name: "swamp-extension",
+    relativePath: "swamp/references/extension/references/driver/examples.md",
+    name: "swamp",
   },
   {
-    relativePath: "swamp-extension/references/model/typing.md",
-    name: "swamp-extension",
+    relativePath: "swamp/references/extension/references/driver/testing.md",
+    name: "swamp",
   },
   {
-    relativePath: "swamp-extension/references/model/upgrades.md",
-    name: "swamp-extension",
+    relativePath:
+      "swamp/references/extension/references/driver/troubleshooting.md",
+    name: "swamp",
   },
   {
-    relativePath: "swamp-extension/references/vault/api.md",
-    name: "swamp-extension",
+    relativePath: "swamp/references/extension/references/model/api.md",
+    name: "swamp",
   },
   {
-    relativePath: "swamp-extension/references/vault/examples.md",
-    name: "swamp-extension",
+    relativePath: "swamp/references/extension/references/model/checks.md",
+    name: "swamp",
   },
   {
-    relativePath: "swamp-extension/references/vault/testing.md",
-    name: "swamp-extension",
+    relativePath:
+      "swamp/references/extension/references/model/docker-execution.md",
+    name: "swamp",
   },
   {
-    relativePath: "swamp-extension/references/vault/troubleshooting.md",
-    name: "swamp-extension",
+    relativePath: "swamp/references/extension/references/model/examples.md",
+    name: "swamp",
   },
   {
-    relativePath: "swamp-extension/references/driver/api.md",
-    name: "swamp-extension",
+    relativePath: "swamp/references/extension/references/model/scenarios.md",
+    name: "swamp",
   },
   {
-    relativePath: "swamp-extension/references/driver/examples.md",
-    name: "swamp-extension",
+    relativePath: "swamp/references/extension/references/model/skills.md",
+    name: "swamp",
   },
   {
-    relativePath: "swamp-extension/references/driver/testing.md",
-    name: "swamp-extension",
+    relativePath:
+      "swamp/references/extension/references/model/smoke_testing.md",
+    name: "swamp",
   },
   {
-    relativePath: "swamp-extension/references/driver/troubleshooting.md",
-    name: "swamp-extension",
+    relativePath: "swamp/references/extension/references/model/testing.md",
+    name: "swamp",
   },
   {
-    relativePath: "swamp-extension/references/datastore/api.md",
-    name: "swamp-extension",
+    relativePath:
+      "swamp/references/extension/references/model/troubleshooting.md",
+    name: "swamp",
   },
   {
-    relativePath: "swamp-extension/references/datastore/examples.md",
-    name: "swamp-extension",
+    relativePath: "swamp/references/extension/references/model/typing.md",
+    name: "swamp",
   },
   {
-    relativePath: "swamp-extension/references/datastore/testing.md",
-    name: "swamp-extension",
+    relativePath: "swamp/references/extension/references/model/upgrades.md",
+    name: "swamp",
   },
   {
-    relativePath: "swamp-extension/references/datastore/troubleshooting.md",
-    name: "swamp-extension",
+    relativePath: "swamp/references/extension/references/quality/rubric.md",
+    name: "swamp",
   },
   {
-    relativePath: "swamp-extension/references/report/api.md",
-    name: "swamp-extension",
+    relativePath: "swamp/references/extension/references/quality/templates.md",
+    name: "swamp",
   },
   {
-    relativePath: "swamp-extension/references/report/report-types.md",
-    name: "swamp-extension",
+    relativePath: "swamp/references/extension/references/report/api.md",
+    name: "swamp",
   },
   {
-    relativePath: "swamp-extension/references/report/testing.md",
-    name: "swamp-extension",
+    relativePath:
+      "swamp/references/extension/references/report/report-types.md",
+    name: "swamp",
   },
   {
-    relativePath: "swamp-extension/references/quality/rubric.md",
-    name: "swamp-extension",
+    relativePath: "swamp/references/extension/references/report/testing.md",
+    name: "swamp",
   },
   {
-    relativePath: "swamp-extension/references/quality/templates.md",
-    name: "swamp-extension",
+    relativePath: "swamp/references/extension/references/vault/api.md",
+    name: "swamp",
   },
   {
-    relativePath: "swamp-extension-publish/SKILL.md",
-    name: "swamp-extension-publish",
+    relativePath: "swamp/references/extension/references/vault/examples.md",
+    name: "swamp",
   },
   {
-    relativePath: "swamp-extension-publish/references/publishing.md",
-    name: "swamp-extension-publish",
+    relativePath: "swamp/references/extension/references/vault/testing.md",
+    name: "swamp",
   },
   {
-    relativePath: "swamp-model/references/execution-drivers.md",
-    name: "swamp-model",
+    relativePath:
+      "swamp/references/extension/references/vault/troubleshooting.md",
+    name: "swamp",
   },
+  // extension-publish
   {
-    relativePath: "swamp-workflow/references/execution-drivers.md",
-    name: "swamp-workflow",
+    relativePath: "swamp/references/extension-publish/guide.md",
+    name: "swamp",
   },
   {
-    relativePath: "swamp-vault/SKILL.md",
-    name: "swamp-vault",
+    relativePath: "swamp/references/extension-publish/references/publishing.md",
+    name: "swamp",
   },
+  // vault
+  { relativePath: "swamp/references/vault/guide.md", name: "swamp" },
   {
-    relativePath: "swamp-vault/references/providers.md",
-    name: "swamp-vault",
+    relativePath: "swamp/references/vault/references/examples.md",
+    name: "swamp",
   },
   {
-    relativePath: "swamp-vault/references/troubleshooting.md",
-    name: "swamp-vault",
+    relativePath: "swamp/references/vault/references/providers.md",
+    name: "swamp",
   },
   {
-    relativePath: "swamp-vault/references/examples.md",
-    name: "swamp-vault",
+    relativePath: "swamp/references/vault/references/troubleshooting.md",
+    name: "swamp",
   },
   {
-    relativePath: "swamp-vault/references/user-defined-vaults.md",
-    name: "swamp-vault",
+    relativePath: "swamp/references/vault/references/user-defined-vaults.md",
+    name: "swamp",
   },
+  // issue
+  { relativePath: "swamp/references/issue/guide.md", name: "swamp" },
   {
-    relativePath: "swamp-issue/SKILL.md",
-    name: "swamp-issue",
+    relativePath: "swamp/references/issue/references/extension_routing.md",
+    name: "swamp",
   },
   {
-    relativePath: "swamp-issue/references/formatting.md",
-    name: "swamp-issue",
+    relativePath: "swamp/references/issue/references/formatting.md",
+    name: "swamp",
   },
   {
-    relativePath: "swamp-issue/references/output_shapes.md",
-    name: "swamp-issue",
+    relativePath: "swamp/references/issue/references/output_shapes.md",
+    name: "swamp",
   },
   {
-    relativePath: "swamp-troubleshooting/SKILL.md",
-    name: "swamp-troubleshooting",
+    relativePath: "swamp/references/issue/references/sanitization.md",
+    name: "swamp",
   },
   {
-    relativePath: "swamp-troubleshooting/references/checks.md",
-    name: "swamp-troubleshooting",
+    relativePath: "swamp/references/issue/references/security_routing.md",
+    name: "swamp",
   },
   {
-    relativePath: "swamp-troubleshooting/references/error-inspection.md",
-    name: "swamp-troubleshooting",
+    relativePath: "swamp/references/issue/references/version_check.md",
+    name: "swamp",
   },
+  // troubleshooting
+  { relativePath: "swamp/references/troubleshooting/guide.md", name: "swamp" },
   {
-    relativePath: "swamp-troubleshooting/references/health-checks.md",
-    name: "swamp-troubleshooting",
+    relativePath: "swamp/references/troubleshooting/references/checks.md",
+    name: "swamp",
   },
   {
-    relativePath: "swamp-troubleshooting/references/source-reading.md",
-    name: "swamp-troubleshooting",
+    relativePath:
+      "swamp/references/troubleshooting/references/error-inspection.md",
+    name: "swamp",
   },
   {
-    relativePath: "swamp-troubleshooting/references/tracing.md",
-    name: "swamp-troubleshooting",
+    relativePath:
+      "swamp/references/troubleshooting/references/health-checks.md",
+    name: "swamp",
   },
+  {
+    relativePath:
+      "swamp/references/troubleshooting/references/source-reading.md",
+    name: "swamp",
+  },
+  {
+    relativePath: "swamp/references/troubleshooting/references/tracing.md",
+    name: "swamp",
+  },
+  // swamp-getting-started (standalone skill)
   {
     relativePath: "swamp-getting-started/SKILL.md",
     name: "swamp-getting-started",

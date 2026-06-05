@@ -39,7 +39,7 @@ import { z } from "zod";
  * New checks are added as {@link ReviewRule} entries in
  * {@link DEFAULT_REVIEW_RULES}. Each rule is self-contained: it declares the
  * adversarial-review dimension it relates to (see
- * `.claude/skills/swamp-extension/references/adversarial-review.md`), the
+ * `.claude/skills/swamp/references/extension/references/adversarial-review.md`), the
  * content kinds it inspects, its severity, and a pure detector.
  */
 
@@ -295,7 +295,7 @@ export interface ReviewDimension {
 
 /**
  * The catalog of adversarial-review dimensions. Single source of truth,
- * mirroring `.claude/skills/swamp-extension/references/adversarial-review.md`.
+ * mirroring `.claude/skills/swamp/references/extension/references/adversarial-review.md`.
  */
 export const REVIEW_DIMENSIONS: ReviewDimension[] = [
   // Universal
@@ -527,7 +527,7 @@ export function evaluateReviewReport(
       message:
         "No adversarial review recorded for the current code — perform the " +
         "review and write the report here (run with --dry-run --json for the " +
-        "fill-in skeleton, or see the swamp-extension skill).",
+        "fill-in skeleton, or see the swamp skill).",
       skeleton: ctx.skeleton,
     });
     return findings;

@@ -38,7 +38,7 @@ function makeInitDeps(
         path: "/repo",
         version: "1.0.0",
         initializedAt: "2026-01-01T00:00:00Z",
-        skillsCopied: ["swamp-model", "swamp-workflow"],
+        skillsCopied: ["swamp"],
         instructionsFileCreated: true,
         settingsCreated: true,
         gitignoreAction: "created",
@@ -59,7 +59,7 @@ function makeUpgradeDeps(
         previousVersion: "0.9.0",
         newVersion: "1.0.0",
         upgradedAt: "2026-01-01T00:00:00Z",
-        skillsUpdated: ["swamp-model"],
+        skillsUpdated: ["swamp"],
         instructionsUpdated: true,
         settingsUpdated: false,
         gitignoreAction: "updated",
@@ -94,7 +94,7 @@ Deno.test("repoInit: yields completed on successful init", async () => {
   assertEquals(completed.kind, "completed");
   assertEquals(completed.data.path, "/repo");
   assertEquals(completed.data.version, "1.0.0");
-  assertEquals(completed.data.skillsCopied, ["swamp-model", "swamp-workflow"]);
+  assertEquals(completed.data.skillsCopied, ["swamp"]);
   assertEquals(completed.data.instructionsFileCreated, true);
   assertEquals(completed.data.settingsCreated, true);
   assertEquals(completed.data.gitignoreAction, "created");
@@ -253,7 +253,7 @@ Deno.test("repoUpgrade: yields completed on successful upgrade", async () => {
   assertEquals(completed.data.path, "/repo");
   assertEquals(completed.data.previousVersion, "0.9.0");
   assertEquals(completed.data.newVersion, "1.0.0");
-  assertEquals(completed.data.skillsUpdated, ["swamp-model"]);
+  assertEquals(completed.data.skillsUpdated, ["swamp"]);
   assertEquals(completed.data.instructionsUpdated, true);
   assertEquals(completed.data.settingsUpdated, false);
   assertEquals(completed.data.gitignoreAction, "updated");

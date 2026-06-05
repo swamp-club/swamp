@@ -427,8 +427,7 @@ Deno.test("RepoService.init generates CLAUDE.md with skills section", async () =
     const content = await Deno.readTextFile(claudeMdPath);
 
     assertStringIncludes(content, "## Skills");
-    assertStringIncludes(content, "swamp-model");
-    assertStringIncludes(content, "swamp-workflow");
+    assertStringIncludes(content, "`swamp`");
     assertStringIncludes(content, "plan mode");
   });
 });
@@ -1888,11 +1887,11 @@ This repository is managed with [swamp](https://github.com/swamp-club/swamp).
 
 ## Skills
 
-- \`swamp-model\` - Work with swamp models
+- \`swamp\` - Swamp CLI
 
 ## Getting Started
 
-Always start by using the \`swamp-model\` skill to work with swamp models.
+Always start by using the \`swamp\` skill to work with swamp models.
 
 ## Commands
 
@@ -1913,7 +1912,7 @@ Use \`swamp --help\` to see available commands.
     );
     assertStringIncludes(content, "<!-- END swamp managed section -->");
     // Updated template content
-    assertStringIncludes(content, "swamp-workflow");
+    assertStringIncludes(content, "`swamp`");
   });
 });
 
@@ -2517,7 +2516,7 @@ Deno.test("detectSupersededSkills: detects superseded skill directories", async 
     await Deno.mkdir(join(tempDir, "swamp-extension-model"));
     await Deno.mkdir(join(tempDir, "swamp-data-query"));
     // Non-superseded dir should be ignored
-    await Deno.mkdir(join(tempDir, "swamp-model"));
+    await Deno.mkdir(join(tempDir, "swamp"));
 
     const result = await detectSupersededSkills(tempDir);
     assertEquals(result.sort(), ["swamp-data-query", "swamp-extension-model"]);

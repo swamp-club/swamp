@@ -24,7 +24,7 @@
  *
  * Usage: deno run --allow-read generate_config.ts [--model <alias>]
  *
- * Supported model aliases: sonnet, opus, gpt-4.1, gemini-2.5-pro
+ * Supported model aliases: sonnet, opus, gpt-5.4, gemini-2.5-pro
  * Default: sonnet
  */
 
@@ -56,23 +56,18 @@ const PROVIDER_REGISTRY: Record<string, ProviderDefinition> = {
     id: "google:gemini-2.5-pro",
     apiKeyEnv: "GOOGLE_API_KEY",
   },
+  "gemini-3.1-pro": {
+    id: "google:gemini-3.1-pro-preview",
+    apiKeyEnv: "GOOGLE_API_KEY",
+  },
 };
 
 const VALID_MODELS = Object.keys(PROVIDER_REGISTRY);
 
 const SKILLS_DIR = join(Deno.cwd(), ".claude", "skills");
 const SKILL_NAMES = [
-  "swamp-data",
-  "swamp-extension",
-  "swamp-extension-publish",
+  "swamp",
   "swamp-getting-started",
-  "swamp-issue",
-  "swamp-model",
-  "swamp-repo",
-  "swamp-report",
-  "swamp-troubleshooting",
-  "swamp-vault",
-  "swamp-workflow",
 ];
 
 interface EvalQuery {
@@ -157,7 +152,6 @@ async function main(): Promise<void> {
     );
     const frontmatter = parseSkillFrontmatter(skillMdContent);
 
-    // Add tool definition
     tools.push({
       type: "function",
       function: {
@@ -238,8 +232,28 @@ async function main(): Promise<void> {
     }
   }
 
+  // Escape-hatch tool for queries that don't match any skill
+  tools.push({
+    type: "function",
+    function: {
+      name: "no_match",
+      description:
+        "Use when the query does not match any available skill. Route here for general coding questions, git/PR operations, architecture planning, worktree management, cron/agent scheduling, or any task unrelated to the swamp CLI.",
+      parameters: {
+        type: "object",
+        properties: {
+          query: {
+            type: "string",
+            description: "The user's request",
+          },
+        },
+        required: ["query"],
+      },
+    },
+  });
+
   const systemMessage =
-    "You are a skill router for swamp, an AI-native automation framework. Your ONLY job is to route user requests to the correct skill by making a tool call. You MUST call exactly one tool for every request. A text-only response with no tool call is ALWAYS wrong — every request has a best-matching skill. NEVER respond with text. NEVER ask clarifying questions. Even if the request is vague or missing details, route it to the best-matching skill based on the topic and keywords. The skill itself will handle gathering any missing information from the user.";
+    "You are a skill router for swamp, an AI-native automation framework. Your ONLY job is to route user requests to the correct skill by making a tool call. You MUST call exactly one tool for every request. If the request is NOT about the swamp CLI (e.g. general coding, git, PRs, architecture planning, worktree management, cron scheduling), call the no_match tool. NEVER respond with text. NEVER ask clarifying questions.";
 
   const config = {
     description: `Swamp skill trigger routing evaluation (${modelAlias})`,
@@ -252,6 +266,7 @@ async function main(): Promise<void> {
           max_tokens: 200,
           systemMessage,
           tools,
+          tool_choice: "required",
         },
         ...(provider.delay ? { delay: provider.delay } : {}),
       },

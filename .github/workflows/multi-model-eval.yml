@@ -21,13 +21,15 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - model: sonnet
-            concurrency: 20
           - model: opus
+            concurrency: 20
+          - model: sonnet
             concurrency: 20
           - model: gpt-5.4
             concurrency: 1
           - model: gemini-2.5-pro
+            concurrency: 20
+          - model: gemini-3.1-pro
             concurrency: 20
     steps:
       - name: Check if model is selected
@@ -69,7 +71,9 @@ jobs:
         uses: actions/upload-artifact@v6
         with:
           name: eval-results-${{ matrix.model }}
-          path: evals/promptfoo/results.json
+          path: |
+            evals/promptfoo/results.json
+            evals/promptfoo/routing_results.json
           retention-days: 14
 
   analysis:

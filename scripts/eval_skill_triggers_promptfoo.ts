@@ -18,12 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Runs skill trigger evaluations using promptfoo. This replaces the previous
- * approach that spawned hundreds of `claude -p` subprocesses with lightweight
- * API calls via promptfoo's tool-call evaluation.
- *
- * The promptfoo config is regenerated at eval time from
- * .claude/skills/<skill>/evals/trigger_evals.json using evals/promptfoo/generate_config.ts.
+ * Runs skill evaluations using promptfoo. Two phases:
+ *   1. Trigger evals — does the swamp skill activate for the right queries?
+ *   2. Routing evals — once activated, does it route to the correct guide?
  *
  * Usage: deno run eval-skill-triggers [--model <alias>] [--concurrency <n>] [--threshold <0.0-1.0>]
  *
@@ -43,6 +40,7 @@ const API_KEY_ENV: Record<string, string> = {
   "opus": "ANTHROPIC_API_KEY",
   "gpt-5.4": "OPENAI_API_KEY",
   "gemini-2.5-pro": "GOOGLE_API_KEY",
+  "gemini-3.1-pro": "GOOGLE_API_KEY",
 };
 
 // Maps model aliases to the API model ID used for preflight checks.
@@ -51,6 +49,7 @@ const PREFLIGHT_MODEL_ID: Record<string, string> = {
   "opus": "claude-opus-4-6",
   "gpt-5.4": "gpt-5.4",
   "gemini-2.5-pro": "gemini-2.5-pro",
+  "gemini-3.1-pro": "gemini-3.1-pro-preview",
 };
 
 interface PreflightConfig {
@@ -141,6 +140,7 @@ const TOKEN_PRICING: Record<string, { prompt: number; completion: number }> = {
   "opus": { prompt: 15.0, completion: 75.0 },
   "gpt-5.4": { prompt: 2.0, completion: 8.0 },
   "gemini-2.5-pro": { prompt: 1.25, completion: 10.0 },
+  "gemini-3.1-pro": { prompt: 1.25, completion: 10.0 },
 };
 
 const VALID_MODELS = Object.keys(API_KEY_ENV);
@@ -174,6 +174,17 @@ interface PromptfooOutput {
   };
 }
 
+interface PhaseResult {
+  name: string;
+  total: number;
+  passed: number;
+  failed: number;
+  rate: number;
+  cost: number;
+  tokens: EvalStats["tokenUsage"];
+  failures: EvalResult[];
+}
+
 function findProjectRoot(): string {
   let current = Deno.cwd();
   while (true) {
@@ -190,13 +201,14 @@ function findProjectRoot(): string {
 
 async function regenerateConfig(
   projectRoot: string,
+  generatorFile: string,
   model: string,
 ): Promise<void> {
   const generatorPath = join(
     projectRoot,
     "evals",
     "promptfoo",
-    "generate_config.ts",
+    generatorFile,
   );
   const promptfooConfigPath = join(
     projectRoot,
@@ -225,85 +237,20 @@ async function regenerateConfig(
 
   const { code, stdout } = await command.output();
   if (code !== 0) {
-    console.error(`Failed to regenerate promptfoo config for model ${model}`);
-    Deno.exit(1);
-  }
-
-  await Deno.writeFile(promptfooConfigPath, stdout);
-  console.log(`Regenerated promptfoo config for model: ${model}`);
-}
-
-async function main(): Promise<void> {
-  const args = parseArgs(Deno.args, {
-    string: ["model", "concurrency", "threshold"],
-    default: { model: "sonnet", concurrency: "20", threshold: "0.9" },
-  });
-
-  const model = args.model;
-  if (!VALID_MODELS.includes(model)) {
     console.error(
-      `Error: unknown model "${model}". Valid models: ${VALID_MODELS.join(", ")}`,
+      `Failed to regenerate config from ${generatorFile} for model ${model}`,
     );
     Deno.exit(1);
   }
 
-  const concurrency = parseInt(args.concurrency);
-  const passThreshold = parseFloat(args.threshold);
-  const projectRoot = findProjectRoot();
-  const configDir = join(projectRoot, "evals", "promptfoo");
-  const resultsPath = join(configDir, "results.json");
+  await Deno.writeFile(promptfooConfigPath, stdout);
+}
 
-  // Check for required API key — gracefully skip if missing
-  const requiredKeyEnv = API_KEY_ENV[model];
-  if (!Deno.env.get(requiredKeyEnv)) {
-    const message =
-      `Skipping ${model} eval: ${requiredKeyEnv} environment variable is not set.`;
-    console.warn(message);
-
-    // Write skip status to GitHub Actions summary
-    const summaryFile = Deno.env.get("GITHUB_STEP_SUMMARY");
-    if (summaryFile) {
-      let md = `## Skill Trigger Eval Results (${model})\n\n`;
-      md += `**Skipped** — \`${requiredKeyEnv}\` not configured.\n`;
-      await Deno.writeTextFile(summaryFile, md, { append: true });
-    }
-
-    // Exit 0 — missing key is not a failure
-    return;
-  }
-
-  // Preflight: make a single API call to verify the key works before
-  // launching 202 eval calls. Catches billing/credit issues immediately
-  // instead of retrying for hours.
-  await preflightCheck(model);
-
-  // Regenerate config for the selected model
-  await regenerateConfig(projectRoot, model);
-
-  console.log(
-    `Running skill trigger evals for ${model} (concurrency=${concurrency}, threshold=${passThreshold})…`,
-  );
-
-  // Install promptfoo dependencies from lockfile. We use `npm install` rather
-  // than `npm ci` because the lockfile is generated on one platform (e.g. macOS)
-  // and CI runs on another (Linux). `npm ci` fails when platform-specific
-  // optional deps (like @img/sharp-linux-*) are missing from the lockfile.
-  // `npm install` respects the lockfile for version resolution while allowing
-  // native addons (like better-sqlite3) to compile for the current platform.
-  console.log("Installing promptfoo dependencies…");
-  const installCmd = new Deno.Command("npm", {
-    args: ["install", "--package-lock=false"],
-    cwd: configDir,
-    stdout: "inherit",
-    stderr: "inherit",
-  });
-  const installResult = await installCmd.output();
-  if (installResult.code !== 0) {
-    console.error("npm install failed with exit code", installResult.code);
-    Deno.exit(1);
-  }
-
-  // Run promptfoo eval
+async function runPromptfooEval(
+  configDir: string,
+  resultsPath: string,
+  concurrency: number,
+): Promise<PromptfooOutput> {
   const command = new Deno.Command("npx", {
     args: [
       "promptfoo",
@@ -328,32 +275,33 @@ async function main(): Promise<void> {
     Deno.exit(1);
   }
 
-  // Parse results
-  const data: PromptfooOutput = JSON.parse(
-    await Deno.readTextFile(resultsPath),
-  );
+  return JSON.parse(await Deno.readTextFile(resultsPath));
+}
+
+function summarizePhase(
+  name: string,
+  data: PromptfooOutput,
+  model: string,
+): PhaseResult {
   const { stats } = data.results;
   const total = stats.successes + stats.failures;
   const rate = stats.successes / total;
-  // Calculate cost from aggregate token usage and model pricing.
-  // promptfoo does not populate per-result cost for Anthropic providers,
-  // so we compute it from the token counts directly.
   const pricing = TOKEN_PRICING[model];
-  const totalCost = pricing
+  const cost = pricing
     ? (stats.tokenUsage.prompt / 1_000_000) * pricing.prompt +
       (stats.tokenUsage.completion / 1_000_000) * pricing.completion
     : 0;
 
+  const failures = data.results.results.filter((r) => !r.success);
+
   console.log(
-    `\nResults (${model}): ${stats.successes}/${total} passed (${(rate * 100).toFixed(1)}%)`,
+    `\n${name} (${model}): ${stats.successes}/${total} passed (${(rate * 100).toFixed(1)}%)`,
   );
   console.log(
     `Tokens: ${stats.tokenUsage.total} (${stats.tokenUsage.prompt} prompt, ${stats.tokenUsage.completion} completion)`,
   );
-  console.log(`Estimated cost: $${totalCost.toFixed(2)}`);
+  console.log(`Estimated cost: $${cost.toFixed(2)}`);
 
-  // Report failures
-  const failures = data.results.results.filter((r) => !r.success);
   if (failures.length > 0) {
     console.log("\nFailed tests:");
     for (const f of failures) {
@@ -368,23 +316,129 @@ async function main(): Promise<void> {
     }
   }
 
+  return {
+    name,
+    total,
+    passed: stats.successes,
+    failed: stats.failures,
+    rate,
+    cost,
+    tokens: stats.tokenUsage,
+    failures,
+  };
+}
+
+async function main(): Promise<void> {
+  const args = parseArgs(Deno.args, {
+    string: ["model", "concurrency", "threshold"],
+    default: { model: "opus", concurrency: "20", threshold: "0.9" },
+  });
+
+  const model = args.model;
+  if (!VALID_MODELS.includes(model)) {
+    console.error(
+      `Error: unknown model "${model}". Valid models: ${VALID_MODELS.join(", ")}`,
+    );
+    Deno.exit(1);
+  }
+
+  const concurrency = parseInt(args.concurrency);
+  const passThreshold = parseFloat(args.threshold);
+  const projectRoot = findProjectRoot();
+  const configDir = join(projectRoot, "evals", "promptfoo");
+
+  // Check for required API key — gracefully skip if missing
+  const requiredKeyEnv = API_KEY_ENV[model];
+  if (!Deno.env.get(requiredKeyEnv)) {
+    const message =
+      `Skipping ${model} eval: ${requiredKeyEnv} environment variable is not set.`;
+    console.warn(message);
+
+    // Write skip status to GitHub Actions summary
+    const summaryFile = Deno.env.get("GITHUB_STEP_SUMMARY");
+    if (summaryFile) {
+      let md = `## Skill Eval Results (${model})\n\n`;
+      md += `**Skipped** — \`${requiredKeyEnv}\` not configured.\n`;
+      await Deno.writeTextFile(summaryFile, md, { append: true });
+    }
+
+    // Exit 0 — missing key is not a failure
+    return;
+  }
+
+  // Preflight: make a single API call to verify the key works
+  await preflightCheck(model);
+
+  // Install promptfoo dependencies once
+  console.log("Installing promptfoo dependencies…");
+  const installCmd = new Deno.Command("npm", {
+    args: ["install", "--package-lock=false"],
+    cwd: configDir,
+    stdout: "inherit",
+    stderr: "inherit",
+  });
+  const installResult = await installCmd.output();
+  if (installResult.code !== 0) {
+    console.error("npm install failed with exit code", installResult.code);
+    Deno.exit(1);
+  }
+
+  // Phase 1: Trigger evals
+  console.log(
+    `\n━━━ Phase 1: Trigger evals (${model}) ━━━`,
+  );
+  await regenerateConfig(projectRoot, "generate_config.ts", model);
+  const triggerData = await runPromptfooEval(
+    configDir,
+    join(configDir, "results.json"),
+    concurrency,
+  );
+  const triggerResult = summarizePhase("Trigger evals", triggerData, model);
+
+  // Phase 2: Routing evals
+  console.log(
+    `\n━━━ Phase 2: Routing evals (${model}) ━━━`,
+  );
+  await regenerateConfig(projectRoot, "generate_routing_config.ts", model);
+  const routingData = await runPromptfooEval(
+    configDir,
+    join(configDir, "routing_results.json"),
+    concurrency,
+  );
+  const routingResult = summarizePhase("Routing evals", routingData, model);
+
+  // Combined summary
+  const totalPassed = triggerResult.passed + routingResult.passed;
+  const totalTests = triggerResult.total + routingResult.total;
+  const totalCost = triggerResult.cost + routingResult.cost;
+  const combinedRate = totalPassed / totalTests;
+
+  console.log(`\n━━━ Combined Results (${model}) ━━━`);
+  console.log(
+    `Overall: ${totalPassed}/${totalTests} passed (${(combinedRate * 100).toFixed(1)}%)`,
+  );
+  console.log(`Total cost: $${totalCost.toFixed(2)}`);
+
   // Write GitHub Actions summary
   const summaryFile = Deno.env.get("GITHUB_STEP_SUMMARY");
   if (summaryFile) {
-    let md = `## Skill Trigger Eval Results (${model})\n\n`;
-    md += "| Metric | Value |\n|---|---|\n";
-    md += `| Model | ${model} |\n`;
-    md += `| Total tests | ${total} |\n`;
-    md += `| Passed | ${stats.successes} |\n`;
-    md += `| Failed | ${stats.failures} |\n`;
-    md += `| Pass rate | ${(rate * 100).toFixed(1)}% |\n`;
-    md += `| Estimated cost | $${totalCost.toFixed(2)} |\n`;
-    md += `| Tokens | ${stats.tokenUsage.total.toLocaleString()} |\n\n`;
+    let md = `## Skill Eval Results (${model})\n\n`;
+    md += "| Phase | Passed | Total | Rate | Cost |\n|---|---|---|---|---|\n";
+    for (const r of [triggerResult, routingResult]) {
+      md +=
+        `| ${r.name} | ${r.passed} | ${r.total} | ${(r.rate * 100).toFixed(1)}% | $${r.cost.toFixed(2)} |\n`;
+    }
+    md +=
+      `| **Combined** | **${totalPassed}** | **${totalTests}** | **${(combinedRate * 100).toFixed(1)}%** | **$${totalCost.toFixed(2)}** |\n\n`;
 
-    if (failures.length > 0) {
+    const allFailures = [
+      ...triggerResult.failures,
+      ...routingResult.failures,
+    ];
+    if (allFailures.length > 0) {
       md += "### Failed Tests\n\n";
       md += "| Test | Output |\n|---|---|\n";
-      for (const f of failures) {
+      for (const f of allFailures) {
         const desc = (f.testCase?.description ?? f.testCase?.vars?.query ??
           "unknown").replace(/\|/g, "\\|");
         const rawOut = f.response?.output ?? "";
@@ -400,15 +454,15 @@ async function main(): Promise<void> {
     await Deno.writeTextFile(summaryFile, md, { append: true });
   }
 
-  // Check threshold
-  if (rate < passThreshold) {
+  // Check threshold against combined rate
+  if (combinedRate < passThreshold) {
     console.error(
-      `\nFAIL (${model}): Pass rate ${(rate * 100).toFixed(1)}% is below ${(passThreshold * 100).toFixed(0)}% threshold`,
+      `\nFAIL (${model}): Combined pass rate ${(combinedRate * 100).toFixed(1)}% is below ${(passThreshold * 100).toFixed(0)}% threshold`,
     );
     Deno.exit(1);
   }
 
-  console.log(`\nAll skills passed trigger evals for ${model}.`);
+  console.log(`\nAll skill evals passed for ${model}.`);
 }
 
 await main();
