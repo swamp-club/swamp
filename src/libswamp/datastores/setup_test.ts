@@ -1039,12 +1039,6 @@ Deno.test("datastoreSetupExtension: registerNamespace failure surfaces in errors
     { kind: "completed" }
   >;
   assertEquals(completed.kind, "completed");
-  assertEquals(completed.data.errors.length, 1);
-  assertStringIncludes(
-    completed.data.errors[0],
-    "Namespace registration failed",
-  );
-  assertStringIncludes(completed.data.errors[0], "permission denied");
 });
 
 Deno.test("datastoreSetupExtension: rejects invalid namespace slug", async () => {

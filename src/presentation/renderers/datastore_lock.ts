@@ -83,10 +83,10 @@ class JsonDatastoreLockStatusRenderer
   handlers(): EventHandlers<DatastoreLockStatusEvent> {
     return {
       completed: (e) => {
-        console.log(JSON.stringify(e.data.info ?? null, null, 2));
+        console.log(JSON.stringify(e.data, null, 2));
       },
       model_lock: (e) => {
-        console.log(JSON.stringify(e.data.info ?? null, null, 2));
+        console.log(JSON.stringify(e.data, null, 2));
       },
       error: (e) => {
         throw new UserError(e.error.message);

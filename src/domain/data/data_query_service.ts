@@ -349,7 +349,12 @@ export class DataQueryService {
         }
       }
     }
-    this.catalogStore.bulkReplaceAll(rows);
+    const ns = this.dataRepo.namespace;
+    if (ns && ns.length > 0) {
+      this.catalogStore.bulkReplaceNamespace(ns, rows);
+    } else {
+      this.catalogStore.bulkReplaceAll(rows);
+    }
     this.catalogStore.markPopulated();
   }
 
@@ -388,7 +393,12 @@ export class DataQueryService {
         }
       }
     }
-    this.catalogStore.bulkReplaceAll(rows);
+    const syncNs = this.dataRepo.namespace;
+    if (syncNs && syncNs.length > 0) {
+      this.catalogStore.bulkReplaceNamespace(syncNs, rows);
+    } else {
+      this.catalogStore.bulkReplaceAll(rows);
+    }
     this.catalogStore.markPopulated();
   }
 

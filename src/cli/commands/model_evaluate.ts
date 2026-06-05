@@ -108,6 +108,7 @@ export const modelEvaluateCommand = new Command()
         ],
         repoDir,
         syncService,
+        repoContext.catalogStore,
       );
       if (lockResult.synced) repoContext.catalogStore.invalidate();
       const flushModelLocks = lockResult.flush;

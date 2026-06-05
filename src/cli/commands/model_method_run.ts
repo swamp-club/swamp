@@ -339,6 +339,7 @@ export const modelMethodRunCommand = new Command()
           ],
           repoDir,
           syncService,
+          repoContext.catalogStore,
         );
         if (lockResult.synced) repoContext.catalogStore.invalidate();
         flushModelLocks = lockResult.flush;

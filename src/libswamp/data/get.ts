@@ -178,7 +178,13 @@ export function createDataGetDeps(
 ): DataGetDeps {
   const dsPath = (subdir: string): string | undefined =>
     datastoreResolver?.resolvePath(subdir);
-  const definitionRepo = new YamlDefinitionRepository(repoDir);
+  const autoDefDir = dsPath(SWAMP_SUBDIRS.autoDefinitions);
+  const definitionRepo = new YamlDefinitionRepository(
+    repoDir,
+    undefined,
+    undefined,
+    autoDefDir ?? undefined,
+  );
   const dataRepo = injectedDataRepo ?? new FileSystemUnifiedDataRepository(
     repoDir,
     dsPath(SWAMP_SUBDIRS.data),

@@ -378,6 +378,50 @@ Deno.test("resolveCachePath: concrete return is used as-is", async () => {
 });
 
 // ============================================================================
+// Relative path resolution tests (swamp-club#560)
+// ============================================================================
+
+Deno.test("parseDatastoreEnvVar: resolves relative filesystem path against repoDir", async () => {
+  const config = await parseDatastoreEnvVar(
+    "filesystem:.swamp",
+    undefined,
+    "/my/repo",
+  );
+  assertEquals(config.type, "filesystem");
+  if (!isCustomDatastoreConfig(config) && config.type === "filesystem") {
+    assertPathEquals(config.path, "/my/repo/.swamp");
+  }
+});
+
+Deno.test("resolveDatastoreConfig: resolves relative YAML path against repoDir", async () => {
+  const marker: RepoMarkerData = {
+    swampVersion: "0.1.0",
+    initializedAt: "2024-01-01",
+    repoId: "test-repo",
+    datastore: { type: "filesystem", path: ".swamp" },
+  };
+  const config = await resolveDatastoreConfig(marker, undefined, "/my/repo");
+  assertEquals(config.type, "filesystem");
+  if (!isCustomDatastoreConfig(config) && config.type === "filesystem") {
+    assertPathEquals(config.path, "/my/repo/.swamp");
+  }
+});
+
+Deno.test("resolveDatastoreConfig: preserves absolute YAML path as-is", async () => {
+  const marker: RepoMarkerData = {
+    swampVersion: "0.1.0",
+    initializedAt: "2024-01-01",
+    repoId: "test-repo",
+    datastore: { type: "filesystem", path: "/absolute/datastore" },
+  };
+  const config = await resolveDatastoreConfig(marker, undefined, "/my/repo");
+  assertEquals(config.type, "filesystem");
+  if (!isCustomDatastoreConfig(config) && config.type === "filesystem") {
+    assertPathEquals(config.path, "/absolute/datastore");
+  }
+});
+
+// ============================================================================
 // Renamed datastore type tests
 // ============================================================================
 

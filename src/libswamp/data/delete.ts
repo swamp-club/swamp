@@ -94,7 +94,13 @@ export function createDataDeleteDeps(
     undefined,
     namespaceFromResolver(datastoreResolver),
   );
-  const definitionRepo = new YamlDefinitionRepository(repoDir);
+  const autoDefDir = dsPath(SWAMP_SUBDIRS.autoDefinitions);
+  const definitionRepo = new YamlDefinitionRepository(
+    repoDir,
+    undefined,
+    undefined,
+    autoDefDir ?? undefined,
+  );
   const service = new DataDeleteService(dataRepo, definitionRepo);
   return {
     delete: (modelIdOrName, dataName, version) =>

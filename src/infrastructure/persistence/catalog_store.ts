@@ -537,6 +537,24 @@ export class CatalogStore {
     }
   }
 
+  *iterateNamespace(namespace: string): IterableIterator<CatalogRow> {
+    const stmt = this.db.prepare(
+      "SELECT * FROM catalog WHERE namespace = ? ORDER BY rowid LIMIT ? OFFSET ?",
+    );
+    let offset = 0;
+    while (true) {
+      const rows = stmt.all(
+        namespace,
+        ITERATE_PAGE_SIZE,
+        offset,
+      ) as unknown as CatalogRow[];
+      if (rows.length === 0) break;
+      yield* rows;
+      if (rows.length < ITERATE_PAGE_SIZE) break;
+      offset += ITERATE_PAGE_SIZE;
+    }
+  }
+
   /**
    * Returns the number of rows in the catalog.
    */

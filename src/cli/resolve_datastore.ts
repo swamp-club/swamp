@@ -31,7 +31,7 @@
  * Default: filesystem datastore at `{repoDir}/.swamp/` (full backward compatibility)
  */
 
-import { join } from "@std/path";
+import { isAbsolute, join, resolve } from "@std/path";
 import { getLogger } from "@logtape/logtape";
 import type { RepoMarkerData } from "../infrastructure/persistence/repo_marker_repository.ts";
 import {
@@ -84,7 +84,11 @@ export async function parseDatastoreEnvVar(
   const value = envValue.slice(colonIdx + 1);
 
   if (type === "filesystem") {
-    return { type: "filesystem", path: expandEnvVars(value) };
+    const expanded = expandEnvVars(value);
+    const absPath = isAbsolute(expanded)
+      ? expanded
+      : resolve(repoDir ?? Deno.cwd(), expanded);
+    return { type: "filesystem", path: absPath };
   }
 
   // Remap renamed types (e.g., "s3" → "@swamp/s3-datastore")
@@ -311,9 +315,13 @@ export async function resolveDatastoreConfig(
           "Filesystem datastore config in .swamp.yaml requires a 'path' field.",
         );
       }
+      const expanded = expandEnvVars(ds.path);
+      const absPath = isAbsolute(expanded)
+        ? expanded
+        : resolve(repoDir ?? Deno.cwd(), expanded);
       return {
         type: "filesystem",
-        path: expandEnvVars(ds.path),
+        path: absPath,
         directories: ds.directories,
         exclude: ds.exclude,
         namespace: ds.namespace,

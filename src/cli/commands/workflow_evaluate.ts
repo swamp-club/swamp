@@ -172,6 +172,7 @@ export const workflowEvaluateCommand = new Command()
             resolvedModels,
             unlocked.repoDir,
             unlocked.syncService,
+            unlocked.repoContext.catalogStore,
           );
           if (lockResult.synced) {
             unlocked.repoContext.catalogStore.invalidate();

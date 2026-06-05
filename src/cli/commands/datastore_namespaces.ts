@@ -90,7 +90,10 @@ export const datastoreNamespacesCommand = new Command()
       },
     };
 
-    const renderer = createNamespaceListRenderer(cliCtx.outputMode);
+    const renderer = createNamespaceListRenderer(
+      cliCtx.outputMode,
+      cliCtx.verbosity,
+    );
     await consumeStream(
       datastoreNamespaceList(ctx, deps),
       renderer.handlers(),

@@ -31,7 +31,9 @@ import {
   createRepositoryContext,
   type RepositoryContext,
   type RepositoryFactoryConfig,
+  writeCatalogExport,
 } from "../infrastructure/persistence/repository_factory.ts";
+import type { CatalogStore } from "../infrastructure/persistence/catalog_store.ts";
 import { RepoPath } from "../domain/repo/repo_path.ts";
 import { RepoService } from "../domain/repo/repo_service.ts";
 import {
@@ -585,6 +587,10 @@ export function requireInitializedRepo(
       // updating the lock-lifecycle contract documented in
       // design/datastores.md.
       await waitForPerModelLocks(datastoreConfig.path);
+
+      if (datastoreConfig.namespace) {
+        needsCatalogInvalidation = true;
+      }
     }
 
     // Compute top-level directories for definitions, workflows, and vaults
@@ -962,6 +968,12 @@ export async function acquireModelLocks(
    * repo-context markDirty hook will race this instance.
    */
   syncService?: DatastoreSyncService,
+  /**
+   * CatalogStore for writing catalog exports after push. Passed from the
+   * repo context so we reuse the existing SQLite handle instead of opening
+   * a second one (avoids locking contention on _catalog.db).
+   */
+  catalogStore?: CatalogStore,
 ): Promise<ModelLockResult> {
   const logger = getSwampLogger(["datastore", "lock"]);
   let synced = false;
@@ -1110,7 +1122,13 @@ export async function acquireModelLocks(
       // Restart the entire per-model lock acquisition from scratch —
       // propagate the shared sync service so the retry keeps single-instance
       // semantics.
-      return acquireModelLocks(config, models, repoDir, customSyncService);
+      return acquireModelLocks(
+        config,
+        models,
+        repoDir,
+        customSyncService,
+        catalogStore,
+      );
     }
 
     // For custom sync-capable datastores: pull after acquiring per-model lock
@@ -1166,10 +1184,38 @@ export async function acquireModelLocks(
           await pushLock.acquire();
           logger.info`Pushing changes to datastore...`;
 
-          let pushed: number | void;
           const pushNs = isCustomDatastoreConfig(config)
             ? config.namespace
             : undefined;
+
+          if (
+            pushNs && catalogStore &&
+            isCustomDatastoreConfig(config) && config.cachePath
+          ) {
+            try {
+              const exportCount = await writeCatalogExport(
+                catalogStore,
+                config.cachePath,
+                pushNs,
+              );
+              await customSyncService.markDirty({
+                relPath: `${pushNs}/.catalog-export.json`,
+              });
+              logger.info(
+                "Wrote catalog export ({count} row(s)) for namespace {namespace}",
+                { count: exportCount, namespace: pushNs },
+              );
+            } catch (error) {
+              logger.warn(
+                "Catalog export write failed: {error}",
+                {
+                  error: error instanceof Error ? error.message : String(error),
+                },
+              );
+            }
+          }
+
+          let pushed: number | void;
           if (caps?.scopedSync) {
             const context: SyncContext = { models: unique };
             pushed = await customSyncService.pushChanged({

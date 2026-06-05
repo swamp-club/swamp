@@ -21,18 +21,27 @@ import { bold, green } from "@std/fmt/colors";
 import type { EventHandlers, NamespaceListEvent } from "../../libswamp/mod.ts";
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
+import type { Verbosity } from "../../cli/context.ts";
 import { UserError } from "../../domain/errors.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { Table } from "@cliffy/table";
 
 class LogNamespaceListRenderer implements Renderer<NamespaceListEvent> {
+  readonly #verbosity: Verbosity;
+
+  constructor(verbosity: Verbosity) {
+    this.#verbosity = verbosity;
+  }
+
   handlers(): EventHandlers<NamespaceListEvent> {
     return {
       completed: (e) => {
         const { namespaces } = e.data;
 
         if (namespaces.length === 0) {
-          writeOutput("No namespaces registered in this datastore.");
+          if (this.#verbosity !== "quiet") {
+            writeOutput("No namespaces registered in this datastore.");
+          }
           return;
         }
 
@@ -80,11 +89,12 @@ class JsonNamespaceListRenderer implements Renderer<NamespaceListEvent> {
 
 export function createNamespaceListRenderer(
   mode: OutputMode,
+  verbosity: Verbosity = "normal",
 ): Renderer<NamespaceListEvent> {
   switch (mode) {
     case "json":
       return new JsonNamespaceListRenderer();
     case "log":
-      return new LogNamespaceListRenderer();
+      return new LogNamespaceListRenderer(verbosity);
   }
 }

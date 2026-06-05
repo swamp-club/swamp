@@ -146,6 +146,26 @@ export function createCatalogStore(
   return new CatalogStore(catalogDbPath(repoDir, datastoreResolver));
 }
 
+/**
+ * Writes a `.catalog-export.json` file to the local cache for the given
+ * namespace. The file contains all catalog rows for that namespace as a
+ * flat JSON array. Extensions upload this file to the remote datastore
+ * via {@link DatastoreSyncService.exportCatalog}.
+ */
+export async function writeCatalogExport(
+  catalogStore: CatalogStore,
+  cachePath: string,
+  namespace: string,
+): Promise<number> {
+  const rows = [...catalogStore.iterateNamespace(namespace)];
+  const exportPath = join(cachePath, namespace, ".catalog-export.json");
+  await Deno.writeTextFile(
+    exportPath,
+    JSON.stringify(rows, null, 2) + "\n",
+  );
+  return rows.length;
+}
+
 // =============================================================================
 // Standalone Repository Factory Functions
 // =============================================================================
@@ -365,11 +385,16 @@ export function createRepositoryContext(
   const eventBus = new EventBus();
 
   // Create repositories with event bus
-  // Definition and workflow repos are always local (not datastore tier)
+  // Definition and workflow repos are always local (not datastore tier).
+  // Auto-definitions are datastore-tier — resolve via the datastore path
+  // resolver so they're found at the namespaced path after migration.
+  const autoDefDir = dsPath(SWAMP_SUBDIRS.autoDefinitions) ??
+    swampPath(repoDir, SWAMP_SUBDIRS.autoDefinitions);
   const definitionRepo = new YamlDefinitionRepository(
     repoDir,
     enableIndexing ? eventBus : undefined,
     definitionsDir,
+    autoDefDir,
   );
   const yamlWorkflowRepo = new YamlWorkflowRepository(
     repoDir,

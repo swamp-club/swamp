@@ -35,6 +35,12 @@ import {
   requireInitializedRepoReadOnly,
 } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
+import {
+  createCatalogStore,
+  writeCatalogExport,
+} from "../../infrastructure/persistence/repository_factory.ts";
+import { isCustomDatastoreConfig } from "../../domain/datastore/datastore_config.ts";
+import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -143,6 +149,54 @@ export const datastoreSyncCommand = new Command()
       datastoreSync(ctx, deps, { mode }),
       renderer.handlers(),
     );
+
+    if (mode === "pull" || mode === "sync") {
+      const catalogStore = createCatalogStore(repoDir, datastoreResolver);
+      catalogStore.invalidate();
+      catalogStore.close();
+    }
+
+    if (mode === "push" || mode === "sync") {
+      const config = datastoreResolver.config();
+      const ns = config.namespace;
+      if (ns && isCustomDatastoreConfig(config) && config.cachePath) {
+        const catalogStore = createCatalogStore(repoDir, datastoreResolver);
+        try {
+          const exportCount = await writeCatalogExport(
+            catalogStore,
+            config.cachePath,
+            ns,
+          );
+          await datastoreTypeRegistry.ensureLoaded();
+          await datastoreTypeRegistry.ensureTypeLoaded(config.type);
+          const typeInfo = datastoreTypeRegistry.get(config.type);
+          const provider = typeInfo?.createProvider?.(config.config);
+          const syncService = provider?.createSyncService?.(
+            repoDir,
+            config.cachePath,
+          );
+          if (syncService) {
+            await syncService.markDirty({
+              relPath: `${ns}/.catalog-export.json`,
+            });
+            await syncService.pushChanged({ namespace: ns });
+            cliCtx.logger.info(
+              "Exported catalog ({count} row(s)) for namespace {namespace}",
+              { count: exportCount, namespace: ns },
+            );
+          }
+        } catch (error) {
+          cliCtx.logger.warn(
+            "Catalog export failed (data push succeeded): {error}",
+            {
+              error: error instanceof Error ? error.message : String(error),
+            },
+          );
+        } finally {
+          catalogStore.close();
+        }
+      }
+    }
 
     cliCtx.logger.debug("Datastore sync command completed");
   });

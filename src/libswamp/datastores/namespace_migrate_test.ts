@@ -37,8 +37,10 @@ function makeDeps(
     getDatastorePath: () => DS_PATH,
     getNamespace: () => NAMESPACE,
     dirExists: () => Promise.resolve(false),
+    dirHasDataFiles: () => Promise.resolve(false),
     dirSize: () => Promise.resolve({ fileCount: 0, totalBytes: 0 }),
     renameDir: () => Promise.resolve(),
+    mergeDirInto: () => Promise.resolve(0),
     ensureDir: () => Promise.resolve(),
     invalidateCatalog: () => {},
     markDirtyBulk: () => Promise.resolve(),
@@ -199,6 +201,7 @@ Deno.test("datastoreNamespaceMigrate: reverse refuses when un-namespaced path ha
   const ctx = createLibSwampContext({});
   const deps = makeDeps({
     dirExists: () => Promise.resolve(true),
+    dirHasDataFiles: () => Promise.resolve(true),
     dirSize: () => Promise.resolve({ fileCount: 5, totalBytes: 2000 }),
   });
 

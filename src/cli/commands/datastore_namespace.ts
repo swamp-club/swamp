@@ -19,12 +19,14 @@
 
 import { Command } from "@cliffy/command";
 import { ensureDir, walk } from "@std/fs";
+import { join } from "@std/path";
 import {
   consumeStream,
   createLibSwampContext,
   datastoreNamespaceMigrate,
   datastoreNamespaceSet,
   datastoreNamespaceUnset,
+  INFRASTRUCTURE_FILES,
 } from "../../libswamp/mod.ts";
 import {
   createNamespaceMigrateRenderer,
@@ -54,6 +56,7 @@ import {
   removeNamespaceManifest,
   writeNamespaceManifest,
 } from "../../infrastructure/persistence/namespace_manifest.ts";
+import { basename } from "@std/path";
 import {
   type CustomDatastoreConfig,
   isCustomDatastoreConfig,
@@ -135,7 +138,7 @@ export const datastoreNamespaceSetCommand = new Command()
           );
         }
         current.datastore = current.datastore ??
-          { type: "filesystem", path: ".swamp" };
+          { type: "filesystem", path: join(repoDir, ".swamp") };
         current.datastore.namespace = namespace;
         await markerRepo.write(repoPath, current);
       },
@@ -178,7 +181,10 @@ export const datastoreNamespaceUnsetCommand = new Command()
 
     const repoDir = resolveRepoDir(options.repoDir);
     const { datastoreConfig } = await resolveDatastoreForRepo(repoDir);
-    const dsBasePath = datastoreBasePath(datastoreConfig);
+    const dsBasePath = isCustomDatastoreConfig(datastoreConfig) &&
+        datastoreConfig.cachePath
+      ? datastoreConfig.cachePath
+      : datastoreBasePath(datastoreConfig);
     const markerRepo = new RepoMarkerRepository();
     const repoPath = RepoPath.create(repoDir);
 
@@ -321,9 +327,54 @@ function buildMigrateDeps(
         return false;
       }
     },
+    dirHasDataFiles: async (path: string) => {
+      try {
+        const stat = await Deno.stat(path);
+        if (!stat.isDirectory) return false;
+      } catch {
+        return false;
+      }
+      for await (const entry of Deno.readDir(path)) {
+        if (!INFRASTRUCTURE_FILES.has(basename(entry.name))) return true;
+      }
+      return false;
+    },
     dirSize,
     renameDir: (source: string, destination: string) =>
       Deno.rename(source, destination),
+    mergeDirInto: async (source: string, destination: string) => {
+      const mergeRecursive = async (
+        src: string,
+        dst: string,
+      ): Promise<number> => {
+        let moved = 0;
+        for await (const entry of Deno.readDir(src)) {
+          const srcPath = join(src, entry.name);
+          const dstPath = join(dst, entry.name);
+          let dstExists = false;
+          try {
+            await Deno.stat(dstPath);
+            dstExists = true;
+          } catch {
+            // doesn't exist
+          }
+          if (!dstExists) {
+            await Deno.rename(srcPath, dstPath);
+            moved++;
+          } else if (entry.isDirectory) {
+            moved += await mergeRecursive(srcPath, dstPath);
+          }
+        }
+        return moved;
+      };
+      const moved = await mergeRecursive(source, destination);
+      try {
+        await Deno.remove(source, { recursive: true });
+      } catch {
+        // Best-effort cleanup
+      }
+      return moved;
+    },
     ensureDir: (path: string) => ensureDir(path),
     invalidateCatalog: () => {
       catalogStore = createCatalogStore(repoDir);
@@ -384,7 +435,10 @@ export const datastoreNamespaceMigrateCommand = new Command()
 
     const repoDir = resolveRepoDir(options.repoDir);
     const { datastoreConfig } = await resolveDatastoreForRepo(repoDir);
-    const dsBasePath = datastoreBasePath(datastoreConfig);
+    const dsBasePath = isCustomDatastoreConfig(datastoreConfig) &&
+        datastoreConfig.cachePath
+      ? datastoreConfig.cachePath
+      : datastoreBasePath(datastoreConfig);
     const namespace = datastoreConfig.namespace;
 
     if (!namespace) {

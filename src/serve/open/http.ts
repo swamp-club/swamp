@@ -1780,6 +1780,7 @@ async function handleRun(
     ],
     deps.repoDir,
     deps.syncService ?? undefined,
+    deps.repoContext.catalogStore,
   );
   if (lockResult.synced) deps.repoContext.catalogStore.invalidate();
   const flushLocks = lockResult.flush;

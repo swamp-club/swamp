@@ -228,6 +228,7 @@ export async function executeWorkflowWithLocks(
             resolvedModels,
             repoDir,
             syncService,
+            repoContext.catalogStore,
           );
           if (lockResult.synced) repoContext.catalogStore.invalidate();
           flushLocks = lockResult.flush;

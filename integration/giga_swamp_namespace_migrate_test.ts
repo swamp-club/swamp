@@ -116,9 +116,44 @@ function buildDeps(
     getDatastorePath: () => dsPath,
     getNamespace: () => namespace,
     dirExists,
+    dirHasDataFiles: async (path: string) => {
+      if (!(await dirExists(path))) return false;
+      for await (const entry of Deno.readDir(path)) {
+        if (
+          entry.name !== "_catalog.db" &&
+          entry.name !== "_catalog.db-journal" &&
+          entry.name !== "_catalog.db-wal"
+        ) return true;
+      }
+      return false;
+    },
     dirSize,
     renameDir: (source: string, destination: string) =>
       Deno.rename(source, destination),
+    mergeDirInto: async (source: string, destination: string) => {
+      let moved = 0;
+      const mergeRecursive = async (
+        src: string,
+        dst: string,
+      ): Promise<void> => {
+        for await (const entry of Deno.readDir(src)) {
+          const srcPath = join(src, entry.name);
+          const dstPath = join(dst, entry.name);
+          try {
+            await Deno.stat(dstPath);
+            if (entry.isDirectory) await mergeRecursive(srcPath, dstPath);
+          } catch {
+            await Deno.rename(srcPath, dstPath);
+            moved++;
+          }
+        }
+      };
+      await mergeRecursive(source, destination);
+      try {
+        await Deno.remove(source, { recursive: true });
+      } catch { /* best-effort */ }
+      return moved;
+    },
     ensureDir: (path: string) => ensureDir(path),
     invalidateCatalog: () => catalogStore.invalidate(),
     markDirtyBulk: () => Promise.resolve(),

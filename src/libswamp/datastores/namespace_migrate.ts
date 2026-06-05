@@ -80,12 +80,27 @@ export interface DirSize {
   totalBytes: number;
 }
 
+export const INFRASTRUCTURE_FILES = new Set([
+  "_catalog.db",
+  "_catalog.db-journal",
+  "_catalog.db-wal",
+]);
+
+const MERGEABLE_ON_REVERSE = new Set([
+  "bundles",
+  "vault-bundles",
+  "driver-bundles",
+  "report-bundles",
+]);
+
 export interface NamespaceMigrateDeps {
   getDatastorePath: () => string;
   getNamespace: () => string | undefined;
   dirExists: (path: string) => Promise<boolean>;
+  dirHasDataFiles: (path: string) => Promise<boolean>;
   dirSize: (path: string) => Promise<DirSize>;
   renameDir: (source: string, destination: string) => Promise<void>;
+  mergeDirInto: (source: string, destination: string) => Promise<number>;
   ensureDir: (path: string) => Promise<void>;
   invalidateCatalog: () => void;
   markDirtyBulk: () => Promise<void>;
@@ -130,12 +145,14 @@ export async function* datastoreNamespaceMigrate(
           continue;
         }
 
-        if (await deps.dirExists(destination)) {
-          const direction = input.reverse ? "reverse-migrate" : "migrate";
+        if (
+          input.reverse && !MERGEABLE_ON_REVERSE.has(subdir) &&
+          await deps.dirHasDataFiles(destination)
+        ) {
           yield {
             kind: "error",
             error: validationFailed(
-              `Cannot ${direction}: "${subdir}" already exists at ` +
+              `Cannot reverse-migrate: "${subdir}" already exists at ` +
                 `"${destination}". Remove or rename it first.`,
             ),
             succeededDirectories: [],
@@ -154,10 +171,13 @@ export async function* datastoreNamespaceMigrate(
       }
 
       if (directories.length === 0) {
+        const hint = input.reverse
+          ? " If data was pushed to a remote datastore, run 'swamp datastore sync --pull' first to populate the local cache."
+          : "";
         yield {
           kind: "error",
           error: validationFailed(
-            "No data directories found to migrate.",
+            `No data directories found to migrate.${hint}`,
           ),
           succeededDirectories: [],
         };
@@ -208,7 +228,11 @@ export async function* datastoreNamespaceMigrate(
       for (const dir of directories) {
         try {
           await deps.ensureDir(dirname(dir.destination));
-          await deps.renameDir(dir.source, dir.destination);
+          if (await deps.dirExists(dir.destination)) {
+            await deps.mergeDirInto(dir.source, dir.destination);
+          } else {
+            await deps.renameDir(dir.source, dir.destination);
+          }
           succeeded.push(dir.subdir);
 
           yield {

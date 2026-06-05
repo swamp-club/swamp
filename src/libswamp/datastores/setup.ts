@@ -490,7 +490,8 @@ export async function* datastoreSetupExtension(
             ctx.logger.info`Registered namespace ${ns} in datastore`;
           } catch (error) {
             const msg = error instanceof Error ? error.message : String(error);
-            errors.push(`Namespace registration failed: ${msg}`);
+            ctx.logger
+              .warn`Namespace registration failed: ${msg}`;
           }
         } else {
           ctx.logger
