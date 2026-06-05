@@ -3,7 +3,7 @@
 This reference applies **only when your `_test.ts` file imports the model source
 directly.** If your tests do not import the model source, you do not need this
 page — the default unannotated form in the
-[Quick Start](../SKILL.md#quick-start) works without any changes.
+[Quick Start](../../guide.md#quick-starts) works without any changes.
 
 ## The problem
 

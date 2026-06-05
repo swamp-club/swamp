@@ -109,6 +109,6 @@ manifest: ${{ data.query('tags.role == "manifest"', '{"name": name, "version": v
   workflow start.
 - Use `data.version()` function for specific versions
 - Use `data.findByTag()` to query across models
-- See the `swamp-workflow` skill's
-  [data-chaining reference](../../swamp-workflow/references/data-chaining.md)
-  for detailed guidance on expression choice in workflows.
+- See the workflow skill's
+  [data-chaining reference](../../workflow/references/data-chaining.md) for
+  detailed guidance on expression choice in workflows.

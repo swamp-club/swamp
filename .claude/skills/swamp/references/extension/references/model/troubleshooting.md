@@ -232,7 +232,7 @@ directory. Only manifests that explicitly opt in with `paths.base: manifest`
 skip the table entirely and resolve typed keys (`models`, `vaults`, `drivers`,
 `datastores`, `reports`, `include`) relative to the manifest's own directory.
 Default behavior is unchanged. See
-[swamp-extension-publish references/publishing.md](../../../swamp-extension-publish/references/publishing.md#path-resolution--pathsbase)
+[extension-publish references/publishing.md](../../../extension-publish/references/publishing.md#path-resolution--pathsbase)
 for the canonical reference.
 
 ## Auto-Resolution Failures

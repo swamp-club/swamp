@@ -262,8 +262,8 @@ anything that needs to score: prefer the inline form in entrypoint files.
 - Use `include` in the manifest for helper scripts executed via `Deno.Command`
   that shouldn't be bundled
 
-See [examples.md](examples.md#import-styles) for import style examples and
-[examples.md](examples.md#helper-scripts) for helper script details.
+See the extension model [examples](../../extension/references/model/examples.md)
+for import style examples and helper script details.
 
 ### How Content Maps to Manifest
 

@@ -6,14 +6,14 @@ dimension below **before running smoke tests or unit tests**. Present findings
 to the user before proceeding.
 
 This is step 4 of the Development Workflow in
-[../SKILL.md](../SKILL.md#development-workflow) and gates steps 5 (smoke test)
-and 6 (unit tests).
+[../guide.md](../guide.md#shared-development-workflow) and gates steps 5 (smoke
+test) and 6 (unit tests).
 
 ## When to Run
 
 - After writing new extension code, **before** smoke tests or unit tests
   (workflow step 4 — see the
-  [Adversarial Review Gate](../SKILL.md#adversarial-review-gate))
+  [Adversarial Review Gate](../guide.md#adversarial-review-gate))
 - After revising code in response to smoke test failures (review only changed
   dimensions)
 - Before publishing with `swamp extension push`

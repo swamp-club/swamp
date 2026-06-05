@@ -62,4 +62,4 @@ All context methods work identically in Docker:
 ## Design Reference
 
 For the full architecture, bundle execution flow, and output parity details, see
-[design/execution-drivers.md](design/execution-drivers.md).
+`design/execution-drivers.md` in the swamp source repo.

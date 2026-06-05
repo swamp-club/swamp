@@ -409,13 +409,13 @@ All extension types support the optional `paths.base` manifest field. Default
 behavior is unchanged — omit it and paths resolve relative to the configured
 `extensions/<type>/` directory. Set `paths.base: manifest` for
 per-extension-subdir layouts. See
-[swamp-extension-publish references/publishing.md](../swamp-extension-publish/references/publishing.md#path-resolution--pathsbase).
+[extension-publish references/publishing.md](../extension-publish/references/publishing.md#path-resolution--pathsbase).
 
 ## CalVer Versioning
 
 Use `swamp extension version --manifest manifest.yaml --json` to get the correct
 next version. See
-[publishing reference](../swamp-extension-publish/references/publishing.md#calver-versioning).
+[publishing reference](../extension-publish/references/publishing.md#calver-versioning).
 
 ## When to Use Other Skills
 

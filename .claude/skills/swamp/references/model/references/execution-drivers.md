@@ -86,4 +86,4 @@ container execution. See the `swamp-extension` skill for details.
 ## Design Reference
 
 For architecture details, execution flow diagrams, and implementation files, see
-[design/execution-drivers.md](design/execution-drivers.md).
+`design/execution-drivers.md` in the swamp source repo.
