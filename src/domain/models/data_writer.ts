@@ -299,6 +299,21 @@ export function sanitizeVaultKey(key: string): string {
 }
 
 /**
+ * Returns true if any resource output spec in the model requires a vault
+ * (has fields marked `{ sensitive: true }` or `sensitiveOutput: true`).
+ */
+export function modelRequiresVault(
+  resources: Record<string, ResourceOutputSpec> | undefined,
+): boolean {
+  if (!resources) return false;
+  for (const spec of Object.values(resources)) {
+    if (spec.sensitiveOutput) return true;
+    if (extractSensitiveFields(spec.schema).length > 0) return true;
+  }
+  return false;
+}
+
+/**
  * Processes sensitive fields in resource data before persistence.
  *
  * For each field marked with `{ sensitive: true }` metadata in the schema
@@ -556,7 +571,20 @@ export function createResourceWriter(
     }
 
     // Process sensitive fields before serialization
-    if (vaultService && methodName) {
+    const hasSensitiveFields = spec.sensitiveOutput ||
+      extractSensitiveFields(spec.schema).length > 0;
+    if (hasSensitiveFields && !vaultService) {
+      const fields = extractSensitiveFields(spec.schema)
+        .map((f) => `'${f.path}'`).join(", ");
+      const detail = spec.sensitiveOutput
+        ? `resource '${specName}' is marked sensitiveOutput`
+        : `fields ${fields} in resource '${specName}' are marked as sensitive`;
+      throw new Error(
+        `Cannot persist data: ${detail} but no vault is configured. ` +
+          `Create a vault using: swamp vault create <type> <name>`,
+      );
+    }
+    if (vaultService && methodName && hasSensitiveFields) {
       await processSensitiveResourceData(
         data,
         spec,

@@ -39,6 +39,7 @@ import { DefinitionUpgradeService } from "./definition_upgrade_service.ts";
 import {
   createFileWriterFactory,
   createResourceWriter,
+  modelRequiresVault,
 } from "./data_writer.ts";
 import { coerceMethodArgs, getObjectShape } from "./zod_type_coercion.ts";
 import { valueContainsExpression } from "../expressions/expression_parser.ts";
@@ -599,6 +600,21 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
             }
             throw new UserError(lines.join("\n"));
           }
+        }
+      }
+
+      // Fast-fail: reject methods that write sensitive output without a vault.
+      if (
+        isMutatingKind(methodKind) && modelRequiresVault(modelDef.resources)
+      ) {
+        const hasVault = context.vaultService &&
+          context.vaultService.getVaultNames().length > 0;
+        if (!hasVault) {
+          throw new UserError(
+            `Model "${currentDefinition.name}" has sensitive resource output ` +
+              `fields but no vault is configured. Create a vault before ` +
+              `running this method: swamp vault create <type> <name>`,
+          );
         }
       }
 
