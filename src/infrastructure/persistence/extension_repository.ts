@@ -223,6 +223,11 @@ export class ExtensionRepository {
       for (const ext of extensions) {
         this.applyDiffForExtension(ext);
       }
+      const pruned = this.catalog.pruneUnreachableSources(this.repoRoot);
+      if (pruned.length > 0) {
+        logger
+          .info`Pruned ${pruned.length} catalog row(s) with unreachable source path(s)`;
+      }
       this.assertIRepo1();
     });
   }

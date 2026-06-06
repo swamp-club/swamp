@@ -1083,6 +1083,29 @@ export class ExtensionCatalogStore {
   }
 
   /**
+   * Deletes non-Tombstoned rows whose source_path is not under the
+   * given canonical repo root. Returns the paths that were pruned.
+   * Designed to run inside a transaction before I-Repo-1 so stale rows
+   * from prior container sessions (bind-mounted at a different path)
+   * don't block catalog writes.
+   */
+  pruneUnreachableSources(canonicalRepoRoot: string): string[] {
+    const prefix = canonicalRepoRoot.endsWith("/")
+      ? canonicalRepoRoot
+      : canonicalRepoRoot + "/";
+    const rows = this.findAll();
+    const pruned: string[] = [];
+    for (const row of rows) {
+      if ((row.state ?? "Indexed") === "Tombstoned") continue;
+      if (!row.source_path.startsWith(prefix)) {
+        this.removeBySourcePath(row.source_path);
+        pruned.push(row.source_path);
+      }
+    }
+    return pruned;
+  }
+
+  /**
    * Returns every row in `bundle_types`, ordered by source_path so the
    * output is stable across runs. Used by ExtensionRepository.loadAll
    * (which groups by extension identity) and by I-Repo-1 verification

@@ -1010,3 +1010,116 @@ Deno.test(
     );
   },
 );
+
+// =============================================================
+// swamp-club#574 cross-mount stale rows reproducer
+// =============================================================
+//
+// When the same repo is used from both a host shell and a container
+// that bind-mounts the repo at a different path, stale catalog rows
+// accumulate with container-path source_paths. These cause I-Repo-1
+// violations that block ALL catalog writes, including rm of unrelated
+// extensions.
+
+Deno.test(
+  "swamp-club#574: rm succeeds when unrelated extension has stale cross-mount rows",
+  async () => {
+    await withFixtureRepo(
+      async ({ repoDir, repository, catalog, lockfileRepository }) => {
+        const ts = Date.now();
+        const targetExt = `@test/target-${ts}`;
+        const targetType = `@test/target-model-${ts}`;
+        const staleExt = `@test/stale-${ts}`;
+        const staleType = `@test/stale-datastore-${ts}`;
+
+        // Install the extension we'll remove.
+        const targetPath = await stageModel(
+          repoDir,
+          targetExt,
+          "model.ts",
+          MINIMAL_MODEL_CODE(targetType),
+        );
+        const relTargetPath = targetPath.replace(repoDir + "/", "");
+        const installSvc = new InstallExtensionService({
+          denoRuntime: testDenoRuntime,
+          repository,
+          installExtensionFn: async (ref, ctx) => {
+            await ctx.lockfileRepository.writeEntry(
+              ref.name,
+              "2026.01.01.1",
+              [relTargetPath],
+            );
+            return makeStubInstallResult(ref.name, "2026.01.01.1", [
+              relTargetPath,
+            ]);
+          },
+        });
+        await installSvc.execute(
+          { name: targetExt, version: "2026.01.01.1" },
+          makeInstallContext(repoDir, lockfileRepository),
+        );
+
+        // Inject a stale row from a container session — source_path
+        // points at /workspace/... which doesn't exist on this host.
+        // Also inject the "real" host row for the same extension so
+        // they form an I-Repo-1 violation pair.
+        const hostSourcePath = join(
+          repoDir,
+          ".swamp",
+          "pulled-extensions",
+          staleExt,
+          "datastores",
+          "ds.ts",
+        );
+        await ensureDir(
+          join(repoDir, ".swamp", "pulled-extensions", staleExt, "datastores"),
+        );
+        await Deno.writeTextFile(hostSourcePath, "// host source");
+        catalog.upsert({
+          source_path: hostSourcePath,
+          type_normalized: staleType,
+          kind: "datastore",
+          bundle_path: join(repoDir, ".swamp", "datastore-bundles", "ds.js"),
+          version: "2026.01.01.1",
+          description: "",
+          extends_type: "",
+          source_mtime: "",
+          extension_name: staleExt,
+          extension_version: "2026.01.01.1",
+        });
+        catalog.upsert({
+          source_path: "/workspace/.swamp/pulled-extensions/" + staleExt +
+            "/datastores/ds.ts",
+          type_normalized: staleType,
+          kind: "datastore",
+          bundle_path: "/workspace/.swamp/datastore-bundles/ds.js",
+          version: "2026.01.01.1",
+          description: "",
+          extends_type: "",
+          source_mtime: "",
+          extension_name: staleExt,
+          extension_version: "2025.12.01.1",
+        });
+
+        // Before the fix, this would throw DuplicateTypeError wrapped
+        // in a UserError because the stale /workspace row and the host
+        // row form an I-Repo-1 violation. After the fix, the stale row
+        // is pruned before I-Repo-1 fires.
+        const rmSvc = new RemoveExtensionService({
+          repository,
+          lockfileRepository,
+          repoDir,
+        });
+        const result = await rmSvc.execute(targetExt);
+        assertEquals(result.filesDeleted > 0 || result.filesSkipped > 0, true);
+
+        // The stale /workspace row should have been pruned.
+        const remaining = catalog.findAll();
+        const stalePaths = remaining.filter((r) =>
+          r.source_path.startsWith("/workspace")
+        );
+        assertEquals(stalePaths.length, 0);
+      },
+    );
+  },
+);

@@ -1797,3 +1797,87 @@ Deno.test("ExtensionCatalogStore: runInTransaction throws non-lock errors immedi
     store.close();
   }
 });
+
+Deno.test("pruneUnreachableSources: removes rows outside the repo root", () => {
+  const dbPath = makeTempDbPath();
+  const repoRoot = canonicalizePath(dirname(dirname(dbPath)));
+  const store = new ExtensionCatalogStore(dbPath);
+
+  store.upsert(
+    makeRow({
+      source_path: join(repoRoot, ".swamp", "pulled-extensions", "echo.ts"),
+      type_normalized: "@test/local",
+      kind: "model",
+    }),
+  );
+  store.upsert(
+    makeRow({
+      source_path:
+        "/workspace/.swamp/pulled-extensions/@swamp/echo/models/echo.ts",
+      type_normalized: "@swamp/echo",
+      kind: "model",
+    }),
+  );
+
+  const pruned = store.pruneUnreachableSources(repoRoot);
+
+  assertEquals(pruned.length, 1);
+  assertEquals(
+    pruned[0],
+    "/workspace/.swamp/pulled-extensions/@swamp/echo/models/echo.ts",
+  );
+  assertEquals(store.findAll().length, 1);
+  assertEquals(store.findAll()[0].type_normalized, "@test/local");
+
+  store.close();
+});
+
+Deno.test("pruneUnreachableSources: skips Tombstoned rows even if outside repo root", () => {
+  const dbPath = makeTempDbPath();
+  const repoRoot = canonicalizePath(dirname(dirname(dbPath)));
+  const store = new ExtensionCatalogStore(dbPath);
+
+  store.upsert(
+    makeRow({
+      source_path: "/workspace/tombstoned.ts",
+      type_normalized: "@test/tombstoned",
+      kind: "model",
+      state: "Tombstoned",
+    }),
+  );
+
+  const pruned = store.pruneUnreachableSources(repoRoot);
+
+  assertEquals(pruned.length, 0);
+  assertEquals(store.findAll().length, 1);
+
+  store.close();
+});
+
+Deno.test("pruneUnreachableSources: preserves all rows under the repo root", () => {
+  const dbPath = makeTempDbPath();
+  const repoRoot = canonicalizePath(dirname(dirname(dbPath)));
+  const store = new ExtensionCatalogStore(dbPath);
+
+  store.upsert(
+    makeRow({
+      source_path: join(repoRoot, "extensions", "models", "a.ts"),
+      type_normalized: "@test/a",
+      kind: "model",
+    }),
+  );
+  store.upsert(
+    makeRow({
+      source_path: join(repoRoot, ".swamp", "pulled-extensions", "b.ts"),
+      type_normalized: "@test/b",
+      kind: "datastore",
+    }),
+  );
+
+  const pruned = store.pruneUnreachableSources(repoRoot);
+
+  assertEquals(pruned.length, 0);
+  assertEquals(store.findAll().length, 2);
+
+  store.close();
+});

@@ -24,6 +24,7 @@ const logger = getLogger(["swamp", "doctor", "repair"]);
 
 export type RepairOperationKind =
   | "catalog-row-pruned"
+  | "unreachable-row-pruned"
   | "bundle-file-evicted"
   | "pulled-extension-repulled";
 
@@ -53,14 +54,15 @@ export interface RepairDeps {
  * aggregate state report. Handles three categories:
  *
  * - Catalog rows in Tombstoned state (no transitions out; safe to prune).
+ * - Catalog rows whose source_path doesn't exist on disk (stale rows
+ *   from prior container sessions with a different mount path).
  * - Bundle files not referenced by any catalog row.
  * - Pulled extensions with BundleBuildFailed or ValidationFailed sources
  *   (re-pulled from registry to restore pre-built bundles).
  *
- * NEVER touches Indexed, Bundled, or OrphanedBundleOnly rows.
- * OrphanedBundleOnly is excluded because those rows still reference a
- * live bundle file — pruning the row would strand the file as an orphan
- * on the next run, breaking idempotence.
+ * OrphanedBundleOnly rows are excluded from state-based pruning because
+ * they still reference a live bundle file — pruning the row would strand
+ * the file as an orphan on the next run, breaking idempotence.
  */
 export async function repairExtensions(
   deps: RepairDeps,
@@ -84,6 +86,20 @@ export async function repairExtensions(
         reason: `Tombstoned row — no longer active`,
       });
     }
+  }
+
+  // Phase 1b: Identify non-Tombstoned rows whose source_path doesn't
+  // exist on disk. These accumulate when the same repo is used from a
+  // container with a different mount path (e.g. /workspace vs /Users).
+  const unreachableRows: string[] = [];
+  for (const orphan of report.catalogOrphans) {
+    unreachableRows.push(orphan.sourcePath);
+    operations.push({
+      kind: "unreachable-row-pruned",
+      path: orphan.sourcePath,
+      reason:
+        `Source path does not exist on disk — stale row from a prior session`,
+    });
   }
 
   // Phase 2: Identify orphaned bundle files.
@@ -114,13 +130,14 @@ export async function repairExtensions(
     }
   }
 
-  let actualPruned = rowsToPrune.length;
+  let actualPruned = rowsToPrune.length + unreachableRows.length;
   let actualEvicted = filesToEvict.length;
   let actualRepulled = extensionsToRepull.size;
 
   if (deps.apply) {
-    if (rowsToPrune.length > 0) {
-      actualPruned = deps.deleteBySourcePaths(rowsToPrune);
+    const allRowsToPrune = [...rowsToPrune, ...unreachableRows];
+    if (allRowsToPrune.length > 0) {
+      actualPruned = deps.deleteBySourcePaths(allRowsToPrune);
       logger.info`Pruned ${actualPruned} catalog row(s)`;
     }
     actualEvicted = 0;

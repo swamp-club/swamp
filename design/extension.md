@@ -1139,6 +1139,16 @@ extracts + returns metadata, but **does not write to the catalog**. The
 lifecycle service is the catalog-write owner — keeping it that way is
 what lets I-Repo-1 fire on every install consistently.
 
+### Unreachable-path pre-flight prune
+
+Before I-Repo-1 evaluates, `saveAll` prunes non-Tombstoned rows whose
+`source_path` is not under the canonical repo root. This handles stale
+rows left by container sessions that bind-mounted the repo at a
+different path (e.g. `/workspace/...` vs `/Users/...`). Without the
+prune, these phantom rows form cross-aggregate `(kind, typeNormalized)`
+collisions that block *every* catalog write — including `rm` of
+unrelated extensions.
+
 ### Atomic upgrade pattern
 
 For every new aggregate the install service is about to save, it

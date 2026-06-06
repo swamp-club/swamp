@@ -453,3 +453,72 @@ Deno.test("repairExtensions: works without repullExtension callback", async () =
     true,
   );
 });
+
+Deno.test("repairExtensions: prunes catalog orphans with unreachable source paths", async () => {
+  const deleted: string[] = [];
+  const report = makeEmptyReport({
+    catalogOrphans: [
+      {
+        sourcePath:
+          "/workspace/.swamp/pulled-extensions/@swamp/echo/models/echo.ts",
+        extensionName: "@swamp/echo",
+        stateTag: "Indexed",
+        bundlePath: "/workspace/.swamp/bundles/echo.js",
+      },
+    ],
+    orphanRowCount: 1,
+  });
+
+  const result = await repairExtensions({
+    aggregateReport: report,
+    deleteBySourcePaths: (paths) => {
+      deleted.push(...paths);
+      return paths.length;
+    },
+    apply: true,
+  });
+
+  assertEquals(result.prunedRowCount, 1);
+  assertEquals(deleted.length, 1);
+  assertEquals(
+    deleted[0],
+    "/workspace/.swamp/pulled-extensions/@swamp/echo/models/echo.ts",
+  );
+  assertEquals(
+    result.operations.some((op) => op.kind === "unreachable-row-pruned"),
+    true,
+  );
+});
+
+Deno.test("repairExtensions: dry-run reports but does not prune unreachable rows", async () => {
+  let deleteCalled = false;
+  const report = makeEmptyReport({
+    catalogOrphans: [
+      {
+        sourcePath:
+          "/workspace/.swamp/pulled-extensions/@swamp/echo/models/echo.ts",
+        extensionName: "@swamp/echo",
+        stateTag: "Indexed",
+        bundlePath: "/workspace/.swamp/bundles/echo.js",
+      },
+    ],
+    orphanRowCount: 1,
+  });
+
+  const result = await repairExtensions({
+    aggregateReport: report,
+    deleteBySourcePaths: () => {
+      deleteCalled = true;
+      return 0;
+    },
+    apply: false,
+  });
+
+  assertEquals(result.mode, "dry-run");
+  assertEquals(result.prunedRowCount, 1);
+  assertFalse(deleteCalled);
+  assertEquals(
+    result.operations.some((op) => op.kind === "unreachable-row-pruned"),
+    true,
+  );
+});
