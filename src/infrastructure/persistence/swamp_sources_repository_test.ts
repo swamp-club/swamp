@@ -457,6 +457,30 @@ Deno.test("resolveSourceExtensionDirs: large YAML file is skipped during pre-sca
   }
 });
 
+Deno.test("resolveSourceExtensionDirs: detects export beyond 64 KiB in large .ts file", async () => {
+  const tmp = await Deno.makeTempDir({ prefix: "swamp_large_ts_" });
+  try {
+    const src = join(tmp, "big-report");
+    await Deno.mkdir(src, { recursive: true });
+    const padding = "// pad\n".repeat(12_000);
+    await Deno.writeTextFile(
+      join(src, "report.ts"),
+      `${padding}export const report = { name: "@test/big", description: "x", scope: "workflow" as const, execute: async () => ({ markdown: "ok", json: {} }) };\n`,
+    );
+    const stat = await Deno.stat(join(src, "report.ts"));
+    if (stat.size <= 65536) {
+      throw new Error(
+        `Test file must exceed 64 KiB to exercise the fix (got ${stat.size})`,
+      );
+    }
+    const result = await resolveSourceExtensionDirs([{ path: src }]);
+    assertEquals(result.length, 1);
+    assertPathEquals(result[0].reportsDir!, src);
+  } finally {
+    await Deno.remove(tmp, { recursive: true }).catch(() => {});
+  }
+});
+
 // -----------------------------------------------------------------
 // Parity test: resolveExtensionKindsForSource must agree with
 // resolveSourceExtensionDirs about which kinds a source contributes.

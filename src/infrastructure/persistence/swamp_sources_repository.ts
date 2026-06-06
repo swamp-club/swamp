@@ -214,19 +214,23 @@ const PRE_SCAN_SKIP_DIRS = new Set([
  * bounded on large repos where the source path is something broad. */
 const PRE_SCAN_MAX_DEPTH = 4;
 
-/** Cap per-file read during the content pre-scan. Normal extension files
- * sit far below this; a 64 KiB bound prevents blowups on pathological
- * files with no `export` declaration. */
-const PRE_SCAN_MAX_BYTES = 64 * 1024;
+/** Skip .ts files larger than this during the content pre-scan.
+ * Extension files are human-authored and far smaller; this guards
+ * against generated files in the source tree. */
+const PRE_SCAN_TS_MAX_BYTES = 2 * 1024 * 1024;
+
+/** Cap per-file read for YAML during the content pre-scan. Workflow
+ * YAML is small; this guards against large data fixtures. */
+const PRE_SCAN_YAML_MAX_BYTES = 64 * 1024;
 
 /**
  * Walks `sourceDir` looking for files that signal extension content.
  * Returns the set of kinds detected.
  *
- * For .ts files: reads up to PRE_SCAN_MAX_BYTES of the file and runs
- * `detectKindFromSource`, which uses the same export-name regex the
- * loaders use for their pre-bundle skip check — so pre-scan detection
- * equals loader acceptance.
+ * For .ts files: reads the full file (skipping files larger than
+ * PRE_SCAN_TS_MAX_BYTES) and runs `detectKindFromSource`, which uses
+ * the same export-name regex the loaders use for their pre-bundle skip
+ * check — so pre-scan detection equals loader acceptance.
  *
  * For workflow files (.yaml / .yml): parses the YAML and checks for a
  * top-level `jobs:` key. Regex shortcuts are unreliable because workflow
@@ -268,20 +272,12 @@ async function contentPreScan(
         if (entry.name.endsWith("_test.ts")) continue;
         try {
           const stat = await Deno.stat(entry.path);
-          const len = Math.min(stat.size, PRE_SCAN_MAX_BYTES);
-          const file = await Deno.open(entry.path, { read: true });
-          try {
-            const buf = new Uint8Array(len);
-            await file.read(buf);
-            const text = new TextDecoder().decode(buf);
-            const kind = detectKindFromSource(text);
-            if (kind) {
-              found.add(kind);
-              // Short-circuit once every known kind has been seen.
-              if (found.size === EXTENSION_KINDS.length - 1) return found;
-            }
-          } finally {
-            file.close();
+          if (stat.size > PRE_SCAN_TS_MAX_BYTES) continue;
+          const text = await Deno.readTextFile(entry.path);
+          const kind = detectKindFromSource(text);
+          if (kind) {
+            found.add(kind);
+            if (found.size === EXTENSION_KINDS.length - 1) return found;
           }
         } catch {
           // Unreadable file — skip.
@@ -292,13 +288,8 @@ async function contentPreScan(
       ) {
         if (found.has("workflows")) continue;
         try {
-          // Size cap mirrors the .ts branch above. Legitimate workflow
-          // YAML files are small; this guards against a source dir that
-          // happens to contain large YAML data fixtures (e.g. generated
-          // dumps) that would otherwise be read fully into memory before
-          // `parseYaml` could reject them.
           const yamlStat = await Deno.stat(entry.path);
-          if (yamlStat.size > PRE_SCAN_MAX_BYTES) continue;
+          if (yamlStat.size > PRE_SCAN_YAML_MAX_BYTES) continue;
           const content = await Deno.readTextFile(entry.path);
           const raw = parseYaml(content);
           if (
