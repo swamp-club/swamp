@@ -371,7 +371,7 @@ externalization rules for zod). No per-specifier-kind configuration is required.
 reproducibility. An unpinned specifier resolves to the registry's current
 "latest" at push time, which means the published bundle silently changes
 whenever the upstream package publishes a new version. See
-`.claude/skills/swamp-extension-publish/references/publishing.md` for
+`.claude/skills/swamp/references/extension-publish/references/publishing.md` for
 author-facing guidance.
 
 #### Project-aware bundling

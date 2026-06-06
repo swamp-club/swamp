@@ -89,7 +89,7 @@ correct skill. They live at
   {
     "query": "List all the data I have stored",
     "should_trigger": false,
-    "note": "Listing stored data routes to swamp-data, not this skill"
+    "note": "Listing stored data routes to the swamp skill (data guide), not this skill"
   }
 ]
 ```
