@@ -209,16 +209,18 @@ function renderRepairLog(report: RepairReport): void {
   writeOutput("");
 
   for (const op of report.operations) {
-    const icon = op.kind === "catalog-row-pruned"
-      ? "x"
-      : op.kind === "pulled-extension-repulled"
-      ? "+"
-      : "-";
-    const label = op.kind === "catalog-row-pruned"
-      ? dim("[row]")
-      : op.kind === "pulled-extension-repulled"
-      ? dim("[pull]")
-      : dim("[file]");
+    const icon =
+      op.kind === "catalog-row-pruned" || op.kind === "unreachable-row-pruned"
+        ? "x"
+        : op.kind === "pulled-extension-repulled"
+        ? "+"
+        : "-";
+    const label =
+      op.kind === "catalog-row-pruned" || op.kind === "unreachable-row-pruned"
+        ? dim("[row]")
+        : op.kind === "pulled-extension-repulled"
+        ? dim("[pull]")
+        : dim("[file]");
     writeOutput(`  ${icon} ${label} ${op.path}`);
     writeOutput(`     ${dim(op.reason)}`);
   }
