@@ -1097,7 +1097,7 @@ export class ExtensionCatalogStore {
     const pruned: string[] = [];
     for (const row of rows) {
       if ((row.state ?? "Indexed") === "Tombstoned") continue;
-      if (!row.source_path.startsWith(prefix)) {
+      if (!canonicalizePath(row.source_path).startsWith(prefix)) {
         this.removeBySourcePath(row.source_path);
         pruned.push(row.source_path);
       }

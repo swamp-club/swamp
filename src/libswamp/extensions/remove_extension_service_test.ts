@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertRejects } from "@std/assert";
-import { join } from "@std/path";
+import { join, relative } from "@std/path";
 import { ensureDir } from "@std/fs";
 import { RemoveExtensionService } from "./remove_extension_service.ts";
 import { InstallExtensionService } from "./install_extension_service.ts";
@@ -1039,7 +1039,7 @@ Deno.test(
           "model.ts",
           MINIMAL_MODEL_CODE(targetType),
         );
-        const relTargetPath = targetPath.replace(repoDir + "/", "");
+        const relTargetPath = relative(repoDir, targetPath);
         const installSvc = new InstallExtensionService({
           denoRuntime: testDenoRuntime,
           repository,
