@@ -198,6 +198,16 @@ function renderExtensionPreview(
     );
   }
 
+  if (item.repository) {
+    lines.push(<Text key="repo-gap" />);
+    lines.push(
+      <Text key="repo" wrap="truncate-end">
+        <Text bold>Repository:</Text> {item.repository}
+        {item.repositoryVerified && <Text color="green">(verified)</Text>}
+      </Text>,
+    );
+  }
+
   if (item.deprecatedAt != null) {
     lines.push(<Text key="dep-gap" />);
     lines.push(
@@ -256,6 +266,11 @@ function renderExtensionScrollback(
 
   if (item.contentTypes.length > 0) {
     lines.push(`Content Types: ${item.contentTypes.join(", ")}`);
+  }
+
+  if (item.repository) {
+    const verified = item.repositoryVerified ? " (verified)" : "";
+    lines.push(`Repository: ${item.repository}${verified}`);
   }
 
   if (item.deprecatedAt != null) {

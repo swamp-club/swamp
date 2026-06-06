@@ -124,6 +124,9 @@ export interface ExtensionSearchEntry {
   id: string;
   name: string;
   description: string;
+  repository?: string | null;
+  repositoryVerified?: boolean | null;
+  repositoryVerifiedUrl?: string | null;
   platforms: string[];
   labels: string[];
   contentTypes?: string[];

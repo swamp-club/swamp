@@ -25,6 +25,9 @@ import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 export interface ExtensionSearchItem {
   name: string;
   description: string;
+  repository: string | null;
+  repositoryVerified: boolean | null;
+  repositoryVerifiedUrl: string | null;
   latestVersion: string;
   platforms: string[];
   labels: string[];
@@ -77,6 +80,9 @@ export interface ExtensionSearchDeps {
     extensions: Array<{
       name: string;
       description: string;
+      repository?: string | null;
+      repositoryVerified?: boolean | null;
+      repositoryVerifiedUrl?: string | null;
       latestVersion: string;
       platforms: string[];
       labels: string[];
@@ -123,6 +129,9 @@ export async function* extensionSearch(
           results: response.extensions.map((ext) => ({
             name: ext.name,
             description: ext.description,
+            repository: ext.repository ?? null,
+            repositoryVerified: ext.repositoryVerified ?? null,
+            repositoryVerifiedUrl: ext.repositoryVerifiedUrl ?? null,
             latestVersion: ext.latestVersion,
             platforms: ext.platforms,
             labels: ext.labels,

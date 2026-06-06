@@ -36,6 +36,9 @@ function makeDeps(
           {
             name: "@ns/aws-ec2",
             description: "AWS EC2 model",
+            repository: "https://github.com/ns/aws-ec2",
+            repositoryVerified: true,
+            repositoryVerifiedUrl: "https://github.com/ns/aws-ec2",
             latestVersion: "1.0.0",
             platforms: ["aws"],
             labels: ["compute"],
@@ -76,7 +79,19 @@ Deno.test("extensionSearch: returns results from API", async () => {
   assertEquals(completed.data.query, "aws");
   assertEquals(completed.data.results.length, 2);
   assertEquals(completed.data.results[0].name, "@ns/aws-ec2");
+  assertEquals(
+    completed.data.results[0].repository,
+    "https://github.com/ns/aws-ec2",
+  );
+  assertEquals(completed.data.results[0].repositoryVerified, true);
+  assertEquals(
+    completed.data.results[0].repositoryVerifiedUrl,
+    "https://github.com/ns/aws-ec2",
+  );
   assertEquals(completed.data.results[1].name, "@ns/aws-s3");
+  assertEquals(completed.data.results[1].repository, null);
+  assertEquals(completed.data.results[1].repositoryVerified, null);
+  assertEquals(completed.data.results[1].repositoryVerifiedUrl, null);
   assertEquals(completed.data.meta.total, 2);
   assertEquals(completed.data.meta.page, 1);
   assertEquals(completed.data.meta.perPage, 20);
