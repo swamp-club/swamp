@@ -287,6 +287,11 @@ export class SwampClubClient {
     }
 
     const data = await res.json();
+    if (typeof data.id !== "string" || data.id.length === 0) {
+      throw new UserError(
+        `Server accepted the ripple on issue #${issueNumber} but did not return a comment ID. The ripple may not have been saved.`,
+      );
+    }
     return { id: data.id };
   }
 
@@ -421,7 +426,7 @@ export class SwampClubClient {
           (a: Record<string, unknown>) => typeof a.username === "string",
         )
         .map((a: Record<string, string>) => a.username),
-      commentCount: (issue.comments ?? []).length,
+      commentCount: (data.comments ?? []).length,
     };
   }
 
