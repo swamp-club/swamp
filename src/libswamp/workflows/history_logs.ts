@@ -20,6 +20,7 @@
 import type { Workflow } from "../../domain/workflows/workflow.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
+import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import {
   isPartialId,
   matchByPartialId,
@@ -95,6 +96,7 @@ export interface WorkflowHistoryLogsDeps {
 export function createWorkflowHistoryLogsDeps(
   repoDir: string,
   datastoreResolver?: DatastorePathResolver,
+  injectedWorkflowRepo?: WorkflowRepository,
 ): WorkflowHistoryLogsDeps {
   const dsPath = (subdir: string): string | undefined =>
     datastoreResolver?.resolvePath(subdir);
@@ -103,7 +105,8 @@ export function createWorkflowHistoryLogsDeps(
     undefined,
     dsPath(SWAMP_SUBDIRS.workflowRuns),
   );
-  const workflowRepo = new YamlWorkflowRepository(repoDir);
+  const workflowRepo: WorkflowRepository = injectedWorkflowRepo ??
+    new YamlWorkflowRepository(repoDir);
   return {
     isPartialId,
     matchRunByPartialId: async (idPrefix: string) => {

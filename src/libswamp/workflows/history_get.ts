@@ -24,6 +24,7 @@ import {
   createWorkflowRunId,
   type WorkflowId,
 } from "../../domain/workflows/workflow_id.ts";
+import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
 import { YamlWorkflowRunRepository } from "../../infrastructure/persistence/yaml_workflow_run_repository.ts";
 import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
@@ -51,10 +52,12 @@ export interface WorkflowHistoryGetDeps {
 export function createWorkflowHistoryGetDeps(
   repoDir: string,
   datastoreResolver?: DatastorePathResolver,
+  injectedWorkflowRepo?: WorkflowRepository,
 ): WorkflowHistoryGetDeps {
   const dsPath = (subdir: string): string | undefined =>
     datastoreResolver?.resolvePath(subdir);
-  const workflowRepo = new YamlWorkflowRepository(repoDir);
+  const workflowRepo: WorkflowRepository = injectedWorkflowRepo ??
+    new YamlWorkflowRepository(repoDir);
   const runRepo = new YamlWorkflowRunRepository(
     repoDir,
     undefined,

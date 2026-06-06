@@ -86,6 +86,7 @@ export const dataGetCommand = new Command()
         repoDir,
         datastoreResolver,
         repoContext.unifiedDataRepo,
+        repoContext.workflowRepo,
       );
 
       const renderer = createDataGetRenderer(cliCtx.outputMode);

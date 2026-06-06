@@ -22,6 +22,7 @@ import type { ModelType } from "../../domain/models/model_type.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { WorkflowDataService } from "../../domain/data/workflow_data_service.ts";
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
+import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
 import { YamlWorkflowRepository } from "../../infrastructure/persistence/yaml_workflow_repository.ts";
@@ -175,6 +176,7 @@ export function createDataGetDeps(
   repoDir: string,
   datastoreResolver?: DatastorePathResolver,
   injectedDataRepo?: FileSystemUnifiedDataRepository,
+  injectedWorkflowRepo?: WorkflowRepository,
 ): DataGetDeps {
   const dsPath = (subdir: string): string | undefined =>
     datastoreResolver?.resolvePath(subdir);
@@ -193,7 +195,8 @@ export function createDataGetDeps(
     undefined,
     namespaceFromResolver(datastoreResolver),
   );
-  const workflowRepo = new YamlWorkflowRepository(repoDir);
+  const workflowRepo: WorkflowRepository = injectedWorkflowRepo ??
+    new YamlWorkflowRepository(repoDir);
   const runRepo = new YamlWorkflowRunRepository(
     repoDir,
     undefined,

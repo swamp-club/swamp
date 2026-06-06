@@ -53,15 +53,20 @@ export const workflowHistoryGetCommand = new Command()
     ]);
     cliCtx.logger.debug`Getting latest run for workflow: ${workflowIdOrName}`;
 
-    const { repoDir, datastoreResolver } = await requireInitializedRepoReadOnly(
-      {
-        repoDir: resolveRepoDir(options.repoDir),
-        outputMode: cliCtx.outputMode,
-      },
-    );
+    const { repoDir, repoContext, datastoreResolver } =
+      await requireInitializedRepoReadOnly(
+        {
+          repoDir: resolveRepoDir(options.repoDir),
+          outputMode: cliCtx.outputMode,
+        },
+      );
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createWorkflowHistoryGetDeps(repoDir, datastoreResolver);
+    const deps = createWorkflowHistoryGetDeps(
+      repoDir,
+      datastoreResolver,
+      repoContext.workflowRepo,
+    );
 
     const renderer = createWorkflowHistoryGetRenderer(cliCtx.outputMode);
     await consumeStream(

@@ -77,6 +77,7 @@ export const dataListCommand = new Command()
       datastoreResolver,
       repoContext.unifiedDataRepo,
       namespace,
+      repoContext.workflowRepo,
     );
 
     const renderer = createDataListRenderer(cliCtx.outputMode, !!namespace);
