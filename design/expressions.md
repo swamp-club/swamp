@@ -23,7 +23,7 @@ Swamp has two distinct CEL surfaces:
    already holds (e.g. selector predicates over a fleet of hosts).
    Extensions register their own functions, types, and operators on the
    returned Environment — registrations on one instance do not affect any
-   other. See `.claude/skills/swamp-extension/references/model/api.md` for
+   other. See `.claude/skills/swamp/references/extension/references/model/api.md` for
    the extension-author guide.
 
 The two surfaces share the same arithmetic-overload registrations

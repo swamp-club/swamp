@@ -35,8 +35,8 @@ schema and available methods.
 ## Step 3: Build a Custom Extension
 
 If nothing matches locally or in the registry, offer to build a custom extension
-model using the `swamp-extension` skill. This creates a typed model with proper
-Zod schemas for the service the user wants to automate.
+model using the `swamp` skill (extension guide). This creates a typed model with
+proper Zod schemas for the service the user wants to automate.
 
 Only use `command/shell` if the user's goal is genuinely a one-off ad-hoc
 command (e.g., "check my disk space right now") — never for wrapping CLI tools
@@ -47,7 +47,7 @@ wrapping CLI tools or building integrations."_
 ## Credential Setup
 
 If the chosen model type requires credentials (cloud services, APIs, etc.), set
-up a vault before configuring the model. Use the `swamp-vault` skill:
+up a vault before configuring the model. Use the `swamp` skill (vault guide):
 
 1. Create a vault: `swamp vault create local_encryption my-secrets --json`
 2. Store credentials: `swamp vault put my-secrets KEY=VALUE --json`
@@ -89,12 +89,12 @@ Read the validation errors. Common fixes:
   `swamp model type describe <type> --json`
 - File not found → verify path from `swamp model get <name> --json`
 
-For detailed model guidance, see the `swamp-model` skill.
+For detailed model guidance, see the `swamp` skill (model guide).
 
 ### State 3 (method_run) — method failed
 
 - **Command failed**: Read the error output and suggest specific fixes
-- **Missing secrets**: Guide toward vault setup (delegate to `swamp-vault`)
+- **Missing secrets**: Guide toward vault setup (use the `swamp` skill)
 - **Permission denied**: Check the command exists and is executable
 - **Timeout**: Suggest a simpler command for the first run
 
@@ -113,12 +113,12 @@ scope), delegate to the appropriate skill with context about what they built.
 Always pass along the user's original goal and what they built so the next skill
 doesn't start from zero.
 
-| User intent                             | Delegate to               |
-| --------------------------------------- | ------------------------- |
-| Another model or edit the one they made | `swamp-model`             |
-| Chain models together                   | `swamp-workflow`          |
-| Secure credentials                      | `swamp-vault`             |
-| Inspect or query their data             | `swamp-data`              |
-| Build a typed model from scratch        | `swamp-extension`         |
-| Share their work                        | `swamp-extension-publish` |
-| Something is broken                     | `swamp-troubleshooting`   |
+| User intent                             | Delegate to                 |
+| --------------------------------------- | --------------------------- |
+| Another model or edit the one they made | `swamp` (model guide)       |
+| Chain models together                   | `swamp` (workflow guide)    |
+| Secure credentials                      | `swamp` (vault guide)       |
+| Inspect or query their data             | `swamp` (data guide)        |
+| Build a typed model from scratch        | `swamp` (extension guide)   |
+| Share their work                        | `swamp` (extension-publish) |
+| Something is broken                     | `swamp` (troubleshooting)   |
