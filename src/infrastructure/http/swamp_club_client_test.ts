@@ -520,3 +520,102 @@ Deno.test("SwampClubClient lets caller-supplied Authorization win over construct
     await mock.shutdown();
   }
 });
+
+// ── submitComment response validation ────────────────────────────────
+
+Deno.test("submitComment: returns id on valid response", async () => {
+  const mock = startMockServer((_req) =>
+    Response.json({ id: "comment-abc-123" })
+  );
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    const result = await client.submitComment("key", 42, "hello");
+    assertEquals(result.id, "comment-abc-123");
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("submitComment: throws when id is missing from response", async () => {
+  const mock = startMockServer((_req) => Response.json({}));
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    await assertRejects(
+      () => client.submitComment("key", 42, "hello"),
+      UserError,
+      "did not return a comment ID",
+    );
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("submitComment: throws when id is null", async () => {
+  const mock = startMockServer((_req) => Response.json({ id: null }));
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    await assertRejects(
+      () => client.submitComment("key", 42, "hello"),
+      UserError,
+      "did not return a comment ID",
+    );
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("submitComment: throws when id is empty string", async () => {
+  const mock = startMockServer((_req) => Response.json({ id: "" }));
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    await assertRejects(
+      () => client.submitComment("key", 42, "hello"),
+      UserError,
+      "did not return a comment ID",
+    );
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+// ── fetchIssue commentCount ──────────────────────────────────────────
+
+Deno.test("fetchIssue: reads commentCount from top-level comments array", async () => {
+  const mock = startMockServer((_req) =>
+    Response.json({
+      issue: {
+        number: 42,
+        title: "Test issue",
+        type: "bug",
+        status: "open",
+        authorUsername: "alice",
+      },
+      comments: [
+        { id: "c1", body: "first" },
+        { id: "c2", body: "second" },
+      ],
+    })
+  );
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    const result = await client.fetchIssue(undefined, 42);
+    assertEquals(result.commentCount, 2);
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("fetchIssue: commentCount is 0 when no comments array in response", async () => {
+  const mock = startMockServer((_req) =>
+    Response.json({
+      issue: { number: 1, title: "x", type: "bug", status: "open" },
+    })
+  );
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    const result = await client.fetchIssue(undefined, 1);
+    assertEquals(result.commentCount, 0);
+  } finally {
+    await mock.shutdown();
+  }
+});
