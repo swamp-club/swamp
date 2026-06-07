@@ -447,15 +447,15 @@ The safety analyzer scans all files before push. Issues are classified as
 
 ### Errors (block push)
 
-| Rule                        | Detail                                                                  |
-| --------------------------- | ----------------------------------------------------------------------- |
-| `eval()` / `new Function()` | Dynamic code execution not allowed in `.ts` files                       |
-| Symlinks                    | Symlinked files are not allowed                                         |
-| Hidden files                | Files starting with `.` are not allowed                                 |
-| Disallowed extensions       | Only `.ts`, `.json`, `.md`, `.yaml`, `.yml`, `.txt` (`binaries` exempt) |
-| File too large              | Individual files must be under 1 MB                                     |
-| Total size exceeded         | All files combined must be under 10 MB                                  |
-| Too many files              | Maximum 150 files per extension                                         |
+| Rule                        | Detail                                                                                                                                                                                        |
+| --------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `eval()` / `new Function()` | Dynamic code execution not allowed in `.ts` files                                                                                                                                             |
+| Symlinks                    | Symlinked files are not allowed                                                                                                                                                               |
+| Hidden files                | Files starting with `.` are not allowed                                                                                                                                                       |
+| Disallowed extensions       | Only `.ts`, `.json`, `.md`, `.yaml`, `.yml`, `.txt` in `additionalFiles`. Files in the `binaries` manifest field are exempt — use `binaries` for executables and files with other extensions. |
+| File too large              | Individual files must be under 1 MB                                                                                                                                                           |
+| Total size exceeded         | All files combined must be under 10 MB                                                                                                                                                        |
+| Too many files              | Maximum 150 files per extension                                                                                                                                                               |
 
 ### Warnings (prompted)
 

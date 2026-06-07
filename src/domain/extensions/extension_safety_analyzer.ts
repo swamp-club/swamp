@@ -102,7 +102,7 @@ export const DEFAULT_CONTENT_RULES: ContentRule[] = [
 
 // ── Constants ────────────────────────────────────────────────────────
 
-const ALLOWED_EXTENSIONS = new Set([
+export const ALLOWED_EXTENSIONS = new Set([
   ".ts",
   ".json",
   ".md",

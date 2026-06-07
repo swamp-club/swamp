@@ -200,6 +200,22 @@ Deno.test("extensionPushPrepare: invalid collective throws SwampError", async ()
   assertEquals(error.code, "validation_failed");
 });
 
+Deno.test("extensionPushPrepare: additionalFiles with disallowed extension suggests binaries", async () => {
+  const deps = makePrepareDeps();
+  const input = makePrepareInput({
+    additionalFilePaths: ["/tmp/test-repo/helper.bin"],
+    manifest: makeManifest({ additionalFiles: ["helper.bin"] }),
+  });
+
+  const error = await assertRejects(
+    () => extensionPushPrepare(ctx, deps, input),
+  ) as SwampError;
+  assertEquals(error.code, "validation_failed");
+  assertStringIncludes(error.message, "additionalFiles");
+  assertStringIncludes(error.message, "binaries");
+  assertStringIncludes(error.message, ".bin");
+});
+
 Deno.test("extensionPushPrepare: safety errors throw SwampError", async () => {
   const deps = makePrepareDeps({
     analyzeExtensionSafety: () =>

@@ -411,6 +411,30 @@ behavior is unchanged — omit it and paths resolve relative to the configured
 per-extension-subdir layouts. See
 [extension-publish references/publishing.md](../extension-publish/references/publishing.md#path-resolution--pathsbase).
 
+## Binaries
+
+Extensions can include executable host helpers (CLI tools, compiled binaries)
+via the `binaries` manifest field. Files listed in `binaries` are:
+
+- **Exempt from the file-extension allowlist** — unlike `additionalFiles` (which
+  only allows `.ts`, `.json`, `.md`, `.yaml`, `.yml`, `.txt`), binaries can have
+  any extension or no extension at all.
+- **Mode-bit preserved** — executable permissions survive the publish/pull cycle
+  on POSIX systems.
+- **Warned at pull time** — `swamp extension pull` alerts users to inspect
+  binaries before use.
+
+```yaml
+# manifest.yaml
+binaries:
+  - bin/my-helper
+  - bin/another-tool
+```
+
+Paths resolve the same way as `additionalFiles` (relative to the manifest
+directory, or following `paths.base`). Use `binaries` for executables and
+`additionalFiles` for non-code text files (README, LICENSE, config templates).
+
 ## CalVer Versioning
 
 Use `swamp extension version --manifest manifest.yaml --json` to get the correct

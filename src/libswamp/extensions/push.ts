@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { dirname, join, relative } from "@std/path";
+import { dirname, extname, join, relative } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { createTarGz } from "../../infrastructure/archive/tar_archive.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
@@ -26,9 +26,10 @@ import type {
   ExtensionContentMetadata,
   ExtractedArgument,
 } from "../../domain/extensions/extension_content.ts";
-import type {
-  SafetyCheckResult,
-  SafetyIssue,
+import {
+  ALLOWED_EXTENSIONS,
+  type SafetyCheckResult,
+  type SafetyIssue,
 } from "../../domain/extensions/extension_safety_analyzer.ts";
 import type { QualityCheckResult } from "../../domain/extensions/extension_quality_checker.ts";
 import type { DependencySpecifier } from "../../domain/extensions/extension_dependency_extractor.ts";
@@ -579,7 +580,23 @@ export async function extensionPushPrepare(
   // 5. Build resolved data
   const resolvedData = buildResolvedData(input, contentMetadata);
 
-  // 6. Safety analysis
+  // 6a. Pre-check additionalFiles against the extension allowlist so the
+  // error can name the manifest field and suggest `binaries`.
+  for (const file of input.additionalFilePaths) {
+    const ext = extname(file).toLowerCase();
+    if (!ALLOWED_EXTENSIONS.has(ext)) {
+      const rel = relative(input.repoDir, file);
+      throw validationFailed(
+        `File "${rel}" in additionalFiles has extension "${ext}" which is not allowed. ` +
+          `Allowed extensions for additionalFiles: ${
+            [...ALLOWED_EXTENSIONS].join(", ")
+          }. ` +
+          `If this is an executable or binary file, move it to the \`binaries\` field in manifest.yaml instead.`,
+      );
+    }
+  }
+
+  // 6b. Safety analysis
   // Include files are safety-checked but excluded from quality checks
   // (they may have their own tooling and conventions).
   const qualityFiles = [
