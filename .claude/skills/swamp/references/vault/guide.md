@@ -26,9 +26,9 @@ Correct flow: `swamp vault create <type> <name> --json` → edit config if neede
 | Search vaults      | `swamp vault search [query] --json`                     |
 | Get vault details  | `swamp vault get <name_or_id> --json`                   |
 | Edit vault config  | `swamp vault edit <name_or_id>`                         |
-| Store a secret     | `swamp vault put <vault> KEY=VALUE --json`              |
-| Store from stdin   | `echo "val" \| swamp vault put <vault> KEY --json`      |
-| Store interactive  | `swamp vault put <vault> KEY` (prompts for value)       |
+| Store a secret     | `swamp vault put <vault> KEY` (prompts for value)       |
+| Store from stdin   | `echo "$VAL" \| swamp vault put <vault> KEY --json`     |
+| Store inline       | `swamp vault put <vault> KEY=VALUE --json` (insecure)   |
 | Read a secret      | `swamp vault read-secret <vault> <key> --force --json`  |
 | List secret keys   | `swamp vault list-keys <vault> --json`                  |
 | Annotate a secret  | `swamp vault annotate <vault> <key> --url <u>`          |
@@ -115,11 +115,11 @@ swamp vault edit dev-secrets
 
 ## Store Secrets
 
-**Inline value (appears in shell history):**
+**Interactive prompt (recommended for humans — value is hidden):**
 
 ```bash
-swamp vault put dev-secrets API_KEY=sk-1234567890 --json
-swamp vault put prod-secrets DB_PASSWORD=secret123 -f --json  # Skip confirmation
+swamp vault put dev-secrets API_KEY
+# Enter value for API_KEY: ********
 ```
 
 **Piped value (recommended for scripts/CI — keeps secrets out of shell
@@ -131,11 +131,11 @@ cat ~/secrets/token.txt | swamp vault put dev-secrets TOKEN --json
 op read "op://vault/item/field" | swamp vault put dev-secrets SECRET --json
 ```
 
-**Interactive prompt (recommended for humans — value is hidden):**
+**Inline value (insecure — exposes secrets in shell history, process tables, and
+logs; use only for non-sensitive test data):**
 
 ```bash
-swamp vault put dev-secrets API_KEY
-# Enter value for API_KEY: ********
+swamp vault put dev-secrets API_KEY=test-placeholder --json
 ```
 
 Interactive mode (TTY, no `=`, no pipe) prompts with echo suppressed; piped

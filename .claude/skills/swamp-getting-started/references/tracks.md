@@ -50,7 +50,7 @@ If the chosen model type requires credentials (cloud services, APIs, etc.), set
 up a vault before configuring the model. Use the `swamp` skill (vault guide):
 
 1. Create a vault: `swamp vault create local_encryption my-secrets --json`
-2. Store credentials: `swamp vault put my-secrets KEY=VALUE --json`
+2. Store credentials: `swamp vault put my-secrets API_KEY` (prompts securely)
 3. Reference in model YAML: `${{ vault.get("my-secrets", "KEY") }}`
 
 ## Method Selection

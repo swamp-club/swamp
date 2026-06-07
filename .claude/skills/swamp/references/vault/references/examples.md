@@ -57,32 +57,33 @@ swamp vault create local_encryption backend-secrets --json
 There are three ways to provide a secret value:
 
 ```bash
-# 1. Inline KEY=VALUE
-swamp vault put dev-secrets API_KEY=dev-key-12345 --json
-
-# 2. Piped from stdin (useful in scripts/CI)
-echo "dev-db-pass" | swamp vault put dev-secrets DB_PASSWORD --json
-cat secret.txt | swamp vault put dev-secrets CERT --json
-
-# 3. Interactive prompt (TTY only, value is hidden)
+# 1. Interactive prompt (recommended — value is hidden)
 #    Just provide the key without a value — you'll be prompted:
 #    $ swamp vault put dev-secrets API_KEY
 #    Enter value for API_KEY: ********
 swamp vault put dev-secrets API_KEY
+
+# 2. Piped from stdin (recommended for scripts/CI)
+echo "$DB_PASSWORD" | swamp vault put dev-secrets DB_PASSWORD --json
+cat secret.txt | swamp vault put dev-secrets CERT --json
+
+# 3. Inline KEY=VALUE (insecure — exposes value in shell history/process tables;
+#    use only for non-sensitive test data)
+swamp vault put dev-secrets TEST_MODE=enabled --json
 ```
 
 ```bash
-# Dev environment
-swamp vault put dev-secrets API_KEY=dev-key-12345 --json
-swamp vault put dev-secrets DB_PASSWORD=dev-db-pass --json
+# Dev environment (piped from env vars)
+echo "$API_KEY" | swamp vault put dev-secrets API_KEY --json
+echo "$DB_PASSWORD" | swamp vault put dev-secrets DB_PASSWORD --json
 
-# Staging environment
-swamp vault put staging-secrets API_KEY=staging-key-67890 --json
-swamp vault put staging-secrets DB_PASSWORD=staging-db-pass --json
+# Staging environment (piped from env vars)
+echo "$API_KEY" | swamp vault put staging-secrets API_KEY --json
+echo "$DB_PASSWORD" | swamp vault put staging-secrets DB_PASSWORD --json
 
-# Production environment (via AWS)
-swamp vault put prod-secrets API_KEY=prod-key-secure --json
-swamp vault put prod-secrets DB_PASSWORD=prod-db-secure --json
+# Production environment (piped from a secrets manager)
+op read "op://prod/api-key/credential" | swamp vault put prod-secrets API_KEY --json
+op read "op://prod/db-password/credential" | swamp vault put prod-secrets DB_PASSWORD --json
 ```
 
 ## Using Vaults in Models
