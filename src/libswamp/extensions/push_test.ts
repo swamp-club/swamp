@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import { assertPathEquals } from "../../infrastructure/persistence/path_test_helpers.ts";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import type { Logger } from "@logtape/logtape";
@@ -478,4 +479,30 @@ Deno.test("extensionPush: yields pushing events for each phase", async () => {
     assertEquals(pushingEvents[1].phase, "upload");
     assertEquals(pushingEvents[2].phase, "confirm");
   }
+});
+
+Deno.test("extensionPushPrepare: resolvedData excludes helper files that are not entry points", async () => {
+  const tempDir = await Deno.makeTempDir();
+  const modelsDir = `${tempDir}/models`;
+  await Deno.mkdir(`${modelsDir}/_lib`, { recursive: true });
+  await Deno.writeTextFile(`${modelsDir}/echo.ts`, "export default {};");
+  await Deno.writeTextFile(`${modelsDir}/_lib/retry.ts`, "export {};");
+
+  const deps = makePrepareDeps();
+  const input = makePrepareInput({
+    repoDir: tempDir,
+    modelsDir,
+    allModelFiles: [
+      `${modelsDir}/echo.ts`,
+      `${modelsDir}/_lib/retry.ts`,
+    ],
+    modelEntryPoints: [`${modelsDir}/echo.ts`],
+    dryRun: true,
+  });
+
+  const result = await extensionPushPrepare(ctx, deps, input);
+  assertEquals(result.resolvedData.models.length, 1);
+  assertPathEquals(result.resolvedData.models[0].fileName, "models/echo.ts");
+  assertEquals(result.counts.models, 1);
+  await Deno.remove(tempDir, { recursive: true }).catch(() => {});
 });
