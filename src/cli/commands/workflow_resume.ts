@@ -50,6 +50,10 @@ import type { WorkflowRunEvent } from "../../libswamp/mod.ts";
 import { GIT_SHA } from "./version.ts";
 import { deepMerge, parseInputs, parseStdinContent } from "../input_parser.ts";
 import { readStdin } from "../../infrastructure/io/stdin_reader.ts";
+import { modelRegistry } from "../../domain/models/model.ts";
+import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
+import { driverTypeRegistry } from "../../domain/drivers/driver_type_registry.ts";
+import { reportRegistry } from "../../domain/reports/report_registry.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -153,6 +157,13 @@ export const workflowResumeCommand = new Command()
             `Run "swamp workflow approve ${workflowName} ${waiting.stepName}" first.`,
         );
       }
+
+      await Promise.all([
+        modelRegistry.ensureLoaded(),
+        vaultTypeRegistry.ensureLoaded(),
+        driverTypeRegistry.ensureLoaded(),
+        reportRegistry.ensureLoaded(),
+      ]);
 
       // Surface what the resume inputs do to the run's inputs. Key names only —
       // values may be secrets and are never logged. Overrides (a resume key
