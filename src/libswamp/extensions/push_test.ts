@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import { assertPathEquals } from "../../infrastructure/persistence/path_test_helpers.ts";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import type { Logger } from "@logtape/logtape";
@@ -501,7 +502,7 @@ Deno.test("extensionPushPrepare: resolvedData excludes helper files that are not
 
   const result = await extensionPushPrepare(ctx, deps, input);
   assertEquals(result.resolvedData.models.length, 1);
-  assertEquals(result.resolvedData.models[0].fileName, "models/echo.ts");
+  assertPathEquals(result.resolvedData.models[0].fileName, "models/echo.ts");
   assertEquals(result.counts.models, 1);
   await Deno.remove(tempDir, { recursive: true }).catch(() => {});
 });
