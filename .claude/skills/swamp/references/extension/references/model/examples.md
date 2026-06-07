@@ -119,7 +119,17 @@ export const model = {
       arguments: z.object({
         topN: z.number().default(5),
       }),
-      execute: async (args, context) => {
+      execute: async (
+        args: { topN: number },
+        context: {
+          globalArgs: z.infer<typeof GlobalArgsSchema>;
+          writeResource: (
+            specName: string,
+            name: string,
+            data: Record<string, unknown>,
+          ) => Promise<{ name: string }>;
+        },
+      ) => {
         const allWords = words(context.globalArgs.text.toLowerCase());
         const counts = countBy(allWords);
         const sorted = sortBy(
@@ -211,7 +221,17 @@ export const model = {
     create: {
       description: "Create a VPC",
       arguments: z.object({}),
-      execute: async (_args, context) => {
+      execute: async (
+        _args: Record<string, never>,
+        context: {
+          globalArgs: z.infer<typeof GlobalArgsSchema>;
+          writeResource: (
+            specName: string,
+            name: string,
+            data: Record<string, unknown>,
+          ) => Promise<{ name: string }>;
+        },
+      ) => {
         const { cidrBlock, region } = context.globalArgs;
 
         const cmd = new Deno.Command("aws", {
@@ -238,7 +258,20 @@ export const model = {
     update: {
       description: "Update VPC attributes (e.g., enable DNS support)",
       arguments: z.object({}),
-      execute: async (_args, context) => {
+      execute: async (
+        _args: Record<string, never>,
+        context: {
+          globalArgs: z.infer<typeof GlobalArgsSchema>;
+          readResource: (
+            name: string,
+          ) => Promise<Record<string, unknown> | null>;
+          writeResource: (
+            specName: string,
+            name: string,
+            data: Record<string, unknown>,
+          ) => Promise<{ name: string }>;
+        },
+      ) => {
         const region = context.globalArgs.region;
 
         // 1. Read stored data to get the resource ID
@@ -297,7 +330,15 @@ export const model = {
     delete: {
       description: "Delete the VPC",
       arguments: z.object({}),
-      execute: async (_args, context) => {
+      execute: async (
+        _args: Record<string, never>,
+        context: {
+          globalArgs: z.infer<typeof GlobalArgsSchema>;
+          readResource: (
+            name: string,
+          ) => Promise<Record<string, unknown> | null>;
+        },
+      ) => {
         const region = context.globalArgs.region;
 
         // Read back stored data to get the VPC ID
@@ -330,7 +371,20 @@ export const model = {
     sync: {
       description: "Refresh stored VPC state from live AWS API",
       arguments: z.object({}),
-      execute: async (_args, context) => {
+      execute: async (
+        _args: Record<string, never>,
+        context: {
+          globalArgs: z.infer<typeof GlobalArgsSchema>;
+          readResource: (
+            name: string,
+          ) => Promise<Record<string, unknown> | null>;
+          writeResource: (
+            specName: string,
+            name: string,
+            data: Record<string, unknown>,
+          ) => Promise<{ name: string }>;
+        },
+      ) => {
         const region = context.globalArgs.region;
 
         // 1. Read stored data to get the VPC ID
@@ -566,7 +620,17 @@ export const model = {
     create: {
       description: "Create a load balancer and wait until active",
       arguments: z.object({}),
-      execute: async (_args, context) => {
+      execute: async (
+        _args: Record<string, never>,
+        context: {
+          globalArgs: z.infer<typeof GlobalArgsSchema>;
+          writeResource: (
+            specName: string,
+            name: string,
+            data: Record<string, unknown>,
+          ) => Promise<{ name: string }>;
+        },
+      ) => {
         const { name, region, apiToken } = context.globalArgs;
 
         // 1. Call the create API
@@ -711,7 +775,20 @@ export const model = {
     create: {
       description: "Create a droplet (idempotent — skips if already exists)",
       arguments: z.object({}),
-      execute: async (_args, context) => {
+      execute: async (
+        _args: Record<string, never>,
+        context: {
+          globalArgs: z.infer<typeof GlobalArgsSchema>;
+          readResource: (
+            name: string,
+          ) => Promise<Record<string, unknown> | null>;
+          writeResource: (
+            specName: string,
+            name: string,
+            data: Record<string, unknown>,
+          ) => Promise<{ name: string }>;
+        },
+      ) => {
         const { name, region, size, image, apiToken } = context.globalArgs;
         const instanceName = "main";
 
@@ -804,7 +881,19 @@ marker. The purpose is detection, not failure.
 sync: {
   description: "Refresh stored state from live API",
   arguments: z.object({}),
-  execute: async (_args, context) => {
+  execute: async (
+    _args: Record<string, never>,
+    context: {
+      readResource: (
+        name: string,
+      ) => Promise<Record<string, unknown> | null>;
+      writeResource: (
+        specName: string,
+        name: string,
+        data: Record<string, unknown>,
+      ) => Promise<{ name: string }>;
+    },
+  ) => {
     const instanceName = "main";
 
     // 1. Read stored state to get the resource ID
@@ -931,7 +1020,17 @@ export const model = {
     check: {
       description: "Check endpoint health",
       arguments: z.object({}),
-      execute: async (_args, context) => {
+      execute: async (
+        _args: Record<string, never>,
+        context: {
+          globalArgs: z.infer<typeof GlobalArgsSchema>;
+          writeResource: (
+            specName: string,
+            name: string,
+            data: Record<string, unknown>,
+          ) => Promise<{ name: string }>;
+        },
+      ) => {
         const { url, expectedStatus } = context.globalArgs;
         const start = Date.now();
 
@@ -999,7 +1098,16 @@ export const model = {
     process: {
       description: "Process text according to the specified operation",
       arguments: InputSchema,
-      execute: async (args, context) => {
+      execute: async (
+        args: z.infer<typeof InputSchema>,
+        context: {
+          writeResource: (
+            specName: string,
+            name: string,
+            data: Record<string, unknown>,
+          ) => Promise<{ name: string }>;
+        },
+      ) => {
         const { text, operation } = args;
 
         let processedText: string;
@@ -1067,7 +1175,17 @@ export const model = {
     deploy: {
       description: "Deploy the application",
       arguments: z.object({}),
-      execute: async (args, context) => {
+      execute: async (
+        _args: Record<string, never>,
+        context: {
+          globalArgs: z.infer<typeof InputSchema>;
+          writeResource: (
+            specName: string,
+            name: string,
+            data: Record<string, unknown>,
+          ) => Promise<{ name: string }>;
+        },
+      ) => {
         const attrs = context.globalArgs;
         const deploymentId = `deploy-${attrs.appName}-${Date.now()}`;
 
@@ -1086,7 +1204,17 @@ export const model = {
     scale: {
       description: "Scale the deployment replicas",
       arguments: z.object({}),
-      execute: async (args, context) => {
+      execute: async (
+        _args: Record<string, never>,
+        context: {
+          globalArgs: z.infer<typeof InputSchema>;
+          writeResource: (
+            specName: string,
+            name: string,
+            data: Record<string, unknown>,
+          ) => Promise<{ name: string }>;
+        },
+      ) => {
         const attrs = context.globalArgs;
 
         const handle = await context.writeResource("state", "state", {
@@ -1134,7 +1262,17 @@ export const model = {
     run: {
       description: "Echo the message with timestamp",
       arguments: z.object({}),
-      execute: async (args, context) => {
+      execute: async (
+        _args: Record<string, never>,
+        context: {
+          globalArgs: z.infer<typeof InputSchema>;
+          writeResource: (
+            specName: string,
+            name: string,
+            data: Record<string, unknown>,
+          ) => Promise<{ name: string }>;
+        },
+      ) => {
         const handle = await context.writeResource("data", "data", {
           message: context.globalArgs.message,
           timestamp: new Date().toISOString(),
@@ -1185,7 +1323,17 @@ export const model = {
     generate: {
       description: "Generate service configuration based on environment",
       arguments: z.object({}),
-      execute: async (args, context) => {
+      execute: async (
+        _args: Record<string, never>,
+        context: {
+          globalArgs: z.infer<typeof InputSchema>;
+          writeResource: (
+            specName: string,
+            name: string,
+            data: Record<string, unknown>,
+          ) => Promise<{ name: string }>;
+        },
+      ) => {
         const { environment, serviceName } = context.globalArgs;
 
         // Generate environment-specific configuration
@@ -1268,7 +1416,18 @@ export const model = {
     run: {
       description: "Run a system command with streamed output",
       arguments: z.object({}),
-      execute: async (args, context) => {
+      execute: async (
+        _args: Record<string, never>,
+        context: {
+          globalArgs: z.infer<typeof InputSchema>;
+          logger: { info(msg: string, ...args: unknown[]): void };
+          writeResource: (
+            specName: string,
+            name: string,
+            data: Record<string, unknown>,
+          ) => Promise<{ name: string }>;
+        },
+      ) => {
         const attrs = context.globalArgs;
 
         // executeProcess streams stdout (info) and stderr (warn) through
@@ -1381,7 +1540,17 @@ export const model = {
     create: {
       description: "Create a VPC",
       arguments: z.object({}),
-      execute: async (_args, context) => {
+      execute: async (
+        _args: Record<string, never>,
+        context: {
+          globalArgs: z.infer<typeof GlobalArgsSchema>;
+          writeResource: (
+            specName: string,
+            name: string,
+            data: Record<string, unknown>,
+          ) => Promise<{ name: string }>;
+        },
+      ) => {
         const { cidrBlock, region, awsProfile } = context.globalArgs;
 
         await validateCredentials({ region, awsProfile });
@@ -1429,7 +1598,22 @@ export const extension = {
     audit: {
       description: "Audit the shell command execution",
       arguments: z.object({}),
-      execute: async (args, context) => {
+      execute: async (
+        _args: Record<string, never>,
+        context: {
+          definition: {
+            id: string;
+            name: string;
+            version: string;
+            tags: Record<string, string>;
+          };
+          writeResource: (
+            specName: string,
+            name: string,
+            data: Record<string, unknown>,
+          ) => Promise<{ name: string }>;
+        },
+      ) => {
         // Extensions use the target model's resources/files
         const handle = await context.writeResource("result", "result", {
           exitCode: 0,
@@ -1455,7 +1639,22 @@ export const extension = {
     audit: {
       description: "Audit the shell command execution",
       arguments: z.object({}),
-      execute: async (args, context) => {
+      execute: async (
+        _args: Record<string, never>,
+        context: {
+          definition: {
+            id: string;
+            name: string;
+            version: string;
+            tags: Record<string, string>;
+          };
+          writeResource: (
+            specName: string,
+            name: string,
+            data: Record<string, unknown>,
+          ) => Promise<{ name: string }>;
+        },
+      ) => {
         const handle = await context.writeResource("result", "result", {
           exitCode: 0,
           command: `audit: ${context.definition.name}`,
@@ -1467,7 +1666,17 @@ export const extension = {
     validate: {
       description: "Validate the shell command format",
       arguments: z.object({}),
-      execute: async (args, context) => {
+      execute: async (
+        _args: Record<string, never>,
+        context: {
+          globalArgs: Record<string, unknown>;
+          writeResource: (
+            specName: string,
+            name: string,
+            data: Record<string, unknown>,
+          ) => Promise<{ name: string }>;
+        },
+      ) => {
         const handle = await context.writeResource("result", "result", {
           exitCode: 0,
           command: `valid: ${context.globalArgs.run?.length > 0}`,
@@ -1531,7 +1740,10 @@ export const model = {
         type: "resource",
         description: "Discovered devices",
       }],
-      execute: async (_args: unknown, context: { repoDir: string }) => {
+      execute: async (
+        _args: Record<string, never>,
+        context: { repoDir: string },
+      ) => {
         const scriptPath =
           `${context.repoDir}/extensions/models/homekit_discover.ts`;
         const cmd = new Deno.Command("deno", {
@@ -1618,7 +1830,17 @@ export const model = {
     send: {
       description: "Send a notification",
       arguments: z.object({}),
-      execute: async (args, context) => {
+      execute: async (
+        _args: Record<string, never>,
+        context: {
+          globalArgs: { content: string; priority: "low" | "medium" | "high" };
+          writeResource: (
+            specName: string,
+            name: string,
+            data: Record<string, unknown>,
+          ) => Promise<{ name: string }>;
+        },
+      ) => {
         const globalArgs = context.globalArgs;
         const handle = await context.writeResource("result", "main", {
           sent: true,

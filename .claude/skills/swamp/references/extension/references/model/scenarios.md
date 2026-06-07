@@ -77,7 +77,17 @@ export const model = {
     create: {
       description: "Create a new Stripe customer",
       arguments: CreateArgsSchema,
-      execute: async (args, context) => {
+      execute: async (
+        args: z.infer<typeof CreateArgsSchema>,
+        context: {
+          globalArgs: z.infer<typeof GlobalArgsSchema>;
+          writeResource: (
+            specName: string,
+            name: string,
+            data: Record<string, unknown>,
+          ) => Promise<{ name: string }>;
+        },
+      ) => {
         const response = await fetch("https://api.stripe.com/v1/customers", {
           method: "POST",
           headers: {
@@ -109,9 +119,20 @@ export const model = {
     get: {
       description: "Get customer details",
       arguments: z.object({}),
-      execute: async (_args, context) => {
+      execute: async (
+        _args: Record<string, never>,
+        context: {
+          globalArgs: z.infer<typeof GlobalArgsSchema>;
+          readResource: (name: string) => Promise<unknown>;
+          writeResource: (
+            specName: string,
+            name: string,
+            data: Record<string, unknown>,
+          ) => Promise<{ name: string }>;
+        },
+      ) => {
         // Read stored customer ID
-        const stored = await context.readResource!("primary") as
+        const stored = await context.readResource("primary") as
           | CustomerData
           | null;
 
@@ -250,7 +271,17 @@ export const model = {
     create: {
       description: "Create an S3 bucket",
       arguments: z.object({}),
-      execute: async (_args, context) => {
+      execute: async (
+        _args: Record<string, never>,
+        context: {
+          globalArgs: z.infer<typeof GlobalArgsSchema>;
+          writeResource: (
+            specName: string,
+            name: string,
+            data: Record<string, unknown>,
+          ) => Promise<{ name: string }>;
+        },
+      ) => {
         const { bucketName, region } = context.globalArgs;
 
         const cmd = new Deno.Command("aws", {
@@ -297,11 +328,22 @@ export const model = {
     update: {
       description: "Update bucket settings (enable versioning)",
       arguments: z.object({}),
-      execute: async (_args, context) => {
+      execute: async (
+        _args: Record<string, never>,
+        context: {
+          globalArgs: z.infer<typeof GlobalArgsSchema>;
+          readResource: (name: string) => Promise<unknown>;
+          writeResource: (
+            specName: string,
+            name: string,
+            data: Record<string, unknown>,
+          ) => Promise<{ name: string }>;
+        },
+      ) => {
         const { bucketName, versioning } = context.globalArgs;
 
         // Read existing data
-        const existingData = await context.readResource!("main") as
+        const existingData = await context.readResource("main") as
           | BucketData
           | null;
 
@@ -343,9 +385,15 @@ export const model = {
     delete: {
       description: "Delete the S3 bucket",
       arguments: z.object({}),
-      execute: async (_args, context) => {
+      execute: async (
+        _args: Record<string, never>,
+        context: {
+          readResource: (name: string) => Promise<unknown>;
+          logger: { info: (msg: string, ...args: unknown[]) => void };
+        },
+      ) => {
         // Read stored data to get bucket name
-        const bucketData = await context.readResource!("main") as
+        const bucketData = await context.readResource("main") as
           | BucketData
           | null;
 
@@ -381,9 +429,19 @@ export const model = {
     sync: {
       description: "Refresh stored bucket state from live AWS API",
       arguments: z.object({}),
-      execute: async (_args, context) => {
+      execute: async (
+        _args: Record<string, never>,
+        context: {
+          readResource: (name: string) => Promise<unknown>;
+          writeResource: (
+            specName: string,
+            name: string,
+            data: Record<string, unknown>,
+          ) => Promise<{ name: string }>;
+        },
+      ) => {
         // Read stored data to get bucket name
-        const bucketData = await context.readResource!("main") as
+        const bucketData = await context.readResource("main") as
           | BucketData
           | null;
 
@@ -560,7 +618,18 @@ export const model = {
     scan: {
       description: "Scan and discover all VPCs in the region",
       arguments: z.object({}),
-      execute: async (_args, context) => {
+      execute: async (
+        _args: Record<string, never>,
+        context: {
+          globalArgs: z.infer<typeof GlobalArgsSchema>;
+          logger: { info: (msg: string, ...args: unknown[]) => void };
+          writeResource: (
+            specName: string,
+            name: string,
+            data: Record<string, unknown>,
+          ) => Promise<{ name: string }>;
+        },
+      ) => {
         const { region } = context.globalArgs;
 
         const cmd = new Deno.Command("aws", {
@@ -693,7 +762,19 @@ export const extension = {
       arguments: z.object({
         auditTag: z.string().optional(),
       }),
-      execute: async (args, context) => {
+      execute: async (
+        args: { auditTag?: string },
+        context: {
+          definition: { name: string };
+          globalArgs: { run: string };
+          logger: { info: (msg: string, ...args: unknown[]) => void };
+          writeResource: (
+            specName: string,
+            name: string,
+            data: Record<string, unknown>,
+          ) => Promise<{ name: string }>;
+        },
+      ) => {
         const auditEntry = {
           modelName: context.definition.name,
           command: context.globalArgs.run,
@@ -717,7 +798,18 @@ export const extension = {
     dryRun: {
       description: "Show what would be executed without running",
       arguments: z.object({}),
-      execute: async (_args, context) => {
+      execute: async (
+        _args: Record<string, never>,
+        context: {
+          globalArgs: { run: string };
+          logger: { info: (msg: string, ...args: unknown[]) => void };
+          writeResource: (
+            specName: string,
+            name: string,
+            data: Record<string, unknown>,
+          ) => Promise<{ name: string }>;
+        },
+      ) => {
         const command = context.globalArgs.run;
 
         context.logger.info("Would execute: {command}", { command });

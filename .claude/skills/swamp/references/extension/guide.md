@@ -72,6 +72,8 @@ const GlobalArgsSchema = z.object({
   message: z.string(),
 });
 
+type GlobalArgs = z.infer<typeof GlobalArgsSchema>;
+
 const OutputSchema = z.object({
   id: z.uuid(),
   message: z.string(),
@@ -95,7 +97,17 @@ export const model = {
     run: {
       description: "Process the input message",
       arguments: z.object({}),
-      execute: async (args, context) => {
+      execute: async (
+        _args: Record<string, never>,
+        context: {
+          globalArgs: GlobalArgs;
+          writeResource: (
+            specName: string,
+            name: string,
+            data: Record<string, unknown>,
+          ) => Promise<{ name: string }>;
+        },
+      ) => {
         const handle = await context.writeResource("result", "main", {
           id: crypto.randomUUID(),
           message: context.globalArgs.message.toUpperCase(),

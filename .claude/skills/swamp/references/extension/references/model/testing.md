@@ -58,7 +58,10 @@ a stub instead of the live SDK:
 
 ```typescript
 // In the model execute function
-execute: (async (args, context) => {
+execute: (async (
+  args: z.infer<typeof ArgsSchema> & { _s3Client?: S3Client },
+  context: { globalArgs: { region: string; bucket: string } },
+) => {
   const s3 = args._s3Client ??
     new S3Client({ region: context.globalArgs.region });
   await s3.send(new CreateBucketCommand({ Bucket: context.globalArgs.bucket }));

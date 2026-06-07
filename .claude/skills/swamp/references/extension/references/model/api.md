@@ -111,11 +111,14 @@ additionalFiles:
 Read them at runtime via `ctx.extensionFile()`:
 
 ```ts
-execute: (async (_args, ctx) => {
+execute: async (
+  _args: Record<string, never>,
+  ctx: { extensionFile: (path: string) => string },
+) => {
   const promptPath = ctx.extensionFile("prompts/review.md");
   const prompt = await Deno.readTextFile(promptPath);
   // ...
-});
+},
 ```
 
 Do **not** hardcode `.swamp/pulled-extensions/<name>/files/...` — that layout
@@ -369,7 +372,16 @@ executions should not persist incorrect or misleading data.
 **Pattern: check for failure first, only write data on success.**
 
 ```typescript
-execute: (async (args, context) => {
+execute: async (
+  args: z.infer<typeof RequestArgsSchema>,
+  context: {
+    writeResource: (
+      specName: string,
+      name: string,
+      data: Record<string, unknown>,
+    ) => Promise<{ name: string }>;
+  },
+) => {
   const result = await callExternalApi(args);
 
   // Throw BEFORE writing data — don't persist failure data
@@ -384,7 +396,7 @@ execute: (async (args, context) => {
   });
 
   return { dataHandles: [handle] };
-});
+},
 ```
 
 **Workflow integration:** When a model method throws, the workflow engine
@@ -404,7 +416,13 @@ arithmetic-overload registrations.
 ### Basic usage
 
 ```typescript
-execute: (async (args, ctx) => {
+execute: async (
+  args: z.infer<typeof SelectorArgsSchema>,
+  ctx: {
+    globalArgs: GlobalArgs;
+    createCelEnvironment: () => Environment;
+  },
+) => {
   const env = ctx.createCelEnvironment();
 
   // Compile once, evaluate many.
@@ -415,7 +433,7 @@ execute: (async (args, ctx) => {
   );
 
   // ... write resource with matched ...
-});
+},
 ```
 
 The example above takes a selector like
@@ -448,14 +466,17 @@ If a helper signature inside the extension needs the named type, use
 `ReturnType<typeof ctx.createCelEnvironment>` — no external import is required:
 
 ```typescript
-execute: (async (args, ctx) => {
+execute: async (
+  args: z.infer<typeof SelectorArgsSchema>,
+  ctx: { createCelEnvironment: () => Environment },
+) => {
   type CelEnv = ReturnType<typeof ctx.createCelEnvironment>;
   return runPredicate(ctx.createCelEnvironment(), args.selector);
 
   function runPredicate(env: CelEnv, selector: string) {
     return env.parse(selector)({/* ... */});
   }
-});
+},
 ```
 
 Do NOT import `Environment` from `@systeminit/swamp-testing` in production
@@ -472,6 +493,38 @@ class identifiers are different objects. Method calls dispatch correctly via
 prototypes, but `instanceof Environment` will return `false` across that
 boundary. Don't write identity checks against the class — duck-type against the
 methods you call.
+
+---
+
+## Method execute Signature
+
+```typescript
+execute: (async (
+  args: z.infer<typeof MethodArgsSchema>,
+  context: {/* only the fields you use */},
+) => Promise<{ dataHandles?: Array<{ name: string }> }>);
+```
+
+### Context Fields Available in Methods
+
+| Field                          | Type                                                                                           | Description                                      |
+| ------------------------------ | ---------------------------------------------------------------------------------------------- | ------------------------------------------------ |
+| `context.signal`               | `AbortSignal`                                                                                  | Cancellation signal for async operations         |
+| `context.repoDir`              | `string`                                                                                       | Repository root path                             |
+| `context.globalArgs`           | `z.infer<typeof GlobalArgsSchema>`                                                             | Validated global arguments from the definition   |
+| `context.definition`           | `{ id: string; name: string; version: string; tags: Record<string, string> }`                  | Model instance metadata                          |
+| `context.methodName`           | `string`                                                                                       | Name of the method being invoked                 |
+| `context.logger`               | LogTape Logger (trace/debug/info/warning/error/fatal)                                          | Structured logging                               |
+| `context.writeResource`        | `(specName: string, name: string, data: Record<string, unknown>) => Promise<{ name: string }>` | Write structured JSON data                       |
+| `context.readResource`         | `(instanceName: string, version?: number) => Promise<Record<string, unknown> \| null>`         | Read previously stored data                      |
+| `context.createFileWriter`     | `(specName: string, name: string) => DataWriter`                                               | Create binary/streaming file writer              |
+| `context.createCelEnvironment` | `() => Environment`                                                                            | Fresh CEL environment for expression evaluation  |
+| `context.dataRepository`       | Low-level data API                                                                             | For reading non-JSON content or cross-model data |
+| `context.modelType`            | `string`                                                                                       | The model type string (e.g. `@myorg/my-model`)   |
+| `context.modelId`              | `string`                                                                                       | The model instance ID                            |
+
+Type only the fields your method body actually uses — don't declare the full
+interface. See [typing.md](typing.md) for the complete typing guide.
 
 ---
 

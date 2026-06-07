@@ -56,7 +56,16 @@ export const model = {
     run: {
       description: "Run the model",
       arguments: InputSchema,
-      execute: async (args, context) => { ... },
+      execute: async (
+        _args: Record<string, never>,
+        context: {
+          writeResource: (
+            specName: string,
+            name: string,
+            data: Record<string, unknown>,
+          ) => Promise<{ name: string }>;
+        },
+      ) => { ... },
     },
   },
 };
