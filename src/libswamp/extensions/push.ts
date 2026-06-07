@@ -778,13 +778,13 @@ export async function extensionPushPrepare(
     manifest: input.manifest,
     contentMetadata,
     counts: {
-      models: input.allModelFiles.length,
+      models: input.modelEntryPoints.length,
       workflows: input.workflowFiles.length,
       bundles: totalBundles,
-      vaults: input.allVaultFiles.length,
-      drivers: input.allDriverFiles.length,
-      datastores: input.allDatastoreFiles.length,
-      reports: input.allReportFiles.length,
+      vaults: input.vaultEntryPoints.length,
+      drivers: input.driverEntryPoints.length,
+      datastores: input.datastoreEntryPoints.length,
+      reports: input.reportEntryPoints.length,
       skills: input.skillDirs.length,
     },
     isDryRun: input.dryRun,
@@ -938,7 +938,7 @@ function buildResolvedData(
     (contentMetadata?.reports ?? []).map((r) => [r.fileName, r]),
   );
 
-  const resolvedModels = input.allModelFiles.map((f) => {
+  const resolvedModels = input.modelEntryPoints.map((f) => {
     const relPath = relative(input.repoDir, f);
     const extracted = extractedModelsByFile.get(
       relative(input.modelsDir, f),
@@ -950,7 +950,7 @@ function buildResolvedData(
     };
   });
 
-  const resolvedVaults = input.allVaultFiles.map((f) => {
+  const resolvedVaults = input.vaultEntryPoints.map((f) => {
     const relPath = relative(input.repoDir, f);
     const extracted = extractedVaultsByFile.get(
       relative(input.vaultsDir, f),
@@ -964,7 +964,7 @@ function buildResolvedData(
     };
   });
 
-  const resolvedDrivers = input.allDriverFiles.map((f) => {
+  const resolvedDrivers = input.driverEntryPoints.map((f) => {
     const relPath = relative(input.repoDir, f);
     const extracted = extractedDriversByFile.get(
       relative(input.driversDir, f),
@@ -978,7 +978,7 @@ function buildResolvedData(
     };
   });
 
-  const resolvedDatastores = input.allDatastoreFiles.map((f) => {
+  const resolvedDatastores = input.datastoreEntryPoints.map((f) => {
     const relPath = relative(input.repoDir, f);
     const extracted = extractedDatastoresByFile.get(
       relative(input.datastoresDir, f),
@@ -992,7 +992,7 @@ function buildResolvedData(
     };
   });
 
-  const resolvedReports = input.allReportFiles.map((f) => {
+  const resolvedReports = input.reportEntryPoints.map((f) => {
     const relPath = relative(input.repoDir, f);
     const extracted = extractedReportsByFile.get(
       relative(input.reportsDir, f),
