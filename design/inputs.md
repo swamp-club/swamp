@@ -199,8 +199,14 @@ base values and key=value pairs act as overrides (deep merged).
 
 Key=value inputs are parsed as strings by default. When the workflow or model
 declares an `InputsSchema`, string values are automatically coerced to match
-the schema's declared types (`number`, `integer`, `boolean`) before validation.
-Without a schema, values remain as strings.
+the schema's declared types (`number`, `integer`, `boolean`, `array`, `object`)
+before validation. Without a schema, values remain as strings.
+
+For `array` and `object` types, the string is parsed as JSON. If parsing
+succeeds and the result is the correct type (an actual array or object), the
+parsed value is used. If parsing fails or the result is a different JSON type
+(e.g. `null`, a number), the value remains as a string and downstream
+validation reports the mismatch.
 
 ### JSON-typed values via `:json` suffix
 
@@ -227,9 +233,10 @@ deepMerge precedence).
 
 ### Arrays
 
-Array inputs are supported via the `:json` suffix above (preferred), or
-via `--input-file` with YAML/JSON, or via the legacy single-shot
-`--input '<json-object>'` form.
+Array inputs are supported via automatic type coercion when the schema declares
+`type: array` (the string is parsed as JSON), via the `:json` suffix above
+(explicit, works without a schema), via `--input-file` with YAML/JSON, or via
+the legacy single-shot `--input '<json-object>'` form.
 
 ### Reading inputs from stdin
 

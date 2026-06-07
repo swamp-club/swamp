@@ -112,3 +112,99 @@ Deno.test("coerceInputTypes: keys not in schema stay as strings", () => {
   const result = coerceInputTypes({ known: "5", unknown: "hello" }, schema);
   assertEquals(result, { known: 5, unknown: "hello" });
 });
+
+Deno.test("coerceInputTypes: coerces JSON array string to array", () => {
+  const schema: InputsSchema = {
+    properties: {
+      keywords: { type: "array", items: { type: "string" } },
+    },
+  };
+  const result = coerceInputTypes(
+    { keywords: '["typescript","retry"]' },
+    schema,
+  );
+  assertEquals(result, { keywords: ["typescript", "retry"] });
+});
+
+Deno.test("coerceInputTypes: coerces JSON object string to object", () => {
+  const schema: InputsSchema = {
+    properties: {
+      config: { type: "object" },
+    },
+  };
+  const result = coerceInputTypes(
+    { config: '{"port":8080,"host":"localhost"}' },
+    schema,
+  );
+  assertEquals(result, { config: { port: 8080, host: "localhost" } });
+});
+
+Deno.test("coerceInputTypes: invalid JSON for array stays as string", () => {
+  const schema: InputsSchema = {
+    properties: {
+      keywords: { type: "array", items: { type: "string" } },
+    },
+  };
+  const result = coerceInputTypes({ keywords: "not-json" }, schema);
+  assertEquals(result, { keywords: "not-json" });
+});
+
+Deno.test("coerceInputTypes: invalid JSON for object stays as string", () => {
+  const schema: InputsSchema = {
+    properties: {
+      config: { type: "object" },
+    },
+  };
+  const result = coerceInputTypes({ config: "{bad json}" }, schema);
+  assertEquals(result, { config: "{bad json}" });
+});
+
+Deno.test("coerceInputTypes: JSON null does not coerce to object", () => {
+  const schema: InputsSchema = {
+    properties: {
+      data: { type: "object" },
+    },
+  };
+  const result = coerceInputTypes({ data: "null" }, schema);
+  assertEquals(result, { data: "null" });
+});
+
+Deno.test("coerceInputTypes: JSON number does not coerce to array", () => {
+  const schema: InputsSchema = {
+    properties: {
+      items: { type: "array" },
+    },
+  };
+  const result = coerceInputTypes({ items: "42" }, schema);
+  assertEquals(result, { items: "42" });
+});
+
+Deno.test("coerceInputTypes: JSON object does not coerce to array", () => {
+  const schema: InputsSchema = {
+    properties: {
+      items: { type: "array" },
+    },
+  };
+  const result = coerceInputTypes({ items: '{"a":1}' }, schema);
+  assertEquals(result, { items: '{"a":1}' });
+});
+
+Deno.test("coerceInputTypes: JSON array does not coerce to object", () => {
+  const schema: InputsSchema = {
+    properties: {
+      config: { type: "object" },
+    },
+  };
+  const result = coerceInputTypes({ config: '["a","b"]' }, schema);
+  assertEquals(result, { config: '["a","b"]' });
+});
+
+Deno.test("coerceInputTypes: already-parsed array is untouched", () => {
+  const schema: InputsSchema = {
+    properties: {
+      keywords: { type: "array", items: { type: "string" } },
+    },
+  };
+  const result = coerceInputTypes({ keywords: ["a", "b"] }, schema);
+  assertEquals(result, { keywords: ["a", "b"] });
+});

@@ -137,6 +137,27 @@ export function coerceMethodArgs(
       if (!Number.isNaN(num)) {
         result[key] = num;
       }
+    } else if (leafType === "array") {
+      try {
+        const parsed = JSON.parse(value);
+        if (Array.isArray(parsed)) {
+          result[key] = parsed;
+        }
+      } catch {
+        // Not valid JSON — leave as string for downstream validation
+      }
+    } else if (leafType === "object") {
+      try {
+        const parsed = JSON.parse(value);
+        if (
+          typeof parsed === "object" && parsed !== null &&
+          !Array.isArray(parsed)
+        ) {
+          result[key] = parsed;
+        }
+      } catch {
+        // Not valid JSON — leave as string for downstream validation
+      }
     }
   }
 

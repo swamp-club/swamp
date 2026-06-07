@@ -65,6 +65,31 @@ export function coerceInputTypes(
         }
         break;
       }
+      case "array": {
+        try {
+          const parsed = JSON.parse(value);
+          if (Array.isArray(parsed)) {
+            result[key] = parsed;
+          }
+        } catch {
+          // Not valid JSON — leave as string for downstream validation
+        }
+        break;
+      }
+      case "object": {
+        try {
+          const parsed = JSON.parse(value);
+          if (
+            typeof parsed === "object" && parsed !== null &&
+            !Array.isArray(parsed)
+          ) {
+            result[key] = parsed;
+          }
+        } catch {
+          // Not valid JSON — leave as string for downstream validation
+        }
+        break;
+      }
     }
   }
 
