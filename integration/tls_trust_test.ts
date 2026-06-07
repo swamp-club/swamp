@@ -21,30 +21,36 @@ import { assert, assertStringIncludes } from "@std/assert";
 import { join, toFileUrl } from "@std/path";
 
 /**
- * Integration coverage for the TLS trust-store shim (issue #503).
+ * Integration coverage for the TLS trust-store shim (issues #503 and #477).
  *
- * These tests drive the REAL `configureTlsTrust` code path in fresh
- * subprocesses — Deno reads its TLS CA environment lazily and caches the rustls
- * root store on first use, so each scenario must run in its own process. Using
- * the actual module (rather than a hand-rolled fetch client) guards the wiring:
- * if `configureTlsTrust` stopped mapping SSL_CERT_FILE, these would fail.
+ * These tests drive the REAL trust-configuration code path in fresh subprocesses
+ * (Deno caches its rustls root store on the first TLS handshake in a process, so
+ * each scenario must run in its own process). Using the actual modules — rather
+ * than a hand-rolled fetch client — guards the wiring: if `configureTlsTrust`
+ * stopped mapping SSL_CERT_FILE, or the bootstrap stopped running first, these
+ * would fail.
  *
- * Coverage boundary: the `system` trust-store branch cannot be exercised
- * without mutating the operating-system trust store, so these tests use the
- * SSL_CERT_FILE -> DENO_CERT mapping as the testable proxy for the lazy-env
- * mechanism. The public-TLS assertion is offline-tolerant.
+ * The `ordering` tests below encode the regression the first #503 fix missed:
+ * trust configured AFTER an import-time handshake is too late, so the bootstrap
+ * must run as the first import side effect.
+ *
+ * Coverage boundary: the `system` trust-store branch cannot be exercised without
+ * mutating the operating-system trust store, so these tests use the
+ * SSL_CERT_FILE -> DENO_CERT mapping as the testable proxy. The public-TLS
+ * assertion is offline-tolerant.
  */
 
-const TLS_TRUST_MODULE = toFileUrl(
-  join(
-    import.meta.dirname!,
-    "..",
-    "src",
-    "infrastructure",
-    "runtime",
-    "tls_trust.ts",
-  ),
-).href;
+const RUNTIME_DIR = join(
+  import.meta.dirname!,
+  "..",
+  "src",
+  "infrastructure",
+  "runtime",
+);
+const TLS_TRUST_MODULE = toFileUrl(join(RUNTIME_DIR, "tls_trust.ts")).href;
+const TLS_TRUST_BOOTSTRAP_MODULE =
+  toFileUrl(join(RUNTIME_DIR, "tls_trust_bootstrap.ts")).href;
+const MAIN_MODULE = join(import.meta.dirname!, "..", "main.ts");
 
 /** Returns true if `openssl` is available on PATH. */
 async function hasOpenssl(): Promise<boolean> {
@@ -257,4 +263,131 @@ Deno.test("tls_trust integration: public TLS still works under the merged store"
     `public TLS failed with a certificate error under the merged store: ${result}`,
   );
   console.warn(`skipping public-TLS assertion (offline?): ${result}`);
+});
+
+/** Runs an arbitrary entry script in a subprocess and returns its RESULT line. */
+async function runScript(
+  script: string,
+  env: Record<string, string>,
+): Promise<string> {
+  const baseEnv: Record<string, string> = {};
+  for (const key of ["PATH", "HOME", "DENO_DIR", "TMPDIR", "SystemRoot"]) {
+    const v = Deno.env.get(key);
+    if (v) baseEnv[key] = v;
+  }
+  const { stdout } = await spawnWithStdin(script, { ...baseEnv, ...env });
+  const out = new TextDecoder().decode(stdout);
+  return out.split("\n").find((l) => l.startsWith("RESULT:")) ?? out.trim();
+}
+
+// These two tests encode the regression that the first tls_trust fix missed:
+// Deno caches its TLS root store on the FIRST handshake in the process, so
+// trust configured *after* an import-time handshake (e.g. by a heavy dependency
+// evaluated before main()'s body) has no effect. The bootstrap module must run
+// as the first import side effect to win that race.
+Deno.test("tls_trust ordering: trust configured AFTER an import-time handshake is too late", async () => {
+  if (!(await hasOpenssl())) {
+    console.warn("skipping: openssl not available");
+    return;
+  }
+  const dir = await Deno.makeTempDir({ prefix: "swamp-tls-order-" });
+  try {
+    const { caPath, fullchainPath, leafKeyPath } = await generateCertChain(dir);
+    const cert = await Deno.readTextFile(fullchainPath);
+    const key = await Deno.readTextFile(leafKeyPath);
+    const ac = new AbortController();
+    const server = Deno.serve(
+      { port: 0, cert, key, signal: ac.signal, onListen: () => {} },
+      () => new Response("ok"),
+    );
+    const port = (server.addr as Deno.NetAddr).port;
+    const url = `https://localhost:${port}/`;
+    // A module that performs a TLS handshake at evaluation time (a stand-in for
+    // a heavy dependency). Imported first, it caches the untrusted root store.
+    const offender = join(dir, "offender.ts");
+    await Deno.writeTextFile(
+      offender,
+      `try { await fetch(${
+        JSON.stringify(url)
+      }); } catch (_e) { /* untrusted */ }\n`,
+    );
+    try {
+      const script = `
+import ${JSON.stringify(toFileUrl(offender).href)};
+Deno.env.set("DENO_CERT", ${JSON.stringify(caPath)});
+try { const r = await fetch(${
+        JSON.stringify(url)
+      }); console.log("RESULT:OK:" + r.status); }
+catch (e) { console.log("RESULT:ERR:" + (e instanceof Error ? e.message : String(e))); }
+`;
+      const result = await runScript(script, {});
+      assertStringIncludes(result, "RESULT:ERR:");
+      assertStringIncludes(result, "UnknownIssuer");
+    } finally {
+      ac.abort();
+      await server.finished;
+    }
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("tls_trust ordering: the bootstrap import wins the race against a later import-time handshake", async () => {
+  if (!(await hasOpenssl())) {
+    console.warn("skipping: openssl not available");
+    return;
+  }
+  const dir = await Deno.makeTempDir({ prefix: "swamp-tls-order-" });
+  try {
+    const { caPath, fullchainPath, leafKeyPath } = await generateCertChain(dir);
+    const cert = await Deno.readTextFile(fullchainPath);
+    const key = await Deno.readTextFile(leafKeyPath);
+    const ac = new AbortController();
+    const server = Deno.serve(
+      { port: 0, cert, key, signal: ac.signal, onListen: () => {} },
+      () => new Response("ok"),
+    );
+    const port = (server.addr as Deno.NetAddr).port;
+    const url = `https://localhost:${port}/`;
+    const offender = join(dir, "offender.ts");
+    await Deno.writeTextFile(
+      offender,
+      `try { await fetch(${
+        JSON.stringify(url)
+      }); } catch (_e) { /* untrusted */ }\n`,
+    );
+    try {
+      // The real bootstrap module is imported FIRST (as in main.ts); the
+      // import-time handshake then sees the trust and the store is built with it.
+      const script = `
+import ${JSON.stringify(TLS_TRUST_BOOTSTRAP_MODULE)};
+import ${JSON.stringify(toFileUrl(offender).href)};
+try { const r = await fetch(${
+        JSON.stringify(url)
+      }); console.log("RESULT:OK:" + r.status); }
+catch (e) { console.log("RESULT:ERR:" + (e instanceof Error ? e.message : String(e))); }
+`;
+      const result = await runScript(script, { SSL_CERT_FILE: caPath });
+      assertStringIncludes(result, "RESULT:OK:200");
+    } finally {
+      ac.abort();
+      await server.finished;
+    }
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("tls_trust ordering: main.ts imports the bootstrap before any other module", async () => {
+  // Structural guard: the trust bootstrap must be the first import in main.ts.
+  // If it is reordered after a module that opens a TLS connection at evaluation
+  // time, the root store is cached before trust is configured.
+  const source = await Deno.readTextFile(MAIN_MODULE);
+  const firstImport = source.match(/^import\s+["']([^"']+)["']/m) ??
+    source.match(/^import\s.*?from\s+["']([^"']+)["']/ms);
+  assert(firstImport, "no import statement found in main.ts");
+  assertStringIncludes(
+    firstImport[1],
+    "runtime/tls_trust_bootstrap.ts",
+  );
 });

@@ -17,8 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+// MUST be first: configures the TLS trust store before any other module is
+// evaluated. Deno caches its root store on the first TLS handshake, which a
+// heavy dependency (AWS SDK, OpenTelemetry, …) can trigger at import time —
+// before main()'s body runs. See tls_trust_bootstrap.ts for the full rationale.
+import "./src/infrastructure/runtime/tls_trust_bootstrap.ts";
 import { runCli } from "./src/cli/mod.ts";
-import { configureTlsTrust } from "./src/infrastructure/runtime/tls_trust.ts";
 import { initializeLogging } from "./src/infrastructure/logging/logger.ts";
 import { renderError } from "./src/presentation/output/error_output.ts";
 import { flushDatastoreSync } from "./src/infrastructure/persistence/datastore_sync_coordinator.ts";
@@ -30,10 +34,6 @@ import {
 } from "./src/infrastructure/tracing/mod.ts";
 
 if (import.meta.main) {
-  // Configure TLS trust before any network I/O so Deno honors the OS trust
-  // store (and SSL_CERT_FILE) when it first builds its TLS root store.
-  configureTlsTrust();
-
   const parentCtx = await initTracing();
   try {
     await runWithParentTrace(parentCtx, () => runCli(Deno.args));
