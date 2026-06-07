@@ -138,6 +138,54 @@ Deno.test("does not coerce empty string to number", () => {
   assertEquals(result, { count: 0 });
 });
 
+Deno.test("coerces JSON array string to array", () => {
+  const schema = z.object({ keywords: z.array(z.string()) });
+  const result = coerceMethodArgs({ keywords: '["a","b"]' }, schema);
+  assertEquals(result, { keywords: ["a", "b"] });
+});
+
+Deno.test("coerces JSON object string to object", () => {
+  const schema = z.object({ config: z.object({ port: z.number() }) });
+  const result = coerceMethodArgs({ config: '{"port":8080}' }, schema);
+  assertEquals(result, { config: { port: 8080 } });
+});
+
+Deno.test("invalid JSON for array stays as string", () => {
+  const schema = z.object({ keywords: z.array(z.string()) });
+  const result = coerceMethodArgs({ keywords: "not-json" }, schema);
+  assertEquals(result, { keywords: "not-json" });
+});
+
+Deno.test("invalid JSON for object stays as string", () => {
+  const schema = z.object({ config: z.object({ port: z.number() }) });
+  const result = coerceMethodArgs({ config: "{bad}" }, schema);
+  assertEquals(result, { config: "{bad}" });
+});
+
+Deno.test("JSON null does not coerce to object", () => {
+  const schema = z.object({ config: z.object({ port: z.number() }) });
+  const result = coerceMethodArgs({ config: "null" }, schema);
+  assertEquals(result, { config: "null" });
+});
+
+Deno.test("JSON number does not coerce to array", () => {
+  const schema = z.object({ items: z.array(z.string()) });
+  const result = coerceMethodArgs({ items: "42" }, schema);
+  assertEquals(result, { items: "42" });
+});
+
+Deno.test("handles optional array wrapper", () => {
+  const schema = z.object({ tags: z.array(z.string()).optional() });
+  const result = coerceMethodArgs({ tags: '["a","b"]' }, schema);
+  assertEquals(result, { tags: ["a", "b"] });
+});
+
+Deno.test("handles optional object wrapper", () => {
+  const schema = z.object({ meta: z.object({ k: z.string() }).optional() });
+  const result = coerceMethodArgs({ meta: '{"k":"v"}' }, schema);
+  assertEquals(result, { meta: { k: "v" } });
+});
+
 // ---------- getObjectShape ----------
 
 Deno.test("getObjectShape returns shape for plain ZodObject", () => {
