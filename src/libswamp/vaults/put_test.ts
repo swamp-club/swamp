@@ -20,6 +20,7 @@
 import { assertEquals } from "@std/assert";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
+import type { RefreshHook } from "../../domain/vaults/refresh_hook.ts";
 import {
   vaultPut,
   type VaultPutDeps,
@@ -35,6 +36,9 @@ function makeDeps(overrides: Partial<VaultPutDeps> = {}): VaultPutDeps {
     secretExists: () => Promise.resolve(false),
     putSecret: () => Promise.resolve(),
     publishSecretUpdated: () => Promise.resolve(),
+    putRefreshHook: () => Promise.resolve(),
+    deleteRefreshHook: () => Promise.resolve(),
+    supportsRefreshHooks: () => Promise.resolve(false),
     ...overrides,
   };
 }
@@ -128,4 +132,103 @@ Deno.test("vaultPut: yields error when vault not found", async () => {
   >;
   assertEquals(last.kind, "error");
   assertEquals(last.error.code, "not_found");
+});
+
+Deno.test("vaultPut: stores refresh hook when provider supports it", async () => {
+  let storedHook: RefreshHook | null = null;
+  const deps = makeDeps({
+    supportsRefreshHooks: () => Promise.resolve(true),
+    putRefreshHook: (_vault, _key, hook) => {
+      storedHook = hook;
+      return Promise.resolve();
+    },
+  });
+
+  await collect<VaultPutEvent>(
+    vaultPut(createLibSwampContext(), deps, {
+      vaultName: "my-vault",
+      key: "TOKEN",
+      value: "val",
+      overwritten: false,
+      refreshFrom: "gcloud auth print-access-token",
+      refreshTtlMs: 3000000,
+    }),
+  );
+
+  assertEquals(storedHook !== null, true);
+  assertEquals(storedHook!.command, "gcloud auth print-access-token");
+  assertEquals(storedHook!.ttlMs, 3000000);
+});
+
+Deno.test("vaultPut: yields warning when provider does not support refresh hooks", async () => {
+  const deps = makeDeps({
+    supportsRefreshHooks: () => Promise.resolve(false),
+  });
+
+  const events = await collect<VaultPutEvent>(
+    vaultPut(createLibSwampContext(), deps, {
+      vaultName: "my-vault",
+      key: "TOKEN",
+      value: "val",
+      overwritten: false,
+      refreshFrom: "echo hi",
+      refreshTtlMs: 60000,
+    }),
+  );
+
+  const warning = events.find((e) => e.kind === "warning") as Extract<
+    VaultPutEvent,
+    { kind: "warning" }
+  >;
+  assertEquals(warning !== undefined, true);
+  assertEquals(
+    warning.message.includes("does not support refresh hooks"),
+    true,
+  );
+});
+
+Deno.test("vaultPut: clearRefresh deletes hook when supported", async () => {
+  let deleted = false;
+  const deps = makeDeps({
+    supportsRefreshHooks: () => Promise.resolve(true),
+    deleteRefreshHook: () => {
+      deleted = true;
+      return Promise.resolve();
+    },
+  });
+
+  await collect<VaultPutEvent>(
+    vaultPut(createLibSwampContext(), deps, {
+      vaultName: "my-vault",
+      key: "TOKEN",
+      value: "val",
+      overwritten: false,
+      clearRefresh: true,
+    }),
+  );
+
+  assertEquals(deleted, true);
+});
+
+Deno.test("vaultPut: clearRefresh no-ops when provider does not support hooks", async () => {
+  let deleted = false;
+  const deps = makeDeps({
+    supportsRefreshHooks: () => Promise.resolve(false),
+    deleteRefreshHook: () => {
+      deleted = true;
+      return Promise.resolve();
+    },
+  });
+
+  await collect<VaultPutEvent>(
+    vaultPut(createLibSwampContext(), deps, {
+      vaultName: "my-vault",
+      key: "TOKEN",
+      value: "val",
+      overwritten: false,
+      clearRefresh: true,
+    }),
+  );
+
+  assertEquals(deleted, false);
 });

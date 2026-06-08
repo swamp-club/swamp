@@ -37,6 +37,8 @@ function makeDeps(
     secretExists: () => Promise.resolve(true),
     supportsAnnotations: () => Promise.resolve(true),
     getAnnotation: () => Promise.resolve(null),
+    supportsRefreshHooks: () => Promise.resolve(false),
+    getRefreshHook: () => Promise.resolve(null),
     ...overrides,
   };
 }

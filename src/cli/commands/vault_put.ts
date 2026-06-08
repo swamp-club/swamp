@@ -41,6 +41,7 @@ import {
   readSecretFromTty,
   readStdin,
 } from "../../infrastructure/io/stdin_reader.ts";
+import { parseTimeout } from "../duration_parser.ts";
 
 /**
  * Parses a KEY=VALUE string into key and value parts.
@@ -146,11 +147,31 @@ Piping via stdin is recommended for scripts and CI to avoid exposing secrets in 
     "Overwrite existing secret",
     "swamp vault put my-vault API_KEY=new-value --force",
   )
+  .example(
+    "Auto-refresh GCP token every 50 minutes",
+    'swamp vault put my-vault GCP_TOKEN --refresh-from "gcloud auth print-access-token" --refresh-ttl 50m',
+  )
+  .example(
+    "Remove refresh hook from a secret",
+    "swamp vault put my-vault GCP_TOKEN --clear-refresh",
+  )
   .option(
     "--repo-dir <dir:string>",
     "Repository directory (env: SWAMP_REPO_DIR)",
   )
   .option("-f, --force", "Skip confirmation prompt when overwriting")
+  .option(
+    "--refresh-from <command:string>",
+    "Command to run to refresh the secret value when the TTL expires",
+  )
+  .option(
+    "--refresh-ttl <duration:string>",
+    "How long before the secret is considered stale (e.g. 50m, 1h, 30s)",
+  )
+  .option(
+    "--clear-refresh",
+    "Remove the refresh hook from this secret",
+  )
   .action(async function (
     options: AnyOptions,
     vaultName: string,
@@ -159,6 +180,32 @@ Piping via stdin is recommended for scripts and CI to avoid exposing secrets in 
   ) {
     const cliCtx = createContext(options as GlobalOptions, ["vault", "put"]);
     cliCtx.logger.debug`Storing secret in vault: ${vaultName}`;
+
+    if (options.clearRefresh && options.refreshFrom) {
+      throw new UserError(
+        "--clear-refresh cannot be used with --refresh-from",
+      );
+    }
+    if (options.refreshTtl && !options.refreshFrom) {
+      throw new UserError(
+        "--refresh-ttl requires --refresh-from",
+      );
+    }
+    if (options.refreshFrom && !options.refreshTtl) {
+      throw new UserError(
+        "--refresh-from requires --refresh-ttl",
+      );
+    }
+    if (options.clearRefresh && options.refreshTtl) {
+      throw new UserError(
+        "--clear-refresh cannot be used with --refresh-ttl",
+      );
+    }
+
+    let refreshTtlMs: number | undefined;
+    if (options.refreshTtl) {
+      refreshTtlMs = parseTimeout(options.refreshTtl);
+    }
 
     const { repoDir, repoContext } = await requireInitializedRepo({
       repoDir: resolveRepoDir(options.repoDir),
@@ -253,6 +300,9 @@ Piping via stdin is recommended for scripts and CI to avoid exposing secrets in 
         key,
         value,
         overwritten: preview.secretExists,
+        refreshFrom: options.refreshFrom,
+        refreshTtlMs,
+        clearRefresh: options.clearRefresh,
       }),
       renderer.handlers(),
     );

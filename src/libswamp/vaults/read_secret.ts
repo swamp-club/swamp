@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { VaultService } from "../../domain/vaults/vault_service.ts";
+import { createVaultRefreshOptions } from "../../infrastructure/vaults/vault_refresh.ts";
 import { createVaultSecretRead } from "../../domain/events/types.ts";
 import type { EventBus } from "../../domain/events/event_bus.ts";
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
@@ -70,7 +71,11 @@ export function createVaultReadSecretDeps(
 
   const getVaultService = () => {
     if (!vaultServicePromise) {
-      vaultServicePromise = VaultService.fromRepository(repoDir);
+      vaultServicePromise = VaultService.fromRepository(
+        repoDir,
+        undefined,
+        createVaultRefreshOptions(),
+      );
     }
     return vaultServicePromise;
   };

@@ -22,6 +22,8 @@ import { atomicWriteTextFile } from "../../infrastructure/persistence/atomic_wri
 import type { VaultProvider } from "./vault_provider.ts";
 import type { VaultAnnotationProvider } from "./vault_annotation.ts";
 import { VaultAnnotation } from "./vault_annotation.ts";
+import type { VaultRefreshHookProvider } from "./refresh_hook.ts";
+import { RefreshHook } from "./refresh_hook.ts";
 import {
   SWAMP_SUBDIRS,
   swampPath,
@@ -63,7 +65,7 @@ interface EncryptedData {
  * Supports both SSH private key files and auto-generated encryption keys.
  */
 export class LocalEncryptionVaultProvider
-  implements VaultProvider, VaultAnnotationProvider {
+  implements VaultProvider, VaultAnnotationProvider, VaultRefreshHookProvider {
   private readonly name: string;
   private readonly config: LocalEncryptionConfig;
   private readonly vaultDir: string;
@@ -249,6 +251,90 @@ export class LocalEncryptionVaultProvider
       );
     }
     return annotations;
+  }
+
+  private get refreshDir(): string {
+    return join(this.vaultDir, ".refresh");
+  }
+
+  private refreshPath(secretKey: string): string {
+    return join(this.refreshDir, `${secretKey}.enc`);
+  }
+
+  async getRefreshHook(secretKey: string): Promise<RefreshHook | null> {
+    this.validateSecretKey(secretKey);
+    const hookPath = this.refreshPath(secretKey);
+
+    try {
+      const encryptedContent = await Deno.readTextFile(hookPath);
+      const encryptedData: EncryptedData = JSON.parse(encryptedContent);
+      const masterKey = await this.getMasterKey(encryptedData.salt);
+      const json = await this.decrypt(encryptedData, masterKey);
+      return RefreshHook.fromData(JSON.parse(json));
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) {
+        return null;
+      }
+      throw new Error(
+        `Failed to read refresh hook for '${secretKey}': ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+  }
+
+  async putRefreshHook(
+    secretKey: string,
+    hook: RefreshHook,
+  ): Promise<void> {
+    this.validateSecretKey(secretKey);
+    await this.ensureRefreshDirectory();
+
+    const json = JSON.stringify(hook.toData());
+    const salt = crypto.getRandomValues(new Uint8Array(16));
+    const masterKey = await this.getMasterKey(this.arrayBufferToBase64(salt));
+    const encryptedData = await this.encrypt(json, masterKey, salt);
+
+    const hookPath = this.refreshPath(secretKey);
+    await assertSafePath(hookPath, this.secretsBoundary);
+    await atomicWriteTextFile(
+      hookPath,
+      JSON.stringify(encryptedData, null, 2),
+      { mode: 0o600 },
+    );
+  }
+
+  async deleteRefreshHook(secretKey: string): Promise<void> {
+    this.validateSecretKey(secretKey);
+    const hookPath = this.refreshPath(secretKey);
+    await assertSafePath(hookPath, this.secretsBoundary);
+    try {
+      await Deno.remove(hookPath);
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) {
+        throw new Error(
+          `Failed to delete refresh hook for '${secretKey}': ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
+  }
+
+  private async ensureRefreshDirectory(): Promise<void> {
+    const dir = this.refreshDir;
+    await assertSafePath(dir, this.secretsBoundary);
+    try {
+      await Deno.mkdir(dir, { recursive: true, mode: 0o700 });
+    } catch (error) {
+      if (!(error instanceof Deno.errors.AlreadyExists)) {
+        throw new Error(
+          `Failed to create refresh directory '${dir}': ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
   }
 
   private async ensureAnnotationsDirectory(): Promise<void> {

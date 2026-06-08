@@ -79,6 +79,80 @@ Detection is via runtime type guard (`isVaultAnnotationProvider()`), not
 compile-time typing. Extension vault providers opt in by having their
 `createProvider` return an object that implements both interfaces.
 
+## Vault Refresh Hook Provider Interface
+
+Vault providers can optionally support refresh hooks — per-secret metadata that
+tells swamp how to auto-refresh short-lived credentials. Refresh hook support is
+opt-in: providers that implement `VaultRefreshHookProvider` alongside
+`VaultProvider` gain refresh capabilities. Providers that don't implement it
+continue to work unchanged.
+
+```typescript
+interface VaultRefreshHookProvider {
+  getRefreshHook(secretKey: string): Promise<RefreshHook | null>;
+  putRefreshHook(secretKey: string, hook: RefreshHook): Promise<void>;
+  deleteRefreshHook(secretKey: string): Promise<void>;
+}
+```
+
+Detection is via runtime type guard (`isVaultRefreshHookProvider()`), mirroring
+the annotation pattern.
+
+### Refresh Hook Value Object
+
+`RefreshHook` is an immutable value object:
+
+- `command: string` — the shell command to run (e.g.
+  `gcloud auth print-access-token`)
+- `ttlMs: number` — how long (in milliseconds) before the value is stale
+- `lastRefreshedAt: Date | null` — when the value was last refreshed (UTC)
+
+TTL evaluation: `Date.now() - lastRefreshedAt.getTime() >= ttlMs`. Both sides
+are UTC — no local timezone involvement.
+
+### Refresh-on-Read Behavior
+
+When `VaultService.get()` is called with refresh options configured:
+
+1. Check if the provider supports refresh hooks
+2. If a hook exists for the requested key, evaluate whether it's stale
+3. If stale: run the command via `executeProcess`, trim trailing whitespace from
+   stdout, write the fresh value back via `provider.put()`, update
+   `lastRefreshedAt`, return the fresh value
+4. If the refresh command fails: log a warning and return the stale value
+
+This is transparent to callers — `vault.get()` in CEL expressions and workflows
+auto-refreshes without any workflow-level boilerplate.
+
+### Refresh Hook CLI
+
+```bash
+# Register a refresh hook when storing a secret
+swamp vault put my-vault GCP_TOKEN \
+  --refresh-from "gcloud auth print-access-token" \
+  --refresh-ttl 50m
+
+# Remove a refresh hook
+swamp vault put my-vault GCP_TOKEN --clear-refresh
+
+# View refresh hook configuration
+swamp vault inspect my-vault GCP_TOKEN
+```
+
+### Refresh Hook Storage (local_encryption)
+
+For the built-in `local_encryption` provider, refresh hooks are stored as
+encrypted JSON in a `.refresh/` subdirectory alongside `.annotations/`:
+
+```
+.swamp/secrets/local_encryption/{vault-name}/
+  GCP_TOKEN.enc              # encrypted secret value
+  .annotations/
+    GCP_TOKEN.enc            # encrypted annotation metadata
+  .refresh/
+    GCP_TOKEN.enc            # encrypted refresh hook config
+```
+
 ### Annotation Storage (local_encryption)
 
 For the built-in `local_encryption` provider, annotations are stored as
