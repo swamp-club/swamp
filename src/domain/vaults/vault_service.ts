@@ -155,14 +155,19 @@ export class VaultService {
           const result = await this.refreshOptions.runCommand(hook.command);
           if (result.success) {
             const freshValue = result.stdout.trimEnd();
-            await provider.put(secretKey, freshValue);
-            await provider.putRefreshHook(
-              secretKey,
-              hook.withRefreshedAt(new Date()),
-            );
-            getLogger("vaults")
-              .info`Refreshed secret ${secretKey} in vault ${vaultName}`;
-            return freshValue;
+            if (freshValue.length === 0) {
+              getLogger("vaults")
+                .warn`Refresh command for ${secretKey} in vault ${vaultName} succeeded but produced empty output. Returning stale value.`;
+            } else {
+              await provider.put(secretKey, freshValue);
+              await provider.putRefreshHook(
+                secretKey,
+                hook.withRefreshedAt(new Date()),
+              );
+              getLogger("vaults")
+                .info`Refreshed secret ${secretKey} in vault ${vaultName}`;
+              return freshValue;
+            }
           }
           getLogger("vaults")
             .warn`Refresh command failed for ${secretKey} in vault ${vaultName}: ${result.stderr}. Returning stale value.`;
@@ -282,8 +287,52 @@ export class VaultService {
     return provider;
   }
 
-  getProvider(vaultName: string): VaultProvider | undefined {
-    return this.providers.get(vaultName);
+  async getRefreshHook(
+    vaultName: string,
+    secretKey: string,
+  ): Promise<import("./refresh_hook.ts").RefreshHook | null> {
+    const provider = this.requireRefreshHookProvider(vaultName);
+    return await provider.getRefreshHook(secretKey);
+  }
+
+  async putRefreshHook(
+    vaultName: string,
+    secretKey: string,
+    hook: import("./refresh_hook.ts").RefreshHook,
+  ): Promise<void> {
+    const provider = this.requireRefreshHookProvider(vaultName);
+    await provider.putRefreshHook(secretKey, hook);
+  }
+
+  async deleteRefreshHook(
+    vaultName: string,
+    secretKey: string,
+  ): Promise<void> {
+    const provider = this.requireRefreshHookProvider(vaultName);
+    await provider.deleteRefreshHook(secretKey);
+  }
+
+  private requireRefreshHookProvider(vaultName: string) {
+    const provider = this.providers.get(vaultName);
+    if (!provider) {
+      const availableVaults = Array.from(this.providers.keys());
+      if (availableVaults.length === 0) {
+        throw new Error(
+          `Vault '${vaultName}' not found. No vaults are configured.`,
+        );
+      }
+      throw new Error(
+        `Vault '${vaultName}' not found. Available vaults: ${
+          availableVaults.join(", ")
+        }`,
+      );
+    }
+    if (!isVaultRefreshHookProvider(provider)) {
+      throw new Error(
+        `Vault '${vaultName}' (type: ${provider.getName()}) does not support refresh hooks`,
+      );
+    }
+    return provider;
   }
 
   /**

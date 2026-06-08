@@ -18,7 +18,6 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { EventHandlers, VaultInspectEvent } from "../../libswamp/mod.ts";
-import { formatTtlMs } from "../../domain/vaults/refresh_hook.ts";
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
@@ -53,7 +52,7 @@ class LogVaultInspectRenderer implements Renderer<VaultInspectEvent> {
           const rh = e.data.refreshHook;
           logger.info`  refresh:`;
           logger.info`    command: ${rh.command}`;
-          logger.info`    ttl: ${formatTtlMs(rh.ttlMs)}`;
+          logger.info`    ttl: ${rh.ttl}`;
           if (rh.lastRefreshedAt) {
             logger.info`    last refreshed: ${rh.lastRefreshedAt}`;
           } else {

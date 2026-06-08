@@ -19,7 +19,6 @@
 
 import type { VaultAnnotationData } from "../../domain/vaults/vault_annotation.ts";
 import type { RefreshHookData } from "../../domain/vaults/refresh_hook.ts";
-import { isVaultRefreshHookProvider } from "../../domain/vaults/refresh_hook.ts";
 import { VaultService } from "../../domain/vaults/vault_service.ts";
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 import type { LibSwampContext } from "../context.ts";
@@ -101,12 +100,9 @@ export function createVaultInspectDeps(repoDir: string): VaultInspectDeps {
     },
     getRefreshHook: async (vaultName, key) => {
       const svc = await getVaultService();
-      const provider = svc.getProvider(vaultName);
-      if (provider && isVaultRefreshHookProvider(provider)) {
-        const hook = await provider.getRefreshHook(key);
-        return hook?.toData() ?? null;
-      }
-      return null;
+      if (!svc.supportsRefreshHooks(vaultName)) return null;
+      const hook = await svc.getRefreshHook(vaultName, key);
+      return hook?.toData() ?? null;
     },
   };
 }

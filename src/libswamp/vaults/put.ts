@@ -25,7 +25,6 @@ import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { notFound } from "../errors.ts";
 import { RefreshHook } from "../../domain/vaults/refresh_hook.ts";
-import { isVaultRefreshHookProvider } from "../../domain/vaults/refresh_hook.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /** Minimal vault config shape needed by the generator. */
@@ -131,17 +130,11 @@ export function createVaultPutDeps(
     },
     putRefreshHook: async (vaultName, key, hook) => {
       const svc = await getVaultService();
-      const provider = svc.getProvider(vaultName);
-      if (provider && isVaultRefreshHookProvider(provider)) {
-        await provider.putRefreshHook(key, hook);
-      }
+      await svc.putRefreshHook(vaultName, key, hook);
     },
     deleteRefreshHook: async (vaultName, key) => {
       const svc = await getVaultService();
-      const provider = svc.getProvider(vaultName);
-      if (provider && isVaultRefreshHookProvider(provider)) {
-        await provider.deleteRefreshHook(key);
-      }
+      await svc.deleteRefreshHook(vaultName, key);
     },
     supportsRefreshHooks: async (vaultName) => {
       const svc = await getVaultService();

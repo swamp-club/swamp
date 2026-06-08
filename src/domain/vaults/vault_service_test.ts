@@ -351,6 +351,124 @@ Deno.test("VaultService - rejects invalid provider from createProvider", async (
   );
 });
 
+Deno.test("VaultService - refresh-aware get", async (t) => {
+  await t.step(
+    "should refresh stale secret and return fresh value",
+    async () => {
+      const svc = new VaultService({
+        runCommand: () =>
+          Promise.resolve({
+            success: true,
+            stdout: "fresh-token\n",
+            stderr: "",
+          }),
+      });
+      svc.registerVault({
+        name: "v",
+        type: "local_encryption",
+        config: { auto_generate: true },
+      });
+      await svc.put("v", "TOKEN", "old-value");
+      const { RefreshHook } = await import("./refresh_hook.ts");
+      const hook = RefreshHook.create("echo fresh-token", 60000);
+      await svc.putRefreshHook("v", "TOKEN", hook);
+
+      const result = await svc.get("v", "TOKEN");
+      assertEquals(result, "fresh-token");
+    },
+  );
+
+  await t.step(
+    "should return stale value when refresh command fails",
+    async () => {
+      const svc = new VaultService({
+        runCommand: () =>
+          Promise.resolve({ success: false, stdout: "", stderr: "auth error" }),
+      });
+      svc.registerVault({
+        name: "v",
+        type: "local_encryption",
+        config: { auto_generate: true },
+      });
+      await svc.put("v", "TOKEN", "stale-value");
+      const { RefreshHook } = await import("./refresh_hook.ts");
+      const hook = RefreshHook.create("failing-cmd", 60000);
+      await svc.putRefreshHook("v", "TOKEN", hook);
+
+      const result = await svc.get("v", "TOKEN");
+      assertEquals(result, "stale-value");
+    },
+  );
+
+  await t.step(
+    "should return stale value when refresh produces empty stdout",
+    async () => {
+      const svc = new VaultService({
+        runCommand: () =>
+          Promise.resolve({ success: true, stdout: "  \n", stderr: "" }),
+      });
+      svc.registerVault({
+        name: "v",
+        type: "local_encryption",
+        config: { auto_generate: true },
+      });
+      await svc.put("v", "TOKEN", "valid-value");
+      const { RefreshHook } = await import("./refresh_hook.ts");
+      const hook = RefreshHook.create("empty-cmd", 60000);
+      await svc.putRefreshHook("v", "TOKEN", hook);
+
+      const result = await svc.get("v", "TOKEN");
+      assertEquals(result, "valid-value");
+    },
+  );
+
+  await t.step(
+    "should skip refresh when no refreshOptions configured",
+    async () => {
+      const svc = new VaultService();
+      svc.registerVault({
+        name: "v",
+        type: "mock",
+        config: { "TOKEN": "mock-value" },
+      });
+
+      const result = await svc.get("v", "TOKEN");
+      assertEquals(result, "mock-value");
+    },
+  );
+
+  await t.step(
+    "should skip refresh when secret is within TTL",
+    async () => {
+      let commandCalled = false;
+      const svc = new VaultService({
+        runCommand: () => {
+          commandCalled = true;
+          return Promise.resolve({
+            success: true,
+            stdout: "new-token",
+            stderr: "",
+          });
+        },
+      });
+      svc.registerVault({
+        name: "v",
+        type: "local_encryption",
+        config: { auto_generate: true },
+      });
+      await svc.put("v", "TOKEN", "current-value");
+      const { RefreshHook } = await import("./refresh_hook.ts");
+      const hook = RefreshHook.create("echo new", 3600000)
+        .withRefreshedAt(new Date());
+      await svc.putRefreshHook("v", "TOKEN", hook);
+
+      const result = await svc.get("v", "TOKEN");
+      assertEquals(result, "current-value");
+      assertEquals(commandCalled, false);
+    },
+  );
+});
+
 Deno.test("VaultService - fromRepository auto-remaps renamed vault types", async (t) => {
   await t.step(
     "should remap 'aws' type to '@swamp/aws-sm' when loading from repository",

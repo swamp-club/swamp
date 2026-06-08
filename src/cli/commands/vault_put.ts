@@ -191,6 +191,16 @@ Piping via stdin is recommended for scripts and CI to avoid exposing secrets in 
         "--refresh-ttl requires --refresh-from",
       );
     }
+    if (options.refreshFrom && !options.refreshTtl) {
+      throw new UserError(
+        "--refresh-from requires --refresh-ttl",
+      );
+    }
+    if (options.clearRefresh && options.refreshTtl) {
+      throw new UserError(
+        "--clear-refresh cannot be used with --refresh-ttl",
+      );
+    }
 
     let refreshTtlMs: number | undefined;
     if (options.refreshTtl) {
