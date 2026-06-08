@@ -23,7 +23,8 @@ export type ExtensionKind =
   | "vault"
   | "driver"
   | "datastore"
-  | "report";
+  | "report"
+  | "creek";
 
 export interface EmitterOptions {
   writer?: (line: string) => void;
@@ -71,6 +72,8 @@ const HINT_BY_KIND: Record<ExtensionKind, string> = {
     "extensions/datastores/ is auto-discovered — running `swamp extension source add` here is a no-op.",
   report:
     "extensions/reports/ is auto-discovered — running `swamp extension source add` here is a no-op.",
+  creek:
+    "extensions/creeks/ is auto-discovered — running `swamp extension source add` here is a no-op.",
 };
 
 function defaultWriter(line: string): void {

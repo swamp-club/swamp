@@ -116,7 +116,14 @@ Deno.test("isGlobPattern: detects glob characters", () => {
 });
 
 Deno.test("EXTENSION_EXPORT_NAMES: covers every non-workflow kind", () => {
-  const expected = ["models", "vaults", "drivers", "datastores", "reports"];
+  const expected = [
+    "models",
+    "vaults",
+    "drivers",
+    "datastores",
+    "reports",
+    "creeks",
+  ];
   assertEquals(Object.keys(EXTENSION_EXPORT_NAMES).sort(), expected.sort());
 });
 

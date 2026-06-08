@@ -845,3 +845,111 @@ Deno.test("DataQueryService: foreign content fetcher does not fire for own names
 
   catalog.close();
 });
+
+// --- Cross-query (creek + swamp.data) integration ---
+
+Deno.test("DataQueryService: predicate referencing creek() routes async + dispatches", async () => {
+  const { z } = await import("zod");
+  const { CreekRegistry } = await import("../creeks/creek_registry.ts");
+  const { defineCreekMethod } = await import("../creeks/creek.ts");
+
+  const { catalog, service } = setupTest();
+  catalog.upsert(makeRow({ model_name: "ingest", data_name: "FOO-1" }));
+  catalog.upsert(
+    makeRow({ model_name: "ingest", data_name: "FOO-2", id: "uuid-002" }),
+  );
+
+  const registry = new CreekRegistry();
+  let callCount = 0;
+  registry.register({
+    type: "@me/jira",
+    version: "2026.06.01.1",
+    methods: {
+      issue: defineCreekMethod({
+        description: "",
+        arguments: z.object({ key: z.string() }),
+        execute: (args) => {
+          callCount++;
+          return Promise.resolve({
+            key: args.key,
+            status: args.key === "FOO-1" ? "open" : "closed",
+          });
+        },
+      }),
+    },
+  });
+  service.setCrossQueryContext({ creekRegistry: registry });
+
+  const results = await service.query(
+    'creek("@me/jira", "issue", {"key": name}).status == "open"',
+  ) as DataRecord[];
+
+  assertEquals(results.length, 1);
+  assertEquals(results[0].name, "FOO-1");
+  assertEquals(callCount, 2);
+
+  catalog.close();
+});
+
+Deno.test("DataQueryService: --order-by sorts results, --limit applied after ordering", async () => {
+  const { catalog, service } = setupTest();
+  catalog.upsert(makeRow({ data_name: "a", size: 30 }));
+  catalog.upsert(makeRow({ data_name: "b", size: 10, id: "uuid-b" }));
+  catalog.upsert(makeRow({ data_name: "c", size: 20, id: "uuid-c" }));
+
+  const ascending = await service.query('modelName == "ingest"', {
+    orderBy: "size",
+    orderDirection: "asc",
+  }) as DataRecord[];
+  assertEquals(ascending.map((r) => r.name), ["b", "c", "a"]);
+
+  const descendingLimited = await service.query('modelName == "ingest"', {
+    orderBy: "size",
+    orderDirection: "desc",
+    limit: 2,
+  }) as DataRecord[];
+  assertEquals(descendingLimited.map((r) => r.name), ["a", "c"]);
+
+  catalog.close();
+});
+
+Deno.test("DataQueryService: swamp.data() inside select runs inverse cross-query", async () => {
+  const { CreekRegistry } = await import("../creeks/creek_registry.ts");
+
+  const { catalog, service } = setupTest();
+  catalog.upsert(makeRow({ data_name: "a" }));
+  catalog.upsert(makeRow({ data_name: "b", id: "uuid-b" }));
+
+  service.setCrossQueryContext({ creekRegistry: new CreekRegistry() });
+
+  // swamp.data() lets us re-query rows from inside the select projection.
+  // Here we just count inner matches per outer row.
+  const projected = await service.query('modelName == "ingest"', {
+    select: 'swamp.data("modelName == \\"ingest\\"").size()',
+  }) as unknown[];
+
+  assertEquals(projected.length, 2);
+  assertEquals(projected[0], 2n);
+  assertEquals(projected[1], 2n);
+
+  catalog.close();
+});
+
+Deno.test("DataQueryService: cross-query predicate without registry throws via validation", async () => {
+  const { catalog, service } = setupTest();
+  catalog.upsert(makeRow());
+
+  // Without setCrossQueryContext, creek( in predicate still parses
+  // (the function is registered conditionally) — it throws at evaluation
+  // time when the function is missing. Confirm by ensuring the error
+  // surfaces from query().
+  let threw = false;
+  try {
+    await service.query('creek("@me/x", "y") == "z"');
+  } catch {
+    threw = true;
+  }
+  assertEquals(threw, true);
+
+  catalog.close();
+});

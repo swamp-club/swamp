@@ -70,7 +70,8 @@ export type ExtensionKind =
   | "vault"
   | "driver"
   | "datastore"
-  | "report";
+  | "report"
+  | "creek";
 
 /**
  * A single row in the bundle_types table.

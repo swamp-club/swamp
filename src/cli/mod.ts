@@ -45,6 +45,7 @@ import { datastoreCommand } from "./commands/datastore.ts";
 import { driverCommand } from "./commands/driver.ts";
 import { doctorCommand } from "./commands/doctor.ts";
 import { reportCommand } from "./commands/report.ts";
+import { creekCommand } from "./commands/creek.ts";
 import { serveCommand } from "./commands/serve.ts";
 import { openCommand } from "./commands/open.ts";
 import { agentCommand } from "./commands/agent_setup.ts";
@@ -78,6 +79,8 @@ import { driverTypeRegistry } from "../domain/drivers/driver_type_registry.ts";
 import { setConsoleGuardJsonMode } from "../domain/drivers/console_guard.ts";
 import { datastoreTypeRegistry } from "../domain/datastore/datastore_type_registry.ts";
 import { reportRegistry } from "../domain/reports/report_registry.ts";
+import { creekRegistry } from "../domain/creeks/creek_registry.ts";
+import { creekKindAdapter } from "../domain/extensions/creek_kind_adapter.ts";
 
 // Import driver types barrel to trigger built-in driver registration
 import "../domain/drivers/driver_types.ts";
@@ -85,6 +88,8 @@ import "../domain/drivers/driver_types.ts";
 import "../domain/datastore/datastore_types.ts";
 // Import builtin reports to trigger registration
 import "../domain/reports/builtin/mod.ts";
+// Import builtin creeks to trigger registration
+import "../domain/creeks/builtin/mod.ts";
 import { EmbeddedDenoRuntime } from "../infrastructure/runtime/embedded_deno_runtime.ts";
 import { homeDirectoryIsSet } from "../infrastructure/persistence/paths.ts";
 import { ReconcileFromDiskService } from "../libswamp/mod.ts";
@@ -164,6 +169,7 @@ export { resolveDriversDir };
 import { resolveDatastoresDir } from "./resolve_datastores_dir.ts";
 export { resolveDatastoresDir };
 import { resolveReportsDir } from "./resolve_reports_dir.ts";
+import { resolveCreeksDir } from "./resolve_creeks_dir.ts";
 export { resolveReportsDir };
 
 const logger = getLogger(["swamp", "cli"]);
@@ -295,6 +301,7 @@ export async function configureExtensionLoaders(
     "datastores",
   );
   const sourceReportsDirs = collectDirsForKind(resolvedSources, "reports");
+  const sourceCreeksDirs = collectDirsForKind(resolvedSources, "creeks");
 
   let resolverPromise: Promise<DatastorePathResolver | undefined> | undefined;
   const lazyResolver = (): Promise<DatastorePathResolver | undefined> => {
@@ -400,6 +407,17 @@ export async function configureExtensionLoaders(
       denoRuntime,
       sourceReportsDirs,
       lazyResolver,
+      repository,
+      quiet,
+      effectiveExtDir,
+    )
+  );
+  creekRegistry.setLoader(() =>
+    loadUserCreeks(
+      repoDir,
+      marker,
+      denoRuntime,
+      sourceCreeksDirs,
       repository,
       quiet,
       effectiveExtDir,
@@ -804,6 +822,74 @@ async function loadUserDatastores(
     if (isMissingHomeError(error)) return;
     logger
       .warn`Failed to load user datastore extensions: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
+  }
+}
+
+async function loadUserCreeks(
+  repoDir: string,
+  marker: RepoMarkerData | null,
+  denoRuntime: EmbeddedDenoRuntime,
+  sourceDirs: string[] = [],
+  repository?: ExtensionRepository,
+  _quiet = false,
+  extensionsDir?: string,
+): Promise<void> {
+  try {
+    const extBase = extensionsDir ?? repoDir;
+    const creeksDir = resolveCreeksDir(marker);
+    const absoluteCreeksDir = isAbsolute(creeksDir)
+      ? creeksDir
+      : resolve(extBase, creeksDir);
+
+    const loader = new ExtensionLoader(
+      denoRuntime,
+      creekKindAdapter,
+      repoDir,
+      undefined,
+      repository,
+    );
+    const modelsDir = resolveModelsDir(marker);
+    const lockfilePath = join(
+      isAbsolute(modelsDir) ? modelsDir : resolve(repoDir, modelsDir),
+      "upstream_extensions.json",
+    );
+    const pulledDirs = await enumeratePulledExtensionDirs(
+      lockfilePath,
+      repoDir,
+      "creeks",
+    );
+
+    if (repository) {
+      creekRegistry.setTypeLoader(async (type) => {
+        await loader.loadSingleType(type);
+      });
+
+      const result = await loader.buildIndex(absoluteCreeksDir, {
+        additionalDirs: [...sourceDirs, ...pulledDirs],
+      });
+
+      for (const failure of result.failed) {
+        logger
+          .warn`Failed to load user creek ${failure.file}: ${failure.error}`;
+      }
+    } else {
+      const result = await loader.load(absoluteCreeksDir, {
+        additionalDirs: [...sourceDirs, ...pulledDirs],
+        skipAlreadyRegistered: true,
+      });
+
+      for (const failure of result.failed) {
+        logger
+          .warn`Failed to load user creek ${failure.file}: ${failure.error}`;
+      }
+    }
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) return;
+    if (isMissingHomeError(error)) return;
+    logger
+      .warn`Failed to load user creek extensions: ${
       error instanceof Error ? error.message : String(error)
     }`;
   }
@@ -1309,6 +1395,7 @@ export async function runCli(args: string[]): Promise<void> {
     .command("driver", driverCommand)
     .command("doctor", doctorCommand)
     .command("report", reportCommand)
+    .command("creek", creekCommand)
     .command("serve", serveCommand)
     .command("open", openCommand)
     .command("agent", agentCommand);

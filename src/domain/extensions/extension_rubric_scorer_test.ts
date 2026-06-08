@@ -53,6 +53,7 @@ function makeManifest(
     drivers: [],
     datastores: [],
     reports: [],
+    creeks: [],
     skills: [],
     include: [],
     additionalFiles: [],

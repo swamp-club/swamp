@@ -177,6 +177,45 @@ export type {
   StoredReportDetail,
   StoredReportSummary,
 } from "./reports/report_views.ts";
+
+// Creek operations (top-level)
+export {
+  createCreekDescribeDeps,
+  creekDescribe,
+  type CreekDescribeDeps,
+} from "./creeks/describe.ts";
+export {
+  createCreekTypeSearchDeps,
+  creekTypeSearch,
+  type CreekTypeSearchDeps,
+  type CreekTypeSearchInput,
+} from "./creeks/type_search.ts";
+export {
+  createCreekCallDeps,
+  creekCall,
+  type CreekCallDeps,
+  type CreekCallInput,
+} from "./creeks/call.ts";
+export type {
+  CreekCallData,
+  CreekCallEvent,
+  CreekDescribeData,
+  CreekDescribeEvent,
+  CreekMethodDetail,
+  CreekTypeSearchData,
+  CreekTypeSearchEvent,
+  CreekTypeSearchItem,
+} from "./creeks/creek_views.ts";
+
+// Creek authoring (top-level)
+export {
+  type CreekDefinition,
+  type CreekHandle,
+  type CreekMethodContext,
+  type CreekMethodDefinition,
+  defineCreek,
+  defineCreekMethod,
+} from "../domain/creeks/creek.ts";
 export {
   createModelGetDeps,
   modelGet,

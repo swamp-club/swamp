@@ -95,6 +95,7 @@ const ExtensionManifestSchemaV1 = z.object({
   drivers: z.array(safePathString).optional(),
   datastores: z.array(safePathString).optional(),
   reports: z.array(safePathString).optional(),
+  creeks: z.array(safePathString).optional(),
   skills: z.array(safePathString).optional(),
   include: z.array(safePathString).optional(),
   additionalFiles: z.array(safePathString).optional(),
@@ -115,10 +116,11 @@ const ExtensionManifestSchemaV1 = z.object({
     (data.drivers && data.drivers.length > 0) ||
     (data.datastores && data.datastores.length > 0) ||
     (data.reports && data.reports.length > 0) ||
+    (data.creeks && data.creeks.length > 0) ||
     (data.skills && data.skills.length > 0),
   {
     message:
-      "Extension must include at least one model, workflow, vault, driver, datastore, report, or skill",
+      "Extension must include at least one model, workflow, vault, driver, datastore, report, creek, or skill",
   },
 );
 
@@ -136,6 +138,7 @@ export interface ExtensionManifest {
   drivers: string[];
   datastores: string[];
   reports: string[];
+  creeks: string[];
   skills: string[];
   include: string[];
   additionalFiles: string[];
@@ -198,6 +201,7 @@ export function parseExtensionManifest(content: string): ExtensionManifest {
     drivers: result.data.drivers ?? [],
     datastores: result.data.datastores ?? [],
     reports: result.data.reports ?? [],
+    creeks: result.data.creeks ?? [],
     skills: result.data.skills ?? [],
     include: result.data.include ?? [],
     additionalFiles: result.data.additionalFiles ?? [],

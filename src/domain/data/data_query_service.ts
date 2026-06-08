@@ -39,6 +39,12 @@ import { fromRow } from "./data_record_mapper.ts";
 import type { VaultService } from "../vaults/vault_service.ts";
 import type { SecretRedactor } from "../secrets/mod.ts";
 import { resolveVaultRefsInData } from "../models/data_writer.ts";
+import type { CreekRegistry } from "../creeks/creek_registry.ts";
+import {
+  type CelSwampNamespace,
+  referencesCrossQuery,
+  registerCrossQueryFunctions,
+} from "../../infrastructure/cel/cross_query_cel.ts";
 
 const logger = getLogger(["swamp", "domain", "data", "query"]);
 
@@ -48,6 +54,16 @@ export interface DataQueryOptions {
   select?: string;
   /** Force-load JSON attributes even when the predicate doesn't reference them. */
   loadAttributes?: boolean;
+  /**
+   * CEL expression evaluated per matching row; results are sorted by its
+   * value. Use to sort by cross-source timestamps such as
+   * `max(createdAt, creek("@me/jira", "issue", {key: name}).updated)`.
+   * When set, ordering happens after predicate filtering and before
+   * limit/projection. May reference `creek(...)` and `swamp.data(...)`.
+   */
+  orderBy?: string;
+  /** Sort direction for `orderBy`. Defaults to "asc". */
+  orderDirection?: "asc" | "desc";
 }
 
 /**
@@ -72,6 +88,8 @@ export class DataQueryService {
   private redactor?: SecretRedactor;
   private foreignContentFetcher?: ForeignContentFetcher;
   private readonly foreignContentCache = new Map<string, Uint8Array | null>();
+  private creekRegistry?: CreekRegistry;
+  private crossQuerySignal?: AbortSignal;
 
   constructor(
     private readonly catalogStore: CatalogStore,
@@ -93,6 +111,20 @@ export class DataQueryService {
   }
 
   /**
+   * Configures the registry + signal used by the `creek(...)` and
+   * `swamp.data(...)` cross-query CEL functions. When unset, predicates
+   * that reference these functions fail at parse time via
+   * {@link validateFieldReferences}.
+   */
+  setCrossQueryContext(opts: {
+    creekRegistry: CreekRegistry;
+    signal?: AbortSignal;
+  }): void {
+    this.creekRegistry = opts.creekRegistry;
+    this.crossQuerySignal = opts.signal;
+  }
+
+  /**
    * Configures foreign content fetch for cross-namespace attribute access.
    * When set, query results from foreign namespaces that have no local
    * content will attempt to fetch it on-demand. Fetched content is cached
@@ -108,14 +140,32 @@ export class DataQueryService {
    * Vault references in JSON attributes are resolved when a VaultService
    * is configured. Individual resolution failures leave refs unresolved.
    */
-  async query(
+  query(
     predicate: string,
     options?: DataQueryOptions,
+  ): Promise<DataRecord[] | unknown[]> {
+    return this.queryInternal(predicate, options, 0);
+  }
+
+  private async queryInternal(
+    predicate: string,
+    options: DataQueryOptions | undefined,
+    crossQueryDepth: number,
   ): Promise<DataRecord[] | unknown[]> {
     if (!this.catalogStore.isPopulated()) {
       await this.backfillAsync();
     }
-    const results = this.executeQuery(predicate, options);
+
+    const needsAsync = options?.orderBy !== undefined ||
+      referencesCrossQuery(predicate) ||
+      (options?.select !== undefined &&
+        referencesCrossQuery(options.select)) ||
+      (options?.orderBy !== undefined &&
+        referencesCrossQuery(options.orderBy));
+
+    const results = needsAsync
+      ? await this.executeQueryAsync(predicate, options, crossQueryDepth)
+      : this.executeQuery(predicate, options);
 
     // Hydrate foreign namespace records whose content isn't available locally.
     if (this.foreignContentFetcher && Array.isArray(results)) {
@@ -298,6 +348,175 @@ export class DataQueryService {
     return results;
   }
 
+  /**
+   * Async sibling of {@link executeQuery} used when the predicate, select,
+   * or orderBy references the cross-query CEL surface (`creek(...)` or
+   * `swamp.data(...)`), or when an orderBy expression is set.
+   *
+   * Builds a fresh per-query cel-js Environment so cross-query function
+   * registrations (and their shared call cache) don't leak across queries.
+   * Falls through to the same predicate-skip semantics as the sync path —
+   * per-row errors drop the row, not the query.
+   */
+  private async executeQueryAsync(
+    predicate: string,
+    options: DataQueryOptions | undefined,
+    crossQueryDepth: number,
+  ): Promise<DataRecord[] | unknown[]> {
+    const limit = options?.limit ?? Infinity;
+    const orderDirection = options?.orderDirection ?? "asc";
+
+    // Fail loudly when a predicate/select/orderBy references cross-query
+    // functions but the registry hasn't been wired. Without this, every
+    // row evaluation would throw and the per-row catch would silently
+    // drop them — surprising behaviour for the caller.
+    const refsCrossQuery = referencesCrossQuery(predicate) ||
+      (options?.select !== undefined &&
+        referencesCrossQuery(options.select)) ||
+      (options?.orderBy !== undefined &&
+        referencesCrossQuery(options.orderBy));
+    if (refsCrossQuery && !this.creekRegistry) {
+      throw new Error(
+        "Query references creek(...) or swamp.data(...) but no creek " +
+          "registry is configured. Call setCrossQueryContext({ creekRegistry }) " +
+          "on the DataQueryService before invoking query().",
+      );
+    }
+
+    // Build a per-query Environment so cross-query function registrations
+    // (and their shared call cache) are scoped to this evaluation.
+    const env = new Environment({
+      unlistedVariablesAreDyn: true,
+      homogeneousAggregateLiterals: false,
+    });
+
+    let swampNamespace: CelSwampNamespace | undefined;
+    if (this.creekRegistry) {
+      const { swampNamespace: ns } = registerCrossQueryFunctions(env, {
+        registry: this.creekRegistry,
+        signal: this.crossQuerySignal ?? new AbortController().signal,
+        logger,
+        vaultService: this.vaultService,
+        swampDataQuery: async (pred, sel, depth) => {
+          const rows = await this.queryInternal(
+            pred,
+            sel !== undefined ? { select: sel } : undefined,
+            depth,
+          );
+          return rows as unknown[];
+        },
+        recursionDepth: crossQueryDepth,
+      });
+      swampNamespace = ns;
+    }
+
+    // Parse + validate the user's predicate against the fresh env so the
+    // cross-query functions and the rest of CEL are available.
+    const userParsed = env.parse(predicate);
+    const userAst = userParsed.ast as ASTNode;
+    const rootIds = collectRootIdentifiers(userAst);
+    validateFieldReferences(rootIds);
+
+    const opensHistory = rootIds.some((id) => HISTORY_OPT_IN_FIELDS.has(id));
+    const effectivePredicate = opensHistory
+      ? predicate
+      : `(${predicate}) && isLatest == true`;
+    const parsed = opensHistory ? userParsed : env.parse(effectivePredicate);
+    const filterAst = parsed.ast as ASTNode;
+
+    let selectParsed:
+      | ((ctx: Record<string, unknown>) => unknown)
+      | undefined;
+    if (options?.select) {
+      selectParsed = env.parse(options.select) as unknown as (
+        ctx: Record<string, unknown>,
+      ) => unknown;
+    }
+
+    let orderByParsed:
+      | ((ctx: Record<string, unknown>) => unknown)
+      | undefined;
+    if (options?.orderBy) {
+      orderByParsed = env.parse(options.orderBy) as unknown as (
+        ctx: Record<string, unknown>,
+      ) => unknown;
+    }
+
+    let needsAttributes = options?.loadAttributes ??
+      referencesAttributes(filterAst);
+    let needsContent = referencesContent(filterAst);
+    if (selectParsed) {
+      const selectAst = (selectParsed as unknown as { ast: ASTNode }).ast;
+      if (!needsAttributes) needsAttributes = referencesAttributes(selectAst);
+      if (!needsContent) needsContent = referencesContent(selectAst);
+    }
+    if (orderByParsed) {
+      const orderByAst = (orderByParsed as unknown as { ast: ASTNode }).ast;
+      if (!needsAttributes) needsAttributes = referencesAttributes(orderByAst);
+      if (!needsContent) needsContent = referencesContent(orderByAst);
+    }
+
+    // Filter rows. No limit applied yet — orderBy may reshuffle them.
+    const matched: Array<
+      { record: DataRecord; ctx: Record<string, unknown> }
+    > = [];
+    for (const row of this.catalogStore.iterate()) {
+      const record = this.rowToRecord(row, needsAttributes, needsContent);
+      const ctx = Object.create(
+        record as unknown as Record<string, unknown>,
+      ) as Record<string, unknown>;
+      ctx["ns"] = record.namespace;
+      if (swampNamespace) ctx["swamp"] = swampNamespace;
+      try {
+        const match = await parsed(ctx);
+        if (match === true) {
+          matched.push({ record, ctx });
+        }
+      } catch (error) {
+        logger
+          .debug`Async query predicate skipped row ${row.model_name}/${row.data_name}: ${
+          String(error)
+        }`;
+      }
+    }
+
+    // Order if requested. Keys are evaluated once per row, then sorted.
+    let ordered = matched;
+    if (orderByParsed) {
+      const keyed = await Promise.all(
+        matched.map(async (entry) => {
+          try {
+            const key = await orderByParsed!(entry.ctx);
+            return { ...entry, key };
+          } catch {
+            return { ...entry, key: null as unknown };
+          }
+        }),
+      );
+      keyed.sort((a, b) =>
+        compareOrderKeys(a.key, b.key) * (orderDirection === "desc" ? -1 : 1)
+      );
+      ordered = keyed.map(({ record, ctx }) => ({ record, ctx }));
+    }
+
+    // Apply limit after ordering.
+    const limited = limit < Infinity ? ordered.slice(0, limit) : ordered;
+
+    if (selectParsed) {
+      return await Promise.all(
+        limited.map(async ({ ctx }) => {
+          try {
+            return await selectParsed!(ctx);
+          } catch {
+            return null;
+          }
+        }),
+      );
+    }
+
+    return limited.map(({ record }) => record);
+  }
+
   private rowToRecord(
     row: CatalogRow,
     loadAttributes: boolean,
@@ -434,4 +653,23 @@ export class DataQueryService {
       source: data.ownerDefinition.source ?? "",
     };
   }
+}
+
+/**
+ * Comparator used to sort query results by the `orderBy` CEL expression.
+ * Falls back to lexical string comparison when types disagree so the
+ * result is total — no NaN/undefined ordering surprises.
+ */
+function compareOrderKeys(a: unknown, b: unknown): number {
+  if (a === b) return 0;
+  if (a === null || a === undefined) return -1;
+  if (b === null || b === undefined) return 1;
+  if (typeof a === "number" && typeof b === "number") return a - b;
+  if (typeof a === "bigint" && typeof b === "bigint") {
+    return a < b ? -1 : a > b ? 1 : 0;
+  }
+  if (typeof a === "string" && typeof b === "string") {
+    return a < b ? -1 : a > b ? 1 : 0;
+  }
+  return String(a) < String(b) ? -1 : String(a) > String(b) ? 1 : 0;
 }

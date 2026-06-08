@@ -55,7 +55,12 @@ export type DataQueryEvent =
 export interface DataQueryDeps {
   query(
     predicate: string,
-    options?: { limit?: number; select?: string },
+    options?: {
+      limit?: number;
+      select?: string;
+      orderBy?: string;
+      orderDirection?: "asc" | "desc";
+    },
   ): Promise<DataRecord[] | unknown[]>;
 }
 
@@ -66,6 +71,14 @@ export interface DataQueryInput {
   predicate: string;
   select?: string;
   limit?: number;
+  /**
+   * CEL expression evaluated per matching row; results are sorted by this
+   * value. Use to sort by cross-source timestamps like
+   * `max(createdAt, creek("@me/jira", "issue", {key: name}).updated)`.
+   */
+  orderBy?: string;
+  /** Sort direction for `orderBy`. Defaults to "asc". */
+  orderDirection?: "asc" | "desc";
 }
 
 /**
@@ -102,6 +115,8 @@ export async function* dataQuery(
         const rawResults = await deps.query(input.predicate, {
           limit,
           select: input.select,
+          orderBy: input.orderBy,
+          orderDirection: input.orderDirection,
         });
         const total = rawResults.length;
         const limited = limit !== undefined && total >= limit;

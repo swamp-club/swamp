@@ -57,6 +57,7 @@ import { modelKindAdapter } from "../../domain/extensions/model_kind_adapter.ts"
 import { vaultKindAdapter } from "../../domain/extensions/vault_kind_adapter.ts";
 import { driverKindAdapter } from "../../domain/extensions/driver_kind_adapter.ts";
 import { datastoreKindAdapter } from "../../domain/extensions/datastore_kind_adapter.ts";
+import { creekKindAdapter } from "../../domain/extensions/creek_kind_adapter.ts";
 import { reportKindAdapter } from "../../domain/extensions/report_kind_adapter.ts";
 import type { DenoRuntime } from "../../domain/runtime/deno_runtime.ts";
 import {
@@ -572,7 +573,8 @@ export class ReconcileFromDiskService {
           | "vault"
           | "driver"
           | "datastore"
-          | "report";
+          | "report"
+          | "creek";
         typeNormalized: string;
         bundlePath: string;
         fingerprint: string;
@@ -617,6 +619,14 @@ export class ReconcileFromDiskService {
         return new ExtensionLoader(
           this.denoRuntime,
           reportKindAdapter,
+          this.repoDir,
+          undefined,
+          this.repository,
+        );
+      case "creeks":
+        return new ExtensionLoader(
+          this.denoRuntime,
+          creekKindAdapter,
           this.repoDir,
           undefined,
           this.repository,

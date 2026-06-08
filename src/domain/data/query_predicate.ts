@@ -76,6 +76,9 @@ export const CEL_BUILTINS = new Set([
   "contains",
   "startsWith",
   "endsWith",
+  // Cross-query functions (creek extension kind + inverse-direction swamp.data)
+  "creek",
+  "swamp",
 ]);
 
 /** AST node from cel-js parse(). */

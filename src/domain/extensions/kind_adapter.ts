@@ -25,7 +25,13 @@ import type {
 } from "../../infrastructure/persistence/extension_catalog_store.ts";
 import type { DenoRuntime } from "../runtime/deno_runtime.ts";
 
-export type LoaderKind = "model" | "vault" | "driver" | "datastore" | "report";
+export type LoaderKind =
+  | "model"
+  | "vault"
+  | "driver"
+  | "datastore"
+  | "report"
+  | "creek";
 
 export type ValidationResult =
   | { success: true; data: Record<string, unknown> }

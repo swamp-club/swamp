@@ -37,7 +37,8 @@ export type FreshnessKind =
   | "vault"
   | "driver"
   | "datastore"
-  | "report";
+  | "report"
+  | "creek";
 
 /**
  * Minimal row shape this module needs from the catalog. The concrete

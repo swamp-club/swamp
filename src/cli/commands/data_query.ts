@@ -55,6 +55,14 @@ export const dataQueryCommand = new Command()
     "--select <expr:string>",
     "CEL expression to extract fields from matching records (e.g. data.name)",
   )
+  .option(
+    "--order-by <expr:string>",
+    "CEL expression to sort results by (may reference creek(...) and swamp.data(...))",
+  )
+  .option(
+    "--order-direction <dir:string>",
+    "Sort direction for --order-by (asc or desc; defaults to asc)",
+  )
   .example(
     "Interactive mode",
     "swamp data query",
@@ -85,6 +93,14 @@ export const dataQueryCommand = new Command()
     }
 
     const queryService = repoContext.dataQueryService;
+
+    // Wire the creek registry so `creek(...)` and `swamp.data(...)` work
+    // inside predicates / --select / --order-by.
+    const { creekRegistry } = await import(
+      "../../domain/creeks/creek_registry.ts"
+    );
+    await creekRegistry.ensureLoaded();
+    queryService.setCrossQueryContext({ creekRegistry });
 
     const deps: DataQueryDeps = {
       query: (pred, opts) => queryService.query(pred, opts),
@@ -117,11 +133,24 @@ export const dataQueryCommand = new Command()
     const libCtx = createLibSwampContext();
 
     const renderer = createDataQueryRenderer(ctx.outputMode, showNamespace);
+    const orderDirection = options.orderDirection as string | undefined;
+    if (
+      orderDirection !== undefined &&
+      orderDirection !== "asc" &&
+      orderDirection !== "desc"
+    ) {
+      throw new UserError(
+        `--order-direction must be 'asc' or 'desc', got '${orderDirection}'`,
+      );
+    }
+
     await consumeStream(
       dataQuery(libCtx, deps, {
         predicate,
         select: options.select as string | undefined,
         limit: options.limit as number | undefined,
+        orderBy: options.orderBy as string | undefined,
+        orderDirection: orderDirection as "asc" | "desc" | undefined,
       }),
       renderer.handlers(),
     );

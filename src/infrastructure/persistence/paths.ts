@@ -80,6 +80,8 @@ export const SWAMP_SUBDIRS = {
   datastoreBundles: "datastore-bundles",
   /** Cached report extension bundles */
   reportBundles: "report-bundles",
+  /** Cached creek extension bundles */
+  creekBundles: "creek-bundles",
   /** Auto-created definitions from direct type execution */
   autoDefinitions: "auto-definitions",
   /** Audit command logs */
@@ -98,6 +100,8 @@ export const SWAMP_SUBDIRS = {
   pulledDatastores: "pulled-extensions/datastores",
   /** Pulled extension source: reports */
   pulledReports: "pulled-extensions/reports",
+  /** Pulled extension source: creeks */
+  pulledCreeks: "pulled-extensions/creeks",
   /** Pulled extension source: skills */
   pulledSkills: "pulled-extensions/skills",
 } as const;

@@ -31,7 +31,8 @@ export type DuplicateTypeKind =
   | "vault"
   | "driver"
   | "datastore"
-  | "report";
+  | "report"
+  | "creek";
 
 /**
  * Carries enough information to point a user at one of the two

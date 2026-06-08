@@ -30,6 +30,7 @@ export type ExtensionKind =
   | "drivers"
   | "datastores"
   | "reports"
+  | "creeks"
   | "workflows";
 
 export const EXTENSION_KINDS: readonly ExtensionKind[] = [
@@ -38,6 +39,7 @@ export const EXTENSION_KINDS: readonly ExtensionKind[] = [
   "drivers",
   "datastores",
   "reports",
+  "creeks",
   "workflows",
 ] as const;
 
@@ -71,6 +73,7 @@ export interface ResolvedSourceDirs {
   driversDir?: string;
   datastoresDir?: string;
   reportsDir?: string;
+  creeksDir?: string;
   workflowsDir?: string;
 }
 
@@ -80,6 +83,7 @@ const ExtensionKindSchema = z.enum([
   "drivers",
   "datastores",
   "reports",
+  "creeks",
   "workflows",
 ]);
 
@@ -151,6 +155,7 @@ export const EXTENSION_EXPORT_NAMES: Record<
   drivers: ["driver"],
   datastores: ["datastore"],
   reports: ["report"],
+  creeks: ["creek"],
 } as const;
 
 /**

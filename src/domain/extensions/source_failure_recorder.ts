@@ -36,7 +36,8 @@ export type KindDir =
   | "vaults"
   | "drivers"
   | "datastores"
-  | "reports";
+  | "reports"
+  | "creeks";
 
 export interface SourceFailureTransition {
   readonly source: SourceLocation;
@@ -158,6 +159,8 @@ export function kindDirToExtensionKind(
       return "datastore";
     case "reports":
       return "report";
+    case "creeks":
+      return "creek";
   }
 }
 
@@ -176,6 +179,8 @@ export function extensionKindToKindDir(
       return "datastores";
     case "report":
       return "reports";
+    case "creek":
+      return "creeks";
   }
 }
 

@@ -29,6 +29,7 @@ export type PulledExtensionType =
   | "drivers"
   | "datastores"
   | "reports"
+  | "creeks"
   | "files";
 
 /**

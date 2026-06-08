@@ -30,6 +30,7 @@ import type { MethodExecutionEvent } from "./method_events.ts";
 import { CalVer } from "./calver.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
 import type { DataQueryService } from "../data/data_query_service.ts";
+import type { CreekHandle } from "../creeks/creek.ts";
 import {
   type DataId,
   type DataMetadata,
@@ -255,6 +256,17 @@ export interface MethodContext {
     predicate: string,
     select?: string,
   ) => Promise<DataRecord[] | unknown[]>;
+
+  /**
+   * Returns a handle for invoking methods on a registered creek (external
+   * datasource extension). Calls are memoized per (method, args) within
+   * a single method execution so duplicate lookups inside one execute()
+   * hit the backend once.
+   *
+   * Programmatic form: `await ctx.creek("@me/jira").issue({key: "FOO-1"})`
+   * Equivalent .call form: `await ctx.creek("@me/jira").call("issue", {key})`
+   */
+  creek?: (type: string) => CreekHandle;
 
   /**
    * Create a file writer — returns DataWriter for binary/streaming content.

@@ -37,6 +37,40 @@ import {
 } from "../models/data_writer.ts";
 import { DataAccessService } from "../data/data_access_service.ts";
 import { withConsoleGuard } from "./console_guard.ts";
+import type { Logger } from "@logtape/logtape";
+import { getLogger } from "@logtape/logtape";
+import type { VaultService } from "../vaults/vault_service.ts";
+import type { CreekHandle } from "../creeks/creek.ts";
+import { creekRegistry } from "../creeks/creek_registry.ts";
+import {
+  createCreekHandle,
+  type CreekCallCache,
+} from "../creeks/creek_handle.ts";
+
+/**
+ * Returns a factory that creates a {@link CreekHandle} for a given creek
+ * type, with a per-execution call cache shared across every handle the
+ * factory produces. Two calls to `ctx.creek("@me/x").y(args)` with the
+ * same args dispatch once.
+ */
+function buildCreekFactory(
+  signal: AbortSignal,
+  logger: Logger,
+  vaultService?: VaultService,
+): (type: string) => CreekHandle {
+  const cache: CreekCallCache = new Map();
+  return (type: string) =>
+    createCreekHandle(type, cache, creekRegistry, {
+      signal,
+      logger: logger ?? getLogger(["model", "method", "creek", type]),
+      vaultService,
+      extensionFile: (p) => {
+        throw new Error(
+          `extensionFile("${p}") unavailable: creek "${type}" was not loaded through an extension manifest with additionalFiles.`,
+        );
+      },
+    });
+}
 
 function restoreEnv(key: string, saved: string | undefined): void {
   if (saved !== undefined) {
@@ -159,6 +193,16 @@ export class RawExecutionDriver implements ExecutionDriver {
           dataQueryService.query(predicate, { select })
         : undefined);
 
+    // Build a per-execution creek call cache shared across every
+    // ctx.creek(type) call inside this method execution, so two calls
+    // to ctx.creek("@me/jira").issue("FOO-1") within one execute() share
+    // a single network round-trip.
+    const creek = this.context.creek ?? buildCreekFactory(
+      this.context.signal,
+      this.context.logger,
+      this.context.vaultService,
+    );
+
     this.contextWithWriters = {
       ...this.context,
       methodName: this.methodName,
@@ -166,6 +210,7 @@ export class RawExecutionDriver implements ExecutionDriver {
       readResource,
       readModelData,
       queryData,
+      creek,
       createFileWriter,
     };
 

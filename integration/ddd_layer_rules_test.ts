@@ -84,7 +84,9 @@ function isTracingImport(filePath: string, importPath: string): boolean {
 // the domain layer when the catalog gets fully replaced (W4).
 // W4: +2 net (5 user_*_loader.ts deleted, 7 KindAdapter + ExtensionLoader
 // files added — adapters require ExtensionTypeRow + SWAMP_SUBDIRS imports).
-const KNOWN_DOMAIN_INFRA_VIOLATIONS = 25;
+// +2: creek_kind_adapter (same adapter pattern as datastore) and
+// data_query_service importing cross_query_cel from infrastructure/cel.
+const KNOWN_DOMAIN_INFRA_VIOLATIONS = 27;
 
 Deno.test(
   "domain layer must not add new infrastructure imports (ratchet)",
