@@ -20,7 +20,7 @@
 import { assertEquals } from "@std/assert";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
-import { RefreshHook } from "../../domain/vaults/refresh_hook.ts";
+import type { RefreshHook } from "../../domain/vaults/refresh_hook.ts";
 import {
   vaultPut,
   type VaultPutDeps,
