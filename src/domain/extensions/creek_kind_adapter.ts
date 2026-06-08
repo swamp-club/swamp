@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { z } from "zod";
+import { dirname, join, resolve } from "@std/path";
 import type {
   CreekDefinition,
   CreekMethodContext,
@@ -28,6 +29,36 @@ import { isZodSchemaLike } from "../zod_compat.ts";
 import type { ExtensionTypeRow } from "../../infrastructure/persistence/extension_catalog_store.ts";
 import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
 import type { KindAdapter, ValidationResult } from "./kind_adapter.ts";
+
+/**
+ * Walks up from the creek source file looking for `deno.json`/`deno.jsonc`
+ * so the bundler can resolve `npm:`/`jsr:` imports and bare specifiers via
+ * the user's import map. Stops at the repo root so we never escape the
+ * project sandbox. Mirrors `findNearestDenoConfig` in `model_kind_adapter`.
+ */
+function findNearestDenoConfig(
+  absolutePath: string,
+  repoDir: string | null,
+): string | undefined {
+  let dir = dirname(absolutePath);
+  const root = resolve("/");
+  while (dir !== root) {
+    if (repoDir && resolve(dir) === resolve(repoDir)) break;
+    for (const name of ["deno.json", "deno.jsonc"]) {
+      const candidate = join(dir, name);
+      try {
+        Deno.statSync(candidate);
+        return candidate;
+      } catch {
+        // Not found — keep walking up
+      }
+    }
+    const parent = dirname(dir);
+    if (parent === dir) break;
+    dir = parent;
+  }
+  return undefined;
+}
 
 /** Scoped-name pattern for creek types: `@collective/name` or `collective/name`. */
 const USER_CREEK_TYPE_PATTERN = /^@?[a-z0-9_-]+\/[a-z0-9_-]+$/;
@@ -144,4 +175,6 @@ export const creekKindAdapter: KindAdapter = {
   isFullyLoaded(typeNormalized: string): boolean {
     return creekRegistry.get(typeNormalized) !== undefined;
   },
+
+  resolveDenoConfig: findNearestDenoConfig,
 };
