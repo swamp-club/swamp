@@ -20,6 +20,7 @@
 import { dirname, extname, join, relative } from "@std/path";
 import { stringify as stringifyYaml } from "@std/yaml";
 import { createTarGz } from "../../infrastructure/archive/tar_archive.ts";
+import { extractBareSpecifierNames } from "../../domain/models/bundle.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import { validateContentCollectives } from "../../domain/extensions/extension_collective_validator.ts";
 import type {
@@ -738,6 +739,32 @@ export async function extensionPushPrepare(
       "Extension review found issues that must be resolved before pushing.",
       { reviewRuleErrors: reviewRulesResult.errors },
     );
+  }
+
+  // 10c. Bare specifier check — warn that the server-side scorer cannot
+  // resolve bare imports (it strips deno.json and writes a controlled one).
+  const bareSpecifiers = new Set<string>();
+  for (const file of sourceFiles) {
+    try {
+      const src = await Deno.readTextFile(file);
+      for (const name of extractBareSpecifierNames(src)) {
+        bareSpecifiers.add(name);
+      }
+    } catch {
+      // File unreadable — skip.
+    }
+  }
+  if (bareSpecifiers.size > 0) {
+    const names = [...bareSpecifiers].sort();
+    reviewRulesResult.warnings.push({
+      ruleId: "bare-specifiers",
+      dimension: "scoring",
+      severity: "medium",
+      file: "",
+      message: `Extension uses bare import specifiers (${
+        names.map((s) => `"${s}"`).join(", ")
+      }) which cannot be scored by the server. The extension will be published but may show as unscored.`,
+    });
   }
 
   // 11. Bundle entry points + build archive — skip on cache hit

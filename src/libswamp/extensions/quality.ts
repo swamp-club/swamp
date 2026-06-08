@@ -29,11 +29,13 @@ import {
   type RubricScoreDeps,
   scoreExtensionTarball,
 } from "../../domain/extensions/extension_rubric_scorer.ts";
+import { extractBareSpecifierNames } from "../../domain/models/bundle.ts";
 import { extractTarGz } from "../../infrastructure/archive/tar_archive.ts";
 import { EmbeddedDenoRuntime } from "../../infrastructure/runtime/embedded_deno_runtime.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import type { DependencyTrustResult } from "../../domain/extensions/extension_dependency_trust_checker.ts";
 import type { LibSwampContext } from "../context.ts";
+import { validationFailed } from "../errors.ts";
 import type { SwampError } from "../errors.ts";
 import {
   extensionPushPrepare,
@@ -180,6 +182,37 @@ export async function* extensionQuality(
           rubricVersion: RUBRIC_VERSION,
         });
         ctx.logger.debug`Cache put: ${archiveBytes.length} bytes at ${hash}`;
+      }
+
+      const allSourceFiles = [
+        ...input.prepareInput.allModelFiles,
+        ...input.prepareInput.allVaultFiles,
+        ...input.prepareInput.allDriverFiles,
+        ...input.prepareInput.allDatastoreFiles,
+        ...input.prepareInput.allReportFiles,
+      ];
+      const bareSpecifiers = new Set<string>();
+      for (const file of allSourceFiles) {
+        try {
+          const src = await Deno.readTextFile(file);
+          for (const name of extractBareSpecifierNames(src)) {
+            bareSpecifiers.add(name);
+          }
+        } catch {
+          // File unreadable — skip.
+        }
+      }
+      if (bareSpecifiers.size > 0) {
+        const names = [...bareSpecifiers].sort();
+        yield {
+          kind: "error",
+          error: validationFailed(
+            `Extension uses bare import specifiers that cannot be resolved by the server-side scorer: ${
+              names.map((s) => `"${s}"`).join(", ")
+            }. Use explicit npm: or jsr: prefixes (e.g., "npm:zod@3.25.67") or add them to your deno.json imports.`,
+          ),
+        };
+        return;
       }
 
       yield { kind: "scoring" };

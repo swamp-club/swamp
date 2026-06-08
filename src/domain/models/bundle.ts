@@ -186,23 +186,32 @@ export interface BundleOptions {
  * preferred over re-bundling when no deno.json is available (pulled
  * extensions with bare specifiers would always fail to rebundle locally).
  */
+const IMPORT_SPECIFIER_RE =
+  /(?:import|export)\s+[\s\S]*?from\s+["']([^"']+)["']/g;
+
+function isBareSpecifier(specifier: string): boolean {
+  if (specifier.startsWith(".")) return false;
+  if (specifier.startsWith("npm:")) return false;
+  if (specifier.startsWith("jsr:")) return false;
+  if (specifier.startsWith("https:")) return false;
+  if (specifier.startsWith("http:")) return false;
+  if (specifier.startsWith("node:")) return false;
+  return true;
+}
+
 export function sourceHasBareSpecifiers(source: string): boolean {
-  const importPattern = /(?:import|export)\s+[\s\S]*?from\s+["']([^"']+)["']/g;
-  for (const match of source.matchAll(importPattern)) {
-    const specifier = match[1];
-    // Relative imports resolve by path — not bare.
-    if (specifier.startsWith(".")) continue;
-    // Non-local specifiers resolve without an import map — not bare.
-    if (specifier.startsWith("npm:")) continue;
-    if (specifier.startsWith("jsr:")) continue;
-    if (specifier.startsWith("https:")) continue;
-    if (specifier.startsWith("http:")) continue;
-    // Node built-ins pass through unchanged — not bare.
-    if (specifier.startsWith("node:")) continue;
-    // Anything else is a bare specifier that needs an import map.
-    return true;
+  for (const match of source.matchAll(IMPORT_SPECIFIER_RE)) {
+    if (isBareSpecifier(match[1])) return true;
   }
   return false;
+}
+
+export function extractBareSpecifierNames(source: string): string[] {
+  const bare = new Set<string>();
+  for (const match of source.matchAll(IMPORT_SPECIFIER_RE)) {
+    if (isBareSpecifier(match[1])) bare.add(match[1]);
+  }
+  return [...bare];
 }
 
 /**

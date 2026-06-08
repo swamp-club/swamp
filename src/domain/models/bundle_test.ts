@@ -22,6 +22,7 @@ import { join } from "@std/path";
 import { z } from "zod";
 import {
   bundleExtension,
+  extractBareSpecifierNames,
   fixCjsEsmInterop,
   installZodGlobal,
   isExpectedBundleFailure,
@@ -554,6 +555,101 @@ import { helper } from "./helpers.ts";
 export { foo } from "../shared.ts";
 `;
   assertEquals(sourceHasBareSpecifiers(source), false);
+});
+
+// --- extractBareSpecifierNames unit tests ---
+
+Deno.test("extractBareSpecifierNames: returns bare specifier names", () => {
+  assertEquals(
+    extractBareSpecifierNames('import { z } from "zod";'),
+    ["zod"],
+  );
+});
+
+Deno.test("extractBareSpecifierNames: returns scoped bare specifiers", () => {
+  assertEquals(
+    extractBareSpecifierNames(
+      'import { Client } from "@aws-sdk/client-secrets-manager";',
+    ),
+    ["@aws-sdk/client-secrets-manager"],
+  );
+});
+
+Deno.test("extractBareSpecifierNames: collects multiple unique specifiers", () => {
+  const source = `
+import { z } from "zod";
+import { decode } from "he";
+import { z as z2 } from "zod";
+`;
+  const result = extractBareSpecifierNames(source);
+  assertEquals(result.sort(), ["he", "zod"]);
+});
+
+Deno.test("extractBareSpecifierNames: ignores npm: prefixed imports", () => {
+  assertEquals(
+    extractBareSpecifierNames('import { z } from "npm:zod@4";'),
+    [],
+  );
+});
+
+Deno.test("extractBareSpecifierNames: ignores jsr: prefixed imports", () => {
+  assertEquals(
+    extractBareSpecifierNames('import { assert } from "jsr:@std/assert";'),
+    [],
+  );
+});
+
+Deno.test("extractBareSpecifierNames: ignores relative imports", () => {
+  assertEquals(
+    extractBareSpecifierNames('import { helper } from "./helpers.ts";'),
+    [],
+  );
+});
+
+Deno.test("extractBareSpecifierNames: ignores parent-relative imports", () => {
+  assertEquals(
+    extractBareSpecifierNames('import { shared } from "../shared.ts";'),
+    [],
+  );
+});
+
+Deno.test("extractBareSpecifierNames: ignores node: imports", () => {
+  assertEquals(
+    extractBareSpecifierNames('import { readFile } from "node:fs";'),
+    [],
+  );
+});
+
+Deno.test("extractBareSpecifierNames: ignores https: imports", () => {
+  assertEquals(
+    extractBareSpecifierNames(
+      'import { delay } from "https://deno.land/std@0.224.0/async/delay.ts";',
+    ),
+    [],
+  );
+});
+
+Deno.test("extractBareSpecifierNames: ignores http: imports", () => {
+  assertEquals(
+    extractBareSpecifierNames('import { x } from "http://example.com/mod.ts";'),
+    [],
+  );
+});
+
+Deno.test("extractBareSpecifierNames: returns empty for no bare specifiers", () => {
+  const source = `
+import { z } from "npm:zod@4";
+import { helper } from "./helpers.ts";
+export { foo } from "../shared.ts";
+`;
+  assertEquals(extractBareSpecifierNames(source), []);
+});
+
+Deno.test("extractBareSpecifierNames: handles re-exports", () => {
+  assertEquals(
+    extractBareSpecifierNames('export { z } from "zod";'),
+    ["zod"],
+  );
 });
 
 Deno.test("uint8ArrayToBase64 handles large input without stack overflow", () => {

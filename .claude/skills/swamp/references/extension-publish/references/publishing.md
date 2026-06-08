@@ -248,6 +248,9 @@ Other Deno-compatible imports (`npm:`, `jsr:`, `https://`) are inlined into the
 bundle by the swamp packager. Bare specifiers backed by `deno.json` or
 `package.json` work for the bundler, but follow the hermeticity rule above for
 anything that needs to score: prefer the inline form in entrypoint files.
+`swamp extension quality` detects bare specifiers before scoring and fails
+early; `swamp extension push` adds a review warning that the extension may show
+as unscored on the registry.
 
 - All imports must be static top-level imports — dynamic `import()` calls are
   rejected during push
@@ -396,12 +399,16 @@ swamp extension push manifest.yaml --repo-dir /path/to/repo --json
 7. **Quality checks** — runs `deno fmt --check` and `deno lint` on model, vault,
    driver, datastore, and report files (using the project's `deno.json` config
    if present, otherwise default rules). Include files are excluded.
-8. **Bundle TypeScript** — compiles each entry point (models, vaults, drivers,
+8. **Bare specifier check** — scans source files for bare import specifiers
+   (e.g. `from "zod"` instead of `from "npm:zod@3"`). The server-side scorer
+   cannot resolve bare specifiers, so a warning is added to the review warnings
+   prompting the user to confirm before push.
+9. **Bundle TypeScript** — compiles each entry point (models, vaults, drivers,
    datastores) to standalone JS. Include files are not bundled. If a `deno.json`
    is present, the import map governs dependency resolution.
-9. **Version check** — verifies version doesn't already exist (offers to bump)
-10. **Build archive** — creates tar.gz with all content types and their bundles
-11. **Upload** — three-phase push: initiate, upload archive, confirm
+10. **Version check** — verifies version doesn't already exist (offers to bump)
+11. **Build archive** — creates tar.gz with all content types and their bundles
+12. **Upload** — three-phase push: initiate, upload archive, confirm
 
 ## Extension Formatting
 
