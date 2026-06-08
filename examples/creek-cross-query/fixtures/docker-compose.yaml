@@ -1,0 +1,35 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: swamp-creek-example-pg
+    environment:
+      POSTGRES_USER: example
+      POSTGRES_PASSWORD: example
+      POSTGRES_DB: example
+    ports:
+      - "5439:5432"
+    volumes:
+      - ./postgres-seed.sql:/docker-entrypoint-initdb.d/seed.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U example -d example"]
+      interval: 2s
+      timeout: 2s
+      retries: 15
+
+  mysql:
+    image: mysql:8.4
+    container_name: swamp-creek-example-mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: example
+      MYSQL_DATABASE: example
+      MYSQL_USER: example
+      MYSQL_PASSWORD: example
+    ports:
+      - "3309:3306"
+    volumes:
+      - ./mysql-seed.sql:/docker-entrypoint-initdb.d/seed.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uexample -pexample --silent"]
+      interval: 2s
+      timeout: 2s
+      retries: 30

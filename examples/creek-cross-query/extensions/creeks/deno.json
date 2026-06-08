@@ -1,0 +1,7 @@
+{
+  "imports": {
+    "zod": "npm:zod@4",
+    "postgres": "npm:postgres@3.4.4",
+    "mysql2/promise": "npm:mysql2@3.11.0/promise"
+  }
+}
