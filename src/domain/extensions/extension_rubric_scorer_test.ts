@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assert, assertEquals, assertStringIncludes } from "@std/assert";
+import { join } from "@std/path";
 import type { ExtensionManifest } from "./extension_manifest.ts";
 import {
   composeScore,
@@ -30,6 +31,8 @@ import {
   hasModuleDoc,
   repositoryLikelyVerifiable,
   RUBRIC_VERSION,
+  type RubricScoreDeps,
+  scoreExtensionTarball,
   SLOW_TYPE_CODES,
   stripAnsi,
 } from "./extension_rubric_scorer.ts";
@@ -925,4 +928,96 @@ Deno.test("composeScore: dependency-trust fails with blockers", () => {
   assertEquals(factor.earnedPoints, 0);
   assertEquals(factor.status, "missing");
   assertStringIncludes(factor.remediation ?? "", "3 dependency blocker(s)");
+});
+
+// ── scoreExtensionTarball: import map merging ────────────────────────
+
+function fakeExtractTarball(
+  files: Record<string, string>,
+): RubricScoreDeps["extractTarball"] {
+  return async (_source: ReadableStream<Uint8Array>, destDir: string) => {
+    const extDir = join(destDir, "extension");
+    await Deno.mkdir(join(extDir, "models"), { recursive: true });
+    for (const [name, content] of Object.entries(files)) {
+      await Deno.writeTextFile(join(extDir, name), content);
+    }
+  };
+}
+
+const MINIMAL_DOC_OUTPUT: DocOutput = { version: 1, nodes: {} };
+
+function fakeScoreDeps(
+  files: Record<string, string>,
+  onRunDeno?: (args: string[], cwd: string) => void,
+): RubricScoreDeps {
+  return {
+    extractTarball: fakeExtractTarball(files),
+    runDeno: (args: string[], cwd: string) => {
+      onRunDeno?.(args, cwd);
+      if (args[0] === "doc" && args[1] === "--json") {
+        return Promise.resolve({
+          success: true,
+          stdout: JSON.stringify(MINIMAL_DOC_OUTPUT),
+          stderr: "",
+        });
+      }
+      return Promise.resolve({ success: true, stdout: "", stderr: "" });
+    },
+  };
+}
+
+Deno.test("scoreExtensionTarball: merges importMap into controlled deno.json", async () => {
+  let capturedConfig: Record<string, unknown> | undefined;
+  const deps = fakeScoreDeps(
+    {
+      "manifest.yaml": "manifestVersion: 1\nname: '@test/bare'\n",
+      "models/mod.ts": 'import { z } from "zod";\nexport const s = z.string();',
+      "README.md": "# Test",
+      "LICENSE": "MIT",
+    },
+    (_args, cwd) => {
+      const raw = Deno.readTextFileSync(join(cwd, "deno.json"));
+      capturedConfig = JSON.parse(raw);
+    },
+  );
+
+  const tarball = new Uint8Array(0);
+  const manifest = makeManifest({
+    models: ["mod.ts"],
+  });
+  const importMap = { "zod": "npm:zod@4" };
+
+  const score = await scoreExtensionTarball(tarball, manifest, deps, {
+    importMap,
+  });
+
+  assert(capturedConfig !== undefined, "runDeno should have been called");
+  assertEquals(capturedConfig!.nodeModulesDir, "auto");
+  assertEquals(capturedConfig!.imports, { "zod": "npm:zod@4" });
+  assert(score.earnedPoints >= 0);
+});
+
+Deno.test("scoreExtensionTarball: omits imports when importMap is undefined", async () => {
+  let capturedConfig: Record<string, unknown> | undefined;
+  const deps = fakeScoreDeps(
+    {
+      "manifest.yaml": "manifestVersion: 1\nname: '@test/no-map'\n",
+      "models/mod.ts": "export const x = 1;",
+      "README.md": "# Test",
+      "LICENSE": "MIT",
+    },
+    (_args, cwd) => {
+      const raw = Deno.readTextFileSync(join(cwd, "deno.json"));
+      capturedConfig = JSON.parse(raw);
+    },
+  );
+
+  const tarball = new Uint8Array(0);
+  const manifest = makeManifest({ models: ["mod.ts"] });
+
+  await scoreExtensionTarball(tarball, manifest, deps);
+
+  assert(capturedConfig !== undefined, "runDeno should have been called");
+  assertEquals(capturedConfig!.nodeModulesDir, "auto");
+  assertEquals(capturedConfig!.imports, undefined);
 });

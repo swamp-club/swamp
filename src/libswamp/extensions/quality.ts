@@ -73,6 +73,25 @@ export interface ExtensionQualityDeps {
   makeScoreDeps: (denoPath: string) => RubricScoreDeps;
 }
 
+async function readImportMap(
+  denoConfigPath: string | undefined,
+): Promise<Record<string, string> | undefined> {
+  if (!denoConfigPath) return undefined;
+  try {
+    const raw = await Deno.readTextFile(denoConfigPath);
+    const config = JSON.parse(raw);
+    if (
+      config.imports && typeof config.imports === "object" &&
+      !Array.isArray(config.imports)
+    ) {
+      return config.imports as Record<string, string>;
+    }
+  } catch {
+    // Missing or unparseable config — fall back to no import map.
+  }
+  return undefined;
+}
+
 /** Wires real infrastructure into ExtensionQualityDeps. */
 export function createExtensionQualityDeps(
   pushPrepareDeps: ExtensionPushPrepareDeps,
@@ -166,16 +185,18 @@ export async function* extensionQuality(
       yield { kind: "scoring" };
       const denoPath = await deps.ensureDenoPath();
       const scoreDeps = deps.makeScoreDeps(denoPath);
+      const importMap = await readImportMap(
+        input.prepareInput.denoConfigPath,
+      );
       const score = await scoreExtensionTarball(
         archiveBytes,
         input.prepareInput.manifest,
         scoreDeps,
-        dependencyTrustResult
-          ? {
-            dependencyTrustPassed: dependencyTrustResult.passed,
-            dependencyTrustBlockerCount: dependencyTrustResult.errors.length,
-          }
-          : undefined,
+        {
+          dependencyTrustPassed: dependencyTrustResult?.passed,
+          dependencyTrustBlockerCount: dependencyTrustResult?.errors.length,
+          importMap,
+        },
       );
 
       yield {

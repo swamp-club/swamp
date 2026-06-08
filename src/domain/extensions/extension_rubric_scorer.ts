@@ -536,12 +536,6 @@ export function createRubricScoreDeps(
   };
 }
 
-const CONTROLLED_DENO_JSON = JSON.stringify(
-  { nodeModulesDir: "auto" },
-  null,
-  2,
-) + "\n";
-
 const STRIPPED_CONFIG_FILES = [
   "deno.json",
   "deno.jsonc",
@@ -584,6 +578,7 @@ export async function scoreExtensionTarball(
   options?: {
     dependencyTrustPassed?: boolean;
     dependencyTrustBlockerCount?: number;
+    importMap?: Record<string, string>;
   },
 ): Promise<RubricScore> {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_quality_" });
@@ -618,9 +613,16 @@ export async function scoreExtensionTarball(
     }
     await Deno.remove(join(logicalRoot, "node_modules"), { recursive: true })
       .catch(() => {});
+
+    const controlledConfig: Record<string, unknown> = {
+      nodeModulesDir: "auto",
+    };
+    if (options?.importMap && Object.keys(options.importMap).length > 0) {
+      controlledConfig.imports = options.importMap;
+    }
     await Deno.writeTextFile(
       join(logicalRoot, "deno.json"),
-      CONTROLLED_DENO_JSON,
+      JSON.stringify(controlledConfig, null, 2) + "\n",
     );
 
     const rootAbs = resolve(logicalRoot);
