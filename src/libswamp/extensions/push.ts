@@ -760,7 +760,7 @@ export async function extensionPushPrepare(
       ruleId: "bare-specifiers",
       dimension: "scoring",
       severity: "medium",
-      file: "",
+      file: "(multiple files)",
       message: `Extension uses bare import specifiers (${
         names.map((s) => `"${s}"`).join(", ")
       }) which cannot be scored by the server. The extension will be published but may show as unscored.`,

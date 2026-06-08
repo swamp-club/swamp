@@ -209,7 +209,7 @@ export async function* extensionQuality(
           error: validationFailed(
             `Extension uses bare import specifiers that cannot be resolved by the server-side scorer: ${
               names.map((s) => `"${s}"`).join(", ")
-            }. Use explicit npm: or jsr: prefixes (e.g., "npm:zod@3.25.67") or add them to your deno.json imports.`,
+            }. Use explicit npm: or jsr: prefixes in your source files (e.g., "npm:package@version").`,
           ),
         };
         return;
