@@ -31,7 +31,11 @@ import { ModelNotFoundError } from "./errors.ts";
 import { parseNamespacedModelName } from "../data/namespace.ts";
 import type { Namespace } from "../data/namespace.ts";
 import { UserError } from "../errors.ts";
-import { VaultService } from "../vaults/vault_service.ts";
+import {
+  type VaultRefreshOptions,
+  VaultService,
+} from "../vaults/vault_service.ts";
+import { createVaultRefreshOptions } from "../../infrastructure/vaults/vault_refresh.ts";
 import type { SecretRedactor } from "../secrets/mod.ts";
 import type { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
 
@@ -327,6 +331,8 @@ export interface ModelResolverRepositories {
   dataRepo?: UnifiedDataRepository;
   /** Optional data query service for CEL data.query() support */
   dataQueryService?: DataQueryService;
+  /** Optional refresh options for auto-refreshing vault secrets on read */
+  vaultRefreshOptions?: VaultRefreshOptions;
 }
 
 /**
@@ -355,6 +361,7 @@ export class ModelResolver {
   private readonly repoDir?: string;
   private readonly dataRepo?: UnifiedDataRepository;
   private readonly dataQueryService?: DataQueryService;
+  private readonly vaultRefreshOptions?: VaultRefreshOptions;
   private vaultServiceInitialized = false;
 
   constructor(
@@ -365,6 +372,7 @@ export class ModelResolver {
     this.repoDir = repos?.repoDir;
     this.dataRepo = repos?.dataRepo;
     this.dataQueryService = repos?.dataQueryService;
+    this.vaultRefreshOptions = repos?.vaultRefreshOptions;
     // If a vault service was provided, use it directly
     if (repos?.vaultService) {
       this.vaultService = repos.vaultService;
@@ -383,11 +391,17 @@ export class ModelResolver {
     }
 
     // Lazy initialization: load vaults from repository if repoDir is available
+    const refreshOpts = this.vaultRefreshOptions ??
+      createVaultRefreshOptions();
     if (this.repoDir) {
-      this.vaultService = await VaultService.fromRepository(this.repoDir);
+      this.vaultService = await VaultService.fromRepository(
+        this.repoDir,
+        undefined,
+        refreshOpts,
+      );
     } else {
       // No repoDir, create an empty vault service with defaults
-      this.vaultService = new VaultService();
+      this.vaultService = new VaultService(refreshOpts);
       this.vaultService.ensureDefaultVaults();
     }
     this.vaultServiceInitialized = true;

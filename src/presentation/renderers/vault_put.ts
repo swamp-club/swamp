@@ -32,6 +32,9 @@ class LogVaultPutRenderer implements Renderer<VaultPutEvent> {
         logger
           .info`Stored secret ${e.data.secretKey} in vault ${e.data.vaultName}`;
       },
+      warning: (e) => {
+        logger.warn`${e.message}`;
+      },
       error: (e) => {
         throw new UserError(e.error.message);
       },
@@ -45,6 +48,9 @@ class JsonVaultPutRenderer implements Renderer<VaultPutEvent> {
       storing: () => {},
       completed: (e) => {
         console.log(JSON.stringify(e.data, null, 2));
+      },
+      warning: (e) => {
+        console.error(JSON.stringify({ warning: e.message }));
       },
       error: (e) => {
         throw new UserError(e.error.message);

@@ -23,6 +23,7 @@ import {
   isVaultAnnotationProvider,
   type VaultAnnotation,
 } from "./vault_annotation.ts";
+import { isVaultRefreshHookProvider } from "./refresh_hook.ts";
 import { getVaultTypes, RENAMED_VAULT_TYPES } from "./vault_types.ts";
 import { vaultTypeRegistry } from "./vault_type_registry.ts";
 import { resolveVaultType } from "../extensions/extension_auto_resolver.ts";
@@ -32,11 +33,26 @@ import { join } from "@std/path";
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 import { createVaultProvider } from "./vault_provider_factory.ts";
 
+export interface ProcessRunResult {
+  success: boolean;
+  stdout: string;
+  stderr: string;
+}
+
+export interface VaultRefreshOptions {
+  runCommand: (command: string) => Promise<ProcessRunResult>;
+}
+
 /**
  * Service for managing vault providers and resolving vault operations.
  */
 export class VaultService {
   private readonly providers = new Map<string, VaultProvider>();
+  private readonly refreshOptions?: VaultRefreshOptions;
+
+  constructor(refreshOptions?: VaultRefreshOptions) {
+    this.refreshOptions = refreshOptions;
+  }
 
   /**
    * Creates a VaultService instance loaded with vault configurations from the repository.
@@ -52,9 +68,10 @@ export class VaultService {
   static async fromRepository(
     repoDir: string,
     vaultsDir?: string,
+    refreshOptions?: VaultRefreshOptions,
   ): Promise<VaultService> {
     await vaultTypeRegistry.ensureLoaded();
-    const vaultService = new VaultService();
+    const vaultService = new VaultService(refreshOptions);
     try {
       const effectiveVaultsDir = vaultsDir ?? join(repoDir, "vaults");
       const vaultRepo = new YamlVaultConfigRepository(
@@ -124,9 +141,42 @@ export class VaultService {
   }
 
   /**
-   * Gets a secret from the specified vault.
+   * Gets a secret from the specified vault. When a refresh hook is configured
+   * on the key and refreshOptions were provided, transparently re-runs the
+   * refresh command when the TTL has lapsed.
    */
   async get(vaultName: string, secretKey: string): Promise<string> {
+    const provider = this.requireProvider(vaultName);
+
+    if (this.refreshOptions && isVaultRefreshHookProvider(provider)) {
+      const hook = await provider.getRefreshHook(secretKey);
+      if (hook && hook.isStale()) {
+        try {
+          const result = await this.refreshOptions.runCommand(hook.command);
+          if (result.success) {
+            const freshValue = result.stdout.trimEnd();
+            await provider.put(secretKey, freshValue);
+            await provider.putRefreshHook(
+              secretKey,
+              hook.withRefreshedAt(new Date()),
+            );
+            getLogger("vaults")
+              .info`Refreshed secret ${secretKey} in vault ${vaultName}`;
+            return freshValue;
+          }
+          getLogger("vaults")
+            .warn`Refresh command failed for ${secretKey} in vault ${vaultName}: ${result.stderr}. Returning stale value.`;
+        } catch (error) {
+          getLogger("vaults")
+            .warn`Refresh command error for ${secretKey} in vault ${vaultName}: ${error}. Returning stale value.`;
+        }
+      }
+    }
+
+    return await provider.get(secretKey);
+  }
+
+  private requireProvider(vaultName: string): VaultProvider {
     const provider = this.providers.get(vaultName);
     if (!provider) {
       const availableVaults = Array.from(this.providers.keys());
@@ -140,17 +190,15 @@ export class VaultService {
             }\n` +
             `For cloud vaults, install an extension first (e.g., swamp extension pull @swamp/aws-sm).`,
         );
-      } else {
-        throw new Error(
-          `Vault '${vaultName}' not found. Available vaults: ${
-            availableVaults.join(", ")
-          }.\n` +
-            `Create '${vaultName}' using: swamp vault create <type> ${vaultName}`,
-        );
       }
+      throw new Error(
+        `Vault '${vaultName}' not found. Available vaults: ${
+          availableVaults.join(", ")
+        }.\n` +
+          `Create '${vaultName}' using: swamp vault create <type> ${vaultName}`,
+      );
     }
-
-    return await provider.get(secretKey);
+    return provider;
   }
 
   /**
@@ -161,28 +209,7 @@ export class VaultService {
     secretKey: string,
     secretValue: string,
   ): Promise<void> {
-    const provider = this.providers.get(vaultName);
-    if (!provider) {
-      const availableVaults = Array.from(this.providers.keys());
-      if (availableVaults.length === 0) {
-        throw new Error(
-          `Vault '${vaultName}' not found. No vaults are configured.\n\n` +
-            `Note: Vaults are NOT configured in .swamp.yaml. Create a vault using:\n` +
-            `  swamp vault create <type> ${vaultName}\n\n` +
-            `Available vault types: ${
-              getVaultTypes().map((v) => v.type).join(", ")
-            }`,
-        );
-      } else {
-        throw new Error(
-          `Vault '${vaultName}' not found. Available vaults: ${
-            availableVaults.join(", ")
-          }.\n` +
-            `Create '${vaultName}' using: swamp vault create <type> ${vaultName}`,
-        );
-      }
-    }
-
+    const provider = this.requireProvider(vaultName);
     await provider.put(secretKey, secretValue);
   }
 
@@ -191,28 +218,7 @@ export class VaultService {
    * Returns only key names, not values.
    */
   async list(vaultName: string): Promise<string[]> {
-    const provider = this.providers.get(vaultName);
-    if (!provider) {
-      const availableVaults = Array.from(this.providers.keys());
-      if (availableVaults.length === 0) {
-        throw new Error(
-          `Vault '${vaultName}' not found. No vaults are configured.\n\n` +
-            `Note: Vaults are NOT configured in .swamp.yaml. Create a vault using:\n` +
-            `  swamp vault create <type> ${vaultName}\n\n` +
-            `Available vault types: ${
-              getVaultTypes().map((v) => v.type).join(", ")
-            }`,
-        );
-      } else {
-        throw new Error(
-          `Vault '${vaultName}' not found. Available vaults: ${
-            availableVaults.join(", ")
-          }.\n` +
-            `Create '${vaultName}' using: swamp vault create <type> ${vaultName}`,
-        );
-      }
-    }
-
+    const provider = this.requireProvider(vaultName);
     return await provider.list();
   }
 
@@ -239,6 +245,12 @@ export class VaultService {
   ): Promise<void> {
     const provider = this.requireAnnotationProvider(vaultName);
     await provider.deleteAnnotation(secretKey);
+  }
+
+  supportsRefreshHooks(vaultName: string): boolean {
+    const provider = this.providers.get(vaultName);
+    if (!provider) return false;
+    return isVaultRefreshHookProvider(provider);
   }
 
   supportsAnnotations(vaultName: string): boolean {
@@ -268,6 +280,10 @@ export class VaultService {
       );
     }
     return provider;
+  }
+
+  getProvider(vaultName: string): VaultProvider | undefined {
+    return this.providers.get(vaultName);
   }
 
   /**

@@ -24,6 +24,8 @@ import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { notFound } from "../errors.ts";
+import { RefreshHook } from "../../domain/vaults/refresh_hook.ts";
+import { isVaultRefreshHookProvider } from "../../domain/vaults/refresh_hook.ts";
 
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 /** Minimal vault config shape needed by the generator. */
@@ -53,6 +55,7 @@ export interface VaultPutData {
 export type VaultPutEvent =
   | { kind: "storing" }
   | { kind: "completed"; data: VaultPutData }
+  | { kind: "warning"; message: string }
   | { kind: "error"; error: SwampError };
 
 /** Input for the vault put operation. */
@@ -61,6 +64,9 @@ export interface VaultPutInput {
   key: string;
   value: string;
   overwritten: boolean;
+  refreshFrom?: string;
+  refreshTtlMs?: number;
+  clearRefresh?: boolean;
 }
 
 /** Dependencies for the vault put operation. */
@@ -75,6 +81,13 @@ export interface VaultPutDeps {
     vaultName: string,
     key: string,
   ) => Promise<void>;
+  putRefreshHook: (
+    vaultName: string,
+    key: string,
+    hook: RefreshHook,
+  ) => Promise<void>;
+  deleteRefreshHook: (vaultName: string, key: string) => Promise<void>;
+  supportsRefreshHooks: (vaultName: string) => Promise<boolean>;
 }
 
 /** Wires real infrastructure into VaultPutDeps. */
@@ -115,6 +128,24 @@ export function createVaultPutDeps(
         key,
       );
       await eventBus.publish(event);
+    },
+    putRefreshHook: async (vaultName, key, hook) => {
+      const svc = await getVaultService();
+      const provider = svc.getProvider(vaultName);
+      if (provider && isVaultRefreshHookProvider(provider)) {
+        await provider.putRefreshHook(key, hook);
+      }
+    },
+    deleteRefreshHook: async (vaultName, key) => {
+      const svc = await getVaultService();
+      const provider = svc.getProvider(vaultName);
+      if (provider && isVaultRefreshHookProvider(provider)) {
+        await provider.deleteRefreshHook(key);
+      }
+    },
+    supportsRefreshHooks: async (vaultName) => {
+      const svc = await getVaultService();
+      return svc.supportsRefreshHooks(vaultName);
     },
   };
 }
@@ -176,6 +207,29 @@ export async function* vaultPut(
 
       await deps.putSecret(input.vaultName, input.key, input.value);
       ctx.logger.debug`Secret stored successfully`;
+
+      if (input.clearRefresh) {
+        await deps.deleteRefreshHook(input.vaultName, input.key);
+        ctx.logger.debug`Cleared refresh hook`;
+      } else if (input.refreshFrom && input.refreshTtlMs) {
+        const supportsHooks = await deps.supportsRefreshHooks(
+          input.vaultName,
+        );
+        if (supportsHooks) {
+          const hook = RefreshHook.create(
+            input.refreshFrom,
+            input.refreshTtlMs,
+          );
+          await deps.putRefreshHook(input.vaultName, input.key, hook);
+          ctx.logger.debug`Refresh hook stored`;
+        } else {
+          yield {
+            kind: "warning",
+            message:
+              `Vault '${input.vaultName}' does not support refresh hooks — --refresh-from was ignored`,
+          };
+        }
+      }
 
       await deps.publishSecretUpdated(
         config.id,

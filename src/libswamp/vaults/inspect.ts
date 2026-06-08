@@ -18,6 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { VaultAnnotationData } from "../../domain/vaults/vault_annotation.ts";
+import type { RefreshHookData } from "../../domain/vaults/refresh_hook.ts";
+import { isVaultRefreshHookProvider } from "../../domain/vaults/refresh_hook.ts";
 import { VaultService } from "../../domain/vaults/vault_service.ts";
 import { YamlVaultConfigRepository } from "../../infrastructure/persistence/yaml_vault_config_repository.ts";
 import type { LibSwampContext } from "../context.ts";
@@ -37,6 +39,8 @@ export interface VaultInspectData {
   vaultType: string;
   hasAnnotation: boolean;
   annotation: VaultAnnotationData | null;
+  hasRefreshHook: boolean;
+  refreshHook: RefreshHookData | null;
 }
 
 export type VaultInspectEvent =
@@ -53,6 +57,11 @@ export interface VaultInspectDeps {
     vaultName: string,
     key: string,
   ) => Promise<VaultAnnotationData | null>;
+  supportsRefreshHooks: (vaultName: string) => Promise<boolean>;
+  getRefreshHook: (
+    vaultName: string,
+    key: string,
+  ) => Promise<RefreshHookData | null>;
 }
 
 export function createVaultInspectDeps(repoDir: string): VaultInspectDeps {
@@ -85,6 +94,19 @@ export function createVaultInspectDeps(repoDir: string): VaultInspectDeps {
       const svc = await getVaultService();
       const annotation = await svc.getAnnotation(vaultName, key);
       return annotation?.toData() ?? null;
+    },
+    supportsRefreshHooks: async (vaultName) => {
+      const svc = await getVaultService();
+      return svc.supportsRefreshHooks(vaultName);
+    },
+    getRefreshHook: async (vaultName, key) => {
+      const svc = await getVaultService();
+      const provider = svc.getProvider(vaultName);
+      if (provider && isVaultRefreshHookProvider(provider)) {
+        const hook = await provider.getRefreshHook(key);
+        return hook?.toData() ?? null;
+      }
+      return null;
     },
   };
 }
@@ -148,6 +170,11 @@ export async function* vaultInspect(
       const annotation = await deps.getAnnotation(vaultName, secretKey);
       ctx.logger.debug`Retrieved annotation for ${secretKey}`;
 
+      let refreshHook: RefreshHookData | null = null;
+      if (await deps.supportsRefreshHooks(vaultName)) {
+        refreshHook = await deps.getRefreshHook(vaultName, secretKey);
+      }
+
       yield {
         kind: "completed",
         data: {
@@ -156,6 +183,8 @@ export async function* vaultInspect(
           vaultType: config.type,
           hasAnnotation: annotation !== null,
           annotation,
+          hasRefreshHook: refreshHook !== null,
+          refreshHook,
         },
       };
     })(),

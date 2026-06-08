@@ -190,7 +190,8 @@ export type RepositoryEvent =
   | VaultDeleted
   | VaultSecretUpdated
   | VaultSecretRead
-  | VaultSecretAnnotated;
+  | VaultSecretAnnotated
+  | VaultSecretRefreshed;
 
 /**
  * Event type discriminator values.
@@ -573,6 +574,30 @@ export function createVaultSecretAnnotated(
     vaultName,
     secretKey,
     annotationFields,
+    timestamp: new Date(),
+  };
+}
+
+/**
+ * Emitted when a secret is auto-refreshed via a refresh hook.
+ */
+export interface VaultSecretRefreshed extends DomainEvent {
+  readonly type: "VaultSecretRefreshed";
+  readonly vaultName: string;
+  readonly secretKey: string;
+}
+
+/**
+ * Creates a VaultSecretRefreshed event.
+ */
+export function createVaultSecretRefreshed(
+  vaultName: string,
+  secretKey: string,
+): VaultSecretRefreshed {
+  return {
+    type: "VaultSecretRefreshed",
+    vaultName,
+    secretKey,
     timestamp: new Date(),
   };
 }

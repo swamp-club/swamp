@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type { EventHandlers, VaultInspectEvent } from "../../libswamp/mod.ts";
+import { formatTtlMs } from "../../domain/vaults/refresh_hook.ts";
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
@@ -29,22 +30,36 @@ class LogVaultInspectRenderer implements Renderer<VaultInspectEvent> {
     return {
       resolving: () => {},
       completed: (e) => {
-        if (!e.data.hasAnnotation || !e.data.annotation) {
+        const hasContent = e.data.hasAnnotation || e.data.hasRefreshHook;
+        if (!hasContent) {
           logger
-            .info`No annotation found for ${e.data.secretKey} in vault ${e.data.vaultName}`;
+            .info`No metadata found for ${e.data.secretKey} in vault ${e.data.vaultName}`;
           return;
         }
-        const a = e.data.annotation;
         logger
-          .info`Annotation for ${e.data.secretKey} in vault ${e.data.vaultName}:`;
-        if (a.url) logger.info`  url: ${a.url}`;
-        if (a.notes) logger.info`  notes: ${a.notes}`;
-        if (a.labels && Object.keys(a.labels).length > 0) {
-          for (const [k, v] of Object.entries(a.labels)) {
-            logger.info`  label: ${k}=${v}`;
+          .info`Metadata for ${e.data.secretKey} in vault ${e.data.vaultName}:`;
+        if (e.data.hasAnnotation && e.data.annotation) {
+          const a = e.data.annotation;
+          if (a.url) logger.info`  url: ${a.url}`;
+          if (a.notes) logger.info`  notes: ${a.notes}`;
+          if (a.labels && Object.keys(a.labels).length > 0) {
+            for (const [k, v] of Object.entries(a.labels)) {
+              logger.info`  label: ${k}=${v}`;
+            }
+          }
+          logger.info`  updated: ${a.updatedAt}`;
+        }
+        if (e.data.hasRefreshHook && e.data.refreshHook) {
+          const rh = e.data.refreshHook;
+          logger.info`  refresh:`;
+          logger.info`    command: ${rh.command}`;
+          logger.info`    ttl: ${formatTtlMs(rh.ttlMs)}`;
+          if (rh.lastRefreshedAt) {
+            logger.info`    last refreshed: ${rh.lastRefreshedAt}`;
+          } else {
+            logger.info`    last refreshed: never`;
           }
         }
-        logger.info`  updated: ${a.updatedAt}`;
       },
       error: (e) => {
         throw new UserError(e.error.message);

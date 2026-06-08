@@ -35,6 +35,9 @@ function makeDeps(overrides: Partial<VaultPutDeps> = {}): VaultPutDeps {
     secretExists: () => Promise.resolve(false),
     putSecret: () => Promise.resolve(),
     publishSecretUpdated: () => Promise.resolve(),
+    putRefreshHook: () => Promise.resolve(),
+    deleteRefreshHook: () => Promise.resolve(),
+    supportsRefreshHooks: () => Promise.resolve(false),
     ...overrides,
   };
 }

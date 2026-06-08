@@ -150,3 +150,30 @@ Deno.test("vaultReadSecret: yields error when secret key not found in vault", as
   const error = events[1] as Extract<VaultReadSecretEvent, { kind: "error" }>;
   assertEquals(error.error.code, "not_found");
 });
+
+Deno.test("vaultReadSecret: readSecret dep receives refreshed value when hook triggers", async () => {
+  let callCount = 0;
+  const deps = makeDeps({
+    readSecret: () => {
+      callCount++;
+      return Promise.resolve(
+        callCount === 1 ? "refreshed-token-value" : "stale-value",
+      );
+    },
+  });
+
+  const events = await collect<VaultReadSecretEvent>(
+    vaultReadSecret(createLibSwampContext(), deps, {
+      vaultName: "my-vault",
+      secretKey: "TOKEN",
+    }),
+  );
+
+  assertEquals(events[1].kind, "completed");
+  const completed = events[1] as Extract<
+    VaultReadSecretEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.data.value, "refreshed-token-value");
+  assertEquals(callCount, 1);
+});
