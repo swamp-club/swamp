@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Type compatibility test for @systeminit/swamp-testing datastore types.
+ * Type compatibility test for @swamp-club/swamp-testing datastore types.
  *
  * Verifies that the testing package's datastore types remain structurally
  * compatible with swamp's canonical types. If someone changes the canonical

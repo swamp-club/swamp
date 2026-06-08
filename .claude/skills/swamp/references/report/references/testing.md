@@ -1,17 +1,17 @@
 # Testing Report Extensions
 
-The `@systeminit/swamp-testing` package provides `createReportTestContext()` and
+The `@swamp-club/swamp-testing` package provides `createReportTestContext()` and
 mock primitives for unit testing report `execute` functions without running real
 model methods or accessing real data repositories.
 
-Install: `deno add jsr:@systeminit/swamp-testing`
+Install: `deno add jsr:@swamp-club/swamp-testing`
 
 ## createReportTestContext
 
 Creates a fake `ReportContext` with pre-seeded data and definition repositories:
 
 ```typescript
-import { createReportTestContext } from "@systeminit/swamp-testing";
+import { createReportTestContext } from "@swamp-club/swamp-testing";
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { report } from "./my_report.ts";
 
@@ -162,7 +162,7 @@ mock primitives to test without real infrastructure.
 import {
   createReportTestContext,
   withMockedFetch,
-} from "@systeminit/swamp-testing";
+} from "@swamp-club/swamp-testing";
 
 Deno.test("report fetches pricing data", async () => {
   const { calls } = await withMockedFetch((req) => {
@@ -193,7 +193,7 @@ Deno.test("report fetches pricing data", async () => {
 import {
   createReportTestContext,
   withMockedCommand,
-} from "@systeminit/swamp-testing";
+} from "@swamp-club/swamp-testing";
 
 Deno.test("report runs cost calculator CLI", async () => {
   await withMockedCommand((cmd, args) => {

@@ -103,10 +103,10 @@ use:
 
 If you prefer not to annotate each method individually, you can wrap the model
 literal with `satisfies ModelDefinition<typeof GlobalArgsSchema>` from
-`@systeminit/swamp-testing`:
+`@swamp-club/swamp-testing`:
 
 ```typescript
-import type { ModelDefinition } from "jsr:@systeminit/swamp-testing";
+import type { ModelDefinition } from "jsr:@swamp-club/swamp-testing";
 
 export const model = {
   type: "@myorg/my-model",
@@ -138,7 +138,7 @@ The testing package also exports `defineModel` — identical behaviour to
 `satisfies`, different call-site syntax:
 
 ```typescript
-import { defineModel } from "jsr:@systeminit/swamp-testing";
+import { defineModel } from "jsr:@swamp-club/swamp-testing";
 
 export const model = defineModel({
   type: "@myorg/my-model",

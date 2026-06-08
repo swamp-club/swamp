@@ -58,7 +58,7 @@ export type CommandHandler = (
  *
  * **Simple mode** — sequential responses:
  * ```typescript
- * import { withMockedCommand } from "@systeminit/swamp-testing";
+ * import { withMockedCommand } from "@swamp-club/swamp-testing";
  *
  * const { result, calls } = await withMockedCommand([
  *   { stdout: "sk-test-123", code: 0 },

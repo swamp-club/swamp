@@ -113,7 +113,7 @@ export interface ReportTestContextResult {
  * functions.
  *
  * ```typescript
- * import { createReportTestContext } from "@systeminit/swamp-testing";
+ * import { createReportTestContext } from "@swamp-club/swamp-testing";
  *
  * Deno.test("report generates markdown summary", async () => {
  *   const { context } = createReportTestContext({

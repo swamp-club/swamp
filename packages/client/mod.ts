@@ -18,10 +18,10 @@
 // along with Swamp.  If not, see <https:\/\/www.gnu.org\/licenses\/>.
 
 /**
- * @systeminit/swamp-lib — TypeScript client for the swamp WebSocket API.
+ * @swamp-club/swamp-lib — TypeScript client for the swamp WebSocket API.
  *
  * ```typescript
- * import { SwampClient } from "@systeminit/swamp-lib";
+ * import { SwampClient } from "@swamp-club/swamp-lib";
  *
  * const client = new SwampClient("ws://localhost:9090");
  * await client.connect();

@@ -1,5 +1,5 @@
 {
-  "name": "@systeminit/swamp-testing",
+  "name": "@swamp-club/swamp-testing",
   "version": "0.3.0",
   "license": "AGPL-3.0-only",
   "exports": "./mod.ts",

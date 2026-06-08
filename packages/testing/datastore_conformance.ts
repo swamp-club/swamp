@@ -54,7 +54,7 @@ export interface DatastoreExportConformanceOptions {
  * createProvider returns a DatastoreProvider with required methods.
  *
  * ```typescript
- * import { assertDatastoreExportConformance } from "@systeminit/swamp-testing";
+ * import { assertDatastoreExportConformance } from "@swamp-club/swamp-testing";
  * import { datastore } from "./s3.ts";
  *
  * Deno.test("datastore export conforms", () => {
@@ -197,7 +197,7 @@ export function assertDatastoreExportConformance(
  * not, forceRelease with correct/wrong nonce, release is idempotent.
  *
  * ```typescript
- * import { assertLockConformance } from "@systeminit/swamp-testing";
+ * import { assertLockConformance } from "@swamp-club/swamp-testing";
  *
  * Deno.test("s3 lock contract", async () => {
  *   const lock = provider.createLock("/test/path");
@@ -345,7 +345,7 @@ export async function assertLockConformance(
  * Asserts that a DatastoreVerifier implementation returns a valid health result.
  *
  * ```typescript
- * import { assertVerifierConformance } from "@systeminit/swamp-testing";
+ * import { assertVerifierConformance } from "@swamp-club/swamp-testing";
  *
  * Deno.test("s3 verifier contract", async () => {
  *   const verifier = provider.createVerifier();
@@ -402,7 +402,7 @@ export interface SyncServiceConformanceOptions {
  * `scopedSync === true`.
  *
  * ```typescript
- * import { assertSyncServiceConformance } from "@systeminit/swamp-testing";
+ * import { assertSyncServiceConformance } from "@swamp-club/swamp-testing";
  *
  * Deno.test("s3 sync service contract", async () => {
  *   const syncService = provider.createSyncService!("/repo", "/cache");

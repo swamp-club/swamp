@@ -66,7 +66,7 @@ export interface DriverTestContextResult {
  * for inspection.
  *
  * ```typescript
- * import { createDriverTestContext } from "@systeminit/swamp-testing";
+ * import { createDriverTestContext } from "@swamp-club/swamp-testing";
  *
  * Deno.test("driver executes method", async () => {
  *   const { request, callbacks, getCapturedLogs } = createDriverTestContext({

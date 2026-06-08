@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Type compatibility test for @systeminit/swamp-testing vault types.
+ * Type compatibility test for @swamp-club/swamp-testing vault types.
  *
  * Verifies that the testing package's VaultProvider type remains structurally
  * compatible with swamp's canonical VaultProvider. If someone changes the

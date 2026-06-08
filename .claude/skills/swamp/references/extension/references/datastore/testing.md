@@ -1,9 +1,9 @@
 # Testing Datastore Extensions
 
-The `@systeminit/swamp-testing` package provides conformance suites, mock
+The `@swamp-club/swamp-testing` package provides conformance suites, mock
 primitives, and test doubles for datastore extensions.
 
-Install: `deno add jsr:@systeminit/swamp-testing`
+Install: `deno add jsr:@swamp-club/swamp-testing`
 
 ## Export Conformance
 
@@ -11,7 +11,7 @@ One call replaces all structural boilerplate tests (metadata, config schema,
 method existence on provider/lock/verifier):
 
 ```typescript
-import { assertDatastoreExportConformance } from "@systeminit/swamp-testing";
+import { assertDatastoreExportConformance } from "@swamp-club/swamp-testing";
 import { datastore } from "./s3.ts";
 
 Deno.test("datastore export conforms", () => {
@@ -32,7 +32,7 @@ methods, verifier has verify().
 Test the full DistributedLock contract against your implementation:
 
 ```typescript
-import { assertLockConformance } from "@systeminit/swamp-testing";
+import { assertLockConformance } from "@swamp-club/swamp-testing";
 
 Deno.test("lock contract", async () => {
   const lock = provider.createLock("/test/path");
@@ -49,7 +49,7 @@ Works with both real backends and mocked clients (e.g., `createMockS3Client`).
 ## Verifier Conformance
 
 ```typescript
-import { assertVerifierConformance } from "@systeminit/swamp-testing";
+import { assertVerifierConformance } from "@swamp-club/swamp-testing";
 
 Deno.test("verifier contract", async () => {
   const verifier = provider.createVerifier();
@@ -70,7 +70,7 @@ Datastores that accept an `endpoint` config can point at a local mock server to
 test verifier and sync behavior without real AWS credentials:
 
 ```typescript
-import { assertVerifierConformance } from "@systeminit/swamp-testing";
+import { assertVerifierConformance } from "@swamp-club/swamp-testing";
 import { datastore } from "./s3.ts";
 
 Deno.test({
@@ -110,7 +110,7 @@ For testing lock semantics, create an in-memory mock of your storage client and
 pass it to your lock implementation. The S3 datastore uses this pattern:
 
 ```typescript
-import { assertLockConformance } from "@systeminit/swamp-testing";
+import { assertLockConformance } from "@swamp-club/swamp-testing";
 import { S3Lock } from "./_lib/s3_lock.ts";
 
 function createMockS3Client() {
@@ -147,7 +147,7 @@ Deno.test("S3Lock passes conformance", async () => {
 Use `withMockedCommand` for datastores that shell out to CLI tools:
 
 ```typescript
-import { withMockedCommand } from "@systeminit/swamp-testing";
+import { withMockedCommand } from "@swamp-club/swamp-testing";
 
 await withMockedCommand((cmd, args) => {
   if (cmd === "rclone" && args.includes("sync")) {
@@ -165,7 +165,7 @@ await withMockedCommand((cmd, args) => {
 Use `withMockedFetch` for datastores that call `fetch()` directly:
 
 ```typescript
-import { withMockedFetch } from "@systeminit/swamp-testing";
+import { withMockedFetch } from "@swamp-club/swamp-testing";
 
 await withMockedFetch((req) => {
   if (req.method === "HEAD") return new Response(null, { status: 200 });
@@ -182,7 +182,7 @@ await withMockedFetch((req) => {
 For testing code that _consumes_ a datastore (not the datastore itself):
 
 ```typescript
-import { createDatastoreTestContext } from "@systeminit/swamp-testing";
+import { createDatastoreTestContext } from "@swamp-club/swamp-testing";
 
 const { provider, isLockHeld } = createDatastoreTestContext();
 ```

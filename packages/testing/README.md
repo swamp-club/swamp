@@ -1,4 +1,4 @@
-# @systeminit/swamp-testing
+# @swamp-club/swamp-testing
 
 Test utilities for [swamp](https://github.com/swamp-club/swamp) extensions.
 Provides test factories for all extension types — models, vaults, datastores,
@@ -7,7 +7,7 @@ execution drivers, and reports — for unit testing without real infrastructure.
 ## Installation
 
 ```bash
-deno add jsr:@systeminit/swamp-testing
+deno add jsr:@swamp-club/swamp-testing
 ```
 
 Or add to your `deno.json` imports:
@@ -15,7 +15,7 @@ Or add to your `deno.json` imports:
 ```json
 {
   "imports": {
-    "@systeminit/swamp-testing": "jsr:@systeminit/swamp-testing"
+    "@swamp-club/swamp-testing": "jsr:@swamp-club/swamp-testing"
   }
 }
 ```
@@ -23,7 +23,7 @@ Or add to your `deno.json` imports:
 ## Usage
 
 ```typescript
-import { createModelTestContext } from "@systeminit/swamp-testing";
+import { createModelTestContext } from "@swamp-club/swamp-testing";
 import { assertEquals } from "@std/assert";
 import { model } from "./my_model.ts";
 
@@ -119,7 +119,7 @@ await model.methods.create.execute({ _s3Client: mockClient }, context);
 In-memory `VaultProvider` for testing code that reads/writes secrets.
 
 ```typescript
-import { createVaultTestContext } from "@systeminit/swamp-testing";
+import { createVaultTestContext } from "@swamp-club/swamp-testing";
 
 Deno.test("reads API key from vault", async () => {
   const { vault, getOperations } = createVaultTestContext({
@@ -143,7 +143,7 @@ Deno.test("reads API key from vault", async () => {
 In-memory `DatastoreProvider` with fake locking, health checks, and sync.
 
 ```typescript
-import { createDatastoreTestContext } from "@systeminit/swamp-testing";
+import { createDatastoreTestContext } from "@swamp-club/swamp-testing";
 
 Deno.test("lock acquire and release", async () => {
   const { provider, isLockHeld } = createDatastoreTestContext();
@@ -170,7 +170,7 @@ Test harness for `ExecutionDriver` implementations. Provides a well-formed
 `ExecutionRequest` and callbacks that capture events.
 
 ```typescript
-import { createDriverTestContext } from "@systeminit/swamp-testing";
+import { createDriverTestContext } from "@swamp-club/swamp-testing";
 
 Deno.test("driver executes method", async () => {
   const { request, callbacks, getCapturedLogs } = createDriverTestContext({
@@ -199,7 +199,7 @@ scopes (method, model, workflow) with pre-seeded data and definition
 repositories.
 
 ```typescript
-import { createReportTestContext } from "@systeminit/swamp-testing";
+import { createReportTestContext } from "@swamp-club/swamp-testing";
 
 Deno.test("report generates markdown", async () => {
   const { context } = createReportTestContext({
@@ -231,7 +231,7 @@ under strict mode. The escape hatch is a one-line wrap of the model literal:
 
 ```typescript
 import { z } from "npm:zod@4";
-import type { ModelDefinition } from "jsr:@systeminit/swamp-testing";
+import type { ModelDefinition } from "jsr:@swamp-club/swamp-testing";
 
 const GlobalArgsSchema = z.object({ region: z.string() });
 

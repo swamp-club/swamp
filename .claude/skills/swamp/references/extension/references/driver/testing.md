@@ -1,16 +1,16 @@
 # Testing Execution Drivers
 
-The `@systeminit/swamp-testing` package provides test context factories and mock
+The `@swamp-club/swamp-testing` package provides test context factories and mock
 primitives for execution driver extensions.
 
-Install: `deno add jsr:@systeminit/swamp-testing`
+Install: `deno add jsr:@swamp-club/swamp-testing`
 
 ## createDriverTestContext
 
 Builds a well-formed `ExecutionRequest` and callbacks that capture events:
 
 ```typescript
-import { createDriverTestContext } from "@systeminit/swamp-testing";
+import { createDriverTestContext } from "@swamp-club/swamp-testing";
 import { assertEquals } from "@std/assert";
 import { driver } from "./my_driver.ts";
 
@@ -64,7 +64,7 @@ Use `withMockedFetch` for drivers that make HTTP requests via `fetch()`:
 import {
   createDriverTestContext,
   withMockedFetch,
-} from "@systeminit/swamp-testing";
+} from "@swamp-club/swamp-testing";
 
 Deno.test("driver calls remote API", async () => {
   const { calls } = await withMockedFetch((req) => {
@@ -91,7 +91,7 @@ Use `withMockedCommand` for drivers that use `Deno.Command`:
 import {
   createDriverTestContext,
   withMockedCommand,
-} from "@systeminit/swamp-testing";
+} from "@swamp-club/swamp-testing";
 
 Deno.test("driver runs subprocess", async () => {
   const { result } = await withMockedCommand((cmd, args) => {

@@ -52,7 +52,7 @@ export type FetchHandler = (
  *
  * **Simple mode** — sequential responses:
  * ```typescript
- * import { withMockedFetch } from "@systeminit/swamp-testing";
+ * import { withMockedFetch } from "@swamp-club/swamp-testing";
  *
  * const { result, calls } = await withMockedFetch([
  *   Response.json({ SecretString: "sk-test-123" }),

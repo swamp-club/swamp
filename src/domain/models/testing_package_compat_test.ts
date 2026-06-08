@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Type compatibility test for @systeminit/swamp-testing.
+ * Type compatibility test for @swamp-club/swamp-testing.
  *
  * This test verifies that the testing package's types remain structurally
  * compatible with swamp's canonical types. If someone changes MethodContext,

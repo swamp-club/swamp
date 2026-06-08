@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Type compatibility test for @systeminit/swamp-testing driver types.
+ * Type compatibility test for @swamp-club/swamp-testing driver types.
  *
  * Verifies that the testing package's execution driver types remain
  * structurally compatible with swamp's canonical types.

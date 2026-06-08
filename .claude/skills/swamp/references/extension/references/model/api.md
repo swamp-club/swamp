@@ -479,7 +479,7 @@ execute: async (
 },
 ```
 
-Do NOT import `Environment` from `@systeminit/swamp-testing` in production
+Do NOT import `Environment` from `@swamp-club/swamp-testing` in production
 source — testing-named packages don't belong in production code. Do NOT import
 from `cel-js` directly unless your extension already pins cel-js for other
 runtime use; pinning a library just for a type is unnecessary churn.

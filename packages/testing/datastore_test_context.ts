@@ -78,7 +78,7 @@ export interface DatastoreTestContextResult {
  * datastore implementations.
  *
  * ```typescript
- * import { createDatastoreTestContext } from "@systeminit/swamp-testing";
+ * import { createDatastoreTestContext } from "@swamp-club/swamp-testing";
  *
  * Deno.test("datastore creates a healthy verifier", async () => {
  *   const { provider } = createDatastoreTestContext();

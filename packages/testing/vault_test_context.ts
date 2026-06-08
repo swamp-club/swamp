@@ -75,7 +75,7 @@ export interface VaultTestContextResult {
  * that interacts with vaults.
  *
  * ```typescript
- * import { createVaultTestContext } from "@systeminit/swamp-testing";
+ * import { createVaultTestContext } from "@swamp-club/swamp-testing";
  *
  * Deno.test("reads API key from vault", async () => {
  *   const { vault, getOperations } = createVaultTestContext({

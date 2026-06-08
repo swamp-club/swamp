@@ -169,4 +169,4 @@ combine. Env vars: `SWAMP_REPORT_MAX_WIDTH`, `SWAMP_REPORT_MAX_COL_WIDTH`.
 - **Filtering**: See [references/filtering.md](references/filtering.md) for the
   full filtering semantics and precedence rules
 - **Testing**: See [references/testing.md](references/testing.md) for unit
-  testing report execute functions with `@systeminit/swamp-testing`
+  testing report execute functions with `@swamp-club/swamp-testing`

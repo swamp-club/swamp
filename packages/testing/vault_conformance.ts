@@ -56,7 +56,7 @@ export interface VaultExportConformanceOptions {
  * createProvider returns an object with get/put/list/getName.
  *
  * ```typescript
- * import { assertVaultExportConformance } from "@systeminit/swamp-testing";
+ * import { assertVaultExportConformance } from "@swamp-club/swamp-testing";
  * import { vault } from "./my_vault.ts";
  *
  * Deno.test("vault export conforms", () => {
@@ -167,7 +167,7 @@ export interface VaultConformanceOptions {
  * cleaned up by default.
  *
  * ```typescript
- * import { assertVaultConformance } from "@systeminit/swamp-testing";
+ * import { assertVaultConformance } from "@swamp-club/swamp-testing";
  *
  * Deno.test("aws-sm vault contract", async () => {
  *   const provider = vault.createProvider("test", { region: "us-east-1" });
@@ -306,7 +306,7 @@ export interface VaultAnnotationExportConformanceOptions {
  * import {
  *   assertVaultExportConformance,
  *   assertVaultAnnotationExportConformance,
- * } from "@systeminit/swamp-testing";
+ * } from "@swamp-club/swamp-testing";
  * import { vault } from "./my_vault.ts";
  *
  * Deno.test("vault export conforms with annotations", () => {
@@ -377,7 +377,7 @@ export interface VaultAnnotationConformanceOptions {
  * cleaned up by default.
  *
  * ```typescript
- * import { assertVaultAnnotationConformance } from "@systeminit/swamp-testing";
+ * import { assertVaultAnnotationConformance } from "@swamp-club/swamp-testing";
  *
  * Deno.test("vault annotation contract", async () => {
  *   const provider = vault.createProvider("test", { region: "us-east-1" });

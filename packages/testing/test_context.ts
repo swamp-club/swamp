@@ -103,7 +103,7 @@ export interface ModelTestContextResult {
  * can be inspected via the returned helper functions.
  *
  * ```typescript
- * import { createModelTestContext } from "@systeminit/swamp-testing";
+ * import { createModelTestContext } from "@swamp-club/swamp-testing";
  * import { model } from "./my_model.ts";
  *
  * Deno.test("run method writes expected resource", async () => {

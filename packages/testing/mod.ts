@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * @systeminit/swamp-testing — Test utilities for swamp extensions.
+ * @swamp-club/swamp-testing — Test utilities for swamp extensions.
  *
  * Provides test factories and conformance suites for all extension types:
  * models, vaults, datastores, execution drivers, and reports.

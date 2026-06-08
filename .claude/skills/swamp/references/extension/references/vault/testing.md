@@ -1,9 +1,9 @@
 # Testing Vault Extensions
 
-The `@systeminit/swamp-testing` package provides conformance suites, mock
+The `@swamp-club/swamp-testing` package provides conformance suites, mock
 primitives, and test doubles for vault extensions.
 
-Install: `deno add jsr:@systeminit/swamp-testing`
+Install: `deno add jsr:@swamp-club/swamp-testing`
 
 ## Export Conformance
 
@@ -11,7 +11,7 @@ One call replaces all structural boilerplate tests (metadata, config schema,
 method existence):
 
 ```typescript
-import { assertVaultExportConformance } from "@systeminit/swamp-testing";
+import { assertVaultExportConformance } from "@swamp-club/swamp-testing";
 import { vault } from "./my_vault.ts";
 
 Deno.test("vault export conforms", () => {
@@ -31,7 +31,7 @@ an object with get/put/list/getName.
 Test the full VaultProvider contract against a real or mocked provider:
 
 ```typescript
-import { assertVaultConformance } from "@systeminit/swamp-testing";
+import { assertVaultConformance } from "@swamp-club/swamp-testing";
 
 Deno.test("vault contract", async () => {
   const provider = vault.createProvider("test", { region: "us-east-1" });
@@ -62,7 +62,7 @@ this **after** `assertVaultExportConformance`:
 import {
   assertVaultAnnotationExportConformance,
   assertVaultExportConformance,
-} from "@systeminit/swamp-testing";
+} from "@swamp-club/swamp-testing";
 import { vault } from "./my_vault.ts";
 
 Deno.test("vault export conforms with annotations", () => {
@@ -83,7 +83,7 @@ This verifies: the provider has `getAnnotation`, `putAnnotation`,
 Test the full `VaultAnnotationProvider` contract:
 
 ```typescript
-import { assertVaultAnnotationConformance } from "@systeminit/swamp-testing";
+import { assertVaultAnnotationConformance } from "@swamp-club/swamp-testing";
 
 Deno.test("vault annotation contract", async () => {
   const provider = vault.createProvider("test", { region: "us-east-1" });
@@ -111,7 +111,7 @@ import {
   VaultAnnotation,
   type VaultAnnotationData,
   type VaultAnnotationProvider,
-} from "@systeminit/swamp-testing";
+} from "@swamp-club/swamp-testing";
 
 // Create an annotation
 const annotation = VaultAnnotation.create({
@@ -138,7 +138,7 @@ modification to extension source code required.
 Use `withMockedCommand` to replace `Deno.Command` for the test duration:
 
 ```typescript
-import { withMockedCommand } from "@systeminit/swamp-testing";
+import { withMockedCommand } from "@swamp-club/swamp-testing";
 import { vault } from "./onepassword.ts";
 
 Deno.test("get reads secret via op CLI", async () => {
@@ -179,7 +179,7 @@ AWS SDK uses `node:https` internally, not `globalThis.fetch`. Use a local mock
 server with `AWS_ENDPOINT_URL` to intercept the exact production code path:
 
 ```typescript
-import { assertVaultConformance } from "@systeminit/swamp-testing";
+import { assertVaultConformance } from "@swamp-club/swamp-testing";
 import { vault } from "./aws_sm.ts";
 
 Deno.test({
@@ -239,7 +239,7 @@ Deno.test({
 Use `withMockedFetch` for vaults that call `fetch()` directly:
 
 ```typescript
-import { withMockedFetch } from "@systeminit/swamp-testing";
+import { withMockedFetch } from "@swamp-club/swamp-testing";
 
 await withMockedFetch(async (req) => {
   const body = await req.json();
