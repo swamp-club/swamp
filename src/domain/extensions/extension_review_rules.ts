@@ -428,8 +428,9 @@ export function parseReviewReport(raw: string): ExtensionReviewReport | null {
   }
 }
 
-function osTempDir(): string {
-  return Deno.env.get("TMPDIR") ?? Deno.env.get("TMP") ??
+function reviewBaseDir(): string {
+  return Deno.env.get("SWAMP_EXTENSION_REVIEW_DIR") ??
+    Deno.env.get("TMPDIR") ?? Deno.env.get("TMP") ??
     Deno.env.get("TEMP") ??
     "/tmp";
 }
@@ -449,7 +450,7 @@ function sanitizeName(name: string): string {
 export function reviewReportPath(
   extensionName: string,
   contentHash: string,
-  baseTmpDir: string = osTempDir(),
+  baseTmpDir: string = reviewBaseDir(),
 ): string {
   return join(
     baseTmpDir,

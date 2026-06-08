@@ -592,6 +592,32 @@ The CLI rejects `--extensions-dir` values that point inside `.swamp/` to
 prevent accidental reads of data-plane files as extension sources. The
 directory must exist and must be a real directory (not a file).
 
+## Adversarial Review Directory (`SWAMP_EXTENSION_REVIEW_DIR`)
+
+The adversarial review gate in `swamp extension push` looks for a
+content-hash-bound report at
+`<base>/swamp-extension-review/<name>-<hash>.json`. By default `<base>` is
+the OS temp directory (`TMPDIR` / `TMP` / `TEMP` / `/tmp`), which works for
+local development but is ephemeral on CI runners.
+
+Set `SWAMP_EXTENSION_REVIEW_DIR` to override the base directory. This lets CI
+workflows store review reports in a durable, repo-local path that survives
+across runners:
+
+```yaml
+# GitHub Actions example
+env:
+  SWAMP_EXTENSION_REVIEW_DIR: ${{ github.workspace }}/.swamp-reviews
+
+steps:
+  - uses: actions/checkout@v4
+  - run: swamp extension push extensions/my-ext/manifest.yaml --yes
+```
+
+Precedence: `SWAMP_EXTENSION_REVIEW_DIR` > `TMPDIR` > `TMP` > `TEMP` >
+`/tmp`. The explicit `baseTmpDir` parameter on `reviewReportPath()` (used by
+tests) overrides all env vars.
+
 ## Dependencies
 
 Extensions can declare dependencies on other extensions. During a pull,

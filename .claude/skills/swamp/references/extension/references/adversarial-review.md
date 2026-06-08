@@ -32,7 +32,9 @@ Workflow:
 2. Run `swamp extension push manifest.yaml --dry-run`. When no report exists,
    the push prints the exact report path (a content-hash-bound JSON file under
    the system temp directory) and a fill-in skeleton listing every applicable
-   dimension with `"verdict": "pending"`.
+   dimension with `"verdict": "pending"`. Set `SWAMP_EXTENSION_REVIEW_DIR` to
+   override the base directory (useful for CI — store reports in the repo so
+   they survive across runners).
 3. Write the skeleton to the printed path, setting each dimension's `verdict`:
    - `pass` — the dimension is satisfied.
    - `issue` — a problem was found; add a `note`. (Surfaces as a push warning,
