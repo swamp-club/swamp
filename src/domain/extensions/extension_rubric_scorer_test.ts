@@ -843,9 +843,9 @@ Deno.test("[parity] composeScore: empty everything earns universal-platform only
       platforms: [],
     }),
   );
-  // Universal platforms earns 2 points only; dependency-trust fails.
-  assertEquals(score.earnedPoints, 2);
-  assertEquals(score.percentage, Math.floor((2 * 100) / 14));
+  // Universal platforms earns 2 + fast-check always earns 1 (deprecated).
+  assertEquals(score.earnedPoints, 3);
+  assertEquals(score.percentage, Math.floor((3 * 100) / 14));
   assertEquals(score.rubricVersion, 3);
   assertEquals(score.factors.length, 10);
   const byId = new Map(score.factors.map((f) => [f.id, f]));
@@ -902,6 +902,17 @@ Deno.test("[parity] composeScore: platforms factor earns 2 for any count", () =>
   const m3 = new Map(s3.factors.map((f) => [f.id, f]));
   assertEquals(m3.get("platforms")?.status, "earned");
   assertEquals(m3.get("platforms")?.earnedPoints, 2);
+});
+
+Deno.test("composeScore: fast-check is always earned (deprecated)", () => {
+  const score = composeScore(
+    { ...factorsAllEarned(), allFastCheck: false },
+    makeManifest(),
+  );
+  const factor = score.factors.find((f) => f.id === "fast-check")!;
+  assertEquals(factor.status, "earned");
+  assertEquals(factor.earnedPoints, 1);
+  assertEquals(factor.label, "No slow types (deprecated)");
 });
 
 Deno.test("composeScore: dependency-trust is worth 2 points when passing", () => {

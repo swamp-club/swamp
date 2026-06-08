@@ -75,6 +75,10 @@ class LogExtensionQualityRenderer implements ExtensionQualityRenderer {
           const mark = factor.status === "earned" ? "✓" : "✗";
           const pts = `${factor.earnedPoints}/${factor.maxPoints}`;
           logger.info`  ${mark} ${factor.id} [${pts}] — ${factor.label}`;
+          if (factor.id === "fast-check") {
+            logger
+              .info`      ℹ This factor is deprecated and will be removed in a future release.`;
+          }
           if (factor.status !== "earned" && factor.remediation) {
             logger.info`      → ${factor.remediation}`;
           }

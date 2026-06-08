@@ -337,11 +337,7 @@ export function composeScore(
     ),
     richReadmeRow(factors.readmeLength, factors.readmeCodeBlockCount),
     symbolsRow(factors.percentageDocumentedSymbols),
-    boolRow("fast-check", "No slow types", 1, factors.allFastCheck, {
-      remediation:
-        "Run `deno doc --lint <entrypoint>` — add explicit return types and " +
-        "avoid leaking private types in public exports.",
-    }),
+    boolRow("fast-check", "No slow types (deprecated)", 1, true, {}),
     boolRow(
       "description",
       "Has description",
