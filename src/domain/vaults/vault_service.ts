@@ -23,7 +23,10 @@ import {
   isVaultAnnotationProvider,
   type VaultAnnotation,
 } from "./vault_annotation.ts";
-import { isVaultRefreshHookProvider } from "./refresh_hook.ts";
+import {
+  isVaultRefreshHookProvider,
+  type RefreshHook,
+} from "./refresh_hook.ts";
 import { getVaultTypes, RENAMED_VAULT_TYPES } from "./vault_types.ts";
 import { vaultTypeRegistry } from "./vault_type_registry.ts";
 import { resolveVaultType } from "../extensions/extension_auto_resolver.ts";
@@ -168,9 +171,10 @@ export class VaultService {
                 .info`Refreshed secret ${secretKey} in vault ${vaultName}`;
               return freshValue;
             }
+          } else {
+            getLogger("vaults")
+              .warn`Refresh command failed for ${secretKey} in vault ${vaultName}: ${result.stderr}. Returning stale value.`;
           }
-          getLogger("vaults")
-            .warn`Refresh command failed for ${secretKey} in vault ${vaultName}: ${result.stderr}. Returning stale value.`;
         } catch (error) {
           getLogger("vaults")
             .warn`Refresh command error for ${secretKey} in vault ${vaultName}: ${error}. Returning stale value.`;
@@ -290,7 +294,7 @@ export class VaultService {
   async getRefreshHook(
     vaultName: string,
     secretKey: string,
-  ): Promise<import("./refresh_hook.ts").RefreshHook | null> {
+  ): Promise<RefreshHook | null> {
     const provider = this.requireRefreshHookProvider(vaultName);
     return await provider.getRefreshHook(secretKey);
   }
@@ -298,7 +302,7 @@ export class VaultService {
   async putRefreshHook(
     vaultName: string,
     secretKey: string,
-    hook: import("./refresh_hook.ts").RefreshHook,
+    hook: RefreshHook,
   ): Promise<void> {
     const provider = this.requireRefreshHookProvider(vaultName);
     await provider.putRefreshHook(secretKey, hook);

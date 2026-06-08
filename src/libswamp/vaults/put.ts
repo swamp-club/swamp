@@ -202,8 +202,13 @@ export async function* vaultPut(
       ctx.logger.debug`Secret stored successfully`;
 
       if (input.clearRefresh) {
-        await deps.deleteRefreshHook(input.vaultName, input.key);
-        ctx.logger.debug`Cleared refresh hook`;
+        const supportsHooks = await deps.supportsRefreshHooks(
+          input.vaultName,
+        );
+        if (supportsHooks) {
+          await deps.deleteRefreshHook(input.vaultName, input.key);
+          ctx.logger.debug`Cleared refresh hook`;
+        }
       } else if (input.refreshFrom && input.refreshTtlMs) {
         const supportsHooks = await deps.supportsRefreshHooks(
           input.vaultName,
