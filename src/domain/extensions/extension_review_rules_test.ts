@@ -285,8 +285,15 @@ Deno.test("reviewReportPath: deterministic and hash-bound", () => {
 Deno.test("reviewReportPath: explicit baseTmpDir takes precedence over env var", () => {
   const prev = Deno.env.get("SWAMP_EXTENSION_REVIEW_DIR");
   try {
-    Deno.env.set("SWAMP_EXTENSION_REVIEW_DIR", join(SEPARATOR, "ci", "reviews"));
-    const p = reviewReportPath("@acme/thing", "abc123", join(SEPARATOR, "explicit"));
+    Deno.env.set(
+      "SWAMP_EXTENSION_REVIEW_DIR",
+      join(SEPARATOR, "ci", "reviews"),
+    );
+    const p = reviewReportPath(
+      "@acme/thing",
+      "abc123",
+      join(SEPARATOR, "explicit"),
+    );
     const expected = join(SEPARATOR, "explicit", "swamp-extension-review");
     assert(p.startsWith(expected));
   } finally {
