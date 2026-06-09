@@ -199,8 +199,117 @@ function isBareSpecifier(specifier: string): boolean {
   return true;
 }
 
+// See also: stripComments in extension_dependency_extractor.ts (import-line
+// only) and stripCommentsAndStrings in extension_quality_checker.ts (strips
+// both). This variant strips all comments while preserving string literals
+// so the import-specifier regex can still match real import strings.
+function stripSourceComments(source: string): string {
+  const result: string[] = [];
+  let i = 0;
+
+  while (i < source.length) {
+    // Single-line comment — blank to end of line
+    if (source[i] === "/" && i + 1 < source.length && source[i + 1] === "/") {
+      i += 2;
+      while (i < source.length && source[i] !== "\n") {
+        result.push(" ");
+        i++;
+      }
+      continue;
+    }
+
+    // Block comment — blank preserving newlines
+    if (source[i] === "/" && i + 1 < source.length && source[i + 1] === "*") {
+      result.push(" ", " ");
+      i += 2;
+      while (i < source.length) {
+        if (
+          source[i] === "*" && i + 1 < source.length &&
+          source[i + 1] === "/"
+        ) {
+          result.push(" ", " ");
+          i += 2;
+          break;
+        }
+        result.push(source[i] === "\n" ? "\n" : " ");
+        i++;
+      }
+      continue;
+    }
+
+    // Double-quoted string — preserve content (imports live here)
+    if (source[i] === '"') {
+      result.push(source[i]);
+      i++;
+      while (i < source.length && source[i] !== '"' && source[i] !== "\n") {
+        if (source[i] === "\\") {
+          result.push(source[i]);
+          i++;
+        }
+        if (i < source.length) {
+          result.push(source[i]);
+          i++;
+        }
+      }
+      if (i < source.length && source[i] === '"') {
+        result.push(source[i]);
+        i++;
+      }
+      continue;
+    }
+
+    // Single-quoted string — preserve content
+    if (source[i] === "'") {
+      result.push(source[i]);
+      i++;
+      while (i < source.length && source[i] !== "'" && source[i] !== "\n") {
+        if (source[i] === "\\") {
+          result.push(source[i]);
+          i++;
+        }
+        if (i < source.length) {
+          result.push(source[i]);
+          i++;
+        }
+      }
+      if (i < source.length && source[i] === "'") {
+        result.push(source[i]);
+        i++;
+      }
+      continue;
+    }
+
+    // Template literal — preserve content
+    if (source[i] === "`") {
+      result.push(source[i]);
+      i++;
+      while (i < source.length && source[i] !== "`") {
+        if (source[i] === "\\") {
+          result.push(source[i]);
+          i++;
+        }
+        if (i < source.length) {
+          result.push(source[i]);
+          i++;
+        }
+      }
+      if (i < source.length && source[i] === "`") {
+        result.push(source[i]);
+        i++;
+      }
+      continue;
+    }
+
+    result.push(source[i]);
+    i++;
+  }
+
+  return result.join("");
+}
+
 export function sourceHasBareSpecifiers(source: string): boolean {
-  for (const match of source.matchAll(IMPORT_SPECIFIER_RE)) {
+  const stripped = stripSourceComments(source);
+  for (const match of stripped.matchAll(IMPORT_SPECIFIER_RE)) {
     if (isBareSpecifier(match[1])) return true;
   }
   return false;
@@ -208,7 +317,8 @@ export function sourceHasBareSpecifiers(source: string): boolean {
 
 export function extractBareSpecifierNames(source: string): string[] {
   const bare = new Set<string>();
-  for (const match of source.matchAll(IMPORT_SPECIFIER_RE)) {
+  const stripped = stripSourceComments(source);
+  for (const match of stripped.matchAll(IMPORT_SPECIFIER_RE)) {
     if (isBareSpecifier(match[1])) bare.add(match[1]);
   }
   return [...bare];

@@ -652,6 +652,60 @@ Deno.test("extractBareSpecifierNames: handles re-exports", () => {
   );
 });
 
+// --- comment stripping regression tests (swamp-club#602) ---
+
+Deno.test("extractBareSpecifierNames: ignores quoted phrases in single-line comments", () => {
+  const source = `import { z } from "npm:zod@4";
+
+export function check() {
+  // Distinguish "policy attached but unreadable" from "no policy". When
+  // the value is absent it keeps its existing "no policy" behavior.
+  return z.object({}).parse({});
+}
+`;
+  assertEquals(extractBareSpecifierNames(source), []);
+});
+
+Deno.test("extractBareSpecifierNames: ignores from patterns in block comments", () => {
+  const source = `import { z } from "npm:zod@4";
+
+/*
+ * This export is derived from "legacy-pkg" but we no longer
+ * import from "legacy-pkg" directly.
+ */
+export function check() {
+  return z.object({}).parse({});
+}
+`;
+  assertEquals(extractBareSpecifierNames(source), []);
+});
+
+Deno.test("extractBareSpecifierNames: detects real bare imports adjacent to comments", () => {
+  const source = `// this comment mentions "no policy"
+import { z } from "zod";
+`;
+  assertEquals(extractBareSpecifierNames(source), ["zod"]);
+});
+
+Deno.test("extractBareSpecifierNames: preserves string literals containing //", () => {
+  const source = `import { fetch } from "npm:undici@6";
+const url = "https://example.com/api";
+export function get() { return fetch(url); }
+`;
+  assertEquals(extractBareSpecifierNames(source), []);
+});
+
+Deno.test("sourceHasBareSpecifiers: ignores quoted phrases in comments", () => {
+  const source = `import { z } from "npm:zod@4";
+
+export function check() {
+  // existing "no policy" behavior
+  return z.object({}).parse({});
+}
+`;
+  assertEquals(sourceHasBareSpecifiers(source), false);
+});
+
 Deno.test("uint8ArrayToBase64 handles large input without stack overflow", () => {
   // 1MB of data — would blow the stack with String.fromCharCode(...bytes)
   const size = 1_000_000;
