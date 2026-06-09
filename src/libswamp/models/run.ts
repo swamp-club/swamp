@@ -470,10 +470,7 @@ export async function* modelMethodRun(
           }
           evaluatedDefinition = lastEval;
         } else {
-          if (
-            evaluationService.hasDefinitionExpressions(definition) ||
-            Object.keys(inputs).length > 0
-          ) {
+          if (evaluationService.hasDefinitionExpressions(definition)) {
             const evalResult = await evaluationService.evaluateDefinition(
               definition,
               modelType,
