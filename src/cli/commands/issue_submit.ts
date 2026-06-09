@@ -269,7 +269,7 @@ export async function submitIssue(
       );
       return {
         number: result.number,
-        serverUrl: destination.credentials.serverUrl,
+        url: `${destination.credentials.serverUrl}/lab/${result.number}`,
       };
     },
   };

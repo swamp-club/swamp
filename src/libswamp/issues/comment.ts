@@ -35,7 +35,7 @@ export type IssueStatusTransition = "closed" | "open";
 export interface IssueCommentData {
   issueNumber: number;
   commentId: string;
-  serverUrl: string;
+  url: string;
   statusChanged?: IssueStatusTransition;
   statusError?: string;
 }
@@ -54,7 +54,7 @@ export interface IssueCommentDeps {
   submitToLab: (input: {
     issueNumber: number;
     body: string;
-  }) => Promise<{ commentId: string; serverUrl: string }>;
+  }) => Promise<{ commentId: string; url: string }>;
   updateStatus?: (input: {
     issueNumber: number;
     status: IssueStatusTransition;
@@ -97,7 +97,7 @@ export async function* issueComment(
       const data: IssueCommentData = {
         issueNumber: input.issueNumber,
         commentId: result.commentId,
-        serverUrl: result.serverUrl,
+        url: result.url,
       };
 
       if (input.statusTransition && deps.updateStatus) {

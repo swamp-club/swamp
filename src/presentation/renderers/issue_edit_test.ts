@@ -49,7 +49,7 @@ Deno.test("createIssueEditRenderer: json completed handler outputs structured da
         issueNumber: 42,
         title: "Updated title",
         body: "Updated body",
-        serverUrl: "https://swamp-club.com",
+        url: "https://swamp-club.com/lab/42",
       },
     })
   );
@@ -57,7 +57,7 @@ Deno.test("createIssueEditRenderer: json completed handler outputs structured da
   assertEquals(parsed.issueNumber, 42);
   assertEquals(parsed.title, "Updated title");
   assertEquals(parsed.body, "Updated body");
-  assertEquals(parsed.serverUrl, "https://swamp-club.com");
+  assertEquals(parsed.url, "https://swamp-club.com/lab/42");
 });
 
 Deno.test("createIssueEditRenderer: json noop handler outputs status", () => {
@@ -83,7 +83,7 @@ Deno.test("createIssueEditRenderer: log completed handler does not throw", () =>
       issueNumber: 42,
       title: "Updated",
       body: "Body",
-      serverUrl: "https://swamp-club.com",
+      url: "https://swamp-club.com/lab/42",
     },
   });
 });
@@ -97,7 +97,7 @@ Deno.test("createIssueEditRenderer: log noop handler does not throw", () => {
   });
 });
 
-Deno.test("createIssueEditRenderer: json completed output is valid JSON with serverUrl", () => {
+Deno.test("createIssueEditRenderer: json completed output is valid JSON with url", () => {
   const renderer = createIssueEditRenderer("json");
   const handlers = renderer.handlers();
   const out = captureStdout(() =>
@@ -107,10 +107,10 @@ Deno.test("createIssueEditRenderer: json completed output is valid JSON with ser
         issueNumber: 100,
         title: "T",
         body: "B",
-        serverUrl: "https://example.com",
+        url: "https://example.com/lab/100",
       },
     })
   );
   JSON.parse(out);
-  assertStringIncludes(out, "https://example.com");
+  assertStringIncludes(out, "https://example.com/lab/100");
 });

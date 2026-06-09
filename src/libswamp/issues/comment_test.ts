@@ -33,7 +33,7 @@ function makeDeps(overrides: Partial<IssueCommentDeps> = {}): IssueCommentDeps {
     submitToLab: () =>
       Promise.resolve({
         commentId: "ripple-123",
-        serverUrl: "https://swamp-club.com",
+        url: "https://swamp-club.com/lab/42",
       }),
     ...overrides,
   };
@@ -55,7 +55,7 @@ Deno.test("issueComment: yields completed with issue number and comment id", asy
   assertEquals(completed.kind, "completed");
   assertEquals(completed.data.issueNumber, 42);
   assertEquals(completed.data.commentId, "ripple-123");
-  assertEquals(completed.data.serverUrl, "https://swamp-club.com");
+  assertEquals(completed.data.url, "https://swamp-club.com/lab/42");
 });
 
 Deno.test("issueComment: passes body and issueNumber to submitToLab", async () => {
@@ -65,7 +65,7 @@ Deno.test("issueComment: passes body and issueNumber to submitToLab", async () =
       captured = input;
       return Promise.resolve({
         commentId: "ripple-7",
-        serverUrl: "https://swamp-club.com",
+        url: "https://swamp-club.com/lab/42",
       });
     },
   });

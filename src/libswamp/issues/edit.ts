@@ -26,7 +26,7 @@ export interface IssueEditData {
   issueNumber: number;
   title: string;
   body: string;
-  serverUrl: string;
+  url: string;
 }
 
 export type IssueEditEvent =
@@ -46,7 +46,7 @@ export interface IssueEditDeps {
   updateIssue: (input: {
     issueNumber: number;
     fields: { title?: string; body?: string };
-  }) => Promise<{ title: string; body: string; serverUrl: string }>;
+  }) => Promise<{ title: string; body: string; url: string }>;
 }
 
 export async function* issueEdit(
@@ -91,7 +91,7 @@ export async function* issueEdit(
           issueNumber: input.issueNumber,
           title: result.title,
           body: result.body,
-          serverUrl: result.serverUrl,
+          url: result.url,
         },
       };
     })(),

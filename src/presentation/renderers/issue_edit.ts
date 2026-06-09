@@ -30,7 +30,7 @@ class LogIssueEditRenderer implements Renderer<IssueEditEvent> {
       completed: (e) => {
         const d = e.data;
         writeOutput(`Updated issue ${bold(cyan(`#${d.issueNumber}`))}`);
-        writeOutput(dim(`View at: ${d.serverUrl}/lab/${d.issueNumber}`));
+        writeOutput(dim(`View at: ${d.url}`));
       },
       noop: (e) => {
         writeOutput(`No changes to issue ${bold(cyan(`#${e.issueNumber}`))}`);

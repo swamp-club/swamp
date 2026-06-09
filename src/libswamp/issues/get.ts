@@ -30,7 +30,7 @@ export interface IssueGetData {
   body: string;
   assignees: string[];
   commentCount: number;
-  serverUrl: string;
+  url: string;
 }
 
 export type IssueGetEvent =

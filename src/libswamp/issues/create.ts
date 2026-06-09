@@ -34,7 +34,7 @@ export type IssueCreateData =
     number: number;
     type: "bug" | "feature" | "security";
     title: string;
-    serverUrl: string;
+    url: string;
   }
   | {
     method: "email";
@@ -53,7 +53,7 @@ export type IssueCreateData =
     number: number;
     type: "bug" | "feature" | "security";
     title: string;
-    serverUrl: string;
+    url: string;
     extensionName: string;
   };
 
@@ -82,7 +82,7 @@ export interface IssueCreateDeps {
     type: "bug" | "feature" | "security";
     title: string;
     body: string;
-  }) => Promise<{ number: number; serverUrl: string }>;
+  }) => Promise<{ number: number; url: string }>;
 }
 
 /** Submits a bug, feature, or security issue to the Lab API. */
@@ -115,7 +115,7 @@ export async function* issueCreate(
             number: labResult.number,
             type: input.type,
             title: input.title,
-            serverUrl: labResult.serverUrl,
+            url: labResult.url,
             extensionName: input.extensionName,
           },
         };
@@ -129,7 +129,7 @@ export async function* issueCreate(
           number: labResult.number,
           type: input.type,
           title: input.title,
-          serverUrl: labResult.serverUrl,
+          url: labResult.url,
         },
       };
     })(),

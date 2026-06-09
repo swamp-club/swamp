@@ -77,9 +77,9 @@ export const issueSearchCommand = new Command()
             type: issue.type,
             status: issue.status,
             author: issue.author,
+            url: `${serverUrl}/lab/${issue.number}`,
           })),
           total: result.total,
-          serverUrl,
         };
       },
     };

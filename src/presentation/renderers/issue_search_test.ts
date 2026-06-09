@@ -43,10 +43,10 @@ Deno.test("issue search renderer: json mode outputs JSON", () => {
             type: "bug",
             status: "open",
             author: "alice",
+            url: "https://swamp-club.com/lab/1",
           },
         ],
         total: 1,
-        serverUrl: "https://swamp-club.com",
       },
     };
     handlers.completed(event);
@@ -103,10 +103,10 @@ Deno.test("issue search renderer: log mode renders without throwing", () => {
           type: "bug",
           status: "open",
           author: "bob",
+          url: "https://swamp-club.com/lab/42",
         },
       ],
       total: 1,
-      serverUrl: "https://swamp-club.com",
     },
   });
 });
@@ -120,7 +120,6 @@ Deno.test("issue search renderer: log mode handles empty results", () => {
     data: {
       issues: [],
       total: 0,
-      serverUrl: "https://swamp-club.com",
     },
   });
 });
@@ -139,10 +138,10 @@ Deno.test("issue search renderer: log mode handles partial results", () => {
           type: "bug",
           status: "open",
           author: "alice",
+          url: "https://swamp-club.com/lab/1",
         },
       ],
       total: 50,
-      serverUrl: "https://swamp-club.com",
     },
   });
 });
