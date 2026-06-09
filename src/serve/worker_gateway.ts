@@ -50,7 +50,10 @@ import {
   WorkerMethod,
 } from "../domain/remote/protocol.ts";
 import { SessionCredentialService } from "../domain/remote/session_credential.ts";
-import { WORKER_MODEL_TYPE } from "../domain/models/worker/worker_model.ts";
+import {
+  WORKER_MODEL_TYPE,
+  workerDefinitionName,
+} from "../domain/models/worker/worker_model.ts";
 import { ENROLLMENT_TOKEN_MODEL_TYPE } from "../domain/models/worker/enrollment_token_model.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 
@@ -218,7 +221,7 @@ export class WorkerGateway {
     await this.#recordTransition(() =>
       this.#runModelMethod({
         typeArg: WORKER_MODEL_TYPE.normalized,
-        definitionName: name,
+        definitionName: workerDefinitionName(name),
         methodName: "set_status",
         inputs: { status: "busy", dispatchId: params.dispatchId },
       })
@@ -247,7 +250,7 @@ export class WorkerGateway {
         await this.#recordTransition(() =>
           this.#runModelMethod({
             typeArg: WORKER_MODEL_TYPE.normalized,
-            definitionName: name,
+            definitionName: workerDefinitionName(name),
             methodName: "set_status",
             inputs: { status: "idle" },
           })
@@ -326,7 +329,7 @@ export class WorkerGateway {
         existing.channel = state.channel;
         await this.#runModelMethod({
           typeArg: WORKER_MODEL_TYPE.normalized,
-          definitionName: name,
+          definitionName: workerDefinitionName(name),
           methodName: "set_status",
           inputs: existing.status === "busy"
             ? { status: "busy", dispatchId: existing.dispatchId ?? undefined }
@@ -335,7 +338,7 @@ export class WorkerGateway {
       } else {
         await this.#runModelMethod({
           typeArg: WORKER_MODEL_TYPE.normalized,
-          definitionName: name,
+          definitionName: workerDefinitionName(name),
           methodName: "enroll",
           inputs: {
             instanceUuid: params.instanceUuid,
@@ -415,7 +418,7 @@ export class WorkerGateway {
     const recordDisconnect = this.#recordTransition(() =>
       this.#runModelMethod({
         typeArg: WORKER_MODEL_TYPE.normalized,
-        definitionName: name,
+        definitionName: workerDefinitionName(name),
         methodName: "set_status",
         inputs: { status: "disconnected" },
       })
@@ -486,6 +489,9 @@ export class WorkerGateway {
         lastEvaluated: false,
         typeArg: input.typeArg,
         definitionName: input.definitionName,
+        // Control-plane bookkeeping: skip per-run report artifacts so pool
+        // churn stays bounded to the state records themselves.
+        skipAllReports: true,
       })
     ) {
       if (event.kind === "error") {

@@ -75,6 +75,11 @@ async function readState(context: MethodContext): Promise<WorkerState> {
   return WorkerStateSchema.parse(raw);
 }
 
+/** Definition-instance name for a worker (distinct from its token's). */
+export function workerDefinitionName(workerName: string): string {
+  return `worker-${workerName}`;
+}
+
 const EnrollArgsSchema = z.object({
   instanceUuid: z.string().min(1),
   tokenName: z.string().min(1),
@@ -91,7 +96,10 @@ async function enroll(
 ): Promise<MethodResult> {
   const now = new Date().toISOString();
   const state: WorkerState = {
-    name: context.definition.name,
+    // The pool-addressable name is the token name; the definition instance
+    // is prefixed (worker-<name>) so it cannot collide with the token's own
+    // instance in the shared definition-name namespace.
+    name: args.tokenName,
     instanceUuid: args.instanceUuid,
     tokenName: args.tokenName,
     status: "idle",

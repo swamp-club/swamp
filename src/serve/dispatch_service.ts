@@ -459,6 +459,9 @@ export class DispatchService {
         lastEvaluated: false,
         typeArg: input.typeArg,
         definitionName: input.definitionName,
+        // Control-plane bookkeeping: skip per-run report artifacts so pool
+        // churn stays bounded to the state records themselves.
+        skipAllReports: true,
       })
     ) {
       if (event.kind === "error") {
