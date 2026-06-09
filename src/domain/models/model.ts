@@ -276,17 +276,6 @@ export interface MethodContext {
   dataQueryService?: DataQueryService;
 
   /**
-   * The execution driver type for this execution.
-   * Defaults to "raw" (in-process) when not specified.
-   */
-  driver?: string;
-
-  /**
-   * Configuration for the execution driver.
-   */
-  driverConfig?: Record<string, unknown>;
-
-  /**
    * Remote-execution placement for this run (see
    * design/remote-execution.md). When present, the method body dispatches
    * to a matching worker instead of executing in-process; checks, reports,
@@ -694,9 +683,10 @@ export interface ModelDefinition<
   upgrades?: VersionUpgrade[];
 
   /**
-   * Lazily builds the self-contained bundle for out-of-process execution (e.g. Docker).
-   * Called by the execution service when a non-raw driver is used. Memoizes its
-   * result so multiple executions of the same model in one process only bundle once.
+   * Lazily builds the self-contained bundle for out-of-process execution.
+   * Called when a step dispatches to a remote worker (see
+   * design/remote-execution.md). Memoizes its result so multiple executions
+   * of the same model in one process only bundle once.
    */
   bundleSourceFactory?: () => Promise<string>;
 

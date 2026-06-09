@@ -31,7 +31,6 @@ export interface WorkflowRunPayload {
   workflowIdOrName: string;
   inputs?: Record<string, unknown>;
   lastEvaluated?: boolean;
-  driver?: string;
   verbose?: boolean;
   runtimeTags?: Record<string, string>;
 }
@@ -41,7 +40,6 @@ export interface ModelMethodRunPayload {
   methodName: string;
   inputs?: Record<string, unknown>;
   lastEvaluated?: boolean;
-  driver?: string;
   runtimeTags?: Record<string, string>;
 }
 

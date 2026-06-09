@@ -31,7 +31,6 @@ export interface WorkflowRunPayload {
   workflowIdOrName: string;
   inputs?: Record<string, unknown>;
   lastEvaluated?: boolean;
-  driver?: string;
   verbose?: boolean;
   runtimeTags?: Record<string, string>;
 }
@@ -41,7 +40,6 @@ export interface ModelMethodRunPayload {
   methodName: string;
   inputs?: Record<string, unknown>;
   lastEvaluated?: boolean;
-  driver?: string;
   runtimeTags?: Record<string, string>;
 }
 
@@ -73,7 +71,7 @@ export type ServerMessage =
 export type WorkflowRunEvent =
   | { kind: "validating_inputs" }
   | { kind: "evaluating_workflow" }
-  | { kind: "started"; runId: string; workflowName: string; driver?: string }
+  | { kind: "started"; runId: string; workflowName: string }
   | { kind: "job_started"; jobId: string }
   | { kind: "job_completed"; jobId: string; status: string }
   | { kind: "job_skipped"; jobId: string }

@@ -43,7 +43,6 @@ import type { SourceLocation } from "../../domain/extensions/source_location.ts"
 import type { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
 import {
   findSourceByPath,
-  type KindDir,
   recordSourceFailure,
 } from "../../domain/extensions/source_failure_recorder.ts";
 import type {
@@ -55,7 +54,6 @@ import { swampPath } from "../../infrastructure/persistence/paths.ts";
 import { ExtensionLoader } from "../../domain/extensions/extension_loader.ts";
 import { modelKindAdapter } from "../../domain/extensions/model_kind_adapter.ts";
 import { vaultKindAdapter } from "../../domain/extensions/vault_kind_adapter.ts";
-import { driverKindAdapter } from "../../domain/extensions/driver_kind_adapter.ts";
 import { datastoreKindAdapter } from "../../domain/extensions/datastore_kind_adapter.ts";
 import { reportKindAdapter } from "../../domain/extensions/report_kind_adapter.ts";
 import type { DenoRuntime } from "../../domain/runtime/deno_runtime.ts";
@@ -72,10 +70,11 @@ const logger = getLogger(["swamp", "extensions", "reconcile"]);
 const KIND_DIRS = [
   "models",
   "vaults",
-  "drivers",
   "datastores",
   "reports",
 ] as const;
+
+type KindDir = typeof KIND_DIRS[number];
 
 /**
  * A single state transition produced by reconcile. Structured value —
@@ -597,14 +596,6 @@ export class ReconcileFromDiskService {
           undefined,
           this.repository,
         );
-      case "drivers":
-        return new ExtensionLoader(
-          this.denoRuntime,
-          driverKindAdapter,
-          this.repoDir,
-          undefined,
-          this.repository,
-        );
       case "datastores":
         return new ExtensionLoader(
           this.denoRuntime,
@@ -628,7 +619,6 @@ export class ReconcileFromDiskService {
     const kinds: ExtensionKind[] = [
       "model",
       "vault",
-      "driver",
       "datastore",
       "report",
     ];

@@ -186,7 +186,7 @@ export class TelemetryService {
    *   classifies UserError vs Error via instanceof — this method mirrors
    *   recordError's classification.
    * @param parentInvocationId - Id of the parent CLI invocation
-   * @param workflowContext - Workflow/job/step/driver/modelType context
+   * @param workflowContext - Workflow/job/step/modelType context
    */
   async recordChildInvocation(
     invocation: CommandInvocationData,

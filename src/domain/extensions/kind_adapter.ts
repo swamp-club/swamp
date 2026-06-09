@@ -24,8 +24,9 @@ import type {
   ExtensionTypeRow,
 } from "../../infrastructure/persistence/extension_catalog_store.ts";
 import type { DenoRuntime } from "../runtime/deno_runtime.ts";
+import type { FreshnessKind } from "./bundle_freshness.ts";
 
-export type LoaderKind = "model" | "vault" | "driver" | "datastore" | "report";
+export type LoaderKind = "model" | "vault" | "datastore" | "report";
 
 export type ValidationResult =
   | { success: true; data: Record<string, unknown> }
@@ -60,7 +61,7 @@ export interface RegistrationContext {
 export interface KindAdapter {
   readonly kind: LoaderKind;
   readonly bundleSubdir: string;
-  readonly catalogKinds: readonly ExtensionKind[];
+  readonly catalogKinds: readonly FreshnessKind[];
   readonly primaryExportKey: string;
   readonly secondaryExportKey?: string;
   readonly exportRegex: RegExp;

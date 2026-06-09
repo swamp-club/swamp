@@ -53,7 +53,6 @@ interface InFlightMethodInvocation {
   modelName: string;
   methodName: string;
   modelType?: string;
-  driver?: string;
 }
 
 /**
@@ -110,7 +109,6 @@ export class WorkflowTelemetryBridge {
           modelName: event.modelName,
           methodName: event.methodName,
           modelType: this.modelTypeByStep.get(key),
-          driver: event.driver,
         });
         return;
       }
@@ -151,7 +149,7 @@ export class WorkflowTelemetryBridge {
         // No method_executing was yielded — this is a pre-method-executing
         // failure (model lookup, vary-key validation, vault expression
         // resolution, etc.). The domain layer populates modelName /
-        // methodName / driver on step_failed for model-method tasks; if
+        // methodName on step_failed for model-method tasks; if
         // those are absent the failure is structural (workflow-task,
         // nesting-depth, cycle) and we skip emission.
         if (!event.modelName || !event.methodName) return;
@@ -160,7 +158,6 @@ export class WorkflowTelemetryBridge {
           modelName: event.modelName,
           methodName: event.methodName,
           modelType: this.modelTypeByStep.get(key),
-          driver: event.driver,
         };
         const sameInstant = new Date();
         await this.sink.recordChildInvocation(
@@ -219,9 +216,6 @@ export class WorkflowTelemetryBridge {
     };
     if (tracked.modelType !== undefined) {
       ctx.modelType = tracked.modelType;
-    }
-    if (tracked.driver !== undefined) {
-      ctx.driver = tracked.driver;
     }
     return ctx;
   }

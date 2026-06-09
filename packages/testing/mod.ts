@@ -21,7 +21,7 @@
  * @swamp-club/swamp-testing — Test utilities for swamp extensions.
  *
  * Provides test factories and conformance suites for all extension types:
- * models, vaults, datastores, execution drivers, and reports.
+ * models, vaults, datastores, and reports.
  *
  * - **Factories** create in-memory fakes for unit testing without infrastructure
  * - **Conformance suites** verify that real implementations satisfy their contracts
@@ -143,25 +143,6 @@ export type {
   DatastoreExportConformanceOptions,
   SyncServiceConformanceOptions,
 } from "./datastore_conformance.ts";
-
-// --- Drivers ---
-
-export { createDriverTestContext } from "./driver_test_context.ts";
-
-export type {
-  CapturedDriverLog,
-  CapturedResourceEvent,
-  DriverTestContextResult,
-  TestExecutionRequestOptions,
-} from "./driver_test_context.ts";
-
-export type {
-  DriverOutput,
-  ExecutionCallbacks,
-  ExecutionDriver,
-  ExecutionRequest,
-  ExecutionResult,
-} from "./driver_types.ts";
 
 // --- Reports ---
 

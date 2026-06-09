@@ -366,8 +366,6 @@ Models have the richest API surface. For model-specific guidance:
   [references/model/upgrades.md](references/model/upgrades.md)
 - **Smoke testing**:
   [references/model/smoke_testing.md](references/model/smoke_testing.md)
-- **Docker execution**:
-  [references/model/docker-execution.md](references/model/docker-execution.md)
 - **Typing**: [references/model/typing.md](references/model/typing.md)
 - **Bundling skills**: [references/model/skills.md](references/model/skills.md)
 - **Examples**: [references/model/examples.md](references/model/examples.md)
@@ -388,16 +386,6 @@ Models have the richest API surface. For model-specific guidance:
 
 Note: `createProvider` takes two args: `(name: string, config)` — the first is
 the vault instance name, the second is the parsed config.
-
-## Driver-Specific
-
-- **ExecutionDriver interface** (`execute`, `initialize`, `shutdown`):
-  [references/driver/api.md](references/driver/api.md)
-- **Resolution priority**: step > job > workflow > definition > "raw" (default)
-- **Examples**: [references/driver/examples.md](references/driver/examples.md)
-- **Testing**: [references/driver/testing.md](references/driver/testing.md)
-- **Troubleshooting**:
-  [references/driver/troubleshooting.md](references/driver/troubleshooting.md)
 
 ## Datastore-Specific
 

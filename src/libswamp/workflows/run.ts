@@ -73,7 +73,6 @@ export type WorkflowRunEvent =
     kind: "started";
     runId: string;
     workflowName: string;
-    driver?: string;
     jobs: WorkflowRunJobInfo[];
   }
   | { kind: "job_started"; jobId: string }
@@ -103,7 +102,6 @@ export type WorkflowRunEvent =
      */
     modelName?: string;
     methodName?: string;
-    driver?: string;
   }
   | {
     kind: "model_resolved";
@@ -128,11 +126,6 @@ export type WorkflowRunEvent =
     stepId: string;
     modelName: string;
     methodName: string;
-    /**
-     * Resolved driver from the DriverPlan tier resolution. Optional:
-     * undefined when no driver is explicitly configured at any tier.
-     */
-    driver?: string;
   }
   | {
     kind: "method_output";
@@ -246,7 +239,6 @@ export interface WorkflowRunInput {
   inputs?: Record<string, unknown>;
   runtimeTags?: Record<string, string>;
   verbose?: boolean;
-  driver?: string;
   skipAllReports?: boolean;
   skipReportNames?: string[];
   skipReportLabels?: string[];
@@ -389,7 +381,6 @@ export function mapWorkflowExecutionEvent(
         kind: "started",
         runId: event.runId,
         workflowName: event.workflowName,
-        driver: event.driver,
         jobs: event.jobs.map((j) => ({
           id: j.id,
           stepCount: j.stepCount,
@@ -531,7 +522,6 @@ export async function* workflowRun(
             inputs: resolvedInput.inputs,
             runtimeTags: resolvedInput.runtimeTags,
             signal: ctx.signal,
-            driver: resolvedInput.driver,
             reportFilterOptions: {
               skipAllReports: resolvedInput.skipAllReports,
               skipReportNames: resolvedInput.skipReportNames,

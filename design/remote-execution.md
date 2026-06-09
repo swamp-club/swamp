@@ -102,7 +102,7 @@ A worker is provisioned by minting a token and running one command (cloud-init,
 a k8s Job, an ssh one-liner):
 
 ```bash
-swamp worker token create --name ci-runner-3 --duration 1h   # on/near the orchestrator
+swamp worker token create ci-runner-3 --duration 1h    # on/near the orchestrator
 swamp worker connect wss://orchestrator.internal:4000 --token <token>   # on the worker
 ```
 
@@ -221,10 +221,14 @@ expected version — is the future primitive if orchestrators ever scale out.)
 The CLI surface:
 
 ```bash
-swamp worker token create --name <name> --duration <dur>   # mint
-swamp worker token list                                    # state, expiry, name, bound instance
-swamp worker token revoke <name>                           # invalidate before expiry
+swamp worker token create <name> --duration <dur>   # mint; prints the credential once
+swamp worker token list                             # state, expiry, name, bound instance
+swamp worker token revoke <name>                    # invalidate before expiry
 ```
+
+The printed credential has the form **`<name>.<secret>`**: the name half
+addresses the token aggregate at enrollment (no scan over the pool), the
+secret half is compared — constant-time — against the vault-stored plaintext.
 
 The `instanceUuid` is in-memory only: a *socket blip* reconnects (process alive,
 UUID stable), but a *process restart* generates a new UUID and therefore needs a
@@ -240,7 +244,10 @@ first-class **built-in models** through the same datastore and catalog as any
 model method's output:
 
 - a **worker** model — one artifact per enrolled worker: name, `instanceUuid`,
-  labels, platform/arch, resource limits, connection status, current load;
+  labels, platform/arch, resource limits, connection status, current load.
+  (Definition instances are prefixed `worker-<name>` because tokens and
+  workers share one definition-name namespace; the pool-addressable `name`
+  inside the data stays bare.);
 - an **enrollment-token** model — the token lifecycle aggregate above;
 - a **step-lease** model — which step is in flight on which worker.
 
@@ -338,6 +345,15 @@ artifact *bytes* (`getData` / `persistResource` / `persistFile` / `appendData` /
 `getExtensionFile`) ride the HTTP/2 data plane, which also terminates at the
 orchestrator; everything else is control-plane metadata.
 
+Implementation note: the data-repository port also has synchronous members
+(`listVersionsSync`, `findAllGlobalSync`, ...) that cannot make a network
+round-trip, plus whole-store enumeration (`findAllGlobal`, `findAllForModel`)
+and raw write/maintenance members (`save`, `allocateVersion`, `rename`,
+`collectGarbage`, path accessors) that the verbs deliberately do not cover —
+writes flow exclusively through the remote writers. On a worker, every one of
+these fails loudly with an `UnsupportedOnRemoteWorkerError` naming the member
+and pointing at the loopback executor, never silently.
+
 The remaining context members deliberately do **not** proxy:
 
 - **`repoDir`** points at a per-dispatch scratch directory on the worker.
@@ -358,10 +374,11 @@ The remaining context members deliberately do **not** proxy:
   worker speaks verbs, never providers. Report providers are the exception:
   checks and reports run on the executor (see
   [Checks and reports](#checks-and-reports-run-on-the-executor)).
-- **`followUpActions`** returned by a method ride back serialized on
-  `ExecutionResult`, and the orchestrator performs them. The envelope currently
-  marks them in-process-only (`execution_driver.ts`); lifting that is part of
-  this work.
+- **`followUpActions`** returned by a method ride back serialized on the
+  dispatch result (`methodName`/`delayMs`/`maxRetries`; the
+  `continueCondition` function cannot cross the wire — the orchestrator
+  re-evaluates conditions against the returned handles), and the orchestrator
+  performs them.
 
 ## The execution environment
 
@@ -399,6 +416,12 @@ running on the orchestrator host would. Scoping the snapshot (allowlists per
 token or per label) is a later refinement; v1 chooses single-host fidelity over
 introducing a new partial-environment failure mode.
 
+Because the overlay mutates the worker's process-global environment, **v1
+workers execute dispatches serially** (one in flight per worker; an
+overlapping dispatch is rejected with `worker_busy`). Parallel dispatch per
+worker requires subprocess-level environment isolation and is future work —
+fan-out comes from many workers, not from concurrency inside one.
+
 ## Shipping extension code
 
 A worker resolves no extensions of its own. The dispatch references the extension
@@ -415,24 +438,31 @@ has already fetched — so a bundle is shipped at most once per worker per versi
 This mirrors the versioned-handle data cache — code and data both cache by
 content/version identity and travel over the same h2 data plane.
 
-The same mechanism ships every bundle kind the executor needs, not just models:
-**report-provider bundles** travel by fingerprint over the same route, because
-checks and reports run on the executor (below). Co-located extension assets —
-files resolved through `context.extensionFile(relPath)` — are *not* inlined into
-the single-file JS bundle; the worker fetches them lazily via
-`GET /bundle/{fingerprint}/file/{relPath}` and caches them under the same
-fingerprint key.
+Built-in models ship **no bundle at all**: the dispatch carries a
+`builtin:<type>` sentinel and the worker resolves the model from its own
+binary's registry — enrollment already guaranteed version lockstep, and a
+sentinel for a type the worker does not know is a loud
+binaries-disagree error. Co-located extension assets — files resolved through
+`context.extensionFile(relPath)` — are *not* inlined into the single-file JS
+bundle; the worker prefetches the (small) asset tree via
+`GET /bundle/{fingerprint}/files` + `GET /bundle/{fingerprint}/file/{relPath}`
+before executing, because `extensionFile()` is synchronous and must resolve a
+local path. Assets cache under the fingerprint like the bundle itself.
 
-### Checks and reports run on the executor
+### Checks and reports run at the orchestrator, around the method body
 
-Checks and reports are part of the method execution pipeline
-(`DefaultMethodExecutionService`), and they stay there: a remotely dispatched
-step runs its checks and reports **on the worker**, with their data access
-flowing through the same proxied context as the method's. This preserves the
-pipeline's ordering and failure semantics unchanged; the only addition is that
-report-provider bundles ship by fingerprint like model bundles. Running them
-orchestrator-side after the result lands was considered and rejected — it would
-reorder when check failures surface relative to today.
+As built, checks and reports keep their existing pipeline *position*, which is
+**before and after the execution seam at the orchestrator** — this is where
+they have always run relative to out-of-process execution, and remote dispatch
+enters at exactly that seam (`DefaultMethodExecutionService`, where the
+in-process executor used to be selected). Only the method body moves to the
+worker; pre-flight checks, output records, deletion markers, and follow-up
+actions run at the orchestrator with local repositories, unchanged. This
+supersedes an earlier draft that ran checks worker-side: it preserves today's
+semantics exactly, and report-provider bundles never need to ship. (The
+dispatch protocol reserves `reportBundleFingerprints` should that ever
+change.) Control-plane bookkeeping runs (worker/token/lease transitions)
+skip per-run report artifacts so pool churn stays bounded.
 
 ## Data semantics
 
@@ -512,6 +542,13 @@ server-push is needed.
   chunking, credit accounting, and priority queues we would otherwise hand-roll
   come from the runtime. Deno streams request and response bodies, so memory stays
   bounded on both ends.
+
+Implementation note: Deno negotiates HTTP/2 only via ALPN over TLS, so the
+data plane runs h2 under `wss://`/`https://` deployments and HTTP/1.1 over
+plain TCP — the handlers are identical either way, and the single listener
+serves both the control socket and the data plane. The worker derives the
+data-plane base URL from its connect URL (`ws → http`, `wss → https`) unless a
+dispatch overrides it for split deployments.
 
 Both connections are dialed **outbound by the worker**, so NAT-friendliness is
 preserved. Ideally they are a *single* connection — a WebSocket bootstrapped over
@@ -635,15 +672,19 @@ window** (bounded by the token lifetime) before giving up — so reconnection an
 re-dispatch never race into double execution:
 
 - **Worker reconnects within the window** (same `{token, instanceUuid}`): it
-  stays in the pool and the in-flight step continues. Proxied **reads** resume
-  (a fresh h2 request under the refreshed session credential). But if a **write**
-  was in flight at the moment of disconnect, its commit is ambiguous, so the step
-  fails the run per the write-then-fail rule below.
-- **Worker does not reconnect within the window:** the lease ends. If the step
-  had **not yet written**, it is re-dispatched to another matching worker. If it
-  **had already written**, the run fails and surfaces the partial state — exactly
-  as a local mid-method crash leaves partial data today. swamp does not auto-retry
-  crashed methods locally either, so this is not a regression.
+  stays in the pool — same member, fresh session credential. As built, an
+  in-flight dispatch does **not** survive the drop: the RPC pending state dies
+  with the socket on both ends, and the worker aborts its in-flight execution
+  when the channel closes (so a reconnected worker can never double-execute).
+  If the step had **not written**, it is simply re-dispatched — to the
+  reconnected worker or any other match — which is observably equivalent to
+  resuming. If a **write** had landed, the step fails the run per the
+  write-then-fail rule below.
+- **Worker does not reconnect within the window:** the lease ends the same
+  way. A **no-write** step re-dispatches to another matching worker; a
+  **write-bearing** step fails the run and surfaces the partial state — exactly
+  as a local mid-method crash leaves partial data today. swamp does not
+  auto-retry crashed methods locally either, so this is not a regression.
 
 Transparent re-dispatch (or mid-step resume) of a write-bearing step is a later
 feature that must first solve write idempotency. It is not promised in v1.

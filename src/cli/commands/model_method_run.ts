@@ -35,7 +35,6 @@ import { getAutoResolver } from "../auto_resolver_context.ts";
 import { DefaultMethodExecutionService } from "../../domain/models/method_execution_service.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
-import { driverTypeRegistry } from "../../domain/drivers/driver_type_registry.ts";
 import { reportRegistry } from "../../domain/reports/report_registry.ts";
 import { VaultService } from "../../domain/vaults/vault_service.ts";
 import { ExpressionEvaluationService } from "../../domain/expressions/expression_evaluation_service.ts";
@@ -52,8 +51,6 @@ import {
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { SecretRedactor } from "../../domain/secrets/mod.ts";
 import { DataQueryService } from "../../domain/data/data_query_service.ts";
-import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
-import { createRepoMarkerLoader } from "../../infrastructure/persistence/repo_marker_loader.ts";
 import { modelMethodHistoryCommand } from "./model_method_history.ts";
 import { modelMethodDescribeCommand } from "./model_method_describe.ts";
 import { unknownCommandErrorHandler } from "../unknown_command_handler.ts";
@@ -157,10 +154,6 @@ export const modelMethodRunCommand = new Command()
     { collect: true },
   )
   .option(
-    "--driver <driver:string>",
-    "Override execution driver (e.g. raw, docker)",
-  )
-  .option(
     "--timeout <duration:string>",
     "Cancellation deadline — seconds (e.g. 30, 1800) or duration string (e.g. 30s, 5m, 1h). Cooperative — only honored by methods that check AbortSignal.",
   )
@@ -228,14 +221,8 @@ export const modelMethodRunCommand = new Command()
       await Promise.all([
         modelRegistry.ensureLoaded(),
         vaultTypeRegistry.ensureLoaded(),
-        driverTypeRegistry.ensureLoaded(),
         reportRegistry.ensureLoaded(),
       ]);
-
-      const loadRepoMarker = createRepoMarkerLoader(
-        new RepoMarkerRepository(),
-        repoDir,
-      );
 
       const deps: ModelMethodRunDeps = {
         repoDir,
@@ -269,7 +256,6 @@ export const modelMethodRunCommand = new Command()
           repoContext.catalogStore,
           repoContext.unifiedDataRepo,
         ),
-        loadRepoMarker,
         createRunLog: async (modelType, method, definitionId) => {
           const redactor = new SecretRedactor();
           const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
@@ -383,7 +369,6 @@ export const modelMethodRunCommand = new Command()
               skipAllReports: options.skipReports as boolean | undefined,
               reportNames: options.report as string[] | undefined,
               reportLabels: options.reportLabel as string[] | undefined,
-              driver: options.driver as string | undefined,
               swampSha: GIT_SHA || undefined,
             }),
             renderer.handlers(),

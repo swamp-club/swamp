@@ -42,7 +42,6 @@ import { authCommand } from "./commands/auth.ts";
 import { extensionCommand } from "./commands/extension.ts";
 import { summariseCommand } from "./commands/summarise.ts";
 import { datastoreCommand } from "./commands/datastore.ts";
-import { driverCommand } from "./commands/driver.ts";
 import { doctorCommand } from "./commands/doctor.ts";
 import { reportCommand } from "./commands/report.ts";
 import { serveCommand } from "./commands/serve.ts";
@@ -69,18 +68,14 @@ import { LockfileRepository } from "../infrastructure/persistence/lockfile_repos
 import { ExtensionLoader } from "../domain/extensions/extension_loader.ts";
 import { modelKindAdapter } from "../domain/extensions/model_kind_adapter.ts";
 import { vaultKindAdapter } from "../domain/extensions/vault_kind_adapter.ts";
-import { driverKindAdapter } from "../domain/extensions/driver_kind_adapter.ts";
 import { datastoreKindAdapter } from "../domain/extensions/datastore_kind_adapter.ts";
 import { reportKindAdapter } from "../domain/extensions/report_kind_adapter.ts";
 import { modelRegistry } from "../domain/models/model.ts";
 import { vaultTypeRegistry } from "../domain/vaults/vault_type_registry.ts";
-import { driverTypeRegistry } from "../domain/drivers/driver_type_registry.ts";
-import { setConsoleGuardJsonMode } from "../domain/drivers/console_guard.ts";
+import { setConsoleGuardJsonMode } from "../domain/models/console_guard.ts";
 import { datastoreTypeRegistry } from "../domain/datastore/datastore_type_registry.ts";
 import { reportRegistry } from "../domain/reports/report_registry.ts";
 
-// Import driver types barrel to trigger built-in driver registration
-import "../domain/drivers/driver_types.ts";
 // Import datastore types barrel to trigger built-in datastore registration
 import "../domain/datastore/datastore_types.ts";
 // Import builtin reports to trigger registration
@@ -163,8 +158,6 @@ import { resolveWorkflowsDir } from "./resolve_workflows_dir.ts";
 export { resolveWorkflowsDir };
 import { resolveVaultsDir } from "./resolve_vaults_dir.ts";
 export { resolveVaultsDir };
-import { resolveDriversDir } from "./resolve_drivers_dir.ts";
-export { resolveDriversDir };
 import { resolveDatastoresDir } from "./resolve_datastores_dir.ts";
 export { resolveDatastoresDir };
 import { resolveReportsDir } from "./resolve_reports_dir.ts";
@@ -293,7 +286,6 @@ export async function configureExtensionLoaders(
   const denoRuntime = new EmbeddedDenoRuntime();
   const sourceModelsDirs = collectDirsForKind(resolvedSources, "models");
   const sourceVaultsDirs = collectDirsForKind(resolvedSources, "vaults");
-  const sourceDriversDirs = collectDirsForKind(resolvedSources, "drivers");
   const sourceDatastoresDirs = collectDirsForKind(
     resolvedSources,
     "datastores",
@@ -310,10 +302,6 @@ export async function configureExtensionLoaders(
   const kindDirs = new Map<ExtensionKind, string[]>([
     ["models", [resolveAbsoluteKindDir(resolveModelsDir), ...sourceModelsDirs]],
     ["vaults", [resolveAbsoluteKindDir(resolveVaultsDir), ...sourceVaultsDirs]],
-    [
-      "drivers",
-      [resolveAbsoluteKindDir(resolveDriversDir), ...sourceDriversDirs],
-    ],
     [
       "datastores",
       [resolveAbsoluteKindDir(resolveDatastoresDir), ...sourceDatastoresDirs],
@@ -401,18 +389,6 @@ export async function configureExtensionLoaders(
       marker,
       denoRuntime,
       mergeManifestDirs(sourceVaultsDirs, "vaults"),
-      lazyResolver,
-      repository,
-      quiet,
-      effectiveExtDir,
-    )
-  );
-  driverTypeRegistry.setLoader(() =>
-    loadUserDrivers(
-      repoDir,
-      marker,
-      denoRuntime,
-      mergeManifestDirs(sourceDriversDirs, "drivers"),
       lazyResolver,
       repository,
       quiet,
@@ -519,7 +495,6 @@ export interface DeferredWarning {
   kind:
     | "model"
     | "vault"
-    | "driver"
     | "datastore"
     | "report"
     | "extensions"
@@ -700,76 +675,6 @@ async function loadUserVaults(
     if (isMissingHomeError(error)) return;
     logger
       .warn`Failed to load user vault extensions: ${
-      error instanceof Error ? error.message : String(error)
-    }`;
-  }
-}
-
-async function loadUserDrivers(
-  repoDir: string,
-  marker: RepoMarkerData | null,
-  denoRuntime: EmbeddedDenoRuntime,
-  sourceDirs: string[] = [],
-  resolverFactory?: () => Promise<DatastorePathResolver | undefined>,
-  repository?: ExtensionRepository,
-  _quiet = false,
-  extensionsDir?: string,
-): Promise<void> {
-  try {
-    const extBase = extensionsDir ?? repoDir;
-    const driversDir = resolveDriversDir(marker);
-    const absoluteDriversDir = isAbsolute(driversDir)
-      ? driversDir
-      : resolve(extBase, driversDir);
-
-    const resolver = resolverFactory ? await resolverFactory() : undefined;
-    const loader = new ExtensionLoader(
-      denoRuntime,
-      driverKindAdapter,
-      repoDir,
-      resolver,
-      repository,
-    );
-    const modelsDir = resolveModelsDir(marker);
-    const lockfilePath = join(
-      isAbsolute(modelsDir) ? modelsDir : resolve(repoDir, modelsDir),
-      "upstream_extensions.json",
-    );
-    const pulledDirs = await enumeratePulledExtensionDirs(
-      lockfilePath,
-      repoDir,
-      "drivers",
-    );
-
-    if (repository) {
-      driverTypeRegistry.setTypeLoader(async (type) => {
-        await loader.loadSingleType(type);
-      });
-
-      const result = await loader.buildIndex(absoluteDriversDir, {
-        additionalDirs: [...sourceDirs, ...pulledDirs],
-      });
-
-      for (const failure of result.failed) {
-        logger
-          .warn`Failed to load user driver ${failure.file}: ${failure.error}`;
-      }
-    } else {
-      const result = await loader.load(absoluteDriversDir, {
-        additionalDirs: [...sourceDirs, ...pulledDirs],
-        skipAlreadyRegistered: true,
-      });
-
-      for (const failure of result.failed) {
-        logger
-          .warn`Failed to load user driver ${failure.file}: ${failure.error}`;
-      }
-    }
-  } catch (error) {
-    if (error instanceof Deno.errors.NotFound) return;
-    if (isMissingHomeError(error)) return;
-    logger
-      .warn`Failed to load user driver extensions: ${
       error instanceof Error ? error.message : String(error)
     }`;
   }
@@ -1343,7 +1248,6 @@ export async function runCli(args: string[]): Promise<void> {
     .command("extension", extensionCommand)
     .command("summarise", summariseCommand)
     .command("datastore", datastoreCommand)
-    .command("driver", driverCommand)
     .command("doctor", doctorCommand)
     .command("report", reportCommand)
     .command("serve", serveCommand)

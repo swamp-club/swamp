@@ -37,8 +37,6 @@ import { VaultService } from "../../domain/vaults/vault_service.ts";
 import { ExpressionEvaluationService } from "../../domain/expressions/expression_evaluation_service.ts";
 import { DataQueryService } from "../../domain/data/data_query_service.ts";
 import { runFileSink } from "../../infrastructure/logging/logger.ts";
-import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
-import { createRepoMarkerLoader } from "../../infrastructure/persistence/repo_marker_loader.ts";
 import {
   SWAMP_SUBDIRS,
   swampPath,
@@ -47,7 +45,6 @@ import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_
 import { SecretRedactor } from "../../domain/secrets/mod.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
-import { driverTypeRegistry } from "../../domain/drivers/driver_type_registry.ts";
 import { reportRegistry } from "../../domain/reports/report_registry.ts";
 
 /**
@@ -61,14 +58,9 @@ export async function createWorkerModelRunDeps(
   await Promise.all([
     modelRegistry.ensureLoaded(),
     vaultTypeRegistry.ensureLoaded(),
-    driverTypeRegistry.ensureLoaded(),
     reportRegistry.ensureLoaded(),
   ]);
 
-  const loadRepoMarker = createRepoMarkerLoader(
-    new RepoMarkerRepository(),
-    repoDir,
-  );
 
   return {
     repoDir,
@@ -102,7 +94,6 @@ export async function createWorkerModelRunDeps(
       repoContext.catalogStore,
       repoContext.unifiedDataRepo,
     ),
-    loadRepoMarker,
     createRunLog: async (modelType, method, definitionId) => {
       const redactor = new SecretRedactor();
       const timestamp = new Date().toISOString().replace(/[:.]/g, "-");

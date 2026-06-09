@@ -24,10 +24,7 @@ import {
   TriggerConditionSchema,
 } from "./trigger_condition.ts";
 import { Step, type StepData, StepSchema } from "./step.ts";
-import {
-  DriverConfigFieldSchema,
-  DriverFieldSchema,
-} from "../drivers/driver_config.ts";
+import { rejectRemovedDriverFields } from "../removed_driver_fields.ts";
 
 /**
  * Schema for job dependency with condition.
@@ -63,29 +60,33 @@ const JobDependencyFieldSchema = z.preprocess((data) => {
   return data;
 }, z.array(JobDependencySchema).default([]));
 
-/**
- * Zod schema for Job entity.
- */
-export const JobSchema = z.object({
+const JobObjectSchema = z.object({
   name: z.string().min(1),
   description: z.string().optional(),
   steps: z.array(StepSchema).min(1),
   dependsOn: JobDependencyFieldSchema,
   weight: z.number().default(0),
   concurrency: z.number().int().nonnegative().optional(),
-  driver: DriverFieldSchema,
-  driverConfig: DriverConfigFieldSchema,
 });
+
+/**
+ * Zod schema for Job entity. Rejects the removed `driver`/`driverConfig`
+ * fields with an actionable error (see design/remote-execution.md).
+ */
+export const JobSchema = z.preprocess(
+  rejectRemovedDriverFields,
+  JobObjectSchema,
+);
 
 /**
  * Type representing job data (output — defaults applied).
  */
-export type JobData = z.infer<typeof JobSchema>;
+export type JobData = z.infer<typeof JobObjectSchema>;
 
 /**
  * Type representing job input data (defaults optional for backward compat).
  */
-export type JobInput = z.input<typeof JobSchema>;
+export type JobInput = z.input<typeof JobObjectSchema>;
 
 /**
  * Job dependency with resolved TriggerCondition.
@@ -105,8 +106,6 @@ export interface CreateJobProps {
   dependsOn?: JobDependency[];
   weight?: number;
   concurrency?: number;
-  driver?: string;
-  driverConfig?: Record<string, unknown>;
 }
 
 /**
@@ -127,8 +126,6 @@ export class Job {
     private _dependsOn: JobDependency[],
     readonly weight: number,
     readonly concurrency: number | undefined,
-    readonly driver: string | undefined,
-    readonly driverConfig: Record<string, unknown> | undefined,
   ) {}
 
   /**
@@ -149,8 +146,6 @@ export class Job {
       })),
       weight: props.weight ?? 0,
       concurrency: props.concurrency,
-      driver: props.driver,
-      driverConfig: props.driverConfig,
     });
 
     return Job.fromData(data);
@@ -174,8 +169,6 @@ export class Job {
       dependsOn,
       validated.weight,
       validated.concurrency,
-      validated.driver,
-      validated.driverConfig,
     );
   }
 
@@ -221,8 +214,6 @@ export class Job {
       })),
       weight: this.weight,
       concurrency: this.concurrency,
-      driver: this.driver,
-      driverConfig: this.driverConfig,
     };
   }
 }

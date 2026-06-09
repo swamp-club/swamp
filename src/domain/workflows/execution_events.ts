@@ -47,7 +47,6 @@ export type WorkflowExecutionEvent =
     runId: string;
     workflowName: string;
     logPath: string;
-    driver?: string;
     jobs: WorkflowJobInfo[];
   }
   | { kind: "job_started"; jobId: string }
@@ -85,7 +84,6 @@ export type WorkflowExecutionEvent =
      */
     modelName?: string;
     methodName?: string;
-    driver?: string;
   }
   | {
     kind: "model_resolved";
@@ -110,12 +108,6 @@ export type WorkflowExecutionEvent =
     stepId: string;
     modelName: string;
     methodName: string;
-    /**
-     * Resolved driver from the DriverPlan tier resolution (workflow > job
-     * > step > definition > repo). Optional: undefined when no driver is
-     * explicitly configured, allowing the method's default to apply.
-     */
-    driver?: string;
   }
   | {
     kind: "method_output";

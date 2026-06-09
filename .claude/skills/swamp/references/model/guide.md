@@ -559,5 +559,5 @@ validation.
 - **Data chaining**: See
   [references/data-chaining.md](references/data-chaining.md) for command/shell
   model examples and chaining patterns
-- **Execution drivers**: See
-  [references/execution-drivers.md](references/execution-drivers.md)
+- **Remote execution / worker placement**: See
+  [../workflow/references/remote-execution.md](../workflow/references/remote-execution.md)

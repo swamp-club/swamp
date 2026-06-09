@@ -32,7 +32,6 @@ const MANIFEST_MAX_BYTES = 64 * 1024;
 const MANIFEST_KIND_KEYS: readonly ExtensionKind[] = [
   "models",
   "vaults",
-  "drivers",
   "datastores",
   "reports",
 ];

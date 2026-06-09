@@ -18,23 +18,21 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import type {
-  ExecutionCallbacks,
-  ExecutionDriver,
   ExecutionRequest,
   ExecutionResult,
-} from "./execution_driver.ts";
+} from "./execution_envelope.ts";
 import type { Definition } from "../definitions/definition.ts";
 import type {
   MethodContext,
   MethodDefinition,
   MethodResult,
   ModelDefinition,
-} from "../models/model.ts";
+} from "./model.ts";
 import {
   createFileWriterFactory,
   createResourceReader,
   createResourceWriter,
-} from "../models/data_writer.ts";
+} from "./data_writer.ts";
 import { DataAccessService } from "../data/data_access_service.ts";
 import { withConsoleGuard } from "./console_guard.ts";
 
@@ -48,7 +46,7 @@ function restoreEnv(key: string, saved: string | undefined): void {
 
 /**
  * Interface for the execute method of MethodExecutionService.
- * Allows RawExecutionDriver to delegate argument validation and
+ * Allows InProcessExecutor to delegate argument validation and
  * method execution without a circular dependency on the full service.
  */
 export interface MethodExecutor {
@@ -60,18 +58,17 @@ export interface MethodExecutor {
 }
 
 /**
- * Raw execution driver — runs model methods directly in the host Deno process.
+ * In-process executor — runs model methods directly in the host Deno process.
  *
- * This is the default driver. It receives live in-process objects at
- * construction time and ignores the serialized parts of ExecutionRequest.
+ * This is the execution path for every step without remote placement. It
+ * receives live in-process objects at construction time and ignores the
+ * serialized parts of ExecutionRequest.
  *
  * Responsibility: create data writers, inject them into context, delegate
  * to MethodExecutor for argument validation and method execution, and
- * return the result as an ExecutionResult with "persisted" DriverOutputs.
+ * return the result as an ExecutionResult with "persisted" ExecutionOutputs.
  */
-export class RawExecutionDriver implements ExecutionDriver {
-  readonly type = "raw";
-
+export class InProcessExecutor {
   /**
    * The context with writers injected, available after execute() completes.
    * Used by the execution service for follow-up actions.
@@ -89,7 +86,6 @@ export class RawExecutionDriver implements ExecutionDriver {
 
   async execute(
     request: ExecutionRequest,
-    _callbacks?: ExecutionCallbacks,
   ): Promise<ExecutionResult> {
     const start = performance.now();
     const logs: string[] = [];
@@ -151,7 +147,7 @@ export class RawExecutionDriver implements ExecutionDriver {
 
     // Prefer an explicitly-set queryData (test fixtures), otherwise derive
     // a binding from dataQueryService. Production callers supply only
-    // dataQueryService; the driver owns the single queryData binding.
+    // dataQueryService; the executor owns the single queryData binding.
     const dataQueryService = this.context.dataQueryService;
     const queryData = this.context.queryData ??
       (dataQueryService

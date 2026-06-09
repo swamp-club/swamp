@@ -40,7 +40,6 @@ import { swampPath } from "../../infrastructure/persistence/paths.ts";
 import { ExtensionLoader } from "../../domain/extensions/extension_loader.ts";
 import { modelKindAdapter } from "../../domain/extensions/model_kind_adapter.ts";
 import { vaultKindAdapter } from "../../domain/extensions/vault_kind_adapter.ts";
-import { driverKindAdapter } from "../../domain/extensions/driver_kind_adapter.ts";
 import { datastoreKindAdapter } from "../../domain/extensions/datastore_kind_adapter.ts";
 import { reportKindAdapter } from "../../domain/extensions/report_kind_adapter.ts";
 import type { DenoRuntime } from "../../domain/runtime/deno_runtime.ts";
@@ -50,7 +49,6 @@ import type { UpstreamExtensionEntry } from "../../infrastructure/persistence/up
 const KIND_DIRS = [
   "models",
   "vaults",
-  "drivers",
   "datastores",
   "reports",
 ] as const;
@@ -311,14 +309,6 @@ export class InstallExtensionService {
         return new ExtensionLoader(
           this.denoRuntime,
           vaultKindAdapter,
-          repoDir,
-          undefined,
-          this.repository,
-        );
-      case "drivers":
-        return new ExtensionLoader(
-          this.denoRuntime,
-          driverKindAdapter,
           repoDir,
           undefined,
           this.repository,

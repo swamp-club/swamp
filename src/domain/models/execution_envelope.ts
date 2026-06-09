@@ -17,10 +17,14 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { DataHandle } from "../models/model.ts";
+import type { DataHandle } from "./model.ts";
 
 /**
- * Serializable request envelope sent to an execution driver.
+ * Serializable request envelope describing a single method execution.
+ *
+ * Built by the method execution service for every run; the same shape is
+ * the basis for what remote dispatch ships to workers (see
+ * design/remote-execution.md).
  */
 export interface ExecutionRequest {
   /** Protocol version for forward compatibility. */
@@ -53,22 +57,13 @@ export interface ExecutionRequest {
 }
 
 /**
- * Callbacks for real-time events during execution.
- */
-export interface ExecutionCallbacks {
-  /** Called when a log line is emitted. */
-  onLog?: (line: string) => void;
-  /** Called when a resource is written. */
-  onResourceWritten?: (handle: DataHandle) => void;
-}
-
-/**
- * A single output from a driver execution.
+ * A single output from a method execution.
  *
  * - `"persisted"`: data was written in-process; handle references existing data.
- * - `"pending"`: data needs to be persisted by the host (for out-of-process drivers).
+ * - `"pending"`: data needs to be persisted by the host (for out-of-process
+ *   execution).
  */
-export type DriverOutput =
+export type ExecutionOutput =
   | { kind: "persisted"; handle: DataHandle }
   | {
     kind: "pending";
@@ -77,12 +72,12 @@ export type DriverOutput =
     type: "resource" | "file";
     content: Uint8Array;
     tags?: Record<string, string>;
-    /** Execution metadata from the driver (exit code, timing, etc.). */
+    /** Execution metadata (exit code, timing, etc.). */
     metadata?: Record<string, unknown>;
   };
 
 /**
- * Result returned by an execution driver.
+ * Result envelope returned by a method execution.
  */
 export interface ExecutionResult {
   /** Whether execution succeeded or failed. */
@@ -90,40 +85,11 @@ export interface ExecutionResult {
   /** Error message if status is "error". */
   error?: string;
   /** Outputs produced during execution. */
-  outputs: DriverOutput[];
+  outputs: ExecutionOutput[];
   /** Log lines captured during execution. */
   logs: string[];
   /** Execution duration in milliseconds. */
   durationMs: number;
-  /** Follow-up actions from the method result (in-process drivers only). */
+  /** Follow-up actions from the method result (in-process execution only). */
   followUpActions?: unknown[];
-}
-
-/**
- * Pluggable execution driver interface.
- *
- * Drivers control how model methods are executed — in-process (raw),
- * in a container (docker), or remotely (lambda, ssh, etc.).
- */
-export interface ExecutionDriver {
-  /** The driver type identifier. */
-  readonly type: string;
-
-  /**
-   * Execute a model method.
-   *
-   * @param request - The execution request envelope
-   * @param callbacks - Optional real-time event callbacks
-   * @returns The execution result
-   */
-  execute(
-    request: ExecutionRequest,
-    callbacks?: ExecutionCallbacks,
-  ): Promise<ExecutionResult>;
-
-  /** Optional initialization (e.g., pull Docker image). */
-  initialize?(): Promise<void>;
-
-  /** Optional cleanup (e.g., stop container). */
-  shutdown?(): Promise<void>;
 }

@@ -21,7 +21,6 @@ export type ExtensionKind =
   | "model"
   | "extension"
   | "vault"
-  | "driver"
   | "datastore"
   | "report";
 
@@ -65,8 +64,6 @@ const HINT_BY_KIND: Record<ExtensionKind, string> = {
     "extensions/models/ is auto-discovered — running `swamp extension source add` here is a no-op.",
   vault:
     "extensions/vaults/ is auto-discovered — running `swamp extension source add` here is a no-op.",
-  driver:
-    "extensions/drivers/ is auto-discovered — running `swamp extension source add` here is a no-op.",
   datastore:
     "extensions/datastores/ is auto-discovered — running `swamp extension source add` here is a no-op.",
   report:

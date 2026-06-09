@@ -43,8 +43,6 @@ import { VaultService } from "../domain/vaults/vault_service.ts";
 import { ExpressionEvaluationService } from "../domain/expressions/expression_evaluation_service.ts";
 import { DataQueryService } from "../domain/data/data_query_service.ts";
 import { runFileSink } from "../infrastructure/logging/logger.ts";
-import { RepoMarkerRepository } from "../infrastructure/persistence/repo_marker_repository.ts";
-import { createRepoMarkerLoader } from "../infrastructure/persistence/repo_marker_loader.ts";
 import {
   SWAMP_SUBDIRS,
   swampPath,
@@ -52,7 +50,6 @@ import {
 import { SecretRedactor } from "../domain/secrets/mod.ts";
 import { modelRegistry } from "../domain/models/model.ts";
 import { vaultTypeRegistry } from "../domain/vaults/vault_type_registry.ts";
-import { driverTypeRegistry } from "../domain/drivers/driver_type_registry.ts";
 import { reportRegistry } from "../domain/reports/report_registry.ts";
 import type { DatastoreConfig } from "../domain/datastore/datastore_config.ts";
 import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
@@ -66,7 +63,6 @@ export async function createWorkflowRunDeps(
   await Promise.all([
     modelRegistry.ensureLoaded(),
     vaultTypeRegistry.ensureLoaded(),
-    driverTypeRegistry.ensureLoaded(),
     reportRegistry.ensureLoaded(),
   ]);
   return {
@@ -102,13 +98,8 @@ export async function createModelMethodRunDeps(
   await Promise.all([
     modelRegistry.ensureLoaded(),
     vaultTypeRegistry.ensureLoaded(),
-    driverTypeRegistry.ensureLoaded(),
     reportRegistry.ensureLoaded(),
   ]);
-  const loadRepoMarker = createRepoMarkerLoader(
-    new RepoMarkerRepository(),
-    repoDir,
-  );
   return {
     repoDir,
     lookupDefinition: (idOrName) =>
@@ -141,7 +132,6 @@ export async function createModelMethodRunDeps(
       repoContext.catalogStore,
       repoContext.unifiedDataRepo,
     ),
-    loadRepoMarker,
     createRunLog: async (modelType, method, definitionId) => {
       const redactor = new SecretRedactor();
       const timestamp = new Date().toISOString().replace(/[:.]/g, "-");

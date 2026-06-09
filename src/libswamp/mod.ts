@@ -462,16 +462,6 @@ export {
   type VaultTypeSearchItem,
 } from "./vaults/type_search.ts";
 
-// Driver type search operations
-export {
-  driverTypeSearch,
-  type DriverTypeSearchData,
-  type DriverTypeSearchDeps,
-  type DriverTypeSearchEvent,
-  type DriverTypeSearchInput,
-  type DriverTypeSearchItem,
-} from "./drivers/type_search.ts";
-
 // Datastore type search operations
 export {
   datastoreTypeSearch,

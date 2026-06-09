@@ -49,7 +49,6 @@ const WorkflowRunRequestSchema = z.object({
     workflowIdOrName: z.string(),
     inputs: z.record(z.string(), z.unknown()).optional(),
     lastEvaluated: z.boolean().optional(),
-    driver: z.string().optional(),
     verbose: z.boolean().optional(),
     runtimeTags: z.record(z.string(), z.string()).optional(),
   }),
@@ -63,7 +62,6 @@ const ModelMethodRunRequestSchema = z.object({
     methodName: z.string(),
     inputs: z.record(z.string(), z.unknown()).optional(),
     lastEvaluated: z.boolean().optional(),
-    driver: z.string().optional(),
     runtimeTags: z.record(z.string(), z.string()).optional(),
   }),
 });
@@ -237,7 +235,6 @@ async function handleWorkflowRun(
         workflowIdOrName: payload.workflowIdOrName,
         inputs: payload.inputs,
         lastEvaluated: payload.lastEvaluated,
-        driver: payload.driver,
         verbose: payload.verbose,
         runtimeTags: payload.runtimeTags,
       },
@@ -301,7 +298,6 @@ async function handleModelMethodRun(
         inputs: payload.inputs ?? {},
         lastEvaluated: payload.lastEvaluated ?? false,
         runtimeTags: payload.runtimeTags,
-        driver: payload.driver,
       })
     ) {
       if (socket.readyState !== WebSocket.OPEN) break;

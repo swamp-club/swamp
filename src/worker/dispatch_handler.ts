@@ -32,7 +32,7 @@
 import { Definition } from "../domain/definitions/definition.ts";
 import { DefaultMethodExecutionService } from "../domain/models/method_execution_service.ts";
 import type { DataHandle, MethodResult } from "../domain/models/model.ts";
-import { withConsoleGuard } from "../domain/drivers/console_guard.ts";
+import { withConsoleGuard } from "../domain/models/console_guard.ts";
 import {
   type EnvironmentSnapshot,
   isDeniedEnvVar,

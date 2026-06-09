@@ -18,10 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { z } from "zod";
-import {
-  DriverConfigFieldSchema,
-  DriverFieldSchema,
-} from "../drivers/driver_config.ts";
+import { rejectRemovedDriverFields } from "../removed_driver_fields.ts";
 import {
   type ReportSelection,
   ReportSelectionSchema,
@@ -141,7 +138,7 @@ export type CheckSelection = {
   skip?: string[];
 };
 
-export const DefinitionSchema = z.object({
+const DefinitionObjectSchema = z.object({
   type: z.string().optional(),
   typeVersion: z.preprocess(
     (val) => (typeof val === "number" ? undefined : val),
@@ -171,14 +168,21 @@ export const DefinitionSchema = z.object({
   inputs: InputsSchemaSchema,
   checks: CheckSelectionSchema,
   reports: ReportSelectionSchema,
-  driver: DriverFieldSchema,
-  driverConfig: DriverConfigFieldSchema,
 });
+
+/**
+ * Zod schema for Definition. Rejects the removed `driver`/`driverConfig`
+ * fields with an actionable error (see design/remote-execution.md).
+ */
+export const DefinitionSchema = z.preprocess(
+  rejectRemovedDriverFields,
+  DefinitionObjectSchema,
+);
 
 /**
  * Type representing the data stored in a Definition.
  */
-export type DefinitionData = z.infer<typeof DefinitionSchema>;
+export type DefinitionData = z.infer<typeof DefinitionObjectSchema>;
 
 /**
  * Properties required to create a new Definition.
@@ -203,8 +207,6 @@ export interface CreateDefinitionProps {
   inputs?: InputsSchema;
   checks?: CheckSelection;
   reports?: ReportSelection;
-  driver?: string;
-  driverConfig?: Record<string, unknown>;
 }
 
 /**
@@ -229,8 +231,6 @@ export class Definition {
     private _inputs: InputsSchema | undefined,
     private _checks: CheckSelection | undefined,
     private _reports: ReportSelection | undefined,
-    readonly driver: string | undefined,
-    readonly driverConfig: Record<string, unknown> | undefined,
   ) {}
 
   /**
@@ -255,8 +255,6 @@ export class Definition {
       inputs: props.inputs,
       checks: props.checks,
       reports: props.reports,
-      driver: props.driver,
-      driverConfig: props.driverConfig,
     });
 
     return new Definition(
@@ -271,8 +269,6 @@ export class Definition {
       validated.inputs,
       validated.checks,
       validated.reports,
-      validated.driver,
-      validated.driverConfig,
     );
   }
 
@@ -296,8 +292,6 @@ export class Definition {
       validated.inputs,
       validated.checks,
       validated.reports,
-      validated.driver,
-      validated.driverConfig,
     );
   }
 
@@ -327,10 +321,6 @@ export class Definition {
       original._inputs ? structuredClone(original._inputs) : undefined,
       original._checks ? structuredClone(original._checks) : undefined,
       original._reports ? structuredClone(original._reports) : undefined,
-      original.driver,
-      original.driverConfig
-        ? structuredClone(original.driverConfig)
-        : undefined,
     );
   }
 
@@ -460,10 +450,6 @@ export class Definition {
       inputs: this._inputs ? structuredClone(this._inputs) : undefined,
       checks: this._checks ? structuredClone(this._checks) : undefined,
       reports: this._reports ? structuredClone(this._reports) : undefined,
-      driver: this.driver,
-      driverConfig: this.driverConfig
-        ? structuredClone(this.driverConfig)
-        : undefined,
     };
   }
 

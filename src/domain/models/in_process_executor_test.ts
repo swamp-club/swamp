@@ -19,17 +19,17 @@
 
 import { assertEquals } from "@std/assert";
 import { createExtensionCelEnvironment } from "../../infrastructure/cel/cel_evaluator.ts";
-import { RawExecutionDriver } from "./raw_execution_driver.ts";
-import type { MethodExecutor } from "./raw_execution_driver.ts";
-import type { ExecutionRequest } from "./execution_driver.ts";
+import { InProcessExecutor } from "./in_process_executor.ts";
+import type { MethodExecutor } from "./in_process_executor.ts";
+import type { ExecutionRequest } from "./execution_envelope.ts";
 import { Definition } from "../definitions/definition.ts";
-import { ModelType } from "../models/model_type.ts";
+import { ModelType } from "./model_type.ts";
 import type {
   DataHandle,
   MethodContext,
   MethodDefinition,
   ModelDefinition,
-} from "../models/model.ts";
+} from "./model.ts";
 import { z } from "zod";
 import type { UnifiedDataRepository } from "../data/repositories.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
@@ -37,7 +37,7 @@ import { type DataId, generateDataId } from "../data/data_id.ts";
 import { getLogger } from "@logtape/logtape";
 import type { DataQueryService } from "../data/data_query_service.ts";
 
-const TEST_MODEL_TYPE = ModelType.create("test/raw-driver");
+const TEST_MODEL_TYPE = ModelType.create("test/in-process-executor");
 
 function createMockDataRepo(): UnifiedDataRepository {
   return {
@@ -160,7 +160,7 @@ function createMockRequest(): ExecutionRequest {
   };
 }
 
-Deno.test("RawExecutionDriver: collects writer handles when method returns no dataHandles", async () => {
+Deno.test("InProcessExecutor: collects writer handles when method returns no dataHandles", async () => {
   const executor: MethodExecutor = {
     execute: async (_def, _method, context) => {
       // Simulate extension model: writes resource but returns no dataHandles
@@ -171,7 +171,7 @@ Deno.test("RawExecutionDriver: collects writer handles when method returns no da
 
   const context = createMockContext();
 
-  const driver = new RawExecutionDriver(
+  const inProcessExecutor = new InProcessExecutor(
     executor,
     testDefinition,
     testMethod,
@@ -180,16 +180,16 @@ Deno.test("RawExecutionDriver: collects writer handles when method returns no da
     "test",
   );
 
-  const result = await driver.execute(createMockRequest());
+  const result = await inProcessExecutor.execute(createMockRequest());
 
   assertEquals(result.status, "success");
-  // The driver should collect handles from the writer since the method
+  // The executor should collect handles from the writer since the method
   // returned no dataHandles
   assertEquals(result.outputs.length > 0, true);
   assertEquals(result.outputs[0].kind, "persisted");
 });
 
-Deno.test("RawExecutionDriver: uses explicit dataHandles when method returns them", async () => {
+Deno.test("InProcessExecutor: uses explicit dataHandles when method returns them", async () => {
   const explicitHandle = createMockHandle("explicit");
 
   const executor: MethodExecutor = {
@@ -201,7 +201,7 @@ Deno.test("RawExecutionDriver: uses explicit dataHandles when method returns the
 
   const context = createMockContext();
 
-  const driver = new RawExecutionDriver(
+  const inProcessExecutor = new InProcessExecutor(
     executor,
     testDefinition,
     testMethod,
@@ -210,7 +210,7 @@ Deno.test("RawExecutionDriver: uses explicit dataHandles when method returns the
     "test",
   );
 
-  const result = await driver.execute(createMockRequest());
+  const result = await inProcessExecutor.execute(createMockRequest());
 
   assertEquals(result.status, "success");
   assertEquals(result.outputs.length, 1);
@@ -221,7 +221,7 @@ Deno.test("RawExecutionDriver: uses explicit dataHandles when method returns the
   }
 });
 
-Deno.test("RawExecutionDriver: returns empty outputs when no writes and no dataHandles", async () => {
+Deno.test("InProcessExecutor: returns empty outputs when no writes and no dataHandles", async () => {
   const executor: MethodExecutor = {
     execute: () => {
       // Method does nothing
@@ -231,7 +231,7 @@ Deno.test("RawExecutionDriver: returns empty outputs when no writes and no dataH
 
   const context = createMockContext();
 
-  const driver = new RawExecutionDriver(
+  const inProcessExecutor = new InProcessExecutor(
     executor,
     testDefinition,
     testMethod,
@@ -240,13 +240,13 @@ Deno.test("RawExecutionDriver: returns empty outputs when no writes and no dataH
     "test",
   );
 
-  const result = await driver.execute(createMockRequest());
+  const result = await inProcessExecutor.execute(createMockRequest());
 
   assertEquals(result.status, "success");
   assertEquals(result.outputs.length, 0);
 });
 
-Deno.test("RawExecutionDriver: passes workflowRunId from tagOverrides to readModelData", async () => {
+Deno.test("InProcessExecutor: passes workflowRunId from tagOverrides to readModelData", async () => {
   const WORKFLOW_RUN_ID = "c00c0c00-c00c-4c0c-900c-c00c0c00c00c";
   let capturedContext: MethodContext | null = null;
 
@@ -270,7 +270,7 @@ Deno.test("RawExecutionDriver: passes workflowRunId from tagOverrides to readMod
     findAllGlobal: () => Promise.resolve([]),
   } as unknown as DefinitionRepository;
 
-  const driver = new RawExecutionDriver(
+  const inProcessExecutor = new InProcessExecutor(
     executor,
     testDefinition,
     testMethod,
@@ -279,7 +279,7 @@ Deno.test("RawExecutionDriver: passes workflowRunId from tagOverrides to readMod
     "test",
   );
 
-  await driver.execute(createMockRequest());
+  await inProcessExecutor.execute(createMockRequest());
 
   // readModelData should be wired up on the context
   assertEquals(typeof capturedContext!.readModelData, "function");
@@ -290,7 +290,7 @@ Deno.test("RawExecutionDriver: passes workflowRunId from tagOverrides to readMod
   assertEquals(result, []);
 });
 
-Deno.test("RawExecutionDriver: passes queryData predicate through without scoping", async () => {
+Deno.test("InProcessExecutor: passes queryData predicate through without scoping", async () => {
   let capturedPredicate = "";
 
   const executor: MethodExecutor = {
@@ -314,7 +314,7 @@ Deno.test("RawExecutionDriver: passes queryData predicate through without scopin
     return Promise.resolve([]);
   };
 
-  const driver = new RawExecutionDriver(
+  const inProcessExecutor = new InProcessExecutor(
     executor,
     testDefinition,
     testMethod,
@@ -323,13 +323,13 @@ Deno.test("RawExecutionDriver: passes queryData predicate through without scopin
     "test",
   );
 
-  await driver.execute(createMockRequest());
+  await inProcessExecutor.execute(createMockRequest());
 
   // No hidden scoping — predicate passes through unmodified
   assertEquals(capturedPredicate, "model_name == 'source'");
 });
 
-Deno.test("RawExecutionDriver: leaves queryData unscoped when no workflowRunId", async () => {
+Deno.test("InProcessExecutor: leaves queryData unscoped when no workflowRunId", async () => {
   let capturedPredicate = "";
 
   const executor: MethodExecutor = {
@@ -350,7 +350,7 @@ Deno.test("RawExecutionDriver: leaves queryData unscoped when no workflowRunId",
     return Promise.resolve([]);
   };
 
-  const driver = new RawExecutionDriver(
+  const inProcessExecutor = new InProcessExecutor(
     executor,
     testDefinition,
     testMethod,
@@ -359,12 +359,12 @@ Deno.test("RawExecutionDriver: leaves queryData unscoped when no workflowRunId",
     "test",
   );
 
-  await driver.execute(createMockRequest());
+  await inProcessExecutor.execute(createMockRequest());
 
   assertEquals(capturedPredicate, "model_name == 'source'");
 });
 
-Deno.test("RawExecutionDriver: derives queryData from dataQueryService when not set", async () => {
+Deno.test("InProcessExecutor: derives queryData from dataQueryService when not set", async () => {
   let capturedPredicate = "";
   let capturedSelect: string | undefined;
 
@@ -389,7 +389,7 @@ Deno.test("RawExecutionDriver: derives queryData from dataQueryService when not 
     },
   } as unknown as DataQueryService;
 
-  const driver = new RawExecutionDriver(
+  const inProcessExecutor = new InProcessExecutor(
     executor,
     testDefinition,
     testMethod,
@@ -398,13 +398,13 @@ Deno.test("RawExecutionDriver: derives queryData from dataQueryService when not 
     "test",
   );
 
-  await driver.execute(createMockRequest());
+  await inProcessExecutor.execute(createMockRequest());
 
   assertEquals(capturedPredicate, "model_name == 'source'");
   assertEquals(capturedSelect, "attributes.foo");
 });
 
-Deno.test("RawExecutionDriver: explicit queryData wins over dataQueryService derivation", async () => {
+Deno.test("InProcessExecutor: explicit queryData wins over dataQueryService derivation", async () => {
   let usedExplicit = false;
   let usedDerived = false;
 
@@ -432,7 +432,7 @@ Deno.test("RawExecutionDriver: explicit queryData wins over dataQueryService der
     },
   } as unknown as DataQueryService;
 
-  const driver = new RawExecutionDriver(
+  const inProcessExecutor = new InProcessExecutor(
     executor,
     testDefinition,
     testMethod,
@@ -441,13 +441,13 @@ Deno.test("RawExecutionDriver: explicit queryData wins over dataQueryService der
     "test",
   );
 
-  await driver.execute(createMockRequest());
+  await inProcessExecutor.execute(createMockRequest());
 
   assertEquals(usedExplicit, true);
   assertEquals(usedDerived, false);
 });
 
-Deno.test("RawExecutionDriver: sets TRACEPARENT env var from traceHeaders during execution", async () => {
+Deno.test("InProcessExecutor: sets TRACEPARENT env var from traceHeaders during execution", async () => {
   let capturedTraceparent: string | undefined;
   const originalTraceparent = Deno.env.get("TRACEPARENT");
 
@@ -460,7 +460,7 @@ Deno.test("RawExecutionDriver: sets TRACEPARENT env var from traceHeaders during
 
   const context = createMockContext();
 
-  const driver = new RawExecutionDriver(
+  const inProcessExecutor = new InProcessExecutor(
     executor,
     testDefinition,
     testMethod,
@@ -474,13 +474,13 @@ Deno.test("RawExecutionDriver: sets TRACEPARENT env var from traceHeaders during
     traceparent: "00-abc123-def456-01",
   };
 
-  await driver.execute(request);
+  await inProcessExecutor.execute(request);
 
   assertEquals(capturedTraceparent, "00-abc123-def456-01");
   assertEquals(Deno.env.get("TRACEPARENT"), originalTraceparent);
 });
 
-Deno.test("RawExecutionDriver: restores TRACEPARENT env var after execution error", async () => {
+Deno.test("InProcessExecutor: restores TRACEPARENT env var after execution error", async () => {
   const originalTraceparent = Deno.env.get("TRACEPARENT");
 
   const executor: MethodExecutor = {
@@ -491,7 +491,7 @@ Deno.test("RawExecutionDriver: restores TRACEPARENT env var after execution erro
 
   const context = createMockContext();
 
-  const driver = new RawExecutionDriver(
+  const inProcessExecutor = new InProcessExecutor(
     executor,
     testDefinition,
     testMethod,
@@ -505,7 +505,7 @@ Deno.test("RawExecutionDriver: restores TRACEPARENT env var after execution erro
     traceparent: "00-abc123-def456-01",
   };
 
-  const result = await driver.execute(request);
+  const result = await inProcessExecutor.execute(request);
 
   assertEquals(result.status, "error");
   assertEquals(Deno.env.get("TRACEPARENT"), originalTraceparent);

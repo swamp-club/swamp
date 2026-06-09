@@ -53,7 +53,6 @@ import { parseTimeout } from "../duration_parser.ts";
 import { GIT_SHA } from "./version.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
-import { driverTypeRegistry } from "../../domain/drivers/driver_type_registry.ts";
 import { reportRegistry } from "../../domain/reports/report_registry.ts";
 import { parseTags } from "../../libswamp/mod.ts";
 import {
@@ -120,10 +119,6 @@ export const workflowRunCommand = new Command()
     "--tag <tag:string>",
     "Add tag to produced data (KEY=VALUE, repeatable)",
     { collect: true },
-  )
-  .option(
-    "--driver <driver:string>",
-    "Override execution driver (e.g. raw, docker)",
   )
   .option("--skip-reports", "Skip all post-run reports", { default: false })
   .option(
@@ -276,7 +271,6 @@ export const workflowRunCommand = new Command()
       await Promise.all([
         modelRegistry.ensureLoaded(),
         vaultTypeRegistry.ensureLoaded(),
-        driverTypeRegistry.ensureLoaded(),
         reportRegistry.ensureLoaded(),
       ]);
 
@@ -422,7 +416,6 @@ export const workflowRunCommand = new Command()
             inputs: inputSets[i],
             runtimeTags,
             verbose: ctx.verbosity === "verbose",
-            driver: options.driver as string | undefined,
             skipAllReports: options.skipReports as boolean | undefined,
             skipReportNames: options.skipReport as string[] | undefined,
             skipReportLabels: options.skipReportLabel as string[] | undefined,
