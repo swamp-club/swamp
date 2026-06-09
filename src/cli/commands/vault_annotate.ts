@@ -30,7 +30,10 @@ import {
   type GlobalOptions,
   resolveRepoDir,
 } from "../context.ts";
-import { requireInitializedRepo } from "../repo_context.ts";
+import {
+  acquireVaultSync,
+  requireInitializedRepoUnlocked,
+} from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 
 export function parseLabels(
@@ -110,49 +113,59 @@ existing fields are preserved. Use --clear to remove all annotations.`,
     ]);
     cliCtx.logger.debug`Annotating secret in vault: ${vaultName}`;
 
-    const { repoDir, repoContext } = await requireInitializedRepo({
-      repoDir: resolveRepoDir(options.repoDir),
-      outputMode: cliCtx.outputMode,
-    });
-
-    const clear = options.clear === true;
-    const labels = parseLabels(options.label);
-    const notes: string | undefined = options.notes;
-    const removeLabels: string[] | undefined = options.removeLabel;
-
-    if (
-      clear &&
-      (options.url !== undefined || notes !== undefined ||
-        labels !== undefined || removeLabels !== undefined)
-    ) {
-      throw new UserError(
-        "--clear cannot be combined with --url, --notes, --label, or --remove-label. Use --clear alone to remove all annotations.",
-      );
-    }
-
-    if (
-      !clear && options.url === undefined && notes === undefined &&
-      labels === undefined && removeLabels === undefined
-    ) {
-      throw new UserError(
-        "No annotation fields specified. Use --url, --notes, --label, --remove-label, or --clear.",
-      );
-    }
-
-    const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createVaultAnnotateDeps(repoDir, repoContext.eventBus);
-
-    const renderer = createVaultAnnotateRenderer(cliCtx.outputMode);
-    await consumeStream(
-      vaultAnnotate(ctx, deps, {
-        vaultName,
-        key,
-        url: options.url,
-        notes,
-        labels,
-        removeLabels,
-        clear,
-      }),
-      renderer.handlers(),
+    const { repoDir, repoContext, datastoreConfig, syncService } =
+      await requireInitializedRepoUnlocked({
+        repoDir: resolveRepoDir(options.repoDir),
+        outputMode: cliCtx.outputMode,
+      });
+    const { flush } = await acquireVaultSync(
+      datastoreConfig,
+      syncService,
+      repoDir,
     );
+
+    try {
+      const clear = options.clear === true;
+      const labels = parseLabels(options.label);
+      const notes: string | undefined = options.notes;
+      const removeLabels: string[] | undefined = options.removeLabel;
+
+      if (
+        clear &&
+        (options.url !== undefined || notes !== undefined ||
+          labels !== undefined || removeLabels !== undefined)
+      ) {
+        throw new UserError(
+          "--clear cannot be combined with --url, --notes, --label, or --remove-label. Use --clear alone to remove all annotations.",
+        );
+      }
+
+      if (
+        !clear && options.url === undefined && notes === undefined &&
+        labels === undefined && removeLabels === undefined
+      ) {
+        throw new UserError(
+          "No annotation fields specified. Use --url, --notes, --label, --remove-label, or --clear.",
+        );
+      }
+
+      const ctx = createLibSwampContext({ logger: cliCtx.logger });
+      const deps = createVaultAnnotateDeps(repoDir, repoContext.eventBus);
+
+      const renderer = createVaultAnnotateRenderer(cliCtx.outputMode);
+      await consumeStream(
+        vaultAnnotate(ctx, deps, {
+          vaultName,
+          key,
+          url: options.url,
+          notes,
+          labels,
+          removeLabels,
+          clear,
+        }),
+        renderer.handlers(),
+      );
+    } finally {
+      await flush();
+    }
   });

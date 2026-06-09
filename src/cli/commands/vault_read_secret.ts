@@ -30,7 +30,10 @@ import {
   type GlobalOptions,
   resolveRepoDir,
 } from "../context.ts";
-import { requireInitializedRepoReadOnly } from "../repo_context.ts";
+import {
+  acquireVaultSync,
+  requireInitializedRepoUnlocked,
+} from "../repo_context.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -79,29 +82,39 @@ unless --force is set. In --json mode, outputs the value directly.`,
     ]);
     cliCtx.logger.debug`Reading secret from vault: ${vaultName}`;
 
-    const { repoDir, repoContext } = await requireInitializedRepoReadOnly({
-      repoDir: resolveRepoDir(options.repoDir),
-      outputMode: cliCtx.outputMode,
-    });
-
-    if (cliCtx.outputMode === "log" && !options.force) {
-      const confirmed = await promptConfirmation(
-        `This will reveal the secret '${key}' from vault '${vaultName}'. Continue?`,
-      );
-      if (!confirmed) {
-        cliCtx.logger.info`Cancelled.`;
-        return;
-      }
-    }
-
-    const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createVaultReadSecretDeps(repoDir, repoContext.eventBus);
-
-    const renderer = createVaultReadSecretRenderer(cliCtx.outputMode);
-    await consumeStream(
-      vaultReadSecret(ctx, deps, { vaultName, secretKey: key }),
-      renderer.handlers(),
+    const { repoDir, repoContext, datastoreConfig, syncService } =
+      await requireInitializedRepoUnlocked({
+        repoDir: resolveRepoDir(options.repoDir),
+        outputMode: cliCtx.outputMode,
+      });
+    const { flush } = await acquireVaultSync(
+      datastoreConfig,
+      syncService,
+      repoDir,
     );
 
-    cliCtx.logger.debug("Vault read-secret command completed");
+    try {
+      if (cliCtx.outputMode === "log" && !options.force) {
+        const confirmed = await promptConfirmation(
+          `This will reveal the secret '${key}' from vault '${vaultName}'. Continue?`,
+        );
+        if (!confirmed) {
+          cliCtx.logger.info`Cancelled.`;
+          return;
+        }
+      }
+
+      const ctx = createLibSwampContext({ logger: cliCtx.logger });
+      const deps = createVaultReadSecretDeps(repoDir, repoContext.eventBus);
+
+      const renderer = createVaultReadSecretRenderer(cliCtx.outputMode);
+      await consumeStream(
+        vaultReadSecret(ctx, deps, { vaultName, secretKey: key }),
+        renderer.handlers(),
+      );
+
+      cliCtx.logger.debug("Vault read-secret command completed");
+    } finally {
+      await flush();
+    }
   });
