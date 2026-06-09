@@ -27,12 +27,12 @@ export interface IssueSearchItem {
   type: string;
   status: string;
   author: string;
+  url: string;
 }
 
 export interface IssueSearchData {
   issues: IssueSearchItem[];
   total: number;
-  serverUrl: string;
 }
 
 export type IssueSearchEvent =

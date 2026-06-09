@@ -30,7 +30,7 @@ import type { ReporterContext } from "../../domain/extensions/reporter_context.t
 function makeDeps(overrides: Partial<IssueCreateDeps> = {}): IssueCreateDeps {
   return {
     submitToLab: () =>
-      Promise.resolve({ number: 1, serverUrl: "https://swamp-club.com" }),
+      Promise.resolve({ number: 1, url: "https://swamp-club.com/lab/1" }),
     ...overrides,
   };
 }
@@ -70,7 +70,7 @@ Deno.test("issueCreate: submits bug to Lab and yields completed", async () => {
 Deno.test("issueCreate: submits feature to Lab", async () => {
   const deps = makeDeps({
     submitToLab: () =>
-      Promise.resolve({ number: 7, serverUrl: "https://swamp-club.com" }),
+      Promise.resolve({ number: 7, url: "https://swamp-club.com/lab/7" }),
   });
 
   const events = await collect<IssueCreateEvent>(
@@ -98,7 +98,7 @@ Deno.test("issueCreate: passes title, body, and type to submitToLab", async () =
       captured = input;
       return Promise.resolve({
         number: 42,
-        serverUrl: "https://swamp-club.com",
+        url: "https://swamp-club.com/lab/42",
       });
     },
   });
@@ -116,12 +116,12 @@ Deno.test("issueCreate: passes title, body, and type to submitToLab", async () =
   assertEquals(captured?.body, "My body");
 });
 
-Deno.test("issueCreate: includes serverUrl in result", async () => {
+Deno.test("issueCreate: includes url in result", async () => {
   const deps = makeDeps({
     submitToLab: () =>
       Promise.resolve({
         number: 1,
-        serverUrl: "https://custom.server.com",
+        url: "https://custom.server.com/lab/1",
       }),
   });
 
@@ -136,7 +136,7 @@ Deno.test("issueCreate: includes serverUrl in result", async () => {
   const data = (events[0] as Extract<IssueCreateEvent, { kind: "completed" }>)
     .data;
   if (data.method === "lab") {
-    assertEquals(data.serverUrl, "https://custom.server.com");
+    assertEquals(data.url, "https://custom.server.com/lab/1");
   }
 });
 
@@ -149,7 +149,7 @@ Deno.test("issueCreate: plain lab request body is byte-identical to caller body 
       captured = { body: input.body };
       return Promise.resolve({
         number: 1,
-        serverUrl: "https://swamp-club.com",
+        url: "https://swamp-club.com/lab/1",
       });
     },
   });
@@ -170,7 +170,7 @@ Deno.test("issueCreate: plain lab request body is byte-identical to caller body 
 Deno.test("issueCreate: extension-lab variant set when extensionName present", async () => {
   const deps = makeDeps({
     submitToLab: () =>
-      Promise.resolve({ number: 9, serverUrl: "https://swamp-club.com" }),
+      Promise.resolve({ number: 9, url: "https://swamp-club.com/lab/9" }),
   });
 
   const events = await collect<IssueCreateEvent>(
@@ -200,7 +200,7 @@ Deno.test("issueCreate: extension body contains Extension: line", async () => {
       captured = { body: input.body };
       return Promise.resolve({
         number: 1,
-        serverUrl: "https://swamp-club.com",
+        url: "https://swamp-club.com/lab/1",
       });
     },
   });
@@ -227,7 +227,7 @@ Deno.test("issueCreate: extension body contains Upstream repository line when se
       captured = { body: input.body };
       return Promise.resolve({
         number: 1,
-        serverUrl: "https://swamp-club.com",
+        url: "https://swamp-club.com/lab/1",
       });
     },
   });
@@ -255,7 +255,7 @@ Deno.test("issueCreate: extension body omits Upstream repository when unset", as
       captured = { body: input.body };
       return Promise.resolve({
         number: 1,
-        serverUrl: "https://swamp-club.com",
+        url: "https://swamp-club.com/lab/1",
       });
     },
   });
@@ -280,7 +280,7 @@ Deno.test("issueCreate: extension body contains reporter-context Environment sec
       captured = { body: input.body };
       return Promise.resolve({
         number: 1,
-        serverUrl: "https://swamp-club.com",
+        url: "https://swamp-club.com/lab/1",
       });
     },
   });
@@ -305,7 +305,7 @@ Deno.test("issueCreate: extension path does not modify title", async () => {
       captured = { title: input.title };
       return Promise.resolve({
         number: 1,
-        serverUrl: "https://swamp-club.com",
+        url: "https://swamp-club.com/lab/1",
       });
     },
   });

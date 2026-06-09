@@ -157,7 +157,7 @@ export const issueRippleCommand = new Command()
         );
         return {
           commentId: result.id,
-          serverUrl: credentials.serverUrl,
+          url: `${credentials.serverUrl}/lab/${input.issueNumber}`,
         };
       },
       updateStatus: async (input) => {

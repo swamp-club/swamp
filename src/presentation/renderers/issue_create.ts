@@ -42,9 +42,7 @@ class LogIssueCreateRenderer implements Renderer<IssueCreateEvent> {
             "Submitted {type} report #{number}: {title}",
             { type: data.type, number: data.number, title: data.title },
           );
-          logger.info("View at: {url}", {
-            url: `${data.serverUrl}/lab/${data.number}`,
-          });
+          logger.info("View at: {url}", { url: data.url });
           if (data.type === "security") {
             logger.info(
               "This security report is visible only to you and the admin team at swamp-club.com.",
@@ -59,9 +57,7 @@ class LogIssueCreateRenderer implements Renderer<IssueCreateEvent> {
               title: data.title,
             },
           );
-          logger.info("View at: {url}", {
-            url: `${data.serverUrl}/lab/${data.number}`,
-          });
+          logger.info("View at: {url}", { url: data.url });
           if (data.type === "security") {
             logger.info(
               "This security report is visible only to you and the admin team at swamp-club.com.",
@@ -155,9 +151,7 @@ class LogIssueCommentRenderer implements Renderer<IssueCommentEvent> {
           "Posted ripple on issue #{number}",
           { number: data.issueNumber },
         );
-        logger.info("View at: {url}", {
-          url: `${data.serverUrl}/lab/${data.issueNumber}`,
-        });
+        logger.info("View at: {url}", { url: data.url });
         if (data.statusChanged) {
           const verb = data.statusChanged === "closed" ? "Closed" : "Reopened";
           logger.info(`${verb} issue #{number}`, {

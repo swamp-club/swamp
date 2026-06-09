@@ -45,7 +45,7 @@ class LogIssueGetRenderer implements Renderer<IssueGetEvent> {
           writeOutput(renderMarkdownToTerminal(d.body));
         }
         writeOutput("");
-        writeOutput(dim(`View at: ${d.serverUrl}/lab/${d.number}`));
+        writeOutput(dim(`View at: ${d.url}`));
       },
       error: (e) => {
         throw new UserError(e.error.message);

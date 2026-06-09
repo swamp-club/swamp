@@ -29,7 +29,7 @@ function makeDeps(overrides: Partial<IssueEditDeps> = {}): IssueEditDeps {
       Promise.resolve({
         title: "Updated title",
         body: "Updated body",
-        serverUrl: "https://swamp-club.com",
+        url: "https://swamp-club.com/lab/42",
       }),
     ...overrides,
   };
@@ -50,7 +50,7 @@ Deno.test("issueEdit: yields completed when title changes", async () => {
   assertEquals(events[0].kind, "completed");
   const completed = events[0] as Extract<IssueEditEvent, { kind: "completed" }>;
   assertEquals(completed.data.issueNumber, 42);
-  assertEquals(completed.data.serverUrl, "https://swamp-club.com");
+  assertEquals(completed.data.url, "https://swamp-club.com/lab/42");
 });
 
 Deno.test("issueEdit: yields completed when body changes", async () => {
@@ -76,7 +76,7 @@ Deno.test("issueEdit: yields noop when nothing changes", async () => {
       return Promise.resolve({
         title: "Same",
         body: "Same",
-        serverUrl: "https://swamp-club.com",
+        url: "https://swamp-club.com/lab/42",
       });
     },
   });
@@ -104,7 +104,7 @@ Deno.test("issueEdit: sends only changed fields to updateIssue", async () => {
       return Promise.resolve({
         title: input.fields.title ?? "Original",
         body: input.fields.body ?? "Original",
-        serverUrl: "https://swamp-club.com",
+        url: "https://swamp-club.com/lab/42",
       });
     },
   });
@@ -148,7 +148,7 @@ Deno.test("issueEdit: sends both fields when both change", async () => {
       return Promise.resolve({
         title: "New title",
         body: "New body",
-        serverUrl: "https://swamp-club.com",
+        url: "https://swamp-club.com/lab/42",
       });
     },
   });

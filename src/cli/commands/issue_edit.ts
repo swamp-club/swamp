@@ -174,7 +174,10 @@ export const issueEditCommand = new Command()
           input.issueNumber,
           input.fields,
         );
-        return { ...result, serverUrl: credentials.serverUrl };
+        return {
+          ...result,
+          url: `${credentials.serverUrl}/lab/${input.issueNumber}`,
+        };
       },
     };
 

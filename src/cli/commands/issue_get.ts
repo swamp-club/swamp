@@ -57,7 +57,7 @@ export const issueGetCommand = new Command()
     const deps: IssueGetDeps = {
       fetchIssue: async (num) => {
         const issue = await client.fetchIssue(credentials?.apiKey, num);
-        return { ...issue, serverUrl };
+        return { ...issue, url: `${serverUrl}/lab/${num}` };
       },
     };
 

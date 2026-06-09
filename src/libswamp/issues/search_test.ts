@@ -45,10 +45,10 @@ Deno.test("issueSearch: returns completed event with search results", async () =
         type: "bug",
         status: "open",
         author: "alice",
+        url: "https://swamp-club.com/lab/42",
       },
     ],
     total: 1,
-    serverUrl: "https://swamp-club.com",
   };
 
   const deps: IssueSearchDeps = {
@@ -66,7 +66,10 @@ Deno.test("issueSearch: returns completed event with search results", async () =
     assertEquals(events[0].data.issues.length, 1);
     assertEquals(events[0].data.issues[0].number, 42);
     assertEquals(events[0].data.total, 1);
-    assertEquals(events[0].data.serverUrl, "https://swamp-club.com");
+    assertEquals(
+      events[0].data.issues[0].url,
+      "https://swamp-club.com/lab/42",
+    );
   }
 });
 
@@ -78,7 +81,6 @@ Deno.test("issueSearch: passes input filters to deps", async () => {
       return Promise.resolve({
         issues: [],
         total: 0,
-        serverUrl: "https://swamp-club.com",
       });
     },
   };
@@ -102,7 +104,6 @@ Deno.test("issueSearch: returns empty results", async () => {
       Promise.resolve({
         issues: [],
         total: 0,
-        serverUrl: "https://swamp-club.com",
       }),
   };
 
