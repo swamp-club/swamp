@@ -293,6 +293,16 @@ directory is searched first (e.g. `sub/.claude/skills/<name>/`), then
 project-local, then global. All enrolled tools are searched, not just
 the primary tool.
 
+Local source-loading honours `paths.base: manifest` — at startup, the
+loader scans all known extension directories for manifests with
+`paths.base: manifest`. When a manifest declares components of a kind
+different from its parent directory (e.g. a `reports:` entry in a
+manifest under `extensions/models/myext/`), the manifest's directory is
+added as an additional source directory for that kind. This closes the
+dev/prod parity gap where published bundles loaded all declared
+components but local source loading only discovered components matching
+their kind directory.
+
 The on-wire manifest in the archive preserves the field strings
 verbatim — no path rewriting, no normalization. WYSIWYG between what
 the author pushes and what the registry stores. The archive layout

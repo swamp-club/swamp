@@ -146,7 +146,11 @@ import {
   readSwampSources,
   resolveSourceExtensionDirs,
 } from "../infrastructure/persistence/swamp_sources_repository.ts";
-import type { ResolvedSourceDirs } from "../domain/repo/swamp_sources.ts";
+import type {
+  ExtensionKind,
+  ResolvedSourceDirs,
+} from "../domain/repo/swamp_sources.ts";
+import { discoverManifestCrossKindDirs } from "../domain/extensions/manifest_cross_kind_discovery.ts";
 
 // Import models barrel to trigger self-registration
 import "../domain/models/models.ts";
@@ -296,6 +300,39 @@ export async function configureExtensionLoaders(
   );
   const sourceReportsDirs = collectDirsForKind(resolvedSources, "reports");
 
+  const resolveAbsoluteKindDir = (
+    resolveDir: (m: RepoMarkerData | null) => string,
+  ): string => {
+    const dir = resolveDir(marker);
+    return isAbsolute(dir) ? dir : resolve(effectiveExtDir, dir);
+  };
+
+  const kindDirs = new Map<ExtensionKind, string[]>([
+    ["models", [resolveAbsoluteKindDir(resolveModelsDir), ...sourceModelsDirs]],
+    ["vaults", [resolveAbsoluteKindDir(resolveVaultsDir), ...sourceVaultsDirs]],
+    [
+      "drivers",
+      [resolveAbsoluteKindDir(resolveDriversDir), ...sourceDriversDirs],
+    ],
+    [
+      "datastores",
+      [resolveAbsoluteKindDir(resolveDatastoresDir), ...sourceDatastoresDirs],
+    ],
+    [
+      "reports",
+      [resolveAbsoluteKindDir(resolveReportsDir), ...sourceReportsDirs],
+    ],
+  ]);
+  const manifestCrossKindDirs = await discoverManifestCrossKindDirs(kindDirs);
+
+  const mergeManifestDirs = (
+    sourceDirs: string[],
+    kind: ExtensionKind,
+  ): string[] => {
+    const extra = manifestCrossKindDirs.get(kind);
+    return extra ? [...sourceDirs, ...extra] : sourceDirs;
+  };
+
   let resolverPromise: Promise<DatastorePathResolver | undefined> | undefined;
   const lazyResolver = (): Promise<DatastorePathResolver | undefined> => {
     resolverPromise ??= resolveDatastoreConfig(marker, undefined, repoDir)
@@ -351,7 +388,7 @@ export async function configureExtensionLoaders(
       repoDir,
       marker,
       denoRuntime,
-      sourceModelsDirs,
+      mergeManifestDirs(sourceModelsDirs, "models"),
       lazyResolver,
       repository,
       quiet,
@@ -363,7 +400,7 @@ export async function configureExtensionLoaders(
       repoDir,
       marker,
       denoRuntime,
-      sourceVaultsDirs,
+      mergeManifestDirs(sourceVaultsDirs, "vaults"),
       lazyResolver,
       repository,
       quiet,
@@ -375,7 +412,7 @@ export async function configureExtensionLoaders(
       repoDir,
       marker,
       denoRuntime,
-      sourceDriversDirs,
+      mergeManifestDirs(sourceDriversDirs, "drivers"),
       lazyResolver,
       repository,
       quiet,
@@ -387,7 +424,7 @@ export async function configureExtensionLoaders(
       repoDir,
       marker,
       denoRuntime,
-      sourceDatastoresDirs,
+      mergeManifestDirs(sourceDatastoresDirs, "datastores"),
       repository,
       quiet,
       effectiveExtDir,
@@ -398,7 +435,7 @@ export async function configureExtensionLoaders(
       repoDir,
       marker,
       denoRuntime,
-      sourceReportsDirs,
+      mergeManifestDirs(sourceReportsDirs, "reports"),
       lazyResolver,
       repository,
       quiet,

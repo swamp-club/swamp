@@ -467,4 +467,10 @@ directories:
 2. `reportsDir` in `.swamp.yaml`
 3. Default: `extensions/reports/`
 
+Additionally, reports co-located with models in `paths.base: manifest`
+extensions are discovered automatically. When a manifest in e.g.
+`extensions/models/myext/manifest.yaml` declares `reports:` entries with
+`paths.base: manifest`, the manifest's directory is added as an additional
+report source directory at startup.
+
 See `src/cli/resolve_reports_dir.ts`.
