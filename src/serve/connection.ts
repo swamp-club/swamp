@@ -38,6 +38,7 @@ import type {
 import { findDefinitionByIdOrName } from "../domain/models/model_lookup.ts";
 import { acquireModelLocks } from "../cli/repo_context.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
+import type { WorkerGateway } from "./worker_gateway.ts";
 
 // ── Zod schemas for incoming WebSocket messages ─────────────────────────
 
@@ -107,6 +108,13 @@ export interface ConnectionContext {
    * datastores or custom datastores without a cache.
    */
   syncService?: DatastoreSyncService;
+  /**
+   * Remote-execution worker gateway. When present, `rpc.*` frames on this
+   * socket are routed to it (worker enrollment and capability verbs); the
+   * legacy client protocol on the same listener is unaffected. See
+   * design/remote-execution.md.
+   */
+  workerGateway?: WorkerGateway;
 }
 
 export function handleConnection(
@@ -114,12 +122,26 @@ export function handleConnection(
   ctx: ConnectionContext,
 ): void {
   const activeRequests = new Map<string, AbortController>();
+  const workerAttachment = ctx.workerGateway?.attachTransport({
+    send: (data) => {
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.send(data);
+      }
+    },
+  });
 
   socket.onmessage = (event) => {
+    if (
+      workerAttachment && typeof event.data === "string" &&
+      workerAttachment.feed(event.data)
+    ) {
+      return;
+    }
     handleMessage(socket, ctx, activeRequests, event);
   };
 
   socket.onclose = () => {
+    workerAttachment?.closed();
     for (const controller of activeRequests.values()) {
       controller.abort();
     }

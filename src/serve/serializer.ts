@@ -57,7 +57,7 @@ export function serializeSwampError(error: SwampError): SerializedError {
 /**
  * Deep-clones an object, converting Error instances to plain objects.
  */
-function jsonSafeClone(value: unknown): unknown {
+export function jsonSafeClone(value: unknown): unknown {
   if (value === null || value === undefined) return value;
   if (value instanceof Error) {
     return { message: value.message, stack: value.stack };

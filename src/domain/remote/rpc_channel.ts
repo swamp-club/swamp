@@ -84,6 +84,17 @@ export class RpcError extends Error {
 
 export const DEFAULT_CALL_TIMEOUT_MS = 30_000;
 
+/**
+ * Rejection raised for calls pending when the channel closes — the signal
+ * the dispatcher uses to enter grace-window failure semantics.
+ */
+export class ChannelClosedError extends Error {
+  constructor(reason?: string) {
+    super(reason ?? "RPC channel closed");
+    this.name = "ChannelClosedError";
+  }
+}
+
 interface PendingCall {
   resolve: (result: unknown) => void;
   reject: (error: Error) => void;
@@ -217,7 +228,7 @@ export class RpcChannel {
       return;
     }
     this.#closed = true;
-    const error = new Error(reason ?? "RPC channel closed");
+    const error = new ChannelClosedError(reason);
     for (const pending of [...this.#pending.values()]) {
       pending.reject(error);
     }

@@ -225,7 +225,12 @@ export const DispatchParamsSchema = z.object({
   /** Step-lease id recorded at the orchestrator. */
   leaseId: z.string().min(1),
   execution: DispatchExecutionSchema,
-  /** Content fingerprint of the model bundle to fetch on cache miss. */
+  /**
+   * Content fingerprint of the model bundle to fetch on cache miss, or a
+   * `builtin:<type>` sentinel — built-in models ship inside the swamp binary
+   * itself (version lockstep is guaranteed at enrollment), so no bundle
+   * travels for them.
+   */
   bundleFingerprint: z.string().min(1),
   /** Fingerprints of report-provider bundles the step's reports need. */
   reportBundleFingerprints: z.array(z.string()).default([]),
@@ -234,8 +239,12 @@ export const DispatchParamsSchema = z.object({
    * for the duration of the step. See design/remote-execution.md.
    */
   environmentSnapshot: z.record(z.string(), z.string()),
-  /** Base URL of the orchestrator's HTTP data plane. */
-  dataPlaneUrl: z.string().min(1),
+  /**
+   * Base URL of the orchestrator's HTTP data plane. Omitted in the common
+   * single-listener deployment — the worker derives it from its own connect
+   * URL (ws → http, wss → https).
+   */
+  dataPlaneUrl: z.string().optional(),
   /** Workflow position, for run-event labeling. */
   step: z.object({
     workflowName: z.string().optional(),
