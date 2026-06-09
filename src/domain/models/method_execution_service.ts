@@ -51,6 +51,13 @@ import {
   injectTraceContext,
   withSpan,
 } from "../../infrastructure/tracing/mod.ts";
+import {
+  getRemoteStepDispatcher,
+  type RemoteStepResult,
+} from "../remote/remote_dispatch.ts";
+import type { RpcStreamEvent } from "../remote/protocol.ts";
+import { hasPlacement } from "../remote/scheduler.ts";
+import { createDataId } from "../data/data_id.ts";
 
 /**
  * Maximum depth for recursive follow-up action processing.
@@ -347,6 +354,77 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
     }
 
     return result;
+  }
+
+  /**
+   * Dispatch the method body to a remote worker through the registered
+   * dispatcher port. Vault sentinels are resolved into the shipped args —
+   * the same resolve-before-dispatch pattern out-of-process execution has
+   * always used; secrets travel only for the step that needs them.
+   */
+  async #executeRemotely(
+    context: MethodContext,
+    executionRequest: import("../drivers/execution_driver.ts").ExecutionRequest,
+    modelDef: ModelDefinition,
+    currentDefinition: Definition,
+    methodName: string,
+  ): Promise<RemoteStepResult> {
+    const dispatcher = getRemoteStepDispatcher();
+    if (dispatcher === null) {
+      throw new UserError(
+        `Step requests remote placement but no worker dispatcher is active — ` +
+          `remote execution requires running under 'swamp serve' with enrolled workers`,
+      );
+    }
+
+    const secretBag = context.vaultSecrets;
+    const methodArgs = secretBag && !secretBag.isEmpty
+      ? secretBag.resolveDeep(
+        executionRequest.methodArgs,
+      ) as Record<string, unknown>
+      : executionRequest.methodArgs;
+    const globalArgs = secretBag && !secretBag.isEmpty
+      ? secretBag.resolveDeep(
+        executionRequest.globalArgs,
+      ) as Record<string, unknown>
+      : executionRequest.globalArgs;
+
+    return await withSpan("swamp.remote.dispatch", {
+      "model.type": context.modelType.normalized,
+      "method.name": methodName,
+    }, () =>
+      dispatcher.executeRemote({
+        placement: context.placement!,
+        modelDef,
+        modelType: context.modelType,
+        modelId: context.modelId,
+        methodName,
+        definitionName: currentDefinition.name,
+        definitionTags: currentDefinition.tags,
+        definitionMeta: executionRequest.definitionMeta,
+        globalArgs,
+        methodArgs,
+        resourceSpecs: executionRequest.resourceSpecs,
+        fileSpecs: executionRequest.fileSpecs,
+        runtimeTags: context.runtimeTags,
+        workflowName: context.tagOverrides?.workflow,
+        jobName: context.tagOverrides?.job,
+        stepName: context.tagOverrides?.step,
+        signal: context.signal,
+        onEvent: context.onEvent
+          ? (event: RpcStreamEvent) => {
+            if (event.kind === "method_event" && "event" in event) {
+              context.onEvent!(
+                event.event as Parameters<
+                  NonNullable<
+                    MethodContext["onEvent"]
+                  >
+                >[0],
+              );
+            }
+          }
+          : undefined,
+      }));
   }
 
   executeWorkflow(
@@ -703,7 +781,34 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       let result: MethodResult;
       let executionContext: MethodContext = context;
 
-      if (driverType === "raw") {
+      if (context.placement && hasPlacement(context.placement)) {
+        // Remote placement: the method body runs on a matching worker; the
+        // surrounding pipeline (checks above, output records and follow-up
+        // actions below) stays at the orchestrator. See
+        // design/remote-execution.md.
+        const remoteResult = await this.#executeRemotely(
+          context,
+          executionRequest,
+          modelDef,
+          currentDefinition,
+          methodName,
+        );
+        currentHandles = remoteResult.outputs.map((output) => ({
+          dataId: createDataId(output.dataId),
+          name: output.name,
+          specName: output.specName,
+          kind: output.type,
+          version: output.version,
+          size: 0,
+          tags: {},
+          metadata: {} as DataHandle["metadata"],
+        }));
+        result = {
+          dataHandles: currentHandles,
+          followUpActions: remoteResult
+            .followUpActions as FollowUpAction[] | undefined,
+        };
+      } else if (driverType === "raw") {
         // Use the raw in-process driver
         const driver = new RawExecutionDriver(
           this,

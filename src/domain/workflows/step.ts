@@ -93,6 +93,12 @@ export const StepSchema = z.object({
   allowFailure: z.boolean().default(false),
   driver: DriverFieldSchema,
   driverConfig: DriverConfigFieldSchema,
+  // Remote-execution placement (see design/remote-execution.md): a step
+  // declaring any of these dispatches to a matching worker instead of the
+  // loopback executor.
+  target: z.string().optional(),
+  labels: z.record(z.string(), z.string()).optional(),
+  platform: z.string().optional(),
 });
 
 /**
@@ -136,6 +142,9 @@ export interface CreateStepProps {
   allowFailure?: boolean;
   driver?: string;
   driverConfig?: Record<string, unknown>;
+  target?: string;
+  labels?: Record<string, string>;
+  platform?: string;
 }
 
 /**
@@ -162,6 +171,9 @@ export class Step {
     readonly allowFailure: boolean,
     readonly driver: string | undefined,
     readonly driverConfig: Record<string, unknown> | undefined,
+    readonly target: string | undefined,
+    readonly labels: Record<string, string> | undefined,
+    readonly platform: string | undefined,
   ) {}
 
   /**
@@ -183,6 +195,9 @@ export class Step {
       allowFailure: props.allowFailure ?? false,
       driver: props.driver,
       driverConfig: props.driverConfig,
+      target: props.target,
+      labels: props.labels,
+      platform: props.platform,
     });
 
     return Step.fromData(data);
@@ -226,6 +241,9 @@ export class Step {
       validated.allowFailure,
       validated.driver,
       validated.driverConfig,
+      validated.target,
+      validated.labels,
+      validated.platform,
     );
   }
 
@@ -286,6 +304,29 @@ export class Step {
       allowFailure: this.allowFailure,
       driver: this.driver,
       driverConfig: this.driverConfig,
+      target: this.target,
+      labels: this.labels,
+      platform: this.platform,
+    };
+  }
+
+  /**
+   * The step's remote-execution placement, or undefined when it has none —
+   * placement-free steps run on the loopback executor.
+   */
+  get placement():
+    | { target?: string; labels?: Record<string, string>; platform?: string }
+    | undefined {
+    if (
+      this.target === undefined && this.platform === undefined &&
+      (this.labels === undefined || Object.keys(this.labels).length === 0)
+    ) {
+      return undefined;
+    }
+    return {
+      target: this.target,
+      labels: this.labels,
+      platform: this.platform,
     };
   }
 }

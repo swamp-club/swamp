@@ -928,6 +928,7 @@ export class DefaultStepExecutor implements StepExecutor {
           vaultSecrets: secretBag,
           driver: resolved.driver,
           driverConfig: resolved.driverConfig,
+          placement: ctx.step?.placement,
           skipCheckNames: ctx.skipCheckNames,
           skipCheckLabels: ctx.skipCheckLabels,
           skipAllChecks: ctx.skipAllChecks,

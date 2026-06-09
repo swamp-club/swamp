@@ -375,3 +375,49 @@ Deno.test("StepSchema throws clear error for string dependsOn entries", () => {
     "dependsOn entries must be objects, not strings",
   );
 });
+
+Deno.test("Step placement: undefined when no placement fields are set", () => {
+  const step = Step.fromData({
+    name: "local",
+    task: {
+      type: "model_method",
+      modelIdOrName: "my-model",
+      methodName: "run",
+    },
+  });
+  assertEquals(step.placement, undefined);
+});
+
+Deno.test("Step placement: empty labels object still means no placement", () => {
+  const step = Step.fromData({
+    name: "local",
+    task: {
+      type: "model_method",
+      modelIdOrName: "my-model",
+      methodName: "run",
+    },
+    labels: {},
+  });
+  assertEquals(step.placement, undefined);
+});
+
+Deno.test("Step placement: target, labels, and platform round-trip through toData", () => {
+  const step = Step.fromData({
+    name: "remote",
+    task: {
+      type: "model_method",
+      modelIdOrName: "my-model",
+      methodName: "run",
+    },
+    target: "ci-runner-3",
+    labels: { gpu: "true", region: "us-east" },
+    platform: "linux/x86_64",
+  });
+  assertEquals(step.placement, {
+    target: "ci-runner-3",
+    labels: { gpu: "true", region: "us-east" },
+    platform: "linux/x86_64",
+  });
+  const restored = Step.fromData(step.toData());
+  assertEquals(restored.placement, step.placement);
+});

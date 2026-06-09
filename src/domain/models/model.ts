@@ -287,6 +287,18 @@ export interface MethodContext {
   driverConfig?: Record<string, unknown>;
 
   /**
+   * Remote-execution placement for this run (see
+   * design/remote-execution.md). When present, the method body dispatches
+   * to a matching worker instead of executing in-process; checks, reports,
+   * and output records still run at the orchestrator around it.
+   */
+  placement?: {
+    target?: string;
+    labels?: Record<string, string>;
+    platform?: string;
+  };
+
+  /**
    * Optional callback for emitting domain events during method execution.
    * Used for process output streaming, vault storage, schema warnings, etc.
    * Output lines are emitted as `{ type: "output", line, stream }` events.

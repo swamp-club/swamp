@@ -77,6 +77,7 @@ export interface MethodInvocationContext {
   reportLabels?: MethodContext["reportLabels"];
   driver?: MethodContext["driver"];
   driverConfig?: MethodContext["driverConfig"];
+  placement?: MethodContext["placement"];
   vaultSecrets?: MethodContext["vaultSecrets"];
   unresolvedMethodArgs?: MethodContext["unresolvedMethodArgs"];
   /**
@@ -132,6 +133,7 @@ export function buildMethodContext(
     reportLabels: invocation.reportLabels,
     driver: invocation.driver,
     driverConfig: invocation.driverConfig,
+    placement: invocation.placement,
     vaultSecrets: invocation.vaultSecrets,
     unresolvedMethodArgs: invocation.unresolvedMethodArgs,
     extensionFile: (relPath: string) => resolveExtensionFile(root, relPath),
