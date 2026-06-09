@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { dirname, join, resolve } from "@std/path";
+import { assertContainedPath } from "../../infrastructure/persistence/safe_path.ts";
 import { tombstoneAll } from "../../domain/extensions/extension.ts";
 import type { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
 import type { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
@@ -138,6 +139,7 @@ export class RemoveExtensionService {
     let filesSkipped = 0;
     const parentDirs: string[] = [];
     for (const filePath of trackedFiles) {
+      assertContainedPath(filePath, this.repoDir);
       const absolutePath = join(this.repoDir, filePath);
       try {
         const stat = await Deno.stat(absolutePath);

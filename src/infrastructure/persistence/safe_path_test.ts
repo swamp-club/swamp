@@ -17,9 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects } from "@std/assert";
+import { assertEquals, assertRejects, assertThrows } from "@std/assert";
 import { dirname, join } from "@std/path";
-import { assertSafePath, PathTraversalError } from "./safe_path.ts";
+import {
+  assertContainedPath,
+  assertSafePath,
+  PathTraversalError,
+} from "./safe_path.ts";
 
 Deno.test("assertSafePath", async (t) => {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp-safe-path-" });
@@ -231,4 +235,53 @@ Deno.test("assertSafePath", async (t) => {
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }
+});
+
+Deno.test("assertContainedPath", async (t) => {
+  const boundary = "/fake/repo";
+
+  await t.step("accepts simple relative paths", () => {
+    assertContainedPath(".swamp/pulled-extensions/model.ts", boundary);
+    assertContainedPath("extensions/models/foo.ts", boundary);
+    assertContainedPath("a/b/c/d.txt", boundary);
+  });
+
+  await t.step("rejects .. traversal", () => {
+    assertThrows(
+      () => assertContainedPath("../victim-data", boundary),
+      PathTraversalError,
+    );
+    assertThrows(
+      () => assertContainedPath("a/../../outside", boundary),
+      PathTraversalError,
+    );
+    assertThrows(
+      () => assertContainedPath(".swamp/../../../etc/passwd", boundary),
+      PathTraversalError,
+    );
+  });
+
+  await t.step("rejects absolute paths", () => {
+    assertThrows(
+      () => assertContainedPath("/etc/passwd", boundary),
+      PathTraversalError,
+    );
+    assertThrows(
+      () => assertContainedPath("/tmp/evil", boundary),
+      PathTraversalError,
+    );
+  });
+
+  await t.step("rejects null bytes", () => {
+    assertThrows(
+      () => assertContainedPath("file\0.txt", boundary),
+      PathTraversalError,
+    );
+  });
+
+  await t.step("accepts filenames starting with ..", () => {
+    assertContainedPath("..foo", boundary);
+    assertContainedPath("dir/..config", boundary);
+    assertContainedPath("...hidden.txt", boundary);
+  });
 });

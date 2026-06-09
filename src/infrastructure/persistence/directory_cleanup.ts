@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { dirname, join } from "@std/path";
+import { assertContainedPath } from "./safe_path.ts";
 
 /**
  * Removes a list of repo-relative paths and reports which were actually
@@ -44,6 +45,7 @@ export async function pruneOrphanFiles(
 ): Promise<string[]> {
   const removed: string[] = [];
   for (const file of orphanPaths) {
+    assertContainedPath(file, repoDir);
     const absolutePath = join(repoDir, file);
     try {
       await Deno.remove(absolutePath, { recursive: true });

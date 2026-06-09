@@ -17,10 +17,14 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import { ensureDir, exists } from "@std/fs";
-import { cleanupEmptyParentDirs } from "./directory_cleanup.ts";
+import {
+  cleanupEmptyParentDirs,
+  pruneOrphanFiles,
+} from "./directory_cleanup.ts";
+import { PathTraversalError } from "./safe_path.ts";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
   const dir = await Deno.makeTempDir({ prefix: "swamp-cleanup-test-" });
@@ -141,5 +145,45 @@ Deno.test("cleanupEmptyParentDirs does not go above stop directory", async () =>
     // But data and swamp should still exist
     assertEquals(await exists(dataDir), true);
     assertEquals(await exists(swampDir), true);
+  });
+});
+
+Deno.test("pruneOrphanFiles rejects path traversal in orphan paths", async () => {
+  await withTempDir(async (tempDir) => {
+    const repoDir = join(tempDir, "repo");
+    await ensureDir(repoDir);
+
+    const victimDir = join(tempDir, "victim");
+    await ensureDir(victimDir);
+    await Deno.writeTextFile(join(victimDir, "secret.txt"), "sensitive");
+
+    await assertRejects(
+      () => pruneOrphanFiles(["../victim"], repoDir),
+      PathTraversalError,
+    );
+
+    assertEquals(await exists(victimDir), true);
+    assertEquals(
+      await Deno.readTextFile(join(victimDir, "secret.txt")),
+      "sensitive",
+    );
+  });
+});
+
+Deno.test("pruneOrphanFiles removes valid orphan paths", async () => {
+  await withTempDir(async (tempDir) => {
+    const repoDir = join(tempDir, "repo");
+    await ensureDir(repoDir);
+    const orphanFile = join(repoDir, ".swamp", "pulled-extensions", "old.ts");
+    await ensureDir(join(repoDir, ".swamp", "pulled-extensions"));
+    await Deno.writeTextFile(orphanFile, "old content");
+
+    const removed = await pruneOrphanFiles(
+      [".swamp/pulled-extensions/old.ts"],
+      repoDir,
+    );
+
+    assertEquals(removed, [".swamp/pulled-extensions/old.ts"]);
+    assertEquals(await exists(orphanFile), false);
   });
 });

@@ -114,3 +114,42 @@ export async function assertSafePath(
     throw new PathTraversalError(path, boundary, resolvedPath);
   }
 }
+
+/**
+ * Synchronous, lexical containment check for repo-relative paths.
+ * Rejects absolute paths, null bytes, and `..` traversal BEFORE any
+ * filesystem I/O occurs. Use this to validate untrusted paths from
+ * committed lockfiles or other repo-controlled data before passing
+ * them to `Deno.stat`, `Deno.remove`, or similar operations.
+ *
+ * @param relativePath - The repo-relative path to validate
+ * @param boundary - The absolute directory the path must stay within
+ * @throws {PathTraversalError} if the resolved path escapes the boundary
+ */
+export function assertContainedPath(
+  relativePath: string,
+  boundary: string,
+): void {
+  if (relativePath.includes("\0")) {
+    throw new PathTraversalError(
+      relativePath,
+      boundary,
+      "(contains null byte)",
+    );
+  }
+  if (relativePath.startsWith("/") || /^[A-Za-z]:[\\/]/.test(relativePath)) {
+    throw new PathTraversalError(
+      relativePath,
+      boundary,
+      "(absolute path)",
+    );
+  }
+  const resolvedBoundary = resolve(boundary);
+  const resolvedPath = resolve(join(resolvedBoundary, relativePath));
+  if (
+    resolvedPath !== resolvedBoundary &&
+    !resolvedPath.startsWith(resolvedBoundary + SEPARATOR)
+  ) {
+    throw new PathTraversalError(relativePath, boundary, resolvedPath);
+  }
+}

@@ -20,6 +20,7 @@
 import { join } from "@std/path";
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import { cleanupEmptyParentDirs } from "../../infrastructure/persistence/directory_cleanup.ts";
+import { assertContainedPath } from "../../infrastructure/persistence/safe_path.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
@@ -273,6 +274,7 @@ export async function needsInstallOrMigration(
 ): Promise<"install" | "migrate" | "up_to_date"> {
   let hasLegacy = false;
   for (const file of files) {
+    assertContainedPath(file, repoDir);
     const absolutePath = join(repoDir, file);
     try {
       await Deno.stat(absolutePath);
@@ -321,6 +323,7 @@ export async function sweepLegacyPaths(
   skillsDirRelative?: string,
 ): Promise<void> {
   for (const file of originalFiles) {
+    assertContainedPath(file, repoDir);
     if (isSkillDirEntry(file, skillsDirRelative)) {
       continue;
     }
