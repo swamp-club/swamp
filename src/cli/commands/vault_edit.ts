@@ -33,7 +33,7 @@ import {
   type GlobalOptions,
   resolveRepoDir,
 } from "../context.ts";
-import { requireInitializedRepo } from "../repo_context.ts";
+import { requireInitializedRepoUnlocked } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -54,7 +54,7 @@ export const vaultEditCommand = new Command()
     const cliCtx = createContext(options as GlobalOptions, ["vault", "edit"]);
     cliCtx.logger.debug`Editing vault: ${vaultNameOrId ?? "(interactive)"}`;
 
-    const { repoContext, repoDir } = await requireInitializedRepo({
+    const { repoContext, repoDir } = await requireInitializedRepoUnlocked({
       repoDir: resolveRepoDir(options.repoDir),
       outputMode: cliCtx.outputMode,
     });

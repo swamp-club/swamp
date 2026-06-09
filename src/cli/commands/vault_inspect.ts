@@ -30,7 +30,7 @@ import {
   type GlobalOptions,
   resolveRepoDir,
 } from "../context.ts";
-import { requireInitializedRepo } from "../repo_context.ts";
+import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -68,7 +68,7 @@ via \`swamp vault annotate\`.`,
     cliCtx.logger
       .debug`Inspecting annotation for secret in vault: ${vaultName}`;
 
-    const { repoDir } = await requireInitializedRepo({
+    const { repoDir } = await requireInitializedRepoReadOnly({
       repoDir: resolveRepoDir(options.repoDir),
       outputMode: cliCtx.outputMode,
     });
