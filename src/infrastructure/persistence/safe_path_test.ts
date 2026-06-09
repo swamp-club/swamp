@@ -246,6 +246,17 @@ Deno.test("assertContainedPath", async (t) => {
     assertContainedPath("a/b/c/d.txt", boundary);
   });
 
+  await t.step("rejects empty string and identity path", () => {
+    assertThrows(
+      () => assertContainedPath("", boundary),
+      PathTraversalError,
+    );
+    assertThrows(
+      () => assertContainedPath(".", boundary),
+      PathTraversalError,
+    );
+  });
+
   await t.step("rejects .. traversal", () => {
     assertThrows(
       () => assertContainedPath("../victim-data", boundary),

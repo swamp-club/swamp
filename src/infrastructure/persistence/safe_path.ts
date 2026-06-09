@@ -130,6 +130,13 @@ export function assertContainedPath(
   relativePath: string,
   boundary: string,
 ): void {
+  if (!relativePath || relativePath === ".") {
+    throw new PathTraversalError(
+      relativePath,
+      boundary,
+      "(empty or identity path)",
+    );
+  }
   if (relativePath.includes("\0")) {
     throw new PathTraversalError(
       relativePath,
