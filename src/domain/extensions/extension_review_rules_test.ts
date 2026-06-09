@@ -153,6 +153,73 @@ Deno.test("credentials-sensitive-field: no warning when marked sensitive", () =>
   assertEquals(result.warnings.length, 0);
 });
 
+Deno.test("credentials-sensitive-field: no warning when .meta({ sensitive: true }) is on a continuation line", () => {
+  const result = evaluateReviewRules([
+    source({
+      kind: "model",
+      content: `  oauthToken: z.string()
+    .startsWith("sk-ant", "must start with sk-ant")
+    .meta({ sensitive: true })
+    .describe("Claude Code OAuth token"),`,
+    }),
+  ]);
+  assertEquals(
+    result.warnings.filter((w) => w.ruleId === "credentials-sensitive-field")
+      .length,
+    0,
+  );
+});
+
+Deno.test("credentials-sensitive-field: warns on multi-line chain without sensitive", () => {
+  const result = evaluateReviewRules([
+    source({
+      kind: "model",
+      content: `  apiKey: z.string()
+    .min(1)
+    .describe("The API key"),`,
+    }),
+  ]);
+  assertEquals(
+    result.warnings.filter((w) => w.ruleId === "credentials-sensitive-field")
+      .length,
+    1,
+  );
+});
+
+Deno.test("credentials-sensitive-field: only warns on the unmarked field when mixed", () => {
+  const result = evaluateReviewRules([
+    source({
+      kind: "model",
+      content: `  oauthToken: z.string()
+    .meta({ sensitive: true }),
+  secretKey: z.string()
+    .min(1)
+    .describe("not marked"),`,
+    }),
+  ]);
+  const findings = result.warnings.filter((w) =>
+    w.ruleId === "credentials-sensitive-field"
+  );
+  assertEquals(findings.length, 1);
+  assert(findings[0].message.includes("secretKey"));
+});
+
+Deno.test("credentials-sensitive-field: lookahead stops at closing brace", () => {
+  const result = evaluateReviewRules([
+    source({
+      kind: "model",
+      content: `  password: z.string(),
+});
+const other = z.object({}).meta({ sensitive: true });`,
+    }),
+  ]);
+  assertEquals(
+    result.warnings.filter((w) => w.ruleId === "credentials-sensitive-field")
+      .length,
+    1,
+  );
+});
+
 Deno.test("testing-completeness: warns when entry point lacks a sibling test", () => {
   const result = evaluateReviewRules([
     source({ isEntryPoint: true, hasSiblingTest: false, content: "" }),

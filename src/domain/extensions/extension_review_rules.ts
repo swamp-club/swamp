@@ -201,21 +201,31 @@ export const DEFAULT_REVIEW_RULES: ReviewRule[] = [
     detect: (source) => {
       const messages: string[] = [];
       const lines = source.content.split("\n");
-      for (const raw of lines) {
-        const line = stripLineComment(raw);
-        // Heuristic: a schema field whose name suggests a secret, declared
-        // with a zod type, but not marked sensitive on the same line.
+      for (let i = 0; i < lines.length; i++) {
+        const line = stripLineComment(lines[i]);
         if (
-          SENSITIVE_FIELD_PATTERN.test(line) &&
-          /z\s*\./.test(line) &&
-          !/sensitive/i.test(line)
-        ) {
-          messages.push(
-            `Field on line "${line.trim()}" looks like a secret but is not ` +
-              "marked `.meta({ sensitive: true })`. Sensitive values must be " +
-              "vaulted.",
-          );
+          !SENSITIVE_FIELD_PATTERN.test(line) ||
+          !/z\s*\./.test(line)
+        ) continue;
+
+        if (/sensitive/i.test(line)) continue;
+
+        let foundSensitive = false;
+        for (let j = i + 1; j < lines.length; j++) {
+          const cont = stripLineComment(lines[j]);
+          if (!/^\s+\./.test(cont)) break;
+          if (/sensitive/i.test(cont)) {
+            foundSensitive = true;
+            break;
+          }
         }
+        if (foundSensitive) continue;
+
+        messages.push(
+          `Field on line "${line.trim()}" looks like a secret but is not ` +
+            "marked `.meta({ sensitive: true })`. Sensitive values must be " +
+            "vaulted.",
+        );
       }
       return messages;
     },
