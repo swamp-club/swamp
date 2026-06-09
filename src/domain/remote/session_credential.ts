@@ -36,7 +36,11 @@ export interface SessionCredentialRecord {
 /** Default credential lifetime: 15 minutes, refreshed well before expiry. */
 export const DEFAULT_SESSION_TTL_MS = 15 * 60 * 1000;
 
-function generateCredential(): string {
+/**
+ * Generate a 256-bit opaque bearer token, hex-encoded. Used for both
+ * data-plane session credentials and enrollment-token secrets.
+ */
+export function generateOpaqueToken(): string {
   const bytes = new Uint8Array(32);
   crypto.getRandomValues(bytes);
   return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
@@ -66,7 +70,7 @@ export class SessionCredentialService {
   issue(workerId: string): SessionCredentialRecord {
     this.revokeForWorker(workerId);
     const record: SessionCredentialRecord = {
-      credential: generateCredential(),
+      credential: generateOpaqueToken(),
       workerId,
       expiresAtMs: this.#now() + this.#ttlMs,
     };

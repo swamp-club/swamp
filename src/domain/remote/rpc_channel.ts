@@ -322,9 +322,10 @@ export class RpcChannel {
           return;
         }
         const message = error instanceof Error ? error.message : String(error);
-        const code = error instanceof DOMException && error.name === "AbortError"
-          ? "cancelled"
-          : "handler_failed";
+        const code =
+          error instanceof DOMException && error.name === "AbortError"
+            ? "cancelled"
+            : "handler_failed";
         this.#sendFrame({ type: "rpc.error", id, error: { code, message } });
       },
     );

@@ -33,6 +33,12 @@
 // Import all model files to trigger registration
 import "./command/shell/shell_model.ts";
 
+// Remote-execution control-plane models (worker pool, enrollment tokens,
+// step leases) — see design/remote-execution.md.
+import "./worker/worker_model.ts";
+import "./worker/enrollment_token_model.ts";
+import "./worker/step_lease_model.ts";
+
 // Import all of the AWS models - the models in this file are created by the clover pipeline
 import "./aws/aws_models.ts";
 
