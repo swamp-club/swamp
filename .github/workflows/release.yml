@@ -218,7 +218,7 @@ jobs:
           context: docker-build/linux-amd64
           platforms: linux/amd64
           push: true
-          tags: systeminit/swamp:${{ env.docker_tag }}-amd64
+          tags: swampclub/swamp:${{ env.docker_tag }}-amd64
           provenance: mode=max
           sbom: true
 
@@ -228,13 +228,13 @@ jobs:
           context: docker-build/linux-arm64
           platforms: linux/arm64
           push: true
-          tags: systeminit/swamp:${{ env.docker_tag }}-arm64
+          tags: swampclub/swamp:${{ env.docker_tag }}-arm64
           provenance: mode=max
           sbom: true
 
       - name: Create and push multi-arch manifest
         run: |
           docker buildx imagetools create \
-            -t systeminit/swamp:${{ env.docker_tag }} \
-            systeminit/swamp:${{ env.docker_tag }}-amd64 \
-            systeminit/swamp:${{ env.docker_tag }}-arm64
+            -t swampclub/swamp:${{ env.docker_tag }} \
+            swampclub/swamp:${{ env.docker_tag }}-amd64 \
+            swampclub/swamp:${{ env.docker_tag }}-arm64
