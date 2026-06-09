@@ -202,7 +202,11 @@ export async function* workerTokenCreate(
         kind: "completed" as const,
         data: {
           name: input.name,
-          token: plaintext,
+          // The presented credential is `<name>.<secret>`: the name half
+          // addresses the token aggregate at enrollment, the secret half is
+          // compared against the vault-stored plaintext (see
+          // splitEnrollmentToken in src/serve/worker_gateway.ts).
+          token: `${input.name}.${plaintext}`,
           expiresAt: tokenRecord.expiresAt,
           vaultRef: { vaultName, secretKey },
         },

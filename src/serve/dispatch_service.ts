@@ -30,8 +30,11 @@
  * fails the run.
  */
 
-import { createLibSwampContext, modelMethodRun } from "../libswamp/mod.ts";
-import { createModelMethodRunDeps } from "./deps.ts";
+import {
+  createLibSwampContext,
+  createWorkerModelRunDeps,
+  modelMethodRun,
+} from "../libswamp/mod.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import type { ModelDefinition } from "../domain/models/model.ts";
 import {
@@ -443,7 +446,7 @@ export class DispatchService {
     methodName: string;
     inputs: Record<string, unknown>;
   }): Promise<void> {
-    const deps = await createModelMethodRunDeps(
+    const deps = await createWorkerModelRunDeps(
       this.#options.repoDir,
       this.#options.repoContext,
     );

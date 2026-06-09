@@ -99,7 +99,7 @@ Deno.test("workerTokenCreate: mints and yields the plaintext once", async () => 
   assertEquals(completed.kind, "completed");
   assertEquals(completed.data, {
     name: "ci-runner-3",
-    token: "plaintext-token",
+    token: "ci-runner-3.plaintext-token",
     expiresAt: EXPIRES_AT,
     vaultRef: {
       vaultName: "main-vault",

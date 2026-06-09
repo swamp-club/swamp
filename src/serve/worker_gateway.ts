@@ -30,8 +30,11 @@
  */
 
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
-import { createLibSwampContext, modelMethodRun } from "../libswamp/mod.ts";
-import { createModelMethodRunDeps } from "./deps.ts";
+import {
+  createLibSwampContext,
+  createWorkerModelRunDeps,
+  modelMethodRun,
+} from "../libswamp/mod.ts";
 import { RpcChannel, RpcError } from "../domain/remote/rpc_channel.ts";
 import type { RpcTransport } from "../domain/remote/rpc_channel.ts";
 import {
@@ -470,7 +473,7 @@ export class WorkerGateway {
     methodName: string;
     inputs: Record<string, unknown>;
   }): Promise<void> {
-    const deps = await createModelMethodRunDeps(
+    const deps = await createWorkerModelRunDeps(
       this.#options.repoDir,
       this.#options.repoContext,
     );

@@ -356,6 +356,7 @@ export {
   type WorkerTokenRevokeEvent,
   type WorkerTokenRevokeInput,
 } from "./worker/token_revoke.ts";
+export { createWorkerModelRunDeps } from "./worker/run_deps.ts";
 export {
   createNamespace,
   formatNamespacedModelName,
