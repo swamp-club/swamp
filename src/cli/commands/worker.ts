@@ -24,6 +24,7 @@ import { workerTokenCreateCommand } from "./worker_token_create.ts";
 import { workerTokenListCommand } from "./worker_token_list.ts";
 import { workerTokenRevokeCommand } from "./worker_token_revoke.ts";
 import { workerListCommand } from "./worker_list.ts";
+import { workerConnectCommand } from "./worker_connect.ts";
 
 export const workerTokenCommand = new Command()
   .name("token")
@@ -40,4 +41,5 @@ export const workerCommand = new Command()
   .error(unknownCommandErrorHandler)
   .action(groupCommandAction)
   .command("token", workerTokenCommand)
-  .command("list", workerListCommand);
+  .command("list", workerListCommand)
+  .command("connect", workerConnectCommand);

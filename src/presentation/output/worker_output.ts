@@ -31,6 +31,7 @@ import type {
   WorkerTokenListData,
   WorkerTokenRevokeData,
 } from "../../libswamp/mod.ts";
+import type { WorkerStatusEvent } from "../../worker/connect.ts";
 import type { OutputMode } from "./output.ts";
 
 const checkmark = "\u2713"; // ✓
@@ -214,4 +215,40 @@ export function renderWorkerList(
     (column, value) => (column === 1 ? colorWorkerStatus(value) : value),
   );
   writeOutput(lines.join("\n"));
+}
+
+/**
+ * Renders worker dial-home status events as they happen. Log mode is a
+ * line-per-event stream (the command runs until shutdown); json mode emits
+ * one JSON object per line for machine consumption.
+ */
+export function renderWorkerStatus(
+  event: WorkerStatusEvent,
+  mode: OutputMode,
+): void {
+  if (mode === "json") {
+    writeOutput(JSON.stringify(event));
+    return;
+  }
+  switch (event.kind) {
+    case "connecting":
+      writeOutput(
+        dim(`Connecting to ${event.url} (attempt ${event.attempt})...`),
+      );
+      break;
+    case "enrolled":
+      writeOutput(
+        `${green(checkmark)} Enrolled as ${bold(cyan(event.workerId))}`,
+      );
+      break;
+    case "disconnected":
+      writeOutput(yellow(`Disconnected: ${event.reason}`));
+      break;
+    case "retrying":
+      writeOutput(dim(`Reconnecting in ${Math.round(event.delayMs / 1000)}s`));
+      break;
+    case "stopped":
+      writeOutput(dim(`Worker stopped: ${event.reason}`));
+      break;
+  }
 }

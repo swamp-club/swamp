@@ -395,6 +395,13 @@ export class DataPlane {
       });
     }
 
+    if (segments.length === 3 && segments[2] === "files") {
+      if (bundle.filesRoot === undefined) {
+        return json({ files: [] });
+      }
+      return this.#listAssetFiles(bundle.filesRoot);
+    }
+
     if (segments.length >= 4 && segments[2] === "file") {
       if (bundle.filesRoot === undefined) {
         return errorResponse(404, "Bundle has no co-located files");
@@ -414,6 +421,34 @@ export class DataPlane {
     }
 
     return errorResponse(404, "Unknown bundle route");
+  }
+
+  /**
+   * Recursive relative listing of a bundle's co-located files, so a worker
+   * can prefetch the whole (small) asset tree before executing — the
+   * `extensionFile()` context member is synchronous and must resolve to a
+   * local path.
+   */
+  #listAssetFiles(filesRoot: string): Response {
+    const files: string[] = [];
+    const walk = (dir: string, prefix: string) => {
+      for (const entry of Deno.readDirSync(dir)) {
+        const rel = prefix.length === 0
+          ? entry.name
+          : `${prefix}/${entry.name}`;
+        if (entry.isDirectory) {
+          walk(join(dir, entry.name), rel);
+        } else if (entry.isFile) {
+          files.push(rel);
+        }
+      }
+    };
+    try {
+      walk(filesRoot, "");
+    } catch {
+      return json({ files: [] });
+    }
+    return json({ files });
   }
 
   #serveAssetFile(
