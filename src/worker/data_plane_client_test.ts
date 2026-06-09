@@ -38,7 +38,7 @@ function clientWith(
   const client = new DataPlaneClient({
     baseUrl: "http://orchestrator.test",
     credential: () => credential,
-    fetchImpl: (async (input: URL | Request | string, init?: RequestInit) => {
+    fetchImpl: ((input: URL | Request | string, init?: RequestInit) => {
       const request: RecordedRequest = {
         method: init?.method ?? "GET",
         url: String(input),
@@ -46,13 +46,12 @@ function clientWith(
         body: typeof init?.body === "string" ? init.body : undefined,
       };
       requests.push(request);
-      return respond(request);
+      return Promise.resolve(respond(request));
     }) as typeof fetch,
   });
   return {
     client,
     requests,
-    // deno-lint-ignore no-explicit-any
     setCredential: (c: string) => (credential = c),
   } as unknown as {
     client: DataPlaneClient;

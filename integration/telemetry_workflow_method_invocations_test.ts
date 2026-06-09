@@ -148,7 +148,6 @@ interface PersistedEntry {
     jobName: string;
     stepName: string;
     modelType?: string;
-    driver?: string;
   };
   durationMs: number;
 }

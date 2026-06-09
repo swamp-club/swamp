@@ -120,16 +120,15 @@ Deno.test(
       );
       assertEquals(parsed.overallStatus, "fail");
 
-      // All five registry keys present.
+      // All four registry keys present.
       const keys = Object.keys(parsed.registries).sort();
       assertEquals(
         keys,
-        ["datastore", "driver", "model", "report", "vault"],
+        ["datastore", "model", "report", "vault"],
       );
 
       // The non-model registries pass.
       assertEquals(parsed.registries.vault.status, "pass");
-      assertEquals(parsed.registries.driver.status, "pass");
       assertEquals(parsed.registries.datastore.status, "pass");
       assertEquals(parsed.registries.report.status, "pass");
 
@@ -193,11 +192,11 @@ Deno.test(
       );
       assertEquals(parsed.overallStatus, "pass");
 
-      // All five registry keys still present, all passing.
+      // All four registry keys still present, all passing.
       const keys = Object.keys(parsed.registries).sort();
       assertEquals(
         keys,
-        ["datastore", "driver", "model", "report", "vault"],
+        ["datastore", "model", "report", "vault"],
       );
       for (const key of keys) {
         assertEquals(parsed.registries[key].status, "pass");

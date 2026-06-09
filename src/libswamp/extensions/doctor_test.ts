@@ -107,7 +107,7 @@ async function collect(
   return out;
 }
 
-Deno.test("doctorExtensions: clean state — all five registries pass", async () => {
+Deno.test("doctorExtensions: clean state — all registries pass", async () => {
   resetExtensionLoadWarnings();
   const { deps } = buildDeps({ aggregateState: emptyAggregateReport() });
 
@@ -131,7 +131,7 @@ Deno.test("doctorExtensions: emits all five kind-completed events in fixed order
   const events = await collect(doctorExtensions(deps));
   const completedEvents = events.filter((e) => e.kind === "kind-completed");
 
-  assertEquals(completedEvents.length, 5);
+  assertEquals(completedEvents.length, 4);
   for (let i = 0; i < DOCTOR_REGISTRY_ORDER.length; i++) {
     const event = completedEvents[i];
     if (event.kind !== "kind-completed") throw new Error("unreachable");
@@ -227,15 +227,14 @@ Deno.test("doctorExtensions: per-kind throw isolation — a thrown ensureLoaded 
 
   assertEquals(completed.report.registries.vault.status, "fail");
   assertEquals(completed.report.registries.model.status, "pass");
-  assertEquals(completed.report.registries.driver.status, "pass");
   assertEquals(completed.report.registries.datastore.status, "pass");
   assertEquals(completed.report.registries.report.status, "pass");
 
   const completedEvents = events.filter((e) => e.kind === "kind-completed");
-  assertEquals(completedEvents.length, 5);
+  assertEquals(completedEvents.length, 4);
 });
 
-Deno.test("doctorExtensions: completed report has all five registry keys even on pass", async () => {
+Deno.test("doctorExtensions: completed report has all four registry keys even on pass", async () => {
   resetExtensionLoadWarnings();
   const { deps } = buildDeps({ aggregateState: emptyAggregateReport() });
 
@@ -246,7 +245,7 @@ Deno.test("doctorExtensions: completed report has all five registry keys even on
   }
 
   const keys = Object.keys(completed.report.registries).sort();
-  assertEquals(keys, ["datastore", "driver", "model", "report", "vault"]);
+  assertEquals(keys, ["datastore", "model", "report", "vault"]);
 });
 
 import { ensureDir } from "@std/fs";

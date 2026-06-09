@@ -675,7 +675,6 @@ export class DefaultStepExecutor implements StepExecutor {
         evaluatedDefinition,
         runLogger,
         secretBag,
-        expressionEvaluator,
       });
 
       return await this.handleMethodSuccess({
@@ -746,7 +745,6 @@ export class DefaultStepExecutor implements StepExecutor {
       ExpressionEvaluationService["resolveRuntimeExpressionsInDefinition"]
     > extends Promise<infer R> ? R extends { secretBag: infer S } ? S : never
       : never;
-    expressionEvaluator: ExpressionEvaluationService;
   }): Promise<MethodResult> {
     const {
       task,
@@ -762,7 +760,6 @@ export class DefaultStepExecutor implements StepExecutor {
       evaluatedDefinition,
       runLogger,
       secretBag,
-      expressionEvaluator,
     } = args;
 
     runLogger.debug("Executing method {method}", { method: task.methodName });

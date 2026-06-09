@@ -23,7 +23,7 @@ import {
   applyEnvironmentOverlay,
   registerDispatchHandler,
 } from "./dispatch_handler.ts";
-import { RpcChannel, RpcError } from "../domain/remote/rpc_channel.ts";
+import { RpcChannel, type RpcError } from "../domain/remote/rpc_channel.ts";
 import {
   type DispatchResult,
   REMOTE_PROTOCOL_VERSION,

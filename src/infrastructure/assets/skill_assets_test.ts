@@ -394,35 +394,22 @@ Deno.test("SkillAssets.copySkillsTo copies repo references", async () => {
   });
 });
 
-Deno.test("SkillAssets.copySkillsTo copies extension driver references", async () => {
+Deno.test("SkillAssets.copySkillsTo copies workflow remote-execution reference", async () => {
   await withTempDir(async (dir) => {
     const assets = new SkillAssets();
     await assets.copySkillsTo(dir);
 
-    const apiPath = join(
+    const remotePath = join(
       dir,
       "swamp",
       "references",
-      "extension",
+      "workflow",
       "references",
-      "driver",
-      "api.md",
-    );
-    const examplesPath = join(
-      dir,
-      "swamp",
-      "references",
-      "extension",
-      "references",
-      "driver",
-      "examples.md",
+      "remote-execution.md",
     );
 
-    const apiStat = await Deno.stat(apiPath);
-    assertEquals(apiStat.isFile, true);
-
-    const examplesStat = await Deno.stat(examplesPath);
-    assertEquals(examplesStat.isFile, true);
+    const remoteStat = await Deno.stat(remotePath);
+    assertEquals(remoteStat.isFile, true);
   });
 });
 

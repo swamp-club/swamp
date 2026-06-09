@@ -61,7 +61,6 @@ function buildPassReport(): DoctorExtensionsReport {
     registries: {
       model: passResult("model"),
       vault: passResult("vault"),
-      driver: passResult("driver"),
       datastore: passResult("datastore"),
       report: passResult("report"),
     },
@@ -77,7 +76,6 @@ function buildFailReport(): DoctorExtensionsReport {
     registries: {
       model: failResult("model"),
       vault: passResult("vault"),
-      driver: passResult("driver"),
       datastore: passResult("datastore"),
       report: passResult("report"),
     },
@@ -87,7 +85,7 @@ function buildFailReport(): DoctorExtensionsReport {
   };
 }
 
-Deno.test("doctor_extensions json renderer: emits all five registry keys on pass", async () => {
+Deno.test("doctor_extensions json renderer: emits all four registry keys on pass", async () => {
   const out = await captureStdout(async () => {
     const r = createDoctorExtensionsRenderer("json");
     const handlers = r.handlers();
@@ -97,13 +95,13 @@ Deno.test("doctor_extensions json renderer: emits all five registry keys on pass
   const parsed = JSON.parse(out);
   assertEquals(parsed.overallStatus, "pass");
   const keys = Object.keys(parsed.registries).sort();
-  assertEquals(keys, ["datastore", "driver", "model", "report", "vault"]);
+  assertEquals(keys, ["datastore", "model", "report", "vault"]);
   for (const key of keys) {
     assertEquals(parsed.registries[key].status, "pass");
   }
 });
 
-Deno.test("doctor_extensions json renderer: emits all five registry keys on fail", async () => {
+Deno.test("doctor_extensions json renderer: emits all four registry keys on fail", async () => {
   const out = await captureStdout(async () => {
     const r = createDoctorExtensionsRenderer("json");
     const handlers = r.handlers();
@@ -112,9 +110,9 @@ Deno.test("doctor_extensions json renderer: emits all five registry keys on fail
 
   const parsed = JSON.parse(out);
   assertEquals(parsed.overallStatus, "fail");
-  // All five keys still present even though only one registry failed.
+  // All four keys still present even though only one registry failed.
   const keys = Object.keys(parsed.registries).sort();
-  assertEquals(keys, ["datastore", "driver", "model", "report", "vault"]);
+  assertEquals(keys, ["datastore", "model", "report", "vault"]);
   assertEquals(parsed.registries.model.status, "fail");
   assertEquals(parsed.registries.vault.status, "pass");
 });
@@ -152,13 +150,12 @@ Deno.test("doctor_extensions json renderer: stable key ordering", async () => {
     const r = createDoctorExtensionsRenderer("json");
     const handlers = r.handlers();
     // Build a report with registries inserted in reverse order — output
-    // should still be model, vault, driver, datastore, report.
+    // should still be model, vault, datastore, report.
     const reversed: DoctorExtensionsReport = {
       overallStatus: "pass",
       registries: {
         report: passResult("report"),
         datastore: passResult("datastore"),
-        driver: passResult("driver"),
         vault: passResult("vault"),
         model: passResult("model"),
       },
@@ -174,19 +171,17 @@ Deno.test("doctor_extensions json renderer: stable key ordering", async () => {
   const slice = out.slice(startOfRegistries);
   const modelIdx = slice.indexOf('"model"');
   const vaultIdx = slice.indexOf('"vault"');
-  const driverIdx = slice.indexOf('"driver"');
   const datastoreIdx = slice.indexOf('"datastore"');
   const reportIdx = slice.indexOf('"report"');
 
   assertEquals(modelIdx < vaultIdx, true);
-  assertEquals(vaultIdx < driverIdx, true);
-  assertEquals(driverIdx < datastoreIdx, true);
+  assertEquals(vaultIdx < datastoreIdx, true);
   assertEquals(datastoreIdx < reportIdx, true);
 });
 
 Deno.test("doctor_extensions log renderer: no implicit fold — renders every row it receives", async () => {
   // The renderer must not absorb or rename ExtensionKind values. It
-  // expects exactly the five DoctorRegistryName values from the service.
+  // expects exactly the four DoctorRegistryName values from the service.
   // Asserting this contract by checking it does not throw on any single
   // valid registry row and overallStatus tracks the report it sees.
   const r = createDoctorExtensionsRenderer("log");
@@ -195,7 +190,6 @@ Deno.test("doctor_extensions log renderer: no implicit fold — renders every ro
     const registry of [
       "model",
       "vault",
-      "driver",
       "datastore",
       "report",
     ] as const
@@ -220,7 +214,6 @@ Deno.test(
         registries: {
           model: passResult("model"),
           vault: passResult("vault"),
-          driver: passResult("driver"),
           datastore: passResult("datastore"),
           report: passResult("report"),
         },
@@ -258,7 +251,6 @@ Deno.test(
         registries: {
           model: passResult("model"),
           vault: passResult("vault"),
-          driver: passResult("driver"),
           datastore: passResult("datastore"),
           report: passResult("report"),
         },
@@ -277,7 +269,6 @@ Deno.test(
         const reg of [
           "model",
           "vault",
-          "driver",
           "datastore",
           "report",
         ] as const

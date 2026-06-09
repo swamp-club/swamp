@@ -48,11 +48,6 @@ import {
   type LazyDatastoreEntry,
 } from "../src/domain/datastore/datastore_type_registry.ts";
 import {
-  type DriverTypeInfo,
-  DriverTypeRegistry,
-  type LazyDriverEntry,
-} from "../src/domain/drivers/driver_type_registry.ts";
-import {
   type LazyReportEntry,
   ReportRegistry,
 } from "../src/domain/reports/report_registry.ts";
@@ -98,24 +93,6 @@ function datastoreInfo(type: string): DatastoreTypeInfo {
     type,
     name: `Test Datastore ${type}`,
     description: "test datastore type",
-    isBuiltIn: false,
-  };
-}
-
-function lazyDriver(type: string): LazyDriverEntry {
-  return {
-    type,
-    bundlePath: `/fake/driver-bundles/${type}.js`,
-    sourcePath: `/fake/drivers/${type}.ts`,
-    version: "1.0.0",
-  };
-}
-
-function driverInfo(type: string): DriverTypeInfo {
-  return {
-    type,
-    name: `Test Driver ${type}`,
-    description: "test driver type",
     isBuiltIn: false,
   };
 }
@@ -191,29 +168,6 @@ Deno.test("DatastoreTypeRegistry: ensureTypeLoaded() promotes lazy entry for get
   const result = registry.get("@test/ds-promote");
   assertNotEquals(result, undefined);
   assertEquals(result!.type, "@test/ds-promote");
-});
-
-Deno.test("DriverTypeRegistry: get() returns undefined for lazy entries", () => {
-  const registry = new DriverTypeRegistry();
-  registry.registerLazy(lazyDriver("@test/driver-lazy"));
-
-  assertEquals(registry.has("@test/driver-lazy"), true);
-  assertEquals(registry.get("@test/driver-lazy"), undefined);
-});
-
-Deno.test("DriverTypeRegistry: ensureTypeLoaded() promotes lazy entry for get()", async () => {
-  const registry = new DriverTypeRegistry();
-  registry.registerLazy(lazyDriver("@test/driver-promote"));
-  registry.setTypeLoader((type) => {
-    registry.promoteFromLazy(driverInfo(type));
-    return Promise.resolve();
-  });
-
-  await registry.ensureTypeLoaded("@test/driver-promote");
-
-  const result = registry.get("@test/driver-promote");
-  assertNotEquals(result, undefined);
-  assertEquals(result!.type, "@test/driver-promote");
 });
 
 Deno.test("ReportRegistry: get() returns undefined for lazy entries", () => {

@@ -17,8 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertThrows } from "@std/assert";
-import { Job, JobSchema } from "./job.ts";
+import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
+import { Job, type JobInput, JobSchema } from "./job.ts";
 import { Step } from "./step.ts";
 import { StepTask } from "./step_task.ts";
 import { TriggerCondition } from "./trigger_condition.ts";
@@ -162,51 +162,40 @@ Deno.test("Job.toData returns correct structure", () => {
   assertEquals(data.weight, 3);
 });
 
-// Driver field tests
+// Removed driver field tests (see design/remote-execution.md)
 
-Deno.test("Job.create defaults driver to undefined", () => {
+Deno.test("JobSchema rejects removed driver field with actionable error", () => {
   const step = createTestStep("step1");
-  const job = Job.create({ name: "test", steps: [step] });
-  assertEquals(job.driver, undefined);
-  assertEquals(job.driverConfig, undefined);
+  const error = assertThrows(
+    () =>
+      Job.fromData({
+        name: "test",
+        steps: [step.toData()],
+        driver: "docker",
+      } as unknown as JobInput),
+    Error,
+  );
+  assertStringIncludes(
+    error.message,
+    "The 'driver' field has been removed",
+  );
 });
 
-Deno.test("Job.create uses provided driver and driverConfig", () => {
+Deno.test("JobSchema rejects removed driverConfig field with actionable error", () => {
   const step = createTestStep("step1");
-  const job = Job.create({
-    name: "test",
-    steps: [step],
-    driver: "docker",
-    driverConfig: { image: "node:18" },
-  });
-  assertEquals(job.driver, "docker");
-  assertEquals(job.driverConfig, { image: "node:18" });
-});
-
-Deno.test("Job.toData includes driver and driverConfig", () => {
-  const step = createTestStep("step1");
-  const job = Job.create({
-    name: "test",
-    steps: [step],
-    driver: "docker",
-    driverConfig: { timeout: 30 },
-  });
-  const data = job.toData();
-  assertEquals(data.driver, "docker");
-  assertEquals(data.driverConfig, { timeout: 30 });
-});
-
-Deno.test("Job.fromData and toData roundtrip with driver", () => {
-  const step = createTestStep("step1");
-  const original = Job.create({
-    name: "test",
-    steps: [step],
-    driver: "raw",
-  });
-  const data = original.toData();
-  const restored = Job.fromData(data);
-  assertEquals(restored.driver, "raw");
-  assertEquals(restored.driverConfig, undefined);
+  const error = assertThrows(
+    () =>
+      Job.fromData({
+        name: "test",
+        steps: [step.toData()],
+        driverConfig: { image: "node:18" },
+      } as unknown as JobInput),
+    Error,
+  );
+  assertStringIncludes(
+    error.message,
+    "The 'driverConfig' field has been removed",
+  );
 });
 
 Deno.test("Job.fromData and toData roundtrip correctly", () => {

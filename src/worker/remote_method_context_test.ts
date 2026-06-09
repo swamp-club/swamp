@@ -133,7 +133,7 @@ function harness(scratchDir: string, extensionFilesDir?: string) {
         size: 1,
         tags: {},
       }),
-    openWriter: (body: { specName: string; name: string }) => {
+    openWriter: (_body: { specName: string; name: string }) => {
       writerCounter++;
       return Promise.resolve({
         writerId: `w-${writerCounter}`,
@@ -171,7 +171,7 @@ function harness(scratchDir: string, extensionFilesDir?: string) {
         tags: {},
       };
     },
-    finalizeWriter: (writerId: string) =>
+    finalizeWriter: (_writerId: string) =>
       Promise.resolve({
         dataId: crypto.randomUUID(),
         name: "log",
@@ -320,7 +320,7 @@ Deno.test("remote context: unsupported members fail loudly with guidance", async
 });
 
 Deno.test("remote context: extensionFile resolves under the prefetched assets dir", async () => {
-  await withScratch(async (dir) => {
+  await withScratch((dir) => {
     const withAssets = harness(dir, join(dir, "assets"));
     assertEquals(
       withAssets.context.extensionFile("templates/report.html"),
@@ -332,12 +332,14 @@ Deno.test("remote context: extensionFile resolves under the prefetched assets di
       Error,
       "no co-located extension files",
     );
+    return Promise.resolve();
   });
 });
 
 Deno.test("remote context: repoDir is the scratch directory", async () => {
-  await withScratch(async (dir) => {
+  await withScratch((dir) => {
     const h = harness(dir);
     assertEquals(h.context.repoDir, dir);
+    return Promise.resolve();
   });
 });

@@ -373,40 +373,40 @@ Deno.test("findStaleFiles: deleted file is removed from catalog", async () => {
 });
 
 Deno.test("findStaleFiles: kinds filter scopes both the staleness check and deletion — rows of other kinds in unseen dirs are not touched (#128)", async () => {
-  const driverDir = await Deno.makeTempDir({
-    prefix: "swamp_bf_stale_kinds_driver_",
+  const reportDir = await Deno.makeTempDir({
+    prefix: "swamp_bf_stale_kinds_report_",
   });
   const vaultDir = await Deno.makeTempDir({
     prefix: "swamp_bf_stale_kinds_vault_",
   });
   try {
-    // Current on-disk: driver dir has one file, vault dir has one file.
-    const driverFile = join(driverDir, "my_driver.ts");
+    // Current on-disk: report dir has one file, vault dir has one file.
+    const reportFile = join(reportDir, "my_report.ts");
     const vaultFile = join(vaultDir, "my_vault.ts");
-    await Deno.writeTextFile(driverFile, "export const d = 1;");
+    await Deno.writeTextFile(reportFile, "export const d = 1;");
     await Deno.writeTextFile(vaultFile, "export const v = 1;");
 
-    const driverFp = await computeSourceFingerprint(driverFile, driverDir);
+    const reportFp = await computeSourceFingerprint(reportFile, reportDir);
     const vaultFp = await computeSourceFingerprint(vaultFile, vaultDir);
 
-    // Catalog has rows for BOTH kinds, plus a stale driver row whose
+    // Catalog has rows for BOTH kinds, plus a stale report row whose
     // source file has been deleted from disk.
     const catalog = new FakeCatalog();
     catalog.add({
-      source_path: driverFile,
+      source_path: reportFile,
       type_normalized: "@user/d",
-      kind: "driver",
+      kind: "report",
       bundle_path: "",
       version: "",
       description: "",
       extends_type: "",
       source_mtime: "",
-      source_fingerprint: driverFp,
+      source_fingerprint: reportFp,
     });
     catalog.add({
-      source_path: join(driverDir, "gone.ts"),
+      source_path: join(reportDir, "gone.ts"),
       type_normalized: "@user/gone",
-      kind: "driver",
+      kind: "report",
       bundle_path: "",
       version: "",
       description: "",
@@ -426,20 +426,20 @@ Deno.test("findStaleFiles: kinds filter scopes both the staleness check and dele
       source_fingerprint: vaultFp,
     });
 
-    // Scan driver dir with kinds: ["driver"] — only driver rows are
-    // compared, and only driver rows are deleted. The vault row for
-    // a file living outside driverDir must NOT be deleted.
+    // Scan report dir with kinds: ["report"] — only report rows are
+    // compared, and only report rows are deleted. The vault row for
+    // a file living outside reportDir must NOT be deleted.
     const stale = await findStaleFiles({
-      modelsDir: driverDir,
+      modelsDir: reportDir,
       catalog,
       discoverFiles: discoverTsFiles,
-      kinds: ["driver"],
+      kinds: ["report"],
     });
 
     assertEquals(
       stale.length,
       0,
-      "driver row fingerprint matches — nothing should be stale",
+      "report row fingerprint matches — nothing should be stale",
     );
 
     const remaining = catalog.snapshot().map((r) => ({
@@ -447,27 +447,27 @@ Deno.test("findStaleFiles: kinds filter scopes both the staleness check and dele
       kind: r.kind,
     })).sort((a, b) => a.path.localeCompare(b.path));
 
-    // The stale driver row (gone.ts) must be deleted.
+    // The stale report row (gone.ts) must be deleted.
     // The vault row (in a dir outside the scan) must survive — this is
     // the cross-kind isolation guarantee that lets sibling loaders
     // share the catalog without stepping on each other.
     assertEquals(
-      remaining.some((r) => r.kind === "driver" && r.path === driverFile),
+      remaining.some((r) => r.kind === "report" && r.path === reportFile),
       true,
-      "driver survivor must remain",
+      "report survivor must remain",
     );
     assertEquals(
-      remaining.some((r) => r.kind === "driver" && r.path.endsWith("gone.ts")),
+      remaining.some((r) => r.kind === "report" && r.path.endsWith("gone.ts")),
       false,
-      "deleted driver row must be removed",
+      "deleted report row must be removed",
     );
     assertEquals(
       remaining.some((r) => r.kind === "vault" && r.path === vaultFile),
       true,
-      "vault row in a dir outside the driver scan must survive — kinds filter must NOT delete rows of other kinds",
+      "vault row in a dir outside the report scan must survive — kinds filter must NOT delete rows of other kinds",
     );
   } finally {
-    await Deno.remove(driverDir, { recursive: true });
+    await Deno.remove(reportDir, { recursive: true });
     await Deno.remove(vaultDir, { recursive: true });
   }
 });

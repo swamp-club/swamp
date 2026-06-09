@@ -146,8 +146,6 @@ Deno.test("buildMethodContext: passes through invocation overlay fields", () => 
       skipAllReports: false,
       reportNames: ["only"],
       reportLabels: ["label"],
-      driver: "raw",
-      driverConfig: { k: "v" },
       vaultSecrets: { list: () => [] } as unknown as MethodInvocationContext[
         "vaultSecrets"
       ],
@@ -180,15 +178,13 @@ Deno.test("buildMethodContext: passes through invocation overlay fields", () => 
   assertEquals(ctx.skipAllReports, false);
   assertEquals(ctx.reportNames, ["only"]);
   assertEquals(ctx.reportLabels, ["label"]);
-  assertEquals(ctx.driver, "raw");
-  assertEquals(ctx.driverConfig, { k: "v" });
   assertEquals(ctx.unresolvedMethodArgs, { arg: "sentinel" });
 });
 
 Deno.test("buildMethodContext: queryData is not populated by the factory", () => {
-  // queryData is derived at the driver boundary from dataQueryService.
+  // queryData is derived at the executor boundary from dataQueryService.
   // Factory output has no queryData of its own — the field is left
-  // undefined so the driver can bind it consistently.
+  // undefined so the executor can bind it consistently.
   const ctx = buildMethodContext(
     makeCommon({ dataQueryService: {} as DataQueryService }),
     makeInvocation(),

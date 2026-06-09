@@ -654,8 +654,8 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
 
       const definitionHash = await currentDefinition.computeHash();
 
-      const executionRequest: import("./execution_envelope.ts").ExecutionRequest =
-        {
+      const executionRequest:
+        import("./execution_envelope.ts").ExecutionRequest = {
           protocolVersion: 1,
           modelType: context.modelType.normalized,
           modelId: context.modelId,

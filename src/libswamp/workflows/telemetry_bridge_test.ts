@@ -60,7 +60,6 @@ const STARTED_EVENT: WorkflowRunEvent = {
   kind: "started",
   runId: "run-1",
   workflowName: "deploy",
-  driver: "local",
   jobs: [],
 };
 
@@ -84,7 +83,6 @@ Deno.test("bridge records success entry on method_executing → step_completed",
     stepId: "validate",
     modelName: "shell-step",
     methodName: "run",
-    driver: "local",
   });
   await bridge.observe({
     kind: "step_completed",
@@ -105,7 +103,6 @@ Deno.test("bridge records success entry on method_executing → step_completed",
   assertEquals(call.workflowContext.jobName, "build");
   assertEquals(call.workflowContext.stepName, "validate");
   assertEquals(call.workflowContext.modelType, "@swamp/shell");
-  assertEquals(call.workflowContext.driver, "local");
 });
 
 Deno.test("bridge records error entry on method_executing → step_failed (post-method-executing failure)", async () => {
@@ -128,7 +125,6 @@ Deno.test("bridge records error entry on method_executing → step_failed (post-
     stepId: "transform",
     modelName: "etl",
     methodName: "transform",
-    driver: "docker",
   });
   await bridge.observe({
     kind: "step_failed",
@@ -140,7 +136,6 @@ Deno.test("bridge records error entry on method_executing → step_failed (post-
 
   assertEquals(sink.calls.length, 1);
   assertEquals(sink.calls[0].error?.message, "transform threw");
-  assertEquals(sink.calls[0].workflowContext.driver, "docker");
 });
 
 Deno.test("bridge synthesizes durationMs=0 entry for pre-method-executing failures", async () => {
@@ -156,7 +151,6 @@ Deno.test("bridge synthesizes durationMs=0 entry for pre-method-executing failur
     error: "model not found: missing",
     modelName: "missing",
     methodName: "enrich",
-    driver: "local",
   });
   await bridge.finalize();
 
@@ -168,7 +162,6 @@ Deno.test("bridge synthesizes durationMs=0 entry for pre-method-executing failur
     "synthesized entries have zero duration",
   );
   assertEquals(call.error?.message, "model not found: missing");
-  assertEquals(call.workflowContext.driver, "local");
   assertEquals(call.invocation.args, ["run", "<REDACTED>", "enrich"]);
 });
 
@@ -200,7 +193,6 @@ Deno.test("bridge finalize() drains in-flight invocations as error entries", asy
     stepId: "long",
     modelName: "slow",
     methodName: "process",
-    driver: "local",
   });
   // Stream terminates without step_completed/step_failed
   await bridge.finalize();

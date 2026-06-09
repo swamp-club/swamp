@@ -679,8 +679,8 @@ Deno.test("ExtensionRepository: invalidateAll is atomic — all kinds or none", 
   const { repoRoot, dbPath } = makeTempLayout();
   const { repository, catalog } = makeStubRepository({ dbPath, repoRoot });
   try {
-    // Populate all five kinds so isPopulated returns true for each.
-    const kinds = ["model", "vault", "driver", "datastore", "report"] as const;
+    // Populate all kinds so isPopulated returns true for each.
+    const kinds = ["model", "vault", "datastore", "report"] as const;
     for (const kind of kinds) {
       catalog.markPopulated(kind);
     }
@@ -691,7 +691,7 @@ Deno.test("ExtensionRepository: invalidateAll is atomic — all kinds or none", 
       );
     }
 
-    // invalidateAll should clear all five atomically.
+    // invalidateAll should clear all kinds atomically.
     repository.invalidateAll();
 
     for (const kind of kinds) {

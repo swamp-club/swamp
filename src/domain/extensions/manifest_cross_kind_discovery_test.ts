@@ -268,7 +268,7 @@ Deno.test("discoverManifestCrossKindDirs: multiple manifests across dirs", async
       version: "2026.01.01.1",
       paths: { base: "manifest" },
       models: ["model.ts"],
-      drivers: ["driver.ts"],
+      datastores: ["datastore.ts"],
     });
 
     const kindDirs = new Map<ExtensionKind, string[]>([
@@ -277,6 +277,6 @@ Deno.test("discoverManifestCrossKindDirs: multiple manifests across dirs", async
 
     const result = await discoverManifestCrossKindDirs(kindDirs);
     assertEquals(result.get("reports"), [ext1]);
-    assertEquals(result.get("drivers"), [ext2]);
+    assertEquals(result.get("datastores"), [ext2]);
   });
 });

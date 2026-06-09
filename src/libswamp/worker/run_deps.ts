@@ -61,7 +61,6 @@ export async function createWorkerModelRunDeps(
     reportRegistry.ensureLoaded(),
   ]);
 
-
   return {
     repoDir,
     lookupDefinition: (idOrName) =>

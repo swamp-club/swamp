@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 // Integration test for the full queryData chain on the workflow path:
-// buildMethodContext -> RawExecutionDriver -> derived queryData ->
+// buildMethodContext -> InProcessExecutor -> derived queryData ->
 // real DataQueryService -> real CatalogStore. A regression in any of these
 // layers would surface here. See lab issue #35.
 
@@ -30,9 +30,9 @@ import { z } from "zod";
 
 import { buildMethodContext } from "../src/domain/models/method_context.ts";
 import {
+  InProcessExecutor,
   type MethodExecutor,
-  RawExecutionDriver,
-} from "../src/domain/drivers/raw_execution_driver.ts";
+} from "../src/domain/models/in_process_executor.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";
 import { Data } from "../src/domain/data/data.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
@@ -42,7 +42,7 @@ import type {
   ModelDefinition,
 } from "../src/domain/models/model.ts";
 import type { DataRecord } from "../src/domain/data/data_record.ts";
-import type { ExecutionRequest } from "../src/domain/drivers/execution_driver.ts";
+import type { ExecutionRequest } from "../src/domain/models/execution_envelope.ts";
 import { FileSystemUnifiedDataRepository } from "../src/infrastructure/persistence/unified_data_repository.ts";
 import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
 import { CatalogStore } from "../src/infrastructure/persistence/catalog_store.ts";
@@ -88,7 +88,7 @@ function createMockRequest(): ExecutionRequest {
   };
 }
 
-Deno.test("queryData chain: factory + driver derive working queryData from dataQueryService", async () => {
+Deno.test("queryData chain: factory + executor derive working queryData from dataQueryService", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
 
@@ -183,11 +183,11 @@ Deno.test("queryData chain: factory + driver derive working queryData from dataQ
         },
       );
 
-      // The factory alone does not populate queryData — the driver derives it.
+      // The factory alone does not populate queryData — the executor derives it.
       assertEquals(context.queryData, undefined);
       assertExists(context.dataQueryService);
 
-      const driver = new RawExecutionDriver(
+      const inProcessExecutor = new InProcessExecutor(
         executor,
         definition,
         method,
@@ -195,7 +195,7 @@ Deno.test("queryData chain: factory + driver derive working queryData from dataQ
         context,
         "run",
       );
-      const result = await driver.execute(createMockRequest());
+      const result = await inProcessExecutor.execute(createMockRequest());
 
       assertEquals(result.status, "success");
       assertExists(queryResult);

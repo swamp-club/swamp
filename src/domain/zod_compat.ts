@@ -21,7 +21,7 @@
  * Duck-typed check for zod-like schemas.
  *
  * User extensions can bundle their own copy of zod (via their `deno.json`
- * import map). When swamp validates a user's model/vault/driver/datastore
+ * import map). When swamp validates a user's model/vault/datastore
  * definition, the schema object comes from the user's zod instance — and
  * `val instanceof z.ZodType` against swamp's zod returns false because the
  * two constructors are different identities.

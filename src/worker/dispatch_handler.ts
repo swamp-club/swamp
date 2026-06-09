@@ -44,7 +44,7 @@ import {
   WorkerMethod,
 } from "../domain/remote/protocol.ts";
 import {
-  RpcChannel,
+  type RpcChannel,
   RpcError,
   type RpcHandlerContext,
 } from "../domain/remote/rpc_channel.ts";

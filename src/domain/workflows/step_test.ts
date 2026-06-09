@@ -17,8 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertThrows } from "@std/assert";
-import { Step, StepSchema } from "./step.ts";
+import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
+import { Step, type StepInput, StepSchema } from "./step.ts";
 import { StepTask } from "./step_task.ts";
 import { TriggerCondition } from "./trigger_condition.ts";
 
@@ -227,49 +227,48 @@ Deno.test("Step.fromData and toData roundtrip with allowFailure", () => {
   assertEquals(restored.allowFailure, original.allowFailure);
 });
 
-// driver field tests
+// Removed driver field tests (see design/remote-execution.md)
 
-Deno.test("Step.create defaults driver to undefined", () => {
-  const task = StepTask.model("test-model", "run");
-  const step = Step.create({ name: "basic", task });
-  assertEquals(step.driver, undefined);
-  assertEquals(step.driverConfig, undefined);
+Deno.test("StepSchema rejects removed driver field with actionable error", () => {
+  const error = assertThrows(
+    () =>
+      Step.fromData({
+        name: "isolated",
+        task: {
+          type: "model_method",
+          modelIdOrName: "test-model",
+          methodName: "run",
+        },
+        driver: "docker",
+      } as unknown as StepInput),
+    Error,
+  );
+  assertStringIncludes(
+    error.message,
+    "The 'driver' field has been removed",
+  );
+  assertStringIncludes(error.message, "design/remote-execution.md");
+  assertStringIncludes(error.message, "labels");
 });
 
-Deno.test("Step.create uses provided driver and driverConfig", () => {
-  const task = StepTask.model("test-model", "run");
-  const step = Step.create({
-    name: "isolated",
-    task,
-    driver: "docker",
-    driverConfig: { image: "node:18" },
-  });
-  assertEquals(step.driver, "docker");
-  assertEquals(step.driverConfig, { image: "node:18" });
-});
-
-Deno.test("Step.toData includes driver and driverConfig", () => {
-  const step = Step.create({
-    name: "isolated",
-    task: StepTask.model("test-model", "run"),
-    driver: "docker",
-    driverConfig: { timeout: 30 },
-  });
-  const data = step.toData();
-  assertEquals(data.driver, "docker");
-  assertEquals(data.driverConfig, { timeout: 30 });
-});
-
-Deno.test("Step.fromData and toData roundtrip with driver", () => {
-  const original = Step.create({
-    name: "isolated",
-    task: StepTask.model("test-model", "run"),
-    driver: "raw",
-  });
-  const data = original.toData();
-  const restored = Step.fromData(data);
-  assertEquals(restored.driver, "raw");
-  assertEquals(restored.driverConfig, undefined);
+Deno.test("StepSchema rejects removed driverConfig field with actionable error", () => {
+  const error = assertThrows(
+    () =>
+      Step.fromData({
+        name: "isolated",
+        task: {
+          type: "model_method",
+          modelIdOrName: "test-model",
+          methodName: "run",
+        },
+        driverConfig: { image: "node:18" },
+      } as unknown as StepInput),
+    Error,
+  );
+  assertStringIncludes(
+    error.message,
+    "The 'driverConfig' field has been removed",
+  );
 });
 
 // forEach field tests

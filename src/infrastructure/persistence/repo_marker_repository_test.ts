@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import {
   type RepoMarkerData,
@@ -235,22 +235,28 @@ Deno.test("RepoMarkerRepository.createUpgradeMarker preserves existing data", ()
   assertEquals(isNaN(date.getTime()), false);
 });
 
-Deno.test("RepoMarkerRepository.write and read roundtrip with defaultDriver", async () => {
+Deno.test("RepoMarkerRepository.read rejects removed defaultDriver with actionable error", async () => {
   await withTempDir(async (dir) => {
     const repo = new RepoMarkerRepository();
     const repoPath = RepoPath.create(dir);
 
-    const original = {
-      swampVersion: "1.2.3",
-      initializedAt: "2024-01-15T10:30:00.000Z",
-      defaultDriver: "docker",
-      defaultDriverConfig: { image: "alpine:latest", timeout: 30000 },
-    };
+    await Deno.writeTextFile(
+      repo.getMarkerPath(repoPath),
+      [
+        "swampVersion: 1.2.3",
+        "initializedAt: 2024-01-15T10:30:00.000Z",
+        "defaultDriver: docker",
+        "defaultDriverConfig:",
+        "  image: alpine:latest",
+      ].join("\n"),
+    );
 
-    await repo.write(repoPath, original);
-    const result = await repo.read(repoPath);
-
-    assertEquals(result, original);
+    const error = await assertRejects(() => repo.read(repoPath), Error);
+    assertStringIncludes(
+      error.message,
+      "The 'defaultDriver' field has been removed",
+    );
+    assertStringIncludes(error.message, "design/remote-execution.md");
   });
 });
 

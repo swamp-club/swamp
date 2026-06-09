@@ -81,10 +81,6 @@ const BUNDLED_SKILLS: SkillInfo[] = [
     name: "swamp",
   },
   {
-    relativePath: "swamp/references/model/references/execution-drivers.md",
-    name: "swamp",
-  },
-  {
     relativePath: "swamp/references/model/references/expressions.md",
     name: "swamp",
   },
@@ -111,16 +107,16 @@ const BUNDLED_SKILLS: SkillInfo[] = [
     name: "swamp",
   },
   {
-    relativePath: "swamp/references/workflow/references/execution-drivers.md",
-    name: "swamp",
-  },
-  {
     relativePath:
       "swamp/references/workflow/references/expressions-and-foreach.md",
     name: "swamp",
   },
   {
     relativePath: "swamp/references/workflow/references/nested-workflows.md",
+    name: "swamp",
+  },
+  {
+    relativePath: "swamp/references/workflow/references/remote-execution.md",
     name: "swamp",
   },
   {
@@ -183,33 +179,11 @@ const BUNDLED_SKILLS: SkillInfo[] = [
     name: "swamp",
   },
   {
-    relativePath: "swamp/references/extension/references/driver/api.md",
-    name: "swamp",
-  },
-  {
-    relativePath: "swamp/references/extension/references/driver/examples.md",
-    name: "swamp",
-  },
-  {
-    relativePath: "swamp/references/extension/references/driver/testing.md",
-    name: "swamp",
-  },
-  {
-    relativePath:
-      "swamp/references/extension/references/driver/troubleshooting.md",
-    name: "swamp",
-  },
-  {
     relativePath: "swamp/references/extension/references/model/api.md",
     name: "swamp",
   },
   {
     relativePath: "swamp/references/extension/references/model/checks.md",
-    name: "swamp",
-  },
-  {
-    relativePath:
-      "swamp/references/extension/references/model/docker-execution.md",
     name: "swamp",
   },
   {
