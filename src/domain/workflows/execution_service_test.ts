@@ -829,6 +829,116 @@ Deno.test("executes independent steps within a job in parallel", async () => {
 });
 
 /**
+ * Mock step executor that captures the expression context each step receives,
+ * mutates it (simulating executeModelMethod), and yields to the event loop
+ * so parallel steps interleave.
+ */
+class ContextCapturingExecutor implements StepExecutor {
+  executedSteps: string[] = [];
+  capturedContexts = new Map<string, {
+    selfName: string | undefined;
+    inputs: Record<string, unknown> | undefined;
+  }>();
+
+  async execute(step: Step, ctx: StepExecutionContext): Promise<unknown> {
+    const stepName = ctx.stepName;
+    const exprCtx = ctx.expressionContext;
+
+    // Simulate executeModelMethod: mutate self and inputs
+    if (exprCtx) {
+      exprCtx.self = {
+        id: `id-${stepName}`,
+        name: `model-for-${stepName}`,
+        version: 1,
+        tags: {},
+        globalArguments: {},
+      };
+    }
+
+    // Yield to the event loop so other parallel steps can interleave
+    await new Promise((resolve) => setTimeout(resolve, 50));
+
+    if (exprCtx) {
+      exprCtx.inputs = {
+        ...(exprCtx.inputs ?? {}),
+        [`private-${stepName}`]: `secret-${stepName}`,
+      };
+    }
+
+    // Capture what this step sees AFTER the yield — if contexts are shared,
+    // self may have been overwritten by a sibling step during the await.
+    this.capturedContexts.set(stepName, {
+      selfName: exprCtx?.self?.name as string | undefined,
+      inputs: exprCtx?.inputs ? { ...exprCtx.inputs } : undefined,
+    });
+
+    this.executedSteps.push(`${ctx.jobName}/${stepName}`);
+    return { executed: true, step: step.name };
+  }
+}
+
+Deno.test("parallel steps get isolated expression contexts", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new ContextCapturingExecutor();
+
+    const workflow = Workflow.create({
+      name: "context-isolation",
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "step-a",
+              task: StepTask.model("test-model-a", "run", {
+                label: "from-a",
+              }),
+            }),
+            Step.create({
+              name: "step-b",
+              task: StepTask.model("test-model-b", "run", {
+                label: "from-b",
+              }),
+            }),
+          ],
+        }),
+      ],
+    });
+
+    await workflowRepo.save(workflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      catalogStore,
+    );
+
+    const run = await service.execute(workflow.name);
+
+    assertEquals(run.status, "succeeded");
+    assertEquals(executor.executedSteps.length, 2);
+
+    const ctxA = executor.capturedContexts.get("step-a");
+    const ctxB = executor.capturedContexts.get("step-b");
+
+    // Each step should see its OWN self.name, not a sibling's
+    assertEquals(ctxA?.selfName, "model-for-step-a");
+    assertEquals(ctxB?.selfName, "model-for-step-b");
+
+    // Step A's private inputs should NOT leak into step B and vice versa
+    assertEquals(ctxA?.inputs?.["private-step-a"], "secret-step-a");
+    assertEquals(ctxA?.inputs?.["private-step-b"], undefined);
+    assertEquals(ctxB?.inputs?.["private-step-b"], "secret-step-b");
+    assertEquals(ctxB?.inputs?.["private-step-a"], undefined);
+  });
+});
+
+/**
  * Mock step executor that simulates model method execution with data artifacts.
  * Used to test that data context is refreshed between workflow steps.
  */

@@ -2238,10 +2238,13 @@ export class WorkflowExecutionService {
     let driverPlan: DriverPlan | undefined;
 
     try {
-      // Build the expression context with forEach variable
-      let stepExprContext = expressionContext;
-      if (expressionContext && forEachVar && forEachVar.name) {
-        const baseSelf = expressionContext.self ?? {
+      // Shallow-copy the expression context so parallel steps don't race on
+      // the mutable .self and .inputs properties.
+      let stepExprContext = expressionContext
+        ? { ...expressionContext }
+        : expressionContext;
+      if (stepExprContext && forEachVar && forEachVar.name) {
+        const baseSelf = stepExprContext.self ?? {
           id: "",
           name: "",
           version: 1,
@@ -2249,7 +2252,7 @@ export class WorkflowExecutionService {
           globalArguments: {},
         };
         stepExprContext = {
-          ...expressionContext,
+          ...stepExprContext,
           self: {
             ...baseSelf,
             [forEachVar.name]: forEachVar.value,
