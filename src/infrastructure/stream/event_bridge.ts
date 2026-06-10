@@ -47,9 +47,17 @@ export async function* withEventBridge<TEvent, TResult>(
     .finally(() => {
       queue.close();
     });
-  for await (const event of queue) {
-    yield event;
+  try {
+    for await (const event of queue) {
+      yield event;
+    }
+    await promise;
+    return result;
+  } finally {
+    // When the generator is returned early (abort/cancellation), the yield
+    // exits without reaching `await promise`. Close the queue so the executor
+    // sees the signal, and absorb any rejection so it doesn't become unhandled.
+    queue.close();
+    await promise.catch(() => {});
   }
-  await promise;
-  return result;
 }
