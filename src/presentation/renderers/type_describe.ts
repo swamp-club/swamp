@@ -59,6 +59,15 @@ class LogTypeDescribeRenderer implements Renderer<TypeDescribeEvent> {
           lines.push(...formatMethodLines(data.methods));
         }
 
+        if (data.type.normalized.startsWith("@swamp/")) {
+          lines.push("");
+          lines.push(
+            dim(
+              `Missing a capability? swamp issue feature --extension ${data.type.normalized}`,
+            ),
+          );
+        }
+
         writeOutput(lines.join("\n"));
       },
       error: (e) => {

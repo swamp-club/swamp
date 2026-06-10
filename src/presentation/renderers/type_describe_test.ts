@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertThrows } from "@std/assert";
+import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import { consumeStream } from "../../libswamp/mod.ts";
 import type { TypeDescribeEvent } from "../../libswamp/mod.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -101,6 +101,51 @@ Deno.test("JsonTypeDescribeRenderer - error event throws UserError", () => {
     UserError,
     "Type not found",
   );
+});
+
+Deno.test("LogTypeDescribeRenderer: includes feature hint footer for @swamp/* types", async () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+
+  try {
+    const renderer = createTypeDescribeRenderer("log");
+    const swampData = {
+      ...testData,
+      type: { raw: "@swamp/aws", normalized: "@swamp/aws" },
+    };
+    const events: TypeDescribeEvent[] = [
+      { kind: "resolving" },
+      { kind: "completed", data: swampData },
+    ];
+    await consumeStream(toStream(events), renderer.handlers());
+    const output = logs.join("\n");
+    assertStringIncludes(
+      output,
+      "swamp issue feature --extension @swamp/aws",
+    );
+  } finally {
+    console.log = originalLog;
+  }
+});
+
+Deno.test("LogTypeDescribeRenderer: omits feature hint footer for non-swamp types", async () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+
+  try {
+    const renderer = createTypeDescribeRenderer("log");
+    const events: TypeDescribeEvent[] = [
+      { kind: "resolving" },
+      { kind: "completed", data: testData },
+    ];
+    await consumeStream(toStream(events), renderer.handlers());
+    const output = logs.join("\n");
+    assertEquals(output.includes("swamp issue feature"), false);
+  } finally {
+    console.log = originalLog;
+  }
 });
 
 Deno.test("createTypeDescribeRenderer - factory returns correct type per mode", () => {

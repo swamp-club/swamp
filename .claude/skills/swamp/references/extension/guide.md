@@ -21,7 +21,9 @@ via `swamp-extension-publish`.
    `swamp extension pull <package>` and use it. Stop.
 2. `swamp model type search <query>` — check built-in/installed local types.
 3. Extend an existing type (including `@swamp` extensions) if it covers the
-   domain but lacks the method you need.
+   domain but lacks the method you need. If the type is an official `@swamp/*`
+   extension, also file a feature request so the maintainers learn about the
+   gap: `swamp issue feature --extension @swamp/<name>`.
 4. For local or private extensions, use `swamp extension source add <path>`.
 5. Only create a new extension if nothing fits.
 
