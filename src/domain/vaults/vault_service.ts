@@ -75,6 +75,9 @@ export class VaultService {
   ): Promise<VaultService> {
     await vaultTypeRegistry.ensureLoaded();
     const vaultService = new VaultService(refreshOptions);
+    let vaultConfigs: Awaited<
+      ReturnType<YamlVaultConfigRepository["findAll"]>
+    >;
     try {
       const effectiveVaultsDir = vaultsDir ?? join(repoDir, "vaults");
       const vaultRepo = new YamlVaultConfigRepository(
@@ -82,8 +85,14 @@ export class VaultService {
         undefined,
         effectiveVaultsDir,
       );
-      const vaultConfigs = await vaultRepo.findAll();
-      for (const vaultConfig of vaultConfigs) {
+      vaultConfigs = await vaultRepo.findAll();
+    } catch (error) {
+      getLogger("vaults").debug`Failed to load vault configs: ${error}`;
+      vaultService.ensureDefaultVaults();
+      return vaultService;
+    }
+    for (const vaultConfig of vaultConfigs) {
+      try {
         // Auto-remap renamed vault types so old configs load transparently
         let vaultType = vaultConfig.type;
         const renamedTo = RENAMED_VAULT_TYPES[vaultType.toLowerCase()];
@@ -114,17 +123,16 @@ export class VaultService {
           type: vaultType,
           config,
         });
-      }
-    } catch (error) {
-      if (
-        error instanceof Error &&
-        error.message.includes("Unsupported vault type")
-      ) {
-        // Surface unsupported type errors as warnings so users see migration hints
-        getLogger("vaults").warn`${error.message}`;
-      } else {
-        // Repository may not exist yet, or vault config may be invalid
-        getLogger("vaults").debug`Failed to load vault configs: ${error}`;
+      } catch (error) {
+        if (
+          error instanceof Error &&
+          error.message.includes("Unsupported vault type")
+        ) {
+          getLogger("vaults").warn`${error.message}`;
+        } else {
+          getLogger("vaults")
+            .warn`Failed to load vault '${vaultConfig.name}': ${error}`;
+        }
       }
     }
     vaultService.ensureDefaultVaults();
