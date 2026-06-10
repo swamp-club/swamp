@@ -46,7 +46,6 @@ import { driverCommand } from "./commands/driver.ts";
 import { doctorCommand } from "./commands/doctor.ts";
 import { reportCommand } from "./commands/report.ts";
 import { serveCommand } from "./commands/serve.ts";
-import { openCommand } from "./commands/open.ts";
 import { agentCommand } from "./commands/agent_setup.ts";
 import { createHelpCommand } from "./commands/help.ts";
 import { unknownCommandErrorHandler } from "./unknown_command_handler.ts";
@@ -1347,7 +1346,6 @@ export async function runCli(args: string[]): Promise<void> {
     .command("doctor", doctorCommand)
     .command("report", reportCommand)
     .command("serve", serveCommand)
-    .command("open", openCommand)
     .command("agent", agentCommand);
 
   // Register help command last — needs reference to the fully-built CLI tree
