@@ -64,6 +64,10 @@ import {
 import type { DatastoreProvider } from "../../domain/datastore/datastore_provider.ts";
 import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
 import { UserError } from "../../domain/errors.ts";
+import {
+  findFileCollisions,
+  mergeDirInto,
+} from "../../infrastructure/persistence/directory_merge.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -342,39 +346,10 @@ function buildMigrateDeps(
     dirSize,
     renameDir: (source: string, destination: string) =>
       Deno.rename(source, destination),
-    mergeDirInto: async (source: string, destination: string) => {
-      const mergeRecursive = async (
-        src: string,
-        dst: string,
-      ): Promise<number> => {
-        let moved = 0;
-        for await (const entry of Deno.readDir(src)) {
-          const srcPath = join(src, entry.name);
-          const dstPath = join(dst, entry.name);
-          let dstExists = false;
-          try {
-            await Deno.stat(dstPath);
-            dstExists = true;
-          } catch {
-            // doesn't exist
-          }
-          if (!dstExists) {
-            await Deno.rename(srcPath, dstPath);
-            moved++;
-          } else if (entry.isDirectory) {
-            moved += await mergeRecursive(srcPath, dstPath);
-          }
-        }
-        return moved;
-      };
-      const moved = await mergeRecursive(source, destination);
-      try {
-        await Deno.remove(source, { recursive: true });
-      } catch {
-        // Best-effort cleanup
-      }
-      return moved;
-    },
+    findFileCollisions: (source: string, destination: string) =>
+      findFileCollisions(source, destination),
+    mergeDirInto: (source: string, destination: string) =>
+      mergeDirInto(source, destination),
     ensureDir: (path: string) => ensureDir(path),
     invalidateCatalog: () => {
       catalogStore = createCatalogStore(repoDir);

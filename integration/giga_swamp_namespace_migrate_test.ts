@@ -36,6 +36,10 @@ import {
 import { collect } from "../src/libswamp/testing.ts";
 import { DEFAULT_DATASTORE_SUBDIRS } from "../src/domain/datastore/datastore_config.ts";
 import {
+  findFileCollisions,
+  mergeDirInto,
+} from "../src/infrastructure/persistence/directory_merge.ts";
+import {
   removeNamespaceManifest,
   writeNamespaceManifest,
 } from "../src/infrastructure/persistence/namespace_manifest.ts";
@@ -130,30 +134,10 @@ function buildDeps(
     dirSize,
     renameDir: (source: string, destination: string) =>
       Deno.rename(source, destination),
-    mergeDirInto: async (source: string, destination: string) => {
-      let moved = 0;
-      const mergeRecursive = async (
-        src: string,
-        dst: string,
-      ): Promise<void> => {
-        for await (const entry of Deno.readDir(src)) {
-          const srcPath = join(src, entry.name);
-          const dstPath = join(dst, entry.name);
-          try {
-            await Deno.stat(dstPath);
-            if (entry.isDirectory) await mergeRecursive(srcPath, dstPath);
-          } catch {
-            await Deno.rename(srcPath, dstPath);
-            moved++;
-          }
-        }
-      };
-      await mergeRecursive(source, destination);
-      try {
-        await Deno.remove(source, { recursive: true });
-      } catch { /* best-effort */ }
-      return moved;
-    },
+    findFileCollisions: (source: string, destination: string) =>
+      findFileCollisions(source, destination),
+    mergeDirInto: (source: string, destination: string) =>
+      mergeDirInto(source, destination),
     ensureDir: (path: string) => ensureDir(path),
     invalidateCatalog: () => catalogStore.invalidate(),
     markDirtyBulk: () => Promise.resolve(),

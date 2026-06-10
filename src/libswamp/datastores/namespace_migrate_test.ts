@@ -23,6 +23,7 @@ import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
   datastoreNamespaceMigrate,
+  type MergeDirResult,
   type NamespaceMigrateDeps,
   type NamespaceMigrateEvent,
 } from "./namespace_migrate.ts";
@@ -40,7 +41,9 @@ function makeDeps(
     dirHasDataFiles: () => Promise.resolve(false),
     dirSize: () => Promise.resolve({ fileCount: 0, totalBytes: 0 }),
     renameDir: () => Promise.resolve(),
-    mergeDirInto: () => Promise.resolve(0),
+    mergeDirInto: (): Promise<MergeDirResult> =>
+      Promise.resolve({ moved: 0, skipped: 0, skippedPaths: [] }),
+    findFileCollisions: () => Promise.resolve([]),
     ensureDir: () => Promise.resolve(),
     invalidateCatalog: () => {},
     markDirtyBulk: () => Promise.resolve(),
@@ -294,4 +297,180 @@ Deno.test("datastoreNamespaceMigrate: skips nonexistent subdirs", async () => {
     assertEquals(events[0].data.directories.length, 1);
     assertEquals(events[0].data.directories[0].subdir, "data");
   }
+});
+
+Deno.test("datastoreNamespaceMigrate: pre-flight aborts on file collisions in forward migration", async () => {
+  const ctx = createLibSwampContext({});
+  const allPaths = new Set([
+    join(DS_PATH, "data"),
+    join(DS_PATH, NAMESPACE, "data"),
+  ]);
+  const deps = makeDeps({
+    dirExists: (path) => Promise.resolve(allPaths.has(path)),
+    dirSize: () => Promise.resolve({ fileCount: 5, totalBytes: 2000 }),
+    findFileCollisions: (_src, _dst) =>
+      Promise.resolve(["model-a/latest.yaml", "model-b/v1.yaml"]),
+  });
+
+  const events = await collect<NamespaceMigrateEvent>(
+    datastoreNamespaceMigrate(ctx, deps, { confirm: true, reverse: false }),
+  );
+
+  assertEquals(events.length, 1);
+  assertEquals(events[0].kind, "error");
+  if (events[0].kind === "error") {
+    assertStringIncludes(events[0].error.message, "2 file(s) already exist");
+    assertStringIncludes(events[0].error.message, "model-a/latest.yaml");
+    assertStringIncludes(events[0].error.message, "model-b/v1.yaml");
+    assertEquals(events[0].succeededDirectories, []);
+  }
+});
+
+Deno.test("datastoreNamespaceMigrate: re-run after partial failure detects collisions before mutation", async () => {
+  const ctx = createLibSwampContext({});
+  const existingPaths = new Set([
+    join(DS_PATH, "data"),
+    join(DS_PATH, "outputs"),
+    join(DS_PATH, NAMESPACE, "data"),
+  ]);
+  let renameCalled = false;
+  let mergeCalled = false;
+
+  const deps = makeDeps({
+    dirExists: (path) => Promise.resolve(existingPaths.has(path)),
+    dirSize: () => Promise.resolve({ fileCount: 5, totalBytes: 2000 }),
+    findFileCollisions: (src, _dst) => {
+      if (src === join(DS_PATH, "data")) {
+        return Promise.resolve(["colliding-file.yaml"]);
+      }
+      return Promise.resolve([]);
+    },
+    renameDir: () => {
+      renameCalled = true;
+      return Promise.resolve();
+    },
+    mergeDirInto: () => {
+      mergeCalled = true;
+      return Promise.resolve({ moved: 0, skipped: 0, skippedPaths: [] });
+    },
+  });
+
+  const events = await collect<NamespaceMigrateEvent>(
+    datastoreNamespaceMigrate(ctx, deps, { confirm: true, reverse: false }),
+  );
+
+  const errorEvent = events.find((e) => e.kind === "error");
+  assertEquals(errorEvent?.kind, "error");
+  if (errorEvent?.kind === "error") {
+    assertStringIncludes(
+      errorEvent.error.message,
+      "1 file(s) already exist",
+    );
+    assertStringIncludes(errorEvent.error.message, "colliding-file.yaml");
+  }
+  assertEquals(renameCalled, false);
+  assertEquals(mergeCalled, false);
+});
+
+Deno.test("datastoreNamespaceMigrate: nested collisions across multiple subdirs are all reported", async () => {
+  const ctx = createLibSwampContext({});
+  const allPaths = new Set([
+    join(DS_PATH, "data"),
+    join(DS_PATH, NAMESPACE, "data"),
+    join(DS_PATH, "outputs"),
+    join(DS_PATH, NAMESPACE, "outputs"),
+  ]);
+
+  const deps = makeDeps({
+    dirExists: (path) => Promise.resolve(allPaths.has(path)),
+    dirSize: () => Promise.resolve({ fileCount: 3, totalBytes: 1000 }),
+    findFileCollisions: (src, _dst) => {
+      if (src === join(DS_PATH, "data")) {
+        return Promise.resolve(["a/b/deep-file.yaml"]);
+      }
+      if (src === join(DS_PATH, "outputs")) {
+        return Promise.resolve(["report.json"]);
+      }
+      return Promise.resolve([]);
+    },
+  });
+
+  const events = await collect<NamespaceMigrateEvent>(
+    datastoreNamespaceMigrate(ctx, deps, { confirm: false, reverse: false }),
+  );
+
+  assertEquals(events.length, 1);
+  assertEquals(events[0].kind, "error");
+  if (events[0].kind === "error") {
+    assertStringIncludes(events[0].error.message, "2 file(s)");
+    assertStringIncludes(events[0].error.message, "data/a/b/deep-file.yaml");
+    assertStringIncludes(events[0].error.message, "outputs/report.json");
+  }
+});
+
+Deno.test("datastoreNamespaceMigrate: mergeDirInto skipped files yield warning event", async () => {
+  const ctx = createLibSwampContext({});
+  const allPaths = new Set([
+    join(DS_PATH, "data"),
+    join(DS_PATH, NAMESPACE, "data"),
+  ]);
+  const deps = makeDeps({
+    dirExists: (path) => Promise.resolve(allPaths.has(path)),
+    dirSize: () => Promise.resolve({ fileCount: 5, totalBytes: 2000 }),
+    findFileCollisions: () => Promise.resolve([]),
+    mergeDirInto: () =>
+      Promise.resolve({
+        moved: 3,
+        skipped: 1,
+        skippedPaths: ["leftover.yaml"],
+      }),
+  });
+
+  const events = await collect<NamespaceMigrateEvent>(
+    datastoreNamespaceMigrate(ctx, deps, { confirm: true, reverse: false }),
+  );
+
+  const warningEvent = events.find((e) => e.kind === "warning");
+  assertEquals(warningEvent?.kind, "warning");
+  if (warningEvent?.kind === "warning") {
+    assertEquals(warningEvent.data.subdir, "data");
+    assertEquals(warningEvent.data.skippedPaths, ["leftover.yaml"]);
+    assertEquals(warningEvent.data.source, join(DS_PATH, "data"));
+    assertEquals(
+      warningEvent.data.destination,
+      join(DS_PATH, NAMESPACE, "data"),
+    );
+  }
+
+  const completedEvent = events.find((e) => e.kind === "completed");
+  assertEquals(completedEvent?.kind, "completed");
+});
+
+Deno.test("datastoreNamespaceMigrate: no collision check on reverse migration", async () => {
+  const ctx = createLibSwampContext({});
+  const existingDirs = new Set([
+    join(DS_PATH, NAMESPACE, "bundles"),
+    join(DS_PATH, "bundles"),
+  ]);
+  let collisionCheckCalled = false;
+
+  const deps = makeDeps({
+    dirExists: (path) => Promise.resolve(existingDirs.has(path)),
+    dirHasDataFiles: () => Promise.resolve(false),
+    dirSize: () => Promise.resolve({ fileCount: 3, totalBytes: 1000 }),
+    findFileCollisions: () => {
+      collisionCheckCalled = true;
+      return Promise.resolve([]);
+    },
+    mergeDirInto: () =>
+      Promise.resolve({ moved: 3, skipped: 0, skippedPaths: [] }),
+  });
+
+  const events = await collect<NamespaceMigrateEvent>(
+    datastoreNamespaceMigrate(ctx, deps, { confirm: true, reverse: true }),
+  );
+
+  assertEquals(collisionCheckCalled, false);
+  const completed = events.find((e) => e.kind === "completed");
+  assertEquals(completed?.kind, "completed");
 });

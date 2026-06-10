@@ -1268,11 +1268,13 @@ export {
   datastoreNamespaceMigrate,
   type DirSize,
   INFRASTRUCTURE_FILES,
+  type MergeDirResult,
   type NamespaceMigrateCompletedData,
   type NamespaceMigrateDeps,
   type NamespaceMigrateEvent,
   type NamespaceMigrateInput,
   type NamespaceMigratePreviewData,
   type NamespaceMigrateProgressData,
+  type NamespaceMigrateWarningData,
   type SubdirPreview,
 } from "./datastores/namespace_migrate.ts";

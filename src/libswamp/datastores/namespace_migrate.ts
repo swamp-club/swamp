@@ -49,6 +49,13 @@ export interface NamespaceMigrateProgressData {
   destination: string;
 }
 
+export interface NamespaceMigrateWarningData {
+  subdir: string;
+  source: string;
+  destination: string;
+  skippedPaths: string[];
+}
+
 export interface NamespaceMigrateCompletedData {
   namespace: string;
   datastorePath: string;
@@ -62,6 +69,7 @@ export interface NamespaceMigrateCompletedData {
 export type NamespaceMigrateEvent =
   | { kind: "preview"; data: NamespaceMigratePreviewData }
   | { kind: "progress"; data: NamespaceMigrateProgressData }
+  | { kind: "warning"; data: NamespaceMigrateWarningData }
   | { kind: "completed"; data: NamespaceMigrateCompletedData }
   | {
     kind: "error";
@@ -78,6 +86,12 @@ export interface NamespaceMigrateInput {
 export interface DirSize {
   fileCount: number;
   totalBytes: number;
+}
+
+export interface MergeDirResult {
+  moved: number;
+  skipped: number;
+  skippedPaths: string[];
 }
 
 export const INFRASTRUCTURE_FILES = new Set([
@@ -100,7 +114,14 @@ export interface NamespaceMigrateDeps {
   dirHasDataFiles: (path: string) => Promise<boolean>;
   dirSize: (path: string) => Promise<DirSize>;
   renameDir: (source: string, destination: string) => Promise<void>;
-  mergeDirInto: (source: string, destination: string) => Promise<number>;
+  mergeDirInto: (
+    source: string,
+    destination: string,
+  ) => Promise<MergeDirResult>;
+  findFileCollisions: (
+    source: string,
+    destination: string,
+  ) => Promise<string[]>;
   ensureDir: (path: string) => Promise<void>;
   invalidateCatalog: () => void;
   markDirtyBulk: () => Promise<void>;
@@ -131,6 +152,7 @@ export async function* datastoreNamespaceMigrate(
 
       const datastorePath = deps.getDatastorePath();
       const directories: SubdirPreview[] = [];
+      const allCollisions: Array<{ subdir: string; paths: string[] }> = [];
 
       for (const subdir of DEFAULT_DATASTORE_SUBDIRS) {
         const source = input.reverse
@@ -160,6 +182,16 @@ export async function* datastoreNamespaceMigrate(
           return;
         }
 
+        if (!input.reverse && await deps.dirExists(destination)) {
+          const collidingPaths = await deps.findFileCollisions(
+            source,
+            destination,
+          );
+          if (collidingPaths.length > 0) {
+            allCollisions.push({ subdir, paths: collidingPaths });
+          }
+        }
+
         const size = await deps.dirSize(source);
         directories.push({
           subdir,
@@ -168,6 +200,26 @@ export async function* datastoreNamespaceMigrate(
           fileCount: size.fileCount,
           totalBytes: size.totalBytes,
         });
+      }
+
+      if (allCollisions.length > 0) {
+        const totalCollisions = allCollisions.reduce(
+          (sum, c) => sum + c.paths.length,
+          0,
+        );
+        const listing = allCollisions
+          .flatMap((c) => c.paths.map((p) => `  ${c.subdir}/${p}`))
+          .join("\n");
+        yield {
+          kind: "error",
+          error: validationFailed(
+            `Cannot migrate: ${totalCollisions} file(s) already exist at the ` +
+              `destination and would be lost during merge. Remove or rename ` +
+              `the conflicting files first:\n${listing}`,
+          ),
+          succeededDirectories: [],
+        };
+        return;
       }
 
       if (directories.length === 0) {
@@ -229,7 +281,21 @@ export async function* datastoreNamespaceMigrate(
         try {
           await deps.ensureDir(dirname(dir.destination));
           if (await deps.dirExists(dir.destination)) {
-            await deps.mergeDirInto(dir.source, dir.destination);
+            const result = await deps.mergeDirInto(
+              dir.source,
+              dir.destination,
+            );
+            if (result.skipped > 0) {
+              yield {
+                kind: "warning",
+                data: {
+                  subdir: dir.subdir,
+                  source: dir.source,
+                  destination: dir.destination,
+                  skippedPaths: result.skippedPaths,
+                },
+              };
+            }
           } else {
             await deps.renameDir(dir.source, dir.destination);
           }

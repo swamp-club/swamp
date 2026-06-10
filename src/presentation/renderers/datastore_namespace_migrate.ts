@@ -22,6 +22,7 @@ import type {
   EventHandlers,
   NamespaceMigrateEvent,
   NamespaceMigratePreviewData,
+  NamespaceMigrateWarningData,
 } from "../../libswamp/mod.ts";
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
@@ -71,6 +72,16 @@ class LogNamespaceMigrateRenderer implements Renderer<NamespaceMigrateEvent> {
       progress: (e) => {
         writeOutput(green(`  ✓ ${e.data.subdir}`));
       },
+      warning: (e) => {
+        const lines = [
+          yellow(
+            `  ⚠ ${e.data.subdir}: ${e.data.skippedPaths.length} file(s) skipped (already exist at destination)`,
+          ),
+          `    Source copies preserved at: ${e.data.source}`,
+          ...e.data.skippedPaths.map((p) => `      ${p}`),
+        ];
+        writeOutput(lines.join("\n"));
+      },
       completed: (e) => {
         if (e.data.migratedDirectories.length === 0) return;
 
@@ -118,6 +129,7 @@ class LogNamespaceMigrateRenderer implements Renderer<NamespaceMigrateEvent> {
 
 class JsonNamespaceMigrateRenderer implements Renderer<NamespaceMigrateEvent> {
   #previewData: NamespaceMigratePreviewData | null = null;
+  #warnings: NamespaceMigrateWarningData[] = [];
 
   handlers(): EventHandlers<NamespaceMigrateEvent> {
     return {
@@ -125,9 +137,15 @@ class JsonNamespaceMigrateRenderer implements Renderer<NamespaceMigrateEvent> {
         this.#previewData = e.data;
       },
       progress: () => {},
+      warning: (e) => {
+        this.#warnings.push(e.data);
+      },
       completed: (e) => {
         if (e.data.migratedDirectories.length > 0) {
-          writeOutput(JSON.stringify(e.data, null, 2));
+          const output = this.#warnings.length > 0
+            ? { ...e.data, warnings: this.#warnings }
+            : e.data;
+          writeOutput(JSON.stringify(output, null, 2));
         } else {
           writeOutput(JSON.stringify(this.#previewData, null, 2));
         }
