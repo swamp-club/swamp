@@ -250,5 +250,37 @@ export function renderWorkerStatus(
     case "stopped":
       writeOutput(dim(`Worker stopped: ${event.reason}`));
       break;
+    case "dispatch_started": {
+      const where = event.workflowName
+        ? ` (${event.workflowName}${
+          event.stepName ? ` › ${event.stepName}` : ""
+        })`
+        : "";
+      writeOutput(
+        `${cyan("▶")} Dispatch ${bold(event.dispatchId.slice(0, 8))}: ${
+          bold(`${event.modelType}.${event.methodName}`)
+        }${where}`,
+      );
+      break;
+    }
+    case "dispatch_finished": {
+      const took = `${Math.round(event.durationMs)}ms`;
+      if (event.status === "success") {
+        writeOutput(
+          `${green(checkmark)} Dispatch ${
+            bold(event.dispatchId.slice(0, 8))
+          }: ${event.modelType}.${event.methodName} succeeded in ${took}`,
+        );
+      } else {
+        writeOutput(
+          `${red("✗")} Dispatch ${
+            bold(event.dispatchId.slice(0, 8))
+          }: ${event.modelType}.${event.methodName} failed in ${took}${
+            event.error ? ` — ${event.error}` : ""
+          }`,
+        );
+      }
+      break;
+    }
   }
 }

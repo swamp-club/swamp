@@ -269,6 +269,49 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
   }
 
   /**
+   * Rebuild a full DataHandle from the orchestrator's durable record of a
+   * remotely-written output. The dispatch result carries only identities;
+   * metadata (content type, lifetime, ownerDefinition, tags) comes from the
+   * datastore, which the data plane wrote moments ago.
+   */
+  async #rebuildRemoteHandle(
+    context: MethodContext,
+    output: RemoteStepResult["outputs"][number],
+  ): Promise<DataHandle> {
+    const data = await context.dataRepository.findByName(
+      context.modelType,
+      context.modelId,
+      output.name,
+      output.version,
+    );
+    if (data === null) {
+      // The write was durable before the dispatch result returned; a miss
+      // here means the record vanished out from under us — fail loudly
+      // rather than fabricate metadata.
+      throw new Error(
+        `Remotely-written output '${output.name}' v${output.version} was not found in the datastore`,
+      );
+    }
+    return {
+      name: data.name,
+      specName: output.specName,
+      kind: output.type,
+      dataId: createDataId(output.dataId),
+      version: data.version,
+      size: data.size ?? 0,
+      tags: { ...data.tags },
+      metadata: {
+        contentType: data.contentType,
+        lifetime: data.lifetime,
+        garbageCollection: data.garbageCollection,
+        streaming: data.streaming,
+        tags: { ...data.tags },
+        ownerDefinition: { ...data.ownerDefinition },
+      },
+    };
+  }
+
+  /**
    * Dispatch the method body to a remote worker through the registered
    * dispatcher port. Vault sentinels are resolved into the shipped args —
    * the same resolve-before-dispatch pattern out-of-process execution has
@@ -703,16 +746,15 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
           currentDefinition,
           methodName,
         );
-        currentHandles = remoteResult.outputs.map((output) => ({
-          dataId: createDataId(output.dataId),
-          name: output.name,
-          specName: output.specName,
-          kind: output.type,
-          version: output.version,
-          size: 0,
-          tags: {},
-          metadata: {} as DataHandle["metadata"],
-        }));
+        // Rebuild full handles from the durable records the data plane
+        // persisted — downstream consumers (data-record mapping, workflow
+        // artifact tracking) read metadata like ownerDefinition, which the
+        // wire-thin dispatch outputs do not carry.
+        currentHandles = await Promise.all(
+          remoteResult.outputs.map((output) =>
+            this.#rebuildRemoteHandle(context, output)
+          ),
+        );
         result = {
           dataHandles: currentHandles,
           followUpActions: remoteResult

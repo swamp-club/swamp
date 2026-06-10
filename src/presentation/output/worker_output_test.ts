@@ -27,6 +27,7 @@ import type {
 } from "../../libswamp/mod.ts";
 import {
   renderWorkerList,
+  renderWorkerStatus,
   renderWorkerTokenCreate,
   renderWorkerTokenList,
   renderWorkerTokenRevoke,
@@ -242,4 +243,65 @@ Deno.test("renderWorkerList: json mode emits the array of records", () => {
   assertEquals(parsed[0].status, "busy");
   assertEquals(parsed[0].labels, { os: "linux", gpu: "none" });
   assertEquals(parsed[1].currentDispatchId, null);
+});
+
+Deno.test("renderWorkerStatus: dispatch lifecycle renders start and finish", () => {
+  const joined = stripAnsiCode(captureLogs(() => {
+    renderWorkerStatus(
+      {
+        kind: "dispatch_started",
+        dispatchId: "abcdef12-3456",
+        modelType: "command/shell",
+        methodName: "execute",
+        workflowName: "deploy",
+        stepName: "build",
+      },
+      "log",
+    );
+    renderWorkerStatus(
+      {
+        kind: "dispatch_finished",
+        dispatchId: "abcdef12-3456",
+        modelType: "command/shell",
+        methodName: "execute",
+        status: "success",
+        durationMs: 123.4,
+      },
+      "log",
+    );
+    renderWorkerStatus(
+      {
+        kind: "dispatch_finished",
+        dispatchId: "abcdef12-3456",
+        modelType: "command/shell",
+        methodName: "execute",
+        status: "error",
+        durationMs: 50,
+        error: "boom",
+      },
+      "log",
+    );
+  }));
+  assertStringIncludes(joined, "abcdef12");
+  assertStringIncludes(joined, "command/shell.execute");
+  assertStringIncludes(joined, "deploy › build");
+  assertStringIncludes(joined, "succeeded in 123ms");
+  assertStringIncludes(joined, "boom");
+});
+
+Deno.test("renderWorkerStatus: dispatch events serialize whole in json mode", () => {
+  const output = captureLogs(() => {
+    renderWorkerStatus(
+      {
+        kind: "dispatch_started",
+        dispatchId: "d-1",
+        modelType: "m",
+        methodName: "run",
+      },
+      "json",
+    );
+  });
+  const parsed = JSON.parse(output);
+  assertEquals(parsed.kind, "dispatch_started");
+  assertEquals(parsed.dispatchId, "d-1");
 });

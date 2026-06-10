@@ -18,6 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertRejects } from "@std/assert";
+import { setRemoteStepDispatcher } from "../remote/remote_dispatch.ts";
+import { fromResourceHandle } from "../data/data_record_mapper.ts";
 import { createExtensionCelEnvironment } from "../../infrastructure/cel/cel_evaluator.ts";
 import { DefaultMethodExecutionService } from "./method_execution_service.ts";
 import { createDefinitionId, Definition } from "../definitions/definition.ts";
@@ -3150,4 +3152,120 @@ Deno.test("executeWorkflow: check unresolvedMethodArgs filters unresolved expres
 
   assertEquals(capturedArgs?.name, "my-server");
   assertEquals(capturedArgs?.apiKey, undefined);
+});
+
+Deno.test("executeWorkflow - placed steps rebuild full handles from durable records (swamp-club#535)", async () => {
+  const service = new DefaultMethodExecutionService();
+  const model = createTestModel({});
+  const definition = Definition.create({
+    name: "remote-def",
+    methods: { start: { arguments: {} } },
+  });
+
+  // The record the data plane persisted while the worker ran the method.
+  const written = Data.create({
+    name: "data-out",
+    contentType: "application/json",
+    lifetime: "infinite",
+    garbageCollection: 10,
+    tags: { type: "resource", specName: "data" },
+    ownerDefinition: { ownerType: "model-method", ownerRef: "remote-def" },
+    version: 2,
+    size: 17,
+  });
+  const baseRepo = createMockDataRepoWithData([written]);
+  const repo: UnifiedDataRepository = {
+    ...baseRepo,
+    findByName: (_type, _modelId, dataName, version) =>
+      Promise.resolve(
+        dataName === "data-out" && version === 2 ? written : null,
+      ),
+    getContent: () =>
+      Promise.resolve(new TextEncoder().encode('{"value":"remote"}')),
+  };
+
+  setRemoteStepDispatcher({
+    executeRemote: () =>
+      Promise.resolve({
+        outputs: [{
+          dataId: String(written.id),
+          version: 2,
+          name: "data-out",
+          specName: "data",
+          type: "resource" as const,
+        }],
+        logs: [],
+        durationMs: 5,
+      }),
+  });
+  try {
+    const { context } = createTestContext({
+      modelType: model.type,
+      dataRepository: repo,
+      placement: { labels: { tier: "remote" } },
+    });
+    const result = await service.executeWorkflow(
+      definition,
+      model,
+      "start",
+      context,
+    );
+
+    const handle = result.dataHandles![0];
+    // Full metadata is rebuilt from the durable record — the wire-thin
+    // dispatch output carries identities only.
+    assertEquals(handle.metadata.ownerDefinition.ownerType, "model-method");
+    assertEquals(handle.metadata.contentType, "application/json");
+    assertEquals(handle.size, 17);
+
+    // The exact consumer that crashed during manual testing: mapping the
+    // handle into a DataRecord reads metadata.ownerDefinition.* fields.
+    const record = await fromResourceHandle(
+      handle,
+      model.type,
+      context.modelId,
+      "remote-def",
+      repo,
+    );
+    assertEquals(record.ownerType, "model-method");
+    assertEquals(record.attributes, { value: "remote" });
+  } finally {
+    setRemoteStepDispatcher(null);
+  }
+});
+
+Deno.test("executeWorkflow - placed step with a vanished output record fails loudly", async () => {
+  const service = new DefaultMethodExecutionService();
+  const model = createTestModel({});
+  const definition = Definition.create({
+    name: "remote-def",
+    methods: { start: { arguments: {} } },
+  });
+  setRemoteStepDispatcher({
+    executeRemote: () =>
+      Promise.resolve({
+        outputs: [{
+          dataId: crypto.randomUUID(),
+          version: 9,
+          name: "ghost",
+          specName: "data",
+          type: "resource" as const,
+        }],
+        logs: [],
+        durationMs: 1,
+      }),
+  });
+  try {
+    const { context } = createTestContext({
+      modelType: model.type,
+      placement: { target: "w1" },
+    });
+    await assertRejects(
+      () => service.executeWorkflow(definition, model, "start", context),
+      Error,
+      "was not found in the datastore",
+    );
+  } finally {
+    setRemoteStepDispatcher(null);
+  }
 });

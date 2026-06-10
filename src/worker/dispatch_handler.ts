@@ -111,10 +111,32 @@ function serializeFollowUpActions(
   }));
 }
 
+/** Worker-visible lifecycle of one dispatch, for connect-mode output. */
+export type WorkerDispatchEvent =
+  | {
+    kind: "dispatch_started";
+    dispatchId: string;
+    modelType: string;
+    methodName: string;
+    workflowName?: string;
+    stepName?: string;
+  }
+  | {
+    kind: "dispatch_finished";
+    dispatchId: string;
+    modelType: string;
+    methodName: string;
+    status: "success" | "error";
+    durationMs: number;
+    error?: string;
+  };
+
 export interface DispatchHandlerOptions {
   channel: RpcChannel;
   client: DataPlaneClient;
   bundleCache: WorkerBundleCache;
+  /** Receives dispatch start/finish notifications (connect-mode output). */
+  onDispatch?: (event: WorkerDispatchEvent) => void;
   /** Test seam: overrides the method executor. */
   executor?: Pick<DefaultMethodExecutionService, "execute">;
 }
@@ -150,6 +172,23 @@ async function handleDispatch(
   const execution = params.execution;
   const start = performance.now();
   const logs: string[] = [];
+
+  logger.info(
+    "Dispatch {dispatchId} started: {modelType}.{methodName}",
+    {
+      dispatchId: params.dispatchId,
+      modelType: execution.modelType,
+      methodName: execution.methodName,
+    },
+  );
+  options.onDispatch?.({
+    kind: "dispatch_started",
+    dispatchId: params.dispatchId,
+    modelType: execution.modelType,
+    methodName: execution.methodName,
+    workflowName: params.step?.workflowName,
+    stepName: params.step?.stepName,
+  });
 
   const scratchDir = await Deno.makeTempDir({
     prefix: `swamp-dispatch-${params.dispatchId.slice(0, 8)}-`,
@@ -201,17 +240,45 @@ async function handleDispatch(
     const handles = result.dataHandles?.length
       ? result.dataHandles
       : remote.getHandles();
+    const durationMs = performance.now() - start;
+    logger.info(
+      "Dispatch {dispatchId} finished: {modelType}.{methodName} succeeded in {durationMs}ms",
+      {
+        dispatchId: params.dispatchId,
+        modelType: execution.modelType,
+        methodName: execution.methodName,
+        durationMs: Math.round(durationMs),
+      },
+    );
+    options.onDispatch?.({
+      kind: "dispatch_finished",
+      dispatchId: params.dispatchId,
+      modelType: execution.modelType,
+      methodName: execution.methodName,
+      status: "success",
+      durationMs,
+    });
     return {
       status: "success",
       outputs: toOutputs(handles),
       logs,
-      durationMs: performance.now() - start,
+      durationMs,
       followUpActions: serializeFollowUpActions(result),
     };
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     logger.warn("Dispatch {dispatchId} failed: {error}", {
       dispatchId: params.dispatchId,
+      error: message,
+    });
+    const durationMs = performance.now() - start;
+    options.onDispatch?.({
+      kind: "dispatch_finished",
+      dispatchId: params.dispatchId,
+      modelType: execution.modelType,
+      methodName: execution.methodName,
+      status: "error",
+      durationMs,
       error: message,
     });
     // Writes that landed before the throw stay visible — the same
@@ -221,7 +288,7 @@ async function handleDispatch(
       error: message,
       outputs: toOutputs(getHandles()),
       logs,
-      durationMs: performance.now() - start,
+      durationMs,
     };
   } finally {
     restoreEnv();

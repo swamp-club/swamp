@@ -216,6 +216,17 @@ export class WorkerGateway {
       throw new Error(`Worker '${name}' is busy`);
     }
 
+    logger.info(
+      "Dispatching {modelType}.{methodName} (step {step}) to worker {worker} [{dispatchId}]",
+      {
+        modelType: params.execution.modelType,
+        methodName: params.execution.methodName,
+        step: params.step?.stepName ?? "-",
+        worker: name,
+        dispatchId: params.dispatchId,
+      },
+    );
+    const dispatchStart = performance.now();
     entry.status = "busy";
     entry.dispatchId = params.dispatchId;
     await this.#recordTransition(() =>
@@ -241,7 +252,17 @@ export class WorkerGateway {
           waitForPeerOnCancel: true,
         },
       );
-      return DispatchResultSchema.parse(raw);
+      const result = DispatchResultSchema.parse(raw);
+      logger.info(
+        "Dispatch {dispatchId} on worker {worker} {status} in {durationMs}ms",
+        {
+          dispatchId: params.dispatchId,
+          worker: name,
+          status: result.status === "success" ? "succeeded" : "failed",
+          durationMs: Math.round(performance.now() - dispatchStart),
+        },
+      );
+      return result;
     } finally {
       entry.dispatchId = null;
       if (entry.channel === null || entry.channel.closed) {

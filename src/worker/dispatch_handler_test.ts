@@ -277,3 +277,39 @@ Deno.test("dispatch handler: concurrent dispatches are rejected (serial v1)", as
   const result = await first;
   assertEquals(result.status, "success");
 });
+
+Deno.test("dispatch handler: emits started and finished events for connect-mode output", async () => {
+  const { worker, orchestrator } = channelPair();
+  const { client } = stubClient();
+  const dispatchEvents: Array<Record<string, unknown>> = [];
+  registerDispatchHandler({
+    channel: worker,
+    client,
+    bundleCache,
+    onDispatch: (event) => dispatchEvents.push({ ...event }),
+  });
+  methodBehavior = () => Promise.resolve();
+
+  await orchestrator.call<DispatchResult>(
+    WorkerMethod.dispatch,
+    dispatchParams(),
+    { timeoutMs: null },
+  );
+  assertEquals(
+    dispatchEvents.map((e) => e.kind),
+    ["dispatch_started", "dispatch_finished"],
+  );
+  assertEquals(dispatchEvents[0].methodName, "run");
+  assertEquals(dispatchEvents[1].status, "success");
+
+  // Failures report status error with the message.
+  dispatchEvents.length = 0;
+  methodBehavior = () => Promise.reject(new Error("boom"));
+  await orchestrator.call<DispatchResult>(
+    WorkerMethod.dispatch,
+    dispatchParams(),
+    { timeoutMs: null },
+  );
+  assertEquals(dispatchEvents[1].status, "error");
+  assertEquals(String(dispatchEvents[1].error).includes("boom"), true);
+});

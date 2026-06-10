@@ -40,7 +40,10 @@ import {
   dataPlaneUrlFromConnectUrl,
 } from "./data_plane_client.ts";
 import { WorkerBundleCache } from "./bundle_cache.ts";
-import { registerDispatchHandler } from "./dispatch_handler.ts";
+import {
+  registerDispatchHandler,
+  type WorkerDispatchEvent,
+} from "./dispatch_handler.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 
 const logger = getSwampLogger(["worker", "connect"]);
@@ -57,7 +60,8 @@ export type WorkerStatusEvent =
   | { kind: "enrolled"; workerId: string; reconnect: boolean }
   | { kind: "disconnected"; reason: string }
   | { kind: "retrying"; delayMs: number }
-  | { kind: "stopped"; reason: string };
+  | { kind: "stopped"; reason: string }
+  | WorkerDispatchEvent;
 
 export interface RunWorkerOptions {
   /** Orchestrator control-socket URL (ws:// or wss://). */
@@ -245,6 +249,7 @@ function connectOnce(args: ConnectOnceArgs): Promise<string> {
           channel,
           client: args.client,
           bundleCache: args.bundleCache,
+          onDispatch: (event) => options.onStatus?.(event),
         });
         scheduleRefresh();
         logger.info("Enrolled as {workerId}", { workerId: result.workerId });
