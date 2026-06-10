@@ -3,6 +3,6 @@
   "version": "0.0.0",
   "private": true,
   "dependencies": {
-    "promptfoo": "0.121.12"
+    "promptfoo": "0.121.15"
   }
 }

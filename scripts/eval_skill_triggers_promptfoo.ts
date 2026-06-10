@@ -24,7 +24,7 @@
  *
  * Usage: deno run eval-skill-triggers [--model <alias>] [--concurrency <n>] [--threshold <0.0-1.0>]
  *
- * Supported models: sonnet (default), opus, gpt-5.4, gemini-2.5-pro
+ * Supported models: sonnet (default), opus, fable, gpt-5.4, gemini-2.5-pro
  *
  * Environment:
  *   ANTHROPIC_API_KEY - Required for sonnet/opus models.
@@ -38,6 +38,7 @@ import { join } from "@std/path";
 const API_KEY_ENV: Record<string, string> = {
   "sonnet": "ANTHROPIC_API_KEY",
   "opus": "ANTHROPIC_API_KEY",
+  "fable": "ANTHROPIC_API_KEY",
   "gpt-5.4": "OPENAI_API_KEY",
   "gemini-2.5-pro": "GOOGLE_API_KEY",
   "gemini-3.1-pro": "GOOGLE_API_KEY",
@@ -47,6 +48,7 @@ const API_KEY_ENV: Record<string, string> = {
 const PREFLIGHT_MODEL_ID: Record<string, string> = {
   "sonnet": "claude-sonnet-4-5",
   "opus": "claude-opus-4-6",
+  "fable": "claude-fable-5",
   "gpt-5.4": "gpt-5.4",
   "gemini-2.5-pro": "gemini-2.5-pro",
   "gemini-3.1-pro": "gemini-3.1-pro-preview",
@@ -63,7 +65,7 @@ function buildPreflightRequest(
   apiKey: string,
 ): PreflightConfig {
   const modelId = PREFLIGHT_MODEL_ID[model];
-  if (model === "sonnet" || model === "opus") {
+  if (model === "sonnet" || model === "opus" || model === "fable") {
     return {
       url: "https://api.anthropic.com/v1/messages",
       headers: {
@@ -138,6 +140,7 @@ async function preflightCheck(model: string): Promise<void> {
 const TOKEN_PRICING: Record<string, { prompt: number; completion: number }> = {
   "sonnet": { prompt: 3.0, completion: 15.0 },
   "opus": { prompt: 15.0, completion: 75.0 },
+  "fable": { prompt: 10.0, completion: 50.0 },
   "gpt-5.4": { prompt: 2.0, completion: 8.0 },
   "gemini-2.5-pro": { prompt: 1.25, completion: 10.0 },
   "gemini-3.1-pro": { prompt: 1.25, completion: 10.0 },
