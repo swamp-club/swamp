@@ -18,7 +18,14 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { ensureDir } from "@std/fs";
-import { basename, dirname, join, normalize, relative } from "@std/path";
+import {
+  basename,
+  dirname,
+  isAbsolute,
+  join,
+  normalize,
+  relative,
+} from "@std/path";
 import { TarStream, type TarStreamInput } from "@std/tar/tar-stream";
 import { UntarStream } from "@std/tar/untar-stream";
 
@@ -198,20 +205,43 @@ export async function extractTarGz(
     }
 
     if (isSymlink) {
+      const linkTarget = entry.header.linkname;
+
+      // Reject absolute symlink targets — they always escape the root.
+      // `isAbsolute` handles POSIX `/`, Windows `\`, and drive-letter `C:\`.
+      if (isAbsolute(linkTarget)) {
+        throw new Error(
+          `Archive contains symlink with absolute target: ${entry.path} → ${linkTarget}`,
+        );
+      }
+
+      // Resolve the relative target against the symlink's parent directory
+      // and verify it stays within the extract root.
+      const resolvedLinkTarget = normalize(
+        join(dirname(targetPath), linkTarget),
+      );
+      ensureNoTraversal(resolvedLinkTarget, root);
+
+      // Defense-in-depth: verify the symlink's parent directory hasn't been
+      // redirected outside root by an earlier symlink entry.
+      await ensureDir(dirname(targetPath));
+      const realSymlinkParent = await Deno.realPath(dirname(targetPath));
+      ensureNoTraversal(realSymlinkParent, root);
+
       // Determine link type by probing the resolved symlink target — Windows
       // refuses dir symlinks pointing at a missing target without { type }.
       // POSIX ignores the `type` argument.
       let linkType: "file" | "dir" = "file";
       try {
         const stat = await Deno.stat(
-          join(dirname(targetPath), entry.header.linkname),
+          join(dirname(targetPath), linkTarget),
         );
         if (stat.isDirectory) linkType = "dir";
       } catch {
         // Broken or not-yet-extracted target — default to "file"
       }
       try {
-        await Deno.symlink(entry.header.linkname, targetPath, {
+        await Deno.symlink(linkTarget, targetPath, {
           type: linkType,
         });
       } catch (error) {
@@ -236,6 +266,13 @@ export async function extractTarGz(
     }
 
     await ensureDir(dirname(targetPath));
+
+    // Defense-in-depth: resolve the real path of the parent directory to
+    // catch symlink-through-directory escapes where an earlier entry planted
+    // a symlink that redirects this write outside the extract root.
+    const realParent = await Deno.realPath(dirname(targetPath));
+    ensureNoTraversal(realParent, root);
+
     const file = await Deno.open(targetPath, {
       write: true,
       create: true,
