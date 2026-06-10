@@ -189,6 +189,180 @@ Deno.test({
   },
 });
 
+Deno.test({
+  name: "extractTarGz: rejects symlink with absolute target",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withTempDir(async (root) => {
+      const { TarStream } = await import("@std/tar/tar-stream");
+      const archivePath = join(root, "bad.tar.gz");
+      const file = await Deno.open(archivePath, {
+        write: true,
+        create: true,
+        truncate: true,
+      });
+      await ReadableStream.from([
+        {
+          type: "directory" as const,
+          path: "extension/",
+        },
+        {
+          type: "symlink" as const,
+          path: "extension/escape",
+          linkname: "/tmp/evil",
+        },
+      ])
+        .pipeThrough(new TarStream())
+        .pipeThrough(new CompressionStream("gzip"))
+        .pipeTo(file.writable);
+
+      const dst = join(root, "dst");
+      await ensureDir(dst);
+      const bytes = await Deno.readFile(archivePath);
+      await assertRejects(
+        () => extractTarGz(streamFromBytes(bytes), dst),
+        Error,
+        "absolute target",
+      );
+    });
+  },
+});
+
+Deno.test({
+  name: "extractTarGz: rejects symlink with relative target escaping root",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withTempDir(async (root) => {
+      const { TarStream } = await import("@std/tar/tar-stream");
+      const archivePath = join(root, "bad.tar.gz");
+      const file = await Deno.open(archivePath, {
+        write: true,
+        create: true,
+        truncate: true,
+      });
+      await ReadableStream.from([
+        {
+          type: "directory" as const,
+          path: "extension/",
+        },
+        {
+          type: "symlink" as const,
+          path: "extension/escape",
+          linkname: "../../../../../../tmp/evil",
+        },
+      ])
+        .pipeThrough(new TarStream())
+        .pipeThrough(new CompressionStream("gzip"))
+        .pipeTo(file.writable);
+
+      const dst = join(root, "dst");
+      await ensureDir(dst);
+      const bytes = await Deno.readFile(archivePath);
+      await assertRejects(
+        () => extractTarGz(streamFromBytes(bytes), dst),
+        Error,
+        "escapes extract root",
+      );
+    });
+  },
+});
+
+Deno.test({
+  name: "extractTarGz: allows symlink with target staying within root",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withTempDir(async (root) => {
+      const { TarStream } = await import("@std/tar/tar-stream");
+      const archivePath = join(root, "good.tar.gz");
+      const file = await Deno.open(archivePath, {
+        write: true,
+        create: true,
+        truncate: true,
+      });
+      const payload = new TextEncoder().encode("hello");
+      await ReadableStream.from([
+        {
+          type: "directory" as const,
+          path: "extension/",
+        },
+        {
+          type: "file" as const,
+          path: "extension/real.txt",
+          size: payload.length,
+          readable: streamFromBytes(payload),
+        },
+        {
+          type: "symlink" as const,
+          path: "extension/link.txt",
+          linkname: "real.txt",
+        },
+      ])
+        .pipeThrough(new TarStream())
+        .pipeThrough(new CompressionStream("gzip"))
+        .pipeTo(file.writable);
+
+      const dst = join(root, "dst");
+      await ensureDir(dst);
+      const bytes = await Deno.readFile(archivePath);
+      await extractTarGz(streamFromBytes(bytes), dst);
+
+      const linkPath = join(dst, "extension", "link.txt");
+      const stat = await Deno.lstat(linkPath);
+      assert(stat.isSymlink, "link.txt should be a symlink");
+      assertEquals(await Deno.readLink(linkPath), "real.txt");
+    });
+  },
+});
+
+Deno.test({
+  name: "extractTarGz: blocks file write through symlink that escapes root",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withTempDir(async (root) => {
+      // Craft an archive where a symlink points outside root,
+      // followed by a file write through that symlink.
+      // The symlink validation should catch this before the file is written.
+      const { TarStream } = await import("@std/tar/tar-stream");
+      const archivePath = join(root, "bad.tar.gz");
+      const file = await Deno.open(archivePath, {
+        write: true,
+        create: true,
+        truncate: true,
+      });
+      const payload = new TextEncoder().encode("malicious");
+      await ReadableStream.from([
+        {
+          type: "directory" as const,
+          path: "extension/",
+        },
+        {
+          type: "symlink" as const,
+          path: "extension/escape",
+          linkname: "../../../../../../tmp",
+        },
+        {
+          type: "file" as const,
+          path: "extension/escape/payload.txt",
+          size: payload.length,
+          readable: streamFromBytes(payload),
+        },
+      ])
+        .pipeThrough(new TarStream())
+        .pipeThrough(new CompressionStream("gzip"))
+        .pipeTo(file.writable);
+
+      const dst = join(root, "dst");
+      await ensureDir(dst);
+      const bytes = await Deno.readFile(archivePath);
+      await assertRejects(
+        () => extractTarGz(streamFromBytes(bytes), dst),
+        Error,
+        "escapes extract root",
+      );
+    });
+  },
+});
+
 Deno.test("extractTarGz: applies file mode bits on POSIX", async () => {
   await withTempDir(async (root) => {
     const top = join(root, "src", "ext");

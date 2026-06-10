@@ -253,7 +253,7 @@ Deno.test("downloadAndExtract throws on download failure", async () => {
   }
 });
 
-Deno.test("downloadAndExtract skips symlinks escaping via relative path", async () => {
+Deno.test("downloadAndExtract rejects symlinks escaping via relative path", async () => {
   const tempDir = await Deno.makeTempDir({ prefix: "swamp-test-" });
   try {
     const archiveRoot = join(tempDir, "archive");
@@ -293,27 +293,11 @@ Deno.test("downloadAndExtract skips symlinks escaping via relative path", async 
     const targetDir = join(tempDir, "target");
     await ensureDir(targetDir);
 
-    const fileCount = await testDownloader.downloadAndExtract(
-      "main",
-      targetDir,
+    await assertRejects(
+      () => testDownloader.downloadAndExtract("main", targetDir),
+      UserError,
+      "escapes extract root",
     );
-
-    assertEquals(fileCount, 1);
-    assertEquals(
-      await Deno.readTextFile(join(targetDir, "safe.txt")),
-      "safe",
-    );
-
-    // The escaping symlink should NOT have been created
-    let exists = true;
-    try {
-      await Deno.lstat(join(targetDir, "escape-link"));
-    } catch (e) {
-      if (e instanceof Deno.errors.NotFound) {
-        exists = false;
-      }
-    }
-    assertFalse(exists, "symlink escaping via relative path should be skipped");
 
     await server.shutdown();
   } finally {
@@ -391,7 +375,7 @@ Deno.test("downloadAndExtract rejects version with fragment", async () => {
   }
 });
 
-Deno.test("downloadAndExtract skips symlinks escaping via absolute path", async () => {
+Deno.test("downloadAndExtract rejects symlinks escaping via absolute path", async () => {
   const tempDir = await Deno.makeTempDir({ prefix: "swamp-test-" });
   try {
     const archiveRoot = join(tempDir, "archive");
@@ -431,29 +415,10 @@ Deno.test("downloadAndExtract skips symlinks escaping via absolute path", async 
     const targetDir = join(tempDir, "target");
     await ensureDir(targetDir);
 
-    const fileCount = await testDownloader.downloadAndExtract(
-      "main",
-      targetDir,
-    );
-
-    assertEquals(fileCount, 1);
-    assertEquals(
-      await Deno.readTextFile(join(targetDir, "safe.txt")),
-      "safe",
-    );
-
-    // The escaping symlink should NOT have been created
-    let exists = true;
-    try {
-      await Deno.lstat(join(targetDir, "abs-escape-link"));
-    } catch (e) {
-      if (e instanceof Deno.errors.NotFound) {
-        exists = false;
-      }
-    }
-    assertFalse(
-      exists,
-      "symlink escaping via absolute path should be skipped",
+    await assertRejects(
+      () => testDownloader.downloadAndExtract("main", targetDir),
+      UserError,
+      "absolute target",
     );
 
     await server.shutdown();
