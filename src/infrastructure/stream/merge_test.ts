@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertRejects } from "@std/assert";
 import { merge, mergeWithConcurrency } from "./merge.ts";
 
 async function* fromArray<T>(items: T[]): AsyncGenerator<T> {
@@ -163,4 +163,102 @@ Deno.test("mergeWithConcurrency: with pre-aborted signal yields nothing", async 
     controller.signal,
   ));
   assertEquals(items, []);
+});
+
+// Error propagation tests
+
+async function* throwAfter<T>(
+  items: T[],
+  error: Error,
+): AsyncGenerator<T> {
+  for (const item of items) {
+    yield item;
+  }
+  throw error;
+}
+
+function throwImmediately<T>(error: Error): AsyncIterable<T> {
+  return {
+    [Symbol.asyncIterator]() {
+      return {
+        next() {
+          return Promise.reject(error);
+        },
+      };
+    },
+  };
+}
+
+Deno.test("merge propagates source stream error", async () => {
+  const err = new Error("generator crashed");
+  await assertRejects(
+    () => collect(merge([throwAfter([1, 2], err)])),
+    Error,
+    "generator crashed",
+  );
+});
+
+Deno.test("merge propagates error from one of multiple streams", async () => {
+  const err = new Error("stream B crashed");
+  await assertRejects(
+    () =>
+      collect(merge([
+        fromArray([1, 2]),
+        throwImmediately(err),
+      ])),
+    Error,
+    "stream B crashed",
+  );
+});
+
+Deno.test("merge does not propagate stream error when signal is aborted", async () => {
+  const controller = new AbortController();
+  function abortThenThrow(): AsyncIterable<number> {
+    return {
+      [Symbol.asyncIterator]() {
+        let called = false;
+        return {
+          async next() {
+            if (!called) {
+              called = true;
+              controller.abort();
+              await new Promise((r) => setTimeout(r, 10));
+              throw new Error("should be suppressed");
+            }
+            return { value: undefined as unknown as number, done: true };
+          },
+        };
+      },
+    };
+  }
+  // Should NOT throw — the abort came first
+  const items = await collect(merge(
+    [fromArray([1]), abortThenThrow()],
+    controller.signal,
+  ));
+  // May or may not contain 1 depending on timing, but must not throw
+  assertEquals(items.length <= 1, true);
+});
+
+Deno.test("mergeWithConcurrency propagates source stream error", async () => {
+  const err = new Error("generator crashed");
+  await assertRejects(
+    () => collect(mergeWithConcurrency([throwAfter([1, 2], err)], 1)),
+    Error,
+    "generator crashed",
+  );
+});
+
+Deno.test("mergeWithConcurrency propagates error from one of multiple streams", async () => {
+  const err = new Error("step exploded");
+  await assertRejects(
+    () =>
+      collect(mergeWithConcurrency([
+        delayed([1, 2], 5),
+        throwImmediately(err),
+        fromArray([3, 4]),
+      ], 2)),
+    Error,
+    "step exploded",
+  );
 });

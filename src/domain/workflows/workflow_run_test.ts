@@ -343,6 +343,46 @@ Deno.test("WorkflowRun.complete marks run as failed when any job failed", () => 
   assertEquals(run.status, "failed");
 });
 
+Deno.test("WorkflowRun.complete marks run as failed when a job is still running", () => {
+  const workflow = createTestWorkflow();
+  const run = WorkflowRun.create(workflow);
+
+  run.start();
+  run.getJob("job1")?.start();
+  run.getJob("job1")?.succeed();
+  run.getJob("job2")?.start();
+  // job2 stays "running" — simulates a crashed generator
+  run.complete();
+
+  assertEquals(run.status, "failed");
+});
+
+Deno.test("WorkflowRun.complete marks run as failed when a job is still pending", () => {
+  const workflow = createTestWorkflow();
+  const run = WorkflowRun.create(workflow);
+
+  run.start();
+  run.getJob("job1")?.start();
+  run.getJob("job1")?.succeed();
+  // job2 stays "pending"
+  run.complete();
+
+  assertEquals(run.status, "failed");
+});
+
+Deno.test("WorkflowRun.complete marks run as succeeded when all jobs succeeded or skipped", () => {
+  const workflow = createTestWorkflow();
+  const run = WorkflowRun.create(workflow);
+
+  run.start();
+  run.getJob("job1")?.start();
+  run.getJob("job1")?.succeed();
+  run.getJob("job2")?.skip();
+  run.complete();
+
+  assertEquals(run.status, "succeeded");
+});
+
 Deno.test("WorkflowRun.toData returns correct structure", () => {
   const workflow = createTestWorkflow();
   const run = WorkflowRun.create(workflow);

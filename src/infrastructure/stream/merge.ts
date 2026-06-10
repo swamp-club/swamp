@@ -41,6 +41,8 @@ export async function* merge<T>(
 
   const queue = new AsyncQueue<T>();
   let remaining = streams.length;
+  let firstStreamError: unknown;
+  let errorWasAbortInduced = false;
 
   // Close queue early when signal aborts
   let abortHandler: (() => void) | undefined;
@@ -55,10 +57,20 @@ export async function* merge<T>(
   const drainStream = async (stream: AsyncIterable<T>) => {
     try {
       for await (const item of stream) {
-        queue.push(item);
+        try {
+          queue.push(item);
+        } catch {
+          // Queue already closed (abort or sibling stream error) — stop draining
+          return;
+        }
       }
-    } catch {
-      // Silently handle errors from closed queue (abort scenario)
+    } catch (error) {
+      // Source stream threw — record and abort the queue so the consumer exits
+      if (firstStreamError === undefined) {
+        firstStreamError = error;
+        errorWasAbortInduced = signal?.aborted ?? false;
+      }
+      queue.abort();
     } finally {
       remaining--;
       if (remaining === 0) {
@@ -79,6 +91,9 @@ export async function* merge<T>(
     }
     // Ensure all drain tasks complete (they may throw)
     await Promise.allSettled(tasks);
+  }
+  if (firstStreamError !== undefined && !errorWasAbortInduced) {
+    throw firstStreamError;
   }
 }
 
@@ -101,6 +116,8 @@ export async function* mergeWithConcurrency<T>(
   const queue = new AsyncQueue<T>();
   let remaining = streams.length;
   const sem = new Semaphore(limit);
+  let firstStreamError: unknown;
+  let errorWasAbortInduced = false;
 
   let abortHandler: (() => void) | undefined;
   if (signal) {
@@ -117,10 +134,20 @@ export async function* mergeWithConcurrency<T>(
     }
     try {
       for await (const item of stream) {
-        queue.push(item);
+        try {
+          queue.push(item);
+        } catch {
+          // Queue already closed (abort or sibling stream error) — stop draining
+          return;
+        }
       }
-    } catch {
-      // Silently handle errors from closed queue (abort scenario)
+    } catch (error) {
+      // Source stream threw — record and abort the queue so the consumer exits
+      if (firstStreamError === undefined) {
+        firstStreamError = error;
+        errorWasAbortInduced = signal?.aborted ?? false;
+      }
+      queue.abort();
     } finally {
       sem.release();
       remaining--;
@@ -139,5 +166,8 @@ export async function* mergeWithConcurrency<T>(
       signal.removeEventListener("abort", abortHandler);
     }
     await Promise.allSettled(tasks);
+  }
+  if (firstStreamError !== undefined && !errorWasAbortInduced) {
+    throw firstStreamError;
   }
 }
