@@ -33,6 +33,7 @@ export class InkWorkflowRunRenderer implements WorkflowRunRenderer {
   private _failed = false;
   private bridge: EventBridge;
   private cleanup: (() => void) | null = null;
+  private exitPromise: Promise<void> | null = null;
   private workflowName: string;
 
   constructor(opts: WorkflowRunRenderOpts) {
@@ -52,6 +53,10 @@ export class InkWorkflowRunRenderer implements WorkflowRunRenderer {
         }}
       />,
       { maxFps: 15 },
+    );
+    this.exitPromise = instance.waitUntilExit().then(
+      () => {},
+      () => {},
     );
     this.cleanup = () => {
       instance.unmount();
@@ -84,29 +89,29 @@ export class InkWorkflowRunRenderer implements WorkflowRunRenderer {
       report_started: forward,
       report_completed: forward,
       report_failed: forward,
-      completed: (e) => {
+      completed: async (e) => {
         if (e.run.status === "failed") this._failed = true;
         forward(e);
         this.bridge.close();
-        setTimeout(() => this.cleanup?.(), 100);
+        await this.exitPromise;
+        this.cleanup?.();
       },
-      suspended: (e) => {
+      suspended: async (e) => {
         forward(e);
         this.bridge.close();
-        setTimeout(() => {
-          this.cleanup?.();
-          const wf = this.workflowName;
-          const step = e.stepId;
-          console.log("");
-          console.log(
-            `Workflow suspended — awaiting approval on step "${step}"`,
-          );
-          console.log("");
-          console.log(`  swamp workflow approve ${wf} ${step}`);
-          console.log(`  swamp workflow reject  ${wf} ${step}`);
-          console.log("");
-          console.log(`After approval: swamp workflow resume ${wf}`);
-        }, 100);
+        await this.exitPromise;
+        this.cleanup?.();
+        const wf = this.workflowName;
+        const step = e.stepId;
+        console.log("");
+        console.log(
+          `Workflow suspended — awaiting approval on step "${step}"`,
+        );
+        console.log("");
+        console.log(`  swamp workflow approve ${wf} ${step}`);
+        console.log(`  swamp workflow reject  ${wf} ${step}`);
+        console.log("");
+        console.log(`After approval: swamp workflow resume ${wf}`);
       },
       error: (e) => {
         forward(e);

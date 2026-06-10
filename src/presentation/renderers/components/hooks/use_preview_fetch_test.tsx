@@ -17,8 +17,19 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import React, { useState } from "react";
 import { assertEquals } from "@std/assert";
-import { LruCache } from "./use_preview_fetch.ts";
+import { render } from "ink-testing-library";
+import { Text } from "ink";
+import { LruCache, usePreviewFetch } from "./use_preview_fetch.ts";
+
+const inkTestOptions = { sanitizeOps: false, sanitizeResources: false };
+
+function tick(ms = 50): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// --- LruCache unit tests ---
 
 Deno.test("LruCache: get returns undefined for missing key", () => {
   const cache = new LruCache<string, number>(3);
@@ -98,4 +109,96 @@ Deno.test("LruCache: size 1 always evicts on new insert", () => {
   assertEquals(cache.size, 1);
   assertEquals(cache.get("a"), undefined);
   assertEquals(cache.get("b"), 2);
+});
+
+// --- usePreviewFetch hook tests ---
+
+interface Deferred<T> {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+}
+
+function deferred<T>(): Deferred<T> {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((r) => {
+    resolve = r;
+  });
+  return { promise, resolve };
+}
+
+function UpdatableProbe(props: {
+  initialItem: string | undefined;
+  fetchFn: (item: string) => Promise<string>;
+  onDetail: (detail: string | undefined) => void;
+}) {
+  const [item, setItem] = useState(props.initialItem);
+
+  const { detail } = usePreviewFetch(
+    item,
+    props.fetchFn,
+    (i) => i,
+    10,
+    10,
+  );
+
+  React.useEffect(() => {
+    props.onDetail(detail);
+  }, [detail]);
+
+  (globalThis as Record<string, unknown>).__setProbeItem = setItem;
+
+  return <Text>{detail ?? "none"}</Text>;
+}
+
+Deno.test({
+  name:
+    "usePreviewFetch: in-flight fetch for A is discarded after switching to cached B",
+  ...inkTestOptions,
+  fn: async () => {
+    const fetchA = deferred<string>();
+    let detail: string | undefined;
+    const bResult = "B-detail";
+
+    const fetchFn = (item: string): Promise<string> => {
+      if (item === "A") return fetchA.promise;
+      return Promise.resolve(bResult);
+    };
+
+    // Start with B to populate the LRU cache
+    const { unmount } = render(
+      <UpdatableProbe
+        initialItem="B"
+        fetchFn={fetchFn}
+        onDetail={(d) => {
+          detail = d;
+        }}
+      />,
+    );
+
+    await tick(200);
+    assertEquals(detail, bResult);
+
+    const setItem = (globalThis as Record<string, unknown>).__setProbeItem as (
+      item: string,
+    ) => void;
+
+    // Switch to A — starts an async fetch (uncached)
+    setItem("A");
+    await tick(50);
+
+    // Switch to B — cache hit, should show B's detail immediately
+    // and invalidate A's in-flight fetch via the fetch-id bump
+    setItem("B");
+    await tick(50);
+    assertEquals(detail, bResult);
+
+    // Resolve A's fetch — must NOT overwrite B's detail
+    fetchA.resolve("A-detail-stale");
+    await tick(50);
+
+    assertEquals(detail, bResult);
+
+    unmount();
+    delete (globalThis as Record<string, unknown>).__setProbeItem;
+  },
 });

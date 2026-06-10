@@ -214,8 +214,8 @@ export function SearchPicker<T, D = T>(
       return;
     }
 
-    // Check for action keys
-    if (actions && input && !key.ctrl && !key.meta) {
+    // Action keys require Ctrl so they don't conflict with query input
+    if (actions && input && key.ctrl && !key.meta) {
       const action = actions.find((a) => a.key === input);
       if (action) {
         handleSelect(action.action);
@@ -450,7 +450,6 @@ export async function renderInteractivePicker<T, D = T>(
         emptyHint={options?.emptyHint}
         actions={options?.actions}
         onSelect={(item, scrollback, action) => {
-          cleanupTty();
           // Only print scrollback for default select (Enter), not action keys
           if (!action) {
             pendingScrollback = scrollback;
@@ -458,12 +457,16 @@ export async function renderInteractivePicker<T, D = T>(
           resolve({ item, action });
         }}
         onCancel={() => {
-          cleanupTty();
           resolve(undefined);
         }}
       />,
     );
-    waitUntilExit().catch(() => {});
+    waitUntilExit().then(() => {
+      cleanupTty();
+    }).catch(() => {
+      cleanupTty();
+      resolve(undefined);
+    });
   });
 
   // Exit alternate screen buffer — terminal restores to pre-picker state

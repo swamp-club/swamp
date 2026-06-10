@@ -89,16 +89,19 @@ function renderInteractiveWorkflowActionSelect(
         workflowDescription={data.workflowDescription}
         hasInputs={data.hasInputs}
         onSelect={(action) => {
-          cleanupTty();
           resolve(action);
         }}
         onCancel={() => {
-          cleanupTty();
           resolve(undefined);
         }}
       />,
     );
-    waitUntilExit().catch(() => {});
+    waitUntilExit().then(() => {
+      cleanupTty();
+    }).catch(() => {
+      cleanupTty();
+      resolve(undefined);
+    });
   });
 }
 

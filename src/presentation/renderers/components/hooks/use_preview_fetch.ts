@@ -118,6 +118,9 @@ export function usePreviewFetch<T, D>(
       return;
     }
 
+    // Increment fetch ID to invalidate any in-flight fetch, even on cache hits
+    const currentFetchId = ++fetchIdRef.current;
+
     const key = keyFn(item);
 
     // Check cache first
@@ -126,9 +129,6 @@ export function usePreviewFetch<T, D>(
       setDetail(cached);
       return;
     }
-
-    // Increment fetch ID to invalidate any in-flight fetch
-    const currentFetchId = ++fetchIdRef.current;
 
     const timer = setTimeout(() => {
       fetchFn(item).then((result) => {

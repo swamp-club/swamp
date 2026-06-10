@@ -57,7 +57,7 @@ export function HelpBar(props: HelpBarProps): React.ReactElement {
 
   if (actions && actions.length > 0) {
     for (const action of actions) {
-      parts.push(`${action.key} ${action.label.toLowerCase()}`);
+      parts.push(`Ctrl-${action.key} ${action.label.toLowerCase()}`);
     }
   }
 

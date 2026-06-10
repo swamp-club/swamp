@@ -94,7 +94,7 @@ class InkExtensionSearchRenderer implements ExtensionSearchRenderer {
           {
             previewKeyFn: (item) => item.name,
             actions: [
-              { key: "i", label: "Install", action: "install" },
+              { key: "n", label: "Install", action: "install" },
             ],
           },
         );

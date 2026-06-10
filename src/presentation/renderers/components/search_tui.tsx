@@ -206,15 +206,18 @@ export function renderInteractiveSearch<T>(
         itemLabel={itemLabel}
         emptyHint={emptyHint}
         onSelect={(item) => {
-          cleanupTty();
           resolve(item);
         }}
         onCancel={() => {
-          cleanupTty();
           resolve(undefined);
         }}
       />,
     );
-    waitUntilExit().catch(() => {});
+    waitUntilExit().then(() => {
+      cleanupTty();
+    }).catch(() => {
+      cleanupTty();
+      resolve(undefined);
+    });
   });
 }

@@ -86,16 +86,19 @@ function renderInteractiveInputFileSelect(
         hasDefaults={data.hasDefaults}
         searchDir={data.searchDir}
         onSelect={(selection) => {
-          cleanupTty();
           resolve(selection);
         }}
         onCancel={() => {
-          cleanupTty();
           resolve(undefined);
         }}
       />,
     );
-    waitUntilExit().catch(() => {});
+    waitUntilExit().then(() => {
+      cleanupTty();
+    }).catch(() => {
+      cleanupTty();
+      resolve(undefined);
+    });
   });
 }
 
