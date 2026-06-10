@@ -33,6 +33,7 @@ export interface ExtensionListEntry {
   version: string;
   pulledAt: string;
   files: string[];
+  channel?: string;
 }
 
 /** Data payload for the completed event. */
@@ -89,6 +90,7 @@ export async function* extensionList(
           version: entry.version,
           pulledAt: entry.pulledAt ?? "",
           files: entry.files ?? [],
+          ...(entry.channel ? { channel: entry.channel } : {}),
         }))
         .sort((a, b) => a.name.localeCompare(b.name));
 

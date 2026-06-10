@@ -222,6 +222,7 @@ export interface ExtensionPushExecuteInput {
   contentMetadata: ExtensionContentMetadata | undefined;
   counts: ExtensionPushCounts;
   releaseNotes?: string;
+  channel?: string;
 }
 
 export type ExtensionPushEvent =
@@ -295,6 +296,7 @@ export interface ExtensionPushMetadata {
   repository?: string;
   releaseNotes?: string;
   binaries?: string[];
+  channel?: string;
   contentMetadata?: ExtensionContentMetadata;
 }
 
@@ -861,6 +863,7 @@ export async function* extensionPush(
         ...(input.manifest.binaries.length > 0
           ? { binaries: input.manifest.binaries }
           : {}),
+        ...(input.channel ? { channel: input.channel } : {}),
       };
 
       // Phase 1: Initiate

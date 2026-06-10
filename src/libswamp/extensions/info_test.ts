@@ -57,6 +57,8 @@ function makeFullExtensionInfo(
     repositoryVerifiedUrl: "https://github.com/stack72/swamp-aws-ec2",
     pullCount: 142,
     score: { percentage: 85, grade: "A" },
+    latestRc: null,
+    latestBeta: null,
     ...overrides,
   };
 }

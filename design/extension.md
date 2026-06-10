@@ -35,6 +35,90 @@ published version and compute the next CalVer version. Accepts an extension
 name directly or `--manifest <path>` to read the name from a manifest file.
 Does not require a swamp repository — works from any directory.
 
+## Release Channels
+
+Extensions support three release channels with a strict promotion ladder:
+
+```
+beta → rc → stable
+  └──────────┘  (can skip rc)
+```
+
+- **stable** — the default channel. All existing versions are stable. Omitting
+  `--channel` on push and pull means stable. Auto-resolve only considers
+  stable versions.
+- **rc** — release candidate. Opt-in via `--channel rc`.
+- **beta** — early preview. Opt-in via `--channel beta`.
+
+### Version uniqueness
+
+A version string (CalVer) is globally unique per extension regardless of
+channel. You cannot push `2026.06.10.1` as both beta and stable. This enables
+promotion as a metadata-only operation — the archive bytes and checksum are
+unchanged.
+
+### Push
+
+`swamp extension push manifest.yaml --channel rc` pushes to the rc channel.
+`swamp extension push manifest.yaml --channel beta` pushes to beta. No
+`--channel` flag pushes to stable.
+
+### Pull
+
+`swamp extension pull @name` resolves the latest stable version.
+`swamp extension pull @name --channel rc` resolves the latest rc version.
+`swamp extension pull @name --channel beta` resolves the latest beta version.
+Explicit version pinning (`@name@2026.06.10.1`) ignores channel since versions
+are globally unique.
+
+### Search and Versions
+
+`swamp extension search --channel rc --channel beta` filters to extensions
+with versions in either channel. `--channel` is a collect flag (multiple
+allowed). No `--channel` shows stable-only results.
+
+`swamp extension versions @name --channel rc` lists version history filtered
+by channel. No `--channel` shows all versions.
+
+### Info
+
+`swamp extension info @name` shows per-channel latest versions (stable, rc,
+beta) when they exist. No flag needed — info always shows all channels.
+
+### Promotion
+
+`swamp extension promote @name 2026.06.10.1 --channel rc` promotes a beta
+version to rc. `--channel stable` promotes to stable. Only forward transitions
+are allowed:
+
+- beta → rc ✅
+- beta → stable ✅
+- rc → stable ✅
+- stable → rc ❌
+- rc → beta ❌
+- stable → beta ❌
+
+Promotion is a metadata-only operation on the registry — the archive is not
+re-uploaded. The server recalculates per-channel latest after promotion.
+
+### Auto-resolve safety
+
+Beta and rc versions are never auto-resolved via trusted collectives. Only
+stable versions participate in auto-resolution. Lockfile-pinned restores
+fetch by exact version regardless of channel.
+
+### Lockfile
+
+The `upstream_extensions.json` entry records the channel the extension was
+installed from (`channel` field). Pre-channel entries default to `"stable"`
+on read. The update service checks for updates within the installed channel.
+
+### Update cache
+
+The extension update check cache (`.swamp/extension-update-checks.json`) uses
+channel-aware keys: stable uses the bare extension name (backward compatible),
+non-stable uses `name:channel` (e.g. `@swamp/aws:rc`).
+
 ## Freshness
 
 Two opt-in user-facing surfaces report whether installed extensions are

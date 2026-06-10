@@ -38,6 +38,7 @@ export interface PushMetadata {
   repository?: string;
   releaseNotes?: string;
   binaries?: string[];
+  channel?: string;
 }
 
 /** Metadata sent during push confirmation (extends PushMetadata with content metadata). */
@@ -63,6 +64,7 @@ export interface ConfirmPushResult {
 export interface LatestVersionInfo {
   version: string;
   publishedAt: string;
+  channel?: string;
 }
 
 /** Extension author metadata. */
@@ -105,6 +107,8 @@ export interface ExtensionInfo {
   repositoryVerifiedUrl: string | null;
   pullCount: number;
   score: ExtensionScoreSummary | null;
+  latestRc: string | null;
+  latestBeta: string | null;
 }
 
 /** Parameters for the extension search endpoint. */
@@ -114,6 +118,7 @@ export interface ExtensionSearchParams {
   platform?: string[];
   label?: string[];
   contentType?: string[];
+  channel?: string[];
   sort?: "relevance" | "new" | "updated" | "name";
   perPage?: number;
   page?: number;
@@ -174,6 +179,32 @@ export interface UndeprecateResult {
   message: string;
 }
 
+/** Response from the promote endpoint. */
+export interface PromoteResult {
+  name: string;
+  version: string;
+  previousChannel: string;
+  channel: string;
+  message: string;
+}
+
+/** A single version entry in the versions list. */
+export interface VersionEntry {
+  version: string;
+  channel: string;
+  publishedAt: string;
+}
+
+/** Response from the list versions endpoint. */
+export interface ListVersionsResponse {
+  versions: VersionEntry[];
+  meta: {
+    total: number;
+    page: number;
+    perPage: number;
+  };
+}
+
 /**
  * HTTP client for the swamp-club extension registry API.
  *
@@ -188,16 +219,19 @@ export class ExtensionApiClient {
 
   /**
    * Pre-flight: check latest published version.
-   * Returns null if the extension has never been published.
+   * Returns null if the extension has never been published
+   * or has no versions in the requested channel.
    */
   async getLatestVersion(
     name: string,
     apiKey?: string,
+    channel?: string,
   ): Promise<LatestVersionInfo | null> {
     const encodedName = encodeURIComponent(name);
     const headers = apiKey ? this.authHeaders(apiKey) : {};
+    const qs = channel ? `?channel=${encodeURIComponent(channel)}` : "";
     const res = await this.fetch(
-      `/api/v1/extensions/${encodedName}/latest`,
+      `/api/v1/extensions/${encodedName}/latest${qs}`,
       {
         method: "GET",
         headers,
@@ -317,6 +351,7 @@ export class ExtensionApiClient {
     for (const p of params.platform ?? []) qs.append("platform", p);
     for (const l of params.label ?? []) qs.append("label", l);
     for (const ct of params.contentType ?? []) qs.append("contentType", ct);
+    for (const ch of params.channel ?? []) qs.append("channel", ch);
 
     const query = qs.toString();
     const path = `/api/v1/extensions/search${query ? `?${query}` : ""}`;
@@ -549,6 +584,69 @@ export class ExtensionApiClient {
       method: "POST",
       headers: this.authHeaders(apiKey),
     });
+
+    await this.checkResponse(res);
+    return await res.json();
+  }
+
+  /**
+   * Promote an extension version to a higher channel.
+   * Only forward transitions are allowed (beta→rc, beta→stable, rc→stable).
+   */
+  async promoteExtension(
+    name: string,
+    version: string,
+    toChannel: string,
+    apiKey: string,
+  ): Promise<PromoteResult> {
+    const encodedName = encodeURIComponent(name);
+    const res = await this.fetch(
+      `/api/v1/extensions/${encodedName}/promote`,
+      {
+        method: "POST",
+        headers: {
+          ...this.authHeaders(apiKey),
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ version, toChannel }),
+      },
+    );
+
+    await this.checkResponse(res);
+    return await res.json();
+  }
+
+  /**
+   * List published versions for an extension with optional channel filtering.
+   */
+  async listVersions(
+    name: string,
+    options?: {
+      channel?: string[];
+      perPage?: number;
+      page?: number;
+    },
+    apiKey?: string,
+  ): Promise<ListVersionsResponse> {
+    const encodedName = encodeURIComponent(name);
+    const qs = new URLSearchParams();
+    for (const ch of options?.channel ?? []) qs.append("channel", ch);
+    if (options?.perPage !== undefined) {
+      qs.set("perPage", String(options.perPage));
+    }
+    if (options?.page !== undefined) qs.set("page", String(options.page));
+
+    const query = qs.toString();
+    const path = `/api/v1/extensions/${encodedName}/versions${
+      query ? `?${query}` : ""
+    }`;
+    const headers = apiKey ? this.authHeaders(apiKey) : {};
+    const res = await this.fetch(path, { method: "GET", headers });
+
+    if (res.status === 404) {
+      await res.body?.cancel();
+      return { versions: [], meta: { total: 0, page: 1, perPage: 20 } };
+    }
 
     await this.checkResponse(res);
     return await res.json();

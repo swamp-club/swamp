@@ -58,6 +58,7 @@ import type {
 } from "../../domain/extensions/extension_collective_validator.ts";
 import type { CompilationError, SwampError } from "../../libswamp/mod.ts";
 import { loadIdentity } from "../load_identity.ts";
+import { ReleaseChannel } from "../../domain/extensions/release_channel.ts";
 
 interface ExtensionPushOptions extends GlobalOptions {
   repoDir?: string;
@@ -65,6 +66,7 @@ interface ExtensionPushOptions extends GlobalOptions {
   yes?: boolean;
   dryRun?: boolean;
   releaseNotes?: string;
+  channel?: string;
 }
 
 async function promptConfirmation(message: string): Promise<boolean> {
@@ -198,7 +200,19 @@ export const extensionPushCommand = new Command()
     "--release-notes <text:string>",
     "Per-version release notes (max 5000 chars)",
   )
+  .option(
+    "--channel <channel:string>",
+    "Release channel: 'beta' or 'rc' (default: stable)",
+  )
   .action(async function (options: ExtensionPushOptions, manifestPath: string) {
+    if (
+      options.channel !== undefined &&
+      !ReleaseChannel.isPrereleaseName(options.channel)
+    ) {
+      throw new UserError(
+        `Invalid release channel: "${options.channel}". Must be 'beta' or 'rc'.`,
+      );
+    }
     const cliCtx = createContext(options, ["extension", "push"]);
     cliCtx.logger.debug`Starting extension push`;
 
@@ -545,6 +559,7 @@ export const extensionPushCommand = new Command()
         contentMetadata: prepared.contentMetadata,
         counts: prepared.counts,
         releaseNotes: options.releaseNotes,
+        channel: options.channel,
       }),
       renderer.handlers(),
     );

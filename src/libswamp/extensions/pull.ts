@@ -73,6 +73,8 @@ export interface ExtensionRegistryInfo {
   name: string;
   description: string;
   latestVersion: string;
+  latestRc?: string | null;
+  latestBeta?: string | null;
   deprecatedAt?: string | null;
   deprecationReason?: string | null;
   supersededBy?: string | null;
@@ -159,6 +161,8 @@ export interface InstallContext {
    * whatever bytes the registry currently serves.
    */
   expectedChecksum?: string;
+  /** Release channel to record in the lockfile entry. */
+  channel?: string;
 }
 
 /** Thrown when file conflicts are detected and force is false. */
@@ -195,11 +199,16 @@ export type ExtensionPullEvent =
 export interface ExtensionPullInput {
   ref: ExtensionRef;
   force: boolean;
+  channel?: string;
 }
 
 /** Dependencies for the extension pull operation. */
 export interface ExtensionPullDeps {
   getExtension: (name: string) => Promise<ExtensionRegistryInfo | null>;
+  getLatestVersion?: (
+    name: string,
+    channel: string,
+  ) => Promise<string | null>;
   downloadArchive: (name: string, version: string) => Promise<Uint8Array>;
   getChecksum: (name: string, version: string) => Promise<string | null>;
   /**
@@ -1100,6 +1109,7 @@ export async function installExtension(
         checksum: localChecksum,
         filesChecksum: filesChecksum ?? undefined,
         serverUrl: resolveServerUrl(),
+        channel: ctx.channel,
       },
     );
 
@@ -1178,6 +1188,29 @@ export async function* extensionPull(
         };
       }
 
+      // Resolve channel-specific version when --channel is set and
+      // no explicit version is pinned. The resolved ref always carries
+      // an explicit version so installExtension doesn't need channel
+      // awareness — it just installs the pinned version.
+      let resolvedRef = input.ref;
+      if (input.channel && !input.ref.version) {
+        if (!deps.getLatestVersion) {
+          throw new UserError(
+            "Channel-aware pull requires getLatestVersion support.",
+          );
+        }
+        const channelVersion = await deps.getLatestVersion(
+          input.ref.name,
+          input.channel,
+        );
+        if (!channelVersion) {
+          throw new UserError(
+            `Extension ${input.ref.name} has no published ${input.channel} versions.`,
+          );
+        }
+        resolvedRef = { name: input.ref.name, version: channelVersion };
+      }
+
       const installCtx: InstallContext = {
         getExtension: (name) =>
           name === input.ref.name && prefetchedInfo
@@ -1192,6 +1225,7 @@ export async function* extensionPull(
         force: input.force,
         alreadyPulled: deps.alreadyPulled,
         depth: deps.depth,
+        channel: input.channel,
       };
 
       // Let ConflictError propagate — CLI catches it for the two-phase prompt
@@ -1212,7 +1246,7 @@ export async function* extensionPull(
               repository: repo,
             }).execute(r, c)
           : installExtension);
-      const result = await install(input.ref, installCtx);
+      const result = await install(resolvedRef, installCtx);
       if (result) {
         if (result.pruned.length > 0) {
           yield {
@@ -1258,6 +1292,10 @@ export async function createExtensionPullDeps(
   const lockfileRepository = await LockfileRepository.create(lockfilePath);
   return {
     getExtension: (name) => client.getExtension(name),
+    getLatestVersion: async (name, channel) => {
+      const info = await client.getLatestVersion(name, undefined, channel);
+      return info?.version ?? null;
+    },
     downloadArchive: (name, version) => client.downloadArchive(name, version),
     getChecksum: (name, version) => client.getChecksum(name, version),
     lockfileRepository,

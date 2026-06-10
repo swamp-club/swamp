@@ -41,6 +41,20 @@ export interface ExtensionUpdateCheckRepository {
 }
 
 /**
+ * Builds a cache key from extension name and optional channel.
+ * Stable (or absent) channel uses the bare name for backward compat.
+ */
+export function extensionCacheKey(
+  extensionName: string,
+  channel?: string,
+): string {
+  if (channel && channel !== "stable") {
+    return `${extensionName}:${channel}`;
+  }
+  return extensionName;
+}
+
+/**
  * Returns true if the cache entry for the given extension is stale
  * (older than 24 hours) or does not exist.
  */
@@ -48,8 +62,10 @@ export function isExtensionCheckStale(
   cache: ExtensionUpdateCheckMap,
   extensionName: string,
   now: Date,
+  channel?: string,
 ): boolean {
-  const entry = cache[extensionName];
+  const key = extensionCacheKey(extensionName, channel);
+  const entry = cache[key];
   if (!entry) return true;
 
   const checkedAt = new Date(entry.checkedAt);

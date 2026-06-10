@@ -35,6 +35,11 @@ export interface UpstreamExtensionEntry {
   filesChecksum?: string;
   /** Registry server URL used when pulling, for non-default registries. */
   serverUrl?: string;
+  /**
+   * Release channel the extension was installed from. Absent on pre-channel
+   * lockfile entries — consumers default to "stable" when missing.
+   */
+  channel?: string;
 }
 
 /** Shape of upstream_extensions.json. */

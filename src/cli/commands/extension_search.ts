@@ -77,6 +77,11 @@ export const extensionSearchCommand = new Command()
     "--sort <sort:string>",
     "Sort order: relevance, new, updated, name",
   )
+  .option(
+    "--channel <channel:string>",
+    "Filter by release channel: 'rc' or 'beta'",
+    { collect: true },
+  )
   .option("--per-page <perPage:number>", "Results per page", { default: 20 })
   .option("--page <page:number>", "Page number", { default: 1 })
   .example("Browse all extensions", "swamp extension search")
@@ -129,6 +134,18 @@ export const extensionSearchCommand = new Command()
       }
     }
 
+    // Validate channel values
+    const validChannels = ["rc", "beta"];
+    for (const ch of options.channel ?? []) {
+      if (!validChannels.includes(ch)) {
+        throw new UserError(
+          `Invalid channel: "${ch}". Must be one of: ${
+            validChannels.join(", ")
+          }`,
+        );
+      }
+    }
+
     // Validate sort option value
     const validSorts = ["relevance", "new", "updated", "name"];
     if (options.sort && !validSorts.includes(options.sort)) {
@@ -174,6 +191,7 @@ export const extensionSearchCommand = new Command()
           platform: options.platform,
           label: options.label,
           contentType: options.contentType,
+          channel: options.channel,
           sort: options.sort,
           perPage: options.perPage,
           page: options.page,

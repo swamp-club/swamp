@@ -724,6 +724,7 @@ export {
   type LocalEditsStatus,
 } from "./extensions/local_edits.ts";
 export {
+  extensionCacheKey,
   type ExtensionUpdateCheckMap,
   type ExtensionUpdateCheckRepository,
   isExtensionCheckStale,

@@ -60,6 +60,7 @@ export interface ExtensionSearchInput {
   platform?: string[];
   label?: string[];
   contentType?: string[];
+  channel?: string[];
   sort?: string;
   perPage?: number;
   page?: number;
@@ -73,6 +74,7 @@ export interface ExtensionSearchDeps {
     platform?: string[];
     label?: string[];
     contentType?: string[];
+    channel?: string[];
     sort?: string;
     perPage?: number;
     page?: number;
@@ -117,6 +119,7 @@ export async function* extensionSearch(
         platform: input.platform,
         label: input.label,
         contentType: input.contentType,
+        channel: input.channel,
         sort: input.sort,
         perPage: input.perPage,
         page: input.page,

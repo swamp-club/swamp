@@ -55,6 +55,7 @@ import {
   createExtensionPullRenderer,
   renderExtensionPullCancelled,
 } from "../../presentation/renderers/extension_pull.ts";
+import { ReleaseChannel } from "../../domain/extensions/release_channel.ts";
 
 // Re-export types that other CLI commands depend on
 export {
@@ -91,6 +92,10 @@ async function promptConfirmation(message: string): Promise<boolean> {
 /** PullContext for use by extension_search.ts and other callers. */
 export interface PullContext {
   getExtension: (name: string) => Promise<ExtensionRegistryInfo | null>;
+  getLatestVersion?: (
+    name: string,
+    channel: string,
+  ) => Promise<string | null>;
   downloadArchive: (name: string, version: string) => Promise<Uint8Array>;
   getChecksum: (name: string, version: string) => Promise<string | null>;
   logger: Logger;
@@ -106,6 +111,7 @@ export interface PullContext {
   outputMode: "log" | "json";
   alreadyPulled: Set<string>;
   depth: number;
+  channel?: string;
   /**
    * W2 service deps. When BOTH are provided, `extensionPull` routes
    * through {@link InstallExtensionService} so phase 8 fires (catalog
@@ -129,6 +135,7 @@ export async function pullExtension(
   const libCtx = createLibSwampContext({ logger: ctx.logger });
   const deps: ExtensionPullDeps = {
     getExtension: ctx.getExtension,
+    getLatestVersion: ctx.getLatestVersion,
     downloadArchive: ctx.downloadArchive,
     getChecksum: ctx.getChecksum,
     lockfileRepository: ctx.lockfileRepository,
@@ -143,7 +150,11 @@ export async function pullExtension(
 
   try {
     await consumeStream(
-      extensionPull(libCtx, deps, { ref, force: ctx.force }),
+      extensionPull(libCtx, deps, {
+        ref,
+        force: ctx.force,
+        channel: ctx.channel,
+      }),
       renderer.handlers(),
     );
   } catch (error) {
@@ -164,7 +175,11 @@ export async function pullExtension(
       // Retry with force, reset alreadyPulled so the extension can be retried
       deps.alreadyPulled.delete(ref.name);
       await consumeStream(
-        extensionPull(libCtx, deps, { ref, force: true }),
+        extensionPull(libCtx, deps, {
+          ref,
+          force: true,
+          channel: ctx.channel,
+        }),
         renderer.handlers(),
       );
     } else {
@@ -184,7 +199,20 @@ export const extensionPullCommand = new Command()
     "Repository directory (env: SWAMP_REPO_DIR)",
   )
   .option("--force", "Overwrite existing files without prompting")
+  .option(
+    "--channel <channel:string>",
+    "Release channel: 'beta' or 'rc' (default: stable)",
+  )
   .action(async function (options: AnyOptions, extension: string) {
+    const channel: string | undefined = options.channel;
+    if (
+      channel !== undefined && !ReleaseChannel.isPrereleaseName(channel)
+    ) {
+      throw new UserError(
+        `Invalid release channel: "${channel}". Must be 'beta' or 'rc'.`,
+      );
+    }
+
     const ctx = createContext(options as GlobalOptions, ["extension", "pull"]);
     ctx.logger.debug`Starting extension pull`;
 
@@ -245,6 +273,7 @@ export const extensionPullCommand = new Command()
 
       await pullExtension(ref, {
         getExtension: deps.getExtension,
+        getLatestVersion: deps.getLatestVersion,
         downloadArchive: deps.downloadArchive,
         getChecksum: deps.getChecksum,
         logger: ctx.logger,
@@ -255,6 +284,7 @@ export const extensionPullCommand = new Command()
         outputMode: ctx.outputMode,
         alreadyPulled: new Set(),
         depth: 0,
+        channel,
         denoRuntime,
         repository,
       });

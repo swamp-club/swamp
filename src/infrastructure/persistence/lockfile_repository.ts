@@ -35,6 +35,7 @@ export interface WriteEntryOptions {
   checksum?: string;
   filesChecksum?: string;
   serverUrl?: string;
+  channel?: string;
 }
 
 /**
@@ -147,6 +148,7 @@ export class LockfileRepository {
           ? { filesChecksum: options.filesChecksum }
           : {}),
         ...(options?.serverUrl ? { serverUrl: options.serverUrl } : {}),
+        ...(options?.channel ? { channel: options.channel } : {}),
       };
       await atomicWriteTextFile(
         this.lockfilePath,
