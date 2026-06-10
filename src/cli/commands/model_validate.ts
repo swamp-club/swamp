@@ -98,7 +98,7 @@ export const modelValidateCommand = new Command()
       );
 
       if (!renderer.passed()) {
-        Deno.exit(1);
+        Deno.exitCode = 1;
       }
     },
   );
