@@ -1402,3 +1402,66 @@ Deno.test("createResourceWriter: succeeds for non-sensitive resources without va
   });
   assertEquals(handle.name, "main");
 });
+
+// --- getHandles deduplication tests ---
+
+Deno.test("createFileWriterFactory: getHandles returns one handle per writeText call", async () => {
+  const repo = createMockRepo();
+  const { createFileWriter, getHandles } = createFileWriterFactory(
+    repo,
+    modelType,
+    modelId,
+    testFiles,
+  );
+
+  const writer = createFileWriter("log", "test-log");
+  await writer.writeText("hello");
+
+  assertEquals(getHandles().length, 1);
+});
+
+Deno.test("createFileWriterFactory: getHandles returns one handle per writeAll call", async () => {
+  const repo = createMockRepo();
+  const { createFileWriter, getHandles } = createFileWriterFactory(
+    repo,
+    modelType,
+    modelId,
+    testFiles,
+  );
+
+  const writer = createFileWriter("log", "test-log");
+  await writer.writeAll(new TextEncoder().encode("hello"));
+
+  assertEquals(getHandles().length, 1);
+});
+
+Deno.test("createFileWriterFactory: getHandles returns one handle per writeStream call", async () => {
+  const tmpFile = await Deno.makeTempFile();
+  try {
+    const repo = {
+      ...createMockRepo(),
+      allocateVersion: () =>
+        Promise.resolve({ version: 1, contentPath: tmpFile }),
+    };
+    const { createFileWriter, getHandles } = createFileWriterFactory(
+      repo,
+      modelType,
+      modelId,
+      testFiles,
+    );
+
+    const stream = new ReadableStream<Uint8Array>({
+      start(controller) {
+        controller.enqueue(new TextEncoder().encode("hello"));
+        controller.close();
+      },
+    });
+
+    const writer = createFileWriter("log", "test-log");
+    await writer.writeStream(stream);
+
+    assertEquals(getHandles().length, 1);
+  } finally {
+    await Deno.remove(tmpFile).catch(() => {});
+  }
+});

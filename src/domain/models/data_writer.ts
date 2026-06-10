@@ -920,27 +920,13 @@ export function createFileWriterFactory(
 
     // Wrap write methods to track handles
     const originalWriteAll = writer.writeAll.bind(writer);
-    const originalWriteText = writer.writeText.bind(writer);
-    const originalWriteStream = writer.writeStream.bind(writer);
     const originalFinalize = writer.finalize.bind(writer);
 
+    // Only wrap the terminal methods (writeAll, finalize) — writeText delegates
+    // to writeAll and writeStream delegates to finalize, so wrapping those too
+    // would record each handle twice.
     writer.writeAll = async (content: Uint8Array) => {
       const handle = await originalWriteAll(content);
-      handles.push(handle);
-      return handle;
-    };
-
-    writer.writeText = async (text: string) => {
-      const handle = await originalWriteText(text);
-      handles.push(handle);
-      return handle;
-    };
-
-    writer.writeStream = async (
-      stream: ReadableStream<Uint8Array>,
-      opts?: { onLine?: (line: string) => void },
-    ) => {
-      const handle = await originalWriteStream(stream, opts);
       handles.push(handle);
       return handle;
     };
