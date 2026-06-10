@@ -184,3 +184,53 @@ Deno.test("RpcChannel: duplicate inbound request id is rejected", async () => {
   gate.resolve();
   await new Promise((r) => setTimeout(r, 5));
 });
+
+Deno.test("RpcChannel: waitForPeerOnCancel stays pending until the handler unwinds", async () => {
+  const { a, b } = channelPair();
+  const events: string[] = [];
+  b.register("slow", (_params, ctx) =>
+    new Promise((_resolve, reject) => {
+      ctx.signal.addEventListener("abort", () => {
+        // Simulate cleanup work before the handler settles.
+        setTimeout(() => {
+          events.push("handler-unwound");
+          reject(new DOMException("aborted", "AbortError"));
+        }, 30);
+      });
+    }));
+
+  const controller = new AbortController();
+  const call = a.call("slow", {}, {
+    signal: controller.signal,
+    timeoutMs: null,
+    waitForPeerOnCancel: true,
+  });
+  await new Promise((r) => setTimeout(r, 5));
+  controller.abort();
+  const error = await assertRejects(() => call, RpcError);
+  events.push("caller-settled");
+  // The caller settled only AFTER the peer's handler finished unwinding.
+  assertEquals(events, ["handler-unwound", "caller-settled"]);
+  assertEquals(error.code, "cancelled");
+});
+
+Deno.test("RpcChannel: cancelled handlers always emit a terminal frame", async () => {
+  const sent: string[] = [];
+  const b: RpcChannel = new RpcChannel({
+    send: (data) => void sent.push(data),
+  });
+  b.register("slow", (_params, ctx) =>
+    new Promise((_resolve, reject) => {
+      ctx.signal.addEventListener(
+        "abort",
+        () => reject(new DOMException("aborted", "AbortError")),
+      );
+    }));
+  b.handleParsed({ type: "rpc.request", id: "x", method: "slow", params: {} });
+  b.handleParsed({ type: "rpc.cancel", id: "x" });
+  await new Promise((r) => setTimeout(r, 10));
+  const frames = sent.map((raw) => JSON.parse(raw));
+  assertEquals(frames.length, 1);
+  assertEquals(frames[0].type, "rpc.error");
+  assertEquals(frames[0].error.code, "cancelled");
+});

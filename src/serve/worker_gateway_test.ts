@@ -377,3 +377,48 @@ Deno.test("WorkerGateway: dispatch ending after a socket drop does not mark idle
   assertEquals(h.transitions.at(-1)?.inputs.status, "disconnected");
   assertEquals(h.idle.length, 1); // only the enrollment idle
 });
+
+Deno.test("WorkerGateway: a cancelled dispatch frees the worker only after it unwinds", async () => {
+  const h = createHarness();
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  await enroll(workerChannel);
+
+  let unwound = false;
+  workerChannel.register(
+    WorkerMethod.dispatch,
+    (_params, ctx) =>
+      new Promise((_resolve, reject) => {
+        ctx.signal.addEventListener("abort", () => {
+          setTimeout(() => {
+            unwound = true;
+            reject(new DOMException("aborted", "AbortError"));
+          }, 20);
+        });
+      }),
+  );
+
+  const cancel = new AbortController();
+  const dispatch = h.gateway.dispatch("ci-runner-3", dispatchParams("d-c"), {
+    signal: cancel.signal,
+  });
+  await new Promise((r) => setTimeout(r, 10));
+  cancel.abort();
+  await assertRejects(() => dispatch, RpcError, "aborted");
+  // By the time the dispatch settled, the worker's serial slot was free —
+  // an immediate follow-up dispatch must not hit worker_busy.
+  assertEquals(unwound, true);
+  assertEquals(h.gateway.worker("ci-runner-3")?.status, "idle");
+
+  workerChannel.register(WorkerMethod.dispatch, () =>
+    Promise.resolve({
+      status: "success",
+      outputs: [],
+      logs: [],
+      durationMs: 1,
+    }));
+  const followUp = await h.gateway.dispatch(
+    "ci-runner-3",
+    dispatchParams("d-n"),
+  );
+  assertEquals(followUp.status, "success");
+});

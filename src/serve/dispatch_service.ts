@@ -50,7 +50,7 @@ import {
   REMOTE_PROTOCOL_VERSION,
   type RpcStreamEvent,
 } from "../domain/remote/protocol.ts";
-import { ChannelClosedError } from "../domain/remote/rpc_channel.ts";
+import { ChannelClosedError, RpcError } from "../domain/remote/rpc_channel.ts";
 import {
   hasPlacement,
   type ScheduleDecision,
@@ -207,6 +207,20 @@ export class DispatchService {
           );
           continue;
         }
+        if (error instanceof RpcError && error.code === "worker_busy") {
+          // Transient orchestrator/worker view desync (e.g. a cancel grace
+          // period elapsed before the worker freed its serial slot). The
+          // worker IS busy — treat it like any busy worker and re-queue.
+          logger.warn(
+            "Worker {worker} reported busy on dispatch; re-queueing step",
+            { worker: workerName },
+          );
+          await this.#waitForPoolChange(
+            Math.max(deadline - Date.now(), 0),
+            request.signal,
+          );
+          continue;
+        }
         throw error;
       } finally {
         this.#reserved.delete(workerName);
@@ -221,6 +235,7 @@ export class DispatchService {
     const gateway = this.#gateway!;
     const dispatchId = crypto.randomUUID();
     const leaseId = dispatchId;
+    let leaseSettled = false;
 
     const bundleFingerprint = await this.#ensureBundle(request.modelDef);
 
@@ -279,12 +294,14 @@ export class DispatchService {
         onEvent: request.onEvent,
       });
       if (result.status === "error") {
+        leaseSettled = true;
         await this.#leaseTransition("fail", {
           leaseId,
           error: result.error ?? "remote execution failed",
         });
         throw new Error(result.error ?? "Remote execution failed");
       }
+      leaseSettled = true;
       await this.#leaseTransition("complete", { leaseId });
       return {
         outputs: result.outputs,
@@ -293,6 +310,21 @@ export class DispatchService {
         followUpActions: result.followUpActions,
       };
     } catch (error) {
+      if (
+        (error instanceof RpcError && error.code === "cancelled") ||
+        (error instanceof DOMException && error.name === "AbortError")
+      ) {
+        await this.#leaseTransition("fail", {
+          leaseId,
+          error: "dispatch cancelled",
+        });
+        throw new DOMException(
+          `Dispatch of step '${
+            request.stepName ?? request.methodName
+          }' was cancelled`,
+          "AbortError",
+        );
+      }
       if (error instanceof ChannelClosedError) {
         const hadWrites = this.#writesByDispatch.has(dispatchId);
         const fate = await this.#awaitWorkerFate(workerName);
@@ -310,6 +342,16 @@ export class DispatchService {
           });
         }
         throw new WorkerLostError(workerName, hadWrites);
+      }
+      // Anything else (worker_busy desync, unexpected RPC failure): the
+      // attempt is abandoned, not a method failure — end the lease so it
+      // cannot leak as 'active', then let executeRemote decide. Leases the
+      // try block already settled (fail/complete) are left alone.
+      if (!leaseSettled) {
+        await this.#leaseTransition("expire", {
+          leaseId,
+          error: error instanceof Error ? error.message : String(error),
+        }).catch(() => {});
       }
       throw error;
     } finally {

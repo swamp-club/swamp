@@ -67,6 +67,14 @@ export interface RpcCallOptions {
   timeoutMs?: number | null;
   /** Receives stream events emitted by the peer's handler. */
   onStream?: (event: RpcStreamEvent) => void;
+  /**
+   * On signal abort, send rpc.cancel but keep the call pending until the
+   * peer's terminal frame arrives (its handler has fully unwound), bounded
+   * by CANCEL_GRACE_MS. Without this, abort rejects locally and the peer
+   * may still be unwinding — wrong for dispatches, where "the worker is
+   * free again" must mean exactly that.
+   */
+  waitForPeerOnCancel?: boolean;
 }
 
 /** Error raised at the caller when the peer answers with rpc.error. */
@@ -83,6 +91,14 @@ export class RpcError extends Error {
 }
 
 export const DEFAULT_CALL_TIMEOUT_MS = 30_000;
+
+/**
+ * After a cooperative cancel (waitForPeerOnCancel), how long to wait for the
+ * peer's terminal frame before giving up and rejecting locally — a
+ * misbehaving handler that ignores its abort signal must not pin the caller
+ * forever.
+ */
+export const CANCEL_GRACE_MS = 30_000;
 
 /**
  * Rejection raised for calls pending when the channel closes — the signal
@@ -138,8 +154,23 @@ export class RpcChannel {
 
     return new Promise<T>((resolve, reject) => {
       let timer: ReturnType<typeof setTimeout> | undefined;
+      let cancelGraceTimer: ReturnType<typeof setTimeout> | undefined;
       const onAbort = () => {
         this.#sendFrame({ type: "rpc.cancel", id });
+        if (options?.waitForPeerOnCancel) {
+          // Stay pending: the peer's terminal frame (or channel close)
+          // settles the call once its handler has actually unwound.
+          cancelGraceTimer = setTimeout(() => {
+            settleReject(
+              new DOMException(
+                `RPC call '${method}' was aborted, but the peer did not ` +
+                  `confirm cancellation within ${CANCEL_GRACE_MS}ms`,
+                "AbortError",
+              ),
+            );
+          }, CANCEL_GRACE_MS);
+          return;
+        }
         settleReject(
           new DOMException("RPC call was aborted", "AbortError"),
         );
@@ -147,6 +178,9 @@ export class RpcChannel {
       const cleanup = () => {
         if (timer !== undefined) {
           clearTimeout(timer);
+        }
+        if (cancelGraceTimer !== undefined) {
+          clearTimeout(cancelGraceTimer);
         }
         options?.signal?.removeEventListener("abort", onAbort);
         this.#pending.delete(id);
@@ -169,7 +203,11 @@ export class RpcChannel {
 
       if (options?.signal) {
         if (options.signal.aborted) {
-          onAbort();
+          // Nothing has been sent yet — no peer work exists to cancel or to
+          // wait for, regardless of waitForPeerOnCancel.
+          settleReject(
+            new DOMException("RPC call was aborted", "AbortError"),
+          );
           return;
         }
         options.signal.addEventListener("abort", onAbort, { once: true });
@@ -306,18 +344,25 @@ export class RpcChannel {
     };
 
     // The handler runs detached from the socket's onmessage callback; every
-    // outcome (result, thrown error, abort) settles into exactly one frame,
-    // so nothing is fire-and-forget.
+    // outcome (result, thrown error, abort) settles into exactly one
+    // terminal frame — cancelled handlers included, so the peer can learn
+    // when this side has fully unwound. #sendFrame no-ops after close.
     handler(params, ctx).then(
       (result) => {
         this.#inflight.delete(id);
-        if (!controller.signal.aborted) {
-          this.#sendFrame({ type: "rpc.response", id, result: result ?? null });
-        }
+        this.#sendFrame({ type: "rpc.response", id, result: result ?? null });
       },
       (error: unknown) => {
         this.#inflight.delete(id);
         if (controller.signal.aborted) {
+          const message = error instanceof Error
+            ? error.message
+            : String(error);
+          this.#sendFrame({
+            type: "rpc.error",
+            id,
+            error: { code: "cancelled", message },
+          });
           return;
         }
         if (error instanceof RpcError) {

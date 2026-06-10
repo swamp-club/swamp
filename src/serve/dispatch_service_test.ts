@@ -34,7 +34,7 @@ import type {
   DispatchParams,
   DispatchResult,
 } from "../domain/remote/protocol.ts";
-import { ChannelClosedError } from "../domain/remote/rpc_channel.ts";
+import { ChannelClosedError, RpcError } from "../domain/remote/rpc_channel.ts";
 import type { RemoteStepRequest } from "../domain/remote/remote_dispatch.ts";
 
 const MODEL_TYPE = ModelType.create("swamp/dispatch-test");
@@ -378,4 +378,58 @@ Deno.test("DispatchService: abort during queue wait rejects", async () => {
   await new Promise((r) => setTimeout(r, 10));
   controller.abort();
   await assertRejects(() => pending, DOMException);
+});
+
+Deno.test("DispatchService: cancelled dispatch fails the lease and rejects with AbortError", async () => {
+  const h = createHarness();
+  h.setBehavior(() =>
+    Promise.reject(
+      new RpcError({ code: "cancelled", message: "aborted on worker" }),
+    )
+  );
+  const error = await assertRejects(
+    () => h.service.executeRemote(stepRequest()),
+    DOMException,
+    "cancelled",
+  );
+  assertEquals(error.name, "AbortError");
+  assertEquals(
+    h.transitions.map((t) => t.methodName),
+    ["acquire", "fail"],
+  );
+});
+
+Deno.test("DispatchService: worker_busy desync re-queues instead of failing the run", async () => {
+  const h = createHarness();
+  let attempts = 0;
+  h.setBehavior(() => {
+    attempts++;
+    if (attempts === 1) {
+      // The worker still held its serial slot (e.g. a cancel grace period
+      // elapsed) — the gateway view said idle, the worker said busy.
+      queueMicrotask(() =>
+        h.service.notifyWorkerIdle(snapshot({ name: "w1" }))
+      );
+      return Promise.reject(
+        new RpcError({
+          code: "worker_busy",
+          message: "Worker is already executing a dispatch",
+        }),
+      );
+    }
+    return Promise.resolve({
+      status: "success",
+      outputs: [],
+      logs: [],
+      durationMs: 1,
+    });
+  });
+  const result = await h.service.executeRemote(stepRequest());
+  assertEquals(result.durationMs, 1);
+  assertEquals(attempts, 2);
+  // The abandoned first attempt's lease ended (expire), not leaked active.
+  assertEquals(
+    h.transitions.map((t) => t.methodName),
+    ["acquire", "expire", "acquire", "complete"],
+  );
 });

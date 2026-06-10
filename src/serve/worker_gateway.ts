@@ -235,6 +235,10 @@ export class WorkerGateway {
           timeoutMs: null,
           signal: options?.signal,
           onStream: options?.onEvent,
+          // A cancelled dispatch must stay pending until the worker's
+          // serial slot has actually freed — otherwise the next dispatch
+          // races the worker's busy guard.
+          waitForPeerOnCancel: true,
         },
       );
       return DispatchResultSchema.parse(raw);

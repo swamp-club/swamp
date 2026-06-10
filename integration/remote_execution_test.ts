@@ -471,6 +471,11 @@ Deno.test({
           () => orchestrator.gateway.worker("it-worker")?.status === "busy",
           "hung dispatch to start",
         );
+        // Busy flips before the dispatch frame is sent (the durable status
+        // write sits between); give the frame time to reach the worker so
+        // the abort exercises the cooperative cancel path, not the
+        // pre-send fast path.
+        await new Promise((r) => setTimeout(r, 300));
         cancel.abort();
         await assertRejects(() => hung, Error);
         await waitFor(
