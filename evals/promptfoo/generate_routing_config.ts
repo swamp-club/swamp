@@ -36,6 +36,8 @@ interface ProviderDefinition {
   id: string;
   apiKeyEnv: string;
   delay?: number;
+  noToolChoice?: boolean;
+  thinking?: Record<string, string>;
 }
 
 const PROVIDER_REGISTRY: Record<string, ProviderDefinition> = {
@@ -46,6 +48,12 @@ const PROVIDER_REGISTRY: Record<string, ProviderDefinition> = {
   "opus": {
     id: "anthropic:messages:claude-opus-4-6",
     apiKeyEnv: "ANTHROPIC_API_KEY",
+  },
+  "fable": {
+    id: "anthropic:messages:claude-fable-5",
+    apiKeyEnv: "ANTHROPIC_API_KEY",
+    noToolChoice: true,
+    thinking: { type: "adaptive" },
   },
   "gpt-5.4": {
     id: "openai:gpt-5.4",
@@ -211,11 +219,13 @@ async function main(): Promise<void> {
       {
         id: provider.id,
         config: {
-          temperature: 0,
-          max_tokens: 200,
+          ...(provider.thinking
+            ? { thinking: provider.thinking }
+            : { temperature: 0 }),
+          max_tokens: provider.thinking ? 2048 : 200,
           systemMessage,
           tools,
-          tool_choice: "required",
+          ...(provider.noToolChoice ? {} : { tool_choice: "required" }),
         },
         ...(provider.delay ? { delay: provider.delay } : {}),
       },

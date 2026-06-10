@@ -31,6 +31,8 @@ jobs:
             concurrency: 20
           - model: gemini-3.1-pro
             concurrency: 20
+          - model: fable
+            concurrency: 20
     steps:
       - name: Check if model is selected
         id: check
