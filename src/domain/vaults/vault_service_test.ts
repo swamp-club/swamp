@@ -469,6 +469,51 @@ Deno.test("VaultService - refresh-aware get", async (t) => {
   );
 });
 
+Deno.test("VaultService - fromRepository continues loading after a bad vault config", async () => {
+  const tempDir = await Deno.makeTempDir();
+  try {
+    // Vault "bad" has an unsupported type — it should fail to load
+    const badDir = join(tempDir, "vaults", "bad");
+    await ensureDir(badDir);
+    await Deno.writeTextFile(
+      join(badDir, "bad-id.yaml"),
+      stringifyYaml({
+        id: "bad-id",
+        name: "bad",
+        type: "totally-bogus-type",
+        config: {},
+        createdAt: new Date().toISOString(),
+      }),
+    );
+
+    // Vault "good" has a valid type — it should still load even though "bad" failed
+    const goodDir = join(tempDir, "vaults", "good");
+    await ensureDir(goodDir);
+    await Deno.writeTextFile(
+      join(goodDir, "good-id.yaml"),
+      stringifyYaml({
+        id: "good-id",
+        name: "good",
+        type: "mock",
+        config: { "key": "value" },
+        createdAt: new Date().toISOString(),
+      }),
+    );
+
+    const vaultService = await VaultService.fromRepository(tempDir);
+    const names = vaultService.getVaultNames();
+
+    // "good" must be registered despite "bad" failing
+    assertStringIncludes(names.join(","), "good");
+
+    // Verify we can actually use the good vault
+    const secret = await vaultService.get("good", "key");
+    assertEquals(secret, "value");
+  } finally {
+    await Deno.remove(tempDir, { recursive: true }).catch(() => {});
+  }
+});
+
 Deno.test("VaultService - fromRepository auto-remaps renamed vault types", async (t) => {
   await t.step(
     "should remap 'aws' type to '@swamp/aws-sm' when loading from repository",

@@ -790,9 +790,7 @@ export class ModelRegistry {
 
   /**
    * Clears the extension-loaded flag so the next call to
-   * {@link ensureLoaded} re-runs the configured loader. Used by commands
-   * that can re-scan extensions at runtime (e.g. `swamp open` after
-   * installing a new extension or switching repositories). Does not
+   * {@link ensureLoaded} re-runs the configured loader. Does not
    * clear already-registered models.
    */
   resetLoadedFlag(): void {

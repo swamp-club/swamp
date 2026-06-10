@@ -88,8 +88,7 @@ export class ReportRegistry {
 
   /**
    * Clears the extension-loaded flag so the next call to
-   * {@link ensureLoaded} re-runs the configured loader. Used by commands
-   * that re-scan extensions at runtime (e.g. `swamp open`).
+   * {@link ensureLoaded} re-runs the configured loader.
    */
   resetLoadedFlag(): void {
     this.extensionsLoaded = false;
