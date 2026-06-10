@@ -313,3 +313,24 @@ Deno.test("dispatch handler: emits started and finished events for connect-mode 
   assertEquals(dispatchEvents[1].status, "error");
   assertEquals(String(dispatchEvents[1].error).includes("boom"), true);
 });
+
+Deno.test("dispatch handler: trace context applies during the method and restores after", async () => {
+  const h = harness();
+  Deno.env.delete("TRACEPARENT");
+  let seenTraceparent: string | undefined;
+  methodBehavior = () => {
+    seenTraceparent = Deno.env.get("TRACEPARENT");
+    return Promise.resolve();
+  };
+  const params = dispatchParams();
+  (params.execution as Record<string, unknown>).traceHeaders = {
+    traceparent: "00-abc123-def456-01",
+  };
+  await h.orchestrator.call<DispatchResult>(
+    WorkerMethod.dispatch,
+    params,
+    { timeoutMs: null },
+  );
+  assertEquals(seenTraceparent, "00-abc123-def456-01");
+  assertEquals(Deno.env.get("TRACEPARENT"), undefined);
+});

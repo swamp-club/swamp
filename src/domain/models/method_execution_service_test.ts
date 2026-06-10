@@ -3196,6 +3196,7 @@ Deno.test("executeWorkflow - placed steps rebuild full handles from durable reco
         }],
         logs: [],
         durationMs: 5,
+        workerName: "gpu-box-1",
       }),
   });
   try {
@@ -3210,6 +3211,9 @@ Deno.test("executeWorkflow - placed steps rebuild full handles from durable reco
       "start",
       context,
     );
+
+    // Telemetry attribution: the result names the worker that ran it.
+    assertEquals(result.executor, "gpu-box-1");
 
     const handle = result.dataHandles![0];
     // Full metadata is rebuilt from the durable record — the wire-thin

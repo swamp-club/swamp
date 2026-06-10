@@ -123,7 +123,12 @@ export class WorkflowTelemetryBridge {
           new Date(),
           null,
           this.sink.parentInvocationId,
-          this.buildWorkflowContext(event.jobId, event.stepId, tracked),
+          this.buildWorkflowContext(
+            event.jobId,
+            event.stepId,
+            tracked,
+            event.executor,
+          ),
         );
         return;
       }
@@ -207,6 +212,7 @@ export class WorkflowTelemetryBridge {
     jobId: string,
     stepId: string,
     tracked: InFlightMethodInvocation,
+    executor?: string,
   ): WorkflowContextData {
     const ctx: WorkflowContextData = {
       workflowName: this.workflowName,
@@ -216,6 +222,9 @@ export class WorkflowTelemetryBridge {
     };
     if (tracked.modelType !== undefined) {
       ctx.modelType = tracked.modelType;
+    }
+    if (executor !== undefined) {
+      ctx.executor = executor;
     }
     return ctx;
   }

@@ -2334,11 +2334,16 @@ export class WorkflowExecutionService {
 
       stepRun.succeed(output);
       stepSpan.setStatus({ code: SpanStatusCode.OK });
+      const executor = output && typeof output === "object" &&
+          "executor" in output
+        ? (output as { executor?: string }).executor
+        : undefined;
       yield {
         kind: "step_completed",
         jobId: job.name,
         stepId: stepName,
         dataHandles: stepDataHandles,
+        executor,
       };
     } catch (error) {
       if (error instanceof WorkflowSuspendedError) {

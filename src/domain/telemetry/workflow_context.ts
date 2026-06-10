@@ -32,6 +32,8 @@ export interface WorkflowContext {
   readonly jobName: string;
   readonly stepName: string;
   readonly modelType?: string;
+  /** "loopback" or the worker name that executed the step's method. */
+  readonly executor?: string;
 }
 
 /**
@@ -43,6 +45,7 @@ export interface WorkflowContextData {
   jobName: string;
   stepName: string;
   modelType?: string;
+  executor?: string;
 }
 
 /**
@@ -57,6 +60,7 @@ export function createWorkflowContext(
     jobName: props.jobName,
     stepName: props.stepName,
     modelType: props.modelType,
+    executor: props.executor,
   };
 }
 
@@ -74,6 +78,9 @@ export function workflowContextToData(
   };
   if (context.modelType !== undefined) {
     data.modelType = context.modelType;
+  }
+  if (context.executor !== undefined) {
+    data.executor = context.executor;
   }
   return data;
 }

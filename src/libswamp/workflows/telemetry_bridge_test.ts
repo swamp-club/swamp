@@ -342,3 +342,43 @@ Deno.test("bridge does not record allowedFailure: true differently from error", 
   assertEquals(sink.calls.length, 1);
   assertEquals(sink.calls[0].error?.message, "exit 1");
 });
+
+Deno.test("bridge records the executor dimension from step_completed (swamp-club#535)", async () => {
+  const sink = new FakeSink();
+  const bridge = new WorkflowTelemetryBridge(sink);
+
+  await bridge.observe(STARTED_EVENT);
+  await bridge.observe({
+    kind: "method_executing",
+    jobId: "build",
+    stepId: "train",
+    modelName: "gpu-model",
+    methodName: "fit",
+  });
+  await bridge.observe({
+    kind: "step_completed",
+    jobId: "build",
+    stepId: "train",
+    executor: "gpu-box-1",
+  });
+  // A loopback step records "loopback"; an event without the field stays
+  // absent (older serve relays).
+  await bridge.observe({
+    kind: "method_executing",
+    jobId: "build",
+    stepId: "local",
+    modelName: "shell-step",
+    methodName: "run",
+  });
+  await bridge.observe({
+    kind: "step_completed",
+    jobId: "build",
+    stepId: "local",
+    executor: "loopback",
+  });
+  await bridge.finalize();
+
+  assertEquals(sink.calls.length, 2);
+  assertEquals(sink.calls[0].workflowContext.executor, "gpu-box-1");
+  assertEquals(sink.calls[1].workflowContext.executor, "loopback");
+});

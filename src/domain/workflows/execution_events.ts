@@ -58,6 +58,8 @@ export type WorkflowExecutionEvent =
     jobId: string;
     stepId: string;
     dataHandles?: DataHandle[];
+    /** "loopback" or the worker name that executed the step's method. */
+    executor?: string;
   }
   | { kind: "step_skipped"; jobId: string; stepId: string }
   | {

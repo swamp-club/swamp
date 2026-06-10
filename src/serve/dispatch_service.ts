@@ -277,6 +277,7 @@ export class DispatchService {
         definitionMeta: request.definitionMeta,
         resourceSpecs: request.resourceSpecs,
         fileSpecs: request.fileSpecs,
+        traceHeaders: request.traceHeaders,
       },
       bundleFingerprint,
       reportBundleFingerprints: [],
@@ -308,6 +309,7 @@ export class DispatchService {
         logs: result.logs,
         durationMs: result.durationMs,
         followUpActions: result.followUpActions,
+        workerName,
       };
     } catch (error) {
       if (

@@ -79,7 +79,13 @@ export type WorkflowRunEvent =
   | { kind: "job_completed"; jobId: string; status: string }
   | { kind: "job_skipped"; jobId: string }
   | { kind: "step_started"; jobId: string; stepId: string }
-  | { kind: "step_completed"; jobId: string; stepId: string }
+  | {
+    kind: "step_completed";
+    jobId: string;
+    stepId: string;
+    /** "loopback" or the worker name that executed the step's method. */
+    executor?: string;
+  }
   | { kind: "step_skipped"; jobId: string; stepId: string }
   | {
     kind: "approval_requested";

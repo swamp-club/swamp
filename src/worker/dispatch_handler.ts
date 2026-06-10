@@ -194,6 +194,17 @@ async function handleDispatch(
     prefix: `swamp-dispatch-${params.dispatchId.slice(0, 8)}-`,
   });
   const restoreEnv = applyEnvironmentOverlay(params.environmentSnapshot);
+  // W3C trace context applies after the overlay so the dispatch-specific
+  // parent always wins; extensions and subprocesses that initialize their
+  // own OTel SDK read TRACEPARENT/TRACESTATE to join the orchestrator's
+  // trace (mirrors the in-process executor).
+  const restoreTrace = applyEnvironmentOverlay(
+    Object.fromEntries(
+      Object.entries(execution.traceHeaders ?? {}).map((
+        [key, value],
+      ) => [key.toUpperCase().replace(/-/g, "_"), value]),
+    ),
+  );
   let getHandles: () => DataHandle[] = () => [];
 
   try {
@@ -291,6 +302,7 @@ async function handleDispatch(
       durationMs,
     };
   } finally {
+    restoreTrace();
     restoreEnv();
     await Deno.remove(scratchDir, { recursive: true }).catch(() => {});
   }

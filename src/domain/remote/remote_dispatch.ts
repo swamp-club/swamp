@@ -50,6 +50,8 @@ export interface RemoteStepRequest {
   methodArgs: Record<string, unknown>;
   resourceSpecs?: Record<string, unknown>;
   fileSpecs?: Record<string, unknown>;
+  /** W3C trace context propagated into the worker's execution. */
+  traceHeaders?: Record<string, string>;
   runtimeTags?: Record<string, string>;
   workflowName?: string;
   jobName?: string;
@@ -63,6 +65,8 @@ export interface RemoteStepResult {
   logs: string[];
   durationMs: number;
   followUpActions?: unknown[];
+  /** The worker that executed the step (telemetry attribution). */
+  workerName?: string;
 }
 
 export interface RemoteStepDispatcher {

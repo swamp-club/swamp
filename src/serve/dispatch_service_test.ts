@@ -433,3 +433,17 @@ Deno.test("DispatchService: worker_busy desync re-queues instead of failing the 
     ["acquire", "expire", "acquire", "complete"],
   );
 });
+
+Deno.test("DispatchService: forwards trace headers and reports the executing worker", async () => {
+  const h = createHarness();
+  const result = await h.service.executeRemote(
+    stepRequest({
+      traceHeaders: { traceparent: "00-abc-def-01" },
+    } as Partial<RemoteStepRequest>),
+  );
+  assertEquals(
+    h.dispatchCalls[0].params.execution.traceHeaders,
+    { traceparent: "00-abc-def-01" },
+  );
+  assertEquals(result.workerName, "w1");
+});

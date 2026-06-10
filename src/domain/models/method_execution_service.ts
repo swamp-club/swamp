@@ -361,6 +361,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         methodArgs,
         resourceSpecs: executionRequest.resourceSpecs,
         fileSpecs: executionRequest.fileSpecs,
+        traceHeaders: executionRequest.traceHeaders,
         runtimeTags: context.runtimeTags,
         workflowName: context.tagOverrides?.workflow,
         jobName: context.tagOverrides?.job,
@@ -759,6 +760,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
           dataHandles: currentHandles,
           followUpActions: remoteResult
             .followUpActions as FollowUpAction[] | undefined,
+          executor: remoteResult.workerName,
         };
       } else {
         // Execute in-process — the single-host path (see
@@ -800,6 +802,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
           dataHandles: currentHandles,
           followUpActions: executionResult
             .followUpActions as FollowUpAction[] | undefined,
+          executor: "loopback",
         };
         // Use the executor's context with writers for follow-up actions
         executionContext = inProcessExecutor.contextWithWriters ?? context;

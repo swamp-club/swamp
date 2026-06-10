@@ -490,6 +490,13 @@ export interface MethodResult {
    * Optional follow-up actions to execute.
    */
   followUpActions?: FollowUpAction[];
+
+  /**
+   * Where the method body executed: "loopback" for in-process, or the
+   * worker name for a remote dispatch. Populated by the execution service
+   * for telemetry attribution; methods never set it themselves.
+   */
+  executor?: string;
 }
 
 /**
