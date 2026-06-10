@@ -119,6 +119,46 @@ Deno.test("withEventBridge handles zero events", async () => {
   assertEquals(result.value, "done");
 });
 
+Deno.test("withEventBridge: early return does not leak unhandled rejection", async () => {
+  const deferred = Promise.withResolvers<void>();
+
+  async function* run(): AsyncGenerator<string> {
+    yield* withEventBridge<string, void>((push) => {
+      push("first");
+      return deferred.promise;
+    });
+  }
+
+  const gen = run();
+  const first = await gen.next();
+  assertEquals(first.value, "first");
+
+  // Reject concurrently — gen.return() awaits the promise in its finally block
+  const returnPromise = gen.return(undefined as unknown as string);
+  deferred.reject(new Error("late rejection after cancellation"));
+  await returnPromise;
+});
+
+Deno.test("withEventBridge: early return with resolving promise does not leak", async () => {
+  const deferred = Promise.withResolvers<string>();
+
+  async function* run(): AsyncGenerator<string> {
+    const result = yield* withEventBridge<string, string>((push) => {
+      push("event");
+      return deferred.promise;
+    });
+    return result;
+  }
+
+  const gen = run();
+  const first = await gen.next();
+  assertEquals(first.value, "event");
+
+  const returnPromise = gen.return(undefined as unknown as string);
+  deferred.resolve("late result");
+  await returnPromise;
+});
+
 Deno.test("withEventBridge handles push after error gracefully", async () => {
   // If the callback pushes events then rejects, events before the
   // rejection should still be yielded and the error should propagate.
