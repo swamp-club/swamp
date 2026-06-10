@@ -1669,6 +1669,17 @@ export class WorkflowExecutionService {
         runSpan.setStatus({ code: SpanStatusCode.OK });
         return;
       }
+      if (workflowRun) {
+        workflowRun.complete();
+        await this.saveRun(
+          createWorkflowId(workflowRun.workflowId),
+          workflowRun,
+        );
+        yield { kind: "completed" as const, run: workflowRun };
+      }
+      if (workflowLogCategory) {
+        runFileSink.unregister(workflowLogCategory);
+      }
       runSpan.setStatus({
         code: SpanStatusCode.ERROR,
         message: error instanceof Error ? error.message : String(error),
@@ -1923,8 +1934,8 @@ export class WorkflowExecutionService {
       await this.saveRun(workflow.id, existingRun);
       runFileSink.unregister(workflowLogCategory);
     } catch (error) {
-      runFileSink.unregister(workflowLogCategory);
       if (error instanceof WorkflowSuspendedError) {
+        runFileSink.unregister(workflowLogCategory);
         yield {
           kind: "suspended" as const,
           run: existingRun,
@@ -1935,6 +1946,10 @@ export class WorkflowExecutionService {
         };
         return;
       }
+      existingRun.complete();
+      await this.saveRun(workflow.id, existingRun);
+      yield { kind: "completed" as const, run: existingRun };
+      runFileSink.unregister(workflowLogCategory);
       throw error;
     }
   }

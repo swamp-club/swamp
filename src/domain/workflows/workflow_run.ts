@@ -619,8 +619,10 @@ export class WorkflowRun implements TriggerEvaluationContext {
    * Marks the workflow run as completed (succeeded or failed based on job results).
    */
   complete(): void {
-    const anyFailed = this._jobs.some((j) => j.status === "failed");
-    this._status = anyFailed ? "failed" : "succeeded";
+    const anyNonTerminal = this._jobs.some((j) =>
+      j.status !== "succeeded" && j.status !== "skipped"
+    );
+    this._status = anyNonTerminal ? "failed" : "succeeded";
     this._completedAt = new Date();
   }
 
