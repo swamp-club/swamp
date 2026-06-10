@@ -210,7 +210,7 @@ export const extensionPushCommand = new Command()
       !ReleaseChannel.isPrereleaseName(options.channel)
     ) {
       throw new UserError(
-        `Invalid channel: "${options.channel}". Must be one of: beta, rc`,
+        `Invalid channel: "${options.channel}". Must be one of: beta, rc. Stable is the default; omit --channel to use it.`,
       );
     }
     const cliCtx = createContext(options, ["extension", "push"]);

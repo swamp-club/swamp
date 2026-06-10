@@ -160,6 +160,25 @@ Deno.test("extensionPromoteValidate: rejects backward promotion", () => {
   }
 });
 
+Deno.test("extensionPromoteValidate: rejects beta as target without fromChannel", () => {
+  try {
+    extensionPromoteValidate({
+      extensionName: "@test/ext",
+      version: "2026.06.10.1",
+      toChannel: "beta",
+    });
+    throw new Error("Expected to throw");
+  } catch (error) {
+    assertEquals((error as { code: string }).code, "validation_failed");
+    assertEquals(
+      (error as { message: string }).message.includes(
+        "Must be 'rc' or 'stable'",
+      ),
+      true,
+    );
+  }
+});
+
 Deno.test("extensionPromoteValidate: accepts valid forward promotion", () => {
   // Should not throw
   extensionPromoteValidate({
@@ -168,4 +187,20 @@ Deno.test("extensionPromoteValidate: accepts valid forward promotion", () => {
     toChannel: "stable",
     fromChannel: "beta",
   });
+});
+
+Deno.test("extensionPromote: yields error when API call fails", async () => {
+  const ctx = createLibSwampContext();
+  const deps = fakeDeps({
+    promoteExtension: () => Promise.reject(new Error("Version not found")),
+  });
+  const input: ExtensionPromoteInput = {
+    extensionName: "@test/ext",
+    version: "2026.06.10.99",
+    toChannel: "rc",
+  };
+  await assertErrors<ExtensionPromoteEvent>(
+    extensionPromote(ctx, deps, input),
+    "validation_failed",
+  );
 });

@@ -29,7 +29,6 @@ import {
   validateExtensionName,
 } from "../../libswamp/mod.ts";
 import { createExtensionPromoteRenderer } from "../../presentation/renderers/extension_promote.ts";
-import { ReleaseChannel } from "../../domain/extensions/release_channel.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -55,7 +54,7 @@ export const extensionPromoteCommand = new Command()
   )
   .option(
     "--from-channel <fromChannel:string>",
-    "Source channel to promote from (for client-side validation)",
+    "Source channel (beta or rc) — enables pre-flight direction check before contacting the server",
   )
   .action(async function (
     options: AnyOptions,
@@ -71,36 +70,7 @@ export const extensionPromoteCommand = new Command()
     validateExtensionName(extension);
 
     const toChannel = options.channel as string;
-    if (!ReleaseChannel.isValid(toChannel)) {
-      throw new UserError(
-        `Invalid target channel: "${toChannel}". Must be 'rc' or 'stable'.`,
-      );
-    }
-    const target = ReleaseChannel.create(toChannel);
-    if (!ReleaseChannel.BETA.canPromoteTo(target) && toChannel !== "stable") {
-      throw new UserError(
-        `Invalid target channel: "${toChannel}". Promote targets must be 'rc' or 'stable'.`,
-      );
-    }
-
-    // Client-side validation of promotion direction when --from-channel is given
     const fromChannel = options.fromChannel as string | undefined;
-    if (fromChannel) {
-      if (!ReleaseChannel.isValid(fromChannel)) {
-        throw new UserError(
-          `Invalid source channel: "${fromChannel}". Must be one of: beta, rc, stable`,
-        );
-      }
-      const source = ReleaseChannel.create(fromChannel);
-      if (!source.canPromoteTo(target)) {
-        throw new UserError(
-          `Cannot promote from ${fromChannel} to ${toChannel}. Promotion must move to a higher channel.`,
-        );
-      }
-    }
-
-    const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createExtensionPromoteDeps();
     const input = {
       extensionName: extension,
       version,
@@ -116,6 +86,9 @@ export const extensionPromoteCommand = new Command()
       }
       throw error;
     }
+
+    const ctx = createLibSwampContext({ logger: cliCtx.logger });
+    const deps = createExtensionPromoteDeps();
 
     const renderer = createExtensionPromoteRenderer(cliCtx.outputMode);
     await consumeStream(

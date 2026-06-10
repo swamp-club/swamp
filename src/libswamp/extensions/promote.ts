@@ -99,7 +99,9 @@ export function extensionPromoteValidate(
     );
   }
 
-  if (!ReleaseChannel.isValid(input.toChannel)) {
+  if (
+    input.toChannel !== "rc" && input.toChannel !== "stable"
+  ) {
     throw validationFailed(
       `Invalid target channel: "${input.toChannel}". Must be 'rc' or 'stable'.`,
     );
@@ -135,13 +137,23 @@ export async function* extensionPromote(
         return;
       }
 
-      const result = await deps.promoteExtension(
-        credentials.serverUrl,
-        input.extensionName,
-        input.version,
-        input.toChannel,
-        credentials.apiKey,
-      );
+      let result: PromoteResult;
+      try {
+        result = await deps.promoteExtension(
+          credentials.serverUrl,
+          input.extensionName,
+          input.version,
+          input.toChannel,
+          credentials.apiKey,
+        );
+      } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        yield {
+          kind: "error" as const,
+          error: validationFailed(message),
+        };
+        return;
+      }
 
       ctx.logger
         .debug`Promoted extension ${input.extensionName}@${input.version} to ${input.toChannel}`;

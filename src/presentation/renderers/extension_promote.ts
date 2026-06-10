@@ -30,7 +30,9 @@ class LogExtensionPromoteRenderer implements Renderer<ExtensionPromoteEvent> {
   handlers(): EventHandlers<ExtensionPromoteEvent> {
     const logger = getSwampLogger(["extension", "promote"]);
     return {
-      promoting: () => {},
+      promoting: () => {
+        logger.info`Promoting...`;
+      },
       completed: (e) => {
         logger.info(
           "Promoted {name}@{version} from {previousChannel} to {channel}",
