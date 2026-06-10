@@ -90,6 +90,7 @@ export interface ExtensionUpdateDeps {
   installExtension: (
     name: string,
     version: string,
+    channel?: string,
   ) => Promise<InstallResult | undefined>;
 }
 
@@ -101,6 +102,7 @@ export async function createExtensionUpdateDeps(options: {
   installExtension: (
     name: string,
     version: string,
+    channel?: string,
   ) => Promise<InstallResult | undefined>;
 }): Promise<ExtensionUpdateDeps> {
   const extensionClient = new ExtensionApiClient(
@@ -237,6 +239,7 @@ export async function* extensionUpdate(
             const result = await deps.installExtension(
               s.name,
               s.latestVersion,
+              upstream[s.name]?.channel,
             );
             if (result && result.pruned.length > 0) {
               yield {

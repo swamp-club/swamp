@@ -42,6 +42,8 @@ export interface ExtensionInfoData {
   contentTypes: string[];
   contentNames: string[];
   latestVersion: string;
+  latestRc: string | null;
+  latestBeta: string | null;
   author: ExtensionAuthor | null;
   createdAt: string;
   updatedAt: string;
@@ -120,6 +122,8 @@ export async function* extensionInfo(
             contentTypes: info.contentTypes,
             contentNames: info.contentNames,
             latestVersion: info.latestVersion,
+            latestRc: info.latestRc ?? null,
+            latestBeta: info.latestBeta ?? null,
             author: info.author,
             createdAt: info.createdAt,
             updatedAt: info.updatedAt,

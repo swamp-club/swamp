@@ -20,10 +20,16 @@
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { UserError } from "../../domain/errors.ts";
-import { resolveServerUrl, validateExtensionName } from "../../libswamp/mod.ts";
-import { ExtensionApiClient } from "../../infrastructure/http/extension_api_client.ts";
-import { AuthRepository } from "../../infrastructure/persistence/auth_repository.ts";
-import { loadIdentity } from "../load_identity.ts";
+import {
+  consumeStream,
+  createExtensionPromoteDeps,
+  createLibSwampContext,
+  extensionPromote,
+  extensionPromoteValidate,
+  validateExtensionName,
+} from "../../libswamp/mod.ts";
+import { createExtensionPromoteRenderer } from "../../presentation/renderers/extension_promote.ts";
+import { ReleaseChannel } from "../../domain/extensions/release_channel.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -47,6 +53,10 @@ export const extensionPromoteCommand = new Command()
     "Target channel to promote to: 'rc' or 'stable'",
     { required: true },
   )
+  .option(
+    "--from-channel <fromChannel:string>",
+    "Source channel to promote from (for client-side validation)",
+  )
   .action(async function (
     options: AnyOptions,
     extension: string,
@@ -61,36 +71,57 @@ export const extensionPromoteCommand = new Command()
     validateExtensionName(extension);
 
     const toChannel = options.channel as string;
-    if (toChannel !== "rc" && toChannel !== "stable") {
+    if (!ReleaseChannel.isValid(toChannel)) {
       throw new UserError(
         `Invalid target channel: "${toChannel}". Must be 'rc' or 'stable'.`,
       );
     }
-
-    const authRepo = new AuthRepository();
-    const creds = await authRepo.load();
-    if (!creds) {
+    const target = ReleaseChannel.create(toChannel);
+    if (!ReleaseChannel.BETA.canPromoteTo(target) && toChannel !== "stable") {
       throw new UserError(
-        "Not authenticated. Run 'swamp auth login' first.",
+        `Invalid target channel: "${toChannel}". Promote targets must be 'rc' or 'stable'.`,
       );
     }
 
-    const serverUrl = creds.serverUrl ?? resolveServerUrl();
-    const identity = await loadIdentity();
-    const client = new ExtensionApiClient(serverUrl, identity);
+    // Client-side validation of promotion direction when --from-channel is given
+    const fromChannel = options.fromChannel as string | undefined;
+    if (fromChannel) {
+      if (!ReleaseChannel.isValid(fromChannel)) {
+        throw new UserError(
+          `Invalid source channel: "${fromChannel}". Must be one of: beta, rc, stable`,
+        );
+      }
+      const source = ReleaseChannel.create(fromChannel);
+      if (!source.canPromoteTo(target)) {
+        throw new UserError(
+          `Cannot promote from ${fromChannel} to ${toChannel}. Promotion must move to a higher channel.`,
+        );
+      }
+    }
 
-    const result = await client.promoteExtension(
-      extension,
+    const ctx = createLibSwampContext({ logger: cliCtx.logger });
+    const deps = createExtensionPromoteDeps();
+    const input = {
+      extensionName: extension,
       version,
       toChannel,
-      creds.apiKey,
-    );
+      fromChannel,
+    };
 
-    if (cliCtx.outputMode === "json") {
-      console.log(JSON.stringify(result));
-    } else {
-      console.log(result.message);
+    try {
+      extensionPromoteValidate(input);
+    } catch (error) {
+      if ("code" in (error as Record<string, unknown>)) {
+        throw new UserError((error as { message: string }).message);
+      }
+      throw error;
     }
+
+    const renderer = createExtensionPromoteRenderer(cliCtx.outputMode);
+    await consumeStream(
+      extensionPromote(ctx, deps, input),
+      renderer.handlers(),
+    );
 
     cliCtx.logger.debug("Extension promote command completed");
   });

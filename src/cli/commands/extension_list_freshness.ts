@@ -19,6 +19,7 @@
 
 import type { ExtensionListEntry } from "../../libswamp/mod.ts";
 import {
+  extensionCacheKey,
   type ExtensionUpdateCheckMap,
   type ExtensionUpdateCheckRepository,
   isExtensionCheckStale,
@@ -29,7 +30,10 @@ import type { EnrichedExtensionListEntry } from "../../presentation/renderers/ex
 /** Dependencies for the freshness composer. */
 export interface ExtensionListFreshnessDeps {
   /** Look up the latest version for an extension. Return null on failure. */
-  getLatestVersion: (name: string) => Promise<string | null>;
+  getLatestVersion: (
+    name: string,
+    channel?: string,
+  ) => Promise<string | null>;
   /** Cache repository for the 24h check cooldown. */
   cacheRepository: ExtensionUpdateCheckRepository;
   /** Returns the current time. Injected for testability. */
@@ -66,12 +70,18 @@ export async function enrichExtensionList(
     index: number;
     name: string;
     installedVersion: string;
+    channel?: string;
   };
   const stale: StaleTarget[] = [];
   for (let i = 0; i < entries.length; i++) {
     const e = entries[i];
-    if (isExtensionCheckStale(cache, e.name, now)) {
-      stale.push({ index: i, name: e.name, installedVersion: e.version });
+    if (isExtensionCheckStale(cache, e.name, now, e.channel)) {
+      stale.push({
+        index: i,
+        name: e.name,
+        installedVersion: e.version,
+        channel: e.channel,
+      });
     }
   }
 
@@ -79,6 +89,7 @@ export async function enrichExtensionList(
   type FetchResult = {
     index: number;
     name: string;
+    channel?: string;
     latestVersion: string | null;
     failed: boolean;
   };
@@ -92,10 +103,14 @@ export async function enrichExtensionList(
     deps.concurrency,
     async (target) => {
       try {
-        const latest = await deps.getLatestVersion(target.name);
+        const latest = await deps.getLatestVersion(
+          target.name,
+          target.channel,
+        );
         return {
           index: target.index,
           name: target.name,
+          channel: target.channel,
           latestVersion: latest,
           failed: latest === null,
         };
@@ -103,6 +118,7 @@ export async function enrichExtensionList(
         return {
           index: target.index,
           name: target.name,
+          channel: target.channel,
           latestVersion: null,
           failed: true,
         };
@@ -113,7 +129,8 @@ export async function enrichExtensionList(
   // Mutate cache map in-memory; ONE atomic write at the end.
   const checkedAtIso = now.toISOString();
   for (const r of fetched) {
-    cache[r.name] = {
+    const key = extensionCacheKey(r.name, r.channel);
+    cache[key] = {
       checkedAt: checkedAtIso,
       // On registry failure, stamp with installedVersion to suppress
       // retries for 24h.
@@ -146,7 +163,8 @@ export async function enrichExtensionList(
       };
     }
     const latestFromFetch = fetchedEntry?.latestVersion ?? null;
-    const latestFromCache = cache[e.name]?.latestVersion ?? null;
+    const cacheKey = extensionCacheKey(e.name, e.channel);
+    const latestFromCache = cache[cacheKey]?.latestVersion ?? null;
     const latest = latestFromFetch ?? latestFromCache;
     if (latest === null) return { ...e };
 

@@ -676,6 +676,15 @@ export {
   extensionUndeprecatePreview,
 } from "./extensions/undeprecate.ts";
 export {
+  createExtensionPromoteDeps,
+  extensionPromote,
+  type ExtensionPromoteData,
+  type ExtensionPromoteDeps,
+  type ExtensionPromoteEvent,
+  type ExtensionPromoteInput,
+  extensionPromoteValidate,
+} from "./extensions/promote.ts";
+export {
   createExtensionQualityDeps,
   extensionQuality,
   type ExtensionQualityData,

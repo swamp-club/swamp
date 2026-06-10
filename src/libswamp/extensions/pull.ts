@@ -1324,6 +1324,7 @@ export async function createInstallContext(
     force: boolean;
     logger?: Logger;
     identity?: ClientIdentity;
+    channel?: string;
   },
 ): Promise<InstallContext> {
   const client = new ExtensionApiClient(serverUrl, opts.identity);
@@ -1339,5 +1340,6 @@ export async function createInstallContext(
     force: opts.force,
     alreadyPulled: new Set(),
     depth: 0,
+    channel: opts.channel,
   };
 }

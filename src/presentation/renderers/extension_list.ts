@@ -92,7 +92,12 @@ class LogExtensionListRenderer implements Renderer<EnrichedExtensionListEvent> {
             ? ext.name.substring(0, maxName - 1) + "…"
             : ext.name;
           const paddedName = name.padEnd(maxName);
-          const paddedVersion = `v${ext.version}`.padEnd(maxVersion);
+          const channelTag = ext.channel && ext.channel !== "stable"
+            ? ` [${ext.channel}]`
+            : "";
+          const paddedVersion = `v${ext.version}${channelTag}`.padEnd(
+            maxVersion + (channelTag ? channelTag.length : 0),
+          );
           let line = `${paddedName}  ${paddedVersion}`;
           if (enriched) {
             const latestText = ext.latestVersion

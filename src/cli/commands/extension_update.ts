@@ -120,7 +120,11 @@ export const extensionUpdateCommand = new Command()
         lockfilePath,
         serverUrl,
         identity,
-        installExtension: async (name: string, version: string) => {
+        installExtension: async (
+          name: string,
+          version: string,
+          channel?: string,
+        ) => {
           // Construct a fresh InstallContext per upgrade — captures a
           // current snapshot of the lockfile per the
           // InstallContext.lockfileRepository single-use rule. Reusing one
@@ -132,6 +136,7 @@ export const extensionUpdateCommand = new Command()
             repoDir,
             force: true,
             identity,
+            channel,
           });
           // Build a fresh ExtensionRepository per upgrade so its lockfile
           // snapshot lines up with the InstallContext's. Catalog is

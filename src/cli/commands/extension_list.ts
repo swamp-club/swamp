@@ -146,8 +146,16 @@ export const extensionListCommand = new Command()
       const identity = await loadIdentity();
       const apiClient = new ExtensionApiClient(resolveServerUrl(), identity);
       const freshnessDeps: ExtensionListFreshnessDeps = {
-        getLatestVersion: async (name) => {
+        getLatestVersion: async (name, channel?) => {
           try {
+            if (channel && channel !== "stable") {
+              const versionInfo = await apiClient.getLatestVersion(
+                name,
+                undefined,
+                channel,
+              );
+              return versionInfo?.version ?? null;
+            }
             const info = await apiClient.getExtension(name);
             return info?.latestVersion ?? null;
           } catch {

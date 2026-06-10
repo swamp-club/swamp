@@ -135,13 +135,11 @@ export const extensionSearchCommand = new Command()
     }
 
     // Validate channel values
-    const validChannels = ["rc", "beta"];
+    const validChannels = ["beta", "rc"];
     for (const ch of options.channel ?? []) {
       if (!validChannels.includes(ch)) {
         throw new UserError(
-          `Invalid channel: "${ch}". Must be one of: ${
-            validChannels.join(", ")
-          }`,
+          `Invalid channel: "${ch}". Must be one of: beta, rc`,
         );
       }
     }

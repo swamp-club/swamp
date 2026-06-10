@@ -209,7 +209,7 @@ export const extensionPullCommand = new Command()
       channel !== undefined && !ReleaseChannel.isPrereleaseName(channel)
     ) {
       throw new UserError(
-        `Invalid release channel: "${channel}". Must be 'beta' or 'rc'.`,
+        `Invalid channel: "${channel}". Must be one of: beta, rc`,
       );
     }
 

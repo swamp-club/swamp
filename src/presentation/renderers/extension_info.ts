@@ -75,6 +75,13 @@ class LogExtensionInfoRenderer implements Renderer<ExtensionInfoEvent> {
 
         logger.info``;
 
+        if (d.latestRc) {
+          logger.info`Latest RC:   ${d.latestRc}`;
+        }
+        if (d.latestBeta) {
+          logger.info`Latest Beta: ${d.latestBeta}`;
+        }
+
         logger.info`Downloads:   ${d.pullCount}`;
         if (d.score) {
           logger.info`Quality:     ${d.score.grade} (${d.score.percentage}%)`;

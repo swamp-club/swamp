@@ -18,7 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { isExtensionCheckStale } from "./extension_update_check_cache.ts";
+import {
+  extensionCacheKey,
+  isExtensionCheckStale,
+} from "./extension_update_check_cache.ts";
 import { CHECK_INTERVAL_MS } from "../update/update_check_cache.ts";
 
 Deno.test("isExtensionCheckStale: returns true for missing entry", () => {
@@ -76,4 +79,41 @@ Deno.test("isExtensionCheckStale: different extensions are independent", () => {
   };
   assertEquals(isExtensionCheckStale(cache, "@swamp/s3-datastore", now), false);
   assertEquals(isExtensionCheckStale(cache, "@swamp/other-store", now), true);
+});
+
+Deno.test("extensionCacheKey: returns bare name for stable channel", () => {
+  assertEquals(extensionCacheKey("@swamp/ext", "stable"), "@swamp/ext");
+});
+
+Deno.test("extensionCacheKey: returns bare name for absent channel", () => {
+  assertEquals(extensionCacheKey("@swamp/ext"), "@swamp/ext");
+  assertEquals(extensionCacheKey("@swamp/ext", undefined), "@swamp/ext");
+});
+
+Deno.test("extensionCacheKey: returns name:channel for beta", () => {
+  assertEquals(extensionCacheKey("@swamp/ext", "beta"), "@swamp/ext:beta");
+});
+
+Deno.test("extensionCacheKey: returns name:channel for rc", () => {
+  assertEquals(extensionCacheKey("@swamp/ext", "rc"), "@swamp/ext:rc");
+});
+
+Deno.test("isExtensionCheckStale: with channel looks up correct key", () => {
+  const now = new Date();
+  const freshTime = new Date(now.getTime() - 1000);
+  const cache = {
+    "@swamp/ext:beta": {
+      checkedAt: freshTime.toISOString(),
+      latestVersion: "2026.03.15.1",
+    },
+  };
+  // The beta-keyed entry is fresh
+  assertEquals(
+    isExtensionCheckStale(cache, "@swamp/ext", now, "beta"),
+    false,
+  );
+  // The bare (stable) key is missing, so stale
+  assertEquals(isExtensionCheckStale(cache, "@swamp/ext", now), true);
+  // rc key is also missing
+  assertEquals(isExtensionCheckStale(cache, "@swamp/ext", now, "rc"), true);
 });
