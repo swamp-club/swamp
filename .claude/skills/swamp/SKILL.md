@@ -13,9 +13,25 @@ description: >
 
 # Swamp
 
-Route to the right guide based on what the user needs.
+## How Swamp Works
+
+Swamp automates infrastructure and external services through **models** — typed
+definitions that represent resources (an EC2 instance, a DNS record, a GitHub
+repo). Each model type exposes **methods** (create, start, stop, destroy, sync)
+that perform operations against the real resource. Running a method produces
+**data** — versioned snapshots of the resource's state that other models can
+reference via CEL expressions.
+
+**Workflows** chain model methods into a declarative DAG: step A creates a VPC,
+step B reads A's output to launch instances inside it. **Vaults** store secrets
+(API keys, tokens) that models reference at runtime. **Extensions** add new
+model types, vault backends, datastores, and report generators — authored in
+TypeScript and published to a registry. **Reports** summarize data across models
+for observability.
 
 ## Routing Table
+
+Route to the right guide based on what the user needs.
 
 | User intent                                                  | Guide                                                                          |
 | ------------------------------------------------------------ | ------------------------------------------------------------------------------ |
@@ -33,10 +49,28 @@ Route to the right guide based on what the user needs.
 ## Common Commands
 
 ```bash
-swamp model @<type> method run <method> <name> --input key=value
-swamp workflow create <name>
-swamp vault create <type> <name>
-swamp data query <name> '<CEL predicate>'
+# Models
+swamp model @<type> create <name>              # create a model definition
+swamp model @<type> method run <method> <name> # run a method on a model
+swamp model get <name> --json                  # inspect current model state
+swamp model search @<type>                     # find available model types
+swamp model list                               # list all models in the repo
+
+# Data
+swamp data list <name>                         # list data versions for a model
+swamp data query <name> '<CEL predicate>'      # query data with CEL expressions
+swamp data get <name>                          # get latest data snapshot
+
+# Workflows
+swamp workflow create <name>                   # create a new workflow
+swamp workflow run <name>                      # execute a workflow
+swamp workflow validate <name>                 # validate DAG before running
+swamp workflow history <name>                  # view past workflow runs
+
+# Vaults, Reports, Extensions
+swamp vault create <type> <name>               # create a vault for secrets
+swamp report run <name>                        # run a report
+swamp extension init <name>                    # scaffold a new extension
 ```
 
 ## Rules
