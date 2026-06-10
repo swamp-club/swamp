@@ -64,10 +64,13 @@ import {
   createLibSwampContext,
   workflowRun,
   type WorkflowRunDeps,
+  type WorkflowRunEvent,
   type WorkflowTelemetrySink,
 } from "../../libswamp/mod.ts";
 import { createWorkflowRunRenderer } from "../../presentation/renderers/workflow_run.ts";
 import { getActiveTelemetryService } from "../telemetry_integration.ts";
+import { runWorkflowOverServer } from "../remote_run.ts";
+import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -156,10 +159,19 @@ export const workflowRunCommand = new Command()
     "--timeout <duration:string>",
     "Cancellation deadline — seconds (e.g. 30, 1800) or duration string (e.g. 30s, 5m, 1h). Cooperative — only honored by methods that check AbortSignal.",
   )
+  .option(
+    "--server <url:string>",
+    "Run through a 'swamp serve' server (ws:// or http://) instead of locally; no local repo required. Required for steps with worker placement.",
+  )
   // @ts-expect-error - Cliffy custom type returns unknown instead of string
   .action(async function (options: AnyOptions, workflowIdOrName: string) {
     const ctx = createContext(options as GlobalOptions, ["workflow", "run"]);
     ctx.logger.debug`Running workflow: ${workflowIdOrName}`;
+
+    if (options.server) {
+      await runWorkflowViaServer(ctx, options, workflowIdOrName);
+      return;
+    }
 
     // First try unlocked to resolve workflow and model references
     const unlocked = await requireInitializedRepoUnlocked({
@@ -471,3 +483,103 @@ export const workflowRunCommand = new Command()
       )
       .action(workflowRunSearchAction),
   );
+
+/**
+ * The --server branch: dispatch the run through a `swamp serve` server and
+ * render the streamed events with the same renderer a local run uses. No
+ * local repository is required — the server owns the repo, locks, and
+ * scheduling (including worker placement).
+ */
+async function runWorkflowViaServer(
+  ctx: ReturnType<typeof createContext>,
+  options: AnyOptions,
+  workflowIdOrName: string,
+): Promise<void> {
+  // Flags that have no representation in the serve payload must fail
+  // loudly rather than silently behaving differently from a local run.
+  const unsupported: string[] = [];
+  if (options.skipReports) unsupported.push("--skip-reports");
+  if (options.skipReport?.length) unsupported.push("--skip-report");
+  if (options.skipReportLabel?.length) unsupported.push("--skip-report-label");
+  if (options.report?.length) unsupported.push("--report");
+  if (options.reportLabel?.length) unsupported.push("--report-label");
+  if (options.skipChecks) unsupported.push("--skip-checks");
+  if (options.skipCheck?.length) unsupported.push("--skip-check");
+  if (options.skipCheckLabel?.length) unsupported.push("--skip-check-label");
+  if (unsupported.length > 0) {
+    throw new UserError(
+      `${unsupported.join(", ")} ${
+        unsupported.length === 1 ? "is" : "are"
+      } not supported with --server yet — the serve protocol does not carry ${
+        unsupported.length === 1 ? "it" : "them"
+      }`,
+    );
+  }
+
+  const stdinContent = options.stdin ? await readStdin() : null;
+  let stdinItems: Record<string, unknown>[] | null = null;
+  if (stdinContent !== null) {
+    if (options.inputFile) {
+      throw new UserError("Cannot combine --stdin with --input-file.");
+    }
+    stdinItems = parseStdinContent(stdinContent);
+  }
+  const { inputs: cliInputs } = await parseInputs({
+    input: options.input as string[] | undefined,
+    inputFile: stdinItems ? undefined : options.inputFile as string | undefined,
+  });
+  const runtimeTags = options.tag
+    ? parseTags(options.tag as string[])
+    : undefined;
+
+  const abort = new AbortController();
+  if (options.timeout) {
+    const timeoutMs = parseTimeout(options.timeout as string);
+    setTimeout(() => abort.abort(), timeoutMs);
+  }
+  const shutdown = registerShutdownHandler({
+    handler: () => abort.abort(),
+  });
+
+  const inputSets: Record<string, unknown>[] = stdinItems
+    ? stdinItems.map((item) =>
+      Object.keys(cliInputs).length > 0 ? deepMerge(item, cliInputs) : item
+    )
+    : [cliInputs];
+
+  try {
+    for (let i = 0; i < inputSets.length; i++) {
+      if (inputSets.length > 1) {
+        ctx.logger
+          .info`Running workflow ${workflowIdOrName} [${
+          i + 1
+        }/${inputSets.length}] via ${options.server}`;
+      }
+      const renderer = createWorkflowRunRenderer(ctx.outputMode, {
+        workflowName: workflowIdOrName,
+        forceLog: ctx.forceLog,
+      });
+      await consumeStream(
+        runWorkflowOverServer({
+          server: options.server as string,
+          signal: abort.signal,
+          payload: {
+            workflowIdOrName,
+            inputs: inputSets[i],
+            lastEvaluated: options.lastEvaluated as boolean,
+            verbose: ctx.verbosity === "verbose",
+            runtimeTags,
+          },
+          // The wire codec is lossless for run events; see
+          // deserializeEvent in src/serve/serializer.ts.
+        }) as AsyncIterable<WorkflowRunEvent>,
+        renderer.handlers(),
+      );
+      if (renderer.workflowFailed()) {
+        Deno.exit(1);
+      }
+    }
+  } finally {
+    shutdown.dispose();
+  }
+}

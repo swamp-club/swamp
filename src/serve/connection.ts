@@ -248,6 +248,7 @@ async function handleWorkflowRun(
       },
       ctx.syncService,
     );
+    send(socket, { type: "done", id: requestId });
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
       sendError(socket, requestId, "cancelled", "Operation was cancelled");
@@ -306,6 +307,7 @@ async function handleModelMethodRun(
       );
       send(socket, { type: "event", id: requestId, event: serialized });
     }
+    send(socket, { type: "done", id: requestId });
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
       sendError(socket, requestId, "cancelled", "Operation was cancelled");

@@ -68,3 +68,10 @@ Deno.test("modelMethodRunCommand has --timeout option (swamp-club#235)", async (
     );
   }
 });
+
+Deno.test("modelMethodRunCommand has --server option", async () => {
+  const { modelMethodRunCommand } = await import("./model_method_run.ts");
+  const options = modelMethodRunCommand.getOptions();
+  const serverOpt = options.find((o) => o.name === "server");
+  assertEquals(serverOpt !== undefined, true);
+});

@@ -1,0 +1,252 @@
+// Swamp, an Automation Framework
+// Copyright (C) 2026 Elder Swamp Club, Inc.
+//
+// This file is part of Swamp.
+//
+// Swamp is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License version 3
+// as published by the Free Software Foundation, with the Swamp
+// Extension and Definition Exception (found in the "COPYING-EXCEPTION"
+// file).
+//
+// Swamp is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
+
+import {
+  assertEquals,
+  assertRejects,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
+import { UserError } from "../domain/errors.ts";
+import {
+  normalizeServerUrl,
+  runModelMethodOverServer,
+  runWorkflowOverServer,
+} from "./remote_run.ts";
+
+/**
+ * In-process scripted serve endpoint: the script receives each parsed client
+ * request plus a `reply` function and decides what frames come back.
+ */
+function scriptedServer(
+  script: (
+    request: { type: string; id: string; payload: Record<string, unknown> },
+    reply: (frame: Record<string, unknown>) => void,
+    socket: WebSocket,
+  ) => void,
+): { url: string; shutdown: () => Promise<void>; received: unknown[] } {
+  const received: unknown[] = [];
+  const server = Deno.serve(
+    { port: 0, hostname: "127.0.0.1", onListen: () => {} },
+    (req) => {
+      const { socket, response } = Deno.upgradeWebSocket(req);
+      socket.onmessage = (event) => {
+        const parsed = JSON.parse(event.data as string);
+        received.push(parsed);
+        script(
+          parsed,
+          (frame) => {
+            if (socket.readyState === WebSocket.OPEN) {
+              socket.send(JSON.stringify(frame));
+            }
+          },
+          socket,
+        );
+      };
+      return response;
+    },
+  );
+  return {
+    url: `ws://127.0.0.1:${server.addr.port}`,
+    shutdown: () => server.shutdown(),
+    received,
+  };
+}
+
+Deno.test("normalizeServerUrl: accepts ws/wss and maps http/https", () => {
+  assertEquals(normalizeServerUrl("ws://h:1"), "ws://h:1/");
+  assertEquals(normalizeServerUrl("http://h:1"), "ws://h:1/");
+  assertEquals(normalizeServerUrl("https://h:1"), "wss://h:1/");
+  assertThrows(() => normalizeServerUrl("ftp://h"), UserError);
+  assertThrows(() => normalizeServerUrl("not a url"), UserError);
+});
+
+Deno.test({
+  name:
+    "remote run: streams events until the done frame and sends the right payload",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const server = scriptedServer((request, reply) => {
+      reply({
+        type: "event",
+        id: request.id,
+        event: { kind: "started", workflowName: "wf" },
+      });
+      reply({
+        type: "event",
+        id: request.id,
+        event: { kind: "completed", status: "succeeded" },
+      });
+      reply({ type: "done", id: request.id });
+    });
+    try {
+      const events: string[] = [];
+      for await (
+        const event of runWorkflowOverServer({
+          server: server.url,
+          payload: {
+            workflowIdOrName: "wf",
+            inputs: { env: "prod" },
+            lastEvaluated: false,
+          },
+        })
+      ) {
+        events.push(event.kind);
+      }
+      assertEquals(events, ["started", "completed"]);
+      const sent = server.received[0] as {
+        type: string;
+        payload: Record<string, unknown>;
+      };
+      assertEquals(sent.type, "workflow.run");
+      assertEquals(sent.payload.workflowIdOrName, "wf");
+      assertEquals(sent.payload.inputs, { env: "prod" });
+    } finally {
+      await server.shutdown();
+    }
+  },
+});
+
+Deno.test({
+  name: "remote run: an error frame becomes a UserError with the server's code",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const server = scriptedServer((request, reply) => {
+      reply({
+        type: "error",
+        id: request.id,
+        error: {
+          code: "workflow_execution_failed",
+          message: "no such workflow",
+        },
+      });
+    });
+    try {
+      const error = await assertRejects(async () => {
+        for await (
+          const _ of runModelMethodOverServer({
+            server: server.url,
+            payload: { modelIdOrName: "m", methodName: "run" },
+          })
+          // deno-lint-ignore no-empty
+        ) {}
+      }, UserError);
+      assertStringIncludes(error.message, "workflow_execution_failed");
+      assertStringIncludes(error.message, "no such workflow");
+    } finally {
+      await server.shutdown();
+    }
+  },
+});
+
+Deno.test({
+  name: "remote run: premature socket close is a loud failure, not success",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const server = scriptedServer((request, reply, socket) => {
+      reply({
+        type: "event",
+        id: request.id,
+        event: { kind: "started", workflowName: "wf" },
+      });
+      socket.close();
+    });
+    try {
+      const error = await assertRejects(async () => {
+        for await (
+          const _ of runWorkflowOverServer({
+            server: server.url,
+            payload: { workflowIdOrName: "wf" },
+          })
+          // deno-lint-ignore no-empty
+        ) {}
+      }, UserError);
+      assertStringIncludes(error.message, "closed before the run completed");
+    } finally {
+      await server.shutdown();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "remote run: abort sends cancel and settles as AbortError on the server's confirmation",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const server = scriptedServer((request, reply) => {
+      if (request.type === "cancel") {
+        reply({
+          type: "error",
+          id: request.id,
+          error: { code: "cancelled", message: "Operation was cancelled" },
+        });
+        return;
+      }
+      reply({
+        type: "event",
+        id: request.id,
+        event: { kind: "started", workflowName: "wf" },
+      });
+      // Then hang until cancelled.
+    });
+    try {
+      const controller = new AbortController();
+      const error = await assertRejects(async () => {
+        for await (
+          const event of runWorkflowOverServer({
+            server: server.url,
+            signal: controller.signal,
+            payload: { workflowIdOrName: "wf" },
+          })
+        ) {
+          if (event.kind === "started") {
+            controller.abort();
+          }
+        }
+      }, DOMException);
+      assertEquals(error.name, "AbortError");
+      const types = server.received.map((r) => (r as { type: string }).type);
+      assertEquals(types, ["workflow.run", "cancel"]);
+    } finally {
+      await server.shutdown();
+    }
+  },
+});
+
+Deno.test({
+  name: "remote run: connection refused fails with an actionable error",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await assertRejects(async () => {
+      for await (
+        const _ of runWorkflowOverServer({
+          // Port 1 is never listening.
+          server: "ws://127.0.0.1:1",
+          payload: { workflowIdOrName: "wf" },
+        })
+        // deno-lint-ignore no-empty
+      ) {}
+    }, UserError);
+  },
+});

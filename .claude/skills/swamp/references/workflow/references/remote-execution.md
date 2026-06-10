@@ -52,6 +52,22 @@ all-busy queues the step, and no eligible worker fails the step fast. `forEach`
 is the fan-out construct — expand a step over a list and the instances spread
 across matching workers (each worker runs one dispatch at a time).
 
+## Running workflows through the orchestrator
+
+`swamp serve` is the orchestrator, so placed workflows must run through it. From
+any machine (no local repo needed):
+
+```bash
+swamp workflow run my-workflow --server ws://orchestrator:4000 --input env=prod
+swamp model my-model method run create --server ws://orchestrator:4000
+```
+
+Events stream back live through the same renderers as a local run; Ctrl-C
+cancels the run on the server. `http://` URLs are accepted and upgraded. Flags
+the serve protocol does not carry (`--skip-checks`, report filters, direct
+`@type` execution for method runs) are rejected with a clear error. There is no
+authentication yet — same trust model as `swamp serve` itself.
+
 ## Semantics worth knowing
 
 - Placement requires running under `swamp serve` (the orchestrator); a placed

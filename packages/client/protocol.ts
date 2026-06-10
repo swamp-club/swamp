@@ -63,7 +63,9 @@ export interface SerializedError {
 
 export type ServerMessage =
   | { type: "event"; id: string; event: SerializedEvent }
-  | { type: "error"; id: string; error: SerializedError };
+  | { type: "error"; id: string; error: SerializedError }
+  /** Terminal frame after a run's event stream completes successfully. */
+  | { type: "done"; id: string };
 
 // ── Event types (wire-format discriminated unions) ────────────────────────
 

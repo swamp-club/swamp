@@ -32,8 +32,15 @@ import type {
   WorkflowRunInput,
 } from "../libswamp/mod.ts";
 import { createLibSwampContext, workflowRun } from "../libswamp/mod.ts";
-import { WorkflowExecutionService } from "../domain/workflows/execution_service.ts";
+import {
+  type DirectTypeResolver,
+  WorkflowExecutionService,
+} from "../domain/workflows/execution_service.ts";
 import { createWorkflowId } from "../domain/workflows/workflow_id.ts";
+import { ModelType } from "../domain/models/model_type.ts";
+import { resolveOrCreateDefinition } from "../libswamp/mod.ts";
+import { YamlDefinitionRepository } from "../infrastructure/persistence/yaml_definition_repository.ts";
+import type { DefinitionId } from "../domain/definitions/definition.ts";
 import { findDefinitionByIdOrName } from "../domain/models/model_lookup.ts";
 import { extractModelReferencesFromWorkflow } from "../domain/workflows/model_reference_extractor.ts";
 import { resolveModelType } from "../domain/extensions/extension_auto_resolver.ts";
@@ -73,18 +80,77 @@ export async function createWorkflowRunDeps(
       return await repo.findByName(idOrName) ??
         await repo.findById(createWorkflowId(idOrName));
     },
-    createExecutionService: (wfRepo, rnRepo, dir, catalogStore) =>
-      new WorkflowExecutionService(
+    createExecutionService: (wfRepo, rnRepo, dir, catalogStore) => {
+      // Direct type execution (auto-create-then-run steps) must work over
+      // serve exactly as it does locally — serve is the only way to run
+      // workflows with worker placement. Mirrors the CLI's resolver in
+      // workflow_run.ts.
+      const directResolver: DirectTypeResolver = async (
+        typeArg,
+        defName,
+        methodName,
+        inputs,
+        globalArgs,
+      ) => {
+        let resolvedType = ModelType.create(typeArg);
+        let modelDef = await resolveModelType(resolvedType, getAutoResolver());
+        if (!modelDef && typeArg.startsWith("@")) {
+          const strippedType = ModelType.create(typeArg.slice(1));
+          const strippedDef = await resolveModelType(
+            strippedType,
+            getAutoResolver(),
+          );
+          if (strippedDef) {
+            resolvedType = strippedType;
+            modelDef = strippedDef;
+          }
+        }
+        if (!modelDef) {
+          throw new Error(`Unknown model type: ${resolvedType.normalized}`);
+        }
+        const autoDefRepo = new YamlDefinitionRepository(
+          dir,
+          undefined,
+          swampPath(dir, SWAMP_SUBDIRS.autoDefinitions),
+          false,
+        );
+        const result = await resolveOrCreateDefinition(
+          {
+            lookupDefinition: (name) =>
+              findDefinitionByIdOrName(repoContext.definitionRepo, name),
+            getModelDef: (type) => resolveModelType(type, getAutoResolver()),
+            saveDefinition: (type, def) => autoDefRepo.save(type, def),
+            getDefinitionPath: (type, id) =>
+              autoDefRepo.getPath(type, id as DefinitionId),
+          },
+          typeArg,
+          defName,
+          methodName,
+          inputs,
+          resolvedType,
+          modelDef,
+          globalArgs,
+        );
+        if (!result.ok) throw new Error(result.error.message);
+        return {
+          definition: result.definition,
+          modelType: result.modelType,
+          created: result.created,
+          routedMethodInputs: result.routedInputs.methodArguments,
+        };
+      };
+      return new WorkflowExecutionService(
         wfRepo,
         rnRepo,
         dir,
         undefined,
         undefined,
         catalogStore,
-        undefined,
+        directResolver,
         repoContext.markDirty,
         repoContext.unifiedDataRepo.namespace,
-      ),
+      );
+    },
     catalogStore: repoContext.catalogStore,
     dataRepo: repoContext.unifiedDataRepo,
     definitionRepo: repoContext.definitionRepo,

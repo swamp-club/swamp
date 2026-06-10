@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertExists } from "@std/assert";
-import { serializeEvent, serializeSwampError } from "./serializer.ts";
+import {
+  deserializeEvent,
+  serializeEvent,
+  serializeSwampError,
+} from "./serializer.ts";
 import type { SwampError } from "../libswamp/mod.ts";
 
 // ── serializeSwampError ─────────────────────────────────────────────────
@@ -192,4 +196,58 @@ Deno.test("serializeEvent - deep clone does not mutate original", () => {
     (result as Record<string, unknown>).data as Record<string, unknown>
   ).value = "modified";
   assertEquals(inner.value, "original");
+});
+
+Deno.test("deserializeEvent: error events round-trip losslessly through the wire codec", () => {
+  const original = {
+    kind: "error",
+    error: {
+      code: "method_execution_failed",
+      message: "boom in method",
+      details: { stepName: "build", attempt: 2 },
+      cause: new Error("underlying"),
+    },
+  };
+  const wire = JSON.parse(JSON.stringify(serializeEvent(original)));
+  const restored = deserializeEvent(wire);
+  assertEquals(restored.kind, "error");
+  const error = restored.error as {
+    code: string;
+    message: string;
+    details?: unknown;
+  };
+  // The restored error satisfies the SwampError structural contract that
+  // renderers consume; only the non-rendered `cause` Error is dropped.
+  assertEquals(error.code, "method_execution_failed");
+  assertEquals(error.message, "boom in method");
+  assertEquals(error.details, { stepName: "build", attempt: 2 });
+});
+
+Deno.test("deserializeEvent: run events round-trip renderer-equivalent through JSON", () => {
+  const corpus: Array<{ kind: string; [key: string]: unknown }> = [
+    { kind: "started", workflowName: "deploy", runId: "r-1" },
+    {
+      kind: "step_completed",
+      jobId: "main",
+      stepId: "build",
+      durationMs: 1234,
+      artifacts: [{ dataId: "d-1", name: "out", version: 3, tags: {} }],
+    },
+    {
+      kind: "method_output",
+      jobId: "main",
+      stepId: "build",
+      line: "hello",
+      stream: "stdout",
+    },
+    {
+      kind: "completed",
+      status: "succeeded",
+      finishedAt: "2026-06-10T00:00:00Z",
+    },
+  ];
+  for (const event of corpus) {
+    const wire = JSON.parse(JSON.stringify(serializeEvent(event)));
+    assertEquals(deserializeEvent(wire), event);
+  }
 });

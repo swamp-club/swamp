@@ -135,6 +135,16 @@ The serve endpoint keeps its existing client protocol (`workflow.run` /
 `@swamp-club/swamp-lib` client) unchanged and side by side with the worker
 messages: worker verbs are new message types gated on enrollment, so an
 ordinary client and an enrolling worker share one listener without ambiguity.
+The client protocol gains one additive frame — a terminal `done` after a
+run's event stream completes — so clients can distinguish "run ended" from
+"stream stalled". The CLI consumes this protocol via
+`swamp workflow run --server <url>` / `swamp model ... method run --server`:
+repo-less, streaming the run's events through the same renderers as a local
+run (the wire codec is lossless for run events; `deserializeEvent` in
+`src/serve/serializer.ts` is the anti-corruption seam). Client
+authentication is still absent, matching serve's trust model; the intended
+evolution is a bearer credential presented at upgrade, reusing the
+session-credential machinery.
 
 ## No execution drivers
 

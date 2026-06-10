@@ -65,4 +65,11 @@ export interface SerializedError {
 
 export type ServerMessage =
   | { type: "event"; id: string; event: SerializedEvent }
-  | { type: "error"; id: string; error: SerializedError };
+  | { type: "error"; id: string; error: SerializedError }
+  /**
+   * Terminal frame after a run's event stream completes successfully, so a
+   * client can distinguish "run ended" from "stream stalled". An `error`
+   * frame is the terminal frame for failed requests. Additive — clients
+   * that predate it ignore unknown frame types.
+   */
+  | { type: "done"; id: string };

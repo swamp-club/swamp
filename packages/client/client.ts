@@ -248,6 +248,14 @@ export class SwampClient {
       return;
     }
 
+    if (msg.type === "done") {
+      // Authoritative terminal frame (servers >= remote-execution). The
+      // event-kind heuristics below remain for older servers that lack it.
+      this.pending.delete(msg.id);
+      pending.queue?.done();
+      return;
+    }
+
     if (msg.type === "event") {
       const event = msg.event;
 

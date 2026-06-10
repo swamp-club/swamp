@@ -1,0 +1,242 @@
+// Swamp, an Automation Framework
+// Copyright (C) 2026 Elder Swamp Club, Inc.
+//
+// This file is part of Swamp.
+//
+// Swamp is free software: you can redistribute it and/or modify
+// it under the terms of the GNU Affero General Public License version 3
+// as published by the Free Software Foundation, with the Swamp
+// Extension and Definition Exception (found in the "COPYING-EXCEPTION"
+// file).
+//
+// Swamp is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+// GNU Affero General Public License for more details.
+//
+// You should have received a copy of the GNU Affero General Public License
+// along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
+
+/**
+ * Client for running workflows and model methods through a `swamp serve`
+ * server (`--server`). Speaks the serve WebSocket protocol
+ * (`src/serve/protocol.ts`): sends one request, yields the deserialized run
+ * events for the same renderers a local run uses, and finishes on the
+ * server's terminal `done` frame. Ctrl-C (signal abort) sends `cancel` and
+ * drains until the server confirms.
+ *
+ * Authentication: none yet — this matches `swamp serve`'s current model
+ * (it warns on non-loopback binds). The intended evolution is a bearer
+ * credential presented at upgrade, reusing the session-credential machinery
+ * from remote execution.
+ */
+
+import { UserError } from "../domain/errors.ts";
+import type {
+  ModelMethodRunPayload,
+  ServerMessage,
+  WorkflowRunPayload,
+} from "../serve/protocol.ts";
+import { deserializeEvent } from "../serve/serializer.ts";
+
+/** How long to keep draining after sending `cancel` before giving up. */
+const CANCEL_DRAIN_MS = 10_000;
+
+/** How long to wait for the WebSocket to open. */
+const CONNECT_TIMEOUT_MS = 15_000;
+
+export interface ServerRunOptions {
+  /** Server URL: ws://, wss://, http://, or https://. */
+  server: string;
+  signal?: AbortSignal;
+  /** Test seam: WebSocket factory. */
+  createSocket?: (url: string) => WebSocket;
+}
+
+/** Normalizes http(s) URLs to ws(s) so `--server http://host:4000` works. */
+export function normalizeServerUrl(server: string): string {
+  let url: URL;
+  try {
+    url = new URL(server);
+  } catch {
+    throw new UserError(
+      `Invalid --server URL '${server}' — expected ws://host:port (or http://)`,
+    );
+  }
+  if (url.protocol === "http:") {
+    url.protocol = "ws:";
+  } else if (url.protocol === "https:") {
+    url.protocol = "wss:";
+  } else if (url.protocol !== "ws:" && url.protocol !== "wss:") {
+    throw new UserError(
+      `Invalid --server URL '${server}' — expected ws://, wss://, http://, or https://`,
+    );
+  }
+  return url.href;
+}
+
+export function runWorkflowOverServer(
+  options: ServerRunOptions & { payload: WorkflowRunPayload },
+): AsyncIterable<{ kind: string; [key: string]: unknown }> {
+  return streamServerRun(options, {
+    type: "workflow.run",
+    payload: options.payload,
+  });
+}
+
+export function runModelMethodOverServer(
+  options: ServerRunOptions & { payload: ModelMethodRunPayload },
+): AsyncIterable<{ kind: string; [key: string]: unknown }> {
+  return streamServerRun(options, {
+    type: "model.method.run",
+    payload: options.payload,
+  });
+}
+
+interface OutboundRequest {
+  type: "workflow.run" | "model.method.run";
+  payload: WorkflowRunPayload | ModelMethodRunPayload;
+}
+
+/**
+ * One request, one event stream. The generator completes on `done`, throws
+ * UserError on an `error` frame, and treats a premature socket close as a
+ * failure — a run whose end we never saw is not a success.
+ */
+async function* streamServerRun(
+  options: ServerRunOptions,
+  request: OutboundRequest,
+): AsyncIterable<{ kind: string; [key: string]: unknown }> {
+  const url = normalizeServerUrl(options.server);
+  const requestId = crypto.randomUUID();
+  const socket = (options.createSocket ?? ((u) => new WebSocket(u)))(url);
+
+  // Push-queue bridging socket callbacks to the generator.
+  const queue: ServerMessage[] = [];
+  let wake: (() => void) | null = null;
+  let socketClosed = false;
+  let connectError: string | null = null;
+  const notify = () => {
+    wake?.();
+    wake = null;
+  };
+
+  socket.onmessage = (event) => {
+    if (typeof event.data !== "string") {
+      return;
+    }
+    try {
+      const message = JSON.parse(event.data) as ServerMessage;
+      if (
+        typeof message === "object" && message !== null &&
+        "id" in message && message.id === requestId
+      ) {
+        queue.push(message);
+        notify();
+      }
+    } catch {
+      // Not a protocol frame — ignore.
+    }
+  };
+  socket.onclose = () => {
+    socketClosed = true;
+    notify();
+  };
+  socket.onerror = () => {
+    connectError = `Could not connect to ${url}`;
+    notify();
+  };
+
+  const opened = new Promise<void>((resolve, reject) => {
+    const timer = setTimeout(() => {
+      reject(
+        new UserError(
+          `Timed out connecting to ${url} after ${CONNECT_TIMEOUT_MS}ms — is 'swamp serve' running?`,
+        ),
+      );
+    }, CONNECT_TIMEOUT_MS);
+    socket.onopen = () => {
+      clearTimeout(timer);
+      resolve();
+    };
+    const earlyFail = () => {
+      clearTimeout(timer);
+      reject(
+        new UserError(
+          connectError ?? `Connection to ${url} closed before it opened`,
+        ),
+      );
+    };
+    const prevClose = socket.onclose;
+    socket.onclose = (event) => {
+      prevClose?.call(socket, event);
+      earlyFail();
+    };
+  });
+
+  let cancelSent = false;
+  let cancelDeadline = Infinity;
+  const onAbort = () => {
+    if (!cancelSent && socket.readyState === WebSocket.OPEN) {
+      cancelSent = true;
+      cancelDeadline = Date.now() + CANCEL_DRAIN_MS;
+      socket.send(JSON.stringify({ type: "cancel", id: requestId }));
+      notify();
+    }
+  };
+
+  try {
+    await opened;
+    options.signal?.addEventListener("abort", onAbort, { once: true });
+    if (options.signal?.aborted) {
+      throw new DOMException("Run was aborted", "AbortError");
+    }
+    socket.send(JSON.stringify({ ...request, id: requestId }));
+
+    while (true) {
+      const message = queue.shift();
+      if (message !== undefined) {
+        if (message.type === "done") {
+          return;
+        }
+        if (message.type === "error") {
+          if (cancelSent || message.error.code === "cancelled") {
+            throw new DOMException("Run was cancelled", "AbortError");
+          }
+          throw new UserError(
+            `Server reported ${message.error.code}: ${message.error.message}`,
+          );
+        }
+        if (message.type === "event") {
+          yield deserializeEvent(message.event);
+        }
+        continue;
+      }
+      if (socketClosed) {
+        throw new UserError(
+          "Connection to the server closed before the run completed",
+        );
+      }
+      if (cancelSent && Date.now() > cancelDeadline) {
+        throw new DOMException(
+          "Run was cancelled (server did not confirm in time)",
+          "AbortError",
+        );
+      }
+      // Wait for the next frame, close, or cancel-drain tick.
+      await new Promise<void>((resolve) => {
+        wake = resolve;
+        if (cancelSent) {
+          setTimeout(resolve, 250);
+        }
+      });
+    }
+  } finally {
+    options.signal?.removeEventListener("abort", onAbort);
+    try {
+      socket.close();
+    } catch {
+      // Already closed.
+    }
+  }
+}

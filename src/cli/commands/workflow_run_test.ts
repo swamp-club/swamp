@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { assertEquals } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 
 await initializeLogging({});
@@ -29,4 +30,11 @@ Deno.test("workflowRunCommand has --timeout option (swamp-club#235)", async () =
       `expected --timeout option, got: ${names.join(", ")}`,
     );
   }
+});
+
+Deno.test("workflowRunCommand has --server option", async () => {
+  const { workflowRunCommand } = await import("./workflow_run.ts");
+  const options = workflowRunCommand.getOptions();
+  const serverOpt = options.find((o) => o.name === "server");
+  assertEquals(serverOpt !== undefined, true);
 });

@@ -59,8 +59,11 @@ import {
   createLibSwampContext,
   modelMethodRun,
   type ModelMethodRunDeps,
+  type ModelMethodRunEvent,
 } from "../../libswamp/mod.ts";
 import { createModelMethodRunRenderer } from "../../presentation/renderers/model_method_run.ts";
+import { runModelMethodOverServer } from "../remote_run.ts";
+import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
 import { parseTimeout } from "../duration_parser.ts";
 
 // Cliffy's custom type system returns `unknown` for custom types like `model_name`,
@@ -157,6 +160,10 @@ export const modelMethodRunCommand = new Command()
     "--timeout <duration:string>",
     "Cancellation deadline — seconds (e.g. 30, 1800) or duration string (e.g. 30s, 5m, 1h). Cooperative — only honored by methods that check AbortSignal.",
   )
+  .option(
+    "--server <url:string>",
+    "Run through a 'swamp serve' server (ws:// or http://) instead of locally; no local repo required.",
+  )
   .action(
     // @ts-expect-error - Cliffy custom type returns unknown instead of string
     async function (
@@ -165,6 +172,12 @@ export const modelMethodRunCommand = new Command()
       methodName: string,
       definitionNameArg?: string,
     ) {
+      if (options.server) {
+        await runMethodViaServer(options, modelOrType, methodName, {
+          isDirectExecution: modelOrType.startsWith("@"),
+        });
+        return;
+      }
       const isDirectExecution = modelOrType.startsWith("@");
 
       if (isDirectExecution && !definitionNameArg) {
@@ -414,3 +427,113 @@ export const modelMethodCommand = new Command()
   .command("run", modelMethodRunCommand)
   .command("describe", modelMethodDescribeCommand)
   .command("history", modelMethodHistoryCommand);
+
+/**
+ * The --server branch: dispatch the method run through a `swamp serve`
+ * server and render the streamed events with the same renderer a local run
+ * uses. No local repository is required.
+ */
+async function runMethodViaServer(
+  options: AnyOptions,
+  modelIdOrName: string,
+  methodName: string,
+  info: { isDirectExecution: boolean },
+): Promise<void> {
+  const ctx = createContext(options as GlobalOptions, [
+    "model",
+    "method",
+    "run",
+  ]);
+
+  if (info.isDirectExecution) {
+    throw new UserError(
+      "Direct type execution (@type) is not supported with --server yet — " +
+        "run against an existing model name instead",
+    );
+  }
+  const unsupported: string[] = [];
+  if (options.skipChecks) unsupported.push("--skip-checks");
+  if (options.skipCheck?.length) unsupported.push("--skip-check");
+  if (options.skipCheckLabel?.length) unsupported.push("--skip-check-label");
+  if (options.skipReports) unsupported.push("--skip-reports");
+  if (options.skipReport?.length) unsupported.push("--skip-report");
+  if (options.skipReportLabel?.length) unsupported.push("--skip-report-label");
+  if (options.report?.length) unsupported.push("--report");
+  if (options.reportLabel?.length) unsupported.push("--report-label");
+  if (unsupported.length > 0) {
+    throw new UserError(
+      `${unsupported.join(", ")} ${
+        unsupported.length === 1 ? "is" : "are"
+      } not supported with --server yet — the serve protocol does not carry ${
+        unsupported.length === 1 ? "it" : "them"
+      }`,
+    );
+  }
+
+  const stdinContent = options.stdin ? await readStdin() : null;
+  let stdinItems: Record<string, unknown>[] | null = null;
+  if (stdinContent !== null) {
+    if (options.inputFile) {
+      throw new UserError("Cannot combine --stdin with --input-file.");
+    }
+    stdinItems = parseStdinContent(stdinContent);
+  }
+  const { inputs: cliInputs } = await parseInputs({
+    input: options.input as string[] | undefined,
+    inputFile: stdinItems ? undefined : options.inputFile as string | undefined,
+  });
+  const runtimeTags = options.tag
+    ? parseTags(options.tag as string[])
+    : undefined;
+
+  const abort = new AbortController();
+  if (options.timeout) {
+    const timeoutMs = parseTimeout(options.timeout as string);
+    setTimeout(() => abort.abort(), timeoutMs);
+  }
+  const shutdown = registerShutdownHandler({
+    handler: () => abort.abort(),
+  });
+
+  const inputSets: Record<string, unknown>[] = stdinItems
+    ? stdinItems.map((item) =>
+      Object.keys(cliInputs).length > 0 ? deepMerge(item, cliInputs) : item
+    )
+    : [cliInputs];
+
+  try {
+    for (let i = 0; i < inputSets.length; i++) {
+      if (inputSets.length > 1) {
+        ctx.logger
+          .info`Running method ${methodName} [${
+          i + 1
+        }/${inputSets.length}] via ${options.server}`;
+      }
+      const renderer = createModelMethodRunRenderer(ctx.outputMode, {
+        modelName: modelIdOrName,
+        methodName,
+      });
+      await consumeStream(
+        runModelMethodOverServer({
+          server: options.server as string,
+          signal: abort.signal,
+          payload: {
+            modelIdOrName,
+            methodName,
+            inputs: inputSets[i],
+            lastEvaluated: options.lastEvaluated as boolean,
+            runtimeTags,
+          },
+          // The wire codec is lossless for run events; see
+          // deserializeEvent in src/serve/serializer.ts.
+        }) as AsyncIterable<ModelMethodRunEvent>,
+        renderer.handlers(),
+      );
+      if (renderer.runFailed()) {
+        Deno.exit(1);
+      }
+    }
+  } finally {
+    shutdown.dispose();
+  }
+}
