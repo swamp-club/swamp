@@ -437,9 +437,9 @@ export const workflowRunCommand = new Command()
         );
 
         if (renderer.workflowFailed()) {
-          // Release locks before exiting
           if (flushModelLocks) await flushModelLocks();
-          Deno.exit(1);
+          Deno.exitCode = 1;
+          return;
         }
       }
 

@@ -390,8 +390,8 @@ export const modelMethodRunCommand = new Command()
           );
 
           if (renderer.runFailed()) {
-            if (flushModelLocks) await flushModelLocks();
-            Deno.exit(1);
+            Deno.exitCode = 1;
+            return;
           }
         }
       } catch (error) {

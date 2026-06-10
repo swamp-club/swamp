@@ -54,5 +54,8 @@ if (import.meta.main) {
   // telemetry cleanup) can never keep the event loop alive after the CLI
   // finishes. Telemetry flush is awaited inside runCli before reaching here.
   // The error path already calls Deno.exit(1) in the catch block above.
-  Deno.exit(0);
+  // Deno.exit() with no arg honors Deno.exitCode set by commands (e.g.
+  // exitCode=1 on workflow/method failure). Do NOT pass 0 — it overwrites
+  // the failure code.
+  Deno.exit();
 }
