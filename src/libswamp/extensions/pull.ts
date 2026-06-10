@@ -1131,6 +1131,7 @@ export async function installExtension(
           const depResult = await installExtension(depRef, {
             ...ctx,
             depth: ctx.depth + 1,
+            channel: undefined,
           });
           if (depResult) {
             dependencyResults.push(depResult);

@@ -22,7 +22,8 @@ import { ExtensionApiClient } from "../../infrastructure/http/extension_api_clie
 import type { PromoteResult } from "../../infrastructure/http/extension_api_client.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
-import { notAuthenticated, validationFailed } from "../errors.ts";
+import { notAuthenticated, notFound, validationFailed } from "../errors.ts";
+import { UserError } from "../../domain/errors.ts";
 import { ReleaseChannel } from "../../domain/extensions/release_channel.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
@@ -109,6 +110,11 @@ export function extensionPromoteValidate(
 
   const target = ReleaseChannel.create(input.toChannel);
   if (input.fromChannel) {
+    if (!ReleaseChannel.isValid(input.fromChannel)) {
+      throw validationFailed(
+        `Invalid source channel: "${input.fromChannel}". Must be one of: beta, rc, stable`,
+      );
+    }
     const source = ReleaseChannel.create(input.fromChannel);
     if (!source.canPromoteTo(target)) {
       throw validationFailed(
@@ -148,9 +154,18 @@ export async function* extensionPromote(
         );
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
+        const isAuth = error instanceof UserError &&
+          message.includes("Not authenticated");
+        const is404 = error instanceof UserError &&
+          (message.includes("not found") || message.includes("Not Found"));
         yield {
           kind: "error" as const,
-          error: validationFailed(message),
+          error: isAuth ? notAuthenticated() : is404
+            ? notFound(
+              "extension version",
+              `${input.extensionName}@${input.version}`,
+            )
+            : validationFailed(message),
         };
         return;
       }

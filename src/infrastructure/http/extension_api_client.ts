@@ -645,7 +645,14 @@ export class ExtensionApiClient {
 
     if (res.status === 404) {
       await res.body?.cancel();
-      return { versions: [], meta: { total: 0, page: 1, perPage: 20 } };
+      return {
+        versions: [],
+        meta: {
+          total: 0,
+          page: options?.page ?? 1,
+          perPage: options?.perPage ?? 20,
+        },
+      };
     }
 
     await this.checkResponse(res);

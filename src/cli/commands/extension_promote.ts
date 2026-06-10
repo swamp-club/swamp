@@ -54,7 +54,7 @@ export const extensionPromoteCommand = new Command()
   )
   .option(
     "--from-channel <fromChannel:string>",
-    "Source channel (beta or rc) — enables pre-flight direction check before contacting the server",
+    "Source channel ('beta' or 'rc'); skips direction validation if omitted",
   )
   .action(async function (
     options: AnyOptions,

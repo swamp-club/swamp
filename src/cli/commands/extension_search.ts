@@ -79,7 +79,7 @@ export const extensionSearchCommand = new Command()
   )
   .option(
     "--channel <channel:string>",
-    "Filter by release channel: 'rc' or 'beta'",
+    "Filter by release channel: 'beta' or 'rc' (default: stable only)",
     { collect: true },
   )
   .option("--per-page <perPage:number>", "Results per page", { default: 20 })
@@ -139,7 +139,7 @@ export const extensionSearchCommand = new Command()
     for (const ch of options.channel ?? []) {
       if (!validChannels.includes(ch)) {
         throw new UserError(
-          `Invalid channel: "${ch}". Must be one of: beta, rc`,
+          `Invalid channel: "${ch}". Must be one of: beta, rc. Stable is the default; omit --channel to use it.`,
         );
       }
     }
