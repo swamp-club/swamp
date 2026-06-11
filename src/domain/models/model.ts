@@ -945,6 +945,7 @@ export class ModelRegistry {
     type: string | ModelType,
     methods: Record<string, MethodDefinition>,
     checks?: Record<string, CheckDefinition>,
+    resources?: Record<string, ResourceOutputSpec>,
     reports?: string[],
   ): void {
     const modelType = typeof type === "string" ? ModelType.create(type) : type;
@@ -975,12 +976,31 @@ export class ModelRegistry {
       }
     }
 
+    // Check for resource spec name conflicts
+    if (resources) {
+      for (const specName of Object.keys(resources)) {
+        if (existing.resources?.[specName]) {
+          throw new Error(
+            `Resource spec '${specName}' already exists on model type '${key}'`,
+          );
+        }
+      }
+    }
+
     // Create a new merged ModelDefinition (immutable)
     const merged: ModelDefinition = {
       ...existing,
       methods: { ...existing.methods, ...methods },
       ...(checks || existing.checks
         ? { checks: { ...(existing.checks ?? {}), ...(checks ?? {}) } }
+        : {}),
+      ...(resources || existing.resources
+        ? {
+          resources: {
+            ...(existing.resources ?? {}),
+            ...(resources ?? {}),
+          },
+        }
         : {}),
       ...(reports || existing.reports
         ? {

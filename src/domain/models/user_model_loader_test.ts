@@ -1482,6 +1482,135 @@ export const extension = {
   );
 });
 
+Deno.test("UserModelLoader extension with resources merges into target model", async () => {
+  const ts = Date.now();
+  const modelCode = `
+import { z } from "npm:zod@4";
+export const model = {
+  type: "@user/ext-resources-${ts}",
+  version: "2026.02.09.1",
+  globalArguments: z.object({ message: z.string() }),
+  resources: {
+    "data": {
+      description: "Data output",
+      schema: z.object({}),
+      lifetime: "infinite",
+      garbageCollection: 10,
+    },
+  },
+  methods: {
+    write: {
+      description: "Write",
+      arguments: z.object({}),
+      execute: async () => ({ dataHandles: [] }),
+    },
+  },
+};
+`;
+  const extCode = `
+import { z } from "npm:zod@4";
+export const extension = {
+  type: "@user/ext-resources-${ts}",
+  resources: {
+    "audit": {
+      description: "Audit results",
+      schema: z.object({ findings: z.array(z.string()) }),
+      lifetime: "infinite",
+      garbageCollection: 5,
+    },
+  },
+  methods: [{
+    audit: {
+      description: "Audit",
+      arguments: z.object({}),
+      execute: async () => ({ dataHandles: [] }),
+    },
+  }],
+};
+`;
+
+  await withTempModels(
+    { "base.ts": modelCode, "ext.ts": extCode },
+    async (dir) => {
+      const loader = createTestLoader();
+      const result = await loader.load(dir);
+
+      assertEquals(result.loaded.length, 1);
+      assertEquals(result.extended.length, 1);
+      assertEquals(result.failed.length, 0);
+
+      const modelDef = modelRegistry.get(`@user/ext-resources-${ts}`);
+      assertEquals(modelDef !== undefined, true);
+      assertEquals("data" in modelDef!.resources!, true);
+      assertEquals("audit" in modelDef!.resources!, true);
+      assertEquals(modelDef!.resources!["audit"].description, "Audit results");
+      assertEquals(modelDef!.resources!["audit"].garbageCollection, 5);
+    },
+  );
+});
+
+Deno.test("UserModelLoader extension with conflicting resource spec fails gracefully", async () => {
+  const ts = Date.now();
+  const modelCode = `
+import { z } from "npm:zod@4";
+export const model = {
+  type: "@user/ext-res-conflict-${ts}",
+  version: "2026.02.09.1",
+  resources: {
+    "data": {
+      description: "Data output",
+      schema: z.object({}),
+      lifetime: "infinite",
+      garbageCollection: 10,
+    },
+  },
+  methods: {
+    write: {
+      description: "Write",
+      arguments: z.object({}),
+      execute: async () => ({ dataHandles: [] }),
+    },
+  },
+};
+`;
+  const extCode = `
+import { z } from "npm:zod@4";
+export const extension = {
+  type: "@user/ext-res-conflict-${ts}",
+  resources: {
+    "data": {
+      description: "Conflicting data",
+      schema: z.object({}),
+      lifetime: "infinite",
+      garbageCollection: 5,
+    },
+  },
+  methods: [{
+    audit: {
+      description: "Audit",
+      arguments: z.object({}),
+      execute: async () => ({ dataHandles: [] }),
+    },
+  }],
+};
+`;
+
+  await withTempModels(
+    { "base.ts": modelCode, "ext.ts": extCode },
+    async (dir) => {
+      const loader = createTestLoader();
+      const result = await loader.load(dir);
+
+      assertEquals(result.loaded.length, 1);
+      assertEquals(result.failed.length, 1);
+      assertStringIncludes(
+        result.failed[0].error,
+        "Resource spec 'data' already exists",
+      );
+    },
+  );
+});
+
 // --- resources/files validation tests ---
 
 Deno.test("UserModelLoader registers user-declared resources", async () => {

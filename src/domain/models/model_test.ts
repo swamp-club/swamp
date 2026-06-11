@@ -832,6 +832,92 @@ Deno.test("ModelRegistry.extend merges checks from extension with existing check
   assertEquals("check-b" in extended!.checks!, true);
 });
 
+// --- ModelRegistry.extend() with resources tests ---
+
+Deno.test("ModelRegistry.extend: adds resources to existing model", () => {
+  const registry = new ModelRegistry();
+  registry.register(createTestModel("swamp/extend-resources"));
+
+  registry.extend("swamp/extend-resources", {}, undefined, {
+    "audit": {
+      description: "Audit results",
+      schema: z.object({ findings: z.array(z.string()) }),
+      lifetime: "infinite",
+      garbageCollection: 5,
+    },
+  });
+
+  const extended = registry.get("swamp/extend-resources");
+  assertEquals("data" in extended!.resources!, true);
+  assertEquals("audit" in extended!.resources!, true);
+  assertEquals(extended!.resources!["audit"].description, "Audit results");
+});
+
+Deno.test("ModelRegistry.extend: throws on resource spec name conflict", () => {
+  const registry = new ModelRegistry();
+  registry.register(createTestModel("swamp/resource-conflict"));
+
+  assertThrows(
+    () => {
+      registry.extend("swamp/resource-conflict", {}, undefined, {
+        "data": {
+          description: "Conflicting resource",
+          schema: z.object({ value: z.string() }),
+          lifetime: "infinite",
+          garbageCollection: 5,
+        },
+      });
+    },
+    Error,
+    "Resource spec 'data' already exists on model type 'swamp/resource-conflict'",
+  );
+});
+
+Deno.test("ModelRegistry.extend: preserves existing resources when adding methods only", () => {
+  const registry = new ModelRegistry();
+  registry.register(createTestModel("swamp/preserve-resources"));
+
+  registry.extend("swamp/preserve-resources", {
+    extra: {
+      description: "Extra method",
+      arguments: z.object({}),
+      execute: () => Promise.resolve({}),
+    },
+  });
+
+  const extended = registry.get("swamp/preserve-resources");
+  assertEquals("data" in extended!.resources!, true);
+  assertEquals(Object.keys(extended!.resources!).length, 1);
+});
+
+Deno.test("ModelRegistry.extend: adds resources to model with no existing resources", () => {
+  const registry = new ModelRegistry();
+  const model: ModelDefinition = {
+    type: ModelType.create("swamp/no-resources"),
+    version: "2026.02.09.1",
+    methods: {
+      noop: {
+        description: "No-op",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({}),
+      },
+    },
+  };
+  registry.register(model);
+
+  registry.extend("swamp/no-resources", {}, undefined, {
+    "state": {
+      description: "State resource",
+      schema: z.object({ value: z.string() }),
+      lifetime: "infinite",
+      garbageCollection: 3,
+    },
+  });
+
+  const extended = registry.get("swamp/no-resources");
+  assertEquals("state" in extended!.resources!, true);
+});
+
 // --- Lazy entry tests ---
 
 function createLazyEntry(typeString: string): LazyModelEntry {

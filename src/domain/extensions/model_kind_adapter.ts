@@ -147,6 +147,7 @@ const UserModelSchema = z.object({
 
 const UserExtensionSchema = z.object({
   type: z.string(),
+  resources: z.record(z.string(), ResourceOutputSpecSchema).optional(),
   methods: z.array(z.record(z.string(), UserMethodSchema)),
   checks: z.array(z.record(z.string(), UserCheckSchema)).optional(),
 });
@@ -583,7 +584,7 @@ export const modelKindAdapter: KindAdapter = {
     }
 
     try {
-      modelRegistry.extend(ext.type, methods, checks);
+      modelRegistry.extend(ext.type, methods, checks, ext.resources);
       result.extended.push(file);
     } catch (error) {
       result.failed.push({ file, error: String(error) });
