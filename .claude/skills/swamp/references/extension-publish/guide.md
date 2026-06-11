@@ -188,6 +188,73 @@ swamp extension push manifest.yaml --yes --json
 - Network error → check connectivity and retry
 - Auth error → re-run `swamp auth login` (go back to State 2)
 
+## Post-Publication: Release Channels
+
+Release channels let you publish prerelease versions (beta, rc) before promoting
+to stable. Channels are **entirely optional** — omitting `--channel` publishes
+straight to stable, which is the default and most common flow. The state machine
+above does not change when using channels.
+
+See the
+[prerelease publishing manual](https://swamp-club.com/manual/how-to/extensions/publish-prerelease)
+for the full guide.
+
+### Publishing to a channel
+
+Add `--channel` to the push command from State 8:
+
+```bash
+# Publish a beta
+swamp extension push manifest.yaml --channel beta --yes --json
+
+# Publish a release candidate
+swamp extension push manifest.yaml --channel rc --yes --json
+```
+
+Valid channel values are `beta` and `rc`. Omitting `--channel` publishes to
+stable. The dry-run in State 7 also accepts `--channel` for validation.
+
+### Promoting between channels
+
+Promote an existing version to a higher channel without re-publishing:
+
+```bash
+# Promote beta to rc
+swamp extension promote @collective/name 2026.06.10.1 --channel rc --json
+
+# Promote rc to stable
+swamp extension promote @collective/name 2026.06.10.1 --channel stable --json
+
+# Explicit source channel (skips direction validation)
+swamp extension promote @collective/name 2026.06.10.1 \
+  --channel stable --from-channel rc --json
+```
+
+| Option           | Required | Description                                            |
+| ---------------- | -------- | ------------------------------------------------------ |
+| `--channel`      | Yes      | Target channel: `rc` or `stable`                       |
+| `--from-channel` | No       | Source channel (`beta` or `rc`); inferred when omitted |
+
+Promotion direction must go upward: beta → rc → stable.
+
+### Channel-aware pull and search
+
+```bash
+# Pull a specific channel
+swamp extension pull @collective/name --channel beta --json
+
+# Search with channel filter (repeatable; omitting returns stable only)
+swamp extension search query --channel beta --channel rc --json
+```
+
+The lockfile records the channel preference so subsequent `pull` and `outdated`
+checks use it automatically.
+
+### Channel fields in extension info
+
+`swamp extension info` shows `latestBeta` and `latestRc` fields when prerelease
+versions exist, alongside the stable `latestVersion`.
+
 ## Post-Publication: Deprecation
 
 Deprecate or undeprecate a published extension. Deprecated extensions remain
