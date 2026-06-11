@@ -266,7 +266,6 @@ Deno.test("TelemetryEntry.create accepts parentInvocationId and workflowContext"
       jobName: "build",
       stepName: "validate-config",
       modelType: "@swamp/shell",
-      driver: "local",
     },
   });
 
@@ -276,7 +275,6 @@ Deno.test("TelemetryEntry.create accepts parentInvocationId and workflowContext"
   assertEquals(entry.workflowContext?.jobName, "build");
   assertEquals(entry.workflowContext?.stepName, "validate-config");
   assertEquals(entry.workflowContext?.modelType, "@swamp/shell");
-  assertEquals(entry.workflowContext?.driver, "local");
 });
 
 Deno.test("TelemetryEntry round-trips parentInvocationId and workflowContext through toData/fromData", () => {
@@ -314,15 +312,12 @@ Deno.test("TelemetryEntry round-trips parentInvocationId and workflowContext thr
   assertEquals(data.workflowContext?.workflowName, "etl");
   assertEquals(data.workflowContext?.runId, "run-9");
   assertEquals(data.workflowContext?.modelType, undefined);
-  assertEquals(data.workflowContext?.driver, undefined);
   assertEquals("modelType" in (data.workflowContext ?? {}), false);
-  assertEquals("driver" in (data.workflowContext ?? {}), false);
 
   const restored = TelemetryEntry.fromData(data);
   assertEquals(restored.parentInvocationId, "parent-xyz");
   assertEquals(restored.workflowContext?.workflowName, "etl");
   assertEquals(restored.workflowContext?.modelType, undefined);
-  assertEquals(restored.workflowContext?.driver, undefined);
 });
 
 Deno.test("TelemetryEntry.fromData decodes legacy entries without parentInvocationId or workflowContext", () => {

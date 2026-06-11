@@ -350,7 +350,6 @@ Deno.test("HttpTelemetrySender.sendBatch lands parentInvocationId and workflowCo
       jobName: "build",
       stepName: "validate",
       modelType: "@swamp/shell",
-      driver: "local",
     },
   });
 
@@ -364,7 +363,6 @@ Deno.test("HttpTelemetrySender.sendBatch lands parentInvocationId and workflowCo
   assertEquals(parsed.properties.workflowContext.jobName, "build");
   assertEquals(parsed.properties.workflowContext.stepName, "validate");
   assertEquals(parsed.properties.workflowContext.modelType, "@swamp/shell");
-  assertEquals(parsed.properties.workflowContext.driver, "local");
 
   await server.shutdown();
 });

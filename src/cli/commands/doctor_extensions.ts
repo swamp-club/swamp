@@ -61,7 +61,6 @@ import { pullExtension } from "./extension_pull.ts";
 import { loadIdentity } from "../load_identity.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
-import { driverTypeRegistry } from "../../domain/drivers/driver_type_registry.ts";
 import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
 import { reportRegistry } from "../../domain/reports/report_registry.ts";
 import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
@@ -208,11 +207,6 @@ export const doctorExtensionsCommand = new Command()
           registry: "vault",
           ensureLoaded: () => vaultTypeRegistry.ensureLoaded(),
           resetLoadedFlag: () => vaultTypeRegistry.resetLoadedFlag(),
-        },
-        {
-          registry: "driver",
-          ensureLoaded: () => driverTypeRegistry.ensureLoaded(),
-          resetLoadedFlag: () => driverTypeRegistry.resetLoadedFlag(),
         },
         {
           registry: "datastore",

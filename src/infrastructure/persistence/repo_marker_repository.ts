@@ -24,6 +24,8 @@ import type { RepoPath } from "../../domain/repo/repo_path.ts";
 import { swampMarkerPath } from "./paths.ts";
 import type { DatastoreConfigData } from "../../domain/datastore/datastore_config.ts";
 import type { AiTool } from "../../domain/repo/ai_tool.ts";
+import { UserError } from "../../domain/errors.ts";
+import { removedDriverFieldMessage } from "../../domain/removed_driver_fields.ts";
 
 export type { AiTool };
 
@@ -57,12 +59,6 @@ export interface RepoMarkerData {
   datastore?: DatastoreConfigData;
   trustedCollectives?: string[];
   trustMemberCollectives?: boolean;
-  /**
-   * Repo-level default execution driver, applied when no higher tier
-   * (cli / step / job / workflow / definition) sets a driver.
-   */
-  defaultDriver?: string;
-  defaultDriverConfig?: Record<string, unknown>;
 }
 
 /**
@@ -78,6 +74,21 @@ function normalizeMarker(data: RepoMarkerData): RepoMarkerData {
   }
   delete data.tool;
   return data;
+}
+
+/**
+ * Rejects the removed `defaultDriver`/`defaultDriverConfig` fields with an
+ * actionable error instead of silently ignoring them (see
+ * design/remote-execution.md).
+ */
+function rejectRemovedDriverFields(data: RepoMarkerData, path: string): void {
+  for (const field of ["defaultDriver", "defaultDriverConfig"]) {
+    if (field in data) {
+      throw new UserError(
+        `${path}: ${removedDriverFieldMessage(field)}`,
+      );
+    }
+  }
 }
 
 /**
@@ -120,6 +131,7 @@ export class RepoMarkerRepository {
     try {
       const content = await Deno.readTextFile(path);
       const data = parseYaml(content) as RepoMarkerData;
+      rejectRemovedDriverFields(data, path);
       return normalizeMarker(data);
     } catch (error) {
       if (error instanceof Deno.errors.NotFound) {

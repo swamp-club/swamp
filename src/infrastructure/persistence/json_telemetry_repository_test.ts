@@ -605,7 +605,6 @@ Deno.test("JsonTelemetryRepository round-trips parentInvocationId and workflowCo
         jobName: "build",
         stepName: "validate",
         modelType: "@swamp/shell",
-        driver: "local",
       },
     });
 
@@ -616,7 +615,6 @@ Deno.test("JsonTelemetryRepository round-trips parentInvocationId and workflowCo
     assertEquals(restored[0].workflowContext?.workflowName, "deploy");
     assertEquals(restored[0].workflowContext?.runId, "run-1");
     assertEquals(restored[0].workflowContext?.modelType, "@swamp/shell");
-    assertEquals(restored[0].workflowContext?.driver, "local");
   });
 });
 

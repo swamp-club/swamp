@@ -243,7 +243,7 @@ Deno.test("evaluateDefinition: directly-missing input in globalArguments stays u
 });
 
 // ============================================================================
-// resolveAllExpressionsInData — driverConfig seam (swamp-club#291)
+// resolveAllExpressionsInData — CEL + runtime two-pass seam (swamp-club#291)
 // ============================================================================
 
 function makeContext(

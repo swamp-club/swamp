@@ -26,13 +26,19 @@ import {
 import { requireInitializedRepoUnlocked } from "../repo_context.ts";
 import { handleConnection } from "../../serve/connection.ts";
 import { executeWorkflowWithLocks } from "../../serve/deps.ts";
+import { CapabilityService } from "../../serve/capability_service.ts";
+import { WorkerGateway } from "../../serve/worker_gateway.ts";
+import { DispatchService } from "../../serve/dispatch_service.ts";
+import { DispatchRegistry } from "../../serve/dispatch_registry.ts";
+import { BundleRegistry } from "../../serve/bundle_registry.ts";
+import { DataPlane } from "../../serve/data_plane.ts";
+import { setRemoteStepDispatcher } from "../../domain/remote/remote_dispatch.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { ScheduledExecutionService } from "../../libswamp/mod.ts";
 import { parseWebhookFlag, WebhookService } from "../../serve/webhook.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
-import { driverTypeRegistry } from "../../domain/drivers/driver_type_registry.ts";
 import { reportRegistry } from "../../domain/reports/report_registry.ts";
 import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
 
@@ -100,11 +106,48 @@ export const serveCommand = new Command()
         { host },
       );
     }
+    // Remote-execution control plane: capability verbs, worker enrollment,
+    // and the dispatch/lease registries shared with the HTTP data plane.
+    // See design/remote-execution.md.
+    const capabilityService = new CapabilityService({
+      repoDir: resolvedRepoDir,
+      repoContext,
+    });
+    const dispatchRegistry = new DispatchRegistry();
+    const bundleRegistry = new BundleRegistry();
+    const dispatchService = new DispatchService({
+      repoDir: resolvedRepoDir,
+      repoContext,
+      dispatches: dispatchRegistry,
+      bundles: bundleRegistry,
+    });
+    const workerGateway = new WorkerGateway({
+      repoDir: resolvedRepoDir,
+      repoContext,
+      capabilityService,
+      onWorkerIdle: (worker) => dispatchService.notifyWorkerIdle(worker),
+      onGraceExpired: (worker) => dispatchService.notifyGraceExpired(worker),
+    });
+    dispatchService.bindGateway(workerGateway);
+    setRemoteStepDispatcher(dispatchService);
+    const dataPlane = new DataPlane({
+      repoDir: resolvedRepoDir,
+      repoContext,
+      sessions: workerGateway.sessions,
+      dispatches: dispatchRegistry,
+      bundles: bundleRegistry,
+      onFirstWrite: (dispatch) => dispatchService.recordFirstWrite(dispatch),
+    });
+    dispatchService.setOnDispatchEnd((dispatchId) =>
+      dataPlane.releaseDispatch(dispatchId)
+    );
+
     const connectionCtx = {
       repoDir: resolvedRepoDir,
       repoContext,
       datastoreConfig,
       syncService,
+      workerGateway,
     };
 
     // Eagerly load extension registries so failures surface at startup
@@ -112,7 +155,6 @@ export const serveCommand = new Command()
     await Promise.all([
       modelRegistry.ensureLoaded(),
       vaultTypeRegistry.ensureLoaded(),
-      driverTypeRegistry.ensureLoaded(),
       datastoreTypeRegistry.ensureLoaded(),
       reportRegistry.ensureLoaded(),
     ]);
@@ -283,6 +325,10 @@ export const serveCommand = new Command()
           return response;
         }
 
+        // Remote-execution data plane (bearer-authenticated worker routes)
+        const dataPlaneResponse = await dataPlane.handle(req);
+        if (dataPlaneResponse) return dataPlaneResponse;
+
         // Webhook endpoints (POST only, checked before health)
         if (webhookService && req.method === "POST") {
           const webhookResponse = await webhookService.handleRequest(req);
@@ -338,6 +384,7 @@ export const serveCommand = new Command()
       if (scheduledExecution) {
         await scheduledExecution.stop();
       }
+      setRemoteStepDispatcher(null);
       ac.abort();
       if (isJson) {
         console.log(JSON.stringify({ status: "stopped" }));

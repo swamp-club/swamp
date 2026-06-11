@@ -52,7 +52,6 @@ import { deepMerge, parseInputs, parseStdinContent } from "../input_parser.ts";
 import { readStdin } from "../../infrastructure/io/stdin_reader.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
-import { driverTypeRegistry } from "../../domain/drivers/driver_type_registry.ts";
 import { reportRegistry } from "../../domain/reports/report_registry.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -74,7 +73,6 @@ export const workflowResumeCommand = new Command()
     "--repo-dir <dir:string>",
     "Repository directory (env: SWAMP_REPO_DIR)",
   )
-  .option("--driver <driver:string>", "Override execution driver")
   .option("--run <run_id:string>", "Target a specific run ID")
   .option(
     "--input <value:string>",
@@ -161,7 +159,6 @@ export const workflowResumeCommand = new Command()
       await Promise.all([
         modelRegistry.ensureLoaded(),
         vaultTypeRegistry.ensureLoaded(),
-        driverTypeRegistry.ensureLoaded(),
         reportRegistry.ensureLoaded(),
       ]);
 
@@ -260,7 +257,6 @@ export const workflowResumeCommand = new Command()
         for await (
           const event of service.resume(workflowName, run.id, {
             signal: AbortSignal.timeout(600_000),
-            driver: options.driver,
             swampSha: GIT_SHA,
             inputs: resumeInputs,
           })

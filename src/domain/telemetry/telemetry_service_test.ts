@@ -471,7 +471,6 @@ Deno.test("TelemetryService.recordChildInvocation writes a success child entry",
       jobName: "build",
       stepName: "step-a",
       modelType: "@swamp/shell",
-      driver: "local",
     },
   );
 
@@ -480,7 +479,7 @@ Deno.test("TelemetryService.recordChildInvocation writes a success child entry",
   assertEquals(saved.result.status, "success");
   assertEquals(saved.parentInvocationId, "parent-id-1");
   assertEquals(saved.workflowContext?.workflowName, "deploy");
-  assertEquals(saved.workflowContext?.driver, "local");
+  assertEquals(saved.workflowContext?.modelType, "@swamp/shell");
   assertEquals(saved.durationMs, 500);
 });
 
@@ -548,5 +547,4 @@ Deno.test("TelemetryService.recordChildInvocation supports zero-duration entries
   assertEquals(repo.savedEntries[0].durationMs, 0);
   assertEquals(repo.savedEntries[0].result.status, "error");
   assertEquals(repo.savedEntries[0].workflowContext?.modelType, undefined);
-  assertEquals(repo.savedEntries[0].workflowContext?.driver, undefined);
 });

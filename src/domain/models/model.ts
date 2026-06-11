@@ -276,15 +276,16 @@ export interface MethodContext {
   dataQueryService?: DataQueryService;
 
   /**
-   * The execution driver type for this execution.
-   * Defaults to "raw" (in-process) when not specified.
+   * Remote-execution placement for this run (see
+   * design/remote-execution.md). When present, the method body dispatches
+   * to a matching worker instead of executing in-process; checks, reports,
+   * and output records still run at the orchestrator around it.
    */
-  driver?: string;
-
-  /**
-   * Configuration for the execution driver.
-   */
-  driverConfig?: Record<string, unknown>;
+  placement?: {
+    target?: string;
+    labels?: Record<string, string>;
+    platform?: string;
+  };
 
   /**
    * Optional callback for emitting domain events during method execution.
@@ -489,6 +490,13 @@ export interface MethodResult {
    * Optional follow-up actions to execute.
    */
   followUpActions?: FollowUpAction[];
+
+  /**
+   * Where the method body executed: "loopback" for in-process, or the
+   * worker name for a remote dispatch. Populated by the execution service
+   * for telemetry attribution; methods never set it themselves.
+   */
+  executor?: string;
 }
 
 /**
@@ -682,9 +690,10 @@ export interface ModelDefinition<
   upgrades?: VersionUpgrade[];
 
   /**
-   * Lazily builds the self-contained bundle for out-of-process execution (e.g. Docker).
-   * Called by the execution service when a non-raw driver is used. Memoizes its
-   * result so multiple executions of the same model in one process only bundle once.
+   * Lazily builds the self-contained bundle for out-of-process execution.
+   * Called when a step dispatches to a remote worker (see
+   * design/remote-execution.md). Memoizes its result so multiple executions
+   * of the same model in one process only bundle once.
    */
   bundleSourceFactory?: () => Promise<string>;
 

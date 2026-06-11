@@ -18,6 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertRejects } from "@std/assert";
+import { setRemoteStepDispatcher } from "../remote/remote_dispatch.ts";
+import { fromResourceHandle } from "../data/data_record_mapper.ts";
 import { createExtensionCelEnvironment } from "../../infrastructure/cel/cel_evaluator.ts";
 import { DefaultMethodExecutionService } from "./method_execution_service.ts";
 import { createDefinitionId, Definition } from "../definitions/definition.ts";
@@ -38,11 +40,6 @@ import { Data } from "../data/data.ts";
 import { UserError } from "../errors.ts";
 import { getLogger } from "@logtape/logtape";
 import { VaultSecretBag } from "../vaults/vault_secret_bag.ts";
-import type {
-  ExecutionRequest,
-  ExecutionResult,
-} from "../drivers/execution_driver.ts";
-import { driverTypeRegistry } from "../drivers/driver_type_registry.ts";
 
 /**
  * Test model that mimics the echo model's write method.
@@ -2719,50 +2716,6 @@ Deno.test(
   },
 );
 
-Deno.test(
-  "pre-flight check receives resolved driver/driverConfig from MethodContext",
-  async () => {
-    const service = new DefaultMethodExecutionService();
-    let capturedDriver: string | undefined;
-    let capturedDriverConfig: Record<string, unknown> | undefined;
-    // Check returns pass: false so execution halts after capture — avoids
-    // needing a registered driver downstream; this test is scoped to the
-    // pre-flight propagation contract.
-    const model = createCheckModel({
-      "capture-driver": {
-        description: "Records driver seen by the check",
-        execute: (context) => {
-          capturedDriver = context.driver;
-          capturedDriverConfig = context.driverConfig;
-          return Promise.resolve({
-            pass: false,
-            errors: ["halt after capture"],
-          });
-        },
-      },
-    });
-
-    const definition = Definition.create({
-      name: "test-definition",
-      globalArguments: {},
-    });
-    const { context } = createTestContext({
-      modelType: model.type,
-      driver: "docker",
-      driverConfig: { image: "alpine:latest" },
-    });
-
-    await assertRejects(
-      () => service.executeWorkflow(definition, model, "create", context),
-      UserError,
-    );
-
-    // Check must see the resolved driver, not a raw default.
-    assertEquals(capturedDriver, "docker");
-    assertEquals(capturedDriverConfig, { image: "alpine:latest" });
-  },
-);
-
 // ---------- Unknown method input key rejection ----------
 
 Deno.test("execute - accepts known method input key", async () => {
@@ -2828,72 +2781,6 @@ Deno.test("executeWorkflow - rejects unknown global arg key", async () => {
     "Global arguments validation failed",
   );
 });
-
-Deno.test(
-  "executeWorkflow: out-of-process driver receives resolved vault secrets, not sentinels",
-  async () => {
-    const service = new DefaultMethodExecutionService();
-
-    const driverType = `test-capture-${crypto.randomUUID().slice(0, 8)}`;
-    let capturedRequest: ExecutionRequest | null = null;
-
-    driverTypeRegistry.register({
-      type: driverType,
-      name: "Test capture driver",
-      description: "Captures ExecutionRequest for assertions",
-      isBuiltIn: false,
-      createDriver: () => ({
-        type: driverType,
-        execute: (request: ExecutionRequest): Promise<ExecutionResult> => {
-          capturedRequest = request;
-          return Promise.resolve({
-            status: "success",
-            outputs: [],
-            logs: [],
-            durationMs: 0,
-          });
-        },
-      }),
-    });
-
-    const model: ModelDefinition = {
-      type: ModelType.create("test/driver-vault"),
-      version: "1.0.0",
-      globalArguments: z.object({ apiKey: z.string() }),
-      resources: {},
-      methods: {
-        run: {
-          description: "Test method",
-          arguments: z.object({ token: z.string() }),
-          execute: () => Promise.resolve({ dataHandles: [] }),
-        },
-      },
-    };
-
-    const secretBag = new VaultSecretBag();
-    const apiKeySentinel = secretBag.addSecret("real-api-key-value");
-    const tokenSentinel = secretBag.addSecret("real-token-value");
-
-    const definition = Definition.create({
-      name: "test-driver-vault-def",
-      type: "test/driver-vault",
-      globalArguments: { apiKey: apiKeySentinel },
-      methods: { run: { arguments: { token: tokenSentinel } } },
-    });
-
-    const { context } = createTestContext({
-      modelType: model.type,
-      vaultSecrets: secretBag,
-      driver: driverType,
-    });
-
-    await service.executeWorkflow(definition, model, "run", context);
-
-    assertEquals(capturedRequest !== null, true);
-    assertEquals(capturedRequest!.globalArgs.apiKey, "real-api-key-value");
-    assertEquals(capturedRequest!.methodArgs.token, "real-token-value");
-  },
-);
 
 Deno.test("executeWorkflow - passes with required globalArgs schema when definition has empty globalArgs", async () => {
   const service = new DefaultMethodExecutionService();
@@ -3265,4 +3152,124 @@ Deno.test("executeWorkflow: check unresolvedMethodArgs filters unresolved expres
 
   assertEquals(capturedArgs?.name, "my-server");
   assertEquals(capturedArgs?.apiKey, undefined);
+});
+
+Deno.test("executeWorkflow - placed steps rebuild full handles from durable records (swamp-club#535)", async () => {
+  const service = new DefaultMethodExecutionService();
+  const model = createTestModel({});
+  const definition = Definition.create({
+    name: "remote-def",
+    methods: { start: { arguments: {} } },
+  });
+
+  // The record the data plane persisted while the worker ran the method.
+  const written = Data.create({
+    name: "data-out",
+    contentType: "application/json",
+    lifetime: "infinite",
+    garbageCollection: 10,
+    tags: { type: "resource", specName: "data" },
+    ownerDefinition: { ownerType: "model-method", ownerRef: "remote-def" },
+    version: 2,
+    size: 17,
+  });
+  const baseRepo = createMockDataRepoWithData([written]);
+  const repo: UnifiedDataRepository = {
+    ...baseRepo,
+    findByName: (_type, _modelId, dataName, version) =>
+      Promise.resolve(
+        dataName === "data-out" && version === 2 ? written : null,
+      ),
+    getContent: () =>
+      Promise.resolve(new TextEncoder().encode('{"value":"remote"}')),
+  };
+
+  setRemoteStepDispatcher({
+    executeRemote: () =>
+      Promise.resolve({
+        outputs: [{
+          dataId: String(written.id),
+          version: 2,
+          name: "data-out",
+          specName: "data",
+          type: "resource" as const,
+        }],
+        logs: [],
+        durationMs: 5,
+        workerName: "gpu-box-1",
+      }),
+  });
+  try {
+    const { context } = createTestContext({
+      modelType: model.type,
+      dataRepository: repo,
+      placement: { labels: { tier: "remote" } },
+    });
+    const result = await service.executeWorkflow(
+      definition,
+      model,
+      "start",
+      context,
+    );
+
+    // Telemetry attribution: the result names the worker that ran it.
+    assertEquals(result.executor, "gpu-box-1");
+
+    const handle = result.dataHandles![0];
+    // Full metadata is rebuilt from the durable record — the wire-thin
+    // dispatch output carries identities only.
+    assertEquals(handle.metadata.ownerDefinition.ownerType, "model-method");
+    assertEquals(handle.metadata.contentType, "application/json");
+    assertEquals(handle.size, 17);
+
+    // The exact consumer that crashed during manual testing: mapping the
+    // handle into a DataRecord reads metadata.ownerDefinition.* fields.
+    const record = await fromResourceHandle(
+      handle,
+      model.type,
+      context.modelId,
+      "remote-def",
+      repo,
+    );
+    assertEquals(record.ownerType, "model-method");
+    assertEquals(record.attributes, { value: "remote" });
+  } finally {
+    setRemoteStepDispatcher(null);
+  }
+});
+
+Deno.test("executeWorkflow - placed step with a vanished output record fails loudly", async () => {
+  const service = new DefaultMethodExecutionService();
+  const model = createTestModel({});
+  const definition = Definition.create({
+    name: "remote-def",
+    methods: { start: { arguments: {} } },
+  });
+  setRemoteStepDispatcher({
+    executeRemote: () =>
+      Promise.resolve({
+        outputs: [{
+          dataId: crypto.randomUUID(),
+          version: 9,
+          name: "ghost",
+          specName: "data",
+          type: "resource" as const,
+        }],
+        logs: [],
+        durationMs: 1,
+      }),
+  });
+  try {
+    const { context } = createTestContext({
+      modelType: model.type,
+      placement: { target: "w1" },
+    });
+    await assertRejects(
+      () => service.executeWorkflow(definition, model, "start", context),
+      Error,
+      "was not found in the datastore",
+    );
+  } finally {
+    setRemoteStepDispatcher(null);
+  }
 });

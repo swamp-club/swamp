@@ -31,9 +31,9 @@ import { z } from "zod";
 
 import { buildMethodContext } from "../src/domain/models/method_context.ts";
 import {
+  InProcessExecutor,
   type MethodExecutor,
-  RawExecutionDriver,
-} from "../src/domain/drivers/raw_execution_driver.ts";
+} from "../src/domain/models/in_process_executor.ts";
 import { Definition } from "../src/domain/definitions/definition.ts";
 import { ModelType } from "../src/domain/models/model_type.ts";
 import type {
@@ -41,7 +41,7 @@ import type {
   MethodDefinition,
   ModelDefinition,
 } from "../src/domain/models/model.ts";
-import type { ExecutionRequest } from "../src/domain/drivers/execution_driver.ts";
+import type { ExecutionRequest } from "../src/domain/models/execution_envelope.ts";
 import { FileSystemUnifiedDataRepository } from "../src/infrastructure/persistence/unified_data_repository.ts";
 import { YamlDefinitionRepository } from "../src/infrastructure/persistence/yaml_definition_repository.ts";
 import { CatalogStore } from "../src/infrastructure/persistence/catalog_store.ts";
@@ -84,7 +84,7 @@ function createMockRequest(): ExecutionRequest {
   };
 }
 
-Deno.test("createCelEnvironment chain: factory + driver expose a working Environment to extension execute", async () => {
+Deno.test("createCelEnvironment chain: factory + executor expose a working Environment to extension execute", async () => {
   await withTempDir(async (repoDir) => {
     await setupRepoDir(repoDir);
 
@@ -175,7 +175,7 @@ Deno.test("createCelEnvironment chain: factory + driver expose a working Environ
 
       assertExists(context.createCelEnvironment);
 
-      const driver = new RawExecutionDriver(
+      const inProcessExecutor = new InProcessExecutor(
         executor,
         definition,
         method,
@@ -183,7 +183,7 @@ Deno.test("createCelEnvironment chain: factory + driver expose a working Environ
         context,
         "run",
       );
-      const result = await driver.execute(createMockRequest());
+      const result = await inProcessExecutor.execute(createMockRequest());
 
       assertEquals(result.status, "success");
       assertEquals(arithmeticResult, 3.5);

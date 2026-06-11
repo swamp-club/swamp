@@ -325,6 +325,38 @@ export {
   type ProjectedData,
 } from "./data/query.ts";
 export type { DataRecord } from "../domain/data/data_record.ts";
+
+// Worker pool operations (remote execution control plane)
+export {
+  createWorkerListDeps,
+  effectiveTokenState,
+  workerList,
+  type WorkerListData,
+  type WorkerListDeps,
+  type WorkerListEvent,
+  type WorkerListItem,
+  workerTokenList,
+  type WorkerTokenListData,
+  type WorkerTokenListEvent,
+  type WorkerTokenListItem,
+} from "./worker/list.ts";
+export {
+  createWorkerTokenCreateDeps,
+  workerTokenCreate,
+  type WorkerTokenCreateData,
+  type WorkerTokenCreateDeps,
+  type WorkerTokenCreateEvent,
+  type WorkerTokenCreateInput,
+} from "./worker/token_create.ts";
+export {
+  createWorkerTokenRevokeDeps,
+  workerTokenRevoke,
+  type WorkerTokenRevokeData,
+  type WorkerTokenRevokeDeps,
+  type WorkerTokenRevokeEvent,
+  type WorkerTokenRevokeInput,
+} from "./worker/token_revoke.ts";
+export { createWorkerModelRunDeps } from "./worker/run_deps.ts";
 export {
   createNamespace,
   formatNamespacedModelName,
@@ -429,16 +461,6 @@ export {
   type VaultTypeSearchInput,
   type VaultTypeSearchItem,
 } from "./vaults/type_search.ts";
-
-// Driver type search operations
-export {
-  driverTypeSearch,
-  type DriverTypeSearchData,
-  type DriverTypeSearchDeps,
-  type DriverTypeSearchEvent,
-  type DriverTypeSearchInput,
-  type DriverTypeSearchItem,
-} from "./drivers/type_search.ts";
 
 // Datastore type search operations
 export {

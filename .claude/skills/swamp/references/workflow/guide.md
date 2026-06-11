@@ -640,6 +640,6 @@ End-to-end workflow creation:
   [references/data-chaining.md](references/data-chaining.md) for `model.*` vs
   `data.latest()` expression guidance, delete/update workflow ordering, and
   command/shell chaining examples
-- **Execution drivers**: See
-  [references/execution-drivers.md](references/execution-drivers.md) for
-  per-step driver overrides and Docker execution
+- **Remote execution**: See
+  [references/remote-execution.md](references/remote-execution.md) for worker
+  provisioning and step placement (target/labels/platform)

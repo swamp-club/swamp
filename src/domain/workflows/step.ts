@@ -26,10 +26,7 @@ import {
 import { StepTask, StepTaskSchema } from "./step_task.ts";
 import { DataOutputOverrideSchema } from "../models/data_output_override.ts";
 import type { DataOutputOverride } from "../models/data_output_override.ts";
-import {
-  DriverConfigFieldSchema,
-  DriverFieldSchema,
-} from "../drivers/driver_config.ts";
+import { rejectRemovedDriverFields } from "../removed_driver_fields.ts";
 
 /**
  * Schema for step dependency with condition.
@@ -78,10 +75,7 @@ const StepDependencyFieldSchema = z.preprocess((data) => {
   return data;
 }, z.array(StepDependencySchema).default([]));
 
-/**
- * Zod schema for Step entity.
- */
-export const StepSchema = z.object({
+const StepObjectSchema = z.object({
   name: z.string().min(1),
   description: z.string().optional(),
   task: StepTaskSchema,
@@ -91,19 +85,32 @@ export const StepSchema = z.object({
   concurrency: z.number().int().nonnegative().optional(),
   dataOutputOverrides: z.array(DataOutputOverrideSchema).optional(),
   allowFailure: z.boolean().default(false),
-  driver: DriverFieldSchema,
-  driverConfig: DriverConfigFieldSchema,
+  // Remote-execution placement (see design/remote-execution.md): a step
+  // declaring any of these dispatches to a matching worker instead of the
+  // loopback executor.
+  target: z.string().optional(),
+  labels: z.record(z.string(), z.string()).optional(),
+  platform: z.string().optional(),
 });
+
+/**
+ * Zod schema for Step entity. Rejects the removed `driver`/`driverConfig`
+ * fields with an actionable error (see design/remote-execution.md).
+ */
+export const StepSchema = z.preprocess(
+  rejectRemovedDriverFields,
+  StepObjectSchema,
+);
 
 /**
  * Type representing step data (output — defaults applied).
  */
-export type StepData = z.infer<typeof StepSchema>;
+export type StepData = z.infer<typeof StepObjectSchema>;
 
 /**
  * Type representing step input data (defaults optional for backward compat).
  */
-export type StepInput = z.input<typeof StepSchema>;
+export type StepInput = z.input<typeof StepObjectSchema>;
 
 /**
  * Step dependency with resolved TriggerCondition.
@@ -134,8 +141,9 @@ export interface CreateStepProps {
   concurrency?: number;
   dataOutputOverrides?: DataOutputOverride[];
   allowFailure?: boolean;
-  driver?: string;
-  driverConfig?: Record<string, unknown>;
+  target?: string;
+  labels?: Record<string, string>;
+  platform?: string;
 }
 
 /**
@@ -160,8 +168,9 @@ export class Step {
     readonly concurrency: number | undefined,
     private _dataOutputOverrides: DataOutputOverride[],
     readonly allowFailure: boolean,
-    readonly driver: string | undefined,
-    readonly driverConfig: Record<string, unknown> | undefined,
+    readonly target: string | undefined,
+    readonly labels: Record<string, string> | undefined,
+    readonly platform: string | undefined,
   ) {}
 
   /**
@@ -181,8 +190,9 @@ export class Step {
       concurrency: props.concurrency,
       dataOutputOverrides: props.dataOutputOverrides,
       allowFailure: props.allowFailure ?? false,
-      driver: props.driver,
-      driverConfig: props.driverConfig,
+      target: props.target,
+      labels: props.labels,
+      platform: props.platform,
     });
 
     return Step.fromData(data);
@@ -224,8 +234,9 @@ export class Step {
       validated.concurrency,
       dataOutputOverrides,
       validated.allowFailure,
-      validated.driver,
-      validated.driverConfig,
+      validated.target,
+      validated.labels,
+      validated.platform,
     );
   }
 
@@ -284,8 +295,29 @@ export class Step {
         }))
         : undefined,
       allowFailure: this.allowFailure,
-      driver: this.driver,
-      driverConfig: this.driverConfig,
+      target: this.target,
+      labels: this.labels,
+      platform: this.platform,
+    };
+  }
+
+  /**
+   * The step's remote-execution placement, or undefined when it has none —
+   * placement-free steps run on the loopback executor.
+   */
+  get placement():
+    | { target?: string; labels?: Record<string, string>; platform?: string }
+    | undefined {
+    if (
+      this.target === undefined && this.platform === undefined &&
+      (this.labels === undefined || Object.keys(this.labels).length === 0)
+    ) {
+      return undefined;
+    }
+    return {
+      target: this.target,
+      labels: this.labels,
+      platform: this.platform,
     };
   }
 }

@@ -20,7 +20,6 @@
 import type { z } from "zod";
 import {
   type DataHandle,
-  type FileOutputSpec,
   type FollowUpAction,
   inferMethodKind,
   isMutatingKind,
@@ -28,7 +27,6 @@ import {
   type MethodDefinition,
   type MethodResult,
   type ModelDefinition,
-  type ResourceOutputSpec,
 } from "./model.ts";
 import type { Definition } from "../definitions/definition.ts";
 import { UserError } from "../errors.ts";
@@ -36,21 +34,23 @@ import type { DataArtifactRef } from "./model_output.ts";
 import { ModelOutput } from "./model_output.ts";
 import { DataOutputValidationService } from "./data_output_validation_service.ts";
 import { DefinitionUpgradeService } from "./definition_upgrade_service.ts";
-import {
-  createFileWriterFactory,
-  createResourceWriter,
-  modelRequiresVault,
-} from "./data_writer.ts";
+import { modelRequiresVault } from "./data_writer.ts";
 import { coerceMethodArgs, getObjectShape } from "./zod_type_coercion.ts";
 import { valueContainsExpression } from "../expressions/expression_parser.ts";
 import type { Data } from "../data/data.ts";
-import type { DriverOutput } from "../drivers/execution_driver.ts";
-import { RawExecutionDriver } from "../drivers/raw_execution_driver.ts";
-import { driverTypeRegistry } from "../drivers/driver_type_registry.ts";
+import type { ExecutionOutput } from "./execution_envelope.ts";
+import { InProcessExecutor } from "./in_process_executor.ts";
 import {
   injectTraceContext,
   withSpan,
 } from "../../infrastructure/tracing/mod.ts";
+import {
+  getRemoteStepDispatcher,
+  type RemoteStepResult,
+} from "../remote/remote_dispatch.ts";
+import type { RpcStreamEvent } from "../remote/protocol.ts";
+import { hasPlacement } from "../remote/scheduler.ts";
+import { createDataId } from "../data/data_id.ts";
 
 /**
  * Maximum depth for recursive follow-up action processing.
@@ -75,96 +75,15 @@ function filterDeclaredResourceData(
 }
 
 /**
- * Context needed to persist "pending" driver outputs on the host side.
- * Uses types from MethodContext to avoid direct infrastructure imports.
+ * Extracts DataHandle[] from "persisted" execution outputs.
+ * In-process execution persists data as it runs, so every output already
+ * references existing data.
  */
-interface PersistContext extends
-  Pick<
-    MethodContext,
-    | "dataRepository"
-    | "modelType"
-    | "modelId"
-    | "tagOverrides"
-    | "runtimeTags"
-    | "vaultService"
-    | "redactor"
-  > {
-  resources: Record<string, ResourceOutputSpec>;
-  files: Record<string, FileOutputSpec>;
-  definitionTags?: Record<string, string>;
-  definitionName?: string;
-  methodName?: string;
-}
-
-/**
- * Converts DriverOutput[] to DataHandle[].
- * For "persisted" outputs, extracts the handle directly.
- * For "pending" outputs (from out-of-process drivers), persists data
- * via the host-side DataWriter infrastructure.
- */
-async function processDriverOutputs(
-  outputs: DriverOutput[],
-  persistContext?: PersistContext,
-): Promise<DataHandle[]> {
+function collectPersistedHandles(outputs: ExecutionOutput[]): DataHandle[] {
   const handles: DataHandle[] = [];
   for (const output of outputs) {
     if (output.kind === "persisted") {
       handles.push(output.handle);
-    } else if (output.kind === "pending" && persistContext) {
-      if (output.type === "resource") {
-        const { writeResource } = createResourceWriter(
-          persistContext.dataRepository,
-          persistContext.modelType,
-          persistContext.modelId,
-          persistContext.resources,
-          persistContext.tagOverrides,
-          undefined, // dataOutputOverrides
-          persistContext.definitionTags,
-          persistContext.runtimeTags,
-          persistContext.definitionName,
-          persistContext.vaultService,
-          persistContext.methodName,
-          undefined, // onEvent
-          persistContext.redactor,
-        );
-        // Shape the raw content into resource data.
-        // If content is valid JSON, use it directly.
-        // Otherwise, build structured data from driver metadata + raw stdout.
-        const text = new TextDecoder().decode(output.content);
-        let data: Record<string, unknown>;
-        try {
-          data = JSON.parse(text);
-        } catch {
-          const meta = output.metadata ?? {};
-          data = {
-            ...meta,
-            executedAt: new Date().toISOString(),
-            stdout: text,
-          };
-        }
-        const handle = await writeResource(
-          output.specName,
-          output.name,
-          data,
-        );
-        handles.push(handle);
-      } else if (output.type === "file") {
-        const { createFileWriter } = createFileWriterFactory(
-          persistContext.dataRepository,
-          persistContext.modelType,
-          persistContext.modelId,
-          persistContext.files,
-          persistContext.tagOverrides,
-          undefined, // dataOutputOverrides
-          undefined, // callbacks
-          persistContext.definitionTags,
-          persistContext.runtimeTags,
-          persistContext.definitionName,
-        );
-        const writer = createFileWriter(output.specName, output.name);
-        const handle = await writer.writeAll(output.content);
-        handles.push(handle);
-      }
     }
   }
   return handles;
@@ -347,6 +266,121 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
     }
 
     return result;
+  }
+
+  /**
+   * Rebuild a full DataHandle from the orchestrator's durable record of a
+   * remotely-written output. The dispatch result carries only identities;
+   * metadata (content type, lifetime, ownerDefinition, tags) comes from the
+   * datastore, which the data plane wrote moments ago.
+   */
+  async #rebuildRemoteHandle(
+    context: MethodContext,
+    output: RemoteStepResult["outputs"][number],
+  ): Promise<DataHandle> {
+    const data = await context.dataRepository.findByName(
+      context.modelType,
+      context.modelId,
+      output.name,
+      output.version,
+    );
+    if (data === null) {
+      // The write was durable before the dispatch result returned; a miss
+      // here means the record vanished out from under us — fail loudly
+      // rather than fabricate metadata.
+      throw new Error(
+        `Remotely-written output '${output.name}' v${output.version} was not found in the datastore`,
+      );
+    }
+    return {
+      name: data.name,
+      specName: output.specName,
+      kind: output.type,
+      dataId: createDataId(output.dataId),
+      version: data.version,
+      size: data.size ?? 0,
+      tags: { ...data.tags },
+      metadata: {
+        contentType: data.contentType,
+        lifetime: data.lifetime,
+        garbageCollection: data.garbageCollection,
+        streaming: data.streaming,
+        tags: { ...data.tags },
+        ownerDefinition: { ...data.ownerDefinition },
+      },
+    };
+  }
+
+  /**
+   * Dispatch the method body to a remote worker through the registered
+   * dispatcher port. Vault sentinels are resolved into the shipped args —
+   * the same resolve-before-dispatch pattern out-of-process execution has
+   * always used; secrets travel only for the step that needs them.
+   */
+  async #executeRemotely(
+    context: MethodContext,
+    executionRequest: import("./execution_envelope.ts").ExecutionRequest,
+    modelDef: ModelDefinition,
+    currentDefinition: Definition,
+    methodName: string,
+  ): Promise<RemoteStepResult> {
+    const dispatcher = getRemoteStepDispatcher();
+    if (dispatcher === null) {
+      throw new UserError(
+        `Step requests remote placement but no worker dispatcher is active — ` +
+          `remote execution requires running under 'swamp serve' with enrolled workers`,
+      );
+    }
+
+    const secretBag = context.vaultSecrets;
+    const methodArgs = secretBag && !secretBag.isEmpty
+      ? secretBag.resolveDeep(
+        executionRequest.methodArgs,
+      ) as Record<string, unknown>
+      : executionRequest.methodArgs;
+    const globalArgs = secretBag && !secretBag.isEmpty
+      ? secretBag.resolveDeep(
+        executionRequest.globalArgs,
+      ) as Record<string, unknown>
+      : executionRequest.globalArgs;
+
+    return await withSpan("swamp.remote.dispatch", {
+      "model.type": context.modelType.normalized,
+      "method.name": methodName,
+    }, () =>
+      dispatcher.executeRemote({
+        placement: context.placement!,
+        modelDef,
+        modelType: context.modelType,
+        modelId: context.modelId,
+        methodName,
+        definitionName: currentDefinition.name,
+        definitionTags: currentDefinition.tags,
+        definitionMeta: executionRequest.definitionMeta,
+        globalArgs,
+        methodArgs,
+        resourceSpecs: executionRequest.resourceSpecs,
+        fileSpecs: executionRequest.fileSpecs,
+        traceHeaders: executionRequest.traceHeaders,
+        runtimeTags: context.runtimeTags,
+        workflowName: context.tagOverrides?.workflow,
+        jobName: context.tagOverrides?.job,
+        stepName: context.tagOverrides?.step,
+        signal: context.signal,
+        onEvent: context.onEvent
+          ? (event: RpcStreamEvent) => {
+            if (event.kind === "method_event" && "event" in event) {
+              context.onEvent!(
+                event.event as Parameters<
+                  NonNullable<
+                    MethodContext["onEvent"]
+                  >
+                >[0],
+              );
+            }
+          }
+          : undefined,
+      }));
   }
 
   executeWorkflow(
@@ -662,12 +696,10 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         }
       }
 
-      // Resolve the execution driver
-      const driverType = context.driver ?? "raw";
       const definitionHash = await currentDefinition.computeHash();
 
       const executionRequest:
-        import("../drivers/execution_driver.ts").ExecutionRequest = {
+        import("./execution_envelope.ts").ExecutionRequest = {
           protocolVersion: 1,
           modelType: context.modelType.normalized,
           modelId: context.modelId,
@@ -703,9 +735,37 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
       let result: MethodResult;
       let executionContext: MethodContext = context;
 
-      if (driverType === "raw") {
-        // Use the raw in-process driver
-        const driver = new RawExecutionDriver(
+      if (context.placement && hasPlacement(context.placement)) {
+        // Remote placement: the method body runs on a matching worker; the
+        // surrounding pipeline (checks above, output records and follow-up
+        // actions below) stays at the orchestrator. See
+        // design/remote-execution.md.
+        const remoteResult = await this.#executeRemotely(
+          context,
+          executionRequest,
+          modelDef,
+          currentDefinition,
+          methodName,
+        );
+        // Rebuild full handles from the durable records the data plane
+        // persisted — downstream consumers (data-record mapping, workflow
+        // artifact tracking) read metadata like ownerDefinition, which the
+        // wire-thin dispatch outputs do not carry.
+        currentHandles = await Promise.all(
+          remoteResult.outputs.map((output) =>
+            this.#rebuildRemoteHandle(context, output)
+          ),
+        );
+        result = {
+          dataHandles: currentHandles,
+          followUpActions: remoteResult
+            .followUpActions as FollowUpAction[] | undefined,
+          executor: remoteResult.workerName,
+        };
+      } else {
+        // Execute in-process — the single-host path (see
+        // design/remote-execution.md "No execution drivers").
+        const inProcessExecutor = new InProcessExecutor(
           this,
           currentDefinition,
           method,
@@ -713,25 +773,25 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
           context,
           methodName,
         );
-        const driverResult = await withSpan("swamp.driver.execute", {
-          "driver.type": "raw",
+        const executionResult = await withSpan("swamp.method.execute", {
           "model.type": context.modelType.normalized,
-        }, () => driver.execute(executionRequest));
+        }, () => inProcessExecutor.execute(executionRequest));
 
-        if (driverResult.outputs.some((o) => o.kind === "pending")) {
+        if (executionResult.outputs.some((o) => o.kind === "pending")) {
           throw new Error(
-            "Raw driver unexpectedly produced pending outputs — " +
-              "this is a bug; raw driver should only produce persisted outputs",
+            "In-process execution unexpectedly produced pending outputs — " +
+              "this is a bug; in-process execution should only produce " +
+              "persisted outputs",
           );
         }
         // Process outputs first — even on error, data may have been written
         // to disk before the method threw (e.g. code-review writes log then
         // throws on verdict=FAIL). Handles must survive the error path.
-        currentHandles = await processDriverOutputs(driverResult.outputs);
+        currentHandles = collectPersistedHandles(executionResult.outputs);
 
-        if (driverResult.status === "error") {
+        if (executionResult.status === "error") {
           const err = new Error(
-            driverResult.error ?? "Method execution failed",
+            executionResult.error ?? "Method execution failed",
           );
           (err as unknown as Record<string, unknown>).dataHandles =
             currentHandles;
@@ -740,85 +800,12 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
 
         result = {
           dataHandles: currentHandles,
-          followUpActions: driverResult
+          followUpActions: executionResult
             .followUpActions as FollowUpAction[] | undefined,
+          executor: "loopback",
         };
-        // Use the driver's context with writers for follow-up actions
-        executionContext = driver.contextWithWriters ?? context;
-      } else {
-        // Populate bundle only for out-of-process drivers (raw driver doesn't use it)
-        if (modelDef.bundleSourceFactory) {
-          executionRequest.bundle = new TextEncoder().encode(
-            await modelDef.bundleSourceFactory(),
-          );
-        }
-
-        // Resolve vault sentinels for out-of-process drivers. The raw driver
-        // resolves sentinels internally via DefaultMethodExecutionService.execute(),
-        // but out-of-process drivers receive the ExecutionRequest as-is.
-        const secretBag = context.vaultSecrets;
-        if (secretBag && !secretBag.isEmpty) {
-          executionRequest.methodArgs = secretBag.resolveDeep(
-            executionRequest.methodArgs,
-          ) as Record<string, unknown>;
-          executionRequest.globalArgs = secretBag.resolveDeep(
-            executionRequest.globalArgs,
-          ) as Record<string, unknown>;
-        }
-
-        // Look up a registered driver type
-        await driverTypeRegistry.ensureTypeLoaded(driverType);
-        const driverInfo = driverTypeRegistry.get(driverType);
-        if (!driverInfo) {
-          throw new Error(
-            `Unknown execution driver '${driverType}'. ` +
-              `Available drivers: ${
-                driverTypeRegistry.getAll().map((d) => d.type).join(", ")
-              }`,
-          );
-        }
-        if (!driverInfo.createDriver) {
-          throw new Error(
-            `Execution driver '${driverType}' does not have a createDriver factory.`,
-          );
-        }
-        const driver = driverInfo.createDriver(context.driverConfig ?? {});
-        const driverResult = await withSpan("swamp.driver.execute", {
-          "driver.type": driverType,
-          "model.type": context.modelType.normalized,
-        }, () =>
-          driver.execute(executionRequest, {
-            onLog: (line) => {
-              context.logger?.info(line);
-              context.onEvent?.({
-                type: "output",
-                stream: "stdout",
-                line,
-              });
-            },
-          }));
-
-        if (driverResult.status === "error") {
-          throw new Error(driverResult.error ?? "Driver execution failed");
-        }
-
-        const resources = modelDef.resources ?? {};
-        const files = modelDef.files ?? {};
-        currentHandles = await processDriverOutputs(driverResult.outputs, {
-          dataRepository: context.dataRepository,
-          modelType: context.modelType,
-          modelId: context.modelId,
-          resources,
-          files,
-          tagOverrides: context.tagOverrides,
-          definitionTags: currentDefinition.tags,
-          runtimeTags: context.runtimeTags,
-          definitionName: currentDefinition.name,
-          vaultService: context.vaultService,
-          methodName,
-          redactor: context.redactor,
-        });
-        result = { dataHandles: currentHandles };
+        // Use the executor's context with writers for follow-up actions
+        executionContext = inProcessExecutor.contextWithWriters ?? context;
       }
 
       // Collect artifact refs from handles (data is already persisted)

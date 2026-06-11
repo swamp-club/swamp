@@ -984,7 +984,6 @@ Deno.test("workflowRun bridge finalizes in-flight invocations when execution ser
             stepId: "step1",
             modelName: "test-model",
             methodName: "run",
-            driver: "local",
           };
           // Simulate the workflow engine blowing up after starting a
           // method but before any terminal step event.

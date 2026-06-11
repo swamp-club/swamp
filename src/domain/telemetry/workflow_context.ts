@@ -24,8 +24,7 @@
  *
  * Fields are individually optional so the bridge can populate what is
  * known at the failure point. For example, a step that fails before the
- * model can be resolved leaves `modelType` undefined; a step that fails
- * before DriverPlan resolution leaves `driver` undefined.
+ * model can be resolved leaves `modelType` undefined.
  */
 export interface WorkflowContext {
   readonly workflowName: string;
@@ -33,7 +32,8 @@ export interface WorkflowContext {
   readonly jobName: string;
   readonly stepName: string;
   readonly modelType?: string;
-  readonly driver?: string;
+  /** "loopback" or the worker name that executed the step's method. */
+  readonly executor?: string;
 }
 
 /**
@@ -45,7 +45,7 @@ export interface WorkflowContextData {
   jobName: string;
   stepName: string;
   modelType?: string;
-  driver?: string;
+  executor?: string;
 }
 
 /**
@@ -60,7 +60,7 @@ export function createWorkflowContext(
     jobName: props.jobName,
     stepName: props.stepName,
     modelType: props.modelType,
-    driver: props.driver,
+    executor: props.executor,
   };
 }
 
@@ -79,8 +79,8 @@ export function workflowContextToData(
   if (context.modelType !== undefined) {
     data.modelType = context.modelType;
   }
-  if (context.driver !== undefined) {
-    data.driver = context.driver;
+  if (context.executor !== undefined) {
+    data.executor = context.executor;
   }
   return data;
 }

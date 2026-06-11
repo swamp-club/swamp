@@ -35,7 +35,6 @@ export type FreshnessKind =
   | "model"
   | "extension"
   | "vault"
-  | "driver"
   | "datastore"
   | "report";
 
@@ -235,7 +234,7 @@ export interface FindStaleFilesParams {
    * findStaleFiles only considers rows it owns. The models loader
    * passes ["model", "extension"] — models plus user-defined extensions
    * that target base models. Sibling loaders pass singletons
-   * (["report"], ["driver"], etc.).
+   * (["report"], ["datastore"], etc.).
    */
   kinds: FreshnessKind[];
 }

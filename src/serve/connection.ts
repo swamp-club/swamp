@@ -38,6 +38,7 @@ import type {
 import { findDefinitionByIdOrName } from "../domain/models/model_lookup.ts";
 import { acquireModelLocks } from "../cli/repo_context.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
+import type { WorkerGateway } from "./worker_gateway.ts";
 
 // ── Zod schemas for incoming WebSocket messages ─────────────────────────
 
@@ -48,7 +49,6 @@ const WorkflowRunRequestSchema = z.object({
     workflowIdOrName: z.string(),
     inputs: z.record(z.string(), z.unknown()).optional(),
     lastEvaluated: z.boolean().optional(),
-    driver: z.string().optional(),
     verbose: z.boolean().optional(),
     runtimeTags: z.record(z.string(), z.string()).optional(),
   }),
@@ -62,7 +62,6 @@ const ModelMethodRunRequestSchema = z.object({
     methodName: z.string(),
     inputs: z.record(z.string(), z.unknown()).optional(),
     lastEvaluated: z.boolean().optional(),
-    driver: z.string().optional(),
     runtimeTags: z.record(z.string(), z.string()).optional(),
   }),
 });
@@ -107,6 +106,13 @@ export interface ConnectionContext {
    * datastores or custom datastores without a cache.
    */
   syncService?: DatastoreSyncService;
+  /**
+   * Remote-execution worker gateway. When present, `rpc.*` frames on this
+   * socket are routed to it (worker enrollment and capability verbs); the
+   * legacy client protocol on the same listener is unaffected. See
+   * design/remote-execution.md.
+   */
+  workerGateway?: WorkerGateway;
 }
 
 export function handleConnection(
@@ -114,12 +120,26 @@ export function handleConnection(
   ctx: ConnectionContext,
 ): void {
   const activeRequests = new Map<string, AbortController>();
+  const workerAttachment = ctx.workerGateway?.attachTransport({
+    send: (data) => {
+      if (socket.readyState === WebSocket.OPEN) {
+        socket.send(data);
+      }
+    },
+  }, () => socket.close());
 
   socket.onmessage = (event) => {
+    if (
+      workerAttachment && typeof event.data === "string" &&
+      workerAttachment.feed(event.data)
+    ) {
+      return;
+    }
     handleMessage(socket, ctx, activeRequests, event);
   };
 
   socket.onclose = () => {
+    workerAttachment?.closed();
     for (const controller of activeRequests.values()) {
       controller.abort();
     }
@@ -215,7 +235,6 @@ async function handleWorkflowRun(
         workflowIdOrName: payload.workflowIdOrName,
         inputs: payload.inputs,
         lastEvaluated: payload.lastEvaluated,
-        driver: payload.driver,
         verbose: payload.verbose,
         runtimeTags: payload.runtimeTags,
       },
@@ -229,6 +248,7 @@ async function handleWorkflowRun(
       },
       ctx.syncService,
     );
+    send(socket, { type: "done", id: requestId });
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
       sendError(socket, requestId, "cancelled", "Operation was cancelled");
@@ -279,7 +299,6 @@ async function handleModelMethodRun(
         inputs: payload.inputs ?? {},
         lastEvaluated: payload.lastEvaluated ?? false,
         runtimeTags: payload.runtimeTags,
-        driver: payload.driver,
       })
     ) {
       if (socket.readyState !== WebSocket.OPEN) break;
@@ -288,6 +307,7 @@ async function handleModelMethodRun(
       );
       send(socket, { type: "event", id: requestId, event: serialized });
     }
+    send(socket, { type: "done", id: requestId });
   } catch (error) {
     if (error instanceof DOMException && error.name === "AbortError") {
       sendError(socket, requestId, "cancelled", "Operation was cancelled");

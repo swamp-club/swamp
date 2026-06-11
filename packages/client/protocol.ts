@@ -31,7 +31,6 @@ export interface WorkflowRunPayload {
   workflowIdOrName: string;
   inputs?: Record<string, unknown>;
   lastEvaluated?: boolean;
-  driver?: string;
   verbose?: boolean;
   runtimeTags?: Record<string, string>;
 }
@@ -41,7 +40,6 @@ export interface ModelMethodRunPayload {
   methodName: string;
   inputs?: Record<string, unknown>;
   lastEvaluated?: boolean;
-  driver?: string;
   runtimeTags?: Record<string, string>;
 }
 
@@ -65,7 +63,9 @@ export interface SerializedError {
 
 export type ServerMessage =
   | { type: "event"; id: string; event: SerializedEvent }
-  | { type: "error"; id: string; error: SerializedError };
+  | { type: "error"; id: string; error: SerializedError }
+  /** Terminal frame after a run's event stream completes successfully. */
+  | { type: "done"; id: string };
 
 // ── Event types (wire-format discriminated unions) ────────────────────────
 
@@ -73,7 +73,7 @@ export type ServerMessage =
 export type WorkflowRunEvent =
   | { kind: "validating_inputs" }
   | { kind: "evaluating_workflow" }
-  | { kind: "started"; runId: string; workflowName: string; driver?: string }
+  | { kind: "started"; runId: string; workflowName: string }
   | { kind: "job_started"; jobId: string }
   | { kind: "job_completed"; jobId: string; status: string }
   | { kind: "job_skipped"; jobId: string }

@@ -528,8 +528,7 @@ export class ExpressionEvaluationService {
    *      values are resolved to raw strings and registered with the
    *      optional redactor for log scrubbing.
    *
-   * Used at execution-time seams that consume workflow-level driverConfig
-   * (post-DriverPlan.withDefinition and post-resolveDriverConfig), where
+   * Used at execution-time seams that consume workflow-level data where
    * CEL must materialize before runtime resolution walks the now-CEL-
    * resolved tree.
    */

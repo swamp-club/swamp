@@ -75,8 +75,7 @@ export interface MethodInvocationContext {
   skipAllReports?: MethodContext["skipAllReports"];
   reportNames?: MethodContext["reportNames"];
   reportLabels?: MethodContext["reportLabels"];
-  driver?: MethodContext["driver"];
-  driverConfig?: MethodContext["driverConfig"];
+  placement?: MethodContext["placement"];
   vaultSecrets?: MethodContext["vaultSecrets"];
   unresolvedMethodArgs?: MethodContext["unresolvedMethodArgs"];
   /**
@@ -93,7 +92,7 @@ export interface MethodInvocationContext {
  * MethodContext construction — every method execution path (manual runs,
  * workflow steps, pre-flight check validation) routes through here.
  *
- * `queryData` is intentionally not an input. The RawExecutionDriver derives
+ * `queryData` is intentionally not an input. The InProcessExecutor derives
  * it from `dataQueryService` at execution time, with a fallback for test
  * fixtures that set `queryData` directly.
  */
@@ -130,8 +129,7 @@ export function buildMethodContext(
     skipAllReports: invocation.skipAllReports,
     reportNames: invocation.reportNames,
     reportLabels: invocation.reportLabels,
-    driver: invocation.driver,
-    driverConfig: invocation.driverConfig,
+    placement: invocation.placement,
     vaultSecrets: invocation.vaultSecrets,
     unresolvedMethodArgs: invocation.unresolvedMethodArgs,
     extensionFile: (relPath: string) => resolveExtensionFile(root, relPath),

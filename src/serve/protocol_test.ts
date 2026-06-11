@@ -43,14 +43,12 @@ Deno.test("WorkflowRunPayload - full payload", () => {
     workflowIdOrName: "deploy",
     inputs: { env: "prod" },
     lastEvaluated: true,
-    driver: "docker",
     verbose: true,
     runtimeTags: { region: "us-east-1" },
   };
   assertEquals(payload.workflowIdOrName, "deploy");
   assertEquals(payload.inputs, { env: "prod" });
   assertEquals(payload.lastEvaluated, true);
-  assertEquals(payload.driver, "docker");
   assertEquals(payload.verbose, true);
   assertEquals(payload.runtimeTags, { region: "us-east-1" });
 });
@@ -72,11 +70,10 @@ Deno.test("ModelMethodRunPayload - full payload", () => {
     methodName: "start",
     inputs: { force: true },
     lastEvaluated: false,
-    driver: "shell",
     runtimeTags: { tier: "staging" },
   };
   assertEquals(payload.inputs, { force: true });
-  assertEquals(payload.driver, "shell");
+  assertEquals(payload.runtimeTags, { tier: "staging" });
 });
 
 // ── ServerRequest discriminated union ───────────────────────────────────

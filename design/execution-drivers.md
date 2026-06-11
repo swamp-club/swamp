@@ -1,8 +1,19 @@
-# Execution Drivers
+# Execution Drivers (superseded)
 
-An execution driver in swamp controls where and how a model method runs. The
-default driver (`raw`) runs methods directly in the host Deno process. The
-`docker` driver runs methods in isolated containers.
+> **Superseded by [remote execution](./remote-execution.md)** (swamp issue
+> #535). The driver abstraction — `raw`/`docker` selection, the
+> `driver:`/`driverConfig:` fields, the driver extension kind, and the docker
+> bundle-mounting machinery — has been removed. Methods run in-process on
+> whichever executor holds them: the orchestrator's loopback executor, or a
+> remote worker selected by step `target`/`labels`/`platform` placement.
+> Isolation is a worker deployment property (run a containerized worker).
+> The self-contained bundling and out-of-process vault-resolution patterns
+> described below live on in remote execution; the rest of this document is
+> retained for historical context only.
+
+An execution driver in swamp controlled where and how a model method ran. The
+default driver (`raw`) ran methods directly in the host Deno process. The
+`docker` driver ran methods in isolated containers.
 
 ## Built-in Drivers
 

@@ -44,6 +44,23 @@ export function serializeEvent(
 }
 
 /**
+ * Deserializes a wire event back into the renderer-facing event shape — the
+ * anti-corruption layer for clients consuming a remote run (`--server`).
+ *
+ * The codec is lossless by design: run events are plain data (they exist to
+ * be streamed), and `SwampError` is a structural interface whose
+ * `code`/`message`/`details` survive `serializeSwampError` unchanged (only
+ * the optional `cause` Error is dropped, which renderers never read).
+ * Any future event field that needs re-inflation belongs HERE, beside its
+ * serializer — never in renderers.
+ */
+export function deserializeEvent(
+  event: SerializedEvent,
+): { kind: string; [key: string]: unknown } {
+  return event;
+}
+
+/**
  * Serializes a SwampError into a JSON-safe error object.
  */
 export function serializeSwampError(error: SwampError): SerializedError {
@@ -57,7 +74,7 @@ export function serializeSwampError(error: SwampError): SerializedError {
 /**
  * Deep-clones an object, converting Error instances to plain objects.
  */
-function jsonSafeClone(value: unknown): unknown {
+export function jsonSafeClone(value: unknown): unknown {
   if (value === null || value === undefined) return value;
   if (value instanceof Error) {
     return { message: value.message, stack: value.stack };

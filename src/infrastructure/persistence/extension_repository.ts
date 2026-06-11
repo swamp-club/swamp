@@ -290,7 +290,7 @@ export class ExtensionRepository {
    * a missing or corrupt catalog. The next loader pass bootstraps a
    * fresh catalog from disk.
    *
-   * Runs inside a transaction so all five kinds are invalidated
+   * Runs inside a transaction so all kinds are invalidated
    * atomically — a partial invalidation (some kinds cleared, others
    * not) leaves the catalog in an inconsistent state that can cause
    * BundleBuildFailed errors on the next run.
@@ -299,7 +299,6 @@ export class ExtensionRepository {
     const kinds: ExtensionKind[] = [
       "model",
       "vault",
-      "driver",
       "datastore",
       "report",
     ];
@@ -333,7 +332,6 @@ export class ExtensionRepository {
     const kinds: ExtensionKind[] = [
       "model",
       "vault",
-      "driver",
       "datastore",
       "report",
     ];

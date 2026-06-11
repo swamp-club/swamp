@@ -45,8 +45,6 @@ import type { VaultService } from "../../domain/vaults/vault_service.ts";
 import type { ExpressionEvaluationService } from "../../domain/expressions/expression_evaluation_service.ts";
 import type { SecretRedactor } from "../../domain/secrets/mod.ts";
 import type { DataQueryService } from "../../domain/data/data_query_service.ts";
-import type { RepoMarkerData } from "../../infrastructure/persistence/repo_marker_repository.ts";
-import { resolveDriverConfig } from "../../domain/drivers/driver_resolution.ts";
 import { buildMethodContext } from "../../domain/models/method_context.ts";
 import { createExtensionCelEnvironment } from "../../infrastructure/cel/cel_evaluator.ts";
 import type {
@@ -177,15 +175,8 @@ export interface ModelMethodRunDeps {
   dataRepo: UnifiedDataRepository;
   definitionRepo: YamlDefinitionRepository;
   outputRepo: OutputRepository;
-  /** Data query service — the driver derives context.queryData from this. */
+  /** Data query service — the executor derives context.queryData from this. */
   dataQueryService: DataQueryService;
-  /**
-   * Lazily loads the `.swamp.yaml` repo marker. Callers must memoize the
-   * promise so the file is read at most once per invocation; edits to
-   * `.swamp.yaml` between invocations are picked up because the dep is
-   * constructed per-request.
-   */
-  loadRepoMarker: () => Promise<RepoMarkerData | null>;
   createRunLog: (
     modelType: ModelType,
     methodName: string,
@@ -219,7 +210,6 @@ export interface ModelMethodRunInput {
   skipAllReports?: boolean;
   reportNames?: string[];
   reportLabels?: string[];
-  driver?: string;
   swampSha?: string;
 }
 
@@ -595,43 +585,6 @@ export async function* modelMethodRun(
         const vaultService = await deps.createVaultService();
         const executionService = deps.createExecutionService();
 
-        // Resolve the final driver/driverConfig using the full tier chain
-        // (cli > definition > repo > "raw"). No workflow/job/step tiers
-        // apply outside a workflow run.
-        const repoMarker = await deps.loadRepoMarker();
-        const resolvedDriverPre = resolveDriverConfig(
-          { driver: input.driver },
-          undefined,
-          undefined,
-          undefined,
-          {
-            driver: evaluatedDefinition.driver,
-            driverConfig: evaluatedDefinition.driverConfig,
-          },
-          {
-            driver: repoMarker?.defaultDriver,
-            driverConfig: repoMarker?.defaultDriverConfig,
-          },
-        );
-
-        // Resolve runtime expressions (env, vault) in the winning tier's
-        // driverConfig. The definition-tier already went through
-        // resolveRuntimeExpressionsInDefinition above, so this pass is
-        // idempotent for that tier; it is LOAD-BEARING for the repo-tier
-        // defaultDriverConfig from .swamp.yaml, which is never resolved
-        // anywhere else. No forEach on the direct path, so the CEL/self.*
-        // pass is unnecessary here.
-        const resolvedDriver = resolvedDriverPre.driverConfig
-          ? {
-            driver: resolvedDriverPre.driver,
-            driverConfig:
-              (await evaluationService.resolveRuntimeExpressionsInData(
-                resolvedDriverPre.driverConfig,
-                redactor,
-              )) as Record<string, unknown>,
-          }
-          : resolvedDriverPre;
-
         preExecSpan.end();
         setupSpan.end();
 
@@ -674,8 +627,6 @@ export async function* modelMethodRun(
                     skipCheckNames: input.skipCheckNames,
                     skipCheckLabels: input.skipCheckLabels,
                     skipAllChecks: input.skipAllChecks,
-                    driver: resolvedDriver.driver,
-                    driverConfig: resolvedDriver.driverConfig,
                     extensionFilesRoot: modelDef.extensionFilesRoot,
                     onEvent: (event: MethodExecutionEvent) => {
                       if (event.type === "output") {

@@ -24,20 +24,14 @@ import {
   type InputsSchema,
   InputsSchemaSchema,
 } from "../definitions/definition.ts";
-import {
-  DriverConfigFieldSchema,
-  DriverFieldSchema,
-} from "../drivers/driver_config.ts";
+import { rejectRemovedDriverFields } from "../removed_driver_fields.ts";
 import {
   type ReportSelection,
   ReportSelectionSchema,
 } from "../reports/report_selection.ts";
 import { Cron } from "croner";
 
-/**
- * Zod schema for Workflow aggregate root.
- */
-export const WorkflowSchema = z.object({
+const WorkflowObjectSchema = z.object({
   id: z.string().uuid(),
   name: z.string().min(1).refine(
     (name) => {
@@ -76,19 +70,27 @@ export const WorkflowSchema = z.object({
   version: z.number().int().positive().default(1),
   concurrency: z.number().int().nonnegative().optional(),
   reports: ReportSelectionSchema,
-  driver: DriverFieldSchema,
-  driverConfig: DriverConfigFieldSchema,
 });
+
+/**
+ * Zod schema for Workflow aggregate root. Rejects the removed
+ * `driver`/`driverConfig` fields with an actionable error (see
+ * design/remote-execution.md).
+ */
+export const WorkflowSchema = z.preprocess(
+  rejectRemovedDriverFields,
+  WorkflowObjectSchema,
+);
 
 /**
  * Type representing workflow data (output — defaults applied).
  */
-export type WorkflowData = z.infer<typeof WorkflowSchema>;
+export type WorkflowData = z.infer<typeof WorkflowObjectSchema>;
 
 /**
  * Type representing workflow input data (defaults optional for backward compat).
  */
-export type WorkflowInput = z.input<typeof WorkflowSchema>;
+export type WorkflowInput = z.input<typeof WorkflowObjectSchema>;
 
 /**
  * Properties for creating a new Workflow.
@@ -104,8 +106,6 @@ export interface CreateWorkflowProps {
   version?: number;
   concurrency?: number;
   reports?: ReportSelection;
-  driver?: string;
-  driverConfig?: Record<string, unknown>;
 }
 
 /**
@@ -130,8 +130,6 @@ export class Workflow {
     readonly version: number,
     readonly concurrency: number | undefined,
     readonly reports: ReportSelection | undefined,
-    readonly driver: string | undefined,
-    readonly driverConfig: Record<string, unknown> | undefined,
   ) {}
 
   /**
@@ -155,12 +153,10 @@ export class Workflow {
       version,
       concurrency: props.concurrency,
       reports: props.reports,
-      driver: props.driver,
-      driverConfig: props.driverConfig,
     };
 
     // Always validate the name (path traversal protection)
-    WorkflowSchema.shape.name.parse(data.name);
+    WorkflowObjectSchema.shape.name.parse(data.name);
 
     // Only validate full schema if jobs exist (jobs.min(1) requires at least one)
     if (jobs.length > 0) {
@@ -178,8 +174,6 @@ export class Workflow {
       data.version,
       data.concurrency,
       data.reports,
-      data.driver,
-      data.driverConfig,
     );
   }
 
@@ -201,8 +195,6 @@ export class Workflow {
       validated.version,
       validated.concurrency,
       validated.reports,
-      validated.driver,
-      validated.driverConfig,
     );
   }
 
@@ -259,8 +251,6 @@ export class Workflow {
       version: this.version,
       concurrency: this.concurrency,
       reports: this.reports,
-      driver: this.driver,
-      driverConfig: this.driverConfig,
     };
   }
 }

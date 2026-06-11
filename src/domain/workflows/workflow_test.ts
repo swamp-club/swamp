@@ -17,8 +17,9 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertThrows } from "@std/assert";
-import { Workflow } from "./workflow.ts";
+import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
+import { parse as parseYaml } from "@std/yaml";
+import { Workflow, type WorkflowInput } from "./workflow.ts";
 import { Job } from "./job.ts";
 import { Step } from "./step.ts";
 import { StepTask } from "./step_task.ts";
@@ -466,50 +467,72 @@ Deno.test("Workflow.create rejects malformed scoped names", () => {
   );
 });
 
-// Driver field tests
+// Removed driver field tests (see design/remote-execution.md)
 
-Deno.test("Workflow.create defaults driver to undefined", () => {
-  const workflow = Workflow.create({ name: "test-workflow" });
-  assertEquals(workflow.driver, undefined);
-  assertEquals(workflow.driverConfig, undefined);
+Deno.test("Workflow YAML containing 'driver: docker' fails to parse with actionable message", () => {
+  const yaml = `
+id: 550e8400-e29b-41d4-a716-446655440000
+name: legacy-driver-workflow
+version: 1
+jobs:
+  - name: job1
+    steps:
+      - name: step1
+        task:
+          type: model_method
+          modelIdOrName: test-model
+          methodName: run
+        driver: docker
+        driverConfig:
+          image: node:18
+`;
+  const data = parseYaml(yaml);
+  const error = assertThrows(
+    () => Workflow.fromData(data as WorkflowInput),
+    Error,
+  );
+  assertStringIncludes(
+    error.message,
+    "The 'driver' field has been removed — execution drivers are replaced " +
+      "by remote execution (see design/remote-execution.md). Remove the " +
+      "field; for isolation, run a containerized worker and use step " +
+      "'labels' placement.",
+  );
 });
 
-Deno.test("Workflow.create uses provided driver and driverConfig", () => {
-  const workflow = Workflow.create({
-    name: "test-workflow",
-    driver: "docker",
-    driverConfig: { image: "node:18" },
-    jobs: [createTestJob("job1")],
-  });
-  assertEquals(workflow.driver, "docker");
-  assertEquals(workflow.driverConfig, { image: "node:18" });
+Deno.test("WorkflowSchema rejects removed driver field with actionable error", () => {
+  const error = assertThrows(
+    () =>
+      Workflow.fromData({
+        id: "550e8400-e29b-41d4-a716-446655440000",
+        name: "test-workflow",
+        jobs: [createTestJob("job1").toData()],
+        driver: "docker",
+      } as unknown as WorkflowInput),
+    Error,
+  );
+  assertStringIncludes(
+    error.message,
+    "The 'driver' field has been removed",
+  );
+  assertStringIncludes(error.message, "remote execution");
 });
 
-Deno.test("Workflow.toData includes driver and driverConfig", () => {
-  const workflow = Workflow.create({
-    id: "550e8400-e29b-41d4-a716-446655440000",
-    name: "test-workflow",
-    driver: "docker",
-    driverConfig: { timeout: 60 },
-    jobs: [createTestJob("job1")],
-  });
-  const data = workflow.toData();
-  assertEquals(data.driver, "docker");
-  assertEquals(data.driverConfig, { timeout: 60 });
-});
-
-Deno.test("Workflow.fromData and toData roundtrip with driver", () => {
-  const original = Workflow.create({
-    id: "550e8400-e29b-41d4-a716-446655440000",
-    name: "driver-workflow",
-    driver: "docker",
-    driverConfig: { image: "deno:latest" },
-    jobs: [createTestJob("job1")],
-  });
-  const data = original.toData();
-  const restored = Workflow.fromData(data);
-  assertEquals(restored.driver, "docker");
-  assertEquals(restored.driverConfig, { image: "deno:latest" });
+Deno.test("WorkflowSchema rejects removed driverConfig field with actionable error", () => {
+  const error = assertThrows(
+    () =>
+      Workflow.fromData({
+        id: "550e8400-e29b-41d4-a716-446655440000",
+        name: "test-workflow",
+        jobs: [createTestJob("job1").toData()],
+        driverConfig: { timeout: 60 },
+      } as unknown as WorkflowInput),
+    Error,
+  );
+  assertStringIncludes(
+    error.message,
+    "The 'driverConfig' field has been removed",
+  );
 });
 
 // Reports field tests

@@ -2,7 +2,7 @@
 
 Test utilities for [swamp](https://github.com/swamp-club/swamp) extensions.
 Provides test factories for all extension types — models, vaults, datastores,
-execution drivers, and reports — for unit testing without real infrastructure.
+and reports — for unit testing without real infrastructure.
 
 ## Installation
 
@@ -163,34 +163,6 @@ Deno.test("lock acquire and release", async () => {
 | `healthResult`     | healthy                       | Override health check result     |
 | `lockAcquireFails` | `false`                       | Make lock acquire reject         |
 | `withSyncService`  | `false`                       | Enable `createSyncService`       |
-
-## `createDriverTestContext`
-
-Test harness for `ExecutionDriver` implementations. Provides a well-formed
-`ExecutionRequest` and callbacks that capture events.
-
-```typescript
-import { createDriverTestContext } from "@swamp-club/swamp-testing";
-
-Deno.test("driver executes method", async () => {
-  const { request, callbacks, getCapturedLogs } = createDriverTestContext({
-    methodName: "run",
-    globalArgs: { region: "us-east-1" },
-  });
-
-  const result = await myDriver.execute(request, callbacks);
-  assertEquals(result.status, "success");
-});
-```
-
-| Option            | Default        | Description                   |
-| ----------------- | -------------- | ----------------------------- |
-| `protocolVersion` | `1`            | Protocol version              |
-| `modelType`       | `"test/model"` | Model type identifier         |
-| `methodName`      | `"run"`        | Method to execute             |
-| `globalArgs`      | `{}`           | Global arguments              |
-| `methodArgs`      | `{}`           | Method arguments              |
-| `definitionMeta`  | auto-generated | Definition metadata overrides |
 
 ## `createReportTestContext`
 
