@@ -27,6 +27,7 @@ import {
   type GraphNode,
   TopologicalSortService,
 } from "./topological_sort_service.ts";
+import { extractInputReferences } from "../expressions/expression_parser.ts";
 
 /**
  * Value object representing the result of a single validation.
@@ -75,6 +76,7 @@ export type MethodResolution =
     status: "resolved";
     requiredArgs: string[];
     definitionProvidedArgs?: string[];
+    definitionProvidedArgValues?: Record<string, unknown>;
   }
   | { status: "model_not_found" }
   | { status: "method_not_found"; modelType: string }
@@ -106,6 +108,7 @@ export interface ModelMethodResolver {
  * 6. No cyclic dependencies between jobs
  * 7. No cyclic dependencies between steps within jobs
  * 8. Step inputs match method/workflow required arguments
+ * 9. GlobalArgument expressions reference declared workflow inputs
  */
 export interface WorkflowValidationService {
   /**
@@ -156,6 +159,13 @@ export class DefaultWorkflowValidationService
     // 8. Step inputs match required arguments
     if (this.methodResolver || this.workflowRepo) {
       results.push(...await this.validateStepInputs(workflow));
+    }
+
+    // 9. GlobalArgument expressions reference declared workflow inputs
+    if (this.methodResolver) {
+      results.push(
+        ...await this.validateGlobalArgInputRefs(workflow),
+      );
     }
 
     return results;
@@ -533,5 +543,73 @@ export class DefaultWorkflowValidationService
     }
 
     return [WorkflowValidationResult.pass(checkName)];
+  }
+
+  private async validateGlobalArgInputRefs(
+    workflow: Workflow,
+  ): Promise<WorkflowValidationResult[]> {
+    const results: WorkflowValidationResult[] = [];
+    const declaredInputs = new Set(
+      Object.keys(workflow.inputs?.properties ?? {}),
+    );
+
+    for (const job of workflow.jobs) {
+      for (const step of job.steps) {
+        const task = step.task;
+        if (!task) continue;
+
+        const taskData = task.data;
+        if (taskData.type !== "model_method") continue;
+
+        const modelRef = taskData.modelIdOrName ?? taskData.modelName;
+        if (!modelRef) continue;
+        if (modelRef.includes("${{")) continue;
+        if (taskData.modelType?.includes("${{")) continue;
+
+        const checkName =
+          `GlobalArgument input references for '${step.name}' in job '${job.name}' (${modelRef}.${taskData.methodName})`;
+
+        const resolution = await this.methodResolver!.resolve(
+          modelRef,
+          taskData.methodName,
+          taskData.modelType,
+        );
+
+        if (
+          resolution.status !== "resolved" ||
+          !resolution.definitionProvidedArgValues
+        ) {
+          continue;
+        }
+
+        const referencedInputs = extractInputReferences(
+          resolution.definitionProvidedArgValues,
+        );
+
+        if (referencedInputs.size === 0) {
+          results.push(WorkflowValidationResult.pass(checkName));
+          continue;
+        }
+
+        const missing = [...referencedInputs].filter(
+          (name) => !declaredInputs.has(name),
+        );
+
+        if (missing.length > 0) {
+          results.push(
+            WorkflowValidationResult.fail(
+              checkName,
+              `Model definition references undeclared workflow input(s): ${
+                missing.join(", ")
+              }`,
+            ),
+          );
+        } else {
+          results.push(WorkflowValidationResult.pass(checkName));
+        }
+      }
+    }
+
+    return results;
   }
 }
