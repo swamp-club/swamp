@@ -139,7 +139,8 @@ function manualZodToJsonSchema(schema: z.ZodTypeAny): object {
         const required: string[] = [];
         for (const [key, value] of Object.entries(def.shape)) {
           properties[key] = manualZodToJsonSchema(value);
-          if (getSchemaType(value) !== "optional") {
+          const valueType = getSchemaType(value);
+          if (valueType !== "optional" && valueType !== "default") {
             required.push(key);
           }
         }
@@ -175,10 +176,42 @@ function manualZodToJsonSchema(schema: z.ZodTypeAny): object {
  */
 export function zodToJsonSchema(schema: z.ZodTypeAny): object {
   try {
-    return z.toJSONSchema(schema);
+    const result = z.toJSONSchema(schema);
+    return stripDefaultsFromRequired(result);
   } catch {
     return manualZodToJsonSchema(schema);
   }
+}
+
+/**
+ * Removes fields that have a `default` value from the JSON Schema `required`
+ * array. Zod's `z.toJSONSchema()` lists defaulted fields as required (valid
+ * per the JSON Schema spec), but swamp treats a schema default as satisfying
+ * the requirement at runtime.
+ */
+function stripDefaultsFromRequired(
+  jsonSchema: object,
+): object {
+  const schema = jsonSchema as Record<string, unknown>;
+  const required = schema.required;
+  const properties = schema.properties;
+  if (
+    !Array.isArray(required) || typeof properties !== "object" ||
+    properties === null
+  ) {
+    return jsonSchema;
+  }
+  const props = properties as Record<string, Record<string, unknown>>;
+  const filtered = required.filter((key: string) =>
+    !(key in props && "default" in props[key])
+  );
+  const result = { ...schema };
+  if (filtered.length > 0) {
+    result.required = filtered;
+  } else {
+    delete result.required;
+  }
+  return result;
 }
 
 /**
