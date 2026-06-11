@@ -430,8 +430,28 @@ Deno.test("extractTopLevelRoot: per-extension scoped subtree", () => {
     extractTopLevelRoot(
       ".swamp/pulled-extensions/@hivemq/harvester/models/foo.ts",
       SKILLS_DIR,
+      "@hivemq/harvester",
     ),
     ".swamp/pulled-extensions/@hivemq/harvester",
+  );
+});
+
+Deno.test("extractTopLevelRoot: per-extension nested scoped subtree", () => {
+  assertEquals(
+    extractTopLevelRoot(
+      ".swamp/pulled-extensions/@swamp/aws/iam/models/role.ts",
+      SKILLS_DIR,
+      "@swamp/aws/iam",
+    ),
+    ".swamp/pulled-extensions/@swamp/aws/iam",
+  );
+  assertEquals(
+    extractTopLevelRoot(
+      ".swamp/pulled-extensions/@swamp/aws/s3/models/bucket.ts",
+      SKILLS_DIR,
+      "@swamp/aws/s3",
+    ),
+    ".swamp/pulled-extensions/@swamp/aws/s3",
   );
 });
 
@@ -440,6 +460,7 @@ Deno.test("extractTopLevelRoot: per-extension flat (unscoped) subtree", () => {
     extractTopLevelRoot(
       ".swamp/pulled-extensions/myext/models/foo.ts",
       SKILLS_DIR,
+      "myext",
     ),
     ".swamp/pulled-extensions/myext",
   );
@@ -450,6 +471,7 @@ Deno.test("extractTopLevelRoot: bundle namespace", () => {
     extractTopLevelRoot(
       ".swamp/bundles/abc123/foo.js",
       SKILLS_DIR,
+      "@x/y",
     ),
     ".swamp/bundles/abc123",
   );
@@ -469,6 +491,7 @@ Deno.test("extractTopLevelRoot: each bundle kind", () => {
       extractTopLevelRoot(
         `.swamp/${kind}/hash123/foo.js`,
         SKILLS_DIR,
+        "@x/y",
       ),
       `.swamp/${kind}/hash123`,
     );
@@ -477,18 +500,18 @@ Deno.test("extractTopLevelRoot: each bundle kind", () => {
 
 Deno.test("extractTopLevelRoot: skill dir returns null", () => {
   assertEquals(
-    extractTopLevelRoot(".claude/skills/foo", SKILLS_DIR),
+    extractTopLevelRoot(".claude/skills/foo", SKILLS_DIR, "@x/y"),
     null,
   );
   assertEquals(
-    extractTopLevelRoot(".claude/skills/foo/SKILL.md", SKILLS_DIR),
+    extractTopLevelRoot(".claude/skills/foo/SKILL.md", SKILLS_DIR, "@x/y"),
     null,
   );
 });
 
 Deno.test("extractTopLevelRoot: gen-1 path returns null", () => {
   assertEquals(
-    extractTopLevelRoot("extensions/models/legacy.ts", SKILLS_DIR),
+    extractTopLevelRoot("extensions/models/legacy.ts", SKILLS_DIR, "@x/y"),
     null,
   );
 });
@@ -498,6 +521,7 @@ Deno.test("extractTopLevelRoot: gen-2 path returns null", () => {
     extractTopLevelRoot(
       ".swamp/pulled-extensions/models/flat.ts",
       SKILLS_DIR,
+      "@x/y",
     ),
     null,
   );
@@ -505,14 +529,18 @@ Deno.test("extractTopLevelRoot: gen-2 path returns null", () => {
 
 Deno.test("extractTopLevelRoot: unknown current-layout path returns null", () => {
   assertEquals(
-    extractTopLevelRoot(".swamp/some-other-place/foo.ts", SKILLS_DIR),
+    extractTopLevelRoot(".swamp/some-other-place/foo.ts", SKILLS_DIR, "@x/y"),
     null,
   );
 });
 
 Deno.test("extractTopLevelRoot: handles trailing-slash skillsDir", () => {
   assertEquals(
-    extractTopLevelRoot(".claude/skills/foo/SKILL.md", ".claude/skills/"),
+    extractTopLevelRoot(
+      ".claude/skills/foo/SKILL.md",
+      ".claude/skills/",
+      "@x/y",
+    ),
     null,
   );
 });
@@ -526,11 +554,11 @@ Deno.test(
     // they still bottom out at the trailing `return null` rather than
     // leaking into a misidentified per-extension or bundle root.
     assertEquals(
-      extractTopLevelRoot("random/file.ts", SKILLS_DIR),
+      extractTopLevelRoot("random/file.ts", SKILLS_DIR, "@x/y"),
       null,
     );
     assertEquals(
-      extractTopLevelRoot("extensions/unknown-type/foo.ts", SKILLS_DIR),
+      extractTopLevelRoot("extensions/unknown-type/foo.ts", SKILLS_DIR, "@x/y"),
       null,
     );
   },

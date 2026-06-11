@@ -251,7 +251,11 @@ async function detectOrphanFiles(
     const tracked = new Set(trackedFiles);
     const roots = new Set<string>();
     for (const file of trackedFiles) {
-      const root = extractTopLevelRoot(file, normalizedSkillsDir);
+      const root = extractTopLevelRoot(
+        file,
+        normalizedSkillsDir,
+        extensionName,
+      );
       if (root !== null) {
         roots.add(root);
       }

@@ -191,6 +191,7 @@ export function isSkillDirEntry(
 export function extractTopLevelRoot(
   filePath: string,
   skillsDir: string,
+  extensionName: string,
 ): string | null {
   // Legacy paths are out of scope for orphan detection; the migrate
   // flow in extensionInstall handles those.
@@ -205,18 +206,16 @@ export function extractTopLevelRoot(
     return null;
   }
 
-  // Per-extension subtree: pulled-extensions/<scope>/<name>/...
+  // Per-extension subtree: pulled-extensions/<extensionName>/...
   // (current-layout always begins with .swamp/pulled-extensions/).
   if (filePath.startsWith(PULLED_PREFIX)) {
+    const nameSegments = extensionName.split("/");
     const rest = filePath.slice(PULLED_PREFIX.length);
     const segments = rest.split("/");
-    if (segments.length === 0 || segments[0].length === 0) return null;
-    // Two segments for scoped names (@scope/name); one for flat.
-    if (segments[0].startsWith("@")) {
-      if (segments.length < 2) return null;
-      return `${PULLED_PREFIX}${segments[0]}/${segments[1]}`;
-    }
-    return `${PULLED_PREFIX}${segments[0]}`;
+    if (segments.length < nameSegments.length) return null;
+    return `${PULLED_PREFIX}${
+      segments.slice(0, nameSegments.length).join("/")
+    }`;
   }
 
   // Bundle namespaces: <kind>/<hash>/...

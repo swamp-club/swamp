@@ -305,6 +305,58 @@ Deno.test(
 );
 
 Deno.test(
+  "doctorExtensions: nested scoped siblings do not cross-attribute orphans",
+  async () => {
+    const tmpDir = await Deno.makeTempDir({ prefix: "swamp_doctor_orphan_" });
+    try {
+      const iamDir = join(
+        tmpDir,
+        ".swamp/pulled-extensions/@swamp/aws/iam/models",
+      );
+      const s3Dir = join(
+        tmpDir,
+        ".swamp/pulled-extensions/@swamp/aws/s3/models",
+      );
+      await ensureDir(iamDir);
+      await ensureDir(s3Dir);
+      await Deno.writeTextFile(join(iamDir, "role.ts"), "// iam");
+      await Deno.writeTextFile(join(s3Dir, "bucket.ts"), "// s3");
+
+      const { deps } = buildDeps({
+        repoDir: tmpDir,
+        skillsDir: ".claude/skills",
+      });
+      const upstream: UpstreamExtensionsMap = {
+        "@swamp/aws/iam": {
+          version: "1.0.0",
+          pulledAt: "2026-01-01T00:00:00Z",
+          files: [".swamp/pulled-extensions/@swamp/aws/iam/models/role.ts"],
+        },
+        "@swamp/aws/s3": {
+          version: "1.0.0",
+          pulledAt: "2026-01-01T00:00:00Z",
+          files: [".swamp/pulled-extensions/@swamp/aws/s3/models/bucket.ts"],
+        },
+      };
+      deps.lockfileRepository = new LockfileRepository(
+        "/test/repo/upstream_extensions.json",
+        upstream,
+      );
+
+      const events = await collect(doctorExtensions(deps));
+      const completed = events.find((e) => e.kind === "completed");
+      if (completed?.kind !== "completed") {
+        throw new Error("expected completed event");
+      }
+
+      assertEquals(completed.report.orphanFiles.length, 0);
+    } finally {
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    }
+  },
+);
+
+Deno.test(
   "doctorExtensions: orphans do NOT change overallStatus from pass to fail",
   async () => {
     const tmpDir = await Deno.makeTempDir({ prefix: "swamp_doctor_orphan_" });
