@@ -367,8 +367,11 @@ correctness and can be deleted safely at any time.
 ### Commands
 
 ```bash
-# Full push to registry
+# Full push to registry (stable channel, the default)
 swamp extension push manifest.yaml --json
+
+# Push to a prerelease channel (beta or rc)
+swamp extension push manifest.yaml --channel beta --json
 
 # Validate locally without pushing (builds archive, runs safety checks)
 swamp extension push manifest.yaml --dry-run --json
