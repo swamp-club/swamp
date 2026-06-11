@@ -83,3 +83,47 @@ Deno.test("zodToJsonSchema: handles z.enum()", () => {
   // Zod's toJSONSchema may succeed for enum, but verify it works either way
   assertEquals(Array.isArray(result.enum), true);
 });
+
+Deno.test("zodToJsonSchema: field with .default() is not required", () => {
+  const schema = z.object({
+    limit: z.number().default(15),
+  });
+  const result = zodToJsonSchema(schema) as Record<string, unknown>;
+  assertEquals(result.type, "object");
+  const required = result.required as string[] | undefined;
+  assertEquals(required, undefined);
+});
+
+Deno.test("zodToJsonSchema: field without .default() is still required", () => {
+  const schema = z.object({
+    name: z.string(),
+  });
+  const result = zodToJsonSchema(schema) as Record<string, unknown>;
+  const required = result.required as string[];
+  assertEquals(required.includes("name"), true);
+});
+
+Deno.test("zodToJsonSchema: mixed defaulted and required fields", () => {
+  const schema = z.object({
+    name: z.string(),
+    limit: z.number().int().min(1).max(100).default(15),
+    verbose: z.boolean().default(false),
+  });
+  const result = zodToJsonSchema(schema) as Record<string, unknown>;
+  const required = result.required as string[];
+  assertEquals(required, ["name"]);
+  const props = result.properties as Record<string, Record<string, unknown>>;
+  assertEquals(props.limit.default, 15);
+  assertEquals(props.verbose.default, false);
+});
+
+Deno.test("zodToJsonSchema: optional field is not required", () => {
+  const schema = z.object({
+    name: z.string(),
+    tag: z.string().optional(),
+  });
+  const result = zodToJsonSchema(schema) as Record<string, unknown>;
+  const required = result.required as string[];
+  assertEquals(required.includes("name"), true);
+  assertEquals(required.includes("tag"), false);
+});
