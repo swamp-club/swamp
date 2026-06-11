@@ -68,6 +68,7 @@ Deno.test("EnrollParamsSchema: validates a full enrollment", () => {
   const parsed = EnrollParamsSchema.parse({
     token: "tok",
     instanceUuid: "uuid-1",
+    machineId: "machine-1",
     protocolVersion: 1,
     swampVersion: "1.2.3",
     platform: "linux",
@@ -81,6 +82,7 @@ Deno.test("EnrollParamsSchema: labels default to empty", () => {
   const parsed = EnrollParamsSchema.parse({
     token: "tok",
     instanceUuid: "uuid-1",
+    machineId: "machine-1",
     protocolVersion: 1,
     swampVersion: "1.2.3",
     platform: "linux",

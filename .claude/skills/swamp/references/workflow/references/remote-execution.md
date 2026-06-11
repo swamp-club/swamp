@@ -24,10 +24,15 @@ swamp worker connect ws://orchestrator.internal:4000 \
   --label region=us-east --label gpu=true
 ```
 
-The token enrolls exactly one worker, then re-authenticates that same instance
-(same process) across socket blips until the token lifetime expires. A process
-restart needs a fresh token. Manage tokens with `swamp worker token list` and
-`swamp worker token revoke <name>`; inspect the pool with `swamp worker list`.
+The token enrolls exactly one machine, binding to a `machine-id` file in the
+worker's cache directory; that machine re-authenticates across socket blips,
+restarts, and reboots until the token lifetime expires, while any other machine
+is rejected. `--duration` is a hard deadline — when it elapses the orchestrator
+disconnects the worker and rejects re-enrollment. Pass a stable `--cache-dir` to
+keep the machine identity across restarts — the default temp cache directory
+yields a fresh identity (and thus needs a fresh token) per process. Manage
+tokens with `swamp worker token list` and `swamp worker token revoke <name>`;
+inspect the pool with `swamp worker list`.
 
 ## Placing steps on workers
 

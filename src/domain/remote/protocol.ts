@@ -39,7 +39,7 @@ import { z } from "zod";
  * dispatch, never mid-run. Also pins the capability-verb inventory — any
  * change to the verbs below requires a version bump.
  */
-export const REMOTE_PROTOCOL_VERSION = 1;
+export const REMOTE_PROTOCOL_VERSION = 2;
 
 // ── RPC framing ──────────────────────────────────────────────────────────
 
@@ -163,10 +163,16 @@ export const WorkerMethod = {
 // ── Enrollment ───────────────────────────────────────────────────────────
 
 export const EnrollParamsSchema = z.object({
-  /** Enrollment token (named, time-boxed, enroll-once). */
+  /** Enrollment token (named, time-boxed, bound to one machine on first use). */
   token: z.string().min(1),
   /** Per-instance UUID generated at worker startup; in-memory only. */
   instanceUuid: z.string().min(1),
+  /**
+   * Durable machine identity, persisted in the worker's cache directory. The
+   * token binds to this on first redemption so the same machine can re-enroll
+   * across restarts. A fresh (temp) cache directory yields a fresh machine id.
+   */
+  machineId: z.string().min(1),
   protocolVersion: z.number().int(),
   swampVersion: z.string(),
   platform: z.string(),

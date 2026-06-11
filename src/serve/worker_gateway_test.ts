@@ -82,6 +82,8 @@ function createHarness(
       transitions.push(input);
       return Promise.resolve();
     },
+    // No expiry enforcement unless a test opts in with a real timestamp.
+    readTokenExpiresAt: () => Promise.resolve(null),
     ...overrides,
   });
   return { gateway, transitions, idle, disconnected, graceExpired, failOn };
@@ -98,13 +100,15 @@ function connectWorkerSocket(gateway: WorkerGateway): {
   const attached = gateway.attachTransport({
     send: (data) =>
       void Promise.resolve().then(() => workerChannel.handleRaw(data)),
-  });
+    // A gateway-initiated close surfaces like a real socket close.
+  }, () => attached.closed());
   return { workerChannel, dropSocket: () => attached.closed() };
 }
 
 const enrollParams = {
   token: "ci-runner-3.s3cret",
   instanceUuid: "uuid-1",
+  machineId: "machine-1",
   protocolVersion: REMOTE_PROTOCOL_VERSION,
   swampVersion: "1.0.0",
   platform: "linux",
@@ -145,6 +149,7 @@ Deno.test("WorkerGateway: enrollment redeems the token, records the worker, issu
   assertEquals(h.transitions.map((t) => t.methodName), ["redeem", "enroll"]);
   assertEquals(h.transitions[0].typeArg, "swamp/enrollment-token");
   assertEquals(h.transitions[0].inputs.presentedToken, "s3cret");
+  assertEquals(h.transitions[0].inputs.machineId, "machine-1");
   assertEquals(h.transitions[1].typeArg, "swamp/worker");
 
   const workers = h.gateway.workers();
@@ -324,6 +329,28 @@ Deno.test("WorkerGateway: disconnect starts the grace window; reconnect cancels 
   await new Promise((r) => setTimeout(r, 250));
 });
 
+Deno.test("WorkerGateway: a restarted process on the same machine re-enrolls after a disconnect", async () => {
+  const h = createHarness({ graceWindowMs: 200 });
+  const first = connectWorkerSocket(h.gateway);
+  await enroll(first.workerChannel);
+  first.dropSocket();
+  await new Promise((r) => setTimeout(r, 5));
+
+  // A restart means a fresh instanceUuid but the same persisted machineId —
+  // the token's machine binding lets it back in as a fresh enrollment.
+  const second = connectWorkerSocket(h.gateway);
+  await enroll(second.workerChannel, {
+    ...enrollParams,
+    instanceUuid: "uuid-2",
+  });
+  assertEquals(h.gateway.pendingGraceWindows, 0);
+  assertEquals(h.gateway.worker("ci-runner-3")?.connected, true);
+  const enrolls = h.transitions.filter((t) => t.methodName === "enroll");
+  assertEquals(enrolls.length, 2);
+  second.dropSocket();
+  await new Promise((r) => setTimeout(r, 250));
+});
+
 Deno.test("WorkerGateway: grace expiry removes the worker and revokes its credential", async () => {
   const h = createHarness({ graceWindowMs: 20 });
   const { workerChannel, dropSocket } = connectWorkerSocket(h.gateway);
@@ -334,6 +361,27 @@ Deno.test("WorkerGateway: grace expiry removes the worker and revokes its creden
   assertEquals(h.graceExpired.length, 1);
   assertEquals(h.gateway.workers().length, 0);
   assertEquals(h.gateway.sessions.verify(result.sessionCredential), null);
+});
+
+Deno.test("WorkerGateway: token expiry disconnects the worker and removes it after grace", async () => {
+  const h = createHarness({
+    graceWindowMs: 20,
+    readTokenExpiresAt: () =>
+      Promise.resolve(new Date(Date.now() + 30).toISOString()),
+  });
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  await enroll(workerChannel);
+  assertEquals(h.gateway.worker("ci-runner-3")?.connected, true);
+
+  await new Promise((r) => setTimeout(r, 100));
+  // The expiry timer recorded the lapsed lifetime, dropped the socket, and
+  // the grace window then removed the worker from the pool.
+  const expires = h.transitions.filter((t) => t.methodName === "expire");
+  assertEquals(expires.length, 1);
+  assertEquals(expires[0].typeArg, "swamp/enrollment-token");
+  assertEquals(h.disconnected.length, 1);
+  assertEquals(h.graceExpired.length, 1);
+  assertEquals(h.gateway.workers().length, 0);
 });
 
 Deno.test("WorkerGateway: a different instance cannot enroll while a worker is connected", async () => {

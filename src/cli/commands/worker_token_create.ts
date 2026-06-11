@@ -64,7 +64,7 @@ export const workerTokenCreateCommand = new Command()
   )
   .option(
     "--duration <duration:string>",
-    "Token lifetime (e.g. 30m, 1h, 24h, 7d)",
+    "Token lifetime (e.g. 30m, 1h, 24h, 7d) — a hard deadline: the enrolled worker is disconnected when it elapses",
     { required: true },
   )
   .option(

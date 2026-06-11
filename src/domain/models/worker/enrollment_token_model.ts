@@ -24,10 +24,12 @@
  * One model instance per token, named by the token name. The token's
  * plaintext only ever lives in a vault — the resource records the vault
  * reference and the lifecycle state machine `unused → enrolled → expired`
- * (plus `revoked`). The datastore provides no compare-and-swap, so the
- * `unused → enrolled` transition is made atomic by the orchestrator process
- * serializing all token transitions in memory — it is the sole writer of
- * this model.
+ * (plus `revoked`). First redemption binds the token to the presenting
+ * machine id; the bound machine may redeem again (worker restarts and
+ * reboots) until the lifetime expires, while any other machine is rejected.
+ * The datastore provides no compare-and-swap, so the `unused → enrolled`
+ * transition is made atomic by the orchestrator process serializing all
+ * token transitions in memory — it is the sole writer of this model.
  */
 
 import { z } from "zod";
@@ -62,7 +64,8 @@ export const EnrollmentTokenSchema = z.object({
   /** Vault reference to the token plaintext — never the secret itself. */
   vaultName: z.string(),
   secretKey: z.string(),
-  boundInstanceUuid: z.string().optional(),
+  /** Durable machine id bound on first redemption. */
+  boundMachineId: z.string().optional(),
   enrolledAt: z.string().datetime().optional(),
   revokedAt: z.string().datetime().optional(),
 });
@@ -150,14 +153,15 @@ async function mint(
 
 const RedeemArgsSchema = z.object({
   presentedToken: z.string().min(1),
-  instanceUuid: z.string().min(1),
+  machineId: z.string().min(1),
 });
 
 /**
- * Redeem the token at enrollment, or re-authenticate the same instance on
- * reconnect. First redemption transitions `unused → enrolled` and binds the
- * instance UUID (a new resource version); a matching re-authentication
- * validates without writing. Every failure throws.
+ * Redeem the token at enrollment, or re-authenticate the bound machine on
+ * reconnect or restart. First redemption transitions `unused → enrolled` and
+ * binds the machine id (a new resource version); a matching re-redemption
+ * validates without writing. Expiry is a hard deadline for both: past
+ * `expiresAt` even the bound machine is rejected. Every failure throws.
  */
 async function redeem(
   args: z.infer<typeof RedeemArgsSchema>,
@@ -185,19 +189,32 @@ async function redeem(
   }
 
   if (token.state === "enrolled") {
-    if (token.boundInstanceUuid !== args.instanceUuid) {
+    if (token.boundMachineId === args.machineId) {
+      // Re-authentication of the bound machine: valid, no state change.
+      return { dataHandles: [] };
+    }
+    if (token.boundMachineId !== undefined) {
       throw new Error(
-        `Enrollment token '${name}' is already bound to another worker instance`,
+        `Enrollment token '${name}' is already bound to another machine`,
       );
     }
-    // Re-authentication of the same instance: valid, no state change.
-    return { dataHandles: [] };
+    // Enrolled before machine binding existed: adopt the presenting machine.
+    const adopted: EnrollmentToken = {
+      ...token,
+      boundMachineId: args.machineId,
+    };
+    const handle = await context.writeResource!(
+      "token",
+      TOKEN_DATA_NAME,
+      adopted,
+    );
+    return { dataHandles: [handle] };
   }
 
   const enrolled: EnrollmentToken = {
     ...token,
     state: "enrolled",
-    boundInstanceUuid: args.instanceUuid,
+    boundMachineId: args.machineId,
     enrolledAt: new Date().toISOString(),
   };
   const handle = await context.writeResource!(
@@ -254,7 +271,7 @@ async function expire(
  */
 export const enrollmentTokenModel: ModelDefinition = defineModel({
   type: ENROLLMENT_TOKEN_MODEL_TYPE,
-  version: "2026.06.09.1",
+  version: "2026.06.11.1",
   resources: {
     "token": {
       description:
@@ -274,7 +291,7 @@ export const enrollmentTokenModel: ModelDefinition = defineModel({
     },
     redeem: {
       description:
-        "Redeem at enrollment (unused → enrolled, binds instance UUID) or re-authenticate the bound instance",
+        "Redeem at enrollment (unused → enrolled, binds machine id) or re-authenticate the bound machine",
       kind: "action",
       arguments: RedeemArgsSchema,
       execute: redeem,

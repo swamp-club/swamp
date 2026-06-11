@@ -58,7 +58,7 @@ export interface WorkerTokenListItem {
   effectiveState: TokenState;
   createdAt: string;
   expiresAt: string;
-  boundInstanceUuid?: string;
+  boundMachineId?: string;
   vaultName: string;
   secretKey: string;
 }
@@ -172,7 +172,7 @@ export async function* workerTokenList(
             ),
             createdAt: token.createdAt,
             expiresAt: token.expiresAt,
-            boundInstanceUuid: token.boundInstanceUuid,
+            boundMachineId: token.boundMachineId,
             vaultName: token.vaultName,
             secretKey: token.secretKey,
           });

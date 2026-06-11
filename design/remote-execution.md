@@ -174,13 +174,15 @@ orchestrator.
 
 ## Enrollment
 
-On first connect, the worker redeems its token, binds it to this instance's UUID,
-receives a session credential, and the orchestrator admits it into the pool:
+On first connect, the worker redeems its token, binds it to this machine's
+durable id, receives a session credential, and the orchestrator admits it into
+the pool:
 
 ```
 worker → orchestrator   enroll {
-  token,                       // enrolls once; then re-auths this instance for its lifetime
+  token,                       // enrolls one machine; then re-auths that machine for its lifetime
   instanceUuid,                // per-instance UUID generated at worker startup (in-memory only)
+  machineId,                   // durable machine id persisted in the worker's cache directory
   protocolVersion,             // reuse the version on ExecutionRequest
   swampVersion,
   platform, arch,              // e.g. linux/x86_64
@@ -208,20 +210,21 @@ system. Each token is:
 
 - **Named** — for audit and identification, and as the worker's addressable handle
   in the pool (`ci-runner-3`).
-- **Time-boxed** — a `--duration` lifetime that bounds both the enrollment window
-  and the subsequent reconnection window.
-- **Enroll-once** — it enrolls exactly one worker. The first connect binds it to
-  that worker's `instanceUuid`; a second *enrollment* attempt from a different
-  instance is rejected.
-- **Reconnect-for-lifetime** — after enrollment, the *same instance* may
-  re-authenticate by presenting `{token, instanceUuid}` as many times as needed
-  until the lifetime expires. This is what survives a broken control socket: the
-  worker reconnects and stays the same pool member rather than being lost to a
-  transient blip.
+- **Time-boxed** — a `--duration` lifetime that is a *hard deadline*: it bounds
+  enrollment and reconnection, and when it elapses the orchestrator actively
+  disconnects a connected worker. Continuing past it means minting a new token.
+- **One machine** — it enrolls exactly one machine. The first connect binds it
+  to the worker's `machineId` (a durable id persisted in the worker's cache
+  directory); an *enrollment* attempt from a different machine is rejected.
+- **Reconnect-for-lifetime** — after enrollment, the *bound machine* may
+  re-authenticate by presenting `{token, machineId}` as many times as needed
+  until the lifetime expires. This is what survives a broken control socket
+  *and* a process restart or reboot: the worker comes back as the same pool
+  member without a freshly minted token.
 
 The token is a built-in **enrollment-token** model whose instances are swamp data,
 with states `unused → enrolled → expired`; the `unused → enrolled` transition
-records the bound `instanceUuid`, and two workers cannot race to claim one
+records the bound `machineId`, and two workers cannot race to claim one
 token. The datastore itself provides no compare-and-swap — concurrent saves to
 one data item simply land as successive versions — so atomicity comes from the
 **orchestrator process serializing all token and lease transitions in memory**:
@@ -232,7 +235,7 @@ The CLI surface:
 
 ```bash
 swamp worker token create <name> --duration <dur>   # mint; prints the credential once
-swamp worker token list                             # state, expiry, name, bound instance
+swamp worker token list                             # state, expiry, name, bound machine
 swamp worker token revoke <name>                    # invalidate before expiry
 ```
 
@@ -240,11 +243,17 @@ The printed credential has the form **`<name>.<secret>`**: the name half
 addresses the token aggregate at enrollment (no scan over the pool), the
 secret half is compared — constant-time — against the vault-stored plaintext.
 
-The `instanceUuid` is in-memory only: a *socket blip* reconnects (process alive,
-UUID stable), but a *process restart* generates a new UUID and therefore needs a
-fresh token. When the lifetime expires the token is dead. Workers remain cattle,
-not pets — a token outage, expiry, or restart replaces a worker rather than
-nursing it.
+The `instanceUuid` is in-memory only and distinguishes a *socket blip* (process
+alive, UUID stable, same pool member) from a *process restart* (new UUID, fresh
+enrollment of the same machine). The `machineId` is what the token binds to: it
+lives in a `machine-id` file in the worker's cache directory, so a worker
+started with a stable `--cache-dir` survives restarts and reboots on its
+original token for as long as the token lives, while the default fresh temp
+cache directory yields a new machine identity per process. When the lifetime
+expires the token is dead for everyone — the orchestrator disconnects the
+worker and rejects re-enrollment. Replacing a machine or outliving a token
+means minting a new one — machines are the unit of trust; processes come and
+go.
 
 ## Worker state is swamp data
 
@@ -681,7 +690,7 @@ flight, the orchestrator holds the step lease through a **reconnection grace
 window** (bounded by the token lifetime) before giving up — so reconnection and
 re-dispatch never race into double execution:
 
-- **Worker reconnects within the window** (same `{token, instanceUuid}`): it
+- **Worker reconnects within the window** (same `{token, machineId}`): it
   stays in the pool — same member, fresh session credential. As built, an
   in-flight dispatch does **not** survive the drop: the RPC pending state dies
   with the socket on both ends, and the worker aborts its in-flight execution
@@ -718,15 +727,21 @@ provisioning credentials and extensions onto workers:
   the step that needs them (consistent with the out-of-process resolution pattern
   in [execution-drivers.md](./execution-drivers.md#vault-secret-resolution)).
 
-- The **enrollment token** is named, time-boxed, and enroll-once, then bound to
-  the worker `instanceUuid`. The `{token, instanceUuid}` pair is a *bearer*
-  reconnection secret rather than proof-of-possession — acceptable because it
-  rides the authenticated, encrypted `wss://` channel and the only ways to capture
-  it are to MITM the TLS (mitigated by pinning the orchestrator certificate) or to
-  compromise the worker host (which already grants code execution there, so no
-  additional ground is lost). The **session credential** for the data plane is
-  short-lived and lease-scoped. Lifetimes should be short; a token leaked *before*
-  enrollment is the real exposure, since an attacker could enroll first.
+- The **enrollment token** is named, time-boxed for first redemption, and
+  enrolls exactly one machine, binding to the worker's durable `machineId`. The
+  `{token, machineId}` pair is a *bearer* reconnection secret rather than
+  proof-of-possession — the machine id is client-asserted, so the binding
+  contains *accidental* token reuse (pasting one token onto a second box),
+  not an attacker who holds the plaintext. That is acceptable because the pair
+  rides the authenticated, encrypted `wss://` channel and the only ways to
+  capture it are to MITM the TLS (mitigated by pinning the orchestrator
+  certificate) or to compromise the worker host (which already grants code
+  execution there, so no additional ground is lost). The **session credential**
+  for the data plane is short-lived and lease-scoped. Lifetimes should be
+  short — a token leaked *before* enrollment is the real exposure, since an
+  attacker could enroll first. Expiry is enforced actively: the orchestrator
+  disconnects a connected worker when its token lifetime elapses, and `revoke`
+  cuts a token off early.
 
 - Conversely, a worker tricked into connecting to the wrong URL hands code
   execution on its host to whoever owns that URL — the same trust model as a
@@ -747,7 +762,7 @@ provisioning credentials and extensions onto workers:
 | Run-event serialization          | **Reuse** `serializeEvent()`                                                            |
 | Driver abstraction               | **Remove** `ExecutionDriver`, raw/docker/custom drivers, registry, `driver:` fields      |
 | Role split (server ≠ executor)   | **New** — move request-dispatch handling to the dial-out side; two handler registries   |
-| Enrollment handshake             | **New** — token redemption, UUID binding, label exchange, session-credential issue       |
+| Enrollment handshake             | **New** — token redemption, machine binding, label exchange, session-credential issue    |
 | Built-in worker-management models| **New** — `worker`, `enrollment-token`, `step-lease`; `swamp worker token` + mint model   |
 | Remote `MethodContext` adapters  | **New** — proxy implementations of the repository/vault/data-writer ports               |
 | Capability protocol verbs        | **New** — the 14-verb reverse channel split across ws (metadata) and h2 (bytes)         |

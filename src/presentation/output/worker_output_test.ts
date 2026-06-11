@@ -84,7 +84,7 @@ const tokenListData: WorkerTokenListData = {
       effectiveState: "enrolled",
       createdAt: "2026-06-09T00:00:00.000Z",
       expiresAt: "2026-06-10T00:00:00.000Z",
-      boundInstanceUuid: "uuid-42",
+      boundMachineId: "machine-42",
       vaultName: "main-vault",
       secretKey: "worker-token-ci-runner-3",
     },
@@ -108,10 +108,10 @@ Deno.test("renderWorkerTokenList: log mode renders the table with display state"
   assertStringIncludes(output, "NAME");
   assertStringIncludes(output, "STATE");
   assertStringIncludes(output, "EXPIRES");
-  assertStringIncludes(output, "BOUND INSTANCE");
+  assertStringIncludes(output, "BOUND MACHINE");
   assertStringIncludes(output, "ci-runner-3");
   assertStringIncludes(output, "enrolled");
-  assertStringIncludes(output, "uuid-42");
+  assertStringIncludes(output, "machine-42");
   // Display-level expiry overlay
   assertStringIncludes(output, "expired");
 });

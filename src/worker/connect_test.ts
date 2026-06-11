@@ -113,6 +113,7 @@ Deno.test("runWorker: connects, enrolls, and reports status", async () => {
   assertEquals(enrollments[0].labels, { region: "us-east" });
   assertEquals(enrollments[0].protocolVersion, REMOTE_PROTOCOL_VERSION);
   assertEquals(typeof enrollments[0].instanceUuid, "string");
+  assertEquals(typeof enrollments[0].machineId, "string");
   const kinds = events.map((e) => e.kind);
   assertEquals(kinds.includes("enrolled"), true);
   assertEquals(kinds.at(-1), "stopped");
@@ -152,6 +153,50 @@ Deno.test("runWorker: reconnects with the same instance uuid after a drop", asyn
   await done;
   assertEquals(enrollments.length, 2);
   assertEquals(enrollments[0].instanceUuid, enrollments[1].instanceUuid);
+  assertEquals(enrollments[0].machineId, enrollments[1].machineId);
+});
+
+Deno.test("runWorker: a stable cache directory keeps the machine id across restarts", async () => {
+  const cacheDir = await Deno.makeTempDir({ prefix: "swamp-worker-test-" });
+  try {
+    const enrollments: EnrollParams[] = [];
+    const runOnce = () => {
+      let socket: FakeSocket | null = null;
+      return runWorker({
+        url: "ws://test:1",
+        token: "ci.s",
+        swampVersion: "1.2.3",
+        reconnect: false,
+        cacheDir,
+        onStatus: (event) => {
+          if (event.kind === "enrolled") {
+            queueMicrotask(() => socket!.drop());
+          }
+        },
+        createSocket: () => {
+          socket = new FakeSocket((channel) => {
+            channel.register(RemoteMethod.enroll, (params) => {
+              enrollments.push(params as EnrollParams);
+              return Promise.resolve(enrollResult("ci"));
+            });
+          });
+          return socket as unknown as WebSocket;
+        },
+      });
+    };
+
+    // Two process lifetimes: fresh instance uuids, one machine identity.
+    await runOnce();
+    await runOnce();
+    assertEquals(enrollments.length, 2);
+    assertEquals(enrollments[0].machineId, enrollments[1].machineId);
+    assertEquals(
+      enrollments[0].instanceUuid === enrollments[1].instanceUuid,
+      false,
+    );
+  } finally {
+    await Deno.remove(cacheDir, { recursive: true }).catch(() => {});
+  }
 });
 
 Deno.test("runWorker: permanent enrollment failures stop the loop", async () => {

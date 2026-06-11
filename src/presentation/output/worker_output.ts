@@ -141,10 +141,10 @@ export function renderWorkerTokenList(
     token.name,
     token.effectiveState,
     token.expiresAt,
-    token.boundInstanceUuid ?? "-",
+    token.boundMachineId ?? "-",
   ]);
   const lines = tableLines(
-    ["NAME", "STATE", "EXPIRES", "BOUND INSTANCE"],
+    ["NAME", "STATE", "EXPIRES", "BOUND MACHINE"],
     rows,
     (column, value) => (column === 1 ? colorTokenState(value) : value),
   );

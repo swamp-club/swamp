@@ -126,7 +126,7 @@ export function handleConnection(
         socket.send(data);
       }
     },
-  });
+  }, () => socket.close());
 
   socket.onmessage = (event) => {
     if (

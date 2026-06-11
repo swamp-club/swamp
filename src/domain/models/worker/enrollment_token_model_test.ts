@@ -64,15 +64,15 @@ Deno.test("enrollmentTokenModel: mint twice with the same name fails", async () 
   );
 });
 
-Deno.test("enrollmentTokenModel: redeem transitions unused → enrolled and binds the instance", async () => {
+Deno.test("enrollmentTokenModel: redeem transitions unused → enrolled and binds the machine", async () => {
   const { context, store, plaintext } = await mintToken();
   await enrollmentTokenModel.methods.redeem.execute(
-    { presentedToken: plaintext, instanceUuid: "uuid-1" },
+    { presentedToken: plaintext, machineId: "machine-1" },
     context,
   );
   const token = store.get("token-main")!;
   assertEquals(token.state, "enrolled");
-  assertEquals(token.boundInstanceUuid, "uuid-1");
+  assertEquals(token.boundMachineId, "machine-1");
   assertEquals(typeof token.enrolledAt, "string");
 });
 
@@ -81,7 +81,7 @@ Deno.test("enrollmentTokenModel: redeem with a wrong token fails", async () => {
   await assertRejects(
     () =>
       enrollmentTokenModel.methods.redeem.execute(
-        { presentedToken: "wrong", instanceUuid: "uuid-1" },
+        { presentedToken: "wrong", machineId: "machine-1" },
         context,
       ),
     Error,
@@ -89,30 +89,30 @@ Deno.test("enrollmentTokenModel: redeem with a wrong token fails", async () => {
   );
 });
 
-Deno.test("enrollmentTokenModel: re-auth of the bound instance succeeds without a new version", async () => {
+Deno.test("enrollmentTokenModel: re-auth of the bound machine succeeds without a new version", async () => {
   const { context, versions, plaintext } = await mintToken();
   await enrollmentTokenModel.methods.redeem.execute(
-    { presentedToken: plaintext, instanceUuid: "uuid-1" },
+    { presentedToken: plaintext, machineId: "machine-1" },
     context,
   );
   const versionsAfterEnroll = versions.get("token-main");
   await enrollmentTokenModel.methods.redeem.execute(
-    { presentedToken: plaintext, instanceUuid: "uuid-1" },
+    { presentedToken: plaintext, machineId: "machine-1" },
     context,
   );
   assertEquals(versions.get("token-main"), versionsAfterEnroll);
 });
 
-Deno.test("enrollmentTokenModel: a second instance cannot claim an enrolled token", async () => {
+Deno.test("enrollmentTokenModel: a second machine cannot claim an enrolled token", async () => {
   const { context, plaintext } = await mintToken();
   await enrollmentTokenModel.methods.redeem.execute(
-    { presentedToken: plaintext, instanceUuid: "uuid-1" },
+    { presentedToken: plaintext, machineId: "machine-1" },
     context,
   );
   const error = await assertRejects(
     () =>
       enrollmentTokenModel.methods.redeem.execute(
-        { presentedToken: plaintext, instanceUuid: "uuid-2" },
+        { presentedToken: plaintext, machineId: "machine-2" },
         context,
       ),
     Error,
@@ -120,7 +120,7 @@ Deno.test("enrollmentTokenModel: a second instance cannot claim an enrolled toke
   assertStringIncludes(error.message, "already bound");
 });
 
-Deno.test("enrollmentTokenModel: redeem of an expired token fails", async () => {
+Deno.test("enrollmentTokenModel: redeem of an expired unused token fails", async () => {
   const harness = createInMemoryWorkerContext(
     ENROLLMENT_TOKEN_MODEL_TYPE,
     "stale",
@@ -134,12 +134,49 @@ Deno.test("enrollmentTokenModel: redeem of an expired token fails", async () => 
   await assertRejects(
     () =>
       enrollmentTokenModel.methods.redeem.execute(
-        { presentedToken: plaintext, instanceUuid: "uuid-1" },
+        { presentedToken: plaintext, machineId: "machine-1" },
         harness.context,
       ),
     Error,
     "expired",
   );
+});
+
+Deno.test("enrollmentTokenModel: even the bound machine cannot redeem past the token lifetime", async () => {
+  const { context, store, plaintext } = await mintToken();
+  await enrollmentTokenModel.methods.redeem.execute(
+    { presentedToken: plaintext, machineId: "machine-1" },
+    context,
+  );
+  // The lifetime is a hard deadline: once it elapses, a rebooted worker on
+  // the bound machine is rejected too and needs a freshly minted token.
+  store.get("token-main")!.expiresAt = new Date(Date.now() - 1_000)
+    .toISOString();
+  await assertRejects(
+    () =>
+      enrollmentTokenModel.methods.redeem.execute(
+        { presentedToken: plaintext, machineId: "machine-1" },
+        context,
+      ),
+    Error,
+    "expired",
+  );
+});
+
+Deno.test("enrollmentTokenModel: an enrolled token without a bound machine adopts the presenter", async () => {
+  // Records written before machine binding existed have state "enrolled"
+  // but no boundMachineId — the next redemption adopts that machine.
+  const { context, store, plaintext } = await mintToken();
+  await enrollmentTokenModel.methods.redeem.execute(
+    { presentedToken: plaintext, machineId: "machine-1" },
+    context,
+  );
+  delete store.get("token-main")!.boundMachineId;
+  await enrollmentTokenModel.methods.redeem.execute(
+    { presentedToken: plaintext, machineId: "machine-2" },
+    context,
+  );
+  assertEquals(store.get("token-main")!.boundMachineId, "machine-2");
 });
 
 Deno.test("enrollmentTokenModel: revoke blocks subsequent redemption", async () => {
@@ -149,7 +186,7 @@ Deno.test("enrollmentTokenModel: revoke blocks subsequent redemption", async () 
   await assertRejects(
     () =>
       enrollmentTokenModel.methods.redeem.execute(
-        { presentedToken: plaintext, instanceUuid: "uuid-1" },
+        { presentedToken: plaintext, machineId: "machine-1" },
         context,
       ),
     Error,

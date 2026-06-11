@@ -21,10 +21,13 @@
  * The worker dial-home loop (see design/remote-execution.md, "Enrollment").
  *
  * A worker is a swamp binary plus a token and a URL: it opens the control
- * socket outbound, enrolls (or re-authenticates the same instance after a
- * blip), keeps the data-plane session credential sliding, and executes
- * dispatches until told to stop. The instance UUID lives in memory only —
- * a process restart is a new worker that needs an unexpired token.
+ * socket outbound, enrolls (or re-authenticates after a blip or restart),
+ * keeps the data-plane session credential sliding, and executes dispatches
+ * until told to stop. The instance UUID lives in memory only and tells a
+ * same-process reconnect apart from a new process; the machine id persists
+ * in the cache directory and is what the token binds to — a worker with a
+ * stable cache directory survives restarts and reboots on the same token
+ * until the token lifetime expires.
  */
 
 import { join } from "@std/path";
@@ -104,6 +107,7 @@ export async function runWorker(options: RunWorkerOptions): Promise<void> {
   });
   const cacheDir = options.cacheDir ??
     await Deno.makeTempDir({ prefix: "swamp-worker-cache-" });
+  const machineId = await loadOrCreateMachineId(cacheDir);
   const bundleCache = new WorkerBundleCache(join(cacheDir, "bundles"), client);
 
   let attempt = 0;
@@ -115,6 +119,7 @@ export async function runWorker(options: RunWorkerOptions): Promise<void> {
       const outcome = await connectOnce({
         options,
         instanceUuid,
+        machineId,
         session,
         client,
         bundleCache,
@@ -137,6 +142,32 @@ export async function runWorker(options: RunWorkerOptions): Promise<void> {
     delayMs = Math.min(delayMs * 2, RECONNECT_MAX_DELAY_MS);
   }
   options.onStatus?.({ kind: "stopped", reason: "shutdown" });
+}
+
+const MACHINE_ID_FILE = "machine-id";
+
+/**
+ * Durable machine identity: read `machine-id` from the cache directory or
+ * create it. The enrollment token binds to this id, so a stable cache
+ * directory (--cache-dir) is what lets a worker re-enroll after a restart;
+ * the default temp cache directory yields a fresh id per process.
+ */
+async function loadOrCreateMachineId(cacheDir: string): Promise<string> {
+  const path = join(cacheDir, MACHINE_ID_FILE);
+  try {
+    const existing = (await Deno.readTextFile(path)).trim();
+    if (existing.length > 0) {
+      return existing;
+    }
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) {
+      throw error;
+    }
+  }
+  const machineId = crypto.randomUUID();
+  await Deno.mkdir(cacheDir, { recursive: true });
+  await Deno.writeTextFile(path, machineId);
+  return machineId;
 }
 
 /**
@@ -168,6 +199,7 @@ function abortableDelay(ms: number, signal?: AbortSignal): Promise<void> {
 interface ConnectOnceArgs {
   options: RunWorkerOptions;
   instanceUuid: string;
+  machineId: string;
   session: SessionState;
   client: DataPlaneClient;
   bundleCache: WorkerBundleCache;
@@ -175,7 +207,7 @@ interface ConnectOnceArgs {
 
 /** One socket lifetime: connect, enroll, serve dispatches until close. */
 function connectOnce(args: ConnectOnceArgs): Promise<string> {
-  const { options, instanceUuid, session } = args;
+  const { options, instanceUuid, machineId, session } = args;
   return new Promise<string>((resolve, reject) => {
     const socket = (options.createSocket ?? ((url) => new WebSocket(url)))(
       options.url,
@@ -236,6 +268,7 @@ function connectOnce(args: ConnectOnceArgs): Promise<string> {
       channel.call<EnrollResult>(RemoteMethod.enroll, {
         token: options.token,
         instanceUuid,
+        machineId,
         protocolVersion: REMOTE_PROTOCOL_VERSION,
         swampVersion: options.swampVersion,
         platform: Deno.build.os,

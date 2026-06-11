@@ -66,6 +66,10 @@ export const workerConnectCommand = new Command()
     "Advertise scheduling labels",
     "swamp worker connect wss://orch:4000 --token <token> --label region=us-east --label gpu=true",
   )
+  .example(
+    "Survive restarts on one token (stable machine identity)",
+    "swamp worker connect wss://orch:4000 --token <token> --cache-dir /var/lib/swamp-worker",
+  )
   .arguments("<url:string>")
   .option("--token <token:string>", "Enrollment token (<name>.<secret>)", {
     required: true,
@@ -81,7 +85,7 @@ export const workerConnectCommand = new Command()
   )
   .option(
     "--cache-dir <dir:string>",
-    "Bundle/asset cache directory (defaults to a fresh temp dir)",
+    "Bundle/asset cache directory; also stores the machine id the enrollment token binds to — set a stable directory so the worker can re-enroll after a restart (defaults to a fresh temp dir)",
   )
   .option("--no-reconnect", "Exit when the control socket closes")
   .action(async function (options: AnyOptions, url: string) {
