@@ -1614,7 +1614,7 @@ export const extension = {
           ) => Promise<{ name: string }>;
         },
       ) => {
-        // Extensions use the target model's resources/files
+        // Write to a resource declared on the target model
         const handle = await context.writeResource("result", "result", {
           exitCode: 0,
           command: `audit: ${context.definition.name}`,
@@ -1688,6 +1688,60 @@ export const extension = {
   }],
 };
 ```
+
+### Extension with Custom Resources
+
+Extensions can declare their own resource specs when the target model's existing
+resources don't fit the extension's output shape:
+
+```typescript
+// extensions/models/shell_audit_custom.ts
+import { z } from "npm:zod@4";
+
+export const extension = {
+  type: "command/shell",
+  resources: {
+    "audit": {
+      description: "Audit findings for the shell command",
+      schema: z.object({
+        findings: z.array(z.string()),
+        summary: z.string(),
+        auditedAt: z.string(),
+      }),
+      lifetime: "infinite",
+      garbageCollection: 5,
+    },
+  },
+  methods: [{
+    audit: {
+      description: "Audit the shell command with custom output",
+      arguments: z.object({}),
+      execute: async (
+        _args: Record<string, never>,
+        context: {
+          definition: { name: string };
+          writeResource: (
+            specName: string,
+            name: string,
+            data: Record<string, unknown>,
+          ) => Promise<{ name: string }>;
+        },
+      ) => {
+        // Write to the extension-declared "audit" resource
+        const handle = await context.writeResource("audit", "audit", {
+          findings: ["command uses shell expansion safely"],
+          summary: "No issues found",
+          auditedAt: new Date().toISOString(),
+        });
+        return { dataHandles: [handle] };
+      },
+    },
+  }],
+};
+```
+
+Resource spec names must not conflict with specs already declared on the target
+model type. The `resources` field uses the same shape as base model definitions.
 
 ### Nested Directory Organization
 

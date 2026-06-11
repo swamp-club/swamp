@@ -632,6 +632,47 @@ modelRegistry.extend("aws/ec2/vpc", {}, {
 Check names must be unique -- conflicts with existing checks on the target model
 throw an error at registration time.
 
+### Extension Resources via export const extension
+
+Extensions can declare new resource specs that are merged into the target model
+type. Add an optional `resources` field to the extension object:
+
+```typescript
+export const extension = {
+  type: "aws/ec2/vpc",
+  resources: {
+    "audit": {
+      description: "Audit results for the VPC",
+      schema: z.object({
+        findings: z.array(z.string()),
+        summary: z.string(),
+      }),
+      lifetime: "infinite",
+      garbageCollection: 5,
+    },
+  },
+  methods: [
+    {
+      audit: {
+        description: "Audit the VPC",
+        arguments: z.object({}),
+        execute: async (args, context) => {
+          const handle = await context.writeResource("audit", "audit", {
+            findings: ["all good"],
+            summary: "No issues found",
+          });
+          return { dataHandles: [handle] };
+        },
+      },
+    },
+  ],
+};
+```
+
+Resource spec names must be unique -- conflicts with existing resource specs on
+the target model throw an error at registration time. The `resources` field uses
+the same `Record<string, ResourceOutputSpec>` shape as base model definitions.
+
 ---
 
 ## Logging API
