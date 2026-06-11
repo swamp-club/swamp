@@ -40,6 +40,7 @@ import {
   cadenceFromSchedule,
   cronLogPath,
   cronSchedule,
+  detectInstalledCronMode,
   escapeShellPath,
 } from "./cron_scheduler.ts";
 
@@ -262,4 +263,24 @@ Deno.test({
 Deno.test("cronLogPath: daemon mode returns /var/log/swamp path", () => {
   assertPathStringIncludes(cronLogPath("daemon"), "var/log/swamp");
   assertPathStringIncludes(cronLogPath("daemon"), "autoupdate-cron.log");
+});
+
+// --- Cron missing-binary resilience tests ---
+
+Deno.test({
+  name:
+    "detectInstalledCronMode: returns null when crontab binary is not installed",
+  ignore: Deno.build.os === "windows",
+  async fn() {
+    const originalPath = Deno.env.get("PATH");
+    try {
+      Deno.env.set("PATH", "/nonexistent");
+      const result = await detectInstalledCronMode();
+      assertEquals(result, null);
+    } finally {
+      if (originalPath !== undefined) {
+        Deno.env.set("PATH", originalPath);
+      }
+    }
+  },
 });

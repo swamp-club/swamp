@@ -59,26 +59,34 @@ function crontabCommandForUser(
 
 async function readCrontab(mode: LaunchdMode = "agent"): Promise<string> {
   const { command, args } = crontabCommand(mode, ["-l"]);
-  const cmd = new Deno.Command(command, {
-    args,
-    stdout: "piped",
-    stderr: "null",
-  });
-  const result = await cmd.output();
-  if (!result.success) return "";
-  return new TextDecoder().decode(result.stdout);
+  try {
+    const cmd = new Deno.Command(command, {
+      args,
+      stdout: "piped",
+      stderr: "null",
+    });
+    const result = await cmd.output();
+    if (!result.success) return "";
+    return new TextDecoder().decode(result.stdout);
+  } catch {
+    return "";
+  }
 }
 
 async function readCrontabForUser(user: string): Promise<string> {
   const { command, args } = crontabCommandForUser(user, ["-l"]);
-  const cmd = new Deno.Command(command, {
-    args,
-    stdout: "piped",
-    stderr: "null",
-  });
-  const result = await cmd.output();
-  if (!result.success) return "";
-  return new TextDecoder().decode(result.stdout);
+  try {
+    const cmd = new Deno.Command(command, {
+      args,
+      stdout: "piped",
+      stderr: "null",
+    });
+    const result = await cmd.output();
+    if (!result.success) return "";
+    return new TextDecoder().decode(result.stdout);
+  } catch {
+    return "";
+  }
 }
 
 async function writeCrontab(
@@ -86,13 +94,20 @@ async function writeCrontab(
   mode: LaunchdMode = "agent",
 ): Promise<void> {
   const { command, args } = crontabCommand(mode, ["-"]);
-  const cmd = new Deno.Command(command, {
-    args,
-    stdin: "piped",
-    stdout: "null",
-    stderr: "null",
-  });
-  const process = cmd.spawn();
+  let process: Deno.ChildProcess;
+  try {
+    const cmd = new Deno.Command(command, {
+      args,
+      stdin: "piped",
+      stdout: "null",
+      stderr: "null",
+    });
+    process = cmd.spawn();
+  } catch {
+    throw new Error(
+      "crontab is not installed on this system. Use systemd timers instead.",
+    );
+  }
   const writer = process.stdin.getWriter();
   await writer.write(new TextEncoder().encode(content));
   await writer.close();
@@ -107,13 +122,20 @@ async function writeCrontabForUser(
   user: string,
 ): Promise<void> {
   const { command, args } = crontabCommandForUser(user, ["-"]);
-  const cmd = new Deno.Command(command, {
-    args,
-    stdin: "piped",
-    stdout: "null",
-    stderr: "null",
-  });
-  const process = cmd.spawn();
+  let process: Deno.ChildProcess;
+  try {
+    const cmd = new Deno.Command(command, {
+      args,
+      stdin: "piped",
+      stdout: "null",
+      stderr: "null",
+    });
+    process = cmd.spawn();
+  } catch {
+    throw new Error(
+      "crontab is not installed on this system. Use systemd timers instead.",
+    );
+  }
   const writer = process.stdin.getWriter();
   await writer.write(new TextEncoder().encode(content));
   await writer.close();
