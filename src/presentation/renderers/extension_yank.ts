@@ -33,6 +33,11 @@ class LogExtensionYankRenderer implements Renderer<ExtensionYankEvent> {
             name: e.data.name,
             version: e.data.version,
           });
+        } else if (e.data.channel) {
+          logger.info("Yanked {name} ({channel} channel)", {
+            name: e.data.name,
+            channel: e.data.channel,
+          });
         } else {
           logger.info("Yanked {name} (all versions)", { name: e.data.name });
         }

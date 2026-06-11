@@ -48,13 +48,19 @@ Deno.test("extensionUnyank: unyanks specific version", async () => {
   const input: ExtensionUnyankInput = {
     extensionName: "@test/ext",
     version: "2025.01",
+    channel: null,
     reason: "recovered",
   };
   await assertCompletes<ExtensionUnyankEvent>(
     extensionUnyank(ctx, deps, input),
     {
       kind: "completed",
-      data: { name: "@test/ext", version: "2025.01", reason: "recovered" },
+      data: {
+        name: "@test/ext",
+        version: "2025.01",
+        channel: null,
+        reason: "recovered",
+      },
     },
   );
 });
@@ -65,13 +71,19 @@ Deno.test("extensionUnyank: unyanks extension when version is null", async () =>
   const input: ExtensionUnyankInput = {
     extensionName: "@test/ext",
     version: null,
+    channel: null,
     reason: "restoring name",
   };
   await assertCompletes<ExtensionUnyankEvent>(
     extensionUnyank(ctx, deps, input),
     {
       kind: "completed",
-      data: { name: "@test/ext", version: null, reason: "restoring name" },
+      data: {
+        name: "@test/ext",
+        version: null,
+        channel: null,
+        reason: "restoring name",
+      },
     },
   );
 });
@@ -82,15 +94,58 @@ Deno.test("extensionUnyank: accepts null reason", async () => {
   const input: ExtensionUnyankInput = {
     extensionName: "@test/ext",
     version: "2025.01",
+    channel: null,
     reason: null,
   };
   await assertCompletes<ExtensionUnyankEvent>(
     extensionUnyank(ctx, deps, input),
     {
       kind: "completed",
-      data: { name: "@test/ext", version: "2025.01", reason: null },
+      data: {
+        name: "@test/ext",
+        version: "2025.01",
+        channel: null,
+        reason: null,
+      },
     },
   );
+});
+
+Deno.test("extensionUnyank: unyanks by channel", async () => {
+  let capturedChannel: string | null = null;
+  const ctx = createLibSwampContext();
+  const deps = fakeDeps({
+    unyankExtension: (
+      _serverUrl: string,
+      _name: string,
+      _version: string | null,
+      channel: string | null,
+      _reason: string | null,
+      _apiKey: string,
+    ) => {
+      capturedChannel = channel;
+      return Promise.resolve();
+    },
+  });
+  const input: ExtensionUnyankInput = {
+    extensionName: "@test/ext",
+    version: null,
+    channel: "beta",
+    reason: "restoring beta",
+  };
+  await assertCompletes<ExtensionUnyankEvent>(
+    extensionUnyank(ctx, deps, input),
+    {
+      kind: "completed",
+      data: {
+        name: "@test/ext",
+        version: null,
+        channel: "beta",
+        reason: "restoring beta",
+      },
+    },
+  );
+  assertEquals(capturedChannel, "beta");
 });
 
 Deno.test("extensionUnyank: errors when not authenticated", async () => {
@@ -101,6 +156,7 @@ Deno.test("extensionUnyank: errors when not authenticated", async () => {
   const input: ExtensionUnyankInput = {
     extensionName: "@test/ext",
     version: "2025.01",
+    channel: null,
     reason: "recovered",
   };
   await assertErrors<ExtensionUnyankEvent>(
@@ -115,6 +171,7 @@ Deno.test("extensionUnyankPreview: rejects invalid extension name", async () => 
   const input: ExtensionUnyankInput = {
     extensionName: "invalid-name",
     version: "2025.01",
+    channel: null,
     reason: "recovered",
   };
   try {
@@ -133,6 +190,7 @@ Deno.test("extensionUnyankPreview: rejects when not authenticated", async () => 
   const input: ExtensionUnyankInput = {
     extensionName: "@test/ext",
     version: "2025.01",
+    channel: null,
     reason: "recovered",
   };
   try {

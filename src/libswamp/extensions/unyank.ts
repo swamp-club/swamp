@@ -38,6 +38,7 @@ const SCOPED_NAME_PATTERN = /^@[a-z0-9_-]+\/[a-z0-9_-]+(\/[a-z0-9_-]+)*$/;
 export interface ExtensionUnyankData {
   name: string;
   version: string | null;
+  channel: string | null;
   reason: string | null;
 }
 
@@ -49,6 +50,7 @@ export type ExtensionUnyankEvent =
 export interface ExtensionUnyankInput {
   extensionName: string;
   version: string | null;
+  channel: string | null;
   reason: string | null;
 }
 
@@ -56,6 +58,7 @@ export interface ExtensionUnyankInput {
 export interface ExtensionUnyankPreview {
   extensionName: string;
   version: string | null;
+  channel: string | null;
   reason: string | null;
 }
 
@@ -68,6 +71,7 @@ export interface ExtensionUnyankDeps {
     serverUrl: string,
     name: string,
     version: string | null,
+    channel: string | null,
     reason: string | null,
     apiKey: string,
   ) => Promise<void>;
@@ -91,11 +95,12 @@ export function createExtensionUnyankDeps(
       serverUrl: string,
       name: string,
       version: string | null,
+      channel: string | null,
       reason: string | null,
       apiKey: string,
     ) => {
       const client = new ExtensionApiClient(serverUrl, identity);
-      await client.unyankExtension(name, version, reason, apiKey);
+      await client.unyankExtension(name, version, channel, reason, apiKey);
     },
   };
 }
@@ -126,6 +131,7 @@ export async function extensionUnyankPreview(
   return {
     extensionName: input.extensionName,
     version: input.version,
+    channel: input.channel,
     reason: input.reason,
   };
 }
@@ -152,6 +158,7 @@ export async function* extensionUnyank(
         credentials.serverUrl,
         input.extensionName,
         input.version,
+        input.channel,
         input.reason,
         credentials.apiKey,
       );
@@ -163,6 +170,7 @@ export async function* extensionUnyank(
         data: {
           name: input.extensionName,
           version: input.version,
+          channel: input.channel,
           reason: input.reason,
         },
       };

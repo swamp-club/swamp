@@ -32,6 +32,7 @@ const SCOPED_NAME_PATTERN = /^@[a-z0-9_-]+\/[a-z0-9_-]+(\/[a-z0-9_-]+)*$/;
 export interface ExtensionYankData {
   name: string;
   version: string | null;
+  channel: string | null;
   reason: string;
 }
 
@@ -43,6 +44,7 @@ export type ExtensionYankEvent =
 export interface ExtensionYankInput {
   extensionName: string;
   version: string | null;
+  channel: string | null;
   reason: string;
 }
 
@@ -50,6 +52,7 @@ export interface ExtensionYankInput {
 export interface ExtensionYankPreview {
   extensionName: string;
   version: string | null;
+  channel: string | null;
   reason: string;
 }
 
@@ -62,6 +65,7 @@ export interface ExtensionYankDeps {
     serverUrl: string,
     name: string,
     version: string | null,
+    channel: string | null,
     reason: string,
     apiKey: string,
   ) => Promise<void>;
@@ -85,11 +89,12 @@ export function createExtensionYankDeps(
       serverUrl: string,
       name: string,
       version: string | null,
+      channel: string | null,
       reason: string,
       apiKey: string,
     ) => {
       const client = new ExtensionApiClient(serverUrl, identity);
-      await client.yankExtension(name, version, reason, apiKey);
+      await client.yankExtension(name, version, channel, reason, apiKey);
     },
   };
 }
@@ -122,6 +127,7 @@ export async function extensionYankPreview(
   return {
     extensionName: input.extensionName,
     version: input.version,
+    channel: input.channel,
     reason: input.reason,
   };
 }
@@ -149,6 +155,7 @@ export async function* extensionYank(
         credentials.serverUrl,
         input.extensionName,
         input.version,
+        input.channel,
         input.reason,
         credentials.apiKey,
       );
@@ -160,6 +167,7 @@ export async function* extensionYank(
         data: {
           name: input.extensionName,
           version: input.version,
+          channel: input.channel,
           reason: input.reason,
         },
       };

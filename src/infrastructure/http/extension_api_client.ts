@@ -491,6 +491,7 @@ export class ExtensionApiClient {
   async yankExtension(
     name: string,
     version: string | null,
+    channel: string | null,
     reason: string,
     apiKey: string,
   ): Promise<YankResult> {
@@ -501,13 +502,17 @@ export class ExtensionApiClient {
     const path = encodedVersion
       ? `/api/v1/extensions/${encodedName}@${encodedVersion}/yank`
       : `/api/v1/extensions/${encodedName}/yank`;
+    const body: Record<string, string> = { reason };
+    if (channel !== null) {
+      body.channel = channel;
+    }
     const res = await this.fetch(path, {
       method: "POST",
       headers: {
         ...this.authHeaders(apiKey),
         "Content-Type": "application/json",
       },
-      body: JSON.stringify({ reason }),
+      body: JSON.stringify(body),
     });
 
     await this.checkResponse(res);
@@ -522,6 +527,7 @@ export class ExtensionApiClient {
   async unyankExtension(
     name: string,
     version: string | null,
+    channel: string | null,
     reason: string | null,
     apiKey: string,
   ): Promise<UnyankResult> {
@@ -533,16 +539,25 @@ export class ExtensionApiClient {
       ? `/api/v1/extensions/${encodedName}@${encodedVersion}/unyank`
       : `/api/v1/extensions/${encodedName}/unyank`;
 
-    const init: RequestInit = reason === null
-      ? { method: "POST", headers: this.authHeaders(apiKey) }
-      : {
+    const body: Record<string, string> = {};
+    if (channel !== null) {
+      body.channel = channel;
+    }
+    if (reason !== null) {
+      body.reason = reason;
+    }
+    const hasBody = Object.keys(body).length > 0;
+
+    const init: RequestInit = hasBody
+      ? {
         method: "POST",
         headers: {
           ...this.authHeaders(apiKey),
           "Content-Type": "application/json",
         },
-        body: JSON.stringify({ reason }),
-      };
+        body: JSON.stringify(body),
+      }
+      : { method: "POST", headers: this.authHeaders(apiKey) };
 
     const res = await this.fetch(path, init);
     await this.checkResponse(res);

@@ -48,11 +48,17 @@ Deno.test("extensionYank: yanks specific version", async () => {
   const input: ExtensionYankInput = {
     extensionName: "@test/ext",
     version: "2025.01",
+    channel: null,
     reason: "broken",
   };
   await assertCompletes<ExtensionYankEvent>(extensionYank(ctx, deps, input), {
     kind: "completed",
-    data: { name: "@test/ext", version: "2025.01", reason: "broken" },
+    data: {
+      name: "@test/ext",
+      version: "2025.01",
+      channel: null,
+      reason: "broken",
+    },
   });
 });
 
@@ -62,12 +68,52 @@ Deno.test("extensionYank: yanks all versions when version is null", async () => 
   const input: ExtensionYankInput = {
     extensionName: "@test/ext",
     version: null,
+    channel: null,
     reason: "deprecated",
   };
   await assertCompletes<ExtensionYankEvent>(extensionYank(ctx, deps, input), {
     kind: "completed",
-    data: { name: "@test/ext", version: null, reason: "deprecated" },
+    data: {
+      name: "@test/ext",
+      version: null,
+      channel: null,
+      reason: "deprecated",
+    },
   });
+});
+
+Deno.test("extensionYank: yanks by channel", async () => {
+  let capturedChannel: string | null = null;
+  const ctx = createLibSwampContext();
+  const deps = fakeDeps({
+    yankExtension: (
+      _serverUrl: string,
+      _name: string,
+      _version: string | null,
+      channel: string | null,
+      _reason: string,
+      _apiKey: string,
+    ) => {
+      capturedChannel = channel;
+      return Promise.resolve();
+    },
+  });
+  const input: ExtensionYankInput = {
+    extensionName: "@test/ext",
+    version: null,
+    channel: "stable",
+    reason: "withdrawing from stable",
+  };
+  await assertCompletes<ExtensionYankEvent>(extensionYank(ctx, deps, input), {
+    kind: "completed",
+    data: {
+      name: "@test/ext",
+      version: null,
+      channel: "stable",
+      reason: "withdrawing from stable",
+    },
+  });
+  assertEquals(capturedChannel, "stable");
 });
 
 Deno.test("extensionYank: errors when not authenticated", async () => {
@@ -78,6 +124,7 @@ Deno.test("extensionYank: errors when not authenticated", async () => {
   const input: ExtensionYankInput = {
     extensionName: "@test/ext",
     version: "2025.01",
+    channel: null,
     reason: "broken",
   };
   await assertErrors<ExtensionYankEvent>(
@@ -92,6 +139,7 @@ Deno.test("extensionYankPreview: rejects invalid extension name", async () => {
   const input: ExtensionYankInput = {
     extensionName: "invalid-name",
     version: "2025.01",
+    channel: null,
     reason: "broken",
   };
   try {
@@ -110,6 +158,7 @@ Deno.test("extensionYankPreview: rejects when not authenticated", async () => {
   const input: ExtensionYankInput = {
     extensionName: "@test/ext",
     version: "2025.01",
+    channel: null,
     reason: "broken",
   };
   try {

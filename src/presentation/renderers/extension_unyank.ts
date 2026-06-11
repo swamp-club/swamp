@@ -36,6 +36,11 @@ class LogExtensionUnyankRenderer implements Renderer<ExtensionUnyankEvent> {
             name: e.data.name,
             version: e.data.version,
           });
+        } else if (e.data.channel) {
+          logger.info("Unyanked {name} ({channel} channel)", {
+            name: e.data.name,
+            channel: e.data.channel,
+          });
         } else {
           logger.info("Unyanked {name} (all versions)", {
             name: e.data.name,
