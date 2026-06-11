@@ -404,6 +404,23 @@ values.
 
 ## CLI
 
+### `swamp report list` / `swamp report type search`
+
+Lists registered report *definitions* — the report types currently loaded from
+extensions and builtins. This is distinct from `swamp report search`, which
+lists stored report *results* (artifacts from past runs).
+
+`swamp report list` is an alias for `swamp report type search`. Both open an
+interactive TUI picker showing each report's name, scope, and description.
+Pass `--json` for structured output.
+
+```bash
+swamp report list
+swamp report list cost
+swamp report type search
+swamp report type search --json
+```
+
 ### `swamp report get`
 
 Retrieves a stored report's content. Reports are persisted automatically after

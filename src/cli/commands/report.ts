@@ -19,7 +19,7 @@
 
 import { Command } from "@cliffy/command";
 import { groupCommandAction } from "../group_action.ts";
-import { reportSearchAction, reportSearchCommand } from "./report_search.ts";
+import { reportSearchCommand } from "./report_search.ts";
 import { reportGetCommand } from "./report_get.ts";
 import { reportDescribeCommand } from "./report_describe.ts";
 import {
@@ -54,12 +54,7 @@ export const reportCommand = new Command()
   .command(
     "list",
     new Command()
-      .description("Alias for report search")
-      .hidden()
+      .description("List registered report definitions")
       .arguments("[query:string]")
-      .option(
-        "--repo-dir <dir:string>",
-        "Repository directory (env: SWAMP_REPO_DIR)",
-      )
-      .action(reportSearchAction),
+      .action(reportTypeSearchAction),
   );

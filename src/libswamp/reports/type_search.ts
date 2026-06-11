@@ -25,6 +25,7 @@ export interface ReportTypeSearchItem {
   type: string;
   name: string;
   description: string;
+  scope: string;
 }
 
 export interface ReportTypeSearchData {
@@ -42,6 +43,7 @@ export interface ReportTypeSearchDeps {
     type: string;
     name: string;
     description: string;
+    scope: string;
   }>;
 }
 
@@ -65,6 +67,7 @@ export async function* reportTypeSearch(
         type: t.type,
         name: t.name,
         description: t.description,
+        scope: t.scope,
       }));
 
       yield {
