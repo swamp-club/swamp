@@ -52,6 +52,15 @@ resuming an issue in the `triaging` phase. Covers: starting the lifecycle (using
 direct type execution to auto-create the model and fetch issue context in one
 command), reading the codebase, classifying the issue, and reproducing bugs.
 
+The first command to run for a new issue is always:
+
+```
+swamp model @swamp/issue-lifecycle method run start issue-<N> --input issueNumber=<N>
+```
+
+This fetches the issue from swamp-club and writes context automatically — do NOT
+use `gh issue view` or any other mechanism to fetch issue data.
+
 ### Phase 2: Planning (steps 5–7)
 
 Read [references/planning.md](references/planning.md) after triage is complete.
@@ -186,20 +195,24 @@ When a PR has already merged and the lifecycle just needs to be marked done:
 
 ## Key Rules
 
-1. **Never skip the feedback loop.** Always show the plan. Always ask.
-2. **Never call approve without explicit human approval.**
-3. **Persist everything through the model.** Don't just have a conversation —
+1. **Never use `gh` to fetch issue data.** All issue context comes from
+   swamp-club via the `start` method — not from GitHub. The only place `gh` is
+   used in this skill is checking collaborator status during contributor
+   notification.
+2. **Never skip the feedback loop.** Always show the plan. Always ask.
+3. **Never call approve without explicit human approval.**
+4. **Persist everything through the model.** Don't just have a conversation —
    call the model methods so state survives context compression and sessions.
-4. **swamp-club is the source of truth.** Every state transition posts a
+5. **swamp-club is the source of truth.** Every state transition posts a
    lifecycle entry and transitions the issue status in swamp-club automatically.
    You don't need to manually update the issue.
-5. **Read the codebase thoroughly** before generating the plan. The plan should
+6. **Read the codebase thoroughly** before generating the plan. The plan should
    reference specific files, functions, and test paths.
-6. **Follow the planning conventions for this repository.** Read
+7. **Follow the planning conventions for this repository.** Read
    `agent-constraints/planning-conventions.md` if it exists.
-7. **Never open a PR without asking first.** Present the changes summary and
+8. **Never open a PR without asking first.** Present the changes summary and
    wait for the human to confirm before creating the pull request.
-8. **File unrelated issues immediately.** If you discover a bug, code smell, or
+9. **File unrelated issues immediately.** If you discover a bug, code smell, or
    problem during investigation that is NOT related to the current issue, file
    it as a new swamp-club issue. Do not try to fix it in the current work span —
    keep the scope focused.
