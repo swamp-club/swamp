@@ -30,37 +30,27 @@ IMPORTANT: Before creating or modifying ANY skill file, you MUST load the
 authoritative guidelines for structure, frontmatter, and progressive disclosure.
 This is a hard prerequisite, not a suggestion.
 
-### Skill structure
+After editing any `.md` file in `.claude/skills/`, run `deno fmt` — skill
+markdown follows the same formatting rules as all other files in this
+repository.
 
-```
-.claude/skills/<skill-name>/
-├── SKILL.md              (required — uppercase)
-├── references/            (optional — detailed docs loaded on demand)
-└── evals/                 (optional — trigger_evals.json)
-```
+After creating or modifying a skill, verify it before submitting — CI enforces
+both checks on any PR that touches skill files:
 
-### Rules for skill files
+- `npx tessl skill review .claude/skills/<skill-name>` — quality review of the
+  description and content; the average score must be ≥ 90%. Run
+  `deno run review-skills` to review all skills at once.
+- `deno run eval-skill-triggers` — promptfoo trigger-routing evals (needs
+  `ANTHROPIC_API_KEY`); run when a skill's description or `trigger_evals.json`
+  changed.
 
-- **SKILL.md must be uppercase** — not `skill.md`.
-- **Frontmatter is required** — YAML with `name` and `description` fields only.
-  The `description` is the primary trigger mechanism; include what the skill
-  does AND specific trigger phrases/contexts.
-- **Keep SKILL.md body under 500 lines** — split detailed content into
-  `references/` files and reference them from SKILL.md.
-- **No extraneous files** — no README.md, CHANGELOG.md, INSTALLATION_GUIDE.md,
-  or similar auxiliary docs.
-- **Format after editing** — run `deno fmt` after modifying any `.md` files in
-  `.claude/skills/`. Skill markdown files follow the same formatting rules as
-  all other files in this repository.
+See `design/skills.md` for the full skill testing pipeline.
 
 ## Code Style
 
 - TypeScript strict mode, no `any` types
 - Use named exports, not default exports
 - Comprehensive unit test coverage
-- All code must pass type checking with `deno check`
-- All code must pass `deno lint`
-- Format all code with `deno fmt`
 - All `.ts` and `.tsx` files must include the AGPLv3 copyright header from
   `FILE-LICENSE-TEMPLATE.md` at the top of the file (as `//` comments). Run
   `deno run license-headers` to add headers to any new files.
@@ -79,21 +69,24 @@ isn't part of the task. Keep the blast radius small.
 
 ## Commands
 
-Use `deno run` to get a complete list of custom tasks.
+Use `deno run` to get a complete list of custom tasks. `deno run dev` runs the
+CLI.
 
-- `deno run dev`: Run the CLI.
-- `deno run test`: Run the test suite.
-- `deno check`: Type-check the program.
-- `deno lint`: Run lints.
-- `deno fmt`: Format the code.
+## Verification
+
+After completing work (finishing tasks, merging PRs), run these checks:
+
+1. `deno check` - Type checking
+2. `deno lint` - Linting
+3. `deno fmt` - Formatting
+4. `deno run test` - Tests
+5. `deno run compile` - Recompile the binary
 
 ## Source Control & Pull Requests
 
 - Use the `github-pr` skill to create commit messages and pull requests.
 - PRs are auto-merged after passing CI and Claude review. To prevent auto-merge,
   add the `hold` label to the PR.
-- After completing work (finishing tasks, merging PRs), run `deno run compile`
-  to recompile swamp.
 - When a PR fixes a GitHub issue filed by an external contributor (not a repo
   collaborator), add them as a co-author to the commit. Check with
   `gh api /repos/swamp-club/swamp/collaborators --jq '.[].login'` to determine
@@ -101,16 +94,6 @@ Use `deno run` to get a complete list of custom tasks.
   `Co-authored-by: Name <email>` to the commit. Use `gh api /users/<username>`
   to look up their name, and use `<username>@users.noreply.github.com` as the
   email unless a public email is available from the API response.
-
-## Verification
-
-After completing work, run these checks:
-
-1. `deno check` - Type checking
-2. `deno lint` - Linting
-3. `deno fmt` - Formatting
-4. `deno run test` - Tests
-5. `deno run compile` - Recompile the binary
 
 ## Architecture
 
