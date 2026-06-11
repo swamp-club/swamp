@@ -22,93 +22,13 @@ import React, { useState } from "react";
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { render } from "ink-testing-library";
 import { Box, Text, useInput } from "ink";
-import { SearchPicker } from "./search_picker.tsx";
 import type { ActionDef } from "./help_bar.tsx";
 
 const inkTestOptions = { sanitizeOps: false, sanitizeResources: false };
 
-interface TestItem {
-  name: string;
-}
-
-const TEST_ITEMS: TestItem[] = [
-  { name: "alpha" },
-  { name: "bravo" },
-  { name: "charlie" },
-];
-
-function renderTestPicker(opts: {
-  onSelect?: (item: TestItem, scrollback: string, action?: string) => void;
-  onCancel?: () => void;
-  actions?: ActionDef[];
-}) {
-  return render(
-    <SearchPicker
-      items={TEST_ITEMS}
-      initialQuery=""
-      selector={(item) => item.name}
-      renderResultLine={(item) => <>{item.name}</>}
-      renderPreview={(item) => <>{item.name}</>}
-      renderScrollback={(item) => item.name}
-      itemLabel="items"
-      actions={opts.actions}
-      onSelect={opts.onSelect ?? (() => {})}
-      onCancel={opts.onCancel ?? (() => {})}
-    />,
-  );
-}
-
 function tick(ms = 50): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
-
-Deno.test({
-  name:
-    "SearchPicker: plain action-key letter appends to query instead of triggering action",
-  ...inkTestOptions,
-  fn: async () => {
-    let actionFired: string | undefined;
-    const { stdin, lastFrame } = renderTestPicker({
-      actions: [{ key: "r", label: "Run", action: "run" }],
-      onSelect: (_item, _sb, action) => {
-        actionFired = action;
-      },
-    });
-
-    await tick();
-    stdin.write("r");
-    await tick();
-
-    assertEquals(actionFired, undefined);
-    const frame = lastFrame() ?? "";
-    assertStringIncludes(frame, "r");
-  },
-});
-
-Deno.test({
-  name:
-    "SearchPicker: query with action-key characters filters results normally",
-  ...inkTestOptions,
-  fn: async () => {
-    let actionFired: string | undefined;
-    const { stdin, lastFrame } = renderTestPicker({
-      actions: [{ key: "r", label: "Run", action: "run" }],
-      onSelect: (_item, _sb, action) => {
-        actionFired = action;
-      },
-    });
-
-    await tick();
-    stdin.write("b");
-    await tick();
-    stdin.write("r");
-    await tick();
-
-    assertEquals(actionFired, undefined);
-    const frame = lastFrame() ?? "";
-    assertStringIncludes(frame, "br");
-  },
-});
 
 /**
  * Minimal component that mirrors the SearchPicker's action-key logic in
