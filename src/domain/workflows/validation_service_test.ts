@@ -1326,3 +1326,255 @@ Deno.test("validateStepInputs: direct-execution step with CEL in modelType skips
   const inputResult = results.find((r) => r.name.includes("Step inputs"));
   assertEquals(inputResult?.passed, true);
 });
+
+// ---------- validateGlobalArgInputRefs ----------
+
+Deno.test("validateGlobalArgInputRefs: fails when globalArguments reference undeclared workflow inputs", async () => {
+  const resolver = mockResolver({
+    "my-model.execute": {
+      status: "resolved",
+      requiredArgs: [],
+      definitionProvidedArgs: ["run"],
+      definitionProvidedArgValues: {
+        run: "echo ${{ inputs.recordHost }} ${{ inputs.dnsZone }}",
+      },
+    },
+  });
+  const svc = new DefaultWorkflowValidationService(resolver);
+
+  const workflow = Workflow.create({
+    name: "test",
+    inputs: {
+      properties: {
+        recordHost: { type: "string" },
+      },
+    },
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: [
+          Step.create({
+            name: "step1",
+            task: StepTask.model("my-model", "execute"),
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await svc.validate(workflow);
+  const result = results.find((r) =>
+    r.name.includes("GlobalArgument input references")
+  );
+  assertEquals(result?.passed, false);
+  assertEquals(result?.error?.includes("dnsZone"), true);
+});
+
+Deno.test("validateGlobalArgInputRefs: passes when all referenced inputs are declared", async () => {
+  const resolver = mockResolver({
+    "my-model.execute": {
+      status: "resolved",
+      requiredArgs: [],
+      definitionProvidedArgs: ["run"],
+      definitionProvidedArgValues: {
+        run: "echo ${{ inputs.recordHost }} ${{ inputs.dnsZone }}",
+      },
+    },
+  });
+  const svc = new DefaultWorkflowValidationService(resolver);
+
+  const workflow = Workflow.create({
+    name: "test",
+    inputs: {
+      properties: {
+        recordHost: { type: "string" },
+        dnsZone: { type: "string" },
+      },
+    },
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: [
+          Step.create({
+            name: "step1",
+            task: StepTask.model("my-model", "execute"),
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await svc.validate(workflow);
+  const result = results.find((r) =>
+    r.name.includes("GlobalArgument input references")
+  );
+  assertEquals(result?.passed, true);
+});
+
+Deno.test("validateGlobalArgInputRefs: passes when no expressions in globalArguments", async () => {
+  const resolver = mockResolver({
+    "my-model.execute": {
+      status: "resolved",
+      requiredArgs: [],
+      definitionProvidedArgs: ["run"],
+      definitionProvidedArgValues: {
+        run: "echo hello",
+      },
+    },
+  });
+  const svc = new DefaultWorkflowValidationService(resolver);
+
+  const workflow = Workflow.create({
+    name: "test",
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: [
+          Step.create({
+            name: "step1",
+            task: StepTask.model("my-model", "execute"),
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await svc.validate(workflow);
+  const result = results.find((r) =>
+    r.name.includes("GlobalArgument input references")
+  );
+  assertEquals(result?.passed, true);
+});
+
+Deno.test("validateGlobalArgInputRefs: fails when workflow has no inputs but globalArguments reference them", async () => {
+  const resolver = mockResolver({
+    "my-model.execute": {
+      status: "resolved",
+      requiredArgs: [],
+      definitionProvidedArgs: ["run"],
+      definitionProvidedArgValues: {
+        run: "${{ inputs.host }}",
+      },
+    },
+  });
+  const svc = new DefaultWorkflowValidationService(resolver);
+
+  const workflow = Workflow.create({
+    name: "test",
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: [
+          Step.create({
+            name: "step1",
+            task: StepTask.model("my-model", "execute"),
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await svc.validate(workflow);
+  const result = results.find((r) =>
+    r.name.includes("GlobalArgument input references")
+  );
+  assertEquals(result?.passed, false);
+  assertEquals(result?.error?.includes("host"), true);
+});
+
+Deno.test("validateGlobalArgInputRefs: skips when model reference contains CEL expression", async () => {
+  const resolver = mockResolver({});
+  const svc = new DefaultWorkflowValidationService(resolver);
+
+  const workflow = Workflow.create({
+    name: "test",
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: [
+          Step.create({
+            name: "step1",
+            task: StepTask.model("${{ inputs.model_name }}", "execute"),
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await svc.validate(workflow);
+  const result = results.find((r) =>
+    r.name.includes("GlobalArgument input references")
+  );
+  assertEquals(result, undefined);
+});
+
+Deno.test("validateGlobalArgInputRefs: skips when resolution has no definitionProvidedArgValues", async () => {
+  const resolver = mockResolver({
+    "my-model.execute": {
+      status: "resolved",
+      requiredArgs: ["run"],
+    },
+  });
+  const svc = new DefaultWorkflowValidationService(resolver);
+
+  const workflow = Workflow.create({
+    name: "test",
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: [
+          Step.create({
+            name: "step1",
+            task: StepTask.model("my-model", "execute"),
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await svc.validate(workflow);
+  const result = results.find((r) =>
+    r.name.includes("GlobalArgument input references")
+  );
+  assertEquals(result, undefined);
+});
+
+Deno.test("validateGlobalArgInputRefs: handles bracket notation input references", async () => {
+  const resolver = mockResolver({
+    "my-model.execute": {
+      status: "resolved",
+      requiredArgs: [],
+      definitionProvidedArgs: ["run"],
+      definitionProvidedArgValues: {
+        run: '${{ inputs["record-host"] }}',
+      },
+    },
+  });
+  const svc = new DefaultWorkflowValidationService(resolver);
+
+  const workflow = Workflow.create({
+    name: "test",
+    inputs: {
+      properties: {
+        "record-host": { type: "string" },
+      },
+    },
+    jobs: [
+      Job.create({
+        name: "job1",
+        steps: [
+          Step.create({
+            name: "step1",
+            task: StepTask.model("my-model", "execute"),
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await svc.validate(workflow);
+  const result = results.find((r) =>
+    r.name.includes("GlobalArgument input references")
+  );
+  assertEquals(result?.passed, true);
+});

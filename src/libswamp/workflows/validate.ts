@@ -135,14 +135,25 @@ function createModelMethodResolver(
       // including unresolved ${{ ... }} expressions: invalid CEL is a runtime
       // concern, not a validator concern.
       const { definition } = lookupResult;
+      const methodArgValues = definition.getMethodArguments(methodName);
       const definitionProvidedArgs = Array.from(
         new Set([
-          ...Object.keys(definition.getMethodArguments(methodName)),
+          ...Object.keys(methodArgValues),
           ...Object.keys(definition.globalArguments),
         ]),
       );
 
-      return { status: "resolved", requiredArgs, definitionProvidedArgs };
+      const definitionProvidedArgValues: Record<string, unknown> = {
+        ...definition.globalArguments,
+        ...methodArgValues,
+      };
+
+      return {
+        status: "resolved",
+        requiredArgs,
+        definitionProvidedArgs,
+        definitionProvidedArgValues,
+      };
     },
   };
 }
