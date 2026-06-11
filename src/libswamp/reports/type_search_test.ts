@@ -35,11 +35,13 @@ function makeDeps(
         type: "@swamp/method-summary",
         name: "@swamp/method-summary",
         description: "Summary of method execution results",
+        scope: "method",
       },
       {
         type: "@swamp/cost-report",
         name: "@swamp/cost-report",
         description: "Cost breakdown for model operations",
+        scope: "model",
       },
     ],
     ...overrides,
@@ -78,6 +80,20 @@ Deno.test("reportTypeSearch: passes query through in data", async () => {
   >;
   assertEquals(completed.data.query, "cost");
   assertEquals(completed.data.results.length, 2);
+});
+
+Deno.test("reportTypeSearch: includes scope in results", async () => {
+  const deps = makeDeps();
+  const events = await collect<ReportTypeSearchEvent>(
+    reportTypeSearch(createLibSwampContext(), deps, {}),
+  );
+
+  const completed = events[1] as Extract<
+    ReportTypeSearchEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.data.results[0].scope, "method");
+  assertEquals(completed.data.results[1].scope, "model");
 });
 
 Deno.test("reportTypeSearch: returns empty results when no report types", async () => {

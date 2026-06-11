@@ -17,12 +17,23 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { ReportScope } from "./report.ts";
+import {
+  BUILTIN_METHOD_REPORTS,
+  BUILTIN_WORKFLOW_REPORTS,
+} from "./builtin/mod.ts";
 import { reportRegistry } from "./report_registry.ts";
+
+const BUILTIN_NAMES = new Set([
+  ...BUILTIN_METHOD_REPORTS,
+  ...BUILTIN_WORKFLOW_REPORTS,
+]);
 
 export interface ReportTypeInfo {
   type: string;
   name: string;
   description: string;
+  scope: ReportScope;
   isBuiltIn: boolean;
 }
 
@@ -35,7 +46,8 @@ export function getReportTypes(): ReportTypeInfo[] {
     type: name,
     name,
     description: report.description,
-    isBuiltIn: false,
+    scope: report.scope,
+    isBuiltIn: BUILTIN_NAMES.has(name),
   }));
   const loadedKeys = new Set(loaded.map((t) => t.type.toLowerCase()));
 
@@ -45,6 +57,7 @@ export function getReportTypes(): ReportTypeInfo[] {
       type: entry.type,
       name: entry.type,
       description: "",
+      scope: "method" as ReportScope,
       isBuiltIn: false,
     }));
 

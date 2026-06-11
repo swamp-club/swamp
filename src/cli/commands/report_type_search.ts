@@ -50,6 +50,10 @@ export async function reportTypeSearchAction(
 
   await reportRegistry.ensureLoaded();
 
+  for (const lazy of reportRegistry.getAllLazy()) {
+    await reportRegistry.ensureTypeLoaded(lazy.type);
+  }
+
   const deps: ReportTypeSearchDeps = {
     getReportTypes: () => getReportTypes(),
   };

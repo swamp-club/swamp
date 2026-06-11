@@ -41,7 +41,8 @@ function filterReportTypes(
     (t) =>
       t.type.toLowerCase().includes(lowerQuery) ||
       t.name.toLowerCase().includes(lowerQuery) ||
-      t.description.toLowerCase().includes(lowerQuery),
+      t.description.toLowerCase().includes(lowerQuery) ||
+      t.scope.toLowerCase().includes(lowerQuery),
   );
 }
 
@@ -89,7 +90,8 @@ class InkReportTypeSearchRenderer implements ReportTypeSearchRenderer {
         const result = await renderInteractivePicker<ReportTypeSearchItem>(
           e.data.results,
           e.data.query,
-          (item) => `${item.type} ${item.name} ${item.description}`,
+          (item) =>
+            `${item.type} ${item.name} ${item.description} ${item.scope}`,
           renderReportTypeResultLine,
           renderReportTypePreview,
           renderReportTypeScrollback,
@@ -125,7 +127,7 @@ function renderReportTypeResultLine(
 ): React.ReactElement {
   return (
     <Text>
-      {item.type} <Text dimColor>- {item.name}</Text>
+      {item.type} <Text dimColor>[{item.scope}]</Text>
     </Text>
   );
 }
@@ -140,7 +142,7 @@ function renderReportTypePreview(
   return (
     <Box flexDirection="column" marginLeft={1} width={innerWidth}>
       <Text bold wrap="truncate-end">{item.type}</Text>
-      <Text dimColor wrap="truncate-end">name: {item.name}</Text>
+      <Text dimColor wrap="truncate-end">scope: {item.scope}</Text>
       <Text dimColor wrap="truncate-end">{item.description}</Text>
     </Box>
   );
@@ -150,5 +152,5 @@ function renderReportTypeScrollback(
   item: ReportTypeSearchItem,
   _detail: ReportTypeSearchItem | undefined,
 ): string {
-  return `${item.type} - ${item.name}\n${item.description}`;
+  return `${item.type} [${item.scope}]\n${item.description}`;
 }
