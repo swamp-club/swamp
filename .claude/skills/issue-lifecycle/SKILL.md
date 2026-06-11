@@ -52,7 +52,15 @@ resuming an issue in the `triaging` phase. Covers: starting the lifecycle (using
 direct type execution to auto-create the model and fetch issue context in one
 command), reading the codebase, classifying the issue, and reproducing bugs.
 
-The first command to run for a new issue is always:
+The first command to run is always the existence check:
+
+```
+swamp data get issue-<N> state-main --json
+```
+
+- If this **returns data**, the model already exists — check the `phase` field
+  and go to the "Resuming a Session" table below. **Do NOT call `start`.**
+- If this **fails** (model not found), the issue is new — run:
 
 ```
 swamp model @swamp/issue-lifecycle method run start issue-<N> --input issueNumber=<N>
