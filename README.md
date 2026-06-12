@@ -4,7 +4,7 @@
 
 # Swamp
 
-AI Native Automation, built for agents - Welcome to Swamp.
+Deterministic Automation for AI Agents.
 
 Swamp is a CLI that supercharges AI agents to create operational workflows that
 are reviewable, shareable, and accurate. Built for agents, there to empower
@@ -39,6 +39,13 @@ Start your AI agent in the repo and tell it what you want to do. Just ask:
 
 The agent will create models, wire up workflows, and run them — all reviewable
 in `.swamp/` before anything touches production.
+
+## Learn More
+
+You can
+[learn more about swamp by reading the manual](https://swamp-club.com/manual).
+[How Swamp Works](https://swamp-club.com/manual/explanation/how-swamp-works) is
+the best place to start - it provides an overview of the entire system.
 
 ## Core Concepts
 
@@ -413,5 +420,8 @@ env var → `.swamp.yaml` `telemetryDisabled: true`.
 ## License
 
 Swamp is licensed under the [GNU Affero General Public License v3.0](COPYING)
-with the [Swamp Extension and Definition Exception](COPYING-EXCEPTION). See
-[COPYRIGHT](COPYRIGHT) and [CONTRIBUTING.md](CONTRIBUTING.md) for details.
+with the [Swamp Extension and Definition Exception](COPYING-EXCEPTION). No
+rights are granted for use of our
+[trademarks outside our explicit policy](./TRADEMARKS.md) See
+[COPYRIGHT](COPYRIGHT), [CONTRIBUTING.md](CONTRIBUTING.md) and
+[Open Source FAQ](./OSS-FAQ.md) for details.

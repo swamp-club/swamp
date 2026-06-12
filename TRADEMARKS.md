@@ -5,8 +5,9 @@
 This document, the "Policy," outlines the Swamp Club project's (the "Project")
 policy for the use of our trademarks. While our software is available under a
 free and open source software license, the copyright license does not include
-any right, express or implied, to use our trademarks. These guidelines are where
-we describe how you may use our trademarks.
+any right, express or implied, to use our trademarks (for the avoidance of
+doubt, this means we do not grant any rights under section 7 of the AGPLv3).
+These guidelines are where we describe how you may use our trademarks.
 
 The role of trademarks is to provide assurance about the quality of the products
 or services with which the trademark is associated. But because an open source
@@ -47,14 +48,15 @@ This Policy covers:
 
 1. Our word trademarks and service marks (the "Marks"):
 
-| Mark           | Common descriptive name for the goods or services |
-| -------------- | ------------------------------------------------- |
-| Swamp Club     | software platform                                 |
-| SWAMP CLUB     | software platform                                 |
-| Swamp          | software platform                                 |
-| swamp          | software platform                                 |
-| swamp.club     | software platform                                 |
-| swamp-club.com | software platform                                 |
+| Mark             | Common descriptive name for the goods or services |
+| ---------------- | ------------------------------------------------- |
+| Elder Swamp Club | company name                                      |
+| Swamp Club       | software platform                                 |
+| SWAMP CLUB       | software platform                                 |
+| Swamp            | software platform                                 |
+| swamp            | software platform                                 |
+| swamp.club       | software platform                                 |
+| swamp-club.com   | software platform                                 |
 
 Some Marks may not be registered, but registration does not equal ownership of
 trademarks. This Policy covers our Marks whether they are registered or not.
