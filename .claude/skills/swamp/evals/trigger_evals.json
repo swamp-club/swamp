@@ -152,7 +152,7 @@
   {
     "query": "Format the output of this CLI command",
     "should_trigger": false,
-    "note": "Formatting CLI output is presentation-layer coding work, not swamp CLI usage"
+    "note": "Formatting output -> terminal-output skill"
   },
   {
     "query": "create a workflow to run these three steps for me",
