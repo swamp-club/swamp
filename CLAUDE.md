@@ -83,7 +83,7 @@ After completing work, run these checks:
 2. `deno lint` - Linting
 3. `deno fmt` - Formatting
 4. `deno run test` - Tests
-5. `deno run compile` - Recompile the binary (also run this after merging a PR)
+5. `deno run compile` - Recompile the binary
 
 ## Source Control & Pull Requests
 
