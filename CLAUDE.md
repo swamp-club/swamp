@@ -30,19 +30,22 @@ IMPORTANT: Before creating or modifying ANY skill file, you MUST load the
 authoritative guidelines for structure, frontmatter, and progressive disclosure.
 This is a hard prerequisite, not a suggestion.
 
-After editing any `.md` file in `.claude/skills/`, run `deno fmt` — skill
-markdown follows the same formatting rules as all other files in this
-repository.
+Repo-specific rules on top of skill-creator's guidance:
 
-After creating or modifying a skill, verify it before submitting — CI enforces
-both checks on any PR that touches skill files:
+- `SKILL.md` must be uppercase — not `skill.md`.
+- After editing any `.md` file in `.claude/skills/`, run `deno fmt` — skill
+  markdown follows the same formatting rules as all other files in this
+  repository.
+
+After creating or modifying a skill, verify it before submitting:
 
 - `npx tessl skill review .claude/skills/<skill-name>` — quality review of the
-  description and content; the average score must be ≥ 90%. Run
-  `deno run review-skills` to review all skills at once.
-- `deno run eval-skill-triggers` — promptfoo trigger-routing evals (needs
-  `ANTHROPIC_API_KEY`); run when a skill's description or `trigger_evals.json`
-  changed.
+  description and content; aim for an average score ≥ 90%. CI enforces that
+  threshold for the bundled skills (`swamp`, `swamp-getting-started`) via
+  `deno run review-skills`; for other skills it is good hygiene, not a gate.
+- `deno run eval-skill-triggers` — promptfoo trigger-routing evals for the
+  bundled skills (needs `ANTHROPIC_API_KEY`); run when a bundled skill's
+  description or `trigger_evals.json` changed.
 
 See `design/skills.md` for the full skill testing pipeline.
 
@@ -74,13 +77,13 @@ CLI.
 
 ## Verification
 
-After completing work (finishing tasks, merging PRs), run these checks:
+After completing work, run these checks:
 
 1. `deno check` - Type checking
 2. `deno lint` - Linting
 3. `deno fmt` - Formatting
 4. `deno run test` - Tests
-5. `deno run compile` - Recompile the binary
+5. `deno run compile` - Recompile the binary (also run this after merging a PR)
 
 ## Source Control & Pull Requests
 
