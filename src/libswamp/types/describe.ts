@@ -24,6 +24,8 @@ import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { notFound } from "../errors.ts";
 import {
+  buildDataOutputSpecs,
+  type DataOutputSpecDescribeData,
   type MethodDescribeData,
   toMethodDescribeData,
   zodToJsonSchema,
@@ -40,6 +42,7 @@ export interface TypeDescribeData {
   };
   version: string;
   globalArguments?: object;
+  dataOutputSpecs?: DataOutputSpecDescribeData[];
   methods: MethodDescribeData[];
 }
 
@@ -95,15 +98,14 @@ export async function* typeDescribe(
         ? zodToJsonSchema(definition.globalArguments)
         : undefined;
 
+      const specs = buildDataOutputSpecs(
+        definition.resources,
+        definition.files,
+      );
+
       const methods: MethodDescribeData[] = Object.entries(definition.methods)
         .map(
-          ([name, method]) =>
-            toMethodDescribeData(
-              name,
-              method,
-              definition.resources,
-              definition.files,
-            ),
+          ([name, method]) => toMethodDescribeData(name, method),
         );
 
       yield {
@@ -115,6 +117,7 @@ export async function* typeDescribe(
           },
           version: definition.version,
           globalArguments,
+          dataOutputSpecs: specs.length > 0 ? specs : undefined,
           methods,
         },
       };

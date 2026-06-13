@@ -50,13 +50,6 @@ const testData: TypeDescribeData = {
         },
         required: ["message"],
       },
-      inputs: {
-        type: "object",
-        properties: {
-          message: { type: "string", minLength: 1 },
-        },
-        required: ["message"],
-      },
     },
   ],
 };
@@ -75,6 +68,15 @@ const testDataWithSpecs: TypeDescribeData = {
     },
     required: ["cidrBlock"],
   },
+  dataOutputSpecs: [
+    {
+      specName: "resource",
+      kind: "resource" as const,
+      description: "VPC resource state",
+      contentType: "application/json",
+      lifetime: "persistent",
+    },
+  ],
   methods: [
     {
       name: "create",
@@ -86,22 +88,6 @@ const testDataWithSpecs: TypeDescribeData = {
         },
         required: ["cidrBlock"],
       },
-      inputs: {
-        type: "object",
-        properties: {
-          cidrBlock: { type: "string" },
-        },
-        required: ["cidrBlock"],
-      },
-      dataOutputSpecs: [
-        {
-          specName: "resource",
-          kind: "resource" as const,
-          description: "VPC resource state",
-          contentType: "application/json",
-          lifetime: "persistent",
-        },
-      ],
     },
   ],
 };

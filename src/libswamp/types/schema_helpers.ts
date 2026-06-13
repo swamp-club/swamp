@@ -46,8 +46,6 @@ export interface MethodDescribeData {
   name: string;
   description: string;
   arguments: object;
-  inputs: object;
-  dataOutputSpecs?: DataOutputSpecDescribeData[];
 }
 
 /**
@@ -220,9 +218,21 @@ function stripDefaultsFromRequired(
 export function toMethodDescribeData(
   name: string,
   method: MethodDefinition,
+): MethodDescribeData {
+  return {
+    name,
+    description: method.description,
+    arguments: zodToJsonSchema(method.arguments),
+  };
+}
+
+/**
+ * Builds type-level DataOutputSpecDescribeData from resource and file output specs.
+ */
+export function buildDataOutputSpecs(
   resources?: Record<string, ResourceOutputSpec>,
   files?: Record<string, FileOutputSpec>,
-): MethodDescribeData {
+): DataOutputSpecDescribeData[] {
   const resourceSpecs = resources
     ? Object.entries(resources).map(
       ([specName, spec]) => ({
@@ -252,14 +262,5 @@ export function toMethodDescribeData(
     )
     : [];
 
-  const dataOutputSpecs = [...resourceSpecs, ...fileSpecs];
-
-  const schema = zodToJsonSchema(method.arguments);
-  return {
-    name,
-    description: method.description,
-    arguments: schema,
-    inputs: schema,
-    dataOutputSpecs: dataOutputSpecs.length > 0 ? dataOutputSpecs : undefined,
-  };
+  return [...resourceSpecs, ...fileSpecs];
 }

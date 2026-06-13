@@ -31,8 +31,6 @@ const testData = {
       name: "run",
       description: "Run",
       arguments: { type: "object", properties: {}, required: [] },
-      inputs: { type: "object", properties: {}, required: [] },
-      dataOutputSpecs: [],
     },
   ],
 };
@@ -153,4 +151,74 @@ Deno.test("createTypeDescribeRenderer - factory returns correct type per mode", 
   const jsonRenderer = createTypeDescribeRenderer("json");
   assertEquals(typeof logRenderer.handlers, "function");
   assertEquals(typeof jsonRenderer.handlers, "function");
+});
+
+const testDataWithSpecs = {
+  type: { raw: "command/shell", normalized: "command/shell" },
+  version: "1.0.0",
+  dataOutputSpecs: [
+    {
+      specName: "result",
+      kind: "resource" as const,
+      description: "Command result",
+      schema: { type: "object", properties: { code: { type: "number" } } },
+      lifetime: "infinite",
+    },
+  ],
+  methods: [
+    {
+      name: "run",
+      description: "Run a shell command",
+      arguments: {
+        type: "object",
+        properties: { cmd: { type: "string" }, timeout: { type: "number" } },
+        required: ["cmd"],
+      },
+    },
+  ],
+};
+
+Deno.test("JsonTypeDescribeRenderer compact mode: outputs spec names only and simplified arguments", async () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+
+  try {
+    const renderer = createTypeDescribeRenderer("json", true);
+    const events: TypeDescribeEvent[] = [
+      { kind: "resolving" },
+      { kind: "completed", data: testDataWithSpecs },
+    ];
+    await consumeStream(toStream(events), renderer.handlers());
+    assertEquals(logs.length, 1);
+    const parsed = JSON.parse(logs[0]);
+    assertEquals(parsed.dataOutputSpecs, ["result"]);
+    assertEquals(parsed.methods[0].name, "run");
+    assertEquals(parsed.methods[0].arguments.properties.cmd.type, "string");
+    assertEquals(typeof parsed.dataOutputSpecs[0], "string");
+  } finally {
+    console.log = originalLog;
+  }
+});
+
+Deno.test("JsonTypeDescribeRenderer full mode: outputs complete spec objects at type level", async () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+
+  try {
+    const renderer = createTypeDescribeRenderer("json", false);
+    const events: TypeDescribeEvent[] = [
+      { kind: "resolving" },
+      { kind: "completed", data: testDataWithSpecs },
+    ];
+    await consumeStream(toStream(events), renderer.handlers());
+    const parsed = JSON.parse(logs[0]);
+    assertEquals(parsed.dataOutputSpecs[0].specName, "result");
+    assertEquals(parsed.dataOutputSpecs[0].kind, "resource");
+    assertEquals(typeof parsed.dataOutputSpecs[0].schema, "object");
+    assertEquals("inputs" in parsed.methods[0], false);
+  } finally {
+    console.log = originalLog;
+  }
 });

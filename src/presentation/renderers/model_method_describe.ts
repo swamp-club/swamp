@@ -47,20 +47,20 @@ class LogModelMethodDescribeRenderer
           } ${data.method.description}`,
         );
 
-        const argAttrs = formatSchemaAttributes(data.method.inputs, "  ");
+        const argAttrs = formatSchemaAttributes(
+          data.method.arguments,
+          "  ",
+        );
         if (argAttrs.length > 0) {
           lines.push("");
           lines.push(bold(cyan("Inputs:")));
           lines.push(...argAttrs);
         }
 
-        if (
-          data.method.dataOutputSpecs &&
-          data.method.dataOutputSpecs.length > 0
-        ) {
+        if (data.dataOutputSpecs && data.dataOutputSpecs.length > 0) {
           lines.push("");
           lines.push(bold(cyan("Data Outputs:")));
-          for (const spec of data.method.dataOutputSpecs) {
+          for (const spec of data.dataOutputSpecs) {
             const parts = [`${spec.specName} ${dim(`[${spec.kind}]`)}`];
             if (spec.description) {
               parts.push(`${dim("-")} ${spec.description}`);

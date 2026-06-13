@@ -30,7 +30,11 @@ import { ModelType } from "../../domain/models/model_type.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 
 // Re-export from libswamp for backward compatibility with existing importers
-export { toMethodDescribeData, zodToJsonSchema } from "../../libswamp/mod.ts";
+export {
+  buildDataOutputSpecs,
+  toMethodDescribeData,
+  zodToJsonSchema,
+} from "../../libswamp/mod.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -38,7 +42,15 @@ type AnyOptions = any;
 export const typeDescribeCommand = new Command()
   .description("Describe a model type with schema details")
   .example("Describe a model type", "swamp type describe aws-ec2")
+  .example(
+    "Compact digest for agents",
+    "swamp type describe aws-ec2 --compact --json",
+  )
   .alias("get")
+  .option(
+    "--compact",
+    "Output a compact digest (method names, descriptions, argument types, output spec names)",
+  )
   .arguments("<type:model_type>")
   // @ts-expect-error - Cliffy custom type returns unknown instead of string
   .action(async function (options: AnyOptions, typeArg: string) {
@@ -55,7 +67,8 @@ export const typeDescribeCommand = new Command()
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
     const deps = createTypeDescribeDeps();
 
-    const renderer = createTypeDescribeRenderer(cliCtx.outputMode);
+    const compact = !!(options as Record<string, unknown>).compact;
+    const renderer = createTypeDescribeRenderer(cliCtx.outputMode, compact);
     await consumeStream(
       typeDescribe(ctx, deps, modelType),
       renderer.handlers(),
