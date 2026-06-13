@@ -207,7 +207,9 @@ export class MethodReportRunner {
       args.reportVarySuffix,
     );
 
-    // Model scope
+    // Model scope. The method-scope call above already emitted failures
+    // for unresolvable required reports — suppress them here to avoid
+    // duplicates.
     await executeReports(
       reportRegistry,
       { ...methodContext, scope: "model" },
@@ -219,6 +221,7 @@ export class MethodReportRunner {
       args.methodName,
       stepModelTypeReports,
       args.reportVarySuffix,
+      false,
     );
 
     return collected;
@@ -311,7 +314,10 @@ export class MethodReportRunner {
         stepModelTypeReports,
       );
     } catch (reportError) {
-      args.runLogger.debug(
+      // Swallowed so a broken report cannot replace the real execution
+      // error, but logged at warn so the failure is visible at default
+      // log level.
+      args.runLogger.warn(
         "Failed to run reports for failed method: {error}",
         {
           error: reportError instanceof Error

@@ -1436,7 +1436,9 @@ export class WorkflowExecutionService {
         runtimeTags: options?.runtimeTags,
         secretRedactor,
         signal: options?.signal,
-        reportFilterOptions: options?.reportFilterOptions,
+        // Default so per-step reports run even when the caller doesn't
+        // thread CLI report flags — absent filter means "no filtering".
+        reportFilterOptions: options?.reportFilterOptions ?? {},
         swampSha: options?.swampSha,
         skipCheckNames: options?.skipCheckNames,
         skipCheckLabels: options?.skipCheckLabels,
@@ -1751,7 +1753,9 @@ export class WorkflowExecutionService {
       runtimeTags: options?.runtimeTags,
       secretRedactor,
       signal: options?.signal,
-      reportFilterOptions: options?.reportFilterOptions,
+      // workflow resume never receives CLI report flags — default so
+      // resumed runs still execute reports instead of silently skipping.
+      reportFilterOptions: options?.reportFilterOptions ?? {},
       swampSha: options?.swampSha,
     };
 
@@ -2610,9 +2614,10 @@ export class WorkflowExecutionService {
       | import("../reports/report_execution_service.ts").ReportFilterOptions
       | undefined,
   ): AsyncGenerator<WorkflowExecutionEvent> {
-    if (!reportFilterOptions) {
-      return;
-    }
+    // Callers that don't thread CLI report flags (workflow resume, embedded
+    // runs) still execute reports — required reports must not silently
+    // skip. An absent filter means "no filtering", not "no reports".
+    const filterOptions = reportFilterOptions ?? {};
 
     const stepExecutions: WorkflowStepExecutionDetail[] = [];
     for (const [key, info] of modelInfoByStep) {
@@ -2672,7 +2677,7 @@ export class WorkflowExecutionService {
       workflowRunId: run.id,
       workflowStatus: run.status === "succeeded" ? "succeeded" : "failed",
       stepExecutions,
-      reportFilterOptions,
+      reportFilterOptions: filterOptions,
       repoDir: this.repoDir,
       runLogger: getWorkflowRunLogger(workflow.name),
       unifiedDataRepo: this.dataRepo,

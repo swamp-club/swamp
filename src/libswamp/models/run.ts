@@ -920,6 +920,10 @@ export async function* modelMethodRun(
             },
             input.methodName,
             [...BUILTIN_METHOD_REPORTS, ...(modelDef.reports ?? [])],
+            undefined,
+            // The method-scope call above already emitted failures for
+            // unresolvable required reports — suppress duplicates.
+            false,
           );
 
           for (const result of modelSummary.results) {
