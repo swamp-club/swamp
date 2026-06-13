@@ -45,7 +45,7 @@ definitions referenced across multiple workflows.
 | Task                | Command                                                              |
 | ------------------- | -------------------------------------------------------------------- |
 | Search model types  | `swamp model type search [query] --json`                             |
-| Describe a type     | `swamp model type describe <type> --json`                            |
+| Describe a type     | `swamp model type describe <type> --compact --json`                  |
 | Create model input  | `swamp model create <type> <name> --json`                            |
 | Create with args    | `swamp model create <type> <name> --global-arg key=value --json`     |
 | Search models       | `swamp model search [query] --json`                                  |
@@ -110,36 +110,45 @@ swamp model type search "echo" --json
 
 ## Describe Model Types
 
-Get the full schema and available methods for a type.
+Get the methods and argument schemas for a type. Use `--compact` for a minimal
+digest suitable for agent discovery.
 
 ```bash
-swamp model type describe command/shell --json
+swamp model type describe command/shell --compact --json
 ```
 
-**Output shape:**
+**Compact output shape:**
 
 ```json
 {
   "type": { "raw": "command/shell", "normalized": "command/shell" },
   "version": "2026.02.09.1",
-  "globalArguments": {/* JSON Schema */},
-  "resourceAttributesSchema": {/* JSON Schema */},
+  "globalArguments": {
+    "properties": { "message": { "type": "string" } },
+    "required": ["message"]
+  },
+  "dataOutputSpecs": ["result"],
   "methods": [
     {
       "name": "execute",
       "description": "Execute a shell command and capture output",
-      "arguments": {/* JSON Schema */},
-      "inputs": {/* JSON Schema (same as arguments) */}
+      "arguments": {
+        "properties": { "cmd": { "type": "string" } },
+        "required": ["cmd"]
+      }
     }
   ]
 }
 ```
 
+Omit `--compact` for full JSON Schema detail on arguments and data output specs.
+
 **Key fields:**
 
 - `globalArguments` - JSON Schema for input YAML `globalArguments` section
-- `methods` - Available operations with their per-method `inputs` schemas (also
-  available as `arguments` for backward compatibility)
+- `dataOutputSpecs` - Output spec names (compact) or full specs (full mode), at
+  type level
+- `methods` - Available operations with their per-method `arguments` schemas
 
 ## Create Model Inputs
 
@@ -507,7 +516,7 @@ run concurrently. See
    instead of building from scratch
 2. **Search local types**: `swamp model type search "shell" --json`
 3. **Describe** to understand the schema:
-   `swamp model type describe command/shell --json`
+   `swamp model type describe command/shell --compact --json`
 4. **Create** an input file: `swamp model create command/shell my-shell --json`
 5. **Edit** the YAML file to set `methods.execute.arguments.run`
 6. **Validate** the model: `swamp model validate my-shell --json`

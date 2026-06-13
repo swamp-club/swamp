@@ -126,13 +126,7 @@ export async function* modelGet(
           : undefined,
         methods: modelDef
           ? Object.entries(modelDef.methods).map(
-            ([name, method]) =>
-              toMethodDescribeData(
-                name,
-                method,
-                modelDef.resources,
-                modelDef.files,
-              ),
+            ([name, method]) => toMethodDescribeData(name, method),
           )
           : undefined,
       };

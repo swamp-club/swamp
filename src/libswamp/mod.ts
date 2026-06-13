@@ -438,6 +438,7 @@ export {
   type TypeDescribeEvent,
 } from "./types/describe.ts";
 export {
+  buildDataOutputSpecs,
   type DataOutputSpecDescribeData,
   type MethodDescribeData,
   toMethodDescribeData,

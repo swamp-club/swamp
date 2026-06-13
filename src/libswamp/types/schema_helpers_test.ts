@@ -19,7 +19,12 @@
 
 import { assertEquals } from "@std/assert";
 import { z } from "zod";
-import { zodToJsonSchema } from "./schema_helpers.ts";
+import {
+  buildDataOutputSpecs,
+  toMethodDescribeData,
+  zodToJsonSchema,
+} from "./schema_helpers.ts";
+import type { ResourceOutputSpec } from "../../domain/models/model.ts";
 
 Deno.test("zodToJsonSchema: handles z.record(z.unknown())", () => {
   const schema = z.record(z.string(), z.unknown());
@@ -126,4 +131,43 @@ Deno.test("zodToJsonSchema: optional field is not required", () => {
   const required = result.required as string[];
   assertEquals(required.includes("name"), true);
   assertEquals(required.includes("tag"), false);
+});
+
+Deno.test("toMethodDescribeData: returns name, description, and arguments only", () => {
+  const method = {
+    description: "Start the resource",
+    arguments: z.object({ name: z.string() }),
+    execute: () => Promise.resolve({}),
+  };
+  const result = toMethodDescribeData("start", method);
+  assertEquals(result.name, "start");
+  assertEquals(result.description, "Start the resource");
+  assertEquals(typeof result.arguments, "object");
+  assertEquals(Object.keys(result).sort(), [
+    "arguments",
+    "description",
+    "name",
+  ]);
+});
+
+Deno.test("buildDataOutputSpecs: builds specs from resources and files", () => {
+  const resources: Record<string, ResourceOutputSpec> = {
+    state: {
+      description: "Current state",
+      schema: z.object({ phase: z.string() }),
+      lifetime: "infinite",
+      garbageCollection: 10,
+    },
+  };
+  const result = buildDataOutputSpecs(resources, undefined);
+  assertEquals(result.length, 1);
+  assertEquals(result[0].specName, "state");
+  assertEquals(result[0].kind, "resource");
+  assertEquals(result[0].description, "Current state");
+  assertEquals(result[0].lifetime, "infinite");
+});
+
+Deno.test("buildDataOutputSpecs: returns empty array when no specs", () => {
+  const result = buildDataOutputSpecs(undefined, undefined);
+  assertEquals(result.length, 0);
 });

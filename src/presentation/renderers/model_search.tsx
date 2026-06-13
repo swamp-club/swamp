@@ -255,32 +255,6 @@ function renderModelPreview(
           }
         }
       }
-
-      // Inline data output specs
-      if (method.dataOutputSpecs && method.dataOutputSpecs.length > 0) {
-        lines.push(
-          <Text
-            key={`do-hdr-${method.name}`}
-            color="cyan"
-            wrap="truncate-end"
-          >
-            {INDENT_4}Data Outputs:
-          </Text>,
-        );
-        for (const spec of method.dataOutputSpecs) {
-          lines.push(
-            <Text
-              key={`do-${method.name}-${spec.specName}`}
-              dimColor
-              wrap="truncate-end"
-            >
-              {"      "}
-              {spec.specName} [{spec.kind}]
-              {spec.description ? ` - ${spec.description}` : ""}
-            </Text>,
-          );
-        }
-      }
     }
   }
 

@@ -89,7 +89,7 @@ warnings to the user.
 
 - `command/shell`: `execute`
 - Local typed: a read-only method first (`sync`, `get`)
-- Extension: check `swamp model type describe <type> --json`
+- Extension: check `swamp model type describe <type> --compact --json`
 
 **Verify:** The run completes with `succeeded`.
 

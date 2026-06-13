@@ -19,6 +19,7 @@
 
 import { bold, cyan, dim } from "@std/fmt/colors";
 import type {
+  DataOutputSpecDescribeData,
   EventHandlers,
   TypeDescribeData,
   TypeDescribeEvent,
@@ -29,7 +30,81 @@ import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
 import { formatMethodLines, formatSchemaAttributes } from "./model_get.ts";
 
+function formatDataOutputSpecs(
+  specs: DataOutputSpecDescribeData[],
+): string[] {
+  const lines: string[] = [];
+  for (const spec of specs) {
+    const parts = [`${spec.specName} ${dim(`[${spec.kind}]`)}`];
+    if (spec.description) parts.push(`${dim("-")} ${spec.description}`);
+    const meta = [spec.contentType, spec.lifetime].filter(Boolean);
+    if (meta.length > 0) parts.push(dim(`(${meta.join(", ")})`));
+    lines.push(`  ${parts.join(" ")}`);
+  }
+  return lines;
+}
+
+interface CompactMethod {
+  name: string;
+  description: string;
+  arguments: object;
+}
+
+interface CompactTypeDescribe {
+  type: { raw: string; normalized: string };
+  version: string;
+  globalArguments?: object;
+  dataOutputSpecs?: string[];
+  methods: CompactMethod[];
+}
+
+function toCompactOutput(data: TypeDescribeData): CompactTypeDescribe {
+  return {
+    type: data.type,
+    version: data.version,
+    globalArguments: data.globalArguments
+      ? compactSchema(data.globalArguments)
+      : undefined,
+    dataOutputSpecs: data.dataOutputSpecs?.map((s) => s.specName),
+    methods: data.methods.map((m) => ({
+      name: m.name,
+      description: m.description,
+      arguments: compactSchema(m.arguments),
+    })),
+  };
+}
+
+interface JsonSchemaLike {
+  type?: string | string[];
+  properties?: Record<string, { type?: string | string[]; enum?: string[] }>;
+  required?: string[];
+}
+
+function compactSchema(schema: object): object {
+  const s = schema as JsonSchemaLike;
+  if (!s.properties) return {};
+  const result: Record<string, unknown> = {};
+  const props: Record<string, object> = {};
+  for (const [key, val] of Object.entries(s.properties)) {
+    const entry: Record<string, unknown> = {};
+    if (val.type) entry.type = val.type;
+    if (val.enum) entry.enum = val.enum;
+    props[key] = entry;
+  }
+  result.properties = props;
+  if (s.required && s.required.length > 0) {
+    result.required = s.required;
+  }
+  return result;
+}
+
 class LogTypeDescribeRenderer implements Renderer<TypeDescribeEvent> {
+  #compact: boolean;
+
+  constructor(compact: boolean) {
+    this.#compact = compact;
+  }
+
   handlers(): EventHandlers<TypeDescribeEvent> {
     return {
       resolving: () => {},
@@ -50,6 +125,26 @@ class LogTypeDescribeRenderer implements Renderer<TypeDescribeEvent> {
             lines.push("");
             lines.push(bold(cyan("Global Arguments:")));
             lines.push(...attrs);
+          }
+        }
+
+        if (
+          !this.#compact && data.dataOutputSpecs &&
+          data.dataOutputSpecs.length > 0
+        ) {
+          lines.push("");
+          lines.push(bold(cyan("Data Outputs:")));
+          lines.push(...formatDataOutputSpecs(data.dataOutputSpecs));
+        }
+
+        if (
+          this.#compact && data.dataOutputSpecs &&
+          data.dataOutputSpecs.length > 0
+        ) {
+          lines.push("");
+          lines.push(bold(cyan("Data Outputs:")));
+          for (const spec of data.dataOutputSpecs) {
+            lines.push(`  ${spec.specName} ${dim(`[${spec.kind}]`)}`);
           }
         }
 
@@ -78,11 +173,18 @@ class LogTypeDescribeRenderer implements Renderer<TypeDescribeEvent> {
 }
 
 class JsonTypeDescribeRenderer implements Renderer<TypeDescribeEvent> {
+  #compact: boolean;
+
+  constructor(compact: boolean) {
+    this.#compact = compact;
+  }
+
   handlers(): EventHandlers<TypeDescribeEvent> {
     return {
       resolving: () => {},
       completed: (e) => {
-        console.log(JSON.stringify(e.data, null, 2));
+        const output = this.#compact ? toCompactOutput(e.data) : e.data;
+        console.log(JSON.stringify(output, null, 2));
       },
       error: (e) => {
         throw new UserError(e.error.message);
@@ -93,12 +195,13 @@ class JsonTypeDescribeRenderer implements Renderer<TypeDescribeEvent> {
 
 export function createTypeDescribeRenderer(
   mode: OutputMode,
+  compact = false,
 ): Renderer<TypeDescribeEvent> {
   switch (mode) {
     case "json":
-      return new JsonTypeDescribeRenderer();
+      return new JsonTypeDescribeRenderer(compact);
     case "log":
-      return new LogTypeDescribeRenderer();
+      return new LogTypeDescribeRenderer(compact);
   }
 }
 

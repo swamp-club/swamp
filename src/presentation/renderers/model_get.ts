@@ -89,23 +89,12 @@ export function formatMethodLines(methods: MethodDescribeData[]): string[] {
     );
 
     const methodAttrs = formatSchemaAttributes(
-      method.inputs,
+      method.arguments,
       "      ",
     );
     if (methodAttrs.length > 0) {
       lines.push(`    ${cyan("Inputs:")}`);
       lines.push(...methodAttrs);
-    }
-
-    if (method.dataOutputSpecs && method.dataOutputSpecs.length > 0) {
-      lines.push(`    ${cyan("Data Outputs:")}`);
-      for (const spec of method.dataOutputSpecs) {
-        const parts = [`${spec.specName} ${dim(`[${spec.kind}]`)}`];
-        if (spec.description) parts.push(`${dim("-")} ${spec.description}`);
-        const meta = [spec.contentType, spec.lifetime].filter(Boolean);
-        if (meta.length > 0) parts.push(dim(`(${meta.join(", ")})`));
-        lines.push(`      ${parts.join(" ")}`);
-      }
     }
   }
   return lines;

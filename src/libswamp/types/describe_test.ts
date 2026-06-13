@@ -47,6 +47,39 @@ function makeModelDefinition(): ModelDefinition {
   };
 }
 
+function makeModelDefinitionWithSpecs(): ModelDefinition {
+  return {
+    type: makeModelType(),
+    version: "2026.01.01.1",
+    resources: {
+      state: {
+        description: "Current state",
+        schema: z.object({ phase: z.string() }),
+        lifetime: "infinite",
+        garbageCollection: 5,
+      },
+      output: {
+        description: "Output data",
+        schema: z.object({ result: z.string() }),
+        lifetime: "infinite",
+        garbageCollection: 5,
+      },
+    },
+    methods: {
+      start: {
+        description: "Start the resource",
+        arguments: z.object({ name: z.string() }),
+        execute: () => Promise.resolve({}),
+      },
+      stop: {
+        description: "Stop the resource",
+        arguments: z.object({}),
+        execute: () => Promise.resolve({}),
+      },
+    },
+  };
+}
+
 function makeDeps(
   overrides: Partial<TypeDescribeDeps> = {},
 ): TypeDescribeDeps {
@@ -124,4 +157,57 @@ Deno.test("typeDescribe error derives correct search term for non-namespaced typ
   const last = events[1] as Extract<TypeDescribeEvent, { kind: "error" }>;
   assertStringIncludes(last.error.message, "swamp extension search run");
   assertStringIncludes(last.error.message, "swamp extension pull @docker/run");
+});
+
+Deno.test("typeDescribe: dataOutputSpecs are at type level, not per-method", async () => {
+  const modelDef = makeModelDefinitionWithSpecs();
+  const deps = makeDeps({
+    resolveModelType: () => Promise.resolve(modelDef),
+  });
+  const events = await collect<TypeDescribeEvent>(
+    typeDescribe(createLibSwampContext(), deps, makeModelType()),
+  );
+
+  const completed = events[1] as Extract<
+    TypeDescribeEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.data.dataOutputSpecs?.length, 2);
+  assertEquals(completed.data.dataOutputSpecs?.[0].specName, "state");
+  assertEquals(completed.data.dataOutputSpecs?.[1].specName, "output");
+  for (const method of completed.data.methods) {
+    assertEquals(Object.keys(method).sort(), [
+      "arguments",
+      "description",
+      "name",
+    ]);
+  }
+});
+
+Deno.test("typeDescribe: methods have no inputs or dataOutputSpecs fields", async () => {
+  const deps = makeDeps();
+  const events = await collect<TypeDescribeEvent>(
+    typeDescribe(createLibSwampContext(), deps, makeModelType()),
+  );
+
+  const completed = events[1] as Extract<
+    TypeDescribeEvent,
+    { kind: "completed" }
+  >;
+  const method = completed.data.methods[0];
+  assertEquals("inputs" in method, false);
+  assertEquals("dataOutputSpecs" in method, false);
+});
+
+Deno.test("typeDescribe: dataOutputSpecs is undefined when type has no specs", async () => {
+  const deps = makeDeps();
+  const events = await collect<TypeDescribeEvent>(
+    typeDescribe(createLibSwampContext(), deps, makeModelType()),
+  );
+
+  const completed = events[1] as Extract<
+    TypeDescribeEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.data.dataOutputSpecs, undefined);
 });

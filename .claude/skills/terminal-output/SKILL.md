@@ -113,12 +113,12 @@ Top-level key: value                    ← no indent
 Reuse these exported functions from `type_describe_output.ts`:
 
 - `formatSchemaAttributes(schema, indent)` - JSON Schema to attribute lines
-- `formatMethodLines(methods)` - Method descriptions with attributes and data
-  outputs
+- `formatMethodLines(methods)` - Method descriptions with argument attributes
 
-Reuse `toMethodDescribeData()` and `zodToJsonSchema()` from
-`src/cli/commands/type_describe.ts` to convert domain objects to presentation
-data.
+Reuse `toMethodDescribeData()`, `buildDataOutputSpecs()`, and
+`zodToJsonSchema()` from `src/cli/commands/type_describe.ts` to convert domain
+objects to presentation data. Data output specs are built at the type level via
+`buildDataOutputSpecs(resources, files)`, not per-method.
 
 ## Validation Output Pattern
 

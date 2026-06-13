@@ -27,6 +27,8 @@ import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { notFound } from "../errors.ts";
 import {
+  buildDataOutputSpecs,
+  type DataOutputSpecDescribeData,
   type MethodDescribeData,
   toMethodDescribeData,
 } from "../types/schema_helpers.ts";
@@ -40,6 +42,7 @@ export interface ModelMethodDescribeData {
   modelType: string;
   version: string;
   method: MethodDescribeData;
+  dataOutputSpecs?: DataOutputSpecDescribeData[];
 }
 
 export type ModelMethodDescribeEvent =
@@ -114,9 +117,9 @@ export async function* modelMethodDescribe(
         return;
       }
 
-      const methodData = toMethodDescribeData(
-        methodName,
-        method,
+      const methodData = toMethodDescribeData(methodName, method);
+
+      const specs = buildDataOutputSpecs(
         modelDef.resources,
         modelDef.files,
       );
@@ -128,6 +131,7 @@ export async function* modelMethodDescribe(
           modelType: modelType.normalized,
           version: modelDef.version,
           method: methodData,
+          dataOutputSpecs: specs.length > 0 ? specs : undefined,
         },
       };
     })(),
