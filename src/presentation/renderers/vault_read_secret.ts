@@ -23,17 +23,15 @@ import type {
 } from "../../libswamp/mod.ts";
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
-import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
+import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
-
-const logger = getSwampLogger(["vault", "read-secret"]);
 
 class LogVaultReadSecretRenderer implements Renderer<VaultReadSecretEvent> {
   handlers(): EventHandlers<VaultReadSecretEvent> {
     return {
       resolving: () => {},
       completed: (e) => {
-        logger.info`${e.data.value}`;
+        writeOutput(e.data.value);
       },
       error: (e) => {
         throw new UserError(e.error.message);
