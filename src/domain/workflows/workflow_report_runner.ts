@@ -161,7 +161,9 @@ export class WorkflowReportRunner {
         BUILTIN_WORKFLOW_REPORTS,
       );
     } catch (reportError) {
-      args.runLogger.debug(
+      // Swallowed so a broken report cannot mask the workflow result, but
+      // logged at warn so the failure is visible at default log level.
+      args.runLogger.warn(
         "Failed to run workflow-scope reports: {error}",
         {
           error: reportError instanceof Error

@@ -27,6 +27,7 @@ import {
   WorkflowExecutionService,
 } from "./execution_service.ts";
 import { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
+import { reportRegistry } from "../reports/report_registry.ts";
 import { Workflow } from "./workflow.ts";
 import { Job } from "./job.ts";
 import { Step } from "./step.ts";
@@ -2144,6 +2145,116 @@ Deno.test("check skip options and swampSha are threaded to step context", async 
   });
 });
 
+// --- report execution without CLI report flags (swamp-club#640) ---
+//
+// Callers that don't thread reportFilterOptions (workflow resume, embedded
+// runs) must still execute reports — before #640 the absent options object
+// silently skipped all workflow-scope and step-scope reports.
+
+Deno.test("run() executes workflow-scope required reports when reportFilterOptions is not supplied", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+    const executor = new MockStepExecutor();
+
+    const reportName = "@test640/wf-required";
+    if (!reportRegistry.get(reportName)) {
+      reportRegistry.register(reportName, {
+        description: "issue 640 regression report",
+        scope: "workflow",
+        execute: () =>
+          Promise.resolve({ markdown: "# 640", json: { ok: true } }),
+      });
+    }
+
+    const workflow = Workflow.create({
+      name: "issue-640-require-test",
+      reports: { require: [reportName] },
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "step1",
+              task: StepTask.model("test-model", "run"),
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      catalogStore,
+    );
+
+    const completedReports: string[] = [];
+    // No reportFilterOptions passed — reports must still run.
+    for await (const event of service.run(workflow.name, {})) {
+      if (event.kind === "report_completed") {
+        completedReports.push(event.reportName);
+      }
+    }
+
+    assertEquals(completedReports.includes(reportName), true);
+  });
+});
+
+Deno.test("run() defaults reportFilterOptions in step context when not supplied", async () => {
+  await withTempDir(async (tempDir) => {
+    const workflowRepo = new InMemoryWorkflowRepository();
+    const runRepo = new InMemoryWorkflowRunRepository();
+
+    class ContextCapturingExecutor implements StepExecutor {
+      capturedContexts: StepExecutionContext[] = [];
+      execute(_step: Step, ctx: StepExecutionContext): Promise<unknown> {
+        this.capturedContexts.push(ctx);
+        return Promise.resolve({ executed: true });
+      }
+    }
+    const executor = new ContextCapturingExecutor();
+
+    const workflow = Workflow.create({
+      name: "issue-640-default-filter-test",
+      jobs: [
+        Job.create({
+          name: "job1",
+          steps: [
+            Step.create({
+              name: "step1",
+              task: StepTask.model("test-model", "run"),
+            }),
+          ],
+        }),
+      ],
+    });
+    await workflowRepo.save(workflow);
+
+    const catalogStore = new CatalogStore(join(tempDir, "_catalog.db"));
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      tempDir,
+      executor,
+      undefined,
+      catalogStore,
+    );
+
+    for await (const _event of service.run(workflow.name, {})) {
+      // Drain events
+    }
+
+    assertEquals(executor.capturedContexts.length, 1);
+    assertEquals(executor.capturedContexts[0].reportFilterOptions, {});
+  });
+});
+
 // --- forEach step name expansion regression tests (Issue #976 / PR #973) ---
 
 Deno.test("expandForEachSteps: multi-expression step name produces unique names for items sharing a field", async () => {
@@ -2782,6 +2893,10 @@ Deno.test("CONTRACT: success run emits events in exact order", async () => {
       "step_started",
       "step_completed",
       "job_completed",
+      // Workflow-scope reports run even without reportFilterOptions
+      // (swamp-club#640) — the builtin workflow summary emits here.
+      "report_started",
+      "report_completed",
       "completed",
     ]);
   });
@@ -2820,6 +2935,10 @@ Deno.test("CONTRACT: step failure emits events in exact order", async () => {
       "step_started",
       "step_failed",
       "job_completed",
+      // Workflow-scope reports run even without reportFilterOptions
+      // (swamp-club#640) — the builtin workflow summary emits here.
+      "report_started",
+      "report_completed",
       "completed",
     ]);
     // The workflow itself must reflect failure even though the lifecycle

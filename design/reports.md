@@ -299,6 +299,32 @@ filtering pipeline. The algorithm:
 7. **Inclusion filters** — `--report <name>` and `--report-label <label>`
    narrow the remaining set to only matching reports.
 
+### Unresolvable Required Reports
+
+A name in `selection.require` that resolves to nothing — neither loaded nor
+lazy-indexed after the promotion pass — is a contract violation, not a silent
+no-op (swamp-club#640). `executeReports` logs a warning naming the report,
+emits a `report_failed` event, persists a fallback error artifact (so
+`swamp report search` surfaces the failure), and counts it in
+`ReportExecutionSummary.failures` — which flips a `swamp model method run` to
+failed, exactly as a required report that loads and then throws would. Names
+that also appear in `selection.skip` are exempt (skip wins over require, so
+the report was never going to run).
+
+Runners that call `executeReports` more than once with the same selection
+(method + model scope passes) suppress the duplicate via the
+`emitUnresolvableRequireFailures` parameter, passing `true` on exactly one
+call.
+
+### Filter Options Are Optional
+
+`ReportFilterOptions` carries CLI flags; callers of the workflow execution
+service that have no CLI flags to thread (workflow resume, embedded runs)
+simply omit it. An absent filter means "no filtering" — the service defaults
+it to `{}` so reports, including required ones, always execute. Report
+execution must never depend on presentation-layer plumbing supplying an
+options object.
+
 Key invariants:
 
 - **Skip always wins over require.** If a report is in both `skip` and
@@ -352,6 +378,11 @@ The fallback JSON artifact contains:
 
 Consumers can check the `error` field to distinguish a successful report result
 from a fallback error artifact.
+
+The same fallback artifact is generated for a required report that cannot be
+resolved at all (see "Unresolvable Required Reports" above) — the `message`
+field then carries the "Required report not found" diagnostic instead of a
+throw from `execute()`.
 
 If persisting the fallback artifact itself fails, the error is silently absorbed
 to avoid masking the original report error. In this case, only the `WRN` log

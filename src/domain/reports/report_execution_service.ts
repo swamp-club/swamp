@@ -324,6 +324,7 @@ export async function executeReports(
   methodName?: string,
   modelTypeReports?: string[],
   varySuffix?: string,
+  emitUnresolvableRequireFailures = true,
 ): Promise<ReportExecutionSummary> {
   // Promote lazy-registered reports for every candidate name before calling
   // getAll(). getAll() only returns fully-loaded entries from the registry's
@@ -357,6 +358,83 @@ export async function executeReports(
     Array.from(candidateNames, (name) => registry.ensureTypeLoaded(name)),
   );
 
+  const results: ReportExecutionResult[] = [];
+  let failures = 0;
+
+  // A required report still absent from the registry after the promotion
+  // pass is unresolvable — no loaded or lazy-indexed report matches the
+  // name (missing pull, typo, or broken catalog entry). `require` is a
+  // contract: fail loudly instead of silently dropping the name from the
+  // candidate set. Counted in `failures` so the surrounding run reports as
+  // failed, matching required reports that load and then throw — and like
+  // that path, repeated runs accumulate error-artifact versions. Names in
+  // selection.skip are exempt (skip wins over require, so the report was
+  // never going to run). Callers that invoke executeReports more than once
+  // with the same selection set emitUnresolvableRequireFailures on exactly
+  // one call to avoid duplicate failures.
+  if (emitUnresolvableRequireFailures) {
+    const skipNames = new Set(selection?.skip ?? []);
+    const seen = new Set<string>();
+    for (const ref of selection?.require ?? []) {
+      const name = getReportRefName(ref);
+      if (seen.has(name) || skipNames.has(name)) continue;
+      seen.add(name);
+      if (registry.get(name)) continue;
+
+      const errorMessage = `Required report not found: ${name}. ` +
+        `No loaded or indexed report matches this name — check the ` +
+        `reports.require entry, pull the extension that provides it, or ` +
+        `run 'swamp doctor extensions --repair'.`;
+      context.logger.warn(
+        "Required report not found: {report} — check the reports.require " +
+          "entry, pull the extension that provides it, or run " +
+          "'swamp doctor extensions --repair'",
+        { report: name },
+      );
+
+      events?.onReportStarted(name, context.scope);
+
+      // Persist an error artifact so `swamp report search` surfaces the
+      // failure instead of returning nothing for the report.
+      let errorDataHandles: DataHandle[] | undefined;
+      try {
+        const fallback = buildReportErrorResult(
+          name,
+          context.scope,
+          errorMessage,
+        );
+        errorDataHandles = await persistReportData(
+          context.dataRepository,
+          modelType,
+          modelId,
+          name,
+          context.scope,
+          fallback.markdown,
+          fallback.json,
+          varySuffix,
+        );
+      } catch {
+        // Best-effort — the failure event carries the message regardless.
+      }
+
+      events?.onReportFailed(
+        name,
+        context.scope,
+        errorMessage,
+        errorDataHandles,
+      );
+
+      results.push({
+        name,
+        scope: context.scope,
+        success: false,
+        error: errorMessage,
+        dataHandles: errorDataHandles,
+      });
+      failures++;
+    }
+  }
+
   const allReports = registry.getAll();
   const applicable = filterReports(
     allReports,
@@ -368,11 +446,8 @@ export async function executeReports(
   );
 
   if (applicable.length === 0) {
-    return { results: [], failures: 0 };
+    return { results, failures };
   }
-
-  const results: ReportExecutionResult[] = [];
-  let failures = 0;
 
   context.redactSensitiveArgs = buildRedactSensitiveArgs(context);
 

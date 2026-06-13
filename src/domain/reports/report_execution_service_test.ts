@@ -1512,3 +1512,167 @@ Deno.test("executeReports: onReportFailed callback receives data handles", async
   assertEquals(failedHandles !== undefined, true);
   assertEquals(failedHandles!.length, 2);
 });
+
+// --- executeReports unresolvable-require tests (swamp-club#640) ---
+
+Deno.test("executeReports: unresolvable required report fails loudly", async () => {
+  const registry = new ReportRegistry();
+
+  const { repo, saved } = createInMemoryDataRepo();
+  const modelType = ModelType.create("test/model");
+  const context = makeMethodContext(repo, modelType);
+
+  let failedName: string | undefined;
+  let failedError: string | undefined;
+  let failedHandles: DataHandle[] | undefined;
+  const events = {
+    onReportStarted: () => {},
+    onReportCompleted: () => {},
+    onReportFailed: (
+      name: string,
+      _scope: string,
+      error: string,
+      dataHandles?: DataHandle[],
+    ) => {
+      failedName = name;
+      failedError = error;
+      failedHandles = dataHandles;
+    },
+  };
+
+  const summary = await executeReports(
+    registry,
+    context,
+    modelType,
+    "test-id",
+    { require: ["@test/missing"] },
+    {},
+    events,
+    "run",
+  );
+
+  assertEquals(summary.failures, 1);
+  assertEquals(summary.results.length, 1);
+  assertEquals(summary.results[0].name, "@test/missing");
+  assertEquals(summary.results[0].success, false);
+  assertStringIncludes(summary.results[0].error!, "Required report not found");
+
+  assertEquals(failedName, "@test/missing");
+  assertStringIncludes(failedError!, "Required report not found");
+  assertEquals(failedHandles !== undefined, true);
+
+  // Error artifact persisted so `swamp report search` surfaces the failure
+  assertEquals(saved.length, 2);
+  assertEquals(saved[0].name, "report-test-missing");
+  assertEquals(saved[1].name, "report-test-missing-json");
+  assertStringIncludes(saved[0].content, "Required report not found");
+});
+
+Deno.test("executeReports: unresolvable require suppressed when emitUnresolvableRequireFailures is false", async () => {
+  const registry = new ReportRegistry();
+
+  const { repo, saved } = createInMemoryDataRepo();
+  const modelType = ModelType.create("test/model");
+  const context = makeMethodContext(repo, modelType);
+
+  const summary = await executeReports(
+    registry,
+    context,
+    modelType,
+    "test-id",
+    { require: ["@test/missing"] },
+    {},
+    undefined,
+    "run",
+    undefined,
+    undefined,
+    false,
+  );
+
+  assertEquals(summary.failures, 0);
+  assertEquals(summary.results.length, 0);
+  assertEquals(saved.length, 0);
+});
+
+Deno.test("executeReports: unresolvable require exempt when also in skip", async () => {
+  const registry = new ReportRegistry();
+
+  const { repo, saved } = createInMemoryDataRepo();
+  const modelType = ModelType.create("test/model");
+  const context = makeMethodContext(repo, modelType);
+
+  const summary = await executeReports(
+    registry,
+    context,
+    modelType,
+    "test-id",
+    { require: ["@test/missing"], skip: ["@test/missing"] },
+    {},
+    undefined,
+    "run",
+  );
+
+  assertEquals(summary.failures, 0);
+  assertEquals(summary.results.length, 0);
+  assertEquals(saved.length, 0);
+});
+
+Deno.test("executeReports: sibling reports still run when a required report is unresolvable", async () => {
+  const registry = new ReportRegistry();
+  registry.register("@test/present", makeReport("method"));
+
+  const { repo } = createInMemoryDataRepo();
+  const modelType = ModelType.create("test/model");
+  const context = makeMethodContext(repo, modelType);
+
+  const summary = await executeReports(
+    registry,
+    context,
+    modelType,
+    "test-id",
+    { require: ["@test/missing", "@test/present"] },
+    {},
+    undefined,
+    "run",
+  );
+
+  assertEquals(summary.failures, 1);
+  assertEquals(summary.results.length, 2);
+  const missing = summary.results.find((r) => r.name === "@test/missing");
+  const present = summary.results.find((r) => r.name === "@test/present");
+  assertEquals(missing?.success, false);
+  assertEquals(present?.success, true);
+});
+
+Deno.test("executeReports: unresolvable require failure survives artifact persistence errors", async () => {
+  const registry = new ReportRegistry();
+
+  const modelType = ModelType.create("test/model");
+  const brokenRepo = {
+    nextId: () => generateDataId(),
+    findByName: () => Promise.resolve(null),
+    listVersions: () => Promise.resolve([]),
+    save: () => Promise.reject(new Error("disk full")),
+  };
+  const context = makeMethodContext(
+    // deno-lint-ignore no-explicit-any
+    brokenRepo as any,
+    modelType,
+  );
+
+  const summary = await executeReports(
+    registry,
+    context,
+    modelType,
+    "test-id",
+    { require: ["@test/missing"] },
+    {},
+    undefined,
+    "run",
+  );
+
+  // Persistence failed, but the failure is still reported
+  assertEquals(summary.failures, 1);
+  assertEquals(summary.results[0].success, false);
+  assertEquals(summary.results[0].dataHandles, undefined);
+});
