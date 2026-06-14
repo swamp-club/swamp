@@ -402,7 +402,7 @@ Deno.test("WorkerGateway: a different instance cannot enroll while a worker is c
 });
 
 Deno.test("WorkerGateway: dispatch ending after a socket drop does not mark idle", async () => {
-  const h = createHarness({ graceWindowMs: 500 });
+  const h = createHarness({ graceWindowMs: 30 });
   const { workerChannel, dropSocket } = connectWorkerSocket(h.gateway);
   await enroll(workerChannel);
 
@@ -424,6 +424,7 @@ Deno.test("WorkerGateway: dispatch ending after a socket drop does not mark idle
   // No idle status write may follow the disconnect record.
   assertEquals(h.transitions.at(-1)?.inputs.status, "disconnected");
   assertEquals(h.idle.length, 1); // only the enrollment idle
+  await new Promise((r) => setTimeout(r, 50));
 });
 
 Deno.test("WorkerGateway: a cancelled dispatch frees the worker only after it unwinds", async () => {

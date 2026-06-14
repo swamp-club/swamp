@@ -579,18 +579,14 @@ export async function scoreExtensionTarball(
 ): Promise<RubricScore> {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_quality_" });
   try {
-    const tarballPath = join(tmpDir, "archive.tar.gz");
     const extractDir = join(tmpDir, "extract");
-    await Deno.writeFile(tarballPath, tarballBytes);
     await Deno.mkdir(extractDir);
 
-    // Extract via the injected tarball extractor (libswamp wires in
-    // `extractTarGz` from infrastructure/archive). The CLI built this
-    // tarball itself, so we skip the server-side Zip-Slip / type checks —
-    // we trust our own output.
     try {
-      const tarFile = await Deno.open(tarballPath, { read: true });
-      await deps.extractTarball(tarFile.readable, extractDir);
+      await deps.extractTarball(
+        ReadableStream.from([tarballBytes]),
+        extractDir,
+      );
     } catch (error: unknown) {
       const message = error instanceof Error ? error.message : String(error);
       throw new Error(`Failed to extract tarball for scoring: ${message}`);
