@@ -298,13 +298,16 @@ swamp model delete my-shell --json
 
 ```json
 {
-  "deleted": true,
-  "modelId": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
-  "modelName": "my-shell",
-  "artifactsDeleted": {
-    "outputs": 5,
-    "dataItems": 3
-  }
+  "deleted": {
+    "id": "a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d",
+    "name": "my-shell",
+    "type": "command/shell",
+    "inputPath": "models/command/shell/a1b2c3d4-e5f6-4a7b-8c9d-0e1f2a3b4c5d.yaml"
+  },
+  "resourceDeleted": false,
+  "outputsDeleted": 0,
+  "evaluatedInputDeleted": false,
+  "dataDeleted": false
 }
 ```
 
