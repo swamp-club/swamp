@@ -90,11 +90,6 @@ class JsonWorkflowSearchRenderer implements WorkflowSearchRenderer {
       resolving: () => {},
       completed: (e) => {
         const filtered = filterWorkflows(e.data.results, e.data.query);
-        // Auto-select when query matches exactly one workflow
-        if (e.data.query && filtered.length === 1) {
-          this._selected = filtered[0];
-          return;
-        }
         const output: WorkflowSearchData = {
           query: e.data.query,
           results: filtered,

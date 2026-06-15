@@ -95,18 +95,13 @@ class JsonReportSearchRenderer implements ReportSearchRenderer {
       resolving: () => {},
       completed: (e) => {
         const filtered = filterReports(e.data.reports, this.query);
-        // Auto-select when query matches exactly one report
-        if (this.query && filtered.length === 1) {
-          this._selected = filtered[0];
-        } else {
-          console.log(
-            JSON.stringify(
-              { query: this.query, results: filtered },
-              null,
-              2,
-            ),
-          );
-        }
+        console.log(
+          JSON.stringify(
+            { query: this.query, results: filtered },
+            null,
+            2,
+          ),
+        );
       },
       error: (e) => {
         throw new UserError(e.error.message);

@@ -29,7 +29,6 @@ import {
   type ModelSearchItem,
 } from "../../libswamp/mod.ts";
 import { createModelSearchRenderer } from "../../presentation/renderers/model_search.tsx";
-import { createModelGetRenderer } from "../../presentation/renderers/model_get.ts";
 import {
   createContext,
   type GlobalOptions,
@@ -100,19 +99,8 @@ export async function modelSearchAction(
   const selected = renderer.selectedItem();
   if (selected) {
     ctx.logger.debug`Selected model: ${selected.name} (${selected.id})`;
-    // In JSON mode, still display the full model get output after auto-select
-    if (effectiveMode === "json") {
-      const getRenderer = createModelGetRenderer(effectiveMode);
-      const getDeps = await createModelGetDeps(repoDir);
-      await consumeStream(
-        modelGet(libCtx, getDeps, selected.name),
-        getRenderer.handlers(),
-      );
-    }
-    // In interactive mode, the scrollback from the picker already contains
-    // the model detail, so no additional modelGet call is needed.
   } else {
-    ctx.logger.debug`Search cancelled`;
+    ctx.logger.debug`Search completed`;
   }
 
   ctx.logger.debug("Model search command completed");
