@@ -84,16 +84,11 @@ class JsonModelSearchRenderer implements ModelSearchRenderer {
       resolving: () => {},
       completed: (e) => {
         const filtered = filterModels(e.data.results, e.data.query);
-        // Auto-select when query matches exactly one model
-        if (e.data.query && filtered.length === 1) {
-          this._selected = filtered[0];
-        } else {
-          const output: ModelSearchData = {
-            query: e.data.query,
-            results: filtered,
-          };
-          console.log(JSON.stringify(output, null, 2));
-        }
+        const output: ModelSearchData = {
+          query: e.data.query,
+          results: filtered,
+        };
+        console.log(JSON.stringify(output, null, 2));
       },
       error: (e) => {
         throw new UserError(e.error.message);

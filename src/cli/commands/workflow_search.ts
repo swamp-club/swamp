@@ -21,7 +21,6 @@ import { Command } from "@cliffy/command";
 import {
   consumeStream,
   createLibSwampContext,
-  type WorkflowGetData,
   workflowSearch,
   type WorkflowSearchDeps,
 } from "../../libswamp/mod.ts";
@@ -30,7 +29,6 @@ import {
   type WorkflowPreviewDetail,
   type WorkflowPreviewFetcher,
 } from "../../presentation/renderers/workflow_search.tsx";
-import { renderWorkflowGet } from "../../presentation/renderers/workflow_get.ts";
 import {
   createContext,
   type GlobalOptions,
@@ -38,7 +36,6 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
-import { UserError } from "../../domain/errors.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -61,39 +58,6 @@ function createWorkflowFetchPreview(
     const yaml = await Deno.readTextFile(path);
     return { yaml, name: workflow.name };
   };
-}
-
-/**
- * Displays the workflow get output for JSON mode.
- */
-async function displayWorkflowGet(
-  name: string,
-  repo: WorkflowRepository,
-  outputMode: "json" | "log",
-): Promise<void> {
-  const workflow = await repo.findByName(name);
-  if (!workflow) {
-    throw new UserError(`Workflow not found: ${name}`);
-  }
-
-  const data: WorkflowGetData = {
-    id: workflow.id,
-    name: workflow.name,
-    description: workflow.description,
-    version: workflow.version,
-    jobs: workflow.jobs.map((job) => ({
-      name: job.name,
-      description: job.description,
-      steps: job.steps.map((step) => ({
-        name: step.name,
-        description: step.description,
-        task: step.task.toData(),
-      })),
-    })),
-    path: repo.getPath(workflow.id),
-  };
-
-  renderWorkflowGet(data, outputMode);
 }
 
 export async function workflowSearchAction(
@@ -144,11 +108,9 @@ export async function workflowSearchAction(
       if (!status.success) {
         Deno.exit(status.code);
       }
-    } else if (effectiveMode === "json") {
-      await displayWorkflowGet(selected.name, repo, effectiveMode);
     }
   } else {
-    ctx.logger.debug`Search cancelled`;
+    ctx.logger.debug`Search completed`;
   }
 
   ctx.logger.debug("Workflow search command completed");

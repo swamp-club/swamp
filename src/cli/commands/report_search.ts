@@ -31,7 +31,6 @@ import { createDefinitionId } from "../../domain/definitions/definition.ts";
 import {
   consumeStream,
   createLibSwampContext,
-  type LibSwampContext,
   reportGet,
   type ReportGetDeps,
   reportSearch,
@@ -40,9 +39,7 @@ import {
   type StoredReportSummary,
 } from "../../libswamp/mod.ts";
 import type { RepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
-import type { OutputMode } from "../../presentation/output/output.ts";
 import { createReportSearchRenderer } from "../../presentation/renderers/report_search.tsx";
-import { createReportGetRenderer } from "../../presentation/renderers/report_get.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -137,28 +134,6 @@ function createReportFetchPreview(
   };
 }
 
-/**
- * Fetches and displays full report content for a selected summary.
- */
-async function displayReportDetail(
-  summary: StoredReportSummary,
-  repoContext: RepositoryContext,
-  libCtx: LibSwampContext,
-  outputMode: OutputMode,
-): Promise<void> {
-  const getDeps = buildGetDeps(repoContext);
-  const renderer = createReportGetRenderer(outputMode);
-  await consumeStream(
-    reportGet(libCtx, getDeps, {
-      reportName: summary.reportName,
-      model: summary.workflowName ? undefined : summary.modelName,
-      workflow: summary.workflowName,
-      variant: summary.varySuffix,
-    }),
-    renderer.handlers(),
-  );
-}
-
 export async function reportSearchAction(
   options: AnyOptions,
   query?: string,
@@ -200,16 +175,8 @@ export async function reportSearchAction(
   const selected = searchRenderer.selectedItem();
   if (selected) {
     ctx.logger.debug`Selected report: ${selected.reportName}`;
-    if (effectiveMode === "json") {
-      await displayReportDetail(
-        selected,
-        repoContext,
-        libCtx,
-        effectiveMode,
-      );
-    }
   } else {
-    ctx.logger.debug`Search cancelled`;
+    ctx.logger.debug`Search completed`;
   }
 
   ctx.logger.debug("Report search command completed");

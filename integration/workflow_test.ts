@@ -434,7 +434,7 @@ Deno.test("CLI: workflow search filters by query with multiple matches in JSON m
   });
 });
 
-Deno.test("CLI: workflow search with single match returns full details in JSON mode", async () => {
+Deno.test("CLI: workflow search with single match returns envelope in JSON mode", async () => {
   await withTempDir(async (repoDir) => {
     await initializeTestRepo(repoDir);
     const repo = new YamlWorkflowRepository(repoDir);
@@ -461,13 +461,11 @@ Deno.test("CLI: workflow search with single match returns full details in JSON m
       `Command should succeed. stderr: ${result.stderr}`,
     );
 
-    // When single match, returns full workflow details (same as workflow get)
     const output = JSON.parse(result.stdout);
-    assertEquals(output.name, "alpha-workflow");
-    assertEquals(output.id, workflow1.id);
-    assertEquals(output.jobs.length, 2);
-    assertEquals(output.jobs[0].name, "build");
-    assertEquals(output.jobs[1].name, "test");
+    assertEquals(output.query, "alpha");
+    assertEquals(output.results.length, 1);
+    assertEquals(output.results[0].name, "alpha-workflow");
+    assertEquals(output.results[0].id, workflow1.id);
   });
 });
 
