@@ -151,8 +151,10 @@ Legacy `s3:bucket-name/prefix` format is auto-remapped to the
 Two optional fields control which data goes to the datastore:
 
 - **`directories`** — which subdirectories belong to the datastore. Defaults to
-  all runtime subdirectories (`data`, `outputs`, `workflow-runs`, `secrets`,
-  `audit`, `telemetry`, etc.). Anything not listed stays in local `.swamp/`.
+  all runtime subdirectories (`data`, `outputs`, `workflow-runs`, `audit`,
+  `telemetry`, etc.). Anything not listed stays in local `.swamp/`. Note:
+  `secrets` is always local regardless of this setting — see
+  `ALWAYS_LOCAL_SUBDIRS` in `datastore_config.ts`.
 - **`exclude`** — gitignore-style glob patterns. Files matching these patterns
   stay local even if their parent directory is in the datastore.
 

@@ -17,11 +17,15 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertFalse } from "@std/assert";
 import {
+  ALWAYS_LOCAL_SUBDIRS,
   type CustomDatastoreConfig,
+  DEFAULT_DATASTORE_SUBDIRS,
   DEFAULT_SYNC_TIMEOUT_MS,
   type FilesystemDatastoreConfig,
+  getDatastoreDirectories,
+  isAlwaysLocal,
   resolveSyncTimeoutMs,
   SYNC_TIMEOUT_ENV_VAR,
 } from "./datastore_config.ts";
@@ -102,4 +106,63 @@ Deno.test("resolveSyncTimeoutMs: no override, no config, no env returns default"
   withEnv(SYNC_TIMEOUT_ENV_VAR, undefined, () => {
     assertEquals(resolveSyncTimeoutMs(customConfig), DEFAULT_SYNC_TIMEOUT_MS);
   });
+});
+
+// --- getDatastoreDirectories / ALWAYS_LOCAL_SUBDIRS ---
+
+Deno.test("getDatastoreDirectories: excludes secrets from default list", () => {
+  const dirs = getDatastoreDirectories(filesystemConfig);
+  assertFalse(
+    dirs.includes("secrets"),
+    "secrets must not appear in datastore directories",
+  );
+});
+
+Deno.test("getDatastoreDirectories: excludes secrets even when explicitly listed in config", () => {
+  const config: FilesystemDatastoreConfig = {
+    ...filesystemConfig,
+    directories: ["data", "secrets", "outputs"],
+  };
+  const dirs = getDatastoreDirectories(config);
+  assertFalse(
+    dirs.includes("secrets"),
+    "secrets must be filtered even when explicitly configured",
+  );
+});
+
+Deno.test("getDatastoreDirectories: excludes secrets for custom datastore config", () => {
+  const dirs = getDatastoreDirectories(customConfig);
+  assertFalse(
+    dirs.includes("secrets"),
+    "secrets must not appear for custom datastore configs",
+  );
+});
+
+Deno.test("getDatastoreDirectories: returns other default subdirs", () => {
+  const dirs = getDatastoreDirectories(filesystemConfig);
+  assertEquals(dirs.includes("data"), true);
+  assertEquals(dirs.includes("outputs"), true);
+  assertEquals(dirs.includes("workflow-runs"), true);
+});
+
+Deno.test("isAlwaysLocal: returns true for secrets", () => {
+  assertEquals(isAlwaysLocal("secrets"), true);
+});
+
+Deno.test("isAlwaysLocal: returns false for data", () => {
+  assertEquals(isAlwaysLocal("data"), false);
+});
+
+Deno.test("ALWAYS_LOCAL_SUBDIRS: contains secrets", () => {
+  assertEquals(
+    (ALWAYS_LOCAL_SUBDIRS as readonly string[]).includes("secrets"),
+    true,
+  );
+});
+
+Deno.test("DEFAULT_DATASTORE_SUBDIRS: still lists secrets for backwards compatibility", () => {
+  assertEquals(
+    (DEFAULT_DATASTORE_SUBDIRS as readonly string[]).includes("secrets"),
+    true,
+  );
 });

@@ -33,7 +33,7 @@
  * Note: definitions, workflows, and vault configs now live in top-level
  * directories (models/, workflows/, vaults/) and are no longer .swamp/ subdirs.
  */
-export const ALWAYS_LOCAL_SUBDIRS = [] as const;
+export const ALWAYS_LOCAL_SUBDIRS = ["secrets"] as const;
 
 /**
  * Default subdirectories that belong to the datastore tier.
