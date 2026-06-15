@@ -19,7 +19,20 @@ structured lifecycle entry against the issue in swamp-club and transitions its
 status as the work progresses. There is no GitHub integration — the issue must
 already exist in swamp-club before you start.
 
-## Core Principle
+## Core Principles
+
+**Always use the installed `swamp` binary.** Every `swamp` command in this skill
+must invoke the installed binary from `$PATH` — never `deno run dev` or any
+other Deno-based invocation. Before running any swamp command, verify the binary
+exists:
+
+```
+which swamp
+```
+
+If `which swamp` fails (binary not found), **stop immediately** and tell the
+human: "The `swamp` binary is not installed or not on your PATH. Install it
+before continuing." Do not fall back to `deno run dev`.
 
 **Never auto-approve.** Always stop and show the plan to the human. Always ask
 for feedback. Only call `approve` when the human explicitly says to proceed.
@@ -224,3 +237,6 @@ When a PR has already merged and the lifecycle just needs to be marked done:
    problem during investigation that is NOT related to the current issue, file
    it as a new swamp-club issue. Do not try to fix it in the current work span —
    keep the scope focused.
+10. **Never use `deno run dev` for swamp commands.** All `swamp` invocations
+    must use the installed binary. Run `which swamp` first — if it's missing,
+    stop and tell the human.
