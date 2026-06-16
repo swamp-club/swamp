@@ -695,6 +695,79 @@ export function get() { return fetch(url); }
   assertEquals(extractBareSpecifierNames(source), []);
 });
 
+// --- string-literal false-positive regression tests (swamp-club#657) ---
+
+Deno.test("extractBareSpecifierNames: ignores from-pattern in template literal", () => {
+  const source = `export function getAdvice(mode: string): string {
+  if (mode === "flexible") {
+    return \`You should upgrade from "flexible" to "full" for security\`;
+  }
+  return "";
+}
+`;
+  assertEquals(extractBareSpecifierNames(source), []);
+});
+
+Deno.test("extractBareSpecifierNames: ignores from-pattern in single-quoted string", () => {
+  const source = `export function logMessage(mode: string): void {
+  const msg = 'Migrate from "flexible" to "full"';
+  console.log(msg);
+}
+`;
+  assertEquals(extractBareSpecifierNames(source), []);
+});
+
+Deno.test("extractBareSpecifierNames: ignores template interpolation as specifier", () => {
+  const source = `export function getAdvice(mode: string): string {
+  return \`You should migrate from "\${mode}" to "full"\`;
+}
+`;
+  assertEquals(extractBareSpecifierNames(source), []);
+});
+
+Deno.test("extractBareSpecifierNames: real-world mixed imports with string false positives", () => {
+  const source =
+    `import { CloudflareClient } from "npm:@webframp/cloudflare@1.0.0";
+import { z } from "npm:zod@4";
+
+export function analyzeZones(client: CloudflareClient): Finding[] {
+  const zones = client.getZones();
+  for (const zone of zones) {
+    const ssl = zone.sslMode;
+    if (ssl === "off") {
+      findings.push({ severity: "critical" });
+    } else if (ssl === "flexible") {
+      findings.push({
+        severity: "warn",
+        message: \`SSL mode is "flexible" — upgrade from "flexible" to "full"\`,
+      });
+    }
+  }
+  return findings;
+}
+`;
+  assertEquals(extractBareSpecifierNames(source), []);
+});
+
+Deno.test("sourceHasBareSpecifiers: ignores from-pattern in string literals", () => {
+  const source = `export function getMessage(): string {
+  return 'Migrate from "flexible" to "full"';
+}
+`;
+  assertEquals(sourceHasBareSpecifiers(source), false);
+});
+
+Deno.test("extractBareSpecifierNames: multi-line import spanning 4+ lines still detected", () => {
+  const source = `import {
+  foo,
+  bar,
+  baz,
+  qux,
+} from "zod";
+`;
+  assertEquals(extractBareSpecifierNames(source), ["zod"]);
+});
+
 Deno.test("sourceHasBareSpecifiers: ignores quoted phrases in comments", () => {
   const source = `import { z } from "npm:zod@4";
 

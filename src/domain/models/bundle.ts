@@ -187,7 +187,7 @@ export interface BundleOptions {
  * extensions with bare specifiers would always fail to rebundle locally).
  */
 const IMPORT_SPECIFIER_RE =
-  /(?:import|export)\s+[\s\S]*?from\s+["']([^"']+)["']/g;
+  /(?:import|export)\s+[^;()]*?from\s+["']([^"']+)["']/g;
 
 function isBareSpecifier(specifier: string): boolean {
   if (specifier.startsWith(".")) return false;
