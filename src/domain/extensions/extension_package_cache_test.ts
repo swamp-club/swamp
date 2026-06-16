@@ -64,6 +64,7 @@ async function makeHashInput(
   await Deno.writeTextFile(model, "export function hi() {}\n");
   return {
     manifest: makeManifest(),
+    rootDir: tmp,
     modelFilePaths: [model],
     vaultFilePaths: [],
     driverFilePaths: [],
@@ -171,6 +172,24 @@ Deno.test("computePackageCacheHash: file order does not affect hash", async () =
     assertEquals(h1, h2);
   } finally {
     await Deno.remove(tmp, { recursive: true });
+  }
+});
+
+Deno.test("computePackageCacheHash: same files under different roots produce identical hashes", async () => {
+  const tmp1 = await Deno.makeTempDir();
+  const tmp2 = await Deno.makeTempDir();
+  try {
+    const content = "export function hi() {}\n";
+    await Deno.writeTextFile(join(tmp1, "model.ts"), content);
+    await Deno.writeTextFile(join(tmp2, "model.ts"), content);
+    const input1 = await makeHashInput(tmp1);
+    const input2 = await makeHashInput(tmp2);
+    const h1 = await computePackageCacheHash(input1);
+    const h2 = await computePackageCacheHash(input2);
+    assertEquals(h1, h2);
+  } finally {
+    await Deno.remove(tmp1, { recursive: true });
+    await Deno.remove(tmp2, { recursive: true });
   }
 });
 

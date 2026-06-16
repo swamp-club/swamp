@@ -163,6 +163,7 @@ export const extensionQualityCommand = new Command()
           },
           hashInput: {
             manifest: resolved.manifest,
+            rootDir: repoDir,
             modelFilePaths: resolved.allModelFiles,
             vaultFilePaths: resolved.allVaultFiles,
             driverFilePaths: resolved.allDriverFiles,

@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { join } from "@std/path";
+import { join, relative, SEPARATOR } from "@std/path";
 import type { ExtensionManifest } from "./extension_manifest.ts";
 
 function encodeHex(bytes: Uint8Array): string {
@@ -49,6 +49,7 @@ function encodeHex(bytes: Uint8Array): string {
  * affects the tarball must be represented here. */
 export interface PackageCacheHashInput {
   manifest: ExtensionManifest;
+  rootDir: string;
   modelFilePaths: string[];
   vaultFilePaths: string[];
   driverFilePaths: string[];
@@ -89,19 +90,26 @@ export async function computePackageCacheHash(
 ): Promise<string> {
   const parts: string[] = [];
 
+  const rootDir = input.rootDir;
+
   parts.push("manifest-v1");
   parts.push(serializeManifestForHash(input.manifest));
 
-  await appendFileGroup("models", input.modelFilePaths, parts);
-  await appendFileGroup("vaults", input.vaultFilePaths, parts);
-  await appendFileGroup("drivers", input.driverFilePaths, parts);
-  await appendFileGroup("datastores", input.datastoreFilePaths, parts);
-  await appendFileGroup("reports", input.reportFilePaths, parts);
-  await appendFileGroup("workflows", input.workflowFilePaths, parts);
-  await appendFileGroup("additional", input.additionalFilePaths, parts);
-  await appendFileGroup("binaries", input.binaryFilePaths, parts);
-  await appendFileGroup("skills", input.skillFilePaths, parts);
-  await appendFileGroup("include", input.includeFilePaths, parts);
+  await appendFileGroup("models", input.modelFilePaths, rootDir, parts);
+  await appendFileGroup("vaults", input.vaultFilePaths, rootDir, parts);
+  await appendFileGroup("drivers", input.driverFilePaths, rootDir, parts);
+  await appendFileGroup("datastores", input.datastoreFilePaths, rootDir, parts);
+  await appendFileGroup("reports", input.reportFilePaths, rootDir, parts);
+  await appendFileGroup("workflows", input.workflowFilePaths, rootDir, parts);
+  await appendFileGroup(
+    "additional",
+    input.additionalFilePaths,
+    rootDir,
+    parts,
+  );
+  await appendFileGroup("binaries", input.binaryFilePaths, rootDir, parts);
+  await appendFileGroup("skills", input.skillFilePaths, rootDir, parts);
+  await appendFileGroup("include", input.includeFilePaths, rootDir, parts);
 
   if (input.denoConfigPath) {
     parts.push("deno-config");
@@ -147,14 +155,23 @@ function serializeManifestForHash(manifest: ExtensionManifest): string {
 async function appendFileGroup(
   label: string,
   paths: string[],
+  rootDir: string,
   out: string[],
 ): Promise<void> {
-  const sorted = [...paths].sort();
+  const relPaths = paths.map((p) => ({
+    rel: normalizeToForwardSlash(relative(rootDir, p)),
+    abs: p,
+  }));
+  relPaths.sort((a, b) => a.rel < b.rel ? -1 : a.rel > b.rel ? 1 : 0);
   out.push(`group=${label}`);
-  for (const p of sorted) {
-    out.push(`file=${p}`);
-    out.push(await readFileIfExists(p));
+  for (const { rel, abs } of relPaths) {
+    out.push(`file=${rel}`);
+    out.push(await readFileIfExists(abs));
   }
+}
+
+function normalizeToForwardSlash(p: string): string {
+  return SEPARATOR === "\\" ? p.replaceAll("\\", "/") : p;
 }
 
 async function readFileIfExists(path: string): Promise<string> {
