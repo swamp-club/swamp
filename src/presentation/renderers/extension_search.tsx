@@ -203,7 +203,12 @@ function renderExtensionPreview(
     lines.push(
       <Text key="repo" wrap="truncate-end">
         <Text bold>Repository:</Text> {item.repository}
-        {item.repositoryVerified && <Text color="green">(verified)</Text>}
+        {item.repositoryVerified && (
+          <>
+            {" "}
+            <Text color="green">(verified)</Text>
+          </>
+        )}
       </Text>,
     );
   }
