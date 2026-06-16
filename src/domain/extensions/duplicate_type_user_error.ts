@@ -59,6 +59,7 @@ export interface DuplicateTypeOccupant {
  *   "duplicateType": {
  *     "kind": "model",
  *     "type": "@scope/foo",
+ *     "isGhostRow": false,
  *     "existing": {
  *       "extensionName": "@scopeA/aa",
  *       "extensionVersion": "1.0.0",

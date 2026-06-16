@@ -359,15 +359,21 @@ Deno.test(
             ),
         });
 
-        await assertRejects(
+        const thrown = await assertRejects(
           () =>
             serviceB.execute(
               { name: extB, version: "1.0.0" } as ExtensionRef,
               makeInstallContext(repoDir, lockfileRepository),
             ),
-          UserError,
+          DuplicateTypeUserError,
           "Cannot install",
         );
+        assertEquals(
+          thrown.isGhostRow,
+          false,
+          "genuine collision must NOT be flagged as ghost row",
+        );
+        assertStringIncludes(thrown.message, "swamp extension rm");
 
         // FS rollback: B's staged file is gone.
         let bStillExists = true;

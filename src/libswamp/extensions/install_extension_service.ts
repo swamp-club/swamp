@@ -457,12 +457,14 @@ function mapDuplicateTypeErrorToUserError(
 }
 
 async function isGhostRow(error: DuplicateTypeError): Promise<boolean> {
-  for (const occupant of [error.firstSource, error.secondSource]) {
-    try {
-      await Deno.stat(occupant.canonicalPath);
-    } catch (e) {
-      if (e instanceof Deno.errors.NotFound) return true;
-    }
+  // Only check firstSource (the pre-existing catalog occupant).
+  // secondSource is the extension being installed — its files are
+  // always absent after rollbackOnCollision, so it can never be a
+  // meaningful ghost-row signal.
+  try {
+    await Deno.stat(error.firstSource.canonicalPath);
+  } catch (e) {
+    if (e instanceof Deno.errors.NotFound) return true;
   }
   return false;
 }
