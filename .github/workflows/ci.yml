@@ -269,7 +269,7 @@ jobs:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           claude_args: |
             --model claude-opus-4-6
-            --allowedTools Read,Glob,Grep,Bash(gh pr review:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(touch /tmp/review-failed)
+            --allowedTools "Read,Glob,Grep,Bash(gh pr review:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(touch /tmp/review-failed)"
 
       - name: Fail if changes requested
         run: |
@@ -420,7 +420,7 @@ jobs:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           claude_args: |
             --model claude-sonnet-4-6
-            --allowedTools Read,Glob,Grep,Bash(gh pr review:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(touch /tmp/review-failed)
+            --allowedTools "Read,Glob,Grep,Bash(gh pr review:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(touch /tmp/review-failed)"
 
       - name: Fail if changes requested
         run: |
@@ -588,7 +588,7 @@ jobs:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           claude_args: |
             --model claude-opus-4-6
-            --allowedTools Read,Glob,Grep,Bash(gh pr review:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(touch /tmp/review-failed)
+            --allowedTools "Read,Glob,Grep,Bash(gh pr review:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(touch /tmp/review-failed)"
 
       - name: Fail if changes requested
         run: |
