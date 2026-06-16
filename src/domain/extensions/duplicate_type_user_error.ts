@@ -82,26 +82,34 @@ export class DuplicateTypeUserError extends UserError {
   readonly typeNormalized: string;
   readonly existing: DuplicateTypeOccupant;
   readonly conflicting: DuplicateTypeOccupant;
+  readonly isGhostRow: boolean;
 
   constructor(args: {
     kind: DuplicateTypeKind;
     typeNormalized: string;
     existing: DuplicateTypeOccupant;
     conflicting: DuplicateTypeOccupant;
+    isGhostRow?: boolean;
   }) {
+    const ghostRow = args.isGhostRow ?? false;
+    const recovery = ghostRow
+      ? "Ghost catalog entry detected (source deleted outside swamp). " +
+        "Run `swamp doctor extensions` to reclassify and retry."
+      : `Run \`swamp extension rm ${args.existing.extensionName}\` first if ` +
+        `you intended to replace it.`;
     super(
       `Type "${args.typeNormalized}" (kind=${args.kind}) is already claimed by ` +
         `${args.existing.extensionName}@${args.existing.extensionVersion} ` +
         `at ${args.existing.canonicalPath}. Cannot install ` +
         `${args.conflicting.extensionName}@${args.conflicting.extensionVersion} ` +
         `at ${args.conflicting.canonicalPath} — filesystem changes rolled back. ` +
-        `Run \`swamp extension rm ${args.existing.extensionName}\` first if ` +
-        `you intended to replace it.`,
+        recovery,
     );
     this.name = "DuplicateTypeUserError";
     this.kind = args.kind;
     this.typeNormalized = args.typeNormalized;
     this.existing = args.existing;
     this.conflicting = args.conflicting;
+    this.isGhostRow = ghostRow;
   }
 }

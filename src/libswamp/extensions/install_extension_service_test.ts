@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects } from "@std/assert";
+import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import { ensureDir } from "@std/fs";
 import { InstallExtensionService } from "./install_extension_service.ts";
@@ -28,6 +28,7 @@ import { FaultingStubRepository } from "../../infrastructure/persistence/test_he
 import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
 import { swampPath } from "../../infrastructure/persistence/paths.ts";
 import { UserError } from "../../domain/errors.ts";
+import { DuplicateTypeUserError } from "../../domain/extensions/duplicate_type_user_error.ts";
 import type { DenoRuntime } from "../../domain/runtime/deno_runtime.ts";
 
 // Required so the model loader's test bootstrap finds command/shell
@@ -394,6 +395,82 @@ Deno.test(
         // is preserved, B's never landed.
         assertEquals(repository.loadByName(extA).length, 1);
         assertEquals(repository.loadByName(extB).length, 0);
+      },
+    );
+  },
+);
+
+Deno.test(
+  "InstallExtensionService.execute: ghost-row conflict suggests swamp doctor extensions",
+  async () => {
+    await withFixtureRepo(
+      async ({ repoDir, repository, lockfileRepository }) => {
+        const ts = Date.now();
+        const typeId = `@test/ghost-${ts}`;
+        const extA = `@test/ghost-a-${ts}`;
+        const extB = `@test/ghost-b-${ts}`;
+
+        // Install A so its type claims a catalog slot.
+        const aModelPath = await stageModel(
+          repoDir,
+          extA,
+          "model.ts",
+          MINIMAL_MODEL_CODE(typeId),
+        );
+        await lockfileRepository.writeEntry(extA, "1.0.0", [
+          `.swamp/pulled-extensions/${extA}/models/model.ts`,
+        ]);
+        const serviceA = new InstallExtensionService({
+          denoRuntime: testDenoRuntime,
+          repository,
+          installExtensionFn: () =>
+            Promise.resolve(
+              makeStubInstallResult(extA, "1.0.0", [
+                `.swamp/pulled-extensions/${extA}/models/model.ts`,
+              ]),
+            ),
+        });
+        await serviceA.execute(
+          { name: extA, version: "1.0.0" } as ExtensionRef,
+          makeInstallContext(repoDir, lockfileRepository),
+        );
+        assertEquals(repository.loadByName(extA).length, 1);
+
+        // Delete A's source file — simulating "rm -rf" outside swamp.
+        await Deno.remove(aModelPath);
+
+        // Install B claiming the SAME type. The catalog still has A's
+        // ghost row, so I-Repo-1 fires. The error should detect the
+        // ghost and suggest `swamp doctor extensions`.
+        await stageModel(
+          repoDir,
+          extB,
+          "model.ts",
+          MINIMAL_MODEL_CODE(typeId),
+        );
+
+        const serviceB = new InstallExtensionService({
+          denoRuntime: testDenoRuntime,
+          repository,
+          installExtensionFn: () =>
+            Promise.resolve(
+              makeStubInstallResult(extB, "1.0.0", [
+                `.swamp/pulled-extensions/${extB}/models/model.ts`,
+              ]),
+            ),
+        });
+
+        const thrown = await assertRejects(
+          () =>
+            serviceB.execute(
+              { name: extB, version: "1.0.0" } as ExtensionRef,
+              makeInstallContext(repoDir, lockfileRepository),
+            ),
+          DuplicateTypeUserError,
+        );
+        assertEquals(thrown.isGhostRow, true);
+        assertStringIncludes(thrown.message, "swamp doctor extensions");
+        assertStringIncludes(thrown.message, "Ghost catalog entry detected");
       },
     );
   },

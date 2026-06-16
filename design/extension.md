@@ -1316,7 +1316,12 @@ handler renders a clean single-line message in log mode and a structured
 ```
 
 The user-visible message points the user at
-`swamp extension rm <existing-name>` to recover.
+`swamp extension rm <existing-name>` to recover. When the conflict is caused
+by a **ghost catalog row** (an entry whose source file was deleted outside
+swamp), the service detects the missing path via `Deno.stat` and instead
+suggests `swamp doctor extensions` — the correct recovery for orphaned rows.
+The `isGhostRow` flag on `DuplicateTypeUserError` is `true` in this case and
+is included in the `--json` output's `duplicateType` object.
 
 ### Bounded atomicity
 

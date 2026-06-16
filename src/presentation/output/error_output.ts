@@ -64,6 +64,7 @@ export function buildErrorJson(err: Error): Record<string, unknown> {
     data.duplicateType = {
       kind: err.kind,
       type: err.typeNormalized,
+      isGhostRow: err.isGhostRow,
       existing: {
         extensionName: err.existing.extensionName,
         extensionVersion: err.existing.extensionVersion,
