@@ -33,19 +33,21 @@ class LogDataGcRenderer implements Renderer<DataGcEvent> {
     return {
       collecting: () => {},
       completed: (e) => {
+        if (e.data.dryRun) {
+          logger
+            .info`GC dry run: would delete ${e.data.dataEntriesExpired} expired items, would reclaim ${e.data.versionsDeleted} excess versions (${e.data.bytesReclaimed} bytes)`;
+          return;
+        }
         logger
           .info`GC complete: deleted ${e.data.dataEntriesExpired} expired items, ${e.data.versionsDeleted} excess versions reclaimed (${e.data.bytesReclaimed} bytes)`;
-        if (!e.data.dryRun) {
-          // wal_checkpoint(TRUNCATE) returns (0,0,0) on full success.
-          if (
-            e.data.walPagesTotal > 0 &&
-            e.data.walPagesCheckpointed < e.data.walPagesTotal
-          ) {
-            logger
-              .info`WAL partial checkpoint: ${e.data.walPagesCheckpointed}/${e.data.walPagesTotal} pages (active readers present)`;
-          } else {
-            logger.info`WAL checkpointed and truncated`;
-          }
+        if (
+          e.data.walPagesTotal > 0 &&
+          e.data.walPagesCheckpointed < e.data.walPagesTotal
+        ) {
+          logger
+            .info`WAL partial checkpoint: ${e.data.walPagesCheckpointed}/${e.data.walPagesTotal} pages (active readers present)`;
+        } else {
+          logger.info`WAL checkpointed and truncated`;
         }
       },
       error: (e) => {

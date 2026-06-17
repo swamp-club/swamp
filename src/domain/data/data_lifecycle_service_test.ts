@@ -519,13 +519,10 @@ Deno.test("deleteExpiredData - dry run does not call delete()", async () => {
 
   const result = await service.deleteExpiredData({ dryRun: true });
 
-  // Should NOT call delete in dry run
   assertEquals(mockRepo.deleteCalls.length, 0);
   assertEquals(result.dryRun, true);
   assertEquals(result.dataEntriesExpired, 1);
-  // Expired-data byte stat is skipped in dry run, but Phase 2 runs
-  // against collectGarbage with dryRun=true (the mock returns 0/0).
-  assertEquals(result.versionsDeleted, 0);
+  assertEquals(result.versionsDeleted, 2);
   assertEquals(result.bytesReclaimed, 0);
 });
 
