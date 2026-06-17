@@ -7,9 +7,9 @@ should be able to reference models by name, then grab data from definitions or
 data, and manipulate it in place (such as string manipulation, concatenating
 array members, etc).
 
-## Two CEL Surfaces
+## Three CEL Surfaces
 
-Swamp has two distinct CEL surfaces:
+Swamp has three distinct CEL surfaces:
 
 1. **Internal**: `CelEvaluator` (`src/infrastructure/cel/cel_evaluator.ts`) is
    used to evaluate expressions in workflow conditions, data queries,
@@ -23,13 +23,24 @@ Swamp has two distinct CEL surfaces:
    already holds (e.g. selector predicates over a fleet of hosts).
    Extensions register their own functions, types, and operators on the
    returned Environment — registrations on one instance do not affect any
-   other. See `.claude/skills/swamp/references/extension/references/model/api.md` for
+   other. See
+   `.claude/skills/swamp/references/extension/references/model/api.md` for
    the extension-author guide.
+3. **Grant-condition**: `createGrantConditionEnvironment()`
+   (`src/infrastructure/cel/grant_condition_environment.ts`) is a sealed,
+   purpose-built environment for evaluating authorization grant conditions.
+   It declares explicit variables per resource kind (workflow, model, data,
+   access) and a `principal.*` namespace, with
+   `unlistedVariablesAreDyn: false` so references to undeclared fields fail
+   at write-time validation. No I/O receivers (`data.*`, `file.*`,
+   `vault.*`, `env.*`), no extension registrations, no host functions beyond
+   the arithmetic baseline. The seal is permanent — conditions are
+   deterministic pure functions over (resource fields, principal context).
 
-The two surfaces share the same arithmetic-overload registrations
-(bigint/double mixes) so a CEL expression parsed against either evaluates
-arithmetic identically. They diverge only on what receiver methods are
-visible.
+All three surfaces share the same arithmetic-overload registrations
+(bigint/double mixes via `registerArithmeticOverloads()`) so a CEL
+expression parsed against any surface evaluates arithmetic identically.
+They diverge on what variables and receiver methods are visible.
 
 ## Model Data
 

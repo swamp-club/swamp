@@ -192,12 +192,7 @@ export class CelDataNamespace {
  * own expression surface. Callers may freely register their own
  * functions, types, and operators on the returned Environment.
  */
-export function createExtensionCelEnvironment(): Environment {
-  const env = new Environment({ unlistedVariablesAreDyn: true });
-
-  // Register mixed-type arithmetic overloads. Context values from model
-  // attributes are JS numbers (double), but CEL integer literals are bigint
-  // (int). Without these, expressions like `count * 2` fail.
+function registerArithmeticOverloads(env: Environment): void {
   env.registerOperator(
     "double + int",
     (a: number, b: bigint) => a + Number(b),
@@ -238,7 +233,13 @@ export function createExtensionCelEnvironment(): Environment {
     "int % double",
     (a: bigint, b: number) => Number(a) % b,
   );
+}
 
+export { registerArithmeticOverloads };
+
+export function createExtensionCelEnvironment(): Environment {
+  const env = new Environment({ unlistedVariablesAreDyn: true });
+  registerArithmeticOverloads(env);
   return env;
 }
 

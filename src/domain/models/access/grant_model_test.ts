@@ -63,19 +63,55 @@ Deno.test("create: rejects duplicate grant", async () => {
   );
 });
 
-Deno.test("create: stores condition as string", async () => {
+Deno.test("create: stores valid condition as string", async () => {
   const { context, store } = createTestContext();
   await grantModel.methods.create.execute(
     {
       ...VALID_CREATE_ARGS,
-      condition: "request.time < timestamp('2026-12-31T00:00:00Z')",
+      condition: 'tags.env == "staging"',
     },
     context,
   );
   const grant = store.get("grant-main") as unknown as Grant;
-  assertEquals(
-    grant.condition,
-    "request.time < timestamp('2026-12-31T00:00:00Z')",
+  assertEquals(grant.condition, 'tags.env == "staging"');
+});
+
+Deno.test("create: rejects invalid condition syntax", async () => {
+  const { context } = createTestContext();
+  await assertRejects(
+    () =>
+      grantModel.methods.create.execute(
+        { ...VALID_CREATE_ARGS, condition: "name ==" },
+        context,
+      ),
+    Error,
+    "Invalid grant condition",
+  );
+});
+
+Deno.test("create: rejects condition with unknown field", async () => {
+  const { context } = createTestContext();
+  await assertRejects(
+    () =>
+      grantModel.methods.create.execute(
+        { ...VALID_CREATE_ARGS, condition: 'unknown_field == "value"' },
+        context,
+      ),
+    Error,
+    "Invalid grant condition",
+  );
+});
+
+Deno.test("create: rejects condition exceeding length limit", async () => {
+  const { context } = createTestContext();
+  await assertRejects(
+    () =>
+      grantModel.methods.create.execute(
+        { ...VALID_CREATE_ARGS, condition: "a".repeat(1025) },
+        context,
+      ),
+    Error,
+    "maximum length",
   );
 });
 

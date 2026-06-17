@@ -34,6 +34,7 @@ import {
 } from "../../access/resource_selector.ts";
 import { parseSubject, SubjectSchema } from "../../access/subject.ts";
 import { parsePrincipal, PrincipalSchema } from "../../access/principal.ts";
+import { validateGrantCondition } from "../../../infrastructure/cel/grant_condition_environment.ts";
 
 export const GRANT_MODEL_TYPE = ModelType.create("swamp/grant");
 
@@ -77,7 +78,7 @@ const CreateArgsSchema = z.object({
     'Resource pattern (e.g. "@acme/*", "@acme/deploy")',
   ),
   condition: z.string().optional().describe(
-    "Optional CEL expression (stored as string, validated by CEL environment in a sibling issue)",
+    "Optional CEL condition over resource fields and principal context",
   ),
   source: GrantSourceSchema,
   createdBy: z.string().min(1).describe(
@@ -101,6 +102,15 @@ async function create(
     `${args.resourceKind}:${args.resourcePattern}`,
   );
   const createdBy = parsePrincipal(args.createdBy);
+
+  if (args.condition) {
+    const validation = validateGrantCondition(args.condition, resource.kind);
+    if (!validation.valid) {
+      throw new Error(
+        `Invalid grant condition: ${validation.error}`,
+      );
+    }
+  }
 
   const grant: Grant = {
     id: crypto.randomUUID(),
