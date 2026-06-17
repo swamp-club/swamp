@@ -17,7 +17,22 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+export {
+  type AccessDecision,
+  type AccessDecisionService,
+  type AccessPrincipal,
+  type AccessResource,
+} from "./access_decision_service.ts";
+
 export { type Action, ActionSchema } from "./action.ts";
+
+export { GrantBasedAccessDecisionService } from "./grant_based_access_decision_service.ts";
+
+export { type ConditionEvaluator, PolicySnapshot } from "./policy_snapshot.ts";
+
+export { PolicySnapshotLoader } from "./policy_snapshot_loader.ts";
+
+export { type PrincipalContext } from "./principal_context.ts";
 
 export { type Effect, EffectSchema } from "./effect.ts";
 

@@ -17,6 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+export {
+  type AccessDecision,
+  type AccessDecisionService,
+  type AccessPrincipal,
+  type AccessResource,
+} from "../domain/access/mod.ts";
+
 export { createLibSwampContext, type LibSwampContext } from "./context.ts";
 
 // Extension CEL surface — INTERNAL re-exports for libswamp/* and CLI callers.

@@ -18,21 +18,17 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Environment } from "cel-js";
+import type { PrincipalContext } from "../../domain/access/principal_context.ts";
 import type { ResourceKind } from "../../domain/access/resource_selector.ts";
 import { registerArithmeticOverloads } from "./cel_evaluator.ts";
+
+export type { PrincipalContext } from "../../domain/access/principal_context.ts";
 
 const MAX_CONDITION_LENGTH = 1024;
 
 export interface GrantConditionValidationResult {
   valid: boolean;
   error?: string;
-}
-
-export interface PrincipalContext {
-  sub: string;
-  email?: string;
-  groups: string[];
-  collectives: string[];
 }
 
 const RESOURCE_FIELDS: Record<ResourceKind, string[]> = {
