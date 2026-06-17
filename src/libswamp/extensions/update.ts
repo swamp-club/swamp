@@ -201,16 +201,23 @@ export async function* extensionUpdate(
             name,
             installedVersion,
             error: `Failed to fetch registry info for ${name}.`,
+            channel: installedChannel,
           });
           continue;
         }
 
         statuses.push(
-          checkExtensionVersion(name, installedVersion, extInfo.latestVersion, {
-            deprecatedAt: extInfo.deprecatedAt ?? null,
-            deprecationReason: extInfo.deprecationReason ?? null,
-            supersededBy: extInfo.supersededBy ?? null,
-          }),
+          checkExtensionVersion(
+            name,
+            installedVersion,
+            extInfo.latestVersion,
+            {
+              deprecatedAt: extInfo.deprecatedAt ?? null,
+              deprecationReason: extInfo.deprecationReason ?? null,
+              supersededBy: extInfo.supersededBy ?? null,
+            },
+            installedChannel,
+          ),
         );
       }
 
@@ -255,6 +262,7 @@ export async function* extensionUpdate(
               name: s.name,
               previousVersion: s.installedVersion,
               newVersion: s.latestVersion,
+              channel: s.channel,
             });
           } catch (error) {
             const message = error instanceof Error
@@ -265,6 +273,7 @@ export async function* extensionUpdate(
               name: s.name,
               installedVersion: s.installedVersion,
               error: `Update failed: ${message}`,
+              channel: s.channel,
             });
           }
         } else {

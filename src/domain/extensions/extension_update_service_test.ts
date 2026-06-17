@@ -280,6 +280,78 @@ Deno.test("buildUpdateResult counts deprecated as total but not upToDate, update
   assertEquals(result.summary.failed, 0);
 });
 
+Deno.test("checkExtensionVersion passes channel through to update_available status", () => {
+  const result = checkExtensionVersion(
+    "@test/ext",
+    "2026.01.15.1",
+    "2026.02.01.1",
+    undefined,
+    "beta",
+  );
+  assertEquals(result.status, "update_available");
+  if (result.status === "update_available") {
+    assertEquals(result.channel, "beta");
+  }
+});
+
+Deno.test("checkExtensionVersion passes channel through to up_to_date status", () => {
+  const result = checkExtensionVersion(
+    "@test/ext",
+    "2026.01.15.1",
+    "2026.01.15.1",
+    undefined,
+    "beta",
+  );
+  assertEquals(result.status, "up_to_date");
+  if (result.status === "up_to_date") {
+    assertEquals(result.channel, "beta");
+  }
+});
+
+Deno.test("checkExtensionVersion passes channel through to not_found status", () => {
+  const result = checkExtensionVersion(
+    "@test/ext",
+    "2026.01.15.1",
+    null,
+    undefined,
+    "beta",
+  );
+  assertEquals(result.status, "not_found");
+  if (result.status === "not_found") {
+    assertEquals(result.channel, "beta");
+  }
+});
+
+Deno.test("checkExtensionVersion passes channel through to deprecated status", () => {
+  const result = checkExtensionVersion(
+    "@test/ext",
+    "2026.01.15.1",
+    "2026.01.15.1",
+    {
+      deprecatedAt: "2026-01-01T00:00:00Z",
+      deprecationReason: "EOL",
+      supersededBy: "@other/ext",
+    },
+    "beta",
+  );
+  assertEquals(result.status, "deprecated");
+  if (result.status === "deprecated") {
+    assertEquals(result.channel, "beta");
+  }
+});
+
+Deno.test("checkExtensionVersion omits channel when not provided", () => {
+  const result = checkExtensionVersion(
+    "@test/ext",
+    "2026.01.15.1",
+    "2026.01.15.1",
+  );
+  assertEquals(result.status, "up_to_date");
+  if (result.status === "up_to_date") {
+    assertEquals(result.channel, undefined);
+  }
+});
+
 Deno.test("buildUpdateResult handles empty array", () => {
   const result = buildUpdateResult([]);
   assertEquals(result.summary.total, 0);

@@ -299,6 +299,70 @@ Deno.test(
   },
 );
 
+Deno.test("extensionUpdate: check mode includes channel from lockfile in status", async () => {
+  const deps: ExtensionUpdateDeps = {
+    lockfileRepository: new LockfileRepository(
+      "/test/repo/upstream_extensions.json",
+      {
+        "@ns/a": {
+          version: "2026.01.01.1",
+          pulledAt: "1970-01-01T00:00:00.000Z",
+          channel: "beta",
+        },
+      },
+    ),
+    getExtension: () => Promise.resolve({ latestVersion: "2026.02.01.1" }),
+    installExtension: () => Promise.resolve(undefined),
+  };
+  const input: ExtensionUpdateInput = { checkOnly: true };
+
+  const events = await collect<ExtensionUpdateEvent>(
+    extensionUpdate(makeCtx(), deps, input),
+  );
+
+  const completed = events.find((e) => e.kind === "completed");
+  assertEquals(completed?.kind, "completed");
+  if (completed?.kind === "completed") {
+    const ext = completed.data.extensions[0];
+    assertEquals(ext.status, "update_available");
+    if (ext.status === "update_available") {
+      assertEquals(ext.channel, "beta");
+    }
+  }
+});
+
+Deno.test("extensionUpdate: update mode includes channel from lockfile in updated status", async () => {
+  const deps: ExtensionUpdateDeps = {
+    lockfileRepository: new LockfileRepository(
+      "/test/repo/upstream_extensions.json",
+      {
+        "@ns/a": {
+          version: "2026.01.01.1",
+          pulledAt: "1970-01-01T00:00:00.000Z",
+          channel: "beta",
+        },
+      },
+    ),
+    getExtension: () => Promise.resolve({ latestVersion: "2026.03.01.1" }),
+    installExtension: () => Promise.resolve(undefined),
+  };
+  const input: ExtensionUpdateInput = { checkOnly: false };
+
+  const events = await collect<ExtensionUpdateEvent>(
+    extensionUpdate(makeCtx(), deps, input),
+  );
+
+  const completed = events.find((e) => e.kind === "completed");
+  assertEquals(completed?.kind, "completed");
+  if (completed?.kind === "completed") {
+    const ext = completed.data.extensions[0];
+    assertEquals(ext.status, "updated");
+    if (ext.status === "updated") {
+      assertEquals(ext.channel, "beta");
+    }
+  }
+});
+
 Deno.test(
   "extensionUpdate: NO orphans-pruned event when result has empty pruned list",
   async () => {

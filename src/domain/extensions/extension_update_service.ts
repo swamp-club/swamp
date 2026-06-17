@@ -25,6 +25,7 @@ export interface UpToDateStatus {
   name: string;
   installedVersion: string;
   latestVersion: string;
+  channel?: string;
 }
 
 /** A newer version is available in the registry. */
@@ -33,6 +34,7 @@ export interface UpdateAvailableStatus {
   name: string;
   installedVersion: string;
   latestVersion: string;
+  channel?: string;
 }
 
 /** Extension was successfully updated. */
@@ -41,6 +43,7 @@ export interface UpdatedStatus {
   name: string;
   previousVersion: string;
   newVersion: string;
+  channel?: string;
 }
 
 /** Extension was not found in the registry. */
@@ -49,6 +52,7 @@ export interface NotFoundStatus {
   name: string;
   installedVersion: string;
   error: string;
+  channel?: string;
 }
 
 /** Extension install failed during update (network, safety, integrity, etc.). */
@@ -57,6 +61,7 @@ export interface FailedStatus {
   name: string;
   installedVersion: string;
   error: string;
+  channel?: string;
 }
 
 /** Extension is deprecated in the registry. */
@@ -66,6 +71,7 @@ export interface DeprecatedStatus {
   installedVersion: string;
   deprecationReason: string | null;
   supersededBy: string | null;
+  channel?: string;
 }
 
 /** Discriminated union of all possible update statuses. */
@@ -108,6 +114,7 @@ export function checkExtensionVersion(
     deprecationReason: string | null;
     supersededBy: string | null;
   },
+  channel?: string,
 ): UpToDateStatus | UpdateAvailableStatus | NotFoundStatus | DeprecatedStatus {
   if (latestVersion === null) {
     return {
@@ -115,6 +122,7 @@ export function checkExtensionVersion(
       name,
       installedVersion,
       error: `Extension ${name} not found in the registry.`,
+      channel,
     };
   }
 
@@ -132,6 +140,7 @@ export function checkExtensionVersion(
       name,
       installedVersion,
       latestVersion,
+      channel,
     };
   }
 
@@ -142,6 +151,7 @@ export function checkExtensionVersion(
       installedVersion,
       deprecationReason: deprecation.deprecationReason,
       supersededBy: deprecation.supersededBy,
+      channel,
     };
   }
 
@@ -150,6 +160,7 @@ export function checkExtensionVersion(
     name,
     installedVersion,
     latestVersion,
+    channel,
   };
 }
 
