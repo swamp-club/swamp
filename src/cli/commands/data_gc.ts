@@ -35,7 +35,10 @@ import {
   type GlobalOptions,
   resolveRepoDir,
 } from "../context.ts";
-import { requireInitializedRepo } from "../repo_context.ts";
+import {
+  requireInitializedRepo,
+  requireInitializedRepoReadOnly,
+} from "../repo_context.ts";
 
 async function promptConfirmation(message: string): Promise<boolean> {
   const encoder = new TextEncoder();
@@ -72,10 +75,13 @@ export const dataGcCommand = new Command()
   .action(async function (options: AnyOptions) {
     const cliCtx = createContext(options as GlobalOptions, ["data", "gc"]);
 
-    const { repoDir, datastoreResolver } = await requireInitializedRepo({
+    const repoOpts = {
       repoDir: resolveRepoDir(options.repoDir),
       outputMode: cliCtx.outputMode,
-    });
+    };
+    const { repoDir, datastoreResolver } = options.dryRun
+      ? await requireInitializedRepoReadOnly(repoOpts)
+      : await requireInitializedRepo(repoOpts);
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
     const deps = createDataGcDeps(repoDir, datastoreResolver);

@@ -329,24 +329,23 @@ export class DefaultDataLifecycleService implements DataLifecycleService {
         dataName,
       );
 
-      if (!dryRun) {
-        // Calculate bytes to reclaim before deleting
-        for (const version of versions) {
-          const contentPath = this.dataRepo.getContentPath(
-            type,
-            modelId,
-            dataName,
-            version,
-          );
-          try {
-            const stat = await Deno.stat(contentPath);
-            bytesReclaimed += stat.size;
-          } catch {
-            // Ignore stat errors for missing files
-          }
+      for (const version of versions) {
+        const contentPath = this.dataRepo.getContentPath(
+          type,
+          modelId,
+          dataName,
+          version,
+        );
+        try {
+          const stat = await Deno.stat(contentPath);
+          bytesReclaimed += stat.size;
+        } catch {
+          // Ignore stat errors for missing files
         }
-        versionsDeleted += versions.length;
-        // Hard-delete all versions
+      }
+      versionsDeleted += versions.length;
+
+      if (!dryRun) {
         await this.dataRepo.delete(type, modelId, dataName);
       }
 

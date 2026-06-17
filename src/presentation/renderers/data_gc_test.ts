@@ -162,6 +162,45 @@ Deno.test("createDataGcRenderer: log completed handler does not throw", () => {
   });
 });
 
+Deno.test("createDataGcRenderer: log dry-run uses would-delete wording", () => {
+  const renderer = createDataGcRenderer("log");
+  const handlers = renderer.handlers();
+  handlers.completed({
+    kind: "completed",
+    data: {
+      dataEntriesExpired: 3,
+      versionsDeleted: 42,
+      bytesReclaimed: 8192,
+      dryRun: true,
+      expiredEntries: [],
+      walPagesTotal: 0,
+      walPagesCheckpointed: 0,
+    },
+  });
+});
+
+Deno.test("createDataGcRenderer: json dry-run includes dryRun field", () => {
+  const renderer = createDataGcRenderer("json");
+  const handlers = renderer.handlers();
+  const out = captureStdout(() =>
+    handlers.completed({
+      kind: "completed",
+      data: {
+        dataEntriesExpired: 3,
+        versionsDeleted: 42,
+        bytesReclaimed: 8192,
+        dryRun: true,
+        expiredEntries: [],
+        walPagesTotal: 0,
+        walPagesCheckpointed: 0,
+      },
+    })
+  );
+  const parsed = JSON.parse(out);
+  assertEquals(parsed.dryRun, true);
+  assertEquals(parsed.versionsDeleted, 42);
+});
+
 Deno.test("renderDataGcPreview: json output is valid JSON", () => {
   const out = captureStdout(() =>
     renderDataGcPreview({
