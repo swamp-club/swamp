@@ -38,6 +38,7 @@ import { auditCommand } from "./commands/audit.ts";
 import { updateCommand } from "./commands/update.ts";
 import { configCommand } from "./commands/config.ts";
 import { sourceCommand } from "./commands/source.ts";
+import { accessCommand } from "./commands/access.ts";
 import { authCommand } from "./commands/auth.ts";
 import { extensionCommand } from "./commands/extension.ts";
 import { summariseCommand } from "./commands/summarise.ts";
@@ -1230,6 +1231,7 @@ export async function runCli(args: string[]): Promise<void> {
     })
     .error(unknownCommandErrorHandler)
     .action(groupCommandAction)
+    .command("access", accessCommand)
     .command("version", versionCommand)
     .command("model", modelCommand)
     .command("init", repoInitCommand)
