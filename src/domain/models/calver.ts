@@ -121,6 +121,22 @@ export class CalVer {
   }
 
   /**
+   * Creates a CalVer version using the current date prefix and Unix epoch
+   * seconds as the micro segment, e.g. `2026.06.18.1750263600`.
+   *
+   * Designed for CI pipelines where each push needs a unique,
+   * monotonically increasing version without interactive prompts.
+   */
+  static withEpochMicro(): CalVer {
+    const now = new Date();
+    const yyyy = String(now.getFullYear());
+    const mm = String(now.getMonth() + 1).padStart(2, "0");
+    const dd = String(now.getDate()).padStart(2, "0");
+    const epochSeconds = Math.floor(now.getTime() / 1000);
+    return new CalVer(`${yyyy}.${mm}.${dd}.${epochSeconds}`);
+  }
+
+  /**
    * Value equality.
    */
   equals(other: CalVer): boolean {
