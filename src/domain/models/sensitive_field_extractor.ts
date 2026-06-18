@@ -203,11 +203,13 @@ function isExpressionOnly(value: string): boolean {
  * - `undefined`/`null` and empty/whitespace-only strings carry no secret.
  * - A string that is composed solely of `${{ ... }}` expressions (e.g. a
  *   `vault.get(...)` reference) is resolved at runtime and is safe.
+ * - An array or plain object (record/map) is a literal secret iff any leaf
+ *   value is one — an all-`vault.get(...)` map carries no cleartext; an empty
+ *   container carries no secret.
  * - Any other present value — a non-expression string, a string mixing literal
- *   text with an expression, or any number/boolean/array/object — is treated as
- *   a literal secret. Non-string values cannot be expression references, so they
- *   are always literals; this fails closed rather than risk leaking a typed
- *   secret.
+ *   text with an expression, or a bare non-string scalar (number/boolean) — is
+ *   treated as a literal secret. Bare non-string scalars cannot be expression
+ *   references, so they fail closed.
  */
 function isLiteralSecret(value: unknown): boolean {
   if (value === undefined || value === null) {
@@ -218,6 +220,18 @@ function isLiteralSecret(value: unknown): boolean {
       return false;
     }
     return !isExpressionOnly(value);
+  }
+  if (Array.isArray(value)) {
+    return value.some(isLiteralSecret);
+  }
+  if (
+    typeof value === "object" &&
+    (Object.getPrototypeOf(value) === Object.prototype ||
+      Object.getPrototypeOf(value) === null)
+  ) {
+    return Object.values(value as Record<string, unknown>).some(
+      isLiteralSecret,
+    );
   }
   return true;
 }
@@ -381,6 +395,35 @@ export function redactSensitiveValues(
 }
 
 /**
+ * Recursively collects all string values from a value tree into `out`.
+ * Handles strings, arrays, and plain objects (records/maps).
+ */
+function collectSecretStrings(value: unknown, out: string[]): void {
+  if (value === undefined || value === null) {
+    return;
+  }
+  if (typeof value === "string") {
+    out.push(value);
+    return;
+  }
+  if (Array.isArray(value)) {
+    for (const element of value) {
+      collectSecretStrings(element, out);
+    }
+    return;
+  }
+  if (
+    typeof value === "object" &&
+    (Object.getPrototypeOf(value) === Object.prototype ||
+      Object.getPrototypeOf(value) === null)
+  ) {
+    for (const v of Object.values(value as Record<string, unknown>)) {
+      collectSecretStrings(v, out);
+    }
+  }
+}
+
+/**
  * Extracts the runtime secret values from a data object based on its Zod schema.
  *
  * For each field marked `{ sensitive: true }` in the schema:
@@ -404,20 +447,7 @@ export function extractSensitiveFieldValues(
   const secrets: string[] = [];
 
   for (const field of fields) {
-    const value = getNestedValue(data, field.path);
-    if (value === undefined || value === null) {
-      continue;
-    }
-    if (typeof value === "string") {
-      secrets.push(value);
-    } else if (Array.isArray(value)) {
-      for (const element of value) {
-        if (typeof element === "string") {
-          secrets.push(element);
-        }
-      }
-    }
-    // Object values are skipped — nested fields are found by extractSensitiveFields recursion
+    collectSecretStrings(getNestedValue(data, field.path), secrets);
   }
 
   return secrets;

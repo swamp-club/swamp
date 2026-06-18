@@ -227,6 +227,17 @@ Deno.test("extractSensitiveFieldValues: array with non-string elements skips the
   assertEquals(extractSensitiveFieldValues(schema, data), ["str", "other"]);
 });
 
+Deno.test("extractSensitiveFieldValues: record field collects each string value", () => {
+  const schema = z.object({
+    secrets: z.record(z.string(), z.string()).meta({ sensitive: true }),
+  });
+  const data = { secrets: { KEY_A: "secret-a", KEY_B: "secret-b" } };
+  assertEquals(extractSensitiveFieldValues(schema, data).sort(), [
+    "secret-a",
+    "secret-b",
+  ]);
+});
+
 Deno.test("extractSensitiveFieldValues: empty schema returns empty", () => {
   const schema = z.object({});
   const data = {};
@@ -487,14 +498,101 @@ Deno.test("findLiteralSensitiveGlobalArgs: returns [] for undefined schema or ar
   assertEquals(findLiteralSensitiveGlobalArgs(schema, undefined), []);
 });
 
-Deno.test("findLiteralSensitiveGlobalArgs: returns [] for a non-object schema (documented residual)", () => {
-  // extractSensitiveFields only walks object shapes; a record schema is not
-  // inspected, so a sensitive value nested in it is not detected. This mirrors
-  // the redaction primitives' limitation and is an accepted best-effort gap.
+Deno.test("findLiteralSensitiveGlobalArgs: returns [] for a non-object schema (schema-level residual)", () => {
+  // extractSensitiveFields only walks object shapes; a standalone record schema
+  // has no sensitive metadata on individual keys, so nothing is detected.
   const schema = z.record(z.string(), z.string());
 
   assertEquals(
     findLiteralSensitiveGlobalArgs(schema, { apiKey: "SECRET" }),
+    [],
+  );
+});
+
+Deno.test("findLiteralSensitiveGlobalArgs: accepts an all-vault.get() record", () => {
+  const schema = z.object({
+    secrets: z.record(z.string(), z.string()).meta({ sensitive: true }),
+  });
+
+  assertEquals(
+    findLiteralSensitiveGlobalArgs(schema, {
+      secrets: {
+        MY_KEY: "${{ vault.get('my-vault', 'my-key') }}",
+        OTHER: "${{ vault.get('my-vault', 'other') }}",
+      },
+    }),
+    [],
+  );
+});
+
+Deno.test("findLiteralSensitiveGlobalArgs: accepts an all-vault.get() array", () => {
+  const schema = z.object({
+    tokens: z.array(z.string()).meta({ sensitive: true }),
+  });
+
+  assertEquals(
+    findLiteralSensitiveGlobalArgs(schema, {
+      tokens: [
+        "${{ vault.get('my-vault', 'token-a') }}",
+        "${{ vault.get('my-vault', 'token-b') }}",
+      ],
+    }),
+    [],
+  );
+});
+
+Deno.test("findLiteralSensitiveGlobalArgs: accepts an empty record", () => {
+  const schema = z.object({
+    secrets: z.record(z.string(), z.string()).meta({ sensitive: true }),
+  });
+
+  assertEquals(
+    findLiteralSensitiveGlobalArgs(schema, { secrets: {} }),
+    [],
+  );
+});
+
+Deno.test("findLiteralSensitiveGlobalArgs: rejects a record with one literal string", () => {
+  const schema = z.object({
+    secrets: z.record(z.string(), z.string()).meta({ sensitive: true }),
+  });
+
+  assertEquals(
+    findLiteralSensitiveGlobalArgs(schema, {
+      secrets: {
+        SAFE: "${{ vault.get('my-vault', 'safe') }}",
+        LEAKED: "cleartext-secret",
+      },
+    }),
+    ["secrets"],
+  );
+});
+
+Deno.test("findLiteralSensitiveGlobalArgs: rejects a record with a number value", () => {
+  const schema = z.object({
+    secrets: z.record(z.string(), z.unknown()).meta({ sensitive: true }),
+  });
+
+  assertEquals(
+    findLiteralSensitiveGlobalArgs(schema, {
+      secrets: { port: 5432 },
+    }),
+    ["secrets"],
+  );
+});
+
+Deno.test("findLiteralSensitiveGlobalArgs: accepts nested containers of vault.get() expressions", () => {
+  const schema = z.object({
+    secrets: z.record(z.string(), z.unknown()).meta({ sensitive: true }),
+  });
+
+  assertEquals(
+    findLiteralSensitiveGlobalArgs(schema, {
+      secrets: {
+        keys: ["${{ vault.get('v', 'a') }}", "${{ vault.get('v', 'b') }}"],
+        nested: { deep: "${{ vault.get('v', 'c') }}" },
+      },
+    }),
     [],
   );
 });
