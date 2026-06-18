@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { UserError } from "../errors.ts";
-import { parsePrincipal } from "./principal.ts";
+import { parseSubject } from "./subject.ts";
 
 export type AuthMode = "none" | "token" | "oauth";
 
@@ -58,10 +58,10 @@ function parseCommaSeparated(value: string | undefined): string[] {
 function validateAdmins(admins: string[]): void {
   for (const admin of admins) {
     try {
-      parsePrincipal(admin);
+      parseSubject(admin);
     } catch {
       throw new UserError(
-        `Invalid --admins value "${admin}": expected principal format "user:<id>" or "worker:<id>"`,
+        `Invalid --admins value "${admin}": expected format "user:<id>", "group:<name>", or "idp-group:<name>"`,
       );
     }
   }

@@ -57,9 +57,9 @@ Deno.test("buildServeAuthConfig: mode token with admins succeeds", () => {
 Deno.test("buildServeAuthConfig: mode token with multiple admins succeeds", () => {
   const config = buildServeAuthConfig({
     authMode: "token",
-    admins: "user:oauth|user-123, worker:agent-456",
+    admins: "user:oauth|user-123, user:agent-456",
   });
-  assertEquals(config.admins, ["user:oauth|user-123", "worker:agent-456"]);
+  assertEquals(config.admins, ["user:oauth|user-123", "user:agent-456"]);
 });
 
 Deno.test("buildServeAuthConfig: mode oauth without admins refuses", () => {
@@ -149,6 +149,18 @@ Deno.test("buildServeAuthConfig: invalid principal kind in admins refuses", () =
   );
 });
 
+Deno.test("buildServeAuthConfig: worker principal kind in admins refuses", () => {
+  assertThrows(
+    () =>
+      buildServeAuthConfig({
+        authMode: "token",
+        admins: "worker:deploy-bot",
+      }),
+    UserError,
+    'Invalid --admins value "worker:deploy-bot"',
+  );
+});
+
 Deno.test("buildServeAuthConfig: admins with empty name after colon refuses", () => {
   assertThrows(
     () =>
@@ -182,9 +194,9 @@ Deno.test("buildServeAuthConfig: default groups-field is collectives", () => {
 Deno.test("buildServeAuthConfig: comma-separated admins trims whitespace", () => {
   const config = buildServeAuthConfig({
     authMode: "token",
-    admins: " user:alice , user:bob , worker:agent-1 ",
+    admins: " user:alice , user:bob , user:agent-1 ",
   });
-  assertEquals(config.admins, ["user:alice", "user:bob", "worker:agent-1"]);
+  assertEquals(config.admins, ["user:alice", "user:bob", "user:agent-1"]);
 });
 
 Deno.test("buildServeAuthConfig: empty strings in comma list are filtered", () => {
