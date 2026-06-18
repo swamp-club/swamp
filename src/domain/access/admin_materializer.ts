@@ -26,7 +26,7 @@ import {
   grantModel,
   GrantSchema,
 } from "../models/access/grant_model.ts";
-import { parseSubject } from "./subject.ts";
+import { parseSubject, subjectToString } from "./subject.ts";
 import { parseResourceSelector } from "./resource_selector.ts";
 import type { AuthMode } from "./serve_auth_config.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
@@ -169,8 +169,9 @@ export async function materializeAdmins(
 
   const configGrants = await store.queryConfigGrants();
   const desiredInstanceNames = new Set<string>();
+  const uniqueAdmins = [...new Set(admins)];
 
-  for (const admin of admins) {
+  for (const admin of uniqueAdmins) {
     const hash = await hashPrincipal(admin);
     const instanceName = instanceNameForAdmin(hash);
     desiredInstanceNames.add(instanceName);
@@ -186,7 +187,7 @@ export async function materializeAdmins(
       const reactivated: Grant = { ...existing.grant, state: "active" };
       await store.writeGrant(existing.modelId, instanceName, reactivated);
       result.reactivated++;
-      logger.info("Re-activated admin grant for {admin}", { admin });
+      logger.info`Re-activated admin grant for ${admin}`;
       continue;
     }
 
@@ -194,7 +195,7 @@ export async function materializeAdmins(
     const grant = buildAdminGrant(admin);
     await store.writeGrant(modelId, instanceName, grant);
     result.created++;
-    logger.info("Created admin grant for {admin}", { admin });
+    logger.info`Created admin grant for ${admin}`;
   }
 
   for (const [instanceName, { grant, modelId }] of configGrants) {
@@ -206,8 +207,9 @@ export async function materializeAdmins(
 
     const revoked: Grant = { ...grant, state: "revoked" };
     await store.writeGrant(modelId, instanceName, revoked);
+    const revokedSubject = subjectToString(grant.subject);
     result.revoked++;
-    logger.info("Revoked admin grant for {instanceName}", { instanceName });
+    logger.info`Revoked admin grant for ${revokedSubject}`;
   }
 
   return result;
