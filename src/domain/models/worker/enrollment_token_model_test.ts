@@ -26,9 +26,9 @@ import {
 import {
   ENROLLMENT_TOKEN_MODEL_TYPE,
   enrollmentTokenModel,
-  timingSafeEqual,
   tokenSecretKey,
 } from "./enrollment_token_model.ts";
+import { timingSafeEqual } from "../../crypto/timing_safe_equal.ts";
 import { createInMemoryWorkerContext } from "./worker_test_helpers.ts";
 
 const mintArgs = { durationMs: 60_000, vaultName: "local" };
