@@ -54,7 +54,14 @@ import {
   LOCAL_PRINCIPAL,
   parseActionsFlag,
   parseResourceFlag,
+  validateServerRepoExclusivity,
 } from "./access_helpers.ts";
+import type { ModelMethodRunEvent } from "../../libswamp/mod.ts";
+import {
+  requestServerResponse,
+  runModelMethodOverServer,
+} from "../../cli/remote_run.ts";
+import type { AccessGrantListResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -109,6 +116,10 @@ const accessGrantCreateCommand = new Command()
     { required: true },
   )
   .option("--when <condition:string>", "Optional CEL condition")
+  .option(
+    "--server <url:string>",
+    "Run through a 'swamp serve' server instead of locally",
+  )
   .action(async function (options: AnyOptions) {
     if (!options.allow && !options.deny) {
       throw new UserError("Either --allow or --deny must be specified");
@@ -117,6 +128,11 @@ const accessGrantCreateCommand = new Command()
       throw new UserError("Cannot specify both --allow and --deny");
     }
 
+    validateServerRepoExclusivity(
+      options.server as string | undefined,
+      options.repoDir as string | undefined,
+    );
+
     const effect = options.allow ? "allow" : "deny";
     const actions = parseActionsFlag(
       (options.allow ?? options.deny) as string,
@@ -124,6 +140,44 @@ const accessGrantCreateCommand = new Command()
     const resource = parseResourceFlag(options.on as string);
 
     const instanceName = `grant-${crypto.randomUUID().slice(0, 8)}`;
+
+    if (options.server) {
+      const ctx = createContext(options as GlobalOptions, [
+        "access",
+        "grant",
+        "create",
+      ]);
+      const renderer = createModelMethodRunRenderer(ctx.outputMode, {
+        modelName: instanceName,
+        methodName: "create",
+      });
+      await consumeStream(
+        runModelMethodOverServer({
+          server: options.server as string,
+          payload: {
+            modelIdOrName: `@${GRANT_MODEL_TYPE.normalized}`,
+            methodName: "create",
+            inputs: {
+              subject: options.subject as string,
+              effect,
+              actions,
+              resourceKind: resource.kind,
+              resourcePattern: resource.pattern,
+              condition: options.when as string | undefined,
+              source: "method",
+              createdBy: LOCAL_PRINCIPAL,
+            },
+            typeArg: `@${GRANT_MODEL_TYPE.normalized}`,
+            definitionName: instanceName,
+          },
+        }) as AsyncIterable<ModelMethodRunEvent>,
+        renderer.handlers(),
+      );
+      if (renderer.runFailed()) {
+        Deno.exitCode = 1;
+      }
+      return;
+    }
 
     const ctx = createContext(options as GlobalOptions, [
       "access",
@@ -238,7 +292,44 @@ const accessGrantListCommand = new Command()
   )
   .option("--subject <subject:string>", "Filter by subject")
   .option("--on <resource:string>", "Filter by resource selector (exact match)")
+  .option(
+    "--server <url:string>",
+    "List grants on a 'swamp serve' server instead of locally",
+  )
   .action(async function (options: AnyOptions) {
+    validateServerRepoExclusivity(
+      options.server as string | undefined,
+      options.repoDir as string | undefined,
+    );
+
+    if (options.server) {
+      const ctx = createContext(options as GlobalOptions, [
+        "access",
+        "grant",
+        "list",
+      ]);
+      const response = await requestServerResponse<AccessGrantListResponse>(
+        { server: options.server as string },
+        {
+          type: "access.grant.list",
+          payload: {
+            subject: options.subject as string | undefined,
+            resource: options.on as string | undefined,
+          },
+        },
+      );
+      const grants: Grant[] = [];
+      for (const raw of response.grants) {
+        const parsed = GrantSchema.safeParse(raw);
+        if (parsed.success) {
+          grants.push(parsed.data);
+        }
+      }
+      const renderer = createAccessGrantListRenderer(ctx.outputMode);
+      renderer.render(grants);
+      return;
+    }
+
     const ctx = createContext(options as GlobalOptions, [
       "access",
       "grant",
@@ -285,7 +376,72 @@ const accessGrantRevokeCommand = new Command()
     "--repo-dir <dir:string>",
     "Repository directory (env: SWAMP_REPO_DIR)",
   )
+  .option(
+    "--server <url:string>",
+    "Revoke a grant on a 'swamp serve' server instead of locally",
+  )
   .action(async function (options: AnyOptions, grantId: string) {
+    validateServerRepoExclusivity(
+      options.server as string | undefined,
+      options.repoDir as string | undefined,
+    );
+
+    if (options.server) {
+      const ctx = createContext(options as GlobalOptions, [
+        "access",
+        "grant",
+        "revoke",
+      ]);
+      const response = await requestServerResponse<AccessGrantListResponse>(
+        { server: options.server as string },
+        { type: "access.grant.list" },
+      );
+      const allGrants: { grant: Grant; instanceName: string }[] = [];
+      for (const raw of response.grants) {
+        const parsed = GrantSchema.safeParse(raw);
+        if (parsed.success) {
+          allGrants.push({
+            grant: parsed.data,
+            instanceName:
+              (raw as Record<string, unknown>).instanceName as string ?? "",
+          });
+        }
+      }
+      const matches = allGrants.filter((r) => r.grant.id.startsWith(grantId));
+      if (matches.length === 0) {
+        throw new UserError(`Grant not found: ${grantId}`);
+      }
+      if (matches.length > 1) {
+        throw new UserError(
+          `Ambiguous grant ID prefix "${grantId}" — matches ${matches.length} grants. Use a longer prefix.`,
+        );
+      }
+      const match = matches[0];
+      if (match.grant.state === "revoked") {
+        ctx.logger.info`Grant ${grantId} is already revoked`;
+        return;
+      }
+      const renderer = createModelMethodRunRenderer(ctx.outputMode, {
+        modelName: match.instanceName,
+        methodName: "revoke",
+      });
+      await consumeStream(
+        runModelMethodOverServer({
+          server: options.server as string,
+          payload: {
+            modelIdOrName: match.instanceName,
+            methodName: "revoke",
+            inputs: {},
+          },
+        }) as AsyncIterable<ModelMethodRunEvent>,
+        renderer.handlers(),
+      );
+      if (renderer.runFailed()) {
+        Deno.exitCode = 1;
+      }
+      return;
+    }
+
     const ctx = createContext(options as GlobalOptions, [
       "access",
       "grant",

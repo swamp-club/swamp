@@ -22,6 +22,7 @@ import { groupCommandAction } from "../group_action.ts";
 import { accessGrantCommand } from "./access_grant.ts";
 import { accessGroupCommand } from "./access_group.ts";
 import { accessCheckCommand } from "./access_check.ts";
+import { accessReloadCommand } from "./access_reload.ts";
 import { unknownCommandErrorHandler } from "../unknown_command_handler.ts";
 
 export const accessCommand = new Command()
@@ -31,4 +32,5 @@ export const accessCommand = new Command()
   .action(groupCommandAction)
   .command("grant", accessGrantCommand)
   .command("group", accessGroupCommand)
-  .command("check", accessCheckCommand);
+  .command("check", accessCheckCommand)
+  .command("reload", accessReloadCommand);

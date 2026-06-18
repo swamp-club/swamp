@@ -41,6 +41,12 @@ import { modelRegistry } from "../../domain/models/model.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
 import { reportRegistry } from "../../domain/reports/report_registry.ts";
 import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
+import {
+  type PolicyReloadMode,
+  PolicySnapshotLoader,
+} from "../../domain/access/policy_snapshot_loader.ts";
+import { DataQueryService } from "../../domain/data/data_query_service.ts";
+import { EventBus } from "../../domain/events/event_bus.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -79,6 +85,11 @@ export const serveCommand = new Command()
   .option(
     "--key-file <path:string>",
     "Path to PEM-encoded TLS private key (env: SWAMP_SERVE_KEY_FILE)",
+  )
+  .option(
+    "--grant-reload <mode:string>",
+    "Policy snapshot reload mode: manual (default) or auto",
+    { default: "manual" },
   )
   .option(
     "--webhook <spec:string>",
@@ -173,14 +184,6 @@ export const serveCommand = new Command()
       dataPlane.releaseDispatch(dispatchId)
     );
 
-    const connectionCtx = {
-      repoDir: resolvedRepoDir,
-      repoContext,
-      datastoreConfig,
-      syncService,
-      workerGateway,
-    };
-
     // Eagerly load extension registries so failures surface at startup
     // rather than silently on first scheduled/webhook execution.
     await Promise.all([
@@ -189,6 +192,37 @@ export const serveCommand = new Command()
       datastoreTypeRegistry.ensureLoaded(),
       reportRegistry.ensureLoaded(),
     ]);
+
+    const grantReloadMode = options.grantReload as string;
+    if (grantReloadMode !== "manual" && grantReloadMode !== "auto") {
+      throw new Error(
+        `Invalid --grant-reload value "${grantReloadMode}": must be "manual" or "auto"`,
+      );
+    }
+
+    const serveEventBus = new EventBus();
+    const dataQueryService = new DataQueryService(
+      repoContext.catalogStore,
+      repoContext.unifiedDataRepo,
+    );
+    const policySnapshotLoader = new PolicySnapshotLoader(
+      dataQueryService,
+      serveEventBus,
+      grantReloadMode as PolicyReloadMode,
+    );
+    await policySnapshotLoader.load();
+    logger.info("Policy snapshot loaded (reload mode: {mode})", {
+      mode: grantReloadMode,
+    });
+
+    const connectionCtx = {
+      repoDir: resolvedRepoDir,
+      repoContext,
+      datastoreConfig,
+      syncService,
+      workerGateway,
+      policySnapshotLoader,
+    };
 
     const ac = new AbortController();
     const enableSchedule = options.schedule !== false;
@@ -417,6 +451,7 @@ export const serveCommand = new Command()
       if (scheduledExecution) {
         await scheduledExecution.stop();
       }
+      policySnapshotLoader.dispose();
       setRemoteStepDispatcher(null);
       ac.abort();
       if (isJson) {

@@ -93,6 +93,123 @@ export function runModelMethodOverServer(
   });
 }
 
+/** Default timeout for request-response operations (30 seconds). */
+const REQUEST_RESPONSE_TIMEOUT_MS = 30_000;
+
+export interface RequestResponseOptions {
+  server: string;
+  signal?: AbortSignal;
+  createSocket?: (url: string) => WebSocket;
+  timeoutMs?: number;
+}
+
+export function requestServerResponse<T>(
+  options: RequestResponseOptions,
+  request: { type: string; id?: string; payload?: unknown },
+): Promise<T> {
+  const url = normalizeServerUrl(options.server);
+  const requestId = request.id ?? crypto.randomUUID();
+  const socket = (options.createSocket ?? ((u) => new WebSocket(u)))(url);
+  const timeoutMs = options.timeoutMs ?? REQUEST_RESPONSE_TIMEOUT_MS;
+
+  return new Promise<T>((resolve, reject) => {
+    let settled = false;
+    const timer = setTimeout(() => {
+      if (!settled) {
+        settled = true;
+        try {
+          socket.close();
+        } catch { /* already closed */ }
+        reject(
+          new UserError(
+            `Request timed out after ${timeoutMs}ms — the server may not support this operation`,
+          ),
+        );
+      }
+    }, timeoutMs);
+
+    const cleanup = () => {
+      clearTimeout(timer);
+      options.signal?.removeEventListener("abort", onAbort);
+    };
+
+    const onAbort = () => {
+      if (!settled) {
+        settled = true;
+        cleanup();
+        try {
+          socket.close();
+        } catch { /* already closed */ }
+        reject(new DOMException("Request was aborted", "AbortError"));
+      }
+    };
+
+    options.signal?.addEventListener("abort", onAbort, { once: true });
+
+    socket.onerror = () => {
+      if (!settled) {
+        settled = true;
+        cleanup();
+        reject(
+          new UserError(`Could not connect to ${url}`),
+        );
+      }
+    };
+
+    socket.onclose = () => {
+      if (!settled) {
+        settled = true;
+        cleanup();
+        reject(
+          new UserError(
+            "Connection closed before a response was received",
+          ),
+        );
+      }
+    };
+
+    socket.onopen = () => {
+      socket.send(
+        JSON.stringify({ ...request, id: requestId }),
+      );
+    };
+
+    socket.onmessage = (event) => {
+      if (typeof event.data !== "string") return;
+      try {
+        const message = JSON.parse(event.data) as ServerMessage;
+        if (
+          typeof message !== "object" || message === null ||
+          !("id" in message) || message.id !== requestId
+        ) {
+          return;
+        }
+        if (message.type === "error") {
+          settled = true;
+          cleanup();
+          try {
+            socket.close();
+          } catch { /* already closed */ }
+          reject(
+            new UserError(
+              `Server reported ${message.error.code}: ${message.error.message}`,
+            ),
+          );
+          return;
+        }
+        if ("payload" in message) {
+          settled = true;
+          cleanup();
+          try {
+            socket.close();
+          } catch { /* already closed */ }
+          resolve(message.payload as T);
+        }
+      } catch { /* not a protocol frame */ }
+    };
+  });
+}
+
 interface OutboundRequest {
   type: "workflow.run" | "model.method.run";
   payload: WorkflowRunPayload | ModelMethodRunPayload;

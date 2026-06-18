@@ -97,3 +97,39 @@ Deno.test("accessGroupCommand: members accepts name argument", async () => {
   const args = membersCmd.getArguments();
   assertEquals(args.length, 1);
 });
+
+Deno.test("accessGroupCommand: create has --server option", async () => {
+  const { accessGroupCommand } = await import("./access_group.ts");
+  const commands = accessGroupCommand.getCommands();
+  const createCmd = commands.find((c) => c.getName() === "create")!;
+  const options = createCmd.getOptions();
+  const serverOpt = options.find((o) => o.name === "server");
+  assertEquals(serverOpt !== undefined, true);
+});
+
+Deno.test("accessGroupCommand: add-member has --server option", async () => {
+  const { accessGroupCommand } = await import("./access_group.ts");
+  const commands = accessGroupCommand.getCommands();
+  const addCmd = commands.find((c) => c.getName() === "add-member")!;
+  const options = addCmd.getOptions();
+  const serverOpt = options.find((o) => o.name === "server");
+  assertEquals(serverOpt !== undefined, true);
+});
+
+Deno.test("accessGroupCommand: list has --server option", async () => {
+  const { accessGroupCommand } = await import("./access_group.ts");
+  const commands = accessGroupCommand.getCommands();
+  const listCmd = commands.find((c) => c.getName() === "list")!;
+  const options = listCmd.getOptions();
+  const serverOpt = options.find((o) => o.name === "server");
+  assertEquals(serverOpt !== undefined, true);
+});
+
+Deno.test("accessGroupCommand: members has --server option", async () => {
+  const { accessGroupCommand } = await import("./access_group.ts");
+  const commands = accessGroupCommand.getCommands();
+  const membersCmd = commands.find((c) => c.getName() === "members")!;
+  const options = membersCmd.getOptions();
+  const serverOpt = options.find((o) => o.name === "server");
+  assertEquals(serverOpt !== undefined, true);
+});

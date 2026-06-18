@@ -30,6 +30,9 @@ import { createLibSwampContext, modelMethodRun } from "../libswamp/mod.ts";
 import { createModelMethodRunDeps, executeWorkflowWithLocks } from "./deps.ts";
 import { serializeEvent } from "./serializer.ts";
 import type {
+  AccessCheckPayload,
+  AccessGrantListPayload,
+  AccessGroupListPayload,
   ModelMethodRunPayload,
   ServerMessage,
   ServerRequest,
@@ -39,6 +42,23 @@ import { findDefinitionByIdOrName } from "../domain/models/model_lookup.ts";
 import { acquireModelLocks } from "../cli/repo_context.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import type { WorkerGateway } from "./worker_gateway.ts";
+import type { PolicySnapshotLoader } from "../domain/access/policy_snapshot_loader.ts";
+import {
+  type Grant,
+  GRANT_MODEL_TYPE,
+  GrantSchema,
+} from "../domain/models/access/grant_model.ts";
+import {
+  type Group,
+  GROUP_MODEL_TYPE,
+  GroupSchema,
+} from "../domain/models/access/group_model.ts";
+import type { DataRecord } from "../domain/data/data_record.ts";
+import { parsePrincipal } from "../domain/access/principal.ts";
+import { ActionSchema } from "../domain/access/action.ts";
+import { parseResourceSelector } from "../domain/access/resource_selector.ts";
+import { GrantBasedAccessDecisionService } from "../domain/access/grant_based_access_decision_service.ts";
+import { modelRegistry } from "../domain/models/model.ts";
 
 // ── Zod schemas for incoming WebSocket messages ─────────────────────────
 
@@ -63,7 +83,42 @@ const ModelMethodRunRequestSchema = z.object({
     inputs: z.record(z.string(), z.unknown()).optional(),
     lastEvaluated: z.boolean().optional(),
     runtimeTags: z.record(z.string(), z.string()).optional(),
+    typeArg: z.string().optional(),
+    definitionName: z.string().optional(),
   }),
+});
+
+const AccessGrantListRequestSchema = z.object({
+  type: z.literal("access.grant.list"),
+  id: z.string().min(1),
+  payload: z.object({
+    subject: z.string().optional(),
+    resource: z.string().optional(),
+  }).optional(),
+});
+
+const AccessGroupListRequestSchema = z.object({
+  type: z.literal("access.group.list"),
+  id: z.string().min(1),
+  payload: z.object({
+    name: z.string().optional(),
+  }).optional(),
+});
+
+const AccessCheckRequestSchema = z.object({
+  type: z.literal("access.check"),
+  id: z.string().min(1),
+  payload: z.object({
+    subject: z.string(),
+    action: z.string(),
+    resource: z.string(),
+    collectives: z.array(z.string()).optional(),
+  }),
+});
+
+const AccessReloadRequestSchema = z.object({
+  type: z.literal("access.reload"),
+  id: z.string().min(1),
 });
 
 const CancelRequestSchema = z.object({
@@ -74,6 +129,10 @@ const CancelRequestSchema = z.object({
 const ServerRequestSchema = z.discriminatedUnion("type", [
   WorkflowRunRequestSchema,
   ModelMethodRunRequestSchema,
+  AccessGrantListRequestSchema,
+  AccessGroupListRequestSchema,
+  AccessCheckRequestSchema,
+  AccessReloadRequestSchema,
   CancelRequestSchema,
 ]);
 
@@ -113,6 +172,7 @@ export interface ConnectionContext {
    * design/remote-execution.md.
    */
   workerGateway?: WorkerGateway;
+  policySnapshotLoader?: PolicySnapshotLoader;
 }
 
 export function handleConnection(
@@ -200,21 +260,39 @@ export function handleMessage(
   const controller = new AbortController();
   activeRequests.set(request.id, controller);
 
-  const task = request.type === "workflow.run"
-    ? handleWorkflowRun(
-      socket,
-      ctx,
-      request.id,
-      request.payload,
-      controller,
-    )
-    : handleModelMethodRun(
-      socket,
-      ctx,
-      request.id,
-      request.payload,
-      controller,
-    );
+  let task: Promise<void>;
+  switch (request.type) {
+    case "workflow.run":
+      task = handleWorkflowRun(
+        socket,
+        ctx,
+        request.id,
+        request.payload,
+        controller,
+      );
+      break;
+    case "model.method.run":
+      task = handleModelMethodRun(
+        socket,
+        ctx,
+        request.id,
+        request.payload,
+        controller,
+      );
+      break;
+    case "access.grant.list":
+      task = handleAccessGrantList(socket, ctx, request.id, request.payload);
+      break;
+    case "access.group.list":
+      task = handleAccessGroupList(socket, ctx, request.id, request.payload);
+      break;
+    case "access.check":
+      task = handleAccessCheck(socket, ctx, request.id, request.payload);
+      break;
+    case "access.reload":
+      task = handleAccessReload(socket, ctx, request.id);
+      break;
+  }
 
   task.finally(() => activeRequests.delete(request.id));
 }
@@ -289,7 +367,12 @@ async function handleModelMethodRun(
       flushLocks = lockResult.flush;
     }
 
-    const deps = await createModelMethodRunDeps(ctx.repoDir, ctx.repoContext);
+    const isDirectExecution = payload.typeArg !== undefined;
+    const deps = await createModelMethodRunDeps(
+      ctx.repoDir,
+      ctx.repoContext,
+      { directExecution: isDirectExecution },
+    );
     const libCtx = createLibSwampContext({ signal: controller.signal });
 
     for await (
@@ -299,6 +382,9 @@ async function handleModelMethodRun(
         inputs: payload.inputs ?? {},
         lastEvaluated: payload.lastEvaluated ?? false,
         runtimeTags: payload.runtimeTags,
+        typeArg: payload.typeArg,
+        definitionName: payload.definitionName,
+        skipAllReports: isDirectExecution,
       })
     ) {
       if (socket.readyState !== WebSocket.OPEN) break;
@@ -332,6 +418,192 @@ async function handleModelMethodRun(
         });
       }
     }
+  }
+}
+
+async function handleAccessGrantList(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  payload?: AccessGrantListPayload,
+): Promise<void> {
+  try {
+    await modelRegistry.ensureLoaded();
+    const records = await ctx.repoContext.dataQueryService.query(
+      `modelType == "${GRANT_MODEL_TYPE.normalized}"`,
+      { loadAttributes: true },
+    );
+
+    let results: { grant: Grant; instanceName: string }[] = [];
+    for (const record of records) {
+      const dataRecord = record as DataRecord;
+      const parsed = GrantSchema.safeParse(dataRecord.attributes);
+      if (parsed.success && parsed.data.state === "active") {
+        results.push({
+          grant: parsed.data,
+          instanceName: dataRecord.modelName ?? "",
+        });
+      }
+    }
+
+    if (payload?.subject) {
+      results = results.filter((r) =>
+        `${r.grant.subject.kind}:${r.grant.subject.name}` === payload.subject
+      );
+    }
+    if (payload?.resource) {
+      const sel = parseResourceSelector(payload.resource);
+      results = results.filter((r) =>
+        r.grant.resource.kind === sel.kind &&
+        r.grant.resource.pattern === sel.pattern
+      );
+    }
+
+    send(socket, {
+      type: "access.grant.list",
+      id: requestId,
+      payload: {
+        grants: results.map((r) => ({
+          ...r.grant,
+          instanceName: r.instanceName,
+        })) as unknown as Record<string, unknown>[],
+      },
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    sendError(socket, requestId, "access_grant_list_failed", message);
+  }
+}
+
+async function handleAccessGroupList(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  payload?: AccessGroupListPayload,
+): Promise<void> {
+  try {
+    await modelRegistry.ensureLoaded();
+    const records = await ctx.repoContext.dataQueryService.query(
+      `modelType == "${GROUP_MODEL_TYPE.normalized}"`,
+      { loadAttributes: true },
+    );
+
+    let groups: Group[] = [];
+    for (const record of records) {
+      const parsed = GroupSchema.safeParse(
+        (record as DataRecord).attributes,
+      );
+      if (parsed.success) {
+        groups.push(parsed.data);
+      }
+    }
+
+    if (payload?.name) {
+      groups = groups.filter((g) => g.name === payload.name);
+    }
+
+    send(socket, {
+      type: "access.group.list",
+      id: requestId,
+      payload: {
+        groups: groups as unknown as Record<string, unknown>[],
+      },
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    sendError(socket, requestId, "access_group_list_failed", message);
+  }
+}
+
+function handleAccessCheck(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  payload: AccessCheckPayload,
+): Promise<void> {
+  try {
+    if (!ctx.policySnapshotLoader) {
+      sendError(
+        socket,
+        requestId,
+        "access_not_configured",
+        "Access control is not configured on this server",
+      );
+      return Promise.resolve();
+    }
+
+    const principal = parsePrincipal(payload.subject);
+    const actionResult = ActionSchema.safeParse(payload.action);
+    if (!actionResult.success) {
+      sendError(
+        socket,
+        requestId,
+        "invalid_action",
+        `Invalid action "${payload.action}": must be one of run, read, write, admin`,
+      );
+      return Promise.resolve();
+    }
+
+    const resource = parseResourceSelector(payload.resource);
+    const collectives = payload.collectives ?? [];
+
+    const snapshot = ctx.policySnapshotLoader.snapshot;
+    const service = new GrantBasedAccessDecisionService(snapshot);
+    const decisions = service.explain(
+      { principal, collectives },
+      actionResult.data,
+      { kind: resource.kind, name: resource.pattern, fields: {} },
+    );
+
+    send(socket, {
+      type: "access.check",
+      id: requestId,
+      payload: {
+        subject: payload.subject,
+        action: payload.action,
+        resource: payload.resource,
+        collectives,
+        decisions: decisions as unknown as Record<string, unknown>[],
+      },
+    });
+    return Promise.resolve();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    sendError(socket, requestId, "access_check_failed", message);
+    return Promise.resolve();
+  }
+}
+
+async function handleAccessReload(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+): Promise<void> {
+  try {
+    if (!ctx.policySnapshotLoader) {
+      sendError(
+        socket,
+        requestId,
+        "access_not_configured",
+        "Access control is not configured on this server",
+      );
+      return;
+    }
+
+    const result = await ctx.policySnapshotLoader.loadWithCounts();
+
+    send(socket, {
+      type: "access.reload",
+      id: requestId,
+      payload: {
+        success: true,
+        grantCount: result.grantCount,
+        groupCount: result.groupCount,
+      },
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    sendError(socket, requestId, "access_reload_failed", message);
   }
 }
 

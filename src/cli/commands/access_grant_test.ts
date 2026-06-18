@@ -105,6 +105,33 @@ Deno.test("accessGrantCommand: create has --when option", async () => {
   assertEquals(whenOpt !== undefined, true);
 });
 
+Deno.test("accessGrantCommand: create has --server option", async () => {
+  const { accessGrantCommand } = await import("./access_grant.ts");
+  const commands = accessGrantCommand.getCommands();
+  const createCmd = commands.find((c) => c.getName() === "create")!;
+  const options = createCmd.getOptions();
+  const serverOpt = options.find((o) => o.name === "server");
+  assertEquals(serverOpt !== undefined, true);
+});
+
+Deno.test("accessGrantCommand: list has --server option", async () => {
+  const { accessGrantCommand } = await import("./access_grant.ts");
+  const commands = accessGrantCommand.getCommands();
+  const listCmd = commands.find((c) => c.getName() === "list")!;
+  const options = listCmd.getOptions();
+  const serverOpt = options.find((o) => o.name === "server");
+  assertEquals(serverOpt !== undefined, true);
+});
+
+Deno.test("accessGrantCommand: revoke has --server option", async () => {
+  const { accessGrantCommand } = await import("./access_grant.ts");
+  const commands = accessGrantCommand.getCommands();
+  const revokeCmd = commands.find((c) => c.getName() === "revoke")!;
+  const options = revokeCmd.getOptions();
+  const serverOpt = options.find((o) => o.name === "server");
+  assertEquals(serverOpt !== undefined, true);
+});
+
 Deno.test("accessGrantCommand: revoke accepts grant_id argument", async () => {
   const { accessGrantCommand } = await import("./access_grant.ts");
   const commands = accessGrantCommand.getCommands();

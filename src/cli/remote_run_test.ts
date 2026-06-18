@@ -26,6 +26,7 @@ import {
 import { UserError } from "../domain/errors.ts";
 import {
   normalizeServerUrl,
+  requestServerResponse,
   runModelMethodOverServer,
   runWorkflowOverServer,
 } from "./remote_run.ts";
@@ -248,5 +249,107 @@ Deno.test({
         // deno-lint-ignore no-empty
       ) {}
     }, UserError);
+  },
+});
+
+// ── requestServerResponse tests ──────────────────────────────────────
+
+Deno.test({
+  name: "requestServerResponse: returns payload from a single response frame",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const server = scriptedServer((request, reply) => {
+      reply({
+        type: "access.grant.list",
+        id: request.id,
+        payload: { grants: [{ id: "g1" }] },
+      });
+    });
+    try {
+      const result = await requestServerResponse<{ grants: unknown[] }>(
+        { server: server.url },
+        { type: "access.grant.list" },
+      );
+      assertEquals(result.grants.length, 1);
+    } finally {
+      await server.shutdown();
+    }
+  },
+});
+
+Deno.test({
+  name: "requestServerResponse: rejects with UserError on server error frame",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const server = scriptedServer((request, reply) => {
+      reply({
+        type: "error",
+        id: request.id,
+        error: { code: "test_error", message: "something broke" },
+      });
+    });
+    try {
+      await assertRejects(
+        () =>
+          requestServerResponse(
+            { server: server.url },
+            { type: "access.reload" },
+          ),
+        UserError,
+        "test_error",
+      );
+    } finally {
+      await server.shutdown();
+    }
+  },
+});
+
+Deno.test({
+  name: "requestServerResponse: rejects on timeout",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const server = scriptedServer((_request, _reply) => {
+      // Intentionally never reply
+    });
+    try {
+      await assertRejects(
+        () =>
+          requestServerResponse(
+            { server: server.url, timeoutMs: 200 },
+            { type: "access.reload" },
+          ),
+        UserError,
+        "timed out",
+      );
+    } finally {
+      await server.shutdown();
+    }
+  },
+});
+
+Deno.test({
+  name: "requestServerResponse: rejects on premature socket close",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const server = scriptedServer((_request, _reply, socket) => {
+      socket.close();
+    });
+    try {
+      await assertRejects(
+        () =>
+          requestServerResponse(
+            { server: server.url },
+            { type: "access.reload" },
+          ),
+        UserError,
+        "closed before",
+      );
+    } finally {
+      await server.shutdown();
+    }
   },
 });
