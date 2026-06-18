@@ -49,6 +49,10 @@ import {
 } from "../../domain/access/policy_snapshot_loader.ts";
 import { DataQueryService } from "../../domain/data/data_query_service.ts";
 import { EventBus } from "../../domain/events/event_bus.ts";
+import {
+  createAdminGrantStore,
+  materializeAdmins,
+} from "../../domain/access/admin_materializer.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -257,6 +261,24 @@ export const serveCommand = new Command()
       repoContext.catalogStore,
       repoContext.unifiedDataRepo,
     );
+    const adminGrantStore = createAdminGrantStore(
+      dataQueryService,
+      repoContext.definitionRepo,
+      repoContext.unifiedDataRepo,
+    );
+    const materializeResult = await materializeAdmins(
+      authConfig.mode,
+      authConfig.admins,
+      adminGrantStore,
+    );
+    if (
+      materializeResult.created > 0 || materializeResult.revoked > 0 ||
+      materializeResult.reactivated > 0
+    ) {
+      logger
+        .info`Admin grants materialized: ${materializeResult.created} created, ${materializeResult.revoked} revoked, ${materializeResult.reactivated} reactivated, ${materializeResult.unchanged} unchanged`;
+    }
+
     const policySnapshotLoader = new PolicySnapshotLoader(
       dataQueryService,
       serveEventBus,
