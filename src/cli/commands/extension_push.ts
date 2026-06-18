@@ -67,6 +67,7 @@ interface ExtensionPushOptions extends GlobalOptions {
   dryRun?: boolean;
   releaseNotes?: string;
   channel?: string;
+  versionSuffix?: string;
 }
 
 async function promptConfirmation(message: string): Promise<boolean> {
@@ -204,6 +205,10 @@ export const extensionPushCommand = new Command()
     "--channel <channel:string>",
     "Release channel: 'beta' or 'rc' (default: stable)",
   )
+  .option(
+    "--version-suffix <type:string>",
+    "Override version micro segment: 'epoch' uses Unix timestamp (e.g. 2026.06.18.1750263600)",
+  )
   .action(async function (options: ExtensionPushOptions, manifestPath: string) {
     if (
       options.channel !== undefined &&
@@ -211,6 +216,14 @@ export const extensionPushCommand = new Command()
     ) {
       throw new UserError(
         `Invalid channel: "${options.channel}". Must be one of: beta, rc. Stable is the default; omit --channel to use it.`,
+      );
+    }
+    if (
+      options.versionSuffix !== undefined &&
+      options.versionSuffix !== "epoch"
+    ) {
+      throw new UserError(
+        `Invalid version suffix: "${options.versionSuffix}". Must be "epoch".`,
       );
     }
     const cliCtx = createContext(options, ["extension", "push"]);
@@ -254,6 +267,13 @@ export const extensionPushCommand = new Command()
       additionalFilePaths,
       binaryFilePaths,
     } = resolved;
+
+    // 2a. Override version micro with epoch seconds when requested.
+    if (options.versionSuffix === "epoch") {
+      manifest.version = CalVer.withEpochMicro().value;
+      cliCtx.logger
+        .debug`Version overridden with epoch suffix: ${manifest.version}`;
+    }
 
     // 2b. Detect project config for project-aware bundling and quality checks.
     const absoluteManifestPath = resolve(repoDir, manifestPath);

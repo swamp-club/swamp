@@ -176,6 +176,31 @@ Deno.test("CalVer.bump resets micro to 1 when previous has different date", () =
   assertEquals(result.value, `${yyyy}.${mm}.${dd}.1`);
 });
 
+// --- withEpochMicro ---
+
+Deno.test("CalVer.withEpochMicro returns today's date with epoch seconds micro", () => {
+  const before = Math.floor(Date.now() / 1000);
+  const result = CalVer.withEpochMicro();
+  const after = Math.floor(Date.now() / 1000);
+
+  const now = new Date();
+  const yyyy = String(now.getFullYear());
+  const mm = String(now.getMonth() + 1).padStart(2, "0");
+  const dd = String(now.getDate()).padStart(2, "0");
+  const expectedPrefix = `${yyyy}.${mm}.${dd}.`;
+
+  assertEquals(result.value.startsWith(expectedPrefix), true);
+
+  const micro = Number(result.value.split(".")[3]);
+  assertEquals(micro >= before, true);
+  assertEquals(micro <= after, true);
+});
+
+Deno.test("CalVer.withEpochMicro produces a valid CalVer", () => {
+  const result = CalVer.withEpochMicro();
+  assertEquals(CalVer.isValid(result.value), true);
+});
+
 // --- toString ---
 
 Deno.test("CalVer.toString returns the raw string", () => {
