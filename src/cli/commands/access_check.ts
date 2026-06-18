@@ -31,8 +31,14 @@ import { type Action, ActionSchema } from "../../domain/access/action.ts";
 import { PolicySnapshotLoader } from "../../domain/access/policy_snapshot_loader.ts";
 import { GrantBasedAccessDecisionService } from "../../domain/access/grant_based_access_decision_service.ts";
 import { EventBus } from "../../domain/events/event_bus.ts";
-import { parseResourceFlag } from "./access_helpers.ts";
+import {
+  parseResourceFlag,
+  validateServerRepoExclusivity,
+} from "./access_helpers.ts";
 import { createAccessCheckRenderer } from "../../presentation/renderers/access_check.ts";
+import { requestServerResponse } from "../../cli/remote_run.ts";
+import type { AccessCheckResponse } from "../../serve/protocol.ts";
+import type { AccessCheckResult } from "../../presentation/renderers/access_check.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -73,7 +79,50 @@ export const accessCheckCommand = new Command()
     "--collectives <collectives:string>",
     "Comma-separated IdP group memberships to simulate",
   )
+  .option(
+    "--server <url:string>",
+    "Check access on a 'swamp serve' server instead of locally",
+  )
   .action(async function (options: AnyOptions) {
+    validateServerRepoExclusivity(
+      options.server as string | undefined,
+      options.repoDir as string | undefined,
+    );
+
+    if (options.server) {
+      const ctx = createContext(options as GlobalOptions, [
+        "access",
+        "check",
+      ]);
+      const collectives = options.collectives
+        ? (options.collectives as string).split(",").map((c: string) =>
+          c.trim()
+        ).filter((c: string) => c.length > 0)
+        : [];
+
+      const response = await requestServerResponse<AccessCheckResponse>(
+        { server: options.server as string },
+        {
+          type: "access.check",
+          payload: {
+            subject: options.subject as string,
+            action: options.action as string,
+            resource: options.on as string,
+            collectives,
+          },
+        },
+      );
+
+      const result = response as unknown as AccessCheckResult;
+      const renderer = createAccessCheckRenderer(ctx.outputMode);
+      renderer.render(result);
+
+      const isDenied = result.decisions.length === 0 ||
+        result.decisions[0].effect === "deny";
+      if (isDenied) Deno.exitCode = 1;
+      return;
+    }
+
     const ctx = createContext(options as GlobalOptions, [
       "access",
       "check",

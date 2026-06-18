@@ -66,3 +66,10 @@ Deno.test("accessCheckCommand: has --collectives option", async () => {
   const opt = options.find((o) => o.name === "collectives");
   assertEquals(opt !== undefined, true);
 });
+
+Deno.test("accessCheckCommand: has --server option", async () => {
+  const { accessCheckCommand } = await import("./access_check.ts");
+  const options = accessCheckCommand.getOptions();
+  const opt = options.find((o) => o.name === "server");
+  assertEquals(opt !== undefined, true);
+});

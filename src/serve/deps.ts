@@ -160,12 +160,16 @@ export async function createWorkflowRunDeps(
 export async function createModelMethodRunDeps(
   repoDir: string,
   repoContext: RepositoryContext,
+  options?: { directExecution?: boolean },
 ): Promise<ModelMethodRunDeps> {
   await Promise.all([
     modelRegistry.ensureLoaded(),
     vaultTypeRegistry.ensureLoaded(),
     reportRegistry.ensureLoaded(),
   ]);
+
+  const isDirectExecution = options?.directExecution ?? false;
+
   return {
     repoDir,
     lookupDefinition: (idOrName) =>
@@ -220,6 +224,26 @@ export async function createModelMethodRunDeps(
         cleanup: () => runFileSink.unregister(logCategory),
       };
     },
+    createAndSaveDefinition: isDirectExecution
+      ? async (type, definition) => {
+        const autoDefRepo = new YamlDefinitionRepository(
+          repoDir,
+          undefined,
+          swampPath(repoDir, SWAMP_SUBDIRS.autoDefinitions),
+          false,
+        );
+        await autoDefRepo.save(type, definition);
+      }
+      : undefined,
+    getDefinitionPath: isDirectExecution
+      ? (type, id) => {
+        return join(
+          swampPath(repoDir, SWAMP_SUBDIRS.autoDefinitions),
+          type.toDirectoryPath(),
+          `${id}.yaml`,
+        );
+      }
+      : undefined,
   };
 }
 

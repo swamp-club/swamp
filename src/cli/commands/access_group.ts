@@ -49,7 +49,17 @@ import {
 } from "../../domain/models/access/group_model.ts";
 import type { DataRecord } from "../../domain/data/data_record.ts";
 import { createAccessGroupListRenderer } from "../../presentation/renderers/access_group.ts";
-import { buildModelMethodRunDeps, LOCAL_PRINCIPAL } from "./access_helpers.ts";
+import {
+  buildModelMethodRunDeps,
+  LOCAL_PRINCIPAL,
+  validateServerRepoExclusivity,
+} from "./access_helpers.ts";
+import type { ModelMethodRunEvent } from "../../libswamp/mod.ts";
+import {
+  requestServerResponse,
+  runModelMethodOverServer,
+} from "../../cli/remote_run.ts";
+import type { AccessGroupListResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -182,7 +192,45 @@ const accessGroupCreateCommand = new Command()
     "--repo-dir <dir:string>",
     "Repository directory (env: SWAMP_REPO_DIR)",
   )
+  .option(
+    "--server <url:string>",
+    "Create a group on a 'swamp serve' server instead of locally",
+  )
   .action(async function (options: AnyOptions, name: string) {
+    validateServerRepoExclusivity(
+      options.server as string | undefined,
+      options.repoDir as string | undefined,
+    );
+
+    if (options.server) {
+      const ctx = createContext(options as GlobalOptions, [
+        "access",
+        "group",
+        "create",
+      ]);
+      const renderer = createModelMethodRunRenderer(ctx.outputMode, {
+        modelName: name,
+        methodName: "create",
+      });
+      await consumeStream(
+        runModelMethodOverServer({
+          server: options.server as string,
+          payload: {
+            modelIdOrName: `@${GROUP_MODEL_TYPE.normalized}`,
+            methodName: "create",
+            inputs: { createdBy: LOCAL_PRINCIPAL },
+            typeArg: `@${GROUP_MODEL_TYPE.normalized}`,
+            definitionName: name,
+          },
+        }) as AsyncIterable<ModelMethodRunEvent>,
+        renderer.handlers(),
+      );
+      if (renderer.runFailed()) {
+        Deno.exitCode = 1;
+      }
+      return;
+    }
+
     await runGroupMethod(
       options,
       name,
@@ -205,11 +253,47 @@ const accessGroupAddMemberCommand = new Command()
     "--repo-dir <dir:string>",
     "Repository directory (env: SWAMP_REPO_DIR)",
   )
+  .option(
+    "--server <url:string>",
+    "Add a member on a 'swamp serve' server instead of locally",
+  )
   .action(async function (
     options: AnyOptions,
     group: string,
     principal: string,
   ) {
+    validateServerRepoExclusivity(
+      options.server as string | undefined,
+      options.repoDir as string | undefined,
+    );
+
+    if (options.server) {
+      const ctx = createContext(options as GlobalOptions, [
+        "access",
+        "group",
+        "add-member",
+      ]);
+      const renderer = createModelMethodRunRenderer(ctx.outputMode, {
+        modelName: group,
+        methodName: "add-member",
+      });
+      await consumeStream(
+        runModelMethodOverServer({
+          server: options.server as string,
+          payload: {
+            modelIdOrName: group,
+            methodName: "add-member",
+            inputs: { principal },
+          },
+        }) as AsyncIterable<ModelMethodRunEvent>,
+        renderer.handlers(),
+      );
+      if (renderer.runFailed()) {
+        Deno.exitCode = 1;
+      }
+      return;
+    }
+
     await runGroupMethod(
       options,
       group,
@@ -232,11 +316,47 @@ const accessGroupRemoveMemberCommand = new Command()
     "--repo-dir <dir:string>",
     "Repository directory (env: SWAMP_REPO_DIR)",
   )
+  .option(
+    "--server <url:string>",
+    "Remove a member on a 'swamp serve' server instead of locally",
+  )
   .action(async function (
     options: AnyOptions,
     group: string,
     principal: string,
   ) {
+    validateServerRepoExclusivity(
+      options.server as string | undefined,
+      options.repoDir as string | undefined,
+    );
+
+    if (options.server) {
+      const ctx = createContext(options as GlobalOptions, [
+        "access",
+        "group",
+        "remove-member",
+      ]);
+      const renderer = createModelMethodRunRenderer(ctx.outputMode, {
+        modelName: group,
+        methodName: "remove-member",
+      });
+      await consumeStream(
+        runModelMethodOverServer({
+          server: options.server as string,
+          payload: {
+            modelIdOrName: group,
+            methodName: "remove-member",
+            inputs: { principal },
+          },
+        }) as AsyncIterable<ModelMethodRunEvent>,
+        renderer.handlers(),
+      );
+      if (renderer.runFailed()) {
+        Deno.exitCode = 1;
+      }
+      return;
+    }
+
     await runGroupMethod(
       options,
       group,
@@ -255,7 +375,38 @@ const accessGroupListCommand = new Command()
     "--repo-dir <dir:string>",
     "Repository directory (env: SWAMP_REPO_DIR)",
   )
+  .option(
+    "--server <url:string>",
+    "List groups on a 'swamp serve' server instead of locally",
+  )
   .action(async function (options: AnyOptions) {
+    validateServerRepoExclusivity(
+      options.server as string | undefined,
+      options.repoDir as string | undefined,
+    );
+
+    if (options.server) {
+      const ctx = createContext(options as GlobalOptions, [
+        "access",
+        "group",
+        "list",
+      ]);
+      const response = await requestServerResponse<AccessGroupListResponse>(
+        { server: options.server as string },
+        { type: "access.group.list" },
+      );
+      const groups: Group[] = [];
+      for (const raw of response.groups) {
+        const parsed = GroupSchema.safeParse(raw);
+        if (parsed.success) {
+          groups.push(parsed.data);
+        }
+      }
+      const renderer = createAccessGroupListRenderer(ctx.outputMode);
+      renderer.renderList(groups);
+      return;
+    }
+
     const ctx = createContext(options as GlobalOptions, [
       "access",
       "group",
@@ -283,7 +434,42 @@ const accessGroupMembersCommand = new Command()
     "--repo-dir <dir:string>",
     "Repository directory (env: SWAMP_REPO_DIR)",
   )
+  .option(
+    "--server <url:string>",
+    "List members on a 'swamp serve' server instead of locally",
+  )
   .action(async function (options: AnyOptions, name: string) {
+    validateServerRepoExclusivity(
+      options.server as string | undefined,
+      options.repoDir as string | undefined,
+    );
+
+    if (options.server) {
+      const ctx = createContext(options as GlobalOptions, [
+        "access",
+        "group",
+        "members",
+      ]);
+      const response = await requestServerResponse<AccessGroupListResponse>(
+        { server: options.server as string },
+        { type: "access.group.list", payload: { name } },
+      );
+      const groups: Group[] = [];
+      for (const raw of response.groups) {
+        const parsed = GroupSchema.safeParse(raw);
+        if (parsed.success) {
+          groups.push(parsed.data);
+        }
+      }
+      const match = groups.find((g) => g.name === name);
+      if (!match) {
+        throw new UserError(`Group not found: ${name}`);
+      }
+      const renderer = createAccessGroupListRenderer(ctx.outputMode);
+      renderer.renderMembers(match);
+      return;
+    }
+
     const ctx = createContext(options as GlobalOptions, [
       "access",
       "group",

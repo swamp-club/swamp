@@ -273,3 +273,76 @@ Deno.test("PolicySnapshotLoader.dispose: unsubscribes from EventBus", async () =
 
   assertEquals(queryCallCount, initialCount);
 });
+
+Deno.test("PolicySnapshotLoader: manual mode does not subscribe to EventBus", async () => {
+  let queryCallCount = 0;
+  const queryService = {
+    query() {
+      queryCallCount++;
+      return Promise.resolve([]);
+    },
+  } as unknown as DataQueryService;
+
+  const eventBus = new EventBus();
+  const loader = new PolicySnapshotLoader(queryService, eventBus, "manual");
+
+  await loader.load();
+  const initialCount = queryCallCount;
+
+  await eventBus.publish(
+    createModelCreated("swamp/grant", "123", "my-grant"),
+  );
+
+  assertEquals(queryCallCount, initialCount);
+
+  loader.dispose();
+});
+
+Deno.test("PolicySnapshotLoader: auto mode subscribes to EventBus", async () => {
+  let callCount = 0;
+  const grant = makeGrant();
+  const queryService = {
+    query(predicate: string) {
+      if (predicate.includes("swamp/grant")) {
+        callCount++;
+        if (callCount > 1) {
+          return Promise.resolve([makeGrantRecord(grant)]);
+        }
+        return Promise.resolve([]);
+      }
+      return Promise.resolve([]);
+    },
+  } as unknown as DataQueryService;
+
+  const eventBus = new EventBus();
+  const loader = new PolicySnapshotLoader(queryService, eventBus, "auto");
+
+  await loader.load();
+  assertEquals(loader.snapshot.grantsForSubjects(["user:adam"]).length, 0);
+
+  await eventBus.publish(
+    createModelCreated("swamp/grant", "123", "my-grant"),
+  );
+
+  assertEquals(loader.snapshot.grantsForSubjects(["user:adam"]).length, 1);
+
+  loader.dispose();
+});
+
+Deno.test("PolicySnapshotLoader.loadWithCounts: returns counts", async () => {
+  const grant = makeGrant();
+  const group = makeGroup("devs", ["adam"]);
+  const queryService = createMockQueryService(
+    [makeGrantRecord(grant)],
+    [makeGroupRecord(group)],
+  );
+
+  const eventBus = new EventBus();
+  const loader = new PolicySnapshotLoader(queryService, eventBus, "manual");
+  const result = await loader.loadWithCounts();
+
+  assertEquals(result.grantCount, 1);
+  assertEquals(result.groupCount, 1);
+
+  loader.dispose();
+});

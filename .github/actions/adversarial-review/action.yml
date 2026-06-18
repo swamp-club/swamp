@@ -30,7 +30,7 @@ inputs:
   allowed_tools:
     description: Comma-separated list of allowed Claude Code tools
     required: false
-    default: "Read,Glob,Grep,Bash(gh pr review:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(touch /tmp/review-failed)"
+    default: "Read,Glob,Grep,Bash(gh pr review:*),Bash(gh pr view:*),Bash(gh pr diff:*)"
 
 runs:
   using: composite
@@ -139,7 +139,6 @@ runs:
           If there ARE critical or high severity findings:
           ```
           gh pr review ${{ github.event.pull_request.number }} --request-changes --body "your review here"
-          touch /tmp/review-failed
           ```
 
           Format your review body as:
@@ -158,12 +157,17 @@ runs:
           [PASS / FAIL with one-line summary]
         claude_args: |
           --model ${{ inputs.model }}
-          --allowedTools ${{ inputs.allowed_tools }}
+          --allowedTools "${{ inputs.allowed_tools }}"
 
     - name: Fail if changes requested
       shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.github_token }}
       run: |
-        if [ -f /tmp/review-failed ]; then
+        latest_state=$(gh pr view ${{ github.event.pull_request.number }} \
+          --json reviews \
+          --jq '[.reviews[] | select(.author.login == "github-actions")] | last | .state')
+        if [ "$latest_state" = "CHANGES_REQUESTED" ]; then
           echo "::error::Adversarial review requested changes — blocking merge"
           exit 1
         fi

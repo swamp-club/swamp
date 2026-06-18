@@ -234,3 +234,95 @@ Deno.test("handleMessage does not leak unknown type value in error", () => {
   );
   assertEquals(errorMessage.includes("secret.op"), false);
 });
+
+// ── validateServerRequest: new access frame types ─────────────────────
+
+Deno.test("validateServerRequest accepts access.grant.list", () => {
+  const input = {
+    type: "access.grant.list",
+    id: "req-1",
+  };
+  const result = validateServerRequest(input);
+  assertEquals(typeof result, "object");
+});
+
+Deno.test("validateServerRequest accepts access.grant.list with payload", () => {
+  const input = {
+    type: "access.grant.list",
+    id: "req-1",
+    payload: { subject: "user:adam" },
+  };
+  const result = validateServerRequest(input);
+  assertEquals(typeof result, "object");
+});
+
+Deno.test("validateServerRequest accepts access.group.list", () => {
+  const input = {
+    type: "access.group.list",
+    id: "req-1",
+  };
+  const result = validateServerRequest(input);
+  assertEquals(typeof result, "object");
+});
+
+Deno.test("validateServerRequest accepts access.check", () => {
+  const input = {
+    type: "access.check",
+    id: "req-1",
+    payload: {
+      subject: "user:adam",
+      action: "run",
+      resource: "workflow:@acme/deploy",
+    },
+  };
+  const result = validateServerRequest(input);
+  assertEquals(typeof result, "object");
+});
+
+Deno.test("validateServerRequest accepts access.check with collectives", () => {
+  const input = {
+    type: "access.check",
+    id: "req-1",
+    payload: {
+      subject: "user:adam",
+      action: "run",
+      resource: "workflow:@acme/deploy",
+      collectives: ["platform-eng"],
+    },
+  };
+  const result = validateServerRequest(input);
+  assertEquals(typeof result, "object");
+});
+
+Deno.test("validateServerRequest accepts access.reload", () => {
+  const input = {
+    type: "access.reload",
+    id: "req-1",
+  };
+  const result = validateServerRequest(input);
+  assertEquals(typeof result, "object");
+});
+
+Deno.test("validateServerRequest accepts model.method.run with typeArg", () => {
+  const input = {
+    type: "model.method.run",
+    id: "req-1",
+    payload: {
+      modelIdOrName: "@swamp/grant",
+      methodName: "create",
+      typeArg: "@swamp/grant",
+      definitionName: "grant-abc12345",
+    },
+  };
+  const result = validateServerRequest(input);
+  assertEquals(typeof result, "object");
+});
+
+Deno.test("validateServerRequest rejects access.check without payload", () => {
+  const input = {
+    type: "access.check",
+    id: "req-1",
+  };
+  const result = validateServerRequest(input);
+  assertEquals(typeof result, "string");
+});

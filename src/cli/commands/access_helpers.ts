@@ -42,6 +42,18 @@ import {
 
 export const LOCAL_PRINCIPAL = "user:local";
 
+export function validateServerRepoExclusivity(
+  server: string | undefined,
+  repoDir: string | undefined,
+): void {
+  if (server && repoDir) {
+    throw new UserError(
+      "Cannot specify both --server and --repo-dir — " +
+        "--server operates on a remote server, not a local repository",
+    );
+  }
+}
+
 export function parseResourceFlag(value: string): ResourceSelector {
   try {
     return parseResourceSelector(value);

@@ -41,11 +41,33 @@ export interface ModelMethodRunPayload {
   inputs?: Record<string, unknown>;
   lastEvaluated?: boolean;
   runtimeTags?: Record<string, string>;
+  typeArg?: string;
+  definitionName?: string;
+}
+
+export interface AccessGrantListPayload {
+  subject?: string;
+  resource?: string;
+}
+
+export interface AccessGroupListPayload {
+  name?: string;
+}
+
+export interface AccessCheckPayload {
+  subject: string;
+  action: string;
+  resource: string;
+  collectives?: string[];
 }
 
 export type ServerRequest =
   | { type: "workflow.run"; id: string; payload: WorkflowRunPayload }
   | { type: "model.method.run"; id: string; payload: ModelMethodRunPayload }
+  | { type: "access.grant.list"; id: string; payload?: AccessGrantListPayload }
+  | { type: "access.group.list"; id: string; payload?: AccessGroupListPayload }
+  | { type: "access.check"; id: string; payload: AccessCheckPayload }
+  | { type: "access.reload"; id: string }
   | { type: "cancel"; id: string };
 
 // ── Outbound (server → client) ───────────────────────────────────────────
@@ -63,6 +85,28 @@ export interface SerializedError {
   details?: unknown;
 }
 
+export interface AccessGrantListResponse {
+  grants: Record<string, unknown>[];
+}
+
+export interface AccessGroupListResponse {
+  groups: Record<string, unknown>[];
+}
+
+export interface AccessCheckResponse {
+  subject: string;
+  action: string;
+  resource: string;
+  collectives: string[];
+  decisions: Record<string, unknown>[];
+}
+
+export interface AccessReloadResponse {
+  success: boolean;
+  grantCount: number;
+  groupCount: number;
+}
+
 export type ServerMessage =
   | { type: "event"; id: string; event: SerializedEvent }
   | { type: "error"; id: string; error: SerializedError }
@@ -72,4 +116,12 @@ export type ServerMessage =
    * frame is the terminal frame for failed requests. Additive — clients
    * that predate it ignore unknown frame types.
    */
-  | { type: "done"; id: string };
+  | { type: "done"; id: string }
+  | { type: "access.grant.list"; id: string; payload: AccessGrantListResponse }
+  | {
+    type: "access.group.list";
+    id: string;
+    payload: AccessGroupListResponse;
+  }
+  | { type: "access.check"; id: string; payload: AccessCheckResponse }
+  | { type: "access.reload"; id: string; payload: AccessReloadResponse };

@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertThrows } from "@std/assert";
-import { parseActionsFlag, parseResourceFlag } from "./access_helpers.ts";
+import {
+  parseActionsFlag,
+  parseResourceFlag,
+  validateServerRepoExclusivity,
+} from "./access_helpers.ts";
 
 Deno.test("parseResourceFlag: parses workflow resource", () => {
   const result = parseResourceFlag("workflow:@acme/*");
@@ -88,4 +92,24 @@ Deno.test("parseActionsFlag: throws on empty input", () => {
     Error,
     "At least one action",
   );
+});
+
+Deno.test("validateServerRepoExclusivity: throws when both specified", () => {
+  assertThrows(
+    () => validateServerRepoExclusivity("ws://host:1234", "/some/dir"),
+    Error,
+    "Cannot specify both",
+  );
+});
+
+Deno.test("validateServerRepoExclusivity: allows server only", () => {
+  validateServerRepoExclusivity("ws://host:1234", undefined);
+});
+
+Deno.test("validateServerRepoExclusivity: allows repo-dir only", () => {
+  validateServerRepoExclusivity(undefined, "/some/dir");
+});
+
+Deno.test("validateServerRepoExclusivity: allows neither", () => {
+  validateServerRepoExclusivity(undefined, undefined);
 });

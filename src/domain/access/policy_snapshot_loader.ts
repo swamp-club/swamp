@@ -93,31 +93,39 @@ function buildConditionEvaluator(): ConditionEvaluator {
   };
 }
 
+export type PolicyReloadMode = "manual" | "auto";
+
 export class PolicySnapshotLoader {
   readonly #dataQueryService: DataQueryService;
   readonly #unsubscribers: (() => void)[] = [];
   readonly #conditionEvaluator: ConditionEvaluator;
   #snapshot: PolicySnapshot = PolicySnapshot.empty();
 
-  constructor(dataQueryService: DataQueryService, eventBus: EventBus) {
+  constructor(
+    dataQueryService: DataQueryService,
+    eventBus: EventBus,
+    mode: PolicyReloadMode = "auto",
+  ) {
     this.#dataQueryService = dataQueryService;
     this.#conditionEvaluator = buildConditionEvaluator();
 
-    this.#unsubscribers.push(
-      eventBus.subscribe<ModelCreated>("ModelCreated", (event) => {
-        if (this.#isAccessModel(event.modelType)) {
-          this.#rebuild();
-        }
-      }),
-    );
+    if (mode === "auto") {
+      this.#unsubscribers.push(
+        eventBus.subscribe<ModelCreated>("ModelCreated", (event) => {
+          if (this.#isAccessModel(event.modelType)) {
+            this.#rebuild();
+          }
+        }),
+      );
 
-    this.#unsubscribers.push(
-      eventBus.subscribe<ModelUpdated>("ModelUpdated", (event) => {
-        if (this.#isAccessModel(event.modelType)) {
-          this.#rebuild();
-        }
-      }),
-    );
+      this.#unsubscribers.push(
+        eventBus.subscribe<ModelUpdated>("ModelUpdated", (event) => {
+          if (this.#isAccessModel(event.modelType)) {
+            this.#rebuild();
+          }
+        }),
+      );
+    }
   }
 
   get snapshot(): PolicySnapshot {
@@ -125,8 +133,19 @@ export class PolicySnapshotLoader {
   }
 
   async load(): Promise<PolicySnapshot> {
-    this.#snapshot = await this.#buildSnapshot();
+    const result = await this.#buildSnapshotWithCounts();
+    this.#snapshot = result.snapshot;
     return this.#snapshot;
+  }
+
+  async loadWithCounts(): Promise<{
+    snapshot: PolicySnapshot;
+    grantCount: number;
+    groupCount: number;
+  }> {
+    const result = await this.#buildSnapshotWithCounts();
+    this.#snapshot = result.snapshot;
+    return result;
   }
 
   dispose(): void {
@@ -141,7 +160,11 @@ export class PolicySnapshotLoader {
       modelType === GROUP_MODEL_TYPE_STR;
   }
 
-  async #buildSnapshot(): Promise<PolicySnapshot> {
+  async #buildSnapshotWithCounts(): Promise<{
+    snapshot: PolicySnapshot;
+    grantCount: number;
+    groupCount: number;
+  }> {
     const [grantRecords, groupRecords] = await Promise.all([
       this.#dataQueryService.query(
         `modelType == "${GRANT_MODEL_TYPE_STR}"`,
@@ -173,12 +196,17 @@ export class PolicySnapshotLoader {
 
     logger
       .info`Loaded policy snapshot: ${grants.length} active grant(s), ${groups.length} group(s)`;
-    return new PolicySnapshot(grants, groups, this.#conditionEvaluator);
+    return {
+      snapshot: new PolicySnapshot(grants, groups, this.#conditionEvaluator),
+      grantCount: grants.length,
+      groupCount: groups.length,
+    };
   }
 
   async #rebuild(): Promise<void> {
     try {
-      this.#snapshot = await this.#buildSnapshot();
+      const result = await this.#buildSnapshotWithCounts();
+      this.#snapshot = result.snapshot;
     } catch (error) {
       logger.error`Failed to rebuild policy snapshot: ${error}`;
     }
