@@ -1084,6 +1084,17 @@ export {
   createAuthLogoutDeps,
 } from "./auth/logout.ts";
 
+// Server credential storage
+export type {
+  ServerCredential,
+  ServerCredentialRepository,
+} from "../domain/auth/server_credential.ts";
+export { normalizeServerUrl } from "../domain/auth/server_url.ts";
+export {
+  FileServerCredentialRepository,
+  type FileServerCredentialRepositoryOptions,
+} from "../infrastructure/persistence/server_credential_repository.ts";
+
 // Repo init/upgrade operations
 export {
   createRepoInitDeps,
