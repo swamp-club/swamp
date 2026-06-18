@@ -64,6 +64,56 @@ export function parseResourceFlag(value: string): ResourceSelector {
   }
 }
 
+const POISONED_KEYS = new Set(["__proto__", "constructor", "prototype"]);
+
+export function parseFieldFlags(
+  raw: string[] | undefined,
+): Record<string, unknown> {
+  if (!raw || raw.length === 0) return {};
+  const fields: Record<string, unknown> = Object.create(null);
+  for (const entry of raw) {
+    const eqIndex = entry.indexOf("=");
+    if (eqIndex === -1) {
+      throw new UserError(
+        `Invalid --field value "${entry}": expected "key=value" (e.g. "tags.env=staging")`,
+      );
+    }
+    const key = entry.slice(0, eqIndex);
+    if (key.length === 0) {
+      throw new UserError(
+        `Invalid --field value "${entry}": key cannot be empty`,
+      );
+    }
+    const value = entry.slice(eqIndex + 1);
+    const parts = key.split(".");
+    for (const part of parts) {
+      if (part.length === 0) {
+        throw new UserError(
+          `Invalid --field key "${key}": empty segment in dotted path`,
+        );
+      }
+      if (POISONED_KEYS.has(part)) {
+        throw new UserError(
+          `Invalid --field key "${key}": "${part}" is not allowed as a key segment`,
+        );
+      }
+    }
+    // deno-lint-ignore no-explicit-any
+    let target: Record<string, any> = fields;
+    for (let i = 0; i < parts.length - 1; i++) {
+      if (
+        !(Object.prototype.hasOwnProperty.call(target, parts[i])) ||
+        typeof target[parts[i]] !== "object"
+      ) {
+        target[parts[i]] = Object.create(null);
+      }
+      target = target[parts[i]] as Record<string, unknown>;
+    }
+    target[parts[parts.length - 1]] = value;
+  }
+  return fields;
+}
+
 export function parseActionsFlag(value: string): string[] {
   const actions = value.split(",").map((a) => a.trim()).filter((a) =>
     a.length > 0

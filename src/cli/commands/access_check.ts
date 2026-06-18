@@ -32,6 +32,7 @@ import { PolicySnapshotLoader } from "../../domain/access/policy_snapshot_loader
 import { GrantBasedAccessDecisionService } from "../../domain/access/grant_based_access_decision_service.ts";
 import { EventBus } from "../../domain/events/event_bus.ts";
 import {
+  parseFieldFlags,
   parseResourceFlag,
   validateServerRepoExclusivity,
 } from "./access_helpers.ts";
@@ -42,34 +43,6 @@ import type { AccessCheckResult } from "../../presentation/renderers/access_chec
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
-
-function parseFieldFlags(
-  raw: string[] | undefined,
-): Record<string, unknown> {
-  if (!raw || raw.length === 0) return {};
-  const fields: Record<string, unknown> = {};
-  for (const entry of raw) {
-    const eqIndex = entry.indexOf("=");
-    if (eqIndex === -1) {
-      throw new UserError(
-        `Invalid --field value "${entry}": expected "key=value" (e.g. "tags.env=staging")`,
-      );
-    }
-    const key = entry.slice(0, eqIndex);
-    const value = entry.slice(eqIndex + 1);
-    const parts = key.split(".");
-    // deno-lint-ignore no-explicit-any
-    let target: Record<string, any> = fields;
-    for (let i = 0; i < parts.length - 1; i++) {
-      if (!(parts[i] in target) || typeof target[parts[i]] !== "object") {
-        target[parts[i]] = {};
-      }
-      target = target[parts[i]] as Record<string, unknown>;
-    }
-    target[parts[parts.length - 1]] = value;
-  }
-  return fields;
-}
 
 export const accessCheckCommand = new Command()
   .name("check")
@@ -83,6 +56,10 @@ export const accessCheckCommand = new Command()
   .example(
     "With simulated IdP groups",
     "swamp access check --subject user:adam --action run --on workflow:@acme/deploy --collectives platform-eng,ops",
+  )
+  .example(
+    "With resource fields for condition evaluation",
+    "swamp access check --subject user:adam --action run --on workflow:@acme/deploy --field tags.env=staging",
   )
   .option(
     "--repo-dir <dir:string>",
@@ -123,6 +100,12 @@ export const accessCheckCommand = new Command()
     );
 
     if (options.server) {
+      if (options.field && (options.field as string[]).length > 0) {
+        throw new UserError(
+          "--field is not supported with --server: the server evaluates conditions against its own resource context",
+        );
+      }
+
       const ctx = createContext(options as GlobalOptions, [
         "access",
         "check",

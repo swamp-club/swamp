@@ -20,6 +20,7 @@
 import { assertEquals, assertThrows } from "@std/assert";
 import {
   parseActionsFlag,
+  parseFieldFlags,
   parseResourceFlag,
   validateServerRepoExclusivity,
 } from "./access_helpers.ts";
@@ -112,4 +113,109 @@ Deno.test("validateServerRepoExclusivity: allows repo-dir only", () => {
 
 Deno.test("validateServerRepoExclusivity: allows neither", () => {
   validateServerRepoExclusivity(undefined, undefined);
+});
+
+Deno.test("parseFieldFlags: returns empty object for undefined", () => {
+  assertEquals(parseFieldFlags(undefined), {});
+});
+
+Deno.test("parseFieldFlags: returns empty object for empty array", () => {
+  assertEquals(parseFieldFlags([]), {});
+});
+
+Deno.test("parseFieldFlags: parses simple key=value", () => {
+  const result = parseFieldFlags(["env=staging"]);
+  assertEquals(result["env"], "staging");
+});
+
+Deno.test("parseFieldFlags: parses nested dotted key", () => {
+  const result = parseFieldFlags(["tags.env=staging"]);
+  const tags = result["tags"] as Record<string, unknown>;
+  assertEquals(tags["env"], "staging");
+});
+
+Deno.test("parseFieldFlags: parses deeply nested key", () => {
+  const result = parseFieldFlags(["a.b.c=deep"]);
+  const a = result["a"] as Record<string, unknown>;
+  const b = a["b"] as Record<string, unknown>;
+  assertEquals(b["c"], "deep");
+});
+
+Deno.test("parseFieldFlags: handles multiple fields", () => {
+  const result = parseFieldFlags(["tags.env=staging", "tags.team=platform"]);
+  const tags = result["tags"] as Record<string, unknown>;
+  assertEquals(tags["env"], "staging");
+  assertEquals(tags["team"], "platform");
+});
+
+Deno.test("parseFieldFlags: value can contain equals signs", () => {
+  const result = parseFieldFlags(["expr=a==b"]);
+  assertEquals(result["expr"], "a==b");
+});
+
+Deno.test("parseFieldFlags: throws on missing equals sign", () => {
+  assertThrows(
+    () => parseFieldFlags(["noequals"]),
+    Error,
+    'expected "key=value"',
+  );
+});
+
+Deno.test("parseFieldFlags: throws on empty key", () => {
+  assertThrows(
+    () => parseFieldFlags(["=value"]),
+    Error,
+    "key cannot be empty",
+  );
+});
+
+Deno.test("parseFieldFlags: throws on empty segment in dotted path", () => {
+  assertThrows(
+    () => parseFieldFlags(["a..b=value"]),
+    Error,
+    "empty segment",
+  );
+});
+
+Deno.test("parseFieldFlags: throws on leading dot", () => {
+  assertThrows(
+    () => parseFieldFlags([".a=value"]),
+    Error,
+    "empty segment",
+  );
+});
+
+Deno.test("parseFieldFlags: rejects __proto__ key", () => {
+  assertThrows(
+    () => parseFieldFlags(["__proto__.polluted=true"]),
+    Error,
+    '"__proto__" is not allowed',
+  );
+});
+
+Deno.test("parseFieldFlags: rejects constructor key", () => {
+  assertThrows(
+    () => parseFieldFlags(["constructor.name=evil"]),
+    Error,
+    '"constructor" is not allowed',
+  );
+});
+
+Deno.test("parseFieldFlags: rejects prototype key", () => {
+  assertThrows(
+    () => parseFieldFlags(["prototype.fn=bad"]),
+    Error,
+    '"prototype" is not allowed',
+  );
+});
+
+Deno.test("parseFieldFlags: does not pollute Object.prototype", () => {
+  const before = Object.getOwnPropertyNames(Object.prototype).length;
+  try {
+    parseFieldFlags(["__proto__.polluted=true"]);
+  } catch { /* expected */ }
+  assertEquals(
+    Object.getOwnPropertyNames(Object.prototype).length,
+    before,
+  );
 });
