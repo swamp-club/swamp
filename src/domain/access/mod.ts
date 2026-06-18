@@ -62,6 +62,13 @@ export {
 } from "./resource_selector.ts";
 
 export {
+  type AuthMode,
+  buildServeAuthConfig,
+  type ServeAuthConfig,
+  type ServeAuthConfigInput,
+} from "./serve_auth_config.ts";
+
+export {
   parseSubject,
   type Subject,
   type SubjectKind,

@@ -25,6 +25,7 @@ import {
 } from "../context.ts";
 import { requireInitializedRepoUnlocked } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
+import { buildServeAuthConfig } from "../../domain/access/serve_auth_config.ts";
 import { handleConnection } from "../../serve/connection.ts";
 import { executeWorkflowWithLocks } from "../../serve/deps.ts";
 import { CapabilityService } from "../../serve/capability_service.ts";
@@ -97,9 +98,42 @@ export const serveCommand = new Command()
     "Register a webhook endpoint: <route>:<workflow>:<secret>",
     { collect: true },
   )
+  .option(
+    "--auth-mode <mode:string>",
+    "Authentication mode: none (default), token, or oauth",
+    { default: "none" },
+  )
+  .option(
+    "--admins <principals:string>",
+    "Comma-separated principal IDs for admin access (e.g. user:oauth|user-123)",
+  )
+  .option(
+    "--allowed-collectives <list:string>",
+    "Comma-separated collective slugs for OAuth admission policy",
+  )
+  .option(
+    "--allowed-users <list:string>",
+    "Comma-separated user identifiers for OAuth admission policy",
+  )
+  .option(
+    "--oauth-provider <url:string>",
+    "OAuth authorization server URL (default: https://swamp-club.com)",
+  )
+  .option(
+    "--oauth-client-id <id:string>",
+    "OAuth client ID (required for oauth mode)",
+  )
+  .option(
+    "--groups-field <field:string>",
+    "Userinfo field name for group/collective memberships (default: collectives)",
+  )
   .example(
     "Enable TLS",
     "swamp serve --cert-file server.crt --key-file server.key",
+  )
+  .example(
+    "Token auth",
+    "swamp serve --auth-mode token --admins 'user:oauth|user-123'",
   )
   .example(
     "Webhook trigger",
@@ -130,6 +164,23 @@ export const serveCommand = new Command()
       key = await Deno.readTextFile(keyFile);
     }
     const tlsEnabled = cert !== undefined;
+
+    const authConfig = buildServeAuthConfig({
+      authMode: options.authMode as string | undefined,
+      admins: options.admins as string | undefined,
+      allowedCollectives: options.allowedCollectives as string | undefined,
+      allowedUsers: options.allowedUsers as string | undefined,
+      oauthProvider: options.oauthProvider as string | undefined,
+      oauthClientId: options.oauthClientId as string | undefined,
+      groupsField: options.groupsField as string | undefined,
+    });
+
+    if (authConfig.mode === "none" && authConfig.admins.length > 0) {
+      logger.warn(
+        "--admins is set but --auth-mode is {mode} — admins will have no effect",
+        { mode: authConfig.mode },
+      );
+    }
 
     ctx.logger.info`Initializing repository at ${repoDir}`;
 
@@ -223,6 +274,7 @@ export const serveCommand = new Command()
       syncService,
       workerGateway,
       policySnapshotLoader,
+      authConfig,
     };
 
     const ac = new AbortController();
