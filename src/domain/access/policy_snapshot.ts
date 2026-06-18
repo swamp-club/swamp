@@ -104,7 +104,14 @@ export class PolicySnapshot {
         principalContext,
       );
     } catch (error) {
-      logger.warn`Condition evaluation failed for ${condition}: ${error}`;
+      if (
+        error instanceof Error &&
+        error.message.startsWith("Unknown variable:")
+      ) {
+        logger.debug`Condition evaluation skipped for ${condition}: ${error}`;
+      } else {
+        logger.warn`Condition evaluation failed for ${condition}: ${error}`;
+      }
       return false;
     }
   }
