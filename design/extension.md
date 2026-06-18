@@ -30,6 +30,16 @@ This is the same versioning scheme used by models (see [./models.md]).
 The registry enforces unique name+version tuples. If a version conflict occurs
 during push, the CLI offers to bump the version automatically.
 
+### Epoch suffix
+
+`swamp extension push manifest.yaml --version-suffix epoch` replaces the micro
+segment with the current Unix epoch seconds, producing versions like
+`2026.06.18.1750263600`. This eliminates push collisions in CI pipelines where
+interactive version bumps aren't possible — each push gets a unique,
+monotonically increasing version without prompts. The date prefix stays
+human-readable; the epoch suffix handles uniqueness and encodes the exact
+publish time.
+
 Use `swamp extension version <name>` to query the registry for the latest
 published version and compute the next CalVer version. Accepts an extension
 name directly or `--manifest <path>` to read the name from a manifest file.
