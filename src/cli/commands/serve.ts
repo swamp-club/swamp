@@ -24,6 +24,7 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoUnlocked } from "../repo_context.ts";
+import { UserError } from "../../domain/errors.ts";
 import { handleConnection } from "../../serve/connection.ts";
 import { executeWorkflowWithLocks } from "../../serve/deps.ts";
 import { CapabilityService } from "../../serve/capability_service.ts";
@@ -195,7 +196,7 @@ export const serveCommand = new Command()
 
     const grantReloadMode = options.grantReload as string;
     if (grantReloadMode !== "manual" && grantReloadMode !== "auto") {
-      throw new Error(
+      throw new UserError(
         `Invalid --grant-reload value "${grantReloadMode}": must be "manual" or "auto"`,
       );
     }

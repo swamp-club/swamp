@@ -116,6 +116,15 @@ Deno.test("accessGroupCommand: add-member has --server option", async () => {
   assertEquals(serverOpt !== undefined, true);
 });
 
+Deno.test("accessGroupCommand: remove-member has --server option", async () => {
+  const { accessGroupCommand } = await import("./access_group.ts");
+  const commands = accessGroupCommand.getCommands();
+  const removeCmd = commands.find((c) => c.getName() === "remove-member")!;
+  const options = removeCmd.getOptions();
+  const serverOpt = options.find((o) => o.name === "server");
+  assertEquals(serverOpt !== undefined, true);
+});
+
 Deno.test("accessGroupCommand: list has --server option", async () => {
   const { accessGroupCommand } = await import("./access_group.ts");
   const commands = accessGroupCommand.getCommands();

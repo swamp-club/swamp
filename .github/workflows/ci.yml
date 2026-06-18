@@ -255,7 +255,6 @@ jobs:
             If there ARE blocking issues that must be addressed:
             ```
             gh pr review ${{ github.event.pull_request.number }} --request-changes --body "your review here"
-            touch /tmp/review-failed
             ```
 
             Format your review body as:
@@ -269,11 +268,16 @@ jobs:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           claude_args: |
             --model claude-opus-4-6
-            --allowedTools "Read,Glob,Grep,Bash(gh pr review:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(touch /tmp/review-failed)"
+            --allowedTools "Read,Glob,Grep,Bash(gh pr review:*),Bash(gh pr view:*),Bash(gh pr diff:*)"
 
       - name: Fail if changes requested
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if [ -f /tmp/review-failed ]; then
+          latest_state=$(gh pr reviews ${{ github.event.pull_request.number }} \
+            --json state,author \
+            --jq '[.[] | select(.author.login == "github-actions")] | last | .state')
+          if [ "$latest_state" = "CHANGES_REQUESTED" ]; then
             echo "::error::Code review requested changes — blocking merge"
             exit 1
           fi
@@ -403,7 +407,6 @@ jobs:
             If there ARE blocking issues:
             ```
             gh pr review ${{ github.event.pull_request.number }} --request-changes --body "your review here"
-            touch /tmp/review-failed
             ```
 
             Format your review body as:
@@ -420,11 +423,16 @@ jobs:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           claude_args: |
             --model claude-sonnet-4-6
-            --allowedTools "Read,Glob,Grep,Bash(gh pr review:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(touch /tmp/review-failed)"
+            --allowedTools "Read,Glob,Grep,Bash(gh pr review:*),Bash(gh pr view:*),Bash(gh pr diff:*)"
 
       - name: Fail if changes requested
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if [ -f /tmp/review-failed ]; then
+          latest_state=$(gh pr reviews ${{ github.event.pull_request.number }} \
+            --json state,author \
+            --jq '[.[] | select(.author.login == "github-actions")] | last | .state')
+          if [ "$latest_state" = "CHANGES_REQUESTED" ]; then
             echo "::error::UX review requested changes — blocking merge"
             exit 1
           fi
@@ -568,7 +576,6 @@ jobs:
             If there ARE critical or high severity findings:
             ```
             gh pr review ${{ github.event.pull_request.number }} --request-changes --body "your review here"
-            touch /tmp/review-failed
             ```
 
             Format your review body as:
@@ -588,11 +595,16 @@ jobs:
           anthropic_api_key: ${{ secrets.ANTHROPIC_API_KEY }}
           claude_args: |
             --model claude-opus-4-6
-            --allowedTools "Read,Glob,Grep,Bash(gh pr review:*),Bash(gh pr view:*),Bash(gh pr diff:*),Bash(touch /tmp/review-failed)"
+            --allowedTools "Read,Glob,Grep,Bash(gh pr review:*),Bash(gh pr view:*),Bash(gh pr diff:*)"
 
       - name: Fail if changes requested
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          if [ -f /tmp/review-failed ]; then
+          latest_state=$(gh pr reviews ${{ github.event.pull_request.number }} \
+            --json state,author \
+            --jq '[.[] | select(.author.login == "github-actions")] | last | .state')
+          if [ "$latest_state" = "CHANGES_REQUESTED" ]; then
             echo "::error::CI security review requested changes — blocking merge"
             exit 1
           fi

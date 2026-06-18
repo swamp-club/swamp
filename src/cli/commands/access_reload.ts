@@ -31,6 +31,7 @@ import { EventBus } from "../../domain/events/event_bus.ts";
 import { validateServerRepoExclusivity } from "./access_helpers.ts";
 import { requestServerResponse } from "../../cli/remote_run.ts";
 import type { AccessReloadResponse } from "../../serve/protocol.ts";
+import { createAccessReloadRenderer } from "../../presentation/renderers/access_reload.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -64,6 +65,8 @@ export const accessReloadCommand = new Command()
       "reload",
     ]);
 
+    const renderer = createAccessReloadRenderer(ctx.outputMode);
+
     if (options.server) {
       const response = await requestServerResponse<AccessReloadResponse>(
         { server: options.server as string },
@@ -74,8 +77,11 @@ export const accessReloadCommand = new Command()
         throw new UserError("Policy reload failed on the server");
       }
 
-      ctx.logger
-        .info`Policy snapshot reloaded: ${response.grantCount} grant(s), ${response.groupCount} group(s)`;
+      renderer.render({
+        success: true,
+        grantCount: response.grantCount,
+        groupCount: response.groupCount,
+      });
       return;
     }
 
@@ -95,8 +101,11 @@ export const accessReloadCommand = new Command()
 
     try {
       const result = await loader.loadWithCounts();
-      ctx.logger
-        .info`Policy snapshot loaded: ${result.grantCount} grant(s), ${result.groupCount} group(s)`;
+      renderer.render({
+        success: true,
+        grantCount: result.grantCount,
+        groupCount: result.groupCount,
+      });
     } finally {
       loader.dispose();
     }
