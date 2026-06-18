@@ -182,6 +182,9 @@ Classification types (`triage`) match swamp-club's issue types:
 
 Regressions are classified as `type: bug` with `isRegression: true` on the
 classification record — swamp-club does not have a separate `regression` type.
+When the introducing version can be identified, set `regressionIntroducedIn` to
+the version string (e.g. `"2026.06.12.1"`) — this enables time-to-detection
+metrics on the swamp-club side.
 
 Status transitions in swamp-club:
 

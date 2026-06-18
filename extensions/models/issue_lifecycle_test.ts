@@ -319,8 +319,8 @@ Deno.test("model: exposes the new link_pr method definition", () => {
   );
 });
 
-Deno.test("model: version bumped to 2026.05.21.1", () => {
-  assertEquals(model.version, "2026.05.21.1");
+Deno.test("model: version bumped to 2026.06.18.1", () => {
+  assertEquals(model.version, "2026.06.18.1");
 });
 
 // ---------------------------------------------------------------------------

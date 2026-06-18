@@ -130,6 +130,9 @@ export const ClassificationSchema = z.object({
   isRegression: z.boolean().optional().describe(
     "True if this is a regression (something that previously worked). Implies type=bug.",
   ),
+  regressionIntroducedIn: z.string().optional().describe(
+    "Version that introduced the regression (e.g. '2026.06.12.1'). Only set when isRegression is true.",
+  ),
   clarifyingQuestions: z.array(z.string()).optional(),
   classifiedAt: z.string(),
 });
