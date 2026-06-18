@@ -60,3 +60,17 @@ Deno.test("serveCommand has --repo-dir option", async () => {
   const repoDirOpt = options.find((o) => o.name === "repo-dir");
   assertEquals(repoDirOpt !== undefined, true);
 });
+
+Deno.test("serveCommand has --cert-file option", async () => {
+  const { serveCommand } = await import("./serve.ts");
+  const options = serveCommand.getOptions();
+  const certOpt = options.find((o) => o.name === "cert-file");
+  assertEquals(certOpt !== undefined, true);
+});
+
+Deno.test("serveCommand has --key-file option", async () => {
+  const { serveCommand } = await import("./serve.ts");
+  const options = serveCommand.getOptions();
+  const keyOpt = options.find((o) => o.name === "key-file");
+  assertEquals(keyOpt !== undefined, true);
+});

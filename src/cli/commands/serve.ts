@@ -73,9 +73,21 @@ export const serveCommand = new Command()
   .option("--host <host:string>", "Host to bind to", { default: "127.0.0.1" })
   .option("--no-schedule", "Disable scheduled workflow execution")
   .option(
+    "--cert-file <path:string>",
+    "Path to PEM-encoded TLS certificate (env: SWAMP_SERVE_CERT_FILE)",
+  )
+  .option(
+    "--key-file <path:string>",
+    "Path to PEM-encoded TLS private key (env: SWAMP_SERVE_KEY_FILE)",
+  )
+  .option(
     "--webhook <spec:string>",
     "Register a webhook endpoint: <route>:<workflow>:<secret>",
     { collect: true },
+  )
+  .example(
+    "Enable TLS",
+    "swamp serve --cert-file server.crt --key-file server.key",
   )
   .example(
     "Webhook trigger",
@@ -87,6 +99,25 @@ export const serveCommand = new Command()
     const port = options.port as number;
     const host = options.host as string;
     const isJson = ctx.outputMode === "json";
+
+    const certFile = (options.certFile as string | undefined) ??
+      Deno.env.get("SWAMP_SERVE_CERT_FILE") ?? undefined;
+    const keyFile = (options.keyFile as string | undefined) ??
+      Deno.env.get("SWAMP_SERVE_KEY_FILE") ?? undefined;
+
+    if ((certFile && !keyFile) || (!certFile && keyFile)) {
+      throw new Error(
+        "Both --cert-file and --key-file must be provided together for TLS",
+      );
+    }
+
+    let cert: string | undefined;
+    let key: string | undefined;
+    if (certFile && keyFile) {
+      cert = await Deno.readTextFile(certFile);
+      key = await Deno.readTextFile(keyFile);
+    }
+    const tlsEnabled = cert !== undefined;
 
     ctx.logger.info`Initializing repository at ${repoDir}`;
 
@@ -294,24 +325,26 @@ export const serveCommand = new Command()
       }
     }
 
+    const wsScheme = tlsEnabled ? "wss" : "ws";
     const server = Deno.serve(
       {
         port,
         hostname: host,
         signal: ac.signal,
+        cert,
+        key,
         onListen({ hostname, port: listenPort }) {
           if (isJson) {
             console.log(JSON.stringify({
               status: "listening",
               host: hostname,
               port: listenPort,
-              url: `ws://${hostname}:${listenPort}`,
+              url: `${wsScheme}://${hostname}:${listenPort}`,
               schedulingEnabled: enableSchedule,
             }));
           } else {
-            logger.info("WebSocket API server listening on {host}:{port}", {
-              host: hostname,
-              port: listenPort,
+            logger.info("WebSocket API server listening on {url}", {
+              url: `${wsScheme}://${hostname}:${listenPort}`,
             });
           }
         },
