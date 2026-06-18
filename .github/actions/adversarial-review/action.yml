@@ -164,9 +164,9 @@ runs:
       env:
         GH_TOKEN: ${{ inputs.github_token }}
       run: |
-        latest_state=$(gh pr reviews ${{ github.event.pull_request.number }} \
-          --json state,author \
-          --jq '[.[] | select(.author.login == "github-actions")] | last | .state')
+        latest_state=$(gh pr view ${{ github.event.pull_request.number }} \
+          --json reviews \
+          --jq '[.reviews[] | select(.author.login == "github-actions")] | last | .state')
         if [ "$latest_state" = "CHANGES_REQUESTED" ]; then
           echo "::error::Adversarial review requested changes — blocking merge"
           exit 1
