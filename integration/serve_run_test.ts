@@ -102,6 +102,14 @@ async function withServeRepo(
       repoContext,
       datastoreConfig,
       syncService,
+      authConfig: {
+        mode: "none" as const,
+        admins: [],
+        allowedCollectives: [],
+        allowedUsers: [],
+        oauthProvider: "https://swamp-club.com",
+        groupsField: "collectives",
+      },
     };
 
     const server = Deno.serve(

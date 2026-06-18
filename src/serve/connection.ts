@@ -43,6 +43,7 @@ import { acquireModelLocks } from "../cli/repo_context.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import type { WorkerGateway } from "./worker_gateway.ts";
 import type { PolicySnapshotLoader } from "../domain/access/policy_snapshot_loader.ts";
+import type { ServeAuthConfig } from "../domain/access/serve_auth_config.ts";
 import {
   type Grant,
   GRANT_MODEL_TYPE,
@@ -173,6 +174,7 @@ export interface ConnectionContext {
    */
   workerGateway?: WorkerGateway;
   policySnapshotLoader?: PolicySnapshotLoader;
+  authConfig: ServeAuthConfig;
 }
 
 export function handleConnection(
