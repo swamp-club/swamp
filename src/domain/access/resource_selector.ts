@@ -55,6 +55,12 @@ export function parseResourceSelector(value: string): ResourceSelector {
       `Invalid resource kind "${kind}": expected "workflow", "model", "data", or "access"`,
     );
   }
+  const starIndex = pattern.indexOf("*");
+  if (starIndex !== -1 && starIndex !== pattern.length - 1) {
+    throw new Error(
+      `Invalid resource selector "${value}": wildcard * is only supported at the end of a pattern`,
+    );
+  }
   return { kind: parsed.data, pattern };
 }
 

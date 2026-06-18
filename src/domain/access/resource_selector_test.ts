@@ -99,3 +99,29 @@ Deno.test("resourceSelectorMatches: prefix wildcard does not match mid-string", 
   assertEquals(resourceSelectorMatches(selector, "@acme/reports-"), true);
   assertEquals(resourceSelectorMatches(selector, "@acme/other"), false);
 });
+
+Deno.test("parseResourceSelector: rejects wildcard in middle of pattern", () => {
+  assertThrows(
+    () => parseResourceSelector("data:@acme/*pii*"),
+    Error,
+    "wildcard * is only supported at the end of a pattern",
+  );
+});
+
+Deno.test("parseResourceSelector: rejects wildcard at start of pattern", () => {
+  assertThrows(
+    () => parseResourceSelector("workflow:*deploy"),
+    Error,
+    "wildcard * is only supported at the end of a pattern",
+  );
+});
+
+Deno.test("parseResourceSelector: allows trailing wildcard", () => {
+  const s = parseResourceSelector("workflow:@acme/*");
+  assertEquals(s, { kind: "workflow", pattern: "@acme/*" });
+});
+
+Deno.test("parseResourceSelector: allows lone wildcard", () => {
+  const s = parseResourceSelector("model:*");
+  assertEquals(s, { kind: "model", pattern: "*" });
+});

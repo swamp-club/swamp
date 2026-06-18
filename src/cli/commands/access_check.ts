@@ -43,6 +43,34 @@ import type { AccessCheckResult } from "../../presentation/renderers/access_chec
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
+function parseFieldFlags(
+  raw: string[] | undefined,
+): Record<string, unknown> {
+  if (!raw || raw.length === 0) return {};
+  const fields: Record<string, unknown> = {};
+  for (const entry of raw) {
+    const eqIndex = entry.indexOf("=");
+    if (eqIndex === -1) {
+      throw new UserError(
+        `Invalid --field value "${entry}": expected "key=value" (e.g. "tags.env=staging")`,
+      );
+    }
+    const key = entry.slice(0, eqIndex);
+    const value = entry.slice(eqIndex + 1);
+    const parts = key.split(".");
+    // deno-lint-ignore no-explicit-any
+    let target: Record<string, any> = fields;
+    for (let i = 0; i < parts.length - 1; i++) {
+      if (!(parts[i] in target) || typeof target[parts[i]] !== "object") {
+        target[parts[i]] = {};
+      }
+      target = target[parts[i]] as Record<string, unknown>;
+    }
+    target[parts[parts.length - 1]] = value;
+  }
+  return fields;
+}
+
 export const accessCheckCommand = new Command()
   .name("check")
   .description(
@@ -78,6 +106,11 @@ export const accessCheckCommand = new Command()
   .option(
     "--collectives <collectives:string>",
     "Comma-separated IdP group memberships to simulate",
+  )
+  .option(
+    "--field <field:string>",
+    "Resource field for condition evaluation (key=value, repeatable)",
+    { collect: true },
   )
   .option(
     "--server <url:string>",
@@ -160,10 +193,11 @@ export const accessCheckCommand = new Command()
       const service = new GrantBasedAccessDecisionService(snapshot);
 
       const accessPrincipal = { principal, collectives };
+      const fields = parseFieldFlags(options.field as string[] | undefined);
       const accessResource = {
         kind: resource.kind,
         name: resource.pattern,
-        fields: {},
+        fields,
       };
 
       const decisions = service.explain(

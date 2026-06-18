@@ -61,7 +61,7 @@ Deno.test("accessGrantListRenderer log: shows grant data", () => {
   } finally {
     console.log = origLog;
   }
-  assertStringIncludes(output[1], "test-uui");
+  assertStringIncludes(output[1], "test-uuid-1234-5678-abcd-ef0123456789");
   assertStringIncludes(output[1], "user:adam");
   assertStringIncludes(output[1], "allow");
   assertStringIncludes(output[1], "workflow:@acme/*");

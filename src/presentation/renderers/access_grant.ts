@@ -40,7 +40,7 @@ class LogAccessGrantListRenderer implements AccessGrantListRenderer {
       return;
     }
 
-    const idDisplay = 9;
+    const idDisplay = 36;
     const header = `${"ID".padEnd(idDisplay)}  ${"SUBJECT".padEnd(28)}  ${
       "EFFECT".padEnd(6)
     }  ${"ACTIONS".padEnd(20)}  ${"RESOURCE".padEnd(28)}  ${
@@ -49,7 +49,7 @@ class LogAccessGrantListRenderer implements AccessGrantListRenderer {
     writeOutput(header);
 
     for (const grant of grants) {
-      const id = (grant.id.slice(0, 8) + "…").padEnd(idDisplay);
+      const id = grant.id.padEnd(idDisplay);
       const subject = formatSubject(grant.subject).padEnd(28);
       const effect = grant.effect.padEnd(6);
       const actions = grant.actions.join(",").padEnd(20);

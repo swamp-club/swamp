@@ -17,12 +17,15 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import { getLogger } from "@logtape/logtape";
 import type { Grant } from "../models/access/grant_model.ts";
 import type { Group } from "../models/access/group_model.ts";
 import type { PrincipalContext } from "./principal_context.ts";
 import { principalToString } from "./principal.ts";
 import type { ResourceKind } from "./resource_selector.ts";
 import { subjectToString } from "./subject.ts";
+
+const logger = getLogger(["swamp", "domain", "access", "policy-snapshot"]);
 
 export type ConditionEvaluator = (
   condition: string,
@@ -93,12 +96,17 @@ export class PolicySnapshot {
     resourceFields: Record<string, unknown>,
     principalContext: PrincipalContext,
   ): boolean {
-    return this.#evaluateCondition(
-      condition,
-      resourceKind,
-      resourceFields,
-      principalContext,
-    );
+    try {
+      return this.#evaluateCondition(
+        condition,
+        resourceKind,
+        resourceFields,
+        principalContext,
+      );
+    } catch (error) {
+      logger.warn`Condition evaluation failed for ${condition}: ${error}`;
+      return false;
+    }
   }
 
   static empty(): PolicySnapshot {

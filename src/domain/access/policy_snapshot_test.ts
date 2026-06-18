@@ -144,6 +144,21 @@ Deno.test("PolicySnapshot.evaluateCondition: returns false when no evaluator pro
   assertEquals(result, false);
 });
 
+Deno.test("PolicySnapshot.evaluateCondition: returns false when evaluator throws", () => {
+  const throwingEvaluator: ConditionEvaluator = () => {
+    throw new Error("Unknown variable: tags");
+  };
+  const snapshot = new PolicySnapshot([], [], throwingEvaluator);
+
+  const result = snapshot.evaluateCondition(
+    'tags.env == "staging"',
+    "workflow",
+    {},
+    { sub: "adam", groups: [], collectives: [] },
+  );
+  assertEquals(result, false);
+});
+
 Deno.test("PolicySnapshot.empty: creates snapshot with no grants or groups", () => {
   const snapshot = PolicySnapshot.empty();
   assertEquals(snapshot.grantsForSubjects(["user:adam"]).length, 0);
