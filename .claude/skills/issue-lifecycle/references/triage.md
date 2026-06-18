@@ -88,6 +88,12 @@ showing the affected code was recently modified. A regression is still
 classified as `type: bug` — `isRegression` is a detail on the classification
 record.
 
+When `isRegression=true`, also provide
+`--input regressionIntroducedIn=<version>`. Check `git log` on the affected
+files and cross-reference with recent releases to identify which version
+introduced the breakage. If the introducing version cannot be determined, omit
+the field.
+
 **If you cannot classify confidently**, do NOT guess. Ask the human first, or
 call `triage` with `confidence=low` and `clarifyingQuestions` populated, then
 wait for the human's response before moving on.

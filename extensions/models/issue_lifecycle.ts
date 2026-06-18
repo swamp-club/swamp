@@ -70,7 +70,7 @@ async function readState(
 
 export const model = {
   type: "@swamp/issue-lifecycle",
-  version: "2026.05.21.1",
+  version: "2026.06.18.1",
   globalArguments: GlobalArgsSchema,
 
   upgrades: [
@@ -133,6 +133,13 @@ export const model = {
         "ship() and complete() now transition to notify instead of done. " +
         "New notify method posts a thank-you ripple and transitions to done. " +
         "Issue data now includes author field.",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+    {
+      toVersion: "2026.06.18.1",
+      description: "Add regressionIntroducedIn to triage classification — " +
+        "captures the version that introduced a regression for time-to-detection metrics. " +
+        "No globalArguments changes.",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
   ],
@@ -552,6 +559,9 @@ export const model = {
         isRegression: z.boolean().optional().describe(
           "True if this is a regression (something that previously worked). Implies type=bug.",
         ),
+        regressionIntroducedIn: z.string().optional().describe(
+          "Version that introduced the regression (e.g. '2026.06.12.1'). Only set when isRegression is true.",
+        ),
         clarifyingQuestions: z.array(z.string()).optional(),
       }),
       execute: async (
@@ -560,6 +570,7 @@ export const model = {
           confidence: "high" | "medium" | "low";
           reasoning: string;
           isRegression?: boolean;
+          regressionIntroducedIn?: string;
           clarifyingQuestions?: string[];
         },
         context: {
@@ -587,6 +598,7 @@ export const model = {
               confidence: args.confidence,
               reasoning: args.reasoning,
               isRegression: args.isRegression,
+              regressionIntroducedIn: args.regressionIntroducedIn,
               clarifyingQuestions: args.clarifyingQuestions,
               classifiedAt: new Date().toISOString(),
             },
@@ -629,6 +641,7 @@ export const model = {
               confidence: args.confidence,
               reasoning: args.reasoning,
               isRegression: args.isRegression ?? false,
+              regressionIntroducedIn: args.regressionIntroducedIn,
               clarifyingQuestions: args.clarifyingQuestions,
             },
             isVerbose: false,
