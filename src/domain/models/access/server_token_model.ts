@@ -146,6 +146,13 @@ async function redeem(
     throw new Error(`Server token '${name}' has expired`);
   }
 
+  const presentedName = args.presentedToken.slice(0, dotIndex);
+  if (presentedName !== name) {
+    throw new Error(
+      `Server token name mismatch: expected '${name}'`,
+    );
+  }
+
   const presentedSecret = args.presentedToken.slice(dotIndex + 1);
   const secret = await context.vaultService.get(
     token.vaultName,

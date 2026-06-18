@@ -43,8 +43,6 @@ import {
 import { generateOpaqueToken } from "../../remote/session_credential.ts";
 import { timingSafeEqual } from "../../crypto/timing_safe_equal.ts";
 
-export { timingSafeEqual };
-
 export const ENROLLMENT_TOKEN_MODEL_TYPE = ModelType.create(
   "swamp/enrollment-token",
 );

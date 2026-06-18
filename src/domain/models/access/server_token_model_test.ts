@@ -127,6 +127,19 @@ Deno.test("serverTokenModel: redeem with wrong secret fails", async () => {
   );
 });
 
+Deno.test("serverTokenModel: redeem rejects token with wrong name prefix", async () => {
+  const { context, plaintext } = await mintToken();
+  await assertRejects(
+    () =>
+      serverTokenModel.methods.redeem.execute(
+        { presentedToken: `wrong-name.${plaintext}` },
+        context,
+      ),
+    Error,
+    "name mismatch",
+  );
+});
+
 Deno.test("serverTokenModel: redeem with malformed token (no dot) fails", async () => {
   const { context } = await mintToken();
   await assertRejects(

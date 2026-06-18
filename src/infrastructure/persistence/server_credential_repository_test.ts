@@ -39,7 +39,7 @@ const TEST_CREDENTIAL_2: ServerCredential = {
   obtainedAt: "2026-06-18T01:00:00Z",
 };
 
-Deno.test("FileServerCredentialRepository - save and get round trip", async () => {
+Deno.test("FileServerCredentialRepository.save: round-trips credential", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
     const repo = new FileServerCredentialRepository({
@@ -59,11 +59,11 @@ Deno.test("FileServerCredentialRepository - save and get round trip", async () =
     assertEquals(loaded.displayName, TEST_CREDENTIAL.displayName);
     assertEquals(loaded.obtainedAt, TEST_CREDENTIAL.obtainedAt);
   } finally {
-    await Deno.remove(tmpDir, { recursive: true });
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
   }
 });
 
-Deno.test("FileServerCredentialRepository - get returns null when no file exists", async () => {
+Deno.test("FileServerCredentialRepository.get: returns null when no file exists", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
     const repo = new FileServerCredentialRepository({
@@ -75,11 +75,11 @@ Deno.test("FileServerCredentialRepository - get returns null when no file exists
     const loaded = await repo.get("https://nonexistent.server.com");
     assertEquals(loaded, null);
   } finally {
-    await Deno.remove(tmpDir, { recursive: true });
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
   }
 });
 
-Deno.test("FileServerCredentialRepository - remove deletes a credential", async () => {
+Deno.test("FileServerCredentialRepository.remove: deletes a credential", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
     const repo = new FileServerCredentialRepository({
@@ -94,11 +94,11 @@ Deno.test("FileServerCredentialRepository - remove deletes a credential", async 
     await repo.remove(TEST_CREDENTIAL.serverUrl);
     assertEquals(await repo.get(TEST_CREDENTIAL.serverUrl), null);
   } finally {
-    await Deno.remove(tmpDir, { recursive: true });
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
   }
 });
 
-Deno.test("FileServerCredentialRepository - remove is idempotent (no error when missing)", async () => {
+Deno.test("FileServerCredentialRepository.remove: is idempotent when missing", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
     const repo = new FileServerCredentialRepository({
@@ -109,11 +109,11 @@ Deno.test("FileServerCredentialRepository - remove is idempotent (no error when 
 
     await repo.remove("https://nonexistent.server.com");
   } finally {
-    await Deno.remove(tmpDir, { recursive: true });
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
   }
 });
 
-Deno.test("FileServerCredentialRepository - list returns all credentials", async () => {
+Deno.test("FileServerCredentialRepository.list: returns all credentials", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
     const repo = new FileServerCredentialRepository({
@@ -134,11 +134,11 @@ Deno.test("FileServerCredentialRepository - list returns all credentials", async
       "https://swamp.acme.internal:9090",
     ]);
   } finally {
-    await Deno.remove(tmpDir, { recursive: true });
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
   }
 });
 
-Deno.test("FileServerCredentialRepository - list returns empty array when no file", async () => {
+Deno.test("FileServerCredentialRepository.list: returns empty array when no file", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
     const repo = new FileServerCredentialRepository({
@@ -150,11 +150,11 @@ Deno.test("FileServerCredentialRepository - list returns empty array when no fil
     const all = await repo.list();
     assertEquals(all, []);
   } finally {
-    await Deno.remove(tmpDir, { recursive: true });
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
   }
 });
 
-Deno.test("FileServerCredentialRepository - save normalizes URL key", async () => {
+Deno.test("FileServerCredentialRepository.save: normalizes URL key", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
     const repo = new FileServerCredentialRepository({
@@ -172,11 +172,11 @@ Deno.test("FileServerCredentialRepository - save normalizes URL key", async () =
     assertExists(loaded);
     assertEquals(loaded.serverUrl, "https://swamp.acme.internal:9090");
   } finally {
-    await Deno.remove(tmpDir, { recursive: true });
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
   }
 });
 
-Deno.test("FileServerCredentialRepository - get normalizes URL for lookup", async () => {
+Deno.test("FileServerCredentialRepository.get: normalizes URL for lookup", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
     const repo = new FileServerCredentialRepository({
@@ -191,11 +191,11 @@ Deno.test("FileServerCredentialRepository - get normalizes URL for lookup", asyn
     assertExists(loaded);
     assertEquals(loaded.tokenName, TEST_CREDENTIAL.tokenName);
   } finally {
-    await Deno.remove(tmpDir, { recursive: true });
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
   }
 });
 
-Deno.test("FileServerCredentialRepository - save overwrites existing credential for same URL", async () => {
+Deno.test("FileServerCredentialRepository.save: overwrites existing credential for same URL", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
     const repo = new FileServerCredentialRepository({
@@ -217,11 +217,11 @@ Deno.test("FileServerCredentialRepository - save overwrites existing credential 
     const all = await repo.list();
     assertEquals(all.length, 1);
   } finally {
-    await Deno.remove(tmpDir, { recursive: true });
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
   }
 });
 
-Deno.test("FileServerCredentialRepository - remove does not affect other credentials", async () => {
+Deno.test("FileServerCredentialRepository.remove: does not affect other credentials", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
     const repo = new FileServerCredentialRepository({
@@ -238,11 +238,11 @@ Deno.test("FileServerCredentialRepository - remove does not affect other credent
     assertEquals(await repo.get(TEST_CREDENTIAL.serverUrl), null);
     assertExists(await repo.get(TEST_CREDENTIAL_2.serverUrl));
   } finally {
-    await Deno.remove(tmpDir, { recursive: true });
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
   }
 });
 
-Deno.test("FileServerCredentialRepository - save sets restrictive file permissions", async () => {
+Deno.test("FileServerCredentialRepository.save: sets restrictive file permissions", async () => {
   if (Deno.build.os === "windows") return;
   const tmpDir = await Deno.makeTempDir();
   try {
@@ -257,13 +257,13 @@ Deno.test("FileServerCredentialRepository - save sets restrictive file permissio
     const stat = await Deno.stat(join(tmpDir, "swamp", "servers.json"));
     assertEquals(stat.mode !== null && (stat.mode & 0o777) === 0o600, true);
   } finally {
-    await Deno.remove(tmpDir, { recursive: true });
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
   }
 });
 
 // ── SWAMP_SERVER_TOKEN override tests ─────────────────────────────────
 
-Deno.test("FileServerCredentialRepository - get returns env var credential when SWAMP_SERVER_TOKEN matches URL", async () => {
+Deno.test("FileServerCredentialRepository.get: returns env var credential when SWAMP_SERVER_TOKEN matches URL", async () => {
   const repo = new FileServerCredentialRepository({
     getServerToken: () => "env_token_123",
     getServerUrl: () => "https://swamp.example.com",
@@ -278,7 +278,7 @@ Deno.test("FileServerCredentialRepository - get returns env var credential when 
   assertEquals(loaded.principalId, "");
 });
 
-Deno.test("FileServerCredentialRepository - SWAMP_SERVER_TOKEN takes precedence over file", async () => {
+Deno.test("FileServerCredentialRepository.get: SWAMP_SERVER_TOKEN takes precedence over file", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
     const fileRepo = new FileServerCredentialRepository({
@@ -301,11 +301,11 @@ Deno.test("FileServerCredentialRepository - SWAMP_SERVER_TOKEN takes precedence 
     assertExists(loaded);
     assertEquals(loaded.token, "env_override_token");
   } finally {
-    await Deno.remove(tmpDir, { recursive: true });
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
   }
 });
 
-Deno.test("FileServerCredentialRepository - SWAMP_SERVER_TOKEN does not match different URL", async () => {
+Deno.test("FileServerCredentialRepository.get: SWAMP_SERVER_TOKEN does not match different URL", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
     const repo = new FileServerCredentialRepository({
@@ -319,11 +319,11 @@ Deno.test("FileServerCredentialRepository - SWAMP_SERVER_TOKEN does not match di
     assertExists(loaded);
     assertEquals(loaded.token, TEST_CREDENTIAL.token);
   } finally {
-    await Deno.remove(tmpDir, { recursive: true });
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
   }
 });
 
-Deno.test("FileServerCredentialRepository - SWAMP_SERVER_TOKEN without SWAMP_SERVER_URL falls through to file", async () => {
+Deno.test("FileServerCredentialRepository.get: SWAMP_SERVER_TOKEN without SWAMP_SERVER_URL falls through to file", async () => {
   const tmpDir = await Deno.makeTempDir();
   try {
     const repo = new FileServerCredentialRepository({
@@ -337,11 +337,11 @@ Deno.test("FileServerCredentialRepository - SWAMP_SERVER_TOKEN without SWAMP_SER
     assertExists(loaded);
     assertEquals(loaded.token, TEST_CREDENTIAL.token);
   } finally {
-    await Deno.remove(tmpDir, { recursive: true });
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
   }
 });
 
-Deno.test("FileServerCredentialRepository - SWAMP_SERVER_TOKEN normalizes env URL for comparison", async () => {
+Deno.test("FileServerCredentialRepository.get: SWAMP_SERVER_TOKEN normalizes env URL for comparison", async () => {
   const repo = new FileServerCredentialRepository({
     getServerToken: () => "env_token_normalized",
     getServerUrl: () => "https://SWAMP.EXAMPLE.COM:443/",
