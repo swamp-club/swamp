@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertThrows } from "@std/assert";
+import { assertEquals } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 
 // Import models barrel to trigger self-registration
@@ -111,43 +111,4 @@ Deno.test("accessGrantCommand: revoke accepts grant_id argument", async () => {
   const revokeCmd = commands.find((c) => c.getName() === "revoke")!;
   const args = revokeCmd.getArguments();
   assertEquals(args.length, 1);
-});
-
-Deno.test("parseResourceFlag: parses workflow resource", async () => {
-  const { parseResourceFlag } = await import("./access_helpers.ts");
-  const result = parseResourceFlag("workflow:@acme/*");
-  assertEquals(result.kind, "workflow");
-  assertEquals(result.pattern, "@acme/*");
-});
-
-Deno.test("parseResourceFlag: parses model resource", async () => {
-  const { parseResourceFlag } = await import("./access_helpers.ts");
-  const result = parseResourceFlag("model:@acme/deploy");
-  assertEquals(result.kind, "model");
-  assertEquals(result.pattern, "@acme/deploy");
-});
-
-Deno.test("parseResourceFlag: preserves colons in pattern", async () => {
-  const { parseResourceFlag } = await import("./access_helpers.ts");
-  const result = parseResourceFlag("data:ns:name");
-  assertEquals(result.kind, "data");
-  assertEquals(result.pattern, "ns:name");
-});
-
-Deno.test("parseResourceFlag: throws on missing colon", async () => {
-  const { parseResourceFlag } = await import("./access_helpers.ts");
-  assertThrows(
-    () => parseResourceFlag("invalid"),
-    Error,
-    "expected format",
-  );
-});
-
-Deno.test("parseResourceFlag: throws on invalid kind", async () => {
-  const { parseResourceFlag } = await import("./access_helpers.ts");
-  assertThrows(
-    () => parseResourceFlag("unknown:pattern"),
-    Error,
-    "Invalid resource kind",
-  );
 });

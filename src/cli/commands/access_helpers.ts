@@ -35,37 +35,21 @@ import { DataQueryService } from "../../domain/data/data_query_service.ts";
 import type { RepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
 import type { ModelMethodRunDeps } from "../../libswamp/mod.ts";
 import { UserError } from "../../domain/errors.ts";
-import type { ResourceKind } from "../../domain/access/resource_selector.ts";
+import {
+  parseResourceSelector,
+  type ResourceSelector,
+} from "../../domain/access/resource_selector.ts";
 
 export const LOCAL_PRINCIPAL = "user:local";
 
-export type ValidResourceKind = ResourceKind;
-
-export function parseResourceFlag(
-  value: string,
-): { kind: ValidResourceKind; pattern: string } {
-  const colonIdx = value.indexOf(":");
-  if (colonIdx === -1) {
+export function parseResourceFlag(value: string): ResourceSelector {
+  try {
+    return parseResourceSelector(value);
+  } catch (error) {
     throw new UserError(
-      `Invalid resource selector "${value}": expected format "kind:pattern" (e.g. "workflow:@acme/*")`,
+      error instanceof Error ? error.message : String(error),
     );
   }
-  const kind = value.substring(0, colonIdx);
-  const pattern = value.substring(colonIdx + 1);
-  const validKinds: ValidResourceKind[] = [
-    "workflow",
-    "model",
-    "data",
-    "access",
-  ];
-  if (!validKinds.includes(kind as ValidResourceKind)) {
-    throw new UserError(
-      `Invalid resource kind "${kind}": must be one of ${
-        validKinds.join(", ")
-      }`,
-    );
-  }
-  return { kind: kind as ValidResourceKind, pattern };
 }
 
 export function parseActionsFlag(value: string): string[] {
