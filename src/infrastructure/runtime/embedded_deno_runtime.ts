@@ -107,7 +107,7 @@ export class EmbeddedDenoRuntime implements DenoRuntime {
       // Version marker missing or binary missing — need to extract
     }
 
-    logger.info`Extracting embedded deno ${embeddedVersion} to ${swampDir}`;
+    logger.debug`Extracting embedded deno ${embeddedVersion} to ${swampDir}`;
 
     // Ensure target directory exists
     await Deno.mkdir(swampDir, { recursive: true });
@@ -131,7 +131,7 @@ export class EmbeddedDenoRuntime implements DenoRuntime {
     await Deno.writeTextFile(versionMarker, embeddedVersion.value);
 
     logger
-      .info`Extracted deno ${embeddedVersion} (${embeddedBinary.length} bytes)`;
+      .debug`Extracted deno ${embeddedVersion} (${embeddedBinary.length} bytes)`;
 
     if (await this.healthCheck(targetBinary)) {
       return targetBinary;
