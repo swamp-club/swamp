@@ -41,6 +41,9 @@ import {
   type ModelDefinition,
 } from "../model.ts";
 import { generateOpaqueToken } from "../../remote/session_credential.ts";
+import { timingSafeEqual } from "../../crypto/timing_safe_equal.ts";
+
+export { timingSafeEqual };
 
 export const ENROLLMENT_TOKEN_MODEL_TYPE = ModelType.create(
   "swamp/enrollment-token",
@@ -77,23 +80,6 @@ const TOKEN_DATA_NAME = "token-main";
 /** Vault key under which a token's plaintext is stored. */
 export function tokenSecretKey(tokenName: string): string {
   return `worker-token-${tokenName}`;
-}
-
-/**
- * Constant-time string comparison so a presented token cannot be probed
- * byte-by-byte through timing.
- */
-export function timingSafeEqual(a: string, b: string): boolean {
-  const encoder = new TextEncoder();
-  const aBytes = encoder.encode(a);
-  const bBytes = encoder.encode(b);
-  let diff = aBytes.length ^ bBytes.length;
-  const length = Math.max(aBytes.length, bBytes.length);
-  for (let i = 0; i < length; i++) {
-    diff |= (aBytes[i % Math.max(aBytes.length, 1)] ?? 0) ^
-      (bBytes[i % Math.max(bBytes.length, 1)] ?? 0);
-  }
-  return diff === 0;
 }
 
 async function readToken(context: MethodContext): Promise<EnrollmentToken> {

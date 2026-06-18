@@ -39,10 +39,11 @@ import "./worker/worker_model.ts";
 import "./worker/enrollment_token_model.ts";
 import "./worker/step_lease_model.ts";
 
-// Access control models (grants, groups) — see src/domain/access/ for
-// the bounded context's shared value objects.
+// Access control models (grants, groups, server tokens) — see
+// src/domain/access/ for the bounded context's shared value objects.
 import "./access/grant_model.ts";
 import "./access/group_model.ts";
+import "./access/server_token_model.ts";
 
 // Import all of the AWS models - the models in this file are created by the clover pipeline
 import "./aws/aws_models.ts";

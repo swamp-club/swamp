@@ -24,6 +24,7 @@ import { CatalogStore } from "../../../infrastructure/persistence/catalog_store.
 import { Data } from "../../data/mod.ts";
 import { GRANT_MODEL_TYPE } from "./grant_model.ts";
 import { GROUP_MODEL_TYPE } from "./group_model.ts";
+import { SERVER_TOKEN_MODEL_TYPE } from "./server_token_model.ts";
 import { OwnershipValidationError } from "../../data/repositories.ts";
 
 const modelMethodOwner = {
@@ -151,6 +152,42 @@ Deno.test("ownership: different model-method ownerRef on same model is rejected"
           GRANT_MODEL_TYPE,
           "test-grant",
           otherMethodData,
+          content,
+        ),
+      OwnershipValidationError,
+      "does not match",
+    );
+  });
+});
+
+Deno.test("ownership: generic write to server-token data owned by model-method is rejected", async () => {
+  const serverTokenMethodOwner = {
+    ownerType: "model-method" as const,
+    ownerRef: "swamp/server-token:mint",
+  };
+  await withTempRepo(async (repo) => {
+    const modelData = Data.create({
+      name: "token-main",
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 20,
+      tags: { type: "resource", specName: "token" },
+      ownerDefinition: serverTokenMethodOwner,
+    });
+    await repo.save(
+      SERVER_TOKEN_MODEL_TYPE,
+      "test-server-token",
+      modelData,
+      content,
+    );
+
+    const intruderData = makeGenericData("token-main");
+    await assertRejects(
+      () =>
+        repo.save(
+          SERVER_TOKEN_MODEL_TYPE,
+          "test-server-token",
+          intruderData,
           content,
         ),
       OwnershipValidationError,
