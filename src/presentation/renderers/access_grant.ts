@@ -19,6 +19,7 @@
 
 import type { Grant } from "../../domain/models/access/grant_model.ts";
 import type { OutputMode } from "../output/output.ts";
+import { writeOutput } from "../../infrastructure/logging/logger.ts";
 
 export interface AccessGrantListRenderer {
   render(grants: Grant[]): void;
@@ -35,7 +36,7 @@ function formatResource(resource: Grant["resource"]): string {
 class LogAccessGrantListRenderer implements AccessGrantListRenderer {
   render(grants: Grant[]): void {
     if (grants.length === 0) {
-      console.log("No active grants found.");
+      writeOutput("No active grants found.");
       return;
     }
 
@@ -45,17 +46,17 @@ class LogAccessGrantListRenderer implements AccessGrantListRenderer {
     }  ${"ACTIONS".padEnd(20)}  ${"RESOURCE".padEnd(28)}  ${
       "CONDITION".padEnd(20)
     }  SOURCE`;
-    console.log(header);
+    writeOutput(header);
 
     for (const grant of grants) {
-      const id = grant.id.slice(0, idWidth);
+      const id = grant.id.slice(0, idWidth) + "…";
       const subject = formatSubject(grant.subject).padEnd(28);
       const effect = grant.effect.padEnd(6);
       const actions = grant.actions.join(",").padEnd(20);
       const resource = formatResource(grant.resource).padEnd(28);
       const condition = (grant.condition ?? "").padEnd(20);
       const source = grant.source;
-      console.log(
+      writeOutput(
         `${id}  ${subject}  ${effect}  ${actions}  ${resource}  ${condition}  ${source}`,
       );
     }
@@ -64,7 +65,7 @@ class LogAccessGrantListRenderer implements AccessGrantListRenderer {
 
 class JsonAccessGrantListRenderer implements AccessGrantListRenderer {
   render(grants: Grant[]): void {
-    console.log(JSON.stringify(grants, null, 2));
+    writeOutput(JSON.stringify(grants, null, 2));
   }
 }
 

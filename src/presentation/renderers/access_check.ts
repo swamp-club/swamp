@@ -19,6 +19,7 @@
 
 import type { AccessDecision } from "../../domain/access/access_decision_service.ts";
 import type { OutputMode } from "../output/output.ts";
+import { writeOutput } from "../../infrastructure/logging/logger.ts";
 
 export interface AccessCheckResult {
   subject: string;
@@ -39,7 +40,7 @@ function formatSubject(subject: AccessDecision["subject"]): string {
 class LogAccessCheckRenderer implements AccessCheckRenderer {
   render(result: AccessCheckResult): void {
     if (result.decisions.length === 0) {
-      console.log(
+      writeOutput(
         `DENY (implicit) — no matching grants for ${result.subject} ${result.action} ${result.resource}`,
       );
       return;
@@ -49,19 +50,19 @@ class LogAccessCheckRenderer implements AccessCheckRenderer {
     const effect = firstDecision.effect.toUpperCase();
     const via = `grant ${firstDecision.grantId.slice(0, 8)}…`;
     const subject = formatSubject(firstDecision.subject);
-    console.log(
+    writeOutput(
       `${effect} via ${via} (${subject} → ${result.action} → ${result.resource})`,
     );
 
     if (result.decisions.length > 1) {
-      console.log();
-      console.log("All matching grants:");
+      writeOutput("");
+      writeOutput("All matching grants:");
       for (const decision of result.decisions) {
         const e = decision.effect.toUpperCase().padEnd(5);
         const g = decision.grantId.slice(0, 8);
         const s = formatSubject(decision.subject);
         const cond = decision.condition ? ` [when: ${decision.condition}]` : "";
-        console.log(`  ${e}  ${g}…  via ${s}${cond}`);
+        writeOutput(`  ${e}  ${g}…  via ${s}${cond}`);
       }
     }
   }
@@ -72,7 +73,7 @@ class JsonAccessCheckRenderer implements AccessCheckRenderer {
     const finalEffect = result.decisions.length > 0
       ? result.decisions[0].effect
       : "deny";
-    console.log(
+    writeOutput(
       JSON.stringify(
         {
           subject: result.subject,

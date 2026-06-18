@@ -31,30 +31,15 @@ import {
 } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
-import { resolveModelType } from "../../domain/extensions/extension_auto_resolver.ts";
-import { getAutoResolver } from "../auto_resolver_context.ts";
-import { DefaultMethodExecutionService } from "../../domain/models/method_execution_service.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
 import { reportRegistry } from "../../domain/reports/report_registry.ts";
-import { VaultService } from "../../domain/vaults/vault_service.ts";
-import { ExpressionEvaluationService } from "../../domain/expressions/expression_evaluation_service.ts";
-import { runFileSink } from "../../infrastructure/logging/logger.ts";
 import { GIT_SHA } from "./version.ts";
-import { join } from "@std/path";
-import {
-  SWAMP_SUBDIRS,
-  swampPath,
-} from "../../infrastructure/persistence/paths.ts";
-import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
-import { SecretRedactor } from "../../domain/secrets/mod.ts";
-import { DataQueryService } from "../../domain/data/data_query_service.ts";
 import type { RepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
 import {
   consumeStream,
   createLibSwampContext,
   modelMethodRun,
-  type ModelMethodRunDeps,
 } from "../../libswamp/mod.ts";
 import { createModelMethodRunRenderer } from "../../presentation/renderers/model_method_run.ts";
 import {
@@ -64,93 +49,10 @@ import {
 } from "../../domain/models/access/group_model.ts";
 import type { DataRecord } from "../../domain/data/data_record.ts";
 import { createAccessGroupListRenderer } from "../../presentation/renderers/access_group.ts";
+import { buildModelMethodRunDeps, LOCAL_PRINCIPAL } from "./access_helpers.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
-
-const LOCAL_PRINCIPAL = "user:local";
-
-function buildModelMethodRunDeps(
-  repoDir: string,
-  repoContext: RepositoryContext,
-  isDirectExecution: boolean,
-): ModelMethodRunDeps {
-  return {
-    repoDir,
-    lookupDefinition: (idOrName) =>
-      findDefinitionByIdOrName(repoContext.definitionRepo, idOrName),
-    getModelDef: (type) => resolveModelType(type, getAutoResolver()),
-    createEvaluationService: () => {
-      const dqs = new DataQueryService(
-        repoContext.catalogStore,
-        repoContext.unifiedDataRepo,
-      );
-      return new ExpressionEvaluationService(
-        repoContext.definitionRepo,
-        repoDir,
-        {
-          dataRepo: repoContext.unifiedDataRepo,
-          dataQueryService: dqs,
-        },
-      );
-    },
-    loadEvaluatedDefinition: (type, name) =>
-      repoContext.evaluatedDefinitionRepo.findByName(type, name),
-    saveEvaluatedDefinition: (type, definition) =>
-      repoContext.evaluatedDefinitionRepo.save(type, definition),
-    createExecutionService: () => new DefaultMethodExecutionService(),
-    createVaultService: () => VaultService.fromRepository(repoDir),
-    dataRepo: repoContext.unifiedDataRepo,
-    definitionRepo: repoContext.definitionRepo,
-    outputRepo: repoContext.outputRepo,
-    dataQueryService: new DataQueryService(
-      repoContext.catalogStore,
-      repoContext.unifiedDataRepo,
-    ),
-    createRunLog: async (modelType, method, definitionId) => {
-      const redactor = new SecretRedactor();
-      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-      const logFilePath = join(
-        swampPath(repoDir, SWAMP_SUBDIRS.outputs),
-        modelType.normalized,
-        method,
-        `${definitionId}-${timestamp}.log`,
-      );
-      const logCategory: string[] = [];
-      await runFileSink.register(
-        logCategory,
-        logFilePath,
-        redactor,
-        swampPath(repoDir),
-      );
-      return {
-        logFilePath,
-        redactor,
-        cleanup: () => runFileSink.unregister(logCategory),
-      };
-    },
-    createAndSaveDefinition: isDirectExecution
-      ? async (type, definition) => {
-        const autoDefRepo = new YamlDefinitionRepository(
-          repoDir,
-          undefined,
-          swampPath(repoDir, SWAMP_SUBDIRS.autoDefinitions),
-          false,
-        );
-        await autoDefRepo.save(type, definition);
-      }
-      : undefined,
-    getDefinitionPath: isDirectExecution
-      ? (type, id) => {
-        return join(
-          swampPath(repoDir, SWAMP_SUBDIRS.autoDefinitions),
-          type.toDirectoryPath(),
-          `${id}.yaml`,
-        );
-      }
-      : undefined,
-  };
-}
 
 async function queryGroups(
   repoContext: RepositoryContext,

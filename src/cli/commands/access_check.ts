@@ -31,7 +31,7 @@ import { type Action, ActionSchema } from "../../domain/access/action.ts";
 import { PolicySnapshotLoader } from "../../domain/access/policy_snapshot_loader.ts";
 import { GrantBasedAccessDecisionService } from "../../domain/access/grant_based_access_decision_service.ts";
 import { EventBus } from "../../domain/events/event_bus.ts";
-import { parseResourceFlag } from "./access_grant.ts";
+import { parseResourceFlag } from "./access_helpers.ts";
 import { createAccessCheckRenderer } from "../../presentation/renderers/access_check.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -112,7 +112,7 @@ export const accessCheckCommand = new Command()
 
       const accessPrincipal = { principal, collectives };
       const accessResource = {
-        kind: resource.kind as "workflow" | "model" | "data" | "access",
+        kind: resource.kind,
         name: resource.pattern,
         fields: {},
       };
@@ -123,14 +123,20 @@ export const accessCheckCommand = new Command()
         accessResource,
       );
 
-      const renderer = createAccessCheckRenderer(ctx.outputMode);
-      renderer.render({
+      const result = {
         subject: options.subject as string,
         action: options.action as string,
         resource: options.on as string,
         collectives,
         decisions,
-      });
+      };
+
+      const renderer = createAccessCheckRenderer(ctx.outputMode);
+      renderer.render(result);
+
+      const isDenied = decisions.length === 0 ||
+        decisions[0].effect === "deny";
+      if (isDenied) Deno.exitCode = 1;
     } finally {
       loader.dispose();
     }

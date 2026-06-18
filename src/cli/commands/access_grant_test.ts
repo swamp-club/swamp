@@ -114,28 +114,28 @@ Deno.test("accessGrantCommand: revoke accepts grant_id argument", async () => {
 });
 
 Deno.test("parseResourceFlag: parses workflow resource", async () => {
-  const { parseResourceFlag } = await import("./access_grant.ts");
+  const { parseResourceFlag } = await import("./access_helpers.ts");
   const result = parseResourceFlag("workflow:@acme/*");
   assertEquals(result.kind, "workflow");
   assertEquals(result.pattern, "@acme/*");
 });
 
 Deno.test("parseResourceFlag: parses model resource", async () => {
-  const { parseResourceFlag } = await import("./access_grant.ts");
+  const { parseResourceFlag } = await import("./access_helpers.ts");
   const result = parseResourceFlag("model:@acme/deploy");
   assertEquals(result.kind, "model");
   assertEquals(result.pattern, "@acme/deploy");
 });
 
 Deno.test("parseResourceFlag: preserves colons in pattern", async () => {
-  const { parseResourceFlag } = await import("./access_grant.ts");
+  const { parseResourceFlag } = await import("./access_helpers.ts");
   const result = parseResourceFlag("data:ns:name");
   assertEquals(result.kind, "data");
   assertEquals(result.pattern, "ns:name");
 });
 
 Deno.test("parseResourceFlag: throws on missing colon", async () => {
-  const { parseResourceFlag } = await import("./access_grant.ts");
+  const { parseResourceFlag } = await import("./access_helpers.ts");
   assertThrows(
     () => parseResourceFlag("invalid"),
     Error,
@@ -144,7 +144,7 @@ Deno.test("parseResourceFlag: throws on missing colon", async () => {
 });
 
 Deno.test("parseResourceFlag: throws on invalid kind", async () => {
-  const { parseResourceFlag } = await import("./access_grant.ts");
+  const { parseResourceFlag } = await import("./access_helpers.ts");
   assertThrows(
     () => parseResourceFlag("unknown:pattern"),
     Error,
