@@ -406,6 +406,15 @@ function authorizeOrReject(
 
   if (decision && decision.effect === "allow") return true;
 
+  if (!decision) {
+    const adminDecision = service.decide(
+      { principal, collectives: [] },
+      "admin",
+      { kind: "access", name: "*", fields: {} },
+    );
+    if (adminDecision && adminDecision.effect === "allow") return true;
+  }
+
   const principalStr = principalToString(principal);
   if (decision && decision.effect === "deny") {
     sendError(

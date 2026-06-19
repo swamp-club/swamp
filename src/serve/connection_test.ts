@@ -706,7 +706,112 @@ Deno.test("authorizeOrReject: access.group.list rejected without read grant", ()
   assertStringIncludes(errorMessage, "access:group");
 });
 
-// ── Authorization: explicit deny ──────────────────────────────────────────
+// ── Authorization: admin on access:* implies other actions ────────────────
+
+Deno.test("authorizeOrReject: admin on access:* allows grant list without explicit read", () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const grant = makeGrant({
+    subject: { kind: "user", name: "adam" },
+    actions: ["admin"],
+    resource: { kind: "access", pattern: "*" },
+  });
+  const ctx = makeCtx(modeTokenConfig, [grant]);
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({
+      type: "access.grant.list",
+      id: "auth-admin-1",
+    })),
+    testPrincipal,
+  );
+
+  for (const sent of mock.sent) {
+    const msg = JSON.parse(sent);
+    if (msg.type === "error") {
+      assertEquals(
+        (msg.error as Record<string, unknown>).code !== "unauthorized",
+        true,
+      );
+    }
+  }
+});
+
+Deno.test("authorizeOrReject: admin on access:* allows group list without explicit read", () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const grant = makeGrant({
+    subject: { kind: "user", name: "adam" },
+    actions: ["admin"],
+    resource: { kind: "access", pattern: "*" },
+  });
+  const ctx = makeCtx(modeTokenConfig, [grant]);
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({
+      type: "access.group.list",
+      id: "auth-admin-2",
+    })),
+    testPrincipal,
+  );
+
+  for (const sent of mock.sent) {
+    const msg = JSON.parse(sent);
+    if (msg.type === "error") {
+      assertEquals(
+        (msg.error as Record<string, unknown>).code !== "unauthorized",
+        true,
+      );
+    }
+  }
+});
+
+// ── Authorization: explicit deny beats admin fallback ─────────────────────
+
+Deno.test("authorizeOrReject: explicit deny beats admin on access:*", () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const grants: Grant[] = [
+    makeGrant({
+      id: "deny-read",
+      subject: { kind: "user", name: "adam" },
+      effect: "deny",
+      actions: ["read"],
+      resource: { kind: "access", pattern: "grant" },
+    }),
+    makeGrant({
+      id: "admin-all",
+      subject: { kind: "user", name: "adam" },
+      actions: ["admin"],
+      resource: { kind: "access", pattern: "*" },
+    }),
+  ];
+  const ctx = makeCtx(modeTokenConfig, grants);
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({
+      type: "access.grant.list",
+      id: "auth-deny-admin-1",
+    })),
+    testPrincipal,
+  );
+
+  assertEquals(mock.sent.length, 1);
+  const msg = parseSent(mock);
+  assertEquals(msg.type, "error");
+  assertEquals((msg.error as Record<string, unknown>).code, "unauthorized");
+  const errorMessage = String((msg.error as Record<string, unknown>).message);
+  assertStringIncludes(errorMessage, "explicitly denied");
+});
 
 Deno.test("authorizeOrReject: explicit deny returns denied error frame", () => {
   const mock = createMockSocket();
