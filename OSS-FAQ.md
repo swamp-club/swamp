@@ -62,7 +62,8 @@ Swamp Club, Extensions, etc.
 # I don't like this!
 
 That's okay! If you don't like any of this, there is a clear solution: fork the
-software and go your own way. We look forward to collaborating with you on how swamp evolves.
+software and go your own way. We look forward to collaborating with you on how
+swamp evolves.
 
 # Can you explain how this all works in more detail?
 
@@ -154,4 +155,5 @@ To summarize how things work:
   Club brand, protected by those trademarks.
 - Elder Swamp Club, Inc. open-sources the software used in their product and
   refers to it as the swamp software.
-- Elder Swamp Club, Inc. makes a commercial distribution of the open source software, named Swamp.
+- Elder Swamp Club, Inc. makes a commercial distribution of the open source
+  software, named Swamp.
