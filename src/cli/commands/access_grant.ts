@@ -578,6 +578,7 @@ const accessGrantRevokeCommand = new Command()
 
 export const accessGrantCommand = new Command()
   .name("grant")
+  .alias("policy")
   .description("Manage authorization grants")
   .action(groupCommandAction)
   .command("create", accessGrantCreateCommand)

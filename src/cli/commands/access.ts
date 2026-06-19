@@ -40,7 +40,9 @@ export const accessTokenCommand = new Command()
 
 export const accessCommand = new Command()
   .name("access")
-  .description("Manage authorization grants, groups, and access checks")
+  .description(
+    "Manage authorization policies (grants), groups, and access checks",
+  )
   .error(unknownCommandErrorHandler)
   .action(groupCommandAction)
   .command("token", accessTokenCommand)

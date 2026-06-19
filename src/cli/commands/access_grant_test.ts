@@ -31,6 +31,11 @@ Deno.test("accessGrantCommand: module loads", async () => {
   assertEquals(accessGrantCommand.getName(), "grant");
 });
 
+Deno.test("accessGrantCommand: has policy alias", async () => {
+  const { accessGrantCommand } = await import("./access_grant.ts");
+  assertEquals(accessGrantCommand.getAliases().includes("policy"), true);
+});
+
 Deno.test("accessGrantCommand: has correct description", async () => {
   const { accessGrantCommand } = await import("./access_grant.ts");
   assertEquals(
