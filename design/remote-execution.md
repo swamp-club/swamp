@@ -141,7 +141,11 @@ run's event stream completes — so clients can distinguish "run ended" from
 `swamp workflow run --server <url>` / `swamp model ... method run --server`:
 repo-less, streaming the run's events through the same renderers as a local
 run (the wire codec is lossless for run events; `deserializeEvent` in
-`src/serve/serializer.ts` is the anti-corruption seam).
+`src/serve/serializer.ts` is the anti-corruption seam). The `--server` flag
+on all remote commands falls back to the `SWAMP_SERVE_URL` env var when not
+provided, so `export SWAMP_SERVE_URL=wss://demo.swamp-club.ai` avoids
+repeating the URL on every invocation. The explicit flag takes precedence when
+both are set.
 
 When `--auth-mode token` is active, the server validates a `?token=name.secret`
 query parameter at WebSocket upgrade time via the `swamp/server-token` model's

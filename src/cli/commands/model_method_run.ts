@@ -62,7 +62,11 @@ import {
   type ModelMethodRunEvent,
 } from "../../libswamp/mod.ts";
 import { createModelMethodRunRenderer } from "../../presentation/renderers/model_method_run.ts";
-import { resolveServerToken, runModelMethodOverServer } from "../remote_run.ts";
+import {
+  resolveServerToken,
+  resolveServeUrl,
+  runModelMethodOverServer,
+} from "../remote_run.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
 import { parseTimeout } from "../duration_parser.ts";
 
@@ -162,7 +166,7 @@ export const modelMethodRunCommand = new Command()
   )
   .option(
     "--server <url:string>",
-    "Run through a 'swamp serve' server (ws:// or http://) instead of locally; no local repo required.",
+    "Run through a 'swamp serve' server (ws:// or http://) instead of locally; no local repo required (env: SWAMP_SERVE_URL).",
   )
   .option(
     "--token <token:string>",
@@ -176,10 +180,14 @@ export const modelMethodRunCommand = new Command()
       methodName: string,
       definitionNameArg?: string,
     ) {
-      if (options.server) {
-        await runMethodViaServer(options, modelOrType, methodName, {
-          isDirectExecution: modelOrType.startsWith("@"),
-        });
+      const server = resolveServeUrl(options.server as string | undefined);
+      if (server) {
+        await runMethodViaServer(
+          { ...options, server },
+          modelOrType,
+          methodName,
+          { isDirectExecution: modelOrType.startsWith("@") },
+        );
         return;
       }
       const isDirectExecution = modelOrType.startsWith("@");

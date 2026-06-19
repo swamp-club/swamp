@@ -60,6 +60,7 @@ import type { ModelMethodRunEvent } from "../../libswamp/mod.ts";
 import {
   requestServerResponse,
   resolveServerToken,
+  resolveServeUrl,
   runModelMethodOverServer,
 } from "../../cli/remote_run.ts";
 import type { AccessGrantListResponse } from "../../serve/protocol.ts";
@@ -119,7 +120,7 @@ const accessGrantCreateCommand = new Command()
   .option("--when <condition:string>", "Optional CEL condition")
   .option(
     "--server <url:string>",
-    "Run through a 'swamp serve' server instead of locally",
+    "Run through a 'swamp serve' server instead of locally (env: SWAMP_SERVE_URL)",
   )
   .option(
     "--token <token:string>",
@@ -133,8 +134,10 @@ const accessGrantCreateCommand = new Command()
       throw new UserError("Cannot specify both --allow and --deny");
     }
 
+    const server = resolveServeUrl(options.server as string | undefined);
+
     validateServerRepoExclusivity(
-      options.server as string | undefined,
+      server,
       options.repoDir as string | undefined,
     );
 
@@ -146,14 +149,14 @@ const accessGrantCreateCommand = new Command()
 
     const instanceName = `grant-${crypto.randomUUID().slice(0, 8)}`;
 
-    if (options.server) {
+    if (server) {
       const ctx = createContext(options as GlobalOptions, [
         "access",
         "grant",
         "create",
       ]);
       const token = await resolveServerToken(
-        options.server as string,
+        server,
         options.token as string | undefined,
       );
       const renderer = createModelMethodRunRenderer(ctx.outputMode, {
@@ -162,7 +165,7 @@ const accessGrantCreateCommand = new Command()
       });
       await consumeStream(
         runModelMethodOverServer({
-          server: options.server as string,
+          server,
           token,
           payload: {
             modelIdOrName: `@${GRANT_MODEL_TYPE.normalized}`,
@@ -304,30 +307,32 @@ const accessGrantListCommand = new Command()
   .option("--on <resource:string>", "Filter by resource selector (exact match)")
   .option(
     "--server <url:string>",
-    "List grants on a 'swamp serve' server instead of locally",
+    "List grants on a 'swamp serve' server instead of locally (env: SWAMP_SERVE_URL)",
   )
   .option(
     "--token <token:string>",
     "Server token (falls back to stored credential)",
   )
   .action(async function (options: AnyOptions) {
+    const server = resolveServeUrl(options.server as string | undefined);
+
     validateServerRepoExclusivity(
-      options.server as string | undefined,
+      server,
       options.repoDir as string | undefined,
     );
 
-    if (options.server) {
+    if (server) {
       const ctx = createContext(options as GlobalOptions, [
         "access",
         "grant",
         "list",
       ]);
       const token = await resolveServerToken(
-        options.server as string,
+        server,
         options.token as string | undefined,
       );
       const response = await requestServerResponse<AccessGrantListResponse>(
-        { server: options.server as string, ...(token ? { token } : {}) },
+        { server, ...(token ? { token } : {}) },
         {
           type: "access.grant.list",
           payload: {
@@ -396,30 +401,32 @@ const accessGrantRevokeCommand = new Command()
   )
   .option(
     "--server <url:string>",
-    "Revoke a grant on a 'swamp serve' server instead of locally",
+    "Revoke a grant on a 'swamp serve' server instead of locally (env: SWAMP_SERVE_URL)",
   )
   .option(
     "--token <token:string>",
     "Server token (falls back to stored credential)",
   )
   .action(async function (options: AnyOptions, grantId: string) {
+    const server = resolveServeUrl(options.server as string | undefined);
+
     validateServerRepoExclusivity(
-      options.server as string | undefined,
+      server,
       options.repoDir as string | undefined,
     );
 
-    if (options.server) {
+    if (server) {
       const ctx = createContext(options as GlobalOptions, [
         "access",
         "grant",
         "revoke",
       ]);
       const token = await resolveServerToken(
-        options.server as string,
+        server,
         options.token as string | undefined,
       );
       const response = await requestServerResponse<AccessGrantListResponse>(
-        { server: options.server as string, ...(token ? { token } : {}) },
+        { server, ...(token ? { token } : {}) },
         { type: "access.grant.list" },
       );
       const allGrants: { grant: Grant; instanceName: string }[] = [];
@@ -453,7 +460,7 @@ const accessGrantRevokeCommand = new Command()
       });
       await consumeStream(
         runModelMethodOverServer({
-          server: options.server as string,
+          server,
           token,
           payload: {
             modelIdOrName: match.instanceName,

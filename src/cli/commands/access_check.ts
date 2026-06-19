@@ -40,6 +40,7 @@ import { createAccessCheckRenderer } from "../../presentation/renderers/access_c
 import {
   requestServerResponse,
   resolveServerToken,
+  resolveServeUrl,
 } from "../../cli/remote_run.ts";
 import type { AccessCheckResponse } from "../../serve/protocol.ts";
 import type { AccessCheckResult } from "../../presentation/renderers/access_check.ts";
@@ -94,19 +95,21 @@ export const accessCheckCommand = new Command()
   )
   .option(
     "--server <url:string>",
-    "Check access on a 'swamp serve' server instead of locally",
+    "Check access on a 'swamp serve' server instead of locally (env: SWAMP_SERVE_URL)",
   )
   .option(
     "--token <token:string>",
     "Server token (falls back to stored credential)",
   )
   .action(async function (options: AnyOptions) {
+    const server = resolveServeUrl(options.server as string | undefined);
+
     validateServerRepoExclusivity(
-      options.server as string | undefined,
+      server,
       options.repoDir as string | undefined,
     );
 
-    if (options.server) {
+    if (server) {
       if (options.field && (options.field as string[]).length > 0) {
         throw new UserError(
           "--field is not supported with --server: the server evaluates conditions against its own resource context",
@@ -124,12 +127,12 @@ export const accessCheckCommand = new Command()
         : [];
 
       const token = await resolveServerToken(
-        options.server as string,
+        server,
         options.token as string | undefined,
       );
 
       const response = await requestServerResponse<AccessCheckResponse>(
-        { server: options.server as string, ...(token ? { token } : {}) },
+        { server, ...(token ? { token } : {}) },
         {
           type: "access.check",
           payload: {
