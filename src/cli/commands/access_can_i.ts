@@ -22,7 +22,10 @@ import { createContext, type GlobalOptions } from "../context.ts";
 import { UserError } from "../../domain/errors.ts";
 import { requestServerResponse } from "../../cli/remote_run.ts";
 import type { AccessCanIResponse } from "../../serve/protocol.ts";
-import { createAccessCanIRenderer } from "../../presentation/renderers/access_can_i.ts";
+import {
+  type AccessCanIResult,
+  createAccessCanIRenderer,
+} from "../../presentation/renderers/access_can_i.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -93,12 +96,24 @@ export const accessCanICommand = new Command()
       },
     );
 
-    const renderer = createAccessCanIRenderer(ctx.outputMode);
-    renderer.render(response);
+    const result: AccessCanIResult = {
+      ...response,
+      ...(options.action && options.on
+        ? {
+          query: {
+            action: options.action as string,
+            resource: options.on as string,
+          },
+        }
+        : {}),
+    };
 
-    if (options.action && options.on) {
-      const isDenied = response.decisions.length === 0 ||
-        response.decisions[0].effect !== "allow";
+    const renderer = createAccessCanIRenderer(ctx.outputMode);
+    renderer.render(result);
+
+    if (result.query) {
+      const isDenied = result.decisions.length === 0 ||
+        result.decisions[0].effect === "deny";
       if (isDenied) Deno.exitCode = 1;
     }
   });

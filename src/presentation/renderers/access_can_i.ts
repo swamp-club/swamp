@@ -19,11 +19,20 @@
 
 import type { OutputMode } from "../output/output.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
-import type { AccessCanIDecision } from "../../serve/protocol.ts";
+
+export interface CanIDecision {
+  action: string;
+  resource: string;
+  effect: string;
+  grantId: string;
+  via: string;
+  condition?: string;
+}
 
 export interface AccessCanIResult {
   principal: string;
-  decisions: AccessCanIDecision[];
+  decisions: CanIDecision[];
+  query?: { action: string; resource: string };
 }
 
 export interface AccessCanIRenderer {
@@ -32,10 +41,53 @@ export interface AccessCanIRenderer {
 
 class LogAccessCanIRenderer implements AccessCanIRenderer {
   render(result: AccessCanIResult): void {
+    if (result.query) {
+      this.#renderSpecificCheck(result);
+    } else {
+      this.#renderEnumeration(result);
+    }
+  }
+
+  #renderSpecificCheck(result: AccessCanIResult): void {
+    if (result.decisions.length === 0) {
+      writeOutput(
+        `DENY (implicit) — no matching grants for ${result.principal} ${
+          result.query!.action
+        } ${result.query!.resource}`,
+      );
+      return;
+    }
+
+    const first = result.decisions[0];
+    const effect = first.effect.toUpperCase();
+    const via = `grant ${first.grantId.slice(0, 8)}…`;
+    writeOutput(
+      `${effect} via ${via} (${first.via} → ${result.query!.action} → ${
+        result.query!.resource
+      })`,
+    );
+
+    if (result.decisions.length > 1) {
+      writeOutput("");
+      writeOutput("All matching grants:");
+      for (const d of result.decisions) {
+        const e = d.effect.toUpperCase().padEnd(5);
+        const g = d.grantId.slice(0, 8);
+        const cond = d.condition ? ` [when: ${d.condition}]` : "";
+        writeOutput(`  ${e}  ${g}…  via ${d.via}${cond}`);
+      }
+    }
+  }
+
+  #renderEnumeration(result: AccessCanIResult): void {
     if (result.decisions.length === 0) {
       writeOutput(`No matching grants for ${result.principal}`);
       return;
     }
+
+    const resourceWidth = Math.max(
+      ...result.decisions.map((d) => d.resource.length),
+    );
 
     writeOutput(`Permissions for ${result.principal}:`);
     for (const decision of result.decisions) {
@@ -43,7 +95,7 @@ class LogAccessCanIRenderer implements AccessCanIRenderer {
       const via = `(via ${decision.via})`;
       const cond = decision.condition ? ` [when: ${decision.condition}]` : "";
       writeOutput(
-        `${decision.resource.padEnd(30)} ${
+        `${decision.resource.padEnd(resourceWidth + 2)} ${
           decision.action.padEnd(6)
         } ${marker} ${via}${cond}`,
       );
@@ -53,7 +105,32 @@ class LogAccessCanIRenderer implements AccessCanIRenderer {
 
 class JsonAccessCanIRenderer implements AccessCanIRenderer {
   render(result: AccessCanIResult): void {
-    writeOutput(JSON.stringify(result, null, 2));
+    if (result.query) {
+      const effect = result.decisions.length > 0
+        ? result.decisions[0].effect
+        : "deny";
+      writeOutput(
+        JSON.stringify(
+          {
+            principal: result.principal,
+            action: result.query.action,
+            resource: result.query.resource,
+            effect,
+            decisions: result.decisions,
+          },
+          null,
+          2,
+        ),
+      );
+    } else {
+      writeOutput(
+        JSON.stringify(
+          { principal: result.principal, decisions: result.decisions },
+          null,
+          2,
+        ),
+      );
+    }
   }
 }
 
