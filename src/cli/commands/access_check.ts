@@ -37,7 +37,10 @@ import {
   validateServerRepoExclusivity,
 } from "./access_helpers.ts";
 import { createAccessCheckRenderer } from "../../presentation/renderers/access_check.ts";
-import { requestServerResponse } from "../../cli/remote_run.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+} from "../../cli/remote_run.ts";
 import type { AccessCheckResponse } from "../../serve/protocol.ts";
 import type { AccessCheckResult } from "../../presentation/renderers/access_check.ts";
 
@@ -93,6 +96,10 @@ export const accessCheckCommand = new Command()
     "--server <url:string>",
     "Check access on a 'swamp serve' server instead of locally",
   )
+  .option(
+    "--token <token:string>",
+    "Server token (falls back to stored credential)",
+  )
   .action(async function (options: AnyOptions) {
     validateServerRepoExclusivity(
       options.server as string | undefined,
@@ -116,8 +123,13 @@ export const accessCheckCommand = new Command()
         ).filter((c: string) => c.length > 0)
         : [];
 
+      const token = await resolveServerToken(
+        options.server as string,
+        options.token as string | undefined,
+      );
+
       const response = await requestServerResponse<AccessCheckResponse>(
-        { server: options.server as string },
+        { server: options.server as string, ...(token ? { token } : {}) },
         {
           type: "access.check",
           payload: {

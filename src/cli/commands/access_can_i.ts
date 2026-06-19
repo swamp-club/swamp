@@ -20,7 +20,10 @@
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { UserError } from "../../domain/errors.ts";
-import { requestServerResponse } from "../../cli/remote_run.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+} from "../../cli/remote_run.ts";
 import type { AccessCanIResponse } from "../../serve/protocol.ts";
 import {
   type AccessCanIResult,
@@ -81,10 +84,15 @@ export const accessCanICommand = new Command()
         .filter((c: string) => c.length > 0)
       : undefined;
 
+    const token = await resolveServerToken(
+      options.server as string,
+      options.token as string | undefined,
+    );
+
     const response = await requestServerResponse<AccessCanIResponse>(
       {
         server: options.server as string,
-        ...(options.token ? { token: options.token as string } : {}),
+        ...(token ? { token } : {}),
       },
       {
         type: "access.can-i",

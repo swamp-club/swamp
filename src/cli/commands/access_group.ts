@@ -57,6 +57,7 @@ import {
 import type { ModelMethodRunEvent } from "../../libswamp/mod.ts";
 import {
   requestServerResponse,
+  resolveServerToken,
   runModelMethodOverServer,
 } from "../../cli/remote_run.ts";
 import type { AccessGroupListResponse } from "../../serve/protocol.ts";
@@ -196,6 +197,10 @@ const accessGroupCreateCommand = new Command()
     "--server <url:string>",
     "Create a group on a 'swamp serve' server instead of locally",
   )
+  .option(
+    "--token <token:string>",
+    "Server token (falls back to stored credential)",
+  )
   .action(async function (options: AnyOptions, name: string) {
     validateServerRepoExclusivity(
       options.server as string | undefined,
@@ -208,6 +213,10 @@ const accessGroupCreateCommand = new Command()
         "group",
         "create",
       ]);
+      const token = await resolveServerToken(
+        options.server as string,
+        options.token as string | undefined,
+      );
       const renderer = createModelMethodRunRenderer(ctx.outputMode, {
         modelName: name,
         methodName: "create",
@@ -215,6 +224,7 @@ const accessGroupCreateCommand = new Command()
       await consumeStream(
         runModelMethodOverServer({
           server: options.server as string,
+          token,
           payload: {
             modelIdOrName: `@${GROUP_MODEL_TYPE.normalized}`,
             methodName: "create",
@@ -257,6 +267,10 @@ const accessGroupAddMemberCommand = new Command()
     "--server <url:string>",
     "Add a member on a 'swamp serve' server instead of locally",
   )
+  .option(
+    "--token <token:string>",
+    "Server token (falls back to stored credential)",
+  )
   .action(async function (
     options: AnyOptions,
     group: string,
@@ -273,6 +287,10 @@ const accessGroupAddMemberCommand = new Command()
         "group",
         "add-member",
       ]);
+      const token = await resolveServerToken(
+        options.server as string,
+        options.token as string | undefined,
+      );
       const renderer = createModelMethodRunRenderer(ctx.outputMode, {
         modelName: group,
         methodName: "add-member",
@@ -280,6 +298,7 @@ const accessGroupAddMemberCommand = new Command()
       await consumeStream(
         runModelMethodOverServer({
           server: options.server as string,
+          token,
           payload: {
             modelIdOrName: group,
             methodName: "add-member",
@@ -320,6 +339,10 @@ const accessGroupRemoveMemberCommand = new Command()
     "--server <url:string>",
     "Remove a member on a 'swamp serve' server instead of locally",
   )
+  .option(
+    "--token <token:string>",
+    "Server token (falls back to stored credential)",
+  )
   .action(async function (
     options: AnyOptions,
     group: string,
@@ -336,6 +359,10 @@ const accessGroupRemoveMemberCommand = new Command()
         "group",
         "remove-member",
       ]);
+      const token = await resolveServerToken(
+        options.server as string,
+        options.token as string | undefined,
+      );
       const renderer = createModelMethodRunRenderer(ctx.outputMode, {
         modelName: group,
         methodName: "remove-member",
@@ -343,6 +370,7 @@ const accessGroupRemoveMemberCommand = new Command()
       await consumeStream(
         runModelMethodOverServer({
           server: options.server as string,
+          token,
           payload: {
             modelIdOrName: group,
             methodName: "remove-member",
@@ -379,6 +407,10 @@ const accessGroupListCommand = new Command()
     "--server <url:string>",
     "List groups on a 'swamp serve' server instead of locally",
   )
+  .option(
+    "--token <token:string>",
+    "Server token (falls back to stored credential)",
+  )
   .action(async function (options: AnyOptions) {
     validateServerRepoExclusivity(
       options.server as string | undefined,
@@ -391,8 +423,12 @@ const accessGroupListCommand = new Command()
         "group",
         "list",
       ]);
+      const token = await resolveServerToken(
+        options.server as string,
+        options.token as string | undefined,
+      );
       const response = await requestServerResponse<AccessGroupListResponse>(
-        { server: options.server as string },
+        { server: options.server as string, ...(token ? { token } : {}) },
         { type: "access.group.list" },
       );
       const groups: Group[] = [];
@@ -438,6 +474,10 @@ const accessGroupMembersCommand = new Command()
     "--server <url:string>",
     "List members on a 'swamp serve' server instead of locally",
   )
+  .option(
+    "--token <token:string>",
+    "Server token (falls back to stored credential)",
+  )
   .action(async function (options: AnyOptions, name: string) {
     validateServerRepoExclusivity(
       options.server as string | undefined,
@@ -450,8 +490,12 @@ const accessGroupMembersCommand = new Command()
         "group",
         "members",
       ]);
+      const token = await resolveServerToken(
+        options.server as string,
+        options.token as string | undefined,
+      );
       const response = await requestServerResponse<AccessGroupListResponse>(
-        { server: options.server as string },
+        { server: options.server as string, ...(token ? { token } : {}) },
         { type: "access.group.list", payload: { name } },
       );
       const groups: Group[] = [];
