@@ -65,7 +65,8 @@ Deno.test("binaryOnPath: uses tool-specific binary name", async () => {
   await check.run(makeCtx("claude"));
   await check.run(makeCtx("cursor"));
   await check.run(makeCtx("opencode"));
-  assertEquals(seen, ["kiro-cli", "claude", "cursor", "opencode"]);
+  await check.run(makeCtx("copilot"));
+  assertEquals(seen, ["kiro-cli", "claude", "cursor", "opencode", "copilot"]);
 });
 
 Deno.test("binaryOnPath: appliesTo returns true for all five audit tools, false otherwise", () => {

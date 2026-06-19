@@ -250,7 +250,8 @@ function normalizeCopilot(
   if (!command) return null;
 
   const errorStr = raw.error as string | undefined;
-  const isFailure = raw.hook_event_name === "PostToolUseFailure" || !!errorStr;
+  const isFailure = raw.hook_event_name === "PostToolUseFailure" ||
+    raw.hookEventName === "PostToolUseFailure" || !!errorStr;
 
   return {
     command,

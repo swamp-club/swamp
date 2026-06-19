@@ -421,6 +421,19 @@ Deno.test("normalizeHookInput copilot: detects failure from hook_event_name with
   assertEquals(result?.errorMessage, undefined);
 });
 
+Deno.test("normalizeHookInput copilot: detects failure from hookEventName (camelCase) without error field", () => {
+  const result = normalizeHookInput("copilot", {
+    sessionId: "cp-session-3",
+    cwd: "/project",
+    hookEventName: "PostToolUseFailure",
+    toolName: "bash",
+    toolArgs: { command: "exit 1" },
+  });
+
+  assertEquals(result?.isFailure, true);
+  assertEquals(result?.errorMessage, undefined);
+});
+
 Deno.test("normalizeHookInput copilot: skips non-bash tools (snake_case)", () => {
   const result = normalizeHookInput("copilot", {
     session_id: "cp-session-2",

@@ -188,3 +188,83 @@ Deno.test("agentConfigLoadable: opencode fails when plugin does not reference sw
     assertEquals(result.status, "fail");
   });
 });
+
+Deno.test("agentConfigLoadable: copilot passes for a well-formed config", async () => {
+  await withTempRepo(async (repo) => {
+    await writeJson(join(repo, ".github/hooks/swamp-audit.json"), {
+      version: 1,
+      hooks: {
+        postToolUse: [
+          {
+            type: "command",
+            command: "swamp audit record --from-hook --tool copilot",
+          },
+        ],
+        postToolUseFailure: [
+          {
+            type: "command",
+            command: "swamp audit record --from-hook --tool copilot",
+          },
+        ],
+      },
+    });
+    const result = await agentConfigLoadableCheck.run(
+      makeCtx(repo, "copilot"),
+    );
+    assertEquals(result.status, "pass");
+  });
+});
+
+Deno.test("agentConfigLoadable: copilot fails when file is missing", async () => {
+  await withTempRepo(async (repo) => {
+    const result = await agentConfigLoadableCheck.run(
+      makeCtx(repo, "copilot"),
+    );
+    assertEquals(result.status, "fail");
+    assertStringIncludes(result.message, "missing");
+  });
+});
+
+Deno.test("agentConfigLoadable: copilot fails on malformed JSON", async () => {
+  await withTempRepo(async (repo) => {
+    const path = join(repo, ".github/hooks/swamp-audit.json");
+    await ensureDir(join(path, ".."));
+    await Deno.writeTextFile(path, "{ not json");
+    const result = await agentConfigLoadableCheck.run(
+      makeCtx(repo, "copilot"),
+    );
+    assertEquals(result.status, "fail");
+    assertStringIncludes(result.message, "could not be parsed");
+  });
+});
+
+Deno.test("agentConfigLoadable: copilot fails when hooks are missing", async () => {
+  await withTempRepo(async (repo) => {
+    await writeJson(join(repo, ".github/hooks/swamp-audit.json"), {
+      version: 1,
+      hooks: {},
+    });
+    const result = await agentConfigLoadableCheck.run(
+      makeCtx(repo, "copilot"),
+    );
+    assertEquals(result.status, "fail");
+    assertStringIncludes(result.message, "postToolUse/postToolUseFailure");
+  });
+});
+
+Deno.test("agentConfigLoadable: copilot fails when hooks do not reference swamp audit record", async () => {
+  await withTempRepo(async (repo) => {
+    await writeJson(join(repo, ".github/hooks/swamp-audit.json"), {
+      version: 1,
+      hooks: {
+        postToolUse: [{ type: "command", command: "echo hello" }],
+        postToolUseFailure: [{ type: "command", command: "echo fail" }],
+      },
+    });
+    const result = await agentConfigLoadableCheck.run(
+      makeCtx(repo, "copilot"),
+    );
+    assertEquals(result.status, "fail");
+    assertStringIncludes(result.message, "swamp audit record");
+  });
+});

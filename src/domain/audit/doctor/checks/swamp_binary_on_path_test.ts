@@ -77,7 +77,7 @@ Deno.test("swampBinaryOnPath: passes for non-kiro when PATH resolves", async () 
     resolveBinary: () => Promise.resolve("/usr/local/bin/swamp"),
   });
   await withTempRepo(async (repo) => {
-    for (const tool of ["claude", "cursor", "opencode"] as const) {
+    for (const tool of ["claude", "cursor", "opencode", "copilot"] as const) {
       const result = await check.run(makeCtx(repo, tool));
       assertEquals(result.status, "pass", `failed for tool ${tool}`);
     }

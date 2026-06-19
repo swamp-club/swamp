@@ -37,6 +37,8 @@ export function binaryNameFor(tool: string): string {
       return "kiro-cli";
     case "opencode":
       return "opencode";
+    case "copilot":
+      return "copilot";
     default:
       return tool;
   }

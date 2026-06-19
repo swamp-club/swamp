@@ -27,7 +27,7 @@ const INSTALL_HINTS: Record<string, string> = {
   kiro: "Install Kiro CLI: https://docs.kiro.ai/cli",
   opencode: "Install OpenCode: https://opencode.ai",
   copilot:
-    "Install Copilot CLI: npm install -g @github/copilot or brew install copilot-cli",
+    "Install GitHub Copilot CLI: https://docs.github.com/en/copilot/how-tos/copilot-cli/set-up-copilot-cli/install-copilot-cli",
 };
 
 function appliesTo(tool: string): boolean {
