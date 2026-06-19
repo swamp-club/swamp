@@ -55,9 +55,14 @@ import {
   GroupSchema,
 } from "../domain/models/access/group_model.ts";
 import type { DataRecord } from "../domain/data/data_record.ts";
-import { parsePrincipal, type Principal } from "../domain/access/principal.ts";
-import { ActionSchema } from "../domain/access/action.ts";
+import {
+  parsePrincipal,
+  type Principal,
+  principalToString,
+} from "../domain/access/principal.ts";
+import { type Action, ActionSchema } from "../domain/access/action.ts";
 import { parseResourceSelector } from "../domain/access/resource_selector.ts";
+import type { AccessResource } from "../domain/access/access_decision_service.ts";
 import { GrantBasedAccessDecisionService } from "../domain/access/grant_based_access_decision_service.ts";
 import { modelRegistry } from "../domain/models/model.ts";
 
@@ -180,7 +185,7 @@ export interface ConnectionContext {
 export function handleConnection(
   socket: WebSocket,
   ctx: ConnectionContext,
-  _principal: Principal | null,
+  principal: Principal | null,
 ): void {
   const activeRequests = new Map<string, AbortController>();
   const workerAttachment = ctx.workerGateway?.attachTransport({
@@ -198,7 +203,7 @@ export function handleConnection(
     ) {
       return;
     }
-    handleMessage(socket, ctx, activeRequests, event);
+    handleMessage(socket, ctx, activeRequests, event, principal);
   };
 
   socket.onclose = () => {
@@ -225,6 +230,7 @@ export function handleMessage(
   ctx: ConnectionContext,
   activeRequests: Map<string, AbortController>,
   event: MessageEvent,
+  principal: Principal | null = null,
 ): void {
   let parsed: unknown;
   try {
@@ -272,6 +278,7 @@ export function handleMessage(
         request.id,
         request.payload,
         controller,
+        principal,
       );
       break;
     case "model.method.run":
@@ -281,23 +288,117 @@ export function handleMessage(
         request.id,
         request.payload,
         controller,
+        principal,
       );
       break;
     case "access.grant.list":
-      task = handleAccessGrantList(socket, ctx, request.id, request.payload);
+      task = handleAccessGrantList(
+        socket,
+        ctx,
+        request.id,
+        principal,
+        request.payload,
+      );
       break;
     case "access.group.list":
-      task = handleAccessGroupList(socket, ctx, request.id, request.payload);
+      task = handleAccessGroupList(
+        socket,
+        ctx,
+        request.id,
+        principal,
+        request.payload,
+      );
       break;
     case "access.check":
-      task = handleAccessCheck(socket, ctx, request.id, request.payload);
+      task = handleAccessCheck(
+        socket,
+        ctx,
+        request.id,
+        request.payload,
+        principal,
+      );
       break;
     case "access.reload":
-      task = handleAccessReload(socket, ctx, request.id);
+      task = handleAccessReload(socket, ctx, request.id, principal);
       break;
   }
 
   task.finally(() => activeRequests.delete(request.id));
+}
+
+function isAccessModelType(
+  typeArg: string | undefined,
+  resolvedType: string | undefined,
+): boolean {
+  const grantType = GRANT_MODEL_TYPE.normalized;
+  const groupType = GROUP_MODEL_TYPE.normalized;
+  if (typeArg) {
+    const stripped = typeArg.startsWith("@") ? typeArg.slice(1) : typeArg;
+    if (stripped === grantType || stripped === groupType) return true;
+  }
+  if (resolvedType) {
+    if (resolvedType === grantType || resolvedType === groupType) return true;
+  }
+  return false;
+}
+
+function authorizeOrReject(
+  socket: WebSocket,
+  requestId: string,
+  principal: Principal | null,
+  action: Action,
+  resource: AccessResource,
+  ctx: ConnectionContext,
+): boolean {
+  if (ctx.authConfig.mode === "none") return true;
+
+  if (!ctx.policySnapshotLoader) {
+    sendError(
+      socket,
+      requestId,
+      "access_not_configured",
+      "Authorization enforcement is enabled but no policy snapshot is available",
+    );
+    return false;
+  }
+
+  if (!principal) {
+    sendError(
+      socket,
+      requestId,
+      "unauthorized",
+      `Access denied: no authenticated principal for '${action}' on ${resource.kind}:${resource.name}`,
+    );
+    return false;
+  }
+
+  const snapshot = ctx.policySnapshotLoader.snapshot;
+  const service = new GrantBasedAccessDecisionService(snapshot);
+  const decision = service.decide(
+    { principal, collectives: [] },
+    action,
+    resource,
+  );
+
+  if (decision && decision.effect === "allow") return true;
+
+  const principalStr = principalToString(principal);
+  if (decision && decision.effect === "deny") {
+    sendError(
+      socket,
+      requestId,
+      "unauthorized",
+      `Access denied: ${principalStr} is explicitly denied '${action}' on ${resource.kind}:${resource.name}`,
+    );
+  } else {
+    sendError(
+      socket,
+      requestId,
+      "unauthorized",
+      `Access denied: ${principalStr} does not have '${action}' on ${resource.kind}:${resource.name}`,
+    );
+  }
+  return false;
 }
 
 async function handleWorkflowRun(
@@ -306,7 +407,16 @@ async function handleWorkflowRun(
   requestId: string,
   payload: WorkflowRunPayload,
   controller: AbortController,
+  principal: Principal | null,
 ): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "run", {
+      kind: "workflow",
+      name: payload.workflowIdOrName,
+      fields: {},
+    }, ctx)
+  ) return;
+
   try {
     await executeWorkflowWithLocks(
       ctx.repoDir,
@@ -346,6 +456,7 @@ async function handleModelMethodRun(
   requestId: string,
   payload: ModelMethodRunPayload,
   controller: AbortController,
+  principal: Principal | null,
 ): Promise<void> {
   let flushLocks: (() => Promise<void>) | null = null;
 
@@ -355,6 +466,25 @@ async function handleModelMethodRun(
       ctx.repoContext.definitionRepo,
       payload.modelIdOrName,
     );
+
+    if (isAccessModelType(payload.typeArg, preResult?.type.normalized)) {
+      if (
+        !authorizeOrReject(socket, requestId, principal, "admin", {
+          kind: "access",
+          name: "*",
+          fields: {},
+        }, ctx)
+      ) return;
+    } else {
+      if (
+        !authorizeOrReject(socket, requestId, principal, "run", {
+          kind: "model",
+          name: payload.modelIdOrName,
+          fields: {},
+        }, ctx)
+      ) return;
+    }
+
     if (preResult) {
       const lockResult = await acquireModelLocks(
         ctx.datastoreConfig,
@@ -428,8 +558,17 @@ async function handleAccessGrantList(
   socket: WebSocket,
   ctx: ConnectionContext,
   requestId: string,
+  principal: Principal | null,
   payload?: AccessGrantListPayload,
 ): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "read", {
+      kind: "access",
+      name: "grant",
+      fields: {},
+    }, ctx)
+  ) return;
+
   try {
     await modelRegistry.ensureLoaded();
     const records = await ctx.repoContext.dataQueryService.query(
@@ -482,8 +621,17 @@ async function handleAccessGroupList(
   socket: WebSocket,
   ctx: ConnectionContext,
   requestId: string,
+  principal: Principal | null,
   payload?: AccessGroupListPayload,
 ): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "read", {
+      kind: "access",
+      name: "group",
+      fields: {},
+    }, ctx)
+  ) return;
+
   try {
     await modelRegistry.ensureLoaded();
     const records = await ctx.repoContext.dataQueryService.query(
@@ -523,7 +671,16 @@ function handleAccessCheck(
   ctx: ConnectionContext,
   requestId: string,
   payload: AccessCheckPayload,
+  principal: Principal | null,
 ): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "admin", {
+      kind: "access",
+      name: "*",
+      fields: {},
+    }, ctx)
+  ) return Promise.resolve();
+
   try {
     if (!ctx.policySnapshotLoader) {
       sendError(
@@ -581,7 +738,16 @@ async function handleAccessReload(
   socket: WebSocket,
   ctx: ConnectionContext,
   requestId: string,
+  principal: Principal | null,
 ): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "admin", {
+      kind: "access",
+      name: "*",
+      fields: {},
+    }, ctx)
+  ) return;
+
   try {
     if (!ctx.policySnapshotLoader) {
       sendError(
