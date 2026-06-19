@@ -31,6 +31,7 @@ const CONFIG_FILES: Record<string, string[]> = {
   claude: [".claude/settings.local.json"],
   cursor: [".cursor/hooks.json"],
   opencode: [".opencode/plugins/swamp-audit.ts"],
+  copilot: [".github/hooks/swamp-audit.json"],
 };
 
 async function readJsonFile(path: string): Promise<unknown> {
@@ -234,6 +235,59 @@ async function checkOpenCode(ctx: CheckContext): Promise<CheckResult> {
   };
 }
 
+async function checkCopilot(ctx: CheckContext): Promise<CheckResult> {
+  const configPath = join(ctx.repoPath, ".github/hooks/swamp-audit.json");
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = (await readJsonFile(configPath)) as Record<string, unknown>;
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) {
+      return {
+        name: "agent-config-loadable",
+        status: "fail",
+        message: `${configPath} is missing`,
+        hint: "Run `swamp init --tool copilot --force` to regenerate.",
+      };
+    }
+    return {
+      name: "agent-config-loadable",
+      status: "fail",
+      message: `${configPath} could not be parsed as JSON`,
+      hint: "The file is corrupt; run `swamp init --tool copilot --force`.",
+      details: { error: String(error) },
+    };
+  }
+  const hooks = parsed.hooks as
+    | { postToolUse?: unknown[]; postToolUseFailure?: unknown[] }
+    | undefined;
+  if (!hooks?.postToolUse || !hooks.postToolUseFailure) {
+    return {
+      name: "agent-config-loadable",
+      status: "fail",
+      message:
+        "Copilot hooks (postToolUse/postToolUseFailure) are not configured",
+      hint: "Run `swamp init --tool copilot --force` to install the hooks.",
+    };
+  }
+  if (
+    !JSON.stringify(hooks).includes(
+      "swamp audit record --from-hook --tool copilot",
+    )
+  ) {
+    return {
+      name: "agent-config-loadable",
+      status: "fail",
+      message: "Copilot hooks do not reference `swamp audit record`",
+      hint: "Run `swamp init --tool copilot --force` to rewrite the hooks.",
+    };
+  }
+  return {
+    name: "agent-config-loadable",
+    status: "pass",
+    message: `${configPath} is present with both hooks wired`,
+  };
+}
+
 function appliesTo(tool: string): boolean {
   return tool in CONFIG_FILES;
 }
@@ -252,6 +306,8 @@ export const agentConfigLoadableCheck: PreflightCheck = {
         return await checkCursor(ctx);
       case "opencode":
         return await checkOpenCode(ctx);
+      case "copilot":
+        return await checkCopilot(ctx);
       default:
         return {
           name: "agent-config-loadable",

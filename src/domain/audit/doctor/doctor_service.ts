@@ -105,7 +105,7 @@ function buildDefaultChecks(deps: AuditDoctorDeps): readonly PreflightCheck[] {
 /**
  * Runs preflight checks against the audit integration for the given tool.
  *
- * For tools without audit hooks (codex, copilot, none), emits a single
+ * For tools without audit hooks (codex, none), emits a single
  * skip result and returns a `warn` report.
  */
 export async function* auditDoctor(
@@ -116,8 +116,7 @@ export async function* auditDoctor(
   // Tools without audit hook integration: short-circuit cleanly.
   // Custom tools (non-built-in) also skip — they have no audit hooks.
   if (
-    !isBuiltInTool(tool) || tool === "codex" || tool === "copilot" ||
-    tool === "none"
+    !isBuiltInTool(tool) || tool === "codex" || tool === "none"
   ) {
     const skipResult: CheckResult = {
       name: "recording-smoke-test",

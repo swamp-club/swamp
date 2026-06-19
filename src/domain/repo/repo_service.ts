@@ -539,8 +539,12 @@ export class RepoService {
             ? await this.updateOpenCodePlugin(repoPath)
             : await this.createOpenCodePluginIfNotExists(repoPath);
           break;
-        case "codex":
         case "copilot":
+          settingsChanged = alreadyExists
+            ? await this.updateCopilotHooks(repoPath)
+            : await this.createCopilotHooksIfNotExists(repoPath);
+          break;
+        case "codex":
         case "none":
           break;
         default:
@@ -1524,6 +1528,113 @@ the full tree, and \`swamp help model method run\` scopes to a subtree.
       hookPath,
       await this.generateKiroHookContent(),
     );
+  }
+
+  /**
+   * Generates the content for Copilot's .github/hooks/swamp-audit.json.
+   * Upstream contract: https://docs.github.com/en/copilot/reference/hooks-configuration
+   */
+  private generateCopilotHooksContent(): string {
+    const hooks = {
+      version: 1,
+      hooks: {
+        postToolUse: [
+          {
+            type: "command",
+            command: "swamp audit record --from-hook --tool copilot",
+          },
+        ],
+        postToolUseFailure: [
+          {
+            type: "command",
+            command: "swamp audit record --from-hook --tool copilot",
+          },
+        ],
+      },
+    };
+    return JSON.stringify(hooks, null, 2) + "\n";
+  }
+
+  /**
+   * Creates .github/hooks/swamp-audit.json if it doesn't already exist.
+   */
+  private createCopilotHooksIfNotExists(
+    repoPath: RepoPath,
+  ): Promise<boolean> {
+    const hooksPath = join(
+      repoPath.value,
+      ".github",
+      "hooks",
+      "swamp-audit.json",
+    );
+    return this.createFileIfNotExists(
+      hooksPath,
+      this.generateCopilotHooksContent(),
+    );
+  }
+
+  /**
+   * Updates .github/hooks/swamp-audit.json, merging new hook entries with
+   * existing ones.
+   */
+  private async updateCopilotHooks(repoPath: RepoPath): Promise<boolean> {
+    const githubDir = join(repoPath.value, ".github", "hooks");
+    const hooksPath = join(githubDir, "swamp-audit.json");
+
+    await ensureDir(githubDir);
+
+    let existingHooks: {
+      version?: number;
+      hooks?: Record<string, unknown[]>;
+    } = {};
+    let hooksExisted = false;
+
+    try {
+      const content = await Deno.readTextFile(hooksPath);
+      existingHooks = JSON.parse(content);
+      hooksExisted = true;
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) {
+        throw error;
+      }
+    }
+
+    const ourHooks: Record<string, unknown[]> = {
+      postToolUse: [
+        {
+          type: "command",
+          command: "swamp audit record --from-hook --tool copilot",
+        },
+      ],
+      postToolUseFailure: [
+        {
+          type: "command",
+          command: "swamp audit record --from-hook --tool copilot",
+        },
+      ],
+    };
+
+    const mergedHooks = this.mergeHooks(
+      existingHooks.hooks ?? {},
+      ourHooks,
+    );
+
+    const hooksChanged = JSON.stringify(existingHooks.hooks ?? {}) !==
+      JSON.stringify(mergedHooks);
+
+    if (!hooksChanged && hooksExisted) {
+      return false;
+    }
+
+    const newContent = {
+      version: existingHooks.version ?? 1,
+      hooks: mergedHooks,
+    };
+    await atomicWriteTextFile(
+      hooksPath,
+      JSON.stringify(newContent, null, 2) + "\n",
+    );
+    return true;
   }
 
   /**

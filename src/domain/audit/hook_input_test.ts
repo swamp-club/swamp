@@ -319,3 +319,116 @@ Deno.test("normalizeHookInput opencode: skips non-bash tools", () => {
 
   assertEquals(result, null);
 });
+
+// ---- Copilot normalization (camelCase format) ----
+
+Deno.test("normalizeHookInput copilot: normalizes successful bash (camelCase)", () => {
+  const result = normalizeHookInput("copilot", {
+    sessionId: "cp-session-1",
+    cwd: "/repo",
+    toolName: "bash",
+    toolArgs: { command: "npm test" },
+    toolResult: { resultType: "success", textResultForLlm: "all tests passed" },
+  });
+
+  assertEquals(result, {
+    command: "npm test",
+    cwd: "/repo",
+    sessionId: "cp-session-1",
+    isFailure: false,
+  });
+});
+
+Deno.test("normalizeHookInput copilot: normalizes failed bash (camelCase)", () => {
+  const result = normalizeHookInput("copilot", {
+    sessionId: "cp-session-1",
+    cwd: "/repo",
+    toolName: "bash",
+    toolArgs: { command: "npm build" },
+    error: "build failed",
+  });
+
+  assertEquals(result?.isFailure, true);
+  assertEquals(result?.errorMessage, "build failed");
+});
+
+Deno.test("normalizeHookInput copilot: skips non-bash tools (camelCase)", () => {
+  const result = normalizeHookInput("copilot", {
+    sessionId: "cp-session-1",
+    cwd: "/repo",
+    toolName: "edit",
+    toolArgs: { file: "foo.ts" },
+  });
+
+  assertEquals(result, null);
+});
+
+Deno.test("normalizeHookInput copilot: returns null for missing command (camelCase)", () => {
+  const result = normalizeHookInput("copilot", {
+    sessionId: "cp-session-1",
+    cwd: "/repo",
+    toolName: "bash",
+    toolArgs: {},
+  });
+
+  assertEquals(result, null);
+});
+
+// ---- Copilot normalization (snake_case format) ----
+
+Deno.test("normalizeHookInput copilot: normalizes successful bash (snake_case)", () => {
+  const result = normalizeHookInput("copilot", {
+    session_id: "cp-session-2",
+    cwd: "/project",
+    hook_event_name: "PostToolUse",
+    tool_name: "bash",
+    tool_input: { command: "deno test" },
+    tool_result: { result_type: "success", text_result_for_llm: "ok" },
+  });
+
+  assertEquals(result, {
+    command: "deno test",
+    cwd: "/project",
+    sessionId: "cp-session-2",
+    isFailure: false,
+  });
+});
+
+Deno.test("normalizeHookInput copilot: normalizes failed bash (snake_case)", () => {
+  const result = normalizeHookInput("copilot", {
+    session_id: "cp-session-2",
+    cwd: "/project",
+    hook_event_name: "PostToolUseFailure",
+    tool_name: "bash",
+    tool_input: { command: "deno check" },
+    error: "type check failed",
+  });
+
+  assertEquals(result?.isFailure, true);
+  assertEquals(result?.errorMessage, "type check failed");
+});
+
+Deno.test("normalizeHookInput copilot: detects failure from hook_event_name without error field", () => {
+  const result = normalizeHookInput("copilot", {
+    session_id: "cp-session-2",
+    cwd: "/project",
+    hook_event_name: "PostToolUseFailure",
+    tool_name: "bash",
+    tool_input: { command: "exit 1" },
+  });
+
+  assertEquals(result?.isFailure, true);
+  assertEquals(result?.errorMessage, undefined);
+});
+
+Deno.test("normalizeHookInput copilot: skips non-bash tools (snake_case)", () => {
+  const result = normalizeHookInput("copilot", {
+    session_id: "cp-session-2",
+    cwd: "/project",
+    hook_event_name: "PostToolUse",
+    tool_name: "view",
+    tool_input: { path: "/etc/hosts" },
+  });
+
+  assertEquals(result, null);
+});

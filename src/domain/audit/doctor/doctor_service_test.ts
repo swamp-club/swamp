@@ -149,7 +149,7 @@ Deno.test(
 Deno.test(
   "auditDoctor: short-circuits to a single skip for tools without audit hooks",
   async () => {
-    for (const tool of ["codex", "copilot", "none"] as const) {
+    for (const tool of ["codex", "none"] as const) {
       const events = await collect(auditDoctor(makeDeps(tool)));
       assertEquals(events.length, 2);
       assertEquals(events[0].kind, "check-completed");

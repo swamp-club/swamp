@@ -100,14 +100,21 @@ Deno.test(
 );
 
 Deno.test(
-  "resolveTargetTool: accepts the audit-skip tools (codex/copilot/none) as valid overrides",
+  "resolveTargetTool: accepts the audit-skip tools (codex/none) as valid overrides",
   async () => {
     const { resolveTargetTool } = await import("./doctor_audit.ts");
     // The service short-circuits these to skip; the CLI must still accept them
     // as valid --tool values so the user can explicitly check them.
     assertEquals(resolveTargetTool("codex", undefined), "codex");
-    assertEquals(resolveTargetTool("copilot", undefined), "copilot");
     assertEquals(resolveTargetTool("none", undefined), "none");
+  },
+);
+
+Deno.test(
+  "resolveTargetTool: accepts copilot as a valid audit-enabled tool override",
+  async () => {
+    const { resolveTargetTool } = await import("./doctor_audit.ts");
+    assertEquals(resolveTargetTool("copilot", undefined), "copilot");
   },
 );
 

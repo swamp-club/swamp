@@ -114,7 +114,7 @@ Deno.test("auditTimeline: yields completed with tool_not_supported for codex", a
   assertEquals(completed.data.status, "tool_not_supported");
 });
 
-Deno.test("auditTimeline: yields completed with tool_not_supported for copilot", async () => {
+Deno.test("auditTimeline: copilot is not tool_not_supported", async () => {
   const deps = makeDeps();
 
   const events = await collect<AuditTimelineEvent>(
@@ -125,11 +125,10 @@ Deno.test("auditTimeline: yields completed with tool_not_supported for copilot",
     }),
   );
 
-  assertEquals(events.length, 1);
-  const completed = events[0] as Extract<
+  const completed = events[events.length - 1] as Extract<
     AuditTimelineEvent,
     { kind: "completed" }
   >;
   assertEquals(completed.kind, "completed");
-  assertEquals(completed.data.status, "tool_not_supported");
+  assertEquals(completed.data.status !== "tool_not_supported", true);
 });

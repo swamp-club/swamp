@@ -64,7 +64,7 @@ const TOOL_CLEANUP_PATHS: Partial<Record<string, readonly string[]>> = {
   kiro: [".kiro/", ".vscode/settings.local.json"],
   opencode: [".opencode/", ".agents/skills/"],
   codex: [".agents/skills/"],
-  copilot: [".agents/skills/"],
+  copilot: [".agents/skills/", ".github/hooks/"],
 };
 
 /**

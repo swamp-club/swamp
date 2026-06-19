@@ -42,6 +42,8 @@
  *   https://docs.kiro.ai/ide/hooks (Kiro IDE emits camelCase via USER_PROMPT)
  * - OpenCode:
  *   https://opencode.ai/docs/plugins (plugin emits normalized JSON on stdin)
+ * - Copilot:
+ *   https://docs.github.com/en/copilot/reference/hooks-reference
  */
 
 import { DIAGNOSTIC_COMMAND_PREFIX } from "../audit_service.ts";
@@ -124,8 +126,16 @@ export function syntheticPayloadFor(
       };
       return { stdin: JSON.stringify(raw), env: {}, expectedCommand };
     }
+    case "copilot": {
+      const raw = {
+        sessionId: DOCTOR_SMOKE_TEST_SESSION_ID,
+        cwd,
+        toolName: "bash",
+        toolArgs: { command: expectedCommand },
+      };
+      return { stdin: JSON.stringify(raw), env: {}, expectedCommand };
+    }
     case "codex":
-    case "copilot":
     case "none":
     default:
       return null;

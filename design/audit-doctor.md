@@ -96,8 +96,8 @@ prefix is the only identifier available for all four tools.
 - Without `--tool`, reads `.swamp.yaml`'s `tool` field.
 - If both are absent, throws `NoToolConfiguredError` — a usage error,
   not a check fail, exits non-zero from the CLI.
-- `codex`, `copilot`, and `none` short-circuit to a single skip result
-  (those tools don't emit audit hooks).
+- `codex` and `none` short-circuit to a single skip result (those tools
+  don't emit audit hooks).
 
 ## Platform
 

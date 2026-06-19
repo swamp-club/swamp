@@ -36,7 +36,7 @@ import { syntheticPayloadFor } from "../synthetic_payloads.ts";
 
 function appliesTo(tool: string): boolean {
   return tool === "claude" || tool === "cursor" || tool === "kiro" ||
-    tool === "opencode";
+    tool === "opencode" || tool === "copilot";
 }
 
 function randomNonce(): string {

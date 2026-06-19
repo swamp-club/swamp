@@ -31,7 +31,13 @@ import {
  * tests break, surfacing the drift at CI time rather than silently at
  * runtime.
  */
-const SUPPORTED_TOOLS: HookTool[] = ["claude", "cursor", "kiro", "opencode"];
+const SUPPORTED_TOOLS: HookTool[] = [
+  "claude",
+  "cursor",
+  "kiro",
+  "opencode",
+  "copilot",
+];
 
 for (const tool of SUPPORTED_TOOLS) {
   Deno.test(
@@ -74,6 +80,20 @@ Deno.test("syntheticPayloadFor: sets USER_PROMPT env var for kiro only", () => {
 
 Deno.test("syntheticPayloadFor: returns null for tools without audit hooks", () => {
   assertEquals(syntheticPayloadFor("codex", "nonce"), null);
-  assertEquals(syntheticPayloadFor("copilot", "nonce"), null);
   assertEquals(syntheticPayloadFor("none", "nonce"), null);
+});
+
+Deno.test("syntheticPayloadFor(copilot): snake_case format also normalizes", () => {
+  const nonce = "snake-test";
+  const expectedCommand = `${DOCTOR_SMOKE_TEST_COMMAND_PREFIX} ${nonce}`;
+  const raw = {
+    session_id: "doctor-session",
+    cwd: ".",
+    hook_event_name: "PostToolUse",
+    tool_name: "bash",
+    tool_input: { command: expectedCommand },
+  };
+  const normalized = normalizeHookInput("copilot", raw);
+  assertNotEquals(normalized, null, "snake_case copilot payload rejected");
+  assertEquals(normalized?.command, expectedCommand);
 });

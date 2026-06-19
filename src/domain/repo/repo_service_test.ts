@@ -661,7 +661,7 @@ Deno.test("RepoService.init with codex creates .agents/skills/ and AGENTS.md", a
   });
 });
 
-Deno.test("RepoService.init with copilot creates .agents/skills/ and AGENTS.md", async () => {
+Deno.test("RepoService.init with copilot creates .agents/skills/, AGENTS.md, and .github/hooks/", async () => {
   await withTempDir(async (tempDir) => {
     const service = new RepoService("0.1.0");
     const repoPath = RepoPath.create(tempDir);
@@ -670,7 +670,7 @@ Deno.test("RepoService.init with copilot creates .agents/skills/ and AGENTS.md",
 
     assertEquals(result.tools[0], "copilot");
     assertEquals(result.instructionsFileCreated, true);
-    assertEquals(result.settingsCreated, false);
+    assertEquals(result.settingsCreated, true);
     assertEquals(result.gitignoreAction, "created");
 
     // Check skills copied to .agents/skills/
@@ -683,6 +683,16 @@ Deno.test("RepoService.init with copilot creates .agents/skills/ and AGENTS.md",
     const content = await Deno.readTextFile(agentsMdPath);
     assertStringIncludes(content, "swamp");
     assertStringIncludes(content, "## Skills");
+
+    // Check .github/hooks/swamp-audit.json created
+    const hooksPath = join(tempDir, ".github", "hooks", "swamp-audit.json");
+    const hooksContent = await Deno.readTextFile(hooksPath);
+    const hooks = JSON.parse(hooksContent);
+    assertEquals(hooks.version, 1);
+    assertStringIncludes(
+      JSON.stringify(hooks),
+      "swamp audit record --from-hook --tool copilot",
+    );
 
     // Check no .claude/ settings created
     const claudeSettingsPath = join(

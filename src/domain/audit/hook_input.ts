@@ -20,7 +20,7 @@
 /**
  * Supported AI coding tools that can provide hook input.
  */
-export type HookTool = "claude" | "cursor" | "kiro" | "opencode";
+export type HookTool = "claude" | "cursor" | "kiro" | "opencode" | "copilot";
 
 /**
  * Normalized hook input from any supported tool.
@@ -80,6 +80,8 @@ export function normalizeHookInput(
       return normalizeKiro(raw);
     case "opencode":
       return normalizeOpenCode(raw);
+    case "copilot":
+      return normalizeCopilot(raw);
   }
 }
 
@@ -218,6 +220,42 @@ function normalizeOpenCode(
     command,
     cwd: (raw.cwd as string) || ".",
     sessionId: raw.session_id as string | undefined,
+    isFailure,
+    ...(isFailure && errorStr ? { errorMessage: errorStr } : {}),
+  };
+}
+
+/**
+ * Copilot: postToolUse / postToolUseFailure hooks.
+ * Upstream contract: https://docs.github.com/en/copilot/reference/hooks-reference
+ *
+ * Supports two input formats:
+ * - camelCase (CLI): toolName, toolArgs, sessionId, timestamp (number)
+ * - snake_case (VS Code compatible): tool_name, tool_input, session_id,
+ *   hook_event_name, timestamp (ISO string)
+ *
+ * toolName/tool_name is "bash" for shell commands. Failure when
+ * hook_event_name === "PostToolUseFailure" or error field is present.
+ */
+function normalizeCopilot(
+  raw: Record<string, unknown>,
+): NormalizedHookInput | null {
+  const toolName = (raw.toolName ?? raw.tool_name) as string | undefined;
+  if (toolName !== "bash") return null;
+
+  const toolInput = (raw.toolArgs ?? raw.tool_input) as
+    | { command?: string }
+    | undefined;
+  const command = toolInput?.command;
+  if (!command) return null;
+
+  const errorStr = raw.error as string | undefined;
+  const isFailure = raw.hook_event_name === "PostToolUseFailure" || !!errorStr;
+
+  return {
+    command,
+    cwd: (raw.cwd as string) || ".",
+    sessionId: (raw.sessionId ?? raw.session_id) as string | undefined,
     isFailure,
     ...(isFailure && errorStr ? { errorMessage: errorStr } : {}),
   };

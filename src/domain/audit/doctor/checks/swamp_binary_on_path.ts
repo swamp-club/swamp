@@ -35,7 +35,7 @@ import type { ResolveBinary } from "./resolve_binary.ts";
 
 function appliesTo(tool: string): boolean {
   return tool === "claude" || tool === "cursor" || tool === "kiro" ||
-    tool === "opencode";
+    tool === "opencode" || tool === "copilot";
 }
 
 async function checkKiroBakedPath(ctx: CheckContext): Promise<{
