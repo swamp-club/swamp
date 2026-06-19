@@ -729,15 +729,13 @@ Deno.test("authorizeOrReject: admin on access:* allows grant list without explic
     testPrincipal,
   );
 
-  for (const sent of mock.sent) {
-    const msg = JSON.parse(sent);
-    if (msg.type === "error") {
-      assertEquals(
-        (msg.error as Record<string, unknown>).code !== "unauthorized",
-        true,
-      );
-    }
-  }
+  const unauthorizedErrors = mock.sent
+    .map((s) => JSON.parse(s))
+    .filter((m) =>
+      m.type === "error" &&
+      (m.error as Record<string, unknown>).code === "unauthorized"
+    );
+  assertEquals(unauthorizedErrors.length, 0);
 });
 
 Deno.test("authorizeOrReject: admin on access:* allows group list without explicit read", () => {
@@ -761,18 +759,44 @@ Deno.test("authorizeOrReject: admin on access:* allows group list without explic
     testPrincipal,
   );
 
-  for (const sent of mock.sent) {
-    const msg = JSON.parse(sent);
-    if (msg.type === "error") {
-      assertEquals(
-        (msg.error as Record<string, unknown>).code !== "unauthorized",
-        true,
-      );
-    }
-  }
+  const unauthorizedErrors = mock.sent
+    .map((s) => JSON.parse(s))
+    .filter((m) =>
+      m.type === "error" &&
+      (m.error as Record<string, unknown>).code === "unauthorized"
+    );
+  assertEquals(unauthorizedErrors.length, 0);
 });
 
 // ── Authorization: explicit deny beats admin fallback ─────────────────────
+
+Deno.test("authorizeOrReject: admin on access:* does not grant workflow run", () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const grant = makeGrant({
+    subject: { kind: "user", name: "adam" },
+    actions: ["admin"],
+    resource: { kind: "access", pattern: "*" },
+  });
+  const ctx = makeCtx(modeTokenConfig, [grant]);
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({
+      type: "workflow.run",
+      id: "auth-admin-no-wf",
+      payload: { workflowIdOrName: "@acme/deploy" },
+    })),
+    testPrincipal,
+  );
+
+  assertEquals(mock.sent.length, 1);
+  const msg = parseSent(mock);
+  assertEquals(msg.type, "error");
+  assertEquals((msg.error as Record<string, unknown>).code, "unauthorized");
+});
 
 Deno.test("authorizeOrReject: explicit deny beats admin on access:*", () => {
   const mock = createMockSocket();

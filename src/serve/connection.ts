@@ -406,7 +406,7 @@ function authorizeOrReject(
 
   if (decision && decision.effect === "allow") return true;
 
-  if (!decision) {
+  if (!decision && resource.kind === "access") {
     const adminDecision = service.decide(
       { principal, collectives: [] },
       "admin",
