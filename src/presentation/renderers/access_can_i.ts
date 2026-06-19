@@ -37,6 +37,7 @@ class LogAccessCanIRenderer implements AccessCanIRenderer {
       return;
     }
 
+    writeOutput(`Permissions for ${result.principal}:`);
     for (const decision of result.decisions) {
       const marker = decision.effect === "allow" ? "✓" : "✗";
       const via = `(via ${decision.via})`;

@@ -62,9 +62,9 @@ export const accessCanICommand = new Command()
     "Comma-separated IdP group memberships to simulate",
   )
   .action(async function (options: AnyOptions) {
-    if (!options.server) {
+    if (!!options.action !== !!options.on) {
       throw new UserError(
-        "--server is required: can-i only works against a server where you have an authenticated identity",
+        "--action and --on must be used together; omit both to list all permissions",
       );
     }
 

@@ -839,14 +839,16 @@ function handleAccessCanI(
         id: requestId,
         payload: {
           principal: principalStr,
-          decisions: grants.map((g) => ({
-            action: g.actions.join(","),
-            resource: `${g.resource.kind}:${g.resource.pattern}`,
-            effect: g.effect,
-            grantId: g.id,
-            via: `${g.subject.kind}:${g.subject.name}`,
-            ...(g.condition ? { condition: g.condition } : {}),
-          })),
+          decisions: grants.flatMap((g) =>
+            g.actions.map((a) => ({
+              action: a,
+              resource: `${g.resource.kind}:${g.resource.pattern}`,
+              effect: g.effect,
+              grantId: g.id,
+              via: `${g.subject.kind}:${g.subject.name}`,
+              ...(g.condition ? { condition: g.condition } : {}),
+            }))
+          ),
         },
       });
     }
