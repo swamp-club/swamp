@@ -71,12 +71,12 @@ export function assertOffLoopbackSecurity(
   if (LOOPBACK_HOSTS.has(host)) return;
 
   if (!tlsEnabled) {
-    throw new Error(
+    throw new UserError(
       "Off-loopback binding requires TLS — provide --cert-file and --key-file, or bind to 127.0.0.1",
     );
   }
   if (authMode === "none") {
-    throw new Error(
+    throw new UserError(
       "Off-loopback binding requires authentication — set --auth-mode token or --auth-mode oauth, or bind to 127.0.0.1",
     );
   }
@@ -97,8 +97,8 @@ export const serveCommand = new Command()
   .example("Start server", "swamp serve")
   .example("Custom port", "swamp serve --port 8080")
   .example(
-    "Bind to all interfaces",
-    "swamp serve --host 0.0.0.0 --port 3000",
+    "Bind to all interfaces (TLS + auth required)",
+    "swamp serve --host 0.0.0.0 --port 3000 --cert-file server.crt --key-file server.key --auth-mode token",
   )
   .option(
     "--repo-dir <dir:string>",
@@ -209,6 +209,8 @@ export const serveCommand = new Command()
       );
     }
 
+    assertOffLoopbackSecurity(host, tlsEnabled, authConfig.mode);
+
     ctx.logger.info`Initializing repository at ${repoDir}`;
 
     const {
@@ -220,8 +222,6 @@ export const serveCommand = new Command()
       repoDir,
       outputMode: ctx.outputMode,
     });
-
-    assertOffLoopbackSecurity(host, tlsEnabled, authConfig.mode);
     // Remote-execution control plane: capability verbs, worker enrollment,
     // and the dispatch/lease registries shared with the HTTP data plane.
     // See design/remote-execution.md.

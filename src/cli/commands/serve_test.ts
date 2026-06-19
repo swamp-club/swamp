@@ -20,6 +20,7 @@
 import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import { assertOffLoopbackSecurity } from "./serve.ts";
+import { UserError } from "../../domain/errors.ts";
 
 // Initialize logging for tests
 await initializeLogging({});
@@ -81,7 +82,7 @@ Deno.test("serveCommand has --key-file option", async () => {
 Deno.test("assertOffLoopbackSecurity: off-loopback without TLS refuses", () => {
   assertThrows(
     () => assertOffLoopbackSecurity("0.0.0.0", false, "none"),
-    Error,
+    UserError,
     "Off-loopback binding requires TLS",
   );
 });
@@ -89,7 +90,7 @@ Deno.test("assertOffLoopbackSecurity: off-loopback without TLS refuses", () => {
 Deno.test("assertOffLoopbackSecurity: off-loopback with TLS but no auth refuses", () => {
   assertThrows(
     () => assertOffLoopbackSecurity("0.0.0.0", true, "none"),
-    Error,
+    UserError,
     "Off-loopback binding requires authentication",
   );
 });
@@ -97,7 +98,7 @@ Deno.test("assertOffLoopbackSecurity: off-loopback with TLS but no auth refuses"
 Deno.test("assertOffLoopbackSecurity: off-loopback without TLS but with auth refuses", () => {
   assertThrows(
     () => assertOffLoopbackSecurity("0.0.0.0", false, "token"),
-    Error,
+    UserError,
     "Off-loopback binding requires TLS",
   );
 });
