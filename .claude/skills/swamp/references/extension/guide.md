@@ -260,14 +260,15 @@ export const datastore = {
 All extension types follow the same lifecycle:
 
 1. **Confirm nothing covers it** — search built-in and community first.
-2. **Author the extension file** — use the Quick Start above; `deno check`.
+2. **Author the extension file** — use the Quick Start above;
+   `~/.swamp/deno/deno check`.
 3. **Verify registration** — `swamp model type search --json` (models/drivers)
    or `swamp vault status --json` / `swamp datastore status --json`.
 4. **Adversarial review** — see
    [Adversarial Review Gate](#adversarial-review-gate) below.
 5. **Smoke test** (models) — see
    [references/model/smoke_testing.md](references/model/smoke_testing.md).
-6. **Unit tests** — colocate `*_test.ts`; `deno test` passes.
+6. **Unit tests** — colocate `*_test.ts`; `~/.swamp/deno/deno test` passes.
 7. **Version + manifest** — `swamp extension version`,
    `swamp extension fmt manifest.yaml --check`.
 8. **Quality check** (optional) — `swamp extension quality manifest.yaml`.

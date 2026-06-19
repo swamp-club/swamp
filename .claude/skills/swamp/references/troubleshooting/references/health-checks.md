@@ -205,7 +205,7 @@ The error string identifies the cause. Most failures fall into these buckets:
 | `Missing version field` / `not CalVer` | Add `version: "YYYY.MM.DD.MICRO"` to the extension export                                                                 |
 | `type` field not a string literal      | Replace the variable with a literal — the catalog regex requires it                                                       |
 | `Import "<dep>" not a dependency`      | Add the dep to the source's `deno.json` `imports` map                                                                     |
-| Syntax / unresolvable import           | Fix the file so `deno check` passes                                                                                       |
+| Syntax / unresolvable import           | Fix the file so `~/.swamp/deno/deno check` passes                                                                         |
 | `<registry> loader>: …`                | The loader itself threw — read the message; usually a config issue in the source's `deno.json` or a missing native binary |
 
 For the deeper "extension not in type search" walkthrough (stderr inspection,

@@ -196,15 +196,15 @@ Run from the extension's directory before invoking `swamp extension push`:
 
 ```sh
 # Verify types and catch slow-type issues.
-deno doc --lint models/my-model.ts
+~/.swamp/deno/deno doc --lint models/my-model.ts
 # Exit status 0 + no output means clean.
 
 # See extracted doc structure — confirms exports are well-shaped.
-deno doc --json models/my-model.ts | jq '.nodes | keys'
+~/.swamp/deno/deno doc --json models/my-model.ts | jq '.nodes | keys'
 
 # Verify formatting and standard lint.
-deno fmt --check
-deno lint
+~/.swamp/deno/deno fmt --check
+~/.swamp/deno/deno lint
 ```
 
 Any diagnostic from `deno doc --lint` costs the `fast-check` point. Fix each one
