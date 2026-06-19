@@ -23,13 +23,26 @@ import { accessGrantCommand } from "./access_grant.ts";
 import { accessGroupCommand } from "./access_group.ts";
 import { accessCheckCommand } from "./access_check.ts";
 import { accessReloadCommand } from "./access_reload.ts";
+import { accessTokenMintCommand } from "./access_token_mint.ts";
+import { accessTokenListCommand } from "./access_token_list.ts";
+import { accessTokenRevokeCommand } from "./access_token_revoke.ts";
 import { unknownCommandErrorHandler } from "../unknown_command_handler.ts";
+
+export const accessTokenCommand = new Command()
+  .name("token")
+  .description("Manage server tokens for user authentication")
+  .error(unknownCommandErrorHandler)
+  .action(groupCommandAction)
+  .command("mint", accessTokenMintCommand)
+  .command("list", accessTokenListCommand)
+  .command("revoke", accessTokenRevokeCommand);
 
 export const accessCommand = new Command()
   .name("access")
   .description("Manage authorization grants, groups, and access checks")
   .error(unknownCommandErrorHandler)
   .action(groupCommandAction)
+  .command("token", accessTokenCommand)
   .command("grant", accessGrantCommand)
   .command("group", accessGroupCommand)
   .command("check", accessCheckCommand)

@@ -118,7 +118,7 @@ async function withServeRepo(
         const upgrade = req.headers.get("upgrade") ?? "";
         if (upgrade.toLowerCase() === "websocket") {
           const { socket, response } = Deno.upgradeWebSocket(req);
-          handleConnection(socket, connectionCtx);
+          handleConnection(socket, connectionCtx, null);
           return response;
         }
         return new Response("Not found", { status: 404 });

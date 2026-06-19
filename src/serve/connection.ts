@@ -55,7 +55,7 @@ import {
   GroupSchema,
 } from "../domain/models/access/group_model.ts";
 import type { DataRecord } from "../domain/data/data_record.ts";
-import { parsePrincipal } from "../domain/access/principal.ts";
+import { parsePrincipal, type Principal } from "../domain/access/principal.ts";
 import { ActionSchema } from "../domain/access/action.ts";
 import { parseResourceSelector } from "../domain/access/resource_selector.ts";
 import { GrantBasedAccessDecisionService } from "../domain/access/grant_based_access_decision_service.ts";
@@ -180,6 +180,7 @@ export interface ConnectionContext {
 export function handleConnection(
   socket: WebSocket,
   ctx: ConnectionContext,
+  _principal: Principal | null,
 ): void {
   const activeRequests = new Map<string, AbortController>();
   const workerAttachment = ctx.workerGateway?.attachTransport({

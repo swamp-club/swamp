@@ -25,10 +25,11 @@
  * server's terminal `done` frame. Ctrl-C (signal abort) sends `cancel` and
  * drains until the server confirms.
  *
- * Authentication: none yet — this matches `swamp serve`'s current model
- * (it warns on non-loopback binds). The intended evolution is a bearer
- * credential presented at upgrade, reusing the session-credential machinery
- * from remote execution.
+ * Authentication: when `--auth-mode token` is active on the server, the
+ * client appends `?token=<name>.<secret>` to the WebSocket URL. The token
+ * comes from (in precedence order): the `--token` flag, the
+ * `SWAMP_SERVER_TOKEN` env var, or the `~/.config/swamp/servers.json` file
+ * via `ServerCredentialRepository`.
  */
 
 import { UserError } from "../domain/errors.ts";
@@ -38,6 +39,8 @@ import type {
   WorkflowRunPayload,
 } from "../serve/protocol.ts";
 import { deserializeEvent } from "../serve/serializer.ts";
+import type { ServerCredentialRepository } from "../domain/auth/server_credential.ts";
+import { FileServerCredentialRepository } from "../infrastructure/persistence/server_credential_repository.ts";
 
 /** How long to keep draining after sending `cancel` before giving up. */
 const CANCEL_DRAIN_MS = 10_000;
@@ -48,9 +51,55 @@ const CONNECT_TIMEOUT_MS = 15_000;
 export interface ServerRunOptions {
   /** Server URL: ws://, wss://, http://, or https://. */
   server: string;
+  /** Server token (`<name>.<secret>`) for authentication. */
+  token?: string;
   signal?: AbortSignal;
   /** Test seam: WebSocket factory. */
   createSocket?: (url: string) => WebSocket;
+}
+
+/**
+ * Appends a `?token=` query parameter to a WebSocket URL for server token
+ * authentication. Returns the original URL unmodified when no token is
+ * provided.
+ */
+export function appendTokenToUrl(url: string, token?: string): string {
+  if (!token) return url;
+  const parsed = new URL(url);
+  parsed.searchParams.set("token", token);
+  return parsed.href;
+}
+
+/**
+ * Converts ws(s) URLs to http(s) for credential lookup — stored credentials
+ * are keyed by http(s) URL, but `--server` flags often use ws(s).
+ */
+function toHttpUrl(serverUrl: string): string {
+  try {
+    const parsed = new URL(serverUrl);
+    if (parsed.protocol === "ws:") parsed.protocol = "http:";
+    else if (parsed.protocol === "wss:") parsed.protocol = "https:";
+    return parsed.href;
+  } catch {
+    return serverUrl;
+  }
+}
+
+/**
+ * Resolves the server token for authentication. Precedence:
+ * 1. Explicit `--token` flag value
+ * 2. `SWAMP_SERVER_TOKEN` env var (via ServerCredentialRepository)
+ * 3. Stored credential in `~/.config/swamp/servers.json`
+ */
+export async function resolveServerToken(
+  serverUrl: string,
+  explicitToken?: string,
+  credentialRepo?: ServerCredentialRepository,
+): Promise<string | undefined> {
+  if (explicitToken) return explicitToken;
+  const repo = credentialRepo ?? new FileServerCredentialRepository();
+  const credential = await repo.get(toHttpUrl(serverUrl));
+  return credential?.token;
 }
 
 /** Normalizes http(s) URLs to ws(s) so `--server http://host:4000` works. */
@@ -98,6 +147,7 @@ const REQUEST_RESPONSE_TIMEOUT_MS = 30_000;
 
 export interface RequestResponseOptions {
   server: string;
+  token?: string;
   signal?: AbortSignal;
   createSocket?: (url: string) => WebSocket;
   timeoutMs?: number;
@@ -107,7 +157,10 @@ export function requestServerResponse<T>(
   options: RequestResponseOptions,
   request: { type: string; id?: string; payload?: unknown },
 ): Promise<T> {
-  const url = normalizeServerUrl(options.server);
+  const url = appendTokenToUrl(
+    normalizeServerUrl(options.server),
+    options.token,
+  );
   const requestId = request.id ?? crypto.randomUUID();
   const socket = (options.createSocket ?? ((u) => new WebSocket(u)))(url);
   const timeoutMs = options.timeoutMs ?? REQUEST_RESPONSE_TIMEOUT_MS;
@@ -224,7 +277,10 @@ async function* streamServerRun(
   options: ServerRunOptions,
   request: OutboundRequest,
 ): AsyncIterable<{ kind: string; [key: string]: unknown }> {
-  const url = normalizeServerUrl(options.server);
+  const url = appendTokenToUrl(
+    normalizeServerUrl(options.server),
+    options.token,
+  );
   const requestId = crypto.randomUUID();
   const socket = (options.createSocket ?? ((u) => new WebSocket(u)))(url);
 

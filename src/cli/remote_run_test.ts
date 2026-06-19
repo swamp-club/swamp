@@ -25,11 +25,15 @@ import {
 } from "@std/assert";
 import { UserError } from "../domain/errors.ts";
 import {
+  appendTokenToUrl,
   normalizeServerUrl,
   requestServerResponse,
+  resolveServerToken,
   runModelMethodOverServer,
   runWorkflowOverServer,
 } from "./remote_run.ts";
+import type { ServerCredential } from "../domain/auth/server_credential.ts";
+import type { ServerCredentialRepository } from "../domain/auth/server_credential.ts";
 
 /**
  * In-process scripted serve endpoint: the script receives each parsed client
@@ -352,4 +356,108 @@ Deno.test({
       await server.shutdown();
     }
   },
+});
+
+// ── appendTokenToUrl tests ──────────────────────────────────────────────
+
+Deno.test("appendTokenToUrl: appends token as query param", () => {
+  const result = appendTokenToUrl(
+    "ws://localhost:9090/",
+    "adam-token.secret123",
+  );
+  assertEquals(result, "ws://localhost:9090/?token=adam-token.secret123");
+});
+
+Deno.test("appendTokenToUrl: returns unchanged URL when no token", () => {
+  const url = "ws://localhost:9090/";
+  assertEquals(appendTokenToUrl(url), url);
+  assertEquals(appendTokenToUrl(url, undefined), url);
+});
+
+Deno.test("appendTokenToUrl: preserves existing path", () => {
+  const result = appendTokenToUrl(
+    "wss://swamp.acme.internal:9090/api",
+    "tok.sec",
+  );
+  assertEquals(result, "wss://swamp.acme.internal:9090/api?token=tok.sec");
+});
+
+// ── resolveServerToken tests ────────────────────────────────────────────
+
+Deno.test("resolveServerToken: explicit token takes precedence", async () => {
+  const result = await resolveServerToken(
+    "http://localhost:9090",
+    "explicit.token",
+  );
+  assertEquals(result, "explicit.token");
+});
+
+Deno.test("resolveServerToken: falls back to credential repo", async () => {
+  const mockRepo: ServerCredentialRepository = {
+    get: (url: string): Promise<ServerCredential | null> => {
+      if (url.includes("localhost")) {
+        return Promise.resolve({
+          serverUrl: url,
+          tokenName: "stored",
+          token: "stored.credential",
+          principalId: "user:test",
+          obtainedAt: "2026-06-18T00:00:00Z",
+        });
+      }
+      return Promise.resolve(null);
+    },
+    save: () => Promise.resolve(),
+    remove: () => Promise.resolve(),
+    list: () => Promise.resolve([]),
+  };
+
+  const result = await resolveServerToken(
+    "http://localhost:9090",
+    undefined,
+    mockRepo,
+  );
+  assertEquals(result, "stored.credential");
+});
+
+Deno.test("resolveServerToken: converts ws URL to http for credential lookup", async () => {
+  const mockRepo: ServerCredentialRepository = {
+    get: (url: string): Promise<ServerCredential | null> => {
+      if (url === "http://localhost:9090/") {
+        return Promise.resolve({
+          serverUrl: url,
+          tokenName: "stored",
+          token: "stored.ws-lookup",
+          principalId: "user:test",
+          obtainedAt: "2026-06-18T00:00:00Z",
+        });
+      }
+      return Promise.resolve(null);
+    },
+    save: () => Promise.resolve(),
+    remove: () => Promise.resolve(),
+    list: () => Promise.resolve([]),
+  };
+
+  const result = await resolveServerToken(
+    "ws://localhost:9090",
+    undefined,
+    mockRepo,
+  );
+  assertEquals(result, "stored.ws-lookup");
+});
+
+Deno.test("resolveServerToken: returns undefined when no credential", async () => {
+  const emptyRepo: ServerCredentialRepository = {
+    get: () => Promise.resolve(null),
+    save: () => Promise.resolve(),
+    remove: () => Promise.resolve(),
+    list: () => Promise.resolve([]),
+  };
+
+  const result = await resolveServerToken(
+    "http://unknown:9090",
+    undefined,
+    emptyRepo,
+  );
+  assertEquals(result, undefined);
 });

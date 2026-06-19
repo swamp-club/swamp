@@ -27,6 +27,8 @@ import { requireInitializedRepoUnlocked } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import { buildServeAuthConfig } from "../../domain/access/serve_auth_config.ts";
 import { handleConnection } from "../../serve/connection.ts";
+import { authenticateServerToken } from "../../serve/token_auth.ts";
+import { parsePrincipal } from "../../domain/access/principal.ts";
 import { executeWorkflowWithLocks } from "../../serve/deps.ts";
 import { CapabilityService } from "../../serve/capability_service.ts";
 import { WorkerGateway } from "../../serve/worker_gateway.ts";
@@ -198,7 +200,10 @@ export const serveCommand = new Command()
       outputMode: ctx.outputMode,
     });
 
-    if (host !== "127.0.0.1" && host !== "localhost") {
+    if (
+      host !== "127.0.0.1" && host !== "localhost" &&
+      authConfig.mode === "none"
+    ) {
       logger.warn(
         "Binding to non-loopback address {host} — no authentication is enforced on WebSocket connections",
         { host },
@@ -462,8 +467,35 @@ export const serveCommand = new Command()
         // WebSocket upgrade (check first — upgrade requests are also GETs)
         const upgrade = req.headers.get("upgrade") ?? "";
         if (upgrade.toLowerCase() === "websocket") {
+          if (authConfig.mode === "token") {
+            const url = new URL(req.url);
+            const tokenParam = url.searchParams.get("token");
+            if (!tokenParam) {
+              return new Response("Unauthorized: token required", {
+                status: 401,
+              });
+            }
+            const result = await authenticateServerToken(
+              tokenParam,
+              resolvedRepoDir,
+              repoContext,
+            );
+            if (!result.ok) {
+              logger.warn(
+                "WebSocket auth rejected: {error}",
+                { error: result.error },
+              );
+              return new Response(`Unauthorized: ${result.error}`, {
+                status: 401,
+              });
+            }
+            const principal = parsePrincipal(result.principalId);
+            const { socket, response } = Deno.upgradeWebSocket(req);
+            handleConnection(socket, connectionCtx, principal);
+            return response;
+          }
           const { socket, response } = Deno.upgradeWebSocket(req);
-          handleConnection(socket, connectionCtx);
+          handleConnection(socket, connectionCtx, null);
           return response;
         }
 

@@ -141,10 +141,15 @@ run's event stream completes — so clients can distinguish "run ended" from
 `swamp workflow run --server <url>` / `swamp model ... method run --server`:
 repo-less, streaming the run's events through the same renderers as a local
 run (the wire codec is lossless for run events; `deserializeEvent` in
-`src/serve/serializer.ts` is the anti-corruption seam). Client
-authentication is still absent, matching serve's trust model; the intended
-evolution is a bearer credential presented at upgrade, reusing the
-session-credential machinery.
+`src/serve/serializer.ts` is the anti-corruption seam).
+
+When `--auth-mode token` is active, the server validates a `?token=name.secret`
+query parameter at WebSocket upgrade time via the `swamp/server-token` model's
+`redeem` method (timing-safe, vault-backed). Unauthenticated connections receive
+HTTP 401. The client resolves the token from (in precedence order) the
+`--token` flag, the `SWAMP_SERVER_TOKEN` env var, or stored credentials in
+`~/.config/swamp/servers.json` (managed by `swamp auth server-login`). Token
+management is through `swamp access token mint/list/revoke`.
 
 ## No execution drivers
 

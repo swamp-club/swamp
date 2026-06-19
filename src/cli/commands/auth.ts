@@ -22,6 +22,7 @@ import { groupCommandAction } from "../group_action.ts";
 import { authLoginCommand } from "./auth_login.ts";
 import { authLogoutCommand } from "./auth_logout.ts";
 import { authWhoamiCommand } from "./auth_whoami.ts";
+import { authServerLoginCommand } from "./auth_server_login.ts";
 
 export const authCommand = new Command()
   .name("auth")
@@ -29,4 +30,5 @@ export const authCommand = new Command()
   .action(groupCommandAction)
   .command("login", authLoginCommand)
   .command("logout", authLogoutCommand)
-  .command("whoami", authWhoamiCommand);
+  .command("whoami", authWhoamiCommand)
+  .command("server-login", authServerLoginCommand);

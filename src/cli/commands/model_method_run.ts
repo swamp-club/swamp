@@ -62,7 +62,7 @@ import {
   type ModelMethodRunEvent,
 } from "../../libswamp/mod.ts";
 import { createModelMethodRunRenderer } from "../../presentation/renderers/model_method_run.ts";
-import { runModelMethodOverServer } from "../remote_run.ts";
+import { resolveServerToken, runModelMethodOverServer } from "../remote_run.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
 import { parseTimeout } from "../duration_parser.ts";
 
@@ -163,6 +163,10 @@ export const modelMethodRunCommand = new Command()
   .option(
     "--server <url:string>",
     "Run through a 'swamp serve' server (ws:// or http://) instead of locally; no local repo required.",
+  )
+  .option(
+    "--token <token:string>",
+    "Server token for authentication (overrides stored credentials)",
   )
   .action(
     // @ts-expect-error - Cliffy custom type returns unknown instead of string
@@ -501,6 +505,11 @@ async function runMethodViaServer(
     )
     : [cliInputs];
 
+  const token = await resolveServerToken(
+    options.server as string,
+    options.token as string | undefined,
+  );
+
   try {
     for (let i = 0; i < inputSets.length; i++) {
       if (inputSets.length > 1) {
@@ -516,6 +525,7 @@ async function runMethodViaServer(
       await consumeStream(
         runModelMethodOverServer({
           server: options.server as string,
+          token,
           signal: abort.signal,
           payload: {
             modelIdOrName,
@@ -524,8 +534,6 @@ async function runMethodViaServer(
             lastEvaluated: options.lastEvaluated as boolean,
             runtimeTags,
           },
-          // The wire codec is lossless for run events; see
-          // deserializeEvent in src/serve/serializer.ts.
         }) as AsyncIterable<ModelMethodRunEvent>,
         renderer.handlers(),
       );

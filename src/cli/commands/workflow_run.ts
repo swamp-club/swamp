@@ -69,7 +69,7 @@ import {
 } from "../../libswamp/mod.ts";
 import { createWorkflowRunRenderer } from "../../presentation/renderers/workflow_run.ts";
 import { getActiveTelemetryService } from "../telemetry_integration.ts";
-import { runWorkflowOverServer } from "../remote_run.ts";
+import { resolveServerToken, runWorkflowOverServer } from "../remote_run.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -162,6 +162,10 @@ export const workflowRunCommand = new Command()
   .option(
     "--server <url:string>",
     "Run through a 'swamp serve' server (ws:// or http://) instead of locally; no local repo required. Required for steps with worker placement.",
+  )
+  .option(
+    "--token <token:string>",
+    "Server token for authentication (overrides stored credentials)",
   )
   // @ts-expect-error - Cliffy custom type returns unknown instead of string
   .action(async function (options: AnyOptions, workflowIdOrName: string) {
@@ -547,6 +551,11 @@ async function runWorkflowViaServer(
     )
     : [cliInputs];
 
+  const token = await resolveServerToken(
+    options.server as string,
+    options.token as string | undefined,
+  );
+
   try {
     for (let i = 0; i < inputSets.length; i++) {
       if (inputSets.length > 1) {
@@ -562,6 +571,7 @@ async function runWorkflowViaServer(
       await consumeStream(
         runWorkflowOverServer({
           server: options.server as string,
+          token,
           signal: abort.signal,
           payload: {
             workflowIdOrName,
@@ -570,8 +580,6 @@ async function runWorkflowViaServer(
             verbose: ctx.verbosity === "verbose",
             runtimeTags,
           },
-          // The wire codec is lossless for run events; see
-          // deserializeEvent in src/serve/serializer.ts.
         }) as AsyncIterable<WorkflowRunEvent>,
         renderer.handlers(),
       );

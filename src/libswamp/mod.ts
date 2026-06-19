@@ -364,6 +364,34 @@ export {
   type WorkerTokenRevokeInput,
 } from "./worker/token_revoke.ts";
 export { createWorkerModelRunDeps } from "./worker/run_deps.ts";
+
+// Server token operations (user authentication for swamp serve)
+export {
+  createServerTokenCreateDeps,
+  serverTokenCreate,
+  type ServerTokenCreateData,
+  type ServerTokenCreateDeps,
+  type ServerTokenCreateEvent,
+  type ServerTokenCreateInput,
+} from "./access/token_create.ts";
+export {
+  createServerTokenListDeps,
+  serverTokenList,
+  type ServerTokenListData,
+  type ServerTokenListDeps,
+  type ServerTokenListEvent,
+  type ServerTokenListItem,
+} from "./access/token_list.ts";
+export {
+  createServerTokenRevokeDeps,
+  serverTokenRevoke,
+  type ServerTokenRevokeData,
+  type ServerTokenRevokeDeps,
+  type ServerTokenRevokeEvent,
+  type ServerTokenRevokeInput,
+} from "./access/token_revoke.ts";
+export { createServerTokenRunDeps } from "./access/run_deps.ts";
+
 export {
   createNamespace,
   formatNamespacedModelName,
