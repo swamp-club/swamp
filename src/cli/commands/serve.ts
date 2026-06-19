@@ -485,9 +485,7 @@ export const serveCommand = new Command()
                 "WebSocket auth rejected: {error}",
                 { error: result.error },
               );
-              return new Response(`Unauthorized: ${result.error}`, {
-                status: 401,
-              });
+              return new Response("Unauthorized", { status: 401 });
             }
             const principal = parsePrincipal(result.principalId);
             const { socket, response } = Deno.upgradeWebSocket(req);

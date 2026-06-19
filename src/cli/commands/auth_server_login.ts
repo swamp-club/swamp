@@ -63,12 +63,23 @@ export const authServerLoginCommand = new Command()
       );
     }
 
-    let serverUrl: string;
+    let rawUrl = options.server as string;
     try {
-      serverUrl = normalizeServerUrl(options.server as string);
+      const parsed = new URL(rawUrl);
+      if (parsed.protocol === "ws:") parsed.protocol = "http:";
+      else if (parsed.protocol === "wss:") parsed.protocol = "https:";
+      rawUrl = parsed.href;
     } catch {
       throw new UserError(
-        `Invalid --server URL "${options.server}": expected http:// or https:// URL`,
+        `Invalid --server URL "${options.server}": expected ws://, wss://, http://, or https:// URL`,
+      );
+    }
+    let serverUrl: string;
+    try {
+      serverUrl = normalizeServerUrl(rawUrl);
+    } catch {
+      throw new UserError(
+        `Invalid --server URL "${options.server}": expected ws://, wss://, http://, or https:// URL`,
       );
     }
 

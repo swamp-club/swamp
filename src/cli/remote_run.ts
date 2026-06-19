@@ -157,10 +157,8 @@ export function requestServerResponse<T>(
   options: RequestResponseOptions,
   request: { type: string; id?: string; payload?: unknown },
 ): Promise<T> {
-  const url = appendTokenToUrl(
-    normalizeServerUrl(options.server),
-    options.token,
-  );
+  const baseUrl = normalizeServerUrl(options.server);
+  const url = appendTokenToUrl(baseUrl, options.token);
   const requestId = request.id ?? crypto.randomUUID();
   const socket = (options.createSocket ?? ((u) => new WebSocket(u)))(url);
   const timeoutMs = options.timeoutMs ?? REQUEST_RESPONSE_TIMEOUT_MS;
@@ -204,7 +202,7 @@ export function requestServerResponse<T>(
         settled = true;
         cleanup();
         reject(
-          new UserError(`Could not connect to ${url}`),
+          new UserError(`Could not connect to ${baseUrl}`),
         );
       }
     };
@@ -277,10 +275,8 @@ async function* streamServerRun(
   options: ServerRunOptions,
   request: OutboundRequest,
 ): AsyncIterable<{ kind: string; [key: string]: unknown }> {
-  const url = appendTokenToUrl(
-    normalizeServerUrl(options.server),
-    options.token,
-  );
+  const baseUrl = normalizeServerUrl(options.server);
+  const url = appendTokenToUrl(baseUrl, options.token);
   const requestId = crypto.randomUUID();
   const socket = (options.createSocket ?? ((u) => new WebSocket(u)))(url);
 
@@ -316,7 +312,7 @@ async function* streamServerRun(
     notify();
   };
   socket.onerror = () => {
-    connectError = `Could not connect to ${url}`;
+    connectError = `Could not connect to ${baseUrl}`;
     notify();
   };
 
@@ -324,7 +320,7 @@ async function* streamServerRun(
     const timer = setTimeout(() => {
       reject(
         new UserError(
-          `Timed out connecting to ${url} after ${CONNECT_TIMEOUT_MS}ms — is 'swamp serve' running?`,
+          `Timed out connecting to ${baseUrl} after ${CONNECT_TIMEOUT_MS}ms — is 'swamp serve' running?`,
         ),
       );
     }, CONNECT_TIMEOUT_MS);
@@ -336,7 +332,7 @@ async function* streamServerRun(
       clearTimeout(timer);
       reject(
         new UserError(
-          connectError ?? `Connection to ${url} closed before it opened`,
+          connectError ?? `Connection to ${baseUrl} closed before it opened`,
         ),
       );
     };

@@ -166,7 +166,7 @@ export const modelMethodRunCommand = new Command()
   )
   .option(
     "--token <token:string>",
-    "Server token for authentication (overrides stored credentials)",
+    "Server token in <name>.<secret> format (overrides stored credentials and SWAMP_SERVER_TOKEN)",
   )
   .action(
     // @ts-expect-error - Cliffy custom type returns unknown instead of string
