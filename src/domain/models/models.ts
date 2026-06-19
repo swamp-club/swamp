@@ -50,3 +50,19 @@ import "./aws/aws_models.ts";
 
 // Re-export the registry for convenient access
 export { modelRegistry } from "./model.ts";
+
+// Built-in infrastructure types are hidden from user-facing discovery
+// commands (swamp type search, shell completions, model create suggestions).
+import { modelRegistry } from "./model.ts";
+for (
+  const type of [
+    "swamp/enrollment-token",
+    "swamp/worker",
+    "swamp/step-lease",
+    "swamp/server-token",
+    "swamp/grant",
+    "swamp/group",
+  ]
+) {
+  modelRegistry.markInternal(type);
+}

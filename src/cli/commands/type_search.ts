@@ -82,7 +82,7 @@ export async function typeSearchAction(
 
   await modelRegistry.ensureLoaded();
   const deps: TypeSearchDeps = {
-    getRegisteredTypes: () => modelRegistry.types(),
+    getRegisteredTypes: () => modelRegistry.publicTypes(),
   };
 
   const fetchPreview = effectiveMode === "log"

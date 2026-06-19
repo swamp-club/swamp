@@ -284,3 +284,107 @@ Deno.test("serverTokenModel: redeem without vault service throws", async () => {
   );
   assertStringIncludes(error.message, "requires a vault service");
 });
+
+Deno.test("serverTokenModel: rotate active token produces new credentials", async () => {
+  const { context, store, vault, plaintext } = await mintToken();
+  const oldSecretKey = store.get("token-main")!.secretKey as string;
+  await serverTokenModel.methods.rotate.execute({}, context);
+  const token = store.get("token-main")!;
+  assertEquals(token.state, "active");
+  assertEquals(token.principalId, "oauth|user-123");
+  assertEquals(token.principalEmail, "user@example.com");
+  const newPlaintext = vault.get(`local/${oldSecretKey}`)!;
+  assertNotEquals(newPlaintext, plaintext);
+});
+
+Deno.test("serverTokenModel: rotate preserves principal from original token", async () => {
+  const { context, store } = await mintToken();
+  await serverTokenModel.methods.rotate.execute({}, context);
+  const token = store.get("token-main")!;
+  assertEquals(token.principalId, "oauth|user-123");
+  assertEquals(token.principalEmail, "user@example.com");
+});
+
+Deno.test("serverTokenModel: rotate respects custom durationMs", async () => {
+  const { context, store } = await mintToken();
+  await serverTokenModel.methods.rotate.execute(
+    { durationMs: 120_000 },
+    context,
+  );
+  const token = store.get("token-main")!;
+  const createdAt = Date.parse(token.createdAt as string);
+  const expiresAt = Date.parse(token.expiresAt as string);
+  assertEquals(expiresAt - createdAt, 120_000);
+});
+
+Deno.test("serverTokenModel: rotate expired token succeeds", async () => {
+  const { context, store } = await mintToken();
+  await serverTokenModel.methods.expire.execute({}, context);
+  assertEquals(store.get("token-main")!.state, "expired");
+  await serverTokenModel.methods.rotate.execute({}, context);
+  assertEquals(store.get("token-main")!.state, "active");
+});
+
+Deno.test("serverTokenModel: rotate revoked token succeeds", async () => {
+  const { context, store } = await mintToken();
+  await serverTokenModel.methods.revoke.execute({}, context);
+  assertEquals(store.get("token-main")!.state, "revoked");
+  await serverTokenModel.methods.rotate.execute({}, context);
+  assertEquals(store.get("token-main")!.state, "active");
+});
+
+Deno.test("serverTokenModel: rotate nonexistent token throws", async () => {
+  const harness = createInMemoryWorkerContext(
+    SERVER_TOKEN_MODEL_TYPE,
+    "missing-token",
+  );
+  await assertRejects(
+    () => serverTokenModel.methods.rotate.execute({}, harness.context),
+    Error,
+    "does not exist",
+  );
+});
+
+Deno.test("serverTokenModel: rotate without vault service throws", async () => {
+  const { context } = await mintToken();
+  const ctx = { ...context, vaultService: undefined };
+  await assertRejects(
+    () =>
+      serverTokenModel.methods.rotate.execute(
+        {},
+        ctx as typeof context,
+      ),
+    Error,
+    "requires a vault service",
+  );
+});
+
+Deno.test("serverTokenModel: rotated token is redeemable with new credentials", async () => {
+  const { context, store } = await mintToken();
+  await serverTokenModel.methods.rotate.execute({}, context);
+  const token = store.get("token-main")!;
+  const newPlaintext = (context as unknown as {
+    vaultService: { get: (v: string, k: string) => Promise<string> };
+  })
+    .vaultService.get(token.vaultName as string, token.secretKey as string);
+  const plaintext = await newPlaintext;
+  await serverTokenModel.methods.redeem.execute(
+    { presentedToken: `user-token-1.${plaintext}` },
+    context,
+  );
+  assertEquals(store.get("token-main")!.lastUsedAt !== undefined, true);
+});
+
+Deno.test("serverTokenModel: old credentials fail after rotate", async () => {
+  const { context, fullToken } = await mintToken();
+  await serverTokenModel.methods.rotate.execute({}, context);
+  await assertRejects(
+    () =>
+      serverTokenModel.methods.redeem.execute(
+        { presentedToken: fullToken },
+        context,
+      ),
+    Error,
+    "does not match",
+  );
+});

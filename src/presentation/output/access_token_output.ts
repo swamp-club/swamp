@@ -29,6 +29,7 @@ import type {
   ServerTokenCreateData,
   ServerTokenListData,
   ServerTokenRevokeData,
+  ServerTokenRotateData,
 } from "../../libswamp/mod.ts";
 import type { OutputMode } from "./output.ts";
 
@@ -147,5 +148,30 @@ export function renderServerTokenRevoke(
   if (data.revokedAt) {
     lines.push(`${bold(cyan("Revoked at:"))} ${data.revokedAt}`);
   }
+  writeOutput(lines.join("\n"));
+}
+
+export function renderServerTokenRotate(
+  data: ServerTokenRotateData,
+  mode: OutputMode,
+): void {
+  if (mode === "json") {
+    console.log(JSON.stringify(data, null, 2));
+    return;
+  }
+  const lines = [
+    `${green(checkmark)} Token ${bold(data.name)} rotated.`,
+    `${bold(cyan("Principal:"))} ${data.principalId}`,
+    `${bold(cyan("Expires:"))} ${data.expiresAt}`,
+    `${bold(cyan("Vault:"))} ${data.vaultRef.vaultName} ${
+      dim(`(key ${data.vaultRef.secretKey})`)
+    }`,
+    "",
+    `  ${bold(data.token)}`,
+    "",
+    yellow(
+      "Previous token has been revoked. Store the new token now — it will not be shown again.",
+    ),
+  ];
   writeOutput(lines.join("\n"));
 }

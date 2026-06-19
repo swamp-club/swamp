@@ -113,7 +113,8 @@ export async function createModelCreateDeps(
       return definition;
     },
     getPath: (type, id) => definitionRepo.getPath(type, id),
-    listAvailableTypes: () => modelRegistry.types().map((t) => t.normalized),
+    listAvailableTypes: () =>
+      modelRegistry.publicTypes().map((t) => t.normalized),
   };
 }
 

@@ -406,6 +406,18 @@ Deno.test("ModelRegistry.types returns empty array when no models", () => {
   assertEquals(registry.types(), []);
 });
 
+Deno.test("ModelRegistry.publicTypes excludes internal models", () => {
+  const registry = new ModelRegistry();
+  registry.register(createTestModel("swamp/echo"));
+  registry.register(createTestModel("swamp/internal"));
+  registry.markInternal("swamp/internal");
+
+  assertEquals(registry.types().length, 2);
+  const publicTypes = registry.publicTypes();
+  assertEquals(publicTypes.length, 1);
+  assertEquals(publicTypes[0].normalized, "swamp/echo");
+});
+
 Deno.test("ModelDefinition method can execute", async () => {
   const model = createTestModel("swamp/echo");
 

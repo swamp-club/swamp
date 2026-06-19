@@ -390,6 +390,14 @@ export {
   type ServerTokenRevokeEvent,
   type ServerTokenRevokeInput,
 } from "./access/token_revoke.ts";
+export {
+  createServerTokenRotateDeps,
+  serverTokenRotate,
+  type ServerTokenRotateData,
+  type ServerTokenRotateDeps,
+  type ServerTokenRotateEvent,
+  type ServerTokenRotateInput,
+} from "./access/token_rotate.ts";
 export { createServerTokenRunDeps } from "./access/run_deps.ts";
 
 export {

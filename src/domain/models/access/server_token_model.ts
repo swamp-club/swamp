@@ -174,6 +174,39 @@ async function redeem(
   return { dataHandles: [handle] };
 }
 
+const RotateArgsSchema = z.object({
+  durationMs: z.number().int().positive().optional(),
+});
+
+async function rotate(
+  args: z.infer<typeof RotateArgsSchema>,
+  context: MethodContext,
+): Promise<MethodResult> {
+  if (!context.vaultService) {
+    throw new Error("Rotating a server token requires a vault service");
+  }
+  const existing = await readToken(context);
+  const name = context.definition.name;
+  const secretKey = serverTokenSecretKey(name);
+  const plaintext = generateOpaqueToken();
+  await context.vaultService.put(existing.vaultName, secretKey, plaintext);
+
+  const now = Date.now();
+  const durationMs = args.durationMs ?? DEFAULT_DURATION_MS;
+  const token: ServerToken = {
+    name,
+    state: "active",
+    principalId: existing.principalId,
+    principalEmail: existing.principalEmail,
+    createdAt: new Date(now).toISOString(),
+    expiresAt: new Date(now + durationMs).toISOString(),
+    vaultName: existing.vaultName,
+    secretKey,
+  };
+  const handle = await context.writeResource!("token", TOKEN_DATA_NAME, token);
+  return { dataHandles: [handle] };
+}
+
 const EmptyArgsSchema = z.object({});
 
 async function revoke(
@@ -239,6 +272,13 @@ export const serverTokenModel: ModelDefinition = defineModel({
       kind: "action",
       arguments: RedeemArgsSchema,
       execute: redeem,
+    },
+    rotate: {
+      description:
+        "Atomically revoke the current token and mint a replacement with the same name and principal",
+      kind: "action",
+      arguments: RotateArgsSchema,
+      execute: rotate,
     },
     revoke: {
       description: "Revoke the token — takes effect immediately, idempotent",

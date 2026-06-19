@@ -735,6 +735,7 @@ export interface LazyModelEntry {
 export class ModelRegistry {
   private models = new Map<string, ModelDefinition>();
   private lazyTypes = new Map<string, LazyModelEntry>();
+  private internalTypes = new Set<string>();
   private extensionLoader: (() => Promise<void>) | null = null;
   private extensionLoadPromise: Promise<void> | null = null;
   private extensionsLoaded = false;
@@ -1050,6 +1051,27 @@ export class ModelRegistry {
       .filter((entry) => !this.models.has(entry.type.normalized))
       .map((entry) => entry.type);
     return [...loaded, ...lazy];
+  }
+
+  /**
+   * Returns model types visible to users — excludes types registered
+   * via {@link markInternal}.
+   */
+  publicTypes(): ModelType[] {
+    return this.types().filter((t) => !this.internalTypes.has(t.normalized));
+  }
+
+  /**
+   * Marks a model type as internal infrastructure. Internal types are
+   * hidden from user-facing discovery commands (`swamp type search`,
+   * shell completions, `swamp model create` type suggestions) but
+   * remain fully functional.
+   */
+  markInternal(type: ModelType | string): void {
+    const normalized = typeof type === "string"
+      ? ModelType.create(type).normalized
+      : type.normalized;
+    this.internalTypes.add(normalized);
   }
 }
 
