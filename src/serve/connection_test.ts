@@ -17,10 +17,15 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { handleMessage, validateServerRequest } from "./connection.ts";
 import type { ConnectionContext } from "./connection.ts";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
+import type { Principal } from "../domain/access/principal.ts";
+import type { ServeAuthConfig } from "../domain/access/serve_auth_config.ts";
+import { PolicySnapshot } from "../domain/access/policy_snapshot.ts";
+import type { PolicySnapshotLoader } from "../domain/access/policy_snapshot_loader.ts";
+import type { Grant } from "../domain/models/access/grant_model.ts";
 
 await initializeLogging({});
 
@@ -325,4 +330,386 @@ Deno.test("validateServerRequest rejects access.check without payload", () => {
   };
   const result = validateServerRequest(input);
   assertEquals(typeof result, "string");
+});
+
+// ── Authorization test helpers ────────────────────────────────────────────
+
+const modeNoneConfig: ServeAuthConfig = {
+  mode: "none",
+  admins: [],
+  allowedCollectives: [],
+  allowedUsers: [],
+  oauthProvider: "",
+  groupsField: "",
+};
+
+const modeTokenConfig: ServeAuthConfig = {
+  mode: "token",
+  admins: [],
+  allowedCollectives: [],
+  allowedUsers: [],
+  oauthProvider: "",
+  groupsField: "",
+};
+
+const testPrincipal: Principal = { kind: "user", id: "adam" };
+
+function makeGrant(
+  overrides: Partial<Grant> & {
+    subject: Grant["subject"];
+    resource: Grant["resource"];
+    actions: Grant["actions"];
+  },
+): Grant {
+  return {
+    id: overrides.id ?? "grant-1",
+    effect: overrides.effect ?? "allow",
+    state: overrides.state ?? "active",
+    source: overrides.source ?? "method",
+    condition: overrides.condition,
+    createdBy: overrides.createdBy ?? { kind: "user", id: "admin" },
+    createdAt: overrides.createdAt ?? "2026-01-01T00:00:00Z",
+    ...overrides,
+  };
+}
+
+function makeMockSnapshotLoader(
+  grants: Grant[],
+): PolicySnapshotLoader {
+  const snapshot = new PolicySnapshot(grants, []);
+  return {
+    snapshot,
+    load: () => Promise.resolve(snapshot),
+    loadWithCounts: () =>
+      Promise.resolve({ snapshot, grantCount: grants.length, groupCount: 0 }),
+    dispose: () => {},
+  } as unknown as PolicySnapshotLoader;
+}
+
+function makeCtx(
+  authConfig: ServeAuthConfig,
+  grants: Grant[] = [],
+): ConnectionContext {
+  const ctx: Partial<ConnectionContext> = {
+    authConfig,
+  };
+  if (authConfig.mode !== "none") {
+    (ctx as Record<string, unknown>).policySnapshotLoader =
+      makeMockSnapshotLoader(grants);
+  }
+  return ctx as ConnectionContext;
+}
+
+// ── Authorization: mode:none bypass ───────────────────────────────────────
+
+Deno.test("authorizeOrReject: mode:none allows all requests without principal", () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const ctx = makeCtx(modeNoneConfig);
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({
+      type: "access.reload",
+      id: "auth-1",
+    })),
+    null,
+  );
+
+  // mode:none should not send an error — the request proceeds to the handler
+  // (which will fail for other reasons in this stub, but not with "unauthorized")
+  for (const sent of mock.sent) {
+    const msg = JSON.parse(sent);
+    if (msg.type === "error") {
+      assertEquals(
+        (msg.error as Record<string, unknown>).code !== "unauthorized",
+        true,
+      );
+    }
+  }
+});
+
+// ── Authorization: null principal rejected in enforcing mode ──────────────
+
+Deno.test("authorizeOrReject: null principal rejected in token mode", () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const ctx = makeCtx(modeTokenConfig, []);
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({
+      type: "access.reload",
+      id: "auth-2",
+    })),
+    null,
+  );
+
+  assertEquals(mock.sent.length, 1);
+  const msg = parseSent(mock);
+  assertEquals(msg.type, "error");
+  assertEquals((msg.error as Record<string, unknown>).code, "unauthorized");
+  const errorMessage = String((msg.error as Record<string, unknown>).message);
+  assertStringIncludes(errorMessage, "no authenticated principal");
+  assertStringIncludes(errorMessage, "admin");
+  assertStringIncludes(errorMessage, "access:*");
+});
+
+// ── Authorization: authorized request succeeds ────────────────────────────
+
+Deno.test("authorizeOrReject: authorized workflow.run proceeds", () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const grant = makeGrant({
+    subject: { kind: "user", name: "adam" },
+    actions: ["run"],
+    resource: { kind: "workflow", pattern: "*" },
+  });
+  const ctx = makeCtx(modeTokenConfig, [grant]);
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({
+      type: "workflow.run",
+      id: "auth-3",
+      payload: { workflowIdOrName: "@acme/deploy" },
+    })),
+    testPrincipal,
+  );
+
+  // Should not get an unauthorized error — the request proceeds to the handler
+  for (const sent of mock.sent) {
+    const msg = JSON.parse(sent);
+    if (msg.type === "error") {
+      assertEquals(
+        (msg.error as Record<string, unknown>).code !== "unauthorized",
+        true,
+      );
+    }
+  }
+});
+
+// ── Authorization: unauthorized request gets error frame ──────────────────
+
+Deno.test("authorizeOrReject: unauthorized workflow.run returns error frame", () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const ctx = makeCtx(modeTokenConfig, []);
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({
+      type: "workflow.run",
+      id: "auth-4",
+      payload: { workflowIdOrName: "@acme/deploy" },
+    })),
+    testPrincipal,
+  );
+
+  assertEquals(mock.sent.length, 1);
+  const msg = parseSent(mock);
+  assertEquals(msg.type, "error");
+  assertEquals((msg.error as Record<string, unknown>).code, "unauthorized");
+  const errorMessage = String((msg.error as Record<string, unknown>).message);
+  assertStringIncludes(errorMessage, "user:adam");
+  assertStringIncludes(errorMessage, "run");
+  assertStringIncludes(errorMessage, "workflow:@acme/deploy");
+});
+
+// ── Authorization: admin boundary ─────────────────────────────────────────
+
+Deno.test("authorizeOrReject: access.reload requires admin on access:*", () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const grant = makeGrant({
+    subject: { kind: "user", name: "adam" },
+    actions: ["read"],
+    resource: { kind: "access", pattern: "*" },
+  });
+  const ctx = makeCtx(modeTokenConfig, [grant]);
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({
+      type: "access.reload",
+      id: "auth-5",
+    })),
+    testPrincipal,
+  );
+
+  assertEquals(mock.sent.length, 1);
+  const msg = parseSent(mock);
+  assertEquals(msg.type, "error");
+  assertEquals((msg.error as Record<string, unknown>).code, "unauthorized");
+  const errorMessage = String((msg.error as Record<string, unknown>).message);
+  assertStringIncludes(errorMessage, "admin");
+});
+
+Deno.test("authorizeOrReject: access.reload allowed with admin grant", () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const grant = makeGrant({
+    subject: { kind: "user", name: "adam" },
+    actions: ["admin"],
+    resource: { kind: "access", pattern: "*" },
+  });
+  const ctx = makeCtx(modeTokenConfig, [grant]);
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({
+      type: "access.reload",
+      id: "auth-6",
+    })),
+    testPrincipal,
+  );
+
+  // Should not get unauthorized — proceeds to handler (which may fail for other reasons)
+  for (const sent of mock.sent) {
+    const msg = JSON.parse(sent);
+    if (msg.type === "error") {
+      assertEquals(
+        (msg.error as Record<string, unknown>).code !== "unauthorized",
+        true,
+      );
+    }
+  }
+});
+
+// ── Authorization: grant list requires read on access:grant ───────────────
+
+Deno.test("authorizeOrReject: access.grant.list rejected without read grant", () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const ctx = makeCtx(modeTokenConfig, []);
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({
+      type: "access.grant.list",
+      id: "auth-7",
+    })),
+    testPrincipal,
+  );
+
+  assertEquals(mock.sent.length, 1);
+  const msg = parseSent(mock);
+  assertEquals(msg.type, "error");
+  assertEquals((msg.error as Record<string, unknown>).code, "unauthorized");
+  const errorMessage = String((msg.error as Record<string, unknown>).message);
+  assertStringIncludes(errorMessage, "read");
+  assertStringIncludes(errorMessage, "access:grant");
+});
+
+// ── Authorization: group list requires read on access:group ───────────────
+
+Deno.test("authorizeOrReject: access.group.list rejected without read grant", () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const ctx = makeCtx(modeTokenConfig, []);
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({
+      type: "access.group.list",
+      id: "auth-8",
+    })),
+    testPrincipal,
+  );
+
+  assertEquals(mock.sent.length, 1);
+  const msg = parseSent(mock);
+  assertEquals(msg.type, "error");
+  assertEquals((msg.error as Record<string, unknown>).code, "unauthorized");
+  const errorMessage = String((msg.error as Record<string, unknown>).message);
+  assertStringIncludes(errorMessage, "read");
+  assertStringIncludes(errorMessage, "access:group");
+});
+
+// ── Authorization: explicit deny ──────────────────────────────────────────
+
+Deno.test("authorizeOrReject: explicit deny returns denied error frame", () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const grants: Grant[] = [
+    makeGrant({
+      id: "deny-1",
+      subject: { kind: "user", name: "adam" },
+      effect: "deny",
+      actions: ["run"],
+      resource: { kind: "workflow", pattern: "*" },
+    }),
+    makeGrant({
+      id: "allow-1",
+      subject: { kind: "user", name: "adam" },
+      effect: "allow",
+      actions: ["run"],
+      resource: { kind: "workflow", pattern: "*" },
+    }),
+  ];
+  const ctx = makeCtx(modeTokenConfig, grants);
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({
+      type: "workflow.run",
+      id: "auth-9",
+      payload: { workflowIdOrName: "@acme/deploy" },
+    })),
+    testPrincipal,
+  );
+
+  assertEquals(mock.sent.length, 1);
+  const msg = parseSent(mock);
+  assertEquals(msg.type, "error");
+  assertEquals((msg.error as Record<string, unknown>).code, "unauthorized");
+  const errorMessage = String((msg.error as Record<string, unknown>).message);
+  assertStringIncludes(errorMessage, "explicitly denied");
+});
+
+// ── Authorization: missing policySnapshotLoader in enforcing mode ─────────
+
+Deno.test("authorizeOrReject: missing snapshot loader rejects in token mode", () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const ctx = {
+    authConfig: modeTokenConfig,
+  } as ConnectionContext;
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({
+      type: "access.reload",
+      id: "auth-10",
+    })),
+    testPrincipal,
+  );
+
+  assertEquals(mock.sent.length, 1);
+  const msg = parseSent(mock);
+  assertEquals(msg.type, "error");
+  assertEquals(
+    (msg.error as Record<string, unknown>).code,
+    "access_not_configured",
+  );
 });
