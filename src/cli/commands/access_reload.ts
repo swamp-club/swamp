@@ -32,6 +32,7 @@ import { validateServerRepoExclusivity } from "./access_helpers.ts";
 import {
   requestServerResponse,
   resolveServerToken,
+  resolveServeUrl,
 } from "../../cli/remote_run.ts";
 import type { AccessReloadResponse } from "../../serve/protocol.ts";
 import { createAccessReloadRenderer } from "../../presentation/renderers/access_reload.ts";
@@ -55,15 +56,17 @@ export const accessReloadCommand = new Command()
   )
   .option(
     "--server <url:string>",
-    "Reload access policy on a 'swamp serve' server instead of locally",
+    "Reload access policy on a 'swamp serve' server instead of locally (env: SWAMP_SERVE_URL)",
   )
   .option(
     "--token <token:string>",
     "Server token (falls back to stored credential)",
   )
   .action(async function (options: AnyOptions) {
+    const server = resolveServeUrl(options.server as string | undefined);
+
     validateServerRepoExclusivity(
-      options.server as string | undefined,
+      server,
       options.repoDir as string | undefined,
     );
 
@@ -74,14 +77,14 @@ export const accessReloadCommand = new Command()
 
     const renderer = createAccessReloadRenderer(ctx.outputMode);
 
-    if (options.server) {
+    if (server) {
       const token = await resolveServerToken(
-        options.server as string,
+        server,
         options.token as string | undefined,
       );
 
       const response = await requestServerResponse<AccessReloadResponse>(
-        { server: options.server as string, ...(token ? { token } : {}) },
+        { server, ...(token ? { token } : {}) },
         { type: "access.reload" },
       );
 

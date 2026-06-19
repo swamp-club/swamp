@@ -23,6 +23,7 @@ import { UserError } from "../../domain/errors.ts";
 import {
   requestServerResponse,
   resolveServerToken,
+  resolveServeUrl,
 } from "../../cli/remote_run.ts";
 import type { AccessCanIResponse } from "../../serve/protocol.ts";
 import {
@@ -48,8 +49,7 @@ export const accessCanICommand = new Command()
   )
   .option(
     "--server <url:string>",
-    "Server to check permissions against (required)",
-    { required: true },
+    "Server to check permissions against (env: SWAMP_SERVE_URL)",
   )
   .option(
     "--token <token:string>",
@@ -68,6 +68,13 @@ export const accessCanICommand = new Command()
     "Comma-separated IdP group memberships to simulate",
   )
   .action(async function (options: AnyOptions) {
+    const server = resolveServeUrl(options.server as string | undefined);
+    if (!server) {
+      throw new UserError(
+        "--server is required (or set SWAMP_SERVE_URL)",
+      );
+    }
+
     if (!!options.action !== !!options.on) {
       throw new UserError(
         "--action and --on must be used together; omit both to list all permissions",
@@ -85,13 +92,13 @@ export const accessCanICommand = new Command()
       : undefined;
 
     const token = await resolveServerToken(
-      options.server as string,
+      server,
       options.token as string | undefined,
     );
 
     const response = await requestServerResponse<AccessCanIResponse>(
       {
-        server: options.server as string,
+        server,
         ...(token ? { token } : {}),
       },
       {

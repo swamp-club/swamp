@@ -42,6 +42,16 @@ import { deserializeEvent } from "../serve/serializer.ts";
 import type { ServerCredentialRepository } from "../domain/auth/server_credential.ts";
 import { FileServerCredentialRepository } from "../infrastructure/persistence/server_credential_repository.ts";
 
+/**
+ * Resolves the server URL from the `--server` flag with `SWAMP_SERVE_URL`
+ * env var as fallback. Flag takes precedence when both are provided.
+ */
+export function resolveServeUrl(
+  flagValue: string | undefined,
+): string | undefined {
+  return flagValue ?? Deno.env.get("SWAMP_SERVE_URL");
+}
+
 /** How long to keep draining after sending `cancel` before giving up. */
 const CANCEL_DRAIN_MS = 10_000;
 

@@ -29,6 +29,7 @@ import {
   normalizeServerUrl,
   requestServerResponse,
   resolveServerToken,
+  resolveServeUrl,
   runModelMethodOverServer,
   runWorkflowOverServer,
 } from "./remote_run.ts";
@@ -73,6 +74,43 @@ function scriptedServer(
     received,
   };
 }
+
+// ── resolveServeUrl tests ──────────────────────────────────────────────
+
+Deno.test("resolveServeUrl: flag value takes precedence over env var", () => {
+  const prev = Deno.env.get("SWAMP_SERVE_URL");
+  try {
+    Deno.env.set("SWAMP_SERVE_URL", "wss://env.example.com");
+    assertEquals(
+      resolveServeUrl("wss://flag.example.com"),
+      "wss://flag.example.com",
+    );
+  } finally {
+    if (prev !== undefined) Deno.env.set("SWAMP_SERVE_URL", prev);
+    else Deno.env.delete("SWAMP_SERVE_URL");
+  }
+});
+
+Deno.test("resolveServeUrl: falls back to SWAMP_SERVE_URL env var", () => {
+  const prev = Deno.env.get("SWAMP_SERVE_URL");
+  try {
+    Deno.env.set("SWAMP_SERVE_URL", "wss://env.example.com");
+    assertEquals(resolveServeUrl(undefined), "wss://env.example.com");
+  } finally {
+    if (prev !== undefined) Deno.env.set("SWAMP_SERVE_URL", prev);
+    else Deno.env.delete("SWAMP_SERVE_URL");
+  }
+});
+
+Deno.test("resolveServeUrl: returns undefined when neither flag nor env var set", () => {
+  const prev = Deno.env.get("SWAMP_SERVE_URL");
+  try {
+    Deno.env.delete("SWAMP_SERVE_URL");
+    assertEquals(resolveServeUrl(undefined), undefined);
+  } finally {
+    if (prev !== undefined) Deno.env.set("SWAMP_SERVE_URL", prev);
+  }
+});
 
 Deno.test("normalizeServerUrl: accepts ws/wss and maps http/https", () => {
   assertEquals(normalizeServerUrl("ws://h:1"), "ws://h:1/");

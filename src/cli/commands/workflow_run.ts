@@ -69,7 +69,11 @@ import {
 } from "../../libswamp/mod.ts";
 import { createWorkflowRunRenderer } from "../../presentation/renderers/workflow_run.ts";
 import { getActiveTelemetryService } from "../telemetry_integration.ts";
-import { resolveServerToken, runWorkflowOverServer } from "../remote_run.ts";
+import {
+  resolveServerToken,
+  resolveServeUrl,
+  runWorkflowOverServer,
+} from "../remote_run.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -161,7 +165,7 @@ export const workflowRunCommand = new Command()
   )
   .option(
     "--server <url:string>",
-    "Run through a 'swamp serve' server (ws:// or http://) instead of locally; no local repo required. Required for steps with worker placement.",
+    "Run through a 'swamp serve' server (ws:// or http://) instead of locally; no local repo required. Required for steps with worker placement (env: SWAMP_SERVE_URL).",
   )
   .option(
     "--token <token:string>",
@@ -172,8 +176,9 @@ export const workflowRunCommand = new Command()
     const ctx = createContext(options as GlobalOptions, ["workflow", "run"]);
     ctx.logger.debug`Running workflow: ${workflowIdOrName}`;
 
-    if (options.server) {
-      await runWorkflowViaServer(ctx, options, workflowIdOrName);
+    const server = resolveServeUrl(options.server as string | undefined);
+    if (server) {
+      await runWorkflowViaServer(ctx, { ...options, server }, workflowIdOrName);
       return;
     }
 
