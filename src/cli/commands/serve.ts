@@ -61,6 +61,27 @@ type AnyOptions = any;
 
 const logger = getSwampLogger(["serve"]);
 
+const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
+
+export function assertOffLoopbackSecurity(
+  host: string,
+  tlsEnabled: boolean,
+  authMode: string,
+): void {
+  if (LOOPBACK_HOSTS.has(host)) return;
+
+  if (!tlsEnabled) {
+    throw new Error(
+      "Off-loopback binding requires TLS — provide --cert-file and --key-file, or bind to 127.0.0.1",
+    );
+  }
+  if (authMode === "none") {
+    throw new Error(
+      "Off-loopback binding requires authentication — set --auth-mode token or --auth-mode oauth, or bind to 127.0.0.1",
+    );
+  }
+}
+
 export const serveCommand = new Command()
   .name("serve")
   .description(
@@ -200,15 +221,7 @@ export const serveCommand = new Command()
       outputMode: ctx.outputMode,
     });
 
-    if (
-      host !== "127.0.0.1" && host !== "localhost" &&
-      authConfig.mode === "none"
-    ) {
-      logger.warn(
-        "Binding to non-loopback address {host} — no authentication is enforced on WebSocket connections",
-        { host },
-      );
-    }
+    assertOffLoopbackSecurity(host, tlsEnabled, authConfig.mode);
     // Remote-execution control plane: capability verbs, worker enrollment,
     // and the dispatch/lease registries shared with the HTTP data plane.
     // See design/remote-execution.md.
