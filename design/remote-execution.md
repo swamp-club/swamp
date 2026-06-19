@@ -147,9 +147,17 @@ When `--auth-mode token` is active, the server validates a `?token=name.secret`
 query parameter at WebSocket upgrade time via the `swamp/server-token` model's
 `redeem` method (timing-safe, vault-backed). Unauthenticated connections receive
 HTTP 401. The client resolves the token from (in precedence order) the
-`--token` flag, the `SWAMP_SERVER_TOKEN` env var, or stored credentials in
-`~/.config/swamp/servers.json` (managed by `swamp auth server-login`). Token
-management is through `swamp access token mint/list/revoke`.
+`--token` flag, the `SWAMP_SERVER_TOKEN` + `SWAMP_SERVER_URL` env vars, or
+stored credentials in `~/.config/swamp/servers.json` (managed by
+`swamp auth server-login`). Token management is through
+`swamp access token mint/list/revoke`.
+
+The token travels as a `?token=` query parameter on the WebSocket upgrade URL.
+This is the standard WebSocket auth pattern (the browser WebSocket API does not
+support custom headers on upgrade requests), but the plaintext will appear in
+any reverse proxy or load balancer access logs that capture the full request
+URL. Use TLS (`wss://`) for non-loopback deployments and configure access-log
+redaction on any intermediary that fronts the server.
 
 ## No execution drivers
 
