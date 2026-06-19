@@ -66,7 +66,7 @@ trademarks. This Policy covers our Marks whether they are registered or not.
 The following trademarks are ones that are reserved exclusively to our use and
 are not covered by the Policy:
 
-<img src="https://images.ctfassets.net/vfl28orm8any/10ZZ8DqAxV9Kug8wT1tHa7/56fff2fb3d8f046f40a821aacfd60142/SI-Symbol-Rev-RGB.svg" width="64" height="64"/>
+<img src="sc-mark.png" width="64" height="64"/>
 
 Contact us as described in "Where to get further information" below if you have
 questions or want to ask permission to use any of these excluded trademarks.
