@@ -376,6 +376,26 @@ Deno.test("validateServerRequest rejects access.can-i without id", () => {
   assertEquals(typeof result, "string");
 });
 
+Deno.test("validateServerRequest rejects access.can-i with action but no resource", () => {
+  const input = {
+    type: "access.can-i",
+    id: "req-1",
+    payload: { action: "run" },
+  };
+  const result = validateServerRequest(input);
+  assertEquals(typeof result, "string");
+});
+
+Deno.test("validateServerRequest rejects access.can-i with resource but no action", () => {
+  const input = {
+    type: "access.can-i",
+    id: "req-1",
+    payload: { resource: "workflow:@acme/deploy" },
+  };
+  const result = validateServerRequest(input);
+  assertEquals(typeof result, "string");
+});
+
 // ── Authorization test helpers ────────────────────────────────────────────
 
 const modeNoneConfig: ServeAuthConfig = {
