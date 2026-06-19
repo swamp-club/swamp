@@ -332,6 +332,70 @@ Deno.test("validateServerRequest rejects access.check without payload", () => {
   assertEquals(typeof result, "string");
 });
 
+Deno.test("validateServerRequest accepts access.can-i with action and resource", () => {
+  const input = {
+    type: "access.can-i",
+    id: "req-1",
+    payload: {
+      action: "run",
+      resource: "workflow:@acme/deploy",
+    },
+  };
+  const result = validateServerRequest(input);
+  assertEquals(typeof result, "object");
+});
+
+Deno.test("validateServerRequest accepts access.can-i without action/resource for enumeration", () => {
+  const input = {
+    type: "access.can-i",
+    id: "req-1",
+    payload: {},
+  };
+  const result = validateServerRequest(input);
+  assertEquals(typeof result, "object");
+});
+
+Deno.test("validateServerRequest accepts access.can-i with collectives", () => {
+  const input = {
+    type: "access.can-i",
+    id: "req-1",
+    payload: {
+      collectives: ["platform-eng", "ops"],
+    },
+  };
+  const result = validateServerRequest(input);
+  assertEquals(typeof result, "object");
+});
+
+Deno.test("validateServerRequest rejects access.can-i without id", () => {
+  const input = {
+    type: "access.can-i",
+    payload: {},
+  };
+  const result = validateServerRequest(input);
+  assertEquals(typeof result, "string");
+});
+
+Deno.test("validateServerRequest rejects access.can-i with action but no resource", () => {
+  const input = {
+    type: "access.can-i",
+    id: "req-1",
+    payload: { action: "run" },
+  };
+  const result = validateServerRequest(input);
+  assertEquals(typeof result, "string");
+});
+
+Deno.test("validateServerRequest rejects access.can-i with resource but no action", () => {
+  const input = {
+    type: "access.can-i",
+    id: "req-1",
+    payload: { resource: "workflow:@acme/deploy" },
+  };
+  const result = validateServerRequest(input);
+  assertEquals(typeof result, "string");
+});
+
 // ── Authorization test helpers ────────────────────────────────────────────
 
 const modeNoneConfig: ServeAuthConfig = {

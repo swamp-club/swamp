@@ -61,12 +61,19 @@ export interface AccessCheckPayload {
   collectives?: string[];
 }
 
+export interface AccessCanIPayload {
+  action?: string;
+  resource?: string;
+  collectives?: string[];
+}
+
 export type ServerRequest =
   | { type: "workflow.run"; id: string; payload: WorkflowRunPayload }
   | { type: "model.method.run"; id: string; payload: ModelMethodRunPayload }
   | { type: "access.grant.list"; id: string; payload?: AccessGrantListPayload }
   | { type: "access.group.list"; id: string; payload?: AccessGroupListPayload }
   | { type: "access.check"; id: string; payload: AccessCheckPayload }
+  | { type: "access.can-i"; id: string; payload: AccessCanIPayload }
   | { type: "access.reload"; id: string }
   | { type: "cancel"; id: string };
 
@@ -101,6 +108,20 @@ export interface AccessCheckResponse {
   decisions: Record<string, unknown>[];
 }
 
+export interface AccessCanIDecision {
+  action: string;
+  resource: string;
+  effect: string;
+  grantId: string;
+  via: string;
+  condition?: string;
+}
+
+export interface AccessCanIResponse {
+  principal: string;
+  decisions: AccessCanIDecision[];
+}
+
 export interface AccessReloadResponse {
   success: boolean;
   grantCount: number;
@@ -124,4 +145,5 @@ export type ServerMessage =
     payload: AccessGroupListResponse;
   }
   | { type: "access.check"; id: string; payload: AccessCheckResponse }
+  | { type: "access.can-i"; id: string; payload: AccessCanIResponse }
   | { type: "access.reload"; id: string; payload: AccessReloadResponse };
