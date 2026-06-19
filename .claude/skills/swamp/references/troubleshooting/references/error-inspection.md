@@ -96,10 +96,9 @@ Symptom: a model file at `extensions/models/<name>.ts` doesn't appear in
 2. **If doctor passes**, the model is loading but isn't visible. Re-run
    `swamp model type search --json` and check stderr for late warnings (some
    issues only surface when the catalog is queried, not when registries load).
-3. **Verify `deno check` passes** on the file — type errors that pass
-   `deno
-   check` may still be rejected by swamp's stricter validation (e.g.
-   missing `version`).
+3. **Verify `~/.swamp/deno/deno check` passes** on the file — type errors that
+   pass `~/.swamp/deno/deno check` may still be rejected by swamp's stricter
+   validation (e.g. missing `version`).
 4. **Do NOT run `swamp extension source add extensions/models`** — that path is
    auto-discovered by default. Registering it as a source is a no-op that adds
    confusion. Source-add is for directories _outside_ the repo.
