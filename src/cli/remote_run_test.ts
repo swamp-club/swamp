@@ -422,7 +422,7 @@ Deno.test("resolveServerToken: falls back to credential repo", async () => {
 Deno.test("resolveServerToken: converts ws URL to http for credential lookup", async () => {
   const mockRepo: ServerCredentialRepository = {
     get: (url: string): Promise<ServerCredential | null> => {
-      if (url === "http://localhost:9090/") {
+      if (url === "http://localhost:9090") {
         return Promise.resolve({
           serverUrl: url,
           tokenName: "stored",

@@ -79,7 +79,7 @@ function toHttpUrl(serverUrl: string): string {
     const parsed = new URL(serverUrl);
     if (parsed.protocol === "ws:") parsed.protocol = "http:";
     else if (parsed.protocol === "wss:") parsed.protocol = "https:";
-    return parsed.href;
+    return parsed.href.replace(/\/+$/, "");
   } catch {
     return serverUrl;
   }

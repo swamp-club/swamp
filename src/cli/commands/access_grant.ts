@@ -59,6 +59,7 @@ import {
 import type { ModelMethodRunEvent } from "../../libswamp/mod.ts";
 import {
   requestServerResponse,
+  resolveServerToken,
   runModelMethodOverServer,
 } from "../../cli/remote_run.ts";
 import type { AccessGrantListResponse } from "../../serve/protocol.ts";
@@ -120,6 +121,10 @@ const accessGrantCreateCommand = new Command()
     "--server <url:string>",
     "Run through a 'swamp serve' server instead of locally",
   )
+  .option(
+    "--token <token:string>",
+    "Server token (falls back to stored credential)",
+  )
   .action(async function (options: AnyOptions) {
     if (!options.allow && !options.deny) {
       throw new UserError("Either --allow or --deny must be specified");
@@ -147,6 +152,10 @@ const accessGrantCreateCommand = new Command()
         "grant",
         "create",
       ]);
+      const token = await resolveServerToken(
+        options.server as string,
+        options.token as string | undefined,
+      );
       const renderer = createModelMethodRunRenderer(ctx.outputMode, {
         modelName: instanceName,
         methodName: "create",
@@ -154,6 +163,7 @@ const accessGrantCreateCommand = new Command()
       await consumeStream(
         runModelMethodOverServer({
           server: options.server as string,
+          token,
           payload: {
             modelIdOrName: `@${GRANT_MODEL_TYPE.normalized}`,
             methodName: "create",
@@ -296,6 +306,10 @@ const accessGrantListCommand = new Command()
     "--server <url:string>",
     "List grants on a 'swamp serve' server instead of locally",
   )
+  .option(
+    "--token <token:string>",
+    "Server token (falls back to stored credential)",
+  )
   .action(async function (options: AnyOptions) {
     validateServerRepoExclusivity(
       options.server as string | undefined,
@@ -308,8 +322,12 @@ const accessGrantListCommand = new Command()
         "grant",
         "list",
       ]);
+      const token = await resolveServerToken(
+        options.server as string,
+        options.token as string | undefined,
+      );
       const response = await requestServerResponse<AccessGrantListResponse>(
-        { server: options.server as string },
+        { server: options.server as string, ...(token ? { token } : {}) },
         {
           type: "access.grant.list",
           payload: {
@@ -380,6 +398,10 @@ const accessGrantRevokeCommand = new Command()
     "--server <url:string>",
     "Revoke a grant on a 'swamp serve' server instead of locally",
   )
+  .option(
+    "--token <token:string>",
+    "Server token (falls back to stored credential)",
+  )
   .action(async function (options: AnyOptions, grantId: string) {
     validateServerRepoExclusivity(
       options.server as string | undefined,
@@ -392,8 +414,12 @@ const accessGrantRevokeCommand = new Command()
         "grant",
         "revoke",
       ]);
+      const token = await resolveServerToken(
+        options.server as string,
+        options.token as string | undefined,
+      );
       const response = await requestServerResponse<AccessGrantListResponse>(
-        { server: options.server as string },
+        { server: options.server as string, ...(token ? { token } : {}) },
         { type: "access.grant.list" },
       );
       const allGrants: { grant: Grant; instanceName: string }[] = [];
@@ -428,6 +454,7 @@ const accessGrantRevokeCommand = new Command()
       await consumeStream(
         runModelMethodOverServer({
           server: options.server as string,
+          token,
           payload: {
             modelIdOrName: match.instanceName,
             methodName: "revoke",
