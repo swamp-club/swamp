@@ -17,8 +17,10 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
+import { assertOffLoopbackSecurity } from "./serve.ts";
+import { UserError } from "../../domain/errors.ts";
 
 // Initialize logging for tests
 await initializeLogging({});
@@ -73,4 +75,46 @@ Deno.test("serveCommand has --key-file option", async () => {
   const options = serveCommand.getOptions();
   const keyOpt = options.find((o) => o.name === "key-file");
   assertEquals(keyOpt !== undefined, true);
+});
+
+// --- Off-loopback security validation ---
+
+Deno.test("assertOffLoopbackSecurity: off-loopback without TLS refuses", () => {
+  assertThrows(
+    () => assertOffLoopbackSecurity("0.0.0.0", false, "none"),
+    UserError,
+    "Off-loopback binding requires TLS",
+  );
+});
+
+Deno.test("assertOffLoopbackSecurity: off-loopback with TLS but no auth refuses", () => {
+  assertThrows(
+    () => assertOffLoopbackSecurity("0.0.0.0", true, "none"),
+    UserError,
+    "Off-loopback binding requires authentication",
+  );
+});
+
+Deno.test("assertOffLoopbackSecurity: off-loopback without TLS but with auth refuses", () => {
+  assertThrows(
+    () => assertOffLoopbackSecurity("0.0.0.0", false, "token"),
+    UserError,
+    "Off-loopback binding requires TLS",
+  );
+});
+
+Deno.test("assertOffLoopbackSecurity: off-loopback with TLS and auth passes", () => {
+  assertOffLoopbackSecurity("0.0.0.0", true, "token");
+});
+
+Deno.test("assertOffLoopbackSecurity: loopback 127.0.0.1 with no TLS and no auth passes", () => {
+  assertOffLoopbackSecurity("127.0.0.1", false, "none");
+});
+
+Deno.test("assertOffLoopbackSecurity: loopback localhost with no TLS and no auth passes", () => {
+  assertOffLoopbackSecurity("localhost", false, "none");
+});
+
+Deno.test("assertOffLoopbackSecurity: IPv6 loopback ::1 with no TLS and no auth passes", () => {
+  assertOffLoopbackSecurity("::1", false, "none");
 });
