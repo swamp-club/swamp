@@ -21,6 +21,7 @@ import { Command } from "@cliffy/command";
 import { groupCommandAction } from "../group_action.ts";
 import { accessGrantCommand } from "./access_grant.ts";
 import { accessGroupCommand } from "./access_group.ts";
+import { accessCanICommand } from "./access_can_i.ts";
 import { accessCheckCommand } from "./access_check.ts";
 import { accessReloadCommand } from "./access_reload.ts";
 import { accessTokenMintCommand } from "./access_token_mint.ts";
@@ -45,5 +46,6 @@ export const accessCommand = new Command()
   .command("token", accessTokenCommand)
   .command("grant", accessGrantCommand)
   .command("group", accessGroupCommand)
+  .command("can-i", accessCanICommand)
   .command("check", accessCheckCommand)
   .command("reload", accessReloadCommand);

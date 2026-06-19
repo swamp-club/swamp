@@ -30,6 +30,7 @@ import { createLibSwampContext, modelMethodRun } from "../libswamp/mod.ts";
 import { createModelMethodRunDeps, executeWorkflowWithLocks } from "./deps.ts";
 import { serializeEvent } from "./serializer.ts";
 import type {
+  AccessCanIPayload,
   AccessCheckPayload,
   AccessGrantListPayload,
   AccessGroupListPayload,
@@ -122,6 +123,16 @@ const AccessCheckRequestSchema = z.object({
   }),
 });
 
+const AccessCanIRequestSchema = z.object({
+  type: z.literal("access.can-i"),
+  id: z.string().min(1),
+  payload: z.object({
+    action: z.string().optional(),
+    resource: z.string().optional(),
+    collectives: z.array(z.string()).optional(),
+  }),
+});
+
 const AccessReloadRequestSchema = z.object({
   type: z.literal("access.reload"),
   id: z.string().min(1),
@@ -138,6 +149,7 @@ const ServerRequestSchema = z.discriminatedUnion("type", [
   AccessGrantListRequestSchema,
   AccessGroupListRequestSchema,
   AccessCheckRequestSchema,
+  AccessCanIRequestSchema,
   AccessReloadRequestSchema,
   CancelRequestSchema,
 ]);
@@ -311,6 +323,15 @@ export function handleMessage(
       break;
     case "access.check":
       task = handleAccessCheck(
+        socket,
+        ctx,
+        request.id,
+        request.payload,
+        principal,
+      );
+      break;
+    case "access.can-i":
+      task = handleAccessCanI(
         socket,
         ctx,
         request.id,
@@ -730,6 +751,109 @@ function handleAccessCheck(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     sendError(socket, requestId, "access_check_failed", message);
+    return Promise.resolve();
+  }
+}
+
+function handleAccessCanI(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  payload: AccessCanIPayload,
+  principal: Principal | null,
+): Promise<void> {
+  if (!principal) {
+    sendError(
+      socket,
+      requestId,
+      "unauthorized",
+      "can-i requires an authenticated connection — use --token or swamp auth server-login",
+    );
+    return Promise.resolve();
+  }
+
+  try {
+    if (!ctx.policySnapshotLoader) {
+      sendError(
+        socket,
+        requestId,
+        "access_not_configured",
+        "Access control is not configured on this server",
+      );
+      return Promise.resolve();
+    }
+
+    const snapshot = ctx.policySnapshotLoader.snapshot;
+    const collectives = payload.collectives ?? [];
+    const accessPrincipal = { principal, collectives };
+    const principalStr = principalToString(principal);
+
+    if (payload.action && payload.resource) {
+      const actionResult = ActionSchema.safeParse(payload.action);
+      if (!actionResult.success) {
+        sendError(
+          socket,
+          requestId,
+          "invalid_action",
+          `Invalid action "${payload.action}": must be one of run, read, write, admin`,
+        );
+        return Promise.resolve();
+      }
+
+      const resource = parseResourceSelector(payload.resource);
+      const service = new GrantBasedAccessDecisionService(snapshot);
+      const decisions = service.explain(
+        accessPrincipal,
+        actionResult.data,
+        { kind: resource.kind, name: resource.pattern, fields: {} },
+      );
+
+      send(socket, {
+        type: "access.can-i",
+        id: requestId,
+        payload: {
+          principal: principalStr,
+          decisions: decisions.map((d) => ({
+            action: payload.action!,
+            resource: payload.resource!,
+            effect: d.effect,
+            grantId: d.grantId,
+            via: `${d.subject.kind}:${d.subject.name}`,
+            ...(d.condition ? { condition: d.condition } : {}),
+          })),
+        },
+      });
+    } else {
+      const subjects: string[] = [principalStr];
+      const localGroups = snapshot.groupsForPrincipal(principalStr);
+      for (const groupName of localGroups) {
+        subjects.push(`group:${groupName}`);
+      }
+      for (const collective of collectives) {
+        subjects.push(`idp-group:${collective}`);
+      }
+
+      const grants = snapshot.grantsForSubjects(subjects);
+      send(socket, {
+        type: "access.can-i",
+        id: requestId,
+        payload: {
+          principal: principalStr,
+          decisions: grants.map((g) => ({
+            action: g.actions.join(","),
+            resource: `${g.resource.kind}:${g.resource.pattern}`,
+            effect: g.effect,
+            grantId: g.id,
+            via: `${g.subject.kind}:${g.subject.name}`,
+            ...(g.condition ? { condition: g.condition } : {}),
+          })),
+        },
+      });
+    }
+    return Promise.resolve();
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    sendError(socket, requestId, "access_can_i_failed", message);
     return Promise.resolve();
   }
 }
