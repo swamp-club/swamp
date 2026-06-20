@@ -73,7 +73,13 @@ function readHookInput(tool: HookTool): Promise<string> {
 }
 
 /** Valid values for the --tool option */
-const VALID_HOOK_TOOLS: HookTool[] = ["claude", "cursor", "kiro", "opencode"];
+const VALID_HOOK_TOOLS: HookTool[] = [
+  "claude",
+  "cursor",
+  "kiro",
+  "opencode",
+  "copilot",
+];
 
 /**
  * `swamp audit record --from-hook`
