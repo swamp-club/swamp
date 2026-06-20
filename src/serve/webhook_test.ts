@@ -18,10 +18,57 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertThrows } from "@std/assert";
-import { parseWebhookFlag, verifySignature } from "./webhook.ts";
+import {
+  buildWebhookPayload,
+  parseWebhookFlag,
+  verifySignature,
+} from "./webhook.ts";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
 
 await initializeLogging({});
+
+// ── buildWebhookPayload ────────────────────────────────────────────────
+
+Deno.test("buildWebhookPayload: parses a JSON body into webhook.body", () => {
+  const body = new TextEncoder().encode(
+    '{"data":{"issue":{"identifier":"PLT-1057"}}}',
+  );
+  const payload = buildWebhookPayload(body, new Headers(), "/hooks/linear");
+  assertEquals(payload.body, {
+    data: { issue: { identifier: "PLT-1057" } },
+  });
+  assertEquals(payload.route, "/hooks/linear");
+});
+
+Deno.test("buildWebhookPayload: falls back to the raw string for non-JSON", () => {
+  const body = new TextEncoder().encode("not json at all");
+  const payload = buildWebhookPayload(body, new Headers(), "/hooks/x");
+  assertEquals(payload.body, "not json at all");
+});
+
+Deno.test("buildWebhookPayload: lowercases header names", () => {
+  const headers = new Headers({ "X-Linear-Event": "Issue" });
+  const payload = buildWebhookPayload(
+    new TextEncoder().encode("{}"),
+    headers,
+    "/hooks/x",
+  );
+  assertEquals(payload.headers["x-linear-event"], "Issue");
+});
+
+Deno.test("buildWebhookPayload: drops the signature header", () => {
+  const headers = new Headers({
+    "X-Hub-Signature-256": "sha256=deadbeef",
+    "X-Other": "keep",
+  });
+  const payload = buildWebhookPayload(
+    new TextEncoder().encode("{}"),
+    headers,
+    "/hooks/x",
+  );
+  assertEquals("x-hub-signature-256" in payload.headers, false);
+  assertEquals(payload.headers["x-other"], "keep");
+});
 
 // ── parseWebhookFlag ───────────────────────────────────────────────────
 

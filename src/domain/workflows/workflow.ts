@@ -224,11 +224,20 @@ export class Workflow {
    * win on conflict (e.g. a webhook payload overrides a trigger default).
    * Schema defaults are applied later, downstream, for any keys still missing —
    * yielding precedence: caller inputs > trigger.inputs > schema defaults.
+   *
+   * `resolvedTriggerInputs`, when supplied, replaces the raw `trigger.inputs`
+   * as the baseline layer. Webhook-triggered runs CEL-evaluate `trigger.inputs`
+   * against the request payload first (see TriggerInputResolver) and pass the
+   * resolved values here, so the precedence rule stays in the aggregate.
    */
   baselineInputs(
     callerInputs: Record<string, unknown>,
+    resolvedTriggerInputs?: Record<string, unknown>,
   ): Record<string, unknown> {
-    return deepMerge(this.trigger?.inputs ?? {}, callerInputs);
+    return deepMerge(
+      resolvedTriggerInputs ?? this.trigger?.inputs ?? {},
+      callerInputs,
+    );
   }
 
   /**

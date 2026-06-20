@@ -28,6 +28,7 @@ import type { EnvVarUsageDetail } from "../../domain/models/validation_service.t
 import type { Workflow } from "../../domain/workflows/workflow.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import type { StepRun } from "../../domain/workflows/workflow_run.ts";
+import type { WebhookPayload } from "../../domain/expressions/model_resolver.ts";
 import type {
   StepArtifactsData,
   StepRunView,
@@ -243,6 +244,12 @@ export interface WorkflowRunInput {
   workflowIdOrName: string;
   lastEvaluated?: boolean;
   inputs?: Record<string, unknown>;
+  /**
+   * Verified webhook request payload, set only for webhook-triggered runs.
+   * `executeWorkflowWithLocks` CEL-evaluates the workflow's `trigger.inputs`
+   * against this payload to produce baseline inputs before validation.
+   */
+  webhook?: WebhookPayload;
   runtimeTags?: Record<string, string>;
   verbose?: boolean;
   skipAllReports?: boolean;

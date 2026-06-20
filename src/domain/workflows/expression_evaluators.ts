@@ -23,6 +23,7 @@ import { Workflow as WorkflowClass } from "./workflow.ts";
 import {
   extractExpressions,
   isTaskInputsPath,
+  isTriggerInputsPath,
   replaceExpressions,
 } from "../expressions/expression_parser.ts";
 import { containsRuntimeExpression } from "../expressions/expression_evaluation_service.ts";
@@ -104,6 +105,13 @@ export class WorkflowExpressionEvaluator {
       }
       // forEach.in expressions must remain as strings for expansion.
       if (forEachInExpressions.has(expr.raw)) {
+        continue;
+      }
+      // trigger.inputs are resolved at fire time (TriggerInputResolver for
+      // webhook runs; static literals for scheduled runs), not during
+      // workflow-body evaluation — leave them raw so a `webhook.*` reference
+      // doesn't evaluate against a context that lacks the payload.
+      if (isTriggerInputsPath(expr.path)) {
         continue;
       }
       // task.inputs that depend on step outputs are evaluated at step

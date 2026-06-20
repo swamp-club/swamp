@@ -26,11 +26,45 @@
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import type { DatastoreConfig } from "../domain/datastore/datastore_config.ts";
 import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
+import type { WebhookPayload } from "../domain/expressions/model_resolver.ts";
 import { UserError } from "../domain/errors.ts";
 import { executeWorkflowWithLocks } from "./deps.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 
 const logger = getSwampLogger(["serve", "webhook"]);
+
+/** Header carrying the HMAC signature — excluded from the exposed payload. */
+const SIGNATURE_HEADER = "x-hub-signature-256";
+
+/**
+ * Builds the {@link WebhookPayload} exposed to a workflow's `trigger.inputs`
+ * CEL expressions from a verified request. The body is JSON-parsed when
+ * possible, falling back to the raw UTF-8 string for non-JSON payloads. Header
+ * names are lowercased and the signature header is dropped so it can never leak
+ * into workflow inputs.
+ */
+export function buildWebhookPayload(
+  body: Uint8Array,
+  headers: Headers,
+  route: string,
+): WebhookPayload {
+  const text = new TextDecoder().decode(body);
+  let parsed: unknown = text;
+  try {
+    parsed = JSON.parse(text);
+  } catch {
+    // Non-JSON payload — expose the raw string.
+  }
+
+  const exposedHeaders: Record<string, string> = {};
+  for (const [name, value] of headers) {
+    const lower = name.toLowerCase();
+    if (lower === SIGNATURE_HEADER) continue;
+    exposedHeaders[lower] = value;
+  }
+
+  return { body: parsed, headers: exposedHeaders, route };
+}
 
 // ── Value Objects ──────────────────────────────────────────────────────
 
@@ -241,6 +275,7 @@ export class WebhookService {
   private readonly runQueue: Array<{
     workflowIdOrName: string;
     route: string;
+    payload: WebhookPayload;
   }> = [];
   private processing = false;
   private processingPromise: Promise<void> = Promise.resolve();
@@ -342,6 +377,7 @@ export class WebhookService {
     this.runQueue.push({
       workflowIdOrName: endpoint.workflowIdOrName,
       route: endpoint.route,
+      payload: buildWebhookPayload(body, req.headers, endpoint.route),
     });
 
     this.emit({
@@ -383,8 +419,8 @@ export class WebhookService {
 
     try {
       while (this.runQueue.length > 0) {
-        const { workflowIdOrName, route } = this.runQueue.shift()!;
-        await this.executeWorkflow(workflowIdOrName, route);
+        const { workflowIdOrName, route, payload } = this.runQueue.shift()!;
+        await this.executeWorkflow(workflowIdOrName, route, payload);
       }
     } finally {
       this.processing = false;
@@ -394,6 +430,7 @@ export class WebhookService {
   private async executeWorkflow(
     workflowIdOrName: string,
     route: string,
+    payload: WebhookPayload,
   ): Promise<void> {
     const controller = new AbortController();
     this.running.set(workflowIdOrName, controller);
@@ -405,7 +442,7 @@ export class WebhookService {
         this.deps.repoDir,
         this.deps.repoContext,
         this.deps.datastoreConfig,
-        { workflowIdOrName },
+        { workflowIdOrName, webhook: payload },
         controller.signal,
         (event) => {
           if (event.kind === "started") {

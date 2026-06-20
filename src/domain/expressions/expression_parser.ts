@@ -221,6 +221,24 @@ export function isTaskInputsPath(path: string): boolean {
 }
 
 /**
+ * Checks if an expression path is within a workflow's `trigger.inputs`.
+ *
+ * These values are resolved at fire time by the trigger machinery — webhook
+ * runs CEL-evaluate them against the request payload (see TriggerInputResolver),
+ * scheduled runs use them as static literals — so workflow-body evaluation must
+ * leave them raw rather than evaluate `webhook.*` against a context that lacks
+ * the payload.
+ *
+ * @param path - The expression path (e.g., "trigger.inputs.identifier")
+ * @returns True if the path is within the trigger's inputs map
+ */
+export function isTriggerInputsPath(path: string): boolean {
+  return path === "trigger.inputs" ||
+    path.startsWith("trigger.inputs.") ||
+    path.startsWith("trigger.inputs[");
+}
+
+/**
  * Pattern to match `inputs.fieldName` (dot notation) in CEL expressions.
  * Uses negative lookbehind to exclude cross-model references like `model.foo.input.bar`.
  */

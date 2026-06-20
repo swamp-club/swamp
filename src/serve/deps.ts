@@ -37,6 +37,9 @@ import {
   WorkflowExecutionService,
 } from "../domain/workflows/execution_service.ts";
 import { createWorkflowId } from "../domain/workflows/workflow_id.ts";
+import { TriggerInputResolver } from "../domain/workflows/trigger_input_resolver.ts";
+import { buildEnvContext } from "../domain/expressions/model_resolver.ts";
+import { CelEvaluator } from "../infrastructure/cel/cel_evaluator.ts";
 import { ModelType } from "../domain/models/model_type.ts";
 import { resolveOrCreateDefinition } from "../libswamp/mod.ts";
 import { YamlDefinitionRepository } from "../infrastructure/persistence/yaml_definition_repository.ts";
@@ -323,8 +326,30 @@ export async function executeWorkflowWithLocks(
     // scheduled and webhook trigger-fired runs get baseline values at fire
     // time. Downstream workflowRun applies schema defaults and validates,
     // yielding precedence: caller inputs > trigger.inputs > schema defaults.
+    //
+    // For webhook runs, trigger.inputs may reference the request payload via the
+    // `webhook` CEL namespace (e.g. "${{ webhook.body.data.issue.identifier }}").
+    // Resolve those against the payload here — before workflowRun's coercion and
+    // validation — so a required input mapped from the payload satisfies the
+    // schema.
+    let resolvedTriggerInputs: Record<string, unknown> | undefined;
+    if (workflow && input.webhook && workflow.triggerInputs) {
+      const resolver = new TriggerInputResolver(new CelEvaluator());
+      resolvedTriggerInputs = await resolver.resolve(workflow.triggerInputs, {
+        model: {},
+        env: buildEnvContext(),
+        webhook: input.webhook,
+      });
+    }
+
     const effectiveInput = workflow
-      ? { ...input, inputs: workflow.baselineInputs(input.inputs ?? {}) }
+      ? {
+        ...input,
+        inputs: workflow.baselineInputs(
+          input.inputs ?? {},
+          resolvedTriggerInputs,
+        ),
+      }
       : input;
 
     for await (const event of workflowRun(libCtx, deps, effectiveInput)) {

@@ -806,6 +806,38 @@ Deno.test("Workflow.baselineInputs preserves non-string trigger input types", ()
   assertEquals(result.items, ["a", "b"]);
 });
 
+Deno.test("Workflow.baselineInputs uses resolvedTriggerInputs over raw trigger inputs", () => {
+  const workflow = Workflow.create({
+    name: "resolved-trigger-inputs",
+    trigger: {
+      inputs: { identifier: "${{ webhook.body.id }}" },
+    },
+    jobs: [createTestJob("job1")],
+  });
+
+  // The webhook path resolves trigger.inputs against the payload first and
+  // passes the resolved values as the baseline layer.
+  assertEquals(
+    workflow.baselineInputs({}, { identifier: "PLT-1057" }),
+    { identifier: "PLT-1057" },
+  );
+});
+
+Deno.test("Workflow.baselineInputs lets caller override resolvedTriggerInputs", () => {
+  const workflow = Workflow.create({
+    name: "resolved-trigger-inputs-override",
+    trigger: { inputs: { identifier: "${{ webhook.body.id }}" } },
+    jobs: [createTestJob("job1")],
+  });
+
+  assertEquals(
+    workflow.baselineInputs({ identifier: "OVERRIDE" }, {
+      identifier: "PLT-1057",
+    }),
+    { identifier: "OVERRIDE" },
+  );
+});
+
 Deno.test("Workflow.fromData handles missing tags (backward compat)", () => {
   // Simulate legacy data without tags field — Zod .default({}) fills it in
   const data = {
