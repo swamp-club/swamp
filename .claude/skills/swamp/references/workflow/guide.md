@@ -215,11 +215,17 @@ trigger:
 ```
 
 `webhook.body` is the JSON-parsed body (raw string if not JSON),
-`webhook.headers` is a lowercased-name map (signature header excluded), and
-`webhook.route` is the matched route. Expressions resolve against the verified
-payload before input validation, so a payload field can satisfy a `required`
-input. swamp's CEL has no `??` — guard optional fields with `has(x) ? x : y`.
-See `design/workflow.md` for full semantics and the security caveat on headers.
+`webhook.headers` is a lowercased-name map (the active scheme's signature header
+excluded), and `webhook.route` is the matched route. Expressions resolve against
+the verified payload before input validation, so a payload field can satisfy a
+`required` input. swamp's CEL has no `??` — guard optional fields with
+`has(x) ? x : y`. See `design/workflow.md` for full semantics and the security
+caveat on headers.
+
+The signature scheme is set per endpoint on `swamp serve`'s `--webhook` flag:
+`<route>:<workflow>:<secret>[:<scheme>[:<header>[:<prefix>]]]`, where `scheme`
+is `github` (default), `linear`, `stripe`, `slack`, or `generic` (header +
+optional prefix). Omitting the scheme preserves the original behavior.
 
 ## Edit a Workflow
 

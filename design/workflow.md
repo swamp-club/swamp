@@ -361,8 +361,17 @@ The `webhook` namespace exposes:
 - `webhook.body` — the request body, parsed as JSON when the payload is valid
   JSON, otherwise the raw string.
 - `webhook.headers` — request headers as a map of lowercased names to values.
-  The signature header (`x-hub-signature-256`) is excluded.
+  The active scheme's signature header is excluded (e.g. `x-hub-signature-256`
+  for github, `stripe-signature` for stripe — see schemes below).
 - `webhook.route` — the matched webhook route (e.g. `/hooks/linear`).
+
+The signature scheme is selected per endpoint on the `--webhook` flag:
+`<route>:<workflow>:<secret>[:<scheme>[:<header>[:<prefix>]]]`. `scheme` is one
+of `github` (the default, `X-Hub-Signature-256`), `linear`, `stripe`, `slack`,
+or `generic` (which takes a header name and optional value prefix). When no
+scheme is given the flag behaves exactly as before, so the secret may still
+contain colons; a scheme is recognized only when the fourth field is a known
+scheme keyword.
 
 These expressions are evaluated against the verified payload **at fire time,
 before input validation**, so a payload field can satisfy a `required` input.
