@@ -122,7 +122,9 @@ export const serveCommand = new Command()
   )
   .option(
     "--webhook <spec:string>",
-    "Register a webhook endpoint: <route>:<workflow>:<secret>",
+    "Register a webhook endpoint: <route>:<workflow>:<secret>[:<scheme>[:<header>[:<prefix>]]]. " +
+      "scheme is one of github (default), linear, stripe, slack, generic; " +
+      "generic takes a header name and optional value prefix",
     { collect: true },
   )
   .option(
@@ -165,6 +167,11 @@ export const serveCommand = new Command()
   .example(
     "Webhook trigger",
     "swamp serve --webhook '/hooks/github:my-workflow:$WEBHOOK_SECRET'",
+  )
+  .example(
+    "Webhook with a provider scheme",
+    "swamp serve --webhook '/hooks/linear:my-workflow:$SECRET:linear' " +
+      "--webhook '/hooks/custom:my-workflow:$SECRET:generic:X-Signature:sha256='",
   )
   .action(async function (options: AnyOptions) {
     const ctx = createContext(options as GlobalOptions, ["serve"]);

@@ -30,10 +30,17 @@ import type { WebhookPayload } from "../domain/expressions/model_resolver.ts";
 import { UserError } from "../domain/errors.ts";
 import { executeWorkflowWithLocks } from "./deps.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
+import {
+  constantTimeEqualHex,
+  createVerifier,
+  hmacSha256Hex,
+  isWebhookScheme,
+  type VerifierConfig,
+} from "./webhook_verifiers.ts";
 
 const logger = getSwampLogger(["serve", "webhook"]);
 
-/** Header carrying the HMAC signature — excluded from the exposed payload. */
+/** Default signature header — used by the github scheme. */
 const SIGNATURE_HEADER = "x-hub-signature-256";
 
 /**
@@ -47,6 +54,7 @@ export function buildWebhookPayload(
   body: Uint8Array,
   headers: Headers,
   route: string,
+  signatureHeader: string = SIGNATURE_HEADER,
 ): WebhookPayload {
   const text = new TextDecoder().decode(body);
   let parsed: unknown = text;
@@ -56,10 +64,11 @@ export function buildWebhookPayload(
     // Non-JSON payload — expose the raw string.
   }
 
+  const excluded = signatureHeader.toLowerCase();
   const exposedHeaders: Record<string, string> = {};
   for (const [name, value] of headers) {
     const lower = name.toLowerCase();
-    if (lower === SIGNATURE_HEADER) continue;
+    if (lower === excluded) continue;
     exposedHeaders[lower] = value;
   }
 
@@ -76,32 +85,64 @@ export interface WebhookEndpoint {
   readonly route: string;
   readonly workflowIdOrName: string;
   readonly secret: string;
+  readonly verifier: VerifierConfig;
 }
 
 /**
  * Parse a --webhook flag value into a WebhookEndpoint.
- * Format: <route>:<workflow>:<secret>
  *
- * The secret is everything after the second colon, allowing colons
- * within the secret itself.
+ * Format: `<route>:<workflow>:<secret>[:<scheme>[:<header>[:<prefix>]]]`
+ *
+ * The scheme is recognized only when the fourth field is a known scheme
+ * keyword; otherwise the flag is parsed the legacy way — the secret is
+ * everything after the second colon (so it may still contain colons) and the
+ * scheme defaults to github. This keeps every existing flag working. The
+ * consequence (a colon-bearing secret cannot be combined with an explicit
+ * scheme, and a secret whose colon-tail begins with a reserved keyword would be
+ * reinterpreted) is the accepted limitation tracked in #723. When a scheme is
+ * given, the remaining fields are positional: `generic` additionally takes a
+ * header name (fifth, required) and a value prefix (sixth, optional).
  */
 export function parseWebhookFlag(flag: string): WebhookEndpoint {
-  const firstColon = flag.indexOf(":");
-  if (firstColon === -1) {
-    throw new UserError(
-      `Invalid --webhook format: expected '<route>:<workflow>:<secret>', got '${flag}'`,
-    );
-  }
-  const secondColon = flag.indexOf(":", firstColon + 1);
-  if (secondColon === -1) {
-    throw new UserError(
-      `Invalid --webhook format: expected '<route>:<workflow>:<secret>', got '${flag}'`,
-    );
+  const fields = flag.split(":");
+  const usage =
+    "expected '<route>:<workflow>:<secret>[:<scheme>[:<header>[:<prefix>]]]'";
+
+  if (fields.length < 3) {
+    throw new UserError(`Invalid --webhook format: ${usage}, got '${flag}'`);
   }
 
-  const route = flag.slice(0, firstColon);
-  const workflowIdOrName = flag.slice(firstColon + 1, secondColon);
-  const secret = flag.slice(secondColon + 1);
+  const route = fields[0];
+  const workflowIdOrName = fields[1];
+
+  let secret: string;
+  let verifier: VerifierConfig;
+
+  if (fields.length >= 4 && isWebhookScheme(fields[3])) {
+    // Scheme-qualified form: fields are positional, so the secret cannot
+    // contain a colon here.
+    secret = fields[2];
+    const scheme = fields[3];
+    if (scheme === "generic") {
+      const header = fields[4];
+      if (!header) {
+        throw new UserError(
+          "Invalid --webhook format: the 'generic' scheme requires a header " +
+            `name (<route>:<workflow>:<secret>:generic:<header>[:<prefix>]), got '${flag}'`,
+        );
+      }
+      verifier = { scheme, header, prefix: fields[5] ?? "" };
+    } else {
+      verifier = { scheme };
+    }
+  } else {
+    // Legacy form: secret is everything after the second colon (may contain
+    // colons); scheme defaults to github.
+    const firstColon = flag.indexOf(":");
+    const secondColon = flag.indexOf(":", firstColon + 1);
+    secret = flag.slice(secondColon + 1);
+    verifier = { scheme: "github" };
+  }
 
   if (!route || !workflowIdOrName || !secret) {
     throw new UserError(
@@ -115,7 +156,7 @@ export function parseWebhookFlag(flag: string): WebhookEndpoint {
     );
   }
 
-  return { route, workflowIdOrName, secret };
+  return { route, workflowIdOrName, secret, verifier };
 }
 
 // ── HMAC Signature Verification ────────────────────────────────────────
@@ -136,39 +177,9 @@ export async function verifySignature(
   if (!signatureHeader.startsWith("sha256=")) {
     return false;
   }
-
   const receivedHex = signatureHeader.slice("sha256=".length);
-
-  const key = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-
-  // body is always a freshly-allocated Uint8Array from readBodyWithLimit
-  // or TextEncoder, so .buffer is a plain ArrayBuffer (not SharedArrayBuffer)
-  const signature = await crypto.subtle.sign(
-    "HMAC",
-    key,
-    body.buffer as ArrayBuffer,
-  );
-  const expectedHex = Array.from(new Uint8Array(signature))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-
-  // Constant-time comparison: always compare all characters
-  if (receivedHex.length !== expectedHex.length) {
-    return false;
-  }
-
-  let mismatch = 0;
-  for (let i = 0; i < expectedHex.length; i++) {
-    mismatch |= receivedHex.charCodeAt(i) ^ expectedHex.charCodeAt(i);
-  }
-
-  return mismatch === 0;
+  const expectedHex = await hmacSha256Hex(body, secret);
+  return constantTimeEqualHex(receivedHex, expectedHex);
 }
 
 // ── Body Size Limit ────────────────────────────────────────────────────
@@ -319,17 +330,18 @@ export class WebhookService {
       workflowName: endpoint.workflowIdOrName,
     });
 
-    // Reject missing signature before reading the body to avoid
-    // unauthenticated resource consumption
-    const signatureHeader = req.headers.get("x-hub-signature-256") ?? "";
-    if (!signatureHeader) {
+    const verifier = createVerifier(endpoint.verifier);
+
+    // Reject a missing signature before reading the body to avoid
+    // unauthenticated resource consumption.
+    if (!req.headers.get(verifier.signatureHeader)) {
       this.emit({
         kind: "webhook_rejected",
         route: endpoint.route,
-        reason: "Missing X-Hub-Signature-256 header",
+        reason: `Missing ${verifier.signatureHeader} header`,
       });
       return Response.json(
-        { error: "Missing X-Hub-Signature-256 header" },
+        { error: `Missing ${verifier.signatureHeader} header` },
         { status: 401 },
       );
     }
@@ -348,7 +360,9 @@ export class WebhookService {
       );
     }
 
-    const valid = await verifySignature(body, signatureHeader, endpoint.secret);
+    // Any verification failure (malformed value, stale timestamp, mismatch)
+    // returns a uniform 401 so the response cannot be used as an oracle.
+    const valid = await verifier.verify(body, req.headers, endpoint.secret);
     if (!valid) {
       this.emit({
         kind: "webhook_rejected",
@@ -377,7 +391,12 @@ export class WebhookService {
     this.runQueue.push({
       workflowIdOrName: endpoint.workflowIdOrName,
       route: endpoint.route,
-      payload: buildWebhookPayload(body, req.headers, endpoint.route),
+      payload: buildWebhookPayload(
+        body,
+        req.headers,
+        endpoint.route,
+        verifier.signatureHeader,
+      ),
     });
 
     this.emit({

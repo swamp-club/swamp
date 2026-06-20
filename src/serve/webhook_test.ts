@@ -70,6 +70,22 @@ Deno.test("buildWebhookPayload: drops the signature header", () => {
   assertEquals(payload.headers["x-other"], "keep");
 });
 
+Deno.test("buildWebhookPayload: drops the scheme-specific signature header", () => {
+  const headers = new Headers({
+    "Stripe-Signature": "t=1,v1=deadbeef",
+    "X-Hub-Signature-256": "sha256=keep-me",
+  });
+  const payload = buildWebhookPayload(
+    new TextEncoder().encode("{}"),
+    headers,
+    "/hooks/stripe",
+    "stripe-signature",
+  );
+  // Only the active scheme's header is excluded; others pass through.
+  assertEquals("stripe-signature" in payload.headers, false);
+  assertEquals(payload.headers["x-hub-signature-256"], "sha256=keep-me");
+});
+
 // ── parseWebhookFlag ───────────────────────────────────────────────────
 
 Deno.test("parseWebhookFlag: parses valid flag", () => {
@@ -78,16 +94,76 @@ Deno.test("parseWebhookFlag: parses valid flag", () => {
     route: "/hooks/github",
     workflowIdOrName: "my-workflow",
     secret: "mysecret",
+    verifier: { scheme: "github" },
   });
 });
 
-Deno.test("parseWebhookFlag: secret can contain colons", () => {
+Deno.test("parseWebhookFlag: three-field form defaults to github", () => {
+  const result = parseWebhookFlag("/hooks/gh:deploy:mysecret");
+  assertEquals(result.verifier, { scheme: "github" });
+});
+
+Deno.test("parseWebhookFlag: secret can contain colons (legacy 3-field form)", () => {
   const result = parseWebhookFlag(
     "/hooks/gh:deploy:secret:with:colons",
   );
   assertEquals(result.route, "/hooks/gh");
   assertEquals(result.workflowIdOrName, "deploy");
   assertEquals(result.secret, "secret:with:colons");
+  assertEquals(result.verifier, { scheme: "github" });
+});
+
+Deno.test("parseWebhookFlag: parses an explicit linear scheme", () => {
+  const result = parseWebhookFlag("/hooks/linear:wf:mysecret:linear");
+  assertEquals(result.secret, "mysecret");
+  assertEquals(result.verifier, { scheme: "linear" });
+});
+
+Deno.test("parseWebhookFlag: parses stripe and slack schemes", () => {
+  assertEquals(
+    parseWebhookFlag("/hooks/s:wf:sec:stripe").verifier,
+    { scheme: "stripe" },
+  );
+  assertEquals(
+    parseWebhookFlag("/hooks/s:wf:sec:slack").verifier,
+    { scheme: "slack" },
+  );
+});
+
+Deno.test("parseWebhookFlag: parses generic scheme with header and prefix", () => {
+  const result = parseWebhookFlag(
+    "/hooks/x:wf:sec:generic:X-Signature:sha256=",
+  );
+  assertEquals(result.verifier, {
+    scheme: "generic",
+    header: "X-Signature",
+    prefix: "sha256=",
+  });
+});
+
+Deno.test("parseWebhookFlag: generic prefix defaults to empty", () => {
+  const result = parseWebhookFlag("/hooks/x:wf:sec:generic:X-Signature");
+  assertEquals(result.verifier, {
+    scheme: "generic",
+    header: "X-Signature",
+    prefix: "",
+  });
+});
+
+Deno.test("parseWebhookFlag: a non-scheme 4th field stays part of a colon-secret", () => {
+  // 'nope' is not a known scheme, so the legacy interpretation wins: the secret
+  // is everything after the 2nd colon and the scheme defaults to github.
+  const result = parseWebhookFlag("/hooks/x:wf:sec:nope");
+  assertEquals(result.secret, "sec:nope");
+  assertEquals(result.verifier, { scheme: "github" });
+});
+
+Deno.test("parseWebhookFlag: rejects generic without a header", () => {
+  assertThrows(
+    () => parseWebhookFlag("/hooks/x:wf:sec:generic"),
+    Error,
+    "'generic' scheme requires a header",
+  );
 });
 
 Deno.test("parseWebhookFlag: rejects missing first colon", () => {
