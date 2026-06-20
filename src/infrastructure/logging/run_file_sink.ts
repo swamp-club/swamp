@@ -28,13 +28,6 @@ import { assertSafePath } from "../persistence/safe_path.ts";
 const formatRecord = getTextFormatter();
 
 /**
- * Converts a category prefix array to a string key for map lookups.
- */
-function prefixKey(prefix: string[]): string {
-  return prefix.join("\x00");
-}
-
-/**
  * Checks whether `category` starts with `prefix`.
  */
 function categoryMatchesPrefix(
@@ -59,27 +52,34 @@ interface FileWriter {
  * A LogTape sink that routes log records to per-run log files.
  * Registered once at startup. File targets are added/removed dynamically
  * as runs start and complete.
+ *
+ * Each {@link register} call is keyed by a unique opaque handle rather than by
+ * its category prefix. Concurrent runs (forEach children, parent+child) share
+ * the same catch-all `[]` prefix, so keying by the prefix would collide on a
+ * single map entry and let one run's register/unregister close a sibling run's
+ * still-open file descriptor — surfacing as Deno's "Bad resource ID". The
+ * handle decouples a registration's identity from its routing rule (the prefix
+ * is retained only for record matching).
  */
 export class RunFileSink {
   private writers = new Map<string, FileWriter>();
 
   /**
-   * Register a log file for a category prefix.
-   * All log records matching this prefix will be written to the file.
+   * Register a log file for a category prefix and return an opaque handle that
+   * identifies this registration. All log records matching the prefix while the
+   * registration is active are written to the file. Pass the returned handle to
+   * {@link unregister} to close the file.
+   *
+   * Failure-atomic: all fallible I/O (path validation, directory creation, file
+   * open) completes before the writer is recorded, so a throw leaves the writer
+   * map and every open descriptor untouched and requires no caller cleanup.
    */
   async register(
     categoryPrefix: string[],
     filePath: string,
     redactor?: SecretRedactor,
     boundary?: string,
-  ): Promise<void> {
-    const key = prefixKey(categoryPrefix);
-    // Close existing writer if any
-    const existing = this.writers.get(key);
-    if (existing) {
-      existing.fd.close();
-    }
-
+  ): Promise<string> {
     // Validate the file path stays within the expected boundary
     if (boundary) {
       await assertSafePath(filePath, boundary);
@@ -96,23 +96,33 @@ export class RunFileSink {
       create: true,
       truncate: true,
     });
-    this.writers.set(key, {
+
+    // Only mutate the map once all fallible I/O has succeeded.
+    const handle = crypto.randomUUID();
+    this.writers.set(handle, {
       fd,
       encoder: new TextEncoder(),
       prefix: categoryPrefix,
       redactor,
     });
+    return handle;
   }
 
   /**
-   * Unregister and close the file writer for a category prefix.
+   * Unregister and close the file writer for a registration handle. No-ops if
+   * the handle is unknown or undefined (e.g. when a `register` call threw before
+   * returning a handle), so callers can unregister unconditionally on cleanup.
    */
-  unregister(categoryPrefix: string[]): void {
-    const key = prefixKey(categoryPrefix);
-    const writer = this.writers.get(key);
+  unregister(handle: string | undefined): void {
+    if (handle === undefined) return;
+    const writer = this.writers.get(handle);
     if (writer) {
-      writer.fd.close();
-      this.writers.delete(key);
+      try {
+        writer.fd.close();
+      } catch {
+        // Already closed — closing twice must never throw "Bad resource ID".
+      }
+      this.writers.delete(handle);
     }
   }
 

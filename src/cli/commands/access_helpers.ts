@@ -178,9 +178,8 @@ export function buildModelMethodRunDeps(
         method,
         `${definitionId}-${timestamp}.log`,
       );
-      const logCategory: string[] = [];
-      await runFileSink.register(
-        logCategory,
+      const logHandle = await runFileSink.register(
+        [],
         logFilePath,
         redactor,
         swampPath(repoDir),
@@ -188,7 +187,7 @@ export function buildModelMethodRunDeps(
       return {
         logFilePath,
         redactor,
-        cleanup: () => runFileSink.unregister(logCategory),
+        cleanup: () => runFileSink.unregister(logHandle),
       };
     },
     createAndSaveDefinition: isDirectExecution

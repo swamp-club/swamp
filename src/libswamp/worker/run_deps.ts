@@ -102,9 +102,8 @@ export async function createWorkerModelRunDeps(
         method,
         `${definitionId}-${timestamp}.log`,
       );
-      const logCategory: string[] = [];
-      await runFileSink.register(
-        logCategory,
+      const logHandle = await runFileSink.register(
+        [],
         logFilePath,
         redactor,
         swampPath(repoDir),
@@ -112,7 +111,7 @@ export async function createWorkerModelRunDeps(
       return {
         logFilePath,
         redactor,
-        cleanup: () => runFileSink.unregister(logCategory),
+        cleanup: () => runFileSink.unregister(logHandle),
       };
     },
     createAndSaveDefinition: async (type, definition) => {

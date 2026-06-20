@@ -17,8 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertStringIncludes } from "@std/assert";
+import {
+  assertEquals,
+  assertNotEquals,
+  assertStringIncludes,
+} from "@std/assert";
 import { RunFileSink } from "./run_file_sink.ts";
+import { SecretRedactor } from "../../domain/secrets/mod.ts";
 import { join } from "@std/path";
 
 async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
@@ -56,7 +61,10 @@ Deno.test("RunFileSink writes log records to registered file", async () => {
     const sink = new RunFileSink();
     const logPath = join(dir, "test.log");
 
-    await sink.register(["model", "method", "run", "my-model"], logPath);
+    const handle = await sink.register(
+      ["model", "method", "run", "my-model"],
+      logPath,
+    );
 
     const sinkFn = sink.sink;
     sinkFn(
@@ -69,7 +77,7 @@ Deno.test("RunFileSink writes log records to registered file", async () => {
     const content = await Deno.readTextFile(logPath);
     assertStringIncludes(content, "hello world");
 
-    sink.unregister(["model", "method", "run", "my-model"]);
+    sink.unregister(handle);
   });
 });
 
@@ -78,7 +86,10 @@ Deno.test("RunFileSink ignores records that don't match any prefix", async () =>
     const sink = new RunFileSink();
     const logPath = join(dir, "test.log");
 
-    await sink.register(["model", "method", "run", "my-model"], logPath);
+    const handle = await sink.register(
+      ["model", "method", "run", "my-model"],
+      logPath,
+    );
 
     const sinkFn = sink.sink;
     sinkFn(makeRecord(["workflow", "run", "wf1"], "should not appear"));
@@ -86,7 +97,7 @@ Deno.test("RunFileSink ignores records that don't match any prefix", async () =>
     const content = await Deno.readTextFile(logPath);
     assertEquals(content, "");
 
-    sink.unregister(["model", "method", "run", "my-model"]);
+    sink.unregister(handle);
   });
 });
 
@@ -96,8 +107,14 @@ Deno.test("RunFileSink writes to all matching prefixes", async () => {
     const broadPath = join(dir, "broad.log");
     const specificPath = join(dir, "specific.log");
 
-    await sink.register(["model", "method", "run"], broadPath);
-    await sink.register(["model", "method", "run", "my-model"], specificPath);
+    const broadHandle = await sink.register(
+      ["model", "method", "run"],
+      broadPath,
+    );
+    const specificHandle = await sink.register(
+      ["model", "method", "run", "my-model"],
+      specificPath,
+    );
 
     const sinkFn = sink.sink;
     sinkFn(
@@ -113,8 +130,8 @@ Deno.test("RunFileSink writes to all matching prefixes", async () => {
     assertStringIncludes(broadContent, "broad");
     assertStringIncludes(broadContent, "specific");
 
-    sink.unregister(["model", "method", "run"]);
-    sink.unregister(["model", "method", "run", "my-model"]);
+    sink.unregister(broadHandle);
+    sink.unregister(specificHandle);
   });
 });
 
@@ -123,12 +140,15 @@ Deno.test("RunFileSink unregister closes file and stops writing", async () => {
     const sink = new RunFileSink();
     const logPath = join(dir, "test.log");
 
-    await sink.register(["model", "method", "run", "my-model"], logPath);
+    const handle = await sink.register(
+      ["model", "method", "run", "my-model"],
+      logPath,
+    );
 
     const sinkFn = sink.sink;
     sinkFn(makeRecord(["model", "method", "run", "my-model"], "before"));
 
-    sink.unregister(["model", "method", "run", "my-model"]);
+    sink.unregister(handle);
 
     // After unregister, records should not be written
     sinkFn(makeRecord(["model", "method", "run", "my-model"], "after"));
@@ -144,7 +164,7 @@ Deno.test("RunFileSink creates parent directories", async () => {
     const sink = new RunFileSink();
     const logPath = join(dir, "nested", "deep", "test.log");
 
-    await sink.register(["workflow", "run"], logPath);
+    const handle = await sink.register(["workflow", "run"], logPath);
 
     const sinkFn = sink.sink;
     sinkFn(makeRecord(["workflow", "run", "wf1"], "nested dir test"));
@@ -152,7 +172,7 @@ Deno.test("RunFileSink creates parent directories", async () => {
     const content = await Deno.readTextFile(logPath);
     assertStringIncludes(content, "nested dir test");
 
-    sink.unregister(["workflow", "run"]);
+    sink.unregister(handle);
   });
 });
 
@@ -161,7 +181,7 @@ Deno.test("RunFileSink empty prefix matches all categories", async () => {
     const sink = new RunFileSink();
     const logPath = join(dir, "all.log");
 
-    await sink.register([], logPath);
+    const handle = await sink.register([], logPath);
 
     const sinkFn = sink.sink;
     sinkFn(makeRecord(["workflow", "run", "wf1"], "workflow log"));
@@ -178,7 +198,7 @@ Deno.test("RunFileSink empty prefix matches all categories", async () => {
     assertStringIncludes(content, "model log");
     assertStringIncludes(content, "other log");
 
-    sink.unregister([]);
+    sink.unregister(handle);
   });
 });
 
@@ -198,5 +218,134 @@ Deno.test("RunFileSink dispose closes all writers", async () => {
     // Files should be empty since no records matched after dispose
     const contentA = await Deno.readTextFile(join(dir, "a.log"));
     assertEquals(contentA, "");
+  });
+});
+
+// Regression: issue #718. Concurrent runs (forEach children, parent+child) all
+// register under the same catch-all `[]` prefix. Each registration must get its
+// own writer keyed by a unique handle so one run can never close another run's
+// open file descriptor ("Bad resource ID").
+
+Deno.test("RunFileSink: concurrent same-prefix registrations get independent writers", async () => {
+  await withTempDir(async (dir) => {
+    const sink = new RunFileSink();
+    const pathA = join(dir, "run-a.log");
+    const pathB = join(dir, "run-b.log");
+
+    // Two "runs" register under the identical `[]` prefix — the exact collision
+    // that previously clobbered a shared map entry.
+    const handleA = await sink.register([], pathA);
+    const handleB = await sink.register([], pathB);
+    assertNotEquals(handleA, handleB);
+
+    const sinkFn = sink.sink;
+    sinkFn(makeRecord(["workflow", "run", "wf1"], "shared record"));
+
+    // Both writers survive and capture the record; neither close throws.
+    assertStringIncludes(await Deno.readTextFile(pathA), "shared record");
+    assertStringIncludes(await Deno.readTextFile(pathB), "shared record");
+
+    sink.unregister(handleA);
+    sink.unregister(handleB);
+  });
+});
+
+Deno.test("RunFileSink: unregistering one writer leaves a same-prefix sibling working", async () => {
+  await withTempDir(async (dir) => {
+    const sink = new RunFileSink();
+    const pathA = join(dir, "run-a.log");
+    const pathB = join(dir, "run-b.log");
+
+    const handleA = await sink.register([], pathA);
+    const handleB = await sink.register([], pathB);
+
+    const sinkFn = sink.sink;
+
+    // Run A finishes first. Under the old shared-key design this evicted/closed
+    // the sibling's fd; now it must only affect A.
+    sink.unregister(handleA);
+    sinkFn(makeRecord(["workflow", "run", "wf1"], "after-a-unregister"));
+
+    // B is still open and still writing — no "Bad resource ID".
+    assertStringIncludes(
+      await Deno.readTextFile(pathB),
+      "after-a-unregister",
+    );
+    assertEquals(
+      (await Deno.readTextFile(pathA)).includes("after-a-unregister"),
+      false,
+    );
+
+    sink.unregister(handleB);
+  });
+});
+
+Deno.test("RunFileSink: unregister is a safe no-op for unknown, undefined, and double calls", async () => {
+  await withTempDir(async (dir) => {
+    const sink = new RunFileSink();
+    const handle = await sink.register([], join(dir, "run.log"));
+
+    // None of these may throw "Bad resource ID".
+    sink.unregister(undefined);
+    sink.unregister("not-a-real-handle");
+    sink.unregister(handle);
+    sink.unregister(handle); // double close of the same handle
+
+    // Sink still works for surviving registrations.
+    const pathB = join(dir, "run-b.log");
+    const handleB = await sink.register([], pathB);
+    sink.sink(makeRecord(["workflow", "run", "wf1"], "still works"));
+    assertStringIncludes(await Deno.readTextFile(pathB), "still works");
+    sink.unregister(handleB);
+  });
+});
+
+Deno.test("RunFileSink: register is failure-atomic and leaves no state on a rejected path", async () => {
+  await withTempDir(async (dir) => {
+    const sink = new RunFileSink();
+
+    // A healthy registration that must remain intact after the failure below.
+    const goodPath = join(dir, "good.log");
+    const goodHandle = await sink.register([], goodPath);
+
+    // A path that escapes the boundary fails in assertSafePath, before any fd
+    // is opened or the writer map is mutated.
+    const escapingPath = join(dir, "..", "escape.log");
+    let threw = false;
+    let badHandle: string | undefined;
+    try {
+      badHandle = await sink.register([], escapingPath, undefined, dir);
+    } catch {
+      threw = true;
+    }
+    assertEquals(threw, true);
+
+    // No handle was returned; unregistering the undefined handle is a no-op.
+    sink.unregister(badHandle);
+
+    // The good writer is untouched and still works.
+    sink.sink(makeRecord(["workflow", "run", "wf1"], "survived"));
+    assertStringIncludes(await Deno.readTextFile(goodPath), "survived");
+
+    sink.unregister(goodHandle);
+  });
+});
+
+Deno.test("RunFileSink: applies the per-writer secret redactor", async () => {
+  await withTempDir(async (dir) => {
+    const sink = new RunFileSink();
+    const logPath = join(dir, "redacted.log");
+
+    const redactor = new SecretRedactor();
+    redactor.addSecret("supersecret");
+    const handle = await sink.register([], logPath, redactor);
+
+    sink.sink(makeRecord(["workflow", "run", "wf1"], "token=supersecret"));
+
+    const content = await Deno.readTextFile(logPath);
+    assertStringIncludes(content, "***");
+    assertEquals(content.includes("supersecret"), false);
+
+    sink.unregister(handle);
   });
 });

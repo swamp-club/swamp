@@ -211,9 +211,8 @@ export async function createModelMethodRunDeps(
         method,
         `${definitionId}-${timestamp}.log`,
       );
-      const logCategory: string[] = [];
-      await runFileSink.register(
-        logCategory,
+      const logHandle = await runFileSink.register(
+        [],
         logFilePath,
         redactor,
         swampPath(repoDir),
@@ -221,7 +220,7 @@ export async function createModelMethodRunDeps(
       return {
         logFilePath,
         redactor,
-        cleanup: () => runFileSink.unregister(logCategory),
+        cleanup: () => runFileSink.unregister(logHandle),
       };
     },
     createAndSaveDefinition: isDirectExecution
