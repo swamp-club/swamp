@@ -148,6 +148,31 @@ in workflow-level fields like `description`).
 The flat `workflowRunId` variable is also available (equivalent to `run.id`)
 for backward compatibility with `data.query()` predicates.
 
+## Webhook Payload Context
+
+For webhook-triggered runs, the `webhook` namespace exposes the verified request
+payload. It is available **only inside a workflow's `trigger.inputs`**, where
+expressions are evaluated against the payload at fire time (before input
+validation) to map payload fields onto named inputs.
+
+| Field             | Type                    | Description                          |
+| ----------------- | ----------------------- | ------------------------------------ |
+| `webhook.body`    | unknown                 | JSON-parsed body; raw string if not JSON |
+| `webhook.headers` | `Record<string,string>` | Lowercased header names (signature header excluded) |
+| `webhook.route`   | string                  | Matched webhook route (e.g. `/hooks/linear`) |
+
+```yaml
+trigger:
+  inputs:
+    identifier: "${{ webhook.body.data.issue.identifier }}"
+```
+
+swamp's CEL has no `??` operator — guard optional payload fields with the
+`has()` macro and a ternary: `has(x.y) ? x.y : fallback`. A hard reference to a
+missing field surfaces an error and the run does not start. Header values are
+not redacted (the same caveat as `env`). See `design/workflow.md` for the full
+walkthrough.
+
 **Run-scoped resource keys** — use `run.id` to prevent collisions when the
 same workflow runs concurrently:
 

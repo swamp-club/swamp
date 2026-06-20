@@ -25,6 +25,7 @@ import {
   extractInputReferences,
   extractInputReferencesFromCel,
   isTaskInputsPath,
+  isTriggerInputsPath,
   replaceExpressions,
 } from "./expression_parser.ts";
 
@@ -306,6 +307,28 @@ Deno.test("isTaskInputsPath returns false for model definition attribute", () =>
     isTaskInputsPath("attributes.vpc_id"),
     false,
   );
+});
+
+// Tests for isTriggerInputsPath
+
+Deno.test("isTriggerInputsPath returns true for a trigger.inputs dot path", () => {
+  assertEquals(isTriggerInputsPath("trigger.inputs.identifier"), true);
+});
+
+Deno.test("isTriggerInputsPath returns true for a trigger.inputs bracket path", () => {
+  assertEquals(isTriggerInputsPath("trigger.inputs[0]"), true);
+});
+
+Deno.test("isTriggerInputsPath returns true for the trigger.inputs root", () => {
+  assertEquals(isTriggerInputsPath("trigger.inputs"), true);
+});
+
+Deno.test("isTriggerInputsPath returns false for trigger.schedule", () => {
+  assertEquals(isTriggerInputsPath("trigger.schedule"), false);
+});
+
+Deno.test("isTriggerInputsPath returns false for the top-level inputs schema", () => {
+  assertEquals(isTriggerInputsPath("inputs.identifier"), false);
 });
 
 // Tests for extractInputReferences

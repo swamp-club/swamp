@@ -328,15 +328,67 @@ description of allowed inputs.
 **Precedence:** the values are merged exactly like `--input` on
 `swamp workflow run`, layered as `caller inputs > trigger.inputs > schema
 defaults`. For a scheduled run there is no caller, so `trigger.inputs` becomes
-the baseline; for a webhook run any inputs the payload supplies (today none —
-the body is used only for signature verification) would override the trigger
-values. The merged inputs flow through the same coercion, default-application,
-and validation pipeline as every other run, so a `required` input satisfied
-only by `trigger.inputs` validates successfully.
+the baseline. The merged inputs flow through the same coercion,
+default-application, and validation pipeline as every other run, so a `required`
+input satisfied only by `trigger.inputs` validates successfully.
 
 Trigger inputs apply only to trigger-fired runs (scheduled, webhook). A manual
 `swamp workflow run` invokes the workflow directly and is unaffected by
 `trigger.inputs` — the operator supplies inputs explicitly.
+
+#### Webhook Payload Extraction
+
+For webhook runs, `trigger.inputs` values may be CEL expressions that read the
+inbound request through the `webhook` namespace, mapping payload fields onto
+named workflow inputs:
+
+```yaml
+trigger:
+  inputs:
+    identifier: "${{ webhook.body.data.issue.identifier }}"
+    eventType: '${{ webhook.headers["x-linear-event"] }}'
+inputs:
+  type: object
+  properties:
+    identifier: { type: string }
+  required: [identifier]
+jobs:
+  # ... runs with identifier populated from the webhook body
+```
+
+The `webhook` namespace exposes:
+
+- `webhook.body` — the request body, parsed as JSON when the payload is valid
+  JSON, otherwise the raw string.
+- `webhook.headers` — request headers as a map of lowercased names to values.
+  The signature header (`x-hub-signature-256`) is excluded.
+- `webhook.route` — the matched webhook route (e.g. `/hooks/linear`).
+
+These expressions are evaluated against the verified payload **at fire time,
+before input validation**, so a payload field can satisfy a `required` input.
+A whole-value expression preserves the field's native type (object, number,
+boolean); an expression embedded in a larger string is interpolated.
+
+swamp's CEL has no `??` operator — guard optional payload fields with the
+`has()` macro and a ternary instead:
+
+```yaml
+trigger:
+  inputs:
+    identifier: >-
+      ${{ has(webhook.body.data.issue) ?
+        webhook.body.data.issue.identifier : webhook.body.data.identifier }}
+```
+
+A hard reference to a missing field (without a `has()` guard) surfaces an error
+and the run does not start. The `webhook` namespace is available only inside
+`trigger.inputs`; the rest of the workflow reads the extracted values as normal
+inputs (`${{ inputs.identifier }}`).
+
+**Security:** `webhook.headers` values are not redacted (the same caveat as the
+`env` namespace). If a workflow maps one into a model attribute it is stored in
+`.swamp/data/` and visible in `swamp data get` output — avoid forwarding
+sensitive headers.
 
 ## Jobs
 

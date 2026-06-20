@@ -268,6 +268,25 @@ export interface RunContext {
 }
 
 /**
+ * The verified payload of an inbound webhook request, exposed to a workflow's
+ * `trigger.inputs` CEL expressions as the `webhook` namespace
+ * (`webhook.body`, `webhook.headers`, `webhook.route`).
+ *
+ * `body` is the JSON-parsed request body when the payload is valid JSON, or the
+ * raw UTF-8 string otherwise. `headers` is a map of lowercased header names to
+ * values; the signature header is intentionally excluded.
+ *
+ * **Security note:** header values are not redacted. If a workflow maps one into
+ * a model attribute it is stored in `.swamp/data/` and visible in
+ * `swamp data get` output. Treat sensitive headers accordingly.
+ */
+export interface WebhookPayload {
+  body: unknown;
+  headers: Record<string, string>;
+  route: string;
+}
+
+/**
  * Context for evaluating CEL expressions.
  */
 export interface ExpressionContext {
@@ -314,6 +333,11 @@ export interface ExpressionContext {
   workflowRunId?: string;
   /** Structured workflow run context, available as `run.*` in CEL expressions. */
   run?: RunContext;
+  /**
+   * Verified inbound webhook payload, available as `webhook.*` in a workflow's
+   * `trigger.inputs` CEL expressions. Set only for webhook-triggered runs.
+   */
+  webhook?: WebhookPayload;
   /** Index signature for CEL evaluator compatibility */
   [key: string]: unknown;
 }

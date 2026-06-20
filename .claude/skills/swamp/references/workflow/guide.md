@@ -203,6 +203,24 @@ every caller. `trigger.inputs` is a values map (the data to inject), not the
 `inputs` schema block. It applies to trigger-fired runs (scheduled and webhook);
 a manual `swamp workflow run` is unaffected.
 
+For webhook runs, `trigger.inputs` values may be CEL expressions that read the
+request payload through the `webhook` namespace, mapping payload fields onto
+named inputs:
+
+```yaml
+trigger:
+  inputs:
+    identifier: "${{ webhook.body.data.issue.identifier }}"
+    eventType: '${{ webhook.headers["x-linear-event"] }}'
+```
+
+`webhook.body` is the JSON-parsed body (raw string if not JSON),
+`webhook.headers` is a lowercased-name map (signature header excluded), and
+`webhook.route` is the matched route. Expressions resolve against the verified
+payload before input validation, so a payload field can satisfy a `required`
+input. swamp's CEL has no `??` — guard optional fields with `has(x) ? x : y`.
+See `design/workflow.md` for full semantics and the security caveat on headers.
+
 ## Edit a Workflow
 
 **Recommended:** Use `swamp workflow get <name> --json` to get the file path,
