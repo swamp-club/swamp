@@ -25,6 +25,7 @@ import {
   InputsSchemaSchema,
 } from "../definitions/definition.ts";
 import { rejectRemovedDriverFields } from "../removed_driver_fields.ts";
+import { deepMerge } from "../inputs/input_merge.ts";
 import {
   type ReportSelection,
   ReportSelectionSchema,
@@ -63,6 +64,7 @@ const WorkflowObjectSchema = z.object({
       },
       { message: "Invalid cron expression" },
     ).optional(),
+    inputs: z.record(z.string(), z.unknown()).optional(),
   }).optional(),
   tags: z.record(z.string(), z.string()).default({}),
   inputs: InputsSchemaSchema,
@@ -99,7 +101,7 @@ export interface CreateWorkflowProps {
   id?: string;
   name: string;
   description?: string;
-  trigger?: { schedule?: string };
+  trigger?: { schedule?: string; inputs?: Record<string, unknown> };
   tags?: Record<string, string>;
   inputs?: InputsSchema;
   jobs?: Job[];
@@ -123,7 +125,9 @@ export class Workflow {
     readonly id: WorkflowId,
     readonly name: string,
     readonly description: string | undefined,
-    readonly trigger: { schedule?: string } | undefined,
+    readonly trigger:
+      | { schedule?: string; inputs?: Record<string, unknown> }
+      | undefined,
     readonly tags: Record<string, string>,
     readonly inputs: InputsSchema | undefined,
     private _jobs: Job[],
@@ -203,6 +207,28 @@ export class Workflow {
    */
   get schedule(): string | undefined {
     return this.trigger?.schedule;
+  }
+
+  /**
+   * Returns the baseline input values declared on the trigger, if any.
+   * These are supplied by the trigger (e.g. scheduled or webhook runs), not
+   * by an operator invoking the workflow manually.
+   */
+  get triggerInputs(): Record<string, unknown> | undefined {
+    return this.trigger?.inputs;
+  }
+
+  /**
+   * Computes the baseline inputs for a trigger-initiated run by layering
+   * caller-supplied inputs over the trigger's declared inputs. Caller values
+   * win on conflict (e.g. a webhook payload overrides a trigger default).
+   * Schema defaults are applied later, downstream, for any keys still missing —
+   * yielding precedence: caller inputs > trigger.inputs > schema defaults.
+   */
+  baselineInputs(
+    callerInputs: Record<string, unknown>,
+  ): Record<string, unknown> {
+    return deepMerge(this.trigger?.inputs ?? {}, callerInputs);
   }
 
   /**

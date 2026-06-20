@@ -699,6 +699,113 @@ Deno.test("Workflow.fromData rejects invalid cron expression", () => {
   );
 });
 
+// trigger.inputs field tests
+
+Deno.test("Workflow.create creates workflow with trigger.inputs", () => {
+  const workflow = Workflow.create({
+    name: "scheduled-with-inputs",
+    trigger: {
+      schedule: "0 3 * * *",
+      inputs: { projectId: "a6b254a2-0b57-4d0f-bf8b-fef767ab119e" },
+    },
+    jobs: [createTestJob("job1")],
+  });
+
+  assertEquals(workflow.triggerInputs, {
+    projectId: "a6b254a2-0b57-4d0f-bf8b-fef767ab119e",
+  });
+});
+
+Deno.test("Workflow.triggerInputs is undefined when no trigger inputs", () => {
+  const workflow = Workflow.create({
+    name: "scheduled-no-inputs",
+    trigger: { schedule: "0 3 * * *" },
+    jobs: [createTestJob("job1")],
+  });
+
+  assertEquals(workflow.triggerInputs, undefined);
+});
+
+Deno.test("Workflow.toData and fromData roundtrip with trigger.inputs", () => {
+  const original = Workflow.create({
+    id: "550e8400-e29b-41d4-a716-446655440000",
+    name: "roundtrip-trigger-inputs",
+    trigger: {
+      schedule: "0 * * * *",
+      inputs: { count: 5, dryRun: true, nested: { region: "us" } },
+    },
+    jobs: [createTestJob("job1")],
+  });
+
+  const data = original.toData();
+  assertEquals(data.trigger?.inputs, {
+    count: 5,
+    dryRun: true,
+    nested: { region: "us" },
+  });
+
+  const restored = Workflow.fromData(data);
+  assertEquals(restored.triggerInputs, {
+    count: 5,
+    dryRun: true,
+    nested: { region: "us" },
+  });
+});
+
+Deno.test("Workflow.baselineInputs returns caller inputs when no trigger inputs", () => {
+  const workflow = Workflow.create({
+    name: "no-trigger-inputs",
+    trigger: { schedule: "0 3 * * *" },
+    jobs: [createTestJob("job1")],
+  });
+
+  assertEquals(workflow.baselineInputs({ foo: "bar" }), { foo: "bar" });
+});
+
+Deno.test("Workflow.baselineInputs returns trigger inputs when caller is empty", () => {
+  const workflow = Workflow.create({
+    name: "trigger-inputs-only",
+    trigger: { schedule: "0 3 * * *", inputs: { projectId: "p1", count: 3 } },
+    jobs: [createTestJob("job1")],
+  });
+
+  assertEquals(workflow.baselineInputs({}), { projectId: "p1", count: 3 });
+});
+
+Deno.test("Workflow.baselineInputs lets caller inputs override trigger inputs", () => {
+  const workflow = Workflow.create({
+    name: "caller-overrides-trigger",
+    trigger: {
+      schedule: "0 3 * * *",
+      inputs: { projectId: "p1", region: "us" },
+    },
+    jobs: [createTestJob("job1")],
+  });
+
+  // Caller value wins on conflict; non-conflicting trigger values are kept.
+  assertEquals(workflow.baselineInputs({ projectId: "p2" }), {
+    projectId: "p2",
+    region: "us",
+  });
+});
+
+Deno.test("Workflow.baselineInputs preserves non-string trigger input types", () => {
+  const workflow = Workflow.create({
+    name: "typed-trigger-inputs",
+    trigger: {
+      schedule: "0 3 * * *",
+      inputs: { count: 5, enabled: false, ratio: 1.5, items: ["a", "b"] },
+    },
+    jobs: [createTestJob("job1")],
+  });
+
+  const result = workflow.baselineInputs({});
+  assertEquals(result.count, 5);
+  assertEquals(result.enabled, false);
+  assertEquals(result.ratio, 1.5);
+  assertEquals(result.items, ["a", "b"]);
+});
+
 Deno.test("Workflow.fromData handles missing tags (backward compat)", () => {
   // Simulate legacy data without tags field — Zod .default({}) fills it in
   const data = {

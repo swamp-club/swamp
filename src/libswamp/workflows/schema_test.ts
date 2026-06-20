@@ -39,3 +39,30 @@ Deno.test("workflowSchema yields completed with schema data", async () => {
   assert(typeof completed.data.stepTask === "object");
   assert(typeof completed.data.triggerCondition === "object");
 });
+
+Deno.test("workflowSchema exposes trigger.inputs in the workflow schema", async () => {
+  const ctx = createLibSwampContext();
+  const events = await collect<WorkflowSchemaEvent>(workflowSchema(ctx));
+  const completed = events[0] as Extract<
+    WorkflowSchemaEvent,
+    { kind: "completed" }
+  >;
+
+  const asRecord = (value: unknown): Record<string, unknown> => {
+    assert(
+      typeof value === "object" && value !== null,
+      "expected an object node in the generated schema",
+    );
+    return value as Record<string, unknown>;
+  };
+
+  const workflow = asRecord(completed.data.workflow);
+  const properties = asRecord(workflow.properties);
+  const trigger = asRecord(properties.trigger);
+  const triggerProperties = asRecord(trigger.properties);
+
+  assert(
+    "inputs" in triggerProperties,
+    "workflow schema trigger should expose an 'inputs' property",
+  );
+});

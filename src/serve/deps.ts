@@ -319,7 +319,15 @@ export async function executeWorkflowWithLocks(
     const deps = await createWorkflowRunDeps(repoDir, repoContext);
     const libCtx = createLibSwampContext({ signal });
 
-    for await (const event of workflowRun(libCtx, deps, input)) {
+    // Layer the workflow's trigger.inputs under any caller-supplied inputs so
+    // scheduled and webhook trigger-fired runs get baseline values at fire
+    // time. Downstream workflowRun applies schema defaults and validates,
+    // yielding precedence: caller inputs > trigger.inputs > schema defaults.
+    const effectiveInput = workflow
+      ? { ...input, inputs: workflow.baselineInputs(input.inputs ?? {}) }
+      : input;
+
+    for await (const event of workflowRun(libCtx, deps, effectiveInput)) {
       onEvent(event);
     }
   } finally {

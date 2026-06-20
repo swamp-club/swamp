@@ -184,6 +184,25 @@ modifying, or removing a schedule takes effect without restart.
 - Use `--no-schedule` on `swamp serve` to disable scheduled execution
 - Health endpoint (`/health`) reports scheduled workflows and next fire times
 
+### Trigger inputs
+
+Scheduled runs have no `--input` flag, so add `trigger.inputs` to supply
+baseline input values at fire time:
+
+```yaml
+trigger:
+  schedule: "0 3 * * *"
+  inputs:
+    projectId: "a6b254a2-0b57-4d0f-bf8b-fef767ab119e"
+```
+
+These are merged just like `--input` on `swamp workflow run`, with precedence
+`caller inputs > trigger.inputs > schema defaults`. This lets a workflow keep
+`required` inputs instead of setting a schema `default` that would apply to
+every caller. `trigger.inputs` is a values map (the data to inject), not the
+`inputs` schema block. It applies to trigger-fired runs (scheduled and webhook);
+a manual `swamp workflow run` is unaffected.
+
 ## Edit a Workflow
 
 **Recommended:** Use `swamp workflow get <name> --json` to get the file path,

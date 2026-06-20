@@ -305,6 +305,39 @@ jobs:
 The `ScheduledExecutionService` lives in libswamp, so any consumer (serve, a
 future daemon, or programmatic use) can use the same scheduling infrastructure.
 
+#### Trigger Inputs
+
+Scheduled (and webhook) runs have no `--input` flag, so a `trigger.inputs` map
+supplies baseline input values at fire time:
+
+```yaml
+trigger:
+  schedule: "* * * * *"
+  inputs:
+    projectId: "a6b254a2-0b57-4d0f-bf8b-fef767ab119e"
+jobs:
+  # ... runs with projectId already populated
+```
+
+This lets a workflow declare `required` inputs without abusing the input
+schema's `default` (which would apply to every caller, not just trigger-fired
+runs). `trigger.inputs` is a free values map — the runtime values to inject —
+distinct from the workflow's `inputs` block, which is the JSON-Schema
+description of allowed inputs.
+
+**Precedence:** the values are merged exactly like `--input` on
+`swamp workflow run`, layered as `caller inputs > trigger.inputs > schema
+defaults`. For a scheduled run there is no caller, so `trigger.inputs` becomes
+the baseline; for a webhook run any inputs the payload supplies (today none —
+the body is used only for signature verification) would override the trigger
+values. The merged inputs flow through the same coercion, default-application,
+and validation pipeline as every other run, so a `required` input satisfied
+only by `trigger.inputs` validates successfully.
+
+Trigger inputs apply only to trigger-fired runs (scheduled, webhook). A manual
+`swamp workflow run` invokes the workflow directly and is unaffected by
+`trigger.inputs` — the operator supplies inputs explicitly.
+
 ## Jobs
 
 Each job has a name, a description, a series of steps, and an array of objects
