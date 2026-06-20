@@ -1298,7 +1298,7 @@ export class WorkflowExecutionService {
     });
 
     let workflowRun: WorkflowRun | undefined;
-    let workflowLogCategory: string[] | undefined;
+    let workflowLogHandle: string | undefined;
     try {
       const wfSetupSpan = tracer.startSpan("swamp.workflow.setup");
       let workflow: Workflow;
@@ -1384,10 +1384,9 @@ export class WorkflowExecutionService {
           workflow.id,
           `workflow-run-${run.id}.log`,
         );
-        workflowLogCategory = [];
         const workflowLogBoundary = swampPath(this.repoDir);
-        await runFileSink.register(
-          workflowLogCategory,
+        workflowLogHandle = await runFileSink.register(
+          [],
           workflowLogPath,
           secretRedactor,
           workflowLogBoundary,
@@ -1582,16 +1581,14 @@ export class WorkflowExecutionService {
         }
 
         // Unregister workflow log file sink
-        runFileSink.unregister(workflowLogCategory);
+        runFileSink.unregister(workflowLogHandle);
       } finally {
         wfTeardownSpan.end();
       }
       runSpan.setStatus({ code: SpanStatusCode.OK });
     } catch (error) {
       if (error instanceof WorkflowSuspendedError && workflowRun) {
-        if (workflowLogCategory) {
-          runFileSink.unregister(workflowLogCategory);
-        }
+        runFileSink.unregister(workflowLogHandle);
         yield {
           kind: "suspended" as const,
           run: workflowRun,
@@ -1611,9 +1608,7 @@ export class WorkflowExecutionService {
         );
         yield { kind: "completed" as const, run: workflowRun };
       }
-      if (workflowLogCategory) {
-        runFileSink.unregister(workflowLogCategory);
-      }
+      runFileSink.unregister(workflowLogHandle);
       runSpan.setStatus({
         code: SpanStatusCode.ERROR,
         message: error instanceof Error ? error.message : String(error),
@@ -1728,9 +1723,8 @@ export class WorkflowExecutionService {
         workflow.id,
         `workflow-run-${existingRun.id}.log`,
       );
-    const workflowLogCategory: string[] = [];
-    await runFileSink.register(
-      workflowLogCategory,
+    const workflowLogHandle = await runFileSink.register(
+      [],
       workflowLogPath,
       secretRedactor,
       swampPath(this.repoDir),
@@ -1866,10 +1860,10 @@ export class WorkflowExecutionService {
 
       yield { kind: "completed", run: existingRun };
       await this.saveRun(workflow.id, existingRun);
-      runFileSink.unregister(workflowLogCategory);
+      runFileSink.unregister(workflowLogHandle);
     } catch (error) {
       if (error instanceof WorkflowSuspendedError) {
-        runFileSink.unregister(workflowLogCategory);
+        runFileSink.unregister(workflowLogHandle);
         yield {
           kind: "suspended" as const,
           run: existingRun,
@@ -1883,7 +1877,7 @@ export class WorkflowExecutionService {
       existingRun.complete();
       await this.saveRun(workflow.id, existingRun);
       yield { kind: "completed" as const, run: existingRun };
-      runFileSink.unregister(workflowLogCategory);
+      runFileSink.unregister(workflowLogHandle);
       throw error;
     }
   }
