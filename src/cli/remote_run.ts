@@ -32,6 +32,7 @@
  * via `ServerCredentialRepository`.
  */
 
+import type { Command } from "@cliffy/command";
 import { UserError } from "../domain/errors.ts";
 import type {
   ModelMethodRunPayload,
@@ -269,6 +270,26 @@ export function requestServerResponse<T>(
       } catch { /* not a protocol frame */ }
     };
   });
+}
+
+// deno-lint-ignore no-explicit-any
+type AnyCommand = Command<any, any, any, any, any, any, any, any>;
+
+/**
+ * Adds `--server` and `--token` options to a Cliffy command. New
+ * remote-capable commands should use this instead of duplicating the
+ * option definitions from model_method_run.ts / workflow_run.ts.
+ */
+export function withRemoteOptions<T extends AnyCommand>(command: T): T {
+  return command
+    .option(
+      "--server <url:string>",
+      "Run through a 'swamp serve' server (ws:// or http://) instead of locally; no local repo required (env: SWAMP_SERVE_URL).",
+    )
+    .option(
+      "--token <token:string>",
+      "Server token in <name>.<secret> format; only applies with --server (overrides stored credentials and SWAMP_SERVER_TOKEN)",
+    ) as T;
 }
 
 interface OutboundRequest {

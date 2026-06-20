@@ -45,6 +45,13 @@ import {
   readStdin,
 } from "../../infrastructure/io/stdin_reader.ts";
 import { parseTimeout } from "../duration_parser.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { VaultPutResponse } from "../../serve/protocol.ts";
 
 /**
  * Parses a KEY=VALUE string into key and value parts.
@@ -120,10 +127,11 @@ async function promptConfirmation(message: string): Promise<boolean> {
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-export const vaultPutCommand = new Command()
-  .name("put")
-  .description(
-    `Store a secret in a vault.
+export const vaultPutCommand = withRemoteOptions(
+  new Command()
+    .name("put")
+    .description(
+      `Store a secret in a vault.
 
 The value can be provided in several ways:
   - As a third argument:   swamp vault put <vault> <key> <value>
@@ -132,77 +140,77 @@ The value can be provided in several ways:
   - Interactive prompt:    swamp vault put <vault> <key>  (prompts with hidden input)
 
 Piping via stdin is recommended for scripts and CI to avoid exposing secrets in the process argument list.`,
-  )
-  .arguments("<vault_name:string> <key:string> [value:string]")
-  .example(
-    "Inline KEY=VALUE",
-    "swamp vault put my-vault API_KEY=sk-1234567890",
-  )
-  .example(
-    "Pipe from stdin (recommended for scripts)",
-    'echo "$SECRET" | swamp vault put my-vault API_KEY',
-  )
-  .example(
-    "Interactive prompt (value is hidden)",
-    "swamp vault put my-vault API_KEY",
-  )
-  .example(
-    "Overwrite existing secret",
-    "swamp vault put my-vault API_KEY=new-value --force",
-  )
-  .example(
-    "Auto-refresh GCP token every 50 minutes",
-    'swamp vault put my-vault GCP_TOKEN --refresh-from "gcloud auth print-access-token" --refresh-ttl 50m',
-  )
-  .example(
-    "Remove refresh hook from a secret",
-    "swamp vault put my-vault GCP_TOKEN --clear-refresh",
-  )
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
-  .option("-f, --force", "Skip confirmation prompt when overwriting")
-  .option(
-    "--refresh-from <command:string>",
-    "Command to run to refresh the secret value when the TTL expires",
-  )
-  .option(
-    "--refresh-ttl <duration:string>",
-    "How long before the secret is considered stale (e.g. 50m, 1h, 30s)",
-  )
-  .option(
-    "--clear-refresh",
-    "Remove the refresh hook from this secret",
-  )
-  .action(async function (
-    options: AnyOptions,
-    vaultName: string,
-    keyOrKeyValue: string,
-    valueArg: string | undefined,
-  ) {
-    const cliCtx = createContext(options as GlobalOptions, ["vault", "put"]);
-    cliCtx.logger.debug`Storing secret in vault: ${vaultName}`;
+    )
+    .arguments("<vault_name:string> <key:string> [value:string]")
+    .example(
+      "Inline KEY=VALUE",
+      "swamp vault put my-vault API_KEY=sk-1234567890",
+    )
+    .example(
+      "Pipe from stdin (recommended for scripts)",
+      'echo "$SECRET" | swamp vault put my-vault API_KEY',
+    )
+    .example(
+      "Interactive prompt (value is hidden)",
+      "swamp vault put my-vault API_KEY",
+    )
+    .example(
+      "Overwrite existing secret",
+      "swamp vault put my-vault API_KEY=new-value --force",
+    )
+    .example(
+      "Auto-refresh GCP token every 50 minutes",
+      'swamp vault put my-vault GCP_TOKEN --refresh-from "gcloud auth print-access-token" --refresh-ttl 50m',
+    )
+    .example(
+      "Remove refresh hook from a secret",
+      "swamp vault put my-vault GCP_TOKEN --clear-refresh",
+    )
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    )
+    .option("-f, --force", "Skip confirmation prompt when overwriting")
+    .option(
+      "--refresh-from <command:string>",
+      "Command to run to refresh the secret value when the TTL expires",
+    )
+    .option(
+      "--refresh-ttl <duration:string>",
+      "How long before the secret is considered stale (e.g. 50m, 1h, 30s)",
+    )
+    .option(
+      "--clear-refresh",
+      "Remove the refresh hook from this secret",
+    ),
+).action(async function (
+  options: AnyOptions,
+  vaultName: string,
+  keyOrKeyValue: string,
+  valueArg: string | undefined,
+) {
+  const cliCtx = createContext(options as GlobalOptions, ["vault", "put"]);
+  cliCtx.logger.debug`Storing secret in vault: ${vaultName}`;
 
-    if (options.clearRefresh && options.refreshFrom) {
-      throw new UserError(
-        "--clear-refresh cannot be used with --refresh-from",
-      );
-    }
-    if (options.refreshTtl && !options.refreshFrom) {
-      throw new UserError(
-        "--refresh-ttl requires --refresh-from",
-      );
-    }
-    if (options.refreshFrom && !options.refreshTtl) {
-      throw new UserError(
-        "--refresh-from requires --refresh-ttl",
-      );
-    }
-    if (options.clearRefresh && options.refreshTtl) {
-      throw new UserError(
-        "--clear-refresh cannot be used with --refresh-ttl",
-      );
+  const server = resolveServeUrl(options.server as string | undefined);
+  if (server) {
+    // Parse key/value from arguments
+    let key: string;
+    let value: string;
+
+    if (valueArg !== undefined) {
+      key = keyOrKeyValue;
+      value = valueArg;
+    } else {
+      const parsed = parseKeyValue(keyOrKeyValue);
+      if (parsed) {
+        key = parsed.key;
+        value = parsed.value;
+      } else {
+        throw new UserError(
+          "A value must be provided as an argument when using --server (no interactive prompt or stdin reading remotely)",
+        );
+      }
     }
 
     let refreshTtlMs: number | undefined;
@@ -210,117 +218,166 @@ Piping via stdin is recommended for scripts and CI to avoid exposing secrets in 
       refreshTtlMs = parseTimeout(options.refreshTtl);
     }
 
-    const { repoDir, repoContext, datastoreConfig, syncService } =
-      await requireInitializedRepoUnlocked({
-        repoDir: resolveRepoDir(options.repoDir),
-        outputMode: cliCtx.outputMode,
-      });
-    const { flush } = await acquireVaultSync(
-      datastoreConfig,
-      syncService,
-      repoDir,
+    const token = await resolveServerToken(
+      server,
+      options.token as string | undefined,
     );
-
-    try {
-      // Resolve key and value from arguments.
-      // Priority: explicit value arg > KEY=VALUE format > stdin > interactive prompt.
-      let key: string;
-      let value: string;
-      let stdinContent: string | null = null;
-
-      if (valueArg !== undefined) {
-        // 3-arg form: swamp vault put <vault> <key> <value>
-        key = keyOrKeyValue;
-        value = valueArg;
-      } else {
-        // 2-arg form: try KEY=VALUE, then stdin, then interactive prompt.
-        const parsed = parseKeyValue(keyOrKeyValue);
-        if (parsed) {
-          key = parsed.key;
-          value = parsed.value;
-        } else if (!isStdinTty()) {
-          stdinContent = await readStdin();
-          const resolved = resolveKeyValue(keyOrKeyValue, stdinContent);
-          if ("error" in resolved) {
-            throw new UserError(resolved.error);
-          }
-          key = resolved.key;
-          value = resolved.value;
-        } else if (cliCtx.outputMode === "log") {
-          key = keyOrKeyValue;
-          if (key.length === 0) {
-            throw new UserError("Key cannot be empty");
-          }
-          try {
-            value = await readSecretFromTty(`Enter value for ${key}: `);
-          } catch (err) {
-            if (err instanceof Error && err.message === "Cancelled.") {
-              renderVaultPutCancelled(cliCtx.outputMode);
-              return;
-            }
-            throw err;
-          }
-        } else {
-          const resolved = resolveKeyValue(keyOrKeyValue, null);
-          if ("error" in resolved) {
-            throw new UserError(resolved.error);
-          }
-          key = resolved.key;
-          value = resolved.value;
-        }
-      }
-      cliCtx.logger.debug`Parsed key: ${key}`;
-
-      const ctx = createLibSwampContext({ logger: cliCtx.logger });
-      const deps = createVaultPutDeps(repoDir, repoContext.eventBus);
-
-      // Phase 1: Preview — check vault existence and whether secret exists
-      let preview;
-      try {
-        preview = await vaultPutPreview(ctx, deps, vaultName, key);
-      } catch (error) {
-        if ("code" in (error as Record<string, unknown>)) {
-          throw new UserError((error as { message: string }).message);
-        }
-        throw error;
-      }
-
-      // Phase 2: Prompt on overwrite
-      if (
-        preview.secretExists && cliCtx.outputMode === "log" && !options.force
-      ) {
-        if (stdinContent !== null) {
-          throw new UserError(
-            `Secret '${key}' already exists in vault '${vaultName}'.\n` +
-              `Use --force (-f) to overwrite when piping from stdin.`,
-          );
-        }
-        const confirmed = await promptConfirmation(
-          `Secret '${key}' already exists in vault '${vaultName}'. Overwrite?`,
-        );
-        if (!confirmed) {
-          renderVaultPutCancelled(cliCtx.outputMode);
-          return;
-        }
-      }
-
-      // Phase 3: Execute mutation
-      const renderer = createVaultPutRenderer(cliCtx.outputMode);
-      await consumeStream(
-        vaultPut(ctx, deps, {
+    const response = await requestServerResponse<VaultPutResponse>(
+      { server, token },
+      {
+        type: "vault.put",
+        payload: {
           vaultName,
           key,
           value,
-          overwritten: preview.secretExists,
-          refreshFrom: options.refreshFrom,
+          force: options.force as boolean | undefined,
+          refreshFrom: options.refreshFrom as string | undefined,
           refreshTtlMs,
-          clearRefresh: options.clearRefresh,
-        }),
-        renderer.handlers(),
-      );
+          clearRefresh: options.clearRefresh as boolean | undefined,
+        },
+      },
+    );
+    console.log(JSON.stringify(response.data, null, 2));
+    return;
+  }
 
-      cliCtx.logger.debug("Vault put command completed");
-    } finally {
-      await flush();
+  if (options.clearRefresh && options.refreshFrom) {
+    throw new UserError(
+      "--clear-refresh cannot be used with --refresh-from",
+    );
+  }
+  if (options.refreshTtl && !options.refreshFrom) {
+    throw new UserError(
+      "--refresh-ttl requires --refresh-from",
+    );
+  }
+  if (options.refreshFrom && !options.refreshTtl) {
+    throw new UserError(
+      "--refresh-from requires --refresh-ttl",
+    );
+  }
+  if (options.clearRefresh && options.refreshTtl) {
+    throw new UserError(
+      "--clear-refresh cannot be used with --refresh-ttl",
+    );
+  }
+
+  let refreshTtlMs: number | undefined;
+  if (options.refreshTtl) {
+    refreshTtlMs = parseTimeout(options.refreshTtl);
+  }
+
+  const { repoDir, repoContext, datastoreConfig, syncService } =
+    await requireInitializedRepoUnlocked({
+      repoDir: resolveRepoDir(options.repoDir),
+      outputMode: cliCtx.outputMode,
+    });
+  const { flush } = await acquireVaultSync(
+    datastoreConfig,
+    syncService,
+    repoDir,
+  );
+
+  try {
+    // Resolve key and value from arguments.
+    // Priority: explicit value arg > KEY=VALUE format > stdin > interactive prompt.
+    let key: string;
+    let value: string;
+    let stdinContent: string | null = null;
+
+    if (valueArg !== undefined) {
+      // 3-arg form: swamp vault put <vault> <key> <value>
+      key = keyOrKeyValue;
+      value = valueArg;
+    } else {
+      // 2-arg form: try KEY=VALUE, then stdin, then interactive prompt.
+      const parsed = parseKeyValue(keyOrKeyValue);
+      if (parsed) {
+        key = parsed.key;
+        value = parsed.value;
+      } else if (!isStdinTty()) {
+        stdinContent = await readStdin();
+        const resolved = resolveKeyValue(keyOrKeyValue, stdinContent);
+        if ("error" in resolved) {
+          throw new UserError(resolved.error);
+        }
+        key = resolved.key;
+        value = resolved.value;
+      } else if (cliCtx.outputMode === "log") {
+        key = keyOrKeyValue;
+        if (key.length === 0) {
+          throw new UserError("Key cannot be empty");
+        }
+        try {
+          value = await readSecretFromTty(`Enter value for ${key}: `);
+        } catch (err) {
+          if (err instanceof Error && err.message === "Cancelled.") {
+            renderVaultPutCancelled(cliCtx.outputMode);
+            return;
+          }
+          throw err;
+        }
+      } else {
+        const resolved = resolveKeyValue(keyOrKeyValue, null);
+        if ("error" in resolved) {
+          throw new UserError(resolved.error);
+        }
+        key = resolved.key;
+        value = resolved.value;
+      }
     }
-  });
+    cliCtx.logger.debug`Parsed key: ${key}`;
+
+    const ctx = createLibSwampContext({ logger: cliCtx.logger });
+    const deps = createVaultPutDeps(repoDir, repoContext.eventBus);
+
+    // Phase 1: Preview — check vault existence and whether secret exists
+    let preview;
+    try {
+      preview = await vaultPutPreview(ctx, deps, vaultName, key);
+    } catch (error) {
+      if ("code" in (error as Record<string, unknown>)) {
+        throw new UserError((error as { message: string }).message);
+      }
+      throw error;
+    }
+
+    // Phase 2: Prompt on overwrite
+    if (
+      preview.secretExists && cliCtx.outputMode === "log" && !options.force
+    ) {
+      if (stdinContent !== null) {
+        throw new UserError(
+          `Secret '${key}' already exists in vault '${vaultName}'.\n` +
+            `Use --force (-f) to overwrite when piping from stdin.`,
+        );
+      }
+      const confirmed = await promptConfirmation(
+        `Secret '${key}' already exists in vault '${vaultName}'. Overwrite?`,
+      );
+      if (!confirmed) {
+        renderVaultPutCancelled(cliCtx.outputMode);
+        return;
+      }
+    }
+
+    // Phase 3: Execute mutation
+    const renderer = createVaultPutRenderer(cliCtx.outputMode);
+    await consumeStream(
+      vaultPut(ctx, deps, {
+        vaultName,
+        key,
+        value,
+        overwritten: preview.secretExists,
+        refreshFrom: options.refreshFrom,
+        refreshTtlMs,
+        clearRefresh: options.clearRefresh,
+      }),
+      renderer.handlers(),
+    );
+
+    cliCtx.logger.debug("Vault put command completed");
+  } finally {
+    await flush();
+  }
+});

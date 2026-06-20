@@ -40,6 +40,13 @@ import {
 } from "../../libswamp/mod.ts";
 import type { RepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
 import { createReportSearchRenderer } from "../../presentation/renderers/report_search.tsx";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { ReportSearchResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -142,6 +149,31 @@ export async function reportSearchAction(
     "report",
     "search",
   ]);
+
+  const server = resolveServeUrl(options.server as string | undefined);
+  if (server) {
+    const token = await resolveServerToken(
+      server,
+      options.token as string | undefined,
+    );
+    const response = await requestServerResponse<ReportSearchResponse>(
+      { server, token },
+      {
+        type: "report.search",
+        payload: {
+          query,
+          model: options.model as string | undefined,
+          workflow: options.workflow as string | undefined,
+          scope: options.scope as string | undefined,
+          type: options.type as string | undefined,
+          labels: options.label as string[] | undefined,
+        },
+      },
+    );
+    console.log(JSON.stringify({ items: response.items }, null, 2));
+    return;
+  }
+
   const effectiveMode = interactiveOutputMode(ctx);
 
   const { repoContext } = await requireInitializedRepoReadOnly({
@@ -182,29 +214,30 @@ export async function reportSearchAction(
   ctx.logger.debug("Report search command completed");
 }
 
-export const reportSearchCommand = new Command()
-  .name("search")
-  .description("Search stored report results across all models and workflows")
-  .example("Browse all reports", "swamp report search")
-  .example("Search by keyword", "swamp report search cost")
-  .arguments("[query:string]")
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
-  .option("--model <name:string>", "Filter to a specific model")
-  .option("--workflow <name:string>", "Filter to a specific workflow")
-  .option(
-    "--scope <scope:string>",
-    "Filter by report scope (method, model, workflow)",
-  )
-  .option(
-    "--type <name:string>",
-    "Filter by exact report type name (e.g. @webframp/cost-audit-report)",
-  )
-  .option(
-    "--label <label:string>",
-    "Filter by report label (repeatable)",
-    { collect: true },
-  )
-  .action(reportSearchAction);
+export const reportSearchCommand = withRemoteOptions(
+  new Command()
+    .name("search")
+    .description("Search stored report results across all models and workflows")
+    .example("Browse all reports", "swamp report search")
+    .example("Search by keyword", "swamp report search cost")
+    .arguments("[query:string]")
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    )
+    .option("--model <name:string>", "Filter to a specific model")
+    .option("--workflow <name:string>", "Filter to a specific workflow")
+    .option(
+      "--scope <scope:string>",
+      "Filter by report scope (method, model, workflow)",
+    )
+    .option(
+      "--type <name:string>",
+      "Filter by exact report type name (e.g. @webframp/cost-audit-report)",
+    )
+    .option(
+      "--label <label:string>",
+      "Filter by report label (repeatable)",
+      { collect: true },
+    ),
+).action(reportSearchAction);

@@ -67,6 +67,93 @@ export interface AccessCanIPayload {
   collectives?: string[];
 }
 
+export interface DataGetPayload {
+  modelIdOrName?: string;
+  dataName?: string;
+  workflowName?: string;
+  runId?: string;
+  version?: number;
+  includeContent?: boolean;
+}
+
+export interface DataQueryPayload {
+  predicate: string;
+  limit?: number;
+  select?: string;
+}
+
+export interface DataListPayload {
+  modelIdOrName?: string;
+  workflowName?: string;
+  runId?: string;
+  typeFilter?: string;
+}
+
+export interface ModelSearchPayload {
+  query?: string;
+}
+
+export interface ModelMethodDescribePayload {
+  modelIdOrName: string;
+  methodName: string;
+}
+
+export interface WorkflowSearchPayload {
+  query?: string;
+}
+
+export interface VaultGetPayload {
+  vaultNameOrId: string;
+  vaultType?: string;
+}
+
+export interface VaultPutPayload {
+  vaultName: string;
+  key: string;
+  value: string;
+  force?: boolean;
+  refreshFrom?: string;
+  refreshTtlMs?: number;
+  clearRefresh?: boolean;
+}
+
+export interface AuditTimelinePayload {
+  hours?: number;
+  showAll?: boolean;
+  sessionId?: string;
+  includeDiagnostic?: boolean;
+}
+
+export interface SummarisePayload {
+  since?: string;
+  limit?: number;
+}
+
+export interface ReportGetPayload {
+  reportName: string;
+  model?: string;
+  workflow?: string;
+  version?: number;
+  variant?: string;
+}
+
+export interface ReportSearchPayload {
+  query?: string;
+  model?: string;
+  workflow?: string;
+  scope?: string;
+  type?: string;
+  labels?: string[];
+}
+
+export interface ReportDescribePayload {
+  reportName: string;
+}
+
+export interface ReportTypeSearchPayload {
+  query?: string;
+}
+
 export type ServerRequest =
   | { type: "workflow.run"; id: string; payload: WorkflowRunPayload }
   | { type: "model.method.run"; id: string; payload: ModelMethodRunPayload }
@@ -75,6 +162,28 @@ export type ServerRequest =
   | { type: "access.check"; id: string; payload: AccessCheckPayload }
   | { type: "access.can-i"; id: string; payload: AccessCanIPayload }
   | { type: "access.reload"; id: string }
+  | { type: "data.get"; id: string; payload: DataGetPayload }
+  | { type: "data.query"; id: string; payload: DataQueryPayload }
+  | { type: "data.list"; id: string; payload: DataListPayload }
+  | { type: "model.search"; id: string; payload?: ModelSearchPayload }
+  | {
+    type: "model.method.describe";
+    id: string;
+    payload: ModelMethodDescribePayload;
+  }
+  | { type: "workflow.search"; id: string; payload?: WorkflowSearchPayload }
+  | { type: "vault.get"; id: string; payload: VaultGetPayload }
+  | { type: "vault.put"; id: string; payload: VaultPutPayload }
+  | { type: "audit.timeline"; id: string; payload?: AuditTimelinePayload }
+  | { type: "summarise"; id: string; payload?: SummarisePayload }
+  | { type: "report.get"; id: string; payload: ReportGetPayload }
+  | { type: "report.search"; id: string; payload?: ReportSearchPayload }
+  | { type: "report.describe"; id: string; payload: ReportDescribePayload }
+  | {
+    type: "report.type.search";
+    id: string;
+    payload?: ReportTypeSearchPayload;
+  }
   | { type: "cancel"; id: string };
 
 // ── Outbound (server → client) ───────────────────────────────────────────
@@ -128,6 +237,62 @@ export interface AccessReloadResponse {
   groupCount: number;
 }
 
+export interface DataGetResponse {
+  data: Record<string, unknown>;
+}
+
+export interface DataQueryResponse {
+  results: Record<string, unknown>[];
+}
+
+export interface DataListResponse {
+  data: Record<string, unknown>;
+}
+
+export interface ModelSearchResponse {
+  items: Record<string, unknown>[];
+}
+
+export interface ModelMethodDescribeResponse {
+  data: Record<string, unknown>;
+}
+
+export interface WorkflowSearchResponse {
+  items: Record<string, unknown>[];
+}
+
+export interface VaultGetResponse {
+  data: Record<string, unknown>;
+}
+
+export interface VaultPutResponse {
+  data: Record<string, unknown>;
+}
+
+export interface AuditTimelineResponse {
+  data: Record<string, unknown>;
+}
+
+export interface SummariseResponse {
+  data: Record<string, unknown>;
+}
+
+export interface ReportGetResponse {
+  data: Record<string, unknown>;
+}
+
+export interface ReportSearchResponse {
+  items: Record<string, unknown>[];
+}
+
+export interface ReportDescribeResponse {
+  data: Record<string, unknown>;
+}
+
+export interface ReportTypeSearchResponse {
+  items: Record<string, unknown>[];
+}
+
 export type ServerMessage =
   | { type: "event"; id: string; event: SerializedEvent }
   | { type: "error"; id: string; error: SerializedError }
@@ -146,4 +311,26 @@ export type ServerMessage =
   }
   | { type: "access.check"; id: string; payload: AccessCheckResponse }
   | { type: "access.can-i"; id: string; payload: AccessCanIResponse }
-  | { type: "access.reload"; id: string; payload: AccessReloadResponse };
+  | { type: "access.reload"; id: string; payload: AccessReloadResponse }
+  | { type: "data.get"; id: string; payload: DataGetResponse }
+  | { type: "data.query"; id: string; payload: DataQueryResponse }
+  | { type: "data.list"; id: string; payload: DataListResponse }
+  | { type: "model.search"; id: string; payload: ModelSearchResponse }
+  | {
+    type: "model.method.describe";
+    id: string;
+    payload: ModelMethodDescribeResponse;
+  }
+  | { type: "workflow.search"; id: string; payload: WorkflowSearchResponse }
+  | { type: "vault.get"; id: string; payload: VaultGetResponse }
+  | { type: "vault.put"; id: string; payload: VaultPutResponse }
+  | { type: "audit.timeline"; id: string; payload: AuditTimelineResponse }
+  | { type: "summarise"; id: string; payload: SummariseResponse }
+  | { type: "report.get"; id: string; payload: ReportGetResponse }
+  | { type: "report.search"; id: string; payload: ReportSearchResponse }
+  | { type: "report.describe"; id: string; payload: ReportDescribeResponse }
+  | {
+    type: "report.type.search";
+    id: string;
+    payload: ReportTypeSearchResponse;
+  };

@@ -768,9 +768,9 @@ Deno.test("authorizeOrReject: admin on access:* allows group list without explic
   assertEquals(unauthorizedErrors.length, 0);
 });
 
-// ── Authorization: explicit deny beats admin fallback ─────────────────────
+// ── Authorization: admin superuser fallback & explicit deny ──────────────
 
-Deno.test("authorizeOrReject: admin on access:* does not grant workflow run", () => {
+Deno.test("authorizeOrReject: admin on access:* grants workflow run (superuser)", () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>();
   const grant = makeGrant({
@@ -786,16 +786,18 @@ Deno.test("authorizeOrReject: admin on access:* does not grant workflow run", ()
     active,
     makeEvent(JSON.stringify({
       type: "workflow.run",
-      id: "auth-admin-no-wf",
+      id: "auth-admin-wf",
       payload: { workflowIdOrName: "@acme/deploy" },
     })),
     testPrincipal,
   );
 
-  assertEquals(mock.sent.length, 1);
-  const msg = parseSent(mock);
-  assertEquals(msg.type, "error");
-  assertEquals((msg.error as Record<string, unknown>).code, "unauthorized");
+  const messages = mock.sent.map((s) => JSON.parse(s));
+  const errorMsg = messages.find((m: Record<string, unknown>) =>
+    m.type === "error" &&
+    (m.error as Record<string, unknown>).code === "unauthorized"
+  );
+  assertEquals(errorMsg, undefined, "admin superuser should not be denied");
 });
 
 Deno.test("authorizeOrReject: explicit deny beats admin on access:*", () => {

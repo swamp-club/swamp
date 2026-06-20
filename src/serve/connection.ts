@@ -26,7 +26,41 @@ import { z } from "zod";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import type { DatastoreConfig } from "../domain/datastore/datastore_config.ts";
 import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
-import { createLibSwampContext, modelMethodRun } from "../libswamp/mod.ts";
+import {
+  auditTimeline,
+  consumeStream,
+  createAuditTimelineDeps,
+  createDataGetDeps,
+  createDataListDeps,
+  createLibSwampContext,
+  createModelMethodDescribeDeps,
+  createSummariseDeps,
+  createVaultGetDeps,
+  createVaultPutDeps,
+  dataGet,
+  dataList,
+  dataQuery,
+  type DataQueryDeps,
+  modelMethodDescribe,
+  modelMethodRun,
+  modelSearch,
+  type ModelSearchDeps,
+  parseDuration,
+  reportDescribe,
+  type ReportDescribeDeps,
+  reportGet,
+  type ReportGetDeps,
+  reportSearch,
+  type ReportSearchDeps,
+  reportTypeSearch,
+  type ReportTypeSearchDeps,
+  summarise,
+  vaultGet,
+  vaultPut,
+  vaultPutPreview,
+  workflowSearch,
+  type WorkflowSearchDeps,
+} from "../libswamp/mod.ts";
 import { createModelMethodRunDeps, executeWorkflowWithLocks } from "./deps.ts";
 import { serializeEvent } from "./serializer.ts";
 import type {
@@ -34,13 +68,34 @@ import type {
   AccessCheckPayload,
   AccessGrantListPayload,
   AccessGroupListPayload,
+  AuditTimelinePayload,
+  DataGetPayload,
+  DataListPayload,
+  DataQueryPayload,
+  ModelMethodDescribePayload,
   ModelMethodRunPayload,
+  ModelSearchPayload,
+  ReportDescribePayload,
+  ReportGetPayload,
+  ReportSearchPayload,
+  ReportTypeSearchPayload,
   ServerMessage,
   ServerRequest,
+  SummarisePayload,
+  VaultGetPayload,
+  VaultPutPayload,
   WorkflowRunPayload,
+  WorkflowSearchPayload,
 } from "./protocol.ts";
 import { findDefinitionByIdOrName } from "../domain/models/model_lookup.ts";
+import { createDefinitionId } from "../domain/definitions/definition.ts";
 import { acquireModelLocks } from "../cli/repo_context.ts";
+import { reportRegistry } from "../domain/reports/report_registry.ts";
+import { getReportTypes } from "../domain/reports/report_types.ts";
+import { RepoMarkerRepository } from "../infrastructure/persistence/repo_marker_repository.ts";
+import { resolvePrimaryTool } from "../domain/repo/primary_tool.ts";
+import { RepoPath } from "../domain/repo/repo_path.ts";
+import { EventBus } from "../domain/events/event_bus.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import type { WorkerGateway } from "./worker_gateway.ts";
 import type { PolicySnapshotLoader } from "../domain/access/policy_snapshot_loader.ts";
@@ -146,6 +201,149 @@ const CancelRequestSchema = z.object({
   id: z.string().min(1),
 });
 
+const DataGetRequestSchema = z.object({
+  type: z.literal("data.get"),
+  id: z.string().min(1),
+  payload: z.object({
+    modelIdOrName: z.string().optional(),
+    dataName: z.string().optional(),
+    workflowName: z.string().optional(),
+    runId: z.string().optional(),
+    version: z.number().optional(),
+    includeContent: z.boolean().optional(),
+  }),
+});
+
+const DataQueryRequestSchema = z.object({
+  type: z.literal("data.query"),
+  id: z.string().min(1),
+  payload: z.object({
+    predicate: z.string(),
+    limit: z.number().optional(),
+    select: z.string().optional(),
+  }),
+});
+
+const DataListRequestSchema = z.object({
+  type: z.literal("data.list"),
+  id: z.string().min(1),
+  payload: z.object({
+    modelIdOrName: z.string().optional(),
+    workflowName: z.string().optional(),
+    runId: z.string().optional(),
+    typeFilter: z.string().optional(),
+  }),
+});
+
+const ModelSearchRequestSchema = z.object({
+  type: z.literal("model.search"),
+  id: z.string().min(1),
+  payload: z.object({
+    query: z.string().optional(),
+  }).optional(),
+});
+
+const ModelMethodDescribeRequestSchema = z.object({
+  type: z.literal("model.method.describe"),
+  id: z.string().min(1),
+  payload: z.object({
+    modelIdOrName: z.string(),
+    methodName: z.string(),
+  }),
+});
+
+const WorkflowSearchRequestSchema = z.object({
+  type: z.literal("workflow.search"),
+  id: z.string().min(1),
+  payload: z.object({
+    query: z.string().optional(),
+  }).optional(),
+});
+
+const VaultGetRequestSchema = z.object({
+  type: z.literal("vault.get"),
+  id: z.string().min(1),
+  payload: z.object({
+    vaultNameOrId: z.string(),
+    vaultType: z.string().optional(),
+  }),
+});
+
+const VaultPutRequestSchema = z.object({
+  type: z.literal("vault.put"),
+  id: z.string().min(1),
+  payload: z.object({
+    vaultName: z.string(),
+    key: z.string(),
+    value: z.string(),
+    force: z.boolean().optional(),
+    refreshFrom: z.string().optional(),
+    refreshTtlMs: z.number().optional(),
+    clearRefresh: z.boolean().optional(),
+  }),
+});
+
+const AuditTimelineRequestSchema = z.object({
+  type: z.literal("audit.timeline"),
+  id: z.string().min(1),
+  payload: z.object({
+    hours: z.number().optional(),
+    showAll: z.boolean().optional(),
+    sessionId: z.string().optional(),
+    includeDiagnostic: z.boolean().optional(),
+  }).optional(),
+});
+
+const SummariseRequestSchema = z.object({
+  type: z.literal("summarise"),
+  id: z.string().min(1),
+  payload: z.object({
+    since: z.string().optional(),
+    limit: z.number().optional(),
+  }).optional(),
+});
+
+const ReportGetRequestSchema = z.object({
+  type: z.literal("report.get"),
+  id: z.string().min(1),
+  payload: z.object({
+    reportName: z.string(),
+    model: z.string().optional(),
+    workflow: z.string().optional(),
+    version: z.number().optional(),
+    variant: z.string().optional(),
+  }),
+});
+
+const ReportSearchRequestSchema = z.object({
+  type: z.literal("report.search"),
+  id: z.string().min(1),
+  payload: z.object({
+    query: z.string().optional(),
+    model: z.string().optional(),
+    workflow: z.string().optional(),
+    scope: z.string().optional(),
+    type: z.string().optional(),
+    labels: z.array(z.string()).optional(),
+  }).optional(),
+});
+
+const ReportDescribeRequestSchema = z.object({
+  type: z.literal("report.describe"),
+  id: z.string().min(1),
+  payload: z.object({
+    reportName: z.string(),
+  }),
+});
+
+const ReportTypeSearchRequestSchema = z.object({
+  type: z.literal("report.type.search"),
+  id: z.string().min(1),
+  payload: z.object({
+    query: z.string().optional(),
+  }).optional(),
+});
+
 const ServerRequestSchema = z.discriminatedUnion("type", [
   WorkflowRunRequestSchema,
   ModelMethodRunRequestSchema,
@@ -154,6 +352,20 @@ const ServerRequestSchema = z.discriminatedUnion("type", [
   AccessCheckRequestSchema,
   AccessCanIRequestSchema,
   AccessReloadRequestSchema,
+  DataGetRequestSchema,
+  DataQueryRequestSchema,
+  DataListRequestSchema,
+  ModelSearchRequestSchema,
+  ModelMethodDescribeRequestSchema,
+  WorkflowSearchRequestSchema,
+  VaultGetRequestSchema,
+  VaultPutRequestSchema,
+  AuditTimelineRequestSchema,
+  SummariseRequestSchema,
+  ReportGetRequestSchema,
+  ReportSearchRequestSchema,
+  ReportDescribeRequestSchema,
+  ReportTypeSearchRequestSchema,
   CancelRequestSchema,
 ]);
 
@@ -345,6 +557,132 @@ export function handleMessage(
     case "access.reload":
       task = handleAccessReload(socket, ctx, request.id, principal);
       break;
+    case "data.get":
+      task = handleDataGet(
+        socket,
+        ctx,
+        request.id,
+        request.payload,
+        principal,
+      );
+      break;
+    case "data.query":
+      task = handleDataQuery(
+        socket,
+        ctx,
+        request.id,
+        request.payload,
+        principal,
+      );
+      break;
+    case "data.list":
+      task = handleDataList(
+        socket,
+        ctx,
+        request.id,
+        request.payload,
+        principal,
+      );
+      break;
+    case "model.search":
+      task = handleModelSearch(
+        socket,
+        ctx,
+        request.id,
+        principal,
+        request.payload,
+      );
+      break;
+    case "model.method.describe":
+      task = handleModelMethodDescribe(
+        socket,
+        ctx,
+        request.id,
+        request.payload,
+        principal,
+      );
+      break;
+    case "workflow.search":
+      task = handleWorkflowSearch(
+        socket,
+        ctx,
+        request.id,
+        principal,
+        request.payload,
+      );
+      break;
+    case "vault.get":
+      task = handleVaultGet(
+        socket,
+        ctx,
+        request.id,
+        request.payload,
+        principal,
+      );
+      break;
+    case "vault.put":
+      task = handleVaultPut(
+        socket,
+        ctx,
+        request.id,
+        request.payload,
+        principal,
+      );
+      break;
+    case "audit.timeline":
+      task = handleAuditTimeline(
+        socket,
+        ctx,
+        request.id,
+        principal,
+        request.payload,
+      );
+      break;
+    case "summarise":
+      task = handleSummarise(
+        socket,
+        ctx,
+        request.id,
+        principal,
+        request.payload,
+      );
+      break;
+    case "report.get":
+      task = handleReportGet(
+        socket,
+        ctx,
+        request.id,
+        request.payload,
+        principal,
+      );
+      break;
+    case "report.search":
+      task = handleReportSearch(
+        socket,
+        ctx,
+        request.id,
+        principal,
+        request.payload,
+      );
+      break;
+    case "report.describe":
+      task = handleReportDescribe(
+        socket,
+        ctx,
+        request.id,
+        request.payload,
+        principal,
+      );
+      break;
+    case "report.type.search":
+      task = handleReportTypeSearch(
+        socket,
+        ctx,
+        request.id,
+        principal,
+        request.payload,
+      );
+      break;
   }
 
   task.finally(() => activeRequests.delete(request.id));
@@ -406,7 +744,7 @@ function authorizeOrReject(
 
   if (decision && decision.effect === "allow") return true;
 
-  if (!decision && resource.kind === "access") {
+  if (!decision) {
     const adminDecision = service.decide(
       { principal, collectives: [] },
       "admin",
@@ -911,6 +1249,834 @@ async function handleAccessReload(
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     sendError(socket, requestId, "access_reload_failed", message);
+  }
+}
+
+// ── Data handlers ─────────────────────────────────────────────────────
+
+async function handleDataGet(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  payload: DataGetPayload,
+  principal: Principal | null,
+): Promise<void> {
+  const resourceName = payload.modelIdOrName ?? "*";
+  if (
+    !authorizeOrReject(socket, requestId, principal, "read", {
+      kind: "data",
+      name: resourceName,
+      fields: {},
+    }, ctx)
+  ) return;
+
+  try {
+    const libCtx = createLibSwampContext();
+    const deps = createDataGetDeps(
+      ctx.repoDir,
+      undefined,
+      ctx.repoContext.unifiedDataRepo,
+      ctx.repoContext.workflowRepo,
+    );
+
+    let result: Record<string, unknown> | undefined;
+    await consumeStream(
+      dataGet(libCtx, deps, {
+        modelIdOrName: payload.modelIdOrName,
+        dataName: payload.dataName,
+        workflowName: payload.workflowName,
+        runId: payload.runId,
+        version: payload.version,
+        includeContent: payload.includeContent ?? true,
+        repoDir: ctx.repoDir,
+      }),
+      {
+        resolving: () => {},
+        completed: (e) => {
+          result = e.data as unknown as Record<string, unknown>;
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      },
+    );
+
+    if (!result) {
+      sendError(socket, requestId, "not_found", "Data not found");
+      return;
+    }
+
+    send(socket, {
+      type: "data.get",
+      id: requestId,
+      payload: { data: result },
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    sendError(socket, requestId, "data_get_failed", message);
+  }
+}
+
+async function handleDataQuery(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  payload: DataQueryPayload,
+  principal: Principal | null,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "read", {
+      kind: "data",
+      name: "*",
+      fields: {},
+    }, ctx)
+  ) return;
+
+  try {
+    const libCtx = createLibSwampContext();
+    const queryService = ctx.repoContext.dataQueryService;
+    const deps: DataQueryDeps = {
+      query: (pred, opts) => queryService.query(pred, opts),
+    };
+
+    let results: Record<string, unknown>[] = [];
+    await consumeStream(
+      dataQuery(libCtx, deps, {
+        predicate: payload.predicate,
+        select: payload.select,
+        limit: payload.limit,
+      }),
+      {
+        resolving: () => {},
+        match: () => {},
+        projected_match: () => {},
+        completed: (e) => {
+          results = e.data.results as unknown as Record<string, unknown>[];
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      },
+    );
+
+    send(socket, {
+      type: "data.query",
+      id: requestId,
+      payload: { results },
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    sendError(socket, requestId, "data_query_failed", message);
+  }
+}
+
+async function handleDataList(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  payload: DataListPayload,
+  principal: Principal | null,
+): Promise<void> {
+  const resourceName = payload.modelIdOrName ?? "*";
+  if (
+    !authorizeOrReject(socket, requestId, principal, "read", {
+      kind: "data",
+      name: resourceName,
+      fields: {},
+    }, ctx)
+  ) return;
+
+  try {
+    const libCtx = createLibSwampContext();
+    const deps = createDataListDeps(
+      ctx.repoDir,
+      undefined,
+      ctx.repoContext.unifiedDataRepo,
+      undefined,
+      ctx.repoContext.workflowRepo,
+    );
+
+    let result: Record<string, unknown> | undefined;
+    await consumeStream(
+      dataList(libCtx, deps, {
+        modelIdOrName: payload.modelIdOrName,
+        workflowName: payload.workflowName,
+        runId: payload.runId,
+        typeFilter: payload.typeFilter,
+      }),
+      {
+        resolving: () => {},
+        completed: (e) => {
+          result = e.data as unknown as Record<string, unknown>;
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      },
+    );
+
+    if (!result) {
+      sendError(socket, requestId, "not_found", "No data found");
+      return;
+    }
+
+    send(socket, {
+      type: "data.list",
+      id: requestId,
+      payload: { data: result },
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    sendError(socket, requestId, "data_list_failed", message);
+  }
+}
+
+// ── Model handlers ────────────────────────────────────────────────────
+
+async function handleModelSearch(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  principal: Principal | null,
+  payload?: ModelSearchPayload,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "read", {
+      kind: "model",
+      name: "*",
+      fields: {},
+    }, ctx)
+  ) return;
+
+  try {
+    const libCtx = createLibSwampContext();
+    const deps: ModelSearchDeps = {
+      findAllGlobal: () => ctx.repoContext.definitionRepo.findAllGlobal(),
+    };
+
+    let items: Record<string, unknown>[] = [];
+    await consumeStream(
+      modelSearch(libCtx, deps, { query: payload?.query }),
+      {
+        resolving: () => {},
+        completed: (e) => {
+          items = e.data.results as unknown as Record<string, unknown>[];
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      },
+    );
+
+    send(socket, {
+      type: "model.search",
+      id: requestId,
+      payload: { items },
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    sendError(socket, requestId, "model_search_failed", message);
+  }
+}
+
+async function handleModelMethodDescribe(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  payload: ModelMethodDescribePayload,
+  principal: Principal | null,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "read", {
+      kind: "model",
+      name: payload.modelIdOrName,
+      fields: {},
+    }, ctx)
+  ) return;
+
+  try {
+    await modelRegistry.ensureLoaded();
+    const libCtx = createLibSwampContext();
+    const deps = createModelMethodDescribeDeps(ctx.repoDir);
+
+    let result: Record<string, unknown> | undefined;
+    await consumeStream(
+      modelMethodDescribe(
+        libCtx,
+        deps,
+        payload.modelIdOrName,
+        payload.methodName,
+      ),
+      {
+        resolving: () => {},
+        completed: (e) => {
+          result = e.data as unknown as Record<string, unknown>;
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      },
+    );
+
+    if (!result) {
+      sendError(socket, requestId, "not_found", "Method not found");
+      return;
+    }
+
+    send(socket, {
+      type: "model.method.describe",
+      id: requestId,
+      payload: { data: result },
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    sendError(socket, requestId, "model_method_describe_failed", message);
+  }
+}
+
+// ── Workflow handlers ─────────────────────────────────────────────────
+
+async function handleWorkflowSearch(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  principal: Principal | null,
+  payload?: WorkflowSearchPayload,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "read", {
+      kind: "workflow",
+      name: "*",
+      fields: {},
+    }, ctx)
+  ) return;
+
+  try {
+    const libCtx = createLibSwampContext();
+    const deps: WorkflowSearchDeps = {
+      findAllWorkflows: () => ctx.repoContext.workflowRepo.findAll(),
+    };
+
+    let items: Record<string, unknown>[] = [];
+    await consumeStream(
+      workflowSearch(libCtx, deps, { query: payload?.query }),
+      {
+        resolving: () => {},
+        completed: (e) => {
+          items = e.data.results as unknown as Record<string, unknown>[];
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      },
+    );
+
+    send(socket, {
+      type: "workflow.search",
+      id: requestId,
+      payload: { items },
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    sendError(socket, requestId, "workflow_search_failed", message);
+  }
+}
+
+// ── Vault handlers ────────────────────────────────────────────────────
+
+async function handleVaultGet(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  payload: VaultGetPayload,
+  principal: Principal | null,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "read", {
+      kind: "data",
+      name: "vault",
+      fields: {},
+    }, ctx)
+  ) return;
+
+  try {
+    const libCtx = createLibSwampContext();
+    const deps = createVaultGetDeps(ctx.repoDir);
+
+    let result: Record<string, unknown> | undefined;
+    await consumeStream(
+      vaultGet(libCtx, deps, payload.vaultNameOrId, payload.vaultType),
+      {
+        resolving: () => {},
+        completed: (e) => {
+          result = e.data as unknown as Record<string, unknown>;
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      },
+    );
+
+    if (!result) {
+      sendError(socket, requestId, "not_found", "Vault not found");
+      return;
+    }
+
+    send(socket, {
+      type: "vault.get",
+      id: requestId,
+      payload: { data: result },
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    sendError(socket, requestId, "vault_get_failed", message);
+  }
+}
+
+async function handleVaultPut(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  payload: VaultPutPayload,
+  principal: Principal | null,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "write", {
+      kind: "data",
+      name: "vault",
+      fields: {},
+    }, ctx)
+  ) return;
+
+  try {
+    const libCtx = createLibSwampContext();
+    const eventBus = new EventBus();
+    const deps = createVaultPutDeps(ctx.repoDir, eventBus);
+
+    const preview = await vaultPutPreview(
+      libCtx,
+      deps,
+      payload.vaultName,
+      payload.key,
+    );
+
+    if (preview.secretExists && !payload.force) {
+      sendError(
+        socket,
+        requestId,
+        "secret_exists",
+        `Secret '${payload.key}' already exists in vault '${payload.vaultName}'. Set force=true to overwrite.`,
+      );
+      return;
+    }
+
+    let result: Record<string, unknown> | undefined;
+    await consumeStream(
+      vaultPut(libCtx, deps, {
+        vaultName: payload.vaultName,
+        key: payload.key,
+        value: payload.value,
+        overwritten: preview.secretExists,
+        refreshFrom: payload.refreshFrom,
+        refreshTtlMs: payload.refreshTtlMs,
+        clearRefresh: payload.clearRefresh,
+      }),
+      {
+        storing: () => {},
+        warning: () => {},
+        completed: (e) => {
+          result = e.data as unknown as Record<string, unknown>;
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      },
+    );
+
+    send(socket, {
+      type: "vault.put",
+      id: requestId,
+      payload: { data: result ?? {} },
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    sendError(socket, requestId, "vault_put_failed", message);
+  }
+}
+
+// ── Audit / Summary handlers ──────────────────────────────────────────
+
+async function handleAuditTimeline(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  principal: Principal | null,
+  payload?: AuditTimelinePayload,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "read", {
+      kind: "model",
+      name: "*",
+      fields: {},
+    }, ctx)
+  ) return;
+
+  try {
+    const libCtx = createLibSwampContext();
+    const deps = createAuditTimelineDeps(ctx.repoDir);
+
+    const markerRepo = new RepoMarkerRepository();
+    const marker = await markerRepo.read(RepoPath.create(ctx.repoDir));
+    const configuredTool = resolvePrimaryTool(marker);
+
+    let result: Record<string, unknown> | undefined;
+    await consumeStream(
+      auditTimeline(libCtx, deps, {
+        hours: payload?.hours ?? 24,
+        showAll: payload?.showAll ?? false,
+        sessionId: payload?.sessionId,
+        tool: configuredTool,
+        includeDiagnostic: payload?.includeDiagnostic ?? false,
+      }),
+      {
+        completed: (e) => {
+          result = e.data as unknown as Record<string, unknown>;
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      },
+    );
+
+    send(socket, {
+      type: "audit.timeline",
+      id: requestId,
+      payload: { data: result ?? {} },
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    sendError(socket, requestId, "audit_timeline_failed", message);
+  }
+}
+
+async function handleSummarise(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  principal: Principal | null,
+  payload?: SummarisePayload,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "read", {
+      kind: "model",
+      name: "*",
+      fields: {},
+    }, ctx)
+  ) return;
+
+  try {
+    const libCtx = createLibSwampContext();
+    const deps = createSummariseDeps({
+      outputRepo: ctx.repoContext.outputRepo,
+      workflowRunRepo: ctx.repoContext.workflowRunRepo,
+      dataRepo: ctx.repoContext.unifiedDataRepo,
+      definitionRepo: ctx.repoContext.definitionRepo,
+      workflowRepo: ctx.repoContext.workflowRepo,
+    });
+
+    const sinceLabel = payload?.since ?? "7d";
+    const durationMs = parseDuration(sinceLabel);
+    const cutoffDate = new Date(Date.now() - durationMs);
+
+    let result: Record<string, unknown> | undefined;
+    await consumeStream(
+      summarise(libCtx, deps, {
+        since: cutoffDate,
+        sinceLabel,
+        limit: payload?.limit,
+      }),
+      {
+        completed: (e) => {
+          result = e.data as unknown as Record<string, unknown>;
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      },
+    );
+
+    send(socket, {
+      type: "summarise",
+      id: requestId,
+      payload: { data: result ?? {} },
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    sendError(socket, requestId, "summarise_failed", message);
+  }
+}
+
+// ── Report handlers ───────────────────────────────────────────────────
+
+async function handleReportGet(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  payload: ReportGetPayload,
+  principal: Principal | null,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "read", {
+      kind: "model",
+      name: "*",
+      fields: {},
+    }, ctx)
+  ) return;
+
+  try {
+    const libCtx = createLibSwampContext();
+    const deps: ReportGetDeps = {
+      findAllGlobal: () => ctx.repoContext.unifiedDataRepo.findAllGlobal(),
+      findAllForModel: (type, modelId) =>
+        ctx.repoContext.unifiedDataRepo.findAllForModel(type, modelId),
+      getContent: (type, modelId, dataName, version) =>
+        ctx.repoContext.unifiedDataRepo.getContent(
+          type,
+          modelId,
+          dataName,
+          version,
+        ),
+      lookupDefinition: (idOrName) =>
+        findDefinitionByIdOrName(ctx.repoContext.definitionRepo, idOrName),
+      lookupDefinitionById: (type, id) =>
+        ctx.repoContext.definitionRepo.findById(type, createDefinitionId(id)),
+      findWorkflowByName: async (name) => {
+        const wf = await ctx.repoContext.workflowRepo.findByName(name);
+        if (!wf) return null;
+        return { id: wf.id, name: wf.name };
+      },
+      findWorkflowById: async (id) => {
+        const all = await ctx.repoContext.workflowRepo.findAll();
+        const wf = all.find((w) => w.id === id);
+        if (!wf) return null;
+        return { id: wf.id, name: wf.name };
+      },
+    };
+
+    let result: Record<string, unknown> | undefined;
+    await consumeStream(
+      reportGet(libCtx, deps, {
+        reportName: payload.reportName,
+        model: payload.model,
+        workflow: payload.workflow,
+        version: payload.version,
+        variant: payload.variant,
+      }),
+      {
+        resolving: () => {},
+        completed: (e) => {
+          result = e.data as unknown as Record<string, unknown>;
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      },
+    );
+
+    if (!result) {
+      sendError(socket, requestId, "not_found", "Report not found");
+      return;
+    }
+
+    send(socket, {
+      type: "report.get",
+      id: requestId,
+      payload: { data: result },
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    sendError(socket, requestId, "report_get_failed", message);
+  }
+}
+
+async function handleReportSearch(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  principal: Principal | null,
+  payload?: ReportSearchPayload,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "read", {
+      kind: "model",
+      name: "*",
+      fields: {},
+    }, ctx)
+  ) return;
+
+  try {
+    const libCtx = createLibSwampContext();
+    await reportRegistry.ensureLoaded();
+    const deps: ReportSearchDeps = {
+      findAllGlobal: () => ctx.repoContext.unifiedDataRepo.findAllGlobal(),
+      findAllForModel: (type, modelId) =>
+        ctx.repoContext.unifiedDataRepo.findAllForModel(type, modelId),
+      lookupDefinition: (idOrName) =>
+        findDefinitionByIdOrName(ctx.repoContext.definitionRepo, idOrName),
+      lookupDefinitionById: (type, id) =>
+        ctx.repoContext.definitionRepo.findById(type, createDefinitionId(id)),
+      findWorkflowByName: async (name) => {
+        const wf = await ctx.repoContext.workflowRepo.findByName(name);
+        if (!wf) return null;
+        return { id: wf.id, name: wf.name };
+      },
+      findWorkflowById: async (id) => {
+        const all = await ctx.repoContext.workflowRepo.findAll();
+        const wf = all.find((w) => w.id === id);
+        if (!wf) return null;
+        return { id: wf.id, name: wf.name };
+      },
+      getReport: async (name) => {
+        await reportRegistry.ensureTypeLoaded(name);
+        return reportRegistry.get(name);
+      },
+    };
+
+    let items: Record<string, unknown>[] = [];
+    await consumeStream(
+      reportSearch(libCtx, deps, {
+        query: payload?.query,
+        model: payload?.model,
+        workflow: payload?.workflow,
+        scope: payload?.scope,
+        type: payload?.type,
+        labels: payload?.labels,
+      }),
+      {
+        resolving: () => {},
+        completed: (e) => {
+          items = e.data.reports as unknown as Record<string, unknown>[];
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      },
+    );
+
+    send(socket, {
+      type: "report.search",
+      id: requestId,
+      payload: { items },
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    sendError(socket, requestId, "report_search_failed", message);
+  }
+}
+
+async function handleReportDescribe(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  payload: ReportDescribePayload,
+  principal: Principal | null,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "read", {
+      kind: "model",
+      name: "*",
+      fields: {},
+    }, ctx)
+  ) return;
+
+  try {
+    await reportRegistry.ensureLoaded();
+    const libCtx = createLibSwampContext();
+    const deps: ReportDescribeDeps = {
+      getReport: async (name) => {
+        await reportRegistry.ensureTypeLoaded(name);
+        return reportRegistry.get(name);
+      },
+    };
+
+    let result: Record<string, unknown> | undefined;
+    await consumeStream(
+      reportDescribe(libCtx, deps, payload.reportName),
+      {
+        resolving: () => {},
+        completed: (e) => {
+          result = e.data as unknown as Record<string, unknown>;
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      },
+    );
+
+    if (!result) {
+      sendError(socket, requestId, "not_found", "Report type not found");
+      return;
+    }
+
+    send(socket, {
+      type: "report.describe",
+      id: requestId,
+      payload: { data: result },
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    sendError(socket, requestId, "report_describe_failed", message);
+  }
+}
+
+async function handleReportTypeSearch(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  principal: Principal | null,
+  payload?: ReportTypeSearchPayload,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "read", {
+      kind: "model",
+      name: "*",
+      fields: {},
+    }, ctx)
+  ) return;
+
+  try {
+    const libCtx = createLibSwampContext();
+    await reportRegistry.ensureLoaded();
+    for (const lazy of reportRegistry.getAllLazy()) {
+      await reportRegistry.ensureTypeLoaded(lazy.type);
+    }
+
+    const deps: ReportTypeSearchDeps = {
+      getReportTypes: () => getReportTypes(),
+    };
+
+    let items: Record<string, unknown>[] = [];
+    await consumeStream(
+      reportTypeSearch(libCtx, deps, { query: payload?.query }),
+      {
+        resolving: () => {},
+        completed: (e) => {
+          items = e.data.results as unknown as Record<string, unknown>[];
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      },
+    );
+
+    send(socket, {
+      type: "report.type.search",
+      id: requestId,
+      payload: { items },
+    });
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    sendError(socket, requestId, "report_type_search_failed", message);
   }
 }
 

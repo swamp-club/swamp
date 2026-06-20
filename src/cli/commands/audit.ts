@@ -25,6 +25,16 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { AuditTimelineResponse } from "../../serve/protocol.ts";
+
+// deno-lint-ignore no-explicit-any
+type AnyOptions = any;
 import { AuditService } from "../../domain/audit/audit_service.ts";
 import { createBashCommandEntry } from "../../domain/audit/audit_command_entry.ts";
 import { JsonlAuditRepository } from "../../infrastructure/persistence/jsonl_audit_repository.ts";
@@ -151,53 +161,75 @@ export const auditRecordCommand = new Command()
  * View a merged timeline of swamp operations vs direct CLI commands.
  * Also serves as the parent command for `swamp audit record`.
  */
-export const auditCommand = new Command()
-  .name("audit")
-  .description("View audit timeline of swamp vs direct CLI commands")
-  .example("View audit timeline", "swamp audit")
-  .example("Last 4 hours", "swamp audit --hours 4")
-  .example("Include all commands", "swamp audit --all")
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
-  .option("--hours <hours:number>", "Number of hours to analyze", {
-    default: 24,
-  })
-  .option("--all", "Show all commands including noise (ls, cat, etc.)")
-  .option("--session <id:string>", "Filter by session ID")
-  .option(
-    "--include-diagnostic",
-    "Include rows written by `swamp doctor audit`'s smoke test (filtered by default)",
-  )
-  .action(async function (options) {
-    const ctx = createContext(options as GlobalOptions, ["audit"]);
-    ctx.logger.debug`Fetching audit timeline`;
+export const auditCommand = withRemoteOptions(
+  new Command()
+    .name("audit")
+    .description("View audit timeline of swamp vs direct CLI commands")
+    .example("View audit timeline", "swamp audit")
+    .example("Last 4 hours", "swamp audit --hours 4")
+    .example("Include all commands", "swamp audit --all")
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    )
+    .option("--hours <hours:number>", "Number of hours to analyze", {
+      default: 24,
+    })
+    .option("--all", "Show all commands including noise (ls, cat, etc.)")
+    .option("--session <id:string>", "Filter by session ID")
+    .option(
+      "--include-diagnostic",
+      "Include rows written by `swamp doctor audit`'s smoke test (filtered by default)",
+    ),
+).action(async function (options: AnyOptions) {
+  const ctx = createContext(options as GlobalOptions, ["audit"]);
+  ctx.logger.debug`Fetching audit timeline`;
 
-    const { repoDir } = await requireInitializedRepoReadOnly({
-      repoDir: resolveRepoDir(options.repoDir),
-      outputMode: ctx.outputMode,
-    });
-
-    // Check if the configured tool supports audit hooks
-    const markerRepo = new RepoMarkerRepository();
-    const marker = await markerRepo.read(RepoPath.create(repoDir));
-    const configuredTool = resolvePrimaryTool(marker);
-
-    const libCtx = createLibSwampContext({ logger: ctx.logger });
-    const deps = createAuditTimelineDeps(repoDir);
-    const renderer = createAuditTimelineRenderer(ctx.outputMode);
-    await consumeStream(
-      auditTimeline(libCtx, deps, {
-        hours: options.hours,
-        showAll: options.all ?? false,
-        sessionId: options.session,
-        tool: configuredTool,
-        includeDiagnostic: options.includeDiagnostic ?? false,
-      }),
-      renderer.handlers(),
+  const server = resolveServeUrl(options.server as string | undefined);
+  if (server) {
+    const token = await resolveServerToken(
+      server,
+      options.token as string | undefined,
     );
+    const response = await requestServerResponse<AuditTimelineResponse>(
+      { server, token },
+      {
+        type: "audit.timeline",
+        payload: {
+          hours: options.hours,
+          showAll: options.all ?? false,
+          sessionId: options.session,
+          includeDiagnostic: options.includeDiagnostic ?? false,
+        },
+      },
+    );
+    console.log(JSON.stringify(response.data, null, 2));
+    return;
+  }
 
-    ctx.logger.debug("Audit command completed");
-  })
-  .command("record", auditRecordCommand);
+  const { repoDir } = await requireInitializedRepoReadOnly({
+    repoDir: resolveRepoDir(options.repoDir),
+    outputMode: ctx.outputMode,
+  });
+
+  // Check if the configured tool supports audit hooks
+  const markerRepo = new RepoMarkerRepository();
+  const marker = await markerRepo.read(RepoPath.create(repoDir));
+  const configuredTool = resolvePrimaryTool(marker);
+
+  const libCtx = createLibSwampContext({ logger: ctx.logger });
+  const deps = createAuditTimelineDeps(repoDir);
+  const renderer = createAuditTimelineRenderer(ctx.outputMode);
+  await consumeStream(
+    auditTimeline(libCtx, deps, {
+      hours: options.hours,
+      showAll: options.all ?? false,
+      sessionId: options.session,
+      tool: configuredTool,
+      includeDiagnostic: options.includeDiagnostic ?? false,
+    }),
+    renderer.handlers(),
+  );
+
+  ctx.logger.debug("Audit command completed");
+}).command("record", auditRecordCommand);

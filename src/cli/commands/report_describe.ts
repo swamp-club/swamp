@@ -27,36 +27,61 @@ import {
   type ReportDescribeDeps,
 } from "../../libswamp/mod.ts";
 import { createReportDescribeRenderer } from "../../presentation/renderers/report_describe.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { ReportDescribeResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-export const reportDescribeCommand = new Command()
-  .name("describe")
-  .description("Show report definition metadata from the registry")
-  .example("Describe a report", "swamp report describe cost-summary")
-  .arguments("<report_name:string>")
-  .action(async function (options: AnyOptions, reportName: string) {
-    const ctx = createContext(options as GlobalOptions, [
-      "report",
-      "describe",
-    ]);
+export const reportDescribeCommand = withRemoteOptions(
+  new Command()
+    .name("describe")
+    .description("Show report definition metadata from the registry")
+    .example("Describe a report", "swamp report describe cost-summary")
+    .arguments("<report_name:string>"),
+).action(async function (options: AnyOptions, reportName: string) {
+  const ctx = createContext(options as GlobalOptions, [
+    "report",
+    "describe",
+  ]);
 
-    await reportRegistry.ensureLoaded();
-    const deps: ReportDescribeDeps = {
-      getReport: async (name) => {
-        await reportRegistry.ensureTypeLoaded(name);
-        return reportRegistry.get(name);
-      },
-    };
-
-    const libCtx = createLibSwampContext({ logger: ctx.logger });
-    const renderer = createReportDescribeRenderer(ctx.outputMode);
-
-    await consumeStream(
-      reportDescribe(libCtx, deps, reportName),
-      renderer.handlers(),
+  const server = resolveServeUrl(options.server as string | undefined);
+  if (server) {
+    const token = await resolveServerToken(
+      server,
+      options.token as string | undefined,
     );
+    const response = await requestServerResponse<ReportDescribeResponse>(
+      { server, token },
+      {
+        type: "report.describe",
+        payload: { reportName },
+      },
+    );
+    console.log(JSON.stringify(response.data, null, 2));
+    return;
+  }
 
-    ctx.logger.debug("Report describe command completed");
-  });
+  await reportRegistry.ensureLoaded();
+  const deps: ReportDescribeDeps = {
+    getReport: async (name) => {
+      await reportRegistry.ensureTypeLoaded(name);
+      return reportRegistry.get(name);
+    },
+  };
+
+  const libCtx = createLibSwampContext({ logger: ctx.logger });
+  const renderer = createReportDescribeRenderer(ctx.outputMode);
+
+  await consumeStream(
+    reportDescribe(libCtx, deps, reportName),
+    renderer.handlers(),
+  );
+
+  ctx.logger.debug("Report describe command completed");
+});
