@@ -109,6 +109,8 @@ import {
   GROUP_MODEL_TYPE,
   GroupSchema,
 } from "../domain/models/access/group_model.ts";
+import { SERVER_TOKEN_MODEL_TYPE } from "../domain/models/access/server_token_model.ts";
+import { ModelType } from "../domain/models/model_type.ts";
 import type { DataRecord } from "../domain/data/data_record.ts";
 import {
   parsePrincipal,
@@ -687,18 +689,30 @@ export function handleMessage(
   task.finally(() => activeRequests.delete(request.id));
 }
 
+// SECURITY: Authorization must operate on canonical (normalized) model types,
+// never raw client input. ModelType.normalize() applies lowercasing, separator
+// canonicalization (:: . whitespace → /), and deduplication. Any raw typeArg
+// that normalizes to an access-control model type must require admin authority.
 function isAccessModelType(
   typeArg: string | undefined,
   resolvedType: string | undefined,
 ): boolean {
   const grantType = GRANT_MODEL_TYPE.normalized;
   const groupType = GROUP_MODEL_TYPE.normalized;
+  const serverTokenType = SERVER_TOKEN_MODEL_TYPE.normalized;
   if (typeArg) {
     const stripped = typeArg.startsWith("@") ? typeArg.slice(1) : typeArg;
-    if (stripped === grantType || stripped === groupType) return true;
+    const normalized = ModelType.create(stripped).normalized;
+    if (
+      normalized === grantType || normalized === groupType ||
+      normalized === serverTokenType
+    ) return true;
   }
   if (resolvedType) {
-    if (resolvedType === grantType || resolvedType === groupType) return true;
+    if (
+      resolvedType === grantType || resolvedType === groupType ||
+      resolvedType === serverTokenType
+    ) return true;
   }
   return false;
 }
