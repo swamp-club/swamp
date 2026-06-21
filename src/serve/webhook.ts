@@ -458,7 +458,8 @@ export class WebhookService {
     payload: WebhookPayload,
   ): Promise<void> {
     const controller = new AbortController();
-    this.running.set(workflowIdOrName, controller);
+    const execId = crypto.randomUUID();
+    this.running.set(execId, controller);
 
     try {
       let runId = "";
@@ -507,7 +508,7 @@ export class WebhookService {
         { workflow: workflowIdOrName, error: message },
       );
     } finally {
-      this.running.delete(workflowIdOrName);
+      this.running.delete(execId);
     }
   }
 
