@@ -700,7 +700,14 @@ export function handleMessage(
       break;
   }
 
-  task.finally(() => activeRequests.delete(request.id));
+  task
+    .catch((error: unknown) => {
+      logger.error("Unhandled request error for {requestId}: {error}", {
+        requestId: request.id,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    })
+    .finally(() => activeRequests.delete(request.id));
 }
 
 // SECURITY: Authorization must operate on canonical (normalized) model types,

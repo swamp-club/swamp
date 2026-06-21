@@ -412,7 +412,13 @@ export class WebhookService {
 
     // Start processing the queue — only store when actually starting
     if (!this.processing) {
-      this.processingPromise = this.processQueue();
+      this.processingPromise = this.processQueue().catch(
+        (error: unknown) => {
+          logger.error("Webhook queue processing failed: {error}", {
+            error: error instanceof Error ? error.message : String(error),
+          });
+        },
+      );
     }
 
     return Response.json({
