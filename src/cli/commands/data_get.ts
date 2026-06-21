@@ -63,6 +63,10 @@ export const dataGetCommand = withRemoteOptions(
       "Metadata only",
       "swamp data get my-server system-info --no-content",
     )
+    .example(
+      "From a remote server",
+      "swamp data get my-server system-info --server wss://demo.swamp-club.ai",
+    )
     .arguments("[model_id_or_name:model_name] [data_name:string]")
     .option(
       "--repo-dir <dir:string>",

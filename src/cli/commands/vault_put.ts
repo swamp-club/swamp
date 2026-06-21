@@ -140,7 +140,9 @@ The value can be provided in several ways:
   - Piped via stdin:       echo "val" | swamp vault put <vault> <key>
   - Interactive prompt:    swamp vault put <vault> <key>  (prompts with hidden input)
 
-Piping via stdin is recommended for scripts and CI to avoid exposing secrets in the process argument list.`,
+Piping via stdin is recommended for scripts and CI to avoid exposing secrets in the process argument list.
+
+When using --server, the value must be passed as a positional argument or KEY=VALUE form — stdin and interactive prompts are not available remotely.`,
     )
     .arguments("<vault_name:string> <key:string> [value:string]")
     .example(

@@ -1663,7 +1663,7 @@ async function handleVaultPut(
         socket,
         requestId,
         "secret_exists",
-        `Secret '${payload.key}' already exists in vault '${payload.vaultName}'. Set force=true to overwrite.`,
+        `Secret '${payload.key}' already exists in vault '${payload.vaultName}'. Use --force (-f) to overwrite.`,
       );
       return;
     }

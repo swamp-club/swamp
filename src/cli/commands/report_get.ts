@@ -75,6 +75,10 @@ export const reportGetCommand = withRemoteOptions(
       "Cap individual column width",
       "swamp report get cost-summary --max-col-width 60",
     )
+    .example(
+      "From a remote server",
+      "swamp report get cost-summary --server wss://demo.swamp-club.ai",
+    )
     .arguments("<report_name:string>")
     .option(
       "--repo-dir <dir:string>",
@@ -104,6 +108,7 @@ export const reportGetCommand = withRemoteOptions(
     ),
 ).action(async function (options: AnyOptions, reportName: string) {
   const ctx = createContext(options as GlobalOptions, ["report", "get"]);
+  const widthOptions = resolveWidthOptions(options);
 
   const server = resolveServeUrl(options.server as string | undefined);
   if (server) {
@@ -124,15 +129,13 @@ export const reportGetCommand = withRemoteOptions(
         },
       },
     );
-    const renderer = createReportGetRenderer(ctx.outputMode);
+    const renderer = createReportGetRenderer(ctx.outputMode, widthOptions);
     renderer.handlers().completed({
       kind: "completed",
       data: response.data as unknown as StoredReportDetail,
     });
     return;
   }
-
-  const widthOptions = resolveWidthOptions(options);
 
   const { repoContext } = await requireInitializedRepoReadOnly({
     repoDir: resolveRepoDir(options.repoDir),
