@@ -307,18 +307,18 @@ export class WebhookService {
 
     const verifier = createVerifier(endpoint.verifier);
 
-    // Reject a missing signature before reading the body to avoid
-    // unauthenticated resource consumption.
-    if (!req.headers.get(verifier.signatureHeader)) {
-      this.emit({
-        kind: "webhook_rejected",
-        route: endpoint.route,
-        reason: `Missing ${verifier.signatureHeader} header`,
-      });
-      return Response.json(
-        { error: `Missing ${verifier.signatureHeader} header` },
-        { status: 401 },
-      );
+    for (const header of verifier.requiredHeaders) {
+      if (!req.headers.get(header)) {
+        this.emit({
+          kind: "webhook_rejected",
+          route: endpoint.route,
+          reason: `Missing ${header} header`,
+        });
+        return Response.json(
+          { error: `Missing ${header} header` },
+          { status: 401 },
+        );
+      }
     }
 
     // Read body with size limit — streams to avoid unbounded allocation

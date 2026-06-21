@@ -86,6 +86,11 @@ Deno.test("github verifier: accepts an empty body", async () => {
   assertEquals(await verifier.verify(enc(""), headers, SECRET), true);
 });
 
+Deno.test("github verifier: requiredHeaders contains only the signature header", () => {
+  const verifier = createVerifier({ scheme: "github" });
+  assertEquals(verifier.requiredHeaders, ["x-hub-signature-256"]);
+});
+
 // ── linear ──────────────────────────────────────────────────────────────
 
 Deno.test("linear verifier: accepts a valid bare-hex signature", async () => {
@@ -100,6 +105,11 @@ Deno.test("linear verifier: rejects an invalid signature", async () => {
   const verifier = createVerifier({ scheme: "linear" });
   const headers = new Headers({ "linear-signature": "00".repeat(32) });
   assertEquals(await verifier.verify(enc("body"), headers, SECRET), false);
+});
+
+Deno.test("linear verifier: requiredHeaders contains only the signature header", () => {
+  const verifier = createVerifier({ scheme: "linear" });
+  assertEquals(verifier.requiredHeaders, ["linear-signature"]);
 });
 
 // ── generic ─────────────────────────────────────────────────────────────
@@ -146,6 +156,15 @@ Deno.test("generic verifier: empty prefix accepts a bare digest", async () => {
   assertEquals(await verifier.verify(enc("payload"), headers, SECRET), true);
 });
 
+Deno.test("generic verifier: requiredHeaders contains only the configured header", () => {
+  const verifier = createVerifier({
+    scheme: "generic",
+    header: "X-My-Sig",
+    prefix: "",
+  });
+  assertEquals(verifier.requiredHeaders, ["x-my-sig"]);
+});
+
 // ── stripe ──────────────────────────────────────────────────────────────
 
 Deno.test("stripe verifier: accepts a fresh valid signature", async () => {
@@ -183,6 +202,11 @@ Deno.test("stripe verifier: rejects a missing timestamp", async () => {
   assertEquals(await verifier.verify(enc("payload"), headers, SECRET), false);
 });
 
+Deno.test("stripe verifier: requiredHeaders contains only the signature header", () => {
+  const verifier = createVerifier({ scheme: "stripe" });
+  assertEquals(verifier.requiredHeaders, ["stripe-signature"]);
+});
+
 // ── slack ───────────────────────────────────────────────────────────────
 
 Deno.test("slack verifier: accepts a fresh valid signature", async () => {
@@ -215,6 +239,14 @@ Deno.test("slack verifier: rejects a missing timestamp header", async () => {
   const v0 = await sign(`v0:${nowSeconds()}:${body}`);
   const headers = new Headers({ "x-slack-signature": `v0=${v0}` });
   assertEquals(await verifier.verify(enc(body), headers, SECRET), false);
+});
+
+Deno.test("slack verifier: requiredHeaders includes both signature and timestamp", () => {
+  const verifier = createVerifier({ scheme: "slack" });
+  assertEquals(verifier.requiredHeaders, [
+    "x-slack-signature",
+    "x-slack-request-timestamp",
+  ]);
 });
 
 // ── isWebhookScheme ─────────────────────────────────────────────────────

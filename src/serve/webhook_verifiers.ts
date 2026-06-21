@@ -71,6 +71,7 @@ export type VerifierConfig =
  */
 export interface WebhookVerifier {
   readonly signatureHeader: string;
+  readonly requiredHeaders: readonly string[];
   verify(
     body: Uint8Array,
     headers: Headers,
@@ -149,6 +150,7 @@ function prefixedBodyVerifier(
 ): WebhookVerifier {
   return {
     signatureHeader,
+    requiredHeaders: [signatureHeader],
     async verify(body, headers, secret) {
       const value = headers.get(signatureHeader);
       if (value === null || !value.startsWith(prefix)) {
@@ -170,6 +172,7 @@ function stripeVerifier(): WebhookVerifier {
   const signatureHeader = "stripe-signature";
   return {
     signatureHeader,
+    requiredHeaders: [signatureHeader],
     async verify(body, headers, secret) {
       const value = headers.get(signatureHeader);
       if (value === null) {
@@ -217,11 +220,13 @@ function stripeVerifier(): WebhookVerifier {
  */
 function slackVerifier(): WebhookVerifier {
   const signatureHeader = "x-slack-signature";
+  const timestampHeader = "x-slack-request-timestamp";
   return {
     signatureHeader,
+    requiredHeaders: [signatureHeader, timestampHeader],
     async verify(body, headers, secret) {
       const value = headers.get(signatureHeader);
-      const timestamp = headers.get("x-slack-request-timestamp");
+      const timestamp = headers.get(timestampHeader);
       if (value === null || !value.startsWith("v0=") || timestamp === null) {
         return false;
       }
