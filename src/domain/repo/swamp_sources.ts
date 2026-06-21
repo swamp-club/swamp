@@ -85,10 +85,17 @@ const ExtensionKindSchema = z.enum([
   "workflows",
 ]);
 
+const safeSkillName = z.string().refine(
+  (name) =>
+    name.length > 0 && !name.includes("/") && !name.includes("\\") &&
+    !name.includes(".."),
+  { message: "Skill name must not contain path separators or '..' components" },
+);
+
 const SwampSourceSchema = z.object({
   path: z.string().min(1, "Source path must not be empty"),
   only: z.array(ExtensionKindSchema).optional(),
-  installedSkills: z.array(z.string()).optional(),
+  installedSkills: z.array(safeSkillName).optional(),
 });
 
 const SwampSourcesConfigSchema = z.object({

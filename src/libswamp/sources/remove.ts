@@ -122,6 +122,7 @@ export async function* sourceRemove(
     deps.purgeCatalogByPrefix(expandedPath);
   }
 
+  const removedSkills = removed.installedSkills;
   yield {
     kind: "completed",
     data: {
@@ -129,6 +130,7 @@ export async function* sourceRemove(
       path,
       only: removed.only,
       totalSources: updated.length,
+      ...(removedSkills?.length ? { installedSkills: removedSkills } : {}),
     },
   };
 }

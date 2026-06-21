@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { join } from "@std/path";
+import { dirname, join } from "@std/path";
 import {
   copySourceSkills,
   removeSourceSkills,
@@ -37,7 +37,7 @@ async function withTempDir(
 }
 
 async function writeFile(path: string, content: string): Promise<void> {
-  await Deno.mkdir(join(path, ".."), { recursive: true }).catch(() => {});
+  await Deno.mkdir(dirname(path), { recursive: true }).catch(() => {});
   await Deno.writeTextFile(path, content);
 }
 

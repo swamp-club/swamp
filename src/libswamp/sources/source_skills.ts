@@ -18,8 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { dirname, join } from "@std/path";
+import { getLogger } from "@logtape/logtape";
 import { parseExtensionManifest } from "../../domain/extensions/extension_manifest.ts";
 import { SKILL_DIRS } from "../../domain/repo/skill_dirs.ts";
+
+const logger = getLogger(["swamp", "sources", "skills"]);
 
 export interface ResolvedSkill {
   name: string;
@@ -97,7 +100,9 @@ export async function resolveSourceSkills(
 
 /**
  * Copies resolved skill directories to the target skills directory.
- * Returns the list of skill names that were copied.
+ * Skips skills whose target directory already exists (from another source
+ * or user-authored) and logs a warning. Returns the list of skill names
+ * that were actually copied.
  */
 export async function copySourceSkills(
   skills: ResolvedSkill[],
@@ -110,6 +115,13 @@ export async function copySourceSkills(
   const copied: string[] = [];
   for (const skill of skills) {
     const destDir = join(targetSkillsDir, skill.name);
+    try {
+      const stat = await Deno.stat(destDir);
+      if (stat.isDirectory) {
+        logger.warn`Skill ${skill.name} already exists at ${destDir}, skipping`;
+        continue;
+      }
+    } catch { /* not found — safe to copy */ }
     await Deno.mkdir(destDir, { recursive: true });
     await copyDir(skill.absolutePath, destDir);
     copied.push(skill.name);
@@ -127,6 +139,9 @@ export async function removeSourceSkills(
   targetSkillsDir: string,
 ): Promise<void> {
   for (const name of skillNames) {
+    if (name.includes("/") || name.includes("\\") || name.includes("..")) {
+      continue;
+    }
     const skillDir = join(targetSkillsDir, name);
     try {
       await Deno.remove(skillDir, { recursive: true });
@@ -151,7 +166,10 @@ async function copyDir(srcDir: string, destDir: string): Promise<void> {
   for await (const entry of Deno.readDir(srcDir)) {
     const srcPath = join(srcDir, entry.name);
     const destPath = join(destDir, entry.name);
-    if (entry.isDirectory) {
+    if (entry.isSymlink) {
+      const target = await Deno.readLink(srcPath);
+      await Deno.symlink(target, destPath, { type: "file" });
+    } else if (entry.isDirectory) {
       await Deno.mkdir(destPath, { recursive: true });
       await copyDir(srcPath, destPath);
     } else if (entry.isFile) {

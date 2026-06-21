@@ -73,6 +73,10 @@ async function collectEvents(
   return events;
 }
 
+function findCompleted(events: SourceModifyEvent[]) {
+  return events.find((e) => e.kind === "completed");
+}
+
 const ctx = createLibSwampContext({});
 
 Deno.test("sourceRemove: removes an existing source", async () => {
@@ -206,4 +210,39 @@ Deno.test("sourceRemove: purges multiple expanded paths from glob source", async
   await collectEvents(sourceRemove(ctx, deps, "~/code/ext-*"));
 
   assertEquals(deps.purgedPrefixes, ["/expanded/ext-one", "/expanded/ext-two"]);
+});
+
+Deno.test("sourceRemove: calls removeSkills with installed skill names", async () => {
+  const removedSkills: string[] = [];
+  const deps = createTestDeps({
+    sources: [
+      { path: "/some/ext", installedSkills: ["skill-a", "skill-b"] },
+    ],
+  });
+  deps.removeSkills = (names: string[]) => {
+    removedSkills.push(...names);
+    return Promise.resolve();
+  };
+  const events = await collectEvents(
+    sourceRemove(ctx, deps, "/some/ext"),
+  );
+  const completed = findCompleted(events);
+  assertEquals(completed?.kind, "completed");
+  assertEquals(removedSkills, ["skill-a", "skill-b"]);
+  if (completed?.kind === "completed") {
+    assertEquals(completed.data.installedSkills, ["skill-a", "skill-b"]);
+  }
+});
+
+Deno.test("sourceRemove: does not call removeSkills when no skills installed", async () => {
+  let removeSkillsCalled = false;
+  const deps = createTestDeps({
+    sources: [{ path: "/some/ext" }],
+  });
+  deps.removeSkills = () => {
+    removeSkillsCalled = true;
+    return Promise.resolve();
+  };
+  await collectEvents(sourceRemove(ctx, deps, "/some/ext"));
+  assertEquals(removeSkillsCalled, false);
 });

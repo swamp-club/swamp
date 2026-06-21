@@ -35,6 +35,7 @@ import {
 } from "../../infrastructure/persistence/swamp_sources_repository.ts";
 import {
   copySourceSkills,
+  removeSourceSkills,
   type ResolvedSkill,
   resolveSourceSkills,
 } from "./source_skills.ts";
@@ -53,6 +54,8 @@ export interface SourceAddDeps {
   resolveSkills: (sourcePath: string) => Promise<ResolvedSkill[]>;
   /** Copies resolved skills to the repo's skill directory. */
   copySkills: (skills: ResolvedSkill[]) => Promise<string[]>;
+  /** Removes named skill directories (used for cleanup on partial failure). */
+  cleanupSkills: (skillNames: string[]) => Promise<void>;
 }
 
 /** Wires real infrastructure into SourceAddDeps. */
@@ -71,6 +74,8 @@ export function createSourceAddDeps(
       resolveSourceSkills(sourcePath, resolvedTools),
     copySkills: (skills) =>
       skillsDir ? copySourceSkills(skills, skillsDir) : Promise.resolve([]),
+    cleanupSkills: (skillNames) =>
+      skillsDir ? removeSourceSkills(skillNames, skillsDir) : Promise.resolve(),
   };
 }
 
@@ -108,17 +113,18 @@ export async function* sourceAdd(
   // can configure sources before the target dirs exist (pre-population).
   const tentative: SwampSource = only ? { path, only } : { path };
   const isGlob = isGlobPattern(path);
+  let cachedExpansions: SwampSource[] | undefined;
   const resolvedKinds = await deps.resolveKinds(tentative);
   if (resolvedKinds.length === 0) {
     if (isGlob) {
-      const expansions = await deps.expandSource(tentative);
-      if (expansions.length > 0) {
+      cachedExpansions = await deps.expandSource(tentative);
+      if (cachedExpansions.length > 0) {
         // Glob expanded to concrete dirs but none contributed kinds.
         yield {
           kind: "error",
           error: validationFailed(
             `No extensions found under glob '${path}'. ` +
-              `All ${expansions.length} matched path(s) lack either ` +
+              `All ${cachedExpansions.length} matched path(s) lack either ` +
               `'extensions/<kind>/' subdirectories or files declaring ` +
               `extension exports (model, vault, driver, datastore, ` +
               `report, or workflow). Check the target paths or remove ` +
@@ -147,18 +153,25 @@ export async function* sourceAdd(
   const newEntry: SwampSource = only ? { path, only } : { path };
 
   // Resolve and copy skills from the source's manifest.
-  // For glob sources, expand to concrete paths and resolve skills from each.
+  // For glob sources, reuse the cached expansion from validation.
   const sourcesToProbe = isGlob
-    ? await deps.expandSource(newEntry)
+    ? (cachedExpansions ?? await deps.expandSource(newEntry))
     : [newEntry];
 
   const allInstalledSkills: string[] = [];
-  for (const source of sourcesToProbe) {
-    const skills = await deps.resolveSkills(source.path);
-    if (skills.length > 0) {
-      const copied = await deps.copySkills(skills);
-      allInstalledSkills.push(...copied);
+  try {
+    for (const source of sourcesToProbe) {
+      const skills = await deps.resolveSkills(source.path);
+      if (skills.length > 0) {
+        const copied = await deps.copySkills(skills);
+        allInstalledSkills.push(...copied);
+      }
     }
+  } catch (error) {
+    if (allInstalledSkills.length > 0) {
+      await deps.cleanupSkills(allInstalledSkills);
+    }
+    throw error;
   }
 
   if (allInstalledSkills.length > 0) {
@@ -175,6 +188,9 @@ export async function* sourceAdd(
       path,
       only,
       totalSources: updated.length,
+      ...(allInstalledSkills.length > 0
+        ? { installedSkills: allInstalledSkills }
+        : {}),
     },
   };
 }

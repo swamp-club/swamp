@@ -55,6 +55,7 @@ function createTestDeps(
       Promise.resolve(options.expandSource?.(source) ?? [source]),
     resolveSkills: () => Promise.resolve([]),
     copySkills: () => Promise.resolve([]),
+    cleanupSkills: () => Promise.resolve(),
     get written() {
       return state.written;
     },
@@ -375,4 +376,38 @@ Deno.test("sourceAdd e2e: mixed layout — standard wins, loose files ignored", 
     // Should succeed — standard layout has content; loose file ignored.
     assertEquals(findCompleted(events)?.kind, "completed");
   });
+});
+
+Deno.test("sourceAdd: copies skills and records installedSkills on source entry", async () => {
+  const deps = createTestDeps({
+    resolveKinds: () => ["models"],
+  });
+  (deps as unknown as Record<string, unknown>).resolveSkills = () =>
+    Promise.resolve([{ name: "my-skill", absolutePath: "/src/my-skill" }]);
+  (deps as unknown as Record<string, unknown>).copySkills = () =>
+    Promise.resolve(["my-skill"]);
+  const events = await collectEvents(
+    sourceAdd(ctx, deps, "/some/path"),
+  );
+  const completed = findCompleted(events);
+  assertEquals(completed?.kind, "completed");
+  if (completed?.kind === "completed") {
+    assertEquals(completed.data.installedSkills, ["my-skill"]);
+  }
+  assertEquals(deps.written?.sources[0].installedSkills, ["my-skill"]);
+});
+
+Deno.test("sourceAdd: does not set installedSkills when no skills resolved", async () => {
+  const deps = createTestDeps({
+    resolveKinds: () => ["models"],
+  });
+  const events = await collectEvents(
+    sourceAdd(ctx, deps, "/some/path"),
+  );
+  const completed = findCompleted(events);
+  assertEquals(completed?.kind, "completed");
+  if (completed?.kind === "completed") {
+    assertEquals(completed.data.installedSkills, undefined);
+  }
+  assertEquals(deps.written?.sources[0].installedSkills, undefined);
 });

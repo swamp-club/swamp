@@ -461,6 +461,7 @@ export {
   sourceAdd,
   type SourceAddDeps,
 } from "./sources/add.ts";
+export { type ResolvedSkill } from "./sources/source_skills.ts";
 export {
   createSourceRemoveDeps,
   sourceRemove,
