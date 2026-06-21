@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertExists } from "@std/assert";
+import { assertEquals } from "@std/assert";
 import {
   deserializeEvent,
   serializeEvent,
