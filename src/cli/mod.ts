@@ -1282,21 +1282,22 @@ export async function runCli(args: string[]): Promise<void> {
       if (telemetryCtx) {
         await telemetryCtx.service.recordSuccess(commandInfo, startTime);
 
-        // Flush telemetry to remote endpoint with a 200ms timeout — fast/local
-        // endpoints flush within the window; slow endpoints rely on the
-        // next-invocation retry (data is already persisted to the spool).
         const sender = new HttpTelemetrySender(
           telemetryCtx.telemetryEndpoint,
           USER_AGENT,
         );
-        await telemetryCtx.service.flushTelemetry({
+        const flushed = await telemetryCtx.service.flushTelemetry({
           sender,
           distinctId: telemetryCtx.userId ?? telemetryCtx.repoId,
           repoId: telemetryCtx.repoId,
           authToken: telemetryCtx.authToken ?? undefined,
           keepFlushed: telemetryCtx.keepFlushed,
-          signal: AbortSignal.timeout(200),
+          signal: AbortSignal.timeout(2000),
         });
+        if (!flushed) {
+          logger
+            .warn`Telemetry flush failed — entries are queued locally and will retry on the next invocation`;
+        }
 
         // Trigger cleanup asynchronously (fire-and-forget)
         telemetryCtx.service.cleanupOldTelemetry();
@@ -1426,7 +1427,7 @@ export async function runCli(args: string[]): Promise<void> {
         repoId: telemetryCtx.repoId,
         authToken: telemetryCtx.authToken ?? undefined,
         keepFlushed: telemetryCtx.keepFlushed,
-        signal: AbortSignal.timeout(200),
+        signal: AbortSignal.timeout(2000),
       });
     }
     throw error;

@@ -50,12 +50,22 @@ export interface TelemetryRepository {
   findByDateRange(startDate: Date, endDate: Date): Promise<TelemetryEntry[]>;
 
   /**
-   * Deletes all telemetry entries older than the given date.
+   * Deletes flushed telemetry entries older than the given date.
+   * Unflushed entries are preserved for retry.
    *
-   * @param date - Delete entries older than this date
+   * @param date - Delete flushed entries older than this date
    * @returns The number of entries deleted
    */
   deleteOlderThan(date: Date): Promise<number>;
+
+  /**
+   * Deletes ALL telemetry entries older than the given date,
+   * regardless of flush status. Hard retention cap.
+   *
+   * @param date - Delete all entries older than this date
+   * @returns The number of entries deleted
+   */
+  deleteAllOlderThan(date: Date): Promise<number>;
 
   /**
    * Finds unflushed telemetry entries, sorted oldest first.

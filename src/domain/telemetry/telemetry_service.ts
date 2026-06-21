@@ -75,8 +75,11 @@ export interface TelemetryStats {
   daysAnalyzed: number;
 }
 
-/** Default retention period in days */
+/** Default retention period for flushed entries in days */
 const DEFAULT_RETENTION_DAYS = 2;
+
+/** Hard retention cap for all entries (including unflushed) in days */
+const HARD_RETENTION_DAYS = 7;
 
 /**
  * Service for recording and analyzing CLI telemetry.
@@ -218,16 +221,26 @@ export class TelemetryService {
 
   /**
    * Cleans up telemetry entries older than the retention period.
+   * Flushed entries are cleaned after `retentionDays` (default 2).
+   * Unflushed entries survive until the hard cap (`HARD_RETENTION_DAYS`,
+   * 7 days) to allow retry, then are deleted to prevent unbounded growth.
+   *
    * This method is fire-and-forget and does not block.
    *
-   * @param retentionDays - Number of days to retain (default: 2)
+   * @param retentionDays - Number of days to retain flushed entries (default: 2)
    */
   cleanupOldTelemetry(retentionDays: number = DEFAULT_RETENTION_DAYS): void {
-    const cutoffDate = new Date();
-    cutoffDate.setDate(cutoffDate.getDate() - retentionDays);
+    const flushedCutoff = new Date();
+    flushedCutoff.setDate(flushedCutoff.getDate() - retentionDays);
+
+    const hardCutoff = new Date();
+    hardCutoff.setDate(hardCutoff.getDate() - HARD_RETENTION_DAYS);
 
     // Fire-and-forget: don't await, don't let errors propagate
-    this.repository.deleteOlderThan(cutoffDate).catch((error) => {
+    Promise.all([
+      this.repository.deleteOlderThan(flushedCutoff),
+      this.repository.deleteAllOlderThan(hardCutoff),
+    ]).catch((error) => {
       if (Deno.env.get("SWAMP_DEBUG")) {
         console.error("[Telemetry] Cleanup failed:", error);
       }
@@ -236,31 +249,28 @@ export class TelemetryService {
 
   /**
    * Flushes unflushed telemetry entries to a remote endpoint.
-   * Returns a promise that resolves when the flush completes (or fails silently).
-   * Callers should await this before process exit to ensure data is sent.
+   * Returns true if the flush succeeded (or there was nothing to flush),
+   * false if the send failed. Never throws.
    *
    * @param config - Flush configuration with sender and distinctId
    */
-  flushTelemetry(config: TelemetryFlushConfig): Promise<void> {
+  async flushTelemetry(config: TelemetryFlushConfig): Promise<boolean> {
     const batchSize = config.batchSize ?? DEFAULT_FLUSH_BATCH_SIZE;
     const keepFlushed = config.keepFlushed ?? false;
 
-    return this.doFlush(
-      config.sender,
-      config.distinctId,
-      batchSize,
-      keepFlushed,
-      config.repoId,
-      config.authToken,
-      config.signal,
-    )
-      .catch(
-        (error) => {
-          if (Deno.env.get("SWAMP_DEBUG")) {
-            console.error("[Telemetry] Flush failed:", error);
-          }
-        },
+    try {
+      return await this.doFlush(
+        config.sender,
+        config.distinctId,
+        batchSize,
+        keepFlushed,
+        config.repoId,
+        config.authToken,
+        config.signal,
       );
+    } catch {
+      return false;
+    }
   }
 
   private async doFlush(
@@ -271,9 +281,9 @@ export class TelemetryService {
     repoId?: string,
     authToken?: string,
     signal?: AbortSignal,
-  ): Promise<void> {
+  ): Promise<boolean> {
     const entries = await this.repository.findUnflushed(batchSize);
-    if (entries.length === 0) return;
+    if (entries.length === 0) return true;
 
     const success = await sender.sendBatch(
       entries,
@@ -287,6 +297,7 @@ export class TelemetryService {
         await this.repository.markFlushed(entry, keepFlushed);
       }
     }
+    return success;
   }
 
   /**
