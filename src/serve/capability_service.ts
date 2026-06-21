@@ -100,7 +100,10 @@ export class CapabilityService {
   }
 
   #vault(): Promise<VaultService> {
-    this.#vaultService ??= this.#createVaultService();
+    this.#vaultService ??= this.#createVaultService().catch((error) => {
+      this.#vaultService = null;
+      throw error;
+    });
     return this.#vaultService;
   }
 
