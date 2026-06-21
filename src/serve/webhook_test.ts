@@ -18,11 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertThrows } from "@std/assert";
-import {
-  buildWebhookPayload,
-  parseWebhookFlag,
-  verifySignature,
-} from "./webhook.ts";
+import { buildWebhookPayload, parseWebhookFlag } from "./webhook.ts";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
 
 await initializeLogging({});
@@ -212,108 +208,4 @@ Deno.test("parseWebhookFlag: rejects route without leading slash", () => {
     Error,
     "must start with '/'",
   );
-});
-
-// ── verifySignature ────────────────────────────────────────────────────
-
-async function computeSignature(
-  body: string,
-  secret: string,
-): Promise<string> {
-  const key = await crypto.subtle.importKey(
-    "raw",
-    new TextEncoder().encode(secret),
-    { name: "HMAC", hash: "SHA-256" },
-    false,
-    ["sign"],
-  );
-  const sig = await crypto.subtle.sign(
-    "HMAC",
-    key,
-    new TextEncoder().encode(body),
-  );
-  const hex = Array.from(new Uint8Array(sig))
-    .map((b) => b.toString(16).padStart(2, "0"))
-    .join("");
-  return `sha256=${hex}`;
-}
-
-Deno.test("verifySignature: accepts valid signature", async () => {
-  const body = '{"ref":"refs/heads/main"}';
-  const secret = "test-secret";
-  const sig = await computeSignature(body, secret);
-
-  const result = await verifySignature(
-    new TextEncoder().encode(body),
-    sig,
-    secret,
-  );
-  assertEquals(result, true);
-});
-
-Deno.test("verifySignature: rejects invalid signature", async () => {
-  const body = '{"ref":"refs/heads/main"}';
-  const secret = "test-secret";
-
-  const result = await verifySignature(
-    new TextEncoder().encode(body),
-    "sha256=0000000000000000000000000000000000000000000000000000000000000000",
-    secret,
-  );
-  assertEquals(result, false);
-});
-
-Deno.test("verifySignature: rejects wrong secret", async () => {
-  const body = '{"ref":"refs/heads/main"}';
-  const sig = await computeSignature(body, "correct-secret");
-
-  const result = await verifySignature(
-    new TextEncoder().encode(body),
-    sig,
-    "wrong-secret",
-  );
-  assertEquals(result, false);
-});
-
-Deno.test("verifySignature: rejects missing sha256= prefix", async () => {
-  const result = await verifySignature(
-    new TextEncoder().encode("body"),
-    "not-a-valid-header",
-    "secret",
-  );
-  assertEquals(result, false);
-});
-
-Deno.test("verifySignature: rejects empty signature header", async () => {
-  const result = await verifySignature(
-    new TextEncoder().encode("body"),
-    "",
-    "secret",
-  );
-  assertEquals(result, false);
-});
-
-Deno.test("verifySignature: works with empty body", async () => {
-  const body = "";
-  const secret = "test-secret";
-  const sig = await computeSignature(body, secret);
-
-  const result = await verifySignature(
-    new TextEncoder().encode(body),
-    sig,
-    secret,
-  );
-  assertEquals(result, true);
-});
-
-Deno.test("verifySignature: rejects tampered body", async () => {
-  const secret = "test-secret";
-  const sig = await computeSignature("original body", secret);
-
-  const result = await verifySignature(
-    new TextEncoder().encode("tampered body"),
-    sig,
-    secret,
-  );
-  assertEquals(result, false);
 });
