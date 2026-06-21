@@ -22,6 +22,7 @@ import {
   consumeStream,
   createLibSwampContext,
   dataQuery,
+  type DataQueryData,
   type DataQueryDeps,
 } from "../../libswamp/mod.ts";
 import { createDataQueryRenderer } from "../../presentation/renderers/data_query.ts";
@@ -103,7 +104,11 @@ export const dataQueryCommand = withRemoteOptions(
         },
       },
     );
-    console.log(JSON.stringify({ results: response.results }, null, 2));
+    const renderer = createDataQueryRenderer(ctx.outputMode, false);
+    renderer.handlers().completed({
+      kind: "completed",
+      data: response.data as unknown as DataQueryData,
+    });
     return;
   }
 

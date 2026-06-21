@@ -95,7 +95,6 @@ import { getReportTypes } from "../domain/reports/report_types.ts";
 import { RepoMarkerRepository } from "../infrastructure/persistence/repo_marker_repository.ts";
 import { resolvePrimaryTool } from "../domain/repo/primary_tool.ts";
 import { RepoPath } from "../domain/repo/repo_path.ts";
-import { EventBus } from "../domain/events/event_bus.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import type { WorkerGateway } from "./worker_gateway.ts";
 import type { PolicySnapshotLoader } from "../domain/access/policy_snapshot_loader.ts";
@@ -1339,7 +1338,7 @@ async function handleDataQuery(
       query: (pred, opts) => queryService.query(pred, opts),
     };
 
-    let results: Record<string, unknown>[] = [];
+    let result: Record<string, unknown> | undefined;
     await consumeStream(
       dataQuery(libCtx, deps, {
         predicate: payload.predicate,
@@ -1351,7 +1350,7 @@ async function handleDataQuery(
         match: () => {},
         projected_match: () => {},
         completed: (e) => {
-          results = e.data.results as unknown as Record<string, unknown>[];
+          result = e.data as unknown as Record<string, unknown>;
         },
         error: (e) => {
           throw new Error(e.error.message);
@@ -1362,7 +1361,7 @@ async function handleDataQuery(
     send(socket, {
       type: "data.query",
       id: requestId,
-      payload: { results },
+      payload: { data: result ?? {} },
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -1454,13 +1453,13 @@ async function handleModelSearch(
       findAllGlobal: () => ctx.repoContext.definitionRepo.findAllGlobal(),
     };
 
-    let items: Record<string, unknown>[] = [];
+    let result: Record<string, unknown> | undefined;
     await consumeStream(
       modelSearch(libCtx, deps, { query: payload?.query }),
       {
         resolving: () => {},
         completed: (e) => {
-          items = e.data.results as unknown as Record<string, unknown>[];
+          result = e.data as unknown as Record<string, unknown>;
         },
         error: (e) => {
           throw new Error(e.error.message);
@@ -1471,7 +1470,7 @@ async function handleModelSearch(
     send(socket, {
       type: "model.search",
       id: requestId,
-      payload: { items },
+      payload: { data: result ?? {} },
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -1557,13 +1556,13 @@ async function handleWorkflowSearch(
       findAllWorkflows: () => ctx.repoContext.workflowRepo.findAll(),
     };
 
-    let items: Record<string, unknown>[] = [];
+    let result: Record<string, unknown> | undefined;
     await consumeStream(
       workflowSearch(libCtx, deps, { query: payload?.query }),
       {
         resolving: () => {},
         completed: (e) => {
-          items = e.data.results as unknown as Record<string, unknown>[];
+          result = e.data as unknown as Record<string, unknown>;
         },
         error: (e) => {
           throw new Error(e.error.message);
@@ -1574,7 +1573,7 @@ async function handleWorkflowSearch(
     send(socket, {
       type: "workflow.search",
       id: requestId,
-      payload: { items },
+      payload: { data: result ?? {} },
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -1650,8 +1649,7 @@ async function handleVaultPut(
 
   try {
     const libCtx = createLibSwampContext();
-    const eventBus = new EventBus();
-    const deps = createVaultPutDeps(ctx.repoDir, eventBus);
+    const deps = createVaultPutDeps(ctx.repoDir, ctx.repoContext.eventBus);
 
     const preview = await vaultPutPreview(
       libCtx,
@@ -1942,7 +1940,7 @@ async function handleReportSearch(
       },
     };
 
-    let items: Record<string, unknown>[] = [];
+    let result: Record<string, unknown> | undefined;
     await consumeStream(
       reportSearch(libCtx, deps, {
         query: payload?.query,
@@ -1955,7 +1953,7 @@ async function handleReportSearch(
       {
         resolving: () => {},
         completed: (e) => {
-          items = e.data.reports as unknown as Record<string, unknown>[];
+          result = e.data as unknown as Record<string, unknown>;
         },
         error: (e) => {
           throw new Error(e.error.message);
@@ -1966,7 +1964,7 @@ async function handleReportSearch(
     send(socket, {
       type: "report.search",
       id: requestId,
-      payload: { items },
+      payload: { data: result ?? {} },
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
@@ -2055,13 +2053,13 @@ async function handleReportTypeSearch(
       getReportTypes: () => getReportTypes(),
     };
 
-    let items: Record<string, unknown>[] = [];
+    let result: Record<string, unknown> | undefined;
     await consumeStream(
       reportTypeSearch(libCtx, deps, { query: payload?.query }),
       {
         resolving: () => {},
         completed: (e) => {
-          items = e.data.results as unknown as Record<string, unknown>[];
+          result = e.data as unknown as Record<string, unknown>;
         },
         error: (e) => {
           throw new Error(e.error.message);
@@ -2072,7 +2070,7 @@ async function handleReportTypeSearch(
     send(socket, {
       type: "report.type.search",
       id: requestId,
-      payload: { items },
+      payload: { data: result ?? {} },
     });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);

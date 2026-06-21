@@ -23,6 +23,7 @@ import {
   createLibSwampContext,
   createModelMethodDescribeDeps,
   modelMethodDescribe,
+  type ModelMethodDescribeData,
 } from "../../libswamp/mod.ts";
 import { createModelMethodDescribeRenderer } from "../../presentation/renderers/model_method_describe.ts";
 import {
@@ -84,7 +85,11 @@ export const modelMethodDescribeCommand = withRemoteOptions(
           payload: { modelIdOrName, methodName },
         },
       );
-      console.log(JSON.stringify(response.data, null, 2));
+      const renderer = createModelMethodDescribeRenderer(cliCtx.outputMode);
+      renderer.handlers().completed({
+        kind: "completed",
+        data: response.data as unknown as ModelMethodDescribeData,
+      });
       return;
     }
 

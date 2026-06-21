@@ -23,6 +23,7 @@ import {
   createLibSwampContext,
   createVaultGetDeps,
   vaultGet,
+  type VaultGetData,
 } from "../../libswamp/mod.ts";
 import { createVaultGetRenderer } from "../../presentation/renderers/vault_get.ts";
 import {
@@ -90,7 +91,11 @@ export const vaultGetCommand = withRemoteOptions(
           },
         },
       );
-      console.log(JSON.stringify(response.data, null, 2));
+      const renderer = createVaultGetRenderer(cliCtx.outputMode);
+      renderer.handlers().completed({
+        kind: "completed",
+        data: response.data as unknown as VaultGetData,
+      });
       return;
     }
 

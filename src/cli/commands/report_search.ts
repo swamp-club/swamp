@@ -170,7 +170,15 @@ export async function reportSearchAction(
         },
       },
     );
-    console.log(JSON.stringify({ items: response.items }, null, 2));
+    const renderer = createReportSearchRenderer(
+      ctx.outputMode,
+      query ?? "",
+      undefined,
+    );
+    renderer.handlers().completed({
+      kind: "completed",
+      data: response.data as unknown as { reports: StoredReportSummary[] },
+    });
     return;
   }
 

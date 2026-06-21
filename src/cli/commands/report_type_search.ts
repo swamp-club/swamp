@@ -22,6 +22,7 @@ import {
   consumeStream,
   createLibSwampContext,
   reportTypeSearch,
+  type ReportTypeSearchData,
   type ReportTypeSearchDeps,
 } from "../../libswamp/mod.ts";
 import { createReportTypeSearchRenderer } from "../../presentation/renderers/report_type_search.tsx";
@@ -65,7 +66,11 @@ export async function reportTypeSearchAction(
         payload: { query },
       },
     );
-    console.log(JSON.stringify({ items: response.items }, null, 2));
+    const renderer = createReportTypeSearchRenderer(ctx.outputMode);
+    renderer.handlers().completed({
+      kind: "completed",
+      data: response.data as unknown as ReportTypeSearchData,
+    });
     return;
   }
 

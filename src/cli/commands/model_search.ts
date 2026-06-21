@@ -25,6 +25,7 @@ import {
   modelGet,
   type ModelGetData,
   modelSearch,
+  type ModelSearchData,
   type ModelSearchDeps,
   type ModelSearchItem,
 } from "../../libswamp/mod.ts";
@@ -93,13 +94,11 @@ export async function modelSearchAction(
         payload: { query },
       },
     );
-    if (ctx.outputMode === "json") {
-      console.log(JSON.stringify({ items: response.items }, null, 2));
-    } else {
-      for (const item of response.items) {
-        console.log(`${item.name} (${item.type})`);
-      }
-    }
+    const renderer = createModelSearchRenderer(ctx.outputMode);
+    renderer.handlers().completed({
+      kind: "completed",
+      data: response.data as unknown as ModelSearchData,
+    });
     return;
   }
 

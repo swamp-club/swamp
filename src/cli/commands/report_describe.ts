@@ -23,6 +23,7 @@ import { reportRegistry } from "../../domain/reports/report_registry.ts";
 import {
   consumeStream,
   createLibSwampContext,
+  type ReportDefinitionDetail,
   reportDescribe,
   type ReportDescribeDeps,
 } from "../../libswamp/mod.ts";
@@ -63,7 +64,11 @@ export const reportDescribeCommand = withRemoteOptions(
         payload: { reportName },
       },
     );
-    console.log(JSON.stringify(response.data, null, 2));
+    const renderer = createReportDescribeRenderer(ctx.outputMode);
+    renderer.handlers().completed({
+      kind: "completed",
+      data: response.data as unknown as ReportDefinitionDetail,
+    });
     return;
   }
 

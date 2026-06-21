@@ -47,6 +47,7 @@ import { resolvePrimaryTool } from "../../domain/repo/primary_tool.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
 import {
   auditTimeline,
+  type AuditTimelineData,
   consumeStream,
   createAuditTimelineDeps,
   createLibSwampContext,
@@ -203,7 +204,11 @@ export const auditCommand = withRemoteOptions(
         },
       },
     );
-    console.log(JSON.stringify(response.data, null, 2));
+    const renderer = createAuditTimelineRenderer(ctx.outputMode);
+    renderer.handlers().completed({
+      kind: "completed",
+      data: response.data as unknown as AuditTimelineData,
+    });
     return;
   }
 

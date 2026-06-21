@@ -23,6 +23,7 @@ import {
   createLibSwampContext,
   createVaultPutDeps,
   vaultPut,
+  type VaultPutData,
   vaultPutPreview,
 } from "../../libswamp/mod.ts";
 import {
@@ -192,6 +193,27 @@ Piping via stdin is recommended for scripts and CI to avoid exposing secrets in 
   const cliCtx = createContext(options as GlobalOptions, ["vault", "put"]);
   cliCtx.logger.debug`Storing secret in vault: ${vaultName}`;
 
+  if (options.clearRefresh && options.refreshFrom) {
+    throw new UserError(
+      "--clear-refresh cannot be used with --refresh-from",
+    );
+  }
+  if (options.refreshTtl && !options.refreshFrom) {
+    throw new UserError(
+      "--refresh-ttl requires --refresh-from",
+    );
+  }
+  if (options.refreshFrom && !options.refreshTtl) {
+    throw new UserError(
+      "--refresh-from requires --refresh-ttl",
+    );
+  }
+  if (options.clearRefresh && options.refreshTtl) {
+    throw new UserError(
+      "--clear-refresh cannot be used with --refresh-ttl",
+    );
+  }
+
   const server = resolveServeUrl(options.server as string | undefined);
   if (server) {
     // Parse key/value from arguments
@@ -237,29 +259,12 @@ Piping via stdin is recommended for scripts and CI to avoid exposing secrets in 
         },
       },
     );
-    console.log(JSON.stringify(response.data, null, 2));
+    const renderer = createVaultPutRenderer(cliCtx.outputMode);
+    renderer.handlers().completed({
+      kind: "completed",
+      data: response.data as unknown as VaultPutData,
+    });
     return;
-  }
-
-  if (options.clearRefresh && options.refreshFrom) {
-    throw new UserError(
-      "--clear-refresh cannot be used with --refresh-from",
-    );
-  }
-  if (options.refreshTtl && !options.refreshFrom) {
-    throw new UserError(
-      "--refresh-ttl requires --refresh-from",
-    );
-  }
-  if (options.refreshFrom && !options.refreshTtl) {
-    throw new UserError(
-      "--refresh-from requires --refresh-ttl",
-    );
-  }
-  if (options.clearRefresh && options.refreshTtl) {
-    throw new UserError(
-      "--clear-refresh cannot be used with --refresh-ttl",
-    );
   }
 
   let refreshTtlMs: number | undefined;

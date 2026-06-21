@@ -30,6 +30,7 @@ import {
   createLibSwampContext,
   createSummariseDeps,
   summarise,
+  type SummariseData,
 } from "../../libswamp/mod.ts";
 import { createSummariseRenderer } from "../../presentation/renderers/summarise.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -98,7 +99,11 @@ export const summariseCommand = withRemoteOptions(
         },
       },
     );
-    console.log(JSON.stringify(response.data, null, 2));
+    const renderer = createSummariseRenderer(ctx.outputMode, ctx.verbosity);
+    renderer.handlers().completed({
+      kind: "completed",
+      data: response.data as unknown as SummariseData,
+    });
     return;
   }
 

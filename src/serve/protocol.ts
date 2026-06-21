@@ -242,7 +242,7 @@ export interface DataGetResponse {
 }
 
 export interface DataQueryResponse {
-  results: Record<string, unknown>[];
+  data: Record<string, unknown>;
 }
 
 export interface DataListResponse {
@@ -250,7 +250,7 @@ export interface DataListResponse {
 }
 
 export interface ModelSearchResponse {
-  items: Record<string, unknown>[];
+  data: Record<string, unknown>;
 }
 
 export interface ModelMethodDescribeResponse {
@@ -258,7 +258,7 @@ export interface ModelMethodDescribeResponse {
 }
 
 export interface WorkflowSearchResponse {
-  items: Record<string, unknown>[];
+  data: Record<string, unknown>;
 }
 
 export interface VaultGetResponse {
@@ -282,7 +282,7 @@ export interface ReportGetResponse {
 }
 
 export interface ReportSearchResponse {
-  items: Record<string, unknown>[];
+  data: Record<string, unknown>;
 }
 
 export interface ReportDescribeResponse {
@@ -290,7 +290,7 @@ export interface ReportDescribeResponse {
 }
 
 export interface ReportTypeSearchResponse {
-  items: Record<string, unknown>[];
+  data: Record<string, unknown>;
 }
 
 export type ServerMessage =

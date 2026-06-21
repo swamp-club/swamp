@@ -31,6 +31,7 @@ import {
   createLibSwampContext,
   reportGet,
   type ReportGetDeps,
+  type StoredReportDetail,
 } from "../../libswamp/mod.ts";
 import { createReportGetRenderer } from "../../presentation/renderers/report_get.ts";
 import { UserError } from "../../domain/errors.ts";
@@ -90,7 +91,7 @@ export const reportGetCommand = withRemoteOptions(
       "--markdown",
       "Output as plain markdown instead of terminal-formatted",
       {
-        conflicts: ["json"],
+        conflicts: ["json", "server"],
       },
     )
     .option(
@@ -123,7 +124,11 @@ export const reportGetCommand = withRemoteOptions(
         },
       },
     );
-    console.log(JSON.stringify(response.data, null, 2));
+    const renderer = createReportGetRenderer(ctx.outputMode);
+    renderer.handlers().completed({
+      kind: "completed",
+      data: response.data as unknown as StoredReportDetail,
+    });
     return;
   }
 

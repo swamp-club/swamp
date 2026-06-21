@@ -22,6 +22,7 @@ import {
   consumeStream,
   createLibSwampContext,
   workflowSearch,
+  type WorkflowSearchData,
   type WorkflowSearchDeps,
 } from "../../libswamp/mod.ts";
 import {
@@ -71,6 +72,8 @@ export async function workflowSearchAction(
   options: AnyOptions,
   query?: string,
 ): Promise<void> {
+  const ctx = createContext(options as GlobalOptions, ["workflow", "search"]);
+
   const server = resolveServeUrl(options.server as string | undefined);
   if (server) {
     const token = await resolveServerToken(
@@ -84,11 +87,13 @@ export async function workflowSearchAction(
         payload: { query },
       },
     );
-    console.log(JSON.stringify({ items: response.items }, null, 2));
+    const renderer = createWorkflowSearchRenderer(ctx.outputMode);
+    renderer.handlers().completed({
+      kind: "completed",
+      data: response.data as unknown as WorkflowSearchData,
+    });
     return;
   }
-
-  const ctx = createContext(options as GlobalOptions, ["workflow", "search"]);
   const effectiveMode = interactiveOutputMode(ctx);
   const libCtx = createLibSwampContext();
   ctx.logger.debug`Searching workflows with query: ${query ?? "(none)"}`;

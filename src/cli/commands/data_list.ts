@@ -29,6 +29,7 @@ import {
   createDataListDeps,
   createLibSwampContext,
   dataList,
+  type DataListData,
 } from "../../libswamp/mod.ts";
 import { createDataListRenderer } from "../../presentation/renderers/data_list.ts";
 import {
@@ -89,7 +90,11 @@ export const dataListCommand = withRemoteOptions(
           },
         },
       );
-      console.log(JSON.stringify(response.data, null, 2));
+      const renderer = createDataListRenderer(cliCtx.outputMode, false);
+      renderer.handlers().completed({
+        kind: "completed",
+        data: response.data as unknown as DataListData,
+      });
       return;
     }
 
