@@ -329,7 +329,7 @@ export class DispatchService {
       }
       if (error instanceof ChannelClosedError) {
         const hadWrites = this.#writesByDispatch.has(dispatchId);
-        const fate = await this.#awaitWorkerFate(workerName);
+        const fate = await this.#awaitWorkerFate(workerName, request.signal);
         if (hadWrites) {
           await this.#leaseTransition("fail", {
             leaseId,
@@ -440,8 +440,10 @@ export class DispatchService {
    */
   async #awaitWorkerFate(
     workerName: string,
+    signal?: AbortSignal,
   ): Promise<"reconnected" | "expired"> {
     while (true) {
+      signal?.throwIfAborted();
       const current = this.#gateway!.worker(workerName);
       if (current === null) {
         return "expired";
@@ -449,7 +451,7 @@ export class DispatchService {
       if (current.connected) {
         return "reconnected";
       }
-      await this.#waitForPoolChange(60_000, undefined);
+      await this.#waitForPoolChange(60_000, signal);
     }
   }
 
