@@ -203,11 +203,11 @@ export class DataPlane {
   #vault(): Promise<VaultService> {
     this.#vaultService ??= (this.#options.createVaultService ??
       (() => VaultService.fromRepository(this.#options.repoDir)))().catch(
-      (error) => {
-        this.#vaultService = null;
-        throw error;
-      },
-    );
+        (error) => {
+          this.#vaultService = null;
+          throw error;
+        },
+      );
     return this.#vaultService;
   }
 
