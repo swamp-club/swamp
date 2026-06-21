@@ -53,6 +53,8 @@ function createTestDeps(
       Promise.resolve(options.resolveKinds?.(source) ?? ["models"]),
     expandSource: (source) =>
       Promise.resolve(options.expandSource?.(source) ?? [source]),
+    resolveSkills: () => Promise.resolve([]),
+    copySkills: () => Promise.resolve([]),
     get written() {
       return state.written;
     },

@@ -397,6 +397,25 @@ dev/prod parity gap where published bundles loaded all declared
 components but local source loading only discovered components matching
 their kind directory.
 
+### Source-Path Skill Installation
+
+Source-path extensions (configured via `.swamp-sources.yaml`) can provide
+skills just like registry-pulled extensions. When `extension source add`
+records a new source, it reads the source's `manifest.yaml` and — if
+the manifest declares a `skills` field — resolves and copies those skill
+directories into the repo's tool-specific skills directory (e.g.
+`.claude/skills/`). Skill resolution uses the same `paths.base` strategy
+as `extension push` and `extension quality`: under
+`paths.base: manifest`, skills are found relative to the manifest
+directory; otherwise they are found under the source root's tool-specific
+skill directories.
+
+The installed skill names are tracked in the `installedSkills` field on
+the source entry in `.swamp-sources.yaml`. When `extension source rm`
+removes a source, it reads this field and deletes the corresponding
+skill directories from the repo. This ensures cleanup does not depend
+on the source directory still being accessible at removal time.
+
 The on-wire manifest in the archive preserves the field strings
 verbatim — no path rewriting, no normalization. WYSIWYG between what
 the author pushes and what the registry stores. The archive layout

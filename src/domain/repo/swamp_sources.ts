@@ -49,6 +49,8 @@ export interface SwampSource {
   path: string;
   /** Optional filter — only load these extension kinds from this source. */
   only?: ExtensionKind[];
+  /** Skill directory names installed from this source's manifest. */
+  installedSkills?: string[];
 }
 
 /**
@@ -86,6 +88,7 @@ const ExtensionKindSchema = z.enum([
 const SwampSourceSchema = z.object({
   path: z.string().min(1, "Source path must not be empty"),
   only: z.array(ExtensionKindSchema).optional(),
+  installedSkills: z.array(z.string()).optional(),
 });
 
 const SwampSourcesConfigSchema = z.object({

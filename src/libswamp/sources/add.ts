@@ -33,6 +33,11 @@ import {
   resolveExtensionKindsForSource,
   writeSwampSources,
 } from "../../infrastructure/persistence/swamp_sources_repository.ts";
+import {
+  copySourceSkills,
+  type ResolvedSkill,
+  resolveSourceSkills,
+} from "./source_skills.ts";
 
 /** Dependencies for the source add operation. */
 export interface SourceAddDeps {
@@ -44,15 +49,28 @@ export interface SourceAddDeps {
   /** Expands globs to concrete paths. Injected alongside resolveKinds so
    * the glob-vs-concrete validation split is fully testable. */
   expandSource: (source: SwampSource) => Promise<SwampSource[]>;
+  /** Resolves skill directories from a source extension's manifest. */
+  resolveSkills: (sourcePath: string) => Promise<ResolvedSkill[]>;
+  /** Copies resolved skills to the repo's skill directory. */
+  copySkills: (skills: ResolvedSkill[]) => Promise<string[]>;
 }
 
 /** Wires real infrastructure into SourceAddDeps. */
-export function createSourceAddDeps(repoDir: string): SourceAddDeps {
+export function createSourceAddDeps(
+  repoDir: string,
+  tools?: string[],
+  skillsDir?: string,
+): SourceAddDeps {
+  const resolvedTools = tools?.length ? tools : ["claude"];
   return {
     readSources: () => readSwampSources(repoDir),
     writeSources: (config) => writeSwampSources(repoDir, config),
     resolveKinds: (source) => resolveExtensionKindsForSource(source, repoDir),
     expandSource: (source) => expandSourcePaths({ sources: [source] }, repoDir),
+    resolveSkills: (sourcePath) =>
+      resolveSourceSkills(sourcePath, resolvedTools),
+    copySkills: (skills) =>
+      skillsDir ? copySourceSkills(skills, skillsDir) : Promise.resolve([]),
   };
 }
 
@@ -89,9 +107,9 @@ export async function* sourceAdd(
   // paths must resolve to ≥1 kind; unexpanded globs are allowed so users
   // can configure sources before the target dirs exist (pre-population).
   const tentative: SwampSource = only ? { path, only } : { path };
+  const isGlob = isGlobPattern(path);
   const resolvedKinds = await deps.resolveKinds(tentative);
   if (resolvedKinds.length === 0) {
-    const isGlob = isGlobPattern(path);
     if (isGlob) {
       const expansions = await deps.expandSource(tentative);
       if (expansions.length > 0) {
@@ -126,9 +144,28 @@ export async function* sourceAdd(
     }
   }
 
-  const newEntry = only ? { path, only } : { path };
-  const updated = [...sources, newEntry];
+  const newEntry: SwampSource = only ? { path, only } : { path };
 
+  // Resolve and copy skills from the source's manifest.
+  // For glob sources, expand to concrete paths and resolve skills from each.
+  const sourcesToProbe = isGlob
+    ? await deps.expandSource(newEntry)
+    : [newEntry];
+
+  const allInstalledSkills: string[] = [];
+  for (const source of sourcesToProbe) {
+    const skills = await deps.resolveSkills(source.path);
+    if (skills.length > 0) {
+      const copied = await deps.copySkills(skills);
+      allInstalledSkills.push(...copied);
+    }
+  }
+
+  if (allInstalledSkills.length > 0) {
+    newEntry.installedSkills = allInstalledSkills;
+  }
+
+  const updated = [...sources, newEntry];
   await deps.writeSources({ sources: updated });
 
   yield {

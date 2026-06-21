@@ -50,6 +50,7 @@ function createTestDeps(
       return 1;
     },
     expandPath: (path: string) => Promise.resolve([path]),
+    removeSkills: () => Promise.resolve(),
     get written() {
       return state.written;
     },
@@ -190,6 +191,7 @@ Deno.test("sourceRemove: purges multiple expanded paths from glob source", async
     },
     expandPath: () =>
       Promise.resolve(["/expanded/ext-one", "/expanded/ext-two"]),
+    removeSkills: () => Promise.resolve(),
     get written() {
       return state.written;
     },

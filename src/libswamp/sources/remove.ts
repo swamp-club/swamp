@@ -30,6 +30,7 @@ import {
 import { existsSync } from "@std/fs/exists";
 import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
 import { swampPath } from "../../infrastructure/persistence/paths.ts";
+import { removeSourceSkills } from "./source_skills.ts";
 
 /** Dependencies for the source remove operation. */
 export interface SourceRemoveDeps {
@@ -38,10 +39,15 @@ export interface SourceRemoveDeps {
   removeSources: () => Promise<void>;
   purgeCatalogByPrefix: (prefix: string) => number;
   expandPath: (path: string) => Promise<string[]>;
+  /** Removes named skill directories from the repo's skills dir. */
+  removeSkills: (skillNames: string[]) => Promise<void>;
 }
 
 /** Wires real infrastructure into SourceRemoveDeps. */
-export function createSourceRemoveDeps(repoDir: string): SourceRemoveDeps {
+export function createSourceRemoveDeps(
+  repoDir: string,
+  skillsDir?: string,
+): SourceRemoveDeps {
   return {
     readSources: () => readSwampSources(repoDir),
     writeSources: (config) => writeSwampSources(repoDir, config),
@@ -63,6 +69,8 @@ export function createSourceRemoveDeps(repoDir: string): SourceRemoveDeps {
       );
       return expanded.map((s) => s.path);
     },
+    removeSkills: (skillNames) =>
+      skillsDir ? removeSourceSkills(skillNames, skillsDir) : Promise.resolve(),
   };
 }
 
@@ -96,6 +104,11 @@ export async function* sourceRemove(
 
   const removed = existing.sources[idx];
   const updated = existing.sources.filter((_, i) => i !== idx);
+
+  // Remove skills that were installed from this source.
+  if (removed.installedSkills && removed.installedSkills.length > 0) {
+    await deps.removeSkills(removed.installedSkills);
+  }
 
   if (updated.length === 0) {
     await deps.removeSources();
