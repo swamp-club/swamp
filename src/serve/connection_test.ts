@@ -1285,6 +1285,80 @@ Deno.test("authorizeOrReject: vault.put with refreshFrom requires admin", () => 
   );
 });
 
+Deno.test("authorizeOrReject: vault.put with clearRefresh requires admin", () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const writeGrant = makeGrant({
+    subject: { kind: "user", name: "adam" },
+    actions: ["write"],
+    resource: { kind: "data", pattern: "vault" },
+  });
+  const ctx = makeCtx(modeTokenConfig, [writeGrant]);
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({
+      type: "vault.put",
+      id: "auth-vp-clear-1",
+      payload: {
+        vaultName: "default",
+        key: "K",
+        value: "V",
+        clearRefresh: true,
+      },
+    })),
+    testPrincipal,
+  );
+
+  assertEquals(mock.sent.length, 1);
+  const msg = parseSent(mock);
+  assertEquals(msg.type, "error");
+  assertEquals((msg.error as Record<string, unknown>).code, "unauthorized");
+  assertStringIncludes(
+    String((msg.error as Record<string, unknown>).message),
+    "admin",
+  );
+});
+
+Deno.test("authorizeOrReject: vault.put with empty refreshFrom requires admin", () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const writeGrant = makeGrant({
+    subject: { kind: "user", name: "adam" },
+    actions: ["write"],
+    resource: { kind: "data", pattern: "vault" },
+  });
+  const ctx = makeCtx(modeTokenConfig, [writeGrant]);
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({
+      type: "vault.put",
+      id: "auth-vp-empty-refresh",
+      payload: {
+        vaultName: "default",
+        key: "K",
+        value: "V",
+        refreshFrom: "",
+      },
+    })),
+    testPrincipal,
+  );
+
+  assertEquals(mock.sent.length, 1);
+  const msg = parseSent(mock);
+  assertEquals(msg.type, "error");
+  assertEquals((msg.error as Record<string, unknown>).code, "unauthorized");
+  assertStringIncludes(
+    String((msg.error as Record<string, unknown>).message),
+    "admin",
+  );
+});
+
 Deno.test("authorizeOrReject: audit.timeline rejected without read grant", () => {
   const mock = createMockSocket();
   const active = new Map<string, AbortController>();

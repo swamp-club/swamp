@@ -1696,7 +1696,7 @@ async function handleVaultPut(
   controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
-  if (payload.refreshFrom || payload.clearRefresh) {
+  if (payload.refreshFrom !== undefined || payload.clearRefresh) {
     if (
       !authorizeOrReject(socket, requestId, principal, "admin", {
         kind: "data",
@@ -1714,11 +1714,19 @@ async function handleVaultPut(
     ) return;
   }
 
-  const { flush } = await acquireVaultSync(
-    ctx.datastoreConfig,
-    ctx.syncService,
-    ctx.repoDir,
-  );
+  let flush: (() => Promise<void>) | undefined;
+  try {
+    ({ flush } = await acquireVaultSync(
+      ctx.datastoreConfig,
+      ctx.syncService,
+      ctx.repoDir,
+    ));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    sendError(socket, requestId, "vault_put_failed", message);
+    return;
+  }
+
   try {
     const libCtx = createLibSwampContext();
     const deps = createVaultPutDeps(ctx.repoDir, ctx.repoContext.eventBus);
@@ -1737,6 +1745,11 @@ async function handleVaultPut(
         "secret_exists",
         `Secret '${payload.key}' already exists in vault '${payload.vaultName}'. Use --force (-f) to overwrite.`,
       );
+      return;
+    }
+
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
       return;
     }
 
@@ -1774,10 +1787,14 @@ async function handleVaultPut(
       payload: { data: result ?? {} },
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    sendError(socket, requestId, "vault_put_failed", message);
+    if (error instanceof DOMException && error.name === "AbortError") {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+    } else {
+      const message = error instanceof Error ? error.message : String(error);
+      sendError(socket, requestId, "vault_put_failed", message);
+    }
   } finally {
-    await flush();
+    if (flush) await flush();
   }
 }
 
