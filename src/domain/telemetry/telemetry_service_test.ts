@@ -30,6 +30,7 @@ class MockTelemetryRepository implements TelemetryRepository {
   mockUnflushedEntries: TelemetryEntry[] = [];
   flushedEntries: TelemetryEntry[] = [];
   deletedBefore: Date | null = null;
+  deleteAllBefore: Date | null = null;
 
   save(entry: TelemetryEntry): Promise<void> {
     this.savedEntries.push(entry);
@@ -49,7 +50,12 @@ class MockTelemetryRepository implements TelemetryRepository {
 
   deleteOlderThan(date: Date): Promise<number> {
     this.deletedBefore = date;
-    return Promise.resolve(5); // Mock deleted count
+    return Promise.resolve(5);
+  }
+
+  deleteAllOlderThan(date: Date): Promise<number> {
+    this.deleteAllBefore = date;
+    return Promise.resolve(3);
   }
 
   findUnflushed(_limit: number): Promise<TelemetryEntry[]> {
@@ -272,15 +278,19 @@ Deno.test("TelemetryService.flushTelemetry sends unflushed entries and marks the
   );
   repo.mockUnflushedEntries = [entry1, entry2];
 
-  await service.flushTelemetry({ sender, distinctId: "repo-uuid" });
+  const result = await service.flushTelemetry({
+    sender,
+    distinctId: "repo-uuid",
+  });
 
+  assertEquals(result, true);
   assertEquals(sender.sentBatches.length, 1);
   assertEquals(sender.sentBatches[0].entries.length, 2);
   assertEquals(sender.sentBatches[0].distinctId, "repo-uuid");
   assertEquals(repo.flushedEntries.length, 2);
 });
 
-Deno.test("TelemetryService.flushTelemetry does not mark flushed on send failure", async () => {
+Deno.test("TelemetryService.flushTelemetry returns false on send failure", async () => {
   const repo = new MockTelemetryRepository();
   const sender = new MockTelemetrySender();
   sender.shouldSucceed = false;
@@ -292,21 +302,29 @@ Deno.test("TelemetryService.flushTelemetry does not mark flushed on send failure
   );
   repo.mockUnflushedEntries = [entry];
 
-  await service.flushTelemetry({ sender, distinctId: "repo-uuid" });
+  const result = await service.flushTelemetry({
+    sender,
+    distinctId: "repo-uuid",
+  });
 
+  assertEquals(result, false);
   assertEquals(sender.sentBatches.length, 1);
   assertEquals(repo.flushedEntries.length, 0);
 });
 
-Deno.test("TelemetryService.flushTelemetry is a no-op when no unflushed entries", async () => {
+Deno.test("TelemetryService.flushTelemetry returns true when no unflushed entries", async () => {
   const repo = new MockTelemetryRepository();
   const sender = new MockTelemetrySender();
   const service = new TelemetryService(repo, "1.0.0");
 
   repo.mockUnflushedEntries = [];
 
-  await service.flushTelemetry({ sender, distinctId: "repo-uuid" });
+  const result = await service.flushTelemetry({
+    sender,
+    distinctId: "repo-uuid",
+  });
 
+  assertEquals(result, true);
   assertEquals(sender.sentBatches.length, 0);
   assertEquals(repo.flushedEntries.length, 0);
 });

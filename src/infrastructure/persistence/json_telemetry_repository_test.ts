@@ -233,11 +233,11 @@ Deno.test("JsonTelemetryRepository.findByDateRange includes both boundary dates"
   });
 });
 
-Deno.test("JsonTelemetryRepository.deleteOlderThan deletes files older than cutoff", async () => {
+Deno.test("JsonTelemetryRepository.deleteOlderThan deletes flushed files older than cutoff", async () => {
   await withTempDir(async (dir) => {
     const repo = new JsonTelemetryRepository(dir);
 
-    // Create an old entry and a recent entry
+    // Create an old flushed entry and a recent entry
     const oldEntry = createTestEntry({
       id: "old-entry-uuid",
       date: new Date("2024-01-01T10:00:00Z"),
@@ -249,15 +249,13 @@ Deno.test("JsonTelemetryRepository.deleteOlderThan deletes files older than cuto
 
     await repo.save(oldEntry);
     await repo.save(recentEntry);
+    await repo.markFlushed(oldEntry, true);
 
-    // Delete entries older than June 1st
+    // Delete flushed entries older than June 1st
     const deletedCount = await repo.deleteOlderThan(new Date("2024-06-01"));
     assertEquals(deletedCount, 1);
 
-    // Verify only recent entry remains
-    const oldEntries = await repo.findByDate(new Date("2024-01-01"));
-    assertEquals(oldEntries.length, 0);
-
+    // Verify recent entry remains
     const recentEntries = await repo.findByDate(new Date("2024-06-15"));
     assertEquals(recentEntries.length, 1);
   });
@@ -294,30 +292,25 @@ Deno.test("JsonTelemetryRepository.deleteOlderThan keeps files on/after cutoff d
   });
 });
 
-Deno.test("JsonTelemetryRepository.deleteOlderThan returns correct deletion count", async () => {
+Deno.test("JsonTelemetryRepository.deleteOlderThan skips unflushed entries", async () => {
   await withTempDir(async (dir) => {
     const repo = new JsonTelemetryRepository(dir);
 
-    // Create multiple old entries
-    const oldEntry1 = createTestEntry({
-      id: "old-entry-1-uuid",
+    const oldUnflushed = createTestEntry({
+      id: "old-unflushed-uuid",
       date: new Date("2024-01-10T10:00:00Z"),
     });
-    const oldEntry2 = createTestEntry({
-      id: "old-entry-2-uuid",
-      date: new Date("2024-01-15T10:00:00Z"),
-    });
-    const oldEntry3 = createTestEntry({
-      id: "old-entry-3-uuid",
-      date: new Date("2024-01-20T10:00:00Z"),
-    });
 
-    await repo.save(oldEntry1);
-    await repo.save(oldEntry2);
-    await repo.save(oldEntry3);
+    await repo.save(oldUnflushed);
 
+    // deleteOlderThan should skip unflushed entries
     const deletedCount = await repo.deleteOlderThan(new Date("2024-06-01"));
-    assertEquals(deletedCount, 3);
+    assertEquals(deletedCount, 0);
+
+    // Unflushed entry should still exist
+    const remaining = await repo.findUnflushed(25);
+    assertEquals(remaining.length, 1);
+    assertEquals(remaining[0].id, "old-unflushed-uuid");
   });
 });
 
@@ -461,7 +454,7 @@ Deno.test("JsonTelemetryRepository.markFlushed does not throw on non-existent fi
   });
 });
 
-Deno.test("JsonTelemetryRepository.deleteOlderThan cleans up both flushed and unflushed files", async () => {
+Deno.test("JsonTelemetryRepository.deleteOlderThan preserves unflushed entries while removing flushed", async () => {
   await withTempDir(async (dir) => {
     const repo = new JsonTelemetryRepository(dir);
 
@@ -485,8 +478,47 @@ Deno.test("JsonTelemetryRepository.deleteOlderThan cleans up both flushed and un
     // Mark one as flushed with keepFlushed to create .flushed.json
     await repo.markFlushed(flushedEntry, true);
 
-    // Delete entries older than June 1st
+    // deleteOlderThan only removes flushed entries
     const deletedCount = await repo.deleteOlderThan(new Date("2024-06-01"));
+    assertEquals(deletedCount, 1);
+
+    // Unflushed old entry and recent entry should remain
+    const telemetryDir = join(dir, ".swamp", "telemetry");
+    const files: string[] = [];
+    for await (const f of Deno.readDir(telemetryDir)) {
+      files.push(f.name);
+    }
+    assertEquals(files.length, 2);
+    const sorted = files.sort();
+    assertEquals(sorted[0], "telemetry-2024-01-01-unflushed-old-uuid.json");
+    assertEquals(sorted[1], "telemetry-2024-06-15-recent-uuid.json");
+  });
+});
+
+Deno.test("JsonTelemetryRepository.deleteAllOlderThan removes both flushed and unflushed entries", async () => {
+  await withTempDir(async (dir) => {
+    const repo = new JsonTelemetryRepository(dir);
+
+    const unflushedEntry = createTestEntry({
+      id: "unflushed-old-uuid",
+      date: new Date("2024-01-01T10:00:00Z"),
+    });
+    const flushedEntry = createTestEntry({
+      id: "flushed-old-uuid",
+      date: new Date("2024-01-02T10:00:00Z"),
+    });
+    const recentEntry = createTestEntry({
+      id: "recent-uuid",
+      date: new Date("2024-06-15T10:00:00Z"),
+    });
+
+    await repo.save(unflushedEntry);
+    await repo.save(flushedEntry);
+    await repo.save(recentEntry);
+    await repo.markFlushed(flushedEntry, true);
+
+    // deleteAllOlderThan removes everything regardless of flush status
+    const deletedCount = await repo.deleteAllOlderThan(new Date("2024-06-01"));
     assertEquals(deletedCount, 2);
 
     // Only recent entry should remain
@@ -496,10 +528,7 @@ Deno.test("JsonTelemetryRepository.deleteOlderThan cleans up both flushed and un
       files.push(f.name);
     }
     assertEquals(files.length, 1);
-    assertEquals(
-      files[0],
-      "telemetry-2024-06-15-recent-uuid.json",
-    );
+    assertEquals(files[0], "telemetry-2024-06-15-recent-uuid.json");
   });
 });
 

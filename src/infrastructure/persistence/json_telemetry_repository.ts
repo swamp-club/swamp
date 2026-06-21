@@ -132,9 +132,27 @@ export class JsonTelemetryRepository implements TelemetryRepository {
   }
 
   /**
-   * Deletes all telemetry entries older than the given date.
+   * Deletes flushed telemetry entries older than the given date.
+   * Only removes `.flushed.json` files — unflushed entries are preserved
+   * so they can still be retried on the next invocation.
    */
-  async deleteOlderThan(date: Date): Promise<number> {
+  deleteOlderThan(date: Date): Promise<number> {
+    return this.deleteByDate(date, true);
+  }
+
+  /**
+   * Deletes ALL telemetry entries older than the given date, regardless
+   * of flush status. Used as a hard retention cap to prevent unbounded
+   * disk growth when the remote endpoint is permanently unreachable.
+   */
+  deleteAllOlderThan(date: Date): Promise<number> {
+    return this.deleteByDate(date, false);
+  }
+
+  private async deleteByDate(
+    date: Date,
+    flushedOnly: boolean,
+  ): Promise<number> {
     let deletedCount = 0;
     const cutoffDateStr = date.toISOString().split("T")[0];
 
@@ -147,7 +165,10 @@ export class JsonTelemetryRepository implements TelemetryRepository {
           entry.name.startsWith("telemetry-") &&
           entry.name.endsWith(".json")
         ) {
-          // Extract date from filename: telemetry-YYYY-MM-DD-uuid.json
+          if (flushedOnly && !entry.name.endsWith(".flushed.json")) {
+            continue;
+          }
+
           const dateMatch = entry.name.match(/^telemetry-(\d{4}-\d{2}-\d{2})-/);
           if (dateMatch) {
             const fileDate = dateMatch[1];
@@ -167,7 +188,6 @@ export class JsonTelemetryRepository implements TelemetryRepository {
       if (error instanceof Deno.errors.NotFound) {
         return 0;
       }
-      // Log but don't throw for cleanup operations
       if (Deno.env.get("SWAMP_DEBUG")) {
         console.error("[Telemetry] Cleanup error:", error);
       }
