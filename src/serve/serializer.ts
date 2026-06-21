@@ -77,7 +77,7 @@ export function serializeSwampError(error: SwampError): SerializedError {
 export function jsonSafeClone(value: unknown): unknown {
   if (value === null || value === undefined) return value;
   if (value instanceof Error) {
-    return { message: value.message, stack: value.stack };
+    return { message: value.message };
   }
   if (value instanceof Date) return value.toISOString();
   if (Array.isArray(value)) return value.map(jsonSafeClone);

@@ -94,13 +94,11 @@ export async function hmacSha256Hex(
     false,
     ["sign"],
   );
-  // message is always a freshly-allocated Uint8Array, so .buffer is a plain
-  // ArrayBuffer (not SharedArrayBuffer).
-  const signature = await crypto.subtle.sign(
-    "HMAC",
-    key,
-    message.buffer as ArrayBuffer,
-  );
+  const data = message.buffer.slice(
+    message.byteOffset,
+    message.byteOffset + message.byteLength,
+  ) as ArrayBuffer;
+  const signature = await crypto.subtle.sign("HMAC", key, data);
   return Array.from(new Uint8Array(signature))
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");

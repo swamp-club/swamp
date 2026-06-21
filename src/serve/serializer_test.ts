@@ -143,7 +143,7 @@ Deno.test("serializeEvent - converts Error instances to plain objects", () => {
   assertEquals(nested.err !== null && typeof nested.err === "object", true);
   const errObj = nested.err as Record<string, unknown>;
   assertEquals(errObj.message, "something broke");
-  assertExists(errObj.stack);
+  assertEquals("stack" in errObj, false);
 });
 
 Deno.test("serializeEvent - handles arrays", () => {
