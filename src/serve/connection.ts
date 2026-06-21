@@ -89,7 +89,7 @@ import type {
 } from "./protocol.ts";
 import { findDefinitionByIdOrName } from "../domain/models/model_lookup.ts";
 import { createDefinitionId } from "../domain/definitions/definition.ts";
-import { acquireModelLocks } from "../cli/repo_context.ts";
+import { acquireModelLocks, acquireVaultSync } from "../cli/repo_context.ts";
 import { reportRegistry } from "../domain/reports/report_registry.ts";
 import { getReportTypes } from "../domain/reports/report_types.ts";
 import { RepoMarkerRepository } from "../infrastructure/persistence/repo_marker_repository.ts";
@@ -564,6 +564,7 @@ export function handleMessage(
         ctx,
         request.id,
         request.payload,
+        controller,
         principal,
       );
       break;
@@ -573,6 +574,7 @@ export function handleMessage(
         ctx,
         request.id,
         request.payload,
+        controller,
         principal,
       );
       break;
@@ -582,6 +584,7 @@ export function handleMessage(
         ctx,
         request.id,
         request.payload,
+        controller,
         principal,
       );
       break;
@@ -590,6 +593,7 @@ export function handleMessage(
         socket,
         ctx,
         request.id,
+        controller,
         principal,
         request.payload,
       );
@@ -600,6 +604,7 @@ export function handleMessage(
         ctx,
         request.id,
         request.payload,
+        controller,
         principal,
       );
       break;
@@ -608,6 +613,7 @@ export function handleMessage(
         socket,
         ctx,
         request.id,
+        controller,
         principal,
         request.payload,
       );
@@ -618,6 +624,7 @@ export function handleMessage(
         ctx,
         request.id,
         request.payload,
+        controller,
         principal,
       );
       break;
@@ -627,6 +634,7 @@ export function handleMessage(
         ctx,
         request.id,
         request.payload,
+        controller,
         principal,
       );
       break;
@@ -635,6 +643,7 @@ export function handleMessage(
         socket,
         ctx,
         request.id,
+        controller,
         principal,
         request.payload,
       );
@@ -644,6 +653,7 @@ export function handleMessage(
         socket,
         ctx,
         request.id,
+        controller,
         principal,
         request.payload,
       );
@@ -654,6 +664,7 @@ export function handleMessage(
         ctx,
         request.id,
         request.payload,
+        controller,
         principal,
       );
       break;
@@ -662,6 +673,7 @@ export function handleMessage(
         socket,
         ctx,
         request.id,
+        controller,
         principal,
         request.payload,
       );
@@ -672,6 +684,7 @@ export function handleMessage(
         ctx,
         request.id,
         request.payload,
+        controller,
         principal,
       );
       break;
@@ -680,6 +693,7 @@ export function handleMessage(
         socket,
         ctx,
         request.id,
+        controller,
         principal,
         request.payload,
       );
@@ -1272,6 +1286,7 @@ async function handleDataGet(
   ctx: ConnectionContext,
   requestId: string,
   payload: DataGetPayload,
+  controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
   const resourceName = payload.modelIdOrName ?? "*";
@@ -1314,6 +1329,11 @@ async function handleDataGet(
       },
     );
 
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+
     if (!result) {
       sendError(socket, requestId, "not_found", "Data not found");
       return;
@@ -1335,6 +1355,7 @@ async function handleDataQuery(
   ctx: ConnectionContext,
   requestId: string,
   payload: DataQueryPayload,
+  controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
   if (
@@ -1372,6 +1393,11 @@ async function handleDataQuery(
       },
     );
 
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+
     send(socket, {
       type: "data.query",
       id: requestId,
@@ -1388,6 +1414,7 @@ async function handleDataList(
   ctx: ConnectionContext,
   requestId: string,
   payload: DataListPayload,
+  controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
   const resourceName = payload.modelIdOrName ?? "*";
@@ -1428,6 +1455,11 @@ async function handleDataList(
       },
     );
 
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+
     if (!result) {
       sendError(socket, requestId, "not_found", "No data found");
       return;
@@ -1450,6 +1482,7 @@ async function handleModelSearch(
   socket: WebSocket,
   ctx: ConnectionContext,
   requestId: string,
+  controller: AbortController,
   principal: Principal | null,
   payload?: ModelSearchPayload,
 ): Promise<void> {
@@ -1481,6 +1514,11 @@ async function handleModelSearch(
       },
     );
 
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+
     send(socket, {
       type: "model.search",
       id: requestId,
@@ -1497,6 +1535,7 @@ async function handleModelMethodDescribe(
   ctx: ConnectionContext,
   requestId: string,
   payload: ModelMethodDescribePayload,
+  controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
   if (
@@ -1531,6 +1570,11 @@ async function handleModelMethodDescribe(
       },
     );
 
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+
     if (!result) {
       sendError(socket, requestId, "not_found", "Method not found");
       return;
@@ -1553,6 +1597,7 @@ async function handleWorkflowSearch(
   socket: WebSocket,
   ctx: ConnectionContext,
   requestId: string,
+  controller: AbortController,
   principal: Principal | null,
   payload?: WorkflowSearchPayload,
 ): Promise<void> {
@@ -1584,6 +1629,11 @@ async function handleWorkflowSearch(
       },
     );
 
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+
     send(socket, {
       type: "workflow.search",
       id: requestId,
@@ -1602,6 +1652,7 @@ async function handleVaultGet(
   ctx: ConnectionContext,
   requestId: string,
   payload: VaultGetPayload,
+  controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
   if (
@@ -1630,6 +1681,11 @@ async function handleVaultGet(
       },
     );
 
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+
     if (!result) {
       sendError(socket, requestId, "not_found", "Vault not found");
       return;
@@ -1651,15 +1707,39 @@ async function handleVaultPut(
   ctx: ConnectionContext,
   requestId: string,
   payload: VaultPutPayload,
+  controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
-  if (
-    !authorizeOrReject(socket, requestId, principal, "write", {
-      kind: "data",
-      name: "vault",
-      fields: {},
-    }, ctx)
-  ) return;
+  if (payload.refreshFrom !== undefined || payload.clearRefresh) {
+    if (
+      !authorizeOrReject(socket, requestId, principal, "admin", {
+        kind: "data",
+        name: "vault",
+        fields: {},
+      }, ctx)
+    ) return;
+  } else {
+    if (
+      !authorizeOrReject(socket, requestId, principal, "write", {
+        kind: "data",
+        name: "vault",
+        fields: {},
+      }, ctx)
+    ) return;
+  }
+
+  let flush: (() => Promise<void>) | undefined;
+  try {
+    ({ flush } = await acquireVaultSync(
+      ctx.datastoreConfig,
+      ctx.syncService,
+      ctx.repoDir,
+    ));
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    sendError(socket, requestId, "vault_put_failed", message);
+    return;
+  }
 
   try {
     const libCtx = createLibSwampContext();
@@ -1679,6 +1759,11 @@ async function handleVaultPut(
         "secret_exists",
         `Secret '${payload.key}' already exists in vault '${payload.vaultName}'. Use --force (-f) to overwrite.`,
       );
+      return;
+    }
+
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
       return;
     }
 
@@ -1705,14 +1790,25 @@ async function handleVaultPut(
       },
     );
 
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+
     send(socket, {
       type: "vault.put",
       id: requestId,
       payload: { data: result ?? {} },
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    sendError(socket, requestId, "vault_put_failed", message);
+    if (error instanceof DOMException && error.name === "AbortError") {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+    } else {
+      const message = error instanceof Error ? error.message : String(error);
+      sendError(socket, requestId, "vault_put_failed", message);
+    }
+  } finally {
+    if (flush) await flush();
   }
 }
 
@@ -1722,6 +1818,7 @@ async function handleAuditTimeline(
   socket: WebSocket,
   ctx: ConnectionContext,
   requestId: string,
+  controller: AbortController,
   principal: Principal | null,
   payload?: AuditTimelinePayload,
 ): Promise<void> {
@@ -1760,6 +1857,11 @@ async function handleAuditTimeline(
       },
     );
 
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+
     send(socket, {
       type: "audit.timeline",
       id: requestId,
@@ -1775,6 +1877,7 @@ async function handleSummarise(
   socket: WebSocket,
   ctx: ConnectionContext,
   requestId: string,
+  controller: AbortController,
   principal: Principal | null,
   payload?: SummarisePayload,
 ): Promise<void> {
@@ -1817,6 +1920,11 @@ async function handleSummarise(
       },
     );
 
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+
     send(socket, {
       type: "summarise",
       id: requestId,
@@ -1835,6 +1943,7 @@ async function handleReportGet(
   ctx: ConnectionContext,
   requestId: string,
   payload: ReportGetPayload,
+  controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
   if (
@@ -1895,6 +2004,11 @@ async function handleReportGet(
       },
     );
 
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+
     if (!result) {
       sendError(socket, requestId, "not_found", "Report not found");
       return;
@@ -1915,6 +2029,7 @@ async function handleReportSearch(
   socket: WebSocket,
   ctx: ConnectionContext,
   requestId: string,
+  controller: AbortController,
   principal: Principal | null,
   payload?: ReportSearchPayload,
 ): Promise<void> {
@@ -1975,6 +2090,11 @@ async function handleReportSearch(
       },
     );
 
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+
     send(socket, {
       type: "report.search",
       id: requestId,
@@ -1991,6 +2111,7 @@ async function handleReportDescribe(
   ctx: ConnectionContext,
   requestId: string,
   payload: ReportDescribePayload,
+  controller: AbortController,
   principal: Principal | null,
 ): Promise<void> {
   if (
@@ -2025,6 +2146,11 @@ async function handleReportDescribe(
       },
     );
 
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+
     if (!result) {
       sendError(socket, requestId, "not_found", "Report type not found");
       return;
@@ -2045,6 +2171,7 @@ async function handleReportTypeSearch(
   socket: WebSocket,
   ctx: ConnectionContext,
   requestId: string,
+  controller: AbortController,
   principal: Principal | null,
   payload?: ReportTypeSearchPayload,
 ): Promise<void> {
@@ -2080,6 +2207,11 @@ async function handleReportTypeSearch(
         },
       },
     );
+
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
 
     send(socket, {
       type: "report.type.search",
