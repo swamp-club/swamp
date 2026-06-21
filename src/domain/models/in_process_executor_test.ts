@@ -510,3 +510,44 @@ Deno.test("InProcessExecutor: restores TRACEPARENT env var after execution error
   assertEquals(result.status, "error");
   assertEquals(Deno.env.get("TRACEPARENT"), originalTraceparent);
 });
+
+Deno.test("InProcessExecutor: wires deleteResource onto context", async () => {
+  let deletedName: string | undefined;
+  const mockDataRepo = {
+    ...createMockDataRepo(),
+    delete: (
+      _type: unknown,
+      _modelId: string,
+      dataName: string,
+    ) => {
+      deletedName = dataName;
+      return Promise.resolve();
+    },
+  } as unknown as UnifiedDataRepository;
+
+  const executor: MethodExecutor = {
+    execute: async (_def, _method, context) => {
+      await context.deleteResource!("stale-resource");
+      return {};
+    },
+  };
+
+  const context = {
+    ...createMockContext(),
+    dataRepository: mockDataRepo,
+  };
+
+  const inProcessExecutor = new InProcessExecutor(
+    executor,
+    testDefinition,
+    testMethod,
+    testModelDef,
+    context,
+    "test",
+  );
+
+  const result = await inProcessExecutor.execute(createMockRequest());
+
+  assertEquals(result.status, "success");
+  assertEquals(deletedName, "stale-resource");
+});

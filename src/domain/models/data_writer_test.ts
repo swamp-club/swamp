@@ -21,6 +21,7 @@ import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { z } from "zod";
 import {
   createFileWriterFactory,
+  createResourceDeleter,
   createResourceReader,
   createResourceWriter,
   modelRequiresVault,
@@ -1464,4 +1465,45 @@ Deno.test("createFileWriterFactory: getHandles returns one handle per writeStrea
   } finally {
     await Deno.remove(tmpFile).catch(() => {});
   }
+});
+
+// --- createResourceDeleter tests ---
+
+Deno.test("createResourceDeleter: delegates to repo.delete with correct arguments", async () => {
+  let capturedType: ModelType | undefined;
+  let capturedModelId: string | undefined;
+  let capturedName: string | undefined;
+  const repo = {
+    ...createMockRepo(),
+    delete: (
+      type: ModelType,
+      id: string,
+      dataName: string,
+    ) => {
+      capturedType = type;
+      capturedModelId = id;
+      capturedName = dataName;
+      return Promise.resolve();
+    },
+  };
+
+  const deleteResource = createResourceDeleter(repo, modelType, modelId);
+  await deleteResource("stale-data");
+  assertEquals(capturedType, modelType);
+  assertEquals(capturedModelId, modelId);
+  assertEquals(capturedName, "stale-data");
+});
+
+Deno.test("createResourceDeleter: propagates repository errors", async () => {
+  const repo = {
+    ...createMockRepo(),
+    delete: () => Promise.reject(new Error("delete failed")),
+  };
+
+  const deleteResource = createResourceDeleter(repo, modelType, modelId);
+  await assertRejects(
+    () => deleteResource("some-data"),
+    Error,
+    "delete failed",
+  );
 });

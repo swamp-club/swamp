@@ -155,6 +155,17 @@ export class DataPlaneClient {
     return await response.json() as RemoteDataHandle;
   }
 
+  async deleteResource(
+    body: { name: string },
+    signal?: AbortSignal,
+  ): Promise<void> {
+    await this.#request("DELETE", "/data/resource", {
+      body: JSON.stringify(body),
+      headers: { "content-type": "application/json" },
+      signal,
+    });
+  }
+
   async openWriter(
     body: { specName: string; name: string },
     signal?: AbortSignal,

@@ -523,6 +523,10 @@ export function createRemoteMethodContext(
     >;
   };
 
+  const deleteResource = async (instanceName: string): Promise<void> => {
+    await options.client.deleteResource({ name: instanceName }, signal);
+  };
+
   const readModelData = async (modelName: string, specName?: string) => {
     const predicate = specName === undefined
       ? `modelName == ${JSON.stringify(modelName)}`
@@ -555,6 +559,7 @@ export function createRemoteMethodContext(
     dataQueryService,
     writeResource: writers.writeResource,
     readResource,
+    deleteResource,
     readModelData,
     queryData,
     createFileWriter: writers.createFileWriter,

@@ -455,6 +455,34 @@ export const model = {
   detection
 - Always check for `null` content — the model may not have been created yet
 
+## Cleaning Up Stale Data with deleteResource
+
+When a reconciliation loop detects that a previously-errored target has
+recovered, use `deleteResource` to remove stale error data:
+
+```typescript
+sync: {
+  description: "Reconcile target state and clean up stale error records",
+  arguments: z.object({}),
+  execute: async (context) => {
+    const status = await context.readResource!("status");
+    if (!status) return {};
+
+    const errorData = await context.readResource!("last-error");
+    if (errorData && status.state === "healthy") {
+      await context.deleteResource!("last-error");
+    }
+
+    return {};
+  },
+},
+```
+
+`deleteResource` removes all versions of the named resource. It is a no-op if
+the resource does not exist. For version-specific deletion, use the lower-level
+`context.dataRepository.delete(context.modelType, context.modelId, name, version)`
+API directly.
+
 ## Polling to Completion
 
 When integrating with cloud providers or async APIs, the create/update response

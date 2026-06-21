@@ -488,3 +488,46 @@ Deno.test("DataPlane: co-located assets serve from the bundle root only", async 
     assertEquals(missing?.status, 404);
   });
 });
+
+Deno.test("DataPlane: DELETE /data/resource deletes resource and returns 204", async () => {
+  await withHarness(async (h) => {
+    h.dispatches.register(activeDispatch());
+
+    const resp = await h.plane.handle(
+      request("/data/resource", {
+        method: "DELETE",
+        body: JSON.stringify({ name: "stale-data" }),
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    assertEquals(resp?.status, 204);
+  });
+});
+
+Deno.test("DataPlane: DELETE /data/resource rejects missing name", async () => {
+  await withHarness(async (h) => {
+    h.dispatches.register(activeDispatch());
+
+    const resp = await h.plane.handle(
+      request("/data/resource", {
+        method: "DELETE",
+        body: JSON.stringify({}),
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    assertEquals(resp?.status, 400);
+  });
+});
+
+Deno.test("DataPlane: DELETE /data/resource requires active dispatch", async () => {
+  await withHarness(async (h) => {
+    const resp = await h.plane.handle(
+      request("/data/resource", {
+        method: "DELETE",
+        body: JSON.stringify({ name: "data" }),
+        headers: { "content-type": "application/json" },
+      }),
+    );
+    assertEquals(resp?.status, 400);
+  });
+});

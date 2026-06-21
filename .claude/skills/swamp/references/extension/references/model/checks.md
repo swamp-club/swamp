@@ -15,7 +15,8 @@ checks: {
     execute: async (context) => {
       // context has: globalArgs, definition, methodName, repoDir, logger,
       //              dataRepository, modelType, modelId
-      // NOTE: writeResource and createFileWriter are NOT available in checks
+      // NOTE: writeResource, deleteResource, and createFileWriter are NOT
+      //       available in checks
       return { pass: true };
       // or: return { pass: false, errors: ["Reason check failed"] };
     },

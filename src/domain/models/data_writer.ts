@@ -757,6 +757,24 @@ export function createResourceReader(
 }
 
 /**
+ * Creates a deleteResource function bound to a specific execution context.
+ *
+ * @param repo - The unified data repository
+ * @param modelType - The model type
+ * @param modelId - The model ID (definition ID)
+ * @returns A deleteResource function
+ */
+export function createResourceDeleter(
+  repo: UnifiedDataRepository,
+  modelType: ModelType,
+  modelId: string,
+): (instanceName: string) => Promise<void> {
+  return async (instanceName: string): Promise<void> => {
+    await repo.delete(modelType, modelId, instanceName);
+  };
+}
+
+/**
  * Creates a createFileWriter function bound to a specific execution context.
  *
  * The returned function creates DefaultDataWriter instances for writing

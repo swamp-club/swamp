@@ -237,6 +237,12 @@ export interface MethodContext {
   ) => Promise<Record<string, unknown> | null>;
 
   /**
+   * Delete a previously stored resource by instance name.
+   * Removes all versions of the named resource.
+   */
+  deleteResource?: (instanceName: string) => Promise<void>;
+
+  /**
    * Read data from another model by name.
    * Resolves the model name, reads all data (optionally filtered by spec name),
    * parses JSON content, and resolves vault references.

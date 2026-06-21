@@ -181,6 +181,10 @@ function harness(scratchDir: string, extensionFilesDir?: string) {
         size: lines.length,
         tags: {},
       }),
+    deleteResource: (body: { name: string }) => {
+      calls.push({ method: "deleteResource", params: body });
+      return Promise.resolve();
+    },
   } as unknown as DataPlaneClient;
 
   const { context, getHandles } = createRemoteMethodContext({
@@ -341,5 +345,16 @@ Deno.test("remote context: repoDir is the scratch directory", async () => {
     const h = harness(dir);
     assertEquals(h.context.repoDir, dir);
     return Promise.resolve();
+  });
+});
+
+Deno.test("remote context: deleteResource calls client.deleteResource", async () => {
+  await withScratch(async (dir) => {
+    const h = harness(dir);
+    await h.context.deleteResource!("stale-data");
+    assertEquals(
+      h.calls.filter((c) => c.method === "deleteResource"),
+      [{ method: "deleteResource", params: { name: "stale-data" } }],
+    );
   });
 });

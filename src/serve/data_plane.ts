@@ -30,14 +30,15 @@
  * run uses, so declared-spec enforcement comes for free.
  *
  * Routes:
- *   GET  /data/{type}/{modelId}/{dataName}/{version}   read artifact bytes
- *   POST /data/resource                                write a resource (JSON)
- *   POST /data/writers                                 open a file writer
- *   POST /data/writers/{id}/line                       durable line append
- *   POST /data/writers/{id}/content                    stream bytes + finalize
- *   POST /data/writers/{id}/finalize                   finalize a line writer
- *   GET  /bundle/{fingerprint}                         fetch extension bundle
- *   GET  /bundle/{fingerprint}/file/{relPath}          fetch co-located asset
+ *   GET    /data/{type}/{modelId}/{dataName}/{version}   read artifact bytes
+ *   POST   /data/resource                                write a resource (JSON)
+ *   DELETE /data/resource                                delete a resource
+ *   POST   /data/writers                                 open a file writer
+ *   POST   /data/writers/{id}/line                       durable line append
+ *   POST   /data/writers/{id}/content                    stream bytes + finalize
+ *   POST   /data/writers/{id}/finalize                   finalize a line writer
+ *   GET    /bundle/{fingerprint}                         fetch extension bundle
+ *   GET    /bundle/{fingerprint}/file/{relPath}          fetch co-located asset
  */
 
 import { isAbsolute, join, normalize, resolve } from "@std/path";
@@ -224,6 +225,9 @@ export class DataPlane {
     if (req.method === "POST" && segments[1] === "resource") {
       return await this.#writeResource(req, workerName);
     }
+    if (req.method === "DELETE" && segments[1] === "resource") {
+      return await this.#deleteResource(req, workerName);
+    }
     if (req.method === "POST" && segments[1] === "writers") {
       if (segments.length === 2) {
         return await this.#openWriter(req, workerName);
@@ -323,6 +327,28 @@ export class DataPlane {
       );
     }
     return json(handleToJson(handle));
+  }
+
+  async #deleteResource(req: Request, workerName: string): Promise<Response> {
+    const dispatch = this.#activeDispatch(workerName);
+    const body = await req.json() as { name?: string };
+    if (!body.name) {
+      return errorResponse(400, "Expected { name }");
+    }
+
+    try {
+      await this.#options.repoContext.unifiedDataRepo.delete(
+        dispatch.modelType,
+        dispatch.modelId,
+        body.name,
+      );
+    } catch (error) {
+      throw new DataPlaneError(
+        400,
+        error instanceof Error ? error.message : String(error),
+      );
+    }
+    return new Response(null, { status: 204 });
   }
 
   async #openWriter(req: Request, workerName: string): Promise<Response> {

@@ -30,6 +30,7 @@ import type {
 } from "./model.ts";
 import {
   createFileWriterFactory,
+  createResourceDeleter,
   createResourceReader,
   createResourceWriter,
 } from "./data_writer.ts";
@@ -135,6 +136,12 @@ export class InProcessExecutor {
       this.context.redactor,
     );
 
+    const deleteResource = createResourceDeleter(
+      this.context.dataRepository,
+      this.context.modelType,
+      this.context.modelId,
+    );
+
     const dataAccessService = new DataAccessService(
       this.context.definitionRepository,
       this.context.dataRepository,
@@ -160,6 +167,7 @@ export class InProcessExecutor {
       methodName: this.methodName,
       writeResource,
       readResource,
+      deleteResource,
       readModelData,
       queryData,
       createFileWriter,

@@ -93,6 +93,7 @@ use:
 | `logger`               | `{ info(msg: string, ...args: unknown[]): void; ... }` (trace/debug/info/warning/error/fatal)  |
 | `writeResource`        | `(specName: string, name: string, data: Record<string, unknown>) => Promise<{ name: string }>` |
 | `readResource`         | `(instanceName: string, version?: number) => Promise<Record<string, unknown> \| null>`         |
+| `deleteResource`       | `(instanceName: string) => Promise<void>`                                                      |
 | `createFileWriter`     | `(specName: string, name: string) => DataWriter`                                               |
 | `createCelEnvironment` | `() => Environment`                                                                            |
 | `dataRepository`       | Low-level data API (for reading non-JSON content)                                              |

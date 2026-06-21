@@ -104,6 +104,24 @@ const result = await createVpc(mockClient, "10.0.0.0/16");
 assertEquals(result.vpcId, "vpc-123");
 ```
 
+## Testing deleteResource
+
+Use `getDeletedResources()` to verify which resources a method deletes:
+
+```typescript
+Deno.test("sync cleans up stale error data on recovery", async () => {
+  const { context, getDeletedResources } = createModelTestContext({
+    storedResources: {
+      "status": { state: "healthy" },
+      "last-error": { message: "connection refused" },
+    },
+  });
+
+  await model.methods.sync.execute({}, context);
+  assertEquals(getDeletedResources(), ["last-error"]);
+});
+```
+
 ## Other Testing Patterns
 
 **Logs**: Use `getLogs()` or `getLogsByLevel("info")` to assert on logged
