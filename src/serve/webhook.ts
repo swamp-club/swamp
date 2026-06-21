@@ -31,9 +31,7 @@ import { UserError } from "../domain/errors.ts";
 import { executeWorkflowWithLocks } from "./deps.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import {
-  constantTimeEqualHex,
   createVerifier,
-  hmacSha256Hex,
   isWebhookScheme,
   type VerifierConfig,
 } from "./webhook_verifiers.ts";
@@ -157,29 +155,6 @@ export function parseWebhookFlag(flag: string): WebhookEndpoint {
   }
 
   return { route, workflowIdOrName, secret, verifier };
-}
-
-// ── HMAC Signature Verification ────────────────────────────────────────
-
-/**
- * Verify a GitHub-style HMAC-SHA256 signature.
- *
- * @param body - Raw request body bytes
- * @param signatureHeader - The X-Hub-Signature-256 header value (sha256=<hex>)
- * @param secret - The shared secret string
- * @returns true if the signature is valid
- */
-export async function verifySignature(
-  body: Uint8Array,
-  signatureHeader: string,
-  secret: string,
-): Promise<boolean> {
-  if (!signatureHeader.startsWith("sha256=")) {
-    return false;
-  }
-  const receivedHex = signatureHeader.slice("sha256=".length);
-  const expectedHex = await hmacSha256Hex(body, secret);
-  return constantTimeEqualHex(receivedHex, expectedHex);
 }
 
 // ── Body Size Limit ────────────────────────────────────────────────────

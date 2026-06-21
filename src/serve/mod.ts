@@ -34,7 +34,6 @@ export {
 } from "./deps.ts";
 export {
   parseWebhookFlag,
-  verifySignature,
   type WebhookEndpoint,
   type WebhookEndpointInfo,
   type WebhookEvent,
