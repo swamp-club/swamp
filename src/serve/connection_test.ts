@@ -450,12 +450,25 @@ function makeMockSnapshotLoader(
   } as unknown as PolicySnapshotLoader;
 }
 
+const stubRepoContext = {
+  definitionRepo: {
+    findByNameGlobal: () => Promise.resolve(null),
+    findById: () => Promise.resolve(null),
+    listTypes: () => Promise.resolve([]),
+    listByType: () => Promise.resolve([]),
+  },
+} as unknown as ConnectionContext["repoContext"];
+
+const stubRepoDir = await Deno.makeTempDir({ prefix: "swamp_conn_test_" });
+
 function makeCtx(
   authConfig: ServeAuthConfig,
   grants: Grant[] = [],
 ): ConnectionContext {
   const ctx: Partial<ConnectionContext> = {
     authConfig,
+    repoContext: stubRepoContext,
+    repoDir: stubRepoDir,
   };
   if (authConfig.mode !== "none") {
     (ctx as Record<string, unknown>).policySnapshotLoader =
@@ -878,6 +891,170 @@ Deno.test("authorizeOrReject: explicit deny returns denied error frame", () => {
   assertEquals((msg.error as Record<string, unknown>).code, "unauthorized");
   const errorMessage = String((msg.error as Record<string, unknown>).message);
   assertStringIncludes(errorMessage, "explicitly denied");
+});
+
+// ── Authorization: missing policySnapshotLoader in enforcing mode ─────────
+
+// ── Authorization: denormalized access model typeArgs require admin ──────────
+// Regression tests for CVE: canonicalization mismatch between authorization
+// gate (raw typeArg) and executor (normalized ModelType). Every separator
+// variant that normalizes to an access-control model must require admin.
+
+const lowPrivGrant = makeGrant({
+  subject: { kind: "user", name: "adam" },
+  actions: ["run"],
+  resource: { kind: "model", pattern: "*" },
+});
+
+function assertDenormDenied(
+  typeArg: string,
+  label: string,
+): void {
+  Deno.test(`isAccessModelType: denormalized ${label} "${typeArg}" requires admin`, async () => {
+    const mock = createMockSocket();
+    const active = new Map<string, AbortController>();
+    const ctx = makeCtx(modeTokenConfig, [lowPrivGrant]);
+
+    handleMessage(
+      mock as unknown as WebSocket,
+      ctx,
+      active,
+      makeEvent(JSON.stringify({
+        type: "model.method.run",
+        id: `denorm-${label}`,
+        payload: {
+          modelIdOrName: "attack-def",
+          methodName: "create",
+          typeArg,
+          definitionName: "attack-def",
+        },
+      })),
+      testPrincipal,
+    );
+
+    // handleModelMethodRun is async — wait for the task to settle
+    await new Promise((r) => setTimeout(r, 50));
+
+    assertEquals(mock.sent.length, 1);
+    const msg = parseSent(mock);
+    assertEquals(msg.type, "error");
+    assertEquals((msg.error as Record<string, unknown>).code, "unauthorized");
+    const errorMessage = String(
+      (msg.error as Record<string, unknown>).message,
+    );
+    assertStringIncludes(errorMessage, "admin");
+    assertStringIncludes(errorMessage, "access:*");
+  });
+}
+
+// grant: dot separator
+assertDenormDenied("swamp.grant", "grant-dot");
+// grant: double-colon separator
+assertDenormDenied("swamp::grant", "grant-doublecolon");
+// grant: uppercase
+assertDenormDenied("SWAMP/GRANT", "grant-uppercase");
+// grant: double-slash
+assertDenormDenied("swamp//grant", "grant-doubleslash");
+// grant: whitespace separator
+assertDenormDenied("swamp grant", "grant-space");
+// grant: canonical with @ prefix
+assertDenormDenied("@swamp/grant", "grant-at-prefix");
+// grant: canonical without @
+assertDenormDenied("swamp/grant", "grant-canonical");
+
+// group: dot separator
+assertDenormDenied("swamp.group", "group-dot");
+// group: double-colon separator
+assertDenormDenied("swamp::group", "group-doublecolon");
+// group: uppercase
+assertDenormDenied("SWAMP/GROUP", "group-uppercase");
+// group: whitespace separator
+assertDenormDenied("swamp group", "group-space");
+// group: canonical
+assertDenormDenied("swamp/group", "group-canonical");
+
+// server-token: dot separator (swamp.server-token normalizes to swamp/server-token)
+assertDenormDenied("swamp.server-token", "server-token-dot");
+// server-token: double-colon separator
+assertDenormDenied("swamp::server-token", "server-token-doublecolon");
+// server-token: uppercase
+assertDenormDenied("SWAMP/SERVER-TOKEN", "server-token-uppercase");
+// server-token: canonical
+assertDenormDenied("swamp/server-token", "server-token-canonical");
+
+Deno.test("isAccessModelType: normal model typeArg still uses model:* run, not admin", async () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const ctx = makeCtx(modeTokenConfig, [lowPrivGrant]);
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({
+      type: "model.method.run",
+      id: "normal-model",
+      payload: {
+        modelIdOrName: "my-shell",
+        methodName: "run",
+        typeArg: "command/shell",
+        definitionName: "my-shell",
+      },
+    })),
+    testPrincipal,
+  );
+
+  await new Promise((r) => setTimeout(r, 50));
+
+  // Should NOT get an unauthorized error — the request proceeds past authz
+  for (const sent of mock.sent) {
+    const msg = JSON.parse(sent);
+    if (msg.type === "error") {
+      assertEquals(
+        (msg.error as Record<string, unknown>).code !== "unauthorized",
+        true,
+      );
+    }
+  }
+});
+
+Deno.test("isAccessModelType: admin user can still run canonical swamp/grant", async () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const adminGrant = makeGrant({
+    subject: { kind: "user", name: "adam" },
+    actions: ["admin"],
+    resource: { kind: "access", pattern: "*" },
+  });
+  const ctx = makeCtx(modeTokenConfig, [adminGrant]);
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({
+      type: "model.method.run",
+      id: "admin-grant",
+      payload: {
+        modelIdOrName: "grant-def",
+        methodName: "create",
+        typeArg: "@swamp/grant",
+        definitionName: "grant-def",
+      },
+    })),
+    testPrincipal,
+  );
+
+  await new Promise((r) => setTimeout(r, 50));
+
+  // Should not get unauthorized — admin on access:* is sufficient
+  const unauthorizedErrors = mock.sent
+    .map((s) => JSON.parse(s))
+    .filter((m) =>
+      m.type === "error" &&
+      (m.error as Record<string, unknown>).code === "unauthorized"
+    );
+  assertEquals(unauthorizedErrors.length, 0);
 });
 
 // ── Authorization: missing policySnapshotLoader in enforcing mode ─────────
