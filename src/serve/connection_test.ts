@@ -459,6 +459,8 @@ const stubRepoContext = {
   },
 } as unknown as ConnectionContext["repoContext"];
 
+const stubRepoDir = await Deno.makeTempDir({ prefix: "swamp_conn_test_" });
+
 function makeCtx(
   authConfig: ServeAuthConfig,
   grants: Grant[] = [],
@@ -466,6 +468,7 @@ function makeCtx(
   const ctx: Partial<ConnectionContext> = {
     authConfig,
     repoContext: stubRepoContext,
+    repoDir: stubRepoDir,
   };
   if (authConfig.mode !== "none") {
     (ctx as Record<string, unknown>).policySnapshotLoader =
