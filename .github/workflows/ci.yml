@@ -39,6 +39,8 @@ jobs:
               - 'src/domain/**'
               - 'src/infrastructure/**'
               - 'src/libswamp/**'
+              - 'src/serve/**'
+              - 'src/worker/**'
             ux:
               - 'src/cli/commands/**'
               - 'src/presentation/**'
