@@ -84,6 +84,15 @@ function errorResponse(status: number, message: string): Response {
   return json({ error: message }, status);
 }
 
+class DataPlaneError extends Error {
+  readonly status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.name = "DataPlaneError";
+    this.status = status;
+  }
+}
+
 function handleToJson(handle: DataHandle): Record<string, unknown> {
   return {
     dataId: handle.dataId,
@@ -151,13 +160,16 @@ export class DataPlane {
       }
       return await this.#handleData(req, segments, workerName);
     } catch (error) {
+      if (error instanceof DataPlaneError) {
+        return errorResponse(error.status, error.message);
+      }
       const message = error instanceof Error ? error.message : String(error);
-      logger.warn("Data-plane request failed: {method} {path}: {error}", {
+      logger.error("Data-plane request failed: {method} {path}: {error}", {
         method: req.method,
         path: url.pathname,
         error: message,
       });
-      return errorResponse(400, message);
+      return errorResponse(500, "Internal server error");
     }
   }
 
@@ -172,7 +184,8 @@ export class DataPlane {
   #activeDispatch(workerName: string): ActiveDispatch {
     const dispatch = this.#options.dispatches.forWorker(workerName);
     if (dispatch === null) {
-      throw new Error(
+      throw new DataPlaneError(
+        400,
         `Worker '${workerName}' has no active dispatch — writes are lease-scoped`,
       );
     }
@@ -295,7 +308,15 @@ export class DataPlane {
     // Mark the lease BEFORE persisting: a lease may over-report writes
     // (safe, conservative) but must never under-report them.
     await this.#recordWrite(dispatch);
-    const handle = await writeResource(body.specName, body.name, body.data);
+    let handle: DataHandle;
+    try {
+      handle = await writeResource(body.specName, body.name, body.data);
+    } catch (error) {
+      throw new DataPlaneError(
+        400,
+        error instanceof Error ? error.message : String(error),
+      );
+    }
     return json(handleToJson(handle));
   }
 
@@ -346,9 +367,13 @@ export class DataPlane {
     switch (action) {
       case "line": {
         const text = await req.text();
-        // The request body may carry one line or a small batch; each request
-        // is durable once acknowledged — the live-log contract.
-        const lines = text.length === 0 ? [""] : text.split("\n");
+        const lines = text.split("\n");
+        if (lines.length > 0 && lines[lines.length - 1] === "") {
+          lines.pop();
+        }
+        if (lines.length === 0) {
+          return json({ ok: true });
+        }
         await this.#recordWrite(dispatch);
         for (const line of lines) {
           await session.writer.writeLine(line);
@@ -445,8 +470,11 @@ export class DataPlane {
     };
     try {
       walk(filesRoot, "");
-    } catch {
-      return json({ files: [] });
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) {
+        return json({ files: [] });
+      }
+      throw error;
     }
     return json({ files });
   }
@@ -456,13 +484,13 @@ export class DataPlane {
     fingerprint: string,
     relPath: string,
   ): Response {
-    let file: Deno.FsFile;
+    let bytes: Uint8Array;
     try {
-      file = Deno.openSync(target, { read: true });
+      bytes = Deno.readFileSync(target);
     } catch {
       return errorResponse(404, `No asset '${relPath}' in bundle`);
     }
-    return new Response(file.readable, {
+    return new Response(bytes.buffer as ArrayBuffer, {
       headers: {
         "content-type": "application/octet-stream",
         etag: `"${fingerprint}-${relPath}"`,
