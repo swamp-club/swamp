@@ -449,11 +449,16 @@ export const serveCommand = new Command()
             kind: "webhook_registered",
             route: ep.route,
             workflow: ep.workflowIdOrName,
+            scheme: ep.verifier.scheme,
           }));
         } else {
           logger.info(
-            "Webhook registered: {route} → {workflow}",
-            { route: ep.route, workflow: ep.workflowIdOrName },
+            "Webhook registered: {route} → {workflow} (scheme: {scheme})",
+            {
+              route: ep.route,
+              workflow: ep.workflowIdOrName,
+              scheme: ep.verifier.scheme,
+            },
           );
         }
       }
@@ -542,6 +547,7 @@ export const serveCommand = new Command()
               ? webhookService.listEndpoints().map((ep) => ({
                 route: ep.route,
                 workflow: ep.workflowIdOrName,
+                scheme: ep.scheme,
               }))
               : [];
 

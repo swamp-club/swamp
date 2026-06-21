@@ -255,6 +255,7 @@ const MAX_QUEUE_DEPTH = 100;
 export interface WebhookEndpointInfo {
   readonly route: string;
   readonly workflowIdOrName: string;
+  readonly scheme: string;
 }
 
 export class WebhookService {
@@ -281,6 +282,7 @@ export class WebhookService {
     return this.deps.endpoints.map((e) => ({
       route: e.route,
       workflowIdOrName: e.workflowIdOrName,
+      scheme: e.verifier.scheme,
     }));
   }
 

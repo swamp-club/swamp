@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertThrows } from "@std/assert";
-import { buildWebhookPayload, parseWebhookFlag } from "./webhook.ts";
+import {
+  buildWebhookPayload,
+  parseWebhookFlag,
+  WebhookService,
+} from "./webhook.ts";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
 
 await initializeLogging({});
@@ -208,4 +212,27 @@ Deno.test("parseWebhookFlag: rejects route without leading slash", () => {
     Error,
     "must start with '/'",
   );
+});
+
+// ── listEndpoints ─────────────────────────────────────────────────────
+
+Deno.test("listEndpoints: includes scheme from each endpoint verifier", () => {
+  const service = new WebhookService({
+    repoDir: "/tmp/fake",
+    // deno-lint-ignore no-explicit-any
+    repoContext: {} as any,
+    // deno-lint-ignore no-explicit-any
+    datastoreConfig: {} as any,
+    endpoints: [
+      parseWebhookFlag("/hooks/gh:deploy:secret"),
+      parseWebhookFlag("/hooks/stripe:billing:secret:stripe"),
+      parseWebhookFlag("/hooks/custom:wf:secret:generic:X-Sig:sha256="),
+    ],
+  });
+
+  const infos = service.listEndpoints();
+  assertEquals(infos.length, 3);
+  assertEquals(infos[0].scheme, "github");
+  assertEquals(infos[1].scheme, "stripe");
+  assertEquals(infos[2].scheme, "generic");
 });
