@@ -141,6 +141,35 @@ Deno.test("DataPlaneClient: bundle and asset fetch paths are fingerprint-keyed",
   ]);
 });
 
+Deno.test("DataPlaneClient: artifact cache evicts oldest entries at capacity", async () => {
+  let fetchCount = 0;
+  const client = new DataPlaneClient({
+    baseUrl: "http://test",
+    credential: () => "c",
+    maxCacheEntries: 2,
+    fetchImpl: (() => {
+      fetchCount++;
+      return Promise.resolve(
+        new Response(new Uint8Array([fetchCount])),
+      );
+    }) as unknown as typeof fetch,
+  });
+  await client.readArtifact("/a");
+  await client.readArtifact("/b");
+  assertEquals(client.cachedArtifactCount, 2);
+  assertEquals(fetchCount, 2);
+
+  await client.readArtifact("/c");
+  assertEquals(client.cachedArtifactCount, 2);
+  assertEquals(fetchCount, 3);
+
+  await client.readArtifact("/a");
+  assertEquals(fetchCount, 4);
+
+  await client.readArtifact("/c");
+  assertEquals(fetchCount, 4);
+});
+
 Deno.test("dataPlaneUrlFromConnectUrl: maps ws→http and wss→https", () => {
   assertEquals(
     dataPlaneUrlFromConnectUrl("ws://orch.internal:4000"),

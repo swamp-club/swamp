@@ -50,6 +50,8 @@ export interface DataPlaneClientOptions {
   /** Per-request timeout; bulk uploads get no upper bound. */
   timeoutMs?: number;
   fetchImpl?: typeof fetch;
+  /** Maximum cached artifacts before oldest is evicted. Defaults to 1000. */
+  maxCacheEntries?: number;
 }
 
 function combineSignals(
@@ -73,6 +75,7 @@ export class DataPlaneClient {
   readonly #options: DataPlaneClientOptions;
   readonly #fetch: typeof fetch;
   readonly #timeoutMs: number;
+  readonly #maxCacheEntries: number;
   /** Immutable (contentPath) → bytes. Versioned handles never change. */
   readonly #artifactCache = new Map<string, Uint8Array>();
 
@@ -80,6 +83,7 @@ export class DataPlaneClient {
     this.#options = options;
     this.#fetch = options.fetchImpl ?? fetch;
     this.#timeoutMs = options.timeoutMs ?? DATA_PLANE_TIMEOUT_MS;
+    this.#maxCacheEntries = options.maxCacheEntries ?? 1_000;
   }
 
   get cachedArtifactCount(): number {
@@ -130,6 +134,12 @@ export class DataPlaneClient {
     const response = await this.#request("GET", contentPath, { signal });
     const bytes = new Uint8Array(await response.arrayBuffer());
     this.#artifactCache.set(contentPath, bytes);
+    if (this.#artifactCache.size > this.#maxCacheEntries) {
+      const oldest = this.#artifactCache.keys().next().value;
+      if (oldest !== undefined) {
+        this.#artifactCache.delete(oldest);
+      }
+    }
     return bytes;
   }
 
