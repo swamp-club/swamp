@@ -26,6 +26,8 @@ export interface SourceModifyData {
   path: string;
   only?: ExtensionKind[];
   totalSources: number;
+  /** Skill directory names installed or removed by this operation. */
+  installedSkills?: string[];
 }
 
 /** Events emitted by source add/remove operations. */

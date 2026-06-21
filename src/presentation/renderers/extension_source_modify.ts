@@ -33,6 +33,12 @@ class LogSourceModifyRenderer implements Renderer<SourceModifyEvent> {
         if (e.data.only) {
           writeOutput(`  only: ${e.data.only.join(", ")}`);
         }
+        if (e.data.installedSkills && e.data.installedSkills.length > 0) {
+          const skillVerb = e.data.action === "added"
+            ? "skills installed"
+            : "skills removed";
+          writeOutput(`  ${skillVerb}: ${e.data.installedSkills.join(", ")}`);
+        }
         const count = e.data.totalSources;
         writeOutput(
           count === 1 ? "1 source configured" : `${count} sources configured`,

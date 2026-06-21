@@ -30,6 +30,10 @@ import {
   sourceRemove,
 } from "../../libswamp/mod.ts";
 import { createSourceModifyRenderer } from "../../presentation/renderers/extension_source_modify.ts";
+import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
+import { RepoPath } from "../../domain/repo/repo_path.ts";
+import { resolveSkillsDir } from "../../domain/repo/skill_dirs.ts";
+import { resolvePrimaryTool } from "../../domain/repo/primary_tool.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -55,7 +59,12 @@ export const extensionSourceRmCommand = new Command()
     cliCtx.logger.debug`Removing extension source: ${path}`;
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createSourceRemoveDeps(resolveRepoDir(options.repoDir));
+    const repoDir = resolveRepoDir(options.repoDir);
+    const markerRepo = new RepoMarkerRepository();
+    const marker = await markerRepo.read(RepoPath.create(repoDir));
+    const primaryTool = resolvePrimaryTool(marker);
+    const skillsDir = resolveSkillsDir(repoDir, primaryTool);
+    const deps = createSourceRemoveDeps(repoDir, skillsDir);
 
     const renderer = createSourceModifyRenderer(cliCtx.outputMode);
     await consumeStream(
