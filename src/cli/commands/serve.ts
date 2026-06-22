@@ -555,6 +555,7 @@ export const serveCommand = new Command()
 
             const url = new URL(req.url);
             const tokenParam = url.searchParams.get("token");
+            url.searchParams.delete("token");
             if (!tokenParam) {
               logger.warn(
                 "WebSocket auth rejected: no token provided from {ip}",
