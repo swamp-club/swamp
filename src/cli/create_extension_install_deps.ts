@@ -77,8 +77,9 @@ export async function createExtensionInstallDeps(
     skillsDirRelative,
     createInstallContext: async (_name, _version) => ({
       getExtension: (n) => client.getExtension(n),
-      downloadArchive: (n, v) => client.downloadArchive(n, v),
-      getChecksum: (n, v) => client.getChecksum(n, v),
+      downloadArchive: (n, v, ch) =>
+        client.downloadArchive(n, v, undefined, ch),
+      getChecksum: (n, v, ch) => client.getChecksum(n, v, ch),
       logger,
       lockfileRepository: await LockfileRepository.create(lockfilePath),
       skillsDir: absoluteSkillsDir,

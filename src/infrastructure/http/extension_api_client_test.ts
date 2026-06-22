@@ -632,6 +632,16 @@ Deno.test("ExtensionApiClient version-scoped methods URL-encode version path seg
     const checksumUrl = new URL(captured.checksum);
     assertEquals(checksumUrl.pathname, `${expectedBase}/checksum`);
     assertEquals(checksumUrl.search, "");
+
+    await client.getDownloadUrl("@test/ext", hostileVersion, "key", "beta");
+    const downloadUrlCh = new URL(captured.download);
+    assertEquals(downloadUrlCh.pathname, `${expectedBase}/download`);
+    assertEquals(downloadUrlCh.searchParams.get("channel"), "beta");
+
+    await client.getChecksum("@test/ext", hostileVersion, "rc");
+    const checksumUrlCh = new URL(captured.checksum);
+    assertEquals(checksumUrlCh.pathname, `${expectedBase}/checksum`);
+    assertEquals(checksumUrlCh.searchParams.get("channel"), "rc");
   } finally {
     await server.shutdown();
   }

@@ -394,12 +394,14 @@ export class ExtensionApiClient {
     name: string,
     version: string,
     apiKey?: string,
+    channel?: string,
   ): Promise<string | null> {
     const encodedName = encodeURIComponent(name);
     const encodedVersion = encodeURIComponent(version);
     const headers = apiKey ? this.authHeaders(apiKey) : {};
+    const qs = channel ? `?channel=${encodeURIComponent(channel)}` : "";
     const res = await this.fetch(
-      `/api/v1/extensions/${encodedName}@${encodedVersion}/download`,
+      `/api/v1/extensions/${encodedName}@${encodedVersion}/download${qs}`,
       {
         method: "GET",
         redirect: "manual",
@@ -430,8 +432,14 @@ export class ExtensionApiClient {
     name: string,
     version: string,
     apiKey?: string,
+    channel?: string,
   ): Promise<Uint8Array> {
-    const downloadUrl = await this.getDownloadUrl(name, version, apiKey);
+    const downloadUrl = await this.getDownloadUrl(
+      name,
+      version,
+      apiKey,
+      channel,
+    );
     if (!downloadUrl) {
       throw new UserError(
         `Extension ${name}@${version} not found in the registry.`,
@@ -464,11 +472,13 @@ export class ExtensionApiClient {
   async getChecksum(
     name: string,
     version: string,
+    channel?: string,
   ): Promise<string | null> {
     const encodedName = encodeURIComponent(name);
     const encodedVersion = encodeURIComponent(version);
+    const qs = channel ? `?channel=${encodeURIComponent(channel)}` : "";
     const res = await this.fetch(
-      `/api/v1/extensions/${encodedName}@${encodedVersion}/checksum`,
+      `/api/v1/extensions/${encodedName}@${encodedVersion}/checksum${qs}`,
       {
         method: "GET",
       },

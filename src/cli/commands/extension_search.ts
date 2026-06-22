@@ -222,9 +222,10 @@ export const extensionSearchCommand = new Command()
       const lockfileRepository = await LockfileRepository.create(lockfilePath);
       const pullCtx: PullContext = {
         getExtension: (name) => client.getExtension(name),
-        downloadArchive: (name, version) =>
-          client.downloadArchive(name, version),
-        getChecksum: (name, version) => client.getChecksum(name, version),
+        downloadArchive: (name, version, channel) =>
+          client.downloadArchive(name, version, undefined, channel),
+        getChecksum: (name, version, channel) =>
+          client.getChecksum(name, version, channel),
         logger: ctx.logger,
         lockfileRepository,
         skillsDir: resolveSkillsDir(repoDir, resolvePrimaryTool(marker)),

@@ -96,8 +96,16 @@ export interface PullContext {
     name: string,
     channel: string,
   ) => Promise<string | null>;
-  downloadArchive: (name: string, version: string) => Promise<Uint8Array>;
-  getChecksum: (name: string, version: string) => Promise<string | null>;
+  downloadArchive: (
+    name: string,
+    version: string,
+    channel?: string,
+  ) => Promise<Uint8Array>;
+  getChecksum: (
+    name: string,
+    version: string,
+    channel?: string,
+  ) => Promise<string | null>;
   logger: Logger;
   /**
    * Lockfile repository owning read+write of upstream_extensions.json.

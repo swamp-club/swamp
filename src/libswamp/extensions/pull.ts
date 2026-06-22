@@ -123,10 +123,15 @@ export interface InstallResult {
  */
 export interface InstallContext {
   getExtension: (name: string) => Promise<ExtensionRegistryInfo | null>;
-  downloadArchive: (name: string, version: string) => Promise<Uint8Array>;
+  downloadArchive: (
+    name: string,
+    version: string,
+    channel?: string,
+  ) => Promise<Uint8Array>;
   getChecksum: (
     name: string,
     version: string,
+    channel?: string,
   ) => Promise<string | null>;
   logger?: Logger;
   /**
@@ -209,8 +214,16 @@ export interface ExtensionPullDeps {
     name: string,
     channel: string,
   ) => Promise<string | null>;
-  downloadArchive: (name: string, version: string) => Promise<Uint8Array>;
-  getChecksum: (name: string, version: string) => Promise<string | null>;
+  downloadArchive: (
+    name: string,
+    version: string,
+    channel?: string,
+  ) => Promise<Uint8Array>;
+  getChecksum: (
+    name: string,
+    version: string,
+    channel?: string,
+  ) => Promise<string | null>;
   /**
    * Lockfile repository owning read+write of upstream_extensions.json.
    * See {@link InstallContext.lockfileRepository} for snapshot semantics
@@ -679,9 +692,10 @@ export async function installExtension(
   const archiveBytes = await ctx.downloadArchive(
     ref.name,
     version,
+    ctx.channel,
   );
 
-  const serverChecksum = await ctx.getChecksum(ref.name, version);
+  const serverChecksum = await ctx.getChecksum(ref.name, version, ctx.channel);
   const localChecksum = await computeChecksum(archiveBytes);
   let integrityStatus: "verified" | "unverified";
   if (serverChecksum !== null) {
@@ -1297,8 +1311,10 @@ export async function createExtensionPullDeps(
       const info = await client.getLatestVersion(name, undefined, channel);
       return info?.version ?? null;
     },
-    downloadArchive: (name, version) => client.downloadArchive(name, version),
-    getChecksum: (name, version) => client.getChecksum(name, version),
+    downloadArchive: (name, version, channel) =>
+      client.downloadArchive(name, version, undefined, channel),
+    getChecksum: (name, version, channel) =>
+      client.getChecksum(name, version, channel),
     lockfileRepository,
     skillsDir,
     repoDir,
@@ -1332,8 +1348,10 @@ export async function createInstallContext(
   const lockfileRepository = await LockfileRepository.create(opts.lockfilePath);
   return {
     getExtension: (name) => client.getExtension(name),
-    downloadArchive: (name, version) => client.downloadArchive(name, version),
-    getChecksum: (name, version) => client.getChecksum(name, version),
+    downloadArchive: (name, version, channel) =>
+      client.downloadArchive(name, version, undefined, channel),
+    getChecksum: (name, version, channel) =>
+      client.getChecksum(name, version, channel),
     logger: opts.logger,
     lockfileRepository,
     skillsDir: opts.skillsDir,
