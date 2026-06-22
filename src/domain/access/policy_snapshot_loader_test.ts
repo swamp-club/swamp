@@ -147,7 +147,7 @@ Deno.test("PolicySnapshotLoader.load: builds snapshot from DataQueryService", as
   assertEquals(snapshot.grantsForSubjects(["user:adam"]).length, 1);
   assertEquals([...snapshot.groupsForPrincipal("user:adam")], ["devs"]);
 
-  loader.dispose();
+  await loader.dispose();
 });
 
 Deno.test("PolicySnapshotLoader.load: filters out revoked grants", async () => {
@@ -163,7 +163,7 @@ Deno.test("PolicySnapshotLoader.load: filters out revoked grants", async () => {
   const snapshot = await loader.load();
   assertEquals(snapshot.grantsForSubjects(["user:adam"]).length, 1);
 
-  loader.dispose();
+  await loader.dispose();
 });
 
 Deno.test("PolicySnapshotLoader: rebuilds snapshot on ModelCreated for grant model", async () => {
@@ -195,7 +195,7 @@ Deno.test("PolicySnapshotLoader: rebuilds snapshot on ModelCreated for grant mod
   await delay(700);
   assertEquals(loader.snapshot.grantsForSubjects(["user:adam"]).length, 1);
 
-  loader.dispose();
+  await loader.dispose();
 });
 
 Deno.test("PolicySnapshotLoader: rebuilds snapshot on ModelUpdated for group model", async () => {
@@ -227,7 +227,7 @@ Deno.test("PolicySnapshotLoader: rebuilds snapshot on ModelUpdated for group mod
   await delay(700);
   assertEquals([...loader.snapshot.groupsForPrincipal("user:adam")], ["devs"]);
 
-  loader.dispose();
+  await loader.dispose();
 });
 
 Deno.test("PolicySnapshotLoader: ignores events for non-access models", async () => {
@@ -251,7 +251,7 @@ Deno.test("PolicySnapshotLoader: ignores events for non-access models", async ()
 
   assertEquals(queryCallCount, initialCount);
 
-  loader.dispose();
+  await loader.dispose();
 });
 
 Deno.test("PolicySnapshotLoader.dispose: unsubscribes from EventBus", async () => {
@@ -269,7 +269,7 @@ Deno.test("PolicySnapshotLoader.dispose: unsubscribes from EventBus", async () =
   await loader.load();
   const initialCount = queryCallCount;
 
-  loader.dispose();
+  await loader.dispose();
 
   await eventBus.publish(
     createModelCreated("swamp/grant", "123", "my-grant"),
@@ -299,7 +299,7 @@ Deno.test("PolicySnapshotLoader: manual mode does not subscribe to EventBus", as
 
   assertEquals(queryCallCount, initialCount);
 
-  loader.dispose();
+  await loader.dispose();
 });
 
 Deno.test("PolicySnapshotLoader: auto mode subscribes to EventBus", async () => {
@@ -331,7 +331,7 @@ Deno.test("PolicySnapshotLoader: auto mode subscribes to EventBus", async () => 
   await delay(700);
   assertEquals(loader.snapshot.grantsForSubjects(["user:adam"]).length, 1);
 
-  loader.dispose();
+  await loader.dispose();
 });
 
 Deno.test("PolicySnapshotLoader.loadWithCounts: returns counts", async () => {
@@ -349,5 +349,5 @@ Deno.test("PolicySnapshotLoader.loadWithCounts: returns counts", async () => {
   assertEquals(result.grantCount, 1);
   assertEquals(result.groupCount, 1);
 
-  loader.dispose();
+  await loader.dispose();
 });

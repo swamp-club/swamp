@@ -122,6 +122,6 @@ export const accessReloadCommand = new Command()
         groupCount: result.groupCount,
       });
     } finally {
-      loader.dispose();
+      await loader.dispose();
     }
   });

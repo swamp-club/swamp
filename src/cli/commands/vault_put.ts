@@ -247,15 +247,15 @@ When using --server, the value must be passed as a positional argument or KEY=VA
     }
 
     const wsUrl = normalizeServerUrl(server);
-    if (
-      wsUrl.startsWith("ws://") &&
-      !wsUrl.includes("127.0.0.1") && !wsUrl.includes("localhost") &&
-      !wsUrl.includes("[::1]")
-    ) {
-      vaultLogger.warn(
-        "Sending secrets over unencrypted connection — use wss:// for security",
-      );
-    }
+    const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
+    try {
+      const parsed = new URL(wsUrl);
+      if (parsed.protocol === "ws:" && !LOOPBACK_HOSTS.has(parsed.hostname)) {
+        vaultLogger.warn(
+          "Sending secrets over unencrypted connection — use wss:// for security",
+        );
+      }
+    } catch { /* invalid URL handled by normalizeServerUrl */ }
 
     const token = await resolveServerToken(
       server,

@@ -219,6 +219,6 @@ export const accessCheckCommand = new Command()
         decisions[0].effect === "deny";
       if (isDenied) Deno.exitCode = 1;
     } finally {
-      loader.dispose();
+      await loader.dispose();
     }
   });

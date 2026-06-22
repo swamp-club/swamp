@@ -449,7 +449,7 @@ function makeMockSnapshotLoader(
     load: () => Promise.resolve(snapshot),
     loadWithCounts: () =>
       Promise.resolve({ snapshot, grantCount: grants.length, groupCount: 0 }),
-    dispose: () => {},
+    dispose: () => Promise.resolve(),
   } as unknown as PolicySnapshotLoader;
 }
 

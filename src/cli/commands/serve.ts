@@ -193,7 +193,7 @@ export const serveCommand = new Command()
   )
   .option(
     "--trust-proxy",
-    "Trust X-Forwarded-For header for client IP (enable when behind a reverse proxy)",
+    "Trust X-Forwarded-For header for client IP in token auth rate limiting (enable when behind a reverse proxy)",
   )
   .example(
     "Enable TLS",
@@ -530,7 +530,7 @@ export const serveCommand = new Command()
           if (authConfig.mode !== "none") {
             if (authConfig.mode !== "token") {
               return new Response(
-                `Auth mode '${authConfig.mode}' is not yet supported for WebSocket`,
+                "WebSocket authentication is not supported for this server configuration",
                 { status: 501 },
               );
             }
