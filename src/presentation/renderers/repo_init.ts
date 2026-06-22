@@ -229,6 +229,19 @@ class LogRepoUpgradeRenderer implements Renderer<RepoUpgradeEvent> {
           }
         }
 
+        if (data.localSkillCopies.length > 0) {
+          logger.warn(
+            "Local swamp skill copies found that may conflict with " +
+              "the globally installed skills. Run 'swamp repo upgrade' " +
+              "again and confirm removal when prompted, or delete manually:",
+          );
+          for (const copy of data.localSkillCopies) {
+            for (const name of copy.names) {
+              logger.warn(`  ${copy.skillsDir}/${name}/`);
+            }
+          }
+        }
+
         logger.info("  Skills updated: " + data.skillsUpdated.join(", "));
         logger.info(
           "  Instructions: " +

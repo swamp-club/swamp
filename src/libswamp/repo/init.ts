@@ -211,6 +211,8 @@ export interface RepoUpgradeData {
   addedTools: string[];
   removedTools: string[];
   extensionsToReinstall: { tool: string; names: string[] }[];
+  /** Local bundled skill copies that should be cleaned up. */
+  localSkillCopies: { skillsDir: string; names: string[] }[];
   /** @deprecated Read `tools` instead. `null` when not single-tool. */
   tool: string | null;
 }
@@ -383,6 +385,7 @@ export async function* repoUpgrade(
         addedTools: result.addedTools,
         removedTools: result.removedTools,
         extensionsToReinstall: result.extensionsToReinstall,
+        localSkillCopies: result.localSkillCopies,
         tool: legacyToolField(result.tools),
       };
 

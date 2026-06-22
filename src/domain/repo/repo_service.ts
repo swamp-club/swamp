@@ -36,7 +36,10 @@ import {
 import { SkillAssets } from "../../infrastructure/assets/skill_assets.ts";
 import { assertNever, UserError } from "../errors.ts";
 import { resolvePrimaryTool } from "./primary_tool.ts";
-import { resolveSkillsDir } from "./skill_dirs.ts";
+import {
+  resolveSkillsDir,
+  resolveUniqueGlobalSkillsDirs,
+} from "./skill_dirs.ts";
 import { assertPathContained, type ToolConfig } from "./custom_tool.ts";
 import { ToolResolver } from "./tool_resolver.ts";
 import { readCustomTools } from "../../infrastructure/persistence/custom_tools_repository.ts";
@@ -134,6 +137,59 @@ export async function detectSupersededSkills(
   return found;
 }
 
+export const BUNDLED_SKILL_NAMES = ["swamp", "swamp-getting-started"];
+
+/**
+ * Removes local bundled skill copies from a repo's tool skill directories.
+ */
+export async function removeLocalBundledSkills(
+  localCopies: LocalSkillCopy[],
+): Promise<void> {
+  for (const copy of localCopies) {
+    for (const name of copy.names) {
+      const dir = join(copy.skillsDir, name);
+      try {
+        await Deno.remove(dir, { recursive: true });
+        logger.info`Removed local skill copy ${dir}`;
+      } catch (e) {
+        if (!(e instanceof Deno.errors.NotFound)) throw e;
+      }
+    }
+  }
+}
+
+/**
+ * Detects local (repo-level) copies of bundled skills that should now be
+ * installed globally.
+ */
+export async function detectLocalBundledSkills(
+  repoDir: string,
+  tools: readonly string[],
+): Promise<LocalSkillCopy[]> {
+  const results: LocalSkillCopy[] = [];
+  const seen = new Set<string>();
+
+  for (const tool of tools) {
+    const dir = resolveSkillsDir(repoDir, tool);
+    if (seen.has(dir)) continue;
+    seen.add(dir);
+
+    const found: string[] = [];
+    for (const name of BUNDLED_SKILL_NAMES) {
+      try {
+        await Deno.stat(join(dir, name, "SKILL.md"));
+        found.push(name);
+      } catch {
+        // Not present locally
+      }
+    }
+    if (found.length > 0) {
+      results.push({ skillsDir: dir, names: found });
+    }
+  }
+  return results;
+}
+
 /**
  * Pulled extensions present for one of the previously-enrolled tools that
  * were NOT copied into a newly-added tool's skills directory. Surfaced so
@@ -165,6 +221,15 @@ export interface RepoInitResult {
 }
 
 /**
+ * A local bundled skill copy that should be cleaned up after migration
+ * to global skills.
+ */
+export interface LocalSkillCopy {
+  skillsDir: string;
+  names: string[];
+}
+
+/**
  * Result of a repository upgrade operation.
  */
 export interface RepoUpgradeResult {
@@ -182,6 +247,8 @@ export interface RepoUpgradeResult {
   addedTools: string[];
   removedTools: string[];
   extensionsToReinstall: ExtensionsToReinstall[];
+  /** Local bundled skill copies found that should be migrated to global. */
+  localSkillCopies: LocalSkillCopy[];
 }
 
 /**
@@ -282,10 +349,13 @@ export class RepoService {
     // Create data directory structure
     await this.createDataDirectoryStructure(repoPath);
 
-    // Resolve tools to configs and run scaffolding
+    // Install skills globally (deduplicated across tools)
+    const skillsCopied = await this.installGlobalSkills(tools);
+
+    // Resolve tools to configs and run per-repo scaffolding (instructions,
+    // settings, hooks — but NOT skills, which are now global)
     const resolver = new ToolResolver(repoPath.value, readCustomTools);
     const resolvedConfigs: ToolConfig[] = [];
-    let skillsCopied: string[] = [];
     let instructionsFileCreated = false;
     let settingsCreated = false;
     for (const tool of tools) {
@@ -296,7 +366,6 @@ export class RepoService {
         config,
         isAlreadyInit,
       );
-      if (r.skillsCopied.length > 0) skillsCopied = r.skillsCopied;
       instructionsFileCreated = instructionsFileCreated ||
         r.instructionsFileChanged;
       settingsCreated = settingsCreated || r.settingsChanged;
@@ -392,17 +461,19 @@ export class RepoService {
     );
     updatedMarker.tools = tools;
 
-    // Resolve tools to configs and run scaffolding
+    // Install skills globally (deduplicated across tools)
+    const skillsUpdated = await this.installGlobalSkills(tools);
+
+    // Resolve tools to configs and run per-repo scaffolding (instructions,
+    // settings, hooks — but NOT skills, which are now global)
     const resolver = new ToolResolver(repoPath.value, readCustomTools);
     const resolvedConfigs: ToolConfig[] = [];
-    let skillsUpdated: string[] = [];
     let instructionsUpdated = false;
     let settingsUpdated = false;
     for (const tool of tools) {
       const config = await resolver.resolve(tool);
       resolvedConfigs.push(config);
       const r = await this.applyToolScaffolding(repoPath, config, true);
-      if (r.skillsCopied.length > 0) skillsUpdated = r.skillsCopied;
       instructionsUpdated = instructionsUpdated || r.instructionsFileChanged;
       settingsUpdated = settingsUpdated || r.settingsChanged;
     }
@@ -426,8 +497,21 @@ export class RepoService {
       gitignoreAction = "skipped";
     }
 
+    // Detect local bundled skill copies that should be migrated to global
+    const localSkillCopies = await detectLocalBundledSkills(
+      repoPath.value,
+      tools,
+    );
+
     // Migrate from symlink-based layout to datastore layout
     await this.migrateFromSymlinks(repoPath);
+
+    if (localSkillCopies.length === 0) {
+      delete updatedMarker.lastSkillMigrationWarning;
+      delete updatedMarker.skillMigrationDismissed;
+    } else {
+      updatedMarker.skillMigrationDismissed = true;
+    }
 
     await this.markerRepo.write(repoPath, updatedMarker);
 
@@ -452,11 +536,30 @@ export class RepoService {
       addedTools,
       removedTools,
       extensionsToReinstall,
+      localSkillCopies,
     };
   }
 
   /**
-   * Runs all per-tool scaffolding for a single tool: skills copy, instructions
+   * Installs bundled skills to each tool's global (user-level) directory,
+   * deduplicated so shared paths are only written once.
+   */
+  private async installGlobalSkills(
+    tools: readonly string[],
+  ): Promise<string[]> {
+    const globalDirs = resolveUniqueGlobalSkillsDirs(tools);
+    if (globalDirs.length === 0) return [];
+
+    for (const dir of globalDirs) {
+      await this.skillAssets.copySkillsTo(dir);
+      await removeSupersededSkills(dir);
+      logger.info`Installed global skills to ${dir}`;
+    }
+    return this.skillAssets.getSkillNames();
+  }
+
+  /**
+   * Runs all per-tool scaffolding for a single tool: instructions
    * file, settings/hooks/configs. Idempotent across calls — when the same
    * tool runs twice, the writers no-op or re-sync existing content.
    *
@@ -469,13 +572,11 @@ export class RepoService {
     config: ToolConfig,
     alreadyExists: boolean,
   ): Promise<{
-    skillsCopied: string[];
     instructionsFileChanged: boolean;
     settingsChanged: boolean;
   }> {
     if (config.name === "none") {
       return {
-        skillsCopied: [],
         instructionsFileChanged: false,
         settingsChanged: false,
       };
@@ -491,14 +592,6 @@ export class RepoService {
         );
       }
     }
-
-    // Copy skills to tool-appropriate directory
-    const skillsDir = join(repoPath.value, config.skillsDir);
-    await this.skillAssets.copySkillsTo(skillsDir);
-    const skillsCopied = this.skillAssets.getSkillNames();
-
-    // Remove superseded skill directories from prior versions
-    await removeSupersededSkills(skillsDir);
 
     // Create or update instructions file
     const instructionsFileChanged = alreadyExists
@@ -552,7 +645,7 @@ export class RepoService {
       }
     }
 
-    return { skillsCopied, instructionsFileChanged, settingsChanged };
+    return { instructionsFileChanged, settingsChanged };
   }
 
   /**

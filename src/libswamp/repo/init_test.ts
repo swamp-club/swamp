@@ -68,6 +68,7 @@ function makeUpgradeDeps(
         addedTools: [],
         removedTools: [],
         extensionsToReinstall: [],
+        localSkillCopies: [],
       }),
     ...overrides,
   };

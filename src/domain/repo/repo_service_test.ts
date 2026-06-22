@@ -20,7 +20,12 @@
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import { ensureDir } from "@std/fs";
 import { join } from "@std/path";
-import { detectSupersededSkills, RepoService } from "./repo_service.ts";
+import {
+  detectLocalBundledSkills,
+  detectSupersededSkills,
+  removeLocalBundledSkills,
+  RepoService,
+} from "./repo_service.ts";
 import { RepoPath } from "./repo_path.ts";
 import {
   type AiTool,
@@ -116,11 +121,14 @@ Deno.test("RepoService.init copies skills", async () => {
     const result = await service.init(repoPath);
 
     assertEquals(result.skillsCopied.length > 0, true);
+    assertEquals(result.skillsCopied.includes("swamp"), true);
 
-    // Check skills directory exists
-    const skillsDir = join(tempDir, ".claude", "skills");
-    const stat = await Deno.stat(skillsDir);
-    assertEquals(stat.isDirectory, true);
+    // Skills should NOT be in the repo-local dir
+    const localSkillsDir = join(tempDir, ".claude", "skills");
+    const localExists = await Deno.stat(localSkillsDir).then(() => true).catch(
+      () => false,
+    );
+    assertEquals(localExists, false);
   });
 });
 
@@ -568,10 +576,8 @@ Deno.test("RepoService.init with cursor creates .cursor/skills/ and .cursor/rule
     assertEquals(result.settingsCreated, true);
     assertEquals(result.gitignoreAction, "created");
 
-    // Check skills copied to .cursor/skills/
-    const skillsDir = join(tempDir, ".cursor", "skills");
-    const stat = await Deno.stat(skillsDir);
-    assertEquals(stat.isDirectory, true);
+    // Skills are now installed globally, not in repo
+    assertEquals(result.skillsCopied.includes("swamp"), true);
 
     // Check instructions file is .cursor/rules/swamp.mdc with MDC frontmatter
     const mdcPath = join(tempDir, ".cursor", "rules", "swamp.mdc");
@@ -617,10 +623,8 @@ Deno.test("RepoService.init with opencode creates .agents/skills/ and AGENTS.md"
     assertEquals(result.settingsCreated, true);
     assertEquals(result.gitignoreAction, "created");
 
-    // Check skills copied to .agents/skills/
-    const skillsDir = join(tempDir, ".agents", "skills");
-    const stat = await Deno.stat(skillsDir);
-    assertEquals(stat.isDirectory, true);
+    // Skills are now installed globally, not in repo
+    assertEquals(result.skillsCopied.includes("swamp"), true);
 
     // Check AGENTS.md created
     const agentsMdPath = join(tempDir, "AGENTS.md");
@@ -649,10 +653,8 @@ Deno.test("RepoService.init with codex creates .agents/skills/ and AGENTS.md", a
     assertEquals(result.settingsCreated, false);
     assertEquals(result.gitignoreAction, "created");
 
-    // Check skills copied to .agents/skills/
-    const skillsDir = join(tempDir, ".agents", "skills");
-    const stat = await Deno.stat(skillsDir);
-    assertEquals(stat.isDirectory, true);
+    // Skills are now installed globally, not in repo
+    assertEquals(result.skillsCopied.includes("swamp"), true);
 
     // Check AGENTS.md created
     const agentsMdPath = join(tempDir, "AGENTS.md");
@@ -673,10 +675,8 @@ Deno.test("RepoService.init with copilot creates .agents/skills/, AGENTS.md, and
     assertEquals(result.settingsCreated, true);
     assertEquals(result.gitignoreAction, "created");
 
-    // Check skills copied to .agents/skills/
-    const skillsDir = join(tempDir, ".agents", "skills");
-    const stat = await Deno.stat(skillsDir);
-    assertEquals(stat.isDirectory, true);
+    // Skills are now installed globally, not in repo
+    assertEquals(result.skillsCopied.includes("swamp"), true);
 
     // Check AGENTS.md created with section markers (shared file)
     const agentsMdPath = join(tempDir, "AGENTS.md");
@@ -737,10 +737,8 @@ Deno.test("RepoService.upgrade reads tool from marker", async () => {
 
     assertEquals(result.tools[0], "cursor");
 
-    // Verify skills updated in cursor dir
-    const skillsDir = join(tempDir, ".cursor", "skills");
-    const stat = await Deno.stat(skillsDir);
-    assertEquals(stat.isDirectory, true);
+    // Skills are now installed globally
+    assertEquals(result.skillsUpdated.includes("swamp"), true);
   });
 });
 
@@ -760,10 +758,8 @@ Deno.test("RepoService.upgrade allows switching tool via --tool", async () => {
 
     assertEquals(result.tools[0], "cursor");
 
-    // Verify skills exist in cursor dir
-    const skillsDir = join(tempDir, ".cursor", "skills");
-    const stat = await Deno.stat(skillsDir);
-    assertEquals(stat.isDirectory, true);
+    // Skills are now installed globally
+    assertEquals(result.skillsUpdated.includes("swamp"), true);
 
     // Verify marker updated with new tool
     const marker = await upgradeService.getMarker(repoPath);
@@ -1330,10 +1326,8 @@ Deno.test("RepoService.init with kiro creates .kiro/skills/ and steering file wi
     assertEquals(result.instructionsFileCreated, true);
     assertEquals(result.settingsCreated, true);
 
-    // Check skills copied to .kiro/skills/
-    const skillsDir = join(tempDir, ".kiro", "skills");
-    const stat = await Deno.stat(skillsDir);
-    assertEquals(stat.isDirectory, true);
+    // Skills are now installed globally, not in repo
+    assertEquals(result.skillsCopied.includes("swamp"), true);
 
     // Check steering file with frontmatter
     const steeringPath = join(
@@ -1377,10 +1371,8 @@ Deno.test("RepoService.upgrade allows switching to kiro and creates steering fil
     assertEquals(result.tools[0], "kiro");
     assertEquals(result.settingsUpdated, true);
 
-    // Verify skills exist in kiro dir
-    const skillsDir = join(tempDir, ".kiro", "skills");
-    const stat = await Deno.stat(skillsDir);
-    assertEquals(stat.isDirectory, true);
+    // Skills are now installed globally
+    assertEquals(result.skillsUpdated.includes("swamp"), true);
 
     // Verify marker updated with new tool
     const marker = await upgradeService.getMarker(repoPath);
@@ -2324,11 +2316,8 @@ Deno.test("RepoService.init with multiple tools writes scaffolding for each", as
 
     assertEquals(result.tools, ["claude", "kiro"]);
 
-    // Both tools' skill dirs should exist
-    const claudeStat = await Deno.stat(join(tempDir, ".claude", "skills"));
-    assertEquals(claudeStat.isDirectory, true);
-    const kiroStat = await Deno.stat(join(tempDir, ".kiro", "skills"));
-    assertEquals(kiroStat.isDirectory, true);
+    // Skills are installed globally, not in repo
+    assertEquals(result.skillsCopied.includes("swamp"), true);
 
     // Marker should list both
     const markerRepo = new RepoMarkerRepository();
@@ -2586,5 +2575,94 @@ Deno.test("upgrade: throws orphan-specific error when .swamp/ exists without mar
 
     assertStringIncludes(error.message, "Found a .swamp/ directory");
     assertStringIncludes(error.message, "no .swamp.yaml marker");
+  });
+});
+
+// --- Local bundled skill detection and removal tests ---
+
+Deno.test("detectLocalBundledSkills: finds local copies in claude skills dir", async () => {
+  await withTempDir(async (tempDir) => {
+    const skillDir = join(tempDir, ".claude", "skills", "swamp");
+    await ensureDir(skillDir);
+    await Deno.writeTextFile(
+      join(skillDir, "SKILL.md"),
+      "---\nname: swamp\n---",
+    );
+
+    const results = await detectLocalBundledSkills(tempDir, ["claude"]);
+    assertEquals(results.length, 1);
+    assertEquals(results[0].names, ["swamp"]);
+  });
+});
+
+Deno.test("detectLocalBundledSkills: finds both bundled skills", async () => {
+  await withTempDir(async (tempDir) => {
+    for (const name of ["swamp", "swamp-getting-started"]) {
+      const dir = join(tempDir, ".claude", "skills", name);
+      await ensureDir(dir);
+      await Deno.writeTextFile(
+        join(dir, "SKILL.md"),
+        `---\nname: ${name}\n---`,
+      );
+    }
+
+    const results = await detectLocalBundledSkills(tempDir, ["claude"]);
+    assertEquals(results.length, 1);
+    assertEquals(results[0].names, ["swamp", "swamp-getting-started"]);
+  });
+});
+
+Deno.test("detectLocalBundledSkills: returns empty when no local copies", async () => {
+  await withTempDir(async (tempDir) => {
+    const results = await detectLocalBundledSkills(tempDir, ["claude"]);
+    assertEquals(results.length, 0);
+  });
+});
+
+Deno.test("detectLocalBundledSkills: deduplicates shared skill dirs", async () => {
+  await withTempDir(async (tempDir) => {
+    const skillDir = join(tempDir, ".agents", "skills", "swamp");
+    await ensureDir(skillDir);
+    await Deno.writeTextFile(
+      join(skillDir, "SKILL.md"),
+      "---\nname: swamp\n---",
+    );
+
+    const results = await detectLocalBundledSkills(tempDir, [
+      "codex",
+      "opencode",
+      "copilot",
+    ]);
+    assertEquals(results.length, 1);
+  });
+});
+
+Deno.test("removeLocalBundledSkills: removes specified skill directories", async () => {
+  await withTempDir(async (tempDir) => {
+    const skillDir = join(tempDir, ".claude", "skills", "swamp");
+    await ensureDir(skillDir);
+    await Deno.writeTextFile(
+      join(skillDir, "SKILL.md"),
+      "---\nname: swamp\n---",
+    );
+
+    await removeLocalBundledSkills([{
+      skillsDir: join(tempDir, ".claude", "skills"),
+      names: ["swamp"],
+    }]);
+
+    const exists = await Deno.stat(skillDir).then(() => true).catch(() =>
+      false
+    );
+    assertEquals(exists, false);
+  });
+});
+
+Deno.test("removeLocalBundledSkills: no-op when directory already gone", async () => {
+  await withTempDir(async (tempDir) => {
+    await removeLocalBundledSkills([{
+      skillsDir: join(tempDir, ".claude", "skills"),
+      names: ["swamp"],
+    }]);
   });
 });

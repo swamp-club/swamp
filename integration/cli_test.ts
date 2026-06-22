@@ -99,11 +99,8 @@ Deno.test("repo init writes scaffolding for multiple --tool values", async () =>
     const result = JSON.parse(stdout);
     assertEquals(result.tools, ["claude", "kiro"]);
 
-    // Both tools' skills dirs should exist
-    const claudeStat = await Deno.stat(join(dir, ".claude", "skills"));
-    assertEquals(claudeStat.isDirectory, true);
-    const kiroStat = await Deno.stat(join(dir, ".kiro", "skills"));
-    assertEquals(kiroStat.isDirectory, true);
+    // Skills are installed globally, not in repo
+    assertEquals(result.skillsCopied.includes("swamp"), true);
 
     // Marker should list both
     const marker = await Deno.readTextFile(join(dir, ".swamp.yaml"));

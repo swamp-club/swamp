@@ -59,6 +59,8 @@ export interface RepoMarkerData {
   datastore?: DatastoreConfigData;
   trustedCollectives?: string[];
   trustMemberCollectives?: boolean;
+  lastSkillMigrationWarning?: string;
+  skillMigrationDismissed?: boolean;
 }
 
 /**

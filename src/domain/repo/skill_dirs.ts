@@ -19,18 +19,33 @@
 
 import { join } from "@std/path";
 import {
+  homeDirectory,
   SWAMP_SUBDIRS,
   swampPath,
 } from "../../infrastructure/persistence/paths.ts";
 
 /**
  * Maps AI tool names to their skill directory paths (relative to repo root).
- * Used for both project-local and global (user-level) skill directories
- * since the relative path within each tool's config dir is the same.
+ * Used for project-local skill directories and extension skill resolution.
  */
 export const SKILL_DIRS: Record<string, string> = {
   claude: ".claude/skills",
   cursor: ".cursor/skills",
+  opencode: ".agents/skills",
+  codex: ".agents/skills",
+  copilot: ".agents/skills",
+  kiro: ".kiro/skills",
+};
+
+/**
+ * Maps AI tool names to their global (user-level) skill directory paths,
+ * relative to the user's home directory. Tools that read from
+ * `~/.agents/skills/` natively share a single copy; Claude Code and Kiro
+ * require their own vendor-specific paths.
+ */
+export const GLOBAL_SKILL_DIRS: Record<string, string> = {
+  claude: ".claude/skills",
+  cursor: ".agents/skills",
   opencode: ".agents/skills",
   codex: ".agents/skills",
   copilot: ".agents/skills",
@@ -46,4 +61,35 @@ export function resolveSkillsDir(repoDir: string, tool: string): string {
     return join(repoDir, SKILL_DIRS[tool]);
   }
   return swampPath(repoDir, SWAMP_SUBDIRS.pulledSkills);
+}
+
+/**
+ * Resolves the absolute global skill directory for a tool, rooted in the
+ * user's home directory. Returns null for "none" or unknown tools.
+ */
+export function resolveGlobalSkillsDir(tool: string): string | null {
+  const rel = GLOBAL_SKILL_DIRS[tool];
+  if (!rel) return null;
+  return join(homeDirectory(), rel);
+}
+
+/**
+ * Returns deduplicated absolute global skill directory paths for a set of
+ * enrolled tools. Since multiple tools may share the same global path
+ * (e.g., codex/cursor/opencode/copilot all use ~/.agents/skills/), this
+ * deduplicates so each directory is only written to once.
+ */
+export function resolveUniqueGlobalSkillsDirs(
+  tools: readonly string[],
+): string[] {
+  const seen = new Set<string>();
+  const result: string[] = [];
+  for (const tool of tools) {
+    const dir = resolveGlobalSkillsDir(tool);
+    if (dir && !seen.has(dir)) {
+      seen.add(dir);
+      result.push(dir);
+    }
+  }
+  return result;
 }
