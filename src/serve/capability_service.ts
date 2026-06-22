@@ -59,6 +59,7 @@ import {
 } from "../domain/remote/protocol.ts";
 import type { RpcChannel } from "../domain/remote/rpc_channel.ts";
 import { jsonSafeClone } from "./serializer.ts";
+import type { DispatchRegistry } from "./dispatch_registry.ts";
 import { GRANT_MODEL_TYPE } from "../domain/models/access/grant_model.ts";
 import { GROUP_MODEL_TYPE } from "../domain/models/access/group_model.ts";
 import { SERVER_TOKEN_MODEL_TYPE } from "../domain/models/access/server_token_model.ts";
@@ -93,6 +94,7 @@ export function dataContentPath(
 export interface CapabilityServiceOptions {
   repoDir: string;
   repoContext: RepositoryContext;
+  dispatches?: DispatchRegistry;
   /** Overridable for tests; defaults to VaultService.fromRepository. */
   createVaultService?: () => Promise<VaultService>;
 }
@@ -106,12 +108,14 @@ export interface CapabilityServiceOptions {
 export class CapabilityService {
   readonly #repoDir: string;
   readonly #repoContext: RepositoryContext;
+  readonly #dispatches: DispatchRegistry | undefined;
   readonly #createVaultService: () => Promise<VaultService>;
   #vaultService: Promise<VaultService> | null = null;
 
   constructor(options: CapabilityServiceOptions) {
     this.#repoDir = options.repoDir;
     this.#repoContext = options.repoContext;
+    this.#dispatches = options.dispatches;
     this.#createVaultService = options.createVaultService ??
       (() => VaultService.fromRepository(this.#repoDir));
   }
@@ -122,6 +126,26 @@ export class CapabilityService {
       throw error;
     });
     return this.#vaultService;
+  }
+
+  #assertDispatchScope(
+    workerName: string,
+    paramModelType: string,
+    verb: string,
+  ): void {
+    if (!this.#dispatches) return;
+    const dispatch = this.#dispatches.forWorker(workerName);
+    if (!dispatch) {
+      throw new Error(
+        `${verb}: worker '${workerName}' has no active dispatch`,
+      );
+    }
+    const requested = ModelType.create(paramModelType).normalized;
+    if (requested !== dispatch.modelType.normalized) {
+      throw new Error(
+        `${verb}: model type '${requested}' is outside the active dispatch scope`,
+      );
+    }
   }
 
   async getData(params: GetDataParams): Promise<GetDataResult> {
@@ -190,7 +214,11 @@ export class CapabilityService {
     );
   }
 
-  async deleteData(params: DeleteDataParams): Promise<{ deleted: boolean }> {
+  async deleteData(
+    workerName: string,
+    params: DeleteDataParams,
+  ): Promise<{ deleted: boolean }> {
+    this.#assertDispatchScope(workerName, params.modelType, "deleteData");
     const type = ModelType.create(params.modelType);
     if (params.removeLatestMarkerOnly) {
       await this.#repoContext.unifiedDataRepo.removeLatestMarker(
@@ -224,7 +252,18 @@ export class CapabilityService {
     return { value };
   }
 
-  async putSecret(params: PutSecretParams): Promise<{ ok: boolean }> {
+  async putSecret(
+    workerName: string,
+    params: PutSecretParams,
+  ): Promise<{ ok: boolean }> {
+    if (this.#dispatches) {
+      const dispatch = this.#dispatches.forWorker(workerName);
+      if (!dispatch) {
+        throw new Error(
+          `putSecret: worker '${workerName}' has no active dispatch`,
+        );
+      }
+    }
     const vault = await this.#vault();
     if (params.deleteAnnotation) {
       await vault.deleteAnnotation(params.vaultName, params.secretKey);
@@ -299,7 +338,7 @@ export class CapabilityService {
    * are schema-validated at the boundary; handler errors surface to the
    * worker as rpc.error frames.
    */
-  registerHandlers(channel: RpcChannel): void {
+  registerHandlers(channel: RpcChannel, workerName: string): void {
     channel.register(
       RemoteMethod.getData,
       (params) => this.getData(GetDataParamsSchema.parse(params)),
@@ -314,7 +353,8 @@ export class CapabilityService {
     );
     channel.register(
       RemoteMethod.deleteData,
-      (params) => this.deleteData(DeleteDataParamsSchema.parse(params)),
+      (params) =>
+        this.deleteData(workerName, DeleteDataParamsSchema.parse(params)),
     );
     channel.register(
       RemoteMethod.resolveSecret,
@@ -322,7 +362,8 @@ export class CapabilityService {
     );
     channel.register(
       RemoteMethod.putSecret,
-      (params) => this.putSecret(PutSecretParamsSchema.parse(params)),
+      (params) =>
+        this.putSecret(workerName, PutSecretParamsSchema.parse(params)),
     );
     channel.register(
       RemoteMethod.readDefinition,
