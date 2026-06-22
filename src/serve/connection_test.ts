@@ -18,9 +18,14 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
-import { handleMessage, validateServerRequest } from "./connection.ts";
+import {
+  handleMessage,
+  sanitizeErrorForClient,
+  validateServerRequest,
+} from "./connection.ts";
 import type { ConnectionContext } from "./connection.ts";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
+import { UserError } from "../domain/errors.ts";
 import type { Principal } from "../domain/access/principal.ts";
 import type { ServeAuthConfig } from "../domain/access/serve_auth_config.ts";
 import { PolicySnapshot } from "../domain/access/policy_snapshot.ts";
@@ -1874,4 +1879,124 @@ Deno.test("typeArg authz: @ prefix on typeArg is stripped before authorization",
     0,
     "@ prefix on typeArg should be stripped — grant for command/shell should match @command/shell",
   );
+});
+
+// ── sanitizeErrorForClient tests ────────────────────────────────────────
+
+Deno.test("sanitizeErrorForClient: redacts errors containing forward slashes", () => {
+  const result = sanitizeErrorForClient(
+    new Error("File not found: /opt/swamp/.swamp/data/foo"),
+  );
+  assertEquals(
+    result,
+    "An internal error occurred — check server logs for details",
+  );
+});
+
+Deno.test("sanitizeErrorForClient: redacts errors containing backslashes", () => {
+  const result = sanitizeErrorForClient(
+    new Error("File not found: C:\\Users\\data\\foo"),
+  );
+  assertEquals(
+    result,
+    "An internal error occurred — check server logs for details",
+  );
+});
+
+Deno.test("sanitizeErrorForClient: truncates long messages at 200 chars", () => {
+  const longMessage = "x".repeat(300);
+  const result = sanitizeErrorForClient(new Error(longMessage));
+  assertEquals(result.length, 203); // 200 + "..."
+  assertEquals(result.endsWith("..."), true);
+});
+
+Deno.test("sanitizeErrorForClient: passes through short non-path errors", () => {
+  const result = sanitizeErrorForClient(new Error("Model not found"));
+  assertEquals(result, "Model not found");
+});
+
+Deno.test("sanitizeErrorForClient: redacts UserError with path separators", () => {
+  const result = sanitizeErrorForClient(
+    new UserError("Config at /etc/swamp/config.yaml is invalid"),
+  );
+  assertEquals(
+    result,
+    "An internal error occurred — check server logs for details",
+  );
+});
+
+Deno.test("sanitizeErrorForClient: passes through safe UserError messages", () => {
+  const result = sanitizeErrorForClient(
+    new UserError("Invalid token format: expected <name>.<secret>"),
+  );
+  assertEquals(result, "Invalid token format: expected <name>.<secret>");
+});
+
+Deno.test("sanitizeErrorForClient: handles non-Error values", () => {
+  assertEquals(sanitizeErrorForClient("simple string"), "simple string");
+  assertEquals(sanitizeErrorForClient(42), "42");
+});
+
+// ── data.query validation tests ─────────────────────────────────────────
+
+Deno.test("validateServerRequest: data.query rejects predicate over 4096 chars", () => {
+  const input = {
+    type: "data.query",
+    id: "req-1",
+    payload: { predicate: "a".repeat(5000) },
+  };
+  const result = validateServerRequest(input);
+  assertEquals(typeof result, "string");
+  assertStringIncludes(result as string, "predicate");
+});
+
+Deno.test("validateServerRequest: data.query rejects limit over 10000", () => {
+  const input = {
+    type: "data.query",
+    id: "req-1",
+    payload: { predicate: 'modelType == "test"', limit: 50000 },
+  };
+  const result = validateServerRequest(input);
+  assertEquals(typeof result, "string");
+});
+
+Deno.test("validateServerRequest: data.query rejects non-integer limit", () => {
+  const input = {
+    type: "data.query",
+    id: "req-1",
+    payload: { predicate: 'modelType == "test"', limit: 1.5 },
+  };
+  const result = validateServerRequest(input);
+  assertEquals(typeof result, "string");
+});
+
+Deno.test("validateServerRequest: data.query rejects negative limit", () => {
+  const input = {
+    type: "data.query",
+    id: "req-1",
+    payload: { predicate: 'modelType == "test"', limit: -1 },
+  };
+  const result = validateServerRequest(input);
+  assertEquals(typeof result, "string");
+});
+
+Deno.test("validateServerRequest: data.query accepts valid predicate and limit", () => {
+  const input = {
+    type: "data.query",
+    id: "req-1",
+    payload: { predicate: 'modelType == "test"', limit: 100 },
+  };
+  const result = validateServerRequest(input);
+  assertEquals(typeof result, "object");
+});
+
+Deno.test("validateServerRequest: rejects request ID over 256 chars", () => {
+  const input = {
+    type: "data.query",
+    id: "x".repeat(300),
+    payload: { predicate: 'modelType == "test"' },
+  };
+  const result = validateServerRequest(input);
+  assertEquals(typeof result, "string");
+  assertStringIncludes(result as string, "id");
 });

@@ -121,20 +121,16 @@ import { type Action, ActionSchema } from "../domain/access/action.ts";
 import { parseResourceSelector } from "../domain/access/resource_selector.ts";
 import type { AccessResource } from "../domain/access/access_decision_service.ts";
 import { modelRegistry } from "../domain/models/model.ts";
-import { UserError } from "../domain/errors.ts";
 
 const MAX_ACTIVE_REQUESTS = 100;
 const MAX_SESSION_MS = 8 * 60 * 60 * 1000; // 8 hours
 
 const MAX_CLIENT_ERROR_LENGTH = 200;
 
-function sanitizeErrorForClient(error: unknown): string {
-  if (error instanceof UserError) {
-    return error.message;
-  }
+export function sanitizeErrorForClient(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error);
   if (raw.includes("/") || raw.includes("\\")) {
-    return "An internal error occurred";
+    return "An internal error occurred — check server logs for details";
   }
   if (raw.length > MAX_CLIENT_ERROR_LENGTH) {
     return raw.slice(0, MAX_CLIENT_ERROR_LENGTH) + "...";

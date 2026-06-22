@@ -148,7 +148,11 @@ export class CapabilityService {
     }
   }
 
-  async getData(params: GetDataParams): Promise<GetDataResult> {
+  async getData(
+    workerName: string,
+    params: GetDataParams,
+  ): Promise<GetDataResult> {
+    this.#assertDispatchScope(workerName, params.modelType, "getData");
     const type = ModelType.create(params.modelType);
     let data: Data | null = null;
     if (params.dataId !== undefined) {
@@ -192,8 +196,15 @@ export class CapabilityService {
     if (params.predicate.length > MAX_CAPABILITY_PREDICATE_LENGTH) {
       throw new Error("Query predicate exceeds maximum length");
     }
+    // Normalize separators and case before scanning so that variants like
+    // SWAMP/GRANT, swamp.grant, swamp::grant all match the canonical form.
+    const normalizedPredicate = params.predicate
+      .toLowerCase()
+      .replace(/::/g, "/")
+      .replace(/\./g, "/")
+      .replace(/\/+/g, "/");
     for (const denied of DENIED_QUERY_MODEL_TYPES) {
-      if (params.predicate.includes(denied)) {
+      if (normalizedPredicate.includes(denied)) {
         throw new Error(
           "Query against access-control or infrastructure models is not permitted from workers",
         );
@@ -238,8 +249,19 @@ export class CapabilityService {
   }
 
   async resolveSecret(
+    workerName: string,
     params: ResolveSecretParams,
   ): Promise<{ value: unknown }> {
+    // Secrets are not model-type-scoped (any method may reference a vault
+    // secret), so we verify only that the worker has an active dispatch.
+    if (this.#dispatches) {
+      const dispatch = this.#dispatches.forWorker(workerName);
+      if (!dispatch) {
+        throw new Error(
+          `resolveSecret: worker '${workerName}' has no active dispatch`,
+        );
+      }
+    }
     const vault = await this.#vault();
     if (params.annotation) {
       const annotation = await vault.getAnnotation(
@@ -256,6 +278,11 @@ export class CapabilityService {
     workerName: string,
     params: PutSecretParams,
   ): Promise<{ ok: boolean }> {
+    // Secrets are not model-type-scoped: any method may write to any vault
+    // key via the context.putSecret API, so we verify only that the worker
+    // has an active dispatch (not that the vault key relates to the
+    // dispatched model type). deleteData uses the stricter
+    // #assertDispatchScope because data artifacts are model-type-addressed.
     if (this.#dispatches) {
       const dispatch = this.#dispatches.forWorker(workerName);
       if (!dispatch) {
@@ -341,7 +368,7 @@ export class CapabilityService {
   registerHandlers(channel: RpcChannel, workerName: string): void {
     channel.register(
       RemoteMethod.getData,
-      (params) => this.getData(GetDataParamsSchema.parse(params)),
+      (params) => this.getData(workerName, GetDataParamsSchema.parse(params)),
     );
     channel.register(
       RemoteMethod.queryData,
@@ -358,7 +385,8 @@ export class CapabilityService {
     );
     channel.register(
       RemoteMethod.resolveSecret,
-      (params) => this.resolveSecret(ResolveSecretParamsSchema.parse(params)),
+      (params) =>
+        this.resolveSecret(workerName, ResolveSecretParamsSchema.parse(params)),
     );
     channel.register(
       RemoteMethod.putSecret,
