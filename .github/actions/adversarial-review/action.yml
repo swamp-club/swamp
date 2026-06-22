@@ -76,13 +76,69 @@ runs:
           - Are try/catch blocks too broad, catching errors they shouldn't?
           - Is cleanup code (finally blocks, resource disposal) actually correct?
 
-          ## 3. Security
+          ## 3. Security — Implementation Patterns
           - Command injection via string interpolation in shell commands or subprocess calls
-          - Path traversal — can user input escape intended directories?
+          - Path traversal — can user input escape intended directories? Are `..` components, absolute
+            paths, and symlink targets validated? Does the code use the codebase's existing primitives
+            (`assertSafePath`, `assertContainedPath`, `validateNoSymlinkEscape`) for untrusted paths?
+            New file-handling code that skips these is CRITICAL.
+          - Symlink escape — are symlinks from untrusted sources (extension dirs, archives, copied
+            skill directories) detected with lstat and validated to stay within the expected root?
+          - Path containment on external data — if file operations (copy, delete, read) use paths
+            from lockfiles, manifests, extension metadata, or repo-controlled JSON, are paths validated
+            to stay within the expected boundary before any filesystem operation?
           - Sensitive data exposure in logs, error messages, or stack traces
           - Prototype pollution, ReDoS, or other JS/TS-specific vulnerabilities
           - Are secrets, tokens, or credentials ever hardcoded or logged?
           - TOCTOU (time-of-check-time-of-use) race conditions on file operations
+
+          ## 3b. Security — Trust Boundary & Authorization Design
+          These checks catch design-level security flaws that code-pattern matching misses.
+          For every trust boundary crossing in the diff, apply ALL of the following:
+          - Authorization/execution identity consistency — when code authorizes an operation using
+            one value and then executes using a different value (different payload fields, raw vs.
+            normalized forms), that is a CRITICAL authorization bypass. The identity used for the
+            security decision must be the exact same canonical value used for execution. Example:
+            authorizing on `payload.modelIdOrName` but executing from `payload.typeArg` lets an
+            attacker authorize a harmless model and execute a dangerous one.
+          - Canonicalization before security decisions — any input that can be represented in multiple
+            forms (`.` vs `/` separators, `::` vs `/`, case variants, whitespace, URL encoding) MUST
+            be normalized to a single canonical form BEFORE authorization or access-control checks.
+            If a raw string passes the security gate but the normalized form resolves to a different
+            (privileged) resource, that is a bypass.
+          - Defense-in-depth at sensitive execution sinks — built-in operations that execute commands,
+            modify access control, or delete resources must independently verify authorization at the
+            point of execution, not rely solely on an upstream routing gate that may use a different
+            code path, payload field, or identity representation.
+          - Confused deputy / privilege delegation — when code acts on behalf of a caller (serve
+            executing a model for a WebSocket client, extension install acting on lockfile data), does
+            the callee operate with the caller's authority? Can the caller influence which authority is
+            used, which code path runs, or which capabilities are exercised beyond what was authorized?
+          - Untrusted data round-trip through persistence — if external or repo-controlled data is
+            written to a file (lockfile, config, manifest) and later read back and acted upon, the
+            read-back path must validate data shape AND path/identity containment. A hand-edited or
+            malicious committed file bypasses write-time checks.
+
+          ## 3c. Security — Data Flow & Reachability
+          - Trace untrusted data ingress-to-sink — for each piece of untrusted data in the diff
+            (WebSocket message fields, extension manifest entries, lockfile arrays, CLI arguments),
+            trace where it enters and where it acts (file operation, command execution, authorization
+            decision, database write). Every step must validate or be proven safe by its caller. If
+            any step assumes "the caller already validated this," verify the assumption for ALL callers.
+          - Reachability from unvalidated paths — if a function receives data that was validated at
+            one call site, can the same function be reached from a different path that skips validation?
+            Internal functions callable from both validated and unvalidated contexts must validate
+            defensively. This is CRITICAL when the function performs file operations, command execution,
+            or authorization decisions.
+          - Resource exhaustion — can a client-controlled value (array length, string size, nesting
+            depth, query predicate, CEL condition) cause unbounded memory allocation, CPU consumption,
+            or recursive processing? Operations driven by untrusted input must have explicit limits.
+          - Error information leakage — do error messages or WebSocket error frames returned to clients
+            leak internal paths, token fragments, configuration details, or other attacker-useful info?
+            Errors crossing trust boundaries should be generic; diagnostics belong in server-side logs.
+          - Stale authorization — for long-lived connections (WebSocket), are permissions re-evaluated
+            on each request? If grants are revoked or tokens expire mid-session, when does revocation
+            take effect? New authorized operations must consider the authorization lifecycle.
 
           ## 4. Concurrency & State
           - Can concurrent operations corrupt shared state?
