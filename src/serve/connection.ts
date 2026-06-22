@@ -146,7 +146,7 @@ function sanitizeErrorForClient(error: unknown): string {
 
 const WorkflowRunRequestSchema = z.object({
   type: z.literal("workflow.run"),
-  id: z.string().min(1),
+  id: z.string().min(1).max(256),
   payload: z.object({
     workflowIdOrName: z.string(),
     inputs: z.record(z.string(), z.unknown()).optional(),
@@ -158,7 +158,7 @@ const WorkflowRunRequestSchema = z.object({
 
 const ModelMethodRunRequestSchema = z.object({
   type: z.literal("model.method.run"),
-  id: z.string().min(1),
+  id: z.string().min(1).max(256),
   payload: z.object({
     modelIdOrName: z.string(),
     methodName: z.string(),
@@ -172,7 +172,7 @@ const ModelMethodRunRequestSchema = z.object({
 
 const AccessGrantListRequestSchema = z.object({
   type: z.literal("access.grant.list"),
-  id: z.string().min(1),
+  id: z.string().min(1).max(256),
   payload: z.object({
     subject: z.string().optional(),
     resource: z.string().optional(),
@@ -181,7 +181,7 @@ const AccessGrantListRequestSchema = z.object({
 
 const AccessGroupListRequestSchema = z.object({
   type: z.literal("access.group.list"),
-  id: z.string().min(1),
+  id: z.string().min(1).max(256),
   payload: z.object({
     name: z.string().optional(),
   }).optional(),
@@ -189,7 +189,7 @@ const AccessGroupListRequestSchema = z.object({
 
 const AccessCheckRequestSchema = z.object({
   type: z.literal("access.check"),
-  id: z.string().min(1),
+  id: z.string().min(1).max(256),
   payload: z.object({
     subject: z.string(),
     action: z.string(),
@@ -200,7 +200,7 @@ const AccessCheckRequestSchema = z.object({
 
 const AccessCanIRequestSchema = z.object({
   type: z.literal("access.can-i"),
-  id: z.string().min(1),
+  id: z.string().min(1).max(256),
   payload: z.object({
     action: z.string().optional(),
     resource: z.string().optional(),
@@ -213,17 +213,17 @@ const AccessCanIRequestSchema = z.object({
 
 const AccessReloadRequestSchema = z.object({
   type: z.literal("access.reload"),
-  id: z.string().min(1),
+  id: z.string().min(1).max(256),
 });
 
 const CancelRequestSchema = z.object({
   type: z.literal("cancel"),
-  id: z.string().min(1),
+  id: z.string().min(1).max(256),
 });
 
 const DataGetRequestSchema = z.object({
   type: z.literal("data.get"),
-  id: z.string().min(1),
+  id: z.string().min(1).max(256),
   payload: z.object({
     modelIdOrName: z.string().optional(),
     dataName: z.string().optional(),
@@ -240,7 +240,7 @@ const DEFAULT_QUERY_LIMIT = 1000;
 
 const DataQueryRequestSchema = z.object({
   type: z.literal("data.query"),
-  id: z.string().min(1),
+  id: z.string().min(1).max(256),
   payload: z.object({
     predicate: z.string().max(MAX_PREDICATE_LENGTH),
     limit: z.number().int().positive().max(MAX_QUERY_RESULTS).optional(),
@@ -250,7 +250,7 @@ const DataQueryRequestSchema = z.object({
 
 const DataListRequestSchema = z.object({
   type: z.literal("data.list"),
-  id: z.string().min(1),
+  id: z.string().min(1).max(256),
   payload: z.object({
     modelIdOrName: z.string().optional(),
     workflowName: z.string().optional(),
@@ -261,7 +261,7 @@ const DataListRequestSchema = z.object({
 
 const ModelSearchRequestSchema = z.object({
   type: z.literal("model.search"),
-  id: z.string().min(1),
+  id: z.string().min(1).max(256),
   payload: z.object({
     query: z.string().optional(),
   }).optional(),
@@ -269,7 +269,7 @@ const ModelSearchRequestSchema = z.object({
 
 const ModelMethodDescribeRequestSchema = z.object({
   type: z.literal("model.method.describe"),
-  id: z.string().min(1),
+  id: z.string().min(1).max(256),
   payload: z.object({
     modelIdOrName: z.string(),
     methodName: z.string(),
@@ -278,7 +278,7 @@ const ModelMethodDescribeRequestSchema = z.object({
 
 const WorkflowSearchRequestSchema = z.object({
   type: z.literal("workflow.search"),
-  id: z.string().min(1),
+  id: z.string().min(1).max(256),
   payload: z.object({
     query: z.string().optional(),
   }).optional(),
@@ -286,7 +286,7 @@ const WorkflowSearchRequestSchema = z.object({
 
 const VaultGetRequestSchema = z.object({
   type: z.literal("vault.get"),
-  id: z.string().min(1),
+  id: z.string().min(1).max(256),
   payload: z.object({
     vaultNameOrId: z.string(),
     vaultType: z.string().optional(),
@@ -295,7 +295,7 @@ const VaultGetRequestSchema = z.object({
 
 const VaultPutRequestSchema = z.object({
   type: z.literal("vault.put"),
-  id: z.string().min(1),
+  id: z.string().min(1).max(256),
   payload: z.object({
     vaultName: z.string(),
     key: z.string(),
@@ -309,7 +309,7 @@ const VaultPutRequestSchema = z.object({
 
 const AuditTimelineRequestSchema = z.object({
   type: z.literal("audit.timeline"),
-  id: z.string().min(1),
+  id: z.string().min(1).max(256),
   payload: z.object({
     hours: z.number().optional(),
     showAll: z.boolean().optional(),
@@ -320,7 +320,7 @@ const AuditTimelineRequestSchema = z.object({
 
 const SummariseRequestSchema = z.object({
   type: z.literal("summarise"),
-  id: z.string().min(1),
+  id: z.string().min(1).max(256),
   payload: z.object({
     since: z.string().optional(),
     limit: z.number().optional(),
@@ -329,7 +329,7 @@ const SummariseRequestSchema = z.object({
 
 const ReportGetRequestSchema = z.object({
   type: z.literal("report.get"),
-  id: z.string().min(1),
+  id: z.string().min(1).max(256),
   payload: z.object({
     reportName: z.string(),
     model: z.string().optional(),
@@ -341,7 +341,7 @@ const ReportGetRequestSchema = z.object({
 
 const ReportSearchRequestSchema = z.object({
   type: z.literal("report.search"),
-  id: z.string().min(1),
+  id: z.string().min(1).max(256),
   payload: z.object({
     query: z.string().optional(),
     model: z.string().optional(),
@@ -354,7 +354,7 @@ const ReportSearchRequestSchema = z.object({
 
 const ReportDescribeRequestSchema = z.object({
   type: z.literal("report.describe"),
-  id: z.string().min(1),
+  id: z.string().min(1).max(256),
   payload: z.object({
     reportName: z.string(),
   }),
@@ -362,7 +362,7 @@ const ReportDescribeRequestSchema = z.object({
 
 const ReportTypeSearchRequestSchema = z.object({
   type: z.literal("report.type.search"),
-  id: z.string().min(1),
+  id: z.string().min(1).max(256),
   payload: z.object({
     query: z.string().optional(),
   }).optional(),
