@@ -123,6 +123,7 @@ import type { AccessResource } from "../domain/access/access_decision_service.ts
 import { modelRegistry } from "../domain/models/model.ts";
 
 const MAX_ACTIVE_REQUESTS = 100;
+const MAX_SESSION_MS = 8 * 60 * 60 * 1000; // 8 hours
 
 // ── Zod schemas for incoming WebSocket messages ─────────────────────────
 
@@ -429,6 +430,12 @@ export function handleConnection(
     },
   }, () => socket.close());
 
+  const sessionTimeout = principal
+    ? setTimeout(() => {
+      socket.close(4002, "Session expired — reconnect to re-authenticate");
+    }, MAX_SESSION_MS)
+    : null;
+
   socket.onmessage = (event) => {
     if (
       workerAttachment && typeof event.data === "string" &&
@@ -440,6 +447,7 @@ export function handleConnection(
   };
 
   socket.onclose = () => {
+    if (sessionTimeout) clearTimeout(sessionTimeout);
     workerAttachment?.closed();
     for (const controller of activeRequests.values()) {
       controller.abort();
