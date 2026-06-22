@@ -249,7 +249,8 @@ When using --server, the value must be passed as a positional argument or KEY=VA
     const wsUrl = normalizeServerUrl(server);
     if (
       wsUrl.startsWith("ws://") &&
-      !wsUrl.includes("127.0.0.1") && !wsUrl.includes("localhost")
+      !wsUrl.includes("127.0.0.1") && !wsUrl.includes("localhost") &&
+      !wsUrl.includes("[::1]")
     ) {
       vaultLogger.warn(
         "Sending secrets over unencrypted connection — use wss:// for security",

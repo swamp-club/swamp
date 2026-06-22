@@ -490,7 +490,7 @@ export function handleMessage(
       socket,
       request.id,
       "too_many_requests",
-      "Too many concurrent requests",
+      `Too many concurrent requests (limit: ${MAX_ACTIVE_REQUESTS}); wait for active requests to complete`,
     );
     return;
   }

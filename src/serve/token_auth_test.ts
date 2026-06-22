@@ -18,7 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { splitServerToken } from "./token_auth.ts";
+import { authenticateServerToken, splitServerToken } from "./token_auth.ts";
+import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 
 // ── splitServerToken ────────────────────────────────────────────────────
 
@@ -47,4 +48,19 @@ Deno.test("splitServerToken: handles dots in secret", () => {
 Deno.test("splitServerToken: single-char name and secret", () => {
   const result = splitServerToken("a.b");
   assertEquals(result, { name: "a", secret: "b" });
+});
+
+// ── authenticateServerToken ─────────────────────────────────────────────
+
+Deno.test("authenticateServerToken: rejects token exceeding MAX_TOKEN_LENGTH", async () => {
+  const longToken = "name." + "a".repeat(513);
+  const result = await authenticateServerToken(
+    longToken,
+    "/tmp/nonexistent",
+    {} as RepositoryContext,
+  );
+  assertEquals(result.ok, false);
+  if (!result.ok) {
+    assertEquals(result.error, "Token exceeds maximum length");
+  }
 });

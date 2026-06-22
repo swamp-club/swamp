@@ -66,11 +66,24 @@ const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
 const authAttempts = new Map<string, { count: number; resetAt: number }>();
 const MAX_AUTH_ATTEMPTS = 5;
 const AUTH_WINDOW_MS = 60_000;
+const MAX_RATE_LIMIT_ENTRIES = 10_000;
+
+function sweepExpiredEntries(): void {
+  const now = Date.now();
+  for (const [ip, entry] of authAttempts) {
+    if (now > entry.resetAt) authAttempts.delete(ip);
+  }
+}
 
 function checkRateLimit(ip: string): boolean {
   const now = Date.now();
   const entry = authAttempts.get(ip);
   if (!entry || now > entry.resetAt) {
+    if (authAttempts.size >= MAX_RATE_LIMIT_ENTRIES) sweepExpiredEntries();
+    if (authAttempts.size >= MAX_RATE_LIMIT_ENTRIES) {
+      const oldest = authAttempts.keys().next().value!;
+      authAttempts.delete(oldest);
+    }
     authAttempts.set(ip, { count: 1, resetAt: now + AUTH_WINDOW_MS });
     return true;
   }
@@ -79,7 +92,10 @@ function checkRateLimit(ip: string): boolean {
 }
 
 function clearRateLimit(ip: string): void {
-  authAttempts.delete(ip);
+  const entry = authAttempts.get(ip);
+  if (entry) {
+    entry.count = 0;
+  }
 }
 
 export function assertOffLoopbackSecurity(
@@ -175,6 +191,10 @@ export const serveCommand = new Command()
     "--groups-field <field:string>",
     "Userinfo field name for group/collective memberships (default: collectives)",
   )
+  .option(
+    "--trust-proxy",
+    "Trust X-Forwarded-For header for client IP (enable when behind a reverse proxy)",
+  )
   .example(
     "Enable TLS",
     "swamp serve --cert-file server.crt --key-file server.key",
@@ -217,6 +237,7 @@ export const serveCommand = new Command()
       key = await Deno.readTextFile(keyFile);
     }
     const tlsEnabled = cert !== undefined;
+    const trustProxy = options.trustProxy === true;
 
     const authConfig = buildServeAuthConfig({
       authMode: options.authMode as string | undefined,
@@ -514,9 +535,11 @@ export const serveCommand = new Command()
               );
             }
 
-            const remoteAddr = req.headers.get("x-forwarded-for")
-              ?.split(",")[0]?.trim() ??
-              info.remoteAddr.hostname;
+            const remoteAddr = trustProxy
+              ? (req.headers.get("x-forwarded-for")
+                ?.split(",")[0]?.trim() ??
+                info.remoteAddr.hostname)
+              : info.remoteAddr.hostname;
             if (!checkRateLimit(remoteAddr)) {
               logger.warn("WebSocket auth rate-limited from {ip}", {
                 ip: remoteAddr,
@@ -617,7 +640,7 @@ export const serveCommand = new Command()
       if (scheduledExecution) {
         await scheduledExecution.stop();
       }
-      policySnapshotLoader.dispose();
+      await policySnapshotLoader.dispose();
       setRemoteStepDispatcher(null);
       ac.abort();
       if (isJson) {

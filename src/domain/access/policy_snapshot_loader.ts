@@ -47,7 +47,7 @@ const GROUP_MODEL_TYPE_STR = GROUP_MODEL_TYPE.normalized;
 
 const RESOURCE_FIELDS: Record<ResourceKind, string[]> = {
   workflow: ["name", "tags", "collective"],
-  model: ["modelType", "collective"],
+  model: ["name", "modelType", "tags", "collective"],
   data: ["name", "ns", "tags", "owner"],
   access: ["name"],
 };
@@ -166,7 +166,7 @@ export class PolicySnapshotLoader {
     return result;
   }
 
-  dispose(): void {
+  async dispose(): Promise<void> {
     if (this.#rebuildTimer) {
       clearTimeout(this.#rebuildTimer);
       this.#rebuildTimer = null;
@@ -175,6 +175,7 @@ export class PolicySnapshotLoader {
       unsub();
     }
     this.#unsubscribers.length = 0;
+    await this.#pendingRebuild;
   }
 
   #isAccessModel(modelType: string): boolean {
