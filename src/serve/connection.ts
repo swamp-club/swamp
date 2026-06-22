@@ -121,9 +121,26 @@ import { type Action, ActionSchema } from "../domain/access/action.ts";
 import { parseResourceSelector } from "../domain/access/resource_selector.ts";
 import type { AccessResource } from "../domain/access/access_decision_service.ts";
 import { modelRegistry } from "../domain/models/model.ts";
+import { UserError } from "../domain/errors.ts";
 
 const MAX_ACTIVE_REQUESTS = 100;
 const MAX_SESSION_MS = 8 * 60 * 60 * 1000; // 8 hours
+
+const MAX_CLIENT_ERROR_LENGTH = 200;
+
+function sanitizeErrorForClient(error: unknown): string {
+  if (error instanceof UserError) {
+    return error.message;
+  }
+  const raw = error instanceof Error ? error.message : String(error);
+  if (raw.includes("/") || raw.includes("\\")) {
+    return "An internal error occurred";
+  }
+  if (raw.length > MAX_CLIENT_ERROR_LENGTH) {
+    return raw.slice(0, MAX_CLIENT_ERROR_LENGTH) + "...";
+  }
+  return raw;
+}
 
 // ── Zod schemas for incoming WebSocket messages ─────────────────────────
 
@@ -871,7 +888,7 @@ async function handleWorkflowRun(
     if (error instanceof DOMException && error.name === "AbortError") {
       sendError(socket, requestId, "cancelled", "Operation was cancelled");
     } else {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = sanitizeErrorForClient(error);
       sendError(socket, requestId, "workflow_execution_failed", message);
     }
   }
@@ -984,7 +1001,7 @@ async function handleModelMethodRun(
     if (error instanceof DOMException && error.name === "AbortError") {
       sendError(socket, requestId, "cancelled", "Operation was cancelled");
     } else {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = sanitizeErrorForClient(error);
       sendError(
         socket,
         requestId,
@@ -1065,7 +1082,7 @@ async function handleAccessGrantList(
       },
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "access_grant_list_failed", message);
   }
 }
@@ -1114,7 +1131,7 @@ async function handleAccessGroupList(
       },
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "access_group_list_failed", message);
   }
 }
@@ -1180,7 +1197,7 @@ function handleAccessCheck(
     });
     return Promise.resolve();
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "access_check_failed", message);
     return Promise.resolve();
   }
@@ -1285,7 +1302,7 @@ function handleAccessCanI(
     }
     return Promise.resolve();
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "access_can_i_failed", message);
     return Promise.resolve();
   }
@@ -1328,7 +1345,7 @@ async function handleAccessReload(
       },
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "access_reload_failed", message);
   }
 }
@@ -1401,7 +1418,7 @@ async function handleDataGet(
       payload: { data: result },
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "data_get_failed", message);
   }
 }
@@ -1465,7 +1482,7 @@ async function handleDataQuery(
       payload: { data: result ?? {} },
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "data_query_failed", message);
   }
 }
@@ -1534,7 +1551,7 @@ async function handleDataList(
       payload: { data: result },
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "data_list_failed", message);
   }
 }
@@ -1588,7 +1605,7 @@ async function handleModelSearch(
       payload: { data: result ?? {} },
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "model_search_failed", message);
   }
 }
@@ -1649,7 +1666,7 @@ async function handleModelMethodDescribe(
       payload: { data: result },
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "model_method_describe_failed", message);
   }
 }
@@ -1703,7 +1720,7 @@ async function handleWorkflowSearch(
       payload: { data: result ?? {} },
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "workflow_search_failed", message);
   }
 }
@@ -1760,7 +1777,7 @@ async function handleVaultGet(
       payload: { data: result },
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "vault_get_failed", message);
   }
 }
@@ -1799,7 +1816,7 @@ async function handleVaultPut(
       ctx.repoDir,
     ));
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "vault_put_failed", message);
     return;
   }
@@ -1867,7 +1884,7 @@ async function handleVaultPut(
     if (error instanceof DOMException && error.name === "AbortError") {
       sendError(socket, requestId, "cancelled", "Operation was cancelled");
     } else {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = sanitizeErrorForClient(error);
       sendError(socket, requestId, "vault_put_failed", message);
     }
   } finally {
@@ -1931,7 +1948,7 @@ async function handleAuditTimeline(
       payload: { data: result ?? {} },
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "audit_timeline_failed", message);
   }
 }
@@ -1994,7 +2011,7 @@ async function handleSummarise(
       payload: { data: result ?? {} },
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "summarise_failed", message);
   }
 }
@@ -2083,7 +2100,7 @@ async function handleReportGet(
       payload: { data: result },
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "report_get_failed", message);
   }
 }
@@ -2164,7 +2181,7 @@ async function handleReportSearch(
       payload: { data: result ?? {} },
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "report_search_failed", message);
   }
 }
@@ -2225,7 +2242,7 @@ async function handleReportDescribe(
       payload: { data: result },
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "report_describe_failed", message);
   }
 }
@@ -2282,7 +2299,7 @@ async function handleReportTypeSearch(
       payload: { data: result ?? {} },
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "report_type_search_failed", message);
   }
 }
