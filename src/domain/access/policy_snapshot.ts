@@ -96,13 +96,18 @@ export class PolicySnapshot {
     resourceFields: Record<string, unknown>,
     principalContext: PrincipalContext,
   ): boolean {
+    const deadline = Date.now() + 100;
     try {
-      return this.#evaluateCondition(
+      const result = this.#evaluateCondition(
         condition,
         resourceKind,
         resourceFields,
         principalContext,
       );
+      if (Date.now() > deadline) {
+        logger.warn`Condition evaluation exceeded 100ms deadline: ${condition}`;
+      }
+      return result;
     } catch (error) {
       if (
         error instanceof Error &&
