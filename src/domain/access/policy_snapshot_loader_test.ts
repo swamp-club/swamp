@@ -29,6 +29,8 @@ import { PolicySnapshotLoader } from "./policy_snapshot_loader.ts";
 
 await initializeLogging({});
 
+const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
+
 function makeGrantRecord(grant: Grant): DataRecord {
   return {
     id: crypto.randomUUID(),
@@ -190,6 +192,7 @@ Deno.test("PolicySnapshotLoader: rebuilds snapshot on ModelCreated for grant mod
     createModelCreated("swamp/grant", "123", "my-grant"),
   );
 
+  await delay(700);
   assertEquals(loader.snapshot.grantsForSubjects(["user:adam"]).length, 1);
 
   loader.dispose();
@@ -221,6 +224,7 @@ Deno.test("PolicySnapshotLoader: rebuilds snapshot on ModelUpdated for group mod
     createModelUpdated("swamp/group", "456", "devs"),
   );
 
+  await delay(700);
   assertEquals([...loader.snapshot.groupsForPrincipal("user:adam")], ["devs"]);
 
   loader.dispose();
@@ -324,6 +328,7 @@ Deno.test("PolicySnapshotLoader: auto mode subscribes to EventBus", async () => 
     createModelCreated("swamp/grant", "123", "my-grant"),
   );
 
+  await delay(700);
   assertEquals(loader.snapshot.grantsForSubjects(["user:adam"]).length, 1);
 
   loader.dispose();

@@ -38,6 +38,7 @@ import type { PrincipalContext } from "./principal_context.ts";
 import type { ConditionEvaluator } from "./policy_snapshot.ts";
 import { PolicySnapshot } from "./policy_snapshot.ts";
 import type { ResourceKind } from "./resource_selector.ts";
+import { GrantBasedAccessDecisionService } from "./grant_based_access_decision_service.ts";
 
 const logger = getLogger(["swamp", "domain", "access", "policy-snapshot"]);
 
@@ -100,6 +101,9 @@ export class PolicySnapshotLoader {
   readonly #unsubscribers: (() => void)[] = [];
   readonly #conditionEvaluator: ConditionEvaluator;
   #snapshot: PolicySnapshot = PolicySnapshot.empty();
+  #pendingRebuild: Promise<void> = Promise.resolve();
+  #rebuildTimer: ReturnType<typeof setTimeout> | null = null;
+  #cachedDecisionService: GrantBasedAccessDecisionService | null = null;
 
   constructor(
     dataQueryService: DataQueryService,
@@ -113,7 +117,7 @@ export class PolicySnapshotLoader {
       this.#unsubscribers.push(
         eventBus.subscribe<ModelCreated>("ModelCreated", (event) => {
           if (this.#isAccessModel(event.modelType)) {
-            this.#rebuild();
+            this.#scheduleRebuild();
           }
         }),
       );
@@ -121,7 +125,7 @@ export class PolicySnapshotLoader {
       this.#unsubscribers.push(
         eventBus.subscribe<ModelUpdated>("ModelUpdated", (event) => {
           if (this.#isAccessModel(event.modelType)) {
-            this.#rebuild();
+            this.#scheduleRebuild();
           }
         }),
       );
@@ -132,9 +136,22 @@ export class PolicySnapshotLoader {
     return this.#snapshot;
   }
 
+  get decisionService(): GrantBasedAccessDecisionService {
+    if (
+      !this.#cachedDecisionService ||
+      this.#cachedDecisionService.snapshot !== this.#snapshot
+    ) {
+      this.#cachedDecisionService = new GrantBasedAccessDecisionService(
+        this.#snapshot,
+      );
+    }
+    return this.#cachedDecisionService;
+  }
+
   async load(): Promise<PolicySnapshot> {
     const result = await this.#buildSnapshotWithCounts();
     this.#snapshot = result.snapshot;
+    this.#cachedDecisionService = null;
     return this.#snapshot;
   }
 
@@ -145,10 +162,15 @@ export class PolicySnapshotLoader {
   }> {
     const result = await this.#buildSnapshotWithCounts();
     this.#snapshot = result.snapshot;
+    this.#cachedDecisionService = null;
     return result;
   }
 
   dispose(): void {
+    if (this.#rebuildTimer) {
+      clearTimeout(this.#rebuildTimer);
+      this.#rebuildTimer = null;
+    }
     for (const unsub of this.#unsubscribers) {
       unsub();
     }
@@ -203,10 +225,19 @@ export class PolicySnapshotLoader {
     };
   }
 
+  #scheduleRebuild(): void {
+    if (this.#rebuildTimer) clearTimeout(this.#rebuildTimer);
+    this.#rebuildTimer = setTimeout(() => {
+      this.#rebuildTimer = null;
+      this.#pendingRebuild = this.#pendingRebuild.then(() => this.#rebuild());
+    }, 500);
+  }
+
   async #rebuild(): Promise<void> {
     try {
       const result = await this.#buildSnapshotWithCounts();
       this.#snapshot = result.snapshot;
+      this.#cachedDecisionService = null;
     } catch (error) {
       logger.error`Failed to rebuild policy snapshot: ${error}`;
     }

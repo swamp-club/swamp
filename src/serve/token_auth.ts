@@ -51,11 +51,17 @@ export type ServerTokenAuthResult =
  * ServerToken model's `redeem` method. Returns the authenticated
  * principal ID on success, or an error message on failure.
  */
+const MAX_TOKEN_LENGTH = 512;
+
 export async function authenticateServerToken(
   presented: string,
   repoDir: string,
   repoContext: RepositoryContext,
 ): Promise<ServerTokenAuthResult> {
+  if (presented.length > MAX_TOKEN_LENGTH) {
+    return { ok: false, error: "Token exceeds maximum length" };
+  }
+
   const split = splitServerToken(presented);
   if (split === null) {
     return {
@@ -86,7 +92,7 @@ export async function authenticateServerToken(
         name: split.name,
         error: event.error.message,
       });
-      return { ok: false, error: event.error.message };
+      return { ok: false, error: "Authentication failed" };
     }
     if (event.kind === "completed") {
       const tokenRecord = event.run.dataArtifacts.find(

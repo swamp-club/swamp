@@ -26,6 +26,7 @@ import type { ServeAuthConfig } from "../domain/access/serve_auth_config.ts";
 import { PolicySnapshot } from "../domain/access/policy_snapshot.ts";
 import type { PolicySnapshotLoader } from "../domain/access/policy_snapshot_loader.ts";
 import type { Grant } from "../domain/models/access/grant_model.ts";
+import { GrantBasedAccessDecisionService } from "../domain/access/grant_based_access_decision_service.ts";
 
 await initializeLogging({});
 
@@ -441,8 +442,10 @@ function makeMockSnapshotLoader(
   grants: Grant[],
 ): PolicySnapshotLoader {
   const snapshot = new PolicySnapshot(grants, []);
+  const service = new GrantBasedAccessDecisionService(snapshot);
   return {
     snapshot,
+    decisionService: service,
     load: () => Promise.resolve(snapshot),
     loadWithCounts: () =>
       Promise.resolve({ snapshot, grantCount: grants.length, groupCount: 0 }),

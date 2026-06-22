@@ -32,7 +32,7 @@ import { resourceSelectorMatches } from "./resource_selector.ts";
 
 function resolveSubjects(
   accessPrincipal: AccessPrincipal,
-  snapshot: PolicySnapshot,
+  localGroups: readonly string[],
 ): string[] {
   const subjects: string[] = [];
 
@@ -40,8 +40,6 @@ function resolveSubjects(
     `${accessPrincipal.principal.kind}:${accessPrincipal.principal.id}`,
   );
 
-  const principalKey = principalToString(accessPrincipal.principal);
-  const localGroups = snapshot.groupsForPrincipal(principalKey);
   for (const groupName of localGroups) {
     subjects.push(`group:${groupName}`);
   }
@@ -66,10 +64,8 @@ function grantMatchesAction(grant: Grant, action: Action): boolean {
 
 function buildPrincipalContext(
   accessPrincipal: AccessPrincipal,
-  snapshot: PolicySnapshot,
+  localGroups: readonly string[],
 ): PrincipalContext {
-  const principalKey = principalToString(accessPrincipal.principal);
-  const localGroups = snapshot.groupsForPrincipal(principalKey);
   return {
     sub: accessPrincipal.principal.id,
     groups: [...localGroups],
@@ -124,9 +120,11 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
     resource: AccessResource,
   ): AccessDecision | null {
     const snapshot = this.#snapshot;
-    const subjects = resolveSubjects(principal, snapshot);
+    const principalKey = principalToString(principal.principal);
+    const localGroups = snapshot.groupsForPrincipal(principalKey);
+    const subjects = resolveSubjects(principal, localGroups);
     const candidates = snapshot.grantsForSubjects(subjects);
-    const principalContext = buildPrincipalContext(principal, snapshot);
+    const principalContext = buildPrincipalContext(principal, localGroups);
 
     const denies: Grant[] = [];
     const allows: Grant[] = [];
@@ -161,9 +159,11 @@ export class GrantBasedAccessDecisionService implements AccessDecisionService {
     resource: AccessResource,
   ): AccessDecision[] {
     const snapshot = this.#snapshot;
-    const subjects = resolveSubjects(principal, snapshot);
+    const principalKey = principalToString(principal.principal);
+    const localGroups = snapshot.groupsForPrincipal(principalKey);
+    const subjects = resolveSubjects(principal, localGroups);
     const candidates = snapshot.grantsForSubjects(subjects);
-    const principalContext = buildPrincipalContext(principal, snapshot);
+    const principalContext = buildPrincipalContext(principal, localGroups);
 
     const decisions: AccessDecision[] = [];
     for (const grant of candidates) {

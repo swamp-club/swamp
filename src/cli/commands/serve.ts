@@ -63,6 +63,25 @@ const logger = getSwampLogger(["serve"]);
 
 const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
 
+const authAttempts = new Map<string, { count: number; resetAt: number }>();
+const MAX_AUTH_ATTEMPTS = 5;
+const AUTH_WINDOW_MS = 60_000;
+
+function checkRateLimit(ip: string): boolean {
+  const now = Date.now();
+  const entry = authAttempts.get(ip);
+  if (!entry || now > entry.resetAt) {
+    authAttempts.set(ip, { count: 1, resetAt: now + AUTH_WINDOW_MS });
+    return true;
+  }
+  entry.count++;
+  return entry.count <= MAX_AUTH_ATTEMPTS;
+}
+
+function clearRateLimit(ip: string): void {
+  authAttempts.delete(ip);
+}
+
 export function assertOffLoopbackSecurity(
   host: string,
   tlsEnabled: boolean,
@@ -483,14 +502,35 @@ export const serveCommand = new Command()
           }
         },
       },
-      async (req) => {
+      async (req, info) => {
         // WebSocket upgrade (check first — upgrade requests are also GETs)
         const upgrade = req.headers.get("upgrade") ?? "";
         if (upgrade.toLowerCase() === "websocket") {
-          if (authConfig.mode === "token") {
+          if (authConfig.mode !== "none") {
+            if (authConfig.mode !== "token") {
+              return new Response(
+                `Auth mode '${authConfig.mode}' is not yet supported for WebSocket`,
+                { status: 501 },
+              );
+            }
+
+            const remoteAddr = req.headers.get("x-forwarded-for")
+              ?.split(",")[0]?.trim() ??
+              info.remoteAddr.hostname;
+            if (!checkRateLimit(remoteAddr)) {
+              logger.warn("WebSocket auth rate-limited from {ip}", {
+                ip: remoteAddr,
+              });
+              return new Response("Too Many Requests", { status: 429 });
+            }
+
             const url = new URL(req.url);
             const tokenParam = url.searchParams.get("token");
             if (!tokenParam) {
+              logger.warn(
+                "WebSocket auth rejected: no token provided from {ip}",
+                { ip: remoteAddr },
+              );
               return new Response("Unauthorized: token required", {
                 status: 401,
               });
@@ -502,11 +542,12 @@ export const serveCommand = new Command()
             );
             if (!result.ok) {
               logger.warn(
-                "WebSocket auth rejected: {error}",
-                { error: result.error },
+                "WebSocket auth rejected from {ip}: {error}",
+                { ip: remoteAddr, error: result.error },
               );
               return new Response("Unauthorized", { status: 401 });
             }
+            clearRateLimit(remoteAddr);
             const principal = parsePrincipal(result.principalId);
             const { socket, response } = Deno.upgradeWebSocket(req);
             handleConnection(socket, connectionCtx, principal);

@@ -120,8 +120,9 @@ import {
 import { type Action, ActionSchema } from "../domain/access/action.ts";
 import { parseResourceSelector } from "../domain/access/resource_selector.ts";
 import type { AccessResource } from "../domain/access/access_decision_service.ts";
-import { GrantBasedAccessDecisionService } from "../domain/access/grant_based_access_decision_service.ts";
 import { modelRegistry } from "../domain/models/model.ts";
+
+const MAX_ACTIVE_REQUESTS = 100;
 
 // ── Zod schemas for incoming WebSocket messages ─────────────────────────
 
@@ -484,6 +485,16 @@ export function handleMessage(
     return;
   }
 
+  if (activeRequests.size >= MAX_ACTIVE_REQUESTS) {
+    sendError(
+      socket,
+      request.id,
+      "too_many_requests",
+      "Too many concurrent requests",
+    );
+    return;
+  }
+
   if (activeRequests.has(request.id)) {
     sendError(
       socket,
@@ -768,8 +779,7 @@ function authorizeOrReject(
     return false;
   }
 
-  const snapshot = ctx.policySnapshotLoader.snapshot;
-  const service = new GrantBasedAccessDecisionService(snapshot);
+  const service = ctx.policySnapshotLoader.decisionService;
   const decision = service.decide(
     { principal, collectives: [] },
     action,
@@ -818,7 +828,7 @@ async function handleWorkflowRun(
     !authorizeOrReject(socket, requestId, principal, "run", {
       kind: "workflow",
       name: payload.workflowIdOrName,
-      fields: {},
+      fields: { name: payload.workflowIdOrName },
     }, ctx)
   ) return;
 
@@ -872,12 +882,20 @@ async function handleModelMethodRun(
       payload.modelIdOrName,
     );
 
+    const modelFields: Record<string, unknown> = {};
+    if (preResult) {
+      modelFields.modelType = preResult.type.normalized;
+      modelFields.name = preResult.definition.name;
+      const tags = preResult.definition.tags;
+      if (tags && Object.keys(tags).length > 0) modelFields.tags = tags;
+    }
+
     if (isAccessModelType(payload.typeArg, preResult?.type.normalized)) {
       if (
         !authorizeOrReject(socket, requestId, principal, "admin", {
           kind: "access",
           name: "*",
-          fields: {},
+          fields: modelFields,
         }, ctx)
       ) return;
     } else {
@@ -885,7 +903,7 @@ async function handleModelMethodRun(
         !authorizeOrReject(socket, requestId, principal, "run", {
           kind: "model",
           name: payload.modelIdOrName,
-          fields: {},
+          fields: modelFields,
         }, ctx)
       ) return;
     }
@@ -1112,8 +1130,7 @@ function handleAccessCheck(
     const resource = parseResourceSelector(payload.resource);
     const collectives = payload.collectives ?? [];
 
-    const snapshot = ctx.policySnapshotLoader.snapshot;
-    const service = new GrantBasedAccessDecisionService(snapshot);
+    const service = ctx.policySnapshotLoader.decisionService;
     const decisions = service.explain(
       { principal, collectives },
       actionResult.data,
@@ -1185,7 +1202,7 @@ function handleAccessCanI(
       }
 
       const resource = parseResourceSelector(payload.resource);
-      const service = new GrantBasedAccessDecisionService(snapshot);
+      const service = ctx.policySnapshotLoader.decisionService;
       const decisions = service.explain(
         accessPrincipal,
         actionResult.data,
@@ -1297,11 +1314,13 @@ async function handleDataGet(
   principal: Principal | null,
 ): Promise<void> {
   const resourceName = payload.modelIdOrName ?? "*";
+  const dataFields: Record<string, unknown> = {};
+  if (payload.modelIdOrName) dataFields.name = payload.modelIdOrName;
   if (
     !authorizeOrReject(socket, requestId, principal, "read", {
       kind: "data",
       name: resourceName,
-      fields: {},
+      fields: dataFields,
     }, ctx)
   ) return;
 
@@ -1425,11 +1444,13 @@ async function handleDataList(
   principal: Principal | null,
 ): Promise<void> {
   const resourceName = payload.modelIdOrName ?? "*";
+  const listFields: Record<string, unknown> = {};
+  if (payload.modelIdOrName) listFields.name = payload.modelIdOrName;
   if (
     !authorizeOrReject(socket, requestId, principal, "read", {
       kind: "data",
       name: resourceName,
-      fields: {},
+      fields: listFields,
     }, ctx)
   ) return;
 

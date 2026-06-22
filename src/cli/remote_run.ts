@@ -239,9 +239,10 @@ export function requestServerResponse<T>(
     socket.onmessage = (event) => {
       if (typeof event.data !== "string") return;
       try {
-        const message = JSON.parse(event.data) as ServerMessage;
+        const message = JSON.parse(event.data);
         if (
           typeof message !== "object" || message === null ||
+          !("type" in message) || typeof message.type !== "string" ||
           !("id" in message) || message.id !== requestId
         ) {
           return;
