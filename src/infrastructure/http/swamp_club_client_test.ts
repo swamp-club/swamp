@@ -619,3 +619,86 @@ Deno.test("fetchIssue: commentCount is 0 when no comments array in response", as
     await mock.shutdown();
   }
 });
+
+// ── Timeout and retry ────────────────────────────────────────────────
+
+Deno.test("fetch: connection-refused error has no timeout code", async () => {
+  const client = new SwampClubClient("http://localhost:1");
+  const err = await assertRejects(
+    () => client.whoami("key"),
+    UserError,
+  );
+  assertEquals(err.code, undefined);
+  assertStringIncludes(err.message, "Could not connect to");
+});
+
+Deno.test("submitIssue: does not retry on non-timeout HTTP errors", async () => {
+  let attempts = 0;
+  const mock = startMockServer((_req) => {
+    attempts++;
+    return new Response("Server error", { status: 500 });
+  });
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    await assertRejects(
+      () =>
+        client.submitIssue("key", {
+          type: "bug",
+          title: "t",
+          body: "b",
+        }),
+      UserError,
+      "Failed to submit issue",
+    );
+    assertEquals(attempts, 1);
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("submitIssue: does not retry on connection-refused errors", async () => {
+  let attempts = 0;
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = (...args: Parameters<typeof fetch>) => {
+    attempts++;
+    return originalFetch(...args);
+  };
+  try {
+    const client = new SwampClubClient("http://localhost:1");
+    await assertRejects(
+      () =>
+        client.submitIssue("key", {
+          type: "bug",
+          title: "t",
+          body: "b",
+        }),
+      UserError,
+      "Could not connect to",
+    );
+    assertEquals(attempts, 1);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+Deno.test("submitIssue: respects caller abort signal", async () => {
+  const mock = startMockServer(
+    (_req) => new Promise<Response>(() => {}),
+  );
+  try {
+    const client = new SwampClubClient(`http://localhost:${mock.port}`);
+    const ac = new AbortController();
+    setTimeout(() => ac.abort(), 50);
+    await assertRejects(
+      () =>
+        client.submitIssue(
+          "key",
+          { type: "bug", title: "t", body: "b" },
+          ac.signal,
+        ),
+      DOMException,
+    );
+  } finally {
+    await mock.shutdown();
+  }
+});

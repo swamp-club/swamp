@@ -296,8 +296,18 @@ export async function submitIssue(
       body: input.body,
     };
 
-  await consumeStream(
-    issueCreate(libCtx, deps, labInput),
-    renderer.handlers(),
-  );
+  try {
+    await consumeStream(
+      issueCreate(libCtx, deps, labInput),
+      renderer.handlers(),
+    );
+  } catch (error) {
+    if (error instanceof UserError && error.code === "timeout") {
+      throw new UserError(
+        `${error.message} Your report has not been lost — retry, or use --email to send it via email instead.`,
+        "timeout",
+      );
+    }
+    throw error;
+  }
 }

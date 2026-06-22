@@ -208,30 +208,63 @@ export class SwampClubClient {
       title: string;
       body: string;
     },
+    signal?: AbortSignal,
   ): Promise<{ number: number; id: string }> {
-    const res = await this.fetch("/api/v1/lab/issues", {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        "x-api-key": apiKey,
-      },
-      body: JSON.stringify({
-        source: "swamp",
-        type: input.type,
-        title: input.title,
-        body: input.body,
-      }),
-    });
+    const maxAttempts = 3;
+    const backoffMs = [2_000, 4_000];
 
-    if (!res.ok) {
-      const body = await res.text();
-      throw new UserError(
-        `Failed to submit issue (HTTP ${res.status}): ${body}`,
-      );
+    for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      try {
+        const res = await this.fetch(
+          "/api/v1/lab/issues",
+          {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "x-api-key": apiKey,
+            },
+            body: JSON.stringify({
+              source: "swamp",
+              type: input.type,
+              title: input.title,
+              body: input.body,
+            }),
+          },
+          signal,
+          60_000,
+        );
+
+        if (!res.ok) {
+          const body = await res.text();
+          throw new UserError(
+            `Failed to submit issue (HTTP ${res.status}): ${body}`,
+          );
+        }
+
+        const data = await res.json();
+        return { number: data.issue.number, id: data.issue.id };
+      } catch (error) {
+        const isTimeout = error instanceof UserError &&
+          error.code === "timeout";
+        const isLastAttempt = attempt === maxAttempts - 1;
+        if (!isTimeout || isLastAttempt) throw error;
+
+        const delay = backoffMs[attempt] ?? backoffMs[backoffMs.length - 1];
+        await new Promise<void>((resolve, reject) => {
+          if (signal?.aborted) {
+            reject(signal.reason);
+            return;
+          }
+          const timer = setTimeout(resolve, delay);
+          signal?.addEventListener("abort", () => {
+            clearTimeout(timer);
+            reject(signal.reason);
+          }, { once: true });
+        });
+      }
     }
 
-    const data = await res.json();
-    return { number: data.issue.number, id: data.issue.id };
+    throw new Error("unreachable");
   }
 
   /**
@@ -491,9 +524,10 @@ export class SwampClubClient {
     path: string,
     init: RequestInit,
     callerSignal?: AbortSignal,
+    timeoutMs = 15_000,
   ): Promise<Response> {
     const url = `${this.serverUrl}${path}`;
-    const timeoutSignal = AbortSignal.timeout(15000);
+    const timeoutSignal = AbortSignal.timeout(timeoutMs);
     const signal = callerSignal
       ? AbortSignal.any([callerSignal, timeoutSignal])
       : timeoutSignal;
@@ -520,8 +554,10 @@ export class SwampClubClient {
         throw error;
       }
       if (error instanceof DOMException && error.name === "TimeoutError") {
+        const seconds = Math.round(timeoutMs / 1000);
         throw new UserError(
-          `Request to ${this.serverUrl} timed out. Is the server running?`,
+          `Request to ${this.serverUrl}${path} timed out after ${seconds}s.`,
+          "timeout",
         );
       }
       const message = error instanceof Error ? error.message : String(error);
