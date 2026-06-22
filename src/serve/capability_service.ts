@@ -59,6 +59,39 @@ import {
 } from "../domain/remote/protocol.ts";
 import type { RpcChannel } from "../domain/remote/rpc_channel.ts";
 import { jsonSafeClone } from "./serializer.ts";
+import type { DispatchRegistry } from "./dispatch_registry.ts";
+import { GRANT_MODEL_TYPE } from "../domain/models/access/grant_model.ts";
+import { GROUP_MODEL_TYPE } from "../domain/models/access/group_model.ts";
+import { SERVER_TOKEN_MODEL_TYPE } from "../domain/models/access/server_token_model.ts";
+import { ENROLLMENT_TOKEN_MODEL_TYPE } from "../domain/models/worker/enrollment_token_model.ts";
+import { WORKER_MODEL_TYPE } from "../domain/models/worker/worker_model.ts";
+import { STEP_LEASE_MODEL_TYPE } from "../domain/models/worker/step_lease_model.ts";
+
+const DENIED_QUERY_MODEL_TYPES: readonly string[] = [
+  GRANT_MODEL_TYPE.normalized,
+  GROUP_MODEL_TYPE.normalized,
+  SERVER_TOKEN_MODEL_TYPE.normalized,
+  ENROLLMENT_TOKEN_MODEL_TYPE.normalized,
+  WORKER_MODEL_TYPE.normalized,
+  STEP_LEASE_MODEL_TYPE.normalized,
+];
+
+const MAX_CAPABILITY_PREDICATE_LENGTH = 4096;
+
+const RPC_PATH_PATTERN =
+  /(?:^|[\s"'`(])\/(?:opt|home|var|tmp|etc|usr|root|Users|private)\//;
+const RPC_SWAMP_PATH_PATTERN = /\/.swamp\//;
+
+function sanitizeRpcError(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  if (RPC_PATH_PATTERN.test(raw) || RPC_SWAMP_PATH_PATTERN.test(raw)) {
+    return "Capability verb failed — internal error";
+  }
+  if (raw.length > 200) {
+    return raw.slice(0, 200) + "...";
+  }
+  return raw;
+}
 
 /** Builds the data-plane content path for an artifact version. */
 export function dataContentPath(
@@ -76,6 +109,7 @@ export function dataContentPath(
 export interface CapabilityServiceOptions {
   repoDir: string;
   repoContext: RepositoryContext;
+  dispatches?: DispatchRegistry;
   /** Overridable for tests; defaults to VaultService.fromRepository. */
   createVaultService?: () => Promise<VaultService>;
 }
@@ -89,12 +123,14 @@ export interface CapabilityServiceOptions {
 export class CapabilityService {
   readonly #repoDir: string;
   readonly #repoContext: RepositoryContext;
+  readonly #dispatches: DispatchRegistry | undefined;
   readonly #createVaultService: () => Promise<VaultService>;
   #vaultService: Promise<VaultService> | null = null;
 
   constructor(options: CapabilityServiceOptions) {
     this.#repoDir = options.repoDir;
     this.#repoContext = options.repoContext;
+    this.#dispatches = options.dispatches;
     this.#createVaultService = options.createVaultService ??
       (() => VaultService.fromRepository(this.#repoDir));
   }
@@ -107,7 +143,31 @@ export class CapabilityService {
     return this.#vaultService;
   }
 
-  async getData(params: GetDataParams): Promise<GetDataResult> {
+  #assertDispatchScope(
+    workerName: string,
+    paramModelType: string,
+    verb: string,
+  ): void {
+    if (!this.#dispatches) return;
+    const dispatch = this.#dispatches.forWorker(workerName);
+    if (!dispatch) {
+      throw new Error(
+        `${verb}: worker '${workerName}' has no active dispatch`,
+      );
+    }
+    const requested = ModelType.create(paramModelType).normalized;
+    if (requested !== dispatch.modelType.normalized) {
+      throw new Error(
+        `${verb}: model type '${requested}' is outside the active dispatch scope`,
+      );
+    }
+  }
+
+  async getData(
+    workerName: string,
+    params: GetDataParams,
+  ): Promise<GetDataResult> {
+    this.#assertDispatchScope(workerName, params.modelType, "getData");
     const type = ModelType.create(params.modelType);
     let data: Data | null = null;
     if (params.dataId !== undefined) {
@@ -147,11 +207,40 @@ export class CapabilityService {
     };
   }
 
-  async queryData(params: QueryDataParams): Promise<unknown[]> {
+  async queryData(
+    workerName: string,
+    params: QueryDataParams,
+  ): Promise<unknown[]> {
+    if (params.predicate.length > MAX_CAPABILITY_PREDICATE_LENGTH) {
+      throw new Error("Query predicate exceeds maximum length");
+    }
+    if (this.#dispatches) {
+      const dispatch = this.#dispatches.forWorker(workerName);
+      if (!dispatch) {
+        throw new Error(
+          `queryData: worker '${workerName}' has no active dispatch`,
+        );
+      }
+    }
     const records = await this.#repoContext.dataQueryService.query(
       params.predicate,
       params.options,
     );
+    // Post-query filter: remove any records belonging to infrastructure
+    // model types. This is robust against CEL-level bypasses (string
+    // concatenation, variables, ternaries) because it operates on the
+    // resolved modelType of each result, not on the predicate text.
+    const filtered = records.filter((record) => {
+      const rec = record as { modelType?: string };
+      if (!rec.modelType) return true;
+      const normalized = ModelType.create(rec.modelType).normalized;
+      return !DENIED_QUERY_MODEL_TYPES.includes(normalized);
+    });
+    if (filtered.length < records.length) {
+      throw new Error(
+        "Query matched access-control or infrastructure model data which is not permitted from workers",
+      );
+    }
     return records.map((record) => jsonSafeClone(record));
   }
 
@@ -163,7 +252,11 @@ export class CapabilityService {
     );
   }
 
-  async deleteData(params: DeleteDataParams): Promise<{ deleted: boolean }> {
+  async deleteData(
+    workerName: string,
+    params: DeleteDataParams,
+  ): Promise<{ deleted: boolean }> {
+    this.#assertDispatchScope(workerName, params.modelType, "deleteData");
     const type = ModelType.create(params.modelType);
     if (params.removeLatestMarkerOnly) {
       await this.#repoContext.unifiedDataRepo.removeLatestMarker(
@@ -183,8 +276,19 @@ export class CapabilityService {
   }
 
   async resolveSecret(
+    workerName: string,
     params: ResolveSecretParams,
   ): Promise<{ value: unknown }> {
+    // Secrets are not model-type-scoped (any method may reference a vault
+    // secret), so we verify only that the worker has an active dispatch.
+    if (this.#dispatches) {
+      const dispatch = this.#dispatches.forWorker(workerName);
+      if (!dispatch) {
+        throw new Error(
+          `resolveSecret: worker '${workerName}' has no active dispatch`,
+        );
+      }
+    }
     const vault = await this.#vault();
     if (params.annotation) {
       const annotation = await vault.getAnnotation(
@@ -197,7 +301,23 @@ export class CapabilityService {
     return { value };
   }
 
-  async putSecret(params: PutSecretParams): Promise<{ ok: boolean }> {
+  async putSecret(
+    workerName: string,
+    params: PutSecretParams,
+  ): Promise<{ ok: boolean }> {
+    // Secrets are not model-type-scoped: any method may write to any vault
+    // key via the context.putSecret API, so we verify only that the worker
+    // has an active dispatch (not that the vault key relates to the
+    // dispatched model type). deleteData uses the stricter
+    // #assertDispatchScope because data artifacts are model-type-addressed.
+    if (this.#dispatches) {
+      const dispatch = this.#dispatches.forWorker(workerName);
+      if (!dispatch) {
+        throw new Error(
+          `putSecret: worker '${workerName}' has no active dispatch`,
+        );
+      }
+    }
     const vault = await this.#vault();
     if (params.deleteAnnotation) {
       await vault.deleteAnnotation(params.vaultName, params.secretKey);
@@ -269,45 +389,75 @@ export class CapabilityService {
 
   /**
    * Register every capability verb on an enrolled worker's channel. Params
-   * are schema-validated at the boundary; handler errors surface to the
-   * worker as rpc.error frames.
+   * are schema-validated at the boundary; handler errors are sanitized to
+   * avoid leaking internal paths in rpc.error frames sent to workers.
    */
-  registerHandlers(channel: RpcChannel): void {
+  registerHandlers(channel: RpcChannel, workerName: string): void {
+    const safe = <T>(
+      fn: (params: unknown) => Promise<T>,
+    ): (params: unknown) => Promise<T> =>
+    async (params) => {
+      try {
+        return await fn(params);
+      } catch (error) {
+        throw new Error(sanitizeRpcError(error));
+      }
+    };
+
     channel.register(
       RemoteMethod.getData,
-      (params) => this.getData(GetDataParamsSchema.parse(params)),
+      safe((params) =>
+        this.getData(workerName, GetDataParamsSchema.parse(params))
+      ),
     );
     channel.register(
       RemoteMethod.queryData,
-      (params) => this.queryData(QueryDataParamsSchema.parse(params)),
+      safe((params) =>
+        this.queryData(workerName, QueryDataParamsSchema.parse(params))
+      ),
     );
     channel.register(
       RemoteMethod.listVersions,
-      (params) => this.listVersions(ListVersionsParamsSchema.parse(params)),
+      safe((params) =>
+        this.listVersions(ListVersionsParamsSchema.parse(params))
+      ),
     );
     channel.register(
       RemoteMethod.deleteData,
-      (params) => this.deleteData(DeleteDataParamsSchema.parse(params)),
+      safe((params) =>
+        this.deleteData(workerName, DeleteDataParamsSchema.parse(params))
+      ),
     );
     channel.register(
       RemoteMethod.resolveSecret,
-      (params) => this.resolveSecret(ResolveSecretParamsSchema.parse(params)),
+      safe((params) =>
+        this.resolveSecret(
+          workerName,
+          ResolveSecretParamsSchema.parse(params),
+        )
+      ),
     );
     channel.register(
       RemoteMethod.putSecret,
-      (params) => this.putSecret(PutSecretParamsSchema.parse(params)),
+      safe((params) =>
+        this.putSecret(workerName, PutSecretParamsSchema.parse(params))
+      ),
     );
     channel.register(
       RemoteMethod.readDefinition,
-      (params) => this.readDefinition(ReadDefinitionParamsSchema.parse(params)),
+      safe((params) =>
+        this.readDefinition(ReadDefinitionParamsSchema.parse(params))
+      ),
     );
     channel.register(
       RemoteMethod.readOutput,
-      (params) => this.readOutput(ReadOutputParamsSchema.parse(params)),
+      safe((params) => this.readOutput(ReadOutputParamsSchema.parse(params))),
     );
     channel.register(
       RemoteMethod.resolveModel,
-      (params) => this.resolveModel(ResolveModelParamsSchema.parse(params)),
+      safe((params) =>
+        this.resolveModel(ResolveModelParamsSchema.parse(params))
+      ),
     );
   }
 }

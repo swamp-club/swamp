@@ -486,21 +486,38 @@ export class DataPlane {
    * local path.
    */
   #listAssetFiles(filesRoot: string): Response {
+    const MAX_WALK_DEPTH = 20;
+    const MAX_FILES = 10_000;
     const files: string[] = [];
-    const walk = (dir: string, prefix: string) => {
+    const visited = new Set<string>();
+
+    const walk = (dir: string, prefix: string, depth: number) => {
+      if (depth > MAX_WALK_DEPTH || files.length >= MAX_FILES) return;
+
+      let realDir: string;
+      try {
+        realDir = Deno.realPathSync(dir);
+      } catch {
+        return;
+      }
+      if (visited.has(realDir)) return;
+      visited.add(realDir);
+
       for (const entry of Deno.readDirSync(dir)) {
+        if (entry.isSymlink) continue;
         const rel = prefix.length === 0
           ? entry.name
           : `${prefix}/${entry.name}`;
         if (entry.isDirectory) {
-          walk(join(dir, entry.name), rel);
+          walk(join(dir, entry.name), rel, depth + 1);
         } else if (entry.isFile) {
           files.push(rel);
+          if (files.length >= MAX_FILES) return;
         }
       }
     };
     try {
-      walk(filesRoot, "");
+      walk(filesRoot, "", 0);
     } catch (error) {
       if (error instanceof Deno.errors.NotFound) {
         return json({ files: [] });

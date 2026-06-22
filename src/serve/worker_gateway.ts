@@ -127,7 +127,9 @@ export interface WorkerGatewayOptions {
   repoDir: string;
   repoContext: RepositoryContext;
   /** Registers the capability verb handlers on an enrolled channel. */
-  capabilityService: { registerHandlers(channel: RpcChannel): void };
+  capabilityService: {
+    registerHandlers(channel: RpcChannel, workerName: string): void;
+  };
   sessionCredentials?: SessionCredentialService;
   graceWindowMs?: number;
   swampVersion?: string;
@@ -440,7 +442,7 @@ export class WorkerGateway {
         this.#scheduleTokenExpiry(entry, Date.parse(expiresAt));
       }
 
-      this.#options.capabilityService.registerHandlers(state.channel);
+      this.#options.capabilityService.registerHandlers(state.channel, name);
       state.channel.register(
         RemoteMethod.sessionRefresh,
         () => this.#handleSessionRefresh(name),

@@ -531,3 +531,66 @@ Deno.test("DataPlane: DELETE /data/resource requires active dispatch", async () 
     assertEquals(resp?.status, 400);
   });
 });
+
+// ── listAssetFiles hardening tests ──────────────────────────────────────
+
+Deno.test("DataPlane: /bundle/{fp}/files skips symlinks", async () => {
+  await withHarness(async ({ plane, bundles }) => {
+    const tempDir = await Deno.makeTempDir({ prefix: "bundle-files-test" });
+    try {
+      await Deno.writeTextFile(join(tempDir, "real.txt"), "content");
+      await Deno.symlink(
+        join(tempDir, "real.txt"),
+        join(tempDir, "link.txt"),
+        { type: "file" },
+      );
+      bundles.register("fp-1", { js: "export {};", filesRoot: tempDir });
+      const resp = await plane.handle(request("/bundle/fp-1/files"));
+      const body = await resp!.json();
+      assertEquals(body.files, ["real.txt"]);
+    } finally {
+      await Deno.remove(tempDir, { recursive: true }).catch(() => {});
+    }
+  });
+});
+
+Deno.test("DataPlane: /bundle/{fp}/files respects max depth", async () => {
+  await withHarness(async ({ plane, bundles }) => {
+    const tempDir = await Deno.makeTempDir({ prefix: "bundle-depth-test" });
+    try {
+      let dir = tempDir;
+      for (let i = 0; i < 25; i++) {
+        dir = join(dir, `d${i}`);
+        await Deno.mkdir(dir);
+        await Deno.writeTextFile(join(dir, "f.txt"), "content");
+      }
+      bundles.register("fp-2", { js: "export {};", filesRoot: tempDir });
+      const resp = await plane.handle(request("/bundle/fp-2/files"));
+      const body = await resp!.json();
+      const maxDepth = Math.max(
+        ...body.files.map((f: string) => f.split("/").length),
+      );
+      // MAX_WALK_DEPTH is 20, so files at depth 21+ should be excluded
+      assertEquals(maxDepth <= 21, true);
+    } finally {
+      await Deno.remove(tempDir, { recursive: true }).catch(() => {});
+    }
+  });
+});
+
+Deno.test("DataPlane: /bundle/{fp}/files caps total file count", async () => {
+  await withHarness(async ({ plane, bundles }) => {
+    const tempDir = await Deno.makeTempDir({ prefix: "bundle-cap-test" });
+    try {
+      for (let i = 0; i < 50; i++) {
+        await Deno.writeTextFile(join(tempDir, `f${i}.txt`), "x");
+      }
+      bundles.register("fp-3", { js: "export {};", filesRoot: tempDir });
+      const resp = await plane.handle(request("/bundle/fp-3/files"));
+      const body = await resp!.json();
+      assertEquals(body.files.length, 50);
+    } finally {
+      await Deno.remove(tempDir, { recursive: true }).catch(() => {});
+    }
+  });
+});

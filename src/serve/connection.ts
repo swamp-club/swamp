@@ -123,12 +123,35 @@ import type { AccessResource } from "../domain/access/access_decision_service.ts
 import { modelRegistry } from "../domain/models/model.ts";
 
 const MAX_ACTIVE_REQUESTS = 100;
+const MAX_SESSION_MS = 8 * 60 * 60 * 1000; // 8 hours
+
+const MAX_CLIENT_ERROR_LENGTH = 200;
+
+const ABSOLUTE_PATH_PATTERN =
+  /(?:^|[\s"'`(])\/(?:opt|home|var|tmp|etc|usr|root|Users|private|proc|sys|mnt|srv|run)\//;
+const WINDOWS_PATH_PATTERN = /[A-Z]:\\/i;
+const SWAMP_INTERNAL_PATH_PATTERN = /\/.swamp\//;
+
+export function sanitizeErrorForClient(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  if (
+    ABSOLUTE_PATH_PATTERN.test(raw) ||
+    WINDOWS_PATH_PATTERN.test(raw) ||
+    SWAMP_INTERNAL_PATH_PATTERN.test(raw)
+  ) {
+    return "An internal error occurred";
+  }
+  if (raw.length > MAX_CLIENT_ERROR_LENGTH) {
+    return raw.slice(0, MAX_CLIENT_ERROR_LENGTH) + "...";
+  }
+  return raw;
+}
 
 // ── Zod schemas for incoming WebSocket messages ─────────────────────────
 
 const WorkflowRunRequestSchema = z.object({
   type: z.literal("workflow.run"),
-  id: z.string().min(1),
+  id: z.string().min(1).max(256),
   payload: z.object({
     workflowIdOrName: z.string(),
     inputs: z.record(z.string(), z.unknown()).optional(),
@@ -140,7 +163,7 @@ const WorkflowRunRequestSchema = z.object({
 
 const ModelMethodRunRequestSchema = z.object({
   type: z.literal("model.method.run"),
-  id: z.string().min(1),
+  id: z.string().min(1).max(256),
   payload: z.object({
     modelIdOrName: z.string(),
     methodName: z.string(),
@@ -154,7 +177,7 @@ const ModelMethodRunRequestSchema = z.object({
 
 const AccessGrantListRequestSchema = z.object({
   type: z.literal("access.grant.list"),
-  id: z.string().min(1),
+  id: z.string().min(1).max(256),
   payload: z.object({
     subject: z.string().optional(),
     resource: z.string().optional(),
@@ -163,7 +186,7 @@ const AccessGrantListRequestSchema = z.object({
 
 const AccessGroupListRequestSchema = z.object({
   type: z.literal("access.group.list"),
-  id: z.string().min(1),
+  id: z.string().min(1).max(256),
   payload: z.object({
     name: z.string().optional(),
   }).optional(),
@@ -171,7 +194,7 @@ const AccessGroupListRequestSchema = z.object({
 
 const AccessCheckRequestSchema = z.object({
   type: z.literal("access.check"),
-  id: z.string().min(1),
+  id: z.string().min(1).max(256),
   payload: z.object({
     subject: z.string(),
     action: z.string(),
@@ -182,7 +205,7 @@ const AccessCheckRequestSchema = z.object({
 
 const AccessCanIRequestSchema = z.object({
   type: z.literal("access.can-i"),
-  id: z.string().min(1),
+  id: z.string().min(1).max(256),
   payload: z.object({
     action: z.string().optional(),
     resource: z.string().optional(),
@@ -195,17 +218,17 @@ const AccessCanIRequestSchema = z.object({
 
 const AccessReloadRequestSchema = z.object({
   type: z.literal("access.reload"),
-  id: z.string().min(1),
+  id: z.string().min(1).max(256),
 });
 
 const CancelRequestSchema = z.object({
   type: z.literal("cancel"),
-  id: z.string().min(1),
+  id: z.string().min(1).max(256),
 });
 
 const DataGetRequestSchema = z.object({
   type: z.literal("data.get"),
-  id: z.string().min(1),
+  id: z.string().min(1).max(256),
   payload: z.object({
     modelIdOrName: z.string().optional(),
     dataName: z.string().optional(),
@@ -216,19 +239,23 @@ const DataGetRequestSchema = z.object({
   }),
 });
 
+const MAX_PREDICATE_LENGTH = 4096;
+const MAX_QUERY_RESULTS = 10_000;
+const DEFAULT_QUERY_LIMIT = 1000;
+
 const DataQueryRequestSchema = z.object({
   type: z.literal("data.query"),
-  id: z.string().min(1),
+  id: z.string().min(1).max(256),
   payload: z.object({
-    predicate: z.string(),
-    limit: z.number().optional(),
-    select: z.string().optional(),
+    predicate: z.string().max(MAX_PREDICATE_LENGTH),
+    limit: z.number().int().positive().max(MAX_QUERY_RESULTS).optional(),
+    select: z.string().max(MAX_PREDICATE_LENGTH).optional(),
   }),
 });
 
 const DataListRequestSchema = z.object({
   type: z.literal("data.list"),
-  id: z.string().min(1),
+  id: z.string().min(1).max(256),
   payload: z.object({
     modelIdOrName: z.string().optional(),
     workflowName: z.string().optional(),
@@ -239,7 +266,7 @@ const DataListRequestSchema = z.object({
 
 const ModelSearchRequestSchema = z.object({
   type: z.literal("model.search"),
-  id: z.string().min(1),
+  id: z.string().min(1).max(256),
   payload: z.object({
     query: z.string().optional(),
   }).optional(),
@@ -247,7 +274,7 @@ const ModelSearchRequestSchema = z.object({
 
 const ModelMethodDescribeRequestSchema = z.object({
   type: z.literal("model.method.describe"),
-  id: z.string().min(1),
+  id: z.string().min(1).max(256),
   payload: z.object({
     modelIdOrName: z.string(),
     methodName: z.string(),
@@ -256,7 +283,7 @@ const ModelMethodDescribeRequestSchema = z.object({
 
 const WorkflowSearchRequestSchema = z.object({
   type: z.literal("workflow.search"),
-  id: z.string().min(1),
+  id: z.string().min(1).max(256),
   payload: z.object({
     query: z.string().optional(),
   }).optional(),
@@ -264,7 +291,7 @@ const WorkflowSearchRequestSchema = z.object({
 
 const VaultGetRequestSchema = z.object({
   type: z.literal("vault.get"),
-  id: z.string().min(1),
+  id: z.string().min(1).max(256),
   payload: z.object({
     vaultNameOrId: z.string(),
     vaultType: z.string().optional(),
@@ -273,7 +300,7 @@ const VaultGetRequestSchema = z.object({
 
 const VaultPutRequestSchema = z.object({
   type: z.literal("vault.put"),
-  id: z.string().min(1),
+  id: z.string().min(1).max(256),
   payload: z.object({
     vaultName: z.string(),
     key: z.string(),
@@ -287,7 +314,7 @@ const VaultPutRequestSchema = z.object({
 
 const AuditTimelineRequestSchema = z.object({
   type: z.literal("audit.timeline"),
-  id: z.string().min(1),
+  id: z.string().min(1).max(256),
   payload: z.object({
     hours: z.number().optional(),
     showAll: z.boolean().optional(),
@@ -298,7 +325,7 @@ const AuditTimelineRequestSchema = z.object({
 
 const SummariseRequestSchema = z.object({
   type: z.literal("summarise"),
-  id: z.string().min(1),
+  id: z.string().min(1).max(256),
   payload: z.object({
     since: z.string().optional(),
     limit: z.number().optional(),
@@ -307,7 +334,7 @@ const SummariseRequestSchema = z.object({
 
 const ReportGetRequestSchema = z.object({
   type: z.literal("report.get"),
-  id: z.string().min(1),
+  id: z.string().min(1).max(256),
   payload: z.object({
     reportName: z.string(),
     model: z.string().optional(),
@@ -319,7 +346,7 @@ const ReportGetRequestSchema = z.object({
 
 const ReportSearchRequestSchema = z.object({
   type: z.literal("report.search"),
-  id: z.string().min(1),
+  id: z.string().min(1).max(256),
   payload: z.object({
     query: z.string().optional(),
     model: z.string().optional(),
@@ -332,7 +359,7 @@ const ReportSearchRequestSchema = z.object({
 
 const ReportDescribeRequestSchema = z.object({
   type: z.literal("report.describe"),
-  id: z.string().min(1),
+  id: z.string().min(1).max(256),
   payload: z.object({
     reportName: z.string(),
   }),
@@ -340,7 +367,7 @@ const ReportDescribeRequestSchema = z.object({
 
 const ReportTypeSearchRequestSchema = z.object({
   type: z.literal("report.type.search"),
-  id: z.string().min(1),
+  id: z.string().min(1).max(256),
   payload: z.object({
     query: z.string().optional(),
   }).optional(),
@@ -425,6 +452,15 @@ export function handleConnection(
     },
   }, () => socket.close());
 
+  const sessionTimeout = principal
+    ? setTimeout(() => {
+      socket.close(
+        4002,
+        "Session expired after 8 hours — reconnect to re-authenticate",
+      );
+    }, MAX_SESSION_MS)
+    : null;
+
   socket.onmessage = (event) => {
     if (
       workerAttachment && typeof event.data === "string" &&
@@ -436,6 +472,7 @@ export function handleConnection(
   };
 
   socket.onclose = () => {
+    if (sessionTimeout) clearTimeout(sessionTimeout);
     workerAttachment?.closed();
     for (const controller of activeRequests.values()) {
       controller.abort();
@@ -859,7 +896,7 @@ async function handleWorkflowRun(
     if (error instanceof DOMException && error.name === "AbortError") {
       sendError(socket, requestId, "cancelled", "Operation was cancelled");
     } else {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = sanitizeErrorForClient(error);
       sendError(socket, requestId, "workflow_execution_failed", message);
     }
   }
@@ -972,7 +1009,7 @@ async function handleModelMethodRun(
     if (error instanceof DOMException && error.name === "AbortError") {
       sendError(socket, requestId, "cancelled", "Operation was cancelled");
     } else {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = sanitizeErrorForClient(error);
       sendError(
         socket,
         requestId,
@@ -1053,7 +1090,7 @@ async function handleAccessGrantList(
       },
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "access_grant_list_failed", message);
   }
 }
@@ -1102,7 +1139,7 @@ async function handleAccessGroupList(
       },
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "access_group_list_failed", message);
   }
 }
@@ -1168,7 +1205,7 @@ function handleAccessCheck(
     });
     return Promise.resolve();
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "access_check_failed", message);
     return Promise.resolve();
   }
@@ -1273,7 +1310,7 @@ function handleAccessCanI(
     }
     return Promise.resolve();
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "access_can_i_failed", message);
     return Promise.resolve();
   }
@@ -1316,7 +1353,7 @@ async function handleAccessReload(
       },
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "access_reload_failed", message);
   }
 }
@@ -1389,7 +1426,7 @@ async function handleDataGet(
       payload: { data: result },
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "data_get_failed", message);
   }
 }
@@ -1417,12 +1454,17 @@ async function handleDataQuery(
       query: (pred, opts) => queryService.query(pred, opts),
     };
 
+    const limit = Math.min(
+      payload.limit ?? DEFAULT_QUERY_LIMIT,
+      MAX_QUERY_RESULTS,
+    );
+
     let result: Record<string, unknown> | undefined;
     await consumeStream(
       dataQuery(libCtx, deps, {
         predicate: payload.predicate,
         select: payload.select,
-        limit: payload.limit,
+        limit,
       }),
       {
         resolving: () => {},
@@ -1448,7 +1490,7 @@ async function handleDataQuery(
       payload: { data: result ?? {} },
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "data_query_failed", message);
   }
 }
@@ -1517,7 +1559,7 @@ async function handleDataList(
       payload: { data: result },
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "data_list_failed", message);
   }
 }
@@ -1571,7 +1613,7 @@ async function handleModelSearch(
       payload: { data: result ?? {} },
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "model_search_failed", message);
   }
 }
@@ -1632,7 +1674,7 @@ async function handleModelMethodDescribe(
       payload: { data: result },
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "model_method_describe_failed", message);
   }
 }
@@ -1686,7 +1728,7 @@ async function handleWorkflowSearch(
       payload: { data: result ?? {} },
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "workflow_search_failed", message);
   }
 }
@@ -1743,7 +1785,7 @@ async function handleVaultGet(
       payload: { data: result },
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "vault_get_failed", message);
   }
 }
@@ -1782,7 +1824,7 @@ async function handleVaultPut(
       ctx.repoDir,
     ));
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "vault_put_failed", message);
     return;
   }
@@ -1850,7 +1892,7 @@ async function handleVaultPut(
     if (error instanceof DOMException && error.name === "AbortError") {
       sendError(socket, requestId, "cancelled", "Operation was cancelled");
     } else {
-      const message = error instanceof Error ? error.message : String(error);
+      const message = sanitizeErrorForClient(error);
       sendError(socket, requestId, "vault_put_failed", message);
     }
   } finally {
@@ -1914,7 +1956,7 @@ async function handleAuditTimeline(
       payload: { data: result ?? {} },
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "audit_timeline_failed", message);
   }
 }
@@ -1977,7 +2019,7 @@ async function handleSummarise(
       payload: { data: result ?? {} },
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "summarise_failed", message);
   }
 }
@@ -2066,7 +2108,7 @@ async function handleReportGet(
       payload: { data: result },
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "report_get_failed", message);
   }
 }
@@ -2147,7 +2189,7 @@ async function handleReportSearch(
       payload: { data: result ?? {} },
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "report_search_failed", message);
   }
 }
@@ -2208,7 +2250,7 @@ async function handleReportDescribe(
       payload: { data: result },
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "report_describe_failed", message);
   }
 }
@@ -2265,7 +2307,7 @@ async function handleReportTypeSearch(
       payload: { data: result ?? {} },
     });
   } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+    const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "report_type_search_failed", message);
   }
 }

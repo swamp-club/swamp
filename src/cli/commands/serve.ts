@@ -272,11 +272,12 @@ export const serveCommand = new Command()
     // Remote-execution control plane: capability verbs, worker enrollment,
     // and the dispatch/lease registries shared with the HTTP data plane.
     // See design/remote-execution.md.
+    const dispatchRegistry = new DispatchRegistry();
     const capabilityService = new CapabilityService({
       repoDir: resolvedRepoDir,
       repoContext,
+      dispatches: dispatchRegistry,
     });
-    const dispatchRegistry = new DispatchRegistry();
     const bundleRegistry = new BundleRegistry();
     const dispatchService = new DispatchService({
       repoDir: resolvedRepoDir,
@@ -554,6 +555,7 @@ export const serveCommand = new Command()
 
             const url = new URL(req.url);
             const tokenParam = url.searchParams.get("token");
+            url.searchParams.delete("token");
             if (!tokenParam) {
               logger.warn(
                 "WebSocket auth rejected: no token provided from {ip}",
