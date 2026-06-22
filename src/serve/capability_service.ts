@@ -59,6 +59,23 @@ import {
 } from "../domain/remote/protocol.ts";
 import type { RpcChannel } from "../domain/remote/rpc_channel.ts";
 import { jsonSafeClone } from "./serializer.ts";
+import { GRANT_MODEL_TYPE } from "../domain/models/access/grant_model.ts";
+import { GROUP_MODEL_TYPE } from "../domain/models/access/group_model.ts";
+import { SERVER_TOKEN_MODEL_TYPE } from "../domain/models/access/server_token_model.ts";
+import { ENROLLMENT_TOKEN_MODEL_TYPE } from "../domain/models/worker/enrollment_token_model.ts";
+import { WORKER_MODEL_TYPE } from "../domain/models/worker/worker_model.ts";
+import { STEP_LEASE_MODEL_TYPE } from "../domain/models/worker/step_lease_model.ts";
+
+const DENIED_QUERY_MODEL_TYPES: readonly string[] = [
+  GRANT_MODEL_TYPE.normalized,
+  GROUP_MODEL_TYPE.normalized,
+  SERVER_TOKEN_MODEL_TYPE.normalized,
+  ENROLLMENT_TOKEN_MODEL_TYPE.normalized,
+  WORKER_MODEL_TYPE.normalized,
+  STEP_LEASE_MODEL_TYPE.normalized,
+];
+
+const MAX_CAPABILITY_PREDICATE_LENGTH = 4096;
 
 /** Builds the data-plane content path for an artifact version. */
 export function dataContentPath(
@@ -148,6 +165,16 @@ export class CapabilityService {
   }
 
   async queryData(params: QueryDataParams): Promise<unknown[]> {
+    if (params.predicate.length > MAX_CAPABILITY_PREDICATE_LENGTH) {
+      throw new Error("Query predicate exceeds maximum length");
+    }
+    for (const denied of DENIED_QUERY_MODEL_TYPES) {
+      if (params.predicate.includes(denied)) {
+        throw new Error(
+          "Query against access-control or infrastructure models is not permitted from workers",
+        );
+      }
+    }
     const records = await this.#repoContext.dataQueryService.query(
       params.predicate,
       params.options,
