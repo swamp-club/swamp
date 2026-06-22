@@ -450,10 +450,10 @@ export function configureExtensionAutoResolver(
       extensionLookup: extensionClient,
       extensionInstaller: createAutoResolveInstallerAdapter({
         getExtension: (name) => extensionClient.getExtension(name),
-        downloadArchive: (name, version) =>
-          extensionClient.downloadArchive(name, version),
-        getChecksum: (name, version) =>
-          extensionClient.getChecksum(name, version),
+        downloadArchive: (name, version, channel) =>
+          extensionClient.downloadArchive(name, version, undefined, channel),
+        getChecksum: (name, version, channel) =>
+          extensionClient.getChecksum(name, version, channel),
         lockfilePath: join(
           resolve(repoDir, modelsDir),
           "upstream_extensions.json",

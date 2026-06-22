@@ -77,8 +77,16 @@ function isBundleArtifactPath(relPath: string): boolean {
 
 interface InstallerAdapterConfig {
   getExtension: (name: string) => Promise<ExtensionRegistryInfo | null>;
-  downloadArchive: (name: string, version: string) => Promise<Uint8Array>;
-  getChecksum: (name: string, version: string) => Promise<string | null>;
+  downloadArchive: (
+    name: string,
+    version: string,
+    channel?: string,
+  ) => Promise<Uint8Array>;
+  getChecksum: (
+    name: string,
+    version: string,
+    channel?: string,
+  ) => Promise<string | null>;
   /** Full path to the upstream_extensions.json lockfile. */
   lockfilePath: string;
   repoDir: string;
