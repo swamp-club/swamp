@@ -888,6 +888,24 @@ async function handleModelMethodRun(
           fields: {},
         }, ctx)
       ) return;
+
+      // SECURITY: When typeArg is present, the execution path resolves the model
+      // from typeArg, not modelIdOrName. Authorize the execution target separately
+      // to prevent a mismatch bypass where a user authorized for one model supplies
+      // a different typeArg (e.g. command/shell) to execute an unauthorized model.
+      if (payload.typeArg) {
+        const stripped = payload.typeArg.startsWith("@")
+          ? payload.typeArg.slice(1)
+          : payload.typeArg;
+        const executionTarget = ModelType.create(stripped).normalized;
+        if (
+          !authorizeOrReject(socket, requestId, principal, "run", {
+            kind: "model",
+            name: executionTarget,
+            fields: {},
+          }, ctx)
+        ) return;
+      }
     }
 
     if (preResult) {

@@ -1596,3 +1596,279 @@ Deno.test("authorizeOrReject: admin on access:* grants data.get (superuser)", ()
     "admin superuser should not be denied data.get",
   );
 });
+
+// ── Authorization: typeArg execution-target mismatch (SWAMP-003) ────────────
+// Regression tests: authorization must check the execution target (typeArg),
+// not just the claimed model (modelIdOrName).
+
+const narrowModelGrant = makeGrant({
+  subject: { kind: "user", name: "adam" },
+  actions: ["run"],
+  resource: { kind: "model", pattern: "@acme/my-model" },
+});
+
+Deno.test("typeArg authz: narrow grant + mismatched typeArg is denied", async () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const ctx = makeCtx(modeTokenConfig, [narrowModelGrant]);
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({
+      type: "model.method.run",
+      id: "swamp003-mismatch",
+      payload: {
+        modelIdOrName: "@acme/my-model",
+        methodName: "run",
+        typeArg: "command/shell",
+        definitionName: "attack-shell",
+      },
+    })),
+    testPrincipal,
+  );
+
+  await new Promise((r) => setTimeout(r, 50));
+
+  assertEquals(mock.sent.length, 1);
+  const msg = parseSent(mock);
+  assertEquals(msg.type, "error");
+  assertEquals((msg.error as Record<string, unknown>).code, "unauthorized");
+  const errorMessage = String((msg.error as Record<string, unknown>).message);
+  assertStringIncludes(errorMessage, "run");
+  assertStringIncludes(errorMessage, "model:command/shell");
+});
+
+Deno.test("typeArg authz: direct command/shell without grant is denied", async () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const ctx = makeCtx(modeTokenConfig, [narrowModelGrant]);
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({
+      type: "model.method.run",
+      id: "swamp003-direct",
+      payload: {
+        modelIdOrName: "command/shell",
+        methodName: "run",
+      },
+    })),
+    testPrincipal,
+  );
+
+  await new Promise((r) => setTimeout(r, 50));
+
+  assertEquals(mock.sent.length, 1);
+  const msg = parseSent(mock);
+  assertEquals(msg.type, "error");
+  assertEquals((msg.error as Record<string, unknown>).code, "unauthorized");
+});
+
+Deno.test("typeArg authz: model:* grant + typeArg still works (no regression)", async () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const ctx = makeCtx(modeTokenConfig, [lowPrivGrant]);
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({
+      type: "model.method.run",
+      id: "swamp003-wildcard",
+      payload: {
+        modelIdOrName: "@acme/my-model",
+        methodName: "run",
+        typeArg: "command/shell",
+        definitionName: "my-shell",
+      },
+    })),
+    testPrincipal,
+  );
+
+  await new Promise((r) => setTimeout(r, 50));
+
+  const unauthorizedErrors = mock.sent
+    .map((s) => JSON.parse(s))
+    .filter((m) =>
+      m.type === "error" &&
+      (m.error as Record<string, unknown>).code === "unauthorized"
+    );
+  assertEquals(
+    unauthorizedErrors.length,
+    0,
+    "model:* grant should authorize any typeArg",
+  );
+});
+
+Deno.test("typeArg authz: matching modelIdOrName and typeArg with narrow grant works", async () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const matchingGrant = makeGrant({
+    subject: { kind: "user", name: "adam" },
+    actions: ["run"],
+    resource: { kind: "model", pattern: "command/shell" },
+  });
+  const ctx = makeCtx(modeTokenConfig, [narrowModelGrant, matchingGrant]);
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({
+      type: "model.method.run",
+      id: "swamp003-matching",
+      payload: {
+        modelIdOrName: "@acme/my-model",
+        methodName: "run",
+        typeArg: "command/shell",
+        definitionName: "my-shell",
+      },
+    })),
+    testPrincipal,
+  );
+
+  await new Promise((r) => setTimeout(r, 50));
+
+  const unauthorizedErrors = mock.sent
+    .map((s) => JSON.parse(s))
+    .filter((m) =>
+      m.type === "error" &&
+      (m.error as Record<string, unknown>).code === "unauthorized"
+    );
+  assertEquals(
+    unauthorizedErrors.length,
+    0,
+    "user with grants for both modelIdOrName and typeArg should be authorized",
+  );
+});
+
+Deno.test("typeArg authz: admin superuser bypasses typeArg check", async () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const adminGrant = makeGrant({
+    subject: { kind: "user", name: "adam" },
+    actions: ["admin"],
+    resource: { kind: "access", pattern: "*" },
+  });
+  const ctx = makeCtx(modeTokenConfig, [adminGrant]);
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({
+      type: "model.method.run",
+      id: "swamp003-admin",
+      payload: {
+        modelIdOrName: "@acme/my-model",
+        methodName: "run",
+        typeArg: "command/shell",
+        definitionName: "my-shell",
+      },
+    })),
+    testPrincipal,
+  );
+
+  await new Promise((r) => setTimeout(r, 50));
+
+  const unauthorizedErrors = mock.sent
+    .map((s) => JSON.parse(s))
+    .filter((m) =>
+      m.type === "error" &&
+      (m.error as Record<string, unknown>).code === "unauthorized"
+    );
+  assertEquals(
+    unauthorizedErrors.length,
+    0,
+    "admin superuser should bypass typeArg authorization",
+  );
+});
+
+Deno.test("typeArg authz: prefix wildcard grant covers matching typeArg", async () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const prefixGrant = makeGrant({
+    subject: { kind: "user", name: "adam" },
+    actions: ["run"],
+    resource: { kind: "model", pattern: "command/*" },
+  });
+  const ctx = makeCtx(modeTokenConfig, [narrowModelGrant, prefixGrant]);
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({
+      type: "model.method.run",
+      id: "swamp003-prefix",
+      payload: {
+        modelIdOrName: "@acme/my-model",
+        methodName: "run",
+        typeArg: "command/shell",
+        definitionName: "my-shell",
+      },
+    })),
+    testPrincipal,
+  );
+
+  await new Promise((r) => setTimeout(r, 50));
+
+  const unauthorizedErrors = mock.sent
+    .map((s) => JSON.parse(s))
+    .filter((m) =>
+      m.type === "error" &&
+      (m.error as Record<string, unknown>).code === "unauthorized"
+    );
+  assertEquals(
+    unauthorizedErrors.length,
+    0,
+    "prefix wildcard grant command/* should cover command/shell typeArg",
+  );
+});
+
+Deno.test("typeArg authz: @ prefix on typeArg is stripped before authorization", async () => {
+  const mock = createMockSocket();
+  const active = new Map<string, AbortController>();
+  const shellGrant = makeGrant({
+    subject: { kind: "user", name: "adam" },
+    actions: ["run"],
+    resource: { kind: "model", pattern: "command/shell" },
+  });
+  const ctx = makeCtx(modeTokenConfig, [narrowModelGrant, shellGrant]);
+
+  handleMessage(
+    mock as unknown as WebSocket,
+    ctx,
+    active,
+    makeEvent(JSON.stringify({
+      type: "model.method.run",
+      id: "swamp003-at-prefix",
+      payload: {
+        modelIdOrName: "@acme/my-model",
+        methodName: "run",
+        typeArg: "@command/shell",
+        definitionName: "my-shell",
+      },
+    })),
+    testPrincipal,
+  );
+
+  await new Promise((r) => setTimeout(r, 50));
+
+  const unauthorizedErrors = mock.sent
+    .map((s) => JSON.parse(s))
+    .filter((m) =>
+      m.type === "error" &&
+      (m.error as Record<string, unknown>).code === "unauthorized"
+    );
+  assertEquals(
+    unauthorizedErrors.length,
+    0,
+    "@ prefix on typeArg should be stripped — grant for command/shell should match @command/shell",
+  );
+});
