@@ -216,13 +216,17 @@ const DataGetRequestSchema = z.object({
   }),
 });
 
+const MAX_PREDICATE_LENGTH = 4096;
+const MAX_QUERY_RESULTS = 10_000;
+const DEFAULT_QUERY_LIMIT = 1000;
+
 const DataQueryRequestSchema = z.object({
   type: z.literal("data.query"),
   id: z.string().min(1),
   payload: z.object({
-    predicate: z.string(),
-    limit: z.number().optional(),
-    select: z.string().optional(),
+    predicate: z.string().max(MAX_PREDICATE_LENGTH),
+    limit: z.number().int().positive().max(MAX_QUERY_RESULTS).optional(),
+    select: z.string().max(MAX_PREDICATE_LENGTH).optional(),
   }),
 });
 
@@ -1417,12 +1421,17 @@ async function handleDataQuery(
       query: (pred, opts) => queryService.query(pred, opts),
     };
 
+    const limit = Math.min(
+      payload.limit ?? DEFAULT_QUERY_LIMIT,
+      MAX_QUERY_RESULTS,
+    );
+
     let result: Record<string, unknown> | undefined;
     await consumeStream(
       dataQuery(libCtx, deps, {
         predicate: payload.predicate,
         select: payload.select,
-        limit: payload.limit,
+        limit,
       }),
       {
         resolving: () => {},
