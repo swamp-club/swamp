@@ -976,11 +976,7 @@ export class DefaultModelValidationService implements ModelValidationService {
     }
 
     if (firstSegment !== "globalArguments") {
-      return {
-        expression: ref.rawExpression,
-        error:
-          `Invalid self reference segment "${firstSegment}". Valid segments: name, version, tags, globalArguments`,
-      };
+      return null;
     }
 
     if (remainingPath.length === 0) {

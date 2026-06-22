@@ -365,11 +365,32 @@ Deno.test("validateModel with expression paths fails for invalid self attribute"
   assertStringIncludes(exprResult?.error ?? "", "nonExistent");
 });
 
-Deno.test("validateModel with expression paths fails for invalid self segment", async () => {
+Deno.test("validateModel with expression paths allows unknown self segments for extension extras", async () => {
   const service = new DefaultModelValidationService();
   const definition = Definition.create({
     name: "test-definition",
-    globalArguments: { message: "${{ self.wrongSegment }}" },
+    globalArguments: { message: "${{ self.workItem }}" },
+  });
+
+  const mockRepo = createMockDefinitionRepo([
+    { name: "test-definition", type: "test/expr-validation", definition },
+  ]);
+
+  const { results } = await service.validateModel(
+    definition,
+    testExprModel,
+    mockRepo,
+  );
+
+  const exprResult = results.find((r) => r.name === "Expression paths");
+  assertEquals(exprResult?.passed, true);
+});
+
+Deno.test("validateModel with expression paths still validates globalArguments paths", async () => {
+  const service = new DefaultModelValidationService();
+  const definition = Definition.create({
+    name: "test-definition",
+    globalArguments: { message: "${{ self.globalArguments.nonExistent }}" },
   });
 
   const mockRepo = createMockDefinitionRepo([
@@ -384,7 +405,7 @@ Deno.test("validateModel with expression paths fails for invalid self segment", 
 
   const exprResult = results.find((r) => r.name === "Expression paths");
   assertEquals(exprResult?.passed, false);
-  assertStringIncludes(exprResult?.error ?? "", "wrongSegment");
+  assertStringIncludes(exprResult?.error ?? "", "nonExistent");
 });
 
 Deno.test("validateModel with expression paths provides typo suggestion", async () => {
