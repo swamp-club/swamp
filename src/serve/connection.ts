@@ -127,10 +127,19 @@ const MAX_SESSION_MS = 8 * 60 * 60 * 1000; // 8 hours
 
 const MAX_CLIENT_ERROR_LENGTH = 200;
 
+const ABSOLUTE_PATH_PATTERN =
+  /(?:^|[\s"'`(])\/(?:opt|home|var|tmp|etc|usr|root|Users|private|proc|sys|mnt|srv|run)\//;
+const WINDOWS_PATH_PATTERN = /[A-Z]:\\/i;
+const SWAMP_INTERNAL_PATH_PATTERN = /\/.swamp\//;
+
 export function sanitizeErrorForClient(error: unknown): string {
   const raw = error instanceof Error ? error.message : String(error);
-  if (raw.includes("/") || raw.includes("\\")) {
-    return "An internal error occurred — check server logs for details";
+  if (
+    ABSOLUTE_PATH_PATTERN.test(raw) ||
+    WINDOWS_PATH_PATTERN.test(raw) ||
+    SWAMP_INTERNAL_PATH_PATTERN.test(raw)
+  ) {
+    return "An internal error occurred";
   }
   if (raw.length > MAX_CLIENT_ERROR_LENGTH) {
     return raw.slice(0, MAX_CLIENT_ERROR_LENGTH) + "...";
@@ -445,7 +454,10 @@ export function handleConnection(
 
   const sessionTimeout = principal
     ? setTimeout(() => {
-      socket.close(4002, "Session expired — reconnect to re-authenticate");
+      socket.close(
+        4002,
+        "Session expired after 8 hours — reconnect to re-authenticate",
+      );
     }, MAX_SESSION_MS)
     : null;
 

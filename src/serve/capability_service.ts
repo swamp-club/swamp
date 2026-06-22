@@ -78,6 +78,21 @@ const DENIED_QUERY_MODEL_TYPES: readonly string[] = [
 
 const MAX_CAPABILITY_PREDICATE_LENGTH = 4096;
 
+const RPC_PATH_PATTERN =
+  /(?:^|[\s"'`(])\/(?:opt|home|var|tmp|etc|usr|root|Users|private)\//;
+const RPC_SWAMP_PATH_PATTERN = /\/.swamp\//;
+
+function sanitizeRpcError(error: unknown): string {
+  const raw = error instanceof Error ? error.message : String(error);
+  if (RPC_PATH_PATTERN.test(raw) || RPC_SWAMP_PATH_PATTERN.test(raw)) {
+    return "Capability verb failed — internal error";
+  }
+  if (raw.length > 200) {
+    return raw.slice(0, 200) + "...";
+  }
+  return raw;
+}
+
 /** Builds the data-plane content path for an artifact version. */
 export function dataContentPath(
   modelType: string,
@@ -192,21 +207,18 @@ export class CapabilityService {
     };
   }
 
-  async queryData(params: QueryDataParams): Promise<unknown[]> {
+  async queryData(
+    workerName: string,
+    params: QueryDataParams,
+  ): Promise<unknown[]> {
     if (params.predicate.length > MAX_CAPABILITY_PREDICATE_LENGTH) {
       throw new Error("Query predicate exceeds maximum length");
     }
-    // Normalize separators and case before scanning so that variants like
-    // SWAMP/GRANT, swamp.grant, swamp::grant all match the canonical form.
-    const normalizedPredicate = params.predicate
-      .toLowerCase()
-      .replace(/::/g, "/")
-      .replace(/\./g, "/")
-      .replace(/\/+/g, "/");
-    for (const denied of DENIED_QUERY_MODEL_TYPES) {
-      if (normalizedPredicate.includes(denied)) {
+    if (this.#dispatches) {
+      const dispatch = this.#dispatches.forWorker(workerName);
+      if (!dispatch) {
         throw new Error(
-          "Query against access-control or infrastructure models is not permitted from workers",
+          `queryData: worker '${workerName}' has no active dispatch`,
         );
       }
     }
@@ -214,6 +226,21 @@ export class CapabilityService {
       params.predicate,
       params.options,
     );
+    // Post-query filter: remove any records belonging to infrastructure
+    // model types. This is robust against CEL-level bypasses (string
+    // concatenation, variables, ternaries) because it operates on the
+    // resolved modelType of each result, not on the predicate text.
+    const filtered = records.filter((record) => {
+      const rec = record as { modelType?: string };
+      if (!rec.modelType) return true;
+      const normalized = ModelType.create(rec.modelType).normalized;
+      return !DENIED_QUERY_MODEL_TYPES.includes(normalized);
+    });
+    if (filtered.length < records.length) {
+      throw new Error(
+        "Query matched access-control or infrastructure model data which is not permitted from workers",
+      );
+    }
     return records.map((record) => jsonSafeClone(record));
   }
 
@@ -362,48 +389,75 @@ export class CapabilityService {
 
   /**
    * Register every capability verb on an enrolled worker's channel. Params
-   * are schema-validated at the boundary; handler errors surface to the
-   * worker as rpc.error frames.
+   * are schema-validated at the boundary; handler errors are sanitized to
+   * avoid leaking internal paths in rpc.error frames sent to workers.
    */
   registerHandlers(channel: RpcChannel, workerName: string): void {
+    const safe = <T>(
+      fn: (params: unknown) => Promise<T>,
+    ): (params: unknown) => Promise<T> =>
+    async (params) => {
+      try {
+        return await fn(params);
+      } catch (error) {
+        throw new Error(sanitizeRpcError(error));
+      }
+    };
+
     channel.register(
       RemoteMethod.getData,
-      (params) => this.getData(workerName, GetDataParamsSchema.parse(params)),
+      safe((params) =>
+        this.getData(workerName, GetDataParamsSchema.parse(params))
+      ),
     );
     channel.register(
       RemoteMethod.queryData,
-      (params) => this.queryData(QueryDataParamsSchema.parse(params)),
+      safe((params) =>
+        this.queryData(workerName, QueryDataParamsSchema.parse(params))
+      ),
     );
     channel.register(
       RemoteMethod.listVersions,
-      (params) => this.listVersions(ListVersionsParamsSchema.parse(params)),
+      safe((params) =>
+        this.listVersions(ListVersionsParamsSchema.parse(params))
+      ),
     );
     channel.register(
       RemoteMethod.deleteData,
-      (params) =>
-        this.deleteData(workerName, DeleteDataParamsSchema.parse(params)),
+      safe((params) =>
+        this.deleteData(workerName, DeleteDataParamsSchema.parse(params))
+      ),
     );
     channel.register(
       RemoteMethod.resolveSecret,
-      (params) =>
-        this.resolveSecret(workerName, ResolveSecretParamsSchema.parse(params)),
+      safe((params) =>
+        this.resolveSecret(
+          workerName,
+          ResolveSecretParamsSchema.parse(params),
+        )
+      ),
     );
     channel.register(
       RemoteMethod.putSecret,
-      (params) =>
-        this.putSecret(workerName, PutSecretParamsSchema.parse(params)),
+      safe((params) =>
+        this.putSecret(workerName, PutSecretParamsSchema.parse(params))
+      ),
     );
     channel.register(
       RemoteMethod.readDefinition,
-      (params) => this.readDefinition(ReadDefinitionParamsSchema.parse(params)),
+      safe((params) =>
+        this.readDefinition(ReadDefinitionParamsSchema.parse(params))
+      ),
     );
     channel.register(
       RemoteMethod.readOutput,
-      (params) => this.readOutput(ReadOutputParamsSchema.parse(params)),
+      safe((params) => this.readOutput(ReadOutputParamsSchema.parse(params))),
     );
     channel.register(
       RemoteMethod.resolveModel,
-      (params) => this.resolveModel(ResolveModelParamsSchema.parse(params)),
+      safe((params) =>
+        this.resolveModel(ResolveModelParamsSchema.parse(params))
+      ),
     );
   }
 }

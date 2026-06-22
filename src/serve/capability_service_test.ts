@@ -54,98 +54,118 @@ function createService(
   });
 }
 
-// ── queryData deny-list tests ───────────────────────────────────────────
+function withDispatch(dispatches: DispatchRegistry, workerName = "worker-1") {
+  dispatches.register({
+    workerName,
+    dispatchId: "d-1",
+    leaseId: "l-1",
+    modelDef: {} as never,
+    modelType: ModelType.create("acme/invoices"),
+    modelId: "m-1",
+    methodName: "run",
+    definitionName: "my-invoice",
+    definitionTags: {},
+  });
+}
 
-Deno.test("queryData: rejects predicate containing swamp/grant", async () => {
-  const service = createService();
-  await assertRejects(
-    () => service.queryData({ predicate: 'modelType == "swamp/grant"' }),
-    Error,
-    "not permitted from workers",
-  );
-});
+// ── queryData post-query filter tests ───────────────────────────────────
 
-Deno.test("queryData: rejects uppercase SWAMP/GRANT", async () => {
-  const service = createService();
-  await assertRejects(
-    () => service.queryData({ predicate: 'modelType == "SWAMP/GRANT"' }),
-    Error,
-    "not permitted from workers",
-  );
-});
-
-Deno.test("queryData: rejects dot separator swamp.grant", async () => {
-  const service = createService();
-  await assertRejects(
-    () => service.queryData({ predicate: 'modelType == "swamp.grant"' }),
-    Error,
-    "not permitted from workers",
-  );
-});
-
-Deno.test("queryData: rejects double-colon swamp::grant", async () => {
-  const service = createService();
-  await assertRejects(
-    () => service.queryData({ predicate: 'modelType == "swamp::grant"' }),
-    Error,
-    "not permitted from workers",
-  );
-});
-
-Deno.test("queryData: rejects swamp/server-token", async () => {
-  const service = createService();
-  await assertRejects(
-    () => service.queryData({ predicate: 'modelType == "swamp/server-token"' }),
-    Error,
-    "not permitted from workers",
-  );
-});
-
-Deno.test("queryData: rejects swamp/enrollment-token", async () => {
-  const service = createService();
+Deno.test("queryData: rejects results containing swamp/grant records", async () => {
+  const dispatches = new DispatchRegistry();
+  withDispatch(dispatches);
+  const service = createService(dispatches, [
+    { id: "1", modelType: "swamp/grant" },
+  ]);
   await assertRejects(
     () =>
-      service.queryData({
-        predicate: 'modelType == "swamp/enrollment-token"',
+      service.queryData("worker-1", {
+        predicate: 'modelType == "swamp/grant"',
       }),
     Error,
     "not permitted from workers",
   );
 });
 
-Deno.test("queryData: rejects swamp/worker", async () => {
-  const service = createService();
+Deno.test("queryData: rejects results containing swamp/server-token", async () => {
+  const dispatches = new DispatchRegistry();
+  withDispatch(dispatches);
+  const service = createService(dispatches, [
+    { id: "1", modelType: "swamp/server-token" },
+  ]);
   await assertRejects(
-    () => service.queryData({ predicate: 'modelType == "swamp/worker"' }),
+    () =>
+      service.queryData("worker-1", {
+        predicate: 'modelType == "swamp/server-token"',
+      }),
     Error,
     "not permitted from workers",
   );
 });
 
-Deno.test("queryData: rejects swamp/step-lease", async () => {
-  const service = createService();
+Deno.test("queryData: rejects results with denormalized model type", async () => {
+  const dispatches = new DispatchRegistry();
+  withDispatch(dispatches);
+  const service = createService(dispatches, [
+    { id: "1", modelType: "SWAMP.GRANT" },
+  ]);
   await assertRejects(
-    () => service.queryData({ predicate: 'modelType == "swamp/step-lease"' }),
+    () => service.queryData("worker-1", { predicate: "true" }),
     Error,
     "not permitted from workers",
   );
 });
 
-Deno.test("queryData: allows clean predicate", async () => {
-  const service = createService(undefined, [{ id: "1" }]);
-  const result = await service.queryData({
+Deno.test("queryData: allows results with non-infrastructure model types", async () => {
+  const dispatches = new DispatchRegistry();
+  withDispatch(dispatches);
+  const service = createService(dispatches, [
+    { id: "1", modelType: "command/shell" },
+  ]);
+  const result = await service.queryData("worker-1", {
     predicate: 'modelType == "command/shell"',
   });
   assertEquals(result.length, 1);
 });
 
+Deno.test("queryData: allows results without modelType field", async () => {
+  const dispatches = new DispatchRegistry();
+  withDispatch(dispatches);
+  const service = createService(dispatches, [{ id: "1" }]);
+  const result = await service.queryData("worker-1", {
+    predicate: "true",
+  });
+  assertEquals(result.length, 1);
+});
+
 Deno.test("queryData: rejects predicate exceeding max length", async () => {
-  const service = createService();
+  const dispatches = new DispatchRegistry();
+  withDispatch(dispatches);
+  const service = createService(dispatches);
   await assertRejects(
-    () => service.queryData({ predicate: "a".repeat(5000) }),
+    () => service.queryData("worker-1", { predicate: "a".repeat(5000) }),
     Error,
     "maximum length",
   );
+});
+
+Deno.test("queryData: rejects when worker has no active dispatch", async () => {
+  const dispatches = new DispatchRegistry();
+  const service = createService(dispatches);
+  await assertRejects(
+    () => service.queryData("worker-1", { predicate: 'modelType == "test"' }),
+    Error,
+    "no active dispatch",
+  );
+});
+
+Deno.test("queryData: passes without dispatch registry (no scoping)", async () => {
+  const service = createService(undefined, [
+    { id: "1", modelType: "command/shell" },
+  ]);
+  const result = await service.queryData("worker-1", {
+    predicate: 'modelType == "command/shell"',
+  });
+  assertEquals(result.length, 1);
 });
 
 // ── dispatch scoping tests ──────────────────────────────────────────────

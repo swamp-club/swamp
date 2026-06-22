@@ -1883,24 +1883,46 @@ Deno.test("typeArg authz: @ prefix on typeArg is stripped before authorization",
 
 // ── sanitizeErrorForClient tests ────────────────────────────────────────
 
-Deno.test("sanitizeErrorForClient: redacts errors containing forward slashes", () => {
+Deno.test("sanitizeErrorForClient: redacts absolute Unix paths", () => {
   const result = sanitizeErrorForClient(
     new Error("File not found: /opt/swamp/.swamp/data/foo"),
   );
-  assertEquals(
-    result,
-    "An internal error occurred — check server logs for details",
-  );
+  assertEquals(result, "An internal error occurred");
 });
 
-Deno.test("sanitizeErrorForClient: redacts errors containing backslashes", () => {
+Deno.test("sanitizeErrorForClient: redacts .swamp internal paths", () => {
+  const result = sanitizeErrorForClient(
+    new Error("Config at /some/dir/.swamp/config.yaml is invalid"),
+  );
+  assertEquals(result, "An internal error occurred");
+});
+
+Deno.test("sanitizeErrorForClient: redacts Windows drive paths", () => {
   const result = sanitizeErrorForClient(
     new Error("File not found: C:\\Users\\data\\foo"),
   );
-  assertEquals(
-    result,
-    "An internal error occurred — check server logs for details",
+  assertEquals(result, "An internal error occurred");
+});
+
+Deno.test("sanitizeErrorForClient: redacts /home/ paths", () => {
+  const result = sanitizeErrorForClient(
+    new Error("Cannot read /home/user/.swamp/secrets/key"),
   );
+  assertEquals(result, "An internal error occurred");
+});
+
+Deno.test("sanitizeErrorForClient: passes model type slashes (not absolute paths)", () => {
+  const result = sanitizeErrorForClient(
+    new Error("Model 'acme/invoices' not found"),
+  );
+  assertEquals(result, "Model 'acme/invoices' not found");
+});
+
+Deno.test("sanitizeErrorForClient: passes relative paths in user-facing errors", () => {
+  const result = sanitizeErrorForClient(
+    new Error('Extension file not found: "data/config.json"'),
+  );
+  assertEquals(result, 'Extension file not found: "data/config.json"');
 });
 
 Deno.test("sanitizeErrorForClient: truncates long messages at 200 chars", () => {
@@ -1915,21 +1937,25 @@ Deno.test("sanitizeErrorForClient: passes through short non-path errors", () => 
   assertEquals(result, "Model not found");
 });
 
-Deno.test("sanitizeErrorForClient: redacts UserError with path separators", () => {
+Deno.test("sanitizeErrorForClient: redacts UserError with absolute paths", () => {
   const result = sanitizeErrorForClient(
     new UserError("Config at /etc/swamp/config.yaml is invalid"),
   );
-  assertEquals(
-    result,
-    "An internal error occurred — check server logs for details",
-  );
+  assertEquals(result, "An internal error occurred");
 });
 
-Deno.test("sanitizeErrorForClient: passes through safe UserError messages", () => {
+Deno.test("sanitizeErrorForClient: passes safe UserError messages", () => {
   const result = sanitizeErrorForClient(
     new UserError("Invalid token format: expected <name>.<secret>"),
   );
   assertEquals(result, "Invalid token format: expected <name>.<secret>");
+});
+
+Deno.test("sanitizeErrorForClient: passes UserError with model type slashes", () => {
+  const result = sanitizeErrorForClient(
+    new UserError('Paths must not start with "/"'),
+  );
+  assertEquals(result, 'Paths must not start with "/"');
 });
 
 Deno.test("sanitizeErrorForClient: handles non-Error values", () => {
