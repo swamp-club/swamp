@@ -24,7 +24,7 @@ import {
   type GlobalOptions,
   resolveRepoDir,
 } from "../context.ts";
-import { requireInitializedRepoReadOnly } from "../repo_context.ts";
+import { requireRepoMarker } from "../repo_context.ts";
 import {
   consumeStream,
   createLibSwampContext,
@@ -51,10 +51,9 @@ export const telemetryStatsCommand = new Command()
     ]);
     cliCtx.logger.debug`Fetching telemetry stats`;
 
-    const { repoDir } = await requireInitializedRepoReadOnly({
-      repoDir: resolveRepoDir(options.repoDir),
-      outputMode: cliCtx.outputMode,
-    });
+    const { repoDir } = await requireRepoMarker(
+      resolveRepoDir(options.repoDir),
+    );
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
     const deps = createTelemetryStatsDeps(repoDir, VERSION);
