@@ -547,7 +547,14 @@ export class RepoService {
   private async installGlobalSkills(
     tools: readonly string[],
   ): Promise<string[]> {
-    const globalDirs = resolveUniqueGlobalSkillsDirs(tools);
+    let globalDirs: string[];
+    try {
+      globalDirs = resolveUniqueGlobalSkillsDirs(tools);
+    } catch {
+      // HOME/USERPROFILE not set — skip global installation
+      logger.warn`Skipping global skill install: home directory not available`;
+      return [];
+    }
     if (globalDirs.length === 0) return [];
 
     for (const dir of globalDirs) {
