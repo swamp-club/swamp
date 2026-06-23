@@ -211,6 +211,7 @@ export class ReconcileFromDiskService {
     // per-subdirectory manifests. Each manifest-bearing subdirectory
     // becomes its own Extension aggregate; remaining files fall back
     // to the @local/<repo> aggregate.
+    const localTransitionsBefore = transitions.length;
     const localExts = await this.reconcileLocalAndSourceMounted(
       existingExtensions,
       transitions,
@@ -238,11 +239,13 @@ export class ReconcileFromDiskService {
       localExts.map((e) => `${e.name}@${e.version}`),
     );
     if (localExts.length > 0) {
+      let isMigration = false;
       for (const existing of existingExtensions) {
         if (existing.origin !== "local") continue;
         if (localIdentities.has(`${existing.name}@${existing.version}`)) {
           continue;
         }
+        isMigration = true;
         const reason =
           `identity migration: ${existing.name}@${existing.version} → [${
             [...localIdentities].join(", ")
@@ -258,6 +261,15 @@ export class ReconcileFromDiskService {
           migrationTransitions++;
         }
         result.push(tombstoneAll(existing));
+      }
+      // When migrating identities (e.g. monolithic @local/<repo> →
+      // per-subdirectory manifests), ALL transitions produced during
+      // local reconciliation are expected consequences of the identity
+      // change — both the tombstones and the new-source indexing. Count
+      // them as migration transitions so they're exempt from the >50%
+      // guardrail.
+      if (isMigration) {
+        migrationTransitions += transitions.length - localTransitionsBefore;
       }
       result.push(...localExts);
     }
@@ -365,8 +377,22 @@ export class ReconcileFromDiskService {
     }
 
     // Reconcile each partition into an Extension aggregate.
+    const hasManifestPartitions = subdirManifests.size > 0;
     const result: Extension[] = [];
-    for (const [, partition] of partitions) {
+    for (const [key, partition] of partitions) {
+      const isDefault = key === defaultKey;
+
+      // When manifest partitions have claimed all files from the default
+      // partition, skip reconciling it entirely. The old @local/<repo>
+      // aggregate (if one exists) will be tombstoned by the identity
+      // migration loop in reconcileAll(), which counts its transitions
+      // as migrationTransitions — exempt from the >50% guardrail.
+      if (
+        isDefault && hasManifestPartitions && partition.sources.size === 0
+      ) {
+        continue;
+      }
+
       const existing = existingExtensions.find(
         (e) => e.name === partition.name && e.origin === "local",
       );
@@ -384,11 +410,7 @@ export class ReconcileFromDiskService {
           .info`Local extension ${partition.name} version migrated: ${existing.version} → ${partition.version}`;
       } else if (existing) {
         ext = existing;
-      } else if (
-        partition.name === defaultName &&
-        partition.version === defaultVersion &&
-        !topLevelManifest
-      ) {
+      } else if (isDefault && !topLevelManifest) {
         ext = makeLocalExtension({ repoRoot: this.repoDir, basename });
       } else {
         ext = makeExtension({

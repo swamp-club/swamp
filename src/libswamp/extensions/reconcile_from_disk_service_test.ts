@@ -1271,3 +1271,101 @@ Deno.test({
     );
   },
 });
+
+Deno.test({
+  name:
+    "ReconcileFromDisk #784: migration with ≥10 sources does not hit guardrail",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withFixtureRepo(
+      async ({ repoDir, repository, catalog, lockfileRepository }) => {
+        const ts = Date.now();
+        const fooDir = join(repoDir, "extensions", "models", "foo");
+        const barDir = join(repoDir, "extensions", "models", "bar");
+        await ensureDir(fooDir);
+        await ensureDir(barDir);
+
+        for (let i = 0; i < 6; i++) {
+          await Deno.writeTextFile(
+            join(fooDir, `model${i}.ts`),
+            MINIMAL_MODEL_CODE(`@test/foo-g-${ts}-${i}`),
+          );
+          await Deno.writeTextFile(
+            join(barDir, `model${i}.ts`),
+            MINIMAL_MODEL_CODE(`@test/bar-g-${ts}-${i}`),
+          );
+        }
+
+        // Phase 1: reconcile without manifests — all 12 files under
+        // @local/<repo>. Exceeds GUARDRAIL_MIN_ROWS (10).
+        const oldService = new ReconcileFromDiskService({
+          denoRuntime: testDenoRuntime,
+          repository,
+          lockfileRepository,
+          repoDir,
+        });
+        const first = await oldService.execute();
+        assertEquals(first.applied, true);
+        assertEquals(catalog.findAll().length, 12);
+
+        // Phase 2: add manifests and reconcile. The migration must NOT
+        // be blocked by the >50% guardrail.
+        await Deno.writeTextFile(
+          join(fooDir, "manifest.yaml"),
+          stringifyYaml({
+            manifestVersion: 1,
+            name: "@test/foo-guard",
+            version: "2026.06.01.1",
+          }),
+        );
+        await Deno.writeTextFile(
+          join(barDir, "manifest.yaml"),
+          stringifyYaml({
+            manifestVersion: 1,
+            name: "@test/bar-guard",
+            version: "2026.06.01.1",
+          }),
+        );
+
+        const newRepo = new ExtensionRepository({
+          catalog,
+          lockfileRepository,
+          repoRoot: repoDir,
+        });
+        const newService = new ReconcileFromDiskService({
+          denoRuntime: testDenoRuntime,
+          repository: newRepo,
+          lockfileRepository,
+          repoDir,
+        });
+        const second = await newService.execute();
+        assertEquals(
+          second.applied,
+          true,
+          "#784: migration with ≥10 sources must not be blocked by guardrail",
+        );
+
+        const liveRows = catalog.findAll().filter((r) =>
+          (r.state ?? "Indexed") !== "Tombstoned"
+        );
+        const fooRows = liveRows.filter((r) =>
+          r.extension_name === "@test/foo-guard"
+        );
+        const barRows = liveRows.filter((r) =>
+          r.extension_name === "@test/bar-guard"
+        );
+
+        assertEquals(
+          fooRows.length,
+          6,
+          "#784: @test/foo-guard must have 6 rows",
+        );
+        assertEquals(
+          barRows.length,
+          6,
+          "#784: @test/bar-guard must have 6 rows",
+        );
+      },
+    );
+  },
+});
