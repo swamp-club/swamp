@@ -35,6 +35,7 @@ import {
   createLibSwampContext,
   createModelMethodDescribeDeps,
   createSummariseDeps,
+  createVaultDeleteDeps,
   createVaultGetDeps,
   createVaultPutDeps,
   dataGet,
@@ -55,6 +56,8 @@ import {
   reportTypeSearch,
   type ReportTypeSearchDeps,
   summarise,
+  vaultDelete,
+  vaultDeletePreview,
   vaultGet,
   vaultPut,
   vaultPutPreview,
@@ -82,6 +85,7 @@ import type {
   ServerMessage,
   ServerRequest,
   SummarisePayload,
+  VaultDeletePayload,
   VaultGetPayload,
   VaultPutPayload,
   WorkflowRunPayload,
@@ -312,6 +316,16 @@ const VaultPutRequestSchema = z.object({
   }),
 });
 
+const VaultDeleteRequestSchema = z.object({
+  type: z.literal("vault.delete"),
+  id: z.string().min(1).max(256),
+  payload: z.object({
+    vaultName: z.string(),
+    key: z.string(),
+    force: z.boolean().optional(),
+  }),
+});
+
 const AuditTimelineRequestSchema = z.object({
   type: z.literal("audit.timeline"),
   id: z.string().min(1).max(256),
@@ -389,6 +403,7 @@ const ServerRequestSchema = z.discriminatedUnion("type", [
   WorkflowSearchRequestSchema,
   VaultGetRequestSchema,
   VaultPutRequestSchema,
+  VaultDeleteRequestSchema,
   AuditTimelineRequestSchema,
   SummariseRequestSchema,
   ReportGetRequestSchema,
@@ -678,6 +693,16 @@ export function handleMessage(
       break;
     case "vault.put":
       task = handleVaultPut(
+        socket,
+        ctx,
+        request.id,
+        request.payload,
+        controller,
+        principal,
+      );
+      break;
+    case "vault.delete":
+      task = handleVaultDelete(
         socket,
         ctx,
         request.id,
@@ -1894,6 +1919,127 @@ async function handleVaultPut(
     } else {
       const message = sanitizeErrorForClient(error);
       sendError(socket, requestId, "vault_put_failed", message);
+    }
+  } finally {
+    if (flush) await flush();
+  }
+}
+
+async function handleVaultDelete(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  payload: VaultDeletePayload,
+  controller: AbortController,
+  principal: Principal | null,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "write", {
+      kind: "data",
+      name: "vault",
+      fields: {},
+    }, ctx)
+  ) return;
+
+  let flush: (() => Promise<void>) | undefined;
+  try {
+    ({ flush } = await acquireVaultSync(
+      ctx.datastoreConfig,
+      ctx.syncService,
+      ctx.repoDir,
+    ));
+  } catch (error) {
+    const message = sanitizeErrorForClient(error);
+    sendError(socket, requestId, "vault_delete_failed", message);
+    return;
+  }
+
+  try {
+    const libCtx = createLibSwampContext();
+    const deps = createVaultDeleteDeps(ctx.repoDir, ctx.repoContext.eventBus);
+
+    const preview = await vaultDeletePreview(
+      libCtx,
+      deps,
+      payload.vaultName,
+      payload.key,
+    );
+
+    if (!preview.supportsDelete) {
+      sendError(
+        socket,
+        requestId,
+        "unsupported",
+        `Vault '${payload.vaultName}' (type: ${preview.vaultType}) does not support deleting secrets`,
+      );
+      return;
+    }
+
+    if (!preview.secretExists && !payload.force) {
+      sendError(
+        socket,
+        requestId,
+        "not_found",
+        `Secret '${payload.key}' not found in vault '${payload.vaultName}'`,
+      );
+      return;
+    }
+
+    if (!preview.secretExists && payload.force) {
+      send(socket, {
+        type: "vault.delete",
+        id: requestId,
+        payload: {
+          data: {
+            vaultName: payload.vaultName,
+            secretKey: payload.key,
+            vaultType: preview.vaultType,
+            noOp: true,
+            timestamp: new Date().toISOString(),
+          },
+        },
+      });
+      return;
+    }
+
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+
+    let result: Record<string, unknown> | undefined;
+    await consumeStream(
+      vaultDelete(libCtx, deps, {
+        vaultName: payload.vaultName,
+        key: payload.key,
+      }),
+      {
+        deleting: () => {},
+        completed: (e) => {
+          result = e.data as unknown as Record<string, unknown>;
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      },
+    );
+
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+
+    send(socket, {
+      type: "vault.delete",
+      id: requestId,
+      payload: { data: result ?? {} },
+    });
+  } catch (error) {
+    if (error instanceof DOMException && error.name === "AbortError") {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+    } else {
+      const message = sanitizeErrorForClient(error);
+      sendError(socket, requestId, "vault_delete_failed", message);
     }
   } finally {
     if (flush) await flush();

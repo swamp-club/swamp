@@ -117,6 +117,12 @@ export interface VaultPutPayload {
   clearRefresh?: boolean;
 }
 
+export interface VaultDeletePayload {
+  vaultName: string;
+  key: string;
+  force?: boolean;
+}
+
 export interface AuditTimelinePayload {
   hours?: number;
   showAll?: boolean;
@@ -174,6 +180,7 @@ export type ServerRequest =
   | { type: "workflow.search"; id: string; payload?: WorkflowSearchPayload }
   | { type: "vault.get"; id: string; payload: VaultGetPayload }
   | { type: "vault.put"; id: string; payload: VaultPutPayload }
+  | { type: "vault.delete"; id: string; payload: VaultDeletePayload }
   | { type: "audit.timeline"; id: string; payload?: AuditTimelinePayload }
   | { type: "summarise"; id: string; payload?: SummarisePayload }
   | { type: "report.get"; id: string; payload: ReportGetPayload }
@@ -269,6 +276,10 @@ export interface VaultPutResponse {
   data: Record<string, unknown>;
 }
 
+export interface VaultDeleteResponse {
+  data: Record<string, unknown>;
+}
+
 export interface AuditTimelineResponse {
   data: Record<string, unknown>;
 }
@@ -324,6 +335,7 @@ export type ServerMessage =
   | { type: "workflow.search"; id: string; payload: WorkflowSearchResponse }
   | { type: "vault.get"; id: string; payload: VaultGetResponse }
   | { type: "vault.put"; id: string; payload: VaultPutResponse }
+  | { type: "vault.delete"; id: string; payload: VaultDeleteResponse }
   | { type: "audit.timeline"; id: string; payload: AuditTimelineResponse }
   | { type: "summarise"; id: string; payload: SummariseResponse }
   | { type: "report.get"; id: string; payload: ReportGetResponse }

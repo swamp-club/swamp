@@ -17,13 +17,13 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { VaultProvider } from "./vault_provider.ts";
+import type { VaultDeleteProvider, VaultProvider } from "./vault_provider.ts";
 
 /**
  * Mock vault provider for testing and demonstrations.
  * Returns predefined values for known secret keys.
  */
-export class MockVaultProvider implements VaultProvider {
+export class MockVaultProvider implements VaultProvider, VaultDeleteProvider {
   private readonly secrets = new Map<string, string>();
   private readonly name: string;
 
@@ -62,6 +62,16 @@ export class MockVaultProvider implements VaultProvider {
 
   list(): Promise<string[]> {
     return Promise.resolve(Array.from(this.secrets.keys()).sort());
+  }
+
+  delete(secretKey: string): Promise<void> {
+    if (!this.secrets.has(secretKey)) {
+      throw new Error(
+        `Secret '${secretKey}' not found in mock vault '${this.name}'`,
+      );
+    }
+    this.secrets.delete(secretKey);
+    return Promise.resolve();
   }
 
   /**

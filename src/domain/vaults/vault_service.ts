@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { getLogger } from "@logtape/logtape";
-import type { VaultConfiguration, VaultProvider } from "./vault_provider.ts";
+import {
+  isVaultDeleteProvider,
+  type VaultConfiguration,
+  type VaultProvider,
+} from "./vault_provider.ts";
 import {
   isVaultAnnotationProvider,
   type VaultAnnotation,
@@ -228,6 +232,40 @@ export class VaultService {
   ): Promise<void> {
     const provider = this.requireProvider(vaultName);
     await provider.put(secretKey, secretValue);
+  }
+
+  async delete(vaultName: string, secretKey: string): Promise<void> {
+    const provider = this.requireDeleteProvider(vaultName);
+    await provider.delete(secretKey);
+  }
+
+  supportsDelete(vaultName: string): boolean {
+    const provider = this.providers.get(vaultName);
+    if (!provider) return false;
+    return isVaultDeleteProvider(provider);
+  }
+
+  private requireDeleteProvider(vaultName: string) {
+    const provider = this.providers.get(vaultName);
+    if (!provider) {
+      const availableVaults = Array.from(this.providers.keys());
+      if (availableVaults.length === 0) {
+        throw new Error(
+          `Vault '${vaultName}' not found. No vaults are configured.`,
+        );
+      }
+      throw new Error(
+        `Vault '${vaultName}' not found. Available vaults: ${
+          availableVaults.join(", ")
+        }`,
+      );
+    }
+    if (!isVaultDeleteProvider(provider)) {
+      throw new Error(
+        `Vault '${vaultName}' (type: ${provider.getName()}) does not support deleting secrets`,
+      );
+    }
+    return provider;
   }
 
   /**

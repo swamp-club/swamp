@@ -19,7 +19,7 @@
 
 import { join } from "@std/path";
 import { atomicWriteTextFile } from "../../infrastructure/persistence/atomic_write.ts";
-import type { VaultProvider } from "./vault_provider.ts";
+import type { VaultDeleteProvider, VaultProvider } from "./vault_provider.ts";
 import type { VaultAnnotationProvider } from "./vault_annotation.ts";
 import { VaultAnnotation } from "./vault_annotation.ts";
 import type { VaultRefreshHookProvider } from "./refresh_hook.ts";
@@ -65,7 +65,11 @@ interface EncryptedData {
  * Supports both SSH private key files and auto-generated encryption keys.
  */
 export class LocalEncryptionVaultProvider
-  implements VaultProvider, VaultAnnotationProvider, VaultRefreshHookProvider {
+  implements
+    VaultProvider,
+    VaultAnnotationProvider,
+    VaultRefreshHookProvider,
+    VaultDeleteProvider {
   private readonly name: string;
   private readonly config: LocalEncryptionConfig;
   private readonly vaultDir: string;
@@ -158,6 +162,56 @@ export class LocalEncryptionVaultProvider
     }
 
     return secretKeys.sort();
+  }
+
+  async delete(secretKey: string): Promise<void> {
+    this.validateSecretKey(secretKey);
+    const encryptedFilePath = join(this.vaultDir, `${secretKey}.enc`);
+    await assertSafePath(encryptedFilePath, this.secretsBoundary);
+
+    try {
+      await Deno.remove(encryptedFilePath);
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) {
+        throw new Error(
+          `Secret '${secretKey}' not found in local vault '${this.name}'`,
+        );
+      }
+      throw new Error(
+        `Failed to delete secret '${secretKey}': ${
+          error instanceof Error ? error.message : String(error)
+        }`,
+      );
+    }
+
+    // Clean up associated annotation and refresh hook
+    const annotationPath = this.annotationPath(secretKey);
+    await assertSafePath(annotationPath, this.secretsBoundary);
+    try {
+      await Deno.remove(annotationPath);
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) {
+        throw new Error(
+          `Failed to delete annotation for '${secretKey}': ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
+
+    const hookPath = this.refreshPath(secretKey);
+    await assertSafePath(hookPath, this.secretsBoundary);
+    try {
+      await Deno.remove(hookPath);
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) {
+        throw new Error(
+          `Failed to delete refresh hook for '${secretKey}': ${
+            error instanceof Error ? error.message : String(error)
+          }`,
+        );
+      }
+    }
   }
 
   private get annotationsDir(): string {

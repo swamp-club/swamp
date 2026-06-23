@@ -54,6 +54,25 @@ export interface VaultProvider {
 }
 
 /**
+ * Optional interface for vault providers that support deleting secrets.
+ * Separate from VaultProvider — providers opt in by implementing both.
+ */
+export interface VaultDeleteProvider {
+  delete(secretKey: string): Promise<void>;
+}
+
+/**
+ * Type guard to check if a vault provider supports secret deletion.
+ */
+export function isVaultDeleteProvider(
+  provider: unknown,
+): provider is VaultDeleteProvider {
+  if (typeof provider !== "object" || provider === null) return false;
+  const obj = provider as Record<string, unknown>;
+  return typeof obj.delete === "function";
+}
+
+/**
  * Configuration for vault providers.
  */
 export interface VaultConfiguration {
