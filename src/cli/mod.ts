@@ -953,10 +953,13 @@ async function checkForLocalBundledSkills(
         dirs.join("\n"),
     });
 
-    const repoPath = { value: repoDir } as RepoPath;
+    const repoPath = RepoPath.create(repoDir);
     const markerRepo = new RepoMarkerRepository();
-    marker.lastSkillMigrationWarning = new Date().toISOString();
-    await markerRepo.write(repoPath, marker);
+    const updatedMarker = {
+      ...marker,
+      lastSkillMigrationWarning: new Date().toISOString(),
+    };
+    await markerRepo.write(repoPath, updatedMarker);
   } catch {
     // Non-fatal — don't block startup
   }
@@ -1273,7 +1276,10 @@ export async function runCli(args: string[]): Promise<void> {
 
       // Emit deferred warnings now that logging is initialized
       for (const warning of deferredWarnings) {
-        if (warning.kind === "extensions" || warning.kind === "skills") {
+        if (
+          warning.kind === "extensions" || warning.kind === "skills" ||
+          warning.kind === "skill-migration"
+        ) {
           logger.warn`${warning.error}`;
         } else {
           logger

@@ -141,6 +141,7 @@ export const BUNDLED_SKILL_NAMES = ["swamp", "swamp-getting-started"];
 
 /**
  * Removes local bundled skill copies from a repo's tool skill directories.
+ * Currently used in tests; will be wired into an interactive upgrade prompt.
  */
 export async function removeLocalBundledSkills(
   localCopies: LocalSkillCopy[],
@@ -509,9 +510,11 @@ export class RepoService {
     if (localSkillCopies.length === 0) {
       delete updatedMarker.lastSkillMigrationWarning;
       delete updatedMarker.skillMigrationDismissed;
-    } else {
-      updatedMarker.skillMigrationDismissed = true;
     }
+    // When local copies remain, do NOT set skillMigrationDismissed here —
+    // the daily warning should keep firing until the user removes them.
+    // The flag can be set manually in .swamp.yaml for repos that
+    // intentionally keep local skills (e.g., the swamp source repo).
 
     await this.markerRepo.write(repoPath, updatedMarker);
 

@@ -109,34 +109,12 @@ Today these commands copy skills into the repo. Under the new model:
 3. Run migration (see below) to remove local skill copies if present
 4. Update `.swamp.yaml` version
 
-### Version Stamping
+### Keeping Global Skills Current
 
-Each installed SKILL.md gets a `swampVersion` field in its frontmatter:
-
-```yaml
----
-name: swamp
-description: ...
-swampVersion: "20260622.150000.0"
----
-```
-
-This is injected at install time from the running binary's version, matching the
-existing CalVer format in `SwampVersion`. On upgrade, the CLI compares the
-installed version against its own and overwrites if stale.
-
-### Freshness Check
-
-A lightweight version check runs on CLI startup for repo-scoped commands:
-
-1. Read `swampVersion` from each enrolled tool's global skill SKILL.md
-2. Compare against the running binary's version
-3. If stale, emit a deferred warning:
-   `WRN Global swamp skills are outdated (installed: X, current: Y). Run 'swamp repo upgrade' to update.`
-4. Optionally auto-update (controlled by a config flag or `--auto-update-skills`)
-
-This replaces the current superseded-skill detection which only catches renamed
-skill directories.
+Global skills are overwritten on every `repo init` and `repo upgrade`. The
+bundled skill files in the binary are the source of truth — there is no version
+stamping or freshness check. Running `repo init` or `repo upgrade` in any repo
+updates the global copies to match the running binary.
 
 ## Migration: Local to Global
 
@@ -158,14 +136,14 @@ skill directory** for swamp-managed skill subdirectories (currently `swamp/` and
 .kiro/skills/swamp/             ← local copy, should be removed
 ```
 
-### Persistent Migration Warning
+### Migration Warning
 
 Once a user upgrades to a CLI version that installs global skills, any repo that
 still has local skill copies is in a conflict state — the local copies shadow the
-global ones and the user is silently running stale skills. The CLI must make this
-impossible to ignore.
+global ones and the user may be running stale skills.
 
-**On every CLI invocation** in a repo with local skill copies, emit a warning:
+**On CLI startup** (once per day per repo), if local bundled skill copies are
+detected:
 
 ```
 WRN Swamp skills are now installed globally but this repo still has local
@@ -176,43 +154,21 @@ WRN Swamp skills are now installed globally but this repo still has local
       .claude/skills/swamp-getting-started/
 ```
 
-This warning fires **once per day per repo**. It is non-blocking (the command
-still runs) but it is unavoidable on the first invocation of each day. It
-persists until the user runs `swamp repo upgrade` in that repo and confirms
-removal of the local copies.
-
 The debounce is tracked via a `lastSkillMigrationWarning` timestamp in the
-`.swamp.yaml` marker file. On each CLI invocation, if local copies are detected
-and the timestamp is missing or older than 24 hours, the warning is emitted and
-the timestamp is updated. This keeps the reminder visible without spamming
-users who run many commands per day.
+`.swamp.yaml` marker file. The warning persists until the user deletes the
+local copies manually.
 
-**During `swamp repo upgrade`**, for each enrolled tool with local copies:
+**During `swamp repo upgrade`**, local copies are detected and reported:
 
 ```
-Local swamp skills found in .claude/skills/swamp/ — these are now
-installed globally at ~/.claude/skills/swamp/ and the local copies
-take precedence, meaning this repo is using stale skills.
-
-Remove local copies? [Y/n]
+WRN Local swamp skill copies are shadowing the globally installed skills.
+    Delete them manually:
+      .claude/skills/swamp
+      .claude/skills/swamp-getting-started
 ```
 
-Note the default is **Y** (yes) — removal is the expected action. If the user
-declines, the warning continues on every future CLI invocation.
-
-If the local copy has been modified by the user (no `swampVersion` field or
-content differs from any known bundled version), the prompt says so:
-
-```
-Local swamp skills in .claude/skills/swamp/ have been modified from
-the bundled version. The global version will not include your
-changes.
-
-Remove local copies anyway? [y/N]
-```
-
-Note the default flips to **N** (no) for modified copies — don't destroy user
-work without explicit intent.
+For repos that intentionally keep local skills (e.g., the swamp source repo),
+set `skillMigrationDismissed: true` in `.swamp.yaml` to suppress the warning.
 
 ### Migration Flow
 
@@ -220,22 +176,17 @@ work without explicit intent.
 Any CLI command in a repo:
   │
   ├─ Check for local bundled skill copies in enrolled tool dirs
-  ├─ If found: emit persistent warning on every invocation
+  ├─ If found and not dismissed: emit warning (once per day)
   └─ Continue with normal command execution
 
 swamp repo upgrade:
   │
   ├─ For each enrolled tool:
   │   ├─ Resolve global skill dir for this tool
-  │   ├─ Write/update skills to global dir (with version stamp)
+  │   ├─ Write/update skills to global dir
   │   ├─ Check for local skill copies in repo
-  │   │   ├─ If local copies found:
-  │   │   │   ├─ Check if modified (compare to bundled versions)
-  │   │   │   ├─ Prompt user to confirm removal
-  │   │   │   │   (default Y for unmodified, default N for modified)
-  │   │   │   ├─ If confirmed: delete local copies
-  │   │   │   └─ If declined: leave in place, warning continues
-  │   │   └─ If no local copy: nothing to do
+  │   │   ├─ If found: warn user to delete manually
+  │   │   └─ If no local copy: clear migration marker fields
   │   ├─ Update instructions file in repo (stays local)
   │   └─ Update settings/hooks in repo (stays local)
   │
