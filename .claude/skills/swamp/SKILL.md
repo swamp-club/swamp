@@ -49,7 +49,7 @@ Route to the right guide based on what the user needs.
 
 ```bash
 # Models
-swamp model @<type> create <name>              # create a model definition
+swamp model create <type> <name>               # create a model definition
 swamp model @<type> method run <method> <name> # run a method on a model
 swamp model get <name> --json                  # inspect current model state
 swamp model type search [query]                # find available model types
