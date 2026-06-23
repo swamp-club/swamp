@@ -217,6 +217,7 @@ export class ReconcileFromDiskService {
       transitions,
       cache,
     );
+    const localTransitionsAdded = transitions.length - localTransitionsBefore;
 
     // Pulled extensions next. Processed BEFORE local aggregates in
     // the result array so saveAll DELETEs pulled-orphan rows before
@@ -240,6 +241,7 @@ export class ReconcileFromDiskService {
     );
     if (localExts.length > 0) {
       let isMigration = false;
+      let tombstoneCount = 0;
       for (const existing of existingExtensions) {
         if (existing.origin !== "local") continue;
         if (localIdentities.has(`${existing.name}@${existing.version}`)) {
@@ -258,18 +260,21 @@ export class ReconcileFromDiskService {
             toState: "Tombstoned",
             reason,
           });
-          migrationTransitions++;
+          tombstoneCount++;
         }
         result.push(tombstoneAll(existing));
       }
       // When migrating identities (e.g. monolithic @local/<repo> →
-      // per-subdirectory manifests), ALL transitions produced during
-      // local reconciliation are expected consequences of the identity
-      // change — both the tombstones and the new-source indexing. Count
-      // them as migration transitions so they're exempt from the >50%
-      // guardrail.
+      // per-subdirectory manifests), the tombstones from the migration
+      // loop AND the new-source indexing from local reconciliation are
+      // expected consequences of the identity change. Count both as
+      // migration transitions so they're exempt from the >50% guardrail.
+      // Captured separately to avoid double-counting or including
+      // unrelated pulled-extension transitions.
       if (isMigration) {
-        migrationTransitions += transitions.length - localTransitionsBefore;
+        migrationTransitions = tombstoneCount + localTransitionsAdded;
+      } else {
+        migrationTransitions = tombstoneCount;
       }
       result.push(...localExts);
     }
@@ -305,8 +310,8 @@ export class ReconcileFromDiskService {
     }
 
     // Collect all on-disk sources, partitioned by extension identity.
-    // Key: "<name>@<version>" for manifest-bearing subdirs, or
-    // "default" for the fallback @local/<repo> aggregate.
+    // Key: "<name>@<version>" for all partitions, including the
+    // fallback @local/<repo> aggregate.
     const partitions = new Map<
       string,
       {
