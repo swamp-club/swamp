@@ -98,13 +98,14 @@ export interface WebhookEndpoint {
  * consequence (a colon-bearing secret cannot be combined with an explicit
  * scheme, and a secret whose colon-tail begins with a reserved keyword would be
  * reinterpreted) is the accepted limitation tracked in #723. When a scheme is
- * given, the remaining fields are positional: `generic` additionally takes a
- * header name (fifth, required) and a value prefix (sixth, optional).
+ * given, the remaining fields are positional: `generic` requires a header name
+ * (fifth field) and accepts an optional value prefix (sixth field).
  */
 export function parseWebhookFlag(flag: string): WebhookEndpoint {
   const fields = flag.split(":");
   const usage =
-    "expected '<route>:<workflow>:<secret>[:<scheme>[:<header>[:<prefix>]]]'";
+    "expected '<route>:<workflow>:<secret>[:<scheme>[:<header>[:<prefix>]]]' " +
+    "(note: generic scheme requires <header>)";
 
   if (fields.length < 3) {
     throw new UserError(`Invalid --webhook format: ${usage}, got '${flag}'`);

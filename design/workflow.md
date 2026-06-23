@@ -368,7 +368,7 @@ The `webhook` namespace exposes:
 The signature scheme is selected per endpoint on the `--webhook` flag:
 `<route>:<workflow>:<secret>[:<scheme>[:<header>[:<prefix>]]]`. `scheme` is one
 of `github` (the default, `X-Hub-Signature-256`), `linear`, `stripe`, `slack`,
-or `generic` (which takes a header name and optional value prefix). When no
+or `generic` (which requires a header name and accepts an optional value prefix). When no
 scheme is given the flag behaves exactly as before, so the secret may still
 contain colons; a scheme is recognized only when the fourth field is a known
 scheme keyword.

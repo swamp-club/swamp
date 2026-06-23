@@ -224,8 +224,8 @@ caveat on headers.
 
 The signature scheme is set per endpoint on `swamp serve`'s `--webhook` flag:
 `<route>:<workflow>:<secret>[:<scheme>[:<header>[:<prefix>]]]`, where `scheme`
-is `github` (default), `linear`, `stripe`, `slack`, or `generic` (header +
-optional prefix). Omitting the scheme preserves the original behavior.
+is `github` (default), `linear`, `stripe`, `slack`, or `generic` (requires
+header; optional prefix). Omitting the scheme preserves the original behavior.
 
 ## Edit a Workflow
 

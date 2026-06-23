@@ -213,7 +213,7 @@ export const serveCommand = new Command()
     "--webhook <spec:string>",
     "Register a webhook endpoint: <route>:<workflow>:<secret>[:<scheme>[:<header>[:<prefix>]]]. " +
       "scheme is one of github (default), linear, stripe, slack, generic; " +
-      "generic takes a header name and optional value prefix",
+      "generic requires a header name and accepts an optional value prefix",
     { collect: true },
   )
   .option(
