@@ -212,7 +212,7 @@ export const serveCommand = new Command()
   )
   .option(
     "--auth-mode <mode:string>",
-    "Authentication mode: none (default), token, or oauth",
+    "Authentication mode: none (default, deprecated), token, or oauth",
     { default: "none" },
   )
   .option(
@@ -301,6 +301,14 @@ export const serveCommand = new Command()
       logger.warn(
         "--admins is set but --auth-mode is {mode} — admins will have no effect",
         { mode: authConfig.mode },
+      );
+    }
+
+    if (authConfig.mode === "none") {
+      logger.warn(
+        "auth-mode is 'none' — this mode is deprecated and will be removed in a future release. " +
+          "Use --auth-mode token for authenticated access. " +
+          "See https://swamp-club.com/manual/how-to/swamp-serve/set-up-token-auth",
       );
     }
 
