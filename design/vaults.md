@@ -98,6 +98,27 @@ interface VaultRefreshHookProvider {
 Detection is via runtime type guard (`isVaultRefreshHookProvider()`), mirroring
 the annotation pattern.
 
+## Vault Delete Provider Interface
+
+Vault providers can optionally support deleting secrets. Delete support is
+opt-in: providers that implement `VaultDeleteProvider` alongside `VaultProvider`
+gain delete capabilities. Providers that don't implement it will report
+"unsupported" when a user tries `swamp vault delete`.
+
+```typescript
+interface VaultDeleteProvider {
+  delete(secretKey: string): Promise<void>;
+}
+```
+
+Detection is via runtime type guard (`isVaultDeleteProvider()`), mirroring the
+annotation and refresh hook patterns. When a secret is deleted, its associated
+annotation and refresh hook are also removed.
+
+Built-in providers (`local_encryption`, `mock`) implement this interface.
+Extension providers (e.g. `@swamp/1password`, `@swamp/aws-sm`) may opt in by
+having their `createProvider` return an object that implements both interfaces.
+
 ### Refresh Hook Value Object
 
 `RefreshHook` is an immutable value object:

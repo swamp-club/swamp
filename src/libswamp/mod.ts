@@ -1012,6 +1012,19 @@ export {
   vaultPutPreview,
 } from "./vaults/put.ts";
 
+// Vault delete operations
+export {
+  createVaultDeleteDeps,
+  vaultDelete,
+  type VaultDeleteConfigInfo,
+  type VaultDeleteData,
+  type VaultDeleteDeps,
+  type VaultDeleteEvent,
+  type VaultDeleteInput,
+  type VaultDeletePreview,
+  vaultDeletePreview,
+} from "./vaults/delete.ts";
+
 // Vault annotate operations
 export {
   createVaultAnnotateDeps,

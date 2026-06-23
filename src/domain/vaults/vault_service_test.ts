@@ -576,3 +576,83 @@ Deno.test("VaultService - fromRepository auto-remaps renamed vault types", async
     },
   );
 });
+
+Deno.test("VaultService - delete", async (t) => {
+  await t.step("should delete a secret from a mock vault", async () => {
+    const vaultService = new VaultService();
+    vaultService.registerVault({
+      name: "test-vault",
+      type: "mock",
+      config: {},
+    });
+
+    await vaultService.put("test-vault", "to-delete", "value");
+    const keys = await vaultService.list("test-vault");
+    assertEquals(keys.includes("to-delete"), true);
+
+    await vaultService.delete("test-vault", "to-delete");
+    const keysAfter = await vaultService.list("test-vault");
+    assertEquals(keysAfter.includes("to-delete"), false);
+  });
+
+  await t.step(
+    "should throw when vault not found (no vaults configured)",
+    async () => {
+      const vaultService = new VaultService();
+      const error = await assertRejects(
+        () => vaultService.delete("nonexistent", "key"),
+        Error,
+      );
+      assertStringIncludes(error.message, "No vaults are configured");
+    },
+  );
+
+  await t.step(
+    "should throw when vault not found (other vaults exist)",
+    async () => {
+      const vaultService = new VaultService();
+      vaultService.registerVault({
+        name: "existing",
+        type: "mock",
+        config: {},
+      });
+      const error = await assertRejects(
+        () => vaultService.delete("missing", "key"),
+        Error,
+      );
+      assertStringIncludes(error.message, "Available vaults: existing");
+    },
+  );
+
+  await t.step("should throw when secret does not exist", async () => {
+    const vaultService = new VaultService();
+    vaultService.registerVault({
+      name: "test-vault",
+      type: "mock",
+      config: {},
+    });
+
+    await assertRejects(
+      () => vaultService.delete("test-vault", "nonexistent-key"),
+      Error,
+      "not found",
+    );
+  });
+});
+
+Deno.test("VaultService - supportsDelete", async (t) => {
+  await t.step("should return true for mock vault", () => {
+    const vaultService = new VaultService();
+    vaultService.registerVault({
+      name: "test-vault",
+      type: "mock",
+      config: {},
+    });
+    assertEquals(vaultService.supportsDelete("test-vault"), true);
+  });
+
+  await t.step("should return false for non-existent vault", () => {
+    const vaultService = new VaultService();
+    assertEquals(vaultService.supportsDelete("nonexistent"), false);
+  });
+});

@@ -189,6 +189,7 @@ export type RepositoryEvent =
   | VaultUpdated
   | VaultDeleted
   | VaultSecretUpdated
+  | VaultSecretDeleted
   | VaultSecretRead
   | VaultSecretAnnotated;
 
@@ -491,6 +492,36 @@ export function createVaultDeleted(
     vaultId,
     vaultType,
     vaultName,
+    timestamp: new Date(),
+  };
+}
+
+/**
+ * Emitted when a secret is deleted from a vault.
+ */
+export interface VaultSecretDeleted extends DomainEvent {
+  readonly type: "VaultSecretDeleted";
+  readonly vaultId: string;
+  readonly vaultType: string;
+  readonly vaultName: string;
+  readonly secretKey: string;
+}
+
+/**
+ * Creates a VaultSecretDeleted event.
+ */
+export function createVaultSecretDeleted(
+  vaultId: string,
+  vaultType: string,
+  vaultName: string,
+  secretKey: string,
+): VaultSecretDeleted {
+  return {
+    type: "VaultSecretDeleted",
+    vaultId,
+    vaultType,
+    vaultName,
+    secretKey,
     timestamp: new Date(),
   };
 }
