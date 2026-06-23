@@ -150,7 +150,13 @@ export function validateWebSocketOrigin(
   }
 
   if (hostHeader) {
-    const hostName = hostHeader.split(":")[0].toLowerCase();
+    let hostName: string;
+    try {
+      const parsed = new URL(`http://${hostHeader}`);
+      hostName = parsed.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+    } catch {
+      return { allowed: false, reason: `malformed host: ${hostHeader}` };
+    }
     const TRUSTED_HOSTS = new Set([
       "127.0.0.1",
       "localhost",

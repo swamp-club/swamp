@@ -249,3 +249,24 @@ Deno.test("validateWebSocketOrigin: absent host header passes", () => {
   const result = validateWebSocketOrigin(null, null, "127.0.0.1", false);
   assertEquals(result.allowed, true);
 });
+
+Deno.test("validateWebSocketOrigin: accepts IPv6 loopback host [::1]:9090", () => {
+  const result = validateWebSocketOrigin(
+    null,
+    "[::1]:9090",
+    "127.0.0.1",
+    false,
+  );
+  assertEquals(result.allowed, true);
+});
+
+Deno.test("validateWebSocketOrigin: rejects malformed origin", () => {
+  const result = validateWebSocketOrigin(
+    "not-a-url",
+    "127.0.0.1:9090",
+    "127.0.0.1",
+    false,
+  );
+  assertEquals(result.allowed, false);
+  assertStringIncludes(result.reason!, "malformed origin");
+});
