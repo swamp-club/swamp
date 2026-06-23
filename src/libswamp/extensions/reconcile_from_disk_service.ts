@@ -212,11 +212,12 @@ export class ReconcileFromDiskService {
     // becomes its own Extension aggregate; remaining files fall back
     // to the @local/<repo> aggregate.
     const localTransitionsBefore = transitions.length;
-    const localExts = await this.reconcileLocalAndSourceMounted(
-      existingExtensions,
-      transitions,
-      cache,
-    );
+    const { extensions: localExts, hasManifestPartitions } = await this
+      .reconcileLocalAndSourceMounted(
+        existingExtensions,
+        transitions,
+        cache,
+      );
     const localTransitionsAdded = transitions.length - localTransitionsBefore;
 
     // Pulled extensions next. Processed BEFORE local aggregates in
@@ -264,14 +265,16 @@ export class ReconcileFromDiskService {
         }
         result.push(tombstoneAll(existing));
       }
-      // When migrating identities (e.g. monolithic @local/<repo> →
-      // per-subdirectory manifests), the tombstones from the migration
-      // loop AND the new-source indexing from local reconciliation are
-      // expected consequences of the identity change. Count both as
-      // migration transitions so they're exempt from the >50% guardrail.
-      // Captured separately to avoid double-counting or including
-      // unrelated pulled-extension transitions.
-      if (isMigration) {
+      // When migrating identities (full: monolithic @local/<repo> is
+      // entirely replaced, or partial: some files remain in the default
+      // partition while others move to manifest partitions), the
+      // tombstones and new-source indexing are expected consequences of
+      // the identity change. Count both as migration transitions so
+      // they're exempt from the >50% guardrail.
+      // hasManifestPartitions covers the partial-adoption case where
+      // @local/<repo> remains in localIdentities but files are being
+      // re-partitioned to manifest-declared aggregates.
+      if (isMigration || hasManifestPartitions) {
         migrationTransitions = tombstoneCount + localTransitionsAdded;
       } else {
         migrationTransitions = tombstoneCount;
@@ -286,7 +289,7 @@ export class ReconcileFromDiskService {
     existingExtensions: Extension[],
     transitions: ReconcileTransition[],
     cache: FreshnessCache,
-  ): Promise<Extension[]> {
+  ): Promise<{ extensions: Extension[]; hasManifestPartitions: boolean }> {
     const topLevelManifest = this.localManifestIdentity;
     const basename = pathBasename(this.repoDir) || "unknown";
     const defaultName = topLevelManifest
@@ -439,7 +442,7 @@ export class ReconcileFromDiskService {
       result.push(ext);
     }
 
-    return result;
+    return { extensions: result, hasManifestPartitions };
   }
 
   private async reconcilePulled(
