@@ -19,7 +19,7 @@
 
 import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
-import { assertOffLoopbackSecurity } from "./serve.ts";
+import { assertOffLoopbackSecurity, validateWebSocketOrigin } from "./serve.ts";
 import { UserError } from "../../domain/errors.ts";
 
 // Initialize logging for tests
@@ -117,4 +117,156 @@ Deno.test("assertOffLoopbackSecurity: loopback localhost with no TLS and no auth
 
 Deno.test("assertOffLoopbackSecurity: IPv6 loopback ::1 with no TLS and no auth passes", () => {
   assertOffLoopbackSecurity("::1", false, "none");
+});
+
+// --- WebSocket origin/host validation ---
+
+Deno.test("validateWebSocketOrigin: rejects cross-origin http://evil.com", () => {
+  const result = validateWebSocketOrigin(
+    "http://evil.com",
+    "127.0.0.1:9090",
+    "127.0.0.1",
+    false,
+  );
+  assertEquals(result.allowed, false);
+  assertStringIncludes(result.reason!, "untrusted origin");
+});
+
+Deno.test("validateWebSocketOrigin: rejects attacker-controlled origin", () => {
+  const result = validateWebSocketOrigin(
+    "http://attacker.example.com",
+    "127.0.0.1:9090",
+    "127.0.0.1",
+    false,
+  );
+  assertEquals(result.allowed, false);
+  assertStringIncludes(result.reason!, "untrusted origin");
+});
+
+Deno.test("validateWebSocketOrigin: accepts http://127.0.0.1", () => {
+  const result = validateWebSocketOrigin(
+    "http://127.0.0.1",
+    "127.0.0.1:9090",
+    "127.0.0.1",
+    false,
+  );
+  assertEquals(result.allowed, true);
+});
+
+Deno.test("validateWebSocketOrigin: accepts http://127.0.0.1 with port", () => {
+  const result = validateWebSocketOrigin(
+    "http://127.0.0.1:9090",
+    "127.0.0.1:9090",
+    "127.0.0.1",
+    false,
+  );
+  assertEquals(result.allowed, true);
+});
+
+Deno.test("validateWebSocketOrigin: accepts http://localhost", () => {
+  const result = validateWebSocketOrigin(
+    "http://localhost",
+    "localhost:9090",
+    "127.0.0.1",
+    false,
+  );
+  assertEquals(result.allowed, true);
+});
+
+Deno.test("validateWebSocketOrigin: accepts absent origin (non-browser client)", () => {
+  const result = validateWebSocketOrigin(
+    null,
+    "127.0.0.1:9090",
+    "127.0.0.1",
+    false,
+  );
+  assertEquals(result.allowed, true);
+});
+
+Deno.test("validateWebSocketOrigin: rejects DNS-rebinding host", () => {
+  const result = validateWebSocketOrigin(
+    "http://localhost",
+    "evil.com:9090",
+    "127.0.0.1",
+    false,
+  );
+  assertEquals(result.allowed, false);
+  assertStringIncludes(result.reason!, "untrusted host");
+});
+
+Deno.test("validateWebSocketOrigin: accepts host 127.0.0.1", () => {
+  const result = validateWebSocketOrigin(
+    null,
+    "127.0.0.1:9090",
+    "127.0.0.1",
+    false,
+  );
+  assertEquals(result.allowed, true);
+});
+
+Deno.test("validateWebSocketOrigin: accepts host localhost", () => {
+  const result = validateWebSocketOrigin(
+    null,
+    "localhost:9090",
+    "127.0.0.1",
+    false,
+  );
+  assertEquals(result.allowed, true);
+});
+
+Deno.test("validateWebSocketOrigin: accepts host matching --host flag", () => {
+  const result = validateWebSocketOrigin(
+    null,
+    "myhost.local:9090",
+    "myhost.local",
+    false,
+  );
+  assertEquals(result.allowed, true);
+});
+
+Deno.test("validateWebSocketOrigin: TLS adds server domain to trusted origins", () => {
+  const result = validateWebSocketOrigin(
+    "https://myserver.example.com",
+    "myserver.example.com:443",
+    "myserver.example.com",
+    true,
+  );
+  assertEquals(result.allowed, true);
+});
+
+Deno.test("validateWebSocketOrigin: TLS server domain rejected without TLS", () => {
+  const result = validateWebSocketOrigin(
+    "https://myserver.example.com",
+    "myserver.example.com:443",
+    "myserver.example.com",
+    false,
+  );
+  assertEquals(result.allowed, false);
+  assertStringIncludes(result.reason!, "untrusted origin");
+});
+
+Deno.test("validateWebSocketOrigin: absent host header passes", () => {
+  const result = validateWebSocketOrigin(null, null, "127.0.0.1", false);
+  assertEquals(result.allowed, true);
+});
+
+Deno.test("validateWebSocketOrigin: accepts IPv6 loopback host [::1]:9090", () => {
+  const result = validateWebSocketOrigin(
+    null,
+    "[::1]:9090",
+    "127.0.0.1",
+    false,
+  );
+  assertEquals(result.allowed, true);
+});
+
+Deno.test("validateWebSocketOrigin: rejects malformed origin", () => {
+  const result = validateWebSocketOrigin(
+    "not-a-url",
+    "127.0.0.1:9090",
+    "127.0.0.1",
+    false,
+  );
+  assertEquals(result.allowed, false);
+  assertStringIncludes(result.reason!, "malformed origin");
 });

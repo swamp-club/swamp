@@ -117,6 +117,60 @@ export function assertOffLoopbackSecurity(
   }
 }
 
+export function validateWebSocketOrigin(
+  origin: string | null,
+  hostHeader: string | null,
+  bindHost: string,
+  tlsEnabled: boolean,
+): { allowed: boolean; reason?: string } {
+  if (origin) {
+    const TRUSTED_ORIGINS = new Set([
+      "http://127.0.0.1",
+      "http://localhost",
+      "https://127.0.0.1",
+      "https://localhost",
+      "http://[::1]",
+      "https://[::1]",
+    ]);
+    if (tlsEnabled) {
+      TRUSTED_ORIGINS.add(`https://${bindHost.toLowerCase()}`);
+    }
+
+    let originBase: string;
+    try {
+      const originUrl = new URL(origin);
+      originBase = `${originUrl.protocol}//${originUrl.hostname}`;
+    } catch {
+      return { allowed: false, reason: `malformed origin: ${origin}` };
+    }
+
+    if (!TRUSTED_ORIGINS.has(originBase)) {
+      return { allowed: false, reason: `untrusted origin: ${origin}` };
+    }
+  }
+
+  if (hostHeader) {
+    let hostName: string;
+    try {
+      const parsed = new URL(`http://${hostHeader}`);
+      hostName = parsed.hostname.replace(/^\[|\]$/g, "").toLowerCase();
+    } catch {
+      return { allowed: false, reason: `malformed host: ${hostHeader}` };
+    }
+    const TRUSTED_HOSTS = new Set([
+      "127.0.0.1",
+      "localhost",
+      "::1",
+      bindHost.toLowerCase(),
+    ]);
+    if (!TRUSTED_HOSTS.has(hostName)) {
+      return { allowed: false, reason: `untrusted host: ${hostHeader}` };
+    }
+  }
+
+  return { allowed: true };
+}
+
 export const serveCommand = new Command()
   .name("serve")
   .description(
@@ -164,7 +218,7 @@ export const serveCommand = new Command()
   )
   .option(
     "--auth-mode <mode:string>",
-    "Authentication mode: none (default), token, or oauth",
+    "Authentication mode: none (default, deprecated), token, or oauth",
     { default: "none" },
   )
   .option(
@@ -253,6 +307,14 @@ export const serveCommand = new Command()
       logger.warn(
         "--admins is set but --auth-mode is {mode} — admins will have no effect",
         { mode: authConfig.mode },
+      );
+    }
+
+    if (authConfig.mode === "none") {
+      logger.warn(
+        "auth-mode is 'none' — this mode is deprecated and will be removed in a future release. " +
+          "Use --auth-mode token for authenticated access. " +
+          "See https://swamp-club.com/manual/how-to/swamp-serve/set-up-token-auth",
       );
     }
 
@@ -533,6 +595,29 @@ export const serveCommand = new Command()
         // WebSocket upgrade (check first — upgrade requests are also GETs)
         const upgrade = req.headers.get("upgrade") ?? "";
         if (upgrade.toLowerCase() === "websocket") {
+          const remoteAddr = trustProxy
+            ? (req.headers.get("x-forwarded-for")
+              ?.split(",")[0]?.trim() ??
+              info.remoteAddr.hostname)
+            : info.remoteAddr.hostname;
+
+          const originCheck = validateWebSocketOrigin(
+            req.headers.get("origin"),
+            req.headers.get("host"),
+            host,
+            tlsEnabled,
+          );
+          if (!originCheck.allowed) {
+            logger.warn(
+              "WebSocket upgrade rejected: {reason} from {ip}",
+              { reason: originCheck.reason, ip: remoteAddr },
+            );
+            return new Response(
+              `Forbidden: ${originCheck.reason}`,
+              { status: 403 },
+            );
+          }
+
           if (authConfig.mode !== "none") {
             if (authConfig.mode !== "token") {
               return new Response(
@@ -541,11 +626,6 @@ export const serveCommand = new Command()
               );
             }
 
-            const remoteAddr = trustProxy
-              ? (req.headers.get("x-forwarded-for")
-                ?.split(",")[0]?.trim() ??
-                info.remoteAddr.hostname)
-              : info.remoteAddr.hostname;
             if (!checkRateLimit(remoteAddr)) {
               logger.warn("WebSocket auth rate-limited from {ip}", {
                 ip: remoteAddr,
