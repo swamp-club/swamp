@@ -33,7 +33,7 @@ import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import {
   extractFirstStepError,
   type WorkflowRunView,
-} from "../libswamp/workflows/workflow_run_view.ts";
+} from "../libswamp/mod.ts";
 import {
   createVerifier,
   isWebhookScheme,

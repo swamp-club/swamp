@@ -166,10 +166,12 @@ Deno.test("ScheduledExecutionService: emits schedule_failed when workflow run ha
 
   const failed = events.filter((e) => e.kind === "schedule_failed");
   assertEquals(failed.length >= 1, true);
-  assertEquals(
-    (failed[0] as { kind: "schedule_failed"; error: string }).error,
-    "CEL type mismatch",
-  );
+  for (const event of failed) {
+    assertEquals(
+      (event as { kind: "schedule_failed"; error: string }).error,
+      "CEL type mismatch",
+    );
+  }
 
   const completed = events.filter((e) => e.kind === "schedule_completed");
   assertEquals(completed.length, 0);
