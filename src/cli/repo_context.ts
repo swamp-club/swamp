@@ -1069,14 +1069,19 @@ export async function acquireModelLocks(
   }
 
   for (const { modelType, modelId } of unique) {
-    const key = `data/${modelType}/${modelId}/.lock`;
+    const lockFileKey = `data/${modelType}/${modelId}/.lock`;
     // Use cached provider for custom types to avoid repeated registry lookups
     const lock = customProvider && isCustomDatastoreConfig(config)
-      ? customProvider.createLock(config.datastorePath, { lockKey: key })
+      ? customProvider.createLock(config.datastorePath, {
+        lockKey: lockFileKey,
+      })
       : await createModelLock(config, modelType, modelId);
-    // Register lock only (no sync service — we handle S3 pull/push manually)
-    await registerDatastoreSyncNamed(key, { lock });
-    lockKeys.push(key);
+    // Unique coordinator key so parallel steps on the same model get
+    // separate entries — prevents the second registration from
+    // overwriting the first (which would orphan the first lock).
+    const coordinatorKey = `${lockFileKey}#${crypto.randomUUID().slice(0, 8)}`;
+    await registerDatastoreSyncNamed(coordinatorKey, { lock });
+    lockKeys.push(coordinatorKey);
 
     // Re-check global lock after acquiring each per-model lock to close TOCTOU race.
     // If a structural command acquired the global lock between our initial check
@@ -1168,8 +1173,6 @@ export async function acquireModelLocks(
     }
   }
 
-  Deno.env.set(SWAMP_LOCK_HOLDER_PID, String(Deno.pid));
-
   const flush = async () => {
     try {
       // For custom sync-capable datastores: push under global lock
@@ -1255,7 +1258,6 @@ export async function acquireModelLocks(
       for (const key of lockKeys) {
         await flushDatastoreSyncNamed(key);
       }
-      Deno.env.delete(SWAMP_LOCK_HOLDER_PID);
     }
   };
 

@@ -25,16 +25,14 @@ import {
 } from "../context.ts";
 import {
   acquireModelLocks,
-  requireInitializedRepo,
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import { resolveSuspendedRun } from "../../domain/workflows/suspended_run_resolver.ts";
-import { extractModelReferencesFromWorkflow } from "../../domain/workflows/model_reference_extractor.ts";
-import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import {
   type DirectTypeResolver,
+  type StepLockHook,
   WorkflowExecutionService,
 } from "../../domain/workflows/execution_service.ts";
 import {
@@ -143,12 +141,12 @@ export const workflowResumeCommand = new Command()
       // workflow-runs path the run was written to. Constructing
       // YamlWorkflowRunRepository(repoDir) directly would bind to repo-local
       // .swamp/workflow-runs/ and miss runs stored in a configured datastore.
-      let repoDir = unlocked.repoDir;
-      let repoContext = unlocked.repoContext;
+      const repoDir = unlocked.repoDir;
+      const repoContext = unlocked.repoContext;
       const workflowRepo = repoContext.workflowRepo;
       const runRepo = repoContext.workflowRunRepo;
 
-      const { run, workflow, workflowName } = await resolveSuspendedRun(
+      const { run, workflowName } = await resolveSuspendedRun(
         workflowRepo,
         runRepo,
         workflowIdOrName,
@@ -163,195 +161,135 @@ export const workflowResumeCommand = new Command()
         );
       }
 
-      // Acquire per-model locks instead of the global lock so that steps
-      // which perform datastore operations (e.g. shelling out to
-      // `swamp model method run` on another model) don't deadlock.
-      let flushModelLocks: (() => Promise<void>) | null = null;
+      const stepLockHook: StepLockHook = async (modelType, modelId) => {
+        const result = await acquireModelLocks(
+          unlocked.datastoreConfig,
+          [{ modelType, modelId }],
+          repoDir,
+          unlocked.syncService,
+          repoContext.catalogStore,
+        );
+        if (result.synced) repoContext.catalogStore.invalidate();
+        return result;
+      };
 
-      const modelRefs = await extractModelReferencesFromWorkflow(
-        workflow,
-        workflowRepo,
-      );
+      await Promise.all([
+        modelRegistry.ensureLoaded(),
+        vaultTypeRegistry.ensureLoaded(),
+        reportRegistry.ensureLoaded(),
+      ]);
 
-      if (modelRefs !== null && modelRefs.length > 0) {
-        const resolvedModels: Array<
-          { modelType: string; modelId: string }
-        > = [];
-
-        for (const ref of modelRefs) {
-          const lookupResult = await findDefinitionByIdOrName(
-            unlocked.repoContext.definitionRepo,
-            ref,
-          );
-          if (lookupResult) {
-            resolvedModels.push({
-              modelType: lookupResult.type.normalized,
-              modelId: lookupResult.definition.id,
-            });
-          }
+      // Surface what the resume inputs do to the run's inputs. Key names only —
+      // values may be secrets and are never logged. Overrides (a resume key
+      // that collides with an existing input) are warned; purely-additive keys
+      // are info.
+      const resumeKeys = Object.keys(resumeInputs);
+      if (resumeKeys.length > 0) {
+        const overridden = resumeKeys.filter((key) => key in run.inputs);
+        const added = resumeKeys.filter((key) => !(key in run.inputs));
+        if (overridden.length > 0) {
+          cliCtx.logger
+            .warn`Resume overriding existing input(s): ${
+            overridden.join(", ")
+          }`;
         }
-
-        if (resolvedModels.length > 0) {
-          const lockResult = await acquireModelLocks(
-            unlocked.datastoreConfig,
-            resolvedModels,
-            unlocked.repoDir,
-            unlocked.syncService,
-            unlocked.repoContext.catalogStore,
-          );
-          if (lockResult.synced) {
-            unlocked.repoContext.catalogStore.invalidate();
-          }
-          flushModelLocks = lockResult.flush;
+        if (added.length > 0) {
+          cliCtx.logger.info`Resume adding input(s): ${added.join(", ")}`;
         }
-      } else if (modelRefs === null) {
-        const logger = getSwampLogger(["workflow", "resume"]);
-        logger
-          .info`Workflow contains dynamic model references — using global lock`;
-        const globalResult = await requireInitializedRepo({
-          repoDir: resolveRepoDir(options.repoDir),
-          outputMode: cliCtx.outputMode,
-        });
-        repoDir = globalResult.repoDir;
-        repoContext = globalResult.repoContext;
       }
 
-      try {
-        await Promise.all([
-          modelRegistry.ensureLoaded(),
-          vaultTypeRegistry.ensureLoaded(),
-          reportRegistry.ensureLoaded(),
-        ]);
-
-        // Surface what the resume inputs do to the run's inputs. Key names only —
-        // values may be secrets and are never logged. Overrides (a resume key
-        // that collides with an existing input) are warned; purely-additive keys
-        // are info.
-        const resumeKeys = Object.keys(resumeInputs);
-        if (resumeKeys.length > 0) {
-          const overridden = resumeKeys.filter((key) => key in run.inputs);
-          const added = resumeKeys.filter((key) => !(key in run.inputs));
-          if (overridden.length > 0) {
-            cliCtx.logger
-              .warn`Resume overriding existing input(s): ${
-              overridden.join(", ")
-            }`;
-          }
-          if (added.length > 0) {
-            cliCtx.logger.info`Resume adding input(s): ${added.join(", ")}`;
+      const directResolver: DirectTypeResolver = async (
+        typeArg,
+        defName,
+        methodName,
+        inputs,
+      ) => {
+        let resolvedType = ModelType.create(typeArg);
+        let modelDef = await resolveModelType(
+          resolvedType,
+          getAutoResolver(),
+        );
+        if (!modelDef && typeArg.startsWith("@")) {
+          const strippedType = ModelType.create(typeArg.slice(1));
+          const strippedDef = await resolveModelType(
+            strippedType,
+            getAutoResolver(),
+          );
+          if (strippedDef) {
+            resolvedType = strippedType;
+            modelDef = strippedDef;
           }
         }
-
-        const directResolver: DirectTypeResolver = async (
+        if (!modelDef) {
+          throw new Error(`Unknown model type: ${resolvedType.normalized}`);
+        }
+        const autoDefRepo = new YamlDefinitionRepository(
+          repoDir,
+          undefined,
+          swampPath(repoDir, SWAMP_SUBDIRS.autoDefinitions),
+          false,
+        );
+        const result = await resolveOrCreateDefinition(
+          {
+            lookupDefinition: (name) =>
+              findDefinitionByIdOrName(repoContext.definitionRepo, name),
+            getModelDef: (type) => resolveModelType(type, getAutoResolver()),
+            saveDefinition: (type, def) => autoDefRepo.save(type, def),
+            getDefinitionPath: (type, id) =>
+              autoDefRepo.getPath(type, id as DefinitionId),
+          },
           typeArg,
           defName,
           methodName,
           inputs,
-        ) => {
-          let resolvedType = ModelType.create(typeArg);
-          let modelDef = await resolveModelType(
-            resolvedType,
-            getAutoResolver(),
-          );
-          if (!modelDef && typeArg.startsWith("@")) {
-            const strippedType = ModelType.create(typeArg.slice(1));
-            const strippedDef = await resolveModelType(
-              strippedType,
-              getAutoResolver(),
-            );
-            if (strippedDef) {
-              resolvedType = strippedType;
-              modelDef = strippedDef;
-            }
-          }
-          if (!modelDef) {
-            throw new Error(`Unknown model type: ${resolvedType.normalized}`);
-          }
-          const autoDefRepo = new YamlDefinitionRepository(
-            repoDir,
-            undefined,
-            swampPath(repoDir, SWAMP_SUBDIRS.autoDefinitions),
-            false,
-          );
-          const result = await resolveOrCreateDefinition(
-            {
-              lookupDefinition: (name) =>
-                findDefinitionByIdOrName(repoContext.definitionRepo, name),
-              getModelDef: (type) => resolveModelType(type, getAutoResolver()),
-              saveDefinition: (type, def) => autoDefRepo.save(type, def),
-              getDefinitionPath: (type, id) =>
-                autoDefRepo.getPath(type, id as DefinitionId),
-            },
-            typeArg,
-            defName,
-            methodName,
-            inputs,
-            resolvedType,
-            modelDef,
-          );
-          if (!result.ok) throw new Error(result.error.message);
-          return {
-            definition: result.definition,
-            modelType: result.modelType,
-            created: result.created,
-            routedMethodInputs: result.routedInputs.methodArguments,
-          };
-        };
-
-        const service = new WorkflowExecutionService(
-          workflowRepo,
-          runRepo,
-          repoDir,
-          undefined,
-          unlocked.datastoreResolver.resolvePath(SWAMP_SUBDIRS.data),
-          repoContext.catalogStore,
-          directResolver,
-          repoContext.markDirty,
-          repoContext.unifiedDataRepo.namespace,
+          resolvedType,
+          modelDef,
         );
-
-        const renderer = createWorkflowRunRenderer(cliCtx.outputMode, {
-          workflowName,
-        });
-
-        const resumeGenerator = async function* (): AsyncGenerator<
-          WorkflowRunEvent
-        > {
-          for await (
-            const event of service.resume(workflowName, run.id, {
-              signal: AbortSignal.timeout(600_000),
-              swampSha: GIT_SHA,
-              inputs: resumeInputs,
-            })
-          ) {
-            yield mapWorkflowExecutionEvent(event, runRepo);
-          }
+        if (!result.ok) throw new Error(result.error.message);
+        return {
+          definition: result.definition,
+          modelType: result.modelType,
+          created: result.created,
+          routedMethodInputs: result.routedInputs.methodArguments,
         };
+      };
 
-        await consumeStream(resumeGenerator(), renderer.handlers());
+      const service = new WorkflowExecutionService(
+        workflowRepo,
+        runRepo,
+        repoDir,
+        undefined,
+        unlocked.datastoreResolver.resolvePath(SWAMP_SUBDIRS.data),
+        repoContext.catalogStore,
+        directResolver,
+        repoContext.markDirty,
+        repoContext.unifiedDataRepo.namespace,
+        stepLockHook,
+      );
 
-        if (renderer.workflowFailed()) {
-          if (flushModelLocks) await flushModelLocks();
-          Deno.exitCode = 1;
-          return;
+      const renderer = createWorkflowRunRenderer(cliCtx.outputMode, {
+        workflowName,
+      });
+
+      const resumeGenerator = async function* (): AsyncGenerator<
+        WorkflowRunEvent
+      > {
+        for await (
+          const event of service.resume(workflowName, run.id, {
+            signal: AbortSignal.timeout(600_000),
+            swampSha: GIT_SHA,
+            inputs: resumeInputs,
+          })
+        ) {
+          yield mapWorkflowExecutionEvent(event, runRepo);
         }
+      };
 
-        if (flushModelLocks) await flushModelLocks();
-      } catch (error) {
-        try {
-          if (flushModelLocks) await flushModelLocks();
-        } catch (releaseError) {
-          const logger = getSwampLogger(["workflow", "resume"]);
-          logger.warn(
-            "Failed to release locks during error cleanup: {error}",
-            {
-              error: releaseError instanceof Error
-                ? releaseError.message
-                : String(releaseError),
-            },
-          );
-        }
-        throw error;
+      await consumeStream(resumeGenerator(), renderer.handlers());
+
+      if (renderer.workflowFailed()) {
+        Deno.exitCode = 1;
+        return;
       }
     },
   );

@@ -25,15 +25,13 @@ import {
 } from "../context.ts";
 import {
   acquireModelLocks,
-  requireInitializedRepo,
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
-import { extractModelReferencesFromWorkflow } from "../../domain/workflows/model_reference_extractor.ts";
-import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import {
   type DirectTypeResolver,
+  type StepLockHook,
   WorkflowExecutionService,
 } from "../../domain/workflows/execution_service.ts";
 import { resolveOrCreateDefinition } from "../../libswamp/mod.ts";
@@ -187,8 +185,6 @@ export const workflowRunCommand = new Command()
       repoDir: resolveRepoDir(options.repoDir),
       outputMode: ctx.outputMode,
     });
-    const workflowRepo = unlocked.repoContext.workflowRepo;
-
     const lastEvaluated = options.lastEvaluated as boolean;
 
     const stdinContent = options.stdin ? await readStdin() : null;
@@ -215,77 +211,22 @@ export const workflowRunCommand = new Command()
       ? parseTags(options.tag as string[])
       : undefined;
 
-    let flushModelLocks: (() => Promise<void>) | null = null;
-    let repoDir: string;
-    let repoContext: typeof unlocked.repoContext;
+    const repoDir = unlocked.repoDir;
+    const repoContext = unlocked.repoContext;
+
+    const stepLockHook: StepLockHook = async (modelType, modelId) => {
+      const result = await acquireModelLocks(
+        unlocked.datastoreConfig,
+        [{ modelType, modelId }],
+        repoDir,
+        unlocked.syncService,
+        repoContext.catalogStore,
+      );
+      if (result.synced) repoContext.catalogStore.invalidate();
+      return result;
+    };
 
     try {
-      // Pre-lookup workflow for per-model lock acquisition
-      const preWorkflow = await workflowRepo.findByName(workflowIdOrName) ??
-        await workflowRepo.findById(createWorkflowId(workflowIdOrName));
-
-      if (preWorkflow) {
-        // Try to extract model references for per-model locking
-        const modelRefs = await extractModelReferencesFromWorkflow(
-          preWorkflow,
-          workflowRepo,
-        );
-
-        if (modelRefs !== null && modelRefs.length > 0) {
-          const definitionRepo = unlocked.repoContext.definitionRepo;
-          const resolvedModels: Array<
-            { modelType: string; modelId: string }
-          > = [];
-
-          for (const ref of modelRefs) {
-            const lookupResult = await findDefinitionByIdOrName(
-              definitionRepo,
-              ref,
-            );
-            if (lookupResult) {
-              resolvedModels.push({
-                modelType: lookupResult.type.normalized,
-                modelId: lookupResult.definition.id,
-              });
-            }
-          }
-
-          if (resolvedModels.length > 0) {
-            const lockResult = await acquireModelLocks(
-              unlocked.datastoreConfig,
-              resolvedModels,
-              unlocked.repoDir,
-              unlocked.syncService,
-              unlocked.repoContext.catalogStore,
-            );
-            if (lockResult.synced) {
-              unlocked.repoContext.catalogStore.invalidate();
-            }
-            flushModelLocks = lockResult.flush;
-          }
-
-          repoDir = unlocked.repoDir;
-          repoContext = unlocked.repoContext;
-        } else if (modelRefs === null) {
-          // Dynamic references — fall back to global lock
-          const logger = getSwampLogger(["workflow", "run"]);
-          logger
-            .info`Workflow contains dynamic model references — using global lock`;
-          const globalResult = await requireInitializedRepo({
-            repoDir: resolveRepoDir(options.repoDir),
-            outputMode: ctx.outputMode,
-          });
-          repoDir = globalResult.repoDir;
-          repoContext = globalResult.repoContext;
-        } else {
-          repoDir = unlocked.repoDir;
-          repoContext = unlocked.repoContext;
-        }
-      } else {
-        repoDir = unlocked.repoDir;
-        repoContext = unlocked.repoContext;
-      }
-
       const runRepo = repoContext.workflowRunRepo;
 
       // Load all extension registries needed for workflow execution in parallel
@@ -394,6 +335,7 @@ export const workflowRunCommand = new Command()
             directResolver,
             repoContext.markDirty,
             repoContext.unifiedDataRepo.namespace,
+            stepLockHook,
           );
         },
         catalogStore: repoContext.catalogStore,
@@ -451,27 +393,11 @@ export const workflowRunCommand = new Command()
         );
 
         if (renderer.workflowFailed()) {
-          if (flushModelLocks) await flushModelLocks();
           Deno.exitCode = 1;
           return;
         }
       }
-
-      // Release per-model locks on success
-      if (flushModelLocks) await flushModelLocks();
     } catch (error) {
-      // Release per-model locks on error (best-effort — don't lose original error)
-      try {
-        if (flushModelLocks) await flushModelLocks();
-      } catch (releaseError) {
-        const logger = getSwampLogger(["workflow", "run"]);
-        logger.warn("Failed to release locks during error cleanup: {error}", {
-          error: releaseError instanceof Error
-            ? releaseError.message
-            : String(releaseError),
-        });
-      }
-
       if (error instanceof UserError) {
         throw error;
       }

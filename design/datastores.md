@@ -800,17 +800,30 @@ lifecycle as a global singleton:
 - `registerDatastoreSync({ service?, lock? })` — acquire lock, pull if S3
 - `flushDatastoreSync()` — push if S3, release lock
 
-Per-model commands (`model method run`, `workflow run`) acquire only
-per-model locks via `acquireModelLocks`; they do not acquire the global
-lock but do `inspect()` it to wait out any in-flight structural command.
-The `inspect()` must target the **same** namespaced global-lock key the
-structural command acquires (`datastoreGlobalLockOptions`); otherwise the
-drain coordination would inspect a different lock than the one held and
-silently become a no-op in namespaced mode. When a stale global lock is
-observed during this wait, `acquireModelLocks` calls
-`forceRelease(expectedNonce)` to clear it — without this, the post-acquire
-TOCTOU re-check would re-detect the same stale lock on every iteration and
-recurse indefinitely.
+Per-model commands (`model method run`) acquire only per-model locks via
+`acquireModelLocks`; they do not acquire the global lock but do `inspect()`
+it to wait out any in-flight structural command. The `inspect()` must
+target the **same** namespaced global-lock key the structural command
+acquires (`datastoreGlobalLockOptions`); otherwise the drain coordination
+would inspect a different lock than the one held and silently become a
+no-op in namespaced mode. When a stale global lock is observed during this
+wait, `acquireModelLocks` calls `forceRelease(expectedNonce)` to clear
+it — without this, the post-acquire TOCTOU re-check would re-detect the
+same stale lock on every iteration and recurse indefinitely.
+
+Workflow commands (`workflow run`, `workflow resume`) and serve-hosted
+workflow execution do **not** acquire locks upfront. Instead, per-model
+locks are acquired per-step via a `StepLockHook` callback injected into
+the workflow execution engine. Each model method step acquires its own
+per-model lock before execution and releases it in a finally block after
+the method completes. This per-step locking prevents deadlocks when a
+model method spawns a subprocess `swamp model method run` targeting a
+model that would otherwise be locked by the parent workflow. Parallel
+workflow steps on different models lock independently; parallel steps on
+the same model serialize at the lock (correct — concurrent writes to the
+same model are unsafe). The coordinator uses unique keys per lock
+acquisition (suffixed with a random ID) so parallel steps on the same
+model get separate entries and do not overwrite each other.
 
 Because per-model lock keys are not namespaced, `waitForPerModelLocks`
 (which walks the datastore root) drains in-flight per-model writers across

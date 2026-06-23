@@ -34,6 +34,7 @@ import type {
 import { createLibSwampContext, workflowRun } from "../libswamp/mod.ts";
 import {
   type DirectTypeResolver,
+  type StepLockHook,
   WorkflowExecutionService,
 } from "../domain/workflows/execution_service.ts";
 import { createWorkflowId } from "../domain/workflows/workflow_id.ts";
@@ -45,7 +46,6 @@ import { resolveOrCreateDefinition } from "../libswamp/mod.ts";
 import { YamlDefinitionRepository } from "../infrastructure/persistence/yaml_definition_repository.ts";
 import type { DefinitionId } from "../domain/definitions/definition.ts";
 import { findDefinitionByIdOrName } from "../domain/models/model_lookup.ts";
-import { extractModelReferencesFromWorkflow } from "../domain/workflows/model_reference_extractor.ts";
 import { resolveModelType } from "../domain/extensions/extension_auto_resolver.ts";
 import { getAutoResolver } from "../domain/extensions/auto_resolver_context.ts";
 import { DefaultMethodExecutionService } from "../domain/models/method_execution_service.ts";
@@ -64,11 +64,11 @@ import { reportRegistry } from "../domain/reports/report_registry.ts";
 import type { DatastoreConfig } from "../domain/datastore/datastore_config.ts";
 import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
 import { acquireModelLocks } from "../cli/repo_context.ts";
-import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 
 export async function createWorkflowRunDeps(
   repoDir: string,
   repoContext: RepositoryContext,
+  stepLockHook?: StepLockHook,
 ): Promise<WorkflowRunDeps> {
   await Promise.all([
     modelRegistry.ensureLoaded(),
@@ -152,6 +152,7 @@ export async function createWorkflowRunDeps(
         directResolver,
         repoContext.markDirty,
         repoContext.unifiedDataRepo.namespace,
+        stepLockHook,
       );
     },
     catalogStore: repoContext.catalogStore,
@@ -249,13 +250,13 @@ export async function createModelMethodRunDeps(
   };
 }
 
-const depsLogger = getSwampLogger(["serve", "deps"]);
-
 /**
- * Executes a workflow run with model lock acquisition — the single code path
- * for both WebSocket-triggered and scheduled workflow execution.
+ * Executes a workflow run with per-step model lock acquisition — the single
+ * code path for both WebSocket-triggered and scheduled workflow execution.
  *
- * Handles: pre-lookup → lock acquisition → workflowRun → lock release.
+ * Handles: pre-lookup → stepLockHook creation → workflowRun.
+ * Locks are acquired and released per-step by the execution service rather
+ * than held for the entire workflow duration.
  * The caller provides a callback to consume the event stream.
  */
 export async function executeWorkflowWithLocks(
@@ -273,98 +274,60 @@ export async function executeWorkflowWithLocks(
    */
   syncService?: DatastoreSyncService,
 ): Promise<void> {
-  let flushLocks: (() => Promise<void>) | null = null;
+  // Pre-lookup workflow for trigger.inputs resolution
+  const workflowRepo = repoContext.workflowRepo;
+  const workflow = await workflowRepo.findByName(
+    input.workflowIdOrName,
+  ) ?? await workflowRepo.findById(
+    createWorkflowId(input.workflowIdOrName),
+  );
 
-  try {
-    // Pre-lookup workflow for per-model lock acquisition
-    const workflowRepo = repoContext.workflowRepo;
-    const workflow = await workflowRepo.findByName(
-      input.workflowIdOrName,
-    ) ?? await workflowRepo.findById(
-      createWorkflowId(input.workflowIdOrName),
+  const stepLockHook: StepLockHook = async (modelType, modelId) => {
+    const result = await acquireModelLocks(
+      datastoreConfig,
+      [{ modelType, modelId }],
+      repoDir,
+      syncService,
+      repoContext.catalogStore,
     );
+    if (result.synced) repoContext.catalogStore.invalidate();
+    return result;
+  };
 
-    if (workflow) {
-      const modelRefs = await extractModelReferencesFromWorkflow(
-        workflow,
-        workflowRepo,
-      );
-      if (modelRefs !== null && modelRefs.length > 0) {
-        const resolvedModels: Array<{ modelType: string; modelId: string }> =
-          [];
-        for (const ref of modelRefs) {
-          const result = await findDefinitionByIdOrName(
-            repoContext.definitionRepo,
-            ref,
-          );
-          if (result) {
-            resolvedModels.push({
-              modelType: result.type.normalized,
-              modelId: result.definition.id,
-            });
-          }
-        }
-        if (resolvedModels.length > 0) {
-          const lockResult = await acquireModelLocks(
-            datastoreConfig,
-            resolvedModels,
-            repoDir,
-            syncService,
-            repoContext.catalogStore,
-          );
-          if (lockResult.synced) repoContext.catalogStore.invalidate();
-          flushLocks = lockResult.flush;
-        }
-      }
+  const deps = await createWorkflowRunDeps(repoDir, repoContext, stepLockHook);
+  const libCtx = createLibSwampContext({ signal });
+
+  // Layer the workflow's trigger.inputs under any caller-supplied inputs so
+  // scheduled and webhook trigger-fired runs get baseline values at fire
+  // time. Downstream workflowRun applies schema defaults and validates,
+  // yielding precedence: caller inputs > trigger.inputs > schema defaults.
+  //
+  // For webhook runs, trigger.inputs may reference the request payload via the
+  // `webhook` CEL namespace (e.g. "${{ webhook.body.data.issue.identifier }}").
+  // Resolve those against the payload here — before workflowRun's coercion and
+  // validation — so a required input mapped from the payload satisfies the
+  // schema.
+  let resolvedTriggerInputs: Record<string, unknown> | undefined;
+  if (workflow && input.webhook && workflow.triggerInputs) {
+    const resolver = new TriggerInputResolver(new CelEvaluator());
+    resolvedTriggerInputs = await resolver.resolve(workflow.triggerInputs, {
+      model: {},
+      env: buildEnvContext(),
+      webhook: input.webhook,
+    });
+  }
+
+  const effectiveInput = workflow
+    ? {
+      ...input,
+      inputs: workflow.baselineInputs(
+        input.inputs ?? {},
+        resolvedTriggerInputs,
+      ),
     }
+    : input;
 
-    const deps = await createWorkflowRunDeps(repoDir, repoContext);
-    const libCtx = createLibSwampContext({ signal });
-
-    // Layer the workflow's trigger.inputs under any caller-supplied inputs so
-    // scheduled and webhook trigger-fired runs get baseline values at fire
-    // time. Downstream workflowRun applies schema defaults and validates,
-    // yielding precedence: caller inputs > trigger.inputs > schema defaults.
-    //
-    // For webhook runs, trigger.inputs may reference the request payload via the
-    // `webhook` CEL namespace (e.g. "${{ webhook.body.data.issue.identifier }}").
-    // Resolve those against the payload here — before workflowRun's coercion and
-    // validation — so a required input mapped from the payload satisfies the
-    // schema.
-    let resolvedTriggerInputs: Record<string, unknown> | undefined;
-    if (workflow && input.webhook && workflow.triggerInputs) {
-      const resolver = new TriggerInputResolver(new CelEvaluator());
-      resolvedTriggerInputs = await resolver.resolve(workflow.triggerInputs, {
-        model: {},
-        env: buildEnvContext(),
-        webhook: input.webhook,
-      });
-    }
-
-    const effectiveInput = workflow
-      ? {
-        ...input,
-        inputs: workflow.baselineInputs(
-          input.inputs ?? {},
-          resolvedTriggerInputs,
-        ),
-      }
-      : input;
-
-    for await (const event of workflowRun(libCtx, deps, effectiveInput)) {
-      onEvent(event);
-    }
-  } finally {
-    if (flushLocks) {
-      try {
-        await flushLocks();
-      } catch (releaseError) {
-        depsLogger.warn("Failed to release locks: {error}", {
-          error: releaseError instanceof Error
-            ? releaseError.message
-            : String(releaseError),
-        });
-      }
-    }
+  for await (const event of workflowRun(libCtx, deps, effectiveInput)) {
+    onEvent(event);
   }
 }

@@ -252,6 +252,15 @@ export type DirectTypeResolver = (
   globalArgs?: Record<string, unknown>,
 ) => Promise<DirectTypeResolveResult>;
 
+export interface StepLockResult {
+  flush: () => Promise<void>;
+}
+
+export type StepLockHook = (
+  modelType: string,
+  modelId: string,
+) => Promise<StepLockResult>;
+
 export interface StepExecutorDeps {
   definitionRepo: DefinitionRepository;
   unifiedDataRepo: UnifiedDataRepository;
@@ -276,6 +285,7 @@ export class DefaultStepExecutor implements StepExecutor {
     private readonly injectedDeps?: StepExecutorDeps,
     directTypeResolver?: DirectTypeResolver,
     private readonly markDirty?: MarkDirtyHook,
+    private readonly stepLockHook?: StepLockHook,
   ) {
     this._directTypeResolver = directTypeResolver;
   }
@@ -842,72 +852,86 @@ export class DefaultStepExecutor implements StepExecutor {
       }
     }
 
-    // Execute the method with the EVALUATED definition. The logger
-    // handles both console and file persistence via RunFileSink. Data
-    // is persisted by DataWriter during execution — no double-save.
-    return await executionService.executeWorkflow(
-      evaluatedDefinition,
-      modelDef,
-      task.methodName,
-      buildMethodContext(
-        {
-          dataRepository: unifiedDataRepo,
-          definitionRepository: definitionRepo,
-          vaultService,
-          redactor: ctx.secretRedactor,
-          dataQueryService,
-          createCelEnvironment: createExtensionCelEnvironment,
-        },
-        {
-          signal: ctx.signal,
-          repoDir: ctx.repoDir,
-          modelType,
-          modelId: evaluatedDefinition.id,
-          globalArgs: evaluatedDefinition.globalArguments,
-          definition: {
-            id: evaluatedDefinition.id,
-            name: evaluatedDefinition.name,
-            version: evaluatedDefinition.version,
-            tags: evaluatedDefinition.tags,
+    // Acquire per-step lock if a lock hook is provided. The lock covers
+    // the method execution (which writes data) and is released in the
+    // finally block — even on failure — so the lock is never orphaned.
+    let flushLock: (() => Promise<void>) | null = null;
+    if (this.stepLockHook) {
+      const lockResult = await this.stepLockHook(
+        modelType.normalized,
+        originalDefinition.id,
+      );
+      flushLock = lockResult.flush;
+    }
+    try {
+      return await executionService.executeWorkflow(
+        evaluatedDefinition,
+        modelDef,
+        task.methodName,
+        buildMethodContext(
+          {
+            dataRepository: unifiedDataRepo,
+            definitionRepository: definitionRepo,
+            vaultService,
+            redactor: ctx.secretRedactor,
+            dataQueryService,
+            createCelEnvironment: createExtensionCelEnvironment,
           },
-          methodName: task.methodName,
-          logger: runLogger,
-          tagOverrides: workflowTagOverrides,
-          runtimeTags: ctx.runtimeTags,
-          dataOutputOverrides: stepDataOutputOverrides,
-          vaultSecrets: secretBag,
-          placement: ctx.step?.placement,
-          skipCheckNames: ctx.skipCheckNames,
-          skipCheckLabels: ctx.skipCheckLabels,
-          skipAllChecks: ctx.skipAllChecks,
-          extensionFilesRoot: modelDef.extensionFilesRoot,
-          onEvent: ctx.emitEvent
-            ? (event: MethodExecutionEvent) => {
-              if (event.type === "output") {
-                ctx.emitEvent!({
-                  kind: "method_output",
-                  jobId: ctx.jobName,
-                  stepId: ctx.stepName,
-                  modelName: originalDefinition.name,
-                  methodName: task.methodName,
-                  stream: event.stream,
-                  line: event.line,
-                });
-              } else {
-                ctx.emitEvent!({
-                  kind: "method_event",
-                  jobId: ctx.jobName,
-                  stepId: ctx.stepName,
-                  modelName: originalDefinition.name,
-                  methodName: task.methodName,
-                  event,
-                });
+          {
+            signal: ctx.signal,
+            repoDir: ctx.repoDir,
+            modelType,
+            modelId: evaluatedDefinition.id,
+            globalArgs: evaluatedDefinition.globalArguments,
+            definition: {
+              id: evaluatedDefinition.id,
+              name: evaluatedDefinition.name,
+              version: evaluatedDefinition.version,
+              tags: evaluatedDefinition.tags,
+            },
+            methodName: task.methodName,
+            logger: runLogger,
+            tagOverrides: workflowTagOverrides,
+            runtimeTags: ctx.runtimeTags,
+            dataOutputOverrides: stepDataOutputOverrides,
+            vaultSecrets: secretBag,
+            placement: ctx.step?.placement,
+            skipCheckNames: ctx.skipCheckNames,
+            skipCheckLabels: ctx.skipCheckLabels,
+            skipAllChecks: ctx.skipAllChecks,
+            extensionFilesRoot: modelDef.extensionFilesRoot,
+            onEvent: ctx.emitEvent
+              ? (event: MethodExecutionEvent) => {
+                if (event.type === "output") {
+                  ctx.emitEvent!({
+                    kind: "method_output",
+                    jobId: ctx.jobName,
+                    stepId: ctx.stepName,
+                    modelName: originalDefinition.name,
+                    methodName: task.methodName,
+                    stream: event.stream,
+                    line: event.line,
+                  });
+                } else {
+                  ctx.emitEvent!({
+                    kind: "method_event",
+                    jobId: ctx.jobName,
+                    stepId: ctx.stepName,
+                    modelName: originalDefinition.name,
+                    methodName: task.methodName,
+                    event,
+                  });
+                }
               }
-            }
-            : undefined,
-        },
-      ),
-    );
+              : undefined,
+          },
+        ),
+      );
+    } finally {
+      if (flushLock) {
+        await flushLock();
+      }
+    }
   }
 
   /**
@@ -1237,9 +1261,15 @@ export class WorkflowExecutionService {
     private readonly directTypeResolver?: DirectTypeResolver,
     private readonly markDirty?: MarkDirtyHook,
     private readonly namespace: Namespace = SOLO_NAMESPACE,
+    stepLockHook?: StepLockHook,
   ) {
     this.executor = executor ??
-      new DefaultStepExecutor(undefined, directTypeResolver, markDirty);
+      new DefaultStepExecutor(
+        undefined,
+        directTypeResolver,
+        markDirty,
+        stepLockHook,
+      );
     this.dataBaseDir = dataBaseDir;
     this.catalogStore = catalogStore;
     this.definitionRepo = new YamlDefinitionRepository(repoDir);
