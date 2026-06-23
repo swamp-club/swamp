@@ -36,6 +36,10 @@ import { workflowsDir, WorkflowWatcher } from "./watcher.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import type { WorkflowRunEvent, WorkflowRunInput } from "./run.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
+import {
+  extractFirstStepError,
+  type WorkflowRunView,
+} from "./workflow_run_view.ts";
 
 const logger = getSwampLogger(["scheduled-execution"]);
 
@@ -286,6 +290,7 @@ export class ScheduledExecutionService {
 
     try {
       let runId = "";
+      let completedRun: WorkflowRunView | undefined;
 
       await this.deps.executeWorkflow(
         { workflowIdOrName: workflowName },
@@ -294,19 +299,36 @@ export class ScheduledExecutionService {
           if (event.kind === "started") {
             runId = event.runId;
           }
+          if (event.kind === "completed") {
+            completedRun = event.run;
+          }
         },
       );
 
-      this.emit({
-        kind: "schedule_completed",
-        workflowId,
-        workflowName,
-        runId,
-      });
-      logger.info(
-        "Scheduled run completed for workflow {name} (run: {runId})",
-        { name: workflowName, runId },
-      );
+      if (completedRun?.status === "failed") {
+        const message = extractFirstStepError(completedRun);
+        this.emit({
+          kind: "schedule_failed",
+          workflowId,
+          workflowName,
+          error: message,
+        });
+        logger.error(
+          "Scheduled run failed for workflow {name}: {error}",
+          { name: workflowName, error: message },
+        );
+      } else {
+        this.emit({
+          kind: "schedule_completed",
+          workflowId,
+          workflowName,
+          runId,
+        });
+        logger.info(
+          "Scheduled run completed for workflow {name} (run: {runId})",
+          { name: workflowName, runId },
+        );
+      }
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") {
         logger.info("Scheduled run aborted for workflow {name}", {

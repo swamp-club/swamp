@@ -17,10 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type {
-  EventHandlers,
-  WorkflowRunEvent,
-  WorkflowRunView,
+import {
+  type EventHandlers,
+  extractFirstStepError,
+  type WorkflowRunEvent,
+  type WorkflowRunView,
 } from "../../libswamp/mod.ts";
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
@@ -70,7 +71,12 @@ class LogWorkflowRunRenderer implements WorkflowRunRenderer {
         getWorkflowRunLogger(this.workflowName, e.jobId).info("Job started");
       },
       job_completed: (e) => {
-        getWorkflowRunLogger(this.workflowName, e.jobId).info("Job completed");
+        const jobLogger = getWorkflowRunLogger(this.workflowName, e.jobId);
+        if (e.status === "failed") {
+          jobLogger.error("Job failed");
+        } else {
+          jobLogger.info("Job completed");
+        }
       },
       job_skipped: (e) => {
         getWorkflowRunLogger(this.workflowName, e.jobId).info("Job skipped");
@@ -199,7 +205,8 @@ class LogWorkflowRunRenderer implements WorkflowRunRenderer {
         const wfLogger = getWorkflowRunLogger(this.workflowName);
         if (e.run.status === "failed") {
           this._failed = true;
-          wfLogger.error("Workflow {status}", { status: e.run.status });
+          const stepError = extractFirstStepError(e.run);
+          wfLogger.error("Workflow failed: {error}", { error: stepError });
         } else {
           wfLogger.with({ summary: true }).info("Workflow {status}", {
             status: e.run.status,

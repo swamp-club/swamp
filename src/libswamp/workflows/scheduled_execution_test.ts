@@ -27,6 +27,7 @@ import { Job } from "../../domain/workflows/job.ts";
 import { Step } from "../../domain/workflows/step.ts";
 import type { WorkflowRepository } from "../../domain/workflows/repositories.ts";
 import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
+import type { WorkflowRunEvent } from "./run.ts";
 
 function createTestWorkflow(
   name: string,
@@ -114,6 +115,64 @@ Deno.test("ScheduledExecutionService: ignores workflows without schedules", asyn
   assertEquals(events.length, 0);
 
   await service.stop();
+});
+
+Deno.test("ScheduledExecutionService: emits schedule_failed when workflow run has failed status", async () => {
+  const wf = createTestWorkflow("fail-wf", "* * * * * *");
+  const events: ScheduledExecutionEvent[] = [];
+
+  const mockRepo = createMockWorkflowRepo([wf]);
+  const service = new ScheduledExecutionService({
+    workflowRepo: mockRepo,
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: (
+      _input,
+      _signal,
+      onEvent: (event: WorkflowRunEvent) => void,
+    ) => {
+      onEvent({
+        kind: "started",
+        runId: "run-1",
+        workflowName: "fail-wf",
+        jobs: [],
+      });
+      onEvent({
+        kind: "completed",
+        run: {
+          id: "run-1",
+          workflowId: wf.id,
+          workflowName: "fail-wf",
+          status: "failed",
+          jobs: [{
+            name: "job1",
+            status: "failed",
+            steps: [{
+              name: "step1",
+              status: "failed",
+              error: "CEL type mismatch",
+            }],
+          }],
+        },
+      });
+      return Promise.resolve();
+    },
+  });
+
+  await service.start((e) => events.push(e));
+
+  // Wait for the cron to fire (every second)
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+  await service.stop();
+
+  const failed = events.filter((e) => e.kind === "schedule_failed");
+  assertEquals(failed.length >= 1, true);
+  assertEquals(
+    (failed[0] as { kind: "schedule_failed"; error: string }).error,
+    "CEL type mismatch",
+  );
+
+  const completed = events.filter((e) => e.kind === "schedule_completed");
+  assertEquals(completed.length, 0);
 });
 
 Deno.test("ScheduledExecutionService: stop clears schedules", async () => {

@@ -31,6 +31,10 @@ import { UserError } from "../domain/errors.ts";
 import { executeWorkflowWithLocks } from "./deps.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 import {
+  extractFirstStepError,
+  type WorkflowRunView,
+} from "../libswamp/workflows/workflow_run_view.ts";
+import {
   createVerifier,
   isWebhookScheme,
   type VerifierConfig,
@@ -440,6 +444,7 @@ export class WebhookService {
 
     try {
       let runId = "";
+      let completedRun: WorkflowRunView | undefined;
 
       await executeWorkflowWithLocks(
         this.deps.repoDir,
@@ -451,20 +456,37 @@ export class WebhookService {
           if (event.kind === "started") {
             runId = event.runId;
           }
+          if (event.kind === "completed") {
+            completedRun = event.run;
+          }
         },
         this.deps.syncService,
       );
 
-      this.emit({
-        kind: "webhook_completed",
-        route,
-        workflowName: workflowIdOrName,
-        runId,
-      });
-      logger.info(
-        "Webhook workflow {workflow} completed (run: {runId})",
-        { workflow: workflowIdOrName, runId },
-      );
+      if (completedRun?.status === "failed") {
+        const message = extractFirstStepError(completedRun);
+        this.emit({
+          kind: "webhook_failed",
+          route,
+          workflowName: workflowIdOrName,
+          error: message,
+        });
+        logger.error(
+          "Webhook workflow {workflow} failed: {error}",
+          { workflow: workflowIdOrName, error: message },
+        );
+      } else {
+        this.emit({
+          kind: "webhook_completed",
+          route,
+          workflowName: workflowIdOrName,
+          runId,
+        });
+        logger.info(
+          "Webhook workflow {workflow} completed (run: {runId})",
+          { workflow: workflowIdOrName, runId },
+        );
+      }
     } catch (error) {
       if (error instanceof DOMException && error.name === "AbortError") {
         logger.info("Webhook workflow {workflow} aborted", {

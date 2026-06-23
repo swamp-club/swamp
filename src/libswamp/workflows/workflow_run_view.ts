@@ -91,3 +91,14 @@ export interface WorkflowRunView {
   /** Data artifacts produced at workflow scope (e.g. workflow-scope reports). */
   workflowDataArtifacts?: DataArtifactRefData[];
 }
+
+export function extractFirstStepError(run: WorkflowRunView): string {
+  for (const job of run.jobs) {
+    for (const step of job.steps) {
+      if (step.status === "failed" && !step.allowedFailure && step.error) {
+        return step.error;
+      }
+    }
+  }
+  return "unknown error";
+}

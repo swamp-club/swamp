@@ -84,6 +84,7 @@ export {
 export type { MethodExecutionEvent } from "../domain/models/method_events.ts";
 export {
   type DataArtifactRefData,
+  extractFirstStepError,
   type JobRunView,
   type StepArtifactsData,
   type StepRunView,
