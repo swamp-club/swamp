@@ -50,6 +50,17 @@ export function readLocalManifestIdentity(
   repoRoot: string,
 ): LocalManifestIdentity | null {
   const manifestPath = join(repoRoot, "extensions", "manifest.yaml");
+  return readManifestIdentityAt(manifestPath);
+}
+
+/**
+ * Reads a `manifest.yaml` at an arbitrary path and extracts `name` and
+ * `version`. Returns `null` on missing file, malformed YAML, or
+ * incomplete identity (same semantics as {@link readLocalManifestIdentity}).
+ */
+export function readManifestIdentityAt(
+  manifestPath: string,
+): LocalManifestIdentity | null {
   let raw: string;
   try {
     raw = Deno.readTextFileSync(manifestPath);

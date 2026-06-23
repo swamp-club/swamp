@@ -18,7 +18,13 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { getLogger } from "@logtape/logtape";
-import { basename as pathBasename, join, relative, resolve } from "@std/path";
+import {
+  basename as pathBasename,
+  join,
+  relative,
+  resolve,
+  SEPARATOR,
+} from "@std/path";
 import {
   type Extension,
   makeExtension,
@@ -30,6 +36,7 @@ import {
   tombstoneAll,
 } from "../../domain/extensions/extension.ts";
 import type { LocalManifestIdentity } from "../../infrastructure/persistence/local_manifest_reader.ts";
+import { readManifestIdentityAt } from "../../infrastructure/persistence/local_manifest_reader.ts";
 import { canonicalizePath } from "../../infrastructure/persistence/canonicalize_path.ts";
 import { makeSourceLocation } from "../../domain/extensions/source_location.ts";
 import { makeBundleLocation } from "../../domain/extensions/bundle_location.ts";
@@ -200,18 +207,17 @@ export class ReconcileFromDiskService {
     const result: Extension[] = [];
     let migrationTransitions = 0;
 
-    // Gather ALL local + source-mounted on-disk sources into one map,
-    // then reconcile the @local/<repo> aggregate once. Prevents the
-    // duplicate-extension bug where reconcileLocals and
-    // reconcileSourceMounted each build separate @local/<repo>
-    // aggregates that conflict on saveAll.
-    const localExt = await this.reconcileLocalAndSourceMounted(
+    // Gather local + source-mounted on-disk sources, partitioned by
+    // per-subdirectory manifests. Each manifest-bearing subdirectory
+    // becomes its own Extension aggregate; remaining files fall back
+    // to the @local/<repo> aggregate.
+    const localExts = await this.reconcileLocalAndSourceMounted(
       existingExtensions,
       transitions,
       cache,
     );
 
-    // Pulled extensions next. Processed BEFORE the local aggregate in
+    // Pulled extensions next. Processed BEFORE local aggregates in
     // the result array so saveAll DELETEs pulled-orphan rows before
     // local INSERTs. Prevents the manifest-deletion case from losing
     // data: old manifest-named rows are inferred as "pulled" after the
@@ -225,18 +231,22 @@ export class ReconcileFromDiskService {
     result.push(...pulledExts);
 
     // Atomic identity migration: tombstone stale local-origin aggregates
-    // BEFORE the new aggregate. saveAll processes in array order —
+    // BEFORE the new aggregates. saveAll processes in array order —
     // tombstones must come first so removeBySourcePath deletes old rows
     // before upsertWithIdentity writes new ones at the same paths.
-    if (localExt) {
+    const localIdentities = new Set(
+      localExts.map((e) => `${e.name}@${e.version}`),
+    );
+    if (localExts.length > 0) {
       for (const existing of existingExtensions) {
         if (existing.origin !== "local") continue;
-        if (
-          existing.name === localExt.name &&
-          existing.version === localExt.version
-        ) continue;
+        if (localIdentities.has(`${existing.name}@${existing.version}`)) {
+          continue;
+        }
         const reason =
-          `identity migration: ${existing.name}@${existing.version} → ${localExt.name}@${localExt.version}`;
+          `identity migration: ${existing.name}@${existing.version} → [${
+            [...localIdentities].join(", ")
+          }]`;
         for (const [loc, source] of existing.sources) {
           if (source.state.tag === "Tombstoned") continue;
           transitions.push({
@@ -249,7 +259,7 @@ export class ReconcileFromDiskService {
         }
         result.push(tombstoneAll(existing));
       }
-      result.push(localExt);
+      result.push(...localExts);
     }
 
     return { extensions: result, migrationTransitions };
@@ -259,26 +269,76 @@ export class ReconcileFromDiskService {
     existingExtensions: Extension[],
     transitions: ReconcileTransition[],
     cache: FreshnessCache,
-  ): Promise<Extension | null> {
-    const manifest = this.localManifestIdentity;
+  ): Promise<Extension[]> {
+    const topLevelManifest = this.localManifestIdentity;
     const basename = pathBasename(this.repoDir) || "unknown";
-    const localName = manifest ? manifest.name : `@local/${basename}`;
-    const localVersion = manifest ? manifest.version : "0.0.0";
+    const defaultName = topLevelManifest
+      ? topLevelManifest.name
+      : `@local/${basename}`;
+    const defaultVersion = topLevelManifest
+      ? topLevelManifest.version
+      : "0.0.0";
 
-    // Look for an existing aggregate matching the canonical identity.
-    const existing = existingExtensions.find(
-      (e) => e.name === localName && e.origin === "local",
-    );
+    // Discover per-subdirectory manifests under each extensions/<kind>/
+    // directory. Only immediate children are checked — deeper nesting
+    // is not treated as an extension boundary.
+    // When a top-level manifest exists, per-subdirectory manifests are
+    // ignored — the top-level identity claims the entire tree.
+    const subdirManifests = new Map<string, LocalManifestIdentity>();
+    if (!topLevelManifest) {
+      for (const kindDir of KIND_DIRS) {
+        const kindPath = join(this.repoDir, "extensions", kindDir);
+        await discoverSubdirManifests(kindPath, subdirManifests);
+      }
+    }
 
-    // Gather ALL local + source-mounted on-disk sources into one map.
-    const onDiskSources = new Map<string, { kind: KindDir; baseDir: string }>();
+    // Collect all on-disk sources, partitioned by extension identity.
+    // Key: "<name>@<version>" for manifest-bearing subdirs, or
+    // "default" for the fallback @local/<repo> aggregate.
+    const partitions = new Map<
+      string,
+      {
+        name: string;
+        version: string;
+        extensionRoot: string;
+        sources: Map<string, { kind: KindDir; baseDir: string }>;
+      }
+    >();
+
+    const defaultKey = `${defaultName}@${defaultVersion}`;
+    partitions.set(defaultKey, {
+      name: defaultName,
+      version: defaultVersion,
+      extensionRoot: this.repoDir,
+      sources: new Map(),
+    });
+
+    // Pre-populate partitions for all discovered subdirectory manifests.
+    for (const [, manifest] of subdirManifests) {
+      const key = `${manifest.name}@${manifest.version}`;
+      if (!partitions.has(key)) {
+        partitions.set(key, {
+          name: manifest.name,
+          version: manifest.version,
+          extensionRoot: this.repoDir,
+          sources: new Map(),
+        });
+      }
+    }
 
     // Local extensions under extensions/<kind>/
     for (const kindDir of KIND_DIRS) {
       const dir = join(this.repoDir, "extensions", kindDir);
       const files = await collectTsFiles(dir);
       for (const absolutePath of files) {
-        onDiskSources.set(absolutePath, { kind: kindDir, baseDir: dir });
+        const ownerKey = findOwningManifest(
+          absolutePath,
+          subdirManifests,
+          defaultKey,
+        );
+        const partition = partitions.get(ownerKey);
+        if (!partition) continue;
+        partition.sources.set(absolutePath, { kind: kindDir, baseDir: dir });
       }
     }
 
@@ -293,48 +353,66 @@ export class ReconcileFromDiskService {
           for (const dir of dirs) {
             const files = await collectTsFiles(dir);
             for (const absolutePath of files) {
-              onDiskSources.set(absolutePath, { kind: kindDir, baseDir: dir });
+              const defaultPartition = partitions.get(defaultKey)!;
+              defaultPartition.sources.set(absolutePath, {
+                kind: kindDir,
+                baseDir: dir,
+              });
             }
           }
         }
       }
     }
 
-    let ext: Extension;
-    if (existing && existing.version !== localVersion) {
-      ext = makeExtension({
-        name: localName,
-        version: localVersion,
-        origin: "local",
-        extensionRoot: this.repoDir,
-        sources: existing.sources.values(),
-      });
-      logger
-        .info`Local extension ${localName} version migrated: ${existing.version} → ${localVersion}`;
-    } else if (existing) {
-      ext = existing;
-    } else if (manifest) {
-      ext = makeExtension({
-        name: localName,
-        version: localVersion,
-        origin: "local",
-        extensionRoot: this.repoDir,
-        sources: [],
-      });
-    } else {
-      ext = makeLocalExtension({ repoRoot: this.repoDir, basename });
+    // Reconcile each partition into an Extension aggregate.
+    const result: Extension[] = [];
+    for (const [, partition] of partitions) {
+      const existing = existingExtensions.find(
+        (e) => e.name === partition.name && e.origin === "local",
+      );
+
+      let ext: Extension;
+      if (existing && existing.version !== partition.version) {
+        ext = makeExtension({
+          name: partition.name,
+          version: partition.version,
+          origin: "local",
+          extensionRoot: partition.extensionRoot,
+          sources: existing.sources.values(),
+        });
+        logger
+          .info`Local extension ${partition.name} version migrated: ${existing.version} → ${partition.version}`;
+      } else if (existing) {
+        ext = existing;
+      } else if (
+        partition.name === defaultName &&
+        partition.version === defaultVersion &&
+        !topLevelManifest
+      ) {
+        ext = makeLocalExtension({ repoRoot: this.repoDir, basename });
+      } else {
+        ext = makeExtension({
+          name: partition.name,
+          version: partition.version,
+          origin: "local",
+          extensionRoot: partition.extensionRoot,
+          sources: [],
+        });
+      }
+
+      ext = await this.reconcileExtension(
+        ext,
+        partition.sources,
+        transitions,
+        cache,
+        "local",
+      );
+
+      if (ext.sources.size === 0 && !existing) continue;
+      result.push(ext);
     }
 
-    ext = await this.reconcileExtension(
-      ext,
-      onDiskSources,
-      transitions,
-      cache,
-      "local",
-    );
-
-    if (ext.sources.size === 0 && !existing) return null;
-    return ext;
+    return result;
   }
 
   private async reconcilePulled(
@@ -671,4 +749,47 @@ async function collectTsFiles(dir: string): Promise<string[]> {
     if (!(error instanceof Deno.errors.NotFound)) throw error;
   }
   return out;
+}
+
+/**
+ * Scans immediate subdirectories of `kindDir` for `manifest.yaml`
+ * files that declare both `name` and `version`. Populates `out` with
+ * entries keyed by the subdirectory's absolute path.
+ */
+async function discoverSubdirManifests(
+  kindDir: string,
+  out: Map<string, LocalManifestIdentity>,
+): Promise<void> {
+  try {
+    for await (const entry of Deno.readDir(kindDir)) {
+      if (!entry.isDirectory || entry.name.startsWith("_")) continue;
+      const subdirPath = join(kindDir, entry.name);
+      const manifestPath = join(subdirPath, "manifest.yaml");
+      const identity = readManifestIdentityAt(manifestPath);
+      if (identity) {
+        out.set(subdirPath, identity);
+      }
+    }
+  } catch (error) {
+    if (!(error instanceof Deno.errors.NotFound)) throw error;
+  }
+}
+
+/**
+ * Determines which manifest-bearing subdirectory owns `filePath`.
+ * Returns the partition key (`"<name>@<version>"`) for the owning
+ * subdirectory, or `defaultKey` if the file is not under any
+ * manifest-bearing subdirectory.
+ */
+function findOwningManifest(
+  filePath: string,
+  subdirManifests: Map<string, LocalManifestIdentity>,
+  defaultKey: string,
+): string {
+  for (const [subdirPath, manifest] of subdirManifests) {
+    if (filePath.startsWith(subdirPath + SEPARATOR)) {
+      return `${manifest.name}@${manifest.version}`;
+    }
+  }
+  return defaultKey;
 }

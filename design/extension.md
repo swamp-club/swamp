@@ -662,6 +662,37 @@ Only files within the respective directory boundary are included. Non-local
 imports (`npm:`, `jsr:`, `https:`) are skipped here — they are resolved and
 inlined at bundle time by `deno bundle`, not by the local-import resolver.
 
+## Per-Subdirectory Extension Identity
+
+By default, all files under `extensions/<kind>/` are grouped into a single
+local extension aggregate (`@local/<repo-basename>@0.0.0`, or the identity
+from the top-level `extensions/manifest.yaml` if present).
+
+When a subdirectory directly under `extensions/<kind>/` contains its own
+`manifest.yaml` declaring both `name` and `version`, that subdirectory is
+treated as an independent extension aggregate. Files under that subdirectory
+are claimed by the manifest-declared identity instead of the default
+`@local/<repo>` aggregate.
+
+This enables multi-extension repos where sibling directories host
+independently published extensions:
+
+```
+extensions/models/
+  foo/
+    manifest.yaml    # name: @ns/foo, version: 2026.06.01.1
+    driver.ts        → claimed by @ns/foo@2026.06.01.1
+  bar/
+    manifest.yaml    # name: @ns/bar, version: 2026.06.01.1
+    driver.ts        → claimed by @ns/bar@2026.06.01.1
+  shared.ts          → claimed by @local/<repo>@0.0.0
+```
+
+**Precedence:** When a top-level `extensions/manifest.yaml` exists, it
+claims the entire `extensions/` tree — per-subdirectory manifests are
+ignored. Per-subdirectory discovery only activates when no top-level
+manifest is present.
+
 ## Split Extensions Directory (`--extensions-dir`)
 
 By default, swamp discovers local extension sources from `extensions/<kind>/`
