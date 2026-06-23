@@ -46,6 +46,7 @@ export interface VaultDeleteData {
   secretKey: string;
   vaultType: string;
   timestamp: string;
+  noOp?: boolean;
 }
 
 export type VaultDeleteEvent =

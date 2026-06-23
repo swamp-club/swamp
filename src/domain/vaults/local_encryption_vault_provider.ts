@@ -184,33 +184,22 @@ export class LocalEncryptionVaultProvider
       );
     }
 
-    // Clean up associated annotation and refresh hook
-    const annotationPath = this.annotationPath(secretKey);
-    await assertSafePath(annotationPath, this.secretsBoundary);
+    // Best-effort cleanup of associated annotation and refresh hook.
+    // The primary secret is already gone — don't throw if cleanup fails.
     try {
+      const annotationPath = this.annotationPath(secretKey);
+      await assertSafePath(annotationPath, this.secretsBoundary);
       await Deno.remove(annotationPath);
-    } catch (error) {
-      if (!(error instanceof Deno.errors.NotFound)) {
-        throw new Error(
-          `Failed to delete annotation for '${secretKey}': ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-      }
+    } catch {
+      // NotFound or permission error — either way, best-effort
     }
 
-    const hookPath = this.refreshPath(secretKey);
-    await assertSafePath(hookPath, this.secretsBoundary);
     try {
+      const hookPath = this.refreshPath(secretKey);
+      await assertSafePath(hookPath, this.secretsBoundary);
       await Deno.remove(hookPath);
-    } catch (error) {
-      if (!(error instanceof Deno.errors.NotFound)) {
-        throw new Error(
-          `Failed to delete refresh hook for '${secretKey}': ${
-            error instanceof Error ? error.message : String(error)
-          }`,
-        );
-      }
+    } catch {
+      // NotFound or permission error — either way, best-effort
     }
   }
 

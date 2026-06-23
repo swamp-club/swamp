@@ -96,6 +96,37 @@ Deno.test("MockVaultProvider - addSecret", async (t) => {
   });
 });
 
+Deno.test("MockVaultProvider - delete", async (t) => {
+  await t.step("should delete an existing secret", async () => {
+    const provider = new MockVaultProvider("test-vault", {
+      "to-delete": "value",
+    });
+    await provider.delete("to-delete");
+    const keys = await provider.list();
+    assertEquals(keys.includes("to-delete"), false);
+  });
+
+  await t.step("should throw for non-existent secret", () => {
+    const provider = new MockVaultProvider("test-vault");
+    const error = assertThrows(
+      () => provider.delete("nonexistent-key"),
+      Error,
+    );
+    assertStringIncludes(error.message, "Secret 'nonexistent-key' not found");
+    assertStringIncludes(error.message, "mock vault 'test-vault'");
+  });
+
+  await t.step("should not affect other secrets", async () => {
+    const provider = new MockVaultProvider("test-vault", {
+      "keep-me": "keep-value",
+      "delete-me": "delete-value",
+    });
+    await provider.delete("delete-me");
+    const value = await provider.get("keep-me");
+    assertEquals(value, "keep-value");
+  });
+});
+
 Deno.test("MockVaultProvider - listSecrets", async (t) => {
   await t.step("should list all secret keys", () => {
     const provider = new MockVaultProvider("test-vault", {

@@ -29,8 +29,13 @@ class LogVaultDeleteRenderer implements Renderer<VaultDeleteEvent> {
     return {
       deleting: () => {},
       completed: (e) => {
-        logger
-          .info`Deleted secret ${e.data.secretKey} from vault ${e.data.vaultName}`;
+        if (e.data.noOp) {
+          logger
+            .info`Secret ${e.data.secretKey} does not exist in vault ${e.data.vaultName}, skipping`;
+        } else {
+          logger
+            .info`Deleted secret ${e.data.secretKey} from vault ${e.data.vaultName}`;
+        }
       },
       error: (e) => {
         throw new UserError(e.error.message);

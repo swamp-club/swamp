@@ -73,7 +73,9 @@ export const vaultDeleteCommand = withRemoteOptions(
       `Delete a secret from a vault.
 
 Removes the secret and any associated metadata (annotations, refresh hooks).
-Use --force to skip the confirmation prompt and to treat non-existent keys as a no-op.`,
+Use --force to skip the confirmation prompt and to treat non-existent keys as a no-op.
+
+When using --server, the confirmation prompt is not available — use --force to suppress the error on missing keys.`,
     )
     .arguments("<vault_name:string> <key:string>")
     .example(
@@ -166,7 +168,17 @@ Use --force to skip the confirmation prompt and to treat non-existent keys as a 
 
     if (!preview.secretExists) {
       if (options.force) {
-        cliCtx.logger.debug`Secret does not exist, --force specified, no-op`;
+        const renderer = createVaultDeleteRenderer(cliCtx.outputMode);
+        renderer.handlers().completed({
+          kind: "completed",
+          data: {
+            vaultName,
+            secretKey: key,
+            vaultType: preview.vaultType,
+            timestamp: new Date().toISOString(),
+            noOp: true,
+          },
+        });
         return;
       }
       throw new UserError(

@@ -787,6 +787,150 @@ Deno.test("LocalEncryptionVaultProvider - list secrets", async (t) => {
   });
 });
 
+Deno.test("LocalEncryptionVaultProvider - delete secrets", async (t) => {
+  await t.step("should delete an existing secret", async () => {
+    await withTempDir(async (dir) => {
+      const config: LocalEncryptionConfig = {
+        auto_generate: true,
+        base_dir: dir,
+      };
+      const vault = new LocalEncryptionVaultProvider("delete-vault", config);
+
+      await vault.put("to-delete", "secret-value");
+      const before = await vault.list();
+      assertEquals(before.includes("to-delete"), true);
+
+      await vault.delete("to-delete");
+      const after = await vault.list();
+      assertEquals(after.includes("to-delete"), false);
+    });
+  });
+
+  await t.step("should throw for non-existent secret", async () => {
+    await withTempDir(async (dir) => {
+      const config: LocalEncryptionConfig = {
+        auto_generate: true,
+        base_dir: dir,
+      };
+      const vault = new LocalEncryptionVaultProvider(
+        "delete-missing-vault",
+        config,
+      );
+
+      const error = await assertRejects(
+        () => vault.delete("nonexistent-key"),
+        Error,
+      );
+      assertStringIncludes(
+        error.message,
+        "Secret 'nonexistent-key' not found",
+      );
+    });
+  });
+
+  await t.step(
+    "should clean up annotation when deleting a secret",
+    async () => {
+      await withTempDir(async (dir) => {
+        const config: LocalEncryptionConfig = {
+          auto_generate: true,
+          base_dir: dir,
+        };
+        const vault = new LocalEncryptionVaultProvider(
+          "delete-annot-vault",
+          config,
+        );
+
+        await vault.put("annotated", "value");
+        const { VaultAnnotation } = await import("./vault_annotation.ts");
+        const annotation = VaultAnnotation.create({
+          notes: "test note",
+        });
+        await vault.putAnnotation("annotated", annotation);
+
+        const annotBefore = await vault.getAnnotation("annotated");
+        assertEquals(annotBefore !== null, true);
+
+        await vault.delete("annotated");
+
+        const annotAfter = await vault.getAnnotation("annotated");
+        assertEquals(annotAfter, null);
+      });
+    },
+  );
+
+  await t.step(
+    "should clean up refresh hook when deleting a secret",
+    async () => {
+      await withTempDir(async (dir) => {
+        const config: LocalEncryptionConfig = {
+          auto_generate: true,
+          base_dir: dir,
+        };
+        const vault = new LocalEncryptionVaultProvider(
+          "delete-hook-vault",
+          config,
+        );
+
+        await vault.put("hooked", "value");
+        const { RefreshHook } = await import("./refresh_hook.ts");
+        const hook = RefreshHook.create("echo hi", 60000);
+        await vault.putRefreshHook("hooked", hook);
+
+        const hookBefore = await vault.getRefreshHook("hooked");
+        assertEquals(hookBefore !== null, true);
+
+        await vault.delete("hooked");
+
+        const hookAfter = await vault.getRefreshHook("hooked");
+        assertEquals(hookAfter, null);
+      });
+    },
+  );
+
+  await t.step("should not affect other secrets", async () => {
+    await withTempDir(async (dir) => {
+      const config: LocalEncryptionConfig = {
+        auto_generate: true,
+        base_dir: dir,
+      };
+      const vault = new LocalEncryptionVaultProvider(
+        "delete-other-vault",
+        config,
+      );
+
+      await vault.put("keep", "keep-value");
+      await vault.put("remove", "remove-value");
+
+      await vault.delete("remove");
+
+      const value = await vault.get("keep");
+      assertEquals(value, "keep-value");
+      const keys = await vault.list();
+      assertEquals(keys, ["keep"]);
+    });
+  });
+
+  await t.step("should reject path traversal in delete", async () => {
+    await withTempDir(async (dir) => {
+      const config: LocalEncryptionConfig = {
+        auto_generate: true,
+        base_dir: dir,
+      };
+      const vault = new LocalEncryptionVaultProvider(
+        "delete-traversal-vault",
+        config,
+      );
+
+      await assertRejects(
+        () => vault.delete("../../../etc/passwd"),
+        Error,
+        "must not contain",
+      );
+    });
+  });
+});
+
 Deno.test("LocalEncryptionVaultProvider - path traversal prevention", async (t) => {
   await t.step("should reject key with ../ in put()", async () => {
     await withTempDir(async (dir) => {
