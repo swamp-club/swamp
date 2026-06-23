@@ -670,59 +670,77 @@ export class DefaultStepExecutor implements StepExecutor {
       tags: Record<string, string>;
     }> = [];
 
+    // Acquire per-step lock before method execution. The lock covers
+    // both the method execution (which writes result + log data) AND
+    // report generation (which writes report data), ensuring a single
+    // flush pushes everything to the remote datastore.
+    let flushLock: (() => Promise<void>) | null = null;
+    if (this.stepLockHook) {
+      const lockResult = await this.stepLockHook(
+        modelType.normalized,
+        originalDefinition.id,
+      );
+      flushLock = lockResult.flush;
+    }
     try {
-      const result = await this.invokeMethod({
-        task,
-        ctx,
-        executionService,
-        unifiedDataRepo,
-        definitionRepo,
-        dataQueryService,
-        vaultService,
-        modelType,
-        modelDef,
-        originalDefinition,
-        evaluatedDefinition,
-        runLogger,
-        secretBag,
-      });
+      try {
+        const result = await this.invokeMethod({
+          task,
+          ctx,
+          executionService,
+          unifiedDataRepo,
+          definitionRepo,
+          dataQueryService,
+          vaultService,
+          modelType,
+          modelDef,
+          originalDefinition,
+          evaluatedDefinition,
+          runLogger,
+          secretBag,
+        });
 
-      return await this.handleMethodSuccess({
-        task,
-        ctx,
-        outputRepo,
-        unifiedDataRepo,
-        definitionRepo,
-        modelType,
-        modelDef,
-        originalDefinition,
-        evaluatedDefinition,
-        runLogger,
-        reportGlobalArgs,
-        reportMethodArgs,
-        result,
-        output,
-        savedArtifacts,
-      });
-    } catch (error) {
-      await this.handleMethodFailure({
-        task,
-        ctx,
-        outputRepo,
-        unifiedDataRepo,
-        definitionRepo,
-        modelType,
-        modelDef,
-        originalDefinition,
-        evaluatedDefinition,
-        runLogger,
-        reportGlobalArgs,
-        reportMethodArgs,
-        error,
-        output,
-        savedArtifacts,
-      });
-      throw error;
+        return await this.handleMethodSuccess({
+          task,
+          ctx,
+          outputRepo,
+          unifiedDataRepo,
+          definitionRepo,
+          modelType,
+          modelDef,
+          originalDefinition,
+          evaluatedDefinition,
+          runLogger,
+          reportGlobalArgs,
+          reportMethodArgs,
+          result,
+          output,
+          savedArtifacts,
+        });
+      } catch (error) {
+        await this.handleMethodFailure({
+          task,
+          ctx,
+          outputRepo,
+          unifiedDataRepo,
+          definitionRepo,
+          modelType,
+          modelDef,
+          originalDefinition,
+          evaluatedDefinition,
+          runLogger,
+          reportGlobalArgs,
+          reportMethodArgs,
+          error,
+          output,
+          savedArtifacts,
+        });
+        throw error;
+      }
+    } finally {
+      if (flushLock) {
+        await flushLock();
+      }
     }
   }
 
@@ -852,86 +870,69 @@ export class DefaultStepExecutor implements StepExecutor {
       }
     }
 
-    // Acquire per-step lock if a lock hook is provided. The lock covers
-    // the method execution (which writes data) and is released in the
-    // finally block — even on failure — so the lock is never orphaned.
-    let flushLock: (() => Promise<void>) | null = null;
-    if (this.stepLockHook) {
-      const lockResult = await this.stepLockHook(
-        modelType.normalized,
-        originalDefinition.id,
-      );
-      flushLock = lockResult.flush;
-    }
-    try {
-      return await executionService.executeWorkflow(
-        evaluatedDefinition,
-        modelDef,
-        task.methodName,
-        buildMethodContext(
-          {
-            dataRepository: unifiedDataRepo,
-            definitionRepository: definitionRepo,
-            vaultService,
-            redactor: ctx.secretRedactor,
-            dataQueryService,
-            createCelEnvironment: createExtensionCelEnvironment,
+    return await executionService.executeWorkflow(
+      evaluatedDefinition,
+      modelDef,
+      task.methodName,
+      buildMethodContext(
+        {
+          dataRepository: unifiedDataRepo,
+          definitionRepository: definitionRepo,
+          vaultService,
+          redactor: ctx.secretRedactor,
+          dataQueryService,
+          createCelEnvironment: createExtensionCelEnvironment,
+        },
+        {
+          signal: ctx.signal,
+          repoDir: ctx.repoDir,
+          modelType,
+          modelId: evaluatedDefinition.id,
+          globalArgs: evaluatedDefinition.globalArguments,
+          definition: {
+            id: evaluatedDefinition.id,
+            name: evaluatedDefinition.name,
+            version: evaluatedDefinition.version,
+            tags: evaluatedDefinition.tags,
           },
-          {
-            signal: ctx.signal,
-            repoDir: ctx.repoDir,
-            modelType,
-            modelId: evaluatedDefinition.id,
-            globalArgs: evaluatedDefinition.globalArguments,
-            definition: {
-              id: evaluatedDefinition.id,
-              name: evaluatedDefinition.name,
-              version: evaluatedDefinition.version,
-              tags: evaluatedDefinition.tags,
-            },
-            methodName: task.methodName,
-            logger: runLogger,
-            tagOverrides: workflowTagOverrides,
-            runtimeTags: ctx.runtimeTags,
-            dataOutputOverrides: stepDataOutputOverrides,
-            vaultSecrets: secretBag,
-            placement: ctx.step?.placement,
-            skipCheckNames: ctx.skipCheckNames,
-            skipCheckLabels: ctx.skipCheckLabels,
-            skipAllChecks: ctx.skipAllChecks,
-            extensionFilesRoot: modelDef.extensionFilesRoot,
-            onEvent: ctx.emitEvent
-              ? (event: MethodExecutionEvent) => {
-                if (event.type === "output") {
-                  ctx.emitEvent!({
-                    kind: "method_output",
-                    jobId: ctx.jobName,
-                    stepId: ctx.stepName,
-                    modelName: originalDefinition.name,
-                    methodName: task.methodName,
-                    stream: event.stream,
-                    line: event.line,
-                  });
-                } else {
-                  ctx.emitEvent!({
-                    kind: "method_event",
-                    jobId: ctx.jobName,
-                    stepId: ctx.stepName,
-                    modelName: originalDefinition.name,
-                    methodName: task.methodName,
-                    event,
-                  });
-                }
+          methodName: task.methodName,
+          logger: runLogger,
+          tagOverrides: workflowTagOverrides,
+          runtimeTags: ctx.runtimeTags,
+          dataOutputOverrides: stepDataOutputOverrides,
+          vaultSecrets: secretBag,
+          placement: ctx.step?.placement,
+          skipCheckNames: ctx.skipCheckNames,
+          skipCheckLabels: ctx.skipCheckLabels,
+          skipAllChecks: ctx.skipAllChecks,
+          extensionFilesRoot: modelDef.extensionFilesRoot,
+          onEvent: ctx.emitEvent
+            ? (event: MethodExecutionEvent) => {
+              if (event.type === "output") {
+                ctx.emitEvent!({
+                  kind: "method_output",
+                  jobId: ctx.jobName,
+                  stepId: ctx.stepName,
+                  modelName: originalDefinition.name,
+                  methodName: task.methodName,
+                  stream: event.stream,
+                  line: event.line,
+                });
+              } else {
+                ctx.emitEvent!({
+                  kind: "method_event",
+                  jobId: ctx.jobName,
+                  stepId: ctx.stepName,
+                  modelName: originalDefinition.name,
+                  methodName: task.methodName,
+                  event,
+                });
               }
-              : undefined,
-          },
-        ),
-      );
-    } finally {
-      if (flushLock) {
-        await flushLock();
-      }
-    }
+            }
+            : undefined,
+        },
+      ),
+    );
   }
 
   /**
