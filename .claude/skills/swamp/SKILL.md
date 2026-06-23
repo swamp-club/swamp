@@ -52,7 +52,7 @@ Route to the right guide based on what the user needs.
 swamp model @<type> create <name>              # create a model definition
 swamp model @<type> method run <method> <name> # run a method on a model
 swamp model get <name> --json                  # inspect current model state
-swamp model search @<type>                     # find available model types
+swamp model type search [query]                # find available model types
 swamp model list                               # list all models in the repo
 
 # Data
