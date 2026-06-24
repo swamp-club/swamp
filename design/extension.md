@@ -693,6 +693,26 @@ claims the entire `extensions/` tree — per-subdirectory manifests are
 ignored. Per-subdirectory discovery only activates when no top-level
 manifest is present.
 
+### Origin Precedence Enforcement
+
+When both a local source and a pulled extension provide the same
+`(kind, type)`, the local source wins. The pulled row's `type_normalized`
+is cleared to empty in the catalog so it no longer occupies the type
+namespace — the same treatment as `ValidationFailed` or
+`EntryPointUnreadable` states. The pulled files remain on disk for
+reference (diffing, version comparison) but are not registered as active
+types.
+
+This applies to the push/pull development loop: when editing a local
+extension source that is also pulled from the registry, `extension pull`
+succeeds and the local source's types take precedence. The in-memory
+registry has always respected this ordering (`load()` processes local
+directories first and deduplicates via `hasType()`); the catalog now
+matches.
+
+To re-activate pulled types after removing a local source, run
+`swamp doctor extensions` or any command that triggers a catalog rescan.
+
 ## Split Extensions Directory (`--extensions-dir`)
 
 By default, swamp discovers local extension sources from `extensions/<kind>/`

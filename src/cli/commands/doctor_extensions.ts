@@ -193,8 +193,27 @@ export const doctorExtensionsCommand = new Command()
         });
         const result = await reconciler.execute();
         reconcileTransitions = result.transitions;
-      } catch {
-        // Best-effort — the loader will bootstrap a fresh catalog if this fails.
+      } catch (reconcileError) {
+        // Best-effort — the loader will bootstrap a fresh catalog for
+        // most failures. DuplicateTypeError from same-origin conflicts
+        // should still surface so the user sees it.
+        const { DuplicateTypeError } = await import(
+          "../../infrastructure/persistence/duplicate_type_error.ts"
+        );
+        if (reconcileError instanceof DuplicateTypeError) {
+          const { UserError } = await import("../../domain/errors.ts");
+          const e = reconcileError;
+          throw new UserError(
+            `Type "${e.typeNormalized}" (kind=${e.kind}) is claimed by two ` +
+              `installed extensions:\n` +
+              `  • ${e.firstSource.extensionName}@${e.firstSource.extensionVersion}` +
+              `  at ${e.firstSource.canonicalPath}\n` +
+              `  • ${e.secondSource.extensionName}@${e.secondSource.extensionVersion}` +
+              `  at ${e.secondSource.canonicalPath}\n` +
+              `Remove one with \`swamp extension rm <name>\` to resolve ` +
+              `the conflict, then run \`swamp doctor extensions\` again.`,
+          );
+        }
       }
 
       const registries: ReadonlyArray<DoctorRegistryDeps> = [

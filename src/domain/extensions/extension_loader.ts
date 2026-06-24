@@ -379,6 +379,10 @@ export class ExtensionLoader {
         }
       }
 
+      if (this.repoDir) {
+        catalog.resolveOriginConflicts(this.repoDir);
+      }
+
       if (this.adapter.attachPendingExtensionsForType) {
         for (const type of typesNeedingExtensionAttach) {
           await this.adapter.attachPendingExtensionsForType(
@@ -475,6 +479,9 @@ export class ExtensionLoader {
       dir,
       options?.additionalDirs,
     );
+    if (this.repoDir) {
+      catalog.resolveOriginConflicts(this.repoDir);
+    }
     catalog.markPopulated(this.adapter.kind);
     catalog.setLayoutVersion(BUNDLE_LAYOUT_VERSION);
     catalog.setDatastoreBasePath(currentBasePath, this.adapter.kind);

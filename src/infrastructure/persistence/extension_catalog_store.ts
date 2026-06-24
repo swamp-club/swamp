@@ -1106,6 +1106,75 @@ export class ExtensionCatalogStore {
   }
 
   /**
+   * Enforces the `local > source-mounted > pulled` origin precedence
+   * rule at the catalog level. Scans all non-Tombstoned rows with
+   * non-empty type_normalized and kind !== "extension". When two rows
+   * from different origins claim the same (kind, type_normalized),
+   * clears the pulled row's type_normalized to empty so it no longer
+   * occupies the type namespace. Precedence is determined by
+   * source_path prefix: paths under `<repoRoot>/.swamp/pulled-extensions/`
+   * are pulled; everything else is local or source-mounted and wins.
+   *
+   * Mirrors {@link ExtensionRepository}'s `assertIRepo1` exclusions
+   * exactly — same Tombstoned skip, same empty-type skip, same
+   * extension-kind skip — but resolves instead of throwing.
+   *
+   * Idempotent: running twice produces the same result.
+   */
+  resolveOriginConflicts(repoRoot: string): void {
+    const canonical = canonicalizePath(repoRoot);
+    const pulledPrefix = canonical.endsWith("/")
+      ? `${canonical}.swamp/pulled-extensions/`
+      : `${canonical}/.swamp/pulled-extensions/`;
+
+    const rows = this.findAll();
+
+    let hasPulled = false;
+    for (const row of rows) {
+      if (canonicalizePath(row.source_path).startsWith(pulledPrefix)) {
+        hasPulled = true;
+        break;
+      }
+    }
+    if (!hasPulled) return;
+
+    const occupants = new Map<
+      string,
+      { sourcePath: string; isPulled: boolean }
+    >();
+
+    for (const row of rows) {
+      if ((row.state ?? "Indexed") === "Tombstoned") continue;
+      if (row.type_normalized.length === 0) continue;
+      if (row.kind === "extension") continue;
+
+      const key = `${row.kind}::${row.type_normalized}`;
+      const isPulled = canonicalizePath(row.source_path).startsWith(
+        pulledPrefix,
+      );
+      const prior = occupants.get(key);
+
+      if (prior) {
+        if (prior.isPulled && !isPulled) {
+          this.clearTypeNormalized(prior.sourcePath);
+          occupants.set(key, { sourcePath: row.source_path, isPulled });
+        } else if (!prior.isPulled && isPulled) {
+          this.clearTypeNormalized(row.source_path);
+        }
+      } else {
+        occupants.set(key, { sourcePath: row.source_path, isPulled });
+      }
+    }
+  }
+
+  private clearTypeNormalized(sourcePath: string): void {
+    const stmt = this.db.prepare(
+      "UPDATE bundle_types SET type_normalized = '' WHERE source_path = ?",
+    );
+    stmt.run(sourcePath);
+  }
+
+  /**
    * Returns every row in `bundle_types`, ordered by source_path so the
    * output is stable across runs. Used by ExtensionRepository.loadAll
    * (which groups by extension identity) and by I-Repo-1 verification
