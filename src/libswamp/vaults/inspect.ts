@@ -36,8 +36,13 @@ export interface VaultInspectData {
   vaultName: string;
   secretKey: string;
   vaultType: string;
+  sizeBytes: number;
+  sizeChars: number;
+  valueType: string;
+  supportsAnnotations: boolean;
   hasAnnotation: boolean;
   annotation: VaultAnnotationData | null;
+  supportsRefreshHooks: boolean;
   hasRefreshHook: boolean;
   refreshHook: RefreshHookData | null;
 }
@@ -51,6 +56,10 @@ export interface VaultInspectDeps {
   findVault: (name: string) => Promise<VaultInspectConfigInfo | null>;
   listVaultNames: () => Promise<string[]>;
   secretExists: (vaultName: string, key: string) => Promise<boolean>;
+  measureSecretSize: (
+    vaultName: string,
+    key: string,
+  ) => Promise<{ bytes: number; chars: number }>;
   supportsAnnotations: (vaultName: string) => Promise<boolean>;
   getAnnotation: (
     vaultName: string,
@@ -84,6 +93,14 @@ export function createVaultInspectDeps(repoDir: string): VaultInspectDeps {
       const svc = await getVaultService();
       const keys = await svc.list(vaultName);
       return keys.includes(key);
+    },
+    measureSecretSize: async (vaultName, key) => {
+      const svc = await getVaultService();
+      const value = await svc.get(vaultName, key);
+      return {
+        bytes: new TextEncoder().encode(value).byteLength,
+        chars: value.length,
+      };
     },
     supportsAnnotations: async (vaultName) => {
       const svc = await getVaultService();
@@ -153,21 +170,19 @@ export async function* vaultInspect(
         return;
       }
 
-      if (!await deps.supportsAnnotations(vaultName)) {
-        yield {
-          kind: "error",
-          error: validationFailed(
-            `Vault '${vaultName}' (type: ${config.type}) does not support annotations`,
-          ),
-        };
-        return;
+      const { bytes: sizeBytes, chars: sizeChars } = await deps
+        .measureSecretSize(vaultName, secretKey);
+
+      const hasAnnotationSupport = await deps.supportsAnnotations(vaultName);
+      let annotation: VaultAnnotationData | null = null;
+      if (hasAnnotationSupport) {
+        annotation = await deps.getAnnotation(vaultName, secretKey);
+        ctx.logger.debug`Retrieved annotation for ${secretKey}`;
       }
 
-      const annotation = await deps.getAnnotation(vaultName, secretKey);
-      ctx.logger.debug`Retrieved annotation for ${secretKey}`;
-
+      const hasRefreshHookSupport = await deps.supportsRefreshHooks(vaultName);
       let refreshHook: RefreshHookData | null = null;
-      if (await deps.supportsRefreshHooks(vaultName)) {
+      if (hasRefreshHookSupport) {
         refreshHook = await deps.getRefreshHook(vaultName, secretKey);
       }
 
@@ -177,8 +192,13 @@ export async function* vaultInspect(
           vaultName,
           secretKey,
           vaultType: config.type,
+          sizeBytes,
+          sizeChars,
+          valueType: "string",
+          supportsAnnotations: hasAnnotationSupport,
           hasAnnotation: annotation !== null,
           annotation,
+          supportsRefreshHooks: hasRefreshHookSupport,
           hasRefreshHook: refreshHook !== null,
           refreshHook,
         },

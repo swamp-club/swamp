@@ -35,6 +35,7 @@ function makeDeps(
       Promise.resolve({ id: "v1", name: "my-vault", type: "env" }),
     listVaultNames: () => Promise.resolve(["my-vault"]),
     secretExists: () => Promise.resolve(true),
+    measureSecretSize: () => Promise.resolve({ bytes: 11, chars: 11 }),
     supportsAnnotations: () => Promise.resolve(true),
     getAnnotation: () => Promise.resolve(null),
     supportsRefreshHooks: () => Promise.resolve(false),
@@ -81,7 +82,7 @@ Deno.test("vaultInspect: yields validation_failed when secret does not exist", a
   assertStringIncludes(last.error.message, "does not exist");
 });
 
-Deno.test("vaultInspect: yields validation_failed when annotations not supported", async () => {
+Deno.test("vaultInspect: degrades gracefully when annotations not supported", async () => {
   const deps = makeDeps({
     supportsAnnotations: () => Promise.resolve(false),
   });
@@ -90,13 +91,40 @@ Deno.test("vaultInspect: yields validation_failed when annotations not supported
     vaultInspect(createLibSwampContext(), deps, "my-vault", "API_KEY"),
   );
 
-  const last = events[events.length - 1] as Extract<
+  const completed = events[events.length - 1] as Extract<
     VaultInspectEvent,
-    { kind: "error" }
+    { kind: "completed" }
   >;
-  assertEquals(last.kind, "error");
-  assertEquals(last.error.code, "validation_failed");
-  assertStringIncludes(last.error.message, "does not support annotations");
+  assertEquals(completed.kind, "completed");
+  assertEquals(completed.data.supportsAnnotations, false);
+  assertEquals(completed.data.hasAnnotation, false);
+  assertEquals(completed.data.annotation, null);
+  assertEquals(completed.data.sizeBytes, 11);
+  assertEquals(completed.data.sizeChars, 11);
+  assertEquals(completed.data.valueType, "string");
+});
+
+Deno.test("vaultInspect: degrades gracefully when neither annotations nor refresh hooks supported", async () => {
+  const deps = makeDeps({
+    supportsAnnotations: () => Promise.resolve(false),
+    supportsRefreshHooks: () => Promise.resolve(false),
+  });
+
+  const events = await collect<VaultInspectEvent>(
+    vaultInspect(createLibSwampContext(), deps, "my-vault", "API_KEY"),
+  );
+
+  const completed = events[events.length - 1] as Extract<
+    VaultInspectEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.kind, "completed");
+  assertEquals(completed.data.supportsAnnotations, false);
+  assertEquals(completed.data.annotation, null);
+  assertEquals(completed.data.supportsRefreshHooks, false);
+  assertEquals(completed.data.refreshHook, null);
+  assertEquals(completed.data.sizeBytes, 11);
+  assertEquals(completed.data.sizeChars, 11);
 });
 
 Deno.test("vaultInspect: yields completed with annotation data", async () => {
@@ -124,8 +152,12 @@ Deno.test("vaultInspect: yields completed with annotation data", async () => {
   assertEquals(completed.data.vaultName, "my-vault");
   assertEquals(completed.data.secretKey, "API_KEY");
   assertEquals(completed.data.vaultType, "env");
+  assertEquals(completed.data.supportsAnnotations, true);
   assertEquals(completed.data.hasAnnotation, true);
   assertEquals(completed.data.annotation, annotationData);
+  assertEquals(completed.data.sizeBytes, 11);
+  assertEquals(completed.data.sizeChars, 11);
+  assertEquals(completed.data.valueType, "string");
 });
 
 Deno.test("vaultInspect: yields completed with no annotation", async () => {
@@ -146,6 +178,44 @@ Deno.test("vaultInspect: yields completed with no annotation", async () => {
   assertEquals(completed.data.vaultName, "my-vault");
   assertEquals(completed.data.secretKey, "API_KEY");
   assertEquals(completed.data.vaultType, "env");
+  assertEquals(completed.data.supportsAnnotations, true);
   assertEquals(completed.data.hasAnnotation, false);
   assertEquals(completed.data.annotation, null);
+});
+
+Deno.test("vaultInspect: measures secret size correctly", async () => {
+  const deps = makeDeps({
+    measureSecretSize: () => Promise.resolve({ bytes: 42, chars: 38 }),
+  });
+
+  const events = await collect<VaultInspectEvent>(
+    vaultInspect(createLibSwampContext(), deps, "my-vault", "API_KEY"),
+  );
+
+  const completed = events[events.length - 1] as Extract<
+    VaultInspectEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.kind, "completed");
+  assertEquals(completed.data.sizeBytes, 42);
+  assertEquals(completed.data.sizeChars, 38);
+  assertEquals(completed.data.valueType, "string");
+});
+
+Deno.test("vaultInspect: output never contains the secret value", async () => {
+  const secretValue = "super-secret-api-key-12345";
+  const deps = makeDeps({
+    measureSecretSize: () =>
+      Promise.resolve({
+        bytes: new TextEncoder().encode(secretValue).byteLength,
+        chars: secretValue.length,
+      }),
+  });
+
+  const events = await collect<VaultInspectEvent>(
+    vaultInspect(createLibSwampContext(), deps, "my-vault", "API_KEY"),
+  );
+
+  const serialized = JSON.stringify(events);
+  assertEquals(serialized.includes(secretValue), false);
 });

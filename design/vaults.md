@@ -203,6 +203,52 @@ existing fields are preserved. `--remove-label` removes a single label by key
 (repeatable). `--clear` removes all annotations and cannot be combined with
 other annotation flags.
 
+### Vault Inspect Output
+
+`swamp vault inspect <vault> <key>` shows all available metadata for a vault
+item without exposing the secret value:
+
+- `sizeBytes` — byte length of the stored value (UTF-8 encoded)
+- `sizeChars` — character count of the stored value
+- `valueType` — always `"string"` (the vault provider interface stores strings)
+- `annotation` — url, notes, labels, updatedAt (if the provider supports
+  annotations)
+- `refreshHook` — command, ttl, lastRefreshedAt (if the provider supports
+  refresh hooks)
+
+Inspect degrades gracefully: providers that don't support annotations or refresh
+hooks return `null` for those fields with explicit `supportsAnnotations` /
+`supportsRefreshHooks` booleans so consumers can distinguish "not supported" from
+"supported but empty."
+
+The secret value is never returned. Size is measured internally via a deps
+factory function that calls `get()`, measures the byte length, and returns only
+the number — the secret never enters the operation's scope.
+
+### JSON Output
+
+```json
+{
+  "vaultName": "my-vault",
+  "secretKey": "API_KEY",
+  "vaultType": "local_encryption",
+  "sizeBytes": 42,
+  "sizeChars": 42,
+  "valueType": "string",
+  "supportsAnnotations": true,
+  "hasAnnotation": true,
+  "annotation": {
+    "url": "https://console.aws.amazon.com/iam",
+    "notes": "Production API key",
+    "labels": { "env": "prod" },
+    "updatedAt": "2026-01-15T10:30:00.000Z"
+  },
+  "supportsRefreshHooks": false,
+  "hasRefreshHook": false,
+  "refreshHook": null
+}
+```
+
 ## Expression Syntax
 
 Vaults are accessed in CEL expressions using the `vault.get()` and `vault.put()`

@@ -29,34 +29,35 @@ class LogVaultInspectRenderer implements Renderer<VaultInspectEvent> {
     return {
       resolving: () => {},
       completed: (e) => {
-        const hasContent = e.data.hasAnnotation || e.data.hasRefreshHook;
-        if (!hasContent) {
-          logger
-            .info`No metadata found for ${e.data.secretKey} in vault ${e.data.vaultName}`;
-          return;
-        }
         logger
           .info`Metadata for ${e.data.secretKey} in vault ${e.data.vaultName}:`;
-        if (e.data.hasAnnotation && e.data.annotation) {
-          const a = e.data.annotation;
-          if (a.url) logger.info`  url: ${a.url}`;
-          if (a.notes) logger.info`  notes: ${a.notes}`;
-          if (a.labels && Object.keys(a.labels).length > 0) {
-            for (const [k, v] of Object.entries(a.labels)) {
-              logger.info`  label: ${k}=${v}`;
+        logger
+          .info`  size: ${e.data.sizeChars} chars (${e.data.sizeBytes} bytes)`;
+        logger.info`  type: ${e.data.valueType}`;
+        if (e.data.supportsAnnotations) {
+          if (e.data.hasAnnotation && e.data.annotation) {
+            const a = e.data.annotation;
+            if (a.url) logger.info`  url: ${a.url}`;
+            if (a.notes) logger.info`  notes: ${a.notes}`;
+            if (a.labels && Object.keys(a.labels).length > 0) {
+              for (const [k, v] of Object.entries(a.labels)) {
+                logger.info`  label: ${k}=${v}`;
+              }
             }
+            logger.info`  updated: ${a.updatedAt}`;
           }
-          logger.info`  updated: ${a.updatedAt}`;
         }
-        if (e.data.hasRefreshHook && e.data.refreshHook) {
-          const rh = e.data.refreshHook;
-          logger.info`  refresh:`;
-          logger.info`    command: ${rh.command}`;
-          logger.info`    ttl: ${rh.ttl}`;
-          if (rh.lastRefreshedAt) {
-            logger.info`    last refreshed: ${rh.lastRefreshedAt}`;
-          } else {
-            logger.info`    last refreshed: never`;
+        if (e.data.supportsRefreshHooks) {
+          if (e.data.hasRefreshHook && e.data.refreshHook) {
+            const rh = e.data.refreshHook;
+            logger.info`  refresh:`;
+            logger.info`    command: ${rh.command}`;
+            logger.info`    ttl: ${rh.ttl}`;
+            if (rh.lastRefreshedAt) {
+              logger.info`    last refreshed: ${rh.lastRefreshedAt}`;
+            } else {
+              logger.info`    last refreshed: never`;
+            }
           }
         }
       },
