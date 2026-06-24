@@ -13,6 +13,9 @@ plans/
 # Generated/runtime data (ignored)
 .swamp/
 
+# Generated SBOM artifact (scripts/jsr_license_cache.json IS committed)
+sbom.cdx.json
+
 # Claude Code git worktrees (nested checkouts, not part of main working tree)
 .claude/worktrees/
 
