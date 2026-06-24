@@ -810,12 +810,14 @@ Deno.test("collectGarbage: emits per-path markDirty for each removed version", a
     const result = await repo.collectGarbage(testType, "gc-model");
     assertEquals(result.versionsRemoved, 2);
 
-    // Each removed version directory should have its own markDirty call
+    // Each removed version directory should have its own markDirty call.
+    // GC runs removals in parallel so call order is non-deterministic.
     assertEquals(calls.length, 2);
     const v1Dir = repo.getPath(testType, "gc-model", "gc-dirty", 1);
     const v2Dir = repo.getPath(testType, "gc-model", "gc-dirty", 2);
-    assertEquals(calls[0], v1Dir);
-    assertEquals(calls[1], v2Dir);
+    const sorted = [...calls].sort();
+    const expected = [v1Dir, v2Dir].sort();
+    assertEquals(sorted, expected);
   } finally {
     if (Deno.build.os === "windows") {
       await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
