@@ -70,6 +70,7 @@ import {
   type CustomDatastoreConfig,
   type DatastoreConfig,
   isCustomDatastoreConfig,
+  resolveLockTimeoutMs,
   resolveSyncTimeoutMs,
 } from "../domain/datastore/datastore_config.ts";
 import type { DatastoreProvider } from "../domain/datastore/datastore_provider.ts";
@@ -502,7 +503,10 @@ export function requireInitializedRepo(
       const provider = await resolveCustomProvider(datastoreConfig);
       const lock = provider.createLock(
         datastoreConfig.datastorePath,
-        datastoreGlobalLockOptions(datastoreConfig),
+        {
+          ...datastoreGlobalLockOptions(datastoreConfig),
+          maxWaitMs: resolveLockTimeoutMs(),
+        },
       );
 
       // If the custom provider supports sync, register sync service too
@@ -574,7 +578,10 @@ export function requireInitializedRepo(
       // race our structural work.
       const lock = new FileLock(
         datastoreConfig.path,
-        datastoreGlobalLockOptions(datastoreConfig),
+        {
+          ...datastoreGlobalLockOptions(datastoreConfig),
+          maxWaitMs: resolveLockTimeoutMs(),
+        },
       );
       await registerDatastoreSync({ lock });
 
@@ -814,11 +821,12 @@ export async function createModelLock(
   modelId: string,
 ): Promise<DistributedLock> {
   const lockKey = `data/${modelType}/${modelId}/.lock`;
+  const maxWaitMs = resolveLockTimeoutMs();
   if (isCustomDatastoreConfig(config)) {
     const provider = await resolveCustomProvider(config);
-    return provider.createLock(config.datastorePath, { lockKey });
+    return provider.createLock(config.datastorePath, { lockKey, maxWaitMs });
   }
-  return new FileLock(config.path, { lockKey });
+  return new FileLock(config.path, { lockKey, maxWaitMs });
 }
 
 /**
@@ -1000,7 +1008,10 @@ export async function acquireModelLocks(
   const globalLock = customProvider && isCustomDatastoreConfig(config)
     ? customProvider.createLock(
       config.datastorePath,
-      datastoreGlobalLockOptions(config),
+      {
+        ...datastoreGlobalLockOptions(config),
+        maxWaitMs: resolveLockTimeoutMs(),
+      },
     )
     : await createDatastoreLock(config);
   const globalInfo = await globalLock.inspect();
@@ -1181,7 +1192,10 @@ export async function acquireModelLocks(
       ) {
         const pushLock = customProvider.createLock(
           config.datastorePath,
-          datastoreGlobalLockOptions(config),
+          {
+            ...datastoreGlobalLockOptions(config),
+            maxWaitMs: resolveLockTimeoutMs(),
+          },
         );
         try {
           const lockStart = Date.now();
@@ -1340,7 +1354,10 @@ export async function acquireVaultSync(
     ) {
       const pushLock = customProvider.createLock(
         config.datastorePath,
-        datastoreGlobalLockOptions(config),
+        {
+          ...datastoreGlobalLockOptions(config),
+          maxWaitMs: resolveLockTimeoutMs(),
+        },
       );
       try {
         const lockStart = Date.now();
@@ -1428,10 +1445,12 @@ export function datastoreGlobalLockOptions(
 export async function createDatastoreLock(
   config: DatastoreConfig,
 ): Promise<DistributedLock> {
+  const maxWaitMs = resolveLockTimeoutMs();
   const options = datastoreGlobalLockOptions(config);
+  const merged = { ...options, maxWaitMs };
   if (isCustomDatastoreConfig(config)) {
     const provider = await resolveCustomProvider(config);
-    return provider.createLock(config.datastorePath, options);
+    return provider.createLock(config.datastorePath, merged);
   }
-  return new FileLock(config.path, options);
+  return new FileLock(config.path, merged);
 }

@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertRejects } from "@std/assert";
+import { assert, assertEquals, assertRejects } from "@std/assert";
 import { join } from "@std/path";
 import { FileLock } from "./file_lock.ts";
 import type { LockInfo } from "../../domain/datastore/distributed_lock.ts";
@@ -321,5 +321,98 @@ Deno.test("FileLock - different namespaces acquire their locks concurrently", as
 
     await infra.release();
     await security.release();
+  });
+});
+
+Deno.test("FileLock - backoff does not exceed maxWaitMs budget", async () => {
+  await withTempDir(async (dir) => {
+    const holder = new FileLock(dir, { ttlMs: 60_000 });
+    await holder.acquire();
+
+    const maxWaitMs = 800;
+    const waiter = new FileLock(dir, {
+      ttlMs: 60_000,
+      retryIntervalMs: 100,
+      maxWaitMs,
+    });
+
+    const start = Date.now();
+    await assertRejects(() => waiter.acquire(), LockTimeoutError);
+    const elapsed = Date.now() - start;
+
+    // Should not overshoot maxWaitMs by more than one retry interval + jitter
+    assert(
+      elapsed < maxWaitMs + 500,
+      `elapsed ${elapsed}ms should be close to maxWaitMs ${maxWaitMs}ms`,
+    );
+
+    await holder.release();
+  });
+});
+
+Deno.test("FileLock - acquire succeeds after holder releases (contention path)", async () => {
+  await withTempDir(async (dir) => {
+    const holder = new FileLock(dir, { ttlMs: 60_000 });
+    await holder.acquire();
+
+    const waiter = new FileLock(dir, {
+      ttlMs: 60_000,
+      retryIntervalMs: 50,
+      maxWaitMs: 5000,
+    });
+
+    // Release the holder after a short delay
+    const releaseDelay = setTimeout(async () => {
+      await holder.release();
+    }, 200);
+
+    const start = Date.now();
+    await waiter.acquire();
+    const elapsed = Date.now() - start;
+
+    clearTimeout(releaseDelay);
+    assert(elapsed >= 100, `should have waited for release, took ${elapsed}ms`);
+    assert(
+      elapsed < 3000,
+      `should acquire quickly after release, took ${elapsed}ms`,
+    );
+
+    const info = await waiter.inspect();
+    assertEquals(info!.pid, Deno.pid);
+
+    await waiter.release();
+  });
+});
+
+Deno.test("FileLock - maxWaitMs override is respected", async () => {
+  await withTempDir(async (dir) => {
+    const holder = new FileLock(dir, { ttlMs: 60_000 });
+    await holder.acquire();
+
+    const shortTimeout = new FileLock(dir, {
+      ttlMs: 60_000,
+      retryIntervalMs: 50,
+      maxWaitMs: 200,
+    });
+    const longTimeout = new FileLock(dir, {
+      ttlMs: 60_000,
+      retryIntervalMs: 50,
+      maxWaitMs: 800,
+    });
+
+    const start1 = Date.now();
+    await assertRejects(() => shortTimeout.acquire(), LockTimeoutError);
+    const elapsed1 = Date.now() - start1;
+
+    const start2 = Date.now();
+    await assertRejects(() => longTimeout.acquire(), LockTimeoutError);
+    const elapsed2 = Date.now() - start2;
+
+    assert(
+      elapsed2 > elapsed1,
+      `longer timeout (${elapsed2}ms) should wait longer than shorter (${elapsed1}ms)`,
+    );
+
+    await holder.release();
   });
 });

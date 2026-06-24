@@ -91,6 +91,8 @@ const DEFAULT_TTL_MS = 30_000;
 const DEFAULT_RETRY_INTERVAL_MS = 1_000;
 const DEFAULT_MAX_WAIT_MS = 60_000;
 const DEFAULT_LOCK_PATH = ".datastore.lock";
+const MAX_BACKOFF_MS = 8_000;
+const JITTER_FACTOR = 0.25;
 
 /** Build a LockInfo for the current process. */
 function buildLockInfo(ttlMs: number, nonce: string): LockInfo {
@@ -142,6 +144,8 @@ export class FileLock implements DistributedLock {
     const nonce = crypto.randomUUID();
     const logger = getSwampLogger(["datastore", "lock"]);
     let contentionLogged = false;
+    let retryCount = 0;
+    let currentBackoff = this.retryIntervalMs;
 
     while (true) {
       // Check timeout on every iteration — including retries after stale lock cleanup
@@ -170,12 +174,22 @@ export class FileLock implements DistributedLock {
         this.nonce = nonce;
         this.held = true;
         this.startHeartbeat();
+
+        if (retryCount > 0) {
+          const waitMs = Date.now() - startTime;
+          logger.info(
+            "Acquired lock {path} after {retries} retries ({waitMs}ms)",
+            { path: this.lockPath, retries: retryCount, waitMs },
+          );
+        }
         return;
       } catch (error) {
         if (!(error instanceof Deno.errors.AlreadyExists)) {
           throw error;
         }
       }
+
+      retryCount++;
 
       // Lock file exists — check if stale.
       // Best-effort: if we accidentally delete a fresh lock, the nonce
@@ -208,8 +222,18 @@ export class FileLock implements DistributedLock {
         }
       }
 
-      // Wait and retry
-      await new Promise((resolve) => setTimeout(resolve, this.retryIntervalMs));
+      // Jittered exponential backoff, clamped to remaining budget
+      const jitter = 1 + (Math.random() * 2 - 1) * JITTER_FACTOR;
+      const remaining = this.maxWaitMs - (Date.now() - startTime);
+      const sleepMs = Math.min(
+        currentBackoff * jitter,
+        remaining,
+        MAX_BACKOFF_MS,
+      );
+      if (sleepMs > 0) {
+        await new Promise((resolve) => setTimeout(resolve, sleepMs));
+      }
+      currentBackoff = Math.min(currentBackoff * 2, MAX_BACKOFF_MS);
     }
   }
 
