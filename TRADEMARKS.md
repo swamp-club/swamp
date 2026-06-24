@@ -68,6 +68,8 @@ are not covered by the Policy:
 
 <img src="sc-mark.png" width="64" height="64"/>
 
+<img src="swamp-club-wordmark.png" width="368" height="128"/>
+
 Contact us as described in "Where to get further information" below if you have
 questions or want to ask permission to use any of these excluded trademarks.
 
