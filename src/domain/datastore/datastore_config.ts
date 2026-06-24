@@ -80,6 +80,19 @@ export const DEFAULT_SYNC_TIMEOUT_MS = 300_000;
 export const SYNC_TIMEOUT_ENV_VAR = "SWAMP_DATASTORE_SYNC_TIMEOUT_MS";
 
 /**
+ * Default timeout (milliseconds) for acquiring a distributed lock.
+ *
+ * Per-step locking means each model method step gets a fresh timeout
+ * budget. 60 seconds is sufficient for the vast majority of workloads;
+ * users running extreme concurrency (10+ parallel writers on the same
+ * model) can raise this via `SWAMP_LOCK_TIMEOUT_MS`.
+ */
+export const DEFAULT_LOCK_TIMEOUT_MS = 60_000;
+
+/** Env var that overrides `DEFAULT_LOCK_TIMEOUT_MS` at runtime. */
+export const LOCK_TIMEOUT_ENV_VAR = "SWAMP_LOCK_TIMEOUT_MS";
+
+/**
  * Filesystem-based datastore configuration.
  * Data is stored at a specified filesystem path.
  */
@@ -214,4 +227,25 @@ export function resolveSyncTimeoutMs(
     if (Number.isFinite(parsed) && parsed > 0) return parsed;
   }
   return DEFAULT_SYNC_TIMEOUT_MS;
+}
+
+/**
+ * Resolve the effective lock acquisition timeout.
+ *
+ * Resolution order:
+ *   1. `overrideMs` (per-invocation override)
+ *   2. `SWAMP_LOCK_TIMEOUT_MS` env var (must parse as positive int)
+ *   3. `DEFAULT_LOCK_TIMEOUT_MS` (60 seconds)
+ *
+ * Invalid env values (non-numeric, zero, negative) are ignored with a silent
+ * fallback to the default.
+ */
+export function resolveLockTimeoutMs(overrideMs?: number): number {
+  if (overrideMs != null && overrideMs > 0) return overrideMs;
+  const envValue = Deno.env.get(LOCK_TIMEOUT_ENV_VAR);
+  if (envValue) {
+    const parsed = Number.parseInt(envValue, 10);
+    if (Number.isFinite(parsed) && parsed > 0) return parsed;
+  }
+  return DEFAULT_LOCK_TIMEOUT_MS;
 }

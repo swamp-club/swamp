@@ -792,6 +792,39 @@ Co-locating the lock with the namespaced data would require namespace-scoping
 `data` as the first path segment), so it is deferred to the per-model lock
 namespacing work rather than expanding this phase's scope for a cosmetic issue.
 
+### Lock Timeout and Retry Behavior
+
+The default lock acquisition timeout is **60 seconds** (`DEFAULT_LOCK_TIMEOUT_MS`).
+This is sufficient for most workloads because per-step locking gives each model
+method step a fresh timeout budget.
+
+The timeout can be overridden via the `SWAMP_LOCK_TIMEOUT_MS` environment
+variable. Resolution order (first positive value wins):
+
+1. Per-invocation override (internal; no CLI flag currently exposes this)
+2. `SWAMP_LOCK_TIMEOUT_MS` env var (must parse as a positive integer)
+3. `DEFAULT_LOCK_TIMEOUT_MS` (60,000 ms)
+
+Invalid env values (non-numeric, zero, negative) are silently ignored.
+
+The resolved timeout is threaded into every lock creation site: per-model
+locks (`createModelLock`), global datastore locks (`createDatastoreLock`),
+and inline lock constructions in `requireInitializedRepo` and flush paths.
+Custom datastore providers receive `maxWaitMs` in `LockOptions` — whether
+they honor it depends on their implementation.
+
+**Retry backoff.** `FileLock.acquire` uses jittered exponential backoff:
+starting at `retryIntervalMs` (default 1 second), doubling each attempt,
+capped at 8 seconds, with ±25% random jitter. Each sleep is also clamped to
+the remaining timeout budget so the loop never overshoots `maxWaitMs`.
+
+**Contention logging.** When a lock is acquired after one or more retries,
+an info-level log line reports the retry count and total wait time:
+
+```
+INF datastore·lock Acquired lock "data/.../lock" after 3 retries (4521ms)
+```
+
 ### Lock Lifecycle
 
 The sync coordinator (`datastore_sync_coordinator.ts`) manages the lock

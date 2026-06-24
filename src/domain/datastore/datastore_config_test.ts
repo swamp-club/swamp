@@ -22,10 +22,13 @@ import {
   ALWAYS_LOCAL_SUBDIRS,
   type CustomDatastoreConfig,
   DEFAULT_DATASTORE_SUBDIRS,
+  DEFAULT_LOCK_TIMEOUT_MS,
   DEFAULT_SYNC_TIMEOUT_MS,
   type FilesystemDatastoreConfig,
   getDatastoreDirectories,
   isAlwaysLocal,
+  LOCK_TIMEOUT_ENV_VAR,
+  resolveLockTimeoutMs,
   resolveSyncTimeoutMs,
   SYNC_TIMEOUT_ENV_VAR,
 } from "./datastore_config.ts";
@@ -105,6 +108,51 @@ Deno.test("resolveSyncTimeoutMs: undefined override preserves existing precedenc
 Deno.test("resolveSyncTimeoutMs: no override, no config, no env returns default", () => {
   withEnv(SYNC_TIMEOUT_ENV_VAR, undefined, () => {
     assertEquals(resolveSyncTimeoutMs(customConfig), DEFAULT_SYNC_TIMEOUT_MS);
+  });
+});
+
+// --- resolveLockTimeoutMs ---
+
+Deno.test("resolveLockTimeoutMs: override wins over env and default", () => {
+  withEnv(LOCK_TIMEOUT_ENV_VAR, "120000", () => {
+    assertEquals(resolveLockTimeoutMs(30_000), 30_000);
+  });
+});
+
+Deno.test("resolveLockTimeoutMs: env var wins over default", () => {
+  withEnv(LOCK_TIMEOUT_ENV_VAR, "180000", () => {
+    assertEquals(resolveLockTimeoutMs(), 180_000);
+  });
+});
+
+Deno.test("resolveLockTimeoutMs: no override, no env returns default", () => {
+  withEnv(LOCK_TIMEOUT_ENV_VAR, undefined, () => {
+    assertEquals(resolveLockTimeoutMs(), DEFAULT_LOCK_TIMEOUT_MS);
+  });
+});
+
+Deno.test("resolveLockTimeoutMs: non-positive override falls through", () => {
+  withEnv(LOCK_TIMEOUT_ENV_VAR, undefined, () => {
+    assertEquals(resolveLockTimeoutMs(0), DEFAULT_LOCK_TIMEOUT_MS);
+    assertEquals(resolveLockTimeoutMs(-1), DEFAULT_LOCK_TIMEOUT_MS);
+  });
+});
+
+Deno.test("resolveLockTimeoutMs: invalid env var falls through to default", () => {
+  withEnv(LOCK_TIMEOUT_ENV_VAR, "not-a-number", () => {
+    assertEquals(resolveLockTimeoutMs(), DEFAULT_LOCK_TIMEOUT_MS);
+  });
+});
+
+Deno.test("resolveLockTimeoutMs: zero env var falls through to default", () => {
+  withEnv(LOCK_TIMEOUT_ENV_VAR, "0", () => {
+    assertEquals(resolveLockTimeoutMs(), DEFAULT_LOCK_TIMEOUT_MS);
+  });
+});
+
+Deno.test("resolveLockTimeoutMs: negative env var falls through to default", () => {
+  withEnv(LOCK_TIMEOUT_ENV_VAR, "-5000", () => {
+    assertEquals(resolveLockTimeoutMs(), DEFAULT_LOCK_TIMEOUT_MS);
   });
 });
 
