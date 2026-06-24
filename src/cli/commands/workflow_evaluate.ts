@@ -38,7 +38,7 @@ import { createWorkflowEvaluateRenderer } from "../../presentation/renderers/wor
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { extractModelReferencesFromWorkflow } from "../../domain/workflows/model_reference_extractor.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
-import { parseInputs } from "../input_parser.ts";
+import { mergeInputArgs, parseInputs } from "../input_parser.ts";
 import { InputValidationService } from "../../domain/inputs/mod.ts";
 import { UserError } from "../../domain/errors.ts";
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
@@ -76,14 +76,8 @@ export const workflowEvaluateCommand = new Command()
         "evaluate",
       ]);
 
-      // Parse input values.
-      // --arg is a hidden alias; --input takes precedence when both are used.
-      const mergedInput = [
-        ...((options.arg as string[] | undefined) ?? []),
-        ...((options.input as string[] | undefined) ?? []),
-      ];
       const { inputs } = await parseInputs({
-        input: mergedInput.length > 0 ? mergedInput : undefined,
+        input: mergeInputArgs(options),
         inputFile: options.inputFile as string | undefined,
       });
 

@@ -107,6 +107,70 @@ Deno.test("vault type list is registered as a hidden subcommand", async () => {
   );
 });
 
+Deno.test("model method run has hidden --arg option", async () => {
+  const { modelMethodRunCommand } = await import("./model_method_run.ts");
+  const allOptions = modelMethodRunCommand.getOptions(true);
+  const argOpt = allOptions.find((o) => o.name === "arg");
+  assertEquals(argOpt !== undefined, true, "--arg should be registered");
+  assertEquals(argOpt!.hidden, true, "--arg should be hidden");
+
+  const visibleOptions = modelMethodRunCommand.getOptions();
+  const visibleArg = visibleOptions.find((o) => o.name === "arg");
+  assertEquals(
+    visibleArg,
+    undefined,
+    "--arg should not appear in visible options",
+  );
+});
+
+Deno.test("workflow run has hidden --arg option", async () => {
+  const { workflowRunCommand } = await import("./workflow_run.ts");
+  const allOptions = workflowRunCommand.getOptions(true);
+  const argOpt = allOptions.find((o) => o.name === "arg");
+  assertEquals(argOpt !== undefined, true, "--arg should be registered");
+  assertEquals(argOpt!.hidden, true, "--arg should be hidden");
+
+  const visibleOptions = workflowRunCommand.getOptions();
+  const visibleArg = visibleOptions.find((o) => o.name === "arg");
+  assertEquals(
+    visibleArg,
+    undefined,
+    "--arg should not appear in visible options",
+  );
+});
+
+Deno.test("workflow evaluate has hidden --arg option", async () => {
+  const { workflowEvaluateCommand } = await import("./workflow_evaluate.ts");
+  const allOptions = workflowEvaluateCommand.getOptions(true);
+  const argOpt = allOptions.find((o) => o.name === "arg");
+  assertEquals(argOpt !== undefined, true, "--arg should be registered");
+  assertEquals(argOpt!.hidden, true, "--arg should be hidden");
+
+  const visibleOptions = workflowEvaluateCommand.getOptions();
+  const visibleArg = visibleOptions.find((o) => o.name === "arg");
+  assertEquals(
+    visibleArg,
+    undefined,
+    "--arg should not appear in visible options",
+  );
+});
+
+Deno.test("workflow resume has hidden --arg option", async () => {
+  const { workflowResumeCommand } = await import("./workflow_resume.ts");
+  const allOptions = workflowResumeCommand.getOptions(true);
+  const argOpt = allOptions.find((o) => o.name === "arg");
+  assertEquals(argOpt !== undefined, true, "--arg should be registered");
+  assertEquals(argOpt!.hidden, true, "--arg should be hidden");
+
+  const visibleOptions = workflowResumeCommand.getOptions();
+  const visibleArg = visibleOptions.find((o) => o.name === "arg");
+  assertEquals(
+    visibleArg,
+    undefined,
+    "--arg should not appear in visible options",
+  );
+});
+
 Deno.test("repo init is registered as a visible subcommand", async () => {
   const { repoCommand } = await import("./repo_init.ts");
 

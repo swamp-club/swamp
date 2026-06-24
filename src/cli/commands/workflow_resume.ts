@@ -52,7 +52,12 @@ import {
 } from "../../libswamp/mod.ts";
 import type { WorkflowRunEvent } from "../../libswamp/mod.ts";
 import { GIT_SHA } from "./version.ts";
-import { deepMerge, parseInputs, parseStdinContent } from "../input_parser.ts";
+import {
+  deepMerge,
+  mergeInputArgs,
+  parseInputs,
+  parseStdinContent,
+} from "../input_parser.ts";
 import { readStdin } from "../../infrastructure/io/stdin_reader.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
@@ -128,13 +133,8 @@ export const workflowResumeCommand = new Command()
         stdinInputs = stdinItems[0] ?? {};
       }
 
-      // --arg is a hidden alias; --input takes precedence when both are used.
-      const mergedInput = [
-        ...((options.arg as string[] | undefined) ?? []),
-        ...((options.input as string[] | undefined) ?? []),
-      ];
       const { inputs: cliInputs } = await parseInputs({
-        input: mergedInput.length > 0 ? mergedInput : undefined,
+        input: mergeInputArgs(options),
         inputFile: stdinContent !== null
           ? undefined
           : options.inputFile as string | undefined,

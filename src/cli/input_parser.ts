@@ -28,6 +28,19 @@ export { coerceInputTypes } from "../domain/inputs/input_coercion.ts";
 export { deepMerge } from "../domain/inputs/input_merge.ts";
 
 /**
+ * Merges the hidden --arg alias with --input, giving --input precedence.
+ */
+export function mergeInputArgs(
+  options: { arg?: string[]; input?: string[] },
+): string[] | undefined {
+  const merged = [
+    ...((options.arg as string[] | undefined) ?? []),
+    ...((options.input as string[] | undefined) ?? []),
+  ];
+  return merged.length > 0 ? merged : undefined;
+}
+
+/**
  * Result of parsing inputs.
  */
 export interface ParsedInputs {

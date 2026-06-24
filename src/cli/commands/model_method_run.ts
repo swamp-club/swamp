@@ -40,7 +40,12 @@ import { VaultService } from "../../domain/vaults/vault_service.ts";
 import { ExpressionEvaluationService } from "../../domain/expressions/expression_evaluation_service.ts";
 import { runFileSink } from "../../infrastructure/logging/logger.ts";
 import { GIT_SHA } from "./version.ts";
-import { deepMerge, parseInputs, parseStdinContent } from "../input_parser.ts";
+import {
+  deepMerge,
+  mergeInputArgs,
+  parseInputs,
+  parseStdinContent,
+} from "../input_parser.ts";
 import { readStdin } from "../../infrastructure/io/stdin_reader.ts";
 import { parseTags } from "../../libswamp/mod.ts";
 import { join } from "@std/path";
@@ -233,14 +238,8 @@ export const modelMethodRunCommand = new Command()
         stdinItems = parseStdinContent(stdinContent);
       }
 
-      // Parse --input overrides (used standalone or merged with stdin items).
-      // --arg is a hidden alias; --input takes precedence when both are used.
-      const mergedInput = [
-        ...((options.arg as string[] | undefined) ?? []),
-        ...((options.input as string[] | undefined) ?? []),
-      ];
       const { inputs: cliInputs } = await parseInputs({
-        input: mergedInput.length > 0 ? mergedInput : undefined,
+        input: mergeInputArgs(options),
         inputFile: stdinItems
           ? undefined
           : options.inputFile as string | undefined,
@@ -499,7 +498,7 @@ async function runMethodViaServer(
     stdinItems = parseStdinContent(stdinContent);
   }
   const { inputs: cliInputs } = await parseInputs({
-    input: options.input as string[] | undefined,
+    input: mergeInputArgs(options),
     inputFile: stdinItems ? undefined : options.inputFile as string | undefined,
   });
   const runtimeTags = options.tag

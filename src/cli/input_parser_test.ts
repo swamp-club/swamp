@@ -20,6 +20,7 @@
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import {
   deepMerge,
+  mergeInputArgs,
   parseInputs,
   parseKeyValueInputs,
   parseStdinContent,
@@ -553,4 +554,23 @@ Deno.test("parseStdinContent: complex nested JSON object", () => {
     server: { host: "localhost", port: 8080 },
     env: "prod",
   }]);
+});
+
+Deno.test("mergeInputArgs: returns undefined when both are absent", () => {
+  assertEquals(mergeInputArgs({}), undefined);
+});
+
+Deno.test("mergeInputArgs: returns --arg values alone", () => {
+  assertEquals(mergeInputArgs({ arg: ["a=1"] }), ["a=1"]);
+});
+
+Deno.test("mergeInputArgs: returns --input values alone", () => {
+  assertEquals(mergeInputArgs({ input: ["a=1"] }), ["a=1"]);
+});
+
+Deno.test("mergeInputArgs: --input values come after --arg values", () => {
+  assertEquals(
+    mergeInputArgs({ arg: ["a=1"], input: ["a=2"] }),
+    ["a=1", "a=2"],
+  );
 });
