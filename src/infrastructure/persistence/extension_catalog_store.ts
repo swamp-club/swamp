@@ -1121,16 +1121,17 @@ export class ExtensionCatalogStore {
    *
    * Idempotent: running twice produces the same result.
    */
-  resolveOriginConflicts(canonicalRepoRoot: string): void {
-    const pulledPrefix = canonicalRepoRoot.endsWith("/")
-      ? `${canonicalRepoRoot}.swamp/pulled-extensions/`
-      : `${canonicalRepoRoot}/.swamp/pulled-extensions/`;
+  resolveOriginConflicts(repoRoot: string): void {
+    const canonical = canonicalizePath(repoRoot);
+    const pulledPrefix = canonical.endsWith("/")
+      ? `${canonical}.swamp/pulled-extensions/`
+      : `${canonical}/.swamp/pulled-extensions/`;
 
     const rows = this.findAll();
 
     let hasPulled = false;
     for (const row of rows) {
-      if (row.source_path.startsWith(pulledPrefix)) {
+      if (canonicalizePath(row.source_path).startsWith(pulledPrefix)) {
         hasPulled = true;
         break;
       }
@@ -1148,7 +1149,9 @@ export class ExtensionCatalogStore {
       if (row.kind === "extension") continue;
 
       const key = `${row.kind}::${row.type_normalized}`;
-      const isPulled = row.source_path.startsWith(pulledPrefix);
+      const isPulled = canonicalizePath(row.source_path).startsWith(
+        pulledPrefix,
+      );
       const prior = occupants.get(key);
 
       if (prior) {
