@@ -30,7 +30,7 @@ import { issueSecurityCommand } from "./issue_security.ts";
 export const issueCommand = new Command()
   .name("issue")
   .description(
-    "Search, fetch, submit, and comment on swamp-club Lab issues",
+    "Search, fetch, report, and comment on swamp-club Lab issues",
   )
   .action(groupCommandAction)
   .command("search", issueSearchCommand)
