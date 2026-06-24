@@ -980,6 +980,161 @@ Deno.test("CelEvaluator: directly-missing input throws InvalidExpressionError", 
   );
 });
 
+// --- Optional select .? for null-safe data access (Issue #783) ---
+// data.latest() and data.version() return null when the instance doesn't exist.
+// Using .? (optional select) on null should return null instead of throwing.
+// Regular . still throws on null — .? is an explicit opt-in.
+
+Deno.test("CelEvaluator: .? on null returns null instead of throwing", () => {
+  const evaluator = new CelEvaluator();
+  const context = {
+    data: {
+      latest: (_m: string, _d: string) => null,
+    },
+  };
+
+  const result = evaluator.evaluate(
+    'data.latest("model", "instance").?attributes.?payload.?findings',
+    context,
+  );
+  assertEquals(result, null);
+});
+
+Deno.test("CelEvaluator: .? on existing record returns the value", () => {
+  const evaluator = new CelEvaluator();
+  const context = {
+    data: {
+      latest: (m: string, d: string) => {
+        if (m === "model" && d === "instance") {
+          return {
+            attributes: { payload: { findings: ["bug1", "bug2"] } },
+          };
+        }
+        return null;
+      },
+    },
+  };
+
+  const result = evaluator.evaluate(
+    'data.latest("model", "instance").?attributes.?payload.?findings',
+    context,
+  );
+  assertEquals(result, ["bug1", "bug2"]);
+});
+
+Deno.test("CelEvaluator: .? with data.version() returns null for missing version", () => {
+  const evaluator = new CelEvaluator();
+  const context = {
+    data: {
+      version: (_m: string, _d: string, _v: unknown) => null,
+    },
+  };
+
+  const result = evaluator.evaluate(
+    'data.version("model", "instance", 1).?attributes.?status',
+    context,
+  );
+  assertEquals(result, null);
+});
+
+Deno.test("CelEvaluator: .? with vary returns null for missing instance", () => {
+  const evaluator = new CelEvaluator();
+  const context = {
+    data: {
+      latest: (_m: string, _d: string) => null,
+    },
+  };
+
+  const result = evaluator.evaluate(
+    'data.latest("model", "instance", ["prod"]).?attributes.?value',
+    context,
+  );
+  assertEquals(result, null);
+});
+
+Deno.test("CelEvaluator: .? with .orValue() provides inline default", () => {
+  const evaluator = new CelEvaluator();
+  const context = {
+    data: {
+      latest: (_m: string, _d: string) => null,
+    },
+  };
+
+  const result = evaluator.evaluate(
+    'data.latest("model", "instance").?attributes.?payload.?findings.orValue([])',
+    context,
+  );
+  assertEquals(result, []);
+});
+
+Deno.test("CelEvaluator: .? with .orValue() returns value when exists", () => {
+  const evaluator = new CelEvaluator();
+  const context = {
+    data: {
+      latest: (_m: string, _d: string) => ({
+        attributes: { payload: { findings: ["f1"] } },
+      }),
+    },
+  };
+
+  const result = evaluator.evaluate(
+    'data.latest("model", "instance").?attributes.?payload.?findings.orValue([])',
+    context,
+  );
+  assertEquals(result, ["f1"]);
+});
+
+Deno.test("CelEvaluator: regular . still throws on null (no silent null propagation)", () => {
+  const evaluator = new CelEvaluator();
+  const context = {
+    data: {
+      latest: (_m: string, _d: string) => null,
+    },
+  };
+
+  assertThrows(
+    () =>
+      evaluator.evaluate(
+        'data.latest("model", "instance").attributes',
+        context,
+      ),
+    InvalidExpressionError,
+  );
+});
+
+Deno.test("CelEvaluator: .? async returns null for missing instance", async () => {
+  const evaluator = new CelEvaluator();
+  const context = {
+    data: {
+      latest: (_m: string, _d: string) => Promise.resolve(null),
+    },
+  };
+
+  const result = await evaluator.evaluateAsync(
+    'data.latest("model", "instance").?attributes.?payload.?findings',
+    context,
+  );
+  assertEquals(result, null);
+});
+
+Deno.test("CelEvaluator: .? async returns value when exists", async () => {
+  const evaluator = new CelEvaluator();
+  const context = {
+    data: {
+      latest: (_m: string, _d: string) =>
+        Promise.resolve({
+          attributes: { payload: { findings: ["f1"] } },
+        }),
+    },
+  };
+
+  const result = await evaluator.evaluateAsync(
+    'data.latest("model", "instance").?attributes.?payload.?findings',
+    context,
+  );
+  assertEquals(result, ["f1"]);
+});
+
 // --- Promise detection in sync evaluate (Issue #88) ---
 
 Deno.test("evaluate: throws InvalidExpressionError when data.latest returns a Promise", () => {

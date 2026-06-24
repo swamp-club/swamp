@@ -69,6 +69,12 @@ allResources: ${{ data.findByTag("type", "resource") }}
 
 # Find all instances from a factory model's output spec
 subnets: ${{ data.findBySpec("my-scanner", "subnet") }}
+
+# Null-safe access — use .? when data might not exist yet
+priorFindings: ${{ data.latest("factory", "code-review").?attributes.?findings }}
+
+# With inline default via .orValue()
+priorFindings: ${{ data.latest("factory", "code-review").?attributes.?findings.orValue([]) }}
 ```
 
 ## Example with Expressions

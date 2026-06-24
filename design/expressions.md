@@ -319,6 +319,29 @@ attributes:
   historySize: ${{ size(data.listVersions('processor', 'result')) }}
 ```
 
+### Null-safe Optional Access (.?)
+
+`data.latest()` and `data.version()` return `null` when the named instance
+doesn't exist. Accessing properties on `null` with `.` throws an error. Use
+`.?` (optional select) to chain through a potentially null result — the
+expression returns `null` instead of throwing:
+
+```yaml
+inputs:
+  # Throws if the data doesn't exist:
+  findings: ${{ data.latest('factory', 'code-review').attributes.findings }}
+
+  # Returns null if the data doesn't exist:
+  findings: ${{ data.latest('factory', 'code-review').?attributes.?findings }}
+
+  # Use .orValue() for an inline default:
+  findings: ${{ data.latest('factory', 'code-review').?attributes.?findings.orValue([]) }}
+```
+
+Use `.?` when the data **might not exist yet** — for example, referencing a
+prior cycle's output on the first cycle of a rework loop. Use regular `.` when
+the data **must exist** — a missing result is a bug and should fail loudly.
+
 ### data.findBySpec(modelName, specName)
 
 Returns all data records for a model that match a given output spec name.

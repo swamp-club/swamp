@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { Environment } from "cel-js";
+import { Environment, Optional } from "cel-js";
 import { getLogger } from "@logtape/logtape";
 import { InvalidExpressionError } from "../../domain/expressions/errors.ts";
 import { transformHyphenatedModelRefs } from "../../domain/expressions/expression_parser.ts";
@@ -29,6 +29,18 @@ import { composeDataName } from "../../domain/data/mod.ts";
 export interface ValidationResult {
   valid: boolean;
   error?: string;
+}
+
+/**
+ * Unwraps a CEL Optional value at the expression boundary.
+ * Optional.of(v) becomes v, Optional.none() becomes null.
+ * Non-Optional values pass through unchanged.
+ */
+function unwrapOptional(value: unknown): unknown {
+  if (value instanceof Optional) {
+    return value.hasValue() ? value.value() : null;
+  }
+  return value;
 }
 
 /**
@@ -238,7 +250,10 @@ function registerArithmeticOverloads(env: Environment): void {
 export { registerArithmeticOverloads };
 
 export function createExtensionCelEnvironment(): Environment {
-  const env = new Environment({ unlistedVariablesAreDyn: true });
+  const env = new Environment({
+    unlistedVariablesAreDyn: true,
+    enableOptionalTypes: true,
+  });
   registerArithmeticOverloads(env);
   return env;
 }
@@ -255,8 +270,6 @@ export class CelEvaluator {
   private readonly warnedPatterns = new Set<string>();
 
   constructor() {
-    // Start from the shared extension baseline, then layer swamp's internal
-    // namespace types on top.
     this.env = createExtensionCelEnvironment();
 
     // Register namespace types so cel-js recognizes them via constructor
@@ -371,7 +384,8 @@ export class CelEvaluator {
       // resolve receiver methods instead of treating them as maps.
       const wrappedContext = this.wrapNamespaces(context);
 
-      const result = this.env.evaluate(transformedExpr, wrappedContext);
+      const rawResult = this.env.evaluate(transformedExpr, wrappedContext);
+      const result = unwrapOptional(rawResult);
 
       // Detect unresolved Promises from async CEL functions (data.latest,
       // data.findByTag, data.findBySpec, data.query).  These functions are
@@ -432,8 +446,11 @@ export class CelEvaluator {
       const transformedExpr = transformHyphenatedModelRefs(expression);
       this.warnDeprecatedPatterns(transformedExpr);
       const wrappedContext = this.wrapNamespaces(context);
-      const result = await this.env.evaluate(transformedExpr, wrappedContext);
-      return coerceBigInts(result);
+      const rawResult = await this.env.evaluate(
+        transformedExpr,
+        wrappedContext,
+      );
+      return coerceBigInts(unwrapOptional(rawResult));
     } catch (error) {
       throw new InvalidExpressionError(
         error instanceof Error ? error.message : String(error),
