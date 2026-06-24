@@ -228,6 +228,7 @@ export class ExtensionRepository {
         logger
           .info`Pruned ${pruned.length} catalog row(s) with unreachable source path(s)`;
       }
+      this.catalog.resolveOriginConflicts(this.repoRoot);
       this.assertIRepo1();
     });
   }

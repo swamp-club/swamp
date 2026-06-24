@@ -193,8 +193,14 @@ export const doctorExtensionsCommand = new Command()
         });
         const result = await reconciler.execute();
         reconcileTransitions = result.transitions;
-      } catch {
-        // Best-effort — the loader will bootstrap a fresh catalog if this fails.
+      } catch (reconcileError) {
+        // Best-effort — the loader will bootstrap a fresh catalog if
+        // most failures. DuplicateTypeError from same-origin conflicts
+        // should still surface so the user sees it.
+        const { DuplicateTypeError } = await import(
+          "../../infrastructure/persistence/duplicate_type_error.ts"
+        );
+        if (reconcileError instanceof DuplicateTypeError) throw reconcileError;
       }
 
       const registries: ReadonlyArray<DoctorRegistryDeps> = [

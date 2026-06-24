@@ -1881,3 +1881,217 @@ Deno.test("pruneUnreachableSources: preserves all rows under the repo root", () 
 
   store.close();
 });
+
+// ── resolveOriginConflicts ──────────────────────────────────────────
+
+Deno.test("resolveOriginConflicts: no-op when no pulled rows exist", () => {
+  const dbPath = makeTempDbPath();
+  const repoRoot = dirname(dirname(dbPath));
+  const store = new ExtensionCatalogStore(dbPath);
+
+  store.upsert(
+    makeRow({
+      source_path: canonicalizePath(join(repoRoot, "extensions/models/a.ts")),
+      type_normalized: "@ns/a",
+    }),
+  );
+
+  store.resolveOriginConflicts(repoRoot);
+
+  const rows = store.findAll();
+  assertEquals(rows.length, 1);
+  assertEquals(rows[0].type_normalized, "@ns/a");
+  store.close();
+});
+
+Deno.test("resolveOriginConflicts: clears pulled type when local claims same type", () => {
+  const dbPath = makeTempDbPath();
+  const repoRoot = dirname(dirname(dbPath));
+  const store = new ExtensionCatalogStore(dbPath);
+
+  const localPath = canonicalizePath(
+    join(repoRoot, "extensions/models/foo.ts"),
+  );
+  const pulledPath = canonicalizePath(
+    join(repoRoot, ".swamp/pulled-extensions/@ns/foo/models/foo.ts"),
+  );
+
+  store.upsert(makeRow({
+    source_path: localPath,
+    type_normalized: "@ns/foo",
+    kind: "model",
+  }));
+  store.upsert(makeRow({
+    source_path: pulledPath,
+    type_normalized: "@ns/foo",
+    kind: "model",
+  }));
+
+  store.resolveOriginConflicts(repoRoot);
+
+  const local = store.findBySourcePath(localPath);
+  const pulled = store.findBySourcePath(pulledPath);
+  assertEquals(local?.type_normalized, "@ns/foo");
+  assertEquals(pulled?.type_normalized, "");
+  store.close();
+});
+
+Deno.test("resolveOriginConflicts: same-origin conflict is untouched", () => {
+  const dbPath = makeTempDbPath();
+  const repoRoot = dirname(dirname(dbPath));
+  const store = new ExtensionCatalogStore(dbPath);
+
+  const pulled1 = canonicalizePath(
+    join(repoRoot, ".swamp/pulled-extensions/@ns/a/models/x.ts"),
+  );
+  const pulled2 = canonicalizePath(
+    join(repoRoot, ".swamp/pulled-extensions/@ns/b/models/x.ts"),
+  );
+
+  store.upsert(makeRow({
+    source_path: pulled1,
+    type_normalized: "@ns/conflict",
+    kind: "model",
+  }));
+  store.upsert(makeRow({
+    source_path: pulled2,
+    type_normalized: "@ns/conflict",
+    kind: "model",
+  }));
+
+  store.resolveOriginConflicts(repoRoot);
+
+  const r1 = store.findBySourcePath(pulled1);
+  const r2 = store.findBySourcePath(pulled2);
+  assertEquals(r1?.type_normalized, "@ns/conflict");
+  assertEquals(r2?.type_normalized, "@ns/conflict");
+  store.close();
+});
+
+Deno.test("resolveOriginConflicts: skips extension-kind rows", () => {
+  const dbPath = makeTempDbPath();
+  const repoRoot = dirname(dirname(dbPath));
+  const store = new ExtensionCatalogStore(dbPath);
+
+  const localPath = canonicalizePath(
+    join(repoRoot, "extensions/models/ext.ts"),
+  );
+  const pulledPath = canonicalizePath(
+    join(repoRoot, ".swamp/pulled-extensions/@ns/ext/models/ext.ts"),
+  );
+
+  store.upsert(makeRow({
+    source_path: localPath,
+    type_normalized: "@ns/target",
+    kind: "extension",
+  }));
+  store.upsert(makeRow({
+    source_path: pulledPath,
+    type_normalized: "@ns/target",
+    kind: "extension",
+  }));
+
+  store.resolveOriginConflicts(repoRoot);
+
+  const local = store.findBySourcePath(localPath);
+  const pulled = store.findBySourcePath(pulledPath);
+  assertEquals(local?.type_normalized, "@ns/target");
+  assertEquals(pulled?.type_normalized, "@ns/target");
+  store.close();
+});
+
+Deno.test("resolveOriginConflicts: skips Tombstoned rows", () => {
+  const dbPath = makeTempDbPath();
+  const repoRoot = dirname(dirname(dbPath));
+  const store = new ExtensionCatalogStore(dbPath);
+
+  const localPath = canonicalizePath(
+    join(repoRoot, "extensions/models/foo.ts"),
+  );
+  const pulledPath = canonicalizePath(
+    join(repoRoot, ".swamp/pulled-extensions/@ns/foo/models/foo.ts"),
+  );
+
+  store.upsert(makeRow({
+    source_path: localPath,
+    type_normalized: "@ns/foo",
+    kind: "model",
+    state: "Tombstoned",
+  }));
+  store.upsert(makeRow({
+    source_path: pulledPath,
+    type_normalized: "@ns/foo",
+    kind: "model",
+  }));
+
+  store.resolveOriginConflicts(repoRoot);
+
+  const pulled = store.findBySourcePath(pulledPath);
+  assertEquals(pulled?.type_normalized, "@ns/foo");
+  store.close();
+});
+
+Deno.test("resolveOriginConflicts: idempotent", () => {
+  const dbPath = makeTempDbPath();
+  const repoRoot = dirname(dirname(dbPath));
+  const store = new ExtensionCatalogStore(dbPath);
+
+  const localPath = canonicalizePath(
+    join(repoRoot, "extensions/models/foo.ts"),
+  );
+  const pulledPath = canonicalizePath(
+    join(repoRoot, ".swamp/pulled-extensions/@ns/foo/models/foo.ts"),
+  );
+
+  store.upsert(makeRow({
+    source_path: localPath,
+    type_normalized: "@ns/foo",
+    kind: "model",
+  }));
+  store.upsert(makeRow({
+    source_path: pulledPath,
+    type_normalized: "@ns/foo",
+    kind: "model",
+  }));
+
+  store.resolveOriginConflicts(repoRoot);
+  store.resolveOriginConflicts(repoRoot);
+
+  const local = store.findBySourcePath(localPath);
+  const pulled = store.findBySourcePath(pulledPath);
+  assertEquals(local?.type_normalized, "@ns/foo");
+  assertEquals(pulled?.type_normalized, "");
+  store.close();
+});
+
+Deno.test("resolveOriginConflicts: different kinds do not conflict", () => {
+  const dbPath = makeTempDbPath();
+  const repoRoot = dirname(dirname(dbPath));
+  const store = new ExtensionCatalogStore(dbPath);
+
+  const localPath = canonicalizePath(
+    join(repoRoot, "extensions/models/foo.ts"),
+  );
+  const pulledPath = canonicalizePath(
+    join(repoRoot, ".swamp/pulled-extensions/@ns/foo/reports/foo.ts"),
+  );
+
+  store.upsert(makeRow({
+    source_path: localPath,
+    type_normalized: "@ns/foo",
+    kind: "model",
+  }));
+  store.upsert(makeRow({
+    source_path: pulledPath,
+    type_normalized: "@ns/foo",
+    kind: "report",
+  }));
+
+  store.resolveOriginConflicts(repoRoot);
+
+  const local = store.findBySourcePath(localPath);
+  const pulled = store.findBySourcePath(pulledPath);
+  assertEquals(local?.type_normalized, "@ns/foo");
+  assertEquals(pulled?.type_normalized, "@ns/foo");
+  store.close();
+});
