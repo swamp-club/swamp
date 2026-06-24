@@ -291,6 +291,7 @@ export class ScheduledExecutionService {
     try {
       let runId = "";
       let completedRun: WorkflowRunView | undefined;
+      let streamError: string | undefined;
 
       await this.deps.executeWorkflow(
         { workflowIdOrName: workflowName },
@@ -302,22 +303,13 @@ export class ScheduledExecutionService {
           if (event.kind === "completed") {
             completedRun = event.run;
           }
+          if (event.kind === "error") {
+            streamError = event.error.message;
+          }
         },
       );
 
-      if (completedRun?.status === "failed") {
-        const message = extractFirstStepError(completedRun);
-        this.emit({
-          kind: "schedule_failed",
-          workflowId,
-          workflowName,
-          error: message,
-        });
-        logger.error(
-          "Scheduled run failed for workflow {name}: {error}",
-          { name: workflowName, error: message },
-        );
-      } else {
+      if (completedRun?.status === "succeeded") {
         this.emit({
           kind: "schedule_completed",
           workflowId,
@@ -327,6 +319,20 @@ export class ScheduledExecutionService {
         logger.info(
           "Scheduled run completed for workflow {name} (run: {runId})",
           { name: workflowName, runId },
+        );
+      } else {
+        const message = completedRun
+          ? extractFirstStepError(completedRun)
+          : streamError ?? "workflow did not complete";
+        this.emit({
+          kind: "schedule_failed",
+          workflowId,
+          workflowName,
+          error: message,
+        });
+        logger.error(
+          "Scheduled run failed for workflow {name}: {error}",
+          { name: workflowName, error: message },
         );
       }
     } catch (error) {

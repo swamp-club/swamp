@@ -177,6 +177,83 @@ Deno.test("ScheduledExecutionService: emits schedule_failed when workflow run ha
   assertEquals(completed.length, 0);
 });
 
+Deno.test("ScheduledExecutionService: emits schedule_failed when workflow yields error event without completed", async () => {
+  const wf = createTestWorkflow("error-wf", "* * * * * *");
+  const events: ScheduledExecutionEvent[] = [];
+
+  const mockRepo = createMockWorkflowRepo([wf]);
+  const service = new ScheduledExecutionService({
+    workflowRepo: mockRepo,
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: (
+      _input,
+      _signal,
+      onEvent: (event: WorkflowRunEvent) => void,
+    ) => {
+      onEvent({
+        kind: "started",
+        runId: "run-1",
+        workflowName: "error-wf",
+        jobs: [],
+      });
+      onEvent({
+        kind: "error",
+        error: {
+          code: "workflow_execution_failed",
+          message: "Unknown model type: @acme/missing",
+        },
+      });
+      return Promise.resolve();
+    },
+  });
+
+  await service.start((e) => events.push(e));
+
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+  await service.stop();
+
+  const failed = events.filter((e) => e.kind === "schedule_failed");
+  assertEquals(failed.length >= 1, true);
+  for (const event of failed) {
+    assertEquals(
+      (event as { kind: "schedule_failed"; error: string }).error,
+      "Unknown model type: @acme/missing",
+    );
+  }
+
+  const completed = events.filter((e) => e.kind === "schedule_completed");
+  assertEquals(completed.length, 0);
+});
+
+Deno.test("ScheduledExecutionService: emits schedule_failed when no terminal event is yielded", async () => {
+  const wf = createTestWorkflow("silent-wf", "* * * * * *");
+  const events: ScheduledExecutionEvent[] = [];
+
+  const mockRepo = createMockWorkflowRepo([wf]);
+  const service = new ScheduledExecutionService({
+    workflowRepo: mockRepo,
+    repoDir: "/tmp/nonexistent-test-repo",
+    executeWorkflow: () => Promise.resolve(),
+  });
+
+  await service.start((e) => events.push(e));
+
+  await new Promise((resolve) => setTimeout(resolve, 1500));
+  await service.stop();
+
+  const failed = events.filter((e) => e.kind === "schedule_failed");
+  assertEquals(failed.length >= 1, true);
+  for (const event of failed) {
+    assertEquals(
+      (event as { kind: "schedule_failed"; error: string }).error,
+      "workflow did not complete",
+    );
+  }
+
+  const completed = events.filter((e) => e.kind === "schedule_completed");
+  assertEquals(completed.length, 0);
+});
+
 Deno.test("ScheduledExecutionService: stop clears schedules", async () => {
   const wf = createTestWorkflow("scheduled-wf", "0 * * * *");
 
