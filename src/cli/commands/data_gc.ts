@@ -79,12 +79,16 @@ export const dataGcCommand = new Command()
       repoDir: resolveRepoDir(options.repoDir),
       outputMode: cliCtx.outputMode,
     };
-    const { repoDir, datastoreResolver } = options.dryRun
+    const { repoDir, repoContext, datastoreResolver } = options.dryRun
       ? await requireInitializedRepoReadOnly(repoOpts)
       : await requireInitializedRepo(repoOpts);
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createDataGcDeps(repoDir, datastoreResolver);
+    const deps = createDataGcDeps(
+      repoDir,
+      datastoreResolver,
+      repoContext.markDirty,
+    );
 
     // Phase 1: Preview + Prompt (only in interactive mode without --force and not dry-run)
     if (cliCtx.outputMode === "log" && !options.force && !options.dryRun) {
