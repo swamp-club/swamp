@@ -1,0 +1,17 @@
+{
+  "@cliffy/command@1.0.1": "MIT",
+  "@cliffy/flags@1.0.1": "MIT",
+  "@cliffy/internal@1.0.1": "MIT",
+  "@cliffy/table@1.0.1": "MIT",
+  "@logtape/logtape@2.0.7": "MIT",
+  "@logtape/pretty@2.0.7": "MIT",
+  "@std/assert@1.0.19": "MIT",
+  "@std/fmt@1.0.10": "MIT",
+  "@std/fs@1.0.23": "MIT",
+  "@std/internal@1.0.13": "MIT",
+  "@std/path@1.1.4": "MIT",
+  "@std/streams@1.1.0": "MIT",
+  "@std/tar@0.1.10": "MIT",
+  "@std/text@1.0.18": "MIT",
+  "@std/yaml@1.1.0": "MIT"
+}
