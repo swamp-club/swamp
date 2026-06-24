@@ -1184,7 +1184,21 @@ export async function acquireModelLocks(
           datastoreGlobalLockOptions(config),
         );
         try {
+          const lockStart = Date.now();
           await pushLock.acquire();
+          const lockMs = Date.now() - lockStart;
+          if (
+            lockMs > 5_000 && isCustomDatastoreConfig(config) &&
+            !config.namespace
+          ) {
+            logger.warn(
+              "Lock acquisition took {ms}ms — multiple repos sharing this " +
+                "datastore without namespaces serialize all writes behind a " +
+                "single global lock. Run 'swamp datastore namespace set " +
+                "<name>' to scope each repo to its own lock and index",
+              { ms: lockMs },
+            );
+          }
           logger.info`Pushing changes to datastore...`;
 
           const pushNs = isCustomDatastoreConfig(config)
@@ -1329,7 +1343,18 @@ export async function acquireVaultSync(
         datastoreGlobalLockOptions(config),
       );
       try {
+        const lockStart = Date.now();
         await pushLock.acquire();
+        const lockMs = Date.now() - lockStart;
+        if (lockMs > 5_000 && !config.namespace) {
+          logger.warn(
+            "Lock acquisition took {ms}ms — multiple repos sharing this " +
+              "datastore without namespaces serialize all writes behind a " +
+              "single global lock. Run 'swamp datastore namespace set " +
+              "<name>' to scope each repo to its own lock and index",
+            { ms: lockMs },
+          );
+        }
         logger.info`Pushing vault changes to datastore...`;
 
         const pushNs = config.namespace;

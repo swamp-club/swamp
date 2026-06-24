@@ -25,6 +25,8 @@
  * mechanics (S3 conditional writes, file locks, blob leases, etc.).
  */
 
+import { UserError } from "../errors.ts";
+
 /** Procfile-style metadata stored in the lock. */
 export interface LockInfo {
   /** Who holds the lock, e.g. "user@hostname". */
@@ -88,8 +90,26 @@ export interface DistributedLock {
   forceRelease(expectedNonce: string): Promise<boolean>;
 }
 
-/** Thrown when a lock cannot be acquired within the configured timeout. */
-export class LockTimeoutError extends Error {
+/**
+ * Returns true when the lock key identifies the global (non-namespaced)
+ * datastore lock. Covers both the bare key (`".datastore.lock"` from
+ * S3/GCS locks) and the full filesystem path (`"/…/.datastore.lock"`
+ * from FileLock). Namespaced keys live under `.locks/` and won't match.
+ */
+function isGlobalDatastoreLock(lockKey: string): boolean {
+  return (lockKey === ".datastore.lock" ||
+    lockKey.endsWith("/.datastore.lock")) &&
+    !lockKey.includes("/.locks/");
+}
+
+/**
+ * Thrown when a lock cannot be acquired within the configured timeout.
+ *
+ * Extends `UserError` so the message renders clean (no stack trace) at
+ * the CLI error boundary — the message is already hand-crafted to be
+ * actionable, and a stack would bury the remedies.
+ */
+export class LockTimeoutError extends UserError {
   override readonly name = "LockTimeoutError";
 
   constructor(
@@ -97,10 +117,22 @@ export class LockTimeoutError extends Error {
     public readonly holder: LockInfo | null,
     public readonly waitedMs: number,
   ) {
-    const msg = holder
+    const base = holder
       ? `Lock "${lockKey}" held by ${holder.holder} (pid ${holder.pid}) — ` +
         `timed out after ${waitedMs}ms`
       : `Lock "${lockKey}" — timed out after ${waitedMs}ms`;
-    super(msg);
+
+    const hint = isGlobalDatastoreLock(lockKey)
+      ? `\n\nMultiple repos sharing this datastore serialize all writes ` +
+        `behind a single global lock. To scope each repo to its own lock ` +
+        `and index, run:\n` +
+        `  swamp datastore namespace set <name>\n` +
+        `  swamp datastore namespace migrate --confirm`
+      : "";
+
+    super(base + hint, "lock_timeout");
+    this.lockKey = lockKey;
+    this.holder = holder;
+    this.waitedMs = waitedMs;
   }
 }
