@@ -18,8 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { groupCommandAction } from "../group_action.ts";
-import { modelOutputGetCommand } from "./model_output_get.ts";
+import { unknownCommandErrorHandler } from "../unknown_command_handler.ts";
+import {
+  modelOutputGetAction,
+  modelOutputGetCommand,
+} from "./model_output_get.ts";
 import {
   modelOutputSearchAction,
   modelOutputSearchCommand,
@@ -30,7 +33,14 @@ import { modelOutputDataCommand } from "./model_output_data.ts";
 export const modelOutputCommand = new Command()
   .name("output")
   .description("Manage model outputs")
-  .action(groupCommandAction)
+  .error(unknownCommandErrorHandler)
+  .example("Show latest output (shorthand)", "swamp model output my-server")
+  .arguments("<output_id_or_model_name:string>")
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
+  .action(modelOutputGetAction)
   .command("get", modelOutputGetCommand)
   .command("search", modelOutputSearchCommand)
   .command("logs", modelOutputLogsCommand)

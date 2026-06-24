@@ -151,3 +151,19 @@ Deno.test("buildUnknownCommandMessage - repo typo suggests upgrade", () => {
   const msg = buildUnknownCommandMessage("update", cmd);
   assertStringIncludes(msg, 'Did you mean "upgrade"');
 });
+
+Deno.test("buildUnknownCommandMessage - history context suggestions", () => {
+  const cmd = buildCommand("history", ["get", "search", "logs"]);
+  const msg = buildUnknownCommandMessage("deploy-pipeline", cmd);
+  assertStringIncludes(msg, "history get deploy-pipeline");
+  assertStringIncludes(msg, "history logs deploy-pipeline");
+  assertStringIncludes(msg, "history search");
+});
+
+Deno.test("buildUnknownCommandMessage - output context suggestions", () => {
+  const cmd = buildCommand("output", ["get", "search", "logs", "data"]);
+  const msg = buildUnknownCommandMessage("my-server", cmd);
+  assertStringIncludes(msg, "swamp model output get my-server");
+  assertStringIncludes(msg, "swamp model output search");
+  assertStringIncludes(msg, "swamp model output logs my-server");
+});

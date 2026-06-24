@@ -35,6 +35,36 @@ import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
+export async function modelOutputGetAction(
+  options: AnyOptions,
+  outputIdOrModelName: string,
+): Promise<void> {
+  const cliCtx = createContext(options as GlobalOptions, [
+    "model",
+    "output",
+    "get",
+  ]);
+  cliCtx.logger.debug`Getting output: ${outputIdOrModelName}`;
+
+  const { repoDir, datastoreResolver } = await requireInitializedRepoReadOnly(
+    {
+      repoDir: resolveRepoDir(options.repoDir),
+      outputMode: cliCtx.outputMode,
+    },
+  );
+
+  const ctx = createLibSwampContext({ logger: cliCtx.logger });
+  const deps = await createModelOutputGetDeps(repoDir, datastoreResolver);
+
+  const renderer = createModelOutputGetRenderer(cliCtx.outputMode);
+  await consumeStream(
+    modelOutputGet(ctx, deps, outputIdOrModelName),
+    renderer.handlers(),
+  );
+
+  cliCtx.logger.debug("Model output get command completed");
+}
+
 export const modelOutputGetCommand = new Command()
   .name("get")
   .description("Show details of a model output")
@@ -45,29 +75,4 @@ export const modelOutputGetCommand = new Command()
     "--repo-dir <dir:string>",
     "Repository directory (env: SWAMP_REPO_DIR)",
   )
-  .action(async function (options: AnyOptions, outputIdOrModelName: string) {
-    const cliCtx = createContext(options as GlobalOptions, [
-      "model",
-      "output",
-      "get",
-    ]);
-    cliCtx.logger.debug`Getting output: ${outputIdOrModelName}`;
-
-    const { repoDir, datastoreResolver } = await requireInitializedRepoReadOnly(
-      {
-        repoDir: resolveRepoDir(options.repoDir),
-        outputMode: cliCtx.outputMode,
-      },
-    );
-
-    const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = await createModelOutputGetDeps(repoDir, datastoreResolver);
-
-    const renderer = createModelOutputGetRenderer(cliCtx.outputMode);
-    await consumeStream(
-      modelOutputGet(ctx, deps, outputIdOrModelName),
-      renderer.handlers(),
-    );
-
-    cliCtx.logger.debug("Model output get command completed");
-  });
+  .action(modelOutputGetAction);

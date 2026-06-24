@@ -129,6 +129,26 @@ function buildContextSuggestions(
     suggestions.push(
       `swamp vault list-keys ${unknownName}`,
     );
+  } else if (parentName === "history") {
+    suggestions.push(
+      `swamp ... history get ${unknownName}`,
+    );
+    suggestions.push(
+      `swamp ... history logs ${unknownName}`,
+    );
+    suggestions.push(
+      `swamp ... history search`,
+    );
+  } else if (parentName === "output") {
+    suggestions.push(
+      `swamp model output get ${unknownName}`,
+    );
+    suggestions.push(
+      `swamp model output search`,
+    );
+    suggestions.push(
+      `swamp model output logs ${unknownName}`,
+    );
   } else if (parentName === "extension") {
     suggestions.push(
       `swamp extension push ${unknownName}`,

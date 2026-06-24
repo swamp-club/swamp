@@ -18,8 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { groupCommandAction } from "../group_action.ts";
-import { modelMethodHistoryGetCommand } from "./model_method_history_get.ts";
+import { unknownCommandErrorHandler } from "../unknown_command_handler.ts";
+import {
+  modelMethodHistoryGetAction,
+  modelMethodHistoryGetCommand,
+} from "./model_method_history_get.ts";
 import {
   modelMethodHistorySearchAction,
   modelMethodHistorySearchCommand,
@@ -29,7 +32,17 @@ import { modelMethodHistoryLogsCommand } from "./model_method_history_logs.ts";
 export const modelMethodHistoryCommand = new Command()
   .name("history")
   .description("Model method run history commands")
-  .action(groupCommandAction)
+  .error(unknownCommandErrorHandler)
+  .example(
+    "Show latest run (shorthand)",
+    "swamp model method history my-server",
+  )
+  .arguments("<output_id_or_model_name:string>")
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
+  .action(modelMethodHistoryGetAction)
   .command("get", modelMethodHistoryGetCommand)
   .command("search", modelMethodHistorySearchCommand)
   .command("logs", modelMethodHistoryLogsCommand)

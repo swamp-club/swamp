@@ -18,8 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { groupCommandAction } from "../group_action.ts";
-import { workflowHistoryGetCommand } from "./workflow_history_get.ts";
+import { unknownCommandErrorHandler } from "../unknown_command_handler.ts";
+import {
+  workflowHistoryGetAction,
+  workflowHistoryGetCommand,
+} from "./workflow_history_get.ts";
 import {
   workflowHistorySearchAction,
   workflowHistorySearchCommand,
@@ -29,7 +32,18 @@ import { workflowHistoryLogsCommand } from "./workflow_history_logs.ts";
 export const workflowHistoryCommand = new Command()
   .name("history")
   .description("Workflow run history commands")
-  .action(groupCommandAction)
+  .error(unknownCommandErrorHandler)
+  .example(
+    "Show latest run (shorthand)",
+    "swamp workflow history deploy-pipeline",
+  )
+  .arguments("<workflow_id_or_name:workflow_name>")
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
+  // @ts-expect-error - Cliffy custom type returns unknown instead of string
+  .action(workflowHistoryGetAction)
   .command("get", workflowHistoryGetCommand)
   .command("search", workflowHistorySearchCommand)
   .command("logs", workflowHistoryLogsCommand)

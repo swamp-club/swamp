@@ -35,6 +35,37 @@ import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
+export async function modelMethodHistoryGetAction(
+  options: AnyOptions,
+  outputIdOrModelName: string,
+): Promise<void> {
+  const cliCtx = createContext(options as GlobalOptions, [
+    "model",
+    "method",
+    "history",
+    "get",
+  ]);
+  cliCtx.logger.debug`Getting method run: ${outputIdOrModelName}`;
+
+  const { repoDir, datastoreResolver } = await requireInitializedRepoReadOnly(
+    {
+      repoDir: resolveRepoDir(options.repoDir),
+      outputMode: cliCtx.outputMode,
+    },
+  );
+
+  const ctx = createLibSwampContext({ logger: cliCtx.logger });
+  const deps = await createModelOutputGetDeps(repoDir, datastoreResolver);
+
+  const renderer = createModelOutputGetRenderer(cliCtx.outputMode);
+  await consumeStream(
+    modelOutputGet(ctx, deps, outputIdOrModelName),
+    renderer.handlers(),
+  );
+
+  cliCtx.logger.debug("Model method history get command completed");
+}
+
 export const modelMethodHistoryGetCommand = new Command()
   .name("get")
   .description("Show details of a model method run")
@@ -48,30 +79,4 @@ export const modelMethodHistoryGetCommand = new Command()
     "--repo-dir <dir:string>",
     "Repository directory (env: SWAMP_REPO_DIR)",
   )
-  .action(async function (options: AnyOptions, outputIdOrModelName: string) {
-    const cliCtx = createContext(options as GlobalOptions, [
-      "model",
-      "method",
-      "history",
-      "get",
-    ]);
-    cliCtx.logger.debug`Getting method run: ${outputIdOrModelName}`;
-
-    const { repoDir, datastoreResolver } = await requireInitializedRepoReadOnly(
-      {
-        repoDir: resolveRepoDir(options.repoDir),
-        outputMode: cliCtx.outputMode,
-      },
-    );
-
-    const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = await createModelOutputGetDeps(repoDir, datastoreResolver);
-
-    const renderer = createModelOutputGetRenderer(cliCtx.outputMode);
-    await consumeStream(
-      modelOutputGet(ctx, deps, outputIdOrModelName),
-      renderer.handlers(),
-    );
-
-    cliCtx.logger.debug("Model method history get command completed");
-  });
+  .action(modelMethodHistoryGetAction);

@@ -35,6 +35,41 @@ import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
+export async function workflowHistoryGetAction(
+  options: AnyOptions,
+  workflowIdOrName: string,
+): Promise<void> {
+  const cliCtx = createContext(options as GlobalOptions, [
+    "workflow",
+    "history",
+    "get",
+  ]);
+  cliCtx.logger.debug`Getting latest run for workflow: ${workflowIdOrName}`;
+
+  const { repoDir, repoContext, datastoreResolver } =
+    await requireInitializedRepoReadOnly(
+      {
+        repoDir: resolveRepoDir(options.repoDir),
+        outputMode: cliCtx.outputMode,
+      },
+    );
+
+  const ctx = createLibSwampContext({ logger: cliCtx.logger });
+  const deps = createWorkflowHistoryGetDeps(
+    repoDir,
+    datastoreResolver,
+    repoContext.workflowRepo,
+  );
+
+  const renderer = createWorkflowHistoryGetRenderer(cliCtx.outputMode);
+  await consumeStream(
+    workflowHistoryGet(ctx, deps, workflowIdOrName),
+    renderer.handlers(),
+  );
+
+  cliCtx.logger.debug("Workflow history get command completed");
+}
+
 export const workflowHistoryGetCommand = new Command()
   .name("get")
   .description("Show the latest run for a workflow")
@@ -45,34 +80,4 @@ export const workflowHistoryGetCommand = new Command()
     "Repository directory (env: SWAMP_REPO_DIR)",
   )
   // @ts-expect-error - Cliffy custom type returns unknown instead of string
-  .action(async function (options: AnyOptions, workflowIdOrName: string) {
-    const cliCtx = createContext(options as GlobalOptions, [
-      "workflow",
-      "history",
-      "get",
-    ]);
-    cliCtx.logger.debug`Getting latest run for workflow: ${workflowIdOrName}`;
-
-    const { repoDir, repoContext, datastoreResolver } =
-      await requireInitializedRepoReadOnly(
-        {
-          repoDir: resolveRepoDir(options.repoDir),
-          outputMode: cliCtx.outputMode,
-        },
-      );
-
-    const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createWorkflowHistoryGetDeps(
-      repoDir,
-      datastoreResolver,
-      repoContext.workflowRepo,
-    );
-
-    const renderer = createWorkflowHistoryGetRenderer(cliCtx.outputMode);
-    await consumeStream(
-      workflowHistoryGet(ctx, deps, workflowIdOrName),
-      renderer.handlers(),
-    );
-
-    cliCtx.logger.debug("Workflow history get command completed");
-  });
+  .action(workflowHistoryGetAction);
