@@ -32,7 +32,10 @@
 import { Environment } from "cel-js";
 
 export function createExtensionCelEnvironment(): Environment {
-  const env = new Environment({ unlistedVariablesAreDyn: true });
+  const env = new Environment({
+    unlistedVariablesAreDyn: true,
+    enableOptionalTypes: true,
+  });
 
   env.registerOperator(
     "double + int",

@@ -31,11 +31,6 @@ export interface ValidationResult {
   error?: string;
 }
 
-/**
- * Unwraps a CEL Optional value at the expression boundary.
- * Optional.of(v) becomes v, Optional.none() becomes null.
- * Non-Optional values pass through unchanged.
- */
 function unwrapOptional(value: unknown): unknown {
   if (value instanceof Optional) {
     return value.hasValue() ? value.value() : null;
