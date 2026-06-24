@@ -282,7 +282,18 @@ export async function registerDatastoreSyncNamed(
       attributes: { "lock.key": key, "lock.label": label },
     });
     try {
+      const lockStart = Date.now();
       await lock.acquire();
+      const lockMs = Date.now() - lockStart;
+      if (lockMs > 5_000 && !namespace) {
+        logger.warn(
+          "Lock acquisition took {ms}ms — multiple repos sharing this " +
+            "datastore without namespaces serialize all writes behind a " +
+            "single global lock. Run 'swamp datastore namespace set " +
+            "<name>' to scope each repo to its own lock and index",
+          { ms: lockMs },
+        );
+      }
       lockAcquired = true;
       lockSpan.setStatus({ code: SpanStatusCode.OK });
     } catch (error) {

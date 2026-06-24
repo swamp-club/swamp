@@ -18,9 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
+import { UserError } from "../errors.ts";
 import { LockTimeoutError } from "./distributed_lock.ts";
 
-Deno.test("LockTimeoutError - includes holder info when available", () => {
+Deno.test("LockTimeoutError: includes holder info when available", () => {
   const error = new LockTimeoutError(
     ".datastore.lock",
     {
@@ -42,7 +43,7 @@ Deno.test("LockTimeoutError - includes holder info when available", () => {
   assertEquals(error.holder?.pid, 12345);
 });
 
-Deno.test("LockTimeoutError - works without holder info", () => {
+Deno.test("LockTimeoutError: works without holder info", () => {
   const error = new LockTimeoutError(
     ".datastore.lock",
     null,
@@ -55,8 +56,38 @@ Deno.test("LockTimeoutError - works without holder info", () => {
   assertEquals(error.holder, null);
 });
 
-Deno.test("LockTimeoutError - is an instance of Error", () => {
+Deno.test("LockTimeoutError: is an instance of Error and UserError", () => {
   const error = new LockTimeoutError("key", null, 1000);
   assertEquals(error instanceof Error, true);
+  assertEquals(error instanceof UserError, true);
   assertEquals(error instanceof LockTimeoutError, true);
+});
+
+Deno.test("LockTimeoutError: global lock key includes namespace hint", () => {
+  const error = new LockTimeoutError(".datastore.lock", null, 5000);
+  assertStringIncludes(error.message, "swamp datastore namespace set");
+  assertStringIncludes(error.message, "swamp datastore namespace migrate");
+});
+
+Deno.test("LockTimeoutError: filesystem global lock path includes namespace hint", () => {
+  const error = new LockTimeoutError(
+    "/home/user/.swamp/.datastore.lock",
+    null,
+    5000,
+  );
+  assertStringIncludes(error.message, "swamp datastore namespace set");
+});
+
+Deno.test("LockTimeoutError: namespaced lock key omits namespace hint", () => {
+  const error = new LockTimeoutError(".locks/infra.lock", null, 5000);
+  assertEquals(error.message.includes("namespace set"), false);
+});
+
+Deno.test("LockTimeoutError: filesystem namespaced lock path omits namespace hint", () => {
+  const error = new LockTimeoutError(
+    "/home/user/.swamp/.locks/infra.lock",
+    null,
+    5000,
+  );
+  assertEquals(error.message.includes("namespace set"), false);
 });
