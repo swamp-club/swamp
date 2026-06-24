@@ -627,7 +627,8 @@ Deno.test("findAllForModelSync returns empty for missing model", () => {
 // allocateVersion) pass the data-name directory because the version directory
 // doesn't exist yet; finalizeVersion passes the version directory; delete
 // passes the version dir or data-name dir based on whether a version was
-// supplied; rename and collectGarbage pass undefined (bulk).
+// supplied; rename passes undefined (bulk); collectGarbage passes each version
+// directory being removed (per-path, so the sync service can detect deletions).
 //
 // Regression coverage for the datastore fast-path contract violation that
 // silently lost writes when the sidecar stayed clean.
@@ -746,13 +747,12 @@ Deno.test("mutations call markDirty before writing", async () => {
       repo.getDataNameDir(testType, "model-1", "mark-dirty-ren"),
     );
 
-    // collectGarbage (live) → bulk (undefined)
+    // collectGarbage (live) with nothing to GC → no markDirty calls
     await repo.collectGarbage(testType, "model-1");
-    assertEquals(calls.length, afterRename + 3);
     assertEquals(
-      calls[afterRename + 2],
-      undefined,
-      "collectGarbage must use bulk relPath",
+      calls.length,
+      afterRename + 2,
+      "collectGarbage with no excess versions must not call markDirty",
     );
 
     // collectGarbage (dry-run) must not notify — it does not touch the cache
@@ -763,6 +763,61 @@ Deno.test("mutations call markDirty before writing", async () => {
     if (Deno.build.os === "windows") {
       // Best-effort: EBUSY can fire when V8 hasn't GC'd native
       // sqlite handles yet. Temp dir is ephemeral, OS reclaims.
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  }
+});
+
+Deno.test("collectGarbage: emits per-path markDirty for each removed version", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const catalogStore = new CatalogStore(join(tmpDir, "_catalog.db"));
+    const calls: Array<string | undefined> = [];
+    const markDirty = (relPath?: string) => {
+      calls.push(relPath);
+      return Promise.resolve();
+    };
+    const repo = new FileSystemUnifiedDataRepository(
+      tmpDir,
+      undefined,
+      catalogStore,
+      markDirty,
+    );
+
+    const gc1 = Data.create({
+      name: "gc-dirty",
+      contentType: "text/plain",
+      lifetime: "infinite",
+      garbageCollection: 1,
+      streaming: false,
+      tags: { type: "resource" },
+      ownerDefinition: { ownerType: "manual", ownerRef: "test" },
+    });
+
+    // Save 3 versions (gc threshold is 1, so 2 will be removed)
+    for (let i = 0; i < 3; i++) {
+      await repo.save(
+        testType,
+        "gc-model",
+        gc1,
+        new TextEncoder().encode(`v${i}`),
+      );
+    }
+    calls.length = 0;
+
+    const result = await repo.collectGarbage(testType, "gc-model");
+    assertEquals(result.versionsRemoved, 2);
+
+    // Each removed version directory should have its own markDirty call
+    assertEquals(calls.length, 2);
+    const v1Dir = repo.getPath(testType, "gc-model", "gc-dirty", 1);
+    const v2Dir = repo.getPath(testType, "gc-model", "gc-dirty", 2);
+    assertEquals(calls[0], v1Dir);
+    assertEquals(calls[1], v2Dir);
+  } finally {
+    if (Deno.build.os === "windows") {
       await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
     } else {
       await Deno.remove(tmpDir, { recursive: true });

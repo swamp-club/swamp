@@ -31,6 +31,7 @@ import {
   namespaceFromResolver,
 } from "../../infrastructure/persistence/repository_factory.ts";
 import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
+import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_service.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
@@ -101,6 +102,7 @@ export interface DataGcDeps {
 export function createDataGcDeps(
   repoDir: string,
   datastoreResolver?: DatastorePathResolver,
+  markDirty?: MarkDirtyHook,
 ): DataGcDeps {
   const dsPath = (subdir: string): string | undefined =>
     datastoreResolver?.resolvePath(subdir);
@@ -109,7 +111,7 @@ export function createDataGcDeps(
     repoDir,
     dsPath(SWAMP_SUBDIRS.data),
     catalogStore,
-    undefined,
+    markDirty,
     undefined,
     namespaceFromResolver(datastoreResolver),
   );

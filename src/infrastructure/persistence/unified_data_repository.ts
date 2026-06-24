@@ -1345,10 +1345,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     let versionsRemoved = 0;
     let bytesReclaimed = 0;
 
-    // Dry-run does not touch the cache; live runs remove version directories
-    // and rewrite the latest marker, both of which are cache writes.
-    if (!dryRun) await this.notifyDirty();
-
     const allData = await this.findAllForModel(type, modelId);
 
     for (const data of allData) {
@@ -1406,6 +1402,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
               // Ignore stat errors
             }
             if (!dryRun) {
+              await this.notifyDirty(versionDir);
               try {
                 await Deno.remove(versionDir, { recursive: true });
               } catch (error) {
@@ -1463,6 +1460,7 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
           }
         } else {
           const dataNameDir = this.getDataNameDir(type, modelId, data.name);
+          await this.notifyDirty(dataNameDir);
           await Deno.remove(dataNameDir, { recursive: true }).catch(() => {});
           this.catalogRemove(type, modelId, data.name);
         }
