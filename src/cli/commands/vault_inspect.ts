@@ -38,14 +38,15 @@ type AnyOptions = any;
 export const vaultInspectCommand = new Command()
   .name("inspect")
   .description(
-    `Show annotations for a vault secret.
+    `Show metadata for a vault secret.
 
-Displays the metadata (URL, notes, labels) attached to a secret
-via \`swamp vault annotate\`.`,
+Displays size, type, annotations, and refresh-hook info for a secret
+without exposing the secret value. Works on all vault providers; annotation
+and refresh-hook fields are omitted when not supported.`,
   )
   .arguments("<vault_name:string> <key:string>")
   .example(
-    "Inspect a secret's annotations",
+    "Inspect a secret's metadata",
     "swamp vault inspect my-vault API_KEY",
   )
   .example(

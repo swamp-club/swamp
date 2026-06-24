@@ -33,7 +33,6 @@ class LogVaultInspectRenderer implements Renderer<VaultInspectEvent> {
           .info`Metadata for ${e.data.secretKey} in vault ${e.data.vaultName}:`;
         logger
           .info`  size: ${e.data.sizeChars} chars (${e.data.sizeBytes} bytes)`;
-        logger.info`  type: ${e.data.valueType}`;
         if (e.data.supportsAnnotations) {
           if (e.data.hasAnnotation && e.data.annotation) {
             const a = e.data.annotation;
@@ -45,6 +44,8 @@ class LogVaultInspectRenderer implements Renderer<VaultInspectEvent> {
               }
             }
             logger.info`  updated: ${a.updatedAt}`;
+          } else {
+            logger.info`  annotation: (none)`;
           }
         }
         if (e.data.supportsRefreshHooks) {
@@ -58,6 +59,8 @@ class LogVaultInspectRenderer implements Renderer<VaultInspectEvent> {
             } else {
               logger.info`    last refreshed: never`;
             }
+          } else {
+            logger.info`  refresh-hook: (none)`;
           }
         }
       },
