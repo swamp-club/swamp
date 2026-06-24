@@ -64,6 +64,10 @@ export const workflowEvaluateCommand = new Command()
   .option("--input <value:string>", "Input values (key=value or JSON)", {
     collect: true,
   })
+  .option("--arg <value:string>", "Alias for --input", {
+    collect: true,
+    hidden: true,
+  })
   .option("--input-file <file:string>", "Input values from YAML file")
   .action(
     async function (options: AnyOptions, workflowIdOrName?: string) {
@@ -72,9 +76,14 @@ export const workflowEvaluateCommand = new Command()
         "evaluate",
       ]);
 
-      // Parse input values
+      // Parse input values.
+      // --arg is a hidden alias; --input takes precedence when both are used.
+      const mergedInput = [
+        ...((options.arg as string[] | undefined) ?? []),
+        ...((options.input as string[] | undefined) ?? []),
+      ];
       const { inputs } = await parseInputs({
-        input: options.input as string[] | undefined,
+        input: mergedInput.length > 0 ? mergedInput : undefined,
         inputFile: options.inputFile as string | undefined,
       });
 

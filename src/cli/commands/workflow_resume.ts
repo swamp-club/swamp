@@ -83,6 +83,10 @@ export const workflowResumeCommand = new Command()
     "Override/additional input for the resumed run (key=value or JSON); merged over the original run inputs",
     { collect: true },
   )
+  .option("--arg <value:string>", "Alias for --input", {
+    collect: true,
+    hidden: true,
+  })
   .option(
     "--input-file <file:string>",
     "Override inputs from a YAML file (cannot combine with --stdin)",
@@ -124,8 +128,13 @@ export const workflowResumeCommand = new Command()
         stdinInputs = stdinItems[0] ?? {};
       }
 
+      // --arg is a hidden alias; --input takes precedence when both are used.
+      const mergedInput = [
+        ...((options.arg as string[] | undefined) ?? []),
+        ...((options.input as string[] | undefined) ?? []),
+      ];
       const { inputs: cliInputs } = await parseInputs({
-        input: options.input as string[] | undefined,
+        input: mergedInput.length > 0 ? mergedInput : undefined,
         inputFile: stdinContent !== null
           ? undefined
           : options.inputFile as string | undefined,

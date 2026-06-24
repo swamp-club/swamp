@@ -118,6 +118,10 @@ export const modelMethodRunCommand = new Command()
   .option("--input <value:string>", "Input values (key=value or JSON)", {
     collect: true,
   })
+  .option("--arg <value:string>", "Alias for --input", {
+    collect: true,
+    hidden: true,
+  })
   .option(
     "--input-file <file:string>",
     "Input values from YAML file (cannot combine with --stdin)",
@@ -229,9 +233,14 @@ export const modelMethodRunCommand = new Command()
         stdinItems = parseStdinContent(stdinContent);
       }
 
-      // Parse --input overrides (used standalone or merged with stdin items)
+      // Parse --input overrides (used standalone or merged with stdin items).
+      // --arg is a hidden alias; --input takes precedence when both are used.
+      const mergedInput = [
+        ...((options.arg as string[] | undefined) ?? []),
+        ...((options.input as string[] | undefined) ?? []),
+      ];
       const { inputs: cliInputs } = await parseInputs({
-        input: options.input as string[] | undefined,
+        input: mergedInput.length > 0 ? mergedInput : undefined,
         inputFile: stdinItems
           ? undefined
           : options.inputFile as string | undefined,
