@@ -165,7 +165,9 @@ jobs:
           node-version: "24"
 
       - name: Review skills
-        run: deno run --allow-read --allow-run --allow-env=GITHUB_STEP_SUMMARY --allow-write scripts/review_skills.ts
+        env:
+          TESSL_TOKEN: ${{ secrets.TESSL_TOKEN }}
+        run: deno run --allow-read --allow-run --allow-env=GITHUB_STEP_SUMMARY,TESSL_TOKEN --allow-write scripts/review_skills.ts
 
   skill-trigger-eval:
     name: Skill Trigger Eval
