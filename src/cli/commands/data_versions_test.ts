@@ -45,3 +45,17 @@ Deno.test("dataVersionsCommand is registered as subcommand of dataCommand", asyn
   const versionsCmd = commands.find((c) => c.getName() === "versions");
   assertEquals(versionsCmd !== undefined, true);
 });
+
+Deno.test("dataVersionsCommand has --model option", async () => {
+  const { dataVersionsCommand } = await import("./data_versions.ts");
+  const options = dataVersionsCommand.getOptions();
+  const modelOpt = options.find((o) => o.name === "model");
+  assertEquals(modelOpt !== undefined, true);
+});
+
+Deno.test("dataVersionsCommand has --name option", async () => {
+  const { dataVersionsCommand } = await import("./data_versions.ts");
+  const options = dataVersionsCommand.getOptions();
+  const nameOpt = options.find((o) => o.name === "name");
+  assertEquals(nameOpt !== undefined, true);
+});

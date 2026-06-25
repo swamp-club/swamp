@@ -31,6 +31,7 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepo } from "../repo_context.ts";
+import { UserError } from "../../domain/errors.ts";
 
 export const dataRenameCommand = new Command()
   .name("rename")
@@ -39,18 +40,49 @@ export const dataRenameCommand = new Command()
     "Rename with forwarding",
     "swamp data rename my-server old-name new-name",
   )
-  .arguments("<model_id_or_name:string> <old_name:string> <new_name:string>")
+  .example(
+    "Rename using flags",
+    "swamp data rename --model my-server --name old-name --new-name new-name",
+  )
+  .arguments("[model_id_or_name:string] [old_name:string] [new_name:string]")
   .option(
     "--repo-dir <dir:string>",
     "Repository directory (env: SWAMP_REPO_DIR)",
   )
+  .option(
+    "--model <model:string>",
+    "Model name or ID (alternative to positional argument)",
+  )
+  .option(
+    "--name <name:string>",
+    "Current data name (alternative to positional argument)",
+  )
+  .option(
+    "--new-name <newName:string>",
+    "New data name (alternative to positional argument)",
+  )
   .action(
     async function (
-      options: { repoDir?: string; json?: boolean },
-      modelIdOrName: string,
-      oldName: string,
-      newName: string,
+      options: {
+        repoDir?: string;
+        json?: boolean;
+        model?: string;
+        name?: string;
+        newName?: string;
+      },
+      positionalModel?: string,
+      positionalOldName?: string,
+      positionalNewName?: string,
     ) {
+      const modelIdOrName = options.model ?? positionalModel;
+      const oldName = options.name ?? positionalOldName;
+      const newName = options.newName ?? positionalNewName;
+
+      if (!modelIdOrName || !oldName || !newName) {
+        throw new UserError(
+          "Model, current name, and new name are all required. Use positional arguments (swamp data rename <model> <old-name> <new-name>) or flags (--model <model> --name <name> --new-name <new-name>).",
+        );
+      }
       const cliCtx = createContext(options as GlobalOptions, [
         "data",
         "rename",

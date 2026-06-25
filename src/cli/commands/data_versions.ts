@@ -31,6 +31,7 @@ import {
   dataVersions,
 } from "../../libswamp/mod.ts";
 import { createDataVersionsRenderer } from "../../presentation/renderers/data_versions.ts";
+import { UserError } from "../../domain/errors.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -39,18 +40,40 @@ export const dataVersionsCommand = new Command()
   .name("versions")
   .description("List all versions of specific data")
   .example("List all versions", "swamp data versions my-server system-info")
-  .arguments("<model_id_or_name:model_name> <data_name:string>")
+  .example(
+    "List using flags",
+    "swamp data versions --model my-server --name system-info",
+  )
+  .arguments("[model_id_or_name:model_name] [data_name:string]")
   .option(
     "--repo-dir <dir:string>",
     "Repository directory (env: SWAMP_REPO_DIR)",
+  )
+  .option(
+    "--model <model:string>",
+    "Model name or ID (alternative to positional argument)",
+  )
+  .option(
+    "--name <name:string>",
+    "Data name (alternative to positional argument)",
   )
   .action(
     // @ts-expect-error - Cliffy custom type returns unknown instead of string
     async function (
       options: AnyOptions,
-      modelIdOrName: string,
-      dataName: string,
+      positionalModel?: string,
+      positionalName?: string,
     ) {
+      const modelIdOrName = (options.model as string | undefined) ??
+        positionalModel;
+      const dataName = (options.name as string | undefined) ?? positionalName;
+
+      if (!modelIdOrName || !dataName) {
+        throw new UserError(
+          "Both model and data name are required. Use positional arguments (swamp data versions <model> <name>) or flags (--model <model> --name <name>).",
+        );
+      }
+
       const cliCtx = createContext(options as GlobalOptions, [
         "data",
         "versions",

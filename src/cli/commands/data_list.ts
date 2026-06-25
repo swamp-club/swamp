@@ -48,12 +48,17 @@ export const dataListCommand = withRemoteOptions(
     .name("list")
     .description("List all data for a model or workflow, grouped by type")
     .example("List all data for a model", "swamp data list my-server")
+    .example("List using flag", "swamp data list --model my-server")
     .example("Filter by type", "swamp data list my-server --type output")
     .example("List workflow run data", "swamp data list --workflow deploy")
     .arguments("[model_id_or_name:model_name]")
     .option(
       "--repo-dir <dir:string>",
       "Repository directory (env: SWAMP_REPO_DIR)",
+    )
+    .option(
+      "--model <model:string>",
+      "Model name or ID (alternative to positional argument)",
     )
     .option(
       "--type <type:string>",
@@ -69,7 +74,9 @@ export const dataListCommand = withRemoteOptions(
     ),
 ).action(
   // @ts-expect-error - Cliffy custom type returns unknown instead of string
-  async function (options: AnyOptions, modelIdOrName?: string) {
+  async function (options: AnyOptions, positionalModel?: string) {
+    const modelIdOrName = (options.model as string | undefined) ??
+      positionalModel;
     const cliCtx = createContext(options as GlobalOptions, ["data", "list"]);
 
     const server = resolveServeUrl(options.server as string | undefined);
