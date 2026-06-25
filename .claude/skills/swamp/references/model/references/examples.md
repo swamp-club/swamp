@@ -14,6 +14,7 @@
 | Expression Pattern                                           | Description                               | Example Value                 |
 | ------------------------------------------------------------ | ----------------------------------------- | ----------------------------- |
 | `data.latest("<model>", "<name>").attributes.<field>`        | Latest data (PREFERRED, sync disk read)   | VPC ID, subnet CIDR, etc.     |
+| `data.latest("<model>", "<name>").?attributes.?<field>`      | Null-safe — returns null if missing       | Prior cycle findings          |
 | `data.version("<model>", "<name>", N).attributes.<field>`    | Specific version of data                  | Rollback to version 1         |
 | `data.findBySpec("<model>", "<spec>")`                       | Find all instances from a spec            | All subnets from scanner      |
 | `data.findByTag("<key>", "<value>")`                         | Find data by tag                          | All resources tagged env=prod |

@@ -103,6 +103,22 @@ just specific fields.
 **Avoid `model.*.resource` / `model.*.file`** — these patterns are deprecated
 and will emit a warning. Migrate to `data.latest()` or `data.query()`.
 
+**Use `.?` (optional select)** when the data might not exist yet — for example,
+referencing a prior cycle's output on the first cycle of a rework loop. `.?`
+returns `null` instead of throwing when the data is missing. Chain `.orValue()`
+to provide an inline default:
+
+```yaml
+# Throws if artifact doesn't exist:
+findings: ${{ data.latest('factory', 'code-review').attributes.findings }}
+
+# Returns null if missing:
+findings: ${{ data.latest('factory', 'code-review').?attributes.?findings }}
+
+# Returns [] if missing:
+findings: ${{ data.latest('factory', 'code-review').?attributes.?findings.orValue([]) }}
+```
+
 Use explicit `dependsOn` to control step ordering.
 
 ## Example: Multi-Step Infrastructure Workflow

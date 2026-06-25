@@ -240,6 +240,8 @@ Deno.test("cel env factory parity: both factories produce identical results", ()
     ["a / 2", { a: 5.0 }],
     ["a % 2", { a: 5.0 }],
     ["2 + a", { a: 1.5 }],
+    ["a.?b", { a: { b: 42 } }],
+    ["a.?b", { a: null }],
   ];
 
   const a = canonicalFactory();

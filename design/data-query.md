@@ -49,6 +49,20 @@ key, or history access beyond a single version.
 Results from any shortcut are structurally identical to the equivalent
 `data.query()` call — same `DataRecord[]` type, same fields, same semantics.
 
+### Null-safe access (.?)
+
+`data.latest()` and `data.version()` return `null` when the named instance
+doesn't exist. Use `.?` (optional select) to chain through a potentially null
+result instead of throwing:
+
+```cel
+data.latest("m", "n").?attributes.?payload.?findings           // null if missing
+data.latest("m", "n").?attributes.?findings.orValue([])        // [] if missing
+data.latest("m", "n").attributes.findings                      // throws if missing
+```
+
+See [expressions.md](./expressions.md#null-safe-optional-access-) for details.
+
 ### Cross-namespace queries (giga-swamp Phase 4)
 
 Point-lookup helpers (`data.latest`, `data.version`, `data.findBySpec`,
