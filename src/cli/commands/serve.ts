@@ -181,7 +181,7 @@ export function validateWebSocketOrigin(
   return { allowed: true };
 }
 
-function collectServeExtraArgs(options: AnyOptions): string[] {
+export function collectServeExtraArgs(options: AnyOptions): string[] {
   const args: string[] = [];
   if (options.schedule === false) {
     args.push("--no-schedule");

@@ -36,7 +36,10 @@ function servicePath(mode: LaunchdMode = "agent"): string {
   return join(systemdUnitDir(mode), `${UNIT_NAME}.service`);
 }
 
-export function buildServeService(config: ServiceConfig): string {
+export function buildServeService(
+  config: ServiceConfig,
+  mode: LaunchdMode = "agent",
+): string {
   const escapedBinary = escapeSystemdPath(config.binaryPath);
   const escapedRepoDir = escapeSystemdPath(config.repoDir);
 
@@ -48,7 +51,7 @@ export function buildServeService(config: ServiceConfig): string {
     "--port",
     String(config.port),
     "--host",
-    config.host,
+    `"${escapeSystemdPath(config.host)}"`,
   ];
 
   if (config.certFile) {
@@ -59,7 +62,7 @@ export function buildServeService(config: ServiceConfig): string {
   }
   if (config.extraArgs) {
     for (const arg of config.extraArgs) {
-      args.push(arg);
+      args.push(`"${escapeSystemdPath(arg)}"`);
     }
   }
 
@@ -86,7 +89,7 @@ Restart=always
 RestartSec=10${envBlock}
 
 [Install]
-WantedBy=default.target
+WantedBy=${mode === "daemon" ? "multi-user.target" : "default.target"}
 `;
 }
 
@@ -122,7 +125,7 @@ export class SystemdServiceScheduler implements ServiceScheduler {
 
     await atomicWriteTextFile(
       servicePath(this.mode),
-      buildServeService(config),
+      buildServeService(config, this.mode),
       { mode: 0o600 },
     );
 
@@ -176,10 +179,15 @@ export class SystemdServiceScheduler implements ServiceScheduler {
       }
     }
 
+    const logHint = this.mode === "agent"
+      ? `journalctl --user -u ${UNIT_NAME}`
+      : `journalctl -u ${UNIT_NAME}`;
+
     return {
       enabled: true,
       running,
       pid,
+      logPath: logHint,
     };
   }
 }

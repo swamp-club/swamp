@@ -101,10 +101,15 @@ Deno.test("buildServeService: includes network ordering", () => {
   assertStringIncludes(unit, "Wants=network-online.target");
 });
 
-Deno.test("buildServeService: includes install section", () => {
-  const unit = buildServeService(baseConfig);
+Deno.test("buildServeService: agent mode uses default.target", () => {
+  const unit = buildServeService(baseConfig, "agent");
   assertStringIncludes(unit, "[Install]");
   assertStringIncludes(unit, "WantedBy=default.target");
+});
+
+Deno.test("buildServeService: daemon mode uses multi-user.target", () => {
+  const unit = buildServeService(baseConfig, "daemon");
+  assertStringIncludes(unit, "WantedBy=multi-user.target");
 });
 
 Deno.test("buildServeService: includes extraArgs when provided", () => {
@@ -113,7 +118,21 @@ Deno.test("buildServeService: includes extraArgs when provided", () => {
     extraArgs: ["--auth-mode", "token", "--no-schedule"],
   };
   const unit = buildServeService(config);
-  assertStringIncludes(unit, "--auth-mode token --no-schedule");
+  assertStringIncludes(unit, '"--auth-mode" "token" "--no-schedule"');
+});
+
+Deno.test("buildServeService: escapes percent specifiers in extraArgs", () => {
+  const config: ServiceConfig = {
+    ...baseConfig,
+    extraArgs: ["--webhook", "/hooks/gh:wf:secret%nwith%%percents"],
+  };
+  const unit = buildServeService(config);
+  assertStringIncludes(unit, "secret%%nwith%%%%percents");
+});
+
+Deno.test("buildServeService: escapes and quotes host", () => {
+  const unit = buildServeService(baseConfig);
+  assertStringIncludes(unit, '"127.0.0.1"');
 });
 
 Deno.test("buildServeService: omits extraArgs when not provided", () => {
