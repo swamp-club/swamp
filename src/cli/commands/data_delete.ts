@@ -64,6 +64,10 @@ export const dataDeleteCommand = new Command()
     "swamp data delete my-server hetzner-state",
   )
   .example(
+    "Delete using flags",
+    "swamp data delete --model my-server --name hetzner-state",
+  )
+  .example(
     "Delete a specific version",
     "swamp data delete my-server hetzner-state --version 2",
   )
@@ -71,19 +75,36 @@ export const dataDeleteCommand = new Command()
     "Skip the confirmation prompt",
     "swamp data delete my-server hetzner-state --force",
   )
-  .arguments("<model_id_or_name:string> <data_name:string>")
+  .arguments("[model_id_or_name:string] [data_name:string]")
   .option(
     "--repo-dir <dir:string>",
     "Repository directory (env: SWAMP_REPO_DIR)",
+  )
+  .option(
+    "--model <model:string>",
+    "Model name or ID (alternative to positional argument)",
+  )
+  .option(
+    "--name <name:string>",
+    "Data name (alternative to positional argument)",
   )
   .option("--version <n:integer>", "Delete a specific version")
   .option("-f, --force", "Skip confirmation prompt")
   .action(
     async function (
       options: AnyOptions,
-      modelIdOrName: string,
-      dataName: string,
+      positionalModel?: string,
+      positionalName?: string,
     ) {
+      const modelIdOrName = (options.model as string | undefined) ??
+        positionalModel;
+      const dataName = (options.name as string | undefined) ?? positionalName;
+
+      if (!modelIdOrName || !dataName) {
+        throw new UserError(
+          "Both model and data name are required. Use positional arguments (swamp data delete <model> <name>) or flags (--model <model> --name <name>).",
+        );
+      }
       const cliCtx = createContext(options as GlobalOptions, [
         "data",
         "delete",

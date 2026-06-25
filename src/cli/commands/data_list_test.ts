@@ -65,3 +65,10 @@ Deno.test("dataListCommand accepts optional model argument", async () => {
   const args = dataListCommand.getArguments();
   assertEquals(args.length > 0, true);
 });
+
+Deno.test("dataListCommand has --model option", async () => {
+  const { dataListCommand } = await import("./data_list.ts");
+  const options = dataListCommand.getOptions();
+  const modelOpt = options.find((o) => o.name === "model");
+  assertEquals(modelOpt !== undefined, true);
+});

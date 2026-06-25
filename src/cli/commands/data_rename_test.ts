@@ -53,8 +53,29 @@ Deno.test("dataRenameCommand has --repo-dir option", async () => {
   assertEquals(repoDirOpt !== undefined, true);
 });
 
-Deno.test("dataRenameCommand requires three arguments", async () => {
+Deno.test("dataRenameCommand accepts three arguments", async () => {
   const { dataRenameCommand } = await import("./data_rename.ts");
   const args = dataRenameCommand.getArguments();
   assertEquals(args.length, 3);
+});
+
+Deno.test("dataRenameCommand has --model option", async () => {
+  const { dataRenameCommand } = await import("./data_rename.ts");
+  const options = dataRenameCommand.getOptions();
+  const modelOpt = options.find((o) => o.name === "model");
+  assertEquals(modelOpt !== undefined, true);
+});
+
+Deno.test("dataRenameCommand has --name option", async () => {
+  const { dataRenameCommand } = await import("./data_rename.ts");
+  const options = dataRenameCommand.getOptions();
+  const nameOpt = options.find((o) => o.name === "name");
+  assertEquals(nameOpt !== undefined, true);
+});
+
+Deno.test("dataRenameCommand has --new-name option", async () => {
+  const { dataRenameCommand } = await import("./data_rename.ts");
+  const options = dataRenameCommand.getOptions();
+  const newNameOpt = options.find((o) => o.name === "new-name");
+  assertEquals(newNameOpt !== undefined, true);
 });

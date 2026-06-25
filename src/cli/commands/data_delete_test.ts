@@ -66,8 +66,22 @@ Deno.test("dataDeleteCommand has --force option", async () => {
   assertEquals(forceOpt !== undefined, true);
 });
 
-Deno.test("dataDeleteCommand requires two arguments", async () => {
+Deno.test("dataDeleteCommand accepts two arguments", async () => {
   const { dataDeleteCommand } = await import("./data_delete.ts");
   const args = dataDeleteCommand.getArguments();
   assertEquals(args.length, 2);
+});
+
+Deno.test("dataDeleteCommand has --model option", async () => {
+  const { dataDeleteCommand } = await import("./data_delete.ts");
+  const options = dataDeleteCommand.getOptions();
+  const modelOpt = options.find((o) => o.name === "model");
+  assertEquals(modelOpt !== undefined, true);
+});
+
+Deno.test("dataDeleteCommand has --name option", async () => {
+  const { dataDeleteCommand } = await import("./data_delete.ts");
+  const options = dataDeleteCommand.getOptions();
+  const nameOpt = options.find((o) => o.name === "name");
+  assertEquals(nameOpt !== undefined, true);
 });

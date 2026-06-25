@@ -52,6 +52,10 @@ export const dataGetCommand = withRemoteOptions(
     .description("Get data by model and name, or by workflow")
     .example("Get latest data", "swamp data get my-server system-info")
     .example(
+      "Get using flags",
+      "swamp data get --model my-server --name system-info",
+    )
+    .example(
       "Get a specific version",
       "swamp data get my-server system-info --version 2",
     )
@@ -73,6 +77,14 @@ export const dataGetCommand = withRemoteOptions(
       "Repository directory (env: SWAMP_REPO_DIR)",
     )
     .option(
+      "--model <model:string>",
+      "Model name or ID (alternative to positional argument)",
+    )
+    .option(
+      "--name <name:string>",
+      "Data name (alternative to positional argument)",
+    )
+    .option(
       "--version <version:number>",
       "Specific version (defaults to latest)",
     )
@@ -92,9 +104,13 @@ export const dataGetCommand = withRemoteOptions(
   // @ts-expect-error - Cliffy custom type returns unknown instead of string
   async function (
     options: AnyOptions,
-    modelIdOrName?: string,
-    dataName?: string,
+    positionalModel?: string,
+    positionalName?: string,
   ) {
+    const modelIdOrName = (options.model as string | undefined) ??
+      positionalModel;
+    const dataName = (options.name as string | undefined) ?? positionalName;
+
     const cliCtx = createContext(options as GlobalOptions, ["data", "get"]);
 
     const server = resolveServeUrl(options.server as string | undefined);

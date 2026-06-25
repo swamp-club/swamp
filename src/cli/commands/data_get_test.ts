@@ -72,3 +72,17 @@ Deno.test("dataGetCommand has --no-content option", async () => {
   const contentOpt = options.find((o) => o.name === "no-content");
   assertEquals(contentOpt !== undefined, true);
 });
+
+Deno.test("dataGetCommand has --model option", async () => {
+  const { dataGetCommand } = await import("./data_get.ts");
+  const options = dataGetCommand.getOptions();
+  const modelOpt = options.find((o) => o.name === "model");
+  assertEquals(modelOpt !== undefined, true);
+});
+
+Deno.test("dataGetCommand has --name option", async () => {
+  const { dataGetCommand } = await import("./data_get.ts");
+  const options = dataGetCommand.getOptions();
+  const nameOpt = options.find((o) => o.name === "name");
+  assertEquals(nameOpt !== undefined, true);
+});
