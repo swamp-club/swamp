@@ -358,7 +358,7 @@ const daemonStatusCommand = new Command()
 
 const daemonCommand = new Command()
   .name("daemon")
-  .description("Manage swamp serve as a system daemon")
+  .description("Manage swamp serve as a system daemon (EXPERIMENTAL)")
   .action(groupCommandAction)
   .command("enable", daemonEnableCommand)
   .command("disable", daemonDisableCommand)
