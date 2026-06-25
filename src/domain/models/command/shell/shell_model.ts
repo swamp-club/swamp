@@ -133,6 +133,7 @@ async function executeCommand(
       cwd: args.workingDir,
       env: Object.keys(shellEnv).length > 0 ? shellEnv : undefined,
       timeoutMs: args.timeout,
+      signal: context.signal,
       logger: context.logger,
       redactor: context.redactor,
       onOutput: context.onEvent
