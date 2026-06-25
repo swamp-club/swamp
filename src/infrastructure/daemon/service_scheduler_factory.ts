@@ -78,7 +78,9 @@ export async function createServiceScheduler(
         return new SystemdServiceScheduler(mode);
       }
       throw new UserError(
-        "swamp serve daemon requires systemd on Linux, but systemctl was not found",
+        "swamp serve daemon currently requires systemd on Linux, but systemctl was not found.\n" +
+          "If you need support for your init system, please file a feature request:\n\n" +
+          "  swamp issue feature",
       );
     default:
       throw new UserError(
