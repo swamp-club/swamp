@@ -60,6 +60,8 @@ function CompletedJobBlock(
     ? "failed"
     : item.status === "skipped"
     ? "skipped"
+    : item.status === "cancelled"
+    ? "cancelled"
     : "completed";
 
   const dur = item.duration !== null

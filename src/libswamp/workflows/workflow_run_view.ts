@@ -83,7 +83,13 @@ export interface WorkflowRunView {
   id: string;
   workflowId: string;
   workflowName: string;
-  status: "pending" | "running" | "suspended" | "succeeded" | "failed";
+  status:
+    | "pending"
+    | "running"
+    | "suspended"
+    | "succeeded"
+    | "failed"
+    | "cancelled";
   jobs: JobRunView[];
   duration?: number;
   path?: string;

@@ -139,6 +139,7 @@ export type ModelMethodRunEvent =
     error: string;
   }
   | { kind: "completed"; run: ModelMethodRunView }
+  | { kind: "cancelled"; run: ModelMethodRunView; reason?: string }
   | { kind: "error"; error: SwampError };
 
 /**
@@ -578,7 +579,7 @@ export async function* modelMethodRun(
             triggeredBy: "manual",
           },
         });
-        output.markRunning();
+        output.markRunning(Deno.pid);
         output.setLogFile(logFilePath);
         await deps.outputRepo.save(modelType, input.methodName, output);
 
@@ -651,17 +652,28 @@ export async function* modelMethodRun(
               ),
           );
         } catch (error) {
-          // Mark output as failed and save
           const errorMessage = error instanceof Error
             ? error.message
             : String(error);
           const errorStack = error instanceof Error ? error.stack : undefined;
-          output.markFailed({ message: errorMessage, stack: errorStack });
-          await deps.outputRepo.save(modelType, input.methodName, output);
+
+          if (
+            ctx.signal.aborted ||
+            (error instanceof DOMException && error.name === "AbortError")
+          ) {
+            output.markCancelled("aborted");
+            await deps.outputRepo.save(modelType, input.methodName, output);
+          } else {
+            output.markFailed({ message: errorMessage, stack: errorStack });
+            await deps.outputRepo.save(modelType, input.methodName, output);
+          }
 
           // Run method-summary report for failed executions so JSON consumers
           // see structured error output (not just the raw error event).
-          if (!input.skipAllReports && reportRegistry.getAll().length > 0) {
+          if (
+            output.status === "failed" && !input.skipAllReports &&
+            reportRegistry.getAll().length > 0
+          ) {
             const failedMethodContext = buildMethodReportContext(
               {
                 repoDir: deps.repoDir,
@@ -735,6 +747,10 @@ export async function* modelMethodRun(
                 };
               }
             }
+          }
+
+          if (output.status === "cancelled") {
+            return;
           }
 
           if (

@@ -176,6 +176,7 @@ export type WorkflowRunEvent =
     stepId?: string;
   }
   | { kind: "completed"; run: WorkflowRunView }
+  | { kind: "cancelled"; run: WorkflowRunView; reason?: string }
   | {
     kind: "suspended";
     run: WorkflowRunView;
@@ -408,6 +409,14 @@ export function mapWorkflowExecutionEvent(
       const data = toRunData(event.run, path, verbose);
       return { kind: "completed", run: data };
     }
+    case "cancelled": {
+      const path = runRepo.getPath(
+        createWorkflowId(event.run.workflowId),
+        createWorkflowRunId(event.run.id),
+      );
+      const data = toRunData(event.run, path, verbose);
+      return { kind: "cancelled", run: data, reason: event.reason };
+    }
     case "suspended": {
       const path = runRepo.getPath(
         createWorkflowId(event.run.workflowId),
@@ -578,7 +587,8 @@ export async function* workflowRun(
           }
 
           if (
-            (mapped.kind === "completed" || mapped.kind === "suspended") &&
+            (mapped.kind === "completed" || mapped.kind === "cancelled" ||
+              mapped.kind === "suspended") &&
             reportResults.length > 0
           ) {
             mapped = {

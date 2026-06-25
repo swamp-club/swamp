@@ -652,7 +652,7 @@ export class DefaultStepExecutor implements StepExecutor {
     });
 
     // Mark as running and save
-    output.markRunning();
+    output.markRunning(Deno.pid);
     // Reference the workflow run's log file for history access
     if (ctx.workflowRun?.logFile) {
       output.setLogFile(ctx.workflowRun.logFile);
@@ -1429,7 +1429,7 @@ export class WorkflowExecutionService {
         runSpan.setAttribute("workflow.run_id", run.id);
 
         // Start execution
-        run.start();
+        run.start(Deno.pid);
 
         if (expressionContext) {
           expressionContext.run = {
@@ -1579,6 +1579,20 @@ export class WorkflowExecutionService {
         }
       }
 
+      // Check if the run was cancelled via abort signal
+      if (options?.signal?.aborted) {
+        run.cancel(
+          options.signal.reason instanceof Error
+            ? options.signal.reason.message
+            : "aborted",
+        );
+        await this.saveRun(workflow.id, run);
+        yield { kind: "cancelled" as const, run };
+        runFileSink.unregister(workflowLogHandle);
+        runSpan.setStatus({ code: SpanStatusCode.OK });
+        return;
+      }
+
       // Complete workflow
       const wfTeardownSpan = tracer.startSpan("swamp.workflow.teardown");
       try {
@@ -1628,6 +1642,23 @@ export class WorkflowExecutionService {
           prompt: error.prompt,
           timeout: error.timeout,
         };
+        runSpan.setStatus({ code: SpanStatusCode.OK });
+        return;
+      }
+      if (
+        workflowRun && options?.signal?.aborted
+      ) {
+        workflowRun.cancel(
+          options.signal.reason instanceof Error
+            ? options.signal.reason.message
+            : "aborted",
+        );
+        await this.saveRun(
+          createWorkflowId(workflowRun.workflowId),
+          workflowRun,
+        );
+        yield { kind: "cancelled" as const, run: workflowRun };
+        runFileSink.unregister(workflowLogHandle);
         runSpan.setStatus({ code: SpanStatusCode.OK });
         return;
       }
@@ -1877,6 +1908,18 @@ export class WorkflowExecutionService {
         }
       }
 
+      if (options?.signal?.aborted) {
+        existingRun.cancel(
+          options.signal.reason instanceof Error
+            ? options.signal.reason.message
+            : "aborted",
+        );
+        await this.saveRun(workflow.id, existingRun);
+        yield { kind: "cancelled" as const, run: existingRun };
+        runFileSink.unregister(workflowLogHandle);
+        return;
+      }
+
       existingRun.complete();
 
       yield* this.runWorkflowReports(
@@ -1903,6 +1946,17 @@ export class WorkflowExecutionService {
           prompt: error.prompt,
           timeout: error.timeout,
         };
+        return;
+      }
+      if (options?.signal?.aborted) {
+        existingRun.cancel(
+          options.signal.reason instanceof Error
+            ? options.signal.reason.message
+            : "aborted",
+        );
+        await this.saveRun(workflow.id, existingRun);
+        yield { kind: "cancelled" as const, run: existingRun };
+        runFileSink.unregister(workflowLogHandle);
         return;
       }
       existingRun.complete();

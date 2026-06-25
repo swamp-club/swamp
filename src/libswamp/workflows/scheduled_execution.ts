@@ -200,6 +200,33 @@ export class ScheduledExecutionService {
     return this.running.has(workflowId);
   }
 
+  /**
+   * Cancels a scheduled run by workflow ID. Returns true if found and aborted.
+   */
+  cancelRun(workflowId: string): boolean {
+    const id = workflowId as WorkflowId;
+    const controller = this.running.get(id);
+    if (!controller) {
+      return false;
+    }
+    logger.info`Cancelling scheduled run for workflow ${workflowId}`;
+    controller.abort(new Error("cancelled by user"));
+    return true;
+  }
+
+  /**
+   * Cancels all scheduled runs. Returns the number of runs cancelled.
+   */
+  cancelAllRuns(): number {
+    let count = 0;
+    for (const [workflowId, controller] of this.running) {
+      logger.info`Cancelling scheduled run for workflow ${workflowId}`;
+      controller.abort(new Error("cancelled by user"));
+      count++;
+    }
+    return count;
+  }
+
   private handleScheduleChange(
     workflowId: WorkflowId,
     schedule: string | null,

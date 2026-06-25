@@ -69,7 +69,11 @@ function renderLogWorkflowRun(data: WorkflowRunView): void {
     }
   }
 
-  const resultLevel = data.status === "failed" ? "error" : "info";
+  const resultLevel = data.status === "failed"
+    ? "error"
+    : data.status === "cancelled"
+    ? "warn"
+    : "info";
   const durationSuffix = data.duration !== undefined
     ? ` (${data.duration}ms)`
     : "";
@@ -90,7 +94,8 @@ function statusIcon(
     | "waiting_approval"
     | "succeeded"
     | "failed"
-    | "skipped",
+    | "skipped"
+    | "cancelled",
 ): string {
   const icons: Record<string, string> = {
     pending: "\u25CB",
@@ -99,6 +104,7 @@ function statusIcon(
     succeeded: "\u2713",
     failed: "\u2717",
     skipped: "\u2298",
+    cancelled: "\u2298",
   };
   return icons[status] ?? "?";
 }

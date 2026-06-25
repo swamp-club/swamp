@@ -545,6 +545,36 @@ The output of the run will be written to a workflow run log, kept in the
 datastore at `workflow-runs/{workflow-uuid}/{run-uuid}.yaml` (default path:
 `.swamp/workflow-runs/`).
 
+### Run Statuses
+
+- `pending` — created but not yet started
+- `running` — actively executing jobs/steps
+- `suspended` — paused at a manual approval gate
+- `succeeded` — all jobs completed successfully
+- `failed` — at least one job failed or an error occurred
+- `cancelled` — explicitly cancelled by user or daemon restart
+
+### Cancellation
+
+Runs can be cancelled via `swamp workflow cancel <workflow> [--run <runId>]`.
+When `swamp serve` is running, the cancel command sends a request to the serve
+cancel API (`POST /api/v1/cancel/workflow-run/<id>`), which fires the
+AbortController for live cancellation. When serve is not running, the command
+writes the cancelled status directly to the run YAML (offline cancel).
+
+`swamp workflow cancel --all` cancels all active runs across all workflows.
+
+On daemon restart, `swamp serve` automatically reaps orphaned runs left in
+`running` state by the previous process, marking them `cancelled` with reason
+`daemon restarted`.
+
+A `RunCancelRegistry` in the serve layer centralises AbortController tracking
+across all execution paths (scheduled, WebSocket ad-hoc, webhook). The cancel
+API checks both the registry and the `ScheduledExecutionService` running map.
+
+The same mechanism applies to model method runs via
+`swamp model cancel <model> [--run <id>]`.
+
 ## Domain Events
 
 The WorkflowRepository and WorkflowRunRepository emit domain events:

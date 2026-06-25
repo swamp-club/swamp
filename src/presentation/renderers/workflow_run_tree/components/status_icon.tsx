@@ -31,7 +31,8 @@ interface StatusIconProps {
     | "completed"
     | "failed"
     | "skipped"
-    | "succeeded";
+    | "succeeded"
+    | "cancelled";
   spinnerFrame?: string;
 }
 
@@ -42,6 +43,8 @@ export function StatusIcon({ status, spinnerFrame }: StatusIconProps) {
       return <Text color="green">✓</Text>;
     case "failed":
       return <Text color="red">✗</Text>;
+    case "cancelled":
+      return <Text color="yellow">⊘</Text>;
     case "running":
       return <Text color="cyan">{(spinnerFrame ?? "\u280B") + " "}</Text>;
     case "waiting_approval":
