@@ -945,7 +945,7 @@ export const serveCommand = new Command()
             if (
               !found && executionType === "workflow-run" && scheduledExecution
             ) {
-              found = scheduledExecution.cancelRun(executionId);
+              found = scheduledExecution.cancelByRunId(executionId);
             }
             if (found) {
               return Response.json({

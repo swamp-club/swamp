@@ -25,7 +25,10 @@ import {
 } from "../context.ts";
 import { requireInitializedRepoUnlocked } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
-import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
+import {
+  createWorkflowId,
+  createWorkflowRunId,
+} from "../../domain/workflows/workflow_id.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import type { WorkflowId } from "../../domain/workflows/workflow_id.ts";
 import type {
@@ -129,7 +132,12 @@ export const workflowCancelCommand = new Command()
       if (options.all) {
         const activeRuns = await findAllActiveRuns(workflowRepo, runRepo);
         if (activeRuns.length === 0) {
-          throw new UserError("No active workflow runs found to cancel");
+          if (cliCtx.outputMode === "json") {
+            console.log(JSON.stringify({ cancelled: [] }));
+          } else {
+            cliCtx.logger.info("No active workflow runs found to cancel.");
+          }
+          return;
         }
 
         const cancelled: {
@@ -178,8 +186,7 @@ export const workflowCancelCommand = new Command()
       if (options.run) {
         const found = await runRepo.findById(
           workflow.id,
-          (await import("../../domain/workflows/workflow_id.ts"))
-            .createWorkflowRunId(options.run),
+          createWorkflowRunId(options.run),
         );
         if (!found) {
           throw new UserError(`Workflow run not found: ${options.run}`);

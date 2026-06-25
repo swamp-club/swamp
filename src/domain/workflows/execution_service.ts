@@ -114,6 +114,14 @@ import { getTracer, SpanStatusCode } from "../../infrastructure/tracing/mod.ts";
 import { extractSensitiveFieldValues } from "../models/sensitive_field_extractor.ts";
 
 /**
+ * Extracts a human-readable reason from an AbortSignal. Returns the
+ * Error message when the reason is an Error, or "aborted" otherwise.
+ */
+function abortReason(signal: AbortSignal): string {
+  return signal.reason instanceof Error ? signal.reason.message : "aborted";
+}
+
+/**
  * Thrown when a manual_approval step suspends the workflow. Uses an
  * exception for control flow because the generator stack (runStep →
  * runJob → merge → run) has no other way to unwind cleanly — yield
@@ -1582,9 +1590,7 @@ export class WorkflowExecutionService {
       // Check if the run was cancelled via abort signal
       if (options?.signal?.aborted) {
         run.cancel(
-          options.signal.reason instanceof Error
-            ? options.signal.reason.message
-            : "aborted",
+          abortReason(options.signal),
         );
         await this.saveRun(workflow.id, run);
         yield { kind: "cancelled" as const, run };
@@ -1649,9 +1655,7 @@ export class WorkflowExecutionService {
         workflowRun && options?.signal?.aborted
       ) {
         workflowRun.cancel(
-          options.signal.reason instanceof Error
-            ? options.signal.reason.message
-            : "aborted",
+          abortReason(options.signal),
         );
         await this.saveRun(
           createWorkflowId(workflowRun.workflowId),
@@ -1910,9 +1914,7 @@ export class WorkflowExecutionService {
 
       if (options?.signal?.aborted) {
         existingRun.cancel(
-          options.signal.reason instanceof Error
-            ? options.signal.reason.message
-            : "aborted",
+          abortReason(options.signal),
         );
         await this.saveRun(workflow.id, existingRun);
         yield { kind: "cancelled" as const, run: existingRun };
@@ -1950,9 +1952,7 @@ export class WorkflowExecutionService {
       }
       if (options?.signal?.aborted) {
         existingRun.cancel(
-          options.signal.reason instanceof Error
-            ? options.signal.reason.message
-            : "aborted",
+          abortReason(options.signal),
         );
         await this.saveRun(workflow.id, existingRun);
         yield { kind: "cancelled" as const, run: existingRun };

@@ -44,7 +44,10 @@ import {
   SWAMP_SUBDIRS,
   swampPath,
 } from "../../infrastructure/persistence/paths.ts";
-import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
+import {
+  createWorkflowId,
+  createWorkflowRunId,
+} from "../../domain/workflows/workflow_id.ts";
 import {
   deepMerge,
   mergeInputArgs,
@@ -238,6 +241,7 @@ export const workflowRunCommand = new Command()
     const abort = new AbortController();
     const exitSuppress = suppressSyncExitOnSignal();
     let shutdownHandle: { dispose(): void } | undefined;
+    let currentRunId: string | undefined;
     try {
       const runRepo = repoContext.workflowRunRepo;
 
@@ -386,7 +390,6 @@ export const workflowRunCommand = new Command()
           workflowName: workflowIdOrName,
           forceLog: ctx.forceLog,
         });
-
         const eventStream = workflowRun(libCtx, deps, {
           workflowIdOrName,
           lastEvaluated,
@@ -404,7 +407,15 @@ export const workflowRunCommand = new Command()
           skipCheckLabels: options.skipCheckLabel as string[] | undefined,
         });
 
-        await consumeStream(eventStream, renderer.handlers());
+        const baseHandlers = renderer.handlers();
+        const wrappedHandlers = {
+          ...baseHandlers,
+          started: (e: WorkflowRunEvent & { kind: "started" }) => {
+            currentRunId = e.runId;
+            baseHandlers.started(e);
+          },
+        };
+        await consumeStream(eventStream, wrappedHandlers);
 
         if (abort.signal.aborted) {
           Deno.exitCode = 1;
@@ -419,16 +430,18 @@ export const workflowRunCommand = new Command()
     } catch (error) {
       if (abort.signal.aborted) {
         // Ctrl+C or timeout — the generator may not have saved the
-        // cancelled status. Find the latest running run and cancel it.
+        // cancelled status. Cancel only the specific run we started.
         try {
-          const workflows = await repoContext.workflowRepo.findAll();
-          const wf = workflows.find((w) => w.name === workflowIdOrName) ??
-            workflows.find((w) => w.id === workflowIdOrName);
-          if (wf) {
-            const runs = await repoContext.workflowRunRepo
-              .findAllByWorkflowId(wf.id);
-            for (const run of runs) {
-              if (run.status === "running") {
+          if (currentRunId) {
+            const workflows = await repoContext.workflowRepo.findAll();
+            const wf = workflows.find((w) => w.name === workflowIdOrName) ??
+              workflows.find((w) => w.id === workflowIdOrName);
+            if (wf) {
+              const run = await repoContext.workflowRunRepo.findById(
+                wf.id,
+                createWorkflowRunId(currentRunId),
+              );
+              if (run && run.status === "running") {
                 run.cancel("aborted");
                 await repoContext.workflowRunRepo.save(wf.id, run);
               }

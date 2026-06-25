@@ -1029,6 +1029,11 @@ async function handleModelMethodRun(
     );
     const libCtx = createLibSwampContext({ signal: controller.signal });
 
+    // Register method run in cancel registry using the requestId as executionId
+    if (ctx.cancelRegistry) {
+      ctx.cancelRegistry.register("method-run", requestId, controller);
+    }
+
     for await (
       const event of modelMethodRun(libCtx, deps, {
         modelIdOrName: payload.modelIdOrName,
@@ -1061,6 +1066,9 @@ async function handleModelMethodRun(
       );
     }
   } finally {
+    if (ctx.cancelRegistry) {
+      ctx.cancelRegistry.deregister("method-run", requestId);
+    }
     if (flushLocks) {
       try {
         await flushLocks();

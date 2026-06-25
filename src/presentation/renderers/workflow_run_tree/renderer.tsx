@@ -97,6 +97,7 @@ export class InkWorkflowRunRenderer implements WorkflowRunRenderer {
         this.cleanup?.();
       },
       cancelled: async (e) => {
+        this._failed = true;
         forward(e);
         this.bridge.close();
         await this.exitPromise;

@@ -112,7 +112,10 @@ export interface ScheduledExecutionDeps {
 export class ScheduledExecutionService {
   private readonly scheduler: WorkflowScheduler;
   private readonly watcher: WorkflowWatcher;
-  private readonly running = new Map<WorkflowId, AbortController>();
+  private readonly running = new Map<
+    WorkflowId,
+    { controller: AbortController; runId: string }
+  >();
   private readonly workflowNames = new Map<WorkflowId, string>();
   private readonly runQueue: Array<{
     workflowId: WorkflowId;
@@ -168,12 +171,12 @@ export class ScheduledExecutionService {
     this.runQueue.length = 0;
 
     // Abort all in-flight runs
-    for (const [workflowId, controller] of this.running) {
+    for (const [workflowId, entry] of this.running) {
       logger.info(
         "Aborting in-flight scheduled run for workflow {workflowId}",
         { workflowId },
       );
-      controller.abort();
+      entry.controller.abort();
     }
 
     // Drain the processing promise — runs exit quickly after abort
@@ -205,13 +208,30 @@ export class ScheduledExecutionService {
    */
   cancelRun(workflowId: string): boolean {
     const id = workflowId as WorkflowId;
-    const controller = this.running.get(id);
-    if (!controller) {
+    const entry = this.running.get(id);
+    if (!entry) {
       return false;
     }
     logger.info`Cancelling scheduled run for workflow ${workflowId}`;
-    controller.abort(new Error("cancelled by user"));
+    entry.controller.abort(new Error("cancelled by user"));
     return true;
+  }
+
+  /**
+   * Cancels a scheduled run by run ID (reverse lookup). Used by the REST
+   * cancel endpoint which receives a run ID, not a workflow ID.
+   * Returns true if found and aborted.
+   */
+  cancelByRunId(runId: string): boolean {
+    for (const [workflowId, entry] of this.running) {
+      if (entry.runId === runId) {
+        logger
+          .info`Cancelling scheduled run ${runId} for workflow ${workflowId}`;
+        entry.controller.abort(new Error("cancelled by user"));
+        return true;
+      }
+    }
+    return false;
   }
 
   /**
@@ -219,9 +239,9 @@ export class ScheduledExecutionService {
    */
   cancelAllRuns(): number {
     let count = 0;
-    for (const [workflowId, controller] of this.running) {
+    for (const [workflowId, entry] of this.running) {
       logger.info`Cancelling scheduled run for workflow ${workflowId}`;
-      controller.abort(new Error("cancelled by user"));
+      entry.controller.abort(new Error("cancelled by user"));
       count++;
     }
     return count;
@@ -313,7 +333,7 @@ export class ScheduledExecutionService {
     workflowName: string,
   ): Promise<void> {
     const controller = new AbortController();
-    this.running.set(workflowId, controller);
+    this.running.set(workflowId, { controller, runId: "" });
 
     try {
       let runId = "";
@@ -326,6 +346,8 @@ export class ScheduledExecutionService {
         (event) => {
           if (event.kind === "started") {
             runId = event.runId;
+            // Update the running entry with the actual run ID
+            this.running.set(workflowId, { controller, runId });
           }
           if (event.kind === "completed") {
             completedRun = event.run;

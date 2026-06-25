@@ -215,9 +215,15 @@ class LogWorkflowRunRenderer implements WorkflowRunRenderer {
         }
       },
       cancelled: (e) => {
+        this._failed = true;
         const wfLogger = getWorkflowRunLogger(this.workflowName);
-        const reason = e.reason ? `: ${e.reason}` : "";
-        wfLogger.warn("Workflow cancelled{reason}", { reason });
+        if (e.reason) {
+          wfLogger.warn("Workflow cancelled: {reason}", {
+            reason: e.reason,
+          });
+        } else {
+          wfLogger.warn("Workflow cancelled");
+        }
       },
       suspended: (e) => {
         const wfLogger = getWorkflowRunLogger(this.workflowName);
@@ -323,6 +329,7 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
         console.log(JSON.stringify(e.run, null, 2));
       },
       cancelled: (e) => {
+        this._failed = true;
         console.log(JSON.stringify(e.run, null, 2));
       },
       suspended: (e) => {

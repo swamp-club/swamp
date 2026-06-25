@@ -104,7 +104,7 @@ function statusIcon(
     succeeded: "\u2713",
     failed: "\u2717",
     skipped: "\u2298",
-    cancelled: "\u2298",
+    cancelled: "\u2716",
   };
   return icons[status] ?? "?";
 }
