@@ -79,10 +79,8 @@ import { ModelOutput } from "../models/model_output.ts";
 import type { Definition } from "../definitions/definition.ts";
 import type { ModelType } from "../models/model_type.ts";
 import type { MethodResult, ModelDefinition } from "../models/model.ts";
-import {
-  containsRuntimeExpression,
-  ExpressionEvaluationService,
-} from "../expressions/expression_evaluation_service.ts";
+import { ExpressionEvaluationService } from "../expressions/expression_evaluation_service.ts";
+import { resolveAvailableExpressions } from "../expressions/available_expression_resolver.ts";
 import {
   buildEnvContext,
   type DataRecord,
@@ -411,33 +409,18 @@ export class DefaultStepExecutor implements StepExecutor {
       expressionEvaluator,
     } = allDeps;
 
-    // Resolve forEach self.* expressions in modelIdOrName/modelName and methodName
-    // before model lookup. The expression context has self populated with
-    // the forEach variable by runStep().
+    // Resolve every available expression (self.* from the forEach variable,
+    // run.*, etc.) anywhere in the task before model lookup. The expression
+    // context has self populated with the forEach variable by runStep().
+    // resolveAvailableExpressions defers vault/env and step-output kinds to their
+    // dedicated stages — see available_expression_resolver.ts.
     if (ctx.expressionContext) {
       const celEvaluator = new CelEvaluator();
-      const resolve = (value: string): string =>
-        value.replace(
-          /\$\{\{\s*(.+?)\s*\}\}/g,
-          (_match: string, expr: string) => {
-            if (containsRuntimeExpression(expr)) return _match;
-            try {
-              return String(
-                celEvaluator.evaluate(expr, ctx.expressionContext!),
-              );
-            } catch {
-              return _match;
-            }
-          },
-        );
-      task = {
-        ...task,
-        modelIdOrName: task.modelIdOrName
-          ? resolve(task.modelIdOrName)
-          : undefined,
-        modelName: task.modelName ? resolve(task.modelName) : undefined,
-        methodName: resolve(task.methodName),
-      };
+      task = resolveAvailableExpressions(
+        task,
+        ctx.expressionContext,
+        (expr, context) => celEvaluator.evaluate(expr, context),
+      ) as typeof task;
     }
 
     let originalDefinition: Definition;
@@ -2446,6 +2429,21 @@ export class WorkflowExecutionService {
     expressionContext: ExpressionContext | undefined,
     options: StepOptions,
   ): AsyncGenerator<WorkflowExecutionEvent> {
+    // Resolve every available expression (self.* from the forEach variable,
+    // run.*, etc.) in the task BEFORE the recursion-depth guard, cycle
+    // detection, ancestor-set additions, and the child invocation, so they all
+    // operate on the resolved workflowIdOrName rather than a literal `${{ }}`.
+    // Vault/env and step-output kinds are deferred to their dedicated stages;
+    // the inputs evaluateData pass below still resolves the rest.
+    if (expressionContext) {
+      const celEvaluator = new CelEvaluator();
+      task = resolveAvailableExpressions(
+        task,
+        expressionContext,
+        (expr, context) => celEvaluator.evaluate(expr, context),
+      ) as typeof task;
+    }
+
     // Recursion guard
     const depth = options.workflowNestingDepth ?? 0;
     if (depth >= MAX_WORKFLOW_NESTING_DEPTH) {

@@ -178,6 +178,30 @@ jobs:
             environment: ${{ self.env }}
 ```
 
+`workflowIdOrName` itself can be a `self.*` expression, so each item chooses
+which workflow to run — useful when a planner emits items that each name their
+implementation:
+
+```yaml
+jobs:
+  - name: apply-wave
+    steps:
+      - name: apply-${{ self.item.host }}
+        forEach:
+          item: item
+          in: ${{ inputs.items }}
+        task:
+          type: workflow
+          workflowIdOrName: ${{ self.item.implementation.workflowIdOrName }}
+          inputs:
+            host: ${{ self.item.host }}
+```
+
+With items like
+`[{ "host": "gitea", "implementation": { "workflowIdOrName": "lab-capability-ssh" } }]`,
+the step targets `lab-capability-ssh`. The resolved target appears in
+`--last-evaluated` output.
+
 ## Data Access in Sub-Workflows
 
 Sub-workflow model instances can access data produced by the parent workflow

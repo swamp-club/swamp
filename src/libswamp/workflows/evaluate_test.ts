@@ -383,6 +383,188 @@ Deno.test("forEach: resolves self.* in modelIdOrName with object iteration", asy
   assertEquals(asModelMethodTask(steps[1].task).modelIdOrName, "device-beta");
 });
 
+// Builds a forEach workflow whose step runs a `type: workflow` task, so we can
+// exercise dynamic workflowIdOrName resolution (swamp-club#814).
+function makeForEachWorkflowTask(overrides: {
+  workflowIdOrName: string;
+  stepName: string;
+  forEachIn: string;
+  forEachItem: string;
+  inputs?: Record<string, unknown>;
+}): Workflow {
+  return Workflow.fromData({
+    id: "00000000-0000-4000-8000-000000000003",
+    name: "foreach-workflow",
+    inputs: {},
+    jobs: [{
+      name: "default",
+      steps: [{
+        name: overrides.stepName,
+        forEach: {
+          item: overrides.forEachItem,
+          in: overrides.forEachIn,
+        },
+        task: {
+          type: "workflow",
+          workflowIdOrName: overrides.workflowIdOrName,
+          ...(overrides.inputs ? { inputs: overrides.inputs } : {}),
+        },
+      }],
+    }],
+  });
+}
+
+interface WorkflowTaskData {
+  type: "workflow";
+  workflowIdOrName: string;
+  inputs?: Record<string, unknown>;
+}
+
+function asWorkflowTask(
+  // deno-lint-ignore no-explicit-any
+  task: any,
+): WorkflowTaskData {
+  return task as WorkflowTaskData;
+}
+
+Deno.test("forEach: resolves self.* in workflowIdOrName (workflow task)", async () => {
+  const workflow = makeForEachWorkflowTask({
+    workflowIdOrName: "${{ self.item.implementation.workflowIdOrName }}",
+    stepName: "apply-${{ self.item.host }}",
+    forEachIn: "${{ items }}",
+    forEachItem: "item",
+  });
+
+  const data = await evaluateForEachWorkflow(workflow, {
+    buildExpressionContext: () =>
+      Promise.resolve(
+        {
+          model: {},
+          env: {},
+          self: {},
+          items: [
+            {
+              host: "gitea",
+              implementation: { workflowIdOrName: "lab-capability-ssh" },
+            },
+            {
+              host: "bao",
+              implementation: { workflowIdOrName: "lab-capability-vault" },
+            },
+          ],
+        } as // deno-lint-ignore no-explicit-any
+        any,
+      ),
+  });
+
+  const steps = data.jobs![0].steps;
+  assertEquals(steps.length, 2);
+  assertEquals(
+    asWorkflowTask(steps[0].task).workflowIdOrName,
+    "lab-capability-ssh",
+  );
+  assertEquals(
+    asWorkflowTask(steps[1].task).workflowIdOrName,
+    "lab-capability-vault",
+  );
+});
+
+Deno.test("forEach: resolves all expressions in a multi-expression step name", async () => {
+  const workflow = makeForEachWorkflowTask({
+    workflowIdOrName: "${{ self.item.implementation.workflowIdOrName }}",
+    stepName: "apply-${{ self.item.host }}-${{ self.item.capability }}",
+    forEachIn: "${{ items }}",
+    forEachItem: "item",
+  });
+
+  const data = await evaluateForEachWorkflow(workflow, {
+    buildExpressionContext: () =>
+      Promise.resolve(
+        {
+          model: {},
+          env: {},
+          self: {},
+          items: [
+            {
+              host: "gitea",
+              capability: "ssh",
+              implementation: { workflowIdOrName: "lab-capability-ssh" },
+            },
+          ],
+        } as // deno-lint-ignore no-explicit-any
+        any,
+      ),
+  });
+
+  const steps = data.jobs![0].steps;
+  // Both expressions in the name resolve, not just the first.
+  assertEquals(steps[0].name, "apply-gitea-ssh");
+});
+
+Deno.test("forEach: leaves vault expressions in workflowIdOrName unresolved", async () => {
+  const workflow = makeForEachWorkflowTask({
+    workflowIdOrName: '${{ vault.get("which-workflow") }}',
+    stepName: "apply-${{ self.item.host }}",
+    forEachIn: "${{ items }}",
+    forEachItem: "item",
+  });
+
+  const data = await evaluateForEachWorkflow(workflow, {
+    buildExpressionContext: () =>
+      Promise.resolve(
+        {
+          model: {},
+          env: {},
+          self: {},
+          items: [{ host: "gitea" }],
+        } as // deno-lint-ignore no-explicit-any
+        any,
+      ),
+  });
+
+  const steps = data.jobs![0].steps;
+  assertEquals(
+    asWorkflowTask(steps[0].task).workflowIdOrName,
+    '${{ vault.get("which-workflow") }}',
+  );
+});
+
+Deno.test("forEach: resolves self.* in modelName (model task parity)", async () => {
+  const workflow = Workflow.fromData({
+    id: "00000000-0000-4000-8000-000000000004",
+    name: "foreach-workflow",
+    inputs: {},
+    jobs: [{
+      name: "default",
+      steps: [{
+        name: "scan-${{ self.region }}",
+        forEach: { item: "region", in: "${{ items }}" },
+        task: {
+          type: "model_method",
+          modelType: "@acme/scanner",
+          modelName: "scanner-${{ self.region }}",
+          methodName: "scan",
+        },
+      }],
+    }],
+  });
+
+  const data = await evaluateForEachWorkflow(workflow, {
+    buildExpressionContext: () =>
+      Promise.resolve(
+        { model: {}, env: {}, self: {}, items: ["us-east-1", "eu-west-1"] } as // deno-lint-ignore no-explicit-any
+        any,
+      ),
+  });
+
+  const steps = data.jobs![0].steps;
+  assertEquals(steps.length, 2);
+  // deno-lint-ignore no-explicit-any
+  assertEquals((steps[0].task as any).modelName, "scanner-us-east-1");
+  // deno-lint-ignore no-explicit-any
+  assertEquals((steps[1].task as any).modelName, "scanner-eu-west-1");
+});
+
 Deno.test("isWorkflowEvaluateAllData: returns true for AllData, false for ItemData", () => {
   const allData: WorkflowEvaluateAllData = {
     items: [],

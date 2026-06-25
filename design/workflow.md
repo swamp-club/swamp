@@ -76,7 +76,10 @@ task:
 `globalArgs` is only valid with direct type execution — the schema rejects it
 for `modelIdOrName` tasks.
 
-For `forEach` steps, `modelName` supports CEL template expressions:
+For `forEach` steps, `self.*` CEL template expressions resolve in every task
+target field — `modelIdOrName`, `modelName`, `methodName`, and (for workflow
+tasks) `workflowIdOrName` — as well as the step `name`, `inputs`, and shell
+`args`:
 
 ```yaml
 - name: scan-${{self.host}}

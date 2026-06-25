@@ -66,10 +66,12 @@ With `--input '{"tags": {"env": "prod", "team": "platform"}}'`, creates steps:
 - `tag-env` (with `self.tag.key="env"`, `self.tag.value="prod"`)
 - `tag-team` (with `self.tag.key="team"`, `self.tag.value="platform"`)
 
-### Dynamic Model Targeting
+### Dynamic Targeting
 
-`self.*` expressions resolve in `modelIdOrName` and `methodName`, enabling
-forEach steps to target different model instances per iteration:
+During forEach expansion, `self.*` expressions resolve in **any** task field —
+the step `name`, model targets (`modelIdOrName`, `modelName`, `methodName`),
+workflow targets (`workflowIdOrName`), `inputs`, and shell `args` — so each
+iteration can pick a different target:
 
 ```yaml
 steps:
@@ -88,6 +90,25 @@ steps:
 With `regions: ["us-east-1", "eu-west-1"]`, this creates two steps targeting
 `aws-alarms-us-east-1` and `aws-alarms-eu-west-1` respectively. The resolved
 names appear in `--last-evaluated` output.
+
+The same applies to workflow tasks, so a planner can emit waves whose items each
+select a workflow implementation:
+
+```yaml
+steps:
+  - name: apply-${{ self.item.host }}-${{ self.item.capability }}
+    forEach:
+      item: item
+      in: ${{ inputs.items }}
+    task:
+      type: workflow
+      workflowIdOrName: ${{ self.item.implementation.workflowIdOrName }}
+      inputs:
+        host: ${{ self.item.host }}
+```
+
+`vault.*`/`env.*` and step-output/`data.*` references are left untouched during
+expansion — they resolve at their own runtime/execution stage.
 
 ### forEach Variables
 

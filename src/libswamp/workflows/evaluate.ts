@@ -32,6 +32,7 @@ import {
   replaceExpressions,
 } from "../../domain/expressions/expression_parser.ts";
 import { containsRuntimeExpression } from "../../domain/expressions/expression_evaluation_service.ts";
+import { resolveAvailableExpressions } from "../../domain/expressions/available_expression_resolver.ts";
 import { hasStepOutputDependency } from "../../domain/expressions/dependency_extractor.ts";
 import type { ExpressionContext } from "../../domain/expressions/model_resolver.ts";
 import { ModelResolver } from "../../domain/expressions/model_resolver.ts";
@@ -262,35 +263,48 @@ async function evaluateWorkflowInternal(
       const itemName = stepData.forEach.item;
       const nameHasExpression = /\$\{\{.+?\}\}/.test(stepData.name);
 
+      // Build one expanded step for a single forEach item: resolve every
+      // available expression (self.* etc.) across the step name AND task in one
+      // pass via the shared resolver, then apply the unique-name suffix policy.
+      const buildExpandedStep = (
+        // deno-lint-ignore no-explicit-any
+        stepContext: any,
+        fallbackSuffix: string,
+      ) => {
+        const resolved = resolveAvailableExpressions(
+          { name: stepData.name, task: stepData.task },
+          stepContext,
+          deps.evaluateCel,
+        ) as { name: string; task: typeof stepData.task };
+
+        let expandedName: string;
+        if (nameHasExpression) {
+          expandedName = resolved.name;
+          // If any expression in the name could not be resolved, the raw name
+          // would repeat across iterations — append a suffix to keep names
+          // unique (matches ForEachExpansionService.resolveForEachStepName).
+          if (/\$\{\{.+?\}\}/.test(expandedName)) {
+            expandedName = `${expandedName}-${fallbackSuffix}`;
+          }
+        } else {
+          expandedName = `${stepData.name}-${fallbackSuffix}`;
+        }
+
+        return {
+          ...stepData,
+          name: expandedName,
+          task: resolved.task,
+          forEach: undefined,
+        };
+      };
+
       if (Array.isArray(items)) {
         for (const item of items) {
           const stepContext = {
             ...context,
             self: { ...context.self, [itemName]: item },
           };
-
-          // Resolve step name
-          let expandedName = stepData.name;
-          const nameMatch = stepData.name.match(/\$\{\{\s*(.+?)\s*\}\}/);
-          if (nameMatch) {
-            const value = deps.evaluateCel(nameMatch[1], stepContext);
-            expandedName = stepData.name.replace(nameMatch[0], String(value));
-          } else if (!nameHasExpression) {
-            expandedName = `${stepData.name}-${String(item)}`;
-          }
-
-          const expandedTask = resolveForEachTaskExpressions(
-            stepData.task,
-            stepContext,
-            deps,
-          );
-
-          expandedSteps.push({
-            ...stepData,
-            name: expandedName,
-            task: expandedTask,
-            forEach: undefined,
-          });
+          expandedSteps.push(buildExpandedStep(stepContext, String(item)));
         }
       } else if (items && typeof items === "object") {
         for (const [key, value] of Object.entries(items)) {
@@ -299,32 +313,7 @@ async function evaluateWorkflowInternal(
             ...context,
             self: { ...context.self, [itemName]: objItem },
           };
-
-          // Resolve step name
-          let expandedName = stepData.name;
-          const nameMatch = stepData.name.match(/\$\{\{\s*(.+?)\s*\}\}/);
-          if (nameMatch) {
-            const evalValue = deps.evaluateCel(nameMatch[1], stepContext);
-            expandedName = stepData.name.replace(
-              nameMatch[0],
-              String(evalValue),
-            );
-          } else if (!nameHasExpression) {
-            expandedName = `${stepData.name}-${key}`;
-          }
-
-          const expandedTask = resolveForEachTaskExpressions(
-            stepData.task,
-            stepContext,
-            deps,
-          );
-
-          expandedSteps.push({
-            ...stepData,
-            name: expandedName,
-            task: expandedTask,
-            forEach: undefined,
-          });
+          expandedSteps.push(buildExpandedStep(stepContext, key));
         }
       } else {
         // Not iterable — keep original step
@@ -356,77 +345,6 @@ async function evaluateWorkflowInternal(
     outputPath: deps.getEvaluatedPath(workflow.id),
     jobs: expandedWorkflowData.jobs,
   };
-}
-
-/**
- * Resolves forEach self.* expressions in a task's modelIdOrName, methodName,
- * inputs, and args. Vault expressions are left raw for runtime resolution.
- */
-function resolveForEachTaskExpressions(
-  // deno-lint-ignore no-explicit-any
-  taskData: any,
-  // deno-lint-ignore no-explicit-any
-  stepContext: any,
-  deps: Pick<WorkflowEvaluateDeps, "evaluateCel">,
-  // deno-lint-ignore no-explicit-any
-): any {
-  const expandedTask = JSON.parse(JSON.stringify(taskData));
-
-  // Resolve expressions in modelIdOrName and methodName
-  for (const field of ["modelIdOrName", "methodName"] as const) {
-    if (expandedTask[field] && typeof expandedTask[field] === "string") {
-      expandedTask[field] = (expandedTask[field] as string).replace(
-        /\$\{\{\s*(.+?)\s*\}\}/g,
-        (_match: string, expr: string) => {
-          if (containsRuntimeExpression(expr)) return _match;
-          try {
-            return String(deps.evaluateCel(expr, stepContext));
-          } catch {
-            return _match;
-          }
-        },
-      );
-    }
-  }
-
-  // Resolve expressions in task inputs (model and workflow tasks)
-  if (expandedTask.inputs) {
-    for (const [key, val] of Object.entries(expandedTask.inputs)) {
-      if (typeof val === "string") {
-        const exprMatch = (val as string).match(/\$\{\{\s*(.+?)\s*\}\}/);
-        if (exprMatch && !containsRuntimeExpression(exprMatch[1])) {
-          try {
-            expandedTask.inputs[key] = deps.evaluateCel(
-              exprMatch[1],
-              stepContext,
-            );
-          } catch {
-            // Leave as-is if evaluation fails
-          }
-        }
-      }
-    }
-  }
-
-  // Resolve expressions in shell args
-  if (expandedTask.args && Array.isArray(expandedTask.args)) {
-    expandedTask.args = expandedTask.args.map((arg: unknown) => {
-      if (typeof arg !== "string") return arg;
-      return (arg as string).replace(
-        /\$\{\{\s*(.+?)\s*\}\}/g,
-        (_match: string, expr: string) => {
-          if (containsRuntimeExpression(expr)) return _match;
-          try {
-            return String(deps.evaluateCel(expr, stepContext));
-          } catch {
-            return _match;
-          }
-        },
-      );
-    });
-  }
-
-  return expandedTask;
 }
 
 /** Evaluates all workflow definitions. */
