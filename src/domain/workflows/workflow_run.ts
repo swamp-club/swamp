@@ -649,6 +649,10 @@ export class WorkflowRun implements TriggerEvaluationContext {
 
   /**
    * Marks the workflow run as cancelled with an optional reason.
+   *
+   * Deliberately no-ops on terminal states (succeeded, failed, cancelled)
+   * so that late cancellation signals don't corrupt an already-finalized run.
+   * This differs from ModelOutput.markCancelled which throws on terminal states.
    */
   cancel(reason?: string): void {
     if (

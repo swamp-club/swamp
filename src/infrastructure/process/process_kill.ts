@@ -27,6 +27,9 @@ const logger = getLogger(["process", "kill"]);
  * or belongs to a different program — guarding against PID reuse.
  */
 async function isSwampProcess(pid: number): Promise<boolean> {
+  // Windows lacks `ps`; skip verification and trust the caller's PID.
+  if (Deno.build.os === "windows") return true;
+
   try {
     const cmd = new Deno.Command("ps", {
       args: ["-p", String(pid), "-o", "command="],
@@ -44,6 +47,27 @@ async function isSwampProcess(pid: number): Promise<boolean> {
 
 async function findChildPids(ppid: number): Promise<number[]> {
   try {
+    if (Deno.build.os === "windows") {
+      const cmd = new Deno.Command("wmic", {
+        args: [
+          "process",
+          "where",
+          `(ParentProcessId=${ppid})`,
+          "get",
+          "ProcessId",
+        ],
+        stdout: "piped",
+        stderr: "null",
+      });
+      const output = await cmd.output();
+      const text = new TextDecoder().decode(output.stdout).trim();
+      if (!text) return [];
+      // wmic output has a header line ("ProcessId") followed by PID values
+      return text.split("\n").map((l) => l.trim()).map(Number).filter((n) =>
+        !isNaN(n)
+      );
+    }
+
     const cmd = new Deno.Command("pgrep", {
       args: ["-P", String(ppid)],
       stdout: "piped",

@@ -610,7 +610,7 @@ function treeReducerSingle(
       return {
         ...state,
         phase: "done",
-        failed: false,
+        failed: true,
         finalRun: event.run,
         activeReport: null,
       };

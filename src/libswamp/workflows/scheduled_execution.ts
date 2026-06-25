@@ -333,6 +333,9 @@ export class ScheduledExecutionService {
     workflowName: string,
   ): Promise<void> {
     const controller = new AbortController();
+    // runId starts empty until the "started" event arrives with the real ID.
+    // During this narrow window cancelByRunId() cannot match this run;
+    // the window closes as soon as executeWorkflow emits "started".
     this.running.set(workflowId, { controller, runId: "" });
 
     try {
@@ -352,6 +355,9 @@ export class ScheduledExecutionService {
           if (event.kind === "completed") {
             completedRun = event.run;
           }
+          if (event.kind === "cancelled") {
+            completedRun = event.run;
+          }
           if (event.kind === "error") {
             streamError = event.error.message;
           }
@@ -368,6 +374,18 @@ export class ScheduledExecutionService {
         logger.info(
           "Scheduled run completed for workflow {name} (run: {runId})",
           { name: workflowName, runId },
+        );
+      } else if (completedRun?.status === "cancelled") {
+        const message = "workflow was cancelled";
+        this.emit({
+          kind: "schedule_failed",
+          workflowId,
+          workflowName,
+          error: message,
+        });
+        logger.warn(
+          "Scheduled run cancelled for workflow {name}: {error}",
+          { name: workflowName, error: message },
         );
       } else {
         const message = completedRun

@@ -910,7 +910,7 @@ export const serveCommand = new Command()
         if (req.method === "POST") {
           const url = new URL(req.url);
           const cancelMatch = url.pathname.match(
-            /^\/api\/v1\/cancel\/(workflow-run|method-run)\/(.+)$/,
+            /^\/api\/v1\/cancel\/(workflow-run|method-run)\/([^/]+)$/,
           );
           const isBulkCancel = url.pathname === "/api/v1/cancel";
           if (cancelMatch || isBulkCancel) {
@@ -962,10 +962,9 @@ export const serveCommand = new Command()
           }
           if (url.pathname === "/api/v1/cancel") {
             const body = await req.json().catch(() => ({}));
-            const typeFilter = body.executionType as
-              | "workflow-run"
-              | "method-run"
-              | undefined;
+            const typeFilter = typeof body.executionType === "string"
+              ? body.executionType
+              : undefined;
             if (
               typeFilter && typeFilter !== "workflow-run" &&
               typeFilter !== "method-run"
