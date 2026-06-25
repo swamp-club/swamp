@@ -250,6 +250,8 @@ export interface RepoUpgradeResult {
   extensionsToReinstall: ExtensionsToReinstall[];
   /** Local bundled skill copies found that should be migrated to global. */
   localSkillCopies: LocalSkillCopy[];
+  /** Repo-relative paths of files modified during this upgrade. */
+  changedFiles: string[];
 }
 
 /**
@@ -471,12 +473,18 @@ export class RepoService {
     const resolvedConfigs: ToolConfig[] = [];
     let instructionsUpdated = false;
     let settingsUpdated = false;
+    const changedFiles: string[] = [];
+
+    // .swamp.yaml is always written during upgrade
+    changedFiles.push(".swamp.yaml");
+
     for (const tool of tools) {
       const config = await resolver.resolve(tool);
       resolvedConfigs.push(config);
       const r = await this.applyToolScaffolding(repoPath, config, true);
       instructionsUpdated = instructionsUpdated || r.instructionsFileChanged;
       settingsUpdated = settingsUpdated || r.settingsChanged;
+      changedFiles.push(...r.changedFiles);
     }
 
     // Determine gitignore management: CLI flag > marker preference > default off
@@ -496,6 +504,10 @@ export class RepoService {
       );
     } else {
       gitignoreAction = "skipped";
+    }
+
+    if (gitignoreAction === "created" || gitignoreAction === "updated") {
+      changedFiles.push(".gitignore");
     }
 
     // Detect local bundled skill copies that should be migrated to global
@@ -540,6 +552,7 @@ export class RepoService {
       removedTools,
       extensionsToReinstall,
       localSkillCopies,
+      changedFiles,
     };
   }
 
@@ -584,11 +597,15 @@ export class RepoService {
   ): Promise<{
     instructionsFileChanged: boolean;
     settingsChanged: boolean;
+    changedFiles: string[];
   }> {
+    const changedFiles: string[] = [];
+
     if (config.name === "none") {
       return {
         instructionsFileChanged: false,
         settingsChanged: false,
+        changedFiles,
       };
     }
 
@@ -608,21 +625,31 @@ export class RepoService {
       ? await this.updateInstructionsFile(repoPath, config)
       : await this.createInstructionsFileIfNotExists(repoPath, config);
 
+    if (instructionsFileChanged && config.instructionsFile) {
+      changedFiles.push(config.instructionsFile);
+    }
+
     // Create or update tool-specific settings (built-in tools only)
     let settingsChanged = false;
     if (config.isBuiltIn) {
       const tool = config.name as AiTool;
       switch (tool) {
-        case "claude":
-          settingsChanged = alreadyExists
+        case "claude": {
+          const changed = alreadyExists
             ? await this.updateClaudeSettings(repoPath)
             : await this.createClaudeSettingsIfNotExists(repoPath);
+          settingsChanged = changed;
+          if (changed) changedFiles.push(".claude/settings.local.json");
           break;
-        case "cursor":
-          settingsChanged = alreadyExists
+        }
+        case "cursor": {
+          const changed = alreadyExists
             ? await this.updateCursorHooks(repoPath)
             : await this.createCursorHooksIfNotExists(repoPath);
+          settingsChanged = changed;
+          if (changed) changedFiles.push(".cursor/hooks.json");
           break;
+        }
         case "kiro": {
           const s = alreadyExists
             ? await this.updateKiroSettings(repoPath)
@@ -635,18 +662,28 @@ export class RepoService {
             : await this.createKiroAgentConfigIfNotExists(repoPath);
           const c = await this.ensureKiroCliDefaultAgent(repoPath);
           settingsChanged = s || h || a || c;
+          if (s) changedFiles.push(".vscode/settings.local.json");
+          if (h) changedFiles.push(".kiro/hooks.json");
+          if (a) changedFiles.push(".kiro/agents/swamp.agent.md");
+          if (c) changedFiles.push(".kiro/config.json");
           break;
         }
-        case "opencode":
-          settingsChanged = alreadyExists
+        case "opencode": {
+          const changed = alreadyExists
             ? await this.updateOpenCodePlugin(repoPath)
             : await this.createOpenCodePluginIfNotExists(repoPath);
+          settingsChanged = changed;
+          if (changed) changedFiles.push(".opencode/plugins/swamp.ts");
           break;
-        case "copilot":
-          settingsChanged = alreadyExists
+        }
+        case "copilot": {
+          const changed = alreadyExists
             ? await this.updateCopilotHooks(repoPath)
             : await this.createCopilotHooksIfNotExists(repoPath);
+          settingsChanged = changed;
+          if (changed) changedFiles.push(".github/hooks/swamp-audit.json");
           break;
+        }
         case "codex":
         case "none":
           break;
@@ -655,7 +692,7 @@ export class RepoService {
       }
     }
 
-    return { instructionsFileChanged, settingsChanged };
+    return { instructionsFileChanged, settingsChanged, changedFiles };
   }
 
   /**

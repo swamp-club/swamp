@@ -424,6 +424,90 @@ Deno.test("RepoService.upgrade returns false if settings unchanged", async () =>
   });
 });
 
+Deno.test("RepoService.upgrade includes .swamp.yaml in changedFiles", async () => {
+  await withTempDir(async (tempDir) => {
+    const oldService = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+    await oldService.init(repoPath);
+
+    const newService = new RepoService("0.2.0");
+    const result = await newService.upgrade(repoPath);
+
+    assertEquals(result.changedFiles.includes(".swamp.yaml"), true);
+  });
+});
+
+Deno.test("RepoService.upgrade includes CLAUDE.md in changedFiles when instructions change", async () => {
+  await withTempDir(async (tempDir) => {
+    const oldService = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+    await oldService.init(repoPath);
+
+    // Remove CLAUDE.md so the upgrade recreates it
+    await Deno.remove(join(tempDir, "CLAUDE.md"));
+
+    const newService = new RepoService("0.2.0");
+    const result = await newService.upgrade(repoPath);
+
+    assertEquals(result.instructionsUpdated, true);
+    assertEquals(result.changedFiles.includes("CLAUDE.md"), true);
+  });
+});
+
+Deno.test("RepoService.upgrade includes settings file in changedFiles when settings change", async () => {
+  await withTempDir(async (tempDir) => {
+    const oldService = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+    await oldService.init(repoPath);
+
+    // Remove settings so the upgrade recreates them
+    await Deno.remove(join(tempDir, ".claude", "settings.local.json"));
+
+    const newService = new RepoService("0.2.0");
+    const result = await newService.upgrade(repoPath);
+
+    assertEquals(result.settingsUpdated, true);
+    assertEquals(
+      result.changedFiles.includes(".claude/settings.local.json"),
+      true,
+    );
+  });
+});
+
+Deno.test("RepoService.upgrade omits settings from changedFiles when unchanged", async () => {
+  await withTempDir(async (tempDir) => {
+    const oldService = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+    await oldService.init(repoPath);
+
+    const newService = new RepoService("0.2.0");
+    const result = await newService.upgrade(repoPath);
+
+    assertEquals(
+      result.changedFiles.includes(".claude/settings.local.json"),
+      false,
+    );
+  });
+});
+
+Deno.test("RepoService.upgrade includes .gitignore in changedFiles when managed", async () => {
+  await withTempDir(async (tempDir) => {
+    const oldService = new RepoService("0.1.0");
+    const repoPath = RepoPath.create(tempDir);
+    await oldService.init(repoPath);
+
+    // Enable gitignore management via first upgrade, then remove the file
+    const midService = new RepoService("0.1.1");
+    await midService.upgrade(repoPath, { includeGitignore: true });
+    await Deno.remove(join(tempDir, ".gitignore"));
+
+    const newService = new RepoService("0.2.0");
+    const result = await newService.upgrade(repoPath);
+
+    assertEquals(result.changedFiles.includes(".gitignore"), true);
+  });
+});
+
 Deno.test("RepoService.init generates CLAUDE.md with skills section", async () => {
   await withTempDir(async (tempDir) => {
     const service = new RepoService("0.1.0");
