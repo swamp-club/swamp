@@ -38,6 +38,16 @@ import { BundleRegistry } from "../../serve/bundle_registry.ts";
 import { DataPlane } from "../../serve/data_plane.ts";
 import { setRemoteStepDispatcher } from "../../domain/remote/remote_dispatch.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
+import {
+  createServiceScheduler,
+  resolveServiceMode,
+} from "../../infrastructure/daemon/service_scheduler_factory.ts";
+import {
+  renderDaemonDisabled,
+  renderDaemonEnabled,
+  renderDaemonStatus,
+} from "../../presentation/output/serve_daemon_output.ts";
+import { groupCommandAction } from "../group_action.ts";
 import { ScheduledExecutionService } from "../../libswamp/mod.ts";
 import { parseWebhookFlag, WebhookService } from "../../serve/webhook.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
@@ -170,6 +180,189 @@ export function validateWebSocketOrigin(
 
   return { allowed: true };
 }
+
+function collectServeExtraArgs(options: AnyOptions): string[] {
+  const args: string[] = [];
+  if (options.schedule === false) {
+    args.push("--no-schedule");
+  }
+  if (options.grantReload && options.grantReload !== "manual") {
+    args.push("--grant-reload", options.grantReload as string);
+  }
+  const webhooks = options.webhook as string[] | undefined;
+  if (webhooks) {
+    for (const spec of webhooks) {
+      args.push("--webhook", spec);
+    }
+  }
+  if (options.authMode && options.authMode !== "none") {
+    args.push("--auth-mode", options.authMode as string);
+  }
+  if (options.admins) {
+    args.push("--admins", options.admins as string);
+  }
+  if (options.allowedCollectives) {
+    args.push("--allowed-collectives", options.allowedCollectives as string);
+  }
+  if (options.allowedUsers) {
+    args.push("--allowed-users", options.allowedUsers as string);
+  }
+  if (options.oauthProvider) {
+    args.push("--oauth-provider", options.oauthProvider as string);
+  }
+  if (options.oauthClientId) {
+    args.push("--oauth-client-id", options.oauthClientId as string);
+  }
+  if (options.groupsField) {
+    args.push("--groups-field", options.groupsField as string);
+  }
+  if (options.trustProxy) {
+    args.push("--trust-proxy");
+  }
+  return args;
+}
+
+const daemonEnableCommand = new Command()
+  .name("enable")
+  .description("Enable swamp serve as a system daemon (launchd/systemd)")
+  .option(
+    "--repo-dir <dir:string>",
+    "Repository directory (env: SWAMP_REPO_DIR)",
+  )
+  .option("--port <port:number>", "Port for the daemon to listen on", {
+    default: 9090,
+  })
+  .option("--host <host:string>", "Host for the daemon to bind to", {
+    default: "127.0.0.1",
+  })
+  .option("--no-schedule", "Disable scheduled workflow execution")
+  .option(
+    "--cert-file <path:string>",
+    "Path to PEM-encoded TLS certificate",
+  )
+  .option(
+    "--key-file <path:string>",
+    "Path to PEM-encoded TLS private key",
+  )
+  .option(
+    "--grant-reload <mode:string>",
+    "Policy snapshot reload mode: manual (default) or auto",
+    { default: "manual" },
+  )
+  .option(
+    "--webhook <spec:string>",
+    "Register a webhook endpoint: <route>:<workflow>:<secret>[:<scheme>[:<header>[:<prefix>]]]",
+    { collect: true },
+  )
+  .option(
+    "--auth-mode <mode:string>",
+    "Authentication mode: none (default, deprecated), token, or oauth",
+    { default: "none" },
+  )
+  .option(
+    "--admins <principals:string>",
+    "Comma-separated principal IDs for admin access",
+  )
+  .option(
+    "--allowed-collectives <list:string>",
+    "Comma-separated collective slugs for OAuth admission policy",
+  )
+  .option(
+    "--allowed-users <list:string>",
+    "Comma-separated user identifiers for OAuth admission policy",
+  )
+  .option(
+    "--oauth-provider <url:string>",
+    "OAuth authorization server URL (default: https://swamp-club.com)",
+  )
+  .option(
+    "--oauth-client-id <id:string>",
+    "OAuth client ID (required for oauth mode)",
+  )
+  .option(
+    "--groups-field <field:string>",
+    "Userinfo field name for group/collective memberships (default: collectives)",
+  )
+  .option(
+    "--trust-proxy",
+    "Trust X-Forwarded-For header for client IP in token auth rate limiting",
+  )
+  .example("Enable daemon", "swamp serve daemon enable")
+  .example(
+    "Enable with custom port",
+    "swamp serve daemon enable --port 8080",
+  )
+  .example(
+    "Enable with TLS and auth",
+    "swamp serve daemon enable --cert-file cert.pem --key-file key.pem --auth-mode token",
+  )
+  .action(async function (options: AnyOptions) {
+    const ctx = createContext(options as GlobalOptions, [
+      "serve",
+      "daemon",
+      "enable",
+    ]);
+    const repoDir = resolveRepoDir(options.repoDir as string | undefined);
+    const mode = await resolveServiceMode();
+    const scheduler = await createServiceScheduler({ mode });
+    const extraArgs = collectServeExtraArgs(options);
+
+    await scheduler.enable({
+      binaryPath: Deno.execPath(),
+      repoDir,
+      port: options.port as number,
+      host: options.host as string,
+      certFile: options.certFile as string | undefined,
+      keyFile: options.keyFile as string | undefined,
+      extraArgs: extraArgs.length > 0 ? extraArgs : undefined,
+    });
+
+    renderDaemonEnabled(ctx.outputMode);
+  });
+
+const daemonDisableCommand = new Command()
+  .name("disable")
+  .description("Disable and remove the swamp serve daemon")
+  .example("Disable daemon", "swamp serve daemon disable")
+  .action(async function (options: AnyOptions) {
+    const ctx = createContext(options as GlobalOptions, [
+      "serve",
+      "daemon",
+      "disable",
+    ]);
+    const mode = await resolveServiceMode();
+    const scheduler = await createServiceScheduler({ mode });
+
+    await scheduler.disable();
+
+    renderDaemonDisabled(ctx.outputMode);
+  });
+
+const daemonStatusCommand = new Command()
+  .name("status")
+  .description("Show the status of the swamp serve daemon")
+  .example("Check daemon status", "swamp serve daemon status")
+  .action(async function (options: AnyOptions) {
+    const ctx = createContext(options as GlobalOptions, [
+      "serve",
+      "daemon",
+      "status",
+    ]);
+    const mode = await resolveServiceMode();
+    const scheduler = await createServiceScheduler({ mode });
+
+    const status = await scheduler.status();
+
+    renderDaemonStatus(status, ctx.outputMode);
+  });
+
+const daemonCommand = new Command()
+  .name("daemon")
+  .description("Manage swamp serve as a system daemon")
+  .action(groupCommandAction)
+  .command("enable", daemonEnableCommand)
+  .command("disable", daemonDisableCommand)
+  .command("status", daemonStatusCommand);
 
 export const serveCommand = new Command()
   .name("serve")
@@ -748,4 +941,5 @@ export const serveCommand = new Command()
     await server.finished;
 
     repoContext.catalogStore.close();
-  });
+  })
+  .command("daemon", daemonCommand);
