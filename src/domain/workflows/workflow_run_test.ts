@@ -757,3 +757,95 @@ Deno.test("WorkflowRun.fromData tolerates legacy records lacking inputs/resumeIn
   assertEquals(run.inputs, {});
   assertEquals(run.resumeInputs, []);
 });
+
+// WorkflowRun cancel tests
+
+Deno.test("WorkflowRun.cancel: marks running run as cancelled", () => {
+  const workflow = createTestWorkflow();
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  run.cancel();
+  assertEquals(run.status, "cancelled");
+  assertEquals(run.completedAt instanceof Date, true);
+});
+
+Deno.test("WorkflowRun.cancel: stores reason in tags", () => {
+  const workflow = createTestWorkflow();
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  run.cancel("user requested");
+  assertEquals(run.tags.cancel_reason, "user requested");
+});
+
+Deno.test("WorkflowRun.cancel: no-ops on succeeded run", () => {
+  const workflow = createTestWorkflow();
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  run.getJob("job1")?.start();
+  run.getJob("job1")?.succeed();
+  run.getJob("job2")?.start();
+  run.getJob("job2")?.succeed();
+  run.complete();
+  run.cancel();
+  assertEquals(run.status, "succeeded");
+});
+
+Deno.test("WorkflowRun.cancel: no-ops on failed run", () => {
+  const workflow = createTestWorkflow();
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  run.getJob("job1")?.start();
+  run.getJob("job1")?.succeed();
+  run.getJob("job2")?.start();
+  run.getJob("job2")?.fail();
+  run.complete();
+  run.cancel();
+  assertEquals(run.status, "failed");
+});
+
+Deno.test("WorkflowRun.cancel: no-ops on already cancelled run", () => {
+  const workflow = createTestWorkflow();
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  run.cancel();
+  run.cancel();
+  assertEquals(run.status, "cancelled");
+});
+
+Deno.test("WorkflowRun.cancel: works on suspended run", () => {
+  const workflow = createTestWorkflow();
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  run.suspend();
+  run.cancel();
+  assertEquals(run.status, "cancelled");
+});
+
+Deno.test("WorkflowRun.cancel: works on pending run", () => {
+  const workflow = createTestWorkflow();
+  const run = WorkflowRun.create(workflow);
+  run.cancel();
+  assertEquals(run.status, "cancelled");
+});
+
+Deno.test("WorkflowRun.complete: no-ops on cancelled run", () => {
+  const workflow = createTestWorkflow();
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  run.cancel();
+  run.complete();
+  assertEquals(run.status, "cancelled");
+});
+
+Deno.test("WorkflowRun: cancelled round-trips through serialization", () => {
+  const workflow = createTestWorkflow();
+  const run = WorkflowRun.create(workflow);
+  run.start();
+  run.cancel("test reason");
+
+  const data = run.toData();
+  const restored = WorkflowRun.fromData(data);
+
+  assertEquals(restored.status, "cancelled");
+  assertEquals(restored.tags.cancel_reason, "test reason");
+});

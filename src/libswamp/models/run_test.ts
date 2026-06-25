@@ -327,17 +327,26 @@ Deno.test("modelMethodRun yields error on execution failure", async () => {
   }
 });
 
-Deno.test("modelMethodRun yields cancelled error on abort", async () => {
+Deno.test("modelMethodRun marks output cancelled on abort", async () => {
   const definition = createTestDefinition("test-model", "run");
   const modelDef = createTestModelDef("run");
   const controller = new AbortController();
+  const savedOutputs: { status: string }[] = [];
   const deps: ModelMethodRunDeps = {
     ...createTestDeps(definition, modelDef),
     createExecutionService: () =>
       createFailingExecutionService(
         new DOMException("The operation was aborted.", "AbortError"),
       ),
-    outputRepo: createFakeOutputRepo(),
+    outputRepo: {
+      ...createFakeOutputRepo(),
+      save: (_type: unknown, _method: unknown, output: unknown) => {
+        savedOutputs.push({
+          status: (output as { status: string }).status,
+        });
+        return Promise.resolve();
+      },
+    } as ReturnType<typeof createFakeOutputRepo>,
   };
 
   // Abort before execution to simulate cancellation
@@ -347,11 +356,12 @@ Deno.test("modelMethodRun yields cancelled error on abort", async () => {
     modelMethodRun(ctx, deps, createTestInput("test-model", "run")),
   );
 
-  const last = events[events.length - 1];
-  assertEquals(last.kind, "error");
-  if (last.kind === "error") {
-    assertEquals(last.error.code, "cancelled");
-  }
+  // No error event should be yielded — the output is marked cancelled
+  const errorEvents = events.filter((e) => e.kind === "error");
+  assertEquals(errorEvents.length, 0);
+  // The output should have been saved as cancelled
+  const cancelledSaves = savedOutputs.filter((o) => o.status === "cancelled");
+  assertEquals(cancelledSaves.length > 0, true);
 });
 
 // --- Error factory tests ---

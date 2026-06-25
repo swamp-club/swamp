@@ -174,7 +174,10 @@ export class SwampClient {
       reject: (err) => queue.error(err),
       handlers: withDefaults<WorkflowRunEvent>({}, (event) => {
         queue.push(event);
-        if (event.kind === "completed" || event.kind === "error") {
+        if (
+          event.kind === "completed" || event.kind === "error" ||
+          event.kind === "cancelled"
+        ) {
           queue.done();
         }
       }),
@@ -205,7 +208,10 @@ export class SwampClient {
       reject: (err) => queue.error(err),
       handlers: withDefaults<ModelMethodRunEvent>({}, (event) => {
         queue.push(event);
-        if (event.kind === "completed" || event.kind === "error") {
+        if (
+          event.kind === "completed" || event.kind === "error" ||
+          event.kind === "cancelled"
+        ) {
           queue.done();
         }
       }),
@@ -266,7 +272,7 @@ export class SwampClient {
       }
 
       // Resolve/reject on terminal events
-      if (event.kind === "completed") {
+      if (event.kind === "completed" || event.kind === "cancelled") {
         this.pending.delete(msg.id);
         pending.resolve(event.run);
       } else if (event.kind === "error") {

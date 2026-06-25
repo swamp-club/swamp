@@ -606,6 +606,16 @@ function treeReducerSingle(
       };
     }
 
+    case "cancelled": {
+      return {
+        ...state,
+        phase: "done",
+        failed: true,
+        finalRun: event.run,
+        activeReport: null,
+      };
+    }
+
     case "suspended": {
       return {
         ...state,

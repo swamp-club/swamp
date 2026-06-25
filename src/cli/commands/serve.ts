@@ -52,6 +52,7 @@ import { ScheduledExecutionService } from "../../libswamp/mod.ts";
 import { parseWebhookFlag, WebhookService } from "../../serve/webhook.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
+import { RunCancelRegistry } from "../../serve/run_cancel_registry.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
 import { reportRegistry } from "../../domain/reports/report_registry.ts";
 import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
@@ -610,6 +611,8 @@ export const serveCommand = new Command()
       mode: grantReloadMode,
     });
 
+    const cancelRegistry = new RunCancelRegistry();
+
     const connectionCtx = {
       repoDir: resolvedRepoDir,
       repoContext,
@@ -618,7 +621,39 @@ export const serveCommand = new Command()
       workerGateway,
       policySnapshotLoader,
       authConfig,
+      cancelRegistry,
     };
+
+    // Reap orphaned runs left in "running" state by a previous daemon.
+    // Only scan runs started within the last 7 days — anything older is
+    // either already terminal or so stale that it was cleaned up manually.
+    const reapCutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
+    const recentRuns = await repoContext.workflowRunRepo.findAllGlobalSince(
+      reapCutoff,
+    );
+    for (const { run, workflowId } of recentRuns) {
+      if (run.status === "running") {
+        logger.warn(
+          "Reaping orphaned workflow run {runId} (workflow: {workflowName})",
+          { runId: run.id, workflowName: run.workflowName },
+        );
+        run.cancel("daemon restarted");
+        await repoContext.workflowRunRepo.save(workflowId, run);
+      }
+    }
+    const recentOutputs = await repoContext.outputRepo.findAllGlobalSince(
+      reapCutoff,
+    );
+    for (const { output, type, method } of recentOutputs) {
+      if (output.status === "running") {
+        logger.warn(
+          "Reaping orphaned model output {outputId} (method: {methodName})",
+          { outputId: output.id, methodName: output.methodName },
+        );
+        output.markCancelled("daemon restarted");
+        await repoContext.outputRepo.save(type, method, output);
+      }
+    }
 
     const ac = new AbortController();
     const enableSchedule = options.schedule !== false;
@@ -869,6 +904,85 @@ export const serveCommand = new Command()
         if (webhookService && req.method === "POST") {
           const webhookResponse = await webhookService.handleRequest(req);
           if (webhookResponse) return webhookResponse;
+        }
+
+        // Cancel endpoint (authenticated — same auth as WebSocket)
+        if (req.method === "POST") {
+          const url = new URL(req.url);
+          const cancelMatch = url.pathname.match(
+            /^\/api\/v1\/cancel\/(workflow-run|method-run)\/([^/]+)$/,
+          );
+          const isBulkCancel = url.pathname === "/api/v1/cancel";
+          if (cancelMatch || isBulkCancel) {
+            if (authConfig.mode !== "none") {
+              const authHeader = req.headers.get("authorization");
+              const token = authHeader?.startsWith("Bearer ")
+                ? authHeader.slice(7)
+                : null;
+              if (!token) {
+                return new Response("Unauthorized: token required", {
+                  status: 401,
+                });
+              }
+              const authResult = await authenticateServerToken(
+                token,
+                resolvedRepoDir,
+                repoContext,
+              );
+              if (!authResult.ok) {
+                return new Response("Unauthorized", { status: 401 });
+              }
+            }
+          }
+          if (cancelMatch) {
+            const executionType = cancelMatch[1] as
+              | "workflow-run"
+              | "method-run";
+            const executionId = cancelMatch[2];
+            // Check cancel registry first (WebSocket ad-hoc and webhook runs)
+            let found = cancelRegistry.cancel(executionType, executionId);
+            // For workflow runs, also check scheduled execution service
+            if (
+              !found && executionType === "workflow-run" && scheduledExecution
+            ) {
+              found = scheduledExecution.cancelByRunId(executionId);
+            }
+            if (found) {
+              return Response.json({
+                status: "cancelled",
+                executionType,
+                executionId,
+              });
+            }
+            return Response.json({
+              status: "not_found",
+              message:
+                `No active ${executionType} with id ${executionId} in this serve instance`,
+            }, { status: 404 });
+          }
+          if (url.pathname === "/api/v1/cancel") {
+            const body = await req.json().catch(() => ({}));
+            const typeFilter = typeof body.executionType === "string"
+              ? body.executionType
+              : undefined;
+            if (
+              typeFilter && typeFilter !== "workflow-run" &&
+              typeFilter !== "method-run"
+            ) {
+              return Response.json({
+                status: "error",
+                message: "executionType must be 'workflow-run' or 'method-run'",
+              }, { status: 400 });
+            }
+            let count = cancelRegistry.cancelAll(typeFilter);
+            if (
+              (!typeFilter || typeFilter === "workflow-run") &&
+              scheduledExecution
+            ) {
+              count += scheduledExecution.cancelAllRuns();
+            }
+            return Response.json({ status: "cancelled", count });
+          }
         }
 
         // Health check endpoint

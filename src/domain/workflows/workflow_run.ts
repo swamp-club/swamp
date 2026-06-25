@@ -96,12 +96,20 @@ export const WorkflowRunSchema = z.object({
   id: z.string().uuid(),
   workflowId: z.string().uuid(),
   workflowName: z.string().min(1),
-  status: z.enum(["pending", "running", "suspended", "succeeded", "failed"]),
+  status: z.enum([
+    "pending",
+    "running",
+    "suspended",
+    "succeeded",
+    "failed",
+    "cancelled",
+  ]),
   startedAt: z.string().datetime().optional(),
   completedAt: z.string().datetime().optional(),
   jobs: z.array(JobRunSchema),
   workflowDataArtifacts: z.array(DataArtifactRefSchema).optional(),
   logFile: z.string().optional(),
+  pid: z.number().int().positive().optional(),
   tags: z.record(z.string(), z.string()).default({}),
   // Effective workflow inputs captured when a run suspends, so post-resume
   // steps can resolve `inputs.*`. Optional for backward compatibility with
@@ -473,7 +481,8 @@ export class WorkflowRun implements TriggerEvaluationContext {
       | "running"
       | "suspended"
       | "succeeded"
-      | "failed",
+      | "failed"
+      | "cancelled",
     private _startedAt: Date | undefined,
     private _completedAt: Date | undefined,
     private _jobs: JobRun[],
@@ -482,6 +491,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
     private _workflowDataArtifacts: DataArtifactRef[] = [],
     private _inputs: Record<string, unknown> = {},
     private _resumeInputs: string[] = [],
+    private _pid: number | undefined = undefined,
   ) {}
 
   /**
@@ -533,6 +543,7 @@ export class WorkflowRun implements TriggerEvaluationContext {
       validated.workflowDataArtifacts ?? [],
       validated.inputs ?? {},
       validated.resumeInputs ?? [],
+      validated.pid,
     );
   }
 
@@ -541,7 +552,8 @@ export class WorkflowRun implements TriggerEvaluationContext {
     | "running"
     | "suspended"
     | "succeeded"
-    | "failed" {
+    | "failed"
+    | "cancelled" {
     return this._status;
   }
 
@@ -551,6 +563,10 @@ export class WorkflowRun implements TriggerEvaluationContext {
 
   get completedAt(): Date | undefined {
     return this._completedAt;
+  }
+
+  get pid(): number | undefined {
+    return this._pid;
   }
 
   get jobs(): ReadonlyArray<JobRun> {
@@ -608,22 +624,48 @@ export class WorkflowRun implements TriggerEvaluationContext {
   }
 
   /**
-   * Marks the workflow run as started.
+   * Marks the workflow run as started and records the owning process ID.
    */
-  start(): void {
+  start(pid?: number): void {
     this._status = "running";
     this._startedAt = new Date();
+    this._pid = pid;
   }
 
   /**
    * Marks the workflow run as completed (succeeded or failed based on job results).
+   * No-ops if the run is already cancelled.
    */
   complete(): void {
+    if (this._status === "cancelled") {
+      return;
+    }
     const anyNonTerminal = this._jobs.some((j) =>
       j.status !== "succeeded" && j.status !== "skipped"
     );
     this._status = anyNonTerminal ? "failed" : "succeeded";
     this._completedAt = new Date();
+  }
+
+  /**
+   * Marks the workflow run as cancelled with an optional reason.
+   *
+   * Deliberately no-ops on terminal states (succeeded, failed, cancelled)
+   * so that late cancellation signals don't corrupt an already-finalized run.
+   * This differs from ModelOutput.markCancelled which throws on terminal states.
+   */
+  cancel(reason?: string): void {
+    if (
+      this._status === "succeeded" || this._status === "failed" ||
+      this._status === "cancelled"
+    ) {
+      return;
+    }
+    this._status = "cancelled";
+    this._completedAt = new Date();
+    if (reason) {
+      this._tags["cancel_reason"] = reason;
+    }
   }
 
   /**
@@ -705,6 +747,9 @@ export class WorkflowRun implements TriggerEvaluationContext {
       jobs: this._jobs.map((j) => j.toData()),
       tags: { ...this._tags },
     };
+    if (this._pid !== undefined) {
+      data.pid = this._pid;
+    }
     if (this._logFile) {
       data.logFile = this._logFile;
     }

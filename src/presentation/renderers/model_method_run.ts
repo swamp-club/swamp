@@ -181,6 +181,16 @@ class LogModelMethodRunRenderer implements ModelMethodRunRenderer {
             });
         }
       },
+      cancelled: (e) => {
+        this._failed = true;
+        getRunLogger(e.run.modelName, e.run.methodName)
+          .with({ summary: true })
+          .warn("Method {method} cancelled on {model}", {
+            method: e.run.methodName,
+            model: e.run.modelName,
+            reason: e.reason,
+          });
+      },
       error: (e) => {
         throw new UserError(e.error.message, e.error.code);
       },
@@ -244,6 +254,10 @@ class JsonModelMethodRunRenderer implements ModelMethodRunRenderer {
       report_failed: () => {},
       completed: (e) => {
         if (e.run.status === "failed") this._failed = true;
+        console.log(JSON.stringify(e.run, null, 2));
+      },
+      cancelled: (e) => {
+        this._failed = true;
         console.log(JSON.stringify(e.run, null, 2));
       },
       error: (e) => {

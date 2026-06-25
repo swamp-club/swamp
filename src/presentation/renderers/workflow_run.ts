@@ -214,6 +214,17 @@ class LogWorkflowRunRenderer implements WorkflowRunRenderer {
           this.renderDataArtifactHints(e.run, wfLogger);
         }
       },
+      cancelled: (e) => {
+        this._failed = true;
+        const wfLogger = getWorkflowRunLogger(this.workflowName);
+        if (e.reason) {
+          wfLogger.warn("Workflow cancelled: {reason}", {
+            reason: e.reason,
+          });
+        } else {
+          wfLogger.warn("Workflow cancelled");
+        }
+      },
       suspended: (e) => {
         const wfLogger = getWorkflowRunLogger(this.workflowName);
         wfLogger.info("Workflow suspended — awaiting approval on step {step}", {
@@ -315,6 +326,10 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
       report_failed: () => {},
       completed: (e) => {
         if (e.run.status === "failed") this._failed = true;
+        console.log(JSON.stringify(e.run, null, 2));
+      },
+      cancelled: (e) => {
+        this._failed = true;
         console.log(JSON.stringify(e.run, null, 2));
       },
       suspended: (e) => {

@@ -112,7 +112,10 @@ export interface ScheduledExecutionDeps {
 export class ScheduledExecutionService {
   private readonly scheduler: WorkflowScheduler;
   private readonly watcher: WorkflowWatcher;
-  private readonly running = new Map<WorkflowId, AbortController>();
+  private readonly running = new Map<
+    WorkflowId,
+    { controller: AbortController; runId: string }
+  >();
   private readonly workflowNames = new Map<WorkflowId, string>();
   private readonly runQueue: Array<{
     workflowId: WorkflowId;
@@ -168,12 +171,12 @@ export class ScheduledExecutionService {
     this.runQueue.length = 0;
 
     // Abort all in-flight runs
-    for (const [workflowId, controller] of this.running) {
+    for (const [workflowId, entry] of this.running) {
       logger.info(
         "Aborting in-flight scheduled run for workflow {workflowId}",
         { workflowId },
       );
-      controller.abort();
+      entry.controller.abort();
     }
 
     // Drain the processing promise — runs exit quickly after abort
@@ -198,6 +201,50 @@ export class ScheduledExecutionService {
    */
   isRunning(workflowId: WorkflowId): boolean {
     return this.running.has(workflowId);
+  }
+
+  /**
+   * Cancels a scheduled run by workflow ID. Returns true if found and aborted.
+   */
+  cancelRun(workflowId: string): boolean {
+    const id = workflowId as WorkflowId;
+    const entry = this.running.get(id);
+    if (!entry) {
+      return false;
+    }
+    logger.info`Cancelling scheduled run for workflow ${workflowId}`;
+    entry.controller.abort(new Error("cancelled by user"));
+    return true;
+  }
+
+  /**
+   * Cancels a scheduled run by run ID (reverse lookup). Used by the REST
+   * cancel endpoint which receives a run ID, not a workflow ID.
+   * Returns true if found and aborted.
+   */
+  cancelByRunId(runId: string): boolean {
+    for (const [workflowId, entry] of this.running) {
+      if (entry.runId === runId) {
+        logger
+          .info`Cancelling scheduled run ${runId} for workflow ${workflowId}`;
+        entry.controller.abort(new Error("cancelled by user"));
+        return true;
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Cancels all scheduled runs. Returns the number of runs cancelled.
+   */
+  cancelAllRuns(): number {
+    let count = 0;
+    for (const [workflowId, entry] of this.running) {
+      logger.info`Cancelling scheduled run for workflow ${workflowId}`;
+      entry.controller.abort(new Error("cancelled by user"));
+      count++;
+    }
+    return count;
   }
 
   private handleScheduleChange(
@@ -286,7 +333,10 @@ export class ScheduledExecutionService {
     workflowName: string,
   ): Promise<void> {
     const controller = new AbortController();
-    this.running.set(workflowId, controller);
+    // runId starts empty until the "started" event arrives with the real ID.
+    // During this narrow window cancelByRunId() cannot match this run;
+    // the window closes as soon as executeWorkflow emits "started".
+    this.running.set(workflowId, { controller, runId: "" });
 
     try {
       let runId = "";
@@ -299,8 +349,13 @@ export class ScheduledExecutionService {
         (event) => {
           if (event.kind === "started") {
             runId = event.runId;
+            // Update the running entry with the actual run ID
+            this.running.set(workflowId, { controller, runId });
           }
           if (event.kind === "completed") {
+            completedRun = event.run;
+          }
+          if (event.kind === "cancelled") {
             completedRun = event.run;
           }
           if (event.kind === "error") {
@@ -319,6 +374,18 @@ export class ScheduledExecutionService {
         logger.info(
           "Scheduled run completed for workflow {name} (run: {runId})",
           { name: workflowName, runId },
+        );
+      } else if (completedRun?.status === "cancelled") {
+        const message = "workflow was cancelled";
+        this.emit({
+          kind: "schedule_failed",
+          workflowId,
+          workflowName,
+          error: message,
+        });
+        logger.warn(
+          "Scheduled run cancelled for workflow {name}: {error}",
+          { name: workflowName, error: message },
         );
       } else {
         const message = completedRun

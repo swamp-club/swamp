@@ -73,6 +73,7 @@ import {
   runModelMethodOverServer,
 } from "../remote_run.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
+import { suppressSyncExitOnSignal } from "../../infrastructure/persistence/datastore_sync_coordinator.ts";
 import { parseTimeout } from "../duration_parser.ts";
 
 // Cliffy's custom type system returns `unknown` for custom types like `model_name`,
@@ -335,7 +336,12 @@ export const modelMethodRunCommand = new Command()
       const timeoutMs = options.timeout
         ? parseTimeout(options.timeout as string)
         : undefined;
-      const baseLibCtx = createLibSwampContext();
+      const abort = new AbortController();
+      const exitSuppress = suppressSyncExitOnSignal();
+      const shutdownHandle = registerShutdownHandler({
+        handler: () => abort.abort(),
+      });
+      const baseLibCtx = createLibSwampContext({ signal: abort.signal });
       const libCtx = timeoutMs !== undefined
         ? baseLibCtx.withTimeout(timeoutMs)
         : baseLibCtx;
@@ -406,6 +412,11 @@ export const modelMethodRunCommand = new Command()
             renderer.handlers(),
           );
 
+          if (abort.signal.aborted) {
+            Deno.exitCode = 1;
+            return;
+          }
+
           if (renderer.runFailed()) {
             Deno.exitCode = 1;
             return;
@@ -418,6 +429,8 @@ export const modelMethodRunCommand = new Command()
         const message = error instanceof Error ? error.message : String(error);
         throw new UserError(`Method execution failed: ${message}`);
       } finally {
+        shutdownHandle.dispose();
+        exitSuppress.dispose();
         if (flushModelLocks) {
           try {
             await flushModelLocks();

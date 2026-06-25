@@ -44,7 +44,10 @@ import {
   SWAMP_SUBDIRS,
   swampPath,
 } from "../../infrastructure/persistence/paths.ts";
-import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
+import {
+  createWorkflowId,
+  createWorkflowRunId,
+} from "../../domain/workflows/workflow_id.ts";
 import {
   deepMerge,
   mergeInputArgs,
@@ -78,6 +81,7 @@ import {
   runWorkflowOverServer,
 } from "../remote_run.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
+import { suppressSyncExitOnSignal } from "../../infrastructure/persistence/datastore_sync_coordinator.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -234,6 +238,10 @@ export const workflowRunCommand = new Command()
       return result;
     };
 
+    const abort = new AbortController();
+    const exitSuppress = suppressSyncExitOnSignal();
+    let shutdownHandle: { dispose(): void } | undefined;
+    let currentRunId: string | undefined;
     try {
       const runRepo = repoContext.workflowRunRepo;
 
@@ -355,7 +363,10 @@ export const workflowRunCommand = new Command()
       const timeoutMs = options.timeout
         ? parseTimeout(options.timeout as string)
         : undefined;
-      const baseLibCtx = createLibSwampContext();
+      shutdownHandle = registerShutdownHandler({
+        handler: () => abort.abort(),
+      });
+      const baseLibCtx = createLibSwampContext({ signal: abort.signal });
       const libCtx = timeoutMs !== undefined
         ? baseLibCtx.withTimeout(timeoutMs)
         : baseLibCtx;
@@ -379,26 +390,37 @@ export const workflowRunCommand = new Command()
           workflowName: workflowIdOrName,
           forceLog: ctx.forceLog,
         });
+        const eventStream = workflowRun(libCtx, deps, {
+          workflowIdOrName,
+          lastEvaluated,
+          inputs: inputSets[i],
+          runtimeTags,
+          verbose: ctx.verbosity === "verbose",
+          skipAllReports: options.skipReports as boolean | undefined,
+          skipReportNames: options.skipReport as string[] | undefined,
+          skipReportLabels: options.skipReportLabel as string[] | undefined,
+          reportNames: options.report as string[] | undefined,
+          reportLabels: options.reportLabel as string[] | undefined,
+          swampSha: GIT_SHA || undefined,
+          skipAllChecks: options.skipChecks as boolean | undefined,
+          skipCheckNames: options.skipCheck as string[] | undefined,
+          skipCheckLabels: options.skipCheckLabel as string[] | undefined,
+        });
 
-        await consumeStream(
-          workflowRun(libCtx, deps, {
-            workflowIdOrName,
-            lastEvaluated,
-            inputs: inputSets[i],
-            runtimeTags,
-            verbose: ctx.verbosity === "verbose",
-            skipAllReports: options.skipReports as boolean | undefined,
-            skipReportNames: options.skipReport as string[] | undefined,
-            skipReportLabels: options.skipReportLabel as string[] | undefined,
-            reportNames: options.report as string[] | undefined,
-            reportLabels: options.reportLabel as string[] | undefined,
-            swampSha: GIT_SHA || undefined,
-            skipAllChecks: options.skipChecks as boolean | undefined,
-            skipCheckNames: options.skipCheck as string[] | undefined,
-            skipCheckLabels: options.skipCheckLabel as string[] | undefined,
-          }),
-          renderer.handlers(),
-        );
+        const baseHandlers = renderer.handlers();
+        const wrappedHandlers = {
+          ...baseHandlers,
+          started: (e: WorkflowRunEvent & { kind: "started" }) => {
+            currentRunId = e.runId;
+            baseHandlers.started(e);
+          },
+        };
+        await consumeStream(eventStream, wrappedHandlers);
+
+        if (abort.signal.aborted) {
+          Deno.exitCode = 1;
+          return;
+        }
 
         if (renderer.workflowFailed()) {
           Deno.exitCode = 1;
@@ -406,11 +428,39 @@ export const workflowRunCommand = new Command()
         }
       }
     } catch (error) {
+      if (abort.signal.aborted) {
+        // Ctrl+C or timeout — the generator may not have saved the
+        // cancelled status. Cancel only the specific run we started.
+        try {
+          if (currentRunId) {
+            const workflows = await repoContext.workflowRepo.findAll();
+            const wf = workflows.find((w) => w.name === workflowIdOrName) ??
+              workflows.find((w) => w.id === workflowIdOrName);
+            if (wf) {
+              const run = await repoContext.workflowRunRepo.findById(
+                wf.id,
+                createWorkflowRunId(currentRunId),
+              );
+              if (run && run.status === "running") {
+                run.cancel("aborted");
+                await repoContext.workflowRunRepo.save(wf.id, run);
+              }
+            }
+          }
+        } catch {
+          // Best-effort — if we can't save, the daemon reaper will catch it
+        }
+        Deno.exitCode = 1;
+        return;
+      }
       if (error instanceof UserError) {
         throw error;
       }
       const message = error instanceof Error ? error.message : String(error);
       throw new UserError(`Workflow execution failed: ${message}`);
+    } finally {
+      shutdownHandle?.dispose();
+      exitSuppress.dispose();
     }
   })
   .command("search", workflowRunSearchCommand)

@@ -26,6 +26,7 @@ import { z } from "zod";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import type { DatastoreConfig } from "../domain/datastore/datastore_config.ts";
 import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
+import type { RunCancelRegistry } from "./run_cancel_registry.ts";
 import {
   auditTimeline,
   consumeStream,
@@ -451,6 +452,7 @@ export interface ConnectionContext {
   workerGateway?: WorkerGateway;
   policySnapshotLoader?: PolicySnapshotLoader;
   authConfig: ServeAuthConfig;
+  cancelRegistry?: RunCancelRegistry;
 }
 
 export function handleConnection(
@@ -894,6 +896,7 @@ async function handleWorkflowRun(
     }, ctx)
   ) return;
 
+  let registeredRunId: string | undefined;
   try {
     await executeWorkflowWithLocks(
       ctx.repoDir,
@@ -908,6 +911,17 @@ async function handleWorkflowRun(
       },
       controller.signal,
       (event) => {
+        if (
+          event.kind === "started" && ctx.cancelRegistry
+        ) {
+          const startedEvent = event as { runId: string };
+          registeredRunId = startedEvent.runId;
+          ctx.cancelRegistry.register(
+            "workflow-run",
+            registeredRunId,
+            controller,
+          );
+        }
         if (socket.readyState !== WebSocket.OPEN) return;
         const serialized = serializeEvent(
           event as { kind: string; [key: string]: unknown },
@@ -923,6 +937,10 @@ async function handleWorkflowRun(
     } else {
       const message = sanitizeErrorForClient(error);
       sendError(socket, requestId, "workflow_execution_failed", message);
+    }
+  } finally {
+    if (registeredRunId && ctx.cancelRegistry) {
+      ctx.cancelRegistry.deregister("workflow-run", registeredRunId);
     }
   }
 }
@@ -1011,6 +1029,11 @@ async function handleModelMethodRun(
     );
     const libCtx = createLibSwampContext({ signal: controller.signal });
 
+    // Register method run in cancel registry using the requestId as executionId
+    if (ctx.cancelRegistry) {
+      ctx.cancelRegistry.register("method-run", requestId, controller);
+    }
+
     for await (
       const event of modelMethodRun(libCtx, deps, {
         modelIdOrName: payload.modelIdOrName,
@@ -1043,6 +1066,9 @@ async function handleModelMethodRun(
       );
     }
   } finally {
+    if (ctx.cancelRegistry) {
+      ctx.cancelRegistry.deregister("method-run", requestId);
+    }
     if (flushLocks) {
       try {
         await flushLocks();

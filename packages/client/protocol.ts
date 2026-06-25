@@ -137,6 +137,7 @@ export type WorkflowRunEvent =
   }
   | { kind: "report_failed"; reportName: string; scope: string; error: string }
   | { kind: "completed"; run: WorkflowRunView }
+  | { kind: "cancelled"; run: WorkflowRunView; reason?: string }
   | { kind: "error"; error: SerializedError };
 
 /** Events emitted during a model method run. */
@@ -181,6 +182,7 @@ export type ModelMethodRunEvent =
   }
   | { kind: "report_failed"; reportName: string; scope: string; error: string }
   | { kind: "completed"; run: ModelMethodRunView }
+  | { kind: "cancelled"; run: ModelMethodRunView; reason?: string }
   | { kind: "error"; error: SerializedError };
 
 // ── Completed event payload types ────────────────────────────────────────

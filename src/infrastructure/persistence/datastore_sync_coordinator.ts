@@ -118,7 +118,9 @@ function installSignalHandler(): void {
         .map((e) => e.lock!.release().catch(() => {}));
       Promise.all(releases).finally(() => {
         clearTimeout(forceExit);
-        Deno.exit(130);
+        if (suppressCount === 0) {
+          Deno.exit(130);
+        }
       });
     },
     includePosixSignals: false,
@@ -132,6 +134,30 @@ function maybeRemoveSignalHandler(): void {
   if (entries.size > 0 || !shutdownHandle) return;
   shutdownHandle.dispose();
   shutdownHandle = null;
+}
+
+let suppressCount = 0;
+
+/**
+ * Temporarily suppresses the `Deno.exit(130)` call in the SIGINT handler.
+ * Lock releases still happen, but the process stays alive so the caller can
+ * do its own cleanup (e.g. save a cancelled workflow run and render the
+ * final TUI state). Call the returned dispose function to re-enable.
+ *
+ * Reference-counted: if two callers suppress, the first dispose does not
+ * re-enable exit for the second.
+ */
+export function suppressSyncExitOnSignal(): { dispose(): void } {
+  suppressCount++;
+  let disposed = false;
+  return {
+    dispose() {
+      if (!disposed) {
+        disposed = true;
+        suppressCount--;
+      }
+    },
+  };
 }
 
 /**

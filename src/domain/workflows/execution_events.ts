@@ -153,6 +153,7 @@ export type WorkflowExecutionEvent =
     stepId?: string;
   }
   | { kind: "completed"; run: WorkflowRun }
+  | { kind: "cancelled"; run: WorkflowRun; reason?: string }
   | {
     kind: "suspended";
     run: WorkflowRun;

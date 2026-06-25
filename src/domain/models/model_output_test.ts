@@ -484,3 +484,92 @@ Deno.test("computeDefinitionHash different for different values", async () => {
 
   assertEquals(hash1 !== hash2, true);
 });
+
+// markCancelled tests
+
+Deno.test("ModelOutput.markCancelled: marks running output as cancelled", () => {
+  const output = ModelOutput.create({
+    definitionId: createDefinitionId(crypto.randomUUID()),
+    methodName: "create",
+    status: "running",
+    provenance: defaultProvenance,
+  });
+
+  output.markCancelled();
+
+  assertEquals(output.status, "cancelled");
+  assertEquals(output.completedAt !== undefined, true);
+  assertEquals(output.durationMs !== undefined, true);
+  assertEquals(output.error, undefined);
+});
+
+Deno.test("ModelOutput.markCancelled: stores reason in error", () => {
+  const output = ModelOutput.create({
+    definitionId: createDefinitionId(crypto.randomUUID()),
+    methodName: "create",
+    status: "running",
+    provenance: defaultProvenance,
+  });
+
+  output.markCancelled("User requested cancellation");
+
+  assertEquals(output.status, "cancelled");
+  assertEquals(output.error?.message, "User requested cancellation");
+});
+
+Deno.test("ModelOutput.markCancelled: works from pending status", () => {
+  const output = ModelOutput.create({
+    definitionId: createDefinitionId(crypto.randomUUID()),
+    methodName: "create",
+    provenance: defaultProvenance,
+  });
+
+  output.markCancelled();
+
+  assertEquals(output.status, "cancelled");
+  assertEquals(output.isComplete, true);
+});
+
+Deno.test("ModelOutput.markCancelled: throws if already succeeded", () => {
+  const output = ModelOutput.create({
+    definitionId: createDefinitionId(crypto.randomUUID()),
+    methodName: "create",
+    status: "running",
+    provenance: defaultProvenance,
+  });
+  output.markSucceeded();
+
+  assertThrows(
+    () => output.markCancelled(),
+    Error,
+    "Cannot mark output as cancelled: status is succeeded",
+  );
+});
+
+Deno.test("ModelOutput.markCancelled: throws if already failed", () => {
+  const output = ModelOutput.create({
+    definitionId: createDefinitionId(crypto.randomUUID()),
+    methodName: "create",
+    status: "running",
+    provenance: defaultProvenance,
+  });
+  output.markFailed({ message: "error" });
+
+  assertThrows(
+    () => output.markCancelled(),
+    Error,
+    "Cannot mark output as cancelled: status is failed",
+  );
+});
+
+Deno.test("ModelOutput.isComplete: returns true for cancelled", () => {
+  const output = ModelOutput.create({
+    definitionId: createDefinitionId(crypto.randomUUID()),
+    methodName: "create",
+    provenance: defaultProvenance,
+  });
+
+  output.markCancelled();
+
+  assertEquals(output.isComplete, true);
+});

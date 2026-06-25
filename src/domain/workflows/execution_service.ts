@@ -112,6 +112,14 @@ import { getTracer, SpanStatusCode } from "../../infrastructure/tracing/mod.ts";
 import { extractSensitiveFieldValues } from "../models/sensitive_field_extractor.ts";
 
 /**
+ * Extracts a human-readable reason from an AbortSignal. Returns the
+ * Error message when the reason is an Error, or "aborted" otherwise.
+ */
+function abortReason(signal: AbortSignal): string {
+  return signal.reason instanceof Error ? signal.reason.message : "aborted";
+}
+
+/**
  * Thrown when a manual_approval step suspends the workflow. Uses an
  * exception for control flow because the generator stack (runStep →
  * runJob → merge → run) has no other way to unwind cleanly — yield
@@ -635,7 +643,7 @@ export class DefaultStepExecutor implements StepExecutor {
     });
 
     // Mark as running and save
-    output.markRunning();
+    output.markRunning(Deno.pid);
     // Reference the workflow run's log file for history access
     if (ctx.workflowRun?.logFile) {
       output.setLogFile(ctx.workflowRun.logFile);
@@ -1412,7 +1420,7 @@ export class WorkflowExecutionService {
         runSpan.setAttribute("workflow.run_id", run.id);
 
         // Start execution
-        run.start();
+        run.start(Deno.pid);
 
         if (expressionContext) {
           expressionContext.run = {
@@ -1562,6 +1570,18 @@ export class WorkflowExecutionService {
         }
       }
 
+      // Check if the run was cancelled via abort signal
+      if (options?.signal?.aborted) {
+        run.cancel(
+          abortReason(options.signal),
+        );
+        await this.saveRun(workflow.id, run);
+        yield { kind: "cancelled" as const, run };
+        runFileSink.unregister(workflowLogHandle);
+        runSpan.setStatus({ code: SpanStatusCode.OK });
+        return;
+      }
+
       // Complete workflow
       const wfTeardownSpan = tracer.startSpan("swamp.workflow.teardown");
       try {
@@ -1611,6 +1631,21 @@ export class WorkflowExecutionService {
           prompt: error.prompt,
           timeout: error.timeout,
         };
+        runSpan.setStatus({ code: SpanStatusCode.OK });
+        return;
+      }
+      if (
+        workflowRun && options?.signal?.aborted
+      ) {
+        workflowRun.cancel(
+          abortReason(options.signal),
+        );
+        await this.saveRun(
+          createWorkflowId(workflowRun.workflowId),
+          workflowRun,
+        );
+        yield { kind: "cancelled" as const, run: workflowRun };
+        runFileSink.unregister(workflowLogHandle);
         runSpan.setStatus({ code: SpanStatusCode.OK });
         return;
       }
@@ -1860,6 +1895,16 @@ export class WorkflowExecutionService {
         }
       }
 
+      if (options?.signal?.aborted) {
+        existingRun.cancel(
+          abortReason(options.signal),
+        );
+        await this.saveRun(workflow.id, existingRun);
+        yield { kind: "cancelled" as const, run: existingRun };
+        runFileSink.unregister(workflowLogHandle);
+        return;
+      }
+
       existingRun.complete();
 
       yield* this.runWorkflowReports(
@@ -1886,6 +1931,15 @@ export class WorkflowExecutionService {
           prompt: error.prompt,
           timeout: error.timeout,
         };
+        return;
+      }
+      if (options?.signal?.aborted) {
+        existingRun.cancel(
+          abortReason(options.signal),
+        );
+        await this.saveRun(workflow.id, existingRun);
+        yield { kind: "cancelled" as const, run: existingRun };
+        runFileSink.unregister(workflowLogHandle);
         return;
       }
       existingRun.complete();

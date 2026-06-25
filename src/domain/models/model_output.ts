@@ -40,6 +40,7 @@ export const ExecutionStatuses = [
   "running",
   "succeeded",
   "failed",
+  "cancelled",
 ] as const;
 export type ExecutionStatus = typeof ExecutionStatuses[number];
 
@@ -130,6 +131,7 @@ export const ModelOutputSchema = z.object({
   provenance: ExecutionProvenanceSchema,
   artifacts: ArtifactsProducedSchema.optional(),
   logFile: z.string().optional(),
+  pid: z.number().int().positive().optional(),
 });
 
 /**
@@ -174,6 +176,7 @@ export class ModelOutput {
     readonly provenance: ExecutionProvenance,
     private _artifacts: ArtifactsProduced,
     private _logFile: string | undefined,
+    private _pid: number | undefined = undefined,
   ) {}
 
   /**
@@ -214,6 +217,7 @@ export class ModelOutput {
       validated.provenance,
       validated.artifacts ?? { dataArtifacts: [] },
       validated.logFile,
+      validated.pid,
     );
   }
 
@@ -238,6 +242,7 @@ export class ModelOutput {
       validated.provenance,
       validated.artifacts ?? { dataArtifacts: [] },
       validated.logFile,
+      validated.pid,
     );
   }
 
@@ -246,6 +251,10 @@ export class ModelOutput {
    */
   get status(): ExecutionStatus {
     return this._status;
+  }
+
+  get pid(): number | undefined {
+    return this._pid;
   }
 
   /**
@@ -302,13 +311,14 @@ export class ModelOutput {
   /**
    * Marks the execution as running.
    */
-  markRunning(): void {
+  markRunning(pid?: number): void {
     if (this._status !== "pending") {
       throw new Error(
         `Cannot mark output as running: status is ${this._status}`,
       );
     }
     this._status = "running";
+    this._pid = pid;
   }
 
   /**
@@ -348,6 +358,28 @@ export class ModelOutput {
   }
 
   /**
+   * Marks the execution as cancelled.
+   *
+   * @param reason - Optional reason for cancellation
+   */
+  markCancelled(reason?: string): void {
+    if (
+      this._status !== "pending" && this._status !== "running"
+    ) {
+      throw new Error(
+        `Cannot mark output as cancelled: status is ${this._status}`,
+      );
+    }
+    const completed = new Date();
+    this._status = "cancelled";
+    this._completedAt = completed;
+    this._durationMs = completed.getTime() - this.startedAt.getTime();
+    if (reason !== undefined) {
+      this._error = { message: reason };
+    }
+  }
+
+  /**
    * Increments the retry count.
    */
   incrementRetryCount(): void {
@@ -369,7 +401,8 @@ export class ModelOutput {
    * Checks if the execution is in a terminal state.
    */
   get isComplete(): boolean {
-    return this._status === "succeeded" || this._status === "failed";
+    return this._status === "succeeded" || this._status === "failed" ||
+      this._status === "cancelled";
   }
 
   /**
@@ -400,6 +433,9 @@ export class ModelOutput {
     }
     if (this._logFile) {
       data.logFile = this._logFile;
+    }
+    if (this._pid !== undefined) {
+      data.pid = this._pid;
     }
 
     return data;

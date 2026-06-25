@@ -52,7 +52,7 @@ export class InkWorkflowRunRenderer implements WorkflowRunRenderer {
           this._failed = failed;
         }}
       />,
-      { maxFps: 15 },
+      { maxFps: 15, exitOnCtrlC: false },
     );
     this.exitPromise = instance.waitUntilExit().then(
       () => {},
@@ -95,6 +95,16 @@ export class InkWorkflowRunRenderer implements WorkflowRunRenderer {
         this.bridge.close();
         await this.exitPromise;
         this.cleanup?.();
+      },
+      cancelled: async (e) => {
+        this._failed = true;
+        forward(e);
+        this.bridge.close();
+        await this.exitPromise;
+        this.cleanup?.();
+        const reason = e.reason ? `: ${e.reason}` : "";
+        console.log("");
+        console.log(`Workflow cancelled${reason}`);
       },
       suspended: async (e) => {
         forward(e);
