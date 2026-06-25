@@ -251,6 +251,13 @@ class LogRepoUpgradeRenderer implements Renderer<RepoUpgradeEvent> {
           "  Settings: " + (data.settingsUpdated ? "updated" : "unchanged"),
         );
         logger.info("  .gitignore: " + data.gitignoreAction);
+
+        if (data.changedFiles.length > 0) {
+          logger.info("  Changed files:");
+          for (const file of data.changedFiles) {
+            logger.info(`    ${file}`);
+          }
+        }
       },
       error: (e) => {
         throw new UserError(e.error.message);
