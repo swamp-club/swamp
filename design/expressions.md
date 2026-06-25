@@ -363,8 +363,10 @@ output.
       uri: ${{ self.ep.magnet }}
 ```
 
-`self.*` expressions also resolve in `modelIdOrName` and `methodName`, enabling
-forEach steps to target different model instances per iteration:
+During forEach expansion, `self.*` expressions resolve in **any** task field —
+the step `name`, model targets (`modelIdOrName`, `modelName`, `methodName`),
+workflow targets (`workflowIdOrName`), `inputs`, and shell `args` — so a forEach
+step can pick a different target per iteration:
 
 ```yaml
 # Fan out across region-specific model instances:
@@ -379,6 +381,24 @@ forEach steps to target different model instances per iteration:
     inputs:
       historyHours: 24
 ```
+
+```yaml
+# Each wave item selects which workflow implementation to run:
+- name: apply-${{ self.item.host }}-${{ self.item.capability }}
+  forEach:
+    item: item
+    in: ${{ inputs.items }}
+  task:
+    type: workflow
+    workflowIdOrName: ${{ self.item.implementation.workflowIdOrName }}
+    inputs:
+      host: ${{ self.item.host }}
+```
+
+Resolution is uniform across fields: every `${{ }}` expression that can be
+evaluated against the per-iteration context is resolved, while `vault.*`/`env.*`
+and step-output/`data.*` references are left for their later runtime/execution
+stages.
 
 Results are **not** run-scoped — `findBySpec` returns every matching record
 in the catalog. Add a `workflowRunId` predicate via `data.query()` when you

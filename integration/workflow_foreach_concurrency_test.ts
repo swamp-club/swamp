@@ -251,3 +251,221 @@ Deno.test("CLI: forEach concurrency>1 fanning out child workflows does not fail 
     }
   });
 });
+
+// swamp-club#814: a forEach step whose task.workflowIdOrName is itself an
+// expression of the iteration item must resolve the target per item, the same
+// way dynamic modelIdOrName already resolves. Without the fix the run path
+// passed `${{ self.item.workflowIdOrName }}` literally to the child lookup, so
+// the child workflow was never found and the step failed. This drives the real
+// `swamp workflow run` path end to end.
+Deno.test("CLI: forEach resolves dynamic workflowIdOrName per item and runs the selected child", async () => {
+  await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
+    await createShellModel(repoDir, "child-model");
+
+    // Two distinct child workflows; each item selects one of them by name.
+    for (const childName of ["child-ssh", "child-vault"]) {
+      await writeWorkflow(repoDir, {
+        id: crypto.randomUUID(),
+        name: childName,
+        version: 1,
+        inputs: {},
+        jobs: [
+          {
+            name: "work",
+            steps: [
+              {
+                name: "run-child",
+                task: {
+                  type: "model_method",
+                  modelIdOrName: "child-model",
+                  methodName: "execute",
+                },
+                dependsOn: [],
+                weight: 0,
+              },
+            ],
+            dependsOn: [],
+            weight: 0,
+          },
+        ],
+      });
+    }
+
+    // Parent: forEach over wave items, each item selecting its workflow
+    // implementation via a dynamic target — the issue's exact shape.
+    await writeWorkflow(repoDir, {
+      id: crypto.randomUUID(),
+      name: "planner-parent",
+      version: 1,
+      inputs: {
+        properties: {
+          items: { type: "array", items: { type: "object" }, minItems: 1 },
+        },
+        required: ["items"],
+      },
+      jobs: [
+        {
+          name: "fan-out",
+          steps: [
+            {
+              name: "apply-${{ self.item.host }}",
+              forEach: {
+                item: "item",
+                in: "${{ inputs.items }}",
+              },
+              task: {
+                type: "workflow",
+                workflowIdOrName:
+                  "${{ self.item.implementation.workflowIdOrName }}",
+              },
+              dependsOn: [],
+              weight: 0,
+            },
+          ],
+          dependsOn: [],
+          weight: 0,
+        },
+      ],
+    });
+
+    const items = [
+      { host: "gitea", implementation: { workflowIdOrName: "child-ssh" } },
+      { host: "bao", implementation: { workflowIdOrName: "child-vault" } },
+    ];
+    const result = await runCliCommand([
+      "workflow",
+      "run",
+      "planner-parent",
+      "--repo-dir",
+      repoDir,
+      "--input",
+      JSON.stringify({ items }),
+      "--json",
+    ]);
+
+    assertEquals(
+      result.code,
+      0,
+      `Workflow should succeed (dynamic child targets must resolve). stderr: ${result.stderr}\n${result.stdout}`,
+    );
+
+    const output = JSON.parse(result.stdout);
+    const job = output.jobs?.find(
+      (j: { name: string }) => j.name === "fan-out",
+    );
+    const steps = (job?.steps ?? []) as { name: string; status: string }[];
+    const expanded = steps.filter((s) => !s.name.includes("${{"));
+
+    // Step names resolved per item, and each selected child ran successfully.
+    assertEquals(
+      expanded.map((s) => s.name).sort(),
+      ["apply-bao", "apply-gitea"],
+    );
+    for (const step of expanded) {
+      assertEquals(
+        step.status,
+        "succeeded",
+        `Expected ${step.name} to succeed but got ${step.status}`,
+      );
+    }
+  });
+});
+
+// swamp-club#814: dynamic workflowIdOrName must be resolved BEFORE cycle
+// detection, so a target that resolves to a workflow already on the call stack
+// is caught — and the error names the RESOLVED workflow, not the literal
+// expression. If resolution ran after the guard (or not at all), the literal
+// would never match an ancestor and the cycle would go undetected (surfacing
+// instead as a "not found" error).
+Deno.test("CLI: forEach dynamic workflowIdOrName resolving into the ancestor chain still trips cycle detection", async () => {
+  await withTempDir(async (repoDir) => {
+    await initializeTestRepo(repoDir);
+
+    // A workflow that forEach-targets itself via a dynamic expression.
+    await writeWorkflow(repoDir, {
+      id: crypto.randomUUID(),
+      name: "self-cycle",
+      version: 1,
+      inputs: {
+        properties: {
+          names: { type: "array", items: { type: "string" }, minItems: 1 },
+        },
+        required: ["names"],
+      },
+      jobs: [
+        {
+          name: "loop",
+          steps: [
+            {
+              name: "call-${{ self.item }}",
+              forEach: {
+                item: "item",
+                in: "${{ inputs.names }}",
+              },
+              task: {
+                type: "workflow",
+                workflowIdOrName: "${{ self.item }}",
+                inputs: { names: ["self-cycle"] },
+              },
+              dependsOn: [],
+              weight: 0,
+            },
+          ],
+          dependsOn: [],
+          weight: 0,
+        },
+      ],
+    });
+
+    const result = await runCliCommand([
+      "workflow",
+      "run",
+      "self-cycle",
+      "--repo-dir",
+      repoDir,
+      "--input",
+      JSON.stringify({ names: ["self-cycle"] }),
+      "--json",
+    ]);
+
+    assertEquals(
+      result.code !== 0,
+      true,
+      `Self-cycling workflow should fail. stdout: ${result.stdout}\nstderr: ${result.stderr}`,
+    );
+
+    const output = JSON.parse(result.stdout);
+    const job = output.jobs?.find((j: { name: string }) => j.name === "loop");
+    const steps = (job?.steps ?? []) as {
+      name: string;
+      status: string;
+      error?: string;
+    }[];
+    const expanded = steps.filter((s) => !s.name.includes("${{"));
+
+    // The step name resolved per item (call-self-cycle, not the raw template),
+    // and that step failed.
+    const cycled = expanded.find((s) => s.name === "call-self-cycle");
+    assertEquals(
+      cycled?.status,
+      "failed",
+      `Expected the expanded step to fail. Steps: ${JSON.stringify(expanded)}`,
+    );
+    // The failure names the RESOLVED child ("self-cycle"), proving the target
+    // was resolved so the child lookup found it, it was invoked, and it failed
+    // fast on cycle detection. If resolution had not happened (or happened after
+    // the guard) the literal `${{ self.item }}` would never match an ancestor
+    // and would instead surface as a "not found" lookup error.
+    assertEquals(
+      (cycled?.error ?? "").includes("self-cycle"),
+      true,
+      `Expected the resolved child name in the failure. Got: ${cycled?.error}`,
+    );
+    assertEquals(
+      (cycled?.error ?? "").toLowerCase().includes("not found"),
+      false,
+      `Expected a cycle failure, not a lookup miss (resolution must precede the guard). Got: ${cycled?.error}`,
+    );
+  });
+});
