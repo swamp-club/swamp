@@ -193,9 +193,9 @@ class LogModelMethodRunRenderer implements ModelMethodRunRenderer {
       },
       auto_gc_completed: (e) => {
         getRunLogger(this.modelName, this.methodName).info(
-          "Auto-GC: removed {versionsRemoved} version(s), reclaimed {bytesReclaimed} bytes",
+          "Auto-GC: removed {versionsDeleted} version(s), reclaimed {bytesReclaimed} bytes",
           {
-            versionsRemoved: e.versionsRemoved,
+            versionsDeleted: e.versionsDeleted,
             bytesReclaimed: e.bytesReclaimed,
           },
         );
@@ -272,7 +272,7 @@ class JsonModelMethodRunRenderer implements ModelMethodRunRenderer {
       auto_gc_completed: (e) => {
         console.log(JSON.stringify({
           event: "auto_gc_completed",
-          versionsRemoved: e.versionsRemoved,
+          versionsDeleted: e.versionsDeleted,
           bytesReclaimed: e.bytesReclaimed,
         }));
       },

@@ -193,16 +193,11 @@ export async function* dataGc(
   );
 }
 
-/** Result of auto-GC after a model method run. */
-export interface AutoGcResult {
-  versionsRemoved: number;
-  bytesReclaimed: number;
-}
-
 /**
- * Runs garbage collection for a single model, scoped to data written during
- * the method run. Catches all errors — auto-GC failure must never fail the
- * method run.
+ * Runs garbage collection for a single model. Catches all errors — auto-GC
+ * failure must never fail the method run. User-visible output is owned by the
+ * renderer via the auto_gc_completed event; this function only logs at debug
+ * and warn levels.
  */
 export async function autoGc(
   dataRepo: {
@@ -213,14 +208,12 @@ export async function autoGc(
   },
   type: ModelType,
   modelId: string,
-): Promise<AutoGcResult | null> {
+): Promise<GarbageCollectionResult | null> {
   const logger = getLogger(["swamp", "auto-gc"]);
   try {
     const result = await dataRepo.collectGarbage(type, modelId);
-    if (result.versionsRemoved > 0) {
-      logger
-        .info`Auto-GC: removed ${result.versionsRemoved} version(s), reclaimed ${result.bytesReclaimed} bytes`;
-    }
+    logger
+      .debug`Auto-GC for ${type.normalized}/${modelId}: ${result.versionsRemoved} version(s) removed, ${result.bytesReclaimed} bytes reclaimed`;
     return result;
   } catch (error) {
     logger
