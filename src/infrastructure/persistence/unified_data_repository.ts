@@ -180,16 +180,6 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     return results;
   }
 
-  /**
-   * Finds all data items whose `createdAt` is at or after the cutoff using a
-   * two-stage filter (mtime pre-filter, then parse-and-verify) on each
-   * version's metadata.yaml. Old version files are skipped without parse.
-   *
-   * The `_catalog.db` SQLite catalog does not track `createdAt`, so the only
-   * source of truth for time-bounded filtering is the metadata YAML — hence
-   * the same walk shape as `findAllGlobal`, plus a stat per file before
-   * parse.
-   */
   async findAllForType(
     type: ModelTypeInput,
   ): Promise<
@@ -224,6 +214,16 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     return results;
   }
 
+  /**
+   * Finds all data items whose `createdAt` is at or after the cutoff using a
+   * two-stage filter (mtime pre-filter, then parse-and-verify) on each
+   * version's metadata.yaml. Old version files are skipped without parse.
+   *
+   * The `_catalog.db` SQLite catalog does not track `createdAt`, so the only
+   * source of truth for time-bounded filtering is the metadata YAML — hence
+   * the same walk shape as `findAllGlobal`, plus a stat per file before
+   * parse.
+   */
   async findAllGlobalSince(
     cutoff: Date,
   ): Promise<Array<{ data: Data; modelType: ModelType; modelId: string }>> {

@@ -236,7 +236,9 @@ export class PolicySnapshotLoader {
     try {
       const text = new TextDecoder().decode(content);
       return JSON.parse(text) as Record<string, unknown>;
-    } catch {
+    } catch (error) {
+      logger
+        .warn`Skipping ${modelType.normalized}/${modelId}/${dataName}: failed to parse JSON content: ${error}`;
       return null;
     }
   }

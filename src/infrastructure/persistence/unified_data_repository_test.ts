@@ -620,6 +620,79 @@ Deno.test("findAllForModelSync returns empty for missing model", () => {
   assertEquals(results, []);
 });
 
+Deno.test("findAllForType: returns data scoped to one model type", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const catalogStore = new CatalogStore(join(tmpDir, "_catalog.db"));
+    const repo = new FileSystemUnifiedDataRepository(
+      tmpDir,
+      undefined,
+      catalogStore,
+    );
+
+    const otherType = ModelType.create("other/type");
+    const data1 = makeJsonData("item-a");
+    const data2 = makeJsonData("item-b");
+    const data3 = makeJsonData("item-c");
+
+    await repo.save(
+      testType,
+      "model-1",
+      data1,
+      new TextEncoder().encode('{"a":1}'),
+    );
+    await repo.save(
+      otherType,
+      "model-2",
+      data2,
+      new TextEncoder().encode('{"b":2}'),
+    );
+    await repo.save(
+      testType,
+      "model-3",
+      data3,
+      new TextEncoder().encode('{"c":3}'),
+    );
+
+    const results = await repo.findAllForType(testType);
+    assertEquals(results.length, 2);
+    const names = results.map((r) => r.data.name).sort();
+    assertEquals(names, ["item-a", "item-c"]);
+    for (const r of results) {
+      assertEquals(r.modelType.normalized, testType.normalized);
+    }
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  }
+});
+
+Deno.test("findAllForType: returns empty for missing type directory", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const catalogStore = new CatalogStore(join(tmpDir, "_catalog.db"));
+    const repo = new FileSystemUnifiedDataRepository(
+      tmpDir,
+      undefined,
+      catalogStore,
+    );
+
+    const results = await repo.findAllForType(
+      ModelType.create("nonexistent/type"),
+    );
+    assertEquals(results, []);
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  }
+});
+
 // Pins the markDirty contract from design/datastores.md: every public mutation
 // that writes into the cache must call the sync service's markDirty hook before
 // the write begins, so the fast-path sidecar cannot short-circuit past it. Also
