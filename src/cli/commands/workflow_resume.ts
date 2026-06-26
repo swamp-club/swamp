@@ -40,6 +40,7 @@ import {
   swampPath,
 } from "../../infrastructure/persistence/paths.ts";
 import { createWorkflowRunRenderer } from "../../presentation/renderers/workflow_run.ts";
+import { isAuthenticated } from "../auth_context.ts";
 import { resolveOrCreateDefinition } from "../../libswamp/mod.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import type { DefinitionId } from "../../domain/definitions/definition.ts";
@@ -278,6 +279,7 @@ export const workflowResumeCommand = new Command()
 
       const renderer = createWorkflowRunRenderer(cliCtx.outputMode, {
         workflowName,
+        isAuthenticated: isAuthenticated(),
       });
 
       const resumeGenerator = async function* (): AsyncGenerator<

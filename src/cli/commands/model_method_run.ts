@@ -77,6 +77,7 @@ import {
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
 import { suppressSyncExitOnSignal } from "../../infrastructure/persistence/datastore_sync_coordinator.ts";
 import { parseTimeout } from "../duration_parser.ts";
+import { isAuthenticated } from "../auth_context.ts";
 
 // Cliffy's custom type system returns `unknown` for custom types like `model_name`,
 // but we need to pass `options` to functions expecting specific types. Using `any`
@@ -395,6 +396,7 @@ export const modelMethodRunCommand = new Command()
           const renderer = createModelMethodRunRenderer(ctx.outputMode, {
             modelName: modelIdOrName,
             methodName,
+            isAuthenticated: isAuthenticated(),
           });
 
           await consumeStream(
@@ -557,6 +559,7 @@ async function runMethodViaServer(
       const renderer = createModelMethodRunRenderer(ctx.outputMode, {
         modelName: modelIdOrName,
         methodName,
+        isAuthenticated: isAuthenticated(),
       });
       await consumeStream(
         runModelMethodOverServer({

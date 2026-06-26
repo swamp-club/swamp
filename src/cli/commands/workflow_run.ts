@@ -74,6 +74,7 @@ import {
   type WorkflowTelemetrySink,
 } from "../../libswamp/mod.ts";
 import { createWorkflowRunRenderer } from "../../presentation/renderers/workflow_run.ts";
+import { isAuthenticated } from "../auth_context.ts";
 import { getActiveTelemetryService } from "../telemetry_integration.ts";
 import {
   resolveServerToken,
@@ -389,6 +390,7 @@ export const workflowRunCommand = new Command()
         const renderer = createWorkflowRunRenderer(ctx.outputMode, {
           workflowName: workflowIdOrName,
           forceLog: ctx.forceLog,
+          isAuthenticated: isAuthenticated(),
         });
         const eventStream = workflowRun(libCtx, deps, {
           workflowIdOrName,
@@ -556,6 +558,7 @@ async function runWorkflowViaServer(
       const renderer = createWorkflowRunRenderer(ctx.outputMode, {
         workflowName: workflowIdOrName,
         forceLog: ctx.forceLog,
+        isAuthenticated: isAuthenticated(),
       });
       await consumeStream(
         runWorkflowOverServer({

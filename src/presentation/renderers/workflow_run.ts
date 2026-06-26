@@ -33,6 +33,7 @@ import {
 import { UserError } from "../../domain/errors.ts";
 import { renderMarkdownToTerminal } from "../markdown_renderer.ts";
 import { InkWorkflowRunRenderer } from "./workflow_run_tree/mod.ts";
+import { AUTH_NUDGE_MESSAGE } from "../../domain/auth/auth_nudge.ts";
 
 function isStdoutTty(): boolean {
   try {
@@ -45,6 +46,7 @@ function isStdoutTty(): boolean {
 export interface WorkflowRunRenderOpts {
   workflowName: string;
   forceLog?: boolean;
+  isAuthenticated?: boolean;
 }
 
 export interface WorkflowRunRenderer extends Renderer<WorkflowRunEvent> {
@@ -53,10 +55,12 @@ export interface WorkflowRunRenderer extends Renderer<WorkflowRunEvent> {
 
 class LogWorkflowRunRenderer implements WorkflowRunRenderer {
   private workflowName: string;
+  private isAuthenticated: boolean;
   private _failed = false;
 
   constructor(opts: WorkflowRunRenderOpts) {
     this.workflowName = opts.workflowName;
+    this.isAuthenticated = opts.isAuthenticated ?? false;
   }
 
   handlers(): EventHandlers<WorkflowRunEvent> {
@@ -212,6 +216,10 @@ class LogWorkflowRunRenderer implements WorkflowRunRenderer {
             status: e.run.status,
           });
           this.renderDataArtifactHints(e.run, wfLogger);
+          if (!this.isAuthenticated) {
+            wfLogger.info("");
+            wfLogger.info(AUTH_NUDGE_MESSAGE);
+          }
         }
       },
       cancelled: (e) => {

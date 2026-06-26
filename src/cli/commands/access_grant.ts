@@ -42,6 +42,7 @@ import {
   modelMethodRun,
 } from "../../libswamp/mod.ts";
 import { createModelMethodRunRenderer } from "../../presentation/renderers/model_method_run.ts";
+import { isAuthenticated } from "../auth_context.ts";
 import {
   type Grant,
   GRANT_MODEL_TYPE,
@@ -162,6 +163,7 @@ const accessGrantCreateCommand = new Command()
       const renderer = createModelMethodRunRenderer(ctx.outputMode, {
         modelName: instanceName,
         methodName: "create",
+        isAuthenticated: isAuthenticated(),
       });
       await consumeStream(
         runModelMethodOverServer({
@@ -237,6 +239,7 @@ const accessGrantCreateCommand = new Command()
       const renderer = createModelMethodRunRenderer(ctx.outputMode, {
         modelName: instanceName,
         methodName: "create",
+        isAuthenticated: isAuthenticated(),
       });
 
       await consumeStream(
@@ -457,6 +460,7 @@ const accessGrantRevokeCommand = new Command()
       const renderer = createModelMethodRunRenderer(ctx.outputMode, {
         modelName: match.instanceName,
         methodName: "revoke",
+        isAuthenticated: isAuthenticated(),
       });
       await consumeStream(
         runModelMethodOverServer({
@@ -537,6 +541,7 @@ const accessGrantRevokeCommand = new Command()
       const renderer = createModelMethodRunRenderer(ctx.outputMode, {
         modelName: match.instanceName,
         methodName: "revoke",
+        isAuthenticated: isAuthenticated(),
       });
 
       await consumeStream(

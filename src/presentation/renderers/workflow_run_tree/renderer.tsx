@@ -26,6 +26,7 @@ import type {
   WorkflowRunRenderOpts,
 } from "../workflow_run.ts";
 import { UserError } from "../../../domain/errors.ts";
+import { AUTH_NUDGE_MESSAGE } from "../../../domain/auth/auth_nudge.ts";
 import { suppressInkTtyErrors } from "../../output/ink_lifecycle.ts";
 import { EventBridge, WorkflowRunTree } from "./workflow_run_tree.tsx";
 
@@ -35,9 +36,11 @@ export class InkWorkflowRunRenderer implements WorkflowRunRenderer {
   private cleanup: (() => void) | null = null;
   private exitPromise: Promise<void> | null = null;
   private workflowName: string;
+  private isAuthenticated: boolean;
 
   constructor(opts: WorkflowRunRenderOpts) {
     this.workflowName = opts.workflowName;
+    this.isAuthenticated = opts.isAuthenticated ?? false;
     this.bridge = new EventBridge();
   }
 
@@ -95,6 +98,10 @@ export class InkWorkflowRunRenderer implements WorkflowRunRenderer {
         this.bridge.close();
         await this.exitPromise;
         this.cleanup?.();
+        if (e.run.status !== "failed" && !this.isAuthenticated) {
+          console.log("");
+          console.log(AUTH_NUDGE_MESSAGE);
+        }
       },
       cancelled: async (e) => {
         this._failed = true;

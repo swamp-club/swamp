@@ -143,6 +143,18 @@ Deno.test(
 );
 
 Deno.test(
+  "LogRepoInitRenderer: shows community login next step",
+  () => {
+    const output = captureInitOutput([
+      { kind: "initializing" },
+      { kind: "completed", data: makeInitData(["claude"]) },
+    ], "log");
+
+    assertStringIncludes(output, "swamp auth login");
+  },
+);
+
+Deno.test(
   "JsonRepoInitRenderer: includes nextSteps array in JSON output",
   () => {
     const output = captureInitOutput([
@@ -152,8 +164,9 @@ Deno.test(
 
     const parsed = JSON.parse(output);
     assertEquals(Array.isArray(parsed.nextSteps), true);
-    assertEquals(parsed.nextSteps.length, 1);
+    assertEquals(parsed.nextSteps.length, 2);
     assertStringIncludes(parsed.nextSteps[0], "/swamp-getting-started");
+    assertStringIncludes(parsed.nextSteps[1], "swamp auth login");
   },
 );
 
@@ -166,8 +179,9 @@ Deno.test(
     ], "json");
 
     const parsed = JSON.parse(output);
-    assertEquals(parsed.nextSteps.length, 1);
+    assertEquals(parsed.nextSteps.length, 2);
     assertStringIncludes(parsed.nextSteps[0], "swamp --help");
+    assertStringIncludes(parsed.nextSteps[1], "swamp auth login");
   },
 );
 

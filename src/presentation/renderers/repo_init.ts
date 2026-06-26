@@ -156,6 +156,9 @@ class LogRepoInitRenderer implements Renderer<RepoInitEvent> {
           logger.info(`  → ${step}`);
         }
         logger.info("  → Read the manual at https://swamp-club.com/manual");
+        logger.info(
+          "  → Join & participate in the community: swamp auth login",
+        );
       },
       error: (e) => {
         throw new UserError(e.error.message);
@@ -175,6 +178,9 @@ class JsonRepoInitRenderer implements Renderer<RepoInitEvent> {
         if (steps.length === 0) {
           steps.push("Run `swamp --help` to see available commands");
         }
+        steps.push(
+          "Join & participate in the community: swamp auth login",
+        );
         console.log(JSON.stringify({ ...e.data, nextSteps: steps }, null, 2));
       },
       error: (e) => {
@@ -258,6 +264,9 @@ class LogRepoUpgradeRenderer implements Renderer<RepoUpgradeEvent> {
             logger.info(`    ${file}`);
           }
         }
+        logger.info(
+          "  → Join & participate in the community: swamp auth login",
+        );
       },
       error: (e) => {
         throw new UserError(e.error.message);

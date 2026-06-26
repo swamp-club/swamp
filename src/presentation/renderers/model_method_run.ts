@@ -27,10 +27,12 @@ import {
 import { UserError } from "../../domain/errors.ts";
 import { renderMarkdownToTerminal } from "../markdown_renderer.ts";
 import { getTerminalColumns } from "../output/terminal_size.ts";
+import { AUTH_NUDGE_MESSAGE } from "../../domain/auth/auth_nudge.ts";
 
 export interface ModelMethodRunRenderOpts {
   modelName: string;
   methodName: string;
+  isAuthenticated?: boolean;
 }
 
 export interface ModelMethodRunRenderer extends Renderer<ModelMethodRunEvent> {
@@ -40,11 +42,13 @@ export interface ModelMethodRunRenderer extends Renderer<ModelMethodRunEvent> {
 class LogModelMethodRunRenderer implements ModelMethodRunRenderer {
   private modelName: string;
   private methodName: string;
+  private isAuthenticated: boolean;
   private _failed = false;
 
   constructor(opts: ModelMethodRunRenderOpts) {
     this.modelName = opts.modelName;
     this.methodName = opts.methodName;
+    this.isAuthenticated = opts.isAuthenticated ?? false;
   }
 
   handlers(): EventHandlers<ModelMethodRunEvent> {
@@ -179,6 +183,11 @@ class LogModelMethodRunRenderer implements ModelMethodRunRenderer {
               model: e.run.modelName,
               artifacts: e.run.dataArtifacts.length,
             });
+          if (!this.isAuthenticated) {
+            getRunLogger(e.run.modelName, e.run.methodName).info("");
+            getRunLogger(e.run.modelName, e.run.methodName)
+              .info(AUTH_NUDGE_MESSAGE);
+          }
         }
       },
       cancelled: (e) => {
