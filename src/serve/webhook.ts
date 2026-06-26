@@ -77,6 +77,47 @@ export function buildWebhookPayload(
   return { body: parsed, headers: exposedHeaders, route };
 }
 
+// ── Secret Resolution ─────────────────────────────────────────────────
+
+const ENV_PREFIX = "@env=";
+const FILE_PREFIX = "@file=";
+
+export function resolveSecret(raw: string): string {
+  if (raw.startsWith(ENV_PREFIX)) {
+    const varName = raw.slice(ENV_PREFIX.length);
+    const value = Deno.env.get(varName);
+    if (!value) {
+      throw new UserError(
+        `Webhook secret references environment variable '${varName}' ` +
+          `(via ${ENV_PREFIX}), but it is not set or is empty`,
+      );
+    }
+    return value;
+  }
+
+  if (raw.startsWith(FILE_PREFIX)) {
+    const filePath = raw.slice(FILE_PREFIX.length);
+    let content: string;
+    try {
+      content = Deno.readTextFileSync(filePath);
+    } catch (cause) {
+      throw new UserError(
+        `Webhook secret references file '${filePath}' ` +
+          `(via ${FILE_PREFIX}), but it could not be read: ${cause}`,
+      );
+    }
+    content = content.replace(/\r?\n$/, "");
+    if (!content) {
+      throw new UserError(
+        `Webhook secret file '${filePath}' is empty`,
+      );
+    }
+    return content;
+  }
+
+  return raw;
+}
+
 // ── Value Objects ──────────────────────────────────────────────────────
 
 /**
@@ -146,6 +187,8 @@ export function parseWebhookFlag(flag: string): WebhookEndpoint {
     secret = flag.slice(secondColon + 1);
     verifier = { scheme: "github" };
   }
+
+  secret = resolveSecret(secret);
 
   if (!route || !workflowIdOrName || !secret) {
     throw new UserError(

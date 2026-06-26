@@ -21,6 +21,7 @@ import { assertEquals, assertThrows } from "@std/assert";
 import {
   buildWebhookPayload,
   parseWebhookFlag,
+  resolveSecret,
   WebhookService,
 } from "./webhook.ts";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
@@ -212,6 +213,141 @@ Deno.test("parseWebhookFlag: rejects route without leading slash", () => {
     Error,
     "must start with '/'",
   );
+});
+
+// ── resolveSecret ─────────────────────────────────────────────────────
+
+Deno.test("resolveSecret: returns a literal string unchanged", () => {
+  assertEquals(resolveSecret("mysecretvalue"), "mysecretvalue");
+});
+
+Deno.test("resolveSecret: reads from an environment variable via @env=", () => {
+  Deno.env.set("TEST_WEBHOOK_SECRET_758", "env-secret-value");
+  try {
+    assertEquals(
+      resolveSecret("@env=TEST_WEBHOOK_SECRET_758"),
+      "env-secret-value",
+    );
+  } finally {
+    Deno.env.delete("TEST_WEBHOOK_SECRET_758");
+  }
+});
+
+Deno.test("resolveSecret: throws for an unset environment variable", () => {
+  Deno.env.delete("NONEXISTENT_WEBHOOK_VAR_758");
+  assertThrows(
+    () => resolveSecret("@env=NONEXISTENT_WEBHOOK_VAR_758"),
+    Error,
+    "not set or is empty",
+  );
+});
+
+Deno.test("resolveSecret: throws for an empty environment variable", () => {
+  Deno.env.set("EMPTY_WEBHOOK_VAR_758", "");
+  try {
+    assertThrows(
+      () => resolveSecret("@env=EMPTY_WEBHOOK_VAR_758"),
+      Error,
+      "not set or is empty",
+    );
+  } finally {
+    Deno.env.delete("EMPTY_WEBHOOK_VAR_758");
+  }
+});
+
+Deno.test("resolveSecret: reads from a file via @file=", () => {
+  const tmpFile = Deno.makeTempFileSync();
+  try {
+    Deno.writeTextFileSync(tmpFile, "file-secret-value\n");
+    assertEquals(resolveSecret(`@file=${tmpFile}`), "file-secret-value");
+  } finally {
+    Deno.removeSync(tmpFile);
+  }
+});
+
+Deno.test("resolveSecret: trims trailing CRLF from file", () => {
+  const tmpFile = Deno.makeTempFileSync();
+  try {
+    Deno.writeTextFileSync(tmpFile, "file-secret\r\n");
+    assertEquals(resolveSecret(`@file=${tmpFile}`), "file-secret");
+  } finally {
+    Deno.removeSync(tmpFile);
+  }
+});
+
+Deno.test("resolveSecret: throws for a missing file", () => {
+  assertThrows(
+    () => resolveSecret("@file=/tmp/nonexistent-webhook-secret-758"),
+    Error,
+    "could not be read",
+  );
+});
+
+Deno.test("resolveSecret: throws for an empty file", () => {
+  const tmpFile = Deno.makeTempFileSync();
+  try {
+    Deno.writeTextFileSync(tmpFile, "");
+    assertThrows(
+      () => resolveSecret(`@file=${tmpFile}`),
+      Error,
+      "is empty",
+    );
+  } finally {
+    Deno.removeSync(tmpFile);
+  }
+});
+
+Deno.test("resolveSecret: throws for a file containing only a newline", () => {
+  const tmpFile = Deno.makeTempFileSync();
+  try {
+    Deno.writeTextFileSync(tmpFile, "\n");
+    assertThrows(
+      () => resolveSecret(`@file=${tmpFile}`),
+      Error,
+      "is empty",
+    );
+  } finally {
+    Deno.removeSync(tmpFile);
+  }
+});
+
+// ── parseWebhookFlag with secret indirection ──────────────────────────
+
+Deno.test("parseWebhookFlag: resolves @env= secret in legacy form", () => {
+  Deno.env.set("TEST_WH_SECRET_LEGACY_758", "resolved-secret");
+  try {
+    const result = parseWebhookFlag(
+      "/hooks/gh:wf:@env=TEST_WH_SECRET_LEGACY_758",
+    );
+    assertEquals(result.secret, "resolved-secret");
+    assertEquals(result.verifier, { scheme: "github" });
+  } finally {
+    Deno.env.delete("TEST_WH_SECRET_LEGACY_758");
+  }
+});
+
+Deno.test("parseWebhookFlag: resolves @env= secret in scheme-qualified form", () => {
+  Deno.env.set("TEST_WH_SECRET_SCHEME_758", "resolved-secret");
+  try {
+    const result = parseWebhookFlag(
+      "/hooks/linear:wf:@env=TEST_WH_SECRET_SCHEME_758:linear",
+    );
+    assertEquals(result.secret, "resolved-secret");
+    assertEquals(result.verifier, { scheme: "linear" });
+  } finally {
+    Deno.env.delete("TEST_WH_SECRET_SCHEME_758");
+  }
+});
+
+Deno.test("parseWebhookFlag: resolves @file= secret", () => {
+  const tmpFile = Deno.makeTempFileSync();
+  try {
+    Deno.writeTextFileSync(tmpFile, "file-resolved\n");
+    const result = parseWebhookFlag(`/hooks/gh:wf:@file=${tmpFile}`);
+    assertEquals(result.secret, "file-resolved");
+  } finally {
+    Deno.removeSync(tmpFile);
+  }
 });
 
 // ── listEndpoints ─────────────────────────────────────────────────────
