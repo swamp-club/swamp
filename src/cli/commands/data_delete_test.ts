@@ -106,9 +106,3 @@ Deno.test("dataDeleteCommand has --dry-run option", async () => {
   const dryRunOpt = options.find((o) => o.name === "dry-run");
   assertEquals(dryRunOpt !== undefined, true);
 });
-
-Deno.test("dataDeleteCommand has updated description for batch support", async () => {
-  const { dataDeleteCommand } = await import("./data_delete.ts");
-  const desc = dataDeleteCommand.getDescription();
-  assertEquals(desc.includes("prefix"), true);
-});

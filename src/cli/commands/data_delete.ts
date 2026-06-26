@@ -143,6 +143,11 @@ export const dataDeleteCommand = new Command()
             "Cannot combine --version with --prefix or --all. Version-specific delete only applies to single data names.",
           );
         }
+        if (prefix !== undefined && prefix.length === 0) {
+          throw new UserError(
+            "--prefix value cannot be empty. Use --all to delete all data.",
+          );
+        }
         if (prefix !== undefined && all) {
           throw new UserError(
             "Cannot combine --prefix and --all. Use one or the other.",
