@@ -1462,13 +1462,16 @@ export async function runCli(args: string[]): Promise<void> {
       }
 
       // Auth nudge banner (throttled to once per day, suppressed once logged in).
-      // Skip for `repo init/upgrade` — those renderers include their own nudge.
+      // Skip for commands whose renderers already include their own nudge.
       {
         const outputMode = getOutputModeFromArgs(args);
-        const isRepoSetup = commandInfo.command === "repo" &&
+        const hasInlineNudge = (commandInfo.command === "repo" &&
           (commandInfo.subcommand === "init" ||
-            commandInfo.subcommand === "upgrade");
-        if (outputMode === "log" && !isAuthenticated() && !isRepoSetup) {
+            commandInfo.subcommand === "upgrade")) ||
+          (commandInfo.command === "model" &&
+            commandInfo.subcommand === "method") ||
+          commandInfo.command === "workflow";
+        if (outputMode === "log" && !isAuthenticated() && !hasInlineNudge) {
           try {
             const nudgeRepo = new AuthNudgeRepository();
             const nudgeState = await nudgeRepo.read();

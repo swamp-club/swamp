@@ -71,9 +71,10 @@ function captureLog(fn: () => void): string {
 function captureInitOutput(
   events: RepoInitEvent[],
   mode: "log" | "json",
+  opts?: { isAuthenticated?: boolean },
 ): string {
   return captureLog(() => {
-    const renderer = createRepoInitRenderer(mode);
+    const renderer = createRepoInitRenderer(mode, opts);
     const handlers = renderer.handlers();
     for (const event of events) {
       switch (event.kind) {
@@ -151,6 +152,22 @@ Deno.test(
     ], "log");
 
     assertStringIncludes(output, "swamp auth login");
+  },
+);
+
+Deno.test(
+  "LogRepoInitRenderer: suppresses community login when authenticated",
+  () => {
+    const output = captureInitOutput(
+      [
+        { kind: "initializing" },
+        { kind: "completed", data: makeInitData(["claude"]) },
+      ],
+      "log",
+      { isAuthenticated: true },
+    );
+
+    assertEquals(output.includes("swamp auth login"), false);
   },
 );
 

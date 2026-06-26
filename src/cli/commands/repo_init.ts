@@ -38,6 +38,7 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { createExtensionInstallDeps } from "../create_extension_install_deps.ts";
+import { isAuthenticated } from "../auth_context.ts";
 import { VERSION } from "./version.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -99,7 +100,9 @@ export async function repoInitAction(
 
   const ctx = createLibSwampContext({ logger: cliCtx.logger });
   const deps = createRepoInitDeps(VERSION);
-  const renderer = createRepoInitRenderer(cliCtx.outputMode);
+  const renderer = createRepoInitRenderer(cliCtx.outputMode, {
+    isAuthenticated: isAuthenticated(),
+  });
   await consumeStream(
     repoInit(ctx, deps, {
       path: pathArg ?? ".",
@@ -178,7 +181,9 @@ export const repoUpgradeCommand = new Command()
       cliCtx.logger,
     );
 
-    const renderer = createRepoUpgradeRenderer(cliCtx.outputMode);
+    const renderer = createRepoUpgradeRenderer(cliCtx.outputMode, {
+      isAuthenticated: isAuthenticated(),
+    });
     await consumeStream(
       repoUpgrade(ctx, deps, {
         path: pathArg ?? ".",
