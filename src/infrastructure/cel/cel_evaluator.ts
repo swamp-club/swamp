@@ -44,7 +44,7 @@ function unwrapOptional(value: unknown): unknown {
  * expects regular JS numbers. Values outside Number.MAX_SAFE_INTEGER are
  * left as bigint to avoid silent precision loss.
  */
-function coerceBigInts(value: unknown): unknown {
+export function coerceBigInts(value: unknown): unknown {
   if (typeof value === "bigint") {
     if (value >= Number.MIN_SAFE_INTEGER && value <= Number.MAX_SAFE_INTEGER) {
       return Number(value);
