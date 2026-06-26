@@ -22,6 +22,7 @@ import {
   methodExecutionFailed,
   modelMethodRun,
   type ModelMethodRunDeps,
+  type ModelMethodRunEvent,
   type ModelMethodRunInput,
   modelNotFound,
   noEvaluatedDefinition,
@@ -88,8 +89,11 @@ function createFakeOutputRepo(): any {
   };
 }
 
-// deno-lint-ignore no-explicit-any
-function createFakeDataRepo(): any {
+function createFakeDataRepo(gcResult?: {
+  versionsRemoved: number;
+  bytesReclaimed: number;
+  // deno-lint-ignore no-explicit-any
+}): any {
   return {
     nextId: () => crypto.randomUUID(),
     getPath: (
@@ -101,6 +105,10 @@ function createFakeDataRepo(): any {
     getContent: () => Promise.resolve(null),
     findAllForModel: () => Promise.resolve([]),
     save: () => Promise.resolve({ version: 1 }),
+    collectGarbage: () =>
+      Promise.resolve(
+        gcResult ?? { versionsRemoved: 0, bytesReclaimed: 0 },
+      ),
   };
 }
 
@@ -703,4 +711,46 @@ Deno.test("modelMethodRun: direct execution strips @ fallback for repo-local typ
   if (autoCreated && autoCreated.kind === "auto_created") {
     assertEquals(autoCreated.modelType, "sandbox/coder-server");
   }
+});
+
+Deno.test("modelMethodRun: yields auto_gc_completed when autoGc is true and versions are removed", async () => {
+  const definition = createTestDefinition("test-model", "run");
+  const modelDef = createTestModelDef("run");
+  const deps = {
+    ...createTestDeps(definition, modelDef),
+    dataRepo: createFakeDataRepo({ versionsRemoved: 8, bytesReclaimed: 2048 }),
+  };
+
+  const events = await collect<ModelMethodRunEvent>(
+    modelMethodRun(createLibSwampContext(), deps, {
+      ...createTestInput("test-model", "run"),
+      autoGc: true,
+    }),
+  );
+
+  const gcEvent = events.find((e) => e.kind === "auto_gc_completed");
+  assertEquals(gcEvent !== undefined, true);
+  if (gcEvent && gcEvent.kind === "auto_gc_completed") {
+    assertEquals(gcEvent.versionsDeleted, 8);
+    assertEquals(gcEvent.bytesReclaimed, 2048);
+  }
+});
+
+Deno.test("modelMethodRun: does not yield auto_gc_completed when autoGc is false", async () => {
+  const definition = createTestDefinition("test-model", "run");
+  const modelDef = createTestModelDef("run");
+  const deps = {
+    ...createTestDeps(definition, modelDef),
+    dataRepo: createFakeDataRepo({ versionsRemoved: 8, bytesReclaimed: 2048 }),
+  };
+
+  const events = await collect<ModelMethodRunEvent>(
+    modelMethodRun(createLibSwampContext(), deps, {
+      ...createTestInput("test-model", "run"),
+      autoGc: false,
+    }),
+  );
+
+  const gcEvent = events.find((e) => e.kind === "auto_gc_completed");
+  assertEquals(gcEvent, undefined);
 });

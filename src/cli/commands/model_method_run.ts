@@ -28,6 +28,8 @@ import {
   acquireModelLocks,
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
+import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
+import { RepoPath } from "../../domain/repo/repo_path.ts";
 import { UserError } from "../../domain/errors.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { resolveModelType } from "../../domain/extensions/extension_auto_resolver.ts";
@@ -225,6 +227,11 @@ export const modelMethodRunCommand = new Command()
           outputMode: ctx.outputMode,
         });
 
+      const marker = await new RepoMarkerRepository().read(
+        RepoPath.create(repoDir),
+      );
+      const autoGc = marker?.autoGc === true;
+
       ctx.logger
         .debug`Running method '${methodName}' on model: ${modelIdOrName}`;
 
@@ -408,6 +415,7 @@ export const modelMethodRunCommand = new Command()
               reportNames: options.report as string[] | undefined,
               reportLabels: options.reportLabel as string[] | undefined,
               swampSha: GIT_SHA || undefined,
+              autoGc,
             }),
             renderer.handlers(),
           );

@@ -35,6 +35,9 @@ import type { MarkDirtyHook } from "../../domain/datastore/datastore_sync_servic
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
+import type { GarbageCollectionResult } from "../../domain/data/repositories.ts";
+import type { ModelType } from "../../domain/models/model_type.ts";
+import { getLogger } from "@logtape/logtape";
 
 /** Preview item for a single expired data entry. */
 export interface DataGcPreviewItem {
@@ -188,4 +191,35 @@ export async function* dataGc(
       };
     })(),
   );
+}
+
+/**
+ * Runs garbage collection for a single model. Catches all errors — auto-GC
+ * failure must never fail the method run. User-visible output is owned by the
+ * renderer via the auto_gc_completed event; this function only logs at debug
+ * and warn levels.
+ */
+export async function autoGc(
+  dataRepo: {
+    collectGarbage: (
+      type: ModelType,
+      modelId: string,
+    ) => Promise<GarbageCollectionResult>;
+  },
+  type: ModelType,
+  modelId: string,
+): Promise<GarbageCollectionResult | null> {
+  const logger = getLogger(["swamp", "auto-gc"]);
+  try {
+    const result = await dataRepo.collectGarbage(type, modelId);
+    logger
+      .debug`Auto-GC for ${type.normalized}/${modelId}: ${result.versionsRemoved} version(s) removed, ${result.bytesReclaimed} bytes reclaimed`;
+    return result;
+  } catch (error) {
+    logger
+      .warn`Auto-GC failed for ${type.normalized}/${modelId}: ${
+      error instanceof Error ? error.message : String(error)
+    }`;
+    return null;
+  }
 }

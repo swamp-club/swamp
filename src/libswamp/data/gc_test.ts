@@ -21,11 +21,14 @@ import { assertEquals } from "@std/assert";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
+  autoGc,
   dataGc,
   type DataGcDeps,
   type DataGcEvent,
   dataGcPreview,
 } from "./gc.ts";
+import { ModelType } from "../../domain/models/model_type.ts";
+import type { GarbageCollectionResult } from "../../domain/data/repositories.ts";
 
 function makeDeps(overrides: Partial<DataGcDeps> = {}): DataGcDeps {
   return {
@@ -204,4 +207,41 @@ Deno.test("dataGc: passes dryRun flag through", async () => {
   );
 
   assertEquals(receivedDryRun, true);
+});
+
+// --- autoGc tests ---
+
+function makeFakeDataRepo(
+  result: GarbageCollectionResult = { versionsRemoved: 0, bytesReclaimed: 0 },
+) {
+  return {
+    collectGarbage: (
+      _type: ModelType,
+      _modelId: string,
+    ): Promise<GarbageCollectionResult> => Promise.resolve(result),
+  };
+}
+
+Deno.test("autoGc: returns result when versions are removed", async () => {
+  const repo = makeFakeDataRepo({ versionsRemoved: 10, bytesReclaimed: 4096 });
+  const result = await autoGc(repo, ModelType.create("test/type"), "model-1");
+
+  assertEquals(result, { versionsRemoved: 10, bytesReclaimed: 4096 });
+});
+
+Deno.test("autoGc: returns result with zero versions when nothing to clean", async () => {
+  const repo = makeFakeDataRepo({ versionsRemoved: 0, bytesReclaimed: 0 });
+  const result = await autoGc(repo, ModelType.create("test/type"), "model-1");
+
+  assertEquals(result, { versionsRemoved: 0, bytesReclaimed: 0 });
+});
+
+Deno.test("autoGc: catches errors and returns null", async () => {
+  const repo = {
+    collectGarbage: (): Promise<GarbageCollectionResult> =>
+      Promise.reject(new Error("disk full")),
+  };
+  const result = await autoGc(repo, ModelType.create("test/type"), "model-1");
+
+  assertEquals(result, null);
 });
