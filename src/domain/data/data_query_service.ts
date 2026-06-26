@@ -19,6 +19,7 @@
 
 import { getLogger } from "@logtape/logtape";
 import { Environment } from "cel-js";
+import { coerceBigInts } from "../../infrastructure/cel/cel_evaluator.ts";
 import type {
   CatalogRow,
   CatalogStore,
@@ -288,7 +289,7 @@ export class DataQueryService {
             r as unknown as Record<string, unknown>,
           ) as Record<string, unknown>;
           selectCtx["ns"] = r.namespace;
-          return selectParsed(selectCtx);
+          return coerceBigInts(selectParsed(selectCtx));
         } catch {
           return null;
         }

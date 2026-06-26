@@ -370,6 +370,69 @@ Deno.test("DataQueryService: select loads attributes for map literal projection"
   catalog.close();
 });
 
+Deno.test("DataQueryService: select coerces CEL BigInt to number", () => {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-query-select-bigint-" });
+  const dbPath = join(dir, ".swamp", "data", "_catalog.db");
+  const catalog = new CatalogStore(dbPath);
+  catalog.markPopulated();
+
+  const dataDir = join(
+    dir,
+    ".swamp",
+    "data",
+    "test-model",
+    "model-001",
+    "my-data",
+    "1",
+  );
+  ensureDirSync(dataDir);
+  Deno.writeTextFileSync(
+    join(dataDir, "raw"),
+    JSON.stringify({ items: ["a", "b", "c"] }),
+  );
+  Deno.writeTextFileSync(
+    join(dataDir, "metadata.yaml"),
+    stringifyYaml({
+      name: "my-data",
+      id: "00000000-0000-1000-8000-000000000001",
+      version: 1,
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      streaming: false,
+      tags: { type: "resource", specName: "result", modelName: "ingest" },
+      ownerDefinition: { ownerType: "model-method", ownerRef: "test" },
+      createdAt: "2026-01-01T00:00:00.000Z",
+    }),
+  );
+  Deno.writeTextFileSync(
+    join(dir, ".swamp", "data", "test-model", "model-001", "my-data", "latest"),
+    "1",
+  );
+
+  catalog.upsert(makeRow());
+
+  const dataRepo = new FileSystemUnifiedDataRepository(dir, undefined, catalog);
+  const service = new DataQueryService(catalog, dataRepo);
+
+  const results = service.querySync('modelName == "ingest"', {
+    select: "attributes.items.size()",
+  });
+  assertEquals(results.length, 1);
+  assertEquals(results[0], 3);
+  assertEquals(typeof results[0], "number");
+
+  const mapResults = service.querySync('modelName == "ingest"', {
+    select: '{"len": attributes.items.size()}',
+  });
+  assertEquals(mapResults.length, 1);
+  const projected = mapResults[0] as Record<string, unknown>;
+  assertEquals(projected["len"], 3);
+  assertEquals(typeof projected["len"], "number");
+
+  catalog.close();
+});
+
 Deno.test("DataQueryService: backfill triggers on unpopulated catalog", async () => {
   const dir = Deno.makeTempDirSync({ prefix: "swamp-query-backfill-" });
   const dbPath = join(dir, ".swamp", "data", "_catalog.db");
