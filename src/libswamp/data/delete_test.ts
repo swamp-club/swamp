@@ -21,6 +21,9 @@ import { assertEquals } from "@std/assert";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
 import {
+  dataBatchDelete,
+  type DataBatchDeleteEvent,
+  dataBatchDeletePreview,
   dataDelete,
   type DataDeleteDeps,
   type DataDeleteEvent,
@@ -45,6 +48,31 @@ function makeDeps(overrides: Partial<DataDeleteDeps> = {}): DataDeleteDeps {
         modelType: "test/example",
         dataName: "my-data",
         versionsCount: 3,
+      }),
+    batchDelete: () =>
+      Promise.resolve({
+        modelId: "def-1",
+        modelName: "my-model",
+        modelType: "test/example",
+        deleted: [
+          { dataName: "run-001", versionsDeleted: 1 },
+          { dataName: "run-002", versionsDeleted: 2 },
+        ],
+        failed: [],
+        totalDeleted: 2,
+        totalVersionsDeleted: 3,
+      }),
+    batchPreview: () =>
+      Promise.resolve({
+        modelId: "def-1",
+        modelName: "my-model",
+        modelType: "test/example",
+        matchingItems: [
+          { dataName: "run-001", versionsCount: 1 },
+          { dataName: "run-002", versionsCount: 2 },
+        ],
+        totalItems: 2,
+        totalVersions: 3,
       }),
     ...overrides,
   };
@@ -191,4 +219,113 @@ Deno.test("dataDeletePreview: returns version count without invoking delete", as
   assertEquals(preview.modelName, "my-model");
   assertEquals(preview.modelType, "test/example");
   assertEquals(deleteCalled, false);
+});
+
+// --- Batch delete tests ---
+
+Deno.test("dataBatchDelete: yields completed with aggregated stats", async () => {
+  const deps = makeDeps();
+
+  const events = await collect<DataBatchDeleteEvent>(
+    dataBatchDelete(createLibSwampContext(), deps, {
+      modelIdOrName: "my-model",
+      filter: { kind: "prefix", value: "run-" },
+      dryRun: false,
+    }),
+  );
+
+  assertEquals(events.length, 2);
+  assertEquals(events[0], { kind: "deleting" });
+  const completed = events[1] as Extract<
+    DataBatchDeleteEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.kind, "completed");
+  assertEquals(completed.data.totalDeleted, 2);
+  assertEquals(completed.data.totalVersionsDeleted, 3);
+  assertEquals(completed.data.failed.length, 0);
+  assertEquals(completed.data.dryRun, false);
+});
+
+Deno.test("dataBatchDelete: dry run uses preview without deleting", async () => {
+  let batchDeleteCalled = false;
+  const deps = makeDeps({
+    batchDelete: () => {
+      batchDeleteCalled = true;
+      return Promise.resolve({
+        modelId: "def-1",
+        modelName: "my-model",
+        modelType: "test/example",
+        deleted: [],
+        failed: [],
+        totalDeleted: 0,
+        totalVersionsDeleted: 0,
+      });
+    },
+  });
+
+  const events = await collect<DataBatchDeleteEvent>(
+    dataBatchDelete(createLibSwampContext(), deps, {
+      modelIdOrName: "my-model",
+      filter: { kind: "all" },
+      dryRun: true,
+    }),
+  );
+
+  assertEquals(batchDeleteCalled, false);
+  const completed = events[1] as Extract<
+    DataBatchDeleteEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.data.dryRun, true);
+  assertEquals(completed.data.totalDeleted, 2);
+  assertEquals(completed.data.totalVersionsDeleted, 3);
+});
+
+Deno.test("dataBatchDelete: yields error when service throws", async () => {
+  const deps = makeDeps({
+    batchDelete: () => {
+      throw new Error("Model not found: missing");
+    },
+  });
+
+  const events = await collect<DataBatchDeleteEvent>(
+    dataBatchDelete(createLibSwampContext(), deps, {
+      modelIdOrName: "missing",
+      filter: { kind: "all" },
+      dryRun: false,
+    }),
+  );
+
+  const last = events[1] as Extract<DataBatchDeleteEvent, { kind: "error" }>;
+  assertEquals(last.kind, "error");
+  assertEquals(last.error.code, "validation_failed");
+});
+
+Deno.test("dataBatchDeletePreview: returns matching items without deleting", async () => {
+  let batchDeleteCalled = false;
+  const deps = makeDeps({
+    batchDelete: () => {
+      batchDeleteCalled = true;
+      return Promise.resolve({
+        modelId: "def-1",
+        modelName: "my-model",
+        modelType: "test/example",
+        deleted: [],
+        failed: [],
+        totalDeleted: 0,
+        totalVersionsDeleted: 0,
+      });
+    },
+  });
+
+  const preview = await dataBatchDeletePreview(createLibSwampContext(), deps, {
+    modelIdOrName: "my-model",
+    filter: { kind: "prefix", value: "run-" },
+  });
+
+  assertEquals(preview.totalItems, 2);
+  assertEquals(preview.totalVersions, 3);
+  assertEquals(preview.matchingItems.length, 2);
+  assertEquals(batchDeleteCalled, false);
 });

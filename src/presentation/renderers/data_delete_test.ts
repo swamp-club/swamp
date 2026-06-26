@@ -25,10 +25,14 @@ import {
 } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import {
+  createDataBatchDeleteRenderer,
   createDataDeleteRenderer,
   renderDataDeleteCancelled,
 } from "./data_delete.ts";
-import type { DataDeleteEvent } from "../../libswamp/mod.ts";
+import type {
+  DataBatchDeleteEvent,
+  DataDeleteEvent,
+} from "../../libswamp/mod.ts";
 import { UserError } from "../../domain/errors.ts";
 import { validationFailed } from "../../libswamp/errors.ts";
 
@@ -189,4 +193,84 @@ Deno.test("renderDataDeleteCancelled: json mode emits cancelled envelope", () =>
 Deno.test("renderDataDeleteCancelled: log mode does not write to console.log", () => {
   const out = captureStdout(() => renderDataDeleteCancelled("log"));
   assertEquals(out, "");
+});
+
+// --- Batch delete renderer tests ---
+
+function makeBatchCompletedEvent(
+  overrides: Partial<
+    Extract<DataBatchDeleteEvent, { kind: "completed" }>["data"]
+  > = {},
+): Extract<DataBatchDeleteEvent, { kind: "completed" }> {
+  return {
+    kind: "completed",
+    data: {
+      modelId: "def-1",
+      modelName: "my-model",
+      modelType: "test/example",
+      totalDeleted: 5,
+      totalVersionsDeleted: 8,
+      failed: [],
+      dryRun: false,
+      ...overrides,
+    },
+  };
+}
+
+Deno.test("createDataBatchDeleteRenderer: log mode handles real delete", () => {
+  const renderer = createDataBatchDeleteRenderer("log");
+  const handlers = renderer.handlers();
+  const out = captureLog(() => handlers.completed!(makeBatchCompletedEvent()));
+  assertStringIncludes(out, "Deleted 5 data artifact(s)");
+  assertStringIncludes(out, "8 version(s)");
+});
+
+Deno.test("createDataBatchDeleteRenderer: log mode handles dry-run", () => {
+  const renderer = createDataBatchDeleteRenderer("log");
+  const handlers = renderer.handlers();
+  const out = captureLog(() =>
+    handlers.completed!(makeBatchCompletedEvent({ dryRun: true }))
+  );
+  assertStringIncludes(out, "Would delete 5 data artifact(s)");
+});
+
+Deno.test("createDataBatchDeleteRenderer: log mode shows partial failures", () => {
+  const renderer = createDataBatchDeleteRenderer("log");
+  const handlers = renderer.handlers();
+  const out = captureLog(() =>
+    handlers.completed!(makeBatchCompletedEvent({
+      failed: [{ dataName: "bad-item", error: "permission denied" }],
+    }))
+  );
+  assertStringIncludes(out, "1 artifact(s) failed");
+  assertStringIncludes(out, "bad-item");
+  assertStringIncludes(out, "permission denied");
+});
+
+Deno.test("createDataBatchDeleteRenderer: json mode emits data object", () => {
+  const renderer = createDataBatchDeleteRenderer("json");
+  const handlers = renderer.handlers();
+  const out = captureStdout(() =>
+    handlers.completed!(makeBatchCompletedEvent())
+  );
+  const parsed = JSON.parse(out);
+  assertEquals(parsed.modelName, "my-model");
+  assertEquals(parsed.totalDeleted, 5);
+  assertEquals(parsed.totalVersionsDeleted, 8);
+  assertEquals(parsed.dryRun, false);
+  assertEquals(parsed.failed, []);
+});
+
+Deno.test("createDataBatchDeleteRenderer: error handler throws UserError", () => {
+  const renderer = createDataBatchDeleteRenderer("log");
+  const handlers = renderer.handlers();
+  assertThrows(
+    () =>
+      handlers.error!({
+        kind: "error",
+        error: validationFailed("batch failed"),
+      } as Extract<DataBatchDeleteEvent, { kind: "error" }>),
+    UserError,
+    "batch failed",
+  );
 });

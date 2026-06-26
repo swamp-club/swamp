@@ -1105,7 +1105,14 @@ export {
 
 // Data delete operations
 export {
+  type BatchDeleteFilter,
   createDataDeleteDeps,
+  dataBatchDelete,
+  type DataBatchDeleteData,
+  type DataBatchDeleteEvent,
+  type DataBatchDeleteInput,
+  type DataBatchDeletePreview,
+  dataBatchDeletePreview,
   dataDelete,
   type DataDeleteData,
   type DataDeleteDeps,

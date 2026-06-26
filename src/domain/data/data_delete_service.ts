@@ -17,6 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { Data } from "./data.ts";
 import type { UnifiedDataRepository } from "./repositories.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
 import { findDefinitionByIdOrName } from "../models/model_lookup.ts";
@@ -43,6 +44,41 @@ export interface DeletePreview {
   modelName: string;
   dataName: string;
   versionsCount: number;
+}
+
+export interface BatchDeleteResult {
+  modelType: string;
+  modelId: string;
+  modelName: string;
+  deleted: Array<{ dataName: string; versionsDeleted: number }>;
+  failed: Array<{ dataName: string; error: string }>;
+  totalDeleted: number;
+  totalVersionsDeleted: number;
+}
+
+export interface BatchDeletePreview {
+  modelType: string;
+  modelId: string;
+  modelName: string;
+  matchingItems: Array<{ dataName: string; versionsCount: number }>;
+  totalItems: number;
+  totalVersions: number;
+}
+
+export type BatchDeleteFilter =
+  | { kind: "prefix"; value: string }
+  | { kind: "all" };
+
+function matchesFilter(
+  data: Data,
+  filter: BatchDeleteFilter,
+): boolean {
+  switch (filter.kind) {
+    case "all":
+      return true;
+    case "prefix":
+      return data.name.startsWith(filter.value);
+  }
 }
 
 /**
@@ -139,6 +175,125 @@ export class DataDeleteService {
       modelName: definition.name,
       dataName,
       versionsCount: versions.length,
+    };
+  }
+
+  async batchDelete(
+    modelRef: string,
+    filter: BatchDeleteFilter,
+  ): Promise<BatchDeleteResult> {
+    const lookup = await findDefinitionByIdOrName(
+      this.definitionRepo,
+      modelRef,
+    );
+    if (!lookup) {
+      throw new Error(`Model not found: ${modelRef}`);
+    }
+    const { definition, type: modelType } = lookup;
+
+    const allData = await this.dataRepo.findAllForModel(
+      modelType,
+      definition.id,
+    );
+    const matching = allData.filter((d) => matchesFilter(d, filter));
+
+    if (matching.length === 0) {
+      const desc = filter.kind === "prefix"
+        ? `prefix "${filter.value}"`
+        : "any data";
+      throw new Error(
+        `No data matching ${desc} found for model ${definition.name}`,
+      );
+    }
+
+    const deleted: Array<{ dataName: string; versionsDeleted: number }> = [];
+    const failed: Array<{ dataName: string; error: string }> = [];
+    let totalVersionsDeleted = 0;
+
+    for (const data of matching) {
+      try {
+        const versions = await this.dataRepo.listVersions(
+          modelType,
+          definition.id,
+          data.name,
+        );
+        await this.dataRepo.delete(modelType, definition.id, data.name);
+        deleted.push({
+          dataName: data.name,
+          versionsDeleted: versions.length,
+        });
+        totalVersionsDeleted += versions.length;
+      } catch (error) {
+        failed.push({
+          dataName: data.name,
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    return {
+      modelType: modelType.normalized,
+      modelId: definition.id,
+      modelName: definition.name,
+      deleted,
+      failed,
+      totalDeleted: deleted.length,
+      totalVersionsDeleted,
+    };
+  }
+
+  async batchPreviewDelete(
+    modelRef: string,
+    filter: BatchDeleteFilter,
+  ): Promise<BatchDeletePreview> {
+    const lookup = await findDefinitionByIdOrName(
+      this.definitionRepo,
+      modelRef,
+    );
+    if (!lookup) {
+      throw new Error(`Model not found: ${modelRef}`);
+    }
+    const { definition, type: modelType } = lookup;
+
+    const allData = await this.dataRepo.findAllForModel(
+      modelType,
+      definition.id,
+    );
+    const matching = allData.filter((d) => matchesFilter(d, filter));
+
+    if (matching.length === 0) {
+      const desc = filter.kind === "prefix"
+        ? `prefix "${filter.value}"`
+        : "any data";
+      throw new Error(
+        `No data matching ${desc} found for model ${definition.name}`,
+      );
+    }
+
+    let totalVersions = 0;
+    const matchingItems: Array<{ dataName: string; versionsCount: number }> =
+      [];
+
+    for (const data of matching) {
+      const versions = await this.dataRepo.listVersions(
+        modelType,
+        definition.id,
+        data.name,
+      );
+      matchingItems.push({
+        dataName: data.name,
+        versionsCount: versions.length,
+      });
+      totalVersions += versions.length;
+    }
+
+    return {
+      modelType: modelType.normalized,
+      modelId: definition.id,
+      modelName: definition.name,
+      matchingItems,
+      totalItems: matching.length,
+      totalVersions,
     };
   }
 }

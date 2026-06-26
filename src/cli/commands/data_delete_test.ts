@@ -34,7 +34,7 @@ Deno.test("dataDeleteCommand has correct description", async () => {
   const { dataDeleteCommand } = await import("./data_delete.ts");
   assertEquals(
     dataDeleteCommand.getDescription(),
-    "Delete a data artifact (all versions, or one when --version is set)",
+    "Delete data artifacts: one by name, many by prefix, or all for a model",
   );
 });
 
@@ -84,4 +84,25 @@ Deno.test("dataDeleteCommand has --name option", async () => {
   const options = dataDeleteCommand.getOptions();
   const nameOpt = options.find((o) => o.name === "name");
   assertEquals(nameOpt !== undefined, true);
+});
+
+Deno.test("dataDeleteCommand has --prefix option", async () => {
+  const { dataDeleteCommand } = await import("./data_delete.ts");
+  const options = dataDeleteCommand.getOptions();
+  const prefixOpt = options.find((o) => o.name === "prefix");
+  assertEquals(prefixOpt !== undefined, true);
+});
+
+Deno.test("dataDeleteCommand has --all option", async () => {
+  const { dataDeleteCommand } = await import("./data_delete.ts");
+  const options = dataDeleteCommand.getOptions();
+  const allOpt = options.find((o) => o.name === "all");
+  assertEquals(allOpt !== undefined, true);
+});
+
+Deno.test("dataDeleteCommand has --dry-run option", async () => {
+  const { dataDeleteCommand } = await import("./data_delete.ts");
+  const options = dataDeleteCommand.getOptions();
+  const dryRunOpt = options.find((o) => o.name === "dry-run");
+  assertEquals(dryRunOpt !== undefined, true);
 });
