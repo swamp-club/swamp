@@ -21,6 +21,14 @@ interface DatastoreProvider {
   createSyncService?(repoDir: string, cachePath: string): DatastoreSyncService;
   resolveDatastorePath(repoDir: string): string;
   resolveCachePath?(repoDir: string): string | undefined;
+
+  registerNamespace?(
+    datastorePath: string,
+    namespace: string,
+    repoId: string,
+  ): Promise<void>;
+
+  listNamespaces?(datastorePath: string): Promise<string[]>;
 }
 ```
 
@@ -59,6 +67,18 @@ locally accessible (no sync needed).
 Returns the absolute path where runtime data should be stored. For local
 datastores, this is the actual data directory. For remote datastores, this
 should be the local cache path.
+
+### `registerNamespace(datastorePath, namespace, repoId)?`
+
+Optional. Register a namespace in the datastore by writing a
+`{namespace}/.namespace.json` manifest. Fails if the namespace slug is already
+claimed by a different `repoId`. Solo-mode backends that don't support
+namespaces omit this method.
+
+### `listNamespaces(datastorePath)?`
+
+Optional. List all registered namespaces by scanning for `.namespace.json`
+manifests. Returns namespace slugs as strings. An empty array means solo mode.
 
 ### `resolveCachePath(repoDir)?`
 
@@ -165,13 +185,30 @@ Optional interface for remote datastore synchronization.
 interface DatastoreSyncService {
   pullChanged(options?: DatastoreSyncOptions): Promise<number | void>;
   pushChanged(options?: DatastoreSyncOptions): Promise<number | void>;
+  capabilities?(): SyncCapabilities;
   markDirty(options?: DatastoreSyncOptions): Promise<void>;
+  exportCatalog?(namespace: string): Promise<void>;
+  pullForeignCatalogs?(
+    namespaces: readonly string[],
+  ): Promise<CatalogExportEntry[]>;
+  fetchForeignContent?(
+    namespace: string,
+    relPath: string,
+  ): Promise<Uint8Array | null>;
+}
+
+interface SyncCapabilities {
+  scopedSync?: boolean;
+  lazyHydration?: boolean;
+  namespacedSync?: boolean;
 }
 
 interface DatastoreSyncOptions {
   signal?: AbortSignal;
   /** Cache-relative path of the file about to be written or removed. */
   relPath?: string;
+  /** Namespace subtree this sync operation targets. */
+  namespace?: string;
 }
 ```
 
@@ -211,3 +248,37 @@ nothing to invalidate and can return `Promise.resolve()` — fully backward
 compatible.
 
 `markDirty()` must be idempotent and cheap — core does not deduplicate calls.
+
+### `capabilities()?`
+
+Optional. Returns a `SyncCapabilities` object advertising what this sync service
+supports:
+
+- `namespacedSync` — when `true`, the extension correctly handles the
+  `namespace` field on `DatastoreSyncOptions`, scoping its index walk and upload
+  to `{namespace}/` in the remote datastore. Extensions that don't advertise
+  this still receive the namespace field but are expected to ignore it
+  (solo-mode behavior).
+- `scopedSync` — supports domain-level sync context.
+- `lazyHydration` — supports metadata-only pulls with on-demand content fetch.
+
+### `exportCatalog(namespace)?`
+
+Optional. Export the local catalog for the given namespace as a flat JSON array
+at `{namespace}/.catalog-export.json` in the remote datastore. Called after
+`pushChanged` so the export reflects the latest state.
+
+### `pullForeignCatalogs(namespaces)?`
+
+Optional. Pull catalog exports from the given foreign namespaces. Each
+namespace's export lives at `{namespace}/.catalog-export.json`. Returns one
+`CatalogExportEntry` per namespace that was successfully fetched. Missing
+exports are silently skipped.
+
+### `fetchForeignContent(namespace, relPath)?`
+
+Optional. Download a single file from a foreign namespace. Used for on-demand
+cross-namespace content access when a CEL expression references another
+namespace's data attributes. Returns the file contents, or `null` if the file
+does not exist. Fetched content is NOT persisted locally — it is ephemeral,
+cached only for the duration of the current command.

@@ -258,6 +258,31 @@ export SWAMP_DATASTORE='@myorg/my-store:{"key":"val"}'
 
 For custom datastore or driver implementations, see the `swamp-extension` skill.
 
+### Namespaces (Multi-Repo Datastores)
+
+When multiple repos share a remote datastore, each must own a **namespace** to
+avoid index collisions. Without namespaces, two repos writing to the same prefix
+clobber each other's `.datastore-index.json`.
+
+```bash
+swamp datastore namespace set <slug> --json            # Assign namespace
+swamp datastore namespace migrate --confirm --json     # Move data to namespaced layout
+swamp datastore namespace list --json                  # List all namespaces
+swamp datastore namespace unset --json                 # Remove namespace
+swamp datastore catalog pull --namespaces <list> --json # Pull foreign catalogs
+```
+
+Standard multi-repo flow:
+
+```bash
+swamp datastore namespace set infra
+swamp datastore namespace migrate --confirm
+swamp datastore sync --push
+```
+
+For the full command reference, output shapes, and cross-namespace data access,
+see [references/namespaces.md](references/namespaces.md).
+
 ## Extension Sources
 
 Load extensions from external filesystem paths without copying files. Use this
@@ -354,6 +379,9 @@ pointing at your local development copy — your local version loads instead.
   swamp in CI, GitHub Actions examples, and version pinning
 - **Structure**: See [references/structure.md](references/structure.md) for
   complete directory layout reference
+- **Namespaces**: See [references/namespaces.md](references/namespaces.md) for
+  multi-repo shared datastores, namespace commands, and cross-namespace data
+  access
 - **Troubleshooting**: See
   [references/troubleshooting.md](references/troubleshooting.md) for config
   problems and recovery procedures
