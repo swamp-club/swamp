@@ -432,11 +432,15 @@ The manifest lives at `{namespace}/.namespace.json` in the remote datastore
 
 For extension datastores, `DatastoreProvider.registerNamespace()` and
 `DatastoreProvider.listNamespaces()` manage manifests via the remote API
-(S3 PUT/GET, GCS equivalent). For filesystem datastores, the built-in
-`namespace_manifest.ts` utility reads and writes manifest files directly.
-Both methods are optional on `DatastoreProvider` — when the extension does
-not implement them, the CLI warns that conflict detection is unavailable and
-proceeds with only the `.swamp.yaml` update.
+(S3 PUT/GET, GCS equivalent). After writing to the remote, swamp core also
+materializes the manifest into the local cache at
+`{cachePath}/{namespace}/.namespace.json`. This ensures the extension's
+`pushChanged()` orphan detection sees a local counterpart for the manifest
+and does not delete the remote copy (swamp-club#834). For filesystem
+datastores, the built-in `namespace_manifest.ts` utility reads and writes
+manifest files directly. Both methods are optional on `DatastoreProvider` —
+when the extension does not implement them, the CLI warns that conflict
+detection is unavailable and proceeds with only the `.swamp.yaml` update.
 
 ### Zero-Diff Fast Path (Extension Guidance)
 

@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
+import { join } from "@std/path";
 import { z } from "zod";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
@@ -32,6 +33,7 @@ import {
 import { datastoreTypeRegistry } from "../../domain/datastore/datastore_type_registry.ts";
 import type { DatastoreProvider } from "../../domain/datastore/datastore_provider.ts";
 import type { DatastoreSyncOptions } from "../../domain/datastore/datastore_sync_service.ts";
+import { readNamespaceManifest } from "../../infrastructure/persistence/namespace_manifest.ts";
 
 function makeDeps(
   overrides: Partial<DatastoreSetupDeps> = {},
@@ -1061,4 +1063,62 @@ Deno.test("datastoreSetupExtension: rejects invalid namespace slug", async () =>
   assertEquals(error.kind, "error");
   assertEquals(error.error.code, "validation_failed");
   assertStringIncludes(error.error.message, "Invalid namespace");
+});
+
+// ============================================================================
+// Namespace manifest cache materialization tests (swamp-club#834)
+// ============================================================================
+
+Deno.test("datastoreSetupExtension: materializes namespace manifest in local cache", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp-setup-834-" });
+  try {
+    let registered = false;
+    const NS_CACHE_TYPE = "test-ext-ns-cache-834";
+    if (!datastoreTypeRegistry.has(NS_CACHE_TYPE)) {
+      datastoreTypeRegistry.register({
+        type: NS_CACHE_TYPE,
+        name: "NS Cache Test",
+        description: "Test namespace manifest cache materialization",
+        isBuiltIn: false,
+        createProvider: () => ({
+          ...createStubProvider(),
+          resolveDatastorePath: () => join(tmpDir, "remote"),
+          resolveCachePath: () => join(tmpDir, "cache"),
+          registerNamespace: () => {
+            registered = true;
+            return Promise.resolve();
+          },
+        }),
+      });
+    }
+
+    const deps = makeDeps();
+    const input = makeExtensionInput({
+      type: NS_CACHE_TYPE,
+      repoDir: tmpDir,
+      namespace: "infra",
+      repoId: "repo-834",
+      skipMigration: true,
+    });
+
+    await collect<DatastoreSetupEvent>(
+      datastoreSetupExtension(createLibSwampContext(), deps, input),
+    );
+
+    assertEquals(registered, true, "provider.registerNamespace must be called");
+
+    const manifest = await readNamespaceManifest(
+      join(tmpDir, "cache"),
+      "infra",
+    );
+    assertEquals(
+      manifest !== null,
+      true,
+      "manifest must be materialized in the local cache",
+    );
+    assertEquals(manifest?.namespace, "infra");
+    assertEquals(manifest?.repoId, "repo-834");
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+  }
 });

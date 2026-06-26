@@ -130,6 +130,14 @@ export const datastoreNamespaceSetCommand = new Command()
             namespace,
             rId,
           );
+          // Materialize the manifest into the local cache so push's
+          // orphan detection sees a local counterpart and does not
+          // delete the remote copy (swamp-club#834).
+          const cachePath =
+            (datastoreConfig as CustomDatastoreConfig).cachePath;
+          if (cachePath) {
+            await writeNamespaceManifest(cachePath, namespace, rId);
+          }
           return;
         }
         await writeNamespaceManifest(dsBasePath, namespace, rId);
