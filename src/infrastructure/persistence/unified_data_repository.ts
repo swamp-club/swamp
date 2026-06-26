@@ -190,6 +190,40 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
    * the same walk shape as `findAllGlobal`, plus a stat per file before
    * parse.
    */
+  async findAllForType(
+    type: ModelTypeInput,
+  ): Promise<
+    Array<{ data: Data; modelType: ModelType; modelId: string }>
+  > {
+    const modelType = coerceModelType(type);
+    const typeDir = this.getTypeDir(modelType);
+    const results: Array<
+      { data: Data; modelType: ModelType; modelId: string }
+    > = [];
+
+    try {
+      for await (const entry of Deno.readDir(typeDir)) {
+        if (!entry.isDirectory) continue;
+        const modelId = entry.name;
+        try {
+          const dataItems = await this.findAllForModel(modelType, modelId);
+          for (const data of dataItems) {
+            results.push({ data, modelType, modelId });
+          }
+        } catch {
+          // Skip invalid model directories
+        }
+      }
+    } catch (error) {
+      if (error instanceof Deno.errors.NotFound) {
+        return [];
+      }
+      throw error;
+    }
+
+    return results;
+  }
+
   async findAllGlobalSince(
     cutoff: Date,
   ): Promise<Array<{ data: Data; modelType: ModelType; modelId: string }>> {

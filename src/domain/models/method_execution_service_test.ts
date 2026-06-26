@@ -200,6 +200,7 @@ function createMockDataRepo(): UnifiedDataRepository {
   return {
     namespace: SOLO_NAMESPACE,
     findAllGlobal: () => Promise.resolve([]),
+    findAllForType: () => Promise.resolve([]),
     findByName: () => Promise.resolve(null),
     findById: () => Promise.resolve(null),
     listVersions: () => Promise.resolve([]),

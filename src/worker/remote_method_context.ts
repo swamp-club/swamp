@@ -199,6 +199,7 @@ function createRemoteDataRepository(
     // writes flow through the remote writers, never raw repository saves.
     findAllGlobal: () => unsupported("dataRepository.findAllGlobal"),
     findAllForModel: () => unsupported("dataRepository.findAllForModel"),
+    findAllForType: () => unsupported("dataRepository.findAllForType"),
     save: () => unsupported("dataRepository.save"),
     append: () => unsupported("dataRepository.append"),
     allocateVersion: () => unsupported("dataRepository.allocateVersion"),

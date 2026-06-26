@@ -20,8 +20,7 @@
 import { getLogger } from "@logtape/logtape";
 import { Environment } from "cel-js";
 import { registerArithmeticOverloads } from "../../infrastructure/cel/cel_evaluator.ts";
-import type { DataRecord } from "../data/data_record.ts";
-import type { DataQueryService } from "../data/data_query_service.ts";
+import type { UnifiedDataRepository } from "../data/repositories.ts";
 import type { EventBus } from "../events/event_bus.ts";
 import type { ModelCreated, ModelUpdated } from "../events/types.ts";
 import {
@@ -34,6 +33,7 @@ import {
   GROUP_MODEL_TYPE,
   GroupSchema,
 } from "../models/access/group_model.ts";
+import type { ModelType } from "../models/model_type.ts";
 import type { PrincipalContext } from "./principal_context.ts";
 import type { ConditionEvaluator } from "./policy_snapshot.ts";
 import { PolicySnapshot } from "./policy_snapshot.ts";
@@ -97,7 +97,7 @@ function buildConditionEvaluator(): ConditionEvaluator {
 export type PolicyReloadMode = "manual" | "auto";
 
 export class PolicySnapshotLoader {
-  readonly #dataQueryService: DataQueryService;
+  readonly #dataRepo: UnifiedDataRepository;
   readonly #unsubscribers: (() => void)[] = [];
   readonly #conditionEvaluator: ConditionEvaluator;
   #snapshot: PolicySnapshot = PolicySnapshot.empty();
@@ -106,11 +106,11 @@ export class PolicySnapshotLoader {
   #cachedDecisionService: GrantBasedAccessDecisionService | null = null;
 
   constructor(
-    dataQueryService: DataQueryService,
+    dataRepo: UnifiedDataRepository,
     eventBus: EventBus,
     mode: PolicyReloadMode = "auto",
   ) {
-    this.#dataQueryService = dataQueryService;
+    this.#dataRepo = dataRepo;
     this.#conditionEvaluator = buildConditionEvaluator();
 
     if (mode === "auto") {
@@ -188,20 +188,15 @@ export class PolicySnapshotLoader {
     grantCount: number;
     groupCount: number;
   }> {
-    const [grantRecords, groupRecords] = await Promise.all([
-      this.#dataQueryService.query(
-        `modelType == "${GRANT_MODEL_TYPE_STR}"`,
-        { loadAttributes: true },
-      ),
-      this.#dataQueryService.query(
-        `modelType == "${GROUP_MODEL_TYPE_STR}"`,
-        { loadAttributes: true },
-      ),
+    const [grantDataItems, groupDataItems] = await Promise.all([
+      this.#dataRepo.findAllForType(GRANT_MODEL_TYPE),
+      this.#dataRepo.findAllForType(GROUP_MODEL_TYPE),
     ]);
 
     const grants: Grant[] = [];
-    for (const record of grantRecords) {
-      const attrs = (record as DataRecord).attributes;
+    for (const { data, modelType, modelId } of grantDataItems) {
+      const attrs = await this.#readAttributes(modelType, modelId, data.name);
+      if (!attrs) continue;
       const parsed = GrantSchema.safeParse(attrs);
       if (parsed.success && parsed.data.state === "active") {
         grants.push(parsed.data);
@@ -209,8 +204,9 @@ export class PolicySnapshotLoader {
     }
 
     const groups: Group[] = [];
-    for (const record of groupRecords) {
-      const attrs = (record as DataRecord).attributes;
+    for (const { data, modelType, modelId } of groupDataItems) {
+      const attrs = await this.#readAttributes(modelType, modelId, data.name);
+      if (!attrs) continue;
       const parsed = GroupSchema.safeParse(attrs);
       if (parsed.success) {
         groups.push(parsed.data);
@@ -224,6 +220,25 @@ export class PolicySnapshotLoader {
       grantCount: grants.length,
       groupCount: groups.length,
     };
+  }
+
+  async #readAttributes(
+    modelType: ModelType,
+    modelId: string,
+    dataName: string,
+  ): Promise<Record<string, unknown> | null> {
+    const content = await this.#dataRepo.getContent(
+      modelType,
+      modelId,
+      dataName,
+    );
+    if (!content) return null;
+    try {
+      const text = new TextDecoder().decode(content);
+      return JSON.parse(text) as Record<string, unknown>;
+    } catch {
+      return null;
+    }
   }
 
   #scheduleRebuild(): void {

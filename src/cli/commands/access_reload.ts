@@ -109,7 +109,7 @@ export const accessReloadCommand = new Command()
 
     const eventBus = new EventBus();
     const loader = new PolicySnapshotLoader(
-      repoContext.dataQueryService,
+      repoContext.unifiedDataRepo,
       eventBus,
       "manual",
     );
