@@ -55,7 +55,11 @@ export const extensionInfoCommand = new Command()
       const identity = await loadIdentity();
       const ctx = createLibSwampContext({ logger: cliCtx.logger });
       const deps = createExtensionInfoDeps(identity.bearerToken, identity);
-      const renderer = createExtensionInfoRenderer(cliCtx.outputMode);
+      const verbose = cliCtx.verbosity === "verbose";
+      const renderer = createExtensionInfoRenderer(
+        cliCtx.outputMode,
+        verbose,
+      );
 
       await consumeStream(
         extensionInfo(ctx, deps, { extensionName: name }),

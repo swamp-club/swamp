@@ -16,23 +16,61 @@ via `swamp-extension-publish`.
 
 ## Before Creating an Extension
 
-1. `swamp extension search <query>` — does a community extension already cover
-   it? Prefer `@swamp/*` official extensions first. Install with
-   `swamp extension pull <package>` and use it. Stop.
-2. `swamp model type search <query>` — check built-in/installed local types.
-3. Extend an existing type (including `@swamp` extensions) if it covers the
+1. **Search the registry.** Use filters to narrow results — don't rely on broad
+   keyword searches. Search by **service name**, not operation name (e.g. `ec2`
+   not `ebs` — extensions are organized by service, operations are methods
+   within types).
+
+   ```
+   swamp extension search <service> --platform <platform> --content-type models --json
+   ```
+
+   Available filters: `--platform` (aws, gcp, azure, …), `--content-type`
+   (models, workflows, vaults, datastores, drivers, reports), `--label`,
+   `--collective`. Prefer `@swamp/*` official extensions first.
+
+2. **Inspect before pulling.** Once you find a candidate, check its types and
+   methods with `extension info` — don't pull until you confirm it has what you
+   need:
+
+   ```
+   swamp extension info <package> --json
+   ```
+
+   The `contentMetadata` field in the JSON output lists every model type with
+   its methods and arguments, plus workflows, vaults, and other content. If the
+   type or method you need isn't listed, don't pull — move to step 5.
+
+3. **Pull and use.** If the extension has the right type and method, install it:
+   `swamp extension pull <package>`. Stop.
+
+4. **Check local types.** `swamp model type search <query>` — check
+   built-in/installed local types. **Cold-repo shortcut:** if no extensions are
+   installed (fresh repo, CI environment), skip this step — local search is
+   guaranteed-empty.
+
+5. **Extend an existing type** (including `@swamp` extensions) if it covers the
    domain but lacks the method you need. If the type is an official `@swamp/*`
    extension, also file a feature request so the maintainers learn about the
    gap: `swamp issue feature --extension @swamp/<name>`.
-4. For local or private extensions, use `swamp extension source add <path>`.
-5. Only create a new extension if nothing fits.
+
+6. **Confirmed no type/method exists?** If `extension info` and `type search`
+   both confirm no type or method covers the operation, stop searching.
+   `command/shell` or a custom model is the correct approach — file a feature
+   request (`swamp issue feature --extension @swamp/<name>`) to track the gap.
+
+7. For local or private extensions, use `swamp extension source add <path>`.
+
+8. Only create a new extension if nothing fits.
 
 Trusted collectives auto-resolve on first use. Only `@swamp/*` is trusted by
 default; trust others explicitly with `swamp extension trust add <collective>`
 (`swamp extension trust list` shows which).
 
-**Never** use `command/shell` to wrap service integrations — build a dedicated
-model.
+Don't use `command/shell` when an extension type covers the operation. If
+`extension info` confirms no type or method exists for the operation,
+`command/shell` or a custom model is the correct approach — file a feature
+request to track the gap.
 
 ## Choosing a Collective Name
 

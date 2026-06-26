@@ -67,6 +67,14 @@ export interface LatestVersionInfo {
   channel?: string;
 }
 
+/** Detailed version info including content metadata from the /latest endpoint. */
+export interface LatestVersionDetail {
+  version: string;
+  publishedAt: string;
+  channel?: string;
+  contentMetadata: ExtensionContentMetadata | null;
+}
+
 /** Extension author metadata. */
 export interface ExtensionAuthor {
   username: string;
@@ -248,6 +256,50 @@ export class ExtensionApiClient {
     return {
       version: data.latestVersionDetail?.version ?? data.latestVersion,
       publishedAt: data.latestVersionDetail?.publishedAt ?? "",
+    };
+  }
+
+  /**
+   * Get full version detail including content metadata from the /latest endpoint.
+   * Returns null if not found or no versions exist.
+   */
+  async getLatestVersionDetail(
+    name: string,
+    apiKey?: string,
+  ): Promise<LatestVersionDetail | null> {
+    const encodedName = encodeURIComponent(name);
+    const headers = apiKey ? this.authHeaders(apiKey) : {};
+    const res = await this.fetch(
+      `/api/v1/extensions/${encodedName}/latest`,
+      {
+        method: "GET",
+        headers,
+      },
+    );
+
+    if (res.status === 404 || res.status === 410) {
+      await res.body?.cancel();
+      return null;
+    }
+
+    await this.checkResponse(res);
+    const data = await res.json();
+    const detail = data.latestVersionDetail;
+    if (!detail) return null;
+
+    return {
+      version: detail.version,
+      publishedAt: detail.publishedAt ?? "",
+      channel: detail.channel,
+      contentMetadata: {
+        models: detail.models ?? [],
+        workflows: detail.workflows ?? [],
+        vaults: detail.vaults ?? [],
+        drivers: detail.drivers ?? [],
+        datastores: detail.datastores ?? [],
+        reports: detail.reports ?? [],
+        skills: detail.skills ?? [],
+      },
     };
   }
 

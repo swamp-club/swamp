@@ -17,7 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { EventHandlers, ExtensionInfoEvent } from "../../libswamp/mod.ts";
+import type {
+  EventHandlers,
+  ExtensionContentMetadata,
+  ExtensionInfoEvent,
+  ExtractedModel,
+} from "../../libswamp/mod.ts";
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
@@ -28,9 +33,98 @@ function extractBasename(name: string): string {
   return slash >= 0 ? name.slice(slash + 1) : name;
 }
 
+function renderContentMetadata(
+  logger: ReturnType<typeof getSwampLogger>,
+  meta: ExtensionContentMetadata,
+  verbose: boolean,
+): void {
+  if (meta.models.length > 0) {
+    logger.info``;
+    logger.info`Models (${meta.models.length}):`;
+    for (const model of meta.models) {
+      const methods = model.methods.map((m) => m.name).join(", ");
+      const name = model.type || model.fileName;
+      logger.info`  ${name} — methods: ${methods || "none"}`;
+      if (verbose) {
+        renderModelDetail(logger, model);
+      }
+    }
+  }
+
+  if (meta.workflows.length > 0) {
+    logger.info``;
+    logger.info`Workflows (${meta.workflows.length}):`;
+    for (const wf of meta.workflows) {
+      logger.info`  ${wf.name} — ${wf.description || wf.id}`;
+    }
+  }
+
+  if (meta.vaults.length > 0) {
+    logger.info``;
+    logger.info`Vaults (${meta.vaults.length}):`;
+    for (const v of meta.vaults) {
+      logger.info`  ${v.type} — ${v.description || v.name}`;
+    }
+  }
+
+  if (meta.datastores.length > 0) {
+    logger.info``;
+    logger.info`Datastores (${meta.datastores.length}):`;
+    for (const ds of meta.datastores) {
+      logger.info`  ${ds.type} — ${ds.description || ds.name}`;
+    }
+  }
+
+  if (meta.drivers.length > 0) {
+    logger.info``;
+    logger.info`Drivers (${meta.drivers.length}):`;
+    for (const drv of meta.drivers) {
+      logger.info`  ${drv.type} — ${drv.description || drv.name}`;
+    }
+  }
+
+  if (meta.reports.length > 0) {
+    logger.info``;
+    logger.info`Reports (${meta.reports.length}):`;
+    for (const r of meta.reports) {
+      logger.info`  ${r.name} — ${r.description} (${r.scope})`;
+    }
+  }
+
+  if (meta.skills.length > 0) {
+    logger.info``;
+    logger.info`Skills (${meta.skills.length}):`;
+    for (const s of meta.skills) {
+      logger.info`  ${s.name} — ${s.description}`;
+    }
+  }
+}
+
+function renderModelDetail(
+  logger: ReturnType<typeof getSwampLogger>,
+  model: ExtractedModel,
+): void {
+  for (const method of model.methods) {
+    const args = method.arguments
+      .map((a) => `${a.name}${a.required ? "" : "?"}:${a.type}`)
+      .join(", ");
+    logger.info`    ${method.name}(${args})`;
+    if (method.description) {
+      logger.info`      ${method.description}`;
+    }
+  }
+}
+
 class LogExtensionInfoRenderer implements Renderer<ExtensionInfoEvent> {
+  #verbose: boolean;
+
+  constructor(verbose: boolean) {
+    this.#verbose = verbose;
+  }
+
   handlers(): EventHandlers<ExtensionInfoEvent> {
     const logger = getSwampLogger(["extension", "info"]);
+    const verbose = this.#verbose;
     return {
       resolving: () => {},
       completed: (e) => {
@@ -71,6 +165,10 @@ class LogExtensionInfoRenderer implements Renderer<ExtensionInfoEvent> {
         }
         if (d.contentNames.length > 0) {
           logger.info`Exports:     ${d.contentNames.join(", ")}`;
+        }
+
+        if (d.contentMetadata) {
+          renderContentMetadata(logger, d.contentMetadata, verbose);
         }
 
         logger.info``;
@@ -145,11 +243,12 @@ class JsonExtensionInfoRenderer implements Renderer<ExtensionInfoEvent> {
 
 export function createExtensionInfoRenderer(
   mode: OutputMode,
+  verbose = false,
 ): Renderer<ExtensionInfoEvent> {
   switch (mode) {
     case "json":
       return new JsonExtensionInfoRenderer();
     case "log":
-      return new LogExtensionInfoRenderer();
+      return new LogExtensionInfoRenderer(verbose);
   }
 }
