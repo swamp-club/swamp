@@ -1,0 +1,285 @@
+## State 1: repo_verified
+
+Confirm the extension directory is an initialized swamp repository.
+
+**Gate:** The user has a directory containing extension code and a
+`manifest.yaml`.
+
+**Action:**
+
+```bash
+ls .swamp.yaml
+```
+
+**Verify:** The file exists and is valid YAML. If you are in a subdirectory,
+check parent directories up to the filesystem root.
+
+**On Failure:** Run `swamp repo init --json`, then re-verify.
+
+## State 2: auth_verified
+
+Confirm the user is authenticated with the swamp registry.
+
+**Gate:** State 1 passed (`.swamp.yaml` exists).
+
+**Action:**
+
+```bash
+swamp auth whoami --json
+```
+
+**Verify:** The output contains a `username` field and `authenticated: true`.
+
+**On Failure:** Run `swamp auth login`, then re-verify.
+
+## State 3: manifest_validated
+
+Confirm `manifest.yaml` exists and is structurally valid.
+
+**Gate:** State 2 passed (authenticated).
+
+**Action:** Read `manifest.yaml` and validate the 4 required checks documented
+in [references/publishing.md](references/publishing.md#manifest-validation)
+(`manifestVersion`, `name` format, content arrays, file paths).
+
+**Verify:** All 4 checks pass.
+
+**On Failure:** Report which checks failed. See
+[references/publishing.md](references/publishing.md#manifest-validation) for the
+checklist and common fixes.
+
+## State 4: collective_verified
+
+Confirm the manifest collective matches the authenticated user.
+
+**Gate:** State 3 passed (manifest is valid).
+
+**Action:** Extract the collective from the manifest `name` field (the part
+between `@` and `/`). Compare it against the `username` from
+`swamp auth whoami --json`.
+
+**Verify:** The collective matches the authenticated username, or the user has
+confirmed they have permission to publish under this collective.
+
+**On Failure:** Collective mismatch — ask the user to update the manifest `name`
+or confirm publishing rights. Do not proceed until resolved.
+
+## State 5: versioned
+
+Get the next version and bump the manifest.
+
+**Gate:** State 4 passed (collective verified).
+
+**Action:**
+
+```bash
+swamp extension version --manifest manifest.yaml --json
+```
+
+**Verify:** The command succeeds and returns a `nextVersion` field. Update
+`manifest.yaml` with this version. If the model source file also contains a
+`version` field, update it to match.
+
+**On Failure:** If `currentPublished` is `null`, use `nextVersion` as-is (first
+publish). Otherwise check manifest `name` and registry connectivity. See
+[references/publishing.md](references/publishing.md#calver-versioning) for
+CalVer details.
+
+## State 6: formatted
+
+Format and lint all extension files.
+
+**Gate:** State 5 passed (version bumped).
+
+**Action:**
+
+```bash
+swamp extension fmt manifest.yaml --json
+```
+
+**Verify:** The command exits successfully (exit code 0). Run the check mode to
+confirm:
+
+```bash
+swamp extension fmt manifest.yaml --check --json
+```
+
+**On Failure:** Fix lint errors reported by `--check`, then re-run fmt. See
+[references/publishing.md](references/publishing.md#extension-formatting) for
+details.
+
+## State 6b: quality_checked
+
+Show the extension's quality score before proceeding. This step is
+**non-blocking** — it does not gate the next state. The score is informational
+so the author sees where they stand before publishing.
+
+**Gate:** State 6 passed (formatting clean).
+
+**Action:**
+
+```bash
+swamp extension quality manifest.yaml --json
+```
+
+**Present:** Show the score and grade to the user (e.g. "Quality: 10/15 (67%),
+Grade B"). If any factors are unearned, list them so the author can decide
+whether to address them. Do not require or suggest they must fix anything —
+these are the author's choices.
+
+**Advance:** Always proceed to State 7 regardless of the score.
+
+## State 7: dry_run_passed
+
+Validate the extension can be pushed without actually uploading.
+
+**Gate:** State 6 passed (formatting clean).
+
+**Action:**
+
+```bash
+swamp extension push manifest.yaml --dry-run --json
+```
+
+**Verify:** Exit code 0. Confirm any warnings with the user.
+
+**On Failure:** If the dry-run reports a missing or incomplete adversarial
+review report, the review gate is unsatisfied. Complete the **Adversarial Review
+Gate** in the `swamp-extension` skill (write the content-hash-bound review
+report at the path the dry-run prints), then re-run. For other failures see
+[references/publishing.md](references/publishing.md#safety-rules).
+
+## State 8: pushed
+
+Publish the extension to the registry.
+
+**CRITICAL: Do NOT push automatically.** Present summary and wait for explicit
+user confirmation.
+
+**Gate:** ALL prior states (1–7) passed. Ask: "Ready to push
+`@collective/name@YYYY.MM.DD.MICRO`. Shall I proceed?"
+
+**Action:** Only after explicit user approval:
+
+```bash
+swamp extension push manifest.yaml --yes --json
+```
+
+**Verify:** The command exits successfully and reports the published version.
+
+**On Failure:** If the push fails:
+
+- Version already exists → bump the MICRO component and retry
+- Network error → check connectivity and retry
+- Auth error → re-run `swamp auth login` (go back to State 2)
+
+## Post-Publication: Release Channels
+
+Release channels let you publish prerelease versions (beta, rc) before promoting
+to stable. Channels are **entirely optional** — omitting `--channel` publishes
+straight to stable, which is the default and most common flow. The state machine
+above does not change when using channels.
+
+See the
+[prerelease publishing manual](https://swamp-club.com/manual/how-to/extensions/publish-prerelease)
+for the full guide.
+
+### Publishing to a channel
+
+Add `--channel` to the push command from State 8:
+
+```bash
+# Publish a beta
+swamp extension push manifest.yaml --channel beta --yes --json
+
+# Publish a release candidate
+swamp extension push manifest.yaml --channel rc --yes --json
+```
+
+Valid channel values are `beta` and `rc`. Omitting `--channel` publishes to
+stable. The dry-run in State 7 also accepts `--channel` for validation.
+
+### Promoting between channels
+
+Promote an existing version to a higher channel without re-publishing:
+
+```bash
+# Promote beta to rc
+swamp extension promote @collective/name 2026.06.10.1 --channel rc --json
+
+# Promote rc to stable
+swamp extension promote @collective/name 2026.06.10.1 --channel stable --json
+
+# Explicit source channel (skips direction validation)
+swamp extension promote @collective/name 2026.06.10.1 \
+  --channel stable --from-channel rc --json
+```
+
+| Option           | Required | Description                                            |
+| ---------------- | -------- | ------------------------------------------------------ |
+| `--channel`      | Yes      | Target channel: `rc` or `stable`                       |
+| `--from-channel` | No       | Source channel (`beta` or `rc`); inferred when omitted |
+
+Promotion direction must go upward: beta → rc → stable.
+
+### Channel-aware pull and search
+
+```bash
+# Pull a specific channel
+swamp extension pull @collective/name --channel beta --json
+
+# Search with channel filter (repeatable; omitting returns stable only)
+swamp extension search query --channel beta --channel rc --json
+```
+
+The lockfile records the channel preference so subsequent `pull` and `outdated`
+checks use it automatically.
+
+### Channel fields in extension info
+
+`swamp extension info` shows `latestBeta` and `latestRc` fields when prerelease
+versions exist, alongside the stable `latestVersion`.
+
+## Post-Publication: Deprecation
+
+Deprecate or undeprecate a published extension. Deprecated extensions remain
+pullable — this is a soft lifecycle signal, not a deletion.
+
+**Prerequisites:** Authenticated (`swamp auth whoami`) and authorized for the
+extension's collective.
+
+### Deprecate
+
+```bash
+swamp extension deprecate @collective/name --reason "No longer maintained" --json
+
+# Point users to a replacement
+swamp extension deprecate @collective/name \
+  --reason "Merged into collective extension" \
+  --superseded-by @other/replacement --json
+```
+
+| Option            | Required | Description                     |
+| ----------------- | -------- | ------------------------------- |
+| `--reason`        | Yes      | Why the extension is deprecated |
+| `--superseded-by` | No       | Replacement extension name      |
+| `-y, --yes`       | No       | Skip confirmation prompt        |
+
+### Undeprecate
+
+```bash
+swamp extension undeprecate @collective/name --json
+```
+
+Removes deprecation status. Accepts `-y, --yes` to skip confirmation.
+
+### Where deprecation surfaces
+
+`search` shows `[deprecated]`, `info` shows reason/successor/timestamp, `pull`
+prints a warning, `outdated` and `list --check-updates` flag the extension.
+
+## References
+
+See [references/publishing.md](references/publishing.md) for manifest schema,
+field reference, CalVer versioning, safety rules, related skills, and common
+errors.

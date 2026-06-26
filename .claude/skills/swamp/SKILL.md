@@ -78,8 +78,11 @@ swamp extension init <name>                    # scaffold a new extension
    the matching guide from the table above.
 2. **Load deeper references as needed.** Each guide references additional files
    in its `references/` subdirectory — load those when the guide tells you to.
-3. **Load multiple guides when needed.** If the question spans topics (e.g.
-   running a model in a workflow), load both relevant guides.
+3. **Read guides selectively.** Each guide contains only essential reference
+   (commands, rules, quick-start). If the guide doesn't answer your question,
+   load its companion `reference.md` in the same directory for detailed
+   walkthroughs. If the question spans topics, load both relevant guides but do
+   NOT load `reference.md` files upfront — only on demand.
 4. **Use the routing table, not memory.** Don't answer from cached knowledge
    about swamp commands — always load the current guide.
 5. **Validate before acting.** Run `swamp workflow validate <name>` before
