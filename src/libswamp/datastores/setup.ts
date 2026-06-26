@@ -38,6 +38,7 @@ import { FilesystemDatastoreVerifier } from "../../infrastructure/persistence/fi
 import { getSwampDataDir } from "../../infrastructure/persistence/paths.ts";
 import { RepoMarkerRepository } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { summarizeSyncError } from "../../infrastructure/persistence/sync_error_diagnostic.ts";
+import { writeNamespaceManifest } from "../../infrastructure/persistence/namespace_manifest.ts";
 import { runBoundedSync } from "../../infrastructure/persistence/datastore_sync_coordinator.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
@@ -487,6 +488,10 @@ export async function* datastoreSetupExtension(
         if (provider.registerNamespace) {
           try {
             await provider.registerNamespace(datastorePath, ns, input.repoId);
+            // Materialize the manifest into the local cache so push's
+            // orphan detection sees a local counterpart and does not
+            // delete the remote copy (swamp-club#834).
+            await writeNamespaceManifest(cachePath, ns, input.repoId);
             ctx.logger.info`Registered namespace ${ns} in datastore`;
           } catch (error) {
             const msg = error instanceof Error ? error.message : String(error);
