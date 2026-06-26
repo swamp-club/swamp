@@ -17,17 +17,27 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { bold, cyan } from "@std/fmt/colors";
-import { AUTH_NUDGE_MESSAGE } from "../../domain/auth/auth_nudge.ts";
+import { assertEquals, assertStringIncludes } from "@std/assert";
+import { renderAuthNudge } from "./auth_nudge.ts";
 
-export function renderAuthNudge(): void {
-  console.error("");
-  console.error(
-    cyan(
-      AUTH_NUDGE_MESSAGE.replace(
-        "swamp auth login",
-        bold("`swamp auth login`"),
-      ),
-    ),
-  );
-}
+Deno.test("renderAuthNudge: outputs nudge message to stderr", () => {
+  const lines: string[] = [];
+  const original = console.error;
+  console.error = (...args: unknown[]) => {
+    lines.push(
+      args.map((a) => typeof a === "string" ? a : String(a)).join(" "),
+    );
+  };
+  try {
+    renderAuthNudge();
+  } finally {
+    console.error = original;
+  }
+
+  assertEquals(lines.length, 2);
+  assertEquals(lines[0], "");
+  // deno-lint-ignore no-control-regex
+  const stripped = lines[1].replace(/\x1b\[[0-9;]*m/g, "");
+  assertStringIncludes(stripped, "Join & participate in the community");
+  assertStringIncludes(stripped, "swamp auth login");
+});
