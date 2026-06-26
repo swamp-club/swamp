@@ -46,6 +46,11 @@ your intent matches a shortcut — prefer them when they fit and reach for
 `data.query()` when you need a multi-field predicate or a projection. See
 [references/expressions.md](expressions.md) for the full shortcut mapping table.
 
+When the repo uses a datastore namespace, these lookups are implicitly scoped to
+the current namespace. To read data from a foreign namespace, pull its catalog
+first with `swamp datastore catalog pull --namespaces <list>` — see the repo
+skill's [namespaces reference](../../repo/references/namespaces.md) for details.
+
 ```yaml
 # Shortcut — single-model-and-name lookup reads clearly as data.latest()
 globalArguments:
