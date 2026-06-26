@@ -252,7 +252,9 @@ const daemonEnableCommand = new Command()
   )
   .option(
     "--webhook <spec:string>",
-    "Register a webhook endpoint: <route>:<workflow>:<secret>[:<scheme>[:<header>[:<prefix>]]]",
+    "Register a webhook endpoint: <route>:<workflow>:<secret>[:<scheme>[:<header>[:<prefix>]]]. " +
+      "Secret may use @env=VAR to read from an environment variable or " +
+      "@file=/path to read from a file (avoids secrets in argv)",
     { collect: true },
   )
   .option(
@@ -407,7 +409,9 @@ export const serveCommand = new Command()
     "--webhook <spec:string>",
     "Register a webhook endpoint: <route>:<workflow>:<secret>[:<scheme>[:<header>[:<prefix>]]]. " +
       "scheme is one of github (default), linear, stripe, slack, generic; " +
-      "generic requires a header name and accepts an optional value prefix",
+      "generic requires a header name and accepts an optional value prefix. " +
+      "Secret may use @env=VAR to read from an environment variable or " +
+      "@file=/path to read from a file (avoids secrets in argv)",
     { collect: true },
   )
   .option(
@@ -452,13 +456,17 @@ export const serveCommand = new Command()
     "swamp serve --auth-mode token --admins 'user:oauth|user-123'",
   )
   .example(
-    "Webhook trigger",
-    "swamp serve --webhook '/hooks/github:my-workflow:$WEBHOOK_SECRET'",
+    "Webhook (secret from env var)",
+    "swamp serve --webhook '/hooks/github:my-workflow:@env=WEBHOOK_SECRET'",
+  )
+  .example(
+    "Webhook (secret from file)",
+    "swamp serve --webhook '/hooks/github:my-workflow:@file=/run/secrets/webhook'",
   )
   .example(
     "Webhook with a provider scheme",
-    "swamp serve --webhook '/hooks/linear:my-workflow:$SECRET:linear' " +
-      "--webhook '/hooks/custom:my-workflow:$SECRET:generic:X-Signature:sha256='",
+    "swamp serve --webhook '/hooks/linear:my-workflow:@env=LINEAR_SECRET:linear' " +
+      "--webhook '/hooks/custom:my-workflow:@env=CUSTOM_SECRET:generic:X-Signature:sha256='",
   )
   .action(async function (options: AnyOptions) {
     const ctx = createContext(options as GlobalOptions, ["serve"]);
