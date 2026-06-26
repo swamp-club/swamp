@@ -191,6 +191,15 @@ class LogModelMethodRunRenderer implements ModelMethodRunRenderer {
             reason: e.reason,
           });
       },
+      auto_gc_completed: (e) => {
+        getRunLogger(this.modelName, this.methodName).info(
+          "Auto-GC: removed {versionsRemoved} version(s), reclaimed {bytesReclaimed} bytes",
+          {
+            versionsRemoved: e.versionsRemoved,
+            bytesReclaimed: e.bytesReclaimed,
+          },
+        );
+      },
       error: (e) => {
         throw new UserError(e.error.message, e.error.code);
       },
@@ -259,6 +268,13 @@ class JsonModelMethodRunRenderer implements ModelMethodRunRenderer {
       cancelled: (e) => {
         this._failed = true;
         console.log(JSON.stringify(e.run, null, 2));
+      },
+      auto_gc_completed: (e) => {
+        console.log(JSON.stringify({
+          event: "auto_gc_completed",
+          versionsRemoved: e.versionsRemoved,
+          bytesReclaimed: e.bytesReclaimed,
+        }));
       },
       error: (e) => {
         throw new UserError(e.error.message, e.error.code);

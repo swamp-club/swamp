@@ -68,6 +68,7 @@ import {
   withGeneratorSpan,
 } from "../../infrastructure/tracing/mod.ts";
 import { resolveOrCreateDefinition } from "./direct_execution.ts";
+import { autoGc } from "../data/gc.ts";
 
 /**
  * Events emitted by the libswamp model method run generator.
@@ -140,6 +141,11 @@ export type ModelMethodRunEvent =
   }
   | { kind: "completed"; run: ModelMethodRunView }
   | { kind: "cancelled"; run: ModelMethodRunView; reason?: string }
+  | {
+    kind: "auto_gc_completed";
+    versionsRemoved: number;
+    bytesReclaimed: number;
+  }
   | { kind: "error"; error: SwampError };
 
 /**
@@ -212,6 +218,7 @@ export interface ModelMethodRunInput {
   reportNames?: string[];
   reportLabels?: string[];
   swampSha?: string;
+  autoGc?: boolean;
 }
 
 /**
@@ -986,6 +993,21 @@ export async function* modelMethodRun(
           reports: reportResults,
         };
         yield { kind: "completed", run: view };
+
+        if (input.autoGc) {
+          const gcResult = await autoGc(
+            deps.dataRepo,
+            modelType,
+            definition.id,
+          );
+          if (gcResult && gcResult.versionsRemoved > 0) {
+            yield {
+              kind: "auto_gc_completed" as const,
+              versionsRemoved: gcResult.versionsRemoved,
+              bytesReclaimed: gcResult.bytesReclaimed,
+            };
+          }
+        }
       } finally {
         runLog.cleanup();
       }
