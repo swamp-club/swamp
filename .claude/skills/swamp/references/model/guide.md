@@ -40,6 +40,12 @@ definitions referenced across multiple workflows.
 - **Verify CLI syntax**: If unsure about exact flags or subcommands, run
   `swamp help model` for the complete, up-to-date CLI schema.
 
+## Per-Input Disposable Instances
+
+When a method holds the instance lock for minutes (LLM calls, long network IO),
+create per-input ephemeral instances for concurrent dispatch. See
+[references/disposable-instances.md](references/disposable-instances.md).
+
 ## Quick Reference
 
 | Task                | Command                                                              |
