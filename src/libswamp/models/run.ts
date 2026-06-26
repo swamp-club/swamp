@@ -977,22 +977,6 @@ export async function* modelMethodRun(
         }
 
         reportsSpan.end();
-
-        if (input.autoGc) {
-          const gcResult = await autoGc(
-            deps.dataRepo,
-            modelType,
-            definition.id,
-          );
-          if (gcResult && gcResult.versionsRemoved > 0) {
-            yield {
-              kind: "auto_gc_completed" as const,
-              versionsDeleted: gcResult.versionsRemoved,
-              bytesReclaimed: gcResult.bytesReclaimed,
-            };
-          }
-        }
-
         postExecSpan.end();
 
         // --- Complete ---
@@ -1009,6 +993,21 @@ export async function* modelMethodRun(
           reports: reportResults,
         };
         yield { kind: "completed", run: view };
+
+        if (input.autoGc) {
+          const gcResult = await autoGc(
+            deps.dataRepo,
+            modelType,
+            definition.id,
+          );
+          if (gcResult && gcResult.versionsRemoved > 0) {
+            yield {
+              kind: "auto_gc_completed" as const,
+              versionsDeleted: gcResult.versionsRemoved,
+              bytesReclaimed: gcResult.bytesReclaimed,
+            };
+          }
+        }
       } finally {
         runLog.cleanup();
       }
