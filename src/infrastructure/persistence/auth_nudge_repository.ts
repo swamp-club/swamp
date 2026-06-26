@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { join } from "@std/path";
+import { dirname, join } from "@std/path";
 import type { AuthNudgeState } from "../../domain/auth/auth_nudge.ts";
 import { atomicWriteTextFile } from "./atomic_write.ts";
 import { getSwampConfigDir } from "./paths.ts";
@@ -43,7 +43,7 @@ export class AuthNudgeRepository {
   async markShown(): Promise<void> {
     const state: AuthNudgeState = { lastShown: new Date().toISOString() };
     try {
-      await Deno.mkdir(getSwampConfigDir(), { recursive: true });
+      await Deno.mkdir(dirname(this.filePath), { recursive: true });
       await atomicWriteTextFile(
         this.filePath,
         JSON.stringify(state, null, 2) + "\n",
