@@ -99,6 +99,7 @@ import { ExtensionAutoResolver } from "../domain/extensions/extension_auto_resol
 import { ExtensionApiClient } from "../infrastructure/http/extension_api_client.ts";
 import type { ClientIdentity } from "../infrastructure/http/client_identity.ts";
 import { loadIdentity, USER_AGENT } from "./load_identity.ts";
+import { isAuthenticated, setAuthenticated } from "./auth_context.ts";
 import { DEFAULT_SWAMP_CLUB_URL } from "../domain/auth/auth_credentials.ts";
 import { setAutoResolver } from "./auto_resolver_context.ts";
 import {
@@ -128,6 +129,9 @@ import { UpdateCheckCacheFileRepository } from "../infrastructure/update/update_
 import { HttpUpdateChecker } from "../infrastructure/update/http_update_checker.ts";
 import { Platform } from "../domain/update/platform.ts";
 import { renderUpdateNotification } from "../presentation/renderers/update_notification.ts";
+import { renderAuthNudge } from "../presentation/renderers/auth_nudge.ts";
+import { shouldShowAuthNudge } from "../domain/auth/auth_nudge.ts";
+import { AuthNudgeRepository } from "../infrastructure/persistence/auth_nudge_repository.ts";
 import { UpdatePreferencesFileRepository } from "../infrastructure/update/update_preferences_file_repository.ts";
 import { AutoupdateLogFileRepository } from "../infrastructure/update/autoupdate_log_file_repository.ts";
 import {
@@ -1213,6 +1217,7 @@ export async function runCli(args: string[]): Promise<void> {
 
   // Create auto-resolver for trusted collectives (merging membership collectives)
   const autoResolverIdentity = await loadIdentity();
+  setAuthenticated(autoResolverIdentity.bearerToken !== undefined);
   configureExtensionAutoResolver(
     repoDir,
     marker,
@@ -1452,6 +1457,39 @@ export async function runCli(args: string[]): Promise<void> {
             }
           } catch {
             // Silently ignore — never break the CLI for update checks
+          }
+        }
+      }
+
+      // Auth nudge banner (throttled to once per day, suppressed once logged in).
+      // Skip for commands whose renderers already include their own inline
+      // nudge to avoid showing it twice. If you add an inline nudge to a
+      // new renderer, add the command here too.
+      //   - repo init/upgrade: src/presentation/renderers/repo_init.ts
+      //   - model method run: src/presentation/renderers/model_method_run.ts
+      //   - workflow run/resume: src/presentation/renderers/workflow_run.ts
+      //   - access grant/group: via model_method_run renderer
+      {
+        const outputMode = getOutputModeFromArgs(args);
+        const hasInlineNudge = (commandInfo.command === "repo" &&
+          (commandInfo.subcommand === "init" ||
+            commandInfo.subcommand === "upgrade")) ||
+          (commandInfo.command === "model" &&
+            commandInfo.subcommand === "method") ||
+          (commandInfo.command === "workflow" &&
+            (commandInfo.subcommand === "run" ||
+              commandInfo.subcommand === "resume")) ||
+          commandInfo.command === "access";
+        if (outputMode === "log" && !isAuthenticated() && !hasInlineNudge) {
+          try {
+            const nudgeRepo = new AuthNudgeRepository();
+            const nudgeState = await nudgeRepo.read();
+            if (shouldShowAuthNudge(nudgeState)) {
+              renderAuthNudge();
+              await nudgeRepo.markShown();
+            }
+          } catch {
+            // Best effort — never break the CLI for nudge state
           }
         }
       }

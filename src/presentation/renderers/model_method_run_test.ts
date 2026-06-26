@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertThrows } from "@std/assert";
+import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import {
   consumeStream,
@@ -26,6 +26,7 @@ import {
 } from "../../libswamp/mod.ts";
 import { createModelMethodRunRenderer } from "./model_method_run.ts";
 import { UserError } from "../../domain/errors.ts";
+import { AUTH_NUDGE_MESSAGE } from "../../domain/auth/auth_nudge.ts";
 
 await initializeLogging({});
 
@@ -353,4 +354,101 @@ Deno.test("createModelMethodRunRenderer - factory returns correct type per mode"
   assertEquals(typeof logRenderer.runFailed, "function");
   assertEquals(typeof jsonRenderer.handlers, "function");
   assertEquals(typeof jsonRenderer.runFailed, "function");
+});
+
+// --- Auth nudge tests ---
+
+function captureLog(fn: () => void): string {
+  const lines: string[] = [];
+  const methods = ["log", "info", "warn", "error", "debug"] as const;
+  const originals = methods.map((m) => [m, console[m]] as const);
+  for (const [m] of originals) {
+    console[m] = (...args: unknown[]) => {
+      lines.push(
+        args.map((a) => typeof a === "string" ? a : String(a)).join(" "),
+      );
+    };
+  }
+  try {
+    fn();
+  } finally {
+    for (const [m, orig] of originals) {
+      console[m] = orig;
+    }
+  }
+  return lines.join("\n");
+}
+
+Deno.test("LogModelMethodRunRenderer - shows auth nudge on success when not authenticated", () => {
+  const renderer = createModelMethodRunRenderer("log", {
+    modelName: "test-model",
+    methodName: "run",
+    isAuthenticated: false,
+  });
+  const events = fullEventStream(makeRunView("succeeded"));
+  const output = captureLog(() => {
+    for (const event of events) {
+      const handler = renderer.handlers()[event.kind];
+      // deno-lint-ignore no-explicit-any
+      handler(event as any);
+    }
+  });
+  assertStringIncludes(output, AUTH_NUDGE_MESSAGE);
+});
+
+Deno.test("LogModelMethodRunRenderer - suppresses auth nudge when authenticated", () => {
+  const renderer = createModelMethodRunRenderer("log", {
+    modelName: "test-model",
+    methodName: "run",
+    isAuthenticated: true,
+  });
+  const events = fullEventStream(makeRunView("succeeded"));
+  const output = captureLog(() => {
+    for (const event of events) {
+      const handler = renderer.handlers()[event.kind];
+      // deno-lint-ignore no-explicit-any
+      handler(event as any);
+    }
+  });
+  assertEquals(output.includes(AUTH_NUDGE_MESSAGE), false);
+});
+
+Deno.test("LogModelMethodRunRenderer - suppresses auth nudge on failed run", () => {
+  const renderer = createModelMethodRunRenderer("log", {
+    modelName: "test-model",
+    methodName: "run",
+    isAuthenticated: false,
+  });
+  const events: ModelMethodRunEvent[] = [
+    { kind: "validating_inputs" },
+    { kind: "completed", run: makeRunView("failed") },
+  ];
+  const output = captureLog(() => {
+    for (const event of events) {
+      const handler = renderer.handlers()[event.kind];
+      // deno-lint-ignore no-explicit-any
+      handler(event as any);
+    }
+  });
+  assertEquals(output.includes(AUTH_NUDGE_MESSAGE), false);
+});
+
+Deno.test("JsonModelMethodRunRenderer - never shows auth nudge", async () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+
+  try {
+    const renderer = createModelMethodRunRenderer("json", {
+      modelName: "test-model",
+      methodName: "run",
+      isAuthenticated: false,
+    });
+    const events = fullEventStream(makeRunView("succeeded"));
+    await consumeStream(toStream(events), renderer.handlers());
+    const combined = logs.join("\n");
+    assertEquals(combined.includes(AUTH_NUDGE_MESSAGE), false);
+  } finally {
+    console.log = originalLog;
+  }
 });

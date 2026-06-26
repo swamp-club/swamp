@@ -17,7 +17,12 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertNotEquals, assertThrows } from "@std/assert";
+import {
+  assertEquals,
+  assertNotEquals,
+  assertStringIncludes,
+  assertThrows,
+} from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import {
   consumeStream,
@@ -26,6 +31,7 @@ import {
 } from "../../libswamp/mod.ts";
 import { createWorkflowRunRenderer } from "./workflow_run.ts";
 import { UserError } from "../../domain/errors.ts";
+import { AUTH_NUDGE_MESSAGE } from "../../domain/auth/auth_nudge.ts";
 
 await initializeLogging({});
 
@@ -608,4 +614,111 @@ Deno.test("createWorkflowRunRenderer: json mode ignores forceLog", () => {
     forceLog: true,
   });
   assertEquals(renderer.workflowFailed(), false);
+});
+
+// --- Auth nudge tests ---
+
+function captureLog(fn: () => void): string {
+  const lines: string[] = [];
+  const methods = ["log", "info", "warn", "error", "debug"] as const;
+  const originals = methods.map((m) => [m, console[m]] as const);
+  for (const [m] of originals) {
+    console[m] = (...args: unknown[]) => {
+      lines.push(
+        args.map((a) => typeof a === "string" ? a : String(a)).join(" "),
+      );
+    };
+  }
+  try {
+    fn();
+  } finally {
+    for (const [m, orig] of originals) {
+      console[m] = orig;
+    }
+  }
+  return lines.join("\n");
+}
+
+Deno.test("LogWorkflowRunRenderer - shows auth nudge on success when not authenticated", () => {
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "test-workflow",
+    isAuthenticated: false,
+  });
+  const events = fullEventStream(makeRunData("succeeded"));
+  const output = captureLog(() => {
+    for (const event of events) {
+      const handler = renderer.handlers()[event.kind];
+      // deno-lint-ignore no-explicit-any
+      handler(event as any);
+    }
+  });
+  assertStringIncludes(output, AUTH_NUDGE_MESSAGE);
+});
+
+Deno.test("LogWorkflowRunRenderer - suppresses auth nudge when authenticated", () => {
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "test-workflow",
+    isAuthenticated: true,
+  });
+  const events = fullEventStream(makeRunData("succeeded"));
+  const output = captureLog(() => {
+    for (const event of events) {
+      const handler = renderer.handlers()[event.kind];
+      // deno-lint-ignore no-explicit-any
+      handler(event as any);
+    }
+  });
+  assertEquals(output.includes(AUTH_NUDGE_MESSAGE), false);
+});
+
+Deno.test("LogWorkflowRunRenderer - suppresses auth nudge on failed run", () => {
+  const renderer = createWorkflowRunRenderer("log", {
+    workflowName: "test-workflow",
+    isAuthenticated: false,
+  });
+  const events: WorkflowRunEvent[] = [
+    { kind: "validating_inputs" },
+    {
+      kind: "started",
+      runId: "run-1",
+      workflowName: "test-workflow",
+      jobs: [],
+    },
+    { kind: "job_started", jobId: "job-1" },
+    {
+      kind: "step_failed",
+      jobId: "job-1",
+      stepId: "step-1",
+      error: "something broke",
+    },
+    { kind: "job_completed", jobId: "job-1", status: "failed" },
+    { kind: "completed", run: makeRunData("failed") },
+  ];
+  const output = captureLog(() => {
+    for (const event of events) {
+      const handler = renderer.handlers()[event.kind];
+      // deno-lint-ignore no-explicit-any
+      handler(event as any);
+    }
+  });
+  assertEquals(output.includes(AUTH_NUDGE_MESSAGE), false);
+});
+
+Deno.test("JsonWorkflowRunRenderer - never shows auth nudge", async () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+
+  try {
+    const renderer = createWorkflowRunRenderer("json", {
+      workflowName: "test-workflow",
+      isAuthenticated: false,
+    });
+    const events = fullEventStream(makeRunData("succeeded"));
+    await consumeStream(toStream(events), renderer.handlers());
+    const combined = logs.join("\n");
+    assertEquals(combined.includes(AUTH_NUDGE_MESSAGE), false);
+  } finally {
+    console.log = originalLog;
+  }
 });

@@ -42,6 +42,7 @@ import {
   modelMethodRun,
 } from "../../libswamp/mod.ts";
 import { createModelMethodRunRenderer } from "../../presentation/renderers/model_method_run.ts";
+import { isAuthenticated } from "../auth_context.ts";
 import {
   type Group,
   GROUP_MODEL_TYPE,
@@ -137,6 +138,7 @@ async function runGroupMethod(
     const renderer = createModelMethodRunRenderer(ctx.outputMode, {
       modelName: instanceName,
       methodName,
+      isAuthenticated: isAuthenticated(),
     });
 
     const typeArg = isDirectExecution
@@ -223,6 +225,7 @@ const accessGroupCreateCommand = new Command()
       const renderer = createModelMethodRunRenderer(ctx.outputMode, {
         modelName: name,
         methodName: "create",
+        isAuthenticated: isAuthenticated(),
       });
       await consumeStream(
         runModelMethodOverServer({
@@ -299,6 +302,7 @@ const accessGroupAddMemberCommand = new Command()
       const renderer = createModelMethodRunRenderer(ctx.outputMode, {
         modelName: group,
         methodName: "add-member",
+        isAuthenticated: isAuthenticated(),
       });
       await consumeStream(
         runModelMethodOverServer({
@@ -373,6 +377,7 @@ const accessGroupRemoveMemberCommand = new Command()
       const renderer = createModelMethodRunRenderer(ctx.outputMode, {
         modelName: group,
         methodName: "remove-member",
+        isAuthenticated: isAuthenticated(),
       });
       await consumeStream(
         runModelMethodOverServer({
