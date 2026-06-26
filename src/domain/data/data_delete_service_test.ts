@@ -18,6 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
+import type { BatchDeleteFilter } from "./data_delete_service.ts";
 import { DataDeleteService } from "./data_delete_service.ts";
 import { ModelType } from "../models/model_type.ts";
 
@@ -31,6 +32,7 @@ class FakeDataRepository {
     dataName: string;
     version?: number;
   }> = [];
+  deleteError: string | null = null;
 
   listVersions = (
     _type: ModelType,
@@ -40,12 +42,24 @@ class FakeDataRepository {
     return Promise.resolve(this.versionsByName.get(dataName) ?? []);
   };
 
+  findAllForModel = (
+    _type: ModelType,
+    _modelId: string,
+  ): Promise<Array<{ name: string }>> => {
+    return Promise.resolve(
+      [...this.versionsByName.keys()].map((name) => ({ name })),
+    );
+  };
+
   delete = (
     type: ModelType,
     modelId: string,
     dataName: string,
     version?: number,
   ): Promise<void> => {
+    if (this.deleteError && dataName === this.deleteError) {
+      return Promise.reject(new Error(`Delete failed for ${dataName}`));
+    }
     this.deleteCalls.push({ type, modelId, dataName, version });
     return Promise.resolve();
   };
@@ -183,5 +197,105 @@ Deno.test("DataDeleteService.previewDelete: throws when artifact has no versions
     () => service.previewDelete("my-model", "my-data"),
     Error,
     'No data named "my-data" exists for model my-model',
+  );
+});
+
+// --- Batch delete tests ---
+
+Deno.test("DataDeleteService.batchDelete: deletes all items matching prefix", async () => {
+  const { service, dataRepo } = makeService();
+  dataRepo.versionsByName.set("run-001", [1]);
+  dataRepo.versionsByName.set("run-002", [1, 2]);
+  dataRepo.versionsByName.set("keep-me", [1]);
+
+  const filter: BatchDeleteFilter = { kind: "prefix", value: "run-" };
+  const result = await service.batchDelete("my-model", filter);
+
+  assertEquals(result.totalDeleted, 2);
+  assertEquals(result.totalVersionsDeleted, 3);
+  assertEquals(result.failed.length, 0);
+  assertEquals(result.deleted.length, 2);
+  assertEquals(
+    dataRepo.deleteCalls.map((c) => c.dataName).sort(),
+    ["run-001", "run-002"],
+  );
+});
+
+Deno.test("DataDeleteService.batchDelete: deletes all items with 'all' filter", async () => {
+  const { service, dataRepo } = makeService();
+  dataRepo.versionsByName.set("a", [1]);
+  dataRepo.versionsByName.set("b", [1, 2]);
+  dataRepo.versionsByName.set("c", [1]);
+
+  const filter: BatchDeleteFilter = { kind: "all" };
+  const result = await service.batchDelete("my-model", filter);
+
+  assertEquals(result.totalDeleted, 3);
+  assertEquals(result.totalVersionsDeleted, 4);
+});
+
+Deno.test("DataDeleteService.batchDelete: throws when no items match prefix", async () => {
+  const { service, dataRepo } = makeService();
+  dataRepo.versionsByName.set("keep-me", [1]);
+
+  const filter: BatchDeleteFilter = { kind: "prefix", value: "run-" };
+  await assertRejects(
+    () => service.batchDelete("my-model", filter),
+    Error,
+    'No data matching prefix "run-" found for model my-model',
+  );
+});
+
+Deno.test("DataDeleteService.batchDelete: throws when model not found", async () => {
+  const { service } = makeService();
+
+  const filter: BatchDeleteFilter = { kind: "all" };
+  await assertRejects(
+    () => service.batchDelete("missing-model", filter),
+    Error,
+    "Model not found: missing-model",
+  );
+});
+
+Deno.test("DataDeleteService.batchDelete: continues on partial failure", async () => {
+  const { service, dataRepo } = makeService();
+  dataRepo.versionsByName.set("run-001", [1]);
+  dataRepo.versionsByName.set("run-002", [1]);
+  dataRepo.versionsByName.set("run-003", [1]);
+  dataRepo.deleteError = "run-002";
+
+  const filter: BatchDeleteFilter = { kind: "prefix", value: "run-" };
+  const result = await service.batchDelete("my-model", filter);
+
+  assertEquals(result.totalDeleted, 2);
+  assertEquals(result.failed.length, 1);
+  assertEquals(result.failed[0].dataName, "run-002");
+  assertStringIncludes(result.failed[0].error, "Delete failed for run-002");
+});
+
+Deno.test("DataDeleteService.batchPreviewDelete: returns matching items without deleting", async () => {
+  const { service, dataRepo } = makeService();
+  dataRepo.versionsByName.set("run-001", [1, 2]);
+  dataRepo.versionsByName.set("run-002", [1]);
+  dataRepo.versionsByName.set("keep-me", [1]);
+
+  const filter: BatchDeleteFilter = { kind: "prefix", value: "run-" };
+  const preview = await service.batchPreviewDelete("my-model", filter);
+
+  assertEquals(preview.totalItems, 2);
+  assertEquals(preview.totalVersions, 3);
+  assertEquals(preview.matchingItems.length, 2);
+  assertEquals(dataRepo.deleteCalls.length, 0);
+});
+
+Deno.test("DataDeleteService.batchPreviewDelete: throws when no items match", async () => {
+  const { service, dataRepo } = makeService();
+  dataRepo.versionsByName.set("keep-me", [1]);
+
+  const filter: BatchDeleteFilter = { kind: "prefix", value: "run-" };
+  await assertRejects(
+    () => service.batchPreviewDelete("my-model", filter),
+    Error,
+    'No data matching prefix "run-" found for model my-model',
   );
 });

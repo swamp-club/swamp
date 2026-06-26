@@ -17,7 +17,11 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import type { DataDeleteEvent, EventHandlers } from "../../libswamp/mod.ts";
+import type {
+  DataBatchDeleteEvent,
+  DataDeleteEvent,
+  EventHandlers,
+} from "../../libswamp/mod.ts";
 import type { Renderer } from "../renderer.ts";
 import type { OutputMode } from "../output/output.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
@@ -67,6 +71,60 @@ export function createDataDeleteRenderer(
       return new JsonDataDeleteRenderer();
     case "log":
       return new LogDataDeleteRenderer();
+  }
+}
+
+class LogDataBatchDeleteRenderer implements Renderer<DataBatchDeleteEvent> {
+  handlers(): EventHandlers<DataBatchDeleteEvent> {
+    const logger = getSwampLogger(["data", "delete"]);
+    return {
+      deleting: () => {},
+      completed: (e) => {
+        const data = e.data;
+        if (data.dryRun) {
+          logger
+            .info`Would delete ${data.totalDeleted} data artifact(s) (${data.totalVersionsDeleted} version(s)) from ${data.modelName} (${data.modelType})`;
+        } else {
+          logger
+            .info`Deleted ${data.totalDeleted} data artifact(s) (${data.totalVersionsDeleted} version(s)) from ${data.modelName} (${data.modelType})`;
+        }
+        if (data.failed.length > 0) {
+          logger
+            .warn`${data.failed.length} artifact(s) failed to delete`;
+          for (const f of data.failed) {
+            logger.warn`  ${f.dataName}: ${f.error}`;
+          }
+        }
+      },
+      error: (e) => {
+        throw new UserError(e.error.message);
+      },
+    };
+  }
+}
+
+class JsonDataBatchDeleteRenderer implements Renderer<DataBatchDeleteEvent> {
+  handlers(): EventHandlers<DataBatchDeleteEvent> {
+    return {
+      deleting: () => {},
+      completed: (e) => {
+        console.log(JSON.stringify(e.data, null, 2));
+      },
+      error: (e) => {
+        throw new UserError(e.error.message);
+      },
+    };
+  }
+}
+
+export function createDataBatchDeleteRenderer(
+  mode: OutputMode,
+): Renderer<DataBatchDeleteEvent> {
+  switch (mode) {
+    case "json":
+      return new JsonDataBatchDeleteRenderer();
+    case "log":
+      return new LogDataBatchDeleteRenderer();
   }
 }
 

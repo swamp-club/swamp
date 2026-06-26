@@ -18,6 +18,9 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import {
+  type BatchDeleteFilter,
+  type BatchDeletePreview,
+  type BatchDeleteResult,
   DataDeleteService,
   type DeletePreview,
   type DeleteResult,
@@ -77,6 +80,14 @@ export interface DataDeleteDeps {
     modelIdOrName: string,
     dataName: string,
   ) => Promise<DeletePreview>;
+  batchDelete: (
+    modelIdOrName: string,
+    filter: BatchDeleteFilter,
+  ) => Promise<BatchDeleteResult>;
+  batchPreview: (
+    modelIdOrName: string,
+    filter: BatchDeleteFilter,
+  ) => Promise<BatchDeletePreview>;
 }
 
 /** Wires real infrastructure into DataDeleteDeps. */
@@ -107,6 +118,10 @@ export function createDataDeleteDeps(
       service.delete(modelIdOrName, dataName, version),
     preview: (modelIdOrName, dataName) =>
       service.previewDelete(modelIdOrName, dataName),
+    batchDelete: (modelIdOrName, filter) =>
+      service.batchDelete(modelIdOrName, filter),
+    batchPreview: (modelIdOrName, filter) =>
+      service.batchPreviewDelete(modelIdOrName, filter),
   };
 }
 
@@ -172,6 +187,139 @@ export async function* dataDelete(
           dataName: result.dataName,
           version: result.version,
           versionsDeleted: result.versionsDeleted,
+        },
+      };
+    })(),
+  );
+}
+
+/** Data structure for the batch delete completed event. */
+export interface DataBatchDeleteData {
+  modelId: string;
+  modelName: string;
+  modelType: string;
+  totalDeleted: number;
+  totalVersionsDeleted: number;
+  failed: Array<{ dataName: string; error: string }>;
+  dryRun: boolean;
+}
+
+/** Preview returned before batch confirmation. */
+export interface DataBatchDeletePreview {
+  modelId: string;
+  modelName: string;
+  modelType: string;
+  matchingItems: Array<{ dataName: string; versionsCount: number }>;
+  totalItems: number;
+  totalVersions: number;
+}
+
+export type DataBatchDeleteEvent =
+  | { kind: "deleting" }
+  | { kind: "completed"; data: DataBatchDeleteData }
+  | { kind: "error"; error: SwampError };
+
+/** Input for the batch delete operation. */
+export interface DataBatchDeleteInput {
+  modelIdOrName: string;
+  filter: BatchDeleteFilter;
+  dryRun: boolean;
+}
+
+export { type BatchDeleteFilter } from "../../domain/data/data_delete_service.ts";
+
+/** Gathers preview info for a batch delete without mutating state. */
+export async function dataBatchDeletePreview(
+  ctx: LibSwampContext,
+  deps: DataDeleteDeps,
+  input: { modelIdOrName: string; filter: BatchDeleteFilter },
+): Promise<DataBatchDeletePreview> {
+  ctx.logger
+    .debug`Previewing batch delete: model=${input.modelIdOrName}, filter=${input.filter.kind}`;
+  const preview = await deps.batchPreview(input.modelIdOrName, input.filter);
+  return {
+    modelId: preview.modelId,
+    modelName: preview.modelName,
+    modelType: preview.modelType,
+    matchingItems: preview.matchingItems,
+    totalItems: preview.totalItems,
+    totalVersions: preview.totalVersions,
+  };
+}
+
+/** Deletes data instances matching a filter (prefix or all). */
+export async function* dataBatchDelete(
+  ctx: LibSwampContext,
+  deps: DataDeleteDeps,
+  input: DataBatchDeleteInput,
+): AsyncIterable<DataBatchDeleteEvent> {
+  yield* withGeneratorSpan(
+    "swamp.data.batch_delete",
+    {
+      "batch.filter_kind": input.filter.kind,
+      "batch.dry_run": input.dryRun,
+    },
+    (async function* () {
+      yield { kind: "deleting" } as const;
+
+      ctx.logger
+        .debug`Batch deleting data: model=${input.modelIdOrName}, filter=${input.filter.kind}, dryRun=${input.dryRun}`;
+
+      if (input.dryRun) {
+        let preview: BatchDeletePreview;
+        try {
+          preview = await deps.batchPreview(
+            input.modelIdOrName,
+            input.filter,
+          );
+        } catch (error) {
+          yield {
+            kind: "error" as const,
+            error: validationFailed(
+              error instanceof Error ? error.message : String(error),
+            ),
+          };
+          return;
+        }
+
+        yield {
+          kind: "completed" as const,
+          data: {
+            modelId: preview.modelId,
+            modelName: preview.modelName,
+            modelType: preview.modelType,
+            totalDeleted: preview.totalItems,
+            totalVersionsDeleted: preview.totalVersions,
+            failed: [],
+            dryRun: true,
+          },
+        };
+        return;
+      }
+
+      let result: BatchDeleteResult;
+      try {
+        result = await deps.batchDelete(input.modelIdOrName, input.filter);
+      } catch (error) {
+        yield {
+          kind: "error" as const,
+          error: validationFailed(
+            error instanceof Error ? error.message : String(error),
+          ),
+        };
+        return;
+      }
+
+      yield {
+        kind: "completed" as const,
+        data: {
+          modelId: result.modelId,
+          modelName: result.modelName,
+          modelType: result.modelType,
+          totalDeleted: result.totalDeleted,
+          totalVersionsDeleted: result.totalVersionsDeleted,
+          failed: result.failed,
+          dryRun: false,
         },
       };
     })(),
