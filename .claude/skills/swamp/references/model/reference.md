@@ -112,6 +112,12 @@ Dot notation creates nested objects:
 # → globalArguments: { config: { db: { host: "localhost", port: "5432" } } }
 ```
 
+> **Warning:** Omitting `--global-arg` creates an instance with empty
+> `globalArguments`. There is no inheritance from sibling instances or schema
+> templates. Fields without a `default` in the type's `globalArgumentsSchema`
+> arrive as `undefined` in `context.globalArgs.*`. Re-pass every value your
+> methods read from globalArgs.
+
 **Output shape:**
 
 ```json
