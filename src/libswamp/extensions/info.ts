@@ -21,9 +21,11 @@ import type {
   ExtensionAuthor,
   ExtensionInfo,
   ExtensionScoreSummary,
+  LatestVersionDetail,
 } from "../../infrastructure/http/extension_api_client.ts";
 import { ExtensionApiClient } from "../../infrastructure/http/extension_api_client.ts";
 import type { ClientIdentity } from "../../infrastructure/http/client_identity.ts";
+import type { ExtensionContentMetadata } from "../../domain/extensions/extension_content.ts";
 import { resolveServerUrl } from "./pull.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
@@ -58,6 +60,7 @@ export interface ExtensionInfoData {
   repositoryVerifiedUrl: string | null;
   pullCount: number;
   score: ExtensionScoreSummary | null;
+  contentMetadata: ExtensionContentMetadata | null;
 }
 
 export type ExtensionInfoEvent =
@@ -72,6 +75,9 @@ export interface ExtensionInfoInput {
 
 export interface ExtensionInfoDeps {
   getExtension: (name: string) => Promise<ExtensionInfo | null>;
+  getLatestVersionDetail: (
+    name: string,
+  ) => Promise<LatestVersionDetail | null>;
 }
 
 export function createExtensionInfoDeps(
@@ -82,6 +88,8 @@ export function createExtensionInfoDeps(
   const client = new ExtensionApiClient(serverUrl, identity);
   return {
     getExtension: (name: string) => client.getExtension(name, apiKey),
+    getLatestVersionDetail: (name: string) =>
+      client.getLatestVersionDetail(name, apiKey),
   };
 }
 
@@ -106,6 +114,10 @@ export async function* extensionInfo(
           };
           return;
         }
+
+        const versionDetail = await deps.getLatestVersionDetail(
+          input.extensionName,
+        );
 
         yield {
           kind: "completed" as const,
@@ -138,6 +150,7 @@ export async function* extensionInfo(
             repositoryVerifiedUrl: info.repositoryVerifiedUrl,
             pullCount: info.pullCount,
             score: info.score,
+            contentMetadata: versionDetail?.contentMetadata ?? null,
           },
         };
       } catch (error) {

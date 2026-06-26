@@ -20,7 +20,10 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { collect } from "../testing.ts";
 import { createLibSwampContext } from "../context.ts";
-import type { ExtensionInfo } from "../../infrastructure/http/extension_api_client.ts";
+import type {
+  ExtensionInfo,
+  LatestVersionDetail,
+} from "../../infrastructure/http/extension_api_client.ts";
 import {
   extensionInfo,
   type ExtensionInfoDeps,
@@ -63,11 +66,44 @@ function makeFullExtensionInfo(
   };
 }
 
+function makeVersionDetail(
+  overrides?: Partial<LatestVersionDetail>,
+): LatestVersionDetail {
+  return {
+    version: "2026.5.1",
+    publishedAt: "2026-05-20T14:22:00.000Z",
+    contentMetadata: {
+      models: [
+        {
+          fileName: "volume.ts",
+          type: "@swamp/aws/ec2/volume",
+          version: "2026.5.1",
+          globalArguments: [],
+          methods: [
+            { name: "get", description: "Get a volume", arguments: [] },
+            { name: "sync", description: "Sync volume state", arguments: [] },
+          ],
+          resources: [],
+          files: [],
+        },
+      ],
+      workflows: [],
+      vaults: [],
+      drivers: [],
+      datastores: [],
+      reports: [],
+      skills: [],
+    },
+    ...overrides,
+  };
+}
+
 function makeDeps(
   overrides?: Partial<ExtensionInfoDeps>,
 ): ExtensionInfoDeps {
   return {
     getExtension: () => Promise.resolve(null),
+    getLatestVersionDetail: () => Promise.resolve(null),
     ...overrides,
   };
 }
@@ -99,6 +135,37 @@ Deno.test("extensionInfo: returns full metadata when extension exists", async ()
   assertEquals(completed.data.pullCount, 142);
   assertEquals(completed.data.score?.grade, "A");
   assertEquals(completed.data.repositoryVerified, true);
+  assertEquals(completed.data.contentMetadata, null);
+});
+
+Deno.test("extensionInfo: includes content metadata from version detail", async () => {
+  const info = makeFullExtensionInfo();
+  const detail = makeVersionDetail();
+  const deps = makeDeps({
+    getExtension: () => Promise.resolve(info),
+    getLatestVersionDetail: () => Promise.resolve(detail),
+  });
+  const events = await collect<ExtensionInfoEvent>(
+    extensionInfo(createLibSwampContext(), deps, {
+      extensionName: "@stack72/aws-ec2",
+    }),
+  );
+
+  const completed = events[1] as Extract<
+    ExtensionInfoEvent,
+    { kind: "completed" }
+  >;
+  assertEquals(completed.kind, "completed");
+  assertEquals(completed.data.contentMetadata?.models.length, 1);
+  assertEquals(
+    completed.data.contentMetadata?.models[0].type,
+    "@swamp/aws/ec2/volume",
+  );
+  assertEquals(completed.data.contentMetadata?.models[0].methods.length, 2);
+  assertEquals(
+    completed.data.contentMetadata?.models[0].methods[0].name,
+    "get",
+  );
 });
 
 Deno.test("extensionInfo: handles nullable fields", async () => {

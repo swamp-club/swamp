@@ -95,6 +95,12 @@ by channel. No `--channel` shows all versions.
 `swamp extension info @name` shows per-channel latest versions (stable, rc,
 beta) when they exist. No flag needed — info always shows all channels.
 
+The info command also displays content metadata for the latest version: model
+types with their methods, workflows, vaults, datastores, drivers, reports, and
+skills. By default, models show the type name and method names. With `--verbose`,
+each method's arguments and descriptions are also displayed. JSON output
+(`--json`) includes the full `contentMetadata` object with all detail.
+
 ### Promotion
 
 `swamp extension promote @name 2026.06.10.1 --channel rc` promotes a beta

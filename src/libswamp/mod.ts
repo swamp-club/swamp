@@ -795,6 +795,18 @@ export {
   type ExtensionInfoEvent,
   type ExtensionInfoInput,
 } from "./extensions/info.ts";
+export type {
+  ExtensionContentMetadata,
+  ExtractedArgument,
+  ExtractedDatastore,
+  ExtractedDriver,
+  ExtractedMethod,
+  ExtractedModel,
+  ExtractedReport,
+  ExtractedSkill,
+  ExtractedVault,
+  ExtractedWorkflow,
+} from "../domain/extensions/extension_content.ts";
 export {
   detectLocalEditsForExtension,
   LocalEditsError,
