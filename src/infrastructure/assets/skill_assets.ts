@@ -37,6 +37,7 @@ const BUNDLED_SKILLS: SkillInfo[] = [
   { relativePath: "swamp/SKILL.md", name: "swamp" },
   // data
   { relativePath: "swamp/references/data/guide.md", name: "swamp" },
+  { relativePath: "swamp/references/data/reference.md", name: "swamp" },
   {
     relativePath: "swamp/references/data/references/concepts.md",
     name: "swamp",
@@ -64,6 +65,7 @@ const BUNDLED_SKILLS: SkillInfo[] = [
   },
   // model
   { relativePath: "swamp/references/model/guide.md", name: "swamp" },
+  { relativePath: "swamp/references/model/reference.md", name: "swamp" },
   {
     relativePath: "swamp/references/model/references/data-chaining.md",
     name: "swamp",
@@ -98,6 +100,7 @@ const BUNDLED_SKILLS: SkillInfo[] = [
   },
   // workflow
   { relativePath: "swamp/references/workflow/guide.md", name: "swamp" },
+  { relativePath: "swamp/references/workflow/reference.md", name: "swamp" },
   {
     relativePath: "swamp/references/workflow/references/data-chaining.md",
     name: "swamp",
@@ -125,6 +128,7 @@ const BUNDLED_SKILLS: SkillInfo[] = [
   },
   // repo
   { relativePath: "swamp/references/repo/guide.md", name: "swamp" },
+  { relativePath: "swamp/references/repo/reference.md", name: "swamp" },
   {
     relativePath: "swamp/references/repo/references/ci-integration.md",
     name: "swamp",
@@ -139,6 +143,7 @@ const BUNDLED_SKILLS: SkillInfo[] = [
   },
   // report
   { relativePath: "swamp/references/report/guide.md", name: "swamp" },
+  { relativePath: "swamp/references/report/reference.md", name: "swamp" },
   {
     relativePath: "swamp/references/report/references/control-model.md",
     name: "swamp",
@@ -157,6 +162,7 @@ const BUNDLED_SKILLS: SkillInfo[] = [
   },
   // extension
   { relativePath: "swamp/references/extension/guide.md", name: "swamp" },
+  { relativePath: "swamp/references/extension/reference.md", name: "swamp" },
   {
     relativePath: "swamp/references/extension/references/adversarial-review.md",
     name: "swamp",
@@ -264,11 +270,16 @@ const BUNDLED_SKILLS: SkillInfo[] = [
     name: "swamp",
   },
   {
+    relativePath: "swamp/references/extension-publish/reference.md",
+    name: "swamp",
+  },
+  {
     relativePath: "swamp/references/extension-publish/references/publishing.md",
     name: "swamp",
   },
   // vault
   { relativePath: "swamp/references/vault/guide.md", name: "swamp" },
+  { relativePath: "swamp/references/vault/reference.md", name: "swamp" },
   {
     relativePath: "swamp/references/vault/references/examples.md",
     name: "swamp",
@@ -287,6 +298,7 @@ const BUNDLED_SKILLS: SkillInfo[] = [
   },
   // issue
   { relativePath: "swamp/references/issue/guide.md", name: "swamp" },
+  { relativePath: "swamp/references/issue/reference.md", name: "swamp" },
   {
     relativePath: "swamp/references/issue/references/extension_routing.md",
     name: "swamp",
@@ -313,6 +325,10 @@ const BUNDLED_SKILLS: SkillInfo[] = [
   },
   // troubleshooting
   { relativePath: "swamp/references/troubleshooting/guide.md", name: "swamp" },
+  {
+    relativePath: "swamp/references/troubleshooting/reference.md",
+    name: "swamp",
+  },
   {
     relativePath: "swamp/references/troubleshooting/references/checks.md",
     name: "swamp",
