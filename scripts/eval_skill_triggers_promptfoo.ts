@@ -18,9 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Runs skill evaluations using promptfoo. Two phases:
+ * Runs skill evaluations using promptfoo. Three phases:
  *   1. Trigger evals — does the swamp skill activate for the right queries?
  *   2. Routing evals — once activated, does it route to the correct guide?
+ *   3. Sufficiency evals — is guide.md alone sufficient for common queries?
  *
  * Usage: deno run eval-skill-triggers [--model <alias>] [--concurrency <n>] [--threshold <0.0-1.0>]
  *
@@ -410,10 +411,29 @@ async function main(): Promise<void> {
   );
   const routingResult = summarizePhase("Routing evals", routingData, model);
 
+  // Phase 3: Sufficiency evals
+  console.log(
+    `\n━━━ Phase 3: Sufficiency evals (${model}) ━━━`,
+  );
+  await regenerateConfig(projectRoot, "generate_sufficiency_config.ts", model);
+  const sufficiencyData = await runPromptfooEval(
+    configDir,
+    join(configDir, "sufficiency_results.json"),
+    concurrency,
+  );
+  const sufficiencyResult = summarizePhase(
+    "Sufficiency evals",
+    sufficiencyData,
+    model,
+  );
+
   // Combined summary
-  const totalPassed = triggerResult.passed + routingResult.passed;
-  const totalTests = triggerResult.total + routingResult.total;
-  const totalCost = triggerResult.cost + routingResult.cost;
+  const totalPassed = triggerResult.passed + routingResult.passed +
+    sufficiencyResult.passed;
+  const totalTests = triggerResult.total + routingResult.total +
+    sufficiencyResult.total;
+  const totalCost = triggerResult.cost + routingResult.cost +
+    sufficiencyResult.cost;
   const combinedRate = totalPassed / totalTests;
 
   console.log(`\n━━━ Combined Results (${model}) ━━━`);
@@ -427,7 +447,7 @@ async function main(): Promise<void> {
   if (summaryFile) {
     let md = `## Skill Eval Results (${model})\n\n`;
     md += "| Phase | Passed | Total | Rate | Cost |\n|---|---|---|---|---|\n";
-    for (const r of [triggerResult, routingResult]) {
+    for (const r of [triggerResult, routingResult, sufficiencyResult]) {
       md +=
         `| ${r.name} | ${r.passed} | ${r.total} | ${(r.rate * 100).toFixed(1)}% | $${r.cost.toFixed(2)} |\n`;
     }
@@ -437,6 +457,7 @@ async function main(): Promise<void> {
     const allFailures = [
       ...triggerResult.failures,
       ...routingResult.failures,
+      ...sufficiencyResult.failures,
     ];
     if (allFailures.length > 0) {
       md += "### Failed Tests\n\n";

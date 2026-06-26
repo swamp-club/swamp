@@ -20,93 +20,23 @@ returns non-zero on user-facing failure.
 - **One symptom, one tier.** If a symptom matches the table below, jump directly
   to that tier — don't run the loop top to bottom.
 
-## The diagnostic loop
+## The Four Tiers
 
-### Tier 1 — Health checks
-
-For symptoms tied to a known integration (audit pipeline, extension loading).
-The doctor commands name the failing piece directly and exit non-zero on
-failure. Cheapest tier, fastest signal.
-
-→ See [references/health-checks.md](references/health-checks.md).
-
-### Tier 2 — Error inspection
-
-For specific command failures and unexpected output. Read stderr, switch to
-`--json`, check exit codes, grep for `swamp-warning:` lines. Most failures are
-loud — the error surface itself usually answers the question.
-
-→ See [references/error-inspection.md](references/error-inspection.md).
-
-### Tier 3 — Tracing
-
-For timing and flow questions: slow workflows, mysterious waits, "where is this
-spending its time?" Enable OpenTelemetry tracing and read the span hierarchy.
-Not for diagnosing errors — for understanding execution shape.
-
-→ See [references/tracing.md](references/tracing.md).
-
-### Tier 4 — Source reading
-
-For questions Tiers 1–3 can't answer, and for "how does X work internally?"
-questions where `swamp <command> --help` is insufficient. Fetch swamp's source
-with `swamp source fetch` and read the implementation. Most expensive tier —
-reach for it last.
-
-→ See [references/source-reading.md](references/source-reading.md).
+| Tier                | When to use                                  | Key tool                                        |
+| ------------------- | -------------------------------------------- | ----------------------------------------------- |
+| 1. Health checks    | Known integration issues (extensions, audit) | `swamp doctor extensions`, `swamp doctor audit` |
+| 2. Error inspection | Command failures, unexpected output          | stderr, `--json`, exit codes                    |
+| 3. Tracing          | Slow workflows, timing questions             | OpenTelemetry spans                             |
+| 4. Source reading   | Internal behavior questions                  | `swamp source fetch`                            |
 
 ## Symptom → tier index
 
-| Symptom                                                  | Start at                                                  |
-| -------------------------------------------------------- | --------------------------------------------------------- |
-| Audit log empty / hooks not firing                       | Tier 1 → `swamp doctor audit`                             |
-| Extension model/vault/driver/datastore/report not loaded | Tier 1 → `swamp doctor extensions`                        |
-| `swamp-warning:` line on stderr                          | Tier 1 → `swamp doctor extensions`                        |
-| CI preflight needs to gate on integration health         | Tier 1 → either doctor with `--json`                      |
-| Command errored — message is clear                       | Tier 2 → read it, fix the named issue                     |
-| Command errored — message is vague or unhelpful          | Tier 2 → re-run with `--json`, then escalate              |
-| Item "not found" / "not in search results"               | Tier 2 → check stderr for `swamp-warning:`                |
-| Method failed `Pre-flight check failed: …`               | Tier 2 → see [references/checks.md](references/checks.md) |
-| Workflow / method / sync is slow                         | Tier 3 → enable tracing                                   |
-| "Where is this spending its time?"                       | Tier 3 → enable tracing                                   |
-| Need to understand internal behavior of a command        | Tier 4 → fetch source                                     |
-| Tier-1-clean integration that still misbehaves           | Tier 4 → fetch source                                     |
+| Symptom                                           | Start at                              |
+| ------------------------------------------------- | ------------------------------------- |
+| Extension not loaded / `swamp-warning:` on stderr | Tier 1 → `swamp doctor extensions`    |
+| Command errored — message is clear                | Tier 2 → read it, fix the named issue |
+| Command errored — message is vague                | Tier 2 → re-run with `--json`         |
+| Workflow / method / sync is slow                  | Tier 3 → enable tracing               |
+| Need to understand internal behavior              | Tier 4 → fetch source                 |
 
-## Diagnostic playbook
-
-For a typical investigation:
-
-1. Match the symptom against the index above. If a tier is named, jump there.
-2. If no tier matches, run Tier 2 (error inspection) — read stderr and switch to
-   `--json` first.
-3. Capture what each tier ruled out before escalating, so the next tier has
-   context.
-4. Once the root cause is identified, state it clearly, suggest a fix or
-   workaround, and (if it's a bug) summarize for an issue report.
-
-## When to use other skills
-
-| Need                                  | Use Skill                                                         |
-| ------------------------------------- | ----------------------------------------------------------------- |
-| Run/create models                     | `swamp-model`                                                     |
-| Run/create workflows                  | `swamp-workflow`                                                  |
-| Manage secrets                        | `swamp-vault`                                                     |
-| Manage repository / install / upgrade | `swamp-repo`                                                      |
-| Author custom extensions              | `swamp-extension`                                                 |
-| Debug method preflight checks         | this skill, Tier 2 + [references/checks.md](references/checks.md) |
-
-## References
-
-- [references/health-checks.md](references/health-checks.md) — Tier 1: doctor
-  commands (`swamp doctor audit`, `swamp doctor extensions`), exit codes, CI
-  usage.
-- [references/error-inspection.md](references/error-inspection.md) — Tier 2:
-  stderr habits, `--json` switching, `swamp-warning:` lines, recipes for
-  "extension not appearing" and "source extension not loading."
-- [references/tracing.md](references/tracing.md) — Tier 3: OpenTelemetry setup,
-  span hierarchy, diagnosing slow workflows / GC / sync.
-- [references/source-reading.md](references/source-reading.md) — Tier 4:
-  `swamp source fetch/path/clean`, source layout, where to look by symptom.
-- [references/checks.md](references/checks.md) — Per-method preflight check
-  troubleshooting (skip flags, check selection errors, conflicts) — separate
-  concept from Tier 1 doctor commands.
+For detailed walkthroughs of each tier, see [reference.md](reference.md).

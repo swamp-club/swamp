@@ -1,0 +1,188 @@
+[
+  {
+    "query": "Search for model types that handle payments",
+    "guide": "model",
+    "answerable_from_guide": true,
+    "note": "Quick Reference table has the search command"
+  },
+  {
+    "query": "Run the validate method on my model",
+    "guide": "model",
+    "answerable_from_guide": true,
+    "note": "Quick Reference table has method run and validate commands"
+  },
+  {
+    "query": "What is the output shape of swamp model create?",
+    "guide": "model",
+    "answerable_from_guide": false,
+    "note": "Output shapes for create are in reference.md"
+  },
+  {
+    "query": "How do I set up definition-level check selection with require and skip?",
+    "guide": "model",
+    "answerable_from_guide": false,
+    "note": "Check selection details are in reference.md"
+  },
+  {
+    "query": "Validate my workflow before running it",
+    "guide": "workflow",
+    "answerable_from_guide": true,
+    "note": "Quick Reference has validate and run commands"
+  },
+  {
+    "query": "What schema should I get before editing a workflow?",
+    "guide": "workflow",
+    "answerable_from_guide": true,
+    "note": "Always Get Schema First section is in guide.md"
+  },
+  {
+    "query": "How do I use forEach to fan out workflow steps dynamically?",
+    "guide": "workflow",
+    "answerable_from_guide": false,
+    "note": "forEach and expressions are detailed reference material"
+  },
+  {
+    "query": "How do I chain data between workflow steps?",
+    "guide": "workflow",
+    "answerable_from_guide": false,
+    "note": "Data chaining details are in reference.md"
+  },
+  {
+    "query": "Query all data artifacts for a specific model",
+    "guide": "data",
+    "answerable_from_guide": true,
+    "note": "Quick Reference and shortcut mapping cover this"
+  },
+  {
+    "query": "What is the difference between swamp data get and swamp data query?",
+    "guide": "data",
+    "answerable_from_guide": true,
+    "note": "CLI shortcut mapping explains the relationship"
+  },
+  {
+    "query": "How does data garbage collection work with lifetime policies?",
+    "guide": "data",
+    "answerable_from_guide": false,
+    "note": "GC lifecycle details are in reference.md"
+  },
+  {
+    "query": "What fields can I filter on in a CEL data query predicate?",
+    "guide": "data",
+    "answerable_from_guide": false,
+    "note": "Field reference is in references/fields.md, linked from reference.md"
+  },
+  {
+    "query": "What are the five extension types and where do their files go?",
+    "guide": "extension",
+    "answerable_from_guide": true,
+    "note": "Extension type table is in guide.md"
+  },
+  {
+    "query": "How do I check my extension's quality score?",
+    "guide": "extension",
+    "answerable_from_guide": true,
+    "note": "Quick Reference has the quality command"
+  },
+  {
+    "query": "How do I implement the ModelType interface with Zod schemas?",
+    "guide": "extension",
+    "answerable_from_guide": false,
+    "note": "Implementation details are in reference.md"
+  },
+  {
+    "query": "How do I smoke test my extension model before publishing?",
+    "guide": "extension",
+    "answerable_from_guide": true,
+    "note": "Quick Reference has swamp doctor extensions for verification"
+  },
+  {
+    "query": "Initialize a new swamp repository",
+    "guide": "repo",
+    "answerable_from_guide": true,
+    "note": "Quick Reference has the init command"
+  },
+  {
+    "query": "How do I set up a remote datastore for my repository?",
+    "guide": "repo",
+    "answerable_from_guide": false,
+    "note": "Datastore setup details are in reference.md"
+  },
+  {
+    "query": "Create a vault and store a secret",
+    "guide": "vault",
+    "answerable_from_guide": true,
+    "note": "Quick Reference has create and put commands"
+  },
+  {
+    "query": "How do I migrate a vault from one backend to another?",
+    "guide": "vault",
+    "answerable_from_guide": true,
+    "note": "Quick Reference has swamp vault migrate command"
+  },
+  {
+    "query": "Get a stored report for a model in JSON format",
+    "guide": "report",
+    "answerable_from_guide": true,
+    "note": "Quick Reference has the report get command"
+  },
+  {
+    "query": "How do I create a custom report extension from scratch?",
+    "guide": "report",
+    "answerable_from_guide": false,
+    "note": "Report creation walkthrough is in reference.md"
+  },
+  {
+    "query": "File a bug report through the CLI",
+    "guide": "issue",
+    "answerable_from_guide": true,
+    "note": "Commands table has swamp issue bug"
+  },
+  {
+    "query": "What are the constraints on ripple submissions?",
+    "guide": "issue",
+    "answerable_from_guide": false,
+    "note": "Ripple constraints section is in reference.md"
+  },
+  {
+    "query": "What is the state machine for publishing an extension?",
+    "guide": "extension-publish",
+    "answerable_from_guide": true,
+    "note": "State machine diagram is in guide.md"
+  },
+  {
+    "query": "How do I verify my auth credentials before pushing?",
+    "guide": "extension-publish",
+    "answerable_from_guide": true,
+    "note": "Quick Reference table has auth_verified state with swamp auth whoami --json"
+  },
+  {
+    "query": "What are the four diagnostic tiers for troubleshooting?",
+    "guide": "troubleshooting",
+    "answerable_from_guide": true,
+    "note": "Diagnostic mindset principles name the tiers"
+  },
+  {
+    "query": "How do I enable OpenTelemetry tracing for swamp?",
+    "guide": "troubleshooting",
+    "answerable_from_guide": false,
+    "note": "Tracing details are in reference.md"
+  },
+  {
+    "query": "What are the vault expression functions for referencing secrets in model definitions?",
+    "guide": "vault",
+    "answerable_from_guide": false,
+    "note": "Vault expression syntax details are in reference.md"
+  },
+  {
+    "query": "What does the quality scorecard check for and how do I improve a low score?",
+    "guide": "extension-publish",
+    "answerable_from_guide": false,
+    "note": "Quality scoring criteria details are in reference.md"
+  },
+  {
+    "query": "How do I write the execute function for a custom model extension?",
+    "guide": "extension",
+    "answerable_from_guide": false,
+    "note": "ModelType interface implementation details are in reference.md"
+  }
+]
