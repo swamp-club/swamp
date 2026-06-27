@@ -98,6 +98,16 @@ Deno.test("collectServeExtraArgs: includes --trust-proxy", () => {
   assertEquals(args, ["--trust-proxy"]);
 });
 
+Deno.test("collectServeExtraArgs: includes --ws-idle-timeout", () => {
+  const args = collectServeExtraArgs({ wsIdleTimeout: "2m" });
+  assertEquals(args, ["--ws-idle-timeout", "2m"]);
+});
+
+Deno.test("collectServeExtraArgs: skips --ws-idle-timeout when not set", () => {
+  const args = collectServeExtraArgs({});
+  assertEquals(args, []);
+});
+
 Deno.test("collectServeExtraArgs: combines multiple flags", () => {
   const args = collectServeExtraArgs({
     schedule: false,
