@@ -25,6 +25,7 @@ import {
 } from "../context.ts";
 import { requireInitializedRepoUnlocked } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
+import { parseTimeout } from "../duration_parser.ts";
 import { buildServeAuthConfig } from "../../domain/access/serve_auth_config.ts";
 import { handleConnection } from "../../serve/connection.ts";
 import { authenticateServerToken } from "../../serve/token_auth.ts";
@@ -219,6 +220,9 @@ export function collectServeExtraArgs(options: AnyOptions): string[] {
   }
   if (options.trustProxy) {
     args.push("--trust-proxy");
+  }
+  if (options.wsIdleTimeout) {
+    args.push("--ws-idle-timeout", options.wsIdleTimeout as string);
   }
   return args;
 }
@@ -447,6 +451,11 @@ export const serveCommand = new Command()
     "--trust-proxy",
     "Trust X-Forwarded-For header for client IP in token auth rate limiting (enable when behind a reverse proxy)",
   )
+  .option(
+    "--ws-idle-timeout <duration:string>",
+    "WebSocket idle timeout — how long the server waits for a pong before closing the connection (env: SWAMP_WS_IDLE_TIMEOUT). " +
+      "Accepts seconds (30), explicit units (2m, 5m), or 0 to disable. Default: 30s",
+  )
   .example(
     "Enable TLS",
     "swamp serve --cert-file server.crt --key-file server.key",
@@ -494,6 +503,19 @@ export const serveCommand = new Command()
     }
     const tlsEnabled = cert !== undefined;
     const trustProxy = options.trustProxy === true;
+
+    const wsIdleTimeoutRaw = (options.wsIdleTimeout as string | undefined) ??
+      Deno.env.get("SWAMP_WS_IDLE_TIMEOUT") ?? undefined;
+    let wsIdleTimeoutSeconds: number | undefined;
+    if (wsIdleTimeoutRaw !== undefined) {
+      if (wsIdleTimeoutRaw === "0") {
+        wsIdleTimeoutSeconds = 0;
+      } else {
+        wsIdleTimeoutSeconds = Math.round(
+          parseTimeout(wsIdleTimeoutRaw) / 1000,
+        );
+      }
+    }
 
     const authConfig = buildServeAuthConfig({
       authMode: options.authMode as string | undefined,
@@ -803,6 +825,11 @@ export const serveCommand = new Command()
       }
     }
 
+    const wsUpgradeOpts: Deno.UpgradeWebSocketOptions = {};
+    if (wsIdleTimeoutSeconds !== undefined) {
+      wsUpgradeOpts.idleTimeout = wsIdleTimeoutSeconds;
+    }
+
     const wsScheme = tlsEnabled ? "wss" : "ws";
     const server = Deno.serve(
       {
@@ -895,11 +922,17 @@ export const serveCommand = new Command()
             }
             clearRateLimit(remoteAddr);
             const principal = parsePrincipal(result.principalId);
-            const { socket, response } = Deno.upgradeWebSocket(req);
+            const { socket, response } = Deno.upgradeWebSocket(
+              req,
+              wsUpgradeOpts,
+            );
             handleConnection(socket, connectionCtx, principal);
             return response;
           }
-          const { socket, response } = Deno.upgradeWebSocket(req);
+          const { socket, response } = Deno.upgradeWebSocket(
+            req,
+            wsUpgradeOpts,
+          );
           handleConnection(socket, connectionCtx, null);
           return response;
         }
