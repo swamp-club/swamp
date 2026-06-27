@@ -69,6 +69,18 @@ export interface UnifiedDataRepository {
   >;
 
   /**
+   * Finds all data for a single model type across all models of that type.
+   *
+   * @param type - The model type to scan
+   * @returns Array of data with their model type and model ID
+   */
+  findAllForType(
+    type: ModelTypeInput,
+  ): Promise<
+    Array<{ data: Data; modelType: ModelType; modelId: string }>
+  >;
+
+  /**
    * Finds data by name, optionally for a specific version.
    *
    * @param type - The model type

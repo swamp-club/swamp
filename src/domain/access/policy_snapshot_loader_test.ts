@@ -19,77 +19,20 @@
 
 import { assertEquals } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
-import type { DataRecord } from "../data/data_record.ts";
-import type { DataQueryService } from "../data/data_query_service.ts";
+import { Data } from "../data/data.ts";
+import type { UnifiedDataRepository } from "../data/repositories.ts";
 import { EventBus } from "../events/event_bus.ts";
 import { createModelCreated, createModelUpdated } from "../events/types.ts";
 import type { Grant } from "../models/access/grant_model.ts";
+import { GRANT_MODEL_TYPE } from "../models/access/grant_model.ts";
 import type { Group } from "../models/access/group_model.ts";
+import { GROUP_MODEL_TYPE } from "../models/access/group_model.ts";
+import type { ModelType } from "../models/model_type.ts";
 import { PolicySnapshotLoader } from "./policy_snapshot_loader.ts";
 
 await initializeLogging({});
 
 const delay = (ms: number) => new Promise<void>((r) => setTimeout(r, ms));
-
-function makeGrantRecord(grant: Grant): DataRecord {
-  return {
-    id: crypto.randomUUID(),
-    name: "grant-main",
-    version: 1,
-    isLatest: true,
-    createdAt: "2026-01-01T00:00:00Z",
-    namespace: "",
-    attributes: grant as unknown as Record<string, unknown>,
-    tags: {},
-    modelName: `grant-${grant.id}`,
-    modelId: crypto.randomUUID(),
-    modelType: "swamp/grant",
-    specName: "grant",
-    dataType: "grant",
-    contentType: "application/json",
-    lifetime: "infinite",
-    ownerType: "model-method",
-    streaming: false,
-    size: 0,
-    content: "",
-    ownerRef: "",
-    workflowRunId: "",
-    workflowName: "",
-    jobName: "",
-    stepName: "",
-    source: "",
-  };
-}
-
-function makeGroupRecord(group: Group): DataRecord {
-  return {
-    id: crypto.randomUUID(),
-    name: "group-main",
-    version: 1,
-    isLatest: true,
-    createdAt: "2026-01-01T00:00:00Z",
-    namespace: "",
-    attributes: group as unknown as Record<string, unknown>,
-    tags: {},
-    modelName: group.name,
-    modelId: crypto.randomUUID(),
-    modelType: "swamp/group",
-    specName: "group",
-    dataType: "group",
-    contentType: "application/json",
-    lifetime: "infinite",
-    ownerType: "model-method",
-    streaming: false,
-    size: 0,
-    content: "",
-    ownerRef: "",
-    workflowRunId: "",
-    workflowName: "",
-    jobName: "",
-    stepName: "",
-    source: "",
-  };
-}
 
 function makeGrant(overrides: Partial<Grant> = {}): Grant {
   return {
@@ -115,32 +58,92 @@ function makeGroup(name: string, memberIds: string[]): Group {
   };
 }
 
-function createMockQueryService(
-  grantRecords: DataRecord[],
-  groupRecords: DataRecord[],
-): DataQueryService {
-  return {
-    query(predicate: string) {
-      if (predicate.includes("swamp/grant")) {
-        return Promise.resolve(grantRecords);
-      }
-      if (predicate.includes("swamp/group")) {
-        return Promise.resolve(groupRecords);
-      }
-      return Promise.resolve([]);
-    },
-  } as unknown as DataQueryService;
+function makeData(name: string): Data {
+  return Data.create({
+    name,
+    contentType: "application/json",
+    lifetime: "infinite",
+    garbageCollection: 5,
+    tags: { type: "resource" },
+    ownerDefinition: { ownerType: "model-method", ownerRef: "test" },
+  });
 }
 
-Deno.test("PolicySnapshotLoader.load: builds snapshot from DataQueryService", async () => {
+interface ContentEntry {
+  type: string;
+  modelId: string;
+  dataName: string;
+  content: Record<string, unknown>;
+}
+
+function createMockDataRepo(
+  grantItems: Array<{ attrs: Grant; modelId: string; dataName: string }>,
+  groupItems: Array<{ attrs: Group; modelId: string; dataName: string }>,
+): UnifiedDataRepository {
+  const contentMap = new Map<string, Uint8Array>();
+
+  const entries: ContentEntry[] = [];
+  for (const item of grantItems) {
+    const key =
+      `${GRANT_MODEL_TYPE.normalized}/${item.modelId}/${item.dataName}`;
+    contentMap.set(
+      key,
+      new TextEncoder().encode(JSON.stringify(item.attrs)),
+    );
+    entries.push({
+      type: GRANT_MODEL_TYPE.normalized,
+      modelId: item.modelId,
+      dataName: item.dataName,
+      content: item.attrs as unknown as Record<string, unknown>,
+    });
+  }
+  for (const item of groupItems) {
+    const key =
+      `${GROUP_MODEL_TYPE.normalized}/${item.modelId}/${item.dataName}`;
+    contentMap.set(
+      key,
+      new TextEncoder().encode(JSON.stringify(item.attrs)),
+    );
+    entries.push({
+      type: GROUP_MODEL_TYPE.normalized,
+      modelId: item.modelId,
+      dataName: item.dataName,
+      content: item.attrs as unknown as Record<string, unknown>,
+    });
+  }
+
+  return {
+    findAllForType(type: ModelType) {
+      const typeStr = type.normalized;
+      const matching = entries.filter((e) => e.type === typeStr);
+      return Promise.resolve(
+        matching.map((e) => ({
+          data: makeData(e.dataName),
+          modelType: type,
+          modelId: e.modelId,
+        })),
+      );
+    },
+    getContent(
+      type: ModelType,
+      modelId: string,
+      dataName: string,
+    ) {
+      const key = `${type.normalized}/${modelId}/${dataName}`;
+      return Promise.resolve(contentMap.get(key) ?? null);
+    },
+  } as unknown as UnifiedDataRepository;
+}
+
+Deno.test("PolicySnapshotLoader.load: builds snapshot from data repository", async () => {
   const grant = makeGrant();
   const group = makeGroup("devs", ["adam"]);
-  const queryService = createMockQueryService(
-    [makeGrantRecord(grant)],
-    [makeGroupRecord(group)],
+  const dataRepo = createMockDataRepo(
+    [{ attrs: grant, modelId: "g1", dataName: "grant-main" }],
+    [{ attrs: group, modelId: "grp1", dataName: "group-main" }],
   );
   const eventBus = new EventBus();
-  const loader = new PolicySnapshotLoader(queryService, eventBus);
+  const loader = new PolicySnapshotLoader(dataRepo, eventBus);
 
   const snapshot = await loader.load();
 
@@ -153,12 +156,15 @@ Deno.test("PolicySnapshotLoader.load: builds snapshot from DataQueryService", as
 Deno.test("PolicySnapshotLoader.load: filters out revoked grants", async () => {
   const active = makeGrant({ state: "active" });
   const revoked = makeGrant({ state: "revoked" });
-  const queryService = createMockQueryService(
-    [makeGrantRecord(active), makeGrantRecord(revoked)],
+  const dataRepo = createMockDataRepo(
+    [
+      { attrs: active, modelId: "g1", dataName: "grant-main" },
+      { attrs: revoked, modelId: "g2", dataName: "grant-main" },
+    ],
     [],
   );
   const eventBus = new EventBus();
-  const loader = new PolicySnapshotLoader(queryService, eventBus);
+  const loader = new PolicySnapshotLoader(dataRepo, eventBus);
 
   const snapshot = await loader.load();
   assertEquals(snapshot.grantsForSubjects(["user:adam"]).length, 1);
@@ -169,21 +175,38 @@ Deno.test("PolicySnapshotLoader.load: filters out revoked grants", async () => {
 Deno.test("PolicySnapshotLoader: rebuilds snapshot on ModelCreated for grant model", async () => {
   let callCount = 0;
   const grant = makeGrant();
-  const queryService = {
-    query(predicate: string) {
-      if (predicate.includes("swamp/grant")) {
+
+  const dataRepo = {
+    findAllForType(type: ModelType) {
+      if (type.normalized === GRANT_MODEL_TYPE.normalized) {
         callCount++;
         if (callCount > 1) {
-          return Promise.resolve([makeGrantRecord(grant)]);
+          return Promise.resolve([{
+            data: makeData("grant-main"),
+            modelType: type,
+            modelId: "g1",
+          }]);
         }
         return Promise.resolve([]);
       }
       return Promise.resolve([]);
     },
-  } as unknown as DataQueryService;
+    getContent(
+      type: ModelType,
+      _modelId: string,
+      _dataName: string,
+    ) {
+      if (type.normalized === GRANT_MODEL_TYPE.normalized && callCount > 1) {
+        return Promise.resolve(
+          new TextEncoder().encode(JSON.stringify(grant)),
+        );
+      }
+      return Promise.resolve(null);
+    },
+  } as unknown as UnifiedDataRepository;
 
   const eventBus = new EventBus();
-  const loader = new PolicySnapshotLoader(queryService, eventBus);
+  const loader = new PolicySnapshotLoader(dataRepo, eventBus);
 
   await loader.load();
   assertEquals(loader.snapshot.grantsForSubjects(["user:adam"]).length, 0);
@@ -201,21 +224,38 @@ Deno.test("PolicySnapshotLoader: rebuilds snapshot on ModelCreated for grant mod
 Deno.test("PolicySnapshotLoader: rebuilds snapshot on ModelUpdated for group model", async () => {
   let callCount = 0;
   const group = makeGroup("devs", ["adam"]);
-  const queryService = {
-    query(predicate: string) {
-      if (predicate.includes("swamp/group")) {
+
+  const dataRepo = {
+    findAllForType(type: ModelType) {
+      if (type.normalized === GROUP_MODEL_TYPE.normalized) {
         callCount++;
         if (callCount > 1) {
-          return Promise.resolve([makeGroupRecord(group)]);
+          return Promise.resolve([{
+            data: makeData("group-main"),
+            modelType: type,
+            modelId: "grp1",
+          }]);
         }
         return Promise.resolve([]);
       }
       return Promise.resolve([]);
     },
-  } as unknown as DataQueryService;
+    getContent(
+      type: ModelType,
+      _modelId: string,
+      _dataName: string,
+    ) {
+      if (type.normalized === GROUP_MODEL_TYPE.normalized && callCount > 1) {
+        return Promise.resolve(
+          new TextEncoder().encode(JSON.stringify(group)),
+        );
+      }
+      return Promise.resolve(null);
+    },
+  } as unknown as UnifiedDataRepository;
 
   const eventBus = new EventBus();
-  const loader = new PolicySnapshotLoader(queryService, eventBus);
+  const loader = new PolicySnapshotLoader(dataRepo, eventBus);
 
   await loader.load();
   assertEquals(loader.snapshot.groupsForPrincipal("user:adam").length, 0);
@@ -231,43 +271,49 @@ Deno.test("PolicySnapshotLoader: rebuilds snapshot on ModelUpdated for group mod
 });
 
 Deno.test("PolicySnapshotLoader: ignores events for non-access models", async () => {
-  let queryCallCount = 0;
-  const queryService = {
-    query() {
-      queryCallCount++;
+  let findAllCallCount = 0;
+  const dataRepo = {
+    findAllForType() {
+      findAllCallCount++;
       return Promise.resolve([]);
     },
-  } as unknown as DataQueryService;
+    getContent() {
+      return Promise.resolve(null);
+    },
+  } as unknown as UnifiedDataRepository;
 
   const eventBus = new EventBus();
-  const loader = new PolicySnapshotLoader(queryService, eventBus);
+  const loader = new PolicySnapshotLoader(dataRepo, eventBus);
 
   await loader.load();
-  const initialCount = queryCallCount;
+  const initialCount = findAllCallCount;
 
   await eventBus.publish(
     createModelCreated("swamp/echo", "789", "my-echo"),
   );
 
-  assertEquals(queryCallCount, initialCount);
+  assertEquals(findAllCallCount, initialCount);
 
   await loader.dispose();
 });
 
 Deno.test("PolicySnapshotLoader.dispose: unsubscribes from EventBus", async () => {
-  let queryCallCount = 0;
-  const queryService = {
-    query() {
-      queryCallCount++;
+  let findAllCallCount = 0;
+  const dataRepo = {
+    findAllForType() {
+      findAllCallCount++;
       return Promise.resolve([]);
     },
-  } as unknown as DataQueryService;
+    getContent() {
+      return Promise.resolve(null);
+    },
+  } as unknown as UnifiedDataRepository;
 
   const eventBus = new EventBus();
-  const loader = new PolicySnapshotLoader(queryService, eventBus);
+  const loader = new PolicySnapshotLoader(dataRepo, eventBus);
 
   await loader.load();
-  const initialCount = queryCallCount;
+  const initialCount = findAllCallCount;
 
   await loader.dispose();
 
@@ -275,29 +321,32 @@ Deno.test("PolicySnapshotLoader.dispose: unsubscribes from EventBus", async () =
     createModelCreated("swamp/grant", "123", "my-grant"),
   );
 
-  assertEquals(queryCallCount, initialCount);
+  assertEquals(findAllCallCount, initialCount);
 });
 
 Deno.test("PolicySnapshotLoader: manual mode does not subscribe to EventBus", async () => {
-  let queryCallCount = 0;
-  const queryService = {
-    query() {
-      queryCallCount++;
+  let findAllCallCount = 0;
+  const dataRepo = {
+    findAllForType() {
+      findAllCallCount++;
       return Promise.resolve([]);
     },
-  } as unknown as DataQueryService;
+    getContent() {
+      return Promise.resolve(null);
+    },
+  } as unknown as UnifiedDataRepository;
 
   const eventBus = new EventBus();
-  const loader = new PolicySnapshotLoader(queryService, eventBus, "manual");
+  const loader = new PolicySnapshotLoader(dataRepo, eventBus, "manual");
 
   await loader.load();
-  const initialCount = queryCallCount;
+  const initialCount = findAllCallCount;
 
   await eventBus.publish(
     createModelCreated("swamp/grant", "123", "my-grant"),
   );
 
-  assertEquals(queryCallCount, initialCount);
+  assertEquals(findAllCallCount, initialCount);
 
   await loader.dispose();
 });
@@ -305,21 +354,38 @@ Deno.test("PolicySnapshotLoader: manual mode does not subscribe to EventBus", as
 Deno.test("PolicySnapshotLoader: auto mode subscribes to EventBus", async () => {
   let callCount = 0;
   const grant = makeGrant();
-  const queryService = {
-    query(predicate: string) {
-      if (predicate.includes("swamp/grant")) {
+
+  const dataRepo = {
+    findAllForType(type: ModelType) {
+      if (type.normalized === GRANT_MODEL_TYPE.normalized) {
         callCount++;
         if (callCount > 1) {
-          return Promise.resolve([makeGrantRecord(grant)]);
+          return Promise.resolve([{
+            data: makeData("grant-main"),
+            modelType: type,
+            modelId: "g1",
+          }]);
         }
         return Promise.resolve([]);
       }
       return Promise.resolve([]);
     },
-  } as unknown as DataQueryService;
+    getContent(
+      type: ModelType,
+      _modelId: string,
+      _dataName: string,
+    ) {
+      if (type.normalized === GRANT_MODEL_TYPE.normalized && callCount > 1) {
+        return Promise.resolve(
+          new TextEncoder().encode(JSON.stringify(grant)),
+        );
+      }
+      return Promise.resolve(null);
+    },
+  } as unknown as UnifiedDataRepository;
 
   const eventBus = new EventBus();
-  const loader = new PolicySnapshotLoader(queryService, eventBus, "auto");
+  const loader = new PolicySnapshotLoader(dataRepo, eventBus, "auto");
 
   await loader.load();
   assertEquals(loader.snapshot.grantsForSubjects(["user:adam"]).length, 0);
@@ -337,13 +403,13 @@ Deno.test("PolicySnapshotLoader: auto mode subscribes to EventBus", async () => 
 Deno.test("PolicySnapshotLoader.loadWithCounts: returns counts", async () => {
   const grant = makeGrant();
   const group = makeGroup("devs", ["adam"]);
-  const queryService = createMockQueryService(
-    [makeGrantRecord(grant)],
-    [makeGroupRecord(group)],
+  const dataRepo = createMockDataRepo(
+    [{ attrs: grant, modelId: "g1", dataName: "grant-main" }],
+    [{ attrs: group, modelId: "grp1", dataName: "group-main" }],
   );
 
   const eventBus = new EventBus();
-  const loader = new PolicySnapshotLoader(queryService, eventBus, "manual");
+  const loader = new PolicySnapshotLoader(dataRepo, eventBus, "manual");
   const result = await loader.loadWithCounts();
 
   assertEquals(result.grantCount, 1);

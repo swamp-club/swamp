@@ -610,7 +610,7 @@ export const serveCommand = new Command()
     }
 
     const policySnapshotLoader = new PolicySnapshotLoader(
-      dataQueryService,
+      repoContext.unifiedDataRepo,
       serveEventBus,
       grantReloadMode as PolicyReloadMode,
     );
