@@ -278,13 +278,7 @@ class JsonModelMethodRunRenderer implements ModelMethodRunRenderer {
         this._failed = true;
         console.log(JSON.stringify(e.run, null, 2));
       },
-      auto_gc_completed: (e) => {
-        console.log(JSON.stringify({
-          event: "auto_gc_completed",
-          versionsDeleted: e.versionsDeleted,
-          bytesReclaimed: e.bytesReclaimed,
-        }));
-      },
+      auto_gc_completed: () => {},
       error: (e) => {
         throw new UserError(e.error.message, e.error.code);
       },

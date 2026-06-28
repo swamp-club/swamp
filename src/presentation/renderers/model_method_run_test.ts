@@ -433,6 +433,34 @@ Deno.test("LogModelMethodRunRenderer - suppresses auth nudge on failed run", () 
   assertEquals(output.includes(AUTH_NUDGE_MESSAGE), false);
 });
 
+Deno.test("JsonModelMethodRunRenderer - auto_gc_completed does not write to stdout", async () => {
+  const logs: string[] = [];
+  const originalLog = console.log;
+  console.log = (msg: string) => logs.push(msg);
+
+  try {
+    const renderer = createModelMethodRunRenderer("json", {
+      modelName: "test-model",
+      methodName: "run",
+    });
+    const runView = makeRunView("succeeded");
+    const events: ModelMethodRunEvent[] = [
+      ...fullEventStream(runView),
+      {
+        kind: "auto_gc_completed",
+        versionsDeleted: 3,
+        bytesReclaimed: 4096,
+      },
+    ];
+    await consumeStream(toStream(events), renderer.handlers());
+    assertEquals(logs.length, 1);
+    const parsed = JSON.parse(logs[0]);
+    assertEquals(parsed.modelName, "test-model");
+  } finally {
+    console.log = originalLog;
+  }
+});
+
 Deno.test("JsonModelMethodRunRenderer - never shows auth nudge", async () => {
   const logs: string[] = [];
   const originalLog = console.log;
