@@ -135,6 +135,7 @@ type AnyOptions = any;
 export const vaultPutCommand = withRemoteOptions(
   new Command()
     .name("put")
+    .alias("write-secret")
     .description(
       `Store a secret in a vault.
 
@@ -168,6 +169,10 @@ When using --server, the value must be passed as a positional argument or KEY=VA
     .example(
       "Auto-refresh GCP token every 50 minutes",
       'swamp vault put my-vault GCP_TOKEN --refresh-from "gcloud auth print-access-token" --refresh-ttl 50m',
+    )
+    .example(
+      "Write a secret (alias)",
+      "swamp vault write-secret my-vault API_KEY=sk-1234567890",
     )
     .example(
       "Remove refresh hook from a secret",
