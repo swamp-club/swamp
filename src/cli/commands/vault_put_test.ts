@@ -18,7 +18,11 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { parseKeyValue, resolveKeyValue } from "./vault_put.ts";
+import {
+  parseKeyValue,
+  resolveKeyValue,
+  vaultPutCommand,
+} from "./vault_put.ts";
 
 Deno.test("parseKeyValue - simple key=value", () => {
   const result = parseKeyValue("API_KEY=secret123");
@@ -58,6 +62,10 @@ Deno.test("parseKeyValue - key with dashes", () => {
 Deno.test("parseKeyValue - key with underscores", () => {
   const result = parseKeyValue("MY_API_KEY=secret");
   assertEquals(result, { key: "MY_API_KEY", value: "secret" });
+});
+
+Deno.test("vaultPutCommand: exposes the write-secret alias", () => {
+  assertEquals(vaultPutCommand.getAliases().includes("write-secret"), true);
 });
 
 // resolveKeyValue tests
