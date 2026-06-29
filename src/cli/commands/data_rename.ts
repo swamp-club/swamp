@@ -30,7 +30,11 @@ import {
   type GlobalOptions,
   resolveRepoDir,
 } from "../context.ts";
-import { requireInitializedRepo } from "../repo_context.ts";
+import {
+  acquireModelLocks,
+  requireInitializedRepoUnlocked,
+} from "../repo_context.ts";
+import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { UserError } from "../../domain/errors.ts";
 
 export const dataRenameCommand = new Command()
@@ -88,19 +92,62 @@ export const dataRenameCommand = new Command()
         "rename",
       ]);
 
-      const { repoDir, datastoreResolver } = await requireInitializedRepo({
+      const {
+        repoDir,
+        repoContext,
+        datastoreResolver,
+        datastoreConfig,
+        syncService,
+      } = await requireInitializedRepoUnlocked({
         repoDir: resolveRepoDir(options.repoDir),
         outputMode: cliCtx.outputMode,
       });
 
-      const ctx = createLibSwampContext({ logger: cliCtx.logger });
-      const deps = createDataRenameDeps(repoDir, datastoreResolver);
-      const renderer = createDataRenameRenderer(cliCtx.outputMode);
-      await consumeStream(
-        dataRename(ctx, deps, { modelIdOrName, oldName, newName }),
-        renderer.handlers(),
+      const preResult = await findDefinitionByIdOrName(
+        repoContext.definitionRepo,
+        modelIdOrName,
       );
+      if (!preResult) {
+        throw new UserError(`Model not found: ${modelIdOrName}`);
+      }
 
-      cliCtx.logger.debug("Data rename command completed");
+      const lockResult = await acquireModelLocks(
+        datastoreConfig,
+        [
+          {
+            modelType: preResult.type.normalized,
+            modelId: preResult.definition.id,
+          },
+        ],
+        repoDir,
+        syncService,
+        repoContext.catalogStore,
+      );
+      if (lockResult.synced) repoContext.catalogStore.invalidate();
+
+      try {
+        const ctx = createLibSwampContext({ logger: cliCtx.logger });
+        const deps = createDataRenameDeps(repoDir, datastoreResolver);
+        const renderer = createDataRenameRenderer(cliCtx.outputMode);
+        await consumeStream(
+          dataRename(ctx, deps, { modelIdOrName, oldName, newName }),
+          renderer.handlers(),
+        );
+
+        cliCtx.logger.debug("Data rename command completed");
+      } finally {
+        try {
+          await lockResult.flush();
+        } catch (releaseError) {
+          cliCtx.logger.warn(
+            "Failed to release locks during cleanup: {error}",
+            {
+              error: releaseError instanceof Error
+                ? releaseError.message
+                : String(releaseError),
+            },
+          );
+        }
+      }
     },
   );
