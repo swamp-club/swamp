@@ -55,21 +55,23 @@ Deno.test("--json: version stdout is parseable JSON", async () => {
   assertEquals(typeof parsed.version, "string");
 });
 
-Deno.test("--json: error path emits exactly one JSON document on stdout", async () => {
+Deno.test("--json: error path emits exactly one JSON document on stderr", async () => {
   // `data list` without a model name fails with a UserError. The renderError
-  // path should write the error JSON to stdout exactly once — no double
-  // emission and no LogTape pretty-formatted FTL line.
+  // path should write the error JSON to stderr exactly once — no double
+  // emission and no LogTape pretty-formatted FTL line. Stdout must be empty
+  // so callers can reliably separate success data from error diagnostics.
   await withTempDir(async (dir) => {
     await initializeTestRepo(dir);
-    const { stdout, code } = await runCliCommand(
+    const { stdout, stderr, code } = await runCliCommand(
       ["data", "list", "--json"],
       dir,
     );
     assertEquals(code, 1);
+    assertEquals(stdout, "");
     // Parse must succeed with one document. If the double-emission bug
-    // returns, stdout would have two concatenated JSON objects which
+    // returns, stderr would have two concatenated JSON objects which
     // JSON.parse rejects.
-    const parsed = JSON.parse(stdout);
+    const parsed = JSON.parse(stderr);
     assertEquals(typeof parsed.error, "string");
   });
 });
