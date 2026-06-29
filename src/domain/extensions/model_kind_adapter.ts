@@ -462,6 +462,7 @@ export const modelKindAdapter: KindAdapter = {
       bundlePath: entry.bundle_path,
       sourcePath: entry.source_path,
       version: entry.version,
+      sourceFingerprint: entry.source_fingerprint,
     });
   },
 

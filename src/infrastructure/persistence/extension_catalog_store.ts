@@ -170,16 +170,28 @@ export class ExtensionCatalogStore {
 
   /**
    * Initializes WAL mode and schema with retry logic.
-   * PRAGMA journal_mode=WAL requires an exclusive lock to switch modes.
-   * When multiple processes open the database simultaneously, the SQLite
-   * busy handler may not cover the mode switch reliably, so we retry at
-   * the application level with exponential backoff.
+   *
+   * `PRAGMA journal_mode=WAL` requires an **exclusive** lock to switch
+   * modes. When N concurrent processes open the database simultaneously
+   * (e.g. 10 concurrent `model create` during startup reconciliation),
+   * every process contending on the exclusive lock is the primary
+   * catalog-contention bottleneck.
+   *
+   * WAL mode persists on disk — once a database has been switched to WAL,
+   * re-opening it does not require another mode switch. We read the
+   * current journal mode first (a shared-lock operation) and only issue
+   * the mode switch when the database is not yet in WAL mode.
    */
   private initializeWithRetry(): void {
     const MAX_RETRIES = 5;
     for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
       try {
-        this.db.exec("PRAGMA journal_mode=WAL");
+        const modeRow = this.db.prepare("PRAGMA journal_mode").get() as
+          | { journal_mode: string }
+          | undefined;
+        if (modeRow?.journal_mode !== "wal") {
+          this.db.exec("PRAGMA journal_mode=WAL");
+        }
         this.createSchema();
         this.migrateSchema();
         return;

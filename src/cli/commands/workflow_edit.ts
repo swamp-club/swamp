@@ -33,7 +33,7 @@ import {
   type GlobalOptions,
   resolveRepoDir,
 } from "../context.ts";
-import { requireInitializedRepo } from "../repo_context.ts";
+import { requireInitializedRepoUnlocked } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import { readStdin } from "../../infrastructure/io/stdin_reader.ts";
 
@@ -59,7 +59,7 @@ export const workflowEditCommand = new Command()
     cliCtx.logger
       .debug`Editing workflow: ${workflowIdOrName ?? "(interactive)"}`;
 
-    const { repoContext, repoDir } = await requireInitializedRepo({
+    const { repoContext, repoDir } = await requireInitializedRepoUnlocked({
       repoDir: resolveRepoDir(options.repoDir),
       outputMode: cliCtx.outputMode,
     });

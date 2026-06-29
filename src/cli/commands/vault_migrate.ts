@@ -34,7 +34,7 @@ import {
   type GlobalOptions,
   resolveRepoDir,
 } from "../context.ts";
-import { requireInitializedRepo } from "../repo_context.ts";
+import { requireInitializedRepoUnlocked } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 
@@ -93,7 +93,7 @@ Both the source and target vaults must be different types.`,
     ]);
     cliCtx.logger.debug`Migrating vault: ${vaultName}`;
 
-    const { repoDir } = await requireInitializedRepo({
+    const { repoDir } = await requireInitializedRepoUnlocked({
       repoDir: resolveRepoDir(options.repoDir),
       outputMode: cliCtx.outputMode,
     });

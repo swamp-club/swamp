@@ -575,9 +575,11 @@ async function loadUserModels(
       "models",
     );
 
-    // Set type loader on the registry for on-demand loading
-    modelRegistry.setTypeLoader(async (type) => {
-      await loader.loadSingleType(type);
+    // Set type loader on the registry for on-demand loading.
+    // The lazy entry carries bundle/source paths from the catalog index,
+    // avoiding a redundant SQLite read inside loadSingleType.
+    modelRegistry.setTypeLoader(async (type, lazyEntry) => {
+      await loader.loadSingleType(type, lazyEntry);
     });
 
     // Build the index: reads catalog + mtime scan for freshness.

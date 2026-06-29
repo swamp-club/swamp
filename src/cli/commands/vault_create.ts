@@ -30,7 +30,7 @@ import {
   type GlobalOptions,
   resolveRepoDir,
 } from "../context.ts";
-import { requireInitializedRepo } from "../repo_context.ts";
+import { requireInitializedRepoUnlocked } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -81,7 +81,7 @@ export const vaultCreateCommand = new Command()
         "vault",
         "create",
       ]);
-      const { repoDir } = await requireInitializedRepo({
+      const { repoDir } = await requireInitializedRepoUnlocked({
         repoDir: resolveRepoDir(options.repoDir),
         outputMode: cliCtx.outputMode,
       });
