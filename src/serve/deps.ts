@@ -114,7 +114,7 @@ export async function createWorkflowRunDeps(
         const autoDefRepo = new YamlDefinitionRepository(
           dir,
           undefined,
-          swampPath(dir, SWAMP_SUBDIRS.autoDefinitions),
+          repoContext.autoDefinitionsDir,
           false,
         );
         const result = await resolveOrCreateDefinition(
@@ -232,7 +232,7 @@ export async function createModelMethodRunDeps(
         const autoDefRepo = new YamlDefinitionRepository(
           repoDir,
           undefined,
-          swampPath(repoDir, SWAMP_SUBDIRS.autoDefinitions),
+          repoContext.autoDefinitionsDir,
           false,
         );
         await autoDefRepo.save(type, definition);
@@ -241,7 +241,7 @@ export async function createModelMethodRunDeps(
     getDefinitionPath: isDirectExecution
       ? (type, id) => {
         return join(
-          swampPath(repoDir, SWAMP_SUBDIRS.autoDefinitions),
+          repoContext.autoDefinitionsDir,
           type.toDirectoryPath(),
           `${id}.yaml`,
         );

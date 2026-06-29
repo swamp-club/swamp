@@ -68,10 +68,6 @@ import {
   migrateGrantDefinitions,
 } from "../../domain/access/admin_materializer.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
-import {
-  SWAMP_SUBDIRS,
-  swampPath,
-} from "../../infrastructure/persistence/paths.ts";
 import { GRANT_MODEL_TYPE } from "../../domain/models/access/grant_model.ts";
 import { cleanupEmptyParentDirs } from "../../infrastructure/persistence/directory_cleanup.ts";
 import { join } from "@std/path";
@@ -619,10 +615,7 @@ export const serveCommand = new Command()
     const serveEventBus = new EventBus();
 
     const modelsDir = join(resolvedRepoDir, "models");
-    const autoDefDir = swampPath(
-      resolvedRepoDir,
-      SWAMP_SUBDIRS.autoDefinitions,
-    );
+    const autoDefDir = repoContext.autoDefinitionsDir;
     const grantTypeDir = GRANT_MODEL_TYPE.toDirectoryPath();
     const grantSourceDir = join(modelsDir, grantTypeDir);
     const migrationResult = await migrateGrantDefinitions(

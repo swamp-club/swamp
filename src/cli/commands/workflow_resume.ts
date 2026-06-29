@@ -35,10 +35,7 @@ import {
   type StepLockHook,
   WorkflowExecutionService,
 } from "../../domain/workflows/execution_service.ts";
-import {
-  SWAMP_SUBDIRS,
-  swampPath,
-} from "../../infrastructure/persistence/paths.ts";
+import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
 import { createWorkflowRunRenderer } from "../../presentation/renderers/workflow_run.ts";
 import { isAuthenticated } from "../auth_context.ts";
 import { resolveOrCreateDefinition } from "../../libswamp/mod.ts";
@@ -236,7 +233,7 @@ export const workflowResumeCommand = new Command()
         const autoDefRepo = new YamlDefinitionRepository(
           repoDir,
           undefined,
-          swampPath(repoDir, SWAMP_SUBDIRS.autoDefinitions),
+          repoContext.autoDefinitionsDir,
           false,
         );
         const result = await resolveOrCreateDefinition(

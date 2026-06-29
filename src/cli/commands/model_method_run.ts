@@ -324,7 +324,7 @@ export const modelMethodRunCommand = new Command()
             const autoDefRepo = new YamlDefinitionRepository(
               repoDir,
               undefined,
-              swampPath(repoDir, SWAMP_SUBDIRS.autoDefinitions),
+              repoContext.autoDefinitionsDir,
               false,
             );
             await autoDefRepo.save(type, definition);
@@ -333,7 +333,7 @@ export const modelMethodRunCommand = new Command()
         getDefinitionPath: isDirectExecution
           ? (type, id) => {
             return join(
-              swampPath(repoDir, SWAMP_SUBDIRS.autoDefinitions),
+              repoContext.autoDefinitionsDir,
               type.toDirectoryPath(),
               `${id}.yaml`,
             );
