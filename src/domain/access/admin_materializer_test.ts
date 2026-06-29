@@ -18,6 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
+import { join } from "@std/path";
+import { ensureDir } from "@std/fs";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 import type { Grant } from "../models/access/grant_model.ts";
 import {
@@ -25,6 +27,7 @@ import {
   hashPrincipal,
   instanceNameForAdmin,
   materializeAdmins,
+  migrateGrantDefinitions,
 } from "./admin_materializer.ts";
 
 await initializeLogging({});
@@ -257,4 +260,119 @@ Deno.test("instanceNameForAdmin: produces grant-config- prefix", () => {
     instanceNameForAdmin("abc123").startsWith("grant-config-"),
     true,
   );
+});
+
+async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
+  const dir = await Deno.makeTempDir({ prefix: "swamp-test-" });
+  try {
+    await fn(dir);
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(dir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(dir, { recursive: true });
+    }
+  }
+}
+
+Deno.test("migrateGrantDefinitions: moves YAML files from source to destination", async () => {
+  await withTempDir(async (dir) => {
+    const sourceDir = join(dir, "models", "swamp", "grant");
+    const destDir = join(dir, ".swamp", "auto-definitions", "swamp", "grant");
+
+    await ensureDir(sourceDir);
+    await Deno.writeTextFile(
+      join(sourceDir, "abc-123.yaml"),
+      "name: grant-config-abc\ntype: swamp/grant\n",
+    );
+    await Deno.writeTextFile(
+      join(sourceDir, "def-456.yaml"),
+      "name: grant-config-def\ntype: swamp/grant\n",
+    );
+
+    const result = await migrateGrantDefinitions(sourceDir, destDir);
+
+    assertEquals(result.moved, 2);
+    assertEquals(result.skipped, 0);
+
+    const destContent1 = await Deno.readTextFile(
+      join(destDir, "abc-123.yaml"),
+    );
+    assertEquals(destContent1, "name: grant-config-abc\ntype: swamp/grant\n");
+
+    const destContent2 = await Deno.readTextFile(
+      join(destDir, "def-456.yaml"),
+    );
+    assertEquals(destContent2, "name: grant-config-def\ntype: swamp/grant\n");
+  });
+});
+
+Deno.test("migrateGrantDefinitions: no-op when source directory does not exist", async () => {
+  await withTempDir(async (dir) => {
+    const sourceDir = join(dir, "models", "swamp", "grant");
+    const destDir = join(dir, ".swamp", "auto-definitions", "swamp", "grant");
+
+    const result = await migrateGrantDefinitions(sourceDir, destDir);
+
+    assertEquals(result.moved, 0);
+    assertEquals(result.skipped, 0);
+  });
+});
+
+Deno.test("migrateGrantDefinitions: skips files that already exist at destination", async () => {
+  await withTempDir(async (dir) => {
+    const sourceDir = join(dir, "models", "swamp", "grant");
+    const destDir = join(dir, ".swamp", "auto-definitions", "swamp", "grant");
+
+    await ensureDir(sourceDir);
+    await ensureDir(destDir);
+
+    await Deno.writeTextFile(
+      join(sourceDir, "abc-123.yaml"),
+      "source version",
+    );
+    await Deno.writeTextFile(
+      join(destDir, "abc-123.yaml"),
+      "dest version",
+    );
+    await Deno.writeTextFile(
+      join(sourceDir, "def-456.yaml"),
+      "only in source",
+    );
+
+    const result = await migrateGrantDefinitions(sourceDir, destDir);
+
+    assertEquals(result.moved, 1);
+    assertEquals(result.skipped, 1);
+
+    const destExisting = await Deno.readTextFile(
+      join(destDir, "abc-123.yaml"),
+    );
+    assertEquals(destExisting, "dest version");
+
+    const destMoved = await Deno.readTextFile(join(destDir, "def-456.yaml"));
+    assertEquals(destMoved, "only in source");
+  });
+});
+
+Deno.test("migrateGrantDefinitions: ignores non-YAML files", async () => {
+  await withTempDir(async (dir) => {
+    const sourceDir = join(dir, "models", "swamp", "grant");
+    const destDir = join(dir, ".swamp", "auto-definitions", "swamp", "grant");
+
+    await ensureDir(sourceDir);
+    await Deno.writeTextFile(
+      join(sourceDir, "abc-123.yaml"),
+      "content",
+    );
+    await Deno.writeTextFile(
+      join(sourceDir, "notes.txt"),
+      "not a definition",
+    );
+
+    const result = await migrateGrantDefinitions(sourceDir, destDir);
+
+    assertEquals(result.moved, 1);
+    assertEquals(result.skipped, 0);
+  });
 });
