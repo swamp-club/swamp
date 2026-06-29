@@ -18,8 +18,6 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { getLogger } from "@logtape/logtape";
-import type { DataQueryService } from "../data/data_query_service.ts";
-import type { DataRecord } from "../data/data_record.ts";
 import {
   type Grant,
   GRANT_MODEL_TYPE,
@@ -32,6 +30,7 @@ import type { AuthMode } from "./serve_auth_config.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
 import { Definition } from "../definitions/definition.ts";
 import type { UnifiedDataRepository } from "../data/repositories.ts";
+import type { ModelType } from "../models/model_type.ts";
 import { createResourceWriter } from "../models/data_writer.ts";
 
 const logger = getLogger(["swamp", "admin-materializer"]);
@@ -87,28 +86,31 @@ function buildAdminGrant(adminPrincipal: string): Grant {
 }
 
 export function createAdminGrantStore(
-  dataQueryService: DataQueryService,
   definitionRepo: DefinitionRepository,
   dataRepo: UnifiedDataRepository,
 ): AdminGrantStore {
   return {
     async queryConfigGrants() {
-      const records = await dataQueryService.query(
-        `modelType == "${GRANT_MODEL_TYPE.normalized}"`,
-        { loadAttributes: true },
-      );
+      const grantDataItems = await dataRepo.findAllForType(GRANT_MODEL_TYPE);
 
       const configGrants = new Map<
         string,
         { grant: Grant; modelId: string }
       >();
-      for (const record of records) {
-        const dataRecord = record as DataRecord;
-        const parsed = GrantSchema.safeParse(dataRecord.attributes);
+      for (const { data, modelType, modelId } of grantDataItems) {
+        const attrs = await readAttributes(
+          dataRepo,
+          modelType,
+          modelId,
+          data.name,
+        );
+        if (!attrs) continue;
+        const parsed = GrantSchema.safeParse(attrs);
         if (parsed.success && parsed.data.source === "config") {
-          configGrants.set(dataRecord.modelName, {
+          const modelName = data.tags["modelName"] ?? "";
+          configGrants.set(modelName, {
             grant: parsed.data,
-            modelId: dataRecord.modelId,
+            modelId,
           });
         }
       }
@@ -149,6 +151,24 @@ export function createAdminGrantStore(
       );
     },
   };
+}
+
+async function readAttributes(
+  dataRepo: UnifiedDataRepository,
+  modelType: ModelType,
+  modelId: string,
+  dataName: string,
+): Promise<Record<string, unknown> | null> {
+  const content = await dataRepo.getContent(modelType, modelId, dataName);
+  if (!content) return null;
+  try {
+    const text = new TextDecoder().decode(content);
+    return JSON.parse(text) as Record<string, unknown>;
+  } catch (error) {
+    logger
+      .warn`Skipping ${modelType.normalized}/${modelId}/${dataName}: failed to parse JSON content: ${error}`;
+    return null;
+  }
 }
 
 export async function materializeAdmins(
