@@ -23,7 +23,13 @@ import type { OutputMode } from "../output/output.ts";
 import { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
 
-class LogUpdateCheckRenderer implements Renderer<UpdateCheckEvent> {
+export interface UpdateCheckRenderer extends Renderer<UpdateCheckEvent> {
+  readonly updated: boolean;
+}
+
+class LogUpdateCheckRenderer implements UpdateCheckRenderer {
+  updated = false;
+
   handlers(): EventHandlers<UpdateCheckEvent> {
     const logger = getSwampLogger(["update"]);
     return {
@@ -40,12 +46,13 @@ class LogUpdateCheckRenderer implements Renderer<UpdateCheckEvent> {
             logger.info("Run `swamp update` to install");
             break;
           case "updated":
+            this.updated = true;
             logger.info("swamp updated successfully!");
             logger.info`${data.previousVersion} \u2192 ${data.newVersion}`;
             logger.info("SHA-256 integrity check passed");
             logger.info("The swamp binary has been updated globally.");
             logger.info(
-              "Run `swamp repo upgrade` in your repositories to update skills and settings.",
+              "Run `swamp repo upgrade` in your repositories to update settings and instructions.",
             );
             break;
         }
@@ -60,11 +67,16 @@ class LogUpdateCheckRenderer implements Renderer<UpdateCheckEvent> {
   }
 }
 
-class JsonUpdateCheckRenderer implements Renderer<UpdateCheckEvent> {
+class JsonUpdateCheckRenderer implements UpdateCheckRenderer {
+  updated = false;
+
   handlers(): EventHandlers<UpdateCheckEvent> {
     return {
       checking: () => {},
       completed: (e) => {
+        if (e.data.status === "updated") {
+          this.updated = true;
+        }
         console.log(JSON.stringify(e.data, null, 2));
       },
       error: (e) => {
@@ -76,7 +88,7 @@ class JsonUpdateCheckRenderer implements Renderer<UpdateCheckEvent> {
 
 export function createUpdateCheckRenderer(
   mode: OutputMode,
-): Renderer<UpdateCheckEvent> {
+): UpdateCheckRenderer {
   switch (mode) {
     case "json":
       return new JsonUpdateCheckRenderer();
