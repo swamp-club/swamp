@@ -65,7 +65,16 @@ import { EventBus } from "../../domain/events/event_bus.ts";
 import {
   createAdminGrantStore,
   materializeAdmins,
+  migrateGrantDefinitions,
 } from "../../domain/access/admin_materializer.ts";
+import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
+import {
+  SWAMP_SUBDIRS,
+  swampPath,
+} from "../../infrastructure/persistence/paths.ts";
+import { GRANT_MODEL_TYPE } from "../../domain/models/access/grant_model.ts";
+import { cleanupEmptyParentDirs } from "../../infrastructure/persistence/directory_cleanup.ts";
+import { join } from "@std/path";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -608,8 +617,36 @@ export const serveCommand = new Command()
     }
 
     const serveEventBus = new EventBus();
+
+    const modelsDir = join(resolvedRepoDir, "models");
+    const autoDefDir = swampPath(
+      resolvedRepoDir,
+      SWAMP_SUBDIRS.autoDefinitions,
+    );
+    const grantTypeDir = GRANT_MODEL_TYPE.toDirectoryPath();
+    const grantSourceDir = join(modelsDir, grantTypeDir);
+    const migrationResult = await migrateGrantDefinitions(
+      grantSourceDir,
+      join(autoDefDir, grantTypeDir),
+    );
+    if (migrationResult.moved > 0) {
+      logger
+        .info`Migrated ${migrationResult.moved} grant definition(s) from models/ to .swamp/auto-definitions/`;
+      await cleanupEmptyParentDirs(
+        join(grantSourceDir, "_placeholder"),
+        modelsDir,
+      );
+    }
+
+    const autoDefRepo = new YamlDefinitionRepository(
+      resolvedRepoDir,
+      undefined,
+      autoDefDir,
+      false,
+    );
     const adminGrantStore = createAdminGrantStore(
       repoContext.definitionRepo,
+      autoDefRepo,
       repoContext.unifiedDataRepo,
     );
     const materializeResult = await materializeAdmins(

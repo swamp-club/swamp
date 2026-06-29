@@ -18,6 +18,8 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { getLogger } from "@logtape/logtape";
+import { ensureDir } from "@std/fs";
+import { join } from "@std/path";
 import {
   type Grant,
   GRANT_MODEL_TYPE,
@@ -86,7 +88,8 @@ function buildAdminGrant(adminPrincipal: string): Grant {
 }
 
 export function createAdminGrantStore(
-  definitionRepo: DefinitionRepository,
+  readRepo: DefinitionRepository,
+  writeRepo: DefinitionRepository,
   dataRepo: UnifiedDataRepository,
 ): AdminGrantStore {
   return {
@@ -118,7 +121,7 @@ export function createAdminGrantStore(
     },
 
     async ensureDefinition(instanceName: string) {
-      let def = await definitionRepo.findByName(
+      let def = await readRepo.findByName(
         GRANT_MODEL_TYPE,
         instanceName,
       );
@@ -127,7 +130,7 @@ export function createAdminGrantStore(
           type: GRANT_MODEL_TYPE.normalized,
           name: instanceName,
         });
-        await definitionRepo.save(GRANT_MODEL_TYPE, def);
+        await writeRepo.save(GRANT_MODEL_TYPE, def);
       }
       return def.id;
     },
@@ -230,6 +233,55 @@ export async function materializeAdmins(
     const revokedSubject = subjectToString(grant.subject);
     result.revoked++;
     logger.info`Revoked admin grant for ${revokedSubject}`;
+  }
+
+  return result;
+}
+
+export interface MigrateGrantDefinitionsResult {
+  moved: number;
+  skipped: number;
+}
+
+export async function migrateGrantDefinitions(
+  sourceDir: string,
+  destDir: string,
+): Promise<MigrateGrantDefinitionsResult> {
+  const result: MigrateGrantDefinitionsResult = { moved: 0, skipped: 0 };
+
+  let entries: Deno.DirEntry[];
+  try {
+    entries = [];
+    for await (const entry of Deno.readDir(sourceDir)) {
+      entries.push(entry);
+    }
+  } catch (error) {
+    if (error instanceof Deno.errors.NotFound) {
+      return result;
+    }
+    throw error;
+  }
+
+  await ensureDir(destDir);
+
+  for (const entry of entries) {
+    if (!entry.isFile || !entry.name.endsWith(".yaml")) continue;
+
+    const srcPath = join(sourceDir, entry.name);
+    const dstPath = join(destDir, entry.name);
+
+    try {
+      await Deno.stat(dstPath);
+      result.skipped++;
+      logger
+        .debug`Skipping grant definition migration for ${entry.name}: already exists at destination`;
+    } catch (statError) {
+      if (!(statError instanceof Deno.errors.NotFound)) throw statError;
+
+      await Deno.rename(srcPath, dstPath);
+      result.moved++;
+      logger.info`Migrated grant definition ${entry.name} to auto-definitions`;
+    }
   }
 
   return result;
