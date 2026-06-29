@@ -23,7 +23,7 @@ import { groupCommandAction } from "./group_action.ts";
 
 Deno.test("groupCommandAction: emits JSON error when --json is in args", () => {
   const originalArgs = Deno.args;
-  const originalLog = console.log;
+  const originalError = console.error;
   const originalExit = Deno.exit;
   let output = "";
   let exitCode: number | undefined;
@@ -33,7 +33,7 @@ Deno.test("groupCommandAction: emits JSON error when --json is in args", () => {
       value: ["--json"],
       configurable: true,
     });
-    console.log = (...args: unknown[]) => {
+    console.error = (...args: unknown[]) => {
       output += args.join(" ");
     };
     // deno-lint-ignore no-explicit-any
@@ -57,7 +57,7 @@ Deno.test("groupCommandAction: emits JSON error when --json is in args", () => {
       value: originalArgs,
       configurable: true,
     });
-    console.log = originalLog;
+    console.error = originalError;
     // deno-lint-ignore no-explicit-any
     (Deno as any).exit = originalExit;
   }
@@ -97,7 +97,7 @@ Deno.test("groupCommandAction: calls showHelp when not in JSON mode", () => {
 
 Deno.test("groupCommandAction: JSON output is valid parseable JSON", () => {
   const originalArgs = Deno.args;
-  const originalLog = console.log;
+  const originalError = console.error;
   const originalExit = Deno.exit;
   let output = "";
 
@@ -106,7 +106,7 @@ Deno.test("groupCommandAction: JSON output is valid parseable JSON", () => {
       value: ["--json"],
       configurable: true,
     });
-    console.log = (...args: unknown[]) => {
+    console.error = (...args: unknown[]) => {
       output += args.join(" ");
     };
     // deno-lint-ignore no-explicit-any
@@ -128,7 +128,7 @@ Deno.test("groupCommandAction: JSON output is valid parseable JSON", () => {
       value: originalArgs,
       configurable: true,
     });
-    console.log = originalLog;
+    console.error = originalError;
     // deno-lint-ignore no-explicit-any
     (Deno as any).exit = originalExit;
   }

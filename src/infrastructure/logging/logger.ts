@@ -88,7 +88,7 @@ export async function initializeLogging(
   if (options.jsonMode) {
     // JSON mode: the renderError() function in
     // src/presentation/output/error_output.ts is the single emitter for
-    // fatal output (it writes JSON to stdout and skips logger.fatal).
+    // fatal output (it writes JSON to stderr and skips logger.fatal).
     // The root logger has no sinks so nothing leaks via the standard
     // logging pipeline. Audit at swamp-club#235: only error_output.ts
     // calls logger.fatal in src/, both inside renderError itself.
