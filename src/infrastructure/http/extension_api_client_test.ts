@@ -904,3 +904,22 @@ Deno.test("ExtensionApiClient.downloadArchive does NOT send identity headers to 
     await s3Server.shutdown();
   }
 });
+
+Deno.test("ExtensionApiClient.checkResponse includes URL in error message", async () => {
+  const server = Deno.serve({ port: 0, onListen: () => {} }, (_req) => {
+    return new Response(JSON.stringify({ error: "Invalid path" }), {
+      status: 400,
+      headers: { "content-type": "application/json" },
+    });
+  });
+  const addr = server.addr;
+  const client = new ExtensionApiClient(`http://localhost:${addr.port}`);
+  const error = await assertRejects(
+    () => client.getChecksum("@hivemq/asdlc-factory", "2026.06.27.1"),
+    UserError,
+  );
+  assertStringIncludes(error.message, "Extension API error (HTTP 400)");
+  assertStringIncludes(error.message, "Invalid path");
+  assertStringIncludes(error.message, "/api/v1/extensions/");
+  await server.shutdown();
+});

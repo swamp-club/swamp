@@ -788,8 +788,9 @@ export class ExtensionApiClient {
       throw new UserError(serverMessage);
     }
 
+    const endpoint = res.url ? ` [${res.url}]` : "";
     throw new UserError(
-      `Extension API error (HTTP ${res.status}): ${serverMessage}`,
+      `Extension API error (HTTP ${res.status}): ${serverMessage}${endpoint}`,
     );
   }
 
