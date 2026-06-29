@@ -73,6 +73,7 @@ export class DataQueryService {
   private redactor?: SecretRedactor;
   private foreignContentFetcher?: ForeignContentFetcher;
   private readonly foreignContentCache = new Map<string, Uint8Array | null>();
+  private backfillPromise: Promise<void> | null = null;
 
   constructor(
     private readonly catalogStore: CatalogStore,
@@ -114,7 +115,17 @@ export class DataQueryService {
     options?: DataQueryOptions,
   ): Promise<DataRecord[] | unknown[]> {
     if (!this.catalogStore.isPopulated()) {
-      await this.backfillAsync();
+      if (this.backfillPromise) {
+        await this.backfillPromise;
+      } else {
+        const promise = this.backfillAsync();
+        this.backfillPromise = promise;
+        try {
+          await promise;
+        } finally {
+          this.backfillPromise = null;
+        }
+      }
     }
     const results = this.executeQuery(predicate, options);
 
@@ -309,47 +320,72 @@ export class DataQueryService {
 
   private async backfillAsync(): Promise<void> {
     const allData = await this.dataRepo.findAllGlobal();
-    // Gather every (row, isLatest) we want to write, THEN commit them to
-    // SQLite in one batch. Historical metadata.yaml reads are async and
-    // slow; interleaving them with individual SQLite writes would hold the
-    // database in a partially-populated state across many fsyncs and, on
-    // large repos, produces "database is locked" under contention.
+
+    // Group by model type so we can yield to the event loop between types,
+    // giving V8 GC a chance to reclaim intermediate YAML/Zod allocations.
+    const byType = new Map<
+      string,
+      Array<{ data: Data; modelType: ModelType; modelId: string }>
+    >();
+    for (const item of allData) {
+      const key = item.modelType.normalized;
+      let group = byType.get(key);
+      if (!group) {
+        group = [];
+        byType.set(key, group);
+      }
+      group.push(item);
+    }
+
+    // Gather every row we want to write, THEN commit them to SQLite in one
+    // batch. Historical metadata.yaml reads are async and slow; interleaving
+    // them with individual SQLite writes would hold the database in a
+    // partially-populated state across many fsyncs and, on large repos,
+    // produces "database is locked" under contention.
     const rows: CatalogRow[] = [];
-    for (const { data: latest, modelType, modelId } of allData) {
-      if (latest.isRenamed || latest.isDeleted) continue;
-      const versions = await this.dataRepo.listVersions(
-        modelType,
-        modelId,
-        latest.name,
-      );
-      if (versions.length === 0) continue;
-      const maxVersion = Math.max(...versions);
-      for (const version of versions) {
-        try {
-          const data = version === latest.version
-            ? latest
-            : await this.dataRepo.findByName(
-              modelType,
-              modelId,
-              latest.name,
-              version,
+    for (const [, items] of byType) {
+      for (const { data: latest, modelType, modelId } of items) {
+        if (latest.isRenamed || latest.isDeleted) continue;
+        const versions = await this.dataRepo.listVersions(
+          modelType,
+          modelId,
+          latest.name,
+        );
+        if (versions.length === 0) continue;
+        const maxVersion = Math.max(...versions);
+        for (const version of versions) {
+          try {
+            const data = version === latest.version
+              ? latest
+              : await this.dataRepo.findByName(
+                modelType,
+                modelId,
+                latest.name,
+                version,
+              );
+            if (!data) continue;
+            if (data.isRenamed || data.isDeleted) continue;
+            rows.push(
+              this.toCatalogRow(
+                data,
+                modelType,
+                modelId,
+                version === maxVersion,
+              ),
             );
-          if (!data) continue;
-          if (data.isRenamed || data.isDeleted) continue;
-          rows.push(
-            this.toCatalogRow(data, modelType, modelId, version === maxVersion),
-          );
-        } catch (error) {
-          // Skip individual corrupted versions rather than abort the entire
-          // backfill — a half-populated catalog left behind would force
-          // every subsequent query to retry from scratch.
-          logger
-            .debug`Skipping ${modelType.normalized}/${modelId}/${latest.name}@${version} during backfill: ${
-            String(error)
-          }`;
+          } catch (error) {
+            logger
+              .debug`Skipping ${modelType.normalized}/${modelId}/${latest.name}@${version} during backfill: ${
+              String(error)
+            }`;
+          }
         }
       }
+      // Yield to the event loop between model types so V8 can run a major
+      // GC cycle and reclaim intermediate objects from metadata parsing.
+      await new Promise<void>((resolve) => setTimeout(resolve, 0));
     }
+
     const ns = this.dataRepo.namespace;
     if (ns && ns.length > 0) {
       this.catalogStore.bulkReplaceNamespace(ns, rows);
@@ -361,36 +397,58 @@ export class DataQueryService {
 
   private backfillSync(): void {
     const allData = this.dataRepo.findAllGlobalSync();
+
+    const byType = new Map<
+      string,
+      Array<{ data: Data; modelType: ModelType; modelId: string }>
+    >();
+    for (const item of allData) {
+      const key = item.modelType.normalized;
+      let group = byType.get(key);
+      if (!group) {
+        group = [];
+        byType.set(key, group);
+      }
+      group.push(item);
+    }
+
     const rows: CatalogRow[] = [];
-    for (const { data: latest, modelType, modelId } of allData) {
-      if (latest.isRenamed || latest.isDeleted) continue;
-      const versions = this.dataRepo.listVersionsSync(
-        modelType,
-        modelId,
-        latest.name,
-      );
-      if (versions.length === 0) continue;
-      const maxVersion = Math.max(...versions);
-      for (const version of versions) {
-        try {
-          const data = version === latest.version
-            ? latest
-            : this.dataRepo.findByNameSync(
-              modelType,
-              modelId,
-              latest.name,
-              version,
+    for (const [, items] of byType) {
+      for (const { data: latest, modelType, modelId } of items) {
+        if (latest.isRenamed || latest.isDeleted) continue;
+        const versions = this.dataRepo.listVersionsSync(
+          modelType,
+          modelId,
+          latest.name,
+        );
+        if (versions.length === 0) continue;
+        const maxVersion = Math.max(...versions);
+        for (const version of versions) {
+          try {
+            const data = version === latest.version
+              ? latest
+              : this.dataRepo.findByNameSync(
+                modelType,
+                modelId,
+                latest.name,
+                version,
+              );
+            if (!data) continue;
+            if (data.isRenamed || data.isDeleted) continue;
+            rows.push(
+              this.toCatalogRow(
+                data,
+                modelType,
+                modelId,
+                version === maxVersion,
+              ),
             );
-          if (!data) continue;
-          if (data.isRenamed || data.isDeleted) continue;
-          rows.push(
-            this.toCatalogRow(data, modelType, modelId, version === maxVersion),
-          );
-        } catch (error) {
-          logger
-            .debug`Skipping ${modelType.normalized}/${modelId}/${latest.name}@${version} during backfill: ${
-            String(error)
-          }`;
+          } catch (error) {
+            logger
+              .debug`Skipping ${modelType.normalized}/${modelId}/${latest.name}@${version} during backfill: ${
+              String(error)
+            }`;
+          }
         }
       }
     }

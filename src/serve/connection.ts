@@ -116,7 +116,6 @@ import {
 } from "../domain/models/access/group_model.ts";
 import { SERVER_TOKEN_MODEL_TYPE } from "../domain/models/access/server_token_model.ts";
 import { ModelType } from "../domain/models/model_type.ts";
-import type { DataRecord } from "../domain/data/data_record.ts";
 import {
   parsePrincipal,
   type Principal,
@@ -1100,19 +1099,33 @@ async function handleAccessGrantList(
 
   try {
     await modelRegistry.ensureLoaded();
-    const records = await ctx.repoContext.dataQueryService.query(
-      `modelType == "${GRANT_MODEL_TYPE.normalized}"`,
-      { loadAttributes: true },
+    const dataItems = await ctx.repoContext.unifiedDataRepo.findAllForType(
+      GRANT_MODEL_TYPE,
     );
 
     let results: { grant: Grant; instanceName: string }[] = [];
-    for (const record of records) {
-      const dataRecord = record as DataRecord;
-      const parsed = GrantSchema.safeParse(dataRecord.attributes);
+    for (const { data, modelType, modelId } of dataItems) {
+      if (data.isRenamed || data.isDeleted) continue;
+      const content = await ctx.repoContext.unifiedDataRepo.getContent(
+        modelType,
+        modelId,
+        data.name,
+      );
+      if (!content) continue;
+      let attrs: Record<string, unknown>;
+      try {
+        attrs = JSON.parse(new TextDecoder().decode(content)) as Record<
+          string,
+          unknown
+        >;
+      } catch {
+        continue;
+      }
+      const parsed = GrantSchema.safeParse(attrs);
       if (parsed.success && parsed.data.state === "active") {
         results.push({
           grant: parsed.data,
-          instanceName: dataRecord.modelName ?? "",
+          instanceName: data.tags["modelName"] ?? "",
         });
       }
     }
@@ -1163,16 +1176,29 @@ async function handleAccessGroupList(
 
   try {
     await modelRegistry.ensureLoaded();
-    const records = await ctx.repoContext.dataQueryService.query(
-      `modelType == "${GROUP_MODEL_TYPE.normalized}"`,
-      { loadAttributes: true },
+    const dataItems = await ctx.repoContext.unifiedDataRepo.findAllForType(
+      GROUP_MODEL_TYPE,
     );
 
     let groups: Group[] = [];
-    for (const record of records) {
-      const parsed = GroupSchema.safeParse(
-        (record as DataRecord).attributes,
+    for (const { data, modelType, modelId } of dataItems) {
+      if (data.isRenamed || data.isDeleted) continue;
+      const content = await ctx.repoContext.unifiedDataRepo.getContent(
+        modelType,
+        modelId,
+        data.name,
       );
+      if (!content) continue;
+      let attrs: Record<string, unknown>;
+      try {
+        attrs = JSON.parse(new TextDecoder().decode(content)) as Record<
+          string,
+          unknown
+        >;
+      } catch {
+        continue;
+      }
+      const parsed = GroupSchema.safeParse(attrs);
       if (parsed.success) {
         groups.push(parsed.data);
       }

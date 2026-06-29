@@ -615,15 +615,24 @@ export class WorkerGateway {
    */
   async #defaultReadTokenExpiresAt(tokenName: string): Promise<string | null> {
     try {
-      const records = await this.#options.repoContext.dataQueryService.query(
-        `modelType == "${ENROLLMENT_TOKEN_MODEL_TYPE.normalized}" && ` +
-          `name == "${TOKEN_DATA_NAME}"`,
-        { loadAttributes: true },
-      );
-      for (const record of records) {
-        const parsed = EnrollmentTokenSchema.safeParse(
-          (record as { attributes?: unknown }).attributes,
-        );
+      const dataItems = await this.#options.repoContext.unifiedDataRepo
+        .findAllForType(ENROLLMENT_TOKEN_MODEL_TYPE);
+      for (const { data, modelType, modelId } of dataItems) {
+        if (data.isRenamed || data.isDeleted) continue;
+        if (data.name !== TOKEN_DATA_NAME) continue;
+        const content = await this.#options.repoContext.unifiedDataRepo
+          .getContent(modelType, modelId, data.name);
+        if (!content) continue;
+        let attrs: Record<string, unknown>;
+        try {
+          attrs = JSON.parse(new TextDecoder().decode(content)) as Record<
+            string,
+            unknown
+          >;
+        } catch {
+          continue;
+        }
+        const parsed = EnrollmentTokenSchema.safeParse(attrs);
         if (parsed.success && parsed.data.name === tokenName) {
           return parsed.data.expiresAt;
         }
