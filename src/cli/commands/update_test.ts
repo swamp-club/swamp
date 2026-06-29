@@ -22,6 +22,11 @@ import type { UpdateChecker } from "../../domain/update/update_service.ts";
 import { UpdateService } from "../../domain/update/update_service.ts";
 import { Platform } from "../../domain/update/platform.ts";
 import { Spinner } from "../../presentation/spinner.ts";
+import { initializeLogging } from "../../infrastructure/logging/logger.ts";
+import { consumeStream, type UpdateCheckEvent } from "../../libswamp/mod.ts";
+import { createUpdateCheckRenderer } from "../../presentation/renderers/update_check.ts";
+
+await initializeLogging({});
 
 const platform = Platform.from("darwin", "aarch64");
 const currentVersion = "20260207.123456.0-sha.abc12345";
@@ -143,4 +148,55 @@ Deno.test("spinner is created in log mode", () => {
   const outputMode: string = "log";
   const spinner = outputMode !== "json" ? new Spinner() : null;
   assertEquals(spinner instanceof Spinner, true);
+});
+
+// --- UpdateCheckRenderer.updated flag ---
+
+async function* fakeUpdateStream(
+  status: "updated" | "up_to_date",
+): AsyncIterable<UpdateCheckEvent> {
+  yield { kind: "checking" };
+  if (status === "updated") {
+    yield {
+      kind: "completed",
+      data: {
+        status: "updated",
+        previousVersion: "1.0.0",
+        newVersion: "2.0.0",
+      },
+    };
+  } else {
+    yield {
+      kind: "completed",
+      data: { status: "up_to_date", currentVersion: "1.0.0" },
+    };
+  }
+}
+
+Deno.test("createUpdateCheckRenderer: updated is true after successful update (log mode)", async () => {
+  const renderer = createUpdateCheckRenderer("log");
+  assertEquals(renderer.updated, false);
+
+  await consumeStream(fakeUpdateStream("updated"), renderer.handlers());
+  assertEquals(renderer.updated, true);
+});
+
+Deno.test("createUpdateCheckRenderer: updated is false when already up to date (log mode)", async () => {
+  const renderer = createUpdateCheckRenderer("log");
+  await consumeStream(fakeUpdateStream("up_to_date"), renderer.handlers());
+  assertEquals(renderer.updated, false);
+});
+
+Deno.test("createUpdateCheckRenderer: updated is true after successful update (json mode)", async () => {
+  const renderer = createUpdateCheckRenderer("json");
+  assertEquals(renderer.updated, false);
+
+  await consumeStream(fakeUpdateStream("updated"), renderer.handlers());
+  assertEquals(renderer.updated, true);
+});
+
+Deno.test("createUpdateCheckRenderer: updated is false when already up to date (json mode)", async () => {
+  const renderer = createUpdateCheckRenderer("json");
+  await consumeStream(fakeUpdateStream("up_to_date"), renderer.handlers());
+  assertEquals(renderer.updated, false);
 });

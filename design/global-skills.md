@@ -111,10 +111,17 @@ Today these commands copy skills into the repo. Under the new model:
 
 ### Keeping Global Skills Current
 
-Global skills are overwritten on every `repo init` and `repo upgrade`. The
-bundled skill files in the binary are the source of truth — there is no version
-stamping or freshness check. Running `repo init` or `repo upgrade` in any repo
-updates the global copies to match the running binary.
+Global skills are synced automatically in three places:
+
+1. **`swamp update`** — after the binary is updated (interactive and background),
+   skills are written to all global tool directories. This is the primary sync
+   path and requires no repo context.
+2. **`swamp repo init`** — writes global skills as part of first-time setup.
+3. **`swamp repo upgrade`** — writes global skills as part of the upgrade flow.
+
+The bundled skill files in the binary are the source of truth. The sync is
+idempotent — writing the same content is harmless. Failures during sync (e.g.,
+permissions, disk full) log a warning and do not block the update or command.
 
 ## Migration: Local to Global
 
@@ -235,22 +242,21 @@ These files remain project-local because they contain repo-specific content:
 
 ## Open Questions
 
-1. **Auto-update on startup**: Should the CLI silently update global skills on
-   every invocation (GitButler pattern), or only on explicit
-   `swamp repo upgrade`? Auto-update is more convenient but means any CLI run
-   could write to `~/`. A middle ground: auto-update with a flag to opt out.
+1. ~~**Auto-update on startup**~~ — **Resolved**: skills sync during
+   `swamp update`, not on every CLI startup. This avoids writing to `~/` on
+   arbitrary invocations while keeping skills in sync with the binary. The
+   `repo init` and `repo upgrade` paths also sync as before.
 
 2. **Concurrent writes**: Multiple swamp processes (in different repos) could try
-   to update global skills simultaneously. Needs a file lock or atomic-write
-   strategy.
+   to update global skills simultaneously. Mitigated by the sync being idempotent
+   — concurrent writes produce the same result.
 
 3. **`swamp repo init` without `repo upgrade`**: Should `repo init` also update
    global skills, or only write them if missing? Currently `repo init` is the
    first entry point for new repos, so it should ensure global skills exist.
 
-4. **Permissions**: Writing to `~/.claude/skills/` etc. requires the user's home
-   directory to be writable. Should fail gracefully with a clear error if the
-   directory is read-only or doesn't exist.
+4. ~~**Permissions**~~ — **Resolved**: sync catches errors and logs a warning
+   without blocking the update or command.
 
 5. **`none` tool**: The `none` tool currently writes to
    `.swamp/pulled-extensions/skills/`. With global skills, it could either remain

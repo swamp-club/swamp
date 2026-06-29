@@ -51,11 +51,38 @@ import {
 } from "../../domain/update/autoupdate_log.ts";
 import type { getSwampLogger } from "../../infrastructure/logging/logger.ts";
 import { UserError } from "../../domain/errors.ts";
+import { SkillAssets } from "../../infrastructure/assets/skill_assets.ts";
+import {
+  GLOBAL_SKILL_DIRS,
+  resolveUniqueGlobalSkillsDirs,
+} from "../../domain/repo/skill_dirs.ts";
+import { removeSupersededSkills } from "../../domain/repo/superseded_skills.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
 const BACKGROUND_TIMEOUT_MS = 5 * 60 * 1000;
+
+async function syncGlobalSkills(
+  logger: ReturnType<typeof getSwampLogger>,
+): Promise<void> {
+  const allTools = Object.keys(GLOBAL_SKILL_DIRS);
+  let globalDirs: string[];
+  try {
+    globalDirs = resolveUniqueGlobalSkillsDirs(allTools);
+  } catch {
+    logger.warn`Skipping global skill sync: home directory not available`;
+    return;
+  }
+  if (globalDirs.length === 0) return;
+
+  const skillAssets = new SkillAssets();
+  for (const dir of globalDirs) {
+    await skillAssets.copySkillsTo(dir);
+    await removeSupersededSkills(dir);
+    logger.info`Synced global skills to ${dir}`;
+  }
+}
 
 function privilegedSchedulerDescription(): string {
   switch (Deno.build.os) {
@@ -171,6 +198,18 @@ async function runBackgroundUpdate(
     clearTimeout(timeoutId!);
     entry.outcome = "error";
     entry.error = error instanceof Error ? error.message : String(error);
+  }
+
+  if (entry.outcome === "updated") {
+    try {
+      await syncGlobalSkills(ctx.logger);
+      ctx.logger.debug`Background skill sync completed`;
+    } catch (err) {
+      ctx.logger
+        .warn`Background skill sync failed: ${
+        err instanceof Error ? err.message : String(err)
+      }`;
+    }
   }
 
   await logRepo.append(entry);
@@ -449,6 +488,18 @@ export const updateCommand = new Command()
         }),
         renderer.handlers(),
       );
+
+      if (renderer.updated) {
+        spinner?.update("Syncing global skills...");
+        try {
+          await syncGlobalSkills(ctx.logger);
+        } catch (err) {
+          ctx.logger
+            .warn`Failed to sync global skills: ${
+            err instanceof Error ? err.message : String(err)
+          }`;
+        }
+      }
 
       spinner?.stop();
     } catch (err) {
