@@ -76,6 +76,8 @@ export const TRANSITIONS: Record<string, Phase[]> = {
   implement: ["approved", "pr_failed"],
   adversarial_review: ["plan_generated"],
   resolve_findings: ["plan_generated"],
+  code_conformance_review: ["implementing", "pr_failed"],
+  justify_deviations: ["implementing", "pr_failed"],
   link_pr: ["implementing", "pr_open", "pr_failed"],
   pr_merged: ["pr_open"],
   pr_failed: ["pr_open"],
@@ -184,6 +186,47 @@ export const AdversarialReviewSchema = z.object({
 });
 
 export type AdversarialReviewData = z.infer<typeof AdversarialReviewSchema>;
+
+// ---------------------------------------------------------------------------
+// Code Conformance Review Schemas
+// ---------------------------------------------------------------------------
+
+export const StepVerificationSchema = z.object({
+  order: z.number().describe(
+    "Plan step order number, or a new number for unplanned changes",
+  ),
+  status: z.enum([
+    "implemented",
+    "deviated",
+    "partially_implemented",
+    "missing",
+    "added",
+  ]).describe(
+    "How the code relates to the plan step: implemented (matches plan), " +
+      "deviated (done differently), partially_implemented (incomplete), " +
+      "missing (not done), added (unplanned change not in the plan)",
+  ),
+  description: z.string().describe(
+    "What was found in the code for this step",
+  ),
+  justification: z.string().optional().describe(
+    "Why the code differs from the plan. Required when status is not 'implemented'.",
+  ),
+});
+
+export const CodeConformanceReviewSchema = z.object({
+  planVersion: z.number().describe(
+    "The approved plan version this review compares against",
+  ),
+  steps: z.array(StepVerificationSchema).describe(
+    "Per-step verification of plan conformance, plus entries for unplanned changes",
+  ),
+  reviewedAt: z.string(),
+});
+
+export type CodeConformanceReviewData = z.infer<
+  typeof CodeConformanceReviewSchema
+>;
 
 export const PullRequestSchema = z.object({
   url: z.string().min(1).describe(

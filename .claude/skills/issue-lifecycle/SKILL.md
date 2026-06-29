@@ -47,6 +47,8 @@ repository root. If these files exist, they customize how each phase works:
   requirements
 - `agent-constraints/triage-conventions.md` — codebase exploration and bug
   reproduction
+- `agent-constraints/code-conformance-dimensions.md` — code vs plan review
+  criteria
 - `agent-constraints/implementation-conventions.md` — build, verify, and PR
   conventions
 
@@ -97,11 +99,17 @@ running the review first. Covers: challenging the plan across repo-specific
 dimensions, verifying against the codebase, recording findings, presenting to
 the human, and the iteration loop until approval.
 
-### Phase 4: Implementation
+### Phase 4: Implementation & Code Conformance Review
 
 Read [references/implementation.md](references/implementation.md) after plan
-approval. Covers: signalling implementation start, doing the work, verifying
-fixes against the reproduction, creating the PR, and completing the issue.
+approval. Covers: signalling implementation start and doing the work.
+
+After the code is written, read
+[references/code-conformance-review.md](references/code-conformance-review.md)
+**before creating a PR.** This adversarially compares the implemented code
+against the approved plan. Deviations are expected — they just need a documented
+justification. The `link_pr` method will fail until all deviations are
+justified.
 
 ### Phase 5: Contributor Notification
 
@@ -175,7 +183,7 @@ Use this table to determine what to do next:
 | `classified`     | Read [references/planning.md](references/planning.md)                      |
 | `plan_generated` | Read [references/adversarial-review.md](references/adversarial-review.md)  |
 | `approved`       | Read [references/implementation.md](references/implementation.md)          |
-| `implementing`   | Link a PR with `link_pr` or call `complete`                                |
+| `implementing`   | Run code conformance review, then link a PR with `link_pr`                 |
 | `pr_open`        | Wait 3 min, then check PR: `pr_merged` if merged, `pr_failed` if failed    |
 | `pr_failed`      | Fix the issue, then `link_pr` (new PR) or `implement` (major rework)       |
 | `releasing`      | Check release build: `ship` when done, or `complete` as fallback           |

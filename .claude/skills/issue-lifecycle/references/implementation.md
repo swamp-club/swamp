@@ -35,6 +35,13 @@ Report verification results to the human before creating the PR:
 - "Verified: reproduction scenario now passes" or
 - "Verification failed: <what still breaks>"
 
+## 3a. Code Conformance Review
+
+**Before creating a PR**, read
+[code-conformance-review.md](code-conformance-review.md) and run the code
+conformance review. This adversarially compares the implemented code against the
+approved plan. All deviations must be justified before `link_pr` will succeed.
+
 ## 4. Create a PR
 
 **Always ask the human before opening a PR.** Do not create the PR automatically
