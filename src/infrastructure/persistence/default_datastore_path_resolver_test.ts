@@ -195,21 +195,21 @@ Deno.test("DefaultDatastorePathResolver - config returns the stored config", () 
   assertEquals(resolver.config(), config);
 });
 
-Deno.test("DefaultDatastorePathResolver - bundle subdirs are recognized as datastore subdirs", () => {
+Deno.test("DefaultDatastorePathResolver - bundle subdirs are always-local", () => {
   const config: DatastoreConfig = {
     type: "filesystem",
     path: "/data/store",
   };
   const resolver = new DefaultDatastorePathResolver("/repo", config);
-  assertEquals(resolver.isDatastoreSubdir("bundles"), true);
-  assertEquals(resolver.isDatastoreSubdir("vault-bundles"), true);
-  assertEquals(resolver.isDatastoreSubdir("driver-bundles"), true);
-  // datastore-bundles intentionally excluded — bootstrap ordering
+  // All bundle dirs are always-local — derived artifacts, not synced (swamp-club#869)
+  assertEquals(resolver.isDatastoreSubdir("bundles"), false);
+  assertEquals(resolver.isDatastoreSubdir("vault-bundles"), false);
+  assertEquals(resolver.isDatastoreSubdir("driver-bundles"), false);
   assertEquals(resolver.isDatastoreSubdir("datastore-bundles"), false);
-  assertEquals(resolver.isDatastoreSubdir("report-bundles"), true);
+  assertEquals(resolver.isDatastoreSubdir("report-bundles"), false);
 });
 
-Deno.test("DefaultDatastorePathResolver - resolvePath routes bundles to S3 cache", () => {
+Deno.test("DefaultDatastorePathResolver - resolvePath routes bundles to local .swamp", () => {
   const config: DatastoreConfig = {
     type: "s3",
     config: { bucket: "my-bucket" },
@@ -218,26 +218,26 @@ Deno.test("DefaultDatastorePathResolver - resolvePath routes bundles to S3 cache
   };
   const resolver = new DefaultDatastorePathResolver("/repo", config);
 
+  // Bundles are always-local — never routed to S3 cache (swamp-club#869)
   assertPathEquals(
     resolver.resolvePath("bundles", "2e4ea9ae", "aws/logs.js"),
-    "/home/user/.swamp/repos/abc/bundles/2e4ea9ae/aws/logs.js",
+    "/repo/.swamp/bundles/2e4ea9ae/aws/logs.js",
   );
   assertPathEquals(
     resolver.resolvePath("vault-bundles", "ff00aa11", "sm.js"),
-    "/home/user/.swamp/repos/abc/vault-bundles/ff00aa11/sm.js",
+    "/repo/.swamp/vault-bundles/ff00aa11/sm.js",
   );
   assertPathEquals(
     resolver.resolvePath("driver-bundles", "bb22cc33", "driver.js"),
-    "/home/user/.swamp/repos/abc/driver-bundles/bb22cc33/driver.js",
+    "/repo/.swamp/driver-bundles/bb22cc33/driver.js",
   );
-  // datastore-bundles stays local (bootstrap ordering — excluded from datastore tier)
   assertPathEquals(
     resolver.resolvePath("datastore-bundles", "dd44ee55", "ds.js"),
     "/repo/.swamp/datastore-bundles/dd44ee55/ds.js",
   );
   assertPathEquals(
     resolver.resolvePath("report-bundles", "66778899", "report.js"),
-    "/home/user/.swamp/repos/abc/report-bundles/66778899/report.js",
+    "/repo/.swamp/report-bundles/66778899/report.js",
   );
 });
 

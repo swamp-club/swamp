@@ -166,6 +166,23 @@ Deno.test("getDatastoreDirectories: excludes secrets from default list", () => {
   );
 });
 
+Deno.test("getDatastoreDirectories: excludes bundle directories from default list", () => {
+  const dirs = getDatastoreDirectories(filesystemConfig);
+  for (
+    const bundleDir of [
+      "bundles",
+      "vault-bundles",
+      "driver-bundles",
+      "report-bundles",
+    ]
+  ) {
+    assertFalse(
+      dirs.includes(bundleDir),
+      `${bundleDir} must not appear in datastore directories`,
+    );
+  }
+});
+
 Deno.test("getDatastoreDirectories: excludes secrets even when explicitly listed in config", () => {
   const config: FilesystemDatastoreConfig = {
     ...filesystemConfig,
@@ -175,6 +192,22 @@ Deno.test("getDatastoreDirectories: excludes secrets even when explicitly listed
   assertFalse(
     dirs.includes("secrets"),
     "secrets must be filtered even when explicitly configured",
+  );
+});
+
+Deno.test("getDatastoreDirectories: excludes bundles even when explicitly listed in config", () => {
+  const config: FilesystemDatastoreConfig = {
+    ...filesystemConfig,
+    directories: ["data", "bundles", "vault-bundles", "outputs"],
+  };
+  const dirs = getDatastoreDirectories(config);
+  assertFalse(
+    dirs.includes("bundles"),
+    "bundles must be filtered even when explicitly configured",
+  );
+  assertFalse(
+    dirs.includes("vault-bundles"),
+    "vault-bundles must be filtered even when explicitly configured",
   );
 });
 
@@ -206,6 +239,41 @@ Deno.test("ALWAYS_LOCAL_SUBDIRS: contains secrets", () => {
     (ALWAYS_LOCAL_SUBDIRS as readonly string[]).includes("secrets"),
     true,
   );
+});
+
+Deno.test("ALWAYS_LOCAL_SUBDIRS: contains bundle directories", () => {
+  const always = ALWAYS_LOCAL_SUBDIRS as readonly string[];
+  for (
+    const bundleDir of [
+      "bundles",
+      "vault-bundles",
+      "driver-bundles",
+      "report-bundles",
+    ]
+  ) {
+    assertEquals(
+      always.includes(bundleDir),
+      true,
+      `${bundleDir} must be in ALWAYS_LOCAL_SUBDIRS`,
+    );
+  }
+});
+
+Deno.test("isAlwaysLocal: returns true for bundle directories", () => {
+  for (
+    const bundleDir of [
+      "bundles",
+      "vault-bundles",
+      "driver-bundles",
+      "report-bundles",
+    ]
+  ) {
+    assertEquals(
+      isAlwaysLocal(bundleDir),
+      true,
+      `${bundleDir} must be always-local`,
+    );
+  }
 });
 
 Deno.test("DEFAULT_DATASTORE_SUBDIRS: still lists secrets for backwards compatibility", () => {
