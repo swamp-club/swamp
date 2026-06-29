@@ -202,6 +202,7 @@ export function unknownCommandErrorHandler(error: Error, cmd: Command): void {
         const jsonError = buildErrorJson(new Error(message));
         // deno-lint-ignore no-console
         console.error(JSON.stringify(jsonError, null, 2));
+        Deno.exit(2);
       }
       console.error(red(`error: ${message}`));
       Deno.exit(2);
