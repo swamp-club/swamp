@@ -33,7 +33,13 @@
  * Note: definitions, workflows, and vault configs now live in top-level
  * directories (models/, workflows/, vaults/) and are no longer .swamp/ subdirs.
  */
-export const ALWAYS_LOCAL_SUBDIRS = ["secrets"] as const;
+export const ALWAYS_LOCAL_SUBDIRS = [
+  "secrets",
+  "bundles",
+  "vault-bundles",
+  "driver-bundles",
+  "report-bundles",
+] as const;
 
 /**
  * Default subdirectories that belong to the datastore tier.
@@ -57,11 +63,14 @@ export const DEFAULT_DATASTORE_SUBDIRS = [
   "files",
 ] as const;
 
-// Note: "datastore-bundles" is intentionally excluded from the datastore tier.
-// The datastore loader runs during bootstrap BEFORE the DatastorePathResolver
-// exists, so datastore extension bundles must always remain in local .swamp/.
-// Including it here causes the setup migration to delete .swamp/datastore-bundles/
-// after copying to cache, breaking subsequent extension loading.
+// All bundle directories are always-local: bundles are derived artifacts
+// rebuildable from source (local extensions) or re-extractable from archives
+// (pulled extensions). Syncing them via the datastore allows a stale remote
+// copy to shadow a freshly rebuilt local bundle (swamp-club#869).
+//
+// "datastore-bundles" has an additional constraint: the datastore loader runs
+// during bootstrap BEFORE the DatastorePathResolver exists, so it must remain
+// in local .swamp/ regardless.
 
 /**
  * Default timeout (milliseconds) for a single direction of datastore sync.
