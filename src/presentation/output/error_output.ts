@@ -84,7 +84,7 @@ export function buildErrorJson(err: Error): Record<string, unknown> {
  * Renders an error to the user.
  *
  * In JSON mode this is the SINGLE emitter for fatal output: it writes
- * the JSON error to stdout and does NOT call `logger.fatal`, so log-mode
+ * the JSON error to stderr and does NOT call `logger.fatal`, so log-mode
  * sinks never produce a duplicate FTL line. In log mode it falls
  * through to LogTape — UserError / Cliffy ValidationError emit just the
  * message; other errors emit the full Error (stack trace included).
@@ -94,7 +94,7 @@ export function renderError(error: unknown, outputMode?: OutputMode): void {
 
   if (outputMode === "json") {
     // deno-lint-ignore no-console
-    console.log(JSON.stringify(buildErrorJson(err), null, 2));
+    console.error(JSON.stringify(buildErrorJson(err), null, 2));
     return;
   }
 

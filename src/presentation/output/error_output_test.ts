@@ -129,11 +129,11 @@ Deno.test("renderError suppresses Cliffy Command dump on ValidationError (issue 
 });
 
 Deno.test("renderError: json mode emits clean JSON for ValidationError (issue #171)", () => {
-  const stdoutLogs: string[] = [];
+  const stderrLogs: string[] = [];
   const originalLog = console.log;
   const originalError = console.error;
-  console.log = (...args: unknown[]) => stdoutLogs.push(args.join(" "));
-  console.error = () => {};
+  console.log = () => {};
+  console.error = (...args: unknown[]) => stderrLogs.push(args.join(" "));
 
   try {
     const error = new ValidationError(
@@ -145,8 +145,8 @@ Deno.test("renderError: json mode emits clean JSON for ValidationError (issue #1
 
     renderError(error, "json");
 
-    assertEquals(stdoutLogs.length, 1);
-    const parsed = JSON.parse(stdoutLogs[0]);
+    assertEquals(stderrLogs.length, 1);
+    const parsed = JSON.parse(stderrLogs[0]);
     assertEquals(
       parsed.error,
       'Unknown option "--inputs". Did you mean option "--input"?',
@@ -154,8 +154,8 @@ Deno.test("renderError: json mode emits clean JSON for ValidationError (issue #1
     // ValidationError should never produce a stack in JSON output.
     assertEquals(parsed.stack, undefined);
     // And the raw payload must not leak.
-    assertEquals(stdoutLogs[0].includes("Command {"), false);
-    assertEquals(stdoutLogs[0].includes("[Circular"), false);
+    assertEquals(stderrLogs[0].includes("Command {"), false);
+    assertEquals(stderrLogs[0].includes("[Circular"), false);
   } finally {
     console.log = originalLog;
     console.error = originalError;
@@ -183,7 +183,7 @@ Deno.test("renderError uses fatal level for all errors", () => {
 // JSON stdout output tests
 // ============================================================================
 
-Deno.test("renderError: json mode is single-emitter (stdout JSON, no stderr)", () => {
+Deno.test("renderError: json mode is single-emitter (stderr JSON, no stdout)", () => {
   const stdoutLogs: string[] = [];
   const stderrLogs: string[] = [];
   const originalLog = console.log;
@@ -194,14 +194,13 @@ Deno.test("renderError: json mode is single-emitter (stdout JSON, no stderr)", (
   try {
     renderError(new UserError("Model not found"), "json");
 
-    assertEquals(stdoutLogs.length, 1);
-    const parsed = JSON.parse(stdoutLogs[0]);
+    assertEquals(stderrLogs.length, 1);
+    const parsed = JSON.parse(stderrLogs[0]);
     assertEquals(parsed.error, "Model not found");
     assertEquals(parsed.stack, undefined);
-    // Single-emission contract: in JSON mode renderError is the only
-    // emitter — logger.fatal must not be called, so stderr stays
-    // untouched. (See swamp-club#235.)
-    assertEquals(stderrLogs.length, 0);
+    // Single-emission contract: in JSON mode renderError writes to
+    // stderr only — stdout stays clean for success data.
+    assertEquals(stdoutLogs.length, 0);
   } finally {
     console.log = originalLog;
     console.error = originalError;
@@ -209,16 +208,16 @@ Deno.test("renderError: json mode is single-emitter (stdout JSON, no stderr)", (
 });
 
 Deno.test("renderError: json mode surfaces UserError code field", () => {
-  const stdoutLogs: string[] = [];
+  const stderrLogs: string[] = [];
   const originalLog = console.log;
   const originalError = console.error;
-  console.log = (...args: unknown[]) => stdoutLogs.push(args.join(" "));
-  console.error = () => {};
+  console.log = () => {};
+  console.error = (...args: unknown[]) => stderrLogs.push(args.join(" "));
 
   try {
     renderError(new UserError("Operation timed out", "timeout"), "json");
-    assertEquals(stdoutLogs.length, 1);
-    const parsed = JSON.parse(stdoutLogs[0]);
+    assertEquals(stderrLogs.length, 1);
+    const parsed = JSON.parse(stderrLogs[0]);
     assertEquals(parsed.error, "Operation timed out");
     assertEquals(parsed.code, "timeout");
   } finally {
@@ -230,18 +229,18 @@ Deno.test("renderError: json mode surfaces UserError code field", () => {
 Deno.test("renderError: json mode surfaces a `code` property from any error", () => {
   // Errors thrown from libswamp paths often carry a `code` via duck typing
   // rather than via UserError (e.g. cancellations, validation failures).
-  const stdoutLogs: string[] = [];
+  const stderrLogs: string[] = [];
   const originalLog = console.log;
   const originalError = console.error;
-  console.log = (...args: unknown[]) => stdoutLogs.push(args.join(" "));
-  console.error = () => {};
+  console.log = () => {};
+  console.error = (...args: unknown[]) => stderrLogs.push(args.join(" "));
 
   try {
     const error = new Error("Operation was cancelled.");
     Object.assign(error, { code: "cancelled" });
     renderError(error, "json");
-    assertEquals(stdoutLogs.length, 1);
-    const parsed = JSON.parse(stdoutLogs[0]);
+    assertEquals(stderrLogs.length, 1);
+    const parsed = JSON.parse(stderrLogs[0]);
     assertEquals(parsed.code, "cancelled");
   } finally {
     console.log = originalLog;

@@ -30,7 +30,7 @@ export function groupCommandAction(this: Command<any>): void {
     const json = buildErrorJson(new UserError("No subcommand specified"));
     json.availableCommands = commands;
     // deno-lint-ignore no-console
-    console.log(JSON.stringify(json, null, 2));
+    console.error(JSON.stringify(json, null, 2));
     Deno.exit(1);
   }
   this.showHelp();
