@@ -61,7 +61,6 @@ import {
   type PolicyReloadMode,
   PolicySnapshotLoader,
 } from "../../domain/access/policy_snapshot_loader.ts";
-import { DataQueryService } from "../../domain/data/data_query_service.ts";
 import { EventBus } from "../../domain/events/event_bus.ts";
 import {
   createAdminGrantStore,
@@ -609,12 +608,7 @@ export const serveCommand = new Command()
     }
 
     const serveEventBus = new EventBus();
-    const dataQueryService = new DataQueryService(
-      repoContext.catalogStore,
-      repoContext.unifiedDataRepo,
-    );
     const adminGrantStore = createAdminGrantStore(
-      dataQueryService,
       repoContext.definitionRepo,
       repoContext.unifiedDataRepo,
     );
