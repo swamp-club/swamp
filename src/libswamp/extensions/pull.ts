@@ -55,6 +55,7 @@ import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
 
 const SCOPED_NAME_PATTERN = /^@[a-z0-9_-]+\/[a-z0-9_-]+(\/[a-z0-9_-]+)*$/;
 const MAX_DEPENDENCY_DEPTH = 10;
+const VERSION_CONSTRAINT_PREFIX = /^[><=^~!]/;
 
 /** Parsed extension reference from CLI argument. */
 export interface ExtensionRef {
@@ -303,6 +304,14 @@ export function validateExtensionName(name: string): void {
       `Invalid extension name: "${name}". Must match @collective/name pattern (lowercase, alphanumeric, hyphens, underscores, additional /segments allowed).`,
     );
   }
+}
+
+/**
+ * Returns true if a version string is a semver constraint rather than
+ * an exact version. Constraints start with >=, <=, >, <, ^, ~, !, or =.
+ */
+export function isVersionConstraint(version: string): boolean {
+  return VERSION_CONSTRAINT_PREFIX.test(version);
 }
 
 /**
@@ -1130,7 +1139,8 @@ export async function installExtension(
     const dependencyResults: InstallResult[] = [];
     if (manifest.dependencies.length > 0) {
       for (const dep of manifest.dependencies) {
-        if (ctx.alreadyPulled.has(dep)) {
+        const depRef = parseExtensionRef(dep);
+        if (ctx.alreadyPulled.has(depRef.name)) {
           continue;
         }
 
@@ -1138,14 +1148,42 @@ export async function installExtension(
         // made — writeEntry updates the cache on every commit, and child
         // installs in this loop reuse the same repository instance, so
         // their writes are visible too.
-        const isInstalled = ctx.lockfileRepository.getEntry(dep) !== null;
+        const isInstalled =
+          ctx.lockfileRepository.getEntry(depRef.name) !== null;
 
         if (!isInstalled) {
-          const depRef = parseExtensionRef(dep);
-          const depResult = await installExtension(depRef, {
+          // Strip version constraints (>=, ^, ~, etc.) — pass version: null
+          // so installExtension resolves to the registry's latest version.
+          // When the dep has no stable version, resolve from beta/rc channels
+          // so beta-only extensions can satisfy dependency requirements.
+          const hasConstraint = depRef.version != null &&
+            isVersionConstraint(depRef.version);
+          let depVersion: string | null = hasConstraint ? null : depRef.version;
+          let depChannel: string | undefined = undefined;
+
+          if (depVersion === null) {
+            const depInfo = await ctx.getExtension(depRef.name);
+            if (depInfo) {
+              if (depInfo.latestVersion) {
+                depVersion = depInfo.latestVersion;
+              } else if (depInfo.latestBeta) {
+                depVersion = depInfo.latestBeta;
+                depChannel = "beta";
+              } else if (depInfo.latestRc) {
+                depVersion = depInfo.latestRc;
+                depChannel = "rc";
+              }
+            }
+          }
+
+          const resolvedRef: ExtensionRef = {
+            name: depRef.name,
+            version: depVersion,
+          };
+          const depResult = await installExtension(resolvedRef, {
             ...ctx,
             depth: ctx.depth + 1,
-            channel: undefined,
+            channel: depChannel,
           });
           if (depResult) {
             dependencyResults.push(depResult);

@@ -28,6 +28,7 @@ import {
   type ExtensionRef,
   type InstallContext,
   type InstallResult,
+  isVersionConstraint,
   parseExtensionRef,
   validateExtensionName,
 } from "./pull.ts";
@@ -362,5 +363,93 @@ Deno.test(
     }
 
     await Deno.remove(deps.repoDir, { recursive: true }).catch(() => {});
+  },
+);
+
+// ===== isVersionConstraint =====
+
+Deno.test("isVersionConstraint: detects >= prefix", () => {
+  assertEquals(isVersionConstraint(">=2026.04.24"), true);
+});
+
+Deno.test("isVersionConstraint: detects ^ prefix", () => {
+  assertEquals(isVersionConstraint("^1.0.0"), true);
+});
+
+Deno.test("isVersionConstraint: detects ~ prefix", () => {
+  assertEquals(isVersionConstraint("~1.0.0"), true);
+});
+
+Deno.test("isVersionConstraint: detects > prefix", () => {
+  assertEquals(isVersionConstraint(">1.0.0"), true);
+});
+
+Deno.test("isVersionConstraint: detects < prefix", () => {
+  assertEquals(isVersionConstraint("<2.0.0"), true);
+});
+
+Deno.test("isVersionConstraint: detects <= prefix", () => {
+  assertEquals(isVersionConstraint("<=2.0.0"), true);
+});
+
+Deno.test("isVersionConstraint: detects = prefix", () => {
+  assertEquals(isVersionConstraint("=1.0.0"), true);
+});
+
+Deno.test("isVersionConstraint: returns false for exact version", () => {
+  assertEquals(isVersionConstraint("2026.04.24.1782575578"), false);
+});
+
+Deno.test("isVersionConstraint: returns false for simple semver", () => {
+  assertEquals(isVersionConstraint("1.0.0"), false);
+});
+
+// ===== Dependency version constraint resolution (swamp-club#866) =====
+
+Deno.test(
+  "dependency version constraint resolution: constraint stripped, name used for lookup",
+  () => {
+    // Verifies the logic applied in installExtension's dependency loop:
+    // 1. Parse the dep string to extract name (for lookups) and version
+    // 2. Detect version constraints and null them out so installExtension
+    //    resolves to extInfo.latestVersion
+    const depRef = parseExtensionRef("@bixu/launchd@>=2026.04.24");
+    assertEquals(depRef.name, "@bixu/launchd");
+    assertEquals(depRef.version, ">=2026.04.24");
+    assertEquals(isVersionConstraint(depRef.version!), true);
+
+    const resolvedRef: ExtensionRef = {
+      name: depRef.name,
+      version: isVersionConstraint(depRef.version!) ? null : depRef.version,
+    };
+    assertEquals(resolvedRef.name, "@bixu/launchd");
+    assertEquals(resolvedRef.version, null);
+
+    // Exact versions pass through unchanged
+    const exactRef = parseExtensionRef("@hivemq/asdlc@2026.06.27.1782598415");
+    assertEquals(isVersionConstraint(exactRef.version!), false);
+    const resolvedExact: ExtensionRef = {
+      name: exactRef.name,
+      version: isVersionConstraint(exactRef.version!) ? null : exactRef.version,
+    };
+    assertEquals(resolvedExact.version, "2026.06.27.1782598415");
+  },
+);
+
+Deno.test(
+  "parseExtensionRef: parses dependency with version constraint",
+  () => {
+    const ref = parseExtensionRef("@hivemq/asdlc@>=2026.06.27.1782598415");
+    assertEquals(ref.name, "@hivemq/asdlc");
+    assertEquals(ref.version, ">=2026.06.27.1782598415");
+  },
+);
+
+Deno.test(
+  "parseExtensionRef: parses dependency with caret constraint",
+  () => {
+    const ref = parseExtensionRef("@swamp/factory@^2026.06.16.1");
+    assertEquals(ref.name, "@swamp/factory");
+    assertEquals(ref.version, "^2026.06.16.1");
   },
 );

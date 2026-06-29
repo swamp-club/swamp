@@ -856,6 +856,7 @@ export {
   type InstallContext,
   installExtension,
   type InstallResult,
+  isVersionConstraint,
   parseExtensionRef,
   resolveServerUrl,
   validateExtensionName,
