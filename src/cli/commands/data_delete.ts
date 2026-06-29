@@ -38,7 +38,11 @@ import {
   type GlobalOptions,
   resolveRepoDir,
 } from "../context.ts";
-import { requireInitializedRepo } from "../repo_context.ts";
+import {
+  acquireModelLocks,
+  requireInitializedRepoUnlocked,
+} from "../repo_context.ts";
+import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { UserError } from "../../domain/errors.ts";
 
 async function promptConfirmation(message: string): Promise<boolean> {
@@ -171,95 +175,138 @@ export const dataDeleteCommand = new Command()
         "delete",
       ]);
 
-      const { repoDir, datastoreResolver } = await requireInitializedRepo({
+      const {
+        repoDir,
+        repoContext,
+        datastoreResolver,
+        datastoreConfig,
+        syncService,
+      } = await requireInitializedRepoUnlocked({
         repoDir: resolveRepoDir(options.repoDir),
         outputMode: cliCtx.outputMode,
       });
 
-      const ctx = createLibSwampContext({ logger: cliCtx.logger });
-      const deps = createDataDeleteDeps(repoDir, datastoreResolver);
-
-      if (isBatchMode) {
-        const filter: BatchDeleteFilter = all
-          ? { kind: "all" }
-          : { kind: "prefix", value: prefix! };
-
-        // Phase 1: Preview + Prompt (unless --force or --dry-run).
-        if (cliCtx.outputMode === "log" && !options.force && !dryRun) {
-          let preview;
-          try {
-            preview = await dataBatchDeletePreview(ctx, deps, {
-              modelIdOrName: modelIdOrName!,
-              filter,
-            });
-          } catch (error) {
-            throw new UserError(
-              error instanceof Error ? error.message : String(error),
-            );
-          }
-
-          const filterDesc = filter.kind === "prefix"
-            ? `prefix "${filter.value}"`
-            : "all data";
-          const confirmed = await promptConfirmation(
-            `About to delete ${preview.totalItems} data artifact(s) (${preview.totalVersions} version(s)) matching ${filterDesc} from ${preview.modelName}. Proceed?`,
-          );
-          if (!confirmed) {
-            renderDataDeleteCancelled(cliCtx.outputMode);
-            return;
-          }
-        }
-
-        // Phase 2: Execute batch delete.
-        const renderer = createDataBatchDeleteRenderer(cliCtx.outputMode);
-        await consumeStream(
-          dataBatchDelete(ctx, deps, {
-            modelIdOrName: modelIdOrName!,
-            filter,
-            dryRun: dryRun ?? false,
-          }),
-          renderer.handlers(),
-        );
-      } else {
-        const renderer = createDataDeleteRenderer(cliCtx.outputMode);
-
-        // Phase 1: Preview + Prompt (only in interactive log mode without --force).
-        if (cliCtx.outputMode === "log" && !options.force) {
-          let preview;
-          try {
-            preview = await dataDeletePreview(ctx, deps, {
-              modelIdOrName: modelIdOrName!,
-              dataName: dataName!,
-            });
-          } catch (error) {
-            throw new UserError(
-              error instanceof Error ? error.message : String(error),
-            );
-          }
-
-          const target = options.version !== undefined
-            ? `version ${options.version} of "${dataName}"`
-            : `${preview.versionsCount} version(s) of "${dataName}"`;
-          const confirmed = await promptConfirmation(
-            `About to delete ${target} from ${preview.modelName}. Proceed?`,
-          );
-          if (!confirmed) {
-            renderDataDeleteCancelled(cliCtx.outputMode);
-            return;
-          }
-        }
-
-        // Phase 2: Execute single delete.
-        await consumeStream(
-          dataDelete(ctx, deps, {
-            modelIdOrName: modelIdOrName!,
-            dataName: dataName!,
-            version: options.version,
-          }),
-          renderer.handlers(),
-        );
+      const preResult = await findDefinitionByIdOrName(
+        repoContext.definitionRepo,
+        modelIdOrName!,
+      );
+      if (!preResult) {
+        throw new UserError(`Model not found: ${modelIdOrName}`);
       }
 
-      cliCtx.logger.debug("Data delete command completed");
+      const lockResult = await acquireModelLocks(
+        datastoreConfig,
+        [
+          {
+            modelType: preResult.type.normalized,
+            modelId: preResult.definition.id,
+          },
+        ],
+        repoDir,
+        syncService,
+        repoContext.catalogStore,
+      );
+      if (lockResult.synced) repoContext.catalogStore.invalidate();
+
+      try {
+        const ctx = createLibSwampContext({ logger: cliCtx.logger });
+        const deps = createDataDeleteDeps(repoDir, datastoreResolver);
+
+        if (isBatchMode) {
+          const filter: BatchDeleteFilter = all
+            ? { kind: "all" }
+            : { kind: "prefix", value: prefix! };
+
+          // Phase 1: Preview + Prompt (unless --force or --dry-run).
+          if (cliCtx.outputMode === "log" && !options.force && !dryRun) {
+            let preview;
+            try {
+              preview = await dataBatchDeletePreview(ctx, deps, {
+                modelIdOrName: modelIdOrName!,
+                filter,
+              });
+            } catch (error) {
+              throw new UserError(
+                error instanceof Error ? error.message : String(error),
+              );
+            }
+
+            const filterDesc = filter.kind === "prefix"
+              ? `prefix "${filter.value}"`
+              : "all data";
+            const confirmed = await promptConfirmation(
+              `About to delete ${preview.totalItems} data artifact(s) (${preview.totalVersions} version(s)) matching ${filterDesc} from ${preview.modelName}. Proceed?`,
+            );
+            if (!confirmed) {
+              renderDataDeleteCancelled(cliCtx.outputMode);
+              return;
+            }
+          }
+
+          // Phase 2: Execute batch delete.
+          const renderer = createDataBatchDeleteRenderer(cliCtx.outputMode);
+          await consumeStream(
+            dataBatchDelete(ctx, deps, {
+              modelIdOrName: modelIdOrName!,
+              filter,
+              dryRun: dryRun ?? false,
+            }),
+            renderer.handlers(),
+          );
+        } else {
+          const renderer = createDataDeleteRenderer(cliCtx.outputMode);
+
+          // Phase 1: Preview + Prompt (only in interactive log mode without --force).
+          if (cliCtx.outputMode === "log" && !options.force) {
+            let preview;
+            try {
+              preview = await dataDeletePreview(ctx, deps, {
+                modelIdOrName: modelIdOrName!,
+                dataName: dataName!,
+              });
+            } catch (error) {
+              throw new UserError(
+                error instanceof Error ? error.message : String(error),
+              );
+            }
+
+            const target = options.version !== undefined
+              ? `version ${options.version} of "${dataName}"`
+              : `${preview.versionsCount} version(s) of "${dataName}"`;
+            const confirmed = await promptConfirmation(
+              `About to delete ${target} from ${preview.modelName}. Proceed?`,
+            );
+            if (!confirmed) {
+              renderDataDeleteCancelled(cliCtx.outputMode);
+              return;
+            }
+          }
+
+          // Phase 2: Execute single delete.
+          await consumeStream(
+            dataDelete(ctx, deps, {
+              modelIdOrName: modelIdOrName!,
+              dataName: dataName!,
+              version: options.version,
+            }),
+            renderer.handlers(),
+          );
+        }
+
+        cliCtx.logger.debug("Data delete command completed");
+      } finally {
+        try {
+          await lockResult.flush();
+        } catch (releaseError) {
+          cliCtx.logger.warn(
+            "Failed to release locks during cleanup: {error}",
+            {
+              error: releaseError instanceof Error
+                ? releaseError.message
+                : String(releaseError),
+            },
+          );
+        }
+      }
     },
   );

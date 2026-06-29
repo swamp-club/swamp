@@ -891,16 +891,26 @@ export async function waitForPerModelLocks(
       return count;
     });
 
+  const maxWaitMs = resolveLockTimeoutMs();
   const held = await findModelLocks();
   if (held > 0) {
     logger.info(
       "Waiting for {count} per-model lock(s) to be released",
       { count: held },
     );
+    const waitStart = Date.now();
     while (true) {
       await new Promise((resolve) => setTimeout(resolve, 1_000));
       const remaining = await findModelLocks();
       if (remaining === 0) break;
+      const elapsed = Date.now() - waitStart;
+      if (elapsed >= maxWaitMs) {
+        throw new LockTimeoutError(
+          "per-model locks",
+          null,
+          elapsed,
+        );
+      }
     }
     logger.info`Per-model locks released`;
   }
@@ -1085,6 +1095,7 @@ export async function acquireModelLocks(
     const lock = customProvider && isCustomDatastoreConfig(config)
       ? customProvider.createLock(config.datastorePath, {
         lockKey: lockFileKey,
+        maxWaitMs: resolveLockTimeoutMs(),
       })
       : await createModelLock(config, modelType, modelId);
     // Unique coordinator key so parallel steps on the same model get
@@ -1184,8 +1195,12 @@ export async function acquireModelLocks(
     }
   }
 
+  Deno.env.set(SWAMP_LOCK_HOLDER_PID, String(Deno.pid));
+
   const flush = async () => {
     try {
+      Deno.env.delete(SWAMP_LOCK_HOLDER_PID);
+
       // For custom sync-capable datastores: push under global lock
       if (
         customSyncService && customProvider && isCustomDatastoreConfig(config)

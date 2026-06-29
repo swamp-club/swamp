@@ -34,7 +34,11 @@ import {
   type GlobalOptions,
   resolveRepoDir,
 } from "../context.ts";
-import { requireInitializedRepo } from "../repo_context.ts";
+import {
+  acquireModelLocks,
+  requireInitializedRepoUnlocked,
+} from "../repo_context.ts";
+import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { UserError } from "../../domain/errors.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -73,75 +77,120 @@ export const modelDeleteCommand = new Command()
     const cliCtx = createContext(options as GlobalOptions, ["model", "delete"]);
     cliCtx.logger.debug`Deleting model: ${modelIdOrName}`;
 
-    const { repoDir, datastoreResolver } = await requireInitializedRepo({
+    const {
+      repoDir,
+      repoContext,
+      datastoreResolver,
+      datastoreConfig,
+      syncService,
+    } = await requireInitializedRepoUnlocked({
       repoDir: resolveRepoDir(options.repoDir),
       outputMode: cliCtx.outputMode,
     });
 
-    const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createModelDeleteDeps(repoDir, datastoreResolver);
-    const force = !!options.force;
-
-    // Phase 1: Preview — gather what will be affected
-    let preview;
-    try {
-      preview = await modelDeletePreview(ctx, deps, {
-        modelIdOrName,
-        force,
-      });
-    } catch (error) {
-      if ("code" in (error as Record<string, unknown>)) {
-        throw new UserError((error as { message: string }).message);
-      }
-      throw error;
-    }
-
-    // Block if referenced by workflows
-    if (preview.referencingWorkflows.length > 0) {
-      throw new UserError(
-        `Model '${preview.name}' is referenced by workflow(s): ${
-          preview.referencingWorkflows.join(", ")
-        }. ` +
-          `Remove the model from these workflows before deleting.`,
-      );
-    }
-
-    // Block if data artifacts exist and no --force
-    if (preview.dataArtifactCount > 0 && !force) {
-      throw new UserError(
-        `Model '${preview.name}' has ${preview.dataArtifactCount} associated data artifact(s). ` +
-          `Delete the data first, or use --force to delete all.`,
-      );
-    }
-
-    // Phase 2: Prompt (CLI concern)
-    if (cliCtx.outputMode === "log" && !force) {
-      let deleteDetails = "";
-      if (preview.outputCount > 0) {
-        deleteDetails += ` ${preview.outputCount} output(s),`;
-      }
-      if (preview.dataArtifactCount > 0) {
-        deleteDetails += ` ${preview.dataArtifactCount} data artifact(s),`;
-      }
-      if (deleteDetails) {
-        deleteDetails = ` This will also delete:${deleteDetails.slice(0, -1)}.`;
-      }
-
-      const confirmed = await promptConfirmation(
-        `Delete model '${preview.name}' (${preview.id})?${deleteDetails}`,
-      );
-      if (!confirmed) {
-        renderModelDeleteCancelled(cliCtx.outputMode);
-        return;
-      }
-    }
-
-    // Phase 3: Execute mutation
-    const renderer = createModelDeleteRenderer(cliCtx.outputMode);
-    await consumeStream(
-      modelDelete(ctx, deps, { modelIdOrName, force }),
-      renderer.handlers(),
+    const preResult = await findDefinitionByIdOrName(
+      repoContext.definitionRepo,
+      modelIdOrName,
     );
+    if (!preResult) {
+      throw new UserError(`Model not found: ${modelIdOrName}`);
+    }
 
-    cliCtx.logger.debug("Model delete command completed");
+    const lockResult = await acquireModelLocks(
+      datastoreConfig,
+      [
+        {
+          modelType: preResult.type.normalized,
+          modelId: preResult.definition.id,
+        },
+      ],
+      repoDir,
+      syncService,
+      repoContext.catalogStore,
+    );
+    if (lockResult.synced) repoContext.catalogStore.invalidate();
+
+    try {
+      const ctx = createLibSwampContext({ logger: cliCtx.logger });
+      const deps = createModelDeleteDeps(repoDir, datastoreResolver);
+      const force = !!options.force;
+
+      // Phase 1: Preview — gather what will be affected (under lock)
+      let preview;
+      try {
+        preview = await modelDeletePreview(ctx, deps, {
+          modelIdOrName,
+          force,
+        });
+      } catch (error) {
+        if ("code" in (error as Record<string, unknown>)) {
+          throw new UserError((error as { message: string }).message);
+        }
+        throw error;
+      }
+
+      // Block if referenced by workflows
+      if (preview.referencingWorkflows.length > 0) {
+        throw new UserError(
+          `Model '${preview.name}' is referenced by workflow(s): ${
+            preview.referencingWorkflows.join(", ")
+          }. ` +
+            `Remove the model from these workflows before deleting.`,
+        );
+      }
+
+      // Block if data artifacts exist and no --force
+      if (preview.dataArtifactCount > 0 && !force) {
+        throw new UserError(
+          `Model '${preview.name}' has ${preview.dataArtifactCount} associated data artifact(s). ` +
+            `Delete the data first, or use --force to delete all.`,
+        );
+      }
+
+      // Phase 2: Prompt (CLI concern)
+      if (cliCtx.outputMode === "log" && !force) {
+        let deleteDetails = "";
+        if (preview.outputCount > 0) {
+          deleteDetails += ` ${preview.outputCount} output(s),`;
+        }
+        if (preview.dataArtifactCount > 0) {
+          deleteDetails += ` ${preview.dataArtifactCount} data artifact(s),`;
+        }
+        if (deleteDetails) {
+          deleteDetails = ` This will also delete:${
+            deleteDetails.slice(0, -1)
+          }.`;
+        }
+
+        const confirmed = await promptConfirmation(
+          `Delete model '${preview.name}' (${preview.id})?${deleteDetails}`,
+        );
+        if (!confirmed) {
+          renderModelDeleteCancelled(cliCtx.outputMode);
+          return;
+        }
+      }
+
+      // Phase 3: Execute mutation
+      const renderer = createModelDeleteRenderer(cliCtx.outputMode);
+      await consumeStream(
+        modelDelete(ctx, deps, { modelIdOrName, force }),
+        renderer.handlers(),
+      );
+
+      cliCtx.logger.debug("Model delete command completed");
+    } finally {
+      try {
+        await lockResult.flush();
+      } catch (releaseError) {
+        cliCtx.logger.warn(
+          "Failed to release locks during cleanup: {error}",
+          {
+            error: releaseError instanceof Error
+              ? releaseError.message
+              : String(releaseError),
+          },
+        );
+      }
+    }
   });

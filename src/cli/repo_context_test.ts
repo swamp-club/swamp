@@ -42,6 +42,7 @@ import {
   type DatastoreConfig,
   isCustomDatastoreConfig,
 } from "../domain/datastore/datastore_config.ts";
+import { LockTimeoutError } from "../domain/datastore/distributed_lock.ts";
 import { RepoPath } from "../domain/repo/repo_path.ts";
 import { RepoService } from "../domain/repo/repo_service.ts";
 import { UserError } from "../domain/errors.ts";
@@ -1071,6 +1072,31 @@ Deno.test(
 );
 
 Deno.test(
+  "waitForPerModelLocks - throws LockTimeoutError when locks are not released within timeout",
+  async () => {
+    const scanner = (): Promise<number> => Promise.resolve(1);
+
+    await assertRejects(
+      async () => {
+        // Force a short timeout via env var to keep the test fast
+        const prev = Deno.env.get("SWAMP_LOCK_TIMEOUT_MS");
+        Deno.env.set("SWAMP_LOCK_TIMEOUT_MS", "2000");
+        try {
+          await waitForPerModelLocks("/unused/datastore/path", scanner);
+        } finally {
+          if (prev !== undefined) {
+            Deno.env.set("SWAMP_LOCK_TIMEOUT_MS", prev);
+          } else {
+            Deno.env.delete("SWAMP_LOCK_TIMEOUT_MS");
+          }
+        }
+      },
+      LockTimeoutError,
+    );
+  },
+);
+
+Deno.test(
   "requireInitializedRepo - second drain catches a per-model lock that " +
     "appears between the first drain and the global lock acquisition " +
     "(regression for issue #234)",
@@ -1234,6 +1260,46 @@ Deno.test(
         elapsed >= 1_000,
         true,
         `expected to wait for lock to go stale without env var, elapsed=${elapsed}ms`,
+      );
+    });
+  },
+);
+
+// ============================================================================
+// acquireModelLocks — SWAMP_LOCK_HOLDER_PID Lifecycle Tests
+// ============================================================================
+
+Deno.test(
+  "acquireModelLocks - sets SWAMP_LOCK_HOLDER_PID on acquire and clears on flush",
+  async () => {
+    await withTempDir(async (dir) => {
+      await initializeRepo(dir);
+      const { datastoreConfig } = await resolveDatastoreForRepo(dir);
+
+      assertEquals(
+        Deno.env.get(SWAMP_LOCK_HOLDER_PID),
+        undefined,
+        "env var should not be set before acquire",
+      );
+
+      const lockResult = await acquireModelLocks(
+        datastoreConfig,
+        [{ modelType: "test-type", modelId: "test-model" }],
+        dir,
+      );
+
+      assertEquals(
+        Deno.env.get(SWAMP_LOCK_HOLDER_PID),
+        String(Deno.pid),
+        "env var should be set to current PID after acquire",
+      );
+
+      await lockResult.flush();
+
+      assertEquals(
+        Deno.env.get(SWAMP_LOCK_HOLDER_PID),
+        undefined,
+        "env var should be cleared after flush",
       );
     });
   },
