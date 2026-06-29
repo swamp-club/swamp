@@ -23,29 +23,64 @@ import {
   consumeStream,
   createLibSwampContext,
   workflowSchema,
+  type WorkflowSchemaData,
 } from "../../libswamp/mod.ts";
 import { createWorkflowSchemaRenderer } from "../../presentation/renderers/workflow_schema.ts";
 import { createContext, type GlobalOptions } from "../context.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { WorkflowSchemaResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-export const workflowSchemaGetCommand = new Command()
-  .description("Get the schema for workflow files")
-  .example("Get workflow schema", "swamp workflow schema get")
-  .action(async function (options: AnyOptions) {
-    const ctx = createContext(options as GlobalOptions, [
-      "workflow",
-      "schema",
-      "get",
-    ]);
+export const workflowSchemaGetCommand = withRemoteOptions(
+  new Command()
+    .description("Get the schema for workflow files")
+    .example("Get workflow schema", "swamp workflow schema get"),
+).action(async function (options: AnyOptions) {
+  const ctx = createContext(options as GlobalOptions, [
+    "workflow",
+    "schema",
+    "get",
+  ]);
 
-    const lctx = createLibSwampContext({ logger: ctx.logger });
+  const server = resolveServeUrl(options.server as string | undefined);
+  if (server) {
+    const token = await resolveServerToken(
+      server,
+      options.token as string | undefined,
+    );
+    const response = await requestServerResponse<WorkflowSchemaResponse>(
+      { server, token },
+      {
+        type: "workflow.schema",
+        payload: {},
+      },
+    );
     const renderer = createWorkflowSchemaRenderer(ctx.outputMode);
-    await consumeStream(workflowSchema(lctx), renderer.handlers());
+    await consumeStream(
+      (async function* () {
+        yield {
+          kind: "completed" as const,
+          data: response.data as unknown as WorkflowSchemaData,
+        };
+      })(),
+      renderer.handlers(),
+    );
+    return;
+  }
 
-    ctx.logger.debug("Workflow schema get command completed");
-  });
+  const lctx = createLibSwampContext({ logger: ctx.logger });
+  const renderer = createWorkflowSchemaRenderer(ctx.outputMode);
+  await consumeStream(workflowSchema(lctx), renderer.handlers());
+
+  ctx.logger.debug("Workflow schema get command completed");
+});
 
 export const workflowSchemaCommand = new Command()
   .name("schema")

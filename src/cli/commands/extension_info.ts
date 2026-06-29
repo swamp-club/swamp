@@ -24,46 +24,85 @@ import {
   createExtensionInfoDeps,
   createLibSwampContext,
   extensionInfo,
+  type ExtensionInfoData,
 } from "../../libswamp/mod.ts";
 import { createExtensionInfoRenderer } from "../../presentation/renderers/extension_info.ts";
 import { loadIdentity } from "../load_identity.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { ExtensionInfoResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-export const extensionInfoCommand = new Command()
-  .name("info")
-  .description(
-    "Show full registry metadata for a specific extension",
-  )
-  .example(
-    "Show extension info",
-    "swamp extension info @stack72/aws-ec2",
-  )
-  .example(
-    "JSON output",
-    "swamp extension info @stack72/aws-ec2 --json",
-  )
-  .arguments("<name:string>")
-  .action(
-    async function (options: AnyOptions, name: string) {
-      const cliCtx = createContext(options as GlobalOptions, [
-        "extension",
-        "info",
-      ]);
+export const extensionInfoCommand = withRemoteOptions(
+  new Command()
+    .name("info")
+    .description(
+      "Show full registry metadata for a specific extension",
+    )
+    .example(
+      "Show extension info",
+      "swamp extension info @stack72/aws-ec2",
+    )
+    .example(
+      "JSON output",
+      "swamp extension info @stack72/aws-ec2 --json",
+    )
+    .arguments("<name:string>"),
+).action(
+  async function (options: AnyOptions, name: string) {
+    const cliCtx = createContext(options as GlobalOptions, [
+      "extension",
+      "info",
+    ]);
 
-      const identity = await loadIdentity();
-      const ctx = createLibSwampContext({ logger: cliCtx.logger });
-      const deps = createExtensionInfoDeps(identity.bearerToken, identity);
+    const server = resolveServeUrl(options.server as string | undefined);
+    if (server) {
+      const token = await resolveServerToken(
+        server,
+        options.token as string | undefined,
+      );
+      const response = await requestServerResponse<ExtensionInfoResponse>(
+        { server, token },
+        {
+          type: "extension.info",
+          payload: { extensionName: name },
+        },
+      );
       const verbose = cliCtx.verbosity === "verbose";
       const renderer = createExtensionInfoRenderer(
         cliCtx.outputMode,
         verbose,
       );
-
       await consumeStream(
-        extensionInfo(ctx, deps, { extensionName: name }),
+        (async function* () {
+          yield {
+            kind: "completed" as const,
+            data: response.data as unknown as ExtensionInfoData,
+          };
+        })(),
         renderer.handlers(),
       );
-    },
-  );
+      return;
+    }
+
+    const identity = await loadIdentity();
+    const ctx = createLibSwampContext({ logger: cliCtx.logger });
+    const deps = createExtensionInfoDeps(identity.bearerToken, identity);
+    const verbose = cliCtx.verbosity === "verbose";
+    const renderer = createExtensionInfoRenderer(
+      cliCtx.outputMode,
+      verbose,
+    );
+
+    await consumeStream(
+      extensionInfo(ctx, deps, { extensionName: name }),
+      renderer.handlers(),
+    );
+  },
+);

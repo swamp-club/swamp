@@ -130,15 +130,40 @@ sides share the framing, error envelope, and `serializeEvent()` machinery that
 already exists. Byte-heavy transfers do *not* go over this socket — they ride the
 HTTP/2 data plane (see [Data plane](#data-plane-two-transports)).
 
-The serve endpoint keeps its existing client protocol (`workflow.run` /
-`model.method.run` / `cancel`, spoken today by the published
-`@swamp-club/swamp-lib` client) unchanged and side by side with the worker
+The serve endpoint keeps its client protocol side by side with the worker
 messages: worker verbs are new message types gated on enrollment, so an
 ordinary client and an enrolling worker share one listener without ambiguity.
-The client protocol gains one additive frame — a terminal `done` after a
-run's event stream completes — so clients can distinguish "run ended" from
-"stream stalled". The CLI consumes this protocol via
-`swamp workflow run --server <url>` / `swamp model ... method run --server`:
+
+The client protocol supports two interaction patterns:
+
+- **Streaming operations** (`workflow.run`, `model.method.run`,
+  `workflow.resume`) send an event stream followed by a terminal `done` frame,
+  so clients can distinguish "run ended" from "stream stalled".
+- **Request-response operations** (everything else) send a single response
+  frame with a `payload` field, matching the request's `type`.
+
+The full set of client protocol frame types:
+
+| Category       | Frame types                                                                                                    | Auth    |
+| -------------- | -------------------------------------------------------------------------------------------------------------- | ------- |
+| Data           | `data.get`, `data.list`, `data.query`, `data.search`, `data.versions`, `data.delete`, `data.rename`            | read/write |
+| Model          | `model.get`, `model.create`, `model.delete`, `model.search`, `model.method.describe`, `model.method.run`       | read/write/run |
+| Model output   | `model.output.get`, `model.output.data`, `model.output.logs`, `model.output.search`                            | read    |
+| Model history  | `model.method.history.get`, `model.method.history.logs`, `model.method.history.search`                         | read    |
+| Model validate | `model.validate`, `model.evaluate`                                                                             | read    |
+| Workflow       | `workflow.get`, `workflow.search`, `workflow.run`, `workflow.resume`, `workflow.schema`                         | read/run |
+| Workflow history | `workflow.history.get`, `workflow.history.logs`, `workflow.history.search`, `workflow.run.search`             | read    |
+| Workflow approval | `workflow.approve`, `workflow.reject`                                                                       | run     |
+| Vault          | `vault.get`, `vault.put`, `vault.delete`, `vault.describe`, `vault.inspect`, `vault.list-keys`, `vault.search`, `vault.annotate` | read/write |
+| Access         | `access.grant.list`, `access.group.list`, `access.check`, `access.can-i`, `access.reload`                     | admin   |
+| Audit/summary  | `audit.timeline`, `summarise`                                                                                  | read    |
+| Reports        | `report.get`, `report.search`, `report.describe`, `report.type.search`                                        | read    |
+| Extensions     | `extension.list`, `extension.search`, `extension.info`, `extension.install`, `extension.rm`, `extension.outdated` | read/admin |
+| Doctor         | `doctor.vaults`, `doctor.secrets`, `doctor.workflows`, `doctor.extensions`                                     | admin   |
+| Server admin   | `worker.list`, `datastore.status`                                                                              | admin   |
+| Control        | `cancel`                                                                                                       | —       |
+
+The CLI consumes this protocol via `--server <url>` on each command:
 repo-less, streaming the run's events through the same renderers as a local
 run (the wire codec is lossless for run events; `deserializeEvent` in
 `src/serve/serializer.ts` is the anti-corruption seam). The `--server` flag

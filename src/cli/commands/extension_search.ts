@@ -39,6 +39,7 @@ import {
   consumeStream,
   createLibSwampContext,
   extensionSearch,
+  type ExtensionSearchData,
   type ExtensionSearchDeps,
   warnLegacyExtensionLayout,
 } from "../../libswamp/mod.ts";
@@ -47,6 +48,13 @@ import { resolveSkillsDir } from "../../domain/repo/skill_dirs.ts";
 import { resolvePrimaryTool } from "../../domain/repo/primary_tool.ts";
 import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
 import { loadIdentity } from "../load_identity.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { ExtensionSearchResponse } from "../../serve/protocol.ts";
 
 /**
  * Resolves the registry server URL.
@@ -59,131 +67,115 @@ function resolveServerUrl(): string {
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-export const extensionSearchCommand = new Command()
-  .name("search")
-  .description("Search the swamp extension registry")
-  .arguments("[query:string]")
-  .option("--collective <collective:string>", "Filter by collective")
-  .option("--platform <platform:string>", "Filter by platform", {
-    collect: true,
-  })
-  .option("--label <label:string>", "Filter by label", { collect: true })
-  .option(
-    "--content-type <contentType:string>",
-    "Filter by content type (models, workflows, vaults, datastores, drivers, reports)",
-    { collect: true },
-  )
-  .option(
-    "--sort <sort:string>",
-    "Sort order: relevance, new, updated, name",
-  )
-  .option(
-    "--channel <channel:string>",
-    "Filter by release channel: 'beta' or 'rc' (default: stable only)",
-    { collect: true },
-  )
-  .option("--per-page <perPage:number>", "Results per page", { default: 20 })
-  .option("--page <page:number>", "Page number", { default: 1 })
-  .example("Browse all extensions", "swamp extension search")
-  .example("Search by keyword", "swamp extension search aws")
-  .example(
-    "Filter by collective",
-    "swamp extension search --collective stack72",
-  )
-  .example(
-    "Filter by platform and label",
-    "swamp extension search --platform aws --label networking",
-  )
-  .example(
-    "Filter by content type",
-    "swamp extension search --content-type models",
-  )
-  .example(
-    "Sort by newest",
-    "swamp extension search --sort new",
-  )
-  .action(async function (options: AnyOptions, query?: string) {
-    const ctx = createContext(options as GlobalOptions, [
-      "extension",
-      "search",
-    ]);
+export const extensionSearchCommand = withRemoteOptions(
+  new Command()
+    .name("search")
+    .description("Search the swamp extension registry")
+    .arguments("[query:string]")
+    .option("--collective <collective:string>", "Filter by collective")
+    .option("--platform <platform:string>", "Filter by platform", {
+      collect: true,
+    })
+    .option("--label <label:string>", "Filter by label", { collect: true })
+    .option(
+      "--content-type <contentType:string>",
+      "Filter by content type (models, workflows, vaults, datastores, drivers, reports)",
+      { collect: true },
+    )
+    .option(
+      "--sort <sort:string>",
+      "Sort order: relevance, new, updated, name",
+    )
+    .option(
+      "--channel <channel:string>",
+      "Filter by release channel: 'beta' or 'rc' (default: stable only)",
+      { collect: true },
+    )
+    .option("--per-page <perPage:number>", "Results per page", { default: 20 })
+    .option("--page <page:number>", "Page number", { default: 1 })
+    .example("Browse all extensions", "swamp extension search")
+    .example("Search by keyword", "swamp extension search aws")
+    .example(
+      "Filter by collective",
+      "swamp extension search --collective stack72",
+    )
+    .example(
+      "Filter by platform and label",
+      "swamp extension search --platform aws --label networking",
+    )
+    .example(
+      "Filter by content type",
+      "swamp extension search --content-type models",
+    )
+    .example(
+      "Sort by newest",
+      "swamp extension search --sort new",
+    ),
+).action(async function (options: AnyOptions, query?: string) {
+  const ctx = createContext(options as GlobalOptions, [
+    "extension",
+    "search",
+  ]);
 
-    // Validate sort + query combination
-    if (options.sort === "relevance" && !query) {
+  // Validate sort + query combination
+  if (options.sort === "relevance" && !query) {
+    throw new UserError(
+      'Sort by "relevance" requires a search query.',
+    );
+  }
+
+  // Validate content type values
+  const validContentTypes = [
+    "models",
+    "workflows",
+    "vaults",
+    "datastores",
+    "drivers",
+    "reports",
+  ];
+  for (const ct of options.contentType ?? []) {
+    if (!validContentTypes.includes(ct)) {
       throw new UserError(
-        'Sort by "relevance" requires a search query.',
-      );
-    }
-
-    // Validate content type values
-    const validContentTypes = [
-      "models",
-      "workflows",
-      "vaults",
-      "datastores",
-      "drivers",
-      "reports",
-    ];
-    for (const ct of options.contentType ?? []) {
-      if (!validContentTypes.includes(ct)) {
-        throw new UserError(
-          `Invalid content type: "${ct}". Must be one of: ${
-            validContentTypes.join(", ")
-          }`,
-        );
-      }
-    }
-
-    // Validate channel values
-    const validChannels = ["beta", "rc"];
-    for (const ch of options.channel ?? []) {
-      if (!validChannels.includes(ch)) {
-        throw new UserError(
-          `Invalid channel: "${ch}". Must be one of: beta, rc. Stable is the default; omit --channel to use it.`,
-        );
-      }
-    }
-
-    // Validate sort option value
-    const validSorts = ["relevance", "new", "updated", "name"];
-    if (options.sort && !validSorts.includes(options.sort)) {
-      throw new UserError(
-        `Invalid sort option: "${options.sort}". Must be one of: ${
-          validSorts.join(", ")
+        `Invalid content type: "${ct}". Must be one of: ${
+          validContentTypes.join(", ")
         }`,
       );
     }
+  }
 
-    const identity = await loadIdentity();
-    const serverUrl = resolveServerUrl();
-    const client = new ExtensionApiClient(serverUrl, identity);
-    const effectiveMode = interactiveOutputMode(ctx);
-    const libCtx = createLibSwampContext();
+  // Validate channel values
+  const validChannels = ["beta", "rc"];
+  for (const ch of options.channel ?? []) {
+    if (!validChannels.includes(ch)) {
+      throw new UserError(
+        `Invalid channel: "${ch}". Must be one of: beta, rc. Stable is the default; omit --channel to use it.`,
+      );
+    }
+  }
 
-    ctx.logger.debug`Searching extensions with query: ${query ?? "(none)"}`;
+  // Validate sort option value
+  const validSorts = ["relevance", "new", "updated", "name"];
+  if (options.sort && !validSorts.includes(options.sort)) {
+    throw new UserError(
+      `Invalid sort option: "${options.sort}". Must be one of: ${
+        validSorts.join(", ")
+      }`,
+    );
+  }
 
-    const deps: ExtensionSearchDeps = {
-      searchExtensions: (params) =>
-        client.searchExtensions(
-          {
-            ...params,
-            sort: params.sort as
-              | "name"
-              | "relevance"
-              | "new"
-              | "updated"
-              | undefined,
-          },
-          identity.bearerToken,
-        ),
-    };
-
-    const renderer = createExtensionSearchRenderer(effectiveMode);
-    await consumeStream(
-      extensionSearch(
-        libCtx,
-        deps,
-        {
+  const remoteServer = resolveServeUrl(
+    options.server as string | undefined,
+  );
+  if (remoteServer) {
+    const token = await resolveServerToken(
+      remoteServer,
+      options.token as string | undefined,
+    );
+    const response = await requestServerResponse<ExtensionSearchResponse>(
+      { server: remoteServer, token },
+      {
+        type: "extension.search",
+        payload: {
           query,
           collective: options.collective,
           platform: options.platform,
@@ -194,51 +186,107 @@ export const extensionSearchCommand = new Command()
           perPage: options.perPage,
           page: options.page,
         },
-      ),
+      },
+    );
+    const effectiveMode = interactiveOutputMode(ctx);
+    const renderer = createExtensionSearchRenderer(effectiveMode);
+    await consumeStream(
+      (async function* () {
+        yield {
+          kind: "completed" as const,
+          data: response.data as unknown as ExtensionSearchData,
+        };
+      })(),
       renderer.handlers(),
     );
+    return;
+  }
 
-    const selected = renderer.selectedItem();
-    const action = renderer.selectedAction();
+  const identity = await loadIdentity();
+  const serverUrl = resolveServerUrl();
+  const client = new ExtensionApiClient(serverUrl, identity);
+  const effectiveMode = interactiveOutputMode(ctx);
+  const libCtx = createLibSwampContext();
 
-    if (selected && action === "install") {
-      // Extension install writes to local files only (pulled-extensions/,
-      // lockfile) — no datastore needed; see #445.
-      const { repoDir, marker } = await requireRepoMarker(".");
-      const modelsDir = resolveModelsDir(marker);
-      const absoluteModelsDir = resolve(repoDir, modelsDir);
-      const lockfilePath = join(
-        absoluteModelsDir,
-        "upstream_extensions.json",
-      );
+  ctx.logger.debug`Searching extensions with query: ${query ?? "(none)"}`;
 
-      // Warn (don't block) on legacy layout. The pull that follows writes
-      // to the per-extension subtree regardless of existing layout state.
-      await warnLegacyExtensionLayout(
-        lockfilePath,
-        (msg) => ctx.logger.warn(msg),
-      );
+  const deps: ExtensionSearchDeps = {
+    searchExtensions: (params) =>
+      client.searchExtensions(
+        {
+          ...params,
+          sort: params.sort as
+            | "name"
+            | "relevance"
+            | "new"
+            | "updated"
+            | undefined,
+        },
+        identity.bearerToken,
+      ),
+  };
 
-      const lockfileRepository = await LockfileRepository.create(lockfilePath);
-      const pullCtx: PullContext = {
-        getExtension: (name) => client.getExtension(name),
-        downloadArchive: (name, version, channel) =>
-          client.downloadArchive(name, version, undefined, channel),
-        getChecksum: (name, version, channel) =>
-          client.getChecksum(name, version, channel),
-        logger: ctx.logger,
-        lockfileRepository,
-        skillsDir: resolveSkillsDir(repoDir, resolvePrimaryTool(marker)),
-        repoDir,
-        force: false,
-        outputMode: ctx.outputMode,
-        alreadyPulled: new Set(),
-        depth: 0,
-      };
+  const renderer = createExtensionSearchRenderer(effectiveMode);
+  await consumeStream(
+    extensionSearch(
+      libCtx,
+      deps,
+      {
+        query,
+        collective: options.collective,
+        platform: options.platform,
+        label: options.label,
+        contentType: options.contentType,
+        channel: options.channel,
+        sort: options.sort,
+        perPage: options.perPage,
+        page: options.page,
+      },
+    ),
+    renderer.handlers(),
+  );
 
-      await pullExtension(
-        { name: selected.name, version: null },
-        pullCtx,
-      );
-    }
-  });
+  const selected = renderer.selectedItem();
+  const action = renderer.selectedAction();
+
+  if (selected && action === "install") {
+    // Extension install writes to local files only (pulled-extensions/,
+    // lockfile) — no datastore needed; see #445.
+    const { repoDir, marker } = await requireRepoMarker(".");
+    const modelsDir = resolveModelsDir(marker);
+    const absoluteModelsDir = resolve(repoDir, modelsDir);
+    const lockfilePath = join(
+      absoluteModelsDir,
+      "upstream_extensions.json",
+    );
+
+    // Warn (don't block) on legacy layout. The pull that follows writes
+    // to the per-extension subtree regardless of existing layout state.
+    await warnLegacyExtensionLayout(
+      lockfilePath,
+      (msg) => ctx.logger.warn(msg),
+    );
+
+    const lockfileRepository = await LockfileRepository.create(lockfilePath);
+    const pullCtx: PullContext = {
+      getExtension: (name) => client.getExtension(name),
+      downloadArchive: (name, version, channel) =>
+        client.downloadArchive(name, version, undefined, channel),
+      getChecksum: (name, version, channel) =>
+        client.getChecksum(name, version, channel),
+      logger: ctx.logger,
+      lockfileRepository,
+      skillsDir: resolveSkillsDir(repoDir, resolvePrimaryTool(marker)),
+      repoDir,
+      force: false,
+      outputMode: ctx.outputMode,
+      alreadyPulled: new Set(),
+      depth: 0,
+    };
+
+    await pullExtension(
+      { name: selected.name, version: null },
+      pullCtx,
+    );
+  }
+});

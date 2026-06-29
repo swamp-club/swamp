@@ -30,6 +30,7 @@ import {
   createDoctorSecretsDeps,
   createLibSwampContext,
   doctorSecrets,
+  type DoctorSecretsData,
 } from "../../libswamp/mod.ts";
 import { createDoctorSecretsRenderer } from "../../presentation/renderers/doctor_secrets.ts";
 import {
@@ -38,44 +39,81 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { resolveDatastoreForRepo } from "../repo_context.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { DoctorSecretsResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-export const doctorSecretsCommand = new Command()
-  .description(
-    "Scan model definitions for cleartext sensitive global arguments and " +
-      "report how to migrate each to a vault.",
-  )
-  .example("Scan this repo's definitions", "swamp doctor secrets")
-  .example("Machine-readable output for CI", "swamp doctor secrets --json")
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
-  .action(async function (options: AnyOptions) {
-    const cliCtx = createContext(options as GlobalOptions, [
-      "doctor",
-      "secrets",
-    ]);
-    cliCtx.logger.debug("Executing doctor secrets command");
+export const doctorSecretsCommand = withRemoteOptions(
+  new Command()
+    .description(
+      "Scan model definitions for cleartext sensitive global arguments and " +
+        "report how to migrate each to a vault.",
+    )
+    .example("Scan this repo's definitions", "swamp doctor secrets")
+    .example("Machine-readable output for CI", "swamp doctor secrets --json")
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    ),
+).action(async function (options: AnyOptions) {
+  const cliCtx = createContext(options as GlobalOptions, [
+    "doctor",
+    "secrets",
+  ]);
+  cliCtx.logger.debug("Executing doctor secrets command");
 
-    const repoDir = resolveRepoDir(options.repoDir);
-    // Same gate as the other doctor subcommands — fails loudly outside a repo.
-    await resolveDatastoreForRepo(repoDir);
-
-    const libCtx = createLibSwampContext();
-    const deps = await createDoctorSecretsDeps(repoDir);
+  const server = resolveServeUrl(options.server as string | undefined);
+  if (server) {
+    const token = await resolveServerToken(
+      server,
+      options.token as string | undefined,
+    );
+    const response = await requestServerResponse<DoctorSecretsResponse>(
+      { server, token },
+      {
+        type: "doctor.secrets",
+        payload: {},
+      },
+    );
     const renderer = createDoctorSecretsRenderer(cliCtx.outputMode);
-
     await consumeStream(
-      doctorSecrets(libCtx, deps),
+      (async function* () {
+        yield {
+          kind: "completed" as const,
+          data: response.data as unknown as DoctorSecretsData,
+        };
+      })(),
       renderer.handlers(),
     );
-
-    cliCtx.logger.debug("doctor secrets command completed");
-
     if (renderer.overallStatus === "fail") {
       Deno.exit(1);
     }
-  });
+    return;
+  }
+
+  const repoDir = resolveRepoDir(options.repoDir);
+  // Same gate as the other doctor subcommands — fails loudly outside a repo.
+  await resolveDatastoreForRepo(repoDir);
+
+  const libCtx = createLibSwampContext();
+  const deps = await createDoctorSecretsDeps(repoDir);
+  const renderer = createDoctorSecretsRenderer(cliCtx.outputMode);
+
+  await consumeStream(
+    doctorSecrets(libCtx, deps),
+    renderer.handlers(),
+  );
+
+  cliCtx.logger.debug("doctor secrets command completed");
+
+  if (renderer.overallStatus === "fail") {
+    Deno.exit(1);
+  }
+});

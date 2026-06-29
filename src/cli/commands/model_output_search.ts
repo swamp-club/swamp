@@ -25,6 +25,7 @@ import {
   modelOutputGet,
   type ModelOutputGetData,
   modelOutputSearch,
+  type ModelOutputSearchData,
   type ModelOutputSearchDeps,
   type ModelOutputSearchItem,
 } from "../../libswamp/mod.ts";
@@ -39,6 +40,13 @@ import {
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import { createDefinitionId } from "../../domain/definitions/definition.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { ModelOutputSearchResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -79,6 +87,33 @@ export async function modelOutputSearchAction(
     "output",
     "search",
   ]);
+
+  const server = resolveServeUrl(options.server as string | undefined);
+  if (server) {
+    const token = await resolveServerToken(
+      server,
+      options.token as string | undefined,
+    );
+    const response = await requestServerResponse<ModelOutputSearchResponse>(
+      { server, token },
+      {
+        type: "model.output.search",
+        payload: { query },
+      },
+    );
+    const renderer = createModelOutputSearchRenderer(ctx.outputMode);
+    await consumeStream(
+      (async function* () {
+        yield {
+          kind: "completed" as const,
+          data: response.data as unknown as ModelOutputSearchData,
+        };
+      })(),
+      renderer.handlers(),
+    );
+    return;
+  }
+
   const effectiveMode = interactiveOutputMode(ctx);
   const libCtx = createLibSwampContext();
   ctx.logger.debug`Searching outputs with query: ${query ?? "(none)"}`;
@@ -129,14 +164,15 @@ export async function modelOutputSearchAction(
   ctx.logger.debug("Model output search command completed");
 }
 
-export const modelOutputSearchCommand = new Command()
-  .name("search")
-  .description("Search for model outputs")
-  .example("Browse all outputs", "swamp model output search")
-  .example("Search by keyword", "swamp model output search deploy")
-  .arguments("[query:string]")
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
-  .action(modelOutputSearchAction);
+export const modelOutputSearchCommand = withRemoteOptions(
+  new Command()
+    .name("search")
+    .description("Search for model outputs")
+    .example("Browse all outputs", "swamp model output search")
+    .example("Search by keyword", "swamp model output search deploy")
+    .arguments("[query:string]")
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    ),
+).action(modelOutputSearchAction);

@@ -50,6 +50,7 @@ import {
   consumeStream,
   createExtensionPullDeps,
   doctorExtensions,
+  type DoctorExtensionsReport,
   type DoctorRegistryDeps,
   ReconcileFromDiskService,
   type ReconcileTransition,
@@ -74,6 +75,13 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { resolveDatastoreForRepo } from "../repo_context.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { DoctorExtensionsResponse } from "../../serve/protocol.ts";
 import { resolveModelsDir } from "../resolve_models_dir.ts";
 import { resolveSkillsDir } from "../../domain/repo/skill_dirs.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
@@ -101,289 +109,325 @@ type AnyOptions = any;
  * non-zero on any failure so the command composes into CI preflight
  * checks.
  */
-export const doctorExtensionsCommand = new Command()
-  .description(
-    "Verify that user-defined extensions in this repo load cleanly " +
-      "and inspect catalog aggregate state.",
-  )
-  .example("Check this repo's extensions", "swamp doctor extensions")
-  .example("Machine-readable output for CI", "swamp doctor extensions --json")
-  .example("Show per-source detail", "swamp doctor extensions --verbose")
-  .example(
-    "Preview what repair would clean up",
-    "swamp doctor extensions --repair --dry-run",
-  )
-  .example(
-    "Apply repair operations",
-    "swamp doctor extensions --repair",
-  )
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
-  .option("--verbose", "Show per-source detail for each extension")
-  .option(
-    "--repair",
-    "Prune Tombstoned catalog rows and evict unreferenced bundle files",
-  )
-  .option(
-    "--dry-run",
-    "Preview repair operations without executing (use with --repair)",
-  )
-  .option("-f, --force", "Skip confirmation prompt (use with --repair)")
-  .action(async function (options: AnyOptions) {
-    const cliCtx = createContext(options as GlobalOptions, [
-      "doctor",
-      "extensions",
-    ]);
-    cliCtx.logger.debug("Executing doctor extensions command");
+export const doctorExtensionsCommand = withRemoteOptions(
+  new Command()
+    .description(
+      "Verify that user-defined extensions in this repo load cleanly " +
+        "and inspect catalog aggregate state.",
+    )
+    .example("Check this repo's extensions", "swamp doctor extensions")
+    .example("Machine-readable output for CI", "swamp doctor extensions --json")
+    .example("Show per-source detail", "swamp doctor extensions --verbose")
+    .example(
+      "Preview what repair would clean up",
+      "swamp doctor extensions --repair --dry-run",
+    )
+    .example(
+      "Apply repair operations",
+      "swamp doctor extensions --repair",
+    )
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    )
+    .option("--verbose", "Show per-source detail for each extension")
+    .option(
+      "--repair",
+      "Prune Tombstoned catalog rows and evict unreferenced bundle files",
+    )
+    .option(
+      "--dry-run",
+      "Preview repair operations without executing (use with --repair)",
+    )
+    .option("-f, --force", "Skip confirmation prompt (use with --repair)"),
+).action(async function (options: AnyOptions) {
+  const cliCtx = createContext(options as GlobalOptions, [
+    "doctor",
+    "extensions",
+  ]);
+  cliCtx.logger.debug("Executing doctor extensions command");
 
+  const remoteServer = resolveServeUrl(
+    options.server as string | undefined,
+  );
+  if (remoteServer) {
+    const token = await resolveServerToken(
+      remoteServer,
+      options.token as string | undefined,
+    );
+    const response = await requestServerResponse<DoctorExtensionsResponse>(
+      { server: remoteServer, token },
+      {
+        type: "doctor.extensions",
+        payload: {},
+      },
+    );
     const verbose = options.verbose === true;
-    const repair = options.repair === true;
-    const dryRun = options.dryRun === true;
-    const force = options.force === true;
-    const needsPrompt = repair && !dryRun && !force &&
-      cliCtx.outputMode === "log";
+    const renderer = createDoctorExtensionsRenderer(cliCtx.outputMode, {
+      verbose,
+    });
+    await consumeStream(
+      (async function* () {
+        yield {
+          kind: "completed" as const,
+          report: response
+            .data as unknown as DoctorExtensionsReport,
+        };
+      })(),
+      renderer.handlers(),
+    );
+    if (renderer.overallStatus === "fail") {
+      Deno.exit(1);
+    }
+    return;
+  }
 
-    const repoDir = resolveRepoDir(options.repoDir);
-    // Same gate as `doctor audit` — fails loudly outside a swamp repo.
-    await resolveDatastoreForRepo(repoDir);
+  const verbose = options.verbose === true;
+  const repair = options.repair === true;
+  const dryRun = options.dryRun === true;
+  const force = options.force === true;
+  const needsPrompt = repair && !dryRun && !force &&
+    cliCtx.outputMode === "log";
 
-    // Resolve lockfile path early so the rescan repository's
-    // empty-version fallback has lockfile entries available. (Hoisted
-    // from the post-rescan section per ADV-2 resolution; the same
-    // values are reused below for orphan detection.)
-    const repoPath = RepoPath.create(repoDir);
-    const markerRepo = new RepoMarkerRepository();
-    const marker = await markerRepo.read(repoPath);
-    const modelsDir = resolveModelsDir(marker);
-    const absoluteModelsDir = isAbsolute(modelsDir)
-      ? modelsDir
-      : resolve(repoDir, modelsDir);
-    const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
+  const repoDir = resolveRepoDir(options.repoDir);
+  // Same gate as `doctor audit` — fails loudly outside a swamp repo.
+  await resolveDatastoreForRepo(repoDir);
 
-    // A single shared catalog connection for all doctor phases
-    // (reconcile, aggregate state, repair, re-pull). Previous code
-    // opened up to 4 separate connections to the same SQLite file,
-    // which contributed to cross-process lock contention.
-    const catalogDbPath = swampPath(repoDir, "_extension_catalog.db");
-    const sharedCatalog = new ExtensionCatalogStore(catalogDbPath);
+  // Resolve lockfile path early so the rescan repository's
+  // empty-version fallback has lockfile entries available. (Hoisted
+  // from the post-rescan section per ADV-2 resolution; the same
+  // values are reused below for orphan detection.)
+  const repoPath = RepoPath.create(repoDir);
+  const markerRepo = new RepoMarkerRepository();
+  const marker = await markerRepo.read(repoPath);
+  const modelsDir = resolveModelsDir(marker);
+  const absoluteModelsDir = isAbsolute(modelsDir)
+    ? modelsDir
+    : resolve(repoDir, modelsDir);
+  const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
 
+  // A single shared catalog connection for all doctor phases
+  // (reconcile, aggregate state, repair, re-pull). Previous code
+  // opened up to 4 separate connections to the same SQLite file,
+  // which contributed to cross-process lock contention.
+  const catalogDbPath = swampPath(repoDir, "_extension_catalog.db");
+  const sharedCatalog = new ExtensionCatalogStore(catalogDbPath);
+
+  try {
+    const localManifestIdentity = readLocalManifestIdentity(repoDir);
+    let reconcileTransitions: readonly ReconcileTransition[] = [];
     try {
-      const localManifestIdentity = readLocalManifestIdentity(repoDir);
-      let reconcileTransitions: readonly ReconcileTransition[] = [];
-      try {
-        const reconcileLockfileRepo = await LockfileRepository.create(
-          lockfilePath,
-        );
-        const rescanRepo = new ExtensionRepository({
-          catalog: sharedCatalog,
-          lockfileRepository: reconcileLockfileRepo,
-          repoRoot: repoDir,
-          localManifestIdentity,
-        });
-        rescanRepo.invalidateAll();
-        const denoRuntime = new EmbeddedDenoRuntime();
-        const reconciler = new ReconcileFromDiskService({
-          denoRuntime,
-          repository: rescanRepo,
-          lockfileRepository: reconcileLockfileRepo,
-          repoDir,
-          localManifestIdentity,
-        });
-        const result = await reconciler.execute();
-        reconcileTransitions = result.transitions;
-      } catch (reconcileError) {
-        // Best-effort — the loader will bootstrap a fresh catalog for
-        // most failures. DuplicateTypeError from same-origin conflicts
-        // should still surface so the user sees it.
-        const { DuplicateTypeError } = await import(
-          "../../infrastructure/persistence/duplicate_type_error.ts"
-        );
-        if (reconcileError instanceof DuplicateTypeError) {
-          const { UserError } = await import("../../domain/errors.ts");
-          const e = reconcileError;
-          throw new UserError(
-            `Type "${e.typeNormalized}" (kind=${e.kind}) is claimed by two ` +
-              `installed extensions:\n` +
-              `  • ${e.firstSource.extensionName}@${e.firstSource.extensionVersion}` +
-              `  at ${e.firstSource.canonicalPath}\n` +
-              `  • ${e.secondSource.extensionName}@${e.secondSource.extensionVersion}` +
-              `  at ${e.secondSource.canonicalPath}\n` +
-              `Remove one with \`swamp extension rm <name>\` to resolve ` +
-              `the conflict, then run \`swamp doctor extensions\` again.`,
-          );
-        }
-      }
-
-      const registries: ReadonlyArray<DoctorRegistryDeps> = [
-        {
-          registry: "model",
-          ensureLoaded: () => modelRegistry.ensureLoaded(),
-          resetLoadedFlag: () => modelRegistry.resetLoadedFlag(),
-        },
-        {
-          registry: "vault",
-          ensureLoaded: () => vaultTypeRegistry.ensureLoaded(),
-          resetLoadedFlag: () => vaultTypeRegistry.resetLoadedFlag(),
-        },
-        {
-          registry: "datastore",
-          ensureLoaded: () => datastoreTypeRegistry.ensureLoaded(),
-          resetLoadedFlag: () => datastoreTypeRegistry.resetLoadedFlag(),
-        },
-        {
-          registry: "report",
-          ensureLoaded: () => reportRegistry.ensureLoaded(),
-          resetLoadedFlag: () => reportRegistry.resetLoadedFlag(),
-        },
-      ];
-
-      // Resolve skills paths so the orphan-detection phase can walk the
-      // per-extension roots referenced by the lockfile. (lockfilePath /
-      // marker / repoPath / modelsDir / absoluteModelsDir are hoisted
-      // above the rescan call earlier in this function.)
-      const tool = resolvePrimaryTool(marker);
-      const absoluteSkillsDir = resolveSkillsDir(repoDir, tool);
-      // detectOrphanFiles wants a repo-relative skills dir so it can
-      // compare against entry.files[] paths (which are repo-relative).
-      const repoRelativeSkillsDir = relative(repoDir, absoluteSkillsDir);
-
-      const controller = new AbortController();
-      const renderer = createDoctorExtensionsRenderer(cliCtx.outputMode, {
-        verbose,
+      const reconcileLockfileRepo = await LockfileRepository.create(
+        lockfilePath,
+      );
+      const rescanRepo = new ExtensionRepository({
+        catalog: sharedCatalog,
+        lockfileRepository: reconcileLockfileRepo,
+        repoRoot: repoDir,
+        localManifestIdentity,
       });
+      rescanRepo.invalidateAll();
+      const denoRuntime = new EmbeddedDenoRuntime();
+      const reconciler = new ReconcileFromDiskService({
+        denoRuntime,
+        repository: rescanRepo,
+        lockfileRepository: reconcileLockfileRepo,
+        repoDir,
+        localManifestIdentity,
+      });
+      const result = await reconciler.execute();
+      reconcileTransitions = result.transitions;
+    } catch (reconcileError) {
+      // Best-effort — the loader will bootstrap a fresh catalog for
+      // most failures. DuplicateTypeError from same-origin conflicts
+      // should still surface so the user sees it.
+      const { DuplicateTypeError } = await import(
+        "../../infrastructure/persistence/duplicate_type_error.ts"
+      );
+      if (reconcileError instanceof DuplicateTypeError) {
+        const { UserError } = await import("../../domain/errors.ts");
+        const e = reconcileError;
+        throw new UserError(
+          `Type "${e.typeNormalized}" (kind=${e.kind}) is claimed by two ` +
+            `installed extensions:\n` +
+            `  • ${e.firstSource.extensionName}@${e.firstSource.extensionVersion}` +
+            `  at ${e.firstSource.canonicalPath}\n` +
+            `  • ${e.secondSource.extensionName}@${e.secondSource.extensionVersion}` +
+            `  at ${e.secondSource.canonicalPath}\n` +
+            `Remove one with \`swamp extension rm <name>\` to resolve ` +
+            `the conflict, then run \`swamp doctor extensions\` again.`,
+        );
+      }
+    }
 
-      const doctorLockfileRepo = await LockfileRepository.create(lockfilePath);
-      await consumeStream(
-        doctorExtensions({
-          registries,
-          lockfileRepository: doctorLockfileRepo,
-          repoDir,
-          skillsDir: repoRelativeSkillsDir,
-          abortSignal: controller.signal,
-          buildAggregateState: async () => {
-            const aggLockfileRepo = await LockfileRepository.create(
+    const registries: ReadonlyArray<DoctorRegistryDeps> = [
+      {
+        registry: "model",
+        ensureLoaded: () => modelRegistry.ensureLoaded(),
+        resetLoadedFlag: () => modelRegistry.resetLoadedFlag(),
+      },
+      {
+        registry: "vault",
+        ensureLoaded: () => vaultTypeRegistry.ensureLoaded(),
+        resetLoadedFlag: () => vaultTypeRegistry.resetLoadedFlag(),
+      },
+      {
+        registry: "datastore",
+        ensureLoaded: () => datastoreTypeRegistry.ensureLoaded(),
+        resetLoadedFlag: () => datastoreTypeRegistry.resetLoadedFlag(),
+      },
+      {
+        registry: "report",
+        ensureLoaded: () => reportRegistry.ensureLoaded(),
+        resetLoadedFlag: () => reportRegistry.resetLoadedFlag(),
+      },
+    ];
+
+    // Resolve skills paths so the orphan-detection phase can walk the
+    // per-extension roots referenced by the lockfile. (lockfilePath /
+    // marker / repoPath / modelsDir / absoluteModelsDir are hoisted
+    // above the rescan call earlier in this function.)
+    const tool = resolvePrimaryTool(marker);
+    const absoluteSkillsDir = resolveSkillsDir(repoDir, tool);
+    // detectOrphanFiles wants a repo-relative skills dir so it can
+    // compare against entry.files[] paths (which are repo-relative).
+    const repoRelativeSkillsDir = relative(repoDir, absoluteSkillsDir);
+
+    const controller = new AbortController();
+    const renderer = createDoctorExtensionsRenderer(cliCtx.outputMode, {
+      verbose,
+    });
+
+    const doctorLockfileRepo = await LockfileRepository.create(lockfilePath);
+    await consumeStream(
+      doctorExtensions({
+        registries,
+        lockfileRepository: doctorLockfileRepo,
+        repoDir,
+        skillsDir: repoRelativeSkillsDir,
+        abortSignal: controller.signal,
+        buildAggregateState: async () => {
+          const aggLockfileRepo = await LockfileRepository.create(
+            lockfilePath,
+          );
+          const localIdentity = readLocalManifestIdentity(repoDir);
+          const repo = new ExtensionRepository({
+            catalog: sharedCatalog,
+            lockfileRepository: aggLockfileRepo,
+            repoRoot: repoDir,
+            localManifestIdentity: localIdentity,
+          });
+          const extensions = repo.loadAll();
+          return buildAggregateState({ extensions, repoDir });
+        },
+        getRecentTransitions: () => reconcileTransitions,
+        getWarnings: () =>
+          getExtensionLoadWarnings().map((w) => ({
+            sourcePath: w.file,
+            category: "TypeExtractionFailed",
+            message: w.error,
+          })),
+        resetWarnings: resetExtensionLoadWarnings,
+        runRepair: repair
+          ? async (aggregateReport) => {
+            // In interactive mode without --force, preview first and prompt.
+            if (needsPrompt) {
+              const preview = await repairExtensions({
+                aggregateReport,
+                deleteBySourcePaths: () => 0,
+                apply: false,
+              });
+              if (preview.operations.length === 0) {
+                return preview;
+              }
+              const n = preview.operations.length;
+              writeOutput(
+                `\n${bold(`${n} repair operation(s) planned`)} ${
+                  dim("(use --dry-run to see details without prompting)")
+                }`,
+              );
+              const confirmed = await promptConfirmation(
+                "Proceed with repair?",
+              );
+              if (!confirmed) {
+                writeOutput(dim("Repair cancelled."));
+                return preview;
+              }
+            }
+            const repairLockfileRepo = await LockfileRepository.create(
               lockfilePath,
             );
-            const localIdentity = readLocalManifestIdentity(repoDir);
             const repo = new ExtensionRepository({
               catalog: sharedCatalog,
-              lockfileRepository: aggLockfileRepo,
+              lockfileRepository: repairLockfileRepo,
               repoRoot: repoDir,
-              localManifestIdentity: localIdentity,
             });
-            const extensions = repo.loadAll();
-            return buildAggregateState({ extensions, repoDir });
-          },
-          getRecentTransitions: () => reconcileTransitions,
-          getWarnings: () =>
-            getExtensionLoadWarnings().map((w) => ({
-              sourcePath: w.file,
-              category: "TypeExtractionFailed",
-              message: w.error,
-            })),
-          resetWarnings: resetExtensionLoadWarnings,
-          runRepair: repair
-            ? async (aggregateReport) => {
-              // In interactive mode without --force, preview first and prompt.
-              if (needsPrompt) {
-                const preview = await repairExtensions({
-                  aggregateReport,
-                  deleteBySourcePaths: () => 0,
-                  apply: false,
+            const repullExtension = async (
+              name: string,
+            ): Promise<boolean> => {
+              try {
+                const serverUrl = resolveServerUrl();
+                const identity = await loadIdentity();
+                const pullLockfileRepo = await LockfileRepository.create(
+                  lockfilePath,
+                );
+                const pullTool = resolvePrimaryTool(marker);
+                const skillsDir = resolveSkillsDir(repoDir, pullTool);
+                const denoRuntime = new EmbeddedDenoRuntime();
+                const pullRepo = new ExtensionRepository({
+                  catalog: sharedCatalog,
+                  lockfileRepository: pullLockfileRepo,
+                  repoRoot: repoDir,
+                  localManifestIdentity: readLocalManifestIdentity(repoDir),
                 });
-                if (preview.operations.length === 0) {
-                  return preview;
-                }
-                const n = preview.operations.length;
-                writeOutput(
-                  `\n${bold(`${n} repair operation(s) planned`)} ${
-                    dim("(use --dry-run to see details without prompting)")
-                  }`,
+                const deps = await createExtensionPullDeps(
+                  serverUrl,
+                  lockfilePath,
+                  skillsDir,
+                  repoDir,
+                  { identity },
                 );
-                const confirmed = await promptConfirmation(
-                  "Proceed with repair?",
-                );
-                if (!confirmed) {
-                  writeOutput(dim("Repair cancelled."));
-                  return preview;
-                }
-              }
-              const repairLockfileRepo = await LockfileRepository.create(
-                lockfilePath,
-              );
-              const repo = new ExtensionRepository({
-                catalog: sharedCatalog,
-                lockfileRepository: repairLockfileRepo,
-                repoRoot: repoDir,
-              });
-              const repullExtension = async (
-                name: string,
-              ): Promise<boolean> => {
-                try {
-                  const serverUrl = resolveServerUrl();
-                  const identity = await loadIdentity();
-                  const pullLockfileRepo = await LockfileRepository.create(
-                    lockfilePath,
-                  );
-                  const pullTool = resolvePrimaryTool(marker);
-                  const skillsDir = resolveSkillsDir(repoDir, pullTool);
-                  const denoRuntime = new EmbeddedDenoRuntime();
-                  const pullRepo = new ExtensionRepository({
-                    catalog: sharedCatalog,
-                    lockfileRepository: pullLockfileRepo,
-                    repoRoot: repoDir,
-                    localManifestIdentity: readLocalManifestIdentity(repoDir),
-                  });
-                  const deps = await createExtensionPullDeps(
-                    serverUrl,
-                    lockfilePath,
+                await pullExtension(
+                  { name, version: null },
+                  {
+                    getExtension: deps.getExtension,
+                    downloadArchive: deps.downloadArchive,
+                    getChecksum: deps.getChecksum,
+                    logger: cliCtx.logger,
+                    lockfileRepository: deps.lockfileRepository,
                     skillsDir,
                     repoDir,
-                    { identity },
-                  );
-                  await pullExtension(
-                    { name, version: null },
-                    {
-                      getExtension: deps.getExtension,
-                      downloadArchive: deps.downloadArchive,
-                      getChecksum: deps.getChecksum,
-                      logger: cliCtx.logger,
-                      lockfileRepository: deps.lockfileRepository,
-                      skillsDir,
-                      repoDir,
-                      force: true,
-                      outputMode: cliCtx.outputMode,
-                      alreadyPulled: new Set(),
-                      depth: 0,
-                      denoRuntime,
-                      repository: pullRepo,
-                    },
-                  );
-                  return true;
-                } catch {
-                  return false;
-                }
-              };
-              return repairExtensions({
-                aggregateReport,
-                deleteBySourcePaths: (paths) => repo.deleteBySourcePaths(paths),
-                repullExtension,
-                apply: !dryRun,
-              });
-            }
-            : undefined,
-        }),
-        renderer.handlers(),
-      );
+                    force: true,
+                    outputMode: cliCtx.outputMode,
+                    alreadyPulled: new Set(),
+                    depth: 0,
+                    denoRuntime,
+                    repository: pullRepo,
+                  },
+                );
+                return true;
+              } catch {
+                return false;
+              }
+            };
+            return repairExtensions({
+              aggregateReport,
+              deleteBySourcePaths: (paths) => repo.deleteBySourcePaths(paths),
+              repullExtension,
+              apply: !dryRun,
+            });
+          }
+          : undefined,
+      }),
+      renderer.handlers(),
+    );
 
-      cliCtx.logger.debug("doctor extensions command completed");
+    cliCtx.logger.debug("doctor extensions command completed");
 
-      if (renderer.overallStatus === "fail") {
-        Deno.exit(1);
-      }
-    } finally {
-      sharedCatalog.close();
+    if (renderer.overallStatus === "fail") {
+      Deno.exit(1);
     }
-  });
+  } finally {
+    sharedCatalog.close();
+  }
+});

@@ -29,42 +29,77 @@ import {
   createLibSwampContext,
   createVaultListKeysDeps,
   vaultListKeys,
+  type VaultListKeysData,
 } from "../../libswamp/mod.ts";
 import { createVaultListKeysRenderer } from "../../presentation/renderers/vault_list_keys.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { VaultListKeysResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-export const vaultListKeysCommand = new Command()
-  .name("list-keys")
-  .description("List all secret keys in a vault (without values)")
-  .example("List keys in a vault", "swamp vault list-keys my-vault")
-  .example("List all vault keys", "swamp vault list-keys")
-  .arguments("[vault_name:string]")
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
-  .action(async function (options: AnyOptions, vaultName?: string) {
-    const cliCtx = createContext(options as GlobalOptions, [
-      "vault",
-      "list-keys",
-    ]);
-    cliCtx.logger.debug`Listing secret keys in vault: ${vaultName}`;
+export const vaultListKeysCommand = withRemoteOptions(
+  new Command()
+    .name("list-keys")
+    .description("List all secret keys in a vault (without values)")
+    .example("List keys in a vault", "swamp vault list-keys my-vault")
+    .example("List all vault keys", "swamp vault list-keys")
+    .arguments("[vault_name:string]")
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    ),
+).action(async function (options: AnyOptions, vaultName?: string) {
+  const cliCtx = createContext(options as GlobalOptions, [
+    "vault",
+    "list-keys",
+  ]);
+  cliCtx.logger.debug`Listing secret keys in vault: ${vaultName}`;
 
-    const { repoDir } = await requireInitializedRepoReadOnly({
-      repoDir: resolveRepoDir(options.repoDir),
-      outputMode: cliCtx.outputMode,
-    });
-
-    const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = await createVaultListKeysDeps(repoDir);
-
+  const server = resolveServeUrl(options.server as string | undefined);
+  if (server) {
+    const token = await resolveServerToken(
+      server,
+      options.token as string | undefined,
+    );
+    const response = await requestServerResponse<VaultListKeysResponse>(
+      { server, token },
+      {
+        type: "vault.list-keys",
+        payload: { vaultName },
+      },
+    );
     const renderer = createVaultListKeysRenderer(cliCtx.outputMode);
     await consumeStream(
-      vaultListKeys(ctx, deps, { vaultName: vaultName ?? "" }),
+      (async function* () {
+        yield {
+          kind: "completed" as const,
+          data: response.data as unknown as VaultListKeysData,
+        };
+      })(),
       renderer.handlers(),
     );
+    return;
+  }
 
-    cliCtx.logger.debug("Vault list-keys command completed");
+  const { repoDir } = await requireInitializedRepoReadOnly({
+    repoDir: resolveRepoDir(options.repoDir),
+    outputMode: cliCtx.outputMode,
   });
+
+  const ctx = createLibSwampContext({ logger: cliCtx.logger });
+  const deps = await createVaultListKeysDeps(repoDir);
+
+  const renderer = createVaultListKeysRenderer(cliCtx.outputMode);
+  await consumeStream(
+    vaultListKeys(ctx, deps, { vaultName: vaultName ?? "" }),
+    renderer.handlers(),
+  );
+
+  cliCtx.logger.debug("Vault list-keys command completed");
+});

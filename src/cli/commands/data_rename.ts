@@ -23,6 +23,7 @@ import {
   createDataRenameDeps,
   createLibSwampContext,
   dataRename,
+  type DataRenameData,
 } from "../../libswamp/mod.ts";
 import { createDataRenameRenderer } from "../../presentation/renderers/data_rename.ts";
 import {
@@ -35,119 +36,154 @@ import {
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { DataRenameResponse } from "../../serve/protocol.ts";
 import { UserError } from "../../domain/errors.ts";
 
-export const dataRenameCommand = new Command()
-  .name("rename")
-  .description("Rename a data instance with backwards-compatible forwarding")
-  .example(
-    "Rename with forwarding",
-    "swamp data rename my-server old-name new-name",
-  )
-  .example(
-    "Rename using flags",
-    "swamp data rename --model my-server --name old-name --new-name new-name",
-  )
-  .arguments("[model_id_or_name:string] [old_name:string] [new_name:string]")
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
-  .option(
-    "--model <model:string>",
-    "Model name or ID (alternative to positional argument)",
-  )
-  .option(
-    "--name <name:string>",
-    "Current data name (alternative to positional argument)",
-  )
-  .option(
-    "--new-name <newName:string>",
-    "New data name (alternative to positional argument)",
-  )
-  .action(
-    async function (
-      options: {
-        repoDir?: string;
-        json?: boolean;
-        model?: string;
-        name?: string;
-        newName?: string;
-      },
-      positionalModel?: string,
-      positionalOldName?: string,
-      positionalNewName?: string,
-    ) {
-      const modelIdOrName = options.model ?? positionalModel;
-      const oldName = options.name ?? positionalOldName;
-      const newName = options.newName ?? positionalNewName;
+export const dataRenameCommand = withRemoteOptions(
+  new Command()
+    .name("rename")
+    .description("Rename a data instance with backwards-compatible forwarding")
+    .example(
+      "Rename with forwarding",
+      "swamp data rename my-server old-name new-name",
+    )
+    .example(
+      "Rename using flags",
+      "swamp data rename --model my-server --name old-name --new-name new-name",
+    )
+    .arguments("[model_id_or_name:string] [old_name:string] [new_name:string]")
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    )
+    .option(
+      "--model <model:string>",
+      "Model name or ID (alternative to positional argument)",
+    )
+    .option(
+      "--name <name:string>",
+      "Current data name (alternative to positional argument)",
+    )
+    .option(
+      "--new-name <newName:string>",
+      "New data name (alternative to positional argument)",
+    ),
+).action(
+  async function (
+    // deno-lint-ignore no-explicit-any
+    options: any,
+    positionalModel?: string,
+    positionalOldName?: string,
+    positionalNewName?: string,
+  ) {
+    const modelIdOrName = (options.model as string | undefined) ??
+      positionalModel;
+    const oldName = (options.name as string | undefined) ?? positionalOldName;
+    const newName = (options.newName as string | undefined) ??
+      positionalNewName;
 
-      if (!modelIdOrName || !oldName || !newName) {
-        throw new UserError(
-          "Model, current name, and new name are all required. Use positional arguments (swamp data rename <model> <old-name> <new-name>) or flags (--model <model> --name <name> --new-name <new-name>).",
-        );
-      }
-      const cliCtx = createContext(options as GlobalOptions, [
-        "data",
-        "rename",
-      ]);
-
-      const {
-        repoDir,
-        repoContext,
-        datastoreResolver,
-        datastoreConfig,
-        syncService,
-      } = await requireInitializedRepoUnlocked({
-        repoDir: resolveRepoDir(options.repoDir),
-        outputMode: cliCtx.outputMode,
-      });
-
-      const preResult = await findDefinitionByIdOrName(
-        repoContext.definitionRepo,
-        modelIdOrName,
+    if (!modelIdOrName || !oldName || !newName) {
+      throw new UserError(
+        "Model, current name, and new name are all required. Use positional arguments (swamp data rename <model> <old-name> <new-name>) or flags (--model <model> --name <name> --new-name <new-name>).",
       );
-      if (!preResult) {
-        throw new UserError(`Model not found: ${modelIdOrName}`);
-      }
+    }
+    const cliCtx = createContext(options as GlobalOptions, [
+      "data",
+      "rename",
+    ]);
 
-      const lockResult = await acquireModelLocks(
-        datastoreConfig,
-        [
-          {
-            modelType: preResult.type.normalized,
-            modelId: preResult.definition.id,
+    const server = resolveServeUrl(options.server as string | undefined);
+    if (server) {
+      const token = await resolveServerToken(
+        server,
+        options.token as string | undefined,
+      );
+      const response = await requestServerResponse<DataRenameResponse>(
+        { server, token },
+        {
+          type: "data.rename",
+          payload: {
+            modelIdOrName: modelIdOrName!,
+            oldName: oldName!,
+            newName: newName!,
           },
-        ],
-        repoDir,
-        syncService,
-        repoContext.catalogStore,
+        },
       );
-      if (lockResult.synced) repoContext.catalogStore.invalidate();
+      const renderer = createDataRenameRenderer(cliCtx.outputMode);
+      await consumeStream(
+        (async function* () {
+          yield {
+            kind: "completed" as const,
+            data: response.data as unknown as DataRenameData,
+          };
+        })(),
+        renderer.handlers(),
+      );
+      return;
+    }
 
+    const {
+      repoDir,
+      repoContext,
+      datastoreResolver,
+      datastoreConfig,
+      syncService,
+    } = await requireInitializedRepoUnlocked({
+      repoDir: resolveRepoDir(options.repoDir),
+      outputMode: cliCtx.outputMode,
+    });
+
+    const preResult = await findDefinitionByIdOrName(
+      repoContext.definitionRepo,
+      modelIdOrName,
+    );
+    if (!preResult) {
+      throw new UserError(`Model not found: ${modelIdOrName}`);
+    }
+
+    const lockResult = await acquireModelLocks(
+      datastoreConfig,
+      [
+        {
+          modelType: preResult.type.normalized,
+          modelId: preResult.definition.id,
+        },
+      ],
+      repoDir,
+      syncService,
+      repoContext.catalogStore,
+    );
+    if (lockResult.synced) repoContext.catalogStore.invalidate();
+
+    try {
+      const ctx = createLibSwampContext({ logger: cliCtx.logger });
+      const deps = createDataRenameDeps(repoDir, datastoreResolver);
+      const renderer = createDataRenameRenderer(cliCtx.outputMode);
+      await consumeStream(
+        dataRename(ctx, deps, { modelIdOrName, oldName, newName }),
+        renderer.handlers(),
+      );
+
+      cliCtx.logger.debug("Data rename command completed");
+    } finally {
       try {
-        const ctx = createLibSwampContext({ logger: cliCtx.logger });
-        const deps = createDataRenameDeps(repoDir, datastoreResolver);
-        const renderer = createDataRenameRenderer(cliCtx.outputMode);
-        await consumeStream(
-          dataRename(ctx, deps, { modelIdOrName, oldName, newName }),
-          renderer.handlers(),
+        await lockResult.flush();
+      } catch (releaseError) {
+        cliCtx.logger.warn(
+          "Failed to release locks during cleanup: {error}",
+          {
+            error: releaseError instanceof Error
+              ? releaseError.message
+              : String(releaseError),
+          },
         );
-
-        cliCtx.logger.debug("Data rename command completed");
-      } finally {
-        try {
-          await lockResult.flush();
-        } catch (releaseError) {
-          cliCtx.logger.warn(
-            "Failed to release locks during cleanup: {error}",
-            {
-              error: releaseError instanceof Error
-                ? releaseError.message
-                : String(releaseError),
-            },
-          );
-        }
       }
-    },
-  );
+    }
+  },
+);

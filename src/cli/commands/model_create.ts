@@ -24,6 +24,7 @@ import {
   createLibSwampContext,
   createModelCreateDeps,
   modelCreate,
+  type ModelCreateData,
 } from "../../libswamp/mod.ts";
 import { createModelCreateRenderer } from "../../presentation/renderers/model_create.ts";
 import {
@@ -44,30 +45,72 @@ import { modelOutputCommand } from "./model_output.ts";
 import { modelTypeCommand } from "./model_type.ts";
 import { modelCancelCommand } from "./model_cancel.ts";
 import { unknownCommandErrorHandler } from "../unknown_command_handler.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { ModelCreateResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-export const modelCreateCommand = new Command()
-  .description("Create a new model definition")
-  .example("Create a model", "swamp model create aws-ec2 my-server")
-  .example(
-    "With global args",
-    "swamp model create aws-ec2 my-server --global-arg region=us-east-1",
-  )
-  .arguments("<type:model_type> <name:string>")
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
-  .option(
-    "--global-arg <arg:string>",
-    "Set global argument (key=value, repeatable)",
-    { collect: true },
-  )
+export const modelCreateCommand = withRemoteOptions(
+  new Command()
+    .description("Create a new model definition")
+    .example("Create a model", "swamp model create aws-ec2 my-server")
+    .example(
+      "With global args",
+      "swamp model create aws-ec2 my-server --global-arg region=us-east-1",
+    )
+    .arguments("<type:model_type> <name:string>")
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    )
+    .option(
+      "--global-arg <arg:string>",
+      "Set global argument (key=value, repeatable)",
+      { collect: true },
+    ),
+).action(
   // @ts-expect-error - Cliffy custom type returns unknown instead of string
-  .action(async function (options: AnyOptions, typeArg: string, name: string) {
+  async function (options: AnyOptions, typeArg: string, name: string) {
     const cliCtx = createContext(options as GlobalOptions, ["model", "create"]);
+
+    // Parse --global-arg options (needed for both local and remote paths)
+    const globalArgEntries: string[] = options.globalArg ?? [];
+    const globalArguments = globalArgEntries.length > 0
+      ? await parseKeyValueInputs(globalArgEntries)
+      : undefined;
+
+    const server = resolveServeUrl(options.server as string | undefined);
+    if (server) {
+      const token = await resolveServerToken(
+        server,
+        options.token as string | undefined,
+      );
+      const response = await requestServerResponse<ModelCreateResponse>(
+        { server, token },
+        {
+          type: "model.create",
+          payload: { typeArg, name, globalArguments },
+        },
+      );
+      const renderer = createModelCreateRenderer(cliCtx.outputMode);
+      await consumeStream(
+        (async function* () {
+          yield {
+            kind: "completed" as const,
+            data: response.data as unknown as ModelCreateData,
+          };
+        })(),
+        renderer.handlers(),
+      );
+      return;
+    }
+
     cliCtx.logger
       .debug`Creating model definition: type=${typeArg}, name=${name}`;
 
@@ -75,12 +118,6 @@ export const modelCreateCommand = new Command()
       repoDir: resolveRepoDir(options.repoDir),
       outputMode: cliCtx.outputMode,
     });
-
-    // Parse --global-arg options (stays in CLI)
-    const globalArgEntries: string[] = options.globalArg ?? [];
-    const globalArguments = globalArgEntries.length > 0
-      ? await parseKeyValueInputs(globalArgEntries)
-      : undefined;
 
     const ctx = createLibSwampContext({ logger: cliCtx.logger });
     const deps = await createModelCreateDeps(repoDir);
@@ -91,7 +128,8 @@ export const modelCreateCommand = new Command()
     );
 
     cliCtx.logger.debug("Model create command completed");
-  });
+  },
+);
 
 export const modelCommand = new Command()
   .name("model")

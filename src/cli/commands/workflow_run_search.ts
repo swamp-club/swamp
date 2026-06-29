@@ -25,6 +25,7 @@ import {
   parseTags,
   type StepRunView,
   workflowRunSearch,
+  type WorkflowRunSearchData,
   type WorkflowRunSearchDeps,
   type WorkflowRunSearchItem,
   type WorkflowRunView,
@@ -44,6 +45,13 @@ import {
   createWorkflowId,
   createWorkflowRunId,
 } from "../../domain/workflows/workflow_id.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { WorkflowRunSearchResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -123,6 +131,43 @@ export async function workflowRunSearchAction(
     ["workflow", "run", "search"],
   );
   const effectiveMode = interactiveOutputMode(ctx);
+
+  const server = resolveServeUrl(options.server as string | undefined);
+  if (server) {
+    const token = await resolveServerToken(
+      server,
+      options.token as string | undefined,
+    );
+    const parsedTags = options.tag
+      ? parseTags(options.tag as string[])
+      : undefined;
+    const response = await requestServerResponse<WorkflowRunSearchResponse>(
+      { server, token },
+      {
+        type: "workflow.run.search",
+        payload: {
+          query,
+          since: options.since as string | undefined,
+          status: options.status as string | undefined,
+          workflow: options.workflow as string | undefined,
+          tags: parsedTags,
+          limit: options.limit as number | undefined,
+        },
+      },
+    );
+    const renderer = createWorkflowRunSearchRenderer(effectiveMode);
+    await consumeStream(
+      (async function* () {
+        yield {
+          kind: "completed" as const,
+          data: response.data as unknown as WorkflowRunSearchData,
+        };
+      })(),
+      renderer.handlers(),
+    );
+    return;
+  }
+
   const libCtx = createLibSwampContext();
   ctx.logger.debug`Searching workflow runs with query: ${query ?? "(none)"}`;
 
@@ -191,32 +236,33 @@ export async function workflowRunSearchAction(
   ctx.logger.debug("Workflow run search command completed");
 }
 
-export const workflowRunSearchCommand = new Command()
-  .name("search")
-  .description("Search workflow run history")
-  .example("Browse all runs", "swamp workflow run search")
-  .example("Search runs", "swamp workflow run search deploy")
-  .arguments("[query:string]")
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
-  .option(
-    "--since <duration:string>",
-    "Only runs started within duration (1h, 1d, 7d, 1w, 1mo)",
-  )
-  .option(
-    "--status <status:string>",
-    "Filter by run status (pending, running, succeeded, failed)",
-  )
-  .option(
-    "--workflow <name:string>",
-    "Filter by workflow name",
-  )
-  .option(
-    "--tag <tag:string>",
-    "Filter by tag (KEY=VALUE), can be repeated",
-    { collect: true },
-  )
-  .option("--limit <n:number>", "Max results", { default: 50 })
-  .action(workflowRunSearchAction);
+export const workflowRunSearchCommand = withRemoteOptions(
+  new Command()
+    .name("search")
+    .description("Search workflow run history")
+    .example("Browse all runs", "swamp workflow run search")
+    .example("Search runs", "swamp workflow run search deploy")
+    .arguments("[query:string]")
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    )
+    .option(
+      "--since <duration:string>",
+      "Only runs started within duration (1h, 1d, 7d, 1w, 1mo)",
+    )
+    .option(
+      "--status <status:string>",
+      "Filter by run status (pending, running, succeeded, failed)",
+    )
+    .option(
+      "--workflow <name:string>",
+      "Filter by workflow name",
+    )
+    .option(
+      "--tag <tag:string>",
+      "Filter by tag (KEY=VALUE), can be repeated",
+      { collect: true },
+    )
+    .option("--limit <n:number>", "Max results", { default: 50 }),
+).action(workflowRunSearchAction);

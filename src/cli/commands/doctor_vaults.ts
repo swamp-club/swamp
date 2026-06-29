@@ -23,6 +23,7 @@ import {
   createDoctorVaultsDeps,
   createLibSwampContext,
   doctorVaults,
+  type DoctorVaultsData,
 } from "../../libswamp/mod.ts";
 import { createDoctorVaultsRenderer } from "../../presentation/renderers/doctor_vaults.ts";
 import {
@@ -31,43 +32,80 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { resolveDatastoreForRepo } from "../repo_context.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { DoctorVaultsResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-export const doctorVaultsCommand = new Command()
-  .description(
-    "Scan model definitions for sensitive resource outputs and verify " +
-      "a vault is configured to store them.",
-  )
-  .example("Scan this repo's definitions", "swamp doctor vaults")
-  .example("Machine-readable output for CI", "swamp doctor vaults --json")
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
-  .action(async function (options: AnyOptions) {
-    const cliCtx = createContext(options as GlobalOptions, [
-      "doctor",
-      "vaults",
-    ]);
-    cliCtx.logger.debug("Executing doctor vaults command");
+export const doctorVaultsCommand = withRemoteOptions(
+  new Command()
+    .description(
+      "Scan model definitions for sensitive resource outputs and verify " +
+        "a vault is configured to store them.",
+    )
+    .example("Scan this repo's definitions", "swamp doctor vaults")
+    .example("Machine-readable output for CI", "swamp doctor vaults --json")
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    ),
+).action(async function (options: AnyOptions) {
+  const cliCtx = createContext(options as GlobalOptions, [
+    "doctor",
+    "vaults",
+  ]);
+  cliCtx.logger.debug("Executing doctor vaults command");
 
-    const repoDir = resolveRepoDir(options.repoDir);
-    await resolveDatastoreForRepo(repoDir);
-
-    const libCtx = createLibSwampContext();
-    const deps = await createDoctorVaultsDeps(repoDir);
+  const server = resolveServeUrl(options.server as string | undefined);
+  if (server) {
+    const token = await resolveServerToken(
+      server,
+      options.token as string | undefined,
+    );
+    const response = await requestServerResponse<DoctorVaultsResponse>(
+      { server, token },
+      {
+        type: "doctor.vaults",
+        payload: {},
+      },
+    );
     const renderer = createDoctorVaultsRenderer(cliCtx.outputMode);
-
     await consumeStream(
-      doctorVaults(libCtx, deps),
+      (async function* () {
+        yield {
+          kind: "completed" as const,
+          data: response.data as unknown as DoctorVaultsData,
+        };
+      })(),
       renderer.handlers(),
     );
-
-    cliCtx.logger.debug("doctor vaults command completed");
-
     if (renderer.overallStatus === "fail") {
       Deno.exit(1);
     }
-  });
+    return;
+  }
+
+  const repoDir = resolveRepoDir(options.repoDir);
+  await resolveDatastoreForRepo(repoDir);
+
+  const libCtx = createLibSwampContext();
+  const deps = await createDoctorVaultsDeps(repoDir);
+  const renderer = createDoctorVaultsRenderer(cliCtx.outputMode);
+
+  await consumeStream(
+    doctorVaults(libCtx, deps),
+    renderer.handlers(),
+  );
+
+  cliCtx.logger.debug("doctor vaults command completed");
+
+  if (renderer.overallStatus === "fail") {
+    Deno.exit(1);
+  }
+});

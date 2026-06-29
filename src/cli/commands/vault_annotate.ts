@@ -23,6 +23,7 @@ import {
   createLibSwampContext,
   createVaultAnnotateDeps,
   vaultAnnotate,
+  type VaultAnnotateData,
 } from "../../libswamp/mod.ts";
 import { createVaultAnnotateRenderer } from "../../presentation/renderers/vault_annotate.ts";
 import {
@@ -35,6 +36,13 @@ import {
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { VaultAnnotateResponse } from "../../serve/protocol.ts";
 
 export function parseLabels(
   labels: string[] | undefined,
@@ -63,98 +71,72 @@ export function parseLabels(
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-export const vaultAnnotateCommand = new Command()
-  .name("annotate")
-  .description(
-    `Annotate a vault secret with metadata.
+export const vaultAnnotateCommand = withRemoteOptions(
+  new Command()
+    .name("annotate")
+    .description(
+      `Annotate a vault secret with metadata.
 
 Attaches provenance metadata (URL, notes, labels) to an existing secret.
 Annotations use merge semantics: only the fields you specify are updated,
 existing fields are preserved. Use --clear to remove all annotations.`,
-  )
-  .arguments("<vault_name:string> <key:string>")
-  .example(
-    "Add a URL and notes",
-    'swamp vault annotate my-vault API_KEY --url https://console.aws.com/iam --notes "Production API key"',
-  )
-  .example(
-    "Add labels",
-    "swamp vault annotate my-vault API_KEY --label env=prod --label team=infra",
-  )
-  .example(
-    "Clear all annotations",
-    "swamp vault annotate my-vault API_KEY --clear",
-  )
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
-  .option("--url <url:string>", "URL associated with this secret")
-  .option("--notes <notes:string>", "Free-text notes about this secret")
-  .option(
-    "--label <label:string>",
-    "Key=value label (repeatable)",
-    { collect: true },
-  )
-  .option("--clear", "Remove all annotations from this secret")
-  .option(
-    "--remove-label <key:string>",
-    "Remove a label by key (repeatable)",
-    { collect: true },
-  )
-  .action(async function (
-    options: AnyOptions,
-    vaultName: string,
-    key: string,
-  ) {
-    const cliCtx = createContext(options as GlobalOptions, [
-      "vault",
-      "annotate",
-    ]);
-    cliCtx.logger.debug`Annotating secret in vault: ${vaultName}`;
+    )
+    .arguments("<vault_name:string> <key:string>")
+    .example(
+      "Add a URL and notes",
+      'swamp vault annotate my-vault API_KEY --url https://console.aws.com/iam --notes "Production API key"',
+    )
+    .example(
+      "Add labels",
+      "swamp vault annotate my-vault API_KEY --label env=prod --label team=infra",
+    )
+    .example(
+      "Clear all annotations",
+      "swamp vault annotate my-vault API_KEY --clear",
+    )
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    )
+    .option("--url <url:string>", "URL associated with this secret")
+    .option("--notes <notes:string>", "Free-text notes about this secret")
+    .option(
+      "--label <label:string>",
+      "Key=value label (repeatable)",
+      { collect: true },
+    )
+    .option("--clear", "Remove all annotations from this secret")
+    .option(
+      "--remove-label <key:string>",
+      "Remove a label by key (repeatable)",
+      { collect: true },
+    ),
+).action(async function (
+  options: AnyOptions,
+  vaultName: string,
+  key: string,
+) {
+  const cliCtx = createContext(options as GlobalOptions, [
+    "vault",
+    "annotate",
+  ]);
+  cliCtx.logger.debug`Annotating secret in vault: ${vaultName}`;
 
-    const { repoDir, repoContext, datastoreConfig, syncService } =
-      await requireInitializedRepoUnlocked({
-        repoDir: resolveRepoDir(options.repoDir),
-        outputMode: cliCtx.outputMode,
-      });
-    const { flush } = await acquireVaultSync(
-      datastoreConfig,
-      syncService,
-      repoDir,
+  const server = resolveServeUrl(options.server as string | undefined);
+  if (server) {
+    const token = await resolveServerToken(
+      server,
+      options.token as string | undefined,
     );
-
-    try {
-      const clear = options.clear === true;
-      const labels = parseLabels(options.label);
-      const notes: string | undefined = options.notes;
-      const removeLabels: string[] | undefined = options.removeLabel;
-
-      if (
-        clear &&
-        (options.url !== undefined || notes !== undefined ||
-          labels !== undefined || removeLabels !== undefined)
-      ) {
-        throw new UserError(
-          "--clear cannot be combined with --url, --notes, --label, or --remove-label. Use --clear alone to remove all annotations.",
-        );
-      }
-
-      if (
-        !clear && options.url === undefined && notes === undefined &&
-        labels === undefined && removeLabels === undefined
-      ) {
-        throw new UserError(
-          "No annotation fields specified. Use --url, --notes, --label, --remove-label, or --clear.",
-        );
-      }
-
-      const ctx = createLibSwampContext({ logger: cliCtx.logger });
-      const deps = createVaultAnnotateDeps(repoDir, repoContext.eventBus);
-
-      const renderer = createVaultAnnotateRenderer(cliCtx.outputMode);
-      await consumeStream(
-        vaultAnnotate(ctx, deps, {
+    const clear = options.clear === true;
+    const labels = parseLabels(options.label);
+    const notes: string | undefined = options.notes;
+    const removeLabels: string[] | undefined = options.removeLabel;
+    const response = await requestServerResponse<VaultAnnotateResponse>(
+      { server, token },
+      {
+        type: "vault.annotate",
+        payload: {
           vaultName,
           key,
           url: options.url,
@@ -162,10 +144,75 @@ existing fields are preserved. Use --clear to remove all annotations.`,
           labels,
           removeLabels,
           clear,
-        }),
-        renderer.handlers(),
+        },
+      },
+    );
+    const renderer = createVaultAnnotateRenderer(cliCtx.outputMode);
+    await consumeStream(
+      (async function* () {
+        yield {
+          kind: "completed" as const,
+          data: response.data as unknown as VaultAnnotateData,
+        };
+      })(),
+      renderer.handlers(),
+    );
+    return;
+  }
+
+  const { repoDir, repoContext, datastoreConfig, syncService } =
+    await requireInitializedRepoUnlocked({
+      repoDir: resolveRepoDir(options.repoDir),
+      outputMode: cliCtx.outputMode,
+    });
+  const { flush } = await acquireVaultSync(
+    datastoreConfig,
+    syncService,
+    repoDir,
+  );
+
+  try {
+    const clear = options.clear === true;
+    const labels = parseLabels(options.label);
+    const notes: string | undefined = options.notes;
+    const removeLabels: string[] | undefined = options.removeLabel;
+
+    if (
+      clear &&
+      (options.url !== undefined || notes !== undefined ||
+        labels !== undefined || removeLabels !== undefined)
+    ) {
+      throw new UserError(
+        "--clear cannot be combined with --url, --notes, --label, or --remove-label. Use --clear alone to remove all annotations.",
       );
-    } finally {
-      await flush();
     }
-  });
+
+    if (
+      !clear && options.url === undefined && notes === undefined &&
+      labels === undefined && removeLabels === undefined
+    ) {
+      throw new UserError(
+        "No annotation fields specified. Use --url, --notes, --label, --remove-label, or --clear.",
+      );
+    }
+
+    const ctx = createLibSwampContext({ logger: cliCtx.logger });
+    const deps = createVaultAnnotateDeps(repoDir, repoContext.eventBus);
+
+    const renderer = createVaultAnnotateRenderer(cliCtx.outputMode);
+    await consumeStream(
+      vaultAnnotate(ctx, deps, {
+        vaultName,
+        key,
+        url: options.url,
+        notes,
+        labels,
+        removeLabels,
+        clear,
+      }),
+      renderer.handlers(),
+    );
+  } finally {
+    await flush();
+  }
+});

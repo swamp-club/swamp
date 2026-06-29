@@ -23,6 +23,7 @@ import {
   createLibSwampContext,
   createVaultInspectDeps,
   vaultInspect,
+  type VaultInspectData,
 } from "../../libswamp/mod.ts";
 import { createVaultInspectRenderer } from "../../presentation/renderers/vault_inspect.ts";
 import {
@@ -31,55 +32,89 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { VaultInspectResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-export const vaultInspectCommand = new Command()
-  .name("inspect")
-  .description(
-    `Show metadata for a vault secret.
+export const vaultInspectCommand = withRemoteOptions(
+  new Command()
+    .name("inspect")
+    .description(
+      `Show metadata for a vault secret.
 
 Displays size, type, annotations, and refresh-hook info for a secret
 without exposing the secret value. Works on all vault providers; annotation
 and refresh-hook fields are omitted when not supported.`,
-  )
-  .arguments("<vault_name:string> <key:string>")
-  .example(
-    "Inspect a secret's metadata",
-    "swamp vault inspect my-vault API_KEY",
-  )
-  .example(
-    "JSON output",
-    "swamp vault inspect my-vault API_KEY --json",
-  )
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
-  .action(async function (
-    options: AnyOptions,
-    vaultName: string,
-    key: string,
-  ) {
-    const cliCtx = createContext(options as GlobalOptions, [
-      "vault",
-      "inspect",
-    ]);
-    cliCtx.logger
-      .debug`Inspecting annotation for secret in vault: ${vaultName}`;
+    )
+    .arguments("<vault_name:string> <key:string>")
+    .example(
+      "Inspect a secret's metadata",
+      "swamp vault inspect my-vault API_KEY",
+    )
+    .example(
+      "JSON output",
+      "swamp vault inspect my-vault API_KEY --json",
+    )
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    ),
+).action(async function (
+  options: AnyOptions,
+  vaultName: string,
+  key: string,
+) {
+  const cliCtx = createContext(options as GlobalOptions, [
+    "vault",
+    "inspect",
+  ]);
+  cliCtx.logger
+    .debug`Inspecting annotation for secret in vault: ${vaultName}`;
 
-    const { repoDir } = await requireInitializedRepoReadOnly({
-      repoDir: resolveRepoDir(options.repoDir),
-      outputMode: cliCtx.outputMode,
-    });
-
-    const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createVaultInspectDeps(repoDir);
-
+  const server = resolveServeUrl(options.server as string | undefined);
+  if (server) {
+    const token = await resolveServerToken(
+      server,
+      options.token as string | undefined,
+    );
+    const response = await requestServerResponse<VaultInspectResponse>(
+      { server, token },
+      {
+        type: "vault.inspect",
+        payload: { vaultName, key },
+      },
+    );
     const renderer = createVaultInspectRenderer(cliCtx.outputMode);
     await consumeStream(
-      vaultInspect(ctx, deps, vaultName, key),
+      (async function* () {
+        yield {
+          kind: "completed" as const,
+          data: response.data as unknown as VaultInspectData,
+        };
+      })(),
       renderer.handlers(),
     );
+    return;
+  }
+
+  const { repoDir } = await requireInitializedRepoReadOnly({
+    repoDir: resolveRepoDir(options.repoDir),
+    outputMode: cliCtx.outputMode,
   });
+
+  const ctx = createLibSwampContext({ logger: cliCtx.logger });
+  const deps = createVaultInspectDeps(repoDir);
+
+  const renderer = createVaultInspectRenderer(cliCtx.outputMode);
+  await consumeStream(
+    vaultInspect(ctx, deps, vaultName, key),
+    renderer.handlers(),
+  );
+});

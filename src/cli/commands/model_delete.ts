@@ -23,6 +23,7 @@ import {
   createLibSwampContext,
   createModelDeleteDeps,
   modelDelete,
+  type ModelDeleteData,
   modelDeletePreview,
 } from "../../libswamp/mod.ts";
 import {
@@ -40,6 +41,13 @@ import {
 } from "../repo_context.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import { UserError } from "../../domain/errors.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { ModelDeleteResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -58,23 +66,53 @@ async function promptConfirmation(message: string): Promise<boolean> {
   return response === "y" || response === "yes";
 }
 
-export const modelDeleteCommand = new Command()
-  .name("delete")
-  .description("Delete a model and all related artifacts")
-  .example("Delete a model", "swamp model delete my-server")
-  .example("Force delete", "swamp model delete my-server --force")
-  .arguments("<model_id_or_name:model_name>")
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
-  .option(
-    "-f, --force",
-    "Skip confirmation and allow deletion when data artifacts exist",
-  )
+export const modelDeleteCommand = withRemoteOptions(
+  new Command()
+    .name("delete")
+    .description("Delete a model and all related artifacts")
+    .example("Delete a model", "swamp model delete my-server")
+    .example("Force delete", "swamp model delete my-server --force")
+    .arguments("<model_id_or_name:model_name>")
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    )
+    .option(
+      "-f, --force",
+      "Skip confirmation and allow deletion when data artifacts exist",
+    ),
+).action(
   // @ts-expect-error - Cliffy custom type returns unknown instead of string
-  .action(async function (options: AnyOptions, modelIdOrName: string) {
+  async function (options: AnyOptions, modelIdOrName: string) {
     const cliCtx = createContext(options as GlobalOptions, ["model", "delete"]);
+
+    const server = resolveServeUrl(options.server as string | undefined);
+    if (server) {
+      const token = await resolveServerToken(
+        server,
+        options.token as string | undefined,
+      );
+      const force = !!options.force;
+      const response = await requestServerResponse<ModelDeleteResponse>(
+        { server, token },
+        {
+          type: "model.delete",
+          payload: { modelIdOrName, force },
+        },
+      );
+      const renderer = createModelDeleteRenderer(cliCtx.outputMode);
+      await consumeStream(
+        (async function* () {
+          yield {
+            kind: "completed" as const,
+            data: response.data as unknown as ModelDeleteData,
+          };
+        })(),
+        renderer.handlers(),
+      );
+      return;
+    }
+
     cliCtx.logger.debug`Deleting model: ${modelIdOrName}`;
 
     const {
@@ -193,4 +231,5 @@ export const modelDeleteCommand = new Command()
         );
       }
     }
-  });
+  },
+);

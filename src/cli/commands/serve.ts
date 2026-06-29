@@ -165,7 +165,12 @@ export function validateWebSocketOrigin(
     }
   }
 
-  if (hostHeader) {
+  // Only validate Host header when binding off-loopback (direct exposure).
+  // When bound to loopback, a reverse proxy on the same machine handles
+  // external connections and forwards the public domain as the Host header —
+  // this is the documented production deployment model (Caddy, nginx).
+  const LOOPBACK_HOSTS = new Set(["127.0.0.1", "localhost", "::1"]);
+  if (hostHeader && !LOOPBACK_HOSTS.has(bindHost.toLowerCase())) {
     let hostName: string;
     try {
       const parsed = new URL(`http://${hostHeader}`);

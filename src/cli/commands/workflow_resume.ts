@@ -60,61 +60,68 @@ import { readStdin } from "../../infrastructure/io/stdin_reader.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
 import { vaultTypeRegistry } from "../../domain/vaults/vault_type_registry.ts";
 import { reportRegistry } from "../../domain/reports/report_registry.ts";
+import {
+  resolveServerToken,
+  resolveServeUrl,
+  resumeWorkflowOverServer,
+  withRemoteOptions,
+} from "../remote_run.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-export const workflowResumeCommand = new Command()
-  .name("resume")
-  .description("Resume a suspended workflow run after approval")
-  .example(
-    "Resume by workflow name",
-    "swamp workflow resume deploy-with-gate",
-  )
-  .example(
-    "Resume with an override input minted during the gate",
-    "swamp workflow resume deploy-with-gate --input authKey=tskey-abc123",
-  )
-  .arguments("<workflow_id_or_name:string>")
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
-  .option("--run <run_id:string>", "Target a specific run ID")
-  .option(
-    "--input <value:string>",
-    "Override/additional input for the resumed run (key=value or JSON); merged over the original run inputs",
-    { collect: true },
-  )
-  .option("--arg <value:string>", "Alias for --input", {
-    collect: true,
-    hidden: true,
-  })
-  .option(
-    "--input-file <file:string>",
-    "Override inputs from a YAML file (cannot combine with --stdin)",
-  )
-  .option("--stdin", "Read override inputs from stdin (piped data)", {
-    default: false,
-  })
-  .action(
-    async function (
-      options: AnyOptions,
-      workflowIdOrName: string,
-    ) {
-      const cliCtx = createContext(options as GlobalOptions, [
-        "workflow",
-        "resume",
-      ]);
+export const workflowResumeCommand = withRemoteOptions(
+  new Command()
+    .name("resume")
+    .description("Resume a suspended workflow run after approval")
+    .example(
+      "Resume by workflow name",
+      "swamp workflow resume deploy-with-gate",
+    )
+    .example(
+      "Resume with an override input minted during the gate",
+      "swamp workflow resume deploy-with-gate --input authKey=tskey-abc123",
+    )
+    .arguments("<workflow_id_or_name:string>")
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    )
+    .option("--run <run_id:string>", "Target a specific run ID")
+    .option(
+      "--input <value:string>",
+      "Override/additional input for the resumed run (key=value or JSON); merged over the original run inputs",
+      { collect: true },
+    )
+    .option("--arg <value:string>", "Alias for --input", {
+      collect: true,
+      hidden: true,
+    })
+    .option(
+      "--input-file <file:string>",
+      "Override inputs from a YAML file (cannot combine with --stdin)",
+    )
+    .option("--stdin", "Read override inputs from stdin (piped data)", {
+      default: false,
+    }),
+).action(
+  async function (
+    options: AnyOptions,
+    workflowIdOrName: string,
+  ) {
+    const cliCtx = createContext(options as GlobalOptions, [
+      "workflow",
+      "resume",
+    ]);
 
-      const unlocked = await requireInitializedRepoUnlocked({
-        repoDir: resolveRepoDir(options.repoDir),
-        outputMode: cliCtx.outputMode,
-      });
+    const server = resolveServeUrl(options.server as string | undefined);
+    if (server) {
+      const token = await resolveServerToken(
+        server,
+        options.token as string | undefined,
+      );
 
-      // Parse override inputs. Resume targets a single run, so unlike
-      // `workflow run` (which fans out one run per stdin item) stdin must
-      // resolve to a single override set.
+      // Parse override inputs for the remote path (mirrors local logic).
       const stdinContent = options.stdin ? await readStdin() : null;
       let stdinInputs: Record<string, unknown> = {};
       if (stdinContent !== null) {
@@ -130,174 +137,230 @@ export const workflowResumeCommand = new Command()
         }
         stdinInputs = stdinItems[0] ?? {};
       }
-
       const { inputs: cliInputs } = await parseInputs({
         input: mergeInputArgs(options),
         inputFile: stdinContent !== null
           ? undefined
           : options.inputFile as string | undefined,
       });
-
       const resumeInputs = Object.keys(stdinInputs).length > 0
         ? deepMerge(stdinInputs, cliInputs)
         : cliInputs;
 
-      // Use the datastore-aware repositories from the RepositoryContext so the
-      // suspended-run lookup and the resumed-run persistence (this runRepo is
-      // also handed to WorkflowExecutionService below) resolve the same
-      // workflow-runs path the run was written to. Constructing
-      // YamlWorkflowRunRepository(repoDir) directly would bind to repo-local
-      // .swamp/workflow-runs/ and miss runs stored in a configured datastore.
-      const repoDir = unlocked.repoDir;
-      const repoContext = unlocked.repoContext;
-      const workflowRepo = repoContext.workflowRepo;
-      const runRepo = repoContext.workflowRunRepo;
-
-      const { run, workflowName } = await resolveSuspendedRun(
-        workflowRepo,
-        runRepo,
-        workflowIdOrName,
-        options.run,
+      const renderer = createWorkflowRunRenderer(cliCtx.outputMode, {
+        workflowName: workflowIdOrName,
+        isAuthenticated: isAuthenticated(),
+      });
+      await consumeStream(
+        resumeWorkflowOverServer({
+          server,
+          token,
+          signal: AbortSignal.timeout(600_000),
+          payload: {
+            workflowIdOrName,
+            runId: options.run as string | undefined,
+            inputs: Object.keys(resumeInputs).length > 0
+              ? resumeInputs
+              : undefined,
+          },
+        }) as AsyncIterable<WorkflowRunEvent>,
+        renderer.handlers(),
       );
+      if (renderer.workflowFailed()) {
+        Deno.exitCode = 1;
+      }
+      return;
+    }
 
-      const waiting = run.findWaitingApprovalStep();
-      if (waiting) {
+    const unlocked = await requireInitializedRepoUnlocked({
+      repoDir: resolveRepoDir(options.repoDir),
+      outputMode: cliCtx.outputMode,
+    });
+
+    // Parse override inputs. Resume targets a single run, so unlike
+    // `workflow run` (which fans out one run per stdin item) stdin must
+    // resolve to a single override set.
+    const stdinContent = options.stdin ? await readStdin() : null;
+    let stdinInputs: Record<string, unknown> = {};
+    if (stdinContent !== null) {
+      if (options.inputFile) {
+        throw new UserError("Cannot combine --stdin with --input-file.");
+      }
+      const stdinItems = parseStdinContent(stdinContent);
+      if (stdinItems.length > 1) {
         throw new UserError(
-          `Step "${waiting.stepName}" is still awaiting approval. ` +
-            `Run "swamp workflow approve ${workflowName} ${waiting.stepName}" first.`,
+          `--stdin provided ${stdinItems.length} items, but resume targets a single run. ` +
+            `Provide a single inputs object on stdin.`,
         );
       }
+      stdinInputs = stdinItems[0] ?? {};
+    }
 
-      const stepLockHook: StepLockHook = async (modelType, modelId) => {
-        const result = await acquireModelLocks(
-          unlocked.datastoreConfig,
-          [{ modelType, modelId }],
-          repoDir,
-          unlocked.syncService,
-          repoContext.catalogStore,
+    const { inputs: cliInputs } = await parseInputs({
+      input: mergeInputArgs(options),
+      inputFile: stdinContent !== null
+        ? undefined
+        : options.inputFile as string | undefined,
+    });
+
+    const resumeInputs = Object.keys(stdinInputs).length > 0
+      ? deepMerge(stdinInputs, cliInputs)
+      : cliInputs;
+
+    // Use the datastore-aware repositories from the RepositoryContext so the
+    // suspended-run lookup and the resumed-run persistence (this runRepo is
+    // also handed to WorkflowExecutionService below) resolve the same
+    // workflow-runs path the run was written to. Constructing
+    // YamlWorkflowRunRepository(repoDir) directly would bind to repo-local
+    // .swamp/workflow-runs/ and miss runs stored in a configured datastore.
+    const repoDir = unlocked.repoDir;
+    const repoContext = unlocked.repoContext;
+    const workflowRepo = repoContext.workflowRepo;
+    const runRepo = repoContext.workflowRunRepo;
+
+    const { run, workflowName } = await resolveSuspendedRun(
+      workflowRepo,
+      runRepo,
+      workflowIdOrName,
+      options.run,
+    );
+
+    const waiting = run.findWaitingApprovalStep();
+    if (waiting) {
+      throw new UserError(
+        `Step "${waiting.stepName}" is still awaiting approval. ` +
+          `Run "swamp workflow approve ${workflowName} ${waiting.stepName}" first.`,
+      );
+    }
+
+    const stepLockHook: StepLockHook = async (modelType, modelId) => {
+      const result = await acquireModelLocks(
+        unlocked.datastoreConfig,
+        [{ modelType, modelId }],
+        repoDir,
+        unlocked.syncService,
+        repoContext.catalogStore,
+      );
+      if (result.synced) repoContext.catalogStore.invalidate();
+      return result;
+    };
+
+    await Promise.all([
+      modelRegistry.ensureLoaded(),
+      vaultTypeRegistry.ensureLoaded(),
+      reportRegistry.ensureLoaded(),
+    ]);
+
+    // Surface what the resume inputs do to the run's inputs. Key names only —
+    // values may be secrets and are never logged. Overrides (a resume key
+    // that collides with an existing input) are warned; purely-additive keys
+    // are info.
+    const resumeKeys = Object.keys(resumeInputs);
+    if (resumeKeys.length > 0) {
+      const overridden = resumeKeys.filter((key) => key in run.inputs);
+      const added = resumeKeys.filter((key) => !(key in run.inputs));
+      if (overridden.length > 0) {
+        cliCtx.logger
+          .warn`Resume overriding existing input(s): ${overridden.join(", ")}`;
+      }
+      if (added.length > 0) {
+        cliCtx.logger.info`Resume adding input(s): ${added.join(", ")}`;
+      }
+    }
+
+    const directResolver: DirectTypeResolver = async (
+      typeArg,
+      defName,
+      methodName,
+      inputs,
+    ) => {
+      let resolvedType = ModelType.create(typeArg);
+      let modelDef = await resolveModelType(
+        resolvedType,
+        getAutoResolver(),
+      );
+      if (!modelDef && typeArg.startsWith("@")) {
+        const strippedType = ModelType.create(typeArg.slice(1));
+        const strippedDef = await resolveModelType(
+          strippedType,
+          getAutoResolver(),
         );
-        if (result.synced) repoContext.catalogStore.invalidate();
-        return result;
-      };
-
-      await Promise.all([
-        modelRegistry.ensureLoaded(),
-        vaultTypeRegistry.ensureLoaded(),
-        reportRegistry.ensureLoaded(),
-      ]);
-
-      // Surface what the resume inputs do to the run's inputs. Key names only —
-      // values may be secrets and are never logged. Overrides (a resume key
-      // that collides with an existing input) are warned; purely-additive keys
-      // are info.
-      const resumeKeys = Object.keys(resumeInputs);
-      if (resumeKeys.length > 0) {
-        const overridden = resumeKeys.filter((key) => key in run.inputs);
-        const added = resumeKeys.filter((key) => !(key in run.inputs));
-        if (overridden.length > 0) {
-          cliCtx.logger
-            .warn`Resume overriding existing input(s): ${
-            overridden.join(", ")
-          }`;
-        }
-        if (added.length > 0) {
-          cliCtx.logger.info`Resume adding input(s): ${added.join(", ")}`;
+        if (strippedDef) {
+          resolvedType = strippedType;
+          modelDef = strippedDef;
         }
       }
-
-      const directResolver: DirectTypeResolver = async (
+      if (!modelDef) {
+        throw new Error(`Unknown model type: ${resolvedType.normalized}`);
+      }
+      const autoDefRepo = new YamlDefinitionRepository(
+        repoDir,
+        undefined,
+        repoContext.autoDefinitionsDir,
+        false,
+      );
+      const result = await resolveOrCreateDefinition(
+        {
+          lookupDefinition: (name) =>
+            findDefinitionByIdOrName(repoContext.definitionRepo, name),
+          getModelDef: (type) => resolveModelType(type, getAutoResolver()),
+          saveDefinition: (type, def) => autoDefRepo.save(type, def),
+          getDefinitionPath: (type, id) =>
+            autoDefRepo.getPath(type, id as DefinitionId),
+        },
         typeArg,
         defName,
         methodName,
         inputs,
-      ) => {
-        let resolvedType = ModelType.create(typeArg);
-        let modelDef = await resolveModelType(
-          resolvedType,
-          getAutoResolver(),
-        );
-        if (!modelDef && typeArg.startsWith("@")) {
-          const strippedType = ModelType.create(typeArg.slice(1));
-          const strippedDef = await resolveModelType(
-            strippedType,
-            getAutoResolver(),
-          );
-          if (strippedDef) {
-            resolvedType = strippedType;
-            modelDef = strippedDef;
-          }
-        }
-        if (!modelDef) {
-          throw new Error(`Unknown model type: ${resolvedType.normalized}`);
-        }
-        const autoDefRepo = new YamlDefinitionRepository(
-          repoDir,
-          undefined,
-          repoContext.autoDefinitionsDir,
-          false,
-        );
-        const result = await resolveOrCreateDefinition(
-          {
-            lookupDefinition: (name) =>
-              findDefinitionByIdOrName(repoContext.definitionRepo, name),
-            getModelDef: (type) => resolveModelType(type, getAutoResolver()),
-            saveDefinition: (type, def) => autoDefRepo.save(type, def),
-            getDefinitionPath: (type, id) =>
-              autoDefRepo.getPath(type, id as DefinitionId),
-          },
-          typeArg,
-          defName,
-          methodName,
-          inputs,
-          resolvedType,
-          modelDef,
-        );
-        if (!result.ok) throw new Error(result.error.message);
-        return {
-          definition: result.definition,
-          modelType: result.modelType,
-          created: result.created,
-          routedMethodInputs: result.routedInputs.methodArguments,
-        };
-      };
-
-      const service = new WorkflowExecutionService(
-        workflowRepo,
-        runRepo,
-        repoDir,
-        undefined,
-        unlocked.datastoreResolver.resolvePath(SWAMP_SUBDIRS.data),
-        repoContext.catalogStore,
-        directResolver,
-        repoContext.markDirty,
-        repoContext.unifiedDataRepo.namespace,
-        stepLockHook,
+        resolvedType,
+        modelDef,
       );
-
-      const renderer = createWorkflowRunRenderer(cliCtx.outputMode, {
-        workflowName,
-        isAuthenticated: isAuthenticated(),
-      });
-
-      const resumeGenerator = async function* (): AsyncGenerator<
-        WorkflowRunEvent
-      > {
-        for await (
-          const event of service.resume(workflowName, run.id, {
-            signal: AbortSignal.timeout(600_000),
-            swampSha: GIT_SHA,
-            inputs: resumeInputs,
-          })
-        ) {
-          yield mapWorkflowExecutionEvent(event, runRepo);
-        }
+      if (!result.ok) throw new Error(result.error.message);
+      return {
+        definition: result.definition,
+        modelType: result.modelType,
+        created: result.created,
+        routedMethodInputs: result.routedInputs.methodArguments,
       };
+    };
 
-      await consumeStream(resumeGenerator(), renderer.handlers());
+    const service = new WorkflowExecutionService(
+      workflowRepo,
+      runRepo,
+      repoDir,
+      undefined,
+      unlocked.datastoreResolver.resolvePath(SWAMP_SUBDIRS.data),
+      repoContext.catalogStore,
+      directResolver,
+      repoContext.markDirty,
+      repoContext.unifiedDataRepo.namespace,
+      stepLockHook,
+    );
 
-      if (renderer.workflowFailed()) {
-        Deno.exitCode = 1;
-        return;
+    const renderer = createWorkflowRunRenderer(cliCtx.outputMode, {
+      workflowName,
+      isAuthenticated: isAuthenticated(),
+    });
+
+    const resumeGenerator = async function* (): AsyncGenerator<
+      WorkflowRunEvent
+    > {
+      for await (
+        const event of service.resume(workflowName, run.id, {
+          signal: AbortSignal.timeout(600_000),
+          swampSha: GIT_SHA,
+          inputs: resumeInputs,
+        })
+      ) {
+        yield mapWorkflowExecutionEvent(event, runRepo);
       }
-    },
-  );
+    };
+
+    await consumeStream(resumeGenerator(), renderer.handlers());
+
+    if (renderer.workflowFailed()) {
+      Deno.exitCode = 1;
+      return;
+    }
+  },
+);

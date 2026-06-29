@@ -38,8 +38,18 @@ import {
 } from "../../libswamp/mod.ts";
 import { DEFAULT_SWAMP_CLUB_URL } from "../../domain/auth/auth_credentials.ts";
 import type { ExtensionUpdateStatus } from "../../domain/extensions/extension_update_service.ts";
-import { createExtensionOutdatedRenderer } from "../../presentation/renderers/extension_outdated.ts";
+import {
+  createExtensionOutdatedRenderer,
+  type ExtensionOutdatedResult,
+} from "../../presentation/renderers/extension_outdated.ts";
 import { loadIdentity } from "../load_identity.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { ExtensionOutdatedResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -84,77 +94,103 @@ export function filterOutdated(
  * mirrors `extension update --check` so the two behave identically;
  * making them diverge would surprise users of `update --check`.
  */
-export const extensionOutdatedCommand = new Command()
-  .name("outdated")
-  .description(
-    "List installed extensions with newer versions available. " +
-      "Exits 1 if any update is available (suitable for CI gates).",
-  )
-  .example("Check for updates", "swamp extension outdated")
-  .example(
-    "Use as a CI gate",
-    "swamp extension outdated && deploy",
-  )
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
-  .action(async function (options: AnyOptions) {
-    const cliCtx = createContext(options as GlobalOptions, [
-      "extension",
-      "outdated",
-    ]);
-    cliCtx.logger.debug`Starting extension outdated`;
+export const extensionOutdatedCommand = withRemoteOptions(
+  new Command()
+    .name("outdated")
+    .description(
+      "List installed extensions with newer versions available. " +
+        "Exits 1 if any update is available (suitable for CI gates).",
+    )
+    .example("Check for updates", "swamp extension outdated")
+    .example(
+      "Use as a CI gate",
+      "swamp extension outdated && deploy",
+    )
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    ),
+).action(async function (options: AnyOptions) {
+  const cliCtx = createContext(options as GlobalOptions, [
+    "extension",
+    "outdated",
+  ]);
+  cliCtx.logger.debug`Starting extension outdated`;
 
-    const repoDir = resolveRepoDir(options.repoDir);
-    await requireInitializedRepoReadOnly({
-      repoDir,
-      outputMode: cliCtx.outputMode,
-    });
-
-    const repoPath = RepoPath.create(repoDir);
-    const markerRepo = new RepoMarkerRepository();
-    const marker = await markerRepo.read(repoPath);
-    const modelsDir = resolveModelsDir(marker);
-    const absoluteModelsDir = resolve(repoDir, modelsDir);
-    const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
-
-    const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const identity = await loadIdentity();
-    const deps = await createExtensionUpdateDeps({
-      lockfilePath,
-      serverUrl: resolveServerUrl(),
-      identity,
-      // outdated is read-only — installation is wired but never invoked
-      // because checkOnly=true short-circuits before any update path.
-      installExtension: () => {
-        throw new Error(
-          "installExtension should not be called in checkOnly mode",
-        );
+  const server = resolveServeUrl(options.server as string | undefined);
+  if (server) {
+    const token = await resolveServerToken(
+      server,
+      options.token as string | undefined,
+    );
+    const response = await requestServerResponse<ExtensionOutdatedResponse>(
+      { server, token },
+      {
+        type: "extension.outdated",
+        payload: {},
       },
-    });
-
-    const completed = await result(
-      extensionUpdate(ctx, deps, { checkOnly: true }),
     );
-
-    const filtered = filterOutdated(completed.data.extensions);
-    const hasUpdateAvailable = filtered.some(
-      (s) => s.status === "update_available",
-    );
-    const hasDeprecated = filtered.some(
-      (s) => s.status === "deprecated",
-    );
-
+    const result = response.data as unknown as ExtensionOutdatedResult;
     const renderer = createExtensionOutdatedRenderer(cliCtx.outputMode);
     await renderer.handlers().completed({
       kind: "completed",
-      data: { extensions: filtered, hasUpdateAvailable, hasDeprecated },
+      data: result,
     });
-
-    cliCtx.logger.debug("Extension outdated command completed");
-
-    if (hasUpdateAvailable) {
+    if (result.hasUpdateAvailable) {
       Deno.exit(1);
     }
+    return;
+  }
+
+  const repoDir = resolveRepoDir(options.repoDir);
+  await requireInitializedRepoReadOnly({
+    repoDir,
+    outputMode: cliCtx.outputMode,
   });
+
+  const repoPath = RepoPath.create(repoDir);
+  const markerRepo = new RepoMarkerRepository();
+  const marker = await markerRepo.read(repoPath);
+  const modelsDir = resolveModelsDir(marker);
+  const absoluteModelsDir = resolve(repoDir, modelsDir);
+  const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
+
+  const ctx = createLibSwampContext({ logger: cliCtx.logger });
+  const identity = await loadIdentity();
+  const deps = await createExtensionUpdateDeps({
+    lockfilePath,
+    serverUrl: resolveServerUrl(),
+    identity,
+    // outdated is read-only — installation is wired but never invoked
+    // because checkOnly=true short-circuits before any update path.
+    installExtension: () => {
+      throw new Error(
+        "installExtension should not be called in checkOnly mode",
+      );
+    },
+  });
+
+  const completed = await result(
+    extensionUpdate(ctx, deps, { checkOnly: true }),
+  );
+
+  const filtered = filterOutdated(completed.data.extensions);
+  const hasUpdateAvailable = filtered.some(
+    (s) => s.status === "update_available",
+  );
+  const hasDeprecated = filtered.some(
+    (s) => s.status === "deprecated",
+  );
+
+  const renderer = createExtensionOutdatedRenderer(cliCtx.outputMode);
+  await renderer.handlers().completed({
+    kind: "completed",
+    data: { extensions: filtered, hasUpdateAvailable, hasDeprecated },
+  });
+
+  cliCtx.logger.debug("Extension outdated command completed");
+
+  if (hasUpdateAvailable) {
+    Deno.exit(1);
+  }
+});

@@ -195,6 +195,7 @@ export class PolicySnapshotLoader {
 
     const grants: Grant[] = [];
     for (const { data, modelType, modelId } of grantDataItems) {
+      if (data.name !== "grant-main") continue;
       const attrs = await this.#readAttributes(modelType, modelId, data.name);
       if (!attrs) continue;
       const parsed = GrantSchema.safeParse(attrs);
@@ -205,6 +206,7 @@ export class PolicySnapshotLoader {
 
     const groups: Group[] = [];
     for (const { data, modelType, modelId } of groupDataItems) {
+      if (data.name !== "group-main") continue;
       const attrs = await this.#readAttributes(modelType, modelId, data.name);
       if (!attrs) continue;
       const parsed = GroupSchema.safeParse(attrs);
