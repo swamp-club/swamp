@@ -20,6 +20,8 @@ import {
   type AdversarialReviewData,
   AdversarialReviewSchema,
   ClassificationSchema,
+  type CodeConformanceReviewData,
+  CodeConformanceReviewSchema,
   ContextSchema,
   FeedbackSchema,
   GlobalArgsSchema,
@@ -32,6 +34,7 @@ import {
   PullRequestSchema,
   type StateData,
   StateSchema,
+  StepVerificationSchema,
   TRANSITIONS,
 } from "./_lib/schemas.ts";
 import { createSwampClubClient, loadAuthFile } from "./_lib/swamp_club.ts";
@@ -70,7 +73,7 @@ async function readState(
 
 export const model = {
   type: "@swamp/issue-lifecycle",
-  version: "2026.06.18.1",
+  version: "2026.06.29.1",
   globalArguments: GlobalArgsSchema,
 
   upgrades: [
@@ -142,6 +145,16 @@ export const model = {
         "No globalArguments changes.",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },
+    {
+      toVersion: "2026.06.29.1",
+      description:
+        "Add code conformance review — adversarial comparison of implemented code " +
+        "against the approved plan. New codeConformanceReview resource, " +
+        "code_conformance_review and justify_deviations methods, " +
+        "code-conformance-clear check gating link_pr. " +
+        "No globalArguments changes.",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
   ],
 
   resources: {
@@ -180,6 +193,15 @@ export const model = {
       schema: AdversarialReviewSchema,
       lifetime: "infinite" as const,
       garbageCollection: 20,
+    },
+    "codeConformanceReview": {
+      description:
+        "Adversarial comparison of implemented code against the approved plan. " +
+        "Records per-step verification status and justifications for deviations. " +
+        "Gates link_pr — all deviations must be justified before a PR can be linked.",
+      schema: CodeConformanceReviewSchema,
+      lifetime: "infinite" as const,
+      garbageCollection: 10,
     },
     "pullRequest": {
       description:
@@ -347,6 +369,78 @@ export const model = {
             ],
           };
         }
+        return { pass: true };
+      },
+    },
+
+    "code-conformance-clear": {
+      description:
+        "Ensures all code-vs-plan deviations are justified before a PR can be linked",
+      labels: ["policy"],
+      appliesTo: ["link_pr", "complete"],
+      execute: async (context: {
+        dataRepository: {
+          getContent: (
+            type: string,
+            modelId: string,
+            dataName: string,
+          ) => Promise<Uint8Array | null>;
+        };
+        modelType: string;
+        modelId: string;
+      }) => {
+        const planContent = await context.dataRepository.getContent(
+          context.modelType,
+          context.modelId,
+          "plan-main",
+        );
+        if (!planContent) {
+          return { pass: false, errors: ["No plan exists."] };
+        }
+        const plan = JSON.parse(
+          new TextDecoder().decode(planContent),
+        ) as PlanData;
+
+        const reviewContent = await context.dataRepository.getContent(
+          context.modelType,
+          context.modelId,
+          "codeConformanceReview-main",
+        );
+        if (!reviewContent) {
+          return {
+            pass: false,
+            errors: [
+              "No code conformance review exists. Run 'code_conformance_review' before linking a PR.",
+            ],
+          };
+        }
+        const review = JSON.parse(
+          new TextDecoder().decode(reviewContent),
+        ) as CodeConformanceReviewData;
+
+        if (review.planVersion !== plan.version) {
+          return {
+            pass: false,
+            errors: [
+              `Code conformance review is for plan v${review.planVersion} but current plan is v${plan.version}. Re-run 'code_conformance_review'.`,
+            ],
+          };
+        }
+
+        const unjustified = review.steps.filter(
+          (s) => s.status !== "implemented" && !s.justification,
+        );
+
+        if (unjustified.length > 0) {
+          const orders = unjustified.map((s) => `step ${s.order}`).join(", ");
+          return {
+            pass: false,
+            errors: [
+              `${unjustified.length} unjustified deviation(s): ${orders}. Run 'justify_deviations' to explain why the code differs from the plan.`,
+            ],
+          };
+        }
+
         return { pass: true };
       },
     },
@@ -1119,6 +1213,213 @@ export const model = {
             resolved,
             remaining,
             resolutions: args.resolutions,
+          },
+          isVerbose: false,
+        });
+
+        return { dataHandles: handles };
+      },
+    },
+
+    code_conformance_review: {
+      description:
+        "Record an adversarial comparison of implemented code against the approved plan. " +
+        "Each plan step is verified as implemented, deviated, partially implemented, or missing. " +
+        "Unplanned changes are recorded as 'added' steps. Deviations are expected — " +
+        "they just need a justification explaining why the code differs.",
+      arguments: z.object({
+        steps: z.array(StepVerificationSchema).describe(
+          "Per-step verification of plan conformance, plus entries for unplanned changes",
+        ),
+      }),
+      execute: async (
+        args: {
+          steps: {
+            order: number;
+            status:
+              | "implemented"
+              | "deviated"
+              | "partially_implemented"
+              | "missing"
+              | "added";
+            description: string;
+            justification?: string;
+          }[];
+        },
+        context: {
+          globalArgs: GlobalArgs;
+          logger: {
+            info: (msg: string, props: Record<string, unknown>) => void;
+            warning: (msg: string, props: Record<string, unknown>) => void;
+          };
+          writeResource: (
+            specName: string,
+            instanceName: string,
+            data: Record<string, unknown>,
+          ) => Promise<{ name: string }>;
+          readResource: (
+            instanceName: string,
+            version?: number,
+          ) => Promise<Record<string, unknown> | null>;
+        },
+      ) => {
+        const handles = [];
+
+        const plan = await context.readResource!("plan-main") as
+          | PlanData
+          | null;
+        if (!plan) {
+          throw new Error("No plan exists. Run 'plan' first.");
+        }
+
+        handles.push(
+          await context.writeResource(
+            "codeConformanceReview",
+            "codeConformanceReview-main",
+            {
+              planVersion: plan.version,
+              steps: args.steps,
+              reviewedAt: new Date().toISOString(),
+            },
+          ),
+        );
+
+        const implemented =
+          args.steps.filter((s) => s.status === "implemented").length;
+        const deviated = args.steps.filter((s) => s.status !== "implemented")
+          .length;
+        const unjustified = args.steps.filter(
+          (s) => s.status !== "implemented" && !s.justification,
+        ).length;
+
+        context.logger.info(
+          "Code conformance review for plan v{planVersion}: {implemented} implemented, {deviated} deviated ({unjustified} unjustified)",
+          {
+            planVersion: plan.version,
+            implemented,
+            deviated,
+            unjustified,
+          },
+        );
+
+        const sc = await createSwampClubClient(
+          context.globalArgs,
+          context.logger,
+        );
+        await sc?.postLifecycleEntry({
+          step: "code_conformance_review",
+          targetStatus: "in_progress",
+          summary:
+            `Code conformance review (plan v${plan.version}): ${implemented} implemented, ${deviated} deviated (${unjustified} unjustified)`,
+          emoji: "\u{1F50D}",
+          payload: {
+            planVersion: plan.version,
+            steps: args.steps,
+            implemented,
+            deviated,
+            unjustified,
+          },
+          isVerbose: true,
+        });
+
+        return { dataHandles: handles };
+      },
+    },
+
+    justify_deviations: {
+      description:
+        "Add justifications to code conformance review steps that deviate from the plan. " +
+        "Deviations are expected — this method records why the code differs.",
+      arguments: z.object({
+        justifications: z.array(z.object({
+          order: z.number().describe(
+            "Step order number to justify",
+          ),
+          justification: z.string().describe(
+            "Why the code differs from the plan for this step",
+          ),
+        })),
+      }),
+      execute: async (
+        args: {
+          justifications: { order: number; justification: string }[];
+        },
+        context: {
+          globalArgs: GlobalArgs;
+          logger: {
+            info: (msg: string, props: Record<string, unknown>) => void;
+            warning: (msg: string, props: Record<string, unknown>) => void;
+          };
+          writeResource: (
+            specName: string,
+            instanceName: string,
+            data: Record<string, unknown>,
+          ) => Promise<{ name: string }>;
+          readResource: (
+            instanceName: string,
+            version?: number,
+          ) => Promise<Record<string, unknown> | null>;
+        },
+      ) => {
+        const handles = [];
+
+        const current = await context.readResource!(
+          "codeConformanceReview-main",
+        ) as CodeConformanceReviewData | null;
+        if (!current) {
+          throw new Error(
+            "No code conformance review exists. Run 'code_conformance_review' first.",
+          );
+        }
+
+        const justificationMap = new Map(
+          args.justifications.map((j) => [j.order, j.justification]),
+        );
+
+        const updatedSteps = current.steps.map((s) => {
+          const justification = justificationMap.get(s.order);
+          if (justification) {
+            return { ...s, justification };
+          }
+          return s;
+        });
+
+        handles.push(
+          await context.writeResource(
+            "codeConformanceReview",
+            "codeConformanceReview-main",
+            {
+              planVersion: current.planVersion,
+              steps: updatedSteps,
+              reviewedAt: new Date().toISOString(),
+            },
+          ),
+        );
+
+        const justified = args.justifications.length;
+        const remaining = updatedSteps.filter(
+          (s) => s.status !== "implemented" && !s.justification,
+        ).length;
+
+        context.logger.info(
+          "Justified {justified} deviation(s), {remaining} unjustified deviation(s) remain",
+          { justified, remaining },
+        );
+
+        const sc = await createSwampClubClient(
+          context.globalArgs,
+          context.logger,
+        );
+        await sc?.postLifecycleEntry({
+          step: "deviations_justified",
+          targetStatus: "in_progress",
+          summary:
+            `${justified} deviation(s) justified, ${remaining} unjustified remain`,
+          emoji: "\u{2705}",
+          payload: {
+            justified,
+            remaining,
+            justifications: args.justifications,
           },
           isVerbose: false,
         });

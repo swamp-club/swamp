@@ -319,8 +319,8 @@ Deno.test("model: exposes the new link_pr method definition", () => {
   );
 });
 
-Deno.test("model: version bumped to 2026.06.18.1", () => {
-  assertEquals(model.version, "2026.06.18.1");
+Deno.test("model: version bumped to 2026.06.29.1", () => {
+  assertEquals(model.version, "2026.06.29.1");
 });
 
 // ---------------------------------------------------------------------------
@@ -1052,4 +1052,333 @@ Deno.test("model: exposes notify method definition", () => {
 
 Deno.test("model: exposes skip_notify method definition", () => {
   assertEquals("skip_notify" in model.methods, true);
+});
+
+// ---------------------------------------------------------------------------
+// code_conformance_review
+// ---------------------------------------------------------------------------
+
+Deno.test("code_conformance_review: writes codeConformanceReview-main with plan version and steps", async () => {
+  const { context, writes, restore } = await buildTestContext(42, {
+    resources: {
+      "plan-main": {
+        version: 3,
+        summary: "Fix the bug",
+        dddAnalysis: "n/a",
+        steps: [{ order: 1, description: "Step 1", files: ["a.ts"] }],
+        testingStrategy: "unit",
+        potentialChallenges: [],
+        feedbackIncorporated: [],
+        generatedAt: "2026-06-29T00:00:00.000Z",
+      },
+    },
+  });
+  try {
+    await model.methods.code_conformance_review.execute(
+      {
+        steps: [
+          {
+            order: 1,
+            status: "implemented" as const,
+            description: "Step 1 done",
+          },
+          {
+            order: 2,
+            status: "deviated" as const,
+            description: "Did it differently",
+            justification: "Existing helper already covered this",
+          },
+        ],
+      },
+      context,
+    );
+
+    const reviewWrite = writes.find(
+      (w) => w.specName === "codeConformanceReview",
+    );
+    assertEquals(reviewWrite !== undefined, true);
+    assertEquals(reviewWrite!.instanceName, "codeConformanceReview-main");
+    assertEquals(reviewWrite!.data.planVersion, 3);
+    assertEquals(
+      (reviewWrite!.data.steps as unknown[]).length,
+      2,
+    );
+  } finally {
+    await restore();
+  }
+});
+
+Deno.test("code_conformance_review: throws when no plan exists", async () => {
+  const { context, restore } = await buildTestContext(42);
+  try {
+    await assertRejects(
+      () =>
+        model.methods.code_conformance_review.execute(
+          { steps: [] },
+          context,
+        ),
+      Error,
+      "No plan exists",
+    );
+  } finally {
+    await restore();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// justify_deviations
+// ---------------------------------------------------------------------------
+
+Deno.test("justify_deviations: adds justification to unjustified steps", async () => {
+  const { context, writes, restore } = await buildTestContext(42, {
+    resources: {
+      "codeConformanceReview-main": {
+        planVersion: 1,
+        steps: [
+          {
+            order: 1,
+            status: "implemented",
+            description: "Done",
+          },
+          {
+            order: 2,
+            status: "missing",
+            description: "Not done",
+          },
+        ],
+        reviewedAt: "2026-06-29T00:00:00.000Z",
+      },
+    },
+  });
+  try {
+    await model.methods.justify_deviations.execute(
+      {
+        justifications: [
+          {
+            order: 2,
+            justification: "Deferred to follow-up issue #100",
+          },
+        ],
+      },
+      context,
+    );
+
+    const reviewWrite = writes.find(
+      (w) => w.specName === "codeConformanceReview",
+    );
+    assertEquals(reviewWrite !== undefined, true);
+    const steps = reviewWrite!.data.steps as {
+      order: number;
+      justification?: string;
+    }[];
+    const step2 = steps.find((s) => s.order === 2);
+    assertEquals(step2!.justification, "Deferred to follow-up issue #100");
+  } finally {
+    await restore();
+  }
+});
+
+Deno.test("justify_deviations: throws when no conformance review exists", async () => {
+  const { context, restore } = await buildTestContext(42);
+  try {
+    await assertRejects(
+      () =>
+        model.methods.justify_deviations.execute(
+          { justifications: [{ order: 1, justification: "reason" }] },
+          context,
+        ),
+      Error,
+      "No code conformance review exists",
+    );
+  } finally {
+    await restore();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// code-conformance-clear check
+// ---------------------------------------------------------------------------
+
+Deno.test("code-conformance-clear: passes when all deviations are justified", async () => {
+  const checkContext = {
+    methodName: "link_pr",
+    dataRepository: {
+      getContent: (
+        _type: string,
+        _modelId: string,
+        dataName: string,
+      ) => {
+        if (dataName === "plan-main") {
+          return Promise.resolve(
+            new TextEncoder().encode(JSON.stringify({ version: 1 })),
+          );
+        }
+        if (dataName === "codeConformanceReview-main") {
+          return Promise.resolve(
+            new TextEncoder().encode(
+              JSON.stringify({
+                planVersion: 1,
+                steps: [
+                  { order: 1, status: "implemented", description: "Done" },
+                  {
+                    order: 2,
+                    status: "deviated",
+                    description: "Different",
+                    justification: "Better approach",
+                  },
+                ],
+              }),
+            ),
+          );
+        }
+        return Promise.resolve(null);
+      },
+    },
+    modelType: "@swamp/issue-lifecycle",
+    modelId: "issue-42",
+  };
+
+  const result = await model.checks["code-conformance-clear"].execute(
+    checkContext,
+  );
+  assertEquals(result.pass, true);
+});
+
+Deno.test("code-conformance-clear: rejects when no conformance review exists", async () => {
+  const checkContext = {
+    methodName: "link_pr",
+    dataRepository: {
+      getContent: (
+        _type: string,
+        _modelId: string,
+        dataName: string,
+      ) => {
+        if (dataName === "plan-main") {
+          return Promise.resolve(
+            new TextEncoder().encode(JSON.stringify({ version: 1 })),
+          );
+        }
+        return Promise.resolve(null);
+      },
+    },
+    modelType: "@swamp/issue-lifecycle",
+    modelId: "issue-42",
+  };
+
+  const result = await model.checks["code-conformance-clear"].execute(
+    checkContext,
+  );
+  assertEquals(result.pass, false);
+  assertStringIncludes(result.errors![0], "No code conformance review exists");
+});
+
+Deno.test("code-conformance-clear: rejects when review is stale (wrong plan version)", async () => {
+  const checkContext = {
+    methodName: "link_pr",
+    dataRepository: {
+      getContent: (
+        _type: string,
+        _modelId: string,
+        dataName: string,
+      ) => {
+        if (dataName === "plan-main") {
+          return Promise.resolve(
+            new TextEncoder().encode(JSON.stringify({ version: 2 })),
+          );
+        }
+        if (dataName === "codeConformanceReview-main") {
+          return Promise.resolve(
+            new TextEncoder().encode(
+              JSON.stringify({
+                planVersion: 1,
+                steps: [],
+              }),
+            ),
+          );
+        }
+        return Promise.resolve(null);
+      },
+    },
+    modelType: "@swamp/issue-lifecycle",
+    modelId: "issue-42",
+  };
+
+  const result = await model.checks["code-conformance-clear"].execute(
+    checkContext,
+  );
+  assertEquals(result.pass, false);
+  assertStringIncludes(result.errors![0], "plan v1");
+  assertStringIncludes(result.errors![0], "plan is v2");
+});
+
+Deno.test("code-conformance-clear: rejects when unjustified deviations remain", async () => {
+  const checkContext = {
+    methodName: "link_pr",
+    dataRepository: {
+      getContent: (
+        _type: string,
+        _modelId: string,
+        dataName: string,
+      ) => {
+        if (dataName === "plan-main") {
+          return Promise.resolve(
+            new TextEncoder().encode(JSON.stringify({ version: 1 })),
+          );
+        }
+        if (dataName === "codeConformanceReview-main") {
+          return Promise.resolve(
+            new TextEncoder().encode(
+              JSON.stringify({
+                planVersion: 1,
+                steps: [
+                  { order: 1, status: "implemented", description: "Done" },
+                  {
+                    order: 2,
+                    status: "missing",
+                    description: "Not done",
+                  },
+                  {
+                    order: 3,
+                    status: "deviated",
+                    description: "Changed",
+                    justification: "Better way",
+                  },
+                ],
+              }),
+            ),
+          );
+        }
+        return Promise.resolve(null);
+      },
+    },
+    modelType: "@swamp/issue-lifecycle",
+    modelId: "issue-42",
+  };
+
+  const result = await model.checks["code-conformance-clear"].execute(
+    checkContext,
+  );
+  assertEquals(result.pass, false);
+  assertStringIncludes(result.errors![0], "1 unjustified");
+  assertStringIncludes(result.errors![0], "step 2");
+});
+
+// ---------------------------------------------------------------------------
+// Model registration smoke tests (code conformance)
+// ---------------------------------------------------------------------------
+
+Deno.test("model: exposes codeConformanceReview resource definition", () => {
+  assertEquals("codeConformanceReview" in model.resources, true);
+});
+
+Deno.test("model: exposes code_conformance_review method definition", () => {
+  assertEquals("code_conformance_review" in model.methods, true);
+});
+
+Deno.test("model: exposes justify_deviations method definition", () => {
+  assertEquals("justify_deviations" in model.methods, true);
+});
+
+Deno.test("model: exposes code-conformance-clear check definition", () => {
+  assertEquals("code-conformance-clear" in model.checks, true);
 });
