@@ -30,7 +30,7 @@ import {
   type GlobalOptions,
   resolveRepoDir,
 } from "../context.ts";
-import { requireInitializedRepo } from "../repo_context.ts";
+import { requireInitializedRepoUnlocked } from "../repo_context.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -50,7 +50,7 @@ export const workflowCreateCommand = new Command()
     ]);
     cliCtx.logger.debug`Creating workflow: name=${name}`;
 
-    const { repoDir } = await requireInitializedRepo({
+    const { repoDir } = await requireInitializedRepoUnlocked({
       repoDir: resolveRepoDir(options.repoDir),
       outputMode: cliCtx.outputMode,
     });

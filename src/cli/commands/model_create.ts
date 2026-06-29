@@ -31,7 +31,7 @@ import {
   type GlobalOptions,
   resolveRepoDir,
 } from "../context.ts";
-import { requireInitializedRepo } from "../repo_context.ts";
+import { requireInitializedRepoUnlocked } from "../repo_context.ts";
 import { parseKeyValueInputs } from "../input_parser.ts";
 import { modelValidateCommand } from "./model_validate.ts";
 import { modelMethodCommand } from "./model_method_run.ts";
@@ -71,7 +71,7 @@ export const modelCreateCommand = new Command()
     cliCtx.logger
       .debug`Creating model definition: type=${typeArg}, name=${name}`;
 
-    const { repoDir } = await requireInitializedRepo({
+    const { repoDir } = await requireInitializedRepoUnlocked({
       repoDir: resolveRepoDir(options.repoDir),
       outputMode: cliCtx.outputMode,
     });

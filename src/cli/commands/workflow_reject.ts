@@ -23,7 +23,7 @@ import {
   type GlobalOptions,
   resolveRepoDir,
 } from "../context.ts";
-import { requireInitializedRepo } from "../repo_context.ts";
+import { requireInitializedRepoUnlocked } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import { resolveSuspendedRun } from "../../domain/workflows/suspended_run_resolver.ts";
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
@@ -60,7 +60,7 @@ export const workflowRejectCommand = new Command()
         "reject",
       ]);
 
-      const { repoContext } = await requireInitializedRepo({
+      const { repoContext } = await requireInitializedRepoUnlocked({
         repoDir: resolveRepoDir(options.repoDir),
         outputMode: cliCtx.outputMode,
       });

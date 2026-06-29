@@ -724,6 +724,7 @@ export interface LazyModelEntry {
   bundlePath: string;
   sourcePath: string;
   version: string;
+  sourceFingerprint?: string;
 }
 
 /**
@@ -747,7 +748,7 @@ export class ModelRegistry {
   private extensionsLoaded = false;
   private typeLoadPromises = new Map<string, Promise<void>>();
   private typeLoader:
-    | ((type: string) => Promise<void>)
+    | ((type: string, lazyEntry?: LazyModelEntry) => Promise<void>)
     | null = null;
 
   /**
@@ -763,7 +764,9 @@ export class ModelRegistry {
    * Configures the per-type loader for on-demand bundle imports.
    * Called by {@link ensureTypeLoaded} to import a single bundle.
    */
-  setTypeLoader(loader: (type: string) => Promise<void>): void {
+  setTypeLoader(
+    loader: (type: string, lazyEntry?: LazyModelEntry) => Promise<void>,
+  ): void {
     this.typeLoader = loader;
   }
 
@@ -850,7 +853,8 @@ export class ModelRegistry {
     let promise = this.typeLoadPromises.get(key);
     if (!promise) {
       const loader = this.typeLoader;
-      promise = loader(key).then(() => {
+      const lazyEntry = this.lazyTypes.get(key);
+      promise = loader(key, lazyEntry ?? undefined).then(() => {
         // promoteFromLazy() already deleted the lazy entry during
         // the loader call, so no lazyTypes cleanup needed here.
         // Prune the resolved promise — it's no longer needed since

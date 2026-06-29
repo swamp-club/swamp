@@ -497,14 +497,27 @@ export class ExtensionLoader {
     return fullResult;
   }
 
-  async loadSingleType(typeNormalized: string): Promise<void> {
+  async loadSingleType(
+    typeNormalized: string,
+    lazyEntry?: {
+      bundlePath: string;
+      sourcePath: string;
+      sourceFingerprint?: string;
+    },
+  ): Promise<void> {
     const catalog = this.requireRepository("loadSingleType").getCatalogStore();
     installZodGlobal();
 
-    const entry = catalog.findByType(
-      typeNormalized,
-      this.adapter.catalogKinds[0],
-    );
+    // Use the in-memory lazy entry when available — avoids a SQLite read
+    // that contends under concurrent process startups.
+    const entry = lazyEntry
+      ? {
+        type_normalized: typeNormalized,
+        bundle_path: lazyEntry.bundlePath,
+        source_path: lazyEntry.sourcePath,
+        source_fingerprint: lazyEntry.sourceFingerprint,
+      }
+      : catalog.findByType(typeNormalized, this.adapter.catalogKinds[0]);
     if (!entry) {
       throw new Error(
         `No catalog entry for ${this.adapter.kind} type: ${typeNormalized}`,

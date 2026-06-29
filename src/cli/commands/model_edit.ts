@@ -33,7 +33,7 @@ import {
   type GlobalOptions,
   resolveRepoDir,
 } from "../context.ts";
-import { requireInitializedRepo } from "../repo_context.ts";
+import { requireInitializedRepoUnlocked } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import { readStdin } from "../../infrastructure/io/stdin_reader.ts";
 
@@ -55,7 +55,7 @@ export const modelEditCommand = new Command()
     const cliCtx = createContext(options as GlobalOptions, ["model", "edit"]);
     cliCtx.logger.debug`Editing model: ${modelIdOrName ?? "(interactive)"}`;
 
-    const { repoContext, repoDir } = await requireInitializedRepo({
+    const { repoContext, repoDir } = await requireInitializedRepoUnlocked({
       repoDir: resolveRepoDir(options.repoDir),
       outputMode: cliCtx.outputMode,
     });
