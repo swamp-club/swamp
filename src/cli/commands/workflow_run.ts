@@ -40,10 +40,7 @@ import type { DefinitionId } from "../../domain/definitions/definition.ts";
 import { resolveModelType } from "../../domain/extensions/extension_auto_resolver.ts";
 import { getAutoResolver } from "../auto_resolver_context.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
-import {
-  SWAMP_SUBDIRS,
-  swampPath,
-} from "../../infrastructure/persistence/paths.ts";
+import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
 import {
   createWorkflowId,
   createWorkflowRunId,
@@ -312,7 +309,7 @@ export const workflowRunCommand = new Command()
             const autoDefRepo = new YamlDefinitionRepository(
               dir,
               undefined,
-              swampPath(dir, SWAMP_SUBDIRS.autoDefinitions),
+              repoContext.autoDefinitionsDir,
               false,
             );
             const result = await resolveOrCreateDefinition(

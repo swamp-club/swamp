@@ -118,14 +118,14 @@ export async function createWorkerModelRunDeps(
       const autoDefRepo = new YamlDefinitionRepository(
         repoDir,
         undefined,
-        swampPath(repoDir, SWAMP_SUBDIRS.autoDefinitions),
+        repoContext.autoDefinitionsDir,
         false,
       );
       await autoDefRepo.save(type, definition);
     },
     getDefinitionPath: (type, id) => {
       return join(
-        swampPath(repoDir, SWAMP_SUBDIRS.autoDefinitions),
+        repoContext.autoDefinitionsDir,
         type.toDirectoryPath(),
         `${id}.yaml`,
       );
