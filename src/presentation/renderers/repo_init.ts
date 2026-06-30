@@ -259,9 +259,10 @@ class LogRepoUpgradeRenderer implements Renderer<RepoUpgradeEvent> {
         }
 
         if (data.localSkillCopies.length > 0) {
+          const allNames = data.localSkillCopies.flatMap((c) => c.names);
           logger.warn(
-            "Local swamp skill copies are shadowing the globally " +
-              "installed skills. Delete them manually:",
+            `Local copies of ${allNames.join(", ")} are shadowing the ` +
+              "globally installed skills. Delete them manually:",
           );
           for (const copy of data.localSkillCopies) {
             for (const name of copy.names) {
