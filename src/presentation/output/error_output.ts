@@ -81,6 +81,19 @@ export function buildErrorJson(err: Error): Record<string, unknown> {
 }
 
 /**
+ * Returns the process exit code for an error.
+ *
+ * - `75` (EX_TEMPFAIL) for `lock_timeout` — a temporary failure that
+ *   callers should retry with backoff.
+ * - `1` for all other errors.
+ */
+export function exitCodeForError(error: unknown): number {
+  const code = (error as { code?: unknown })?.code;
+  if (code === "lock_timeout") return 75;
+  return 1;
+}
+
+/**
  * Renders an error to the user.
  *
  * In JSON mode this is the SINGLE emitter for fatal output: it writes

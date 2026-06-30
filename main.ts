@@ -24,7 +24,10 @@
 import "./src/infrastructure/runtime/tls_trust_bootstrap.ts";
 import { runCli } from "./src/cli/mod.ts";
 import { initializeLogging } from "./src/infrastructure/logging/logger.ts";
-import { renderError } from "./src/presentation/output/error_output.ts";
+import {
+  exitCodeForError,
+  renderError,
+} from "./src/presentation/output/error_output.ts";
 import { flushDatastoreSync } from "./src/infrastructure/persistence/datastore_sync_coordinator.ts";
 import { getOutputModeFromArgs } from "./src/cli/context.ts";
 import {
@@ -45,7 +48,7 @@ if (import.meta.main) {
       jsonMode: outputMode === "json",
     });
     renderError(error, outputMode);
-    Deno.exit(1);
+    Deno.exit(exitCodeForError(error));
   } finally {
     await shutdownTracing();
   }

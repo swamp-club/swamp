@@ -20,8 +20,13 @@
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import { ValidationError } from "@cliffy/command";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
-import { buildErrorJson, renderError } from "./error_output.ts";
+import {
+  buildErrorJson,
+  exitCodeForError,
+  renderError,
+} from "./error_output.ts";
 import { UserError } from "../../domain/errors.ts";
+import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
 import { DuplicateTypeUserError } from "../../domain/extensions/duplicate_type_user_error.ts";
 
 await initializeLogging({});
@@ -433,3 +438,44 @@ Deno.test(
     );
   },
 );
+
+// ============================================================================
+// exitCodeForError tests
+// ============================================================================
+
+Deno.test("exitCodeForError: returns 75 for LockTimeoutError", () => {
+  const err = new LockTimeoutError("/path/.lock", null, 60000);
+  assertEquals(exitCodeForError(err), 75);
+});
+
+Deno.test("exitCodeForError: returns 75 for UserError with lock_timeout code", () => {
+  const err = new UserError("timed out", "lock_timeout");
+  assertEquals(exitCodeForError(err), 75);
+});
+
+Deno.test("exitCodeForError: returns 1 for UserError without code", () => {
+  const err = new UserError("something broke");
+  assertEquals(exitCodeForError(err), 1);
+});
+
+Deno.test("exitCodeForError: returns 1 for UserError with other code", () => {
+  const err = new UserError("not found", "model_not_found");
+  assertEquals(exitCodeForError(err), 1);
+});
+
+Deno.test("exitCodeForError: returns 1 for plain Error", () => {
+  assertEquals(exitCodeForError(new Error("crash")), 1);
+});
+
+Deno.test("exitCodeForError: returns 1 for non-Error values", () => {
+  assertEquals(exitCodeForError("string error"), 1);
+  assertEquals(exitCodeForError(null), 1);
+  assertEquals(exitCodeForError(undefined), 1);
+});
+
+Deno.test("buildErrorJson: LockTimeoutError includes code field", () => {
+  const err = new LockTimeoutError("/path/.lock", null, 60000);
+  const result = buildErrorJson(err);
+  assertEquals(result.code, "lock_timeout");
+  assertStringIncludes(result.error as string, "timed out after 60000ms");
+});

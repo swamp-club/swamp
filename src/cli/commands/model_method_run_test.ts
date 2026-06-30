@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals } from "@std/assert";
+import { assertEquals, assertStringIncludes } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 
 // Initialize logging for tests
@@ -33,10 +33,13 @@ Deno.test("modelMethodRunCommand module loads", async () => {
 
 Deno.test("modelMethodRunCommand has correct description", async () => {
   const { modelMethodRunCommand } = await import("./model_method_run.ts");
-  assertEquals(
-    modelMethodRunCommand.getDescription(),
+  const desc = modelMethodRunCommand.getDescription();
+  assertStringIncludes(
+    desc,
     "Execute a method on a model. With @type prefix, auto-creates the definition if needed.",
   );
+  assertStringIncludes(desc, "lock_timeout");
+  assertStringIncludes(desc, "Exit codes:");
 });
 
 Deno.test("modelMethodCommand module loads", async () => {
