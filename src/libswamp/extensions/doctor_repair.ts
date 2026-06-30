@@ -60,9 +60,8 @@ export interface RepairDeps {
  * - Pulled extensions with BundleBuildFailed or ValidationFailed sources
  *   (re-pulled from registry to restore pre-built bundles).
  *
- * OrphanedBundleOnly rows are excluded from state-based pruning because
- * they still reference a live bundle file — pruning the row would strand
- * the file as an orphan on the next run, breaking idempotence.
+ * OrphanedBundleOnly rows are pruned together with their associated
+ * bundle file in a single pass to maintain idempotence.
  */
 export async function repairExtensions(
   deps: RepairDeps,
@@ -71,12 +70,8 @@ export async function repairExtensions(
   const report = deps.aggregateReport;
 
   // Phase 1: Identify cleanup-eligible catalog rows.
-  // Only Tombstoned rows are pruned. OrphanedBundleOnly is deliberately
-  // excluded — those rows still reference a bundle file on disk, and
-  // pruning the row would strand the file as an orphan on the NEXT run,
-  // breaking idempotence. OrphanedBundleOnly cleanup is deferred to a
-  // follow-up workstream that can handle row + file atomically.
   const rowsToPrune: string[] = [];
+  const orphanedBundlePaths: string[] = [];
   for (const detail of report.sourceDetails) {
     if (detail.stateTag === "Tombstoned") {
       rowsToPrune.push(detail.sourcePath);
@@ -85,6 +80,22 @@ export async function repairExtensions(
         path: detail.sourcePath,
         reason: `Tombstoned row — no longer active`,
       });
+    } else if (detail.stateTag === "OrphanedBundleOnly") {
+      rowsToPrune.push(detail.sourcePath);
+      operations.push({
+        kind: "catalog-row-pruned",
+        path: detail.sourcePath,
+        reason:
+          `OrphanedBundleOnly row — source deleted, evicting row and bundle`,
+      });
+      if (detail.bundlePath) {
+        orphanedBundlePaths.push(detail.bundlePath);
+        operations.push({
+          kind: "bundle-file-evicted",
+          path: detail.bundlePath,
+          reason: `Bundle for deleted source — no longer needed`,
+        });
+      }
     }
   }
 
@@ -131,7 +142,7 @@ export async function repairExtensions(
   }
 
   let actualPruned = rowsToPrune.length + unreachableRows.length;
-  let actualEvicted = filesToEvict.length;
+  let actualEvicted = filesToEvict.length + orphanedBundlePaths.length;
   let actualRepulled = extensionsToRepull.size;
 
   if (deps.apply) {
@@ -141,7 +152,7 @@ export async function repairExtensions(
       logger.info`Pruned ${actualPruned} catalog row(s)`;
     }
     actualEvicted = 0;
-    for (const file of filesToEvict) {
+    for (const file of [...filesToEvict, ...orphanedBundlePaths]) {
       try {
         await Deno.remove(file);
         actualEvicted++;
