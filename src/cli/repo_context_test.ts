@@ -30,6 +30,8 @@ import {
   acquireModelLocks,
   createModelLock,
   datastoreGlobalLockOptions,
+  flushSinglePhasePush,
+  flushTwoPhasePush,
   requireInitializedRepo,
   requireInitializedRepoReadOnly,
   requireInitializedRepoUnlocked,
@@ -39,9 +41,11 @@ import {
 } from "./repo_context.ts";
 import { flushDatastoreSync } from "../infrastructure/persistence/datastore_sync_coordinator.ts";
 import {
+  type CustomDatastoreConfig,
   type DatastoreConfig,
   isCustomDatastoreConfig,
 } from "../domain/datastore/datastore_config.ts";
+import type { PushManifest } from "../domain/datastore/datastore_sync_service.ts";
 import { LockTimeoutError } from "../domain/datastore/distributed_lock.ts";
 import { RepoPath } from "../domain/repo/repo_path.ts";
 import { RepoService } from "../domain/repo/repo_service.ts";
@@ -1771,5 +1775,366 @@ Deno.test("acquireModelLocks - namespace is threaded to pull and push", async ()
       "pushChanged must receive namespace from config",
     );
     assertExists(pushOpts?.context, "pushChanged must still receive context");
+  });
+});
+
+// ── Two-Phase Sync Tests ─────────────────────────────────────────────────────
+
+function createMockConfig(namespace?: string): CustomDatastoreConfig {
+  return {
+    type: "test-two-phase",
+    config: { bucket: "test" },
+    datastorePath: "/tmp/test-datastore",
+    cachePath: "/tmp/test-cache",
+    namespace,
+  };
+}
+
+function createMockProvider(events: string[]) {
+  return {
+    createLock: () => ({
+      acquire: () => {
+        events.push("global-lock-acquire");
+        return Promise.resolve();
+      },
+      release: () => {
+        events.push("global-lock-release");
+        return Promise.resolve();
+      },
+      withLock: <T>(fn: () => Promise<T>) => fn(),
+      inspect: () => Promise.resolve(null),
+      forceRelease: () => Promise.resolve(true),
+    }),
+    createVerifier: () => ({
+      verify: () =>
+        Promise.resolve({
+          healthy: true,
+          message: "ok",
+          latencyMs: 1,
+          datastoreType: "test",
+        }),
+    }),
+    resolveDatastorePath: () => "/tmp/test-datastore",
+    resolveCachePath: () => "/tmp/test-cache",
+  };
+}
+
+function createMockLogger() {
+  return {
+    info: () => {},
+    warn: () => {},
+    error: () => {},
+    debug: () => {},
+  } as unknown as ReturnType<
+    typeof import("../infrastructure/logging/logger.ts").getSwampLogger
+  >;
+}
+
+Deno.test("flushTwoPhasePush: calls preparePush outside lock, commitPush inside lock", async () => {
+  const events: string[] = [];
+  const provider = createMockProvider(events);
+  const mockManifest = { uploaded: ["a.json"] } as unknown as PushManifest;
+
+  const syncService = {
+    pullChanged: () => Promise.resolve(0),
+    pushChanged: () => {
+      events.push("pushChanged");
+      return Promise.resolve(0);
+    },
+    markDirty: () => Promise.resolve(),
+    capabilities: () => ({ twoPhaseSync: true, scopedSync: true }),
+    preparePush: () => {
+      events.push("preparePush");
+      return Promise.resolve(mockManifest);
+    },
+    commitPush: () => {
+      events.push("commitPush");
+      return Promise.resolve(1);
+    },
+  };
+
+  await flushTwoPhasePush(
+    provider,
+    syncService,
+    createMockConfig(),
+    { twoPhaseSync: true, scopedSync: true },
+    [{ modelType: "test", modelId: "m1" }],
+    undefined,
+    undefined,
+    createMockLogger(),
+  );
+
+  assertEquals(events, [
+    "preparePush",
+    "global-lock-acquire",
+    "commitPush",
+    "global-lock-release",
+  ]);
+});
+
+Deno.test("flushSinglePhasePush: calls pushChanged under global lock", async () => {
+  const events: string[] = [];
+  const provider = createMockProvider(events);
+
+  const syncService = {
+    pullChanged: () => Promise.resolve(0),
+    pushChanged: () => {
+      events.push("pushChanged");
+      return Promise.resolve(0);
+    },
+    markDirty: () => Promise.resolve(),
+    capabilities: () => ({ scopedSync: true }),
+  };
+
+  await flushSinglePhasePush(
+    provider,
+    syncService,
+    createMockConfig(),
+    { scopedSync: true },
+    [{ modelType: "test", modelId: "m1" }],
+    undefined,
+    undefined,
+    createMockLogger(),
+  );
+
+  assertEquals(events, [
+    "global-lock-acquire",
+    "pushChanged",
+    "global-lock-release",
+  ]);
+});
+
+Deno.test("flushTwoPhasePush: preparePush failure skips global lock", async () => {
+  const events: string[] = [];
+  const provider = createMockProvider(events);
+
+  const syncService = {
+    pullChanged: () => Promise.resolve(0),
+    pushChanged: () => Promise.resolve(0),
+    markDirty: () => Promise.resolve(),
+    capabilities: () => ({ twoPhaseSync: true }),
+    preparePush: () => {
+      events.push("preparePush");
+      return Promise.reject(new Error("upload failed"));
+    },
+    commitPush: () => {
+      events.push("commitPush");
+      return Promise.resolve(0);
+    },
+  };
+
+  await assertRejects(
+    () =>
+      flushTwoPhasePush(
+        provider,
+        syncService,
+        createMockConfig(),
+        { twoPhaseSync: true },
+        [{ modelType: "test", modelId: "m1" }],
+        undefined,
+        undefined,
+        createMockLogger(),
+      ),
+    Error,
+  );
+
+  assertEquals(events, ["preparePush"]);
+  assertEquals(events.includes("global-lock-acquire"), false);
+});
+
+Deno.test("flushTwoPhasePush: commitPush failure still releases global lock", async () => {
+  const events: string[] = [];
+  const provider = createMockProvider(events);
+  const mockManifest = {} as unknown as PushManifest;
+
+  const syncService = {
+    pullChanged: () => Promise.resolve(0),
+    pushChanged: () => Promise.resolve(0),
+    markDirty: () => Promise.resolve(),
+    capabilities: () => ({ twoPhaseSync: true }),
+    preparePush: () => {
+      events.push("preparePush");
+      return Promise.resolve(mockManifest);
+    },
+    commitPush: () => {
+      events.push("commitPush");
+      return Promise.reject(new Error("index update failed"));
+    },
+  };
+
+  await assertRejects(
+    () =>
+      flushTwoPhasePush(
+        provider,
+        syncService,
+        createMockConfig(),
+        { twoPhaseSync: true },
+        [{ modelType: "test", modelId: "m1" }],
+        undefined,
+        undefined,
+        createMockLogger(),
+      ),
+    Error,
+  );
+
+  assertEquals(events.includes("global-lock-acquire"), true);
+  assertEquals(events.includes("global-lock-release"), true);
+  assertEquals(
+    events.indexOf("global-lock-release") > events.indexOf("commitPush"),
+    true,
+    "global lock must be released after commitPush failure",
+  );
+});
+
+Deno.test("flushTwoPhasePush: passes namespace to both phases", async () => {
+  const prepareOpts: unknown[] = [];
+  const commitOpts: unknown[] = [];
+  const events: string[] = [];
+  const provider = createMockProvider(events);
+  const mockManifest = {} as unknown as PushManifest;
+
+  const syncService = {
+    pullChanged: () => Promise.resolve(0),
+    pushChanged: () => Promise.resolve(0),
+    markDirty: () => Promise.resolve(),
+    capabilities: () => ({ twoPhaseSync: true, scopedSync: true }),
+    preparePush: (opts?: unknown) => {
+      prepareOpts.push(opts);
+      return Promise.resolve(mockManifest);
+    },
+    commitPush: (_manifest: unknown, opts?: unknown) => {
+      commitOpts.push(opts);
+      return Promise.resolve(1);
+    },
+  };
+
+  await flushTwoPhasePush(
+    provider,
+    syncService,
+    createMockConfig("infra"),
+    { twoPhaseSync: true, scopedSync: true },
+    [{ modelType: "test", modelId: "m1" }],
+    "infra",
+    undefined,
+    createMockLogger(),
+  );
+
+  const prepOpts = prepareOpts[0] as { namespace?: string; context?: unknown };
+  assertEquals(prepOpts?.namespace, "infra");
+  assertExists(prepOpts?.context);
+
+  const cmtOpts = commitOpts[0] as { namespace?: string };
+  assertEquals(cmtOpts?.namespace, "infra");
+});
+
+Deno.test("acquireModelLocks: uses two-phase push when twoPhaseSync is advertised", async () => {
+  const { datastoreTypeRegistry } = await import(
+    "../domain/datastore/datastore_type_registry.ts"
+  );
+
+  const typeName = "test-two-phase-sync";
+  const events: string[] = [];
+  const mockManifest = {} as unknown as PushManifest;
+
+  if (!datastoreTypeRegistry.has(typeName)) {
+    datastoreTypeRegistry.register({
+      type: typeName,
+      name: "Test two-phase sync",
+      description: "Test extension for two-phase sync",
+      isBuiltIn: false,
+      createProvider: () => ({
+        createLock: () => ({
+          acquire: () => {
+            events.push("lock-acquire");
+            return Promise.resolve();
+          },
+          release: () => {
+            events.push("lock-release");
+            return Promise.resolve();
+          },
+          withLock: <T>(fn: () => Promise<T>) => fn(),
+          inspect: () => Promise.resolve(null),
+          forceRelease: () => Promise.resolve(true),
+        }),
+        createVerifier: () => ({
+          verify: () =>
+            Promise.resolve({
+              healthy: true,
+              message: "ok",
+              latencyMs: 1,
+              datastoreType: typeName,
+            }),
+        }),
+        resolveDatastorePath: (repoDir: string) => `${repoDir}/.test-store`,
+        resolveCachePath: (repoDir: string) => `${repoDir}/.test-cache`,
+        createSyncService: () => ({
+          pullChanged: () => Promise.resolve(0),
+          pushChanged: () => {
+            events.push("pushChanged");
+            return Promise.resolve(0);
+          },
+          markDirty: () => Promise.resolve(),
+          capabilities: () => ({
+            scopedSync: true,
+            twoPhaseSync: true,
+          }),
+          preparePush: () => {
+            events.push("preparePush");
+            return Promise.resolve(mockManifest);
+          },
+          commitPush: () => {
+            events.push("commitPush");
+            return Promise.resolve(1);
+          },
+        }),
+      }),
+    });
+  }
+
+  await withTempDir(async (dir) => {
+    await initializeRepo(dir);
+
+    const markerPath = join(dir, ".swamp.yaml");
+    const existing = await Deno.readTextFile(markerPath);
+    const datastoreYaml = [
+      "datastore:",
+      `  type: '${typeName}'`,
+      "  config:",
+      "    bucket: test-bucket",
+    ].join("\n");
+    await Deno.writeTextFile(
+      markerPath,
+      existing.trimEnd() + "\n" + datastoreYaml + "\n",
+    );
+
+    events.length = 0;
+
+    const { datastoreConfig } = await resolveDatastoreForRepo(dir);
+    const lockResult = await acquireModelLocks(datastoreConfig, [
+      { modelType: "test-type", modelId: "m1" },
+    ], dir);
+
+    await lockResult.flush();
+
+    assertEquals(
+      events.includes("preparePush"),
+      true,
+      "two-phase path must call preparePush",
+    );
+    assertEquals(
+      events.includes("commitPush"),
+      true,
+      "two-phase path must call commitPush",
+    );
+    assertEquals(
+      events.includes("pushChanged"),
+      false,
+      "two-phase path must NOT call pushChanged",
+    );
+    assertEquals(
+      events.indexOf("preparePush") < events.indexOf("commitPush"),
+      true,
+      "preparePush must run before commitPush",
+    );
   });
 });
