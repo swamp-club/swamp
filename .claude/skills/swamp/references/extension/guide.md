@@ -78,6 +78,15 @@ Run `swamp auth whoami --json` to see available collectives. If multiple are
 returned, **always ask the user** which one to use. Use `@collective/name` from
 the start — placeholder prefixes like `@local/` are rejected during push.
 
+## Import Rules
+
+Always use `import { z } from "npm:zod@4";` in source files — never bare
+`from "zod"`. A `deno.json` imports map may map `"zod"` for local tooling, but
+source files must still use the inline `npm:zod@4` specifier. The swamp-club
+scorer runs `deno doc --lint` in a hermetic sandbox that strips the repo's
+`deno.json` and writes its own with no imports map, so bare specifiers resolve
+locally but fail at score time.
+
 ## Quick Reference
 
 | Task                | Command/Action                                 |
