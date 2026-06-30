@@ -78,6 +78,7 @@ import type {
   DatastoreSyncService,
   HydrateFileHook,
   MarkDirtyHook,
+  PushManifest,
   SyncCapabilities,
   SyncContext,
 } from "../domain/datastore/datastore_sync_service.ts";
@@ -1201,103 +1202,47 @@ export async function acquireModelLocks(
     try {
       Deno.env.delete(SWAMP_LOCK_HOLDER_PID);
 
-      // For custom sync-capable datastores: push under global lock
+      // For custom sync-capable datastores: push changes to remote
       if (
         customSyncService && customProvider && isCustomDatastoreConfig(config)
       ) {
-        const pushLock = customProvider.createLock(
-          config.datastorePath,
-          {
-            ...datastoreGlobalLockOptions(config),
-            maxWaitMs: resolveLockTimeoutMs(),
-          },
-        );
-        try {
-          const lockStart = Date.now();
-          await pushLock.acquire();
-          const lockMs = Date.now() - lockStart;
-          if (
-            lockMs > 5_000 && isCustomDatastoreConfig(config) &&
-            !config.namespace
-          ) {
-            logger.warn(
-              "Lock acquisition took {ms}ms — multiple repos sharing this " +
-                "datastore without namespaces serialize all writes behind a " +
-                "single global lock. Run 'swamp datastore namespace set " +
-                "<name>' to scope each repo to its own lock and index",
-              { ms: lockMs },
-            );
-          }
-          logger.info`Pushing changes to datastore...`;
+        const pushNs = isCustomDatastoreConfig(config)
+          ? config.namespace
+          : undefined;
 
-          const pushNs = isCustomDatastoreConfig(config)
-            ? config.namespace
-            : undefined;
-
-          if (
-            pushNs && catalogStore &&
-            isCustomDatastoreConfig(config) && config.cachePath
-          ) {
-            try {
-              const exportCount = await writeCatalogExport(
-                catalogStore,
-                config.cachePath,
-                pushNs,
-              );
-              await customSyncService.markDirty({
-                relPath: `${pushNs}/.catalog-export.json`,
-              });
-              logger.info(
-                "Wrote catalog export ({count} row(s)) for namespace {namespace}",
-                { count: exportCount, namespace: pushNs },
-              );
-            } catch (error) {
-              logger.warn(
-                "Catalog export write failed: {error}",
-                {
-                  error: error instanceof Error ? error.message : String(error),
-                },
-              );
-            }
-          }
-
-          let pushed: number | void;
-          if (caps?.scopedSync) {
-            const context: SyncContext = { models: unique };
-            pushed = await customSyncService.pushChanged({
-              context,
-              ...(pushNs ? { namespace: pushNs } : {}),
-            });
-          } else if (pushNs) {
-            pushed = await customSyncService.pushChanged({ namespace: pushNs });
-          } else {
-            pushed = await customSyncService.pushChanged();
-          }
-          if (pushed && pushed > 0) {
-            logger.info("Pushed {count} file(s) to datastore", {
-              count: pushed,
-            });
-          } else {
-            logger.info`Push complete, no changes`;
-          }
-        } catch (error) {
-          const { summary, fields } = summarizeSyncError(
-            "push",
-            config.type,
-            error,
+        if (
+          caps?.twoPhaseSync && customSyncService.preparePush &&
+          customSyncService.commitPush
+        ) {
+          // Two-phase push: file uploads outside global lock, index
+          // merge under global lock. Narrows the critical section from
+          // "entire sync" to "index read-modify-write" only.
+          await flushTwoPhasePush(
+            customProvider,
+            customSyncService,
+            config,
+            caps,
+            unique,
+            pushNs,
+            catalogStore,
+            logger,
           );
-          logger.error("{summary}", { summary, ...fields });
-          throw new Error(summary, { cause: error });
-        } finally {
-          try {
-            await pushLock.release();
-          } catch {
-            // Best-effort release
-          }
+        } else {
+          // Single-phase fallback: everything under global lock
+          await flushSinglePhasePush(
+            customProvider,
+            customSyncService,
+            config,
+            caps,
+            unique,
+            pushNs,
+            catalogStore,
+            logger,
+          );
         }
       }
     } finally {
-      // Always release per-model locks, even if S3 push fails
+      // Always release per-model locks, even if push fails
       for (const key of lockKeys) {
         await flushDatastoreSyncNamed(key);
       }
@@ -1305,6 +1250,228 @@ export async function acquireModelLocks(
   };
 
   return { flush, synced };
+}
+
+/**
+ * Single-phase push: everything under the global lock (existing behavior).
+ *
+ * Acquires the global lock, writes catalog export, calls `pushChanged`,
+ * then releases. Used when the extension does not advertise `twoPhaseSync`.
+ */
+export async function flushSinglePhasePush(
+  provider: DatastoreProvider,
+  syncService: DatastoreSyncService,
+  config: CustomDatastoreConfig,
+  caps: SyncCapabilities | undefined,
+  models: ReadonlyArray<{ modelType: string; modelId: string }>,
+  namespace: string | undefined,
+  catalogStore: CatalogStore | undefined,
+  logger: ReturnType<typeof getSwampLogger>,
+): Promise<void> {
+  const pushLock = provider.createLock(
+    config.datastorePath,
+    {
+      ...datastoreGlobalLockOptions(config),
+      maxWaitMs: resolveLockTimeoutMs(),
+    },
+  );
+  try {
+    const lockStart = Date.now();
+    await pushLock.acquire();
+    const lockMs = Date.now() - lockStart;
+    if (lockMs > 5_000 && !config.namespace) {
+      logger.warn(
+        "Lock acquisition took {ms}ms — multiple repos sharing this " +
+          "datastore without namespaces serialize all writes behind a " +
+          "single global lock. Run 'swamp datastore namespace set " +
+          "<name>' to scope each repo to its own lock and index",
+        { ms: lockMs },
+      );
+    }
+    logger.info`Pushing changes to datastore...`;
+
+    await writeCatalogExportIfNeeded(
+      syncService,
+      config,
+      namespace,
+      catalogStore,
+      logger,
+    );
+
+    let pushed: number | void;
+    if (caps?.scopedSync) {
+      const context: SyncContext = { models: [...models] };
+      pushed = await syncService.pushChanged({
+        context,
+        ...(namespace ? { namespace } : {}),
+      });
+    } else if (namespace) {
+      pushed = await syncService.pushChanged({ namespace });
+    } else {
+      pushed = await syncService.pushChanged();
+    }
+    if (pushed && pushed > 0) {
+      logger.info("Pushed {count} file(s) to datastore", {
+        count: pushed,
+      });
+    } else {
+      logger.info`Push complete, no changes`;
+    }
+  } catch (error) {
+    const { summary, fields } = summarizeSyncError(
+      "push",
+      config.type,
+      error,
+    );
+    logger.error("{summary}", { summary, ...fields });
+    throw new Error(summary, { cause: error });
+  } finally {
+    try {
+      await pushLock.release();
+    } catch {
+      // Best-effort release
+    }
+  }
+}
+
+/**
+ * Two-phase push: file I/O outside the lock, index merge under the lock.
+ *
+ * 1. `preparePush` — uploads changed files to the remote (expensive,
+ *    runs under per-model locks only, no global lock)
+ * 2. Acquire global lock
+ * 3. Write catalog export
+ * 4. `commitPush` — merges the manifest into the remote index (fast)
+ * 5. Release global lock
+ *
+ * This narrows the critical section from "entire sync" to "index
+ * read-modify-write" only. Concurrent writers to different models
+ * overlap on step 1 and serialize only on steps 2–5.
+ */
+export async function flushTwoPhasePush(
+  provider: DatastoreProvider,
+  syncService: DatastoreSyncService,
+  config: CustomDatastoreConfig,
+  caps: SyncCapabilities | undefined,
+  models: ReadonlyArray<{ modelType: string; modelId: string }>,
+  namespace: string | undefined,
+  catalogStore: CatalogStore | undefined,
+  logger: ReturnType<typeof getSwampLogger>,
+): Promise<void> {
+  // Phase 1: upload files outside the global lock
+  let manifest: PushManifest;
+  try {
+    logger.info`Preparing push (uploading files)...`;
+    const prepareOpts = caps?.scopedSync
+      ? {
+        context: { models: [...models] } as SyncContext,
+        ...(namespace ? { namespace } : {}),
+      }
+      : namespace
+      ? { namespace }
+      : undefined;
+    manifest = await syncService.preparePush!(prepareOpts);
+  } catch (error) {
+    const { summary, fields } = summarizeSyncError(
+      "push",
+      config.type,
+      error,
+    );
+    logger.error("{summary}", { summary, ...fields });
+    throw new Error(summary, { cause: error });
+  }
+
+  // Phase 2: index merge under global lock
+  const pushLock = provider.createLock(
+    config.datastorePath,
+    {
+      ...datastoreGlobalLockOptions(config),
+      maxWaitMs: resolveLockTimeoutMs(),
+    },
+  );
+  try {
+    const lockStart = Date.now();
+    await pushLock.acquire();
+    const lockMs = Date.now() - lockStart;
+    if (lockMs > 5_000 && !config.namespace) {
+      logger.warn(
+        "Lock acquisition took {ms}ms — multiple repos sharing this " +
+          "datastore without namespaces serialize all writes behind a " +
+          "single global lock. Run 'swamp datastore namespace set " +
+          "<name>' to scope each repo to its own lock and index",
+        { ms: lockMs },
+      );
+    }
+    logger.info`Committing index update...`;
+
+    await writeCatalogExportIfNeeded(
+      syncService,
+      config,
+      namespace,
+      catalogStore,
+      logger,
+    );
+
+    const commitOpts = namespace ? { namespace } : undefined;
+    const pushed = await syncService.commitPush!(manifest, commitOpts);
+    if (pushed && pushed > 0) {
+      logger.info("Committed {count} file(s) to datastore index", {
+        count: pushed,
+      });
+    } else {
+      logger.info`Commit complete, no index changes`;
+    }
+  } catch (error) {
+    const { summary, fields } = summarizeSyncError(
+      "push",
+      config.type,
+      error,
+    );
+    logger.error("{summary}", { summary, ...fields });
+    throw new Error(summary, { cause: error });
+  } finally {
+    try {
+      await pushLock.release();
+    } catch {
+      // Best-effort release
+    }
+  }
+}
+
+/**
+ * Writes `.catalog-export.json` for the namespace if applicable.
+ * Shared by both single-phase and two-phase push paths.
+ */
+export async function writeCatalogExportIfNeeded(
+  syncService: DatastoreSyncService,
+  config: CustomDatastoreConfig,
+  namespace: string | undefined,
+  catalogStore: CatalogStore | undefined,
+  logger: ReturnType<typeof getSwampLogger>,
+): Promise<void> {
+  if (namespace && catalogStore && config.cachePath) {
+    try {
+      const exportCount = await writeCatalogExport(
+        catalogStore,
+        config.cachePath,
+        namespace,
+      );
+      await syncService.markDirty({
+        relPath: `${namespace}/.catalog-export.json`,
+      });
+      logger.info(
+        "Wrote catalog export ({count} row(s)) for namespace {namespace}",
+        { count: exportCount, namespace },
+      );
+    } catch (error) {
+      logger.warn(
+        "Catalog export write failed: {error}",
+        {
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
+    }
+  }
 }
 
 export interface VaultSyncResult {

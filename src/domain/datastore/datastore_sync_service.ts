@@ -36,7 +36,26 @@ export interface SyncCapabilities {
    * are expected to ignore it and sync everything (solo-mode behavior).
    */
   namespacedSync?: boolean;
+  /**
+   * When `true`, the extension supports two-phase push via
+   * {@link DatastoreSyncService.preparePush} +
+   * {@link DatastoreSyncService.commitPush}. Core splits the push so
+   * expensive file I/O runs outside the global lock (narrowing the
+   * critical section to the index merge only). Extensions that don't
+   * advertise this continue to use `pushChanged` under the global lock.
+   */
+  twoPhaseSync?: boolean;
 }
+
+/**
+ * Opaque manifest returned by {@link DatastoreSyncService.preparePush}
+ * and consumed by {@link DatastoreSyncService.commitPush}.
+ *
+ * Core treats this as passthrough — it never inspects or validates the
+ * contents. The extension defines what goes inside; core only
+ * orchestrates when each phase runs.
+ */
+export type PushManifest = { readonly __brand: unique symbol };
 
 /** Options accepted by sync service methods. */
 export interface DatastoreSyncOptions {
@@ -226,6 +245,51 @@ export interface DatastoreSyncService {
     namespace: string,
     relPath: string,
   ): Promise<Uint8Array | null>;
+
+  /**
+   * Phase 1 of two-phase push: upload changed files to the remote.
+   *
+   * Called **outside** the global lock (but under per-model locks) so the
+   * expensive file I/O runs concurrently across writers to different
+   * models. Returns an opaque {@link PushManifest} that
+   * {@link commitPush} consumes to update the remote index.
+   *
+   * Contract:
+   * 1. Upload new/changed/deleted files to the remote backend.
+   * 2. Return a manifest describing what changed — core passes it
+   *    through to `commitPush` without inspection.
+   * 3. Do NOT update the remote index — that happens in `commitPush`
+   *    under the global lock.
+   * 4. Do NOT clear the dirty flag — if `commitPush` fails, the dirty
+   *    flag must remain set so the next push retries.
+   *
+   * Optional — only implemented by extensions that advertise
+   * `twoPhaseSync: true` in their capabilities.
+   */
+  preparePush?(options?: DatastoreSyncOptions): Promise<PushManifest>;
+
+  /**
+   * Phase 2 of two-phase push: merge the manifest into the remote index.
+   *
+   * Called **under** the global lock so the index read-modify-write is
+   * serialized. Receives the manifest from {@link preparePush} and merges
+   * its entries into the current remote index — read the latest index,
+   * add/update/remove entries per the manifest, write the index back.
+   *
+   * Contract:
+   * 1. Read the **current** remote index (not a cached copy from
+   *    `preparePush` — another writer may have committed in between).
+   * 2. **Merge** manifest entries — never replace the entire index.
+   * 3. Clear the dirty flag only after the index write succeeds.
+   * 4. Return the number of files whose index entries were updated.
+   *
+   * Optional — only implemented by extensions that advertise
+   * `twoPhaseSync: true` in their capabilities.
+   */
+  commitPush?(
+    manifest: PushManifest,
+    options?: DatastoreSyncOptions,
+  ): Promise<number | void>;
 }
 
 /** A single foreign catalog export: the namespace it came from and its rows. */

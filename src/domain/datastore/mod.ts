@@ -52,6 +52,7 @@ export {
   type DatastoreSyncOptions,
   type DatastoreSyncService,
   type MarkDirtyHook,
+  type PushManifest,
   type SyncCapabilities,
   type SyncContext,
   type SyncDirection,

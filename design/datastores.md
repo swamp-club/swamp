@@ -357,7 +357,9 @@ acquired. The extension pulls exactly one model per call.
 
 **Push path.** The flush function calls `pushChanged()` once (not per-model)
 under the global lock. When `scopedSync` is `true`, context contains all
-deduplicated models.
+deduplicated models. When `twoPhaseSync` is `true`, the push is split into
+`preparePush` (outside global lock) and `commitPush` (under global lock) — see
+"Two-Phase Sync" below.
 
 **Catalog rebuild invariant.** `synced = true` is set after `pullChanged()`
 succeeds on both the scoped and full paths. This boolean is returned in
@@ -441,6 +443,74 @@ datastores, the built-in `namespace_manifest.ts` utility reads and writes
 manifest files directly. Both methods are optional on `DatastoreProvider` —
 when the extension does not implement them, the CLI warns that conflict
 detection is unavailable and proceeds with only the `.swamp.yaml` update.
+
+### Two-Phase Sync
+
+When an extension advertises `twoPhaseSync: true` in its capabilities, swamp
+core splits the push into two phases to narrow the global-lock critical section:
+
+```
+Single-phase (default — pushChanged under global lock):
+
+  acquire global lock
+  pushChanged()          ← entire sync: index read + file upload + index write
+  release global lock
+
+Two-phase (twoPhaseSync: true):
+
+  preparePush()          ← file uploads only, outside global lock
+  acquire global lock
+  commitPush(manifest)   ← index merge only, fast
+  release global lock
+```
+
+This matters for workloads with many concurrent per-model writers in the same
+namespace. Without two-phase sync, every writer acquires the global lock to
+do a full push — serializing all concurrent writes behind the lock. With
+two-phase sync, the expensive file I/O (`preparePush`) overlaps across
+writers, and only the fast index merge (`commitPush`) serializes.
+
+#### Extension contract
+
+Extensions implement two optional methods on `DatastoreSyncService`:
+
+- **`preparePush(options?)`** — Upload new/changed files to the remote.
+  Return an opaque `PushManifest` describing what changed. Do NOT update the
+  remote index. Do NOT clear the dirty flag (if `commitPush` fails, the dirty
+  flag must remain set so the next push retries).
+
+- **`commitPush(manifest, options?)`** — Read the **current** remote index
+  (not a cached copy — another writer may have committed between
+  `preparePush` and `commitPush`). **Merge** the manifest entries into the
+  index — never replace the entire index. Write the updated index back. Clear
+  the dirty flag only after the index write succeeds.
+
+The manifest type (`PushManifest`) is opaque to core — core passes it through
+from `preparePush` to `commitPush` without inspection. The extension defines
+what goes inside.
+
+#### Integrity guarantees
+
+Core provides the integrity guarantees; extensions do not need to implement
+their own concurrency control:
+
+1. **Global lock on `commitPush`** — the index read-modify-write is always
+   serialized. Two concurrent `commitPush` calls never overlap.
+2. **Per-model locks across both phases** — held from before `preparePush`
+   through after `commitPush`. Structural commands' symmetric drain waits
+   for these locks, so a concurrent delete/GC cannot interfere.
+3. **Additive merge** — since per-model locks guarantee non-overlapping file
+   paths between concurrent writers, manifests from different writers never
+   conflict. `commitPush` merges into whatever the current index contains.
+4. **Catalog export under lock** — `.catalog-export.json` is written inside
+   the global-lock critical section (between lock acquire and `commitPush`),
+   so concurrent catalog exports do not race.
+
+#### Fallback
+
+Extensions that do not advertise `twoPhaseSync` (or do not implement
+`preparePush`/`commitPush`) continue to use the single-phase
+`pushChanged`-under-global-lock path — zero regression.
 
 ### Zero-Diff Fast Path (Extension Guidance)
 
