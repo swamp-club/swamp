@@ -502,9 +502,11 @@ their own concurrency control:
 3. **Additive merge** — since per-model locks guarantee non-overlapping file
    paths between concurrent writers, manifests from different writers never
    conflict. `commitPush` merges into whatever the current index contains.
-4. **Catalog export under lock** — `.catalog-export.json` is written inside
-   the global-lock critical section (between lock acquire and `commitPush`),
-   so concurrent catalog exports do not race.
+4. **Catalog export before upload** — `.catalog-export.json` is written
+   before `preparePush` so it is included in the file upload phase. The
+   export is a full snapshot of the local catalog, so concurrent writers
+   that overwrite it produce a correct (more complete) result. This avoids
+   a gap where the export is dirty but never uploaded.
 
 #### Fallback
 

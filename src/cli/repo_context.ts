@@ -1206,9 +1206,7 @@ export async function acquireModelLocks(
       if (
         customSyncService && customProvider && isCustomDatastoreConfig(config)
       ) {
-        const pushNs = isCustomDatastoreConfig(config)
-          ? config.namespace
-          : undefined;
+        const pushNs = config.namespace;
 
         if (
           caps?.twoPhaseSync && customSyncService.preparePush &&
@@ -1358,6 +1356,18 @@ export async function flushTwoPhasePush(
   catalogStore: CatalogStore | undefined,
   logger: ReturnType<typeof getSwampLogger>,
 ): Promise<void> {
+  // Write catalog export before preparePush so it's included in the
+  // upload phase. The export is a full snapshot of the local catalog —
+  // safe to write outside the lock because a later concurrent writer
+  // simply overwrites with a more complete snapshot.
+  await writeCatalogExportIfNeeded(
+    syncService,
+    config,
+    namespace,
+    catalogStore,
+    logger,
+  );
+
   // Phase 1: upload files outside the global lock
   let manifest: PushManifest;
   try {
@@ -1403,14 +1413,6 @@ export async function flushTwoPhasePush(
       );
     }
     logger.info`Committing index update...`;
-
-    await writeCatalogExportIfNeeded(
-      syncService,
-      config,
-      namespace,
-      catalogStore,
-      logger,
-    );
 
     const commitOpts = namespace ? { namespace } : undefined;
     const pushed = await syncService.commitPush!(manifest, commitOpts);
