@@ -32,73 +32,115 @@ import {
   createLibSwampContext,
   createModelValidateDeps,
   modelValidate,
+  type ModelValidateAllData,
+  type ModelValidateData,
 } from "../../libswamp/mod.ts";
 import { createModelValidateRenderer } from "../../presentation/renderers/model_validate.ts";
 import { modelRegistry } from "../../domain/models/model.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { ModelValidateResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-export const modelValidateCommand = new Command()
-  .name("validate")
-  .description("Validate a model definition against its schema")
-  .example("Validate a model", "swamp model validate my-server")
-  .example("Validate all models", "swamp model validate")
-  .example(
-    "Filter by label",
-    "swamp model validate --label production",
-  )
-  .arguments("[model_id_or_name:string]")
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
-  .option(
-    "--label <label:string>",
-    "Only run checks with this label",
-    { collect: true },
-  )
-  .option(
-    "--method <method:string>",
-    "Only run checks that apply to this method",
-  )
-  .action(
-    async function (options: AnyOptions, modelIdOrName?: string) {
-      const cliCtx = createContext(options as GlobalOptions, [
-        "model",
-        "validate",
-      ]);
+export const modelValidateCommand = withRemoteOptions(
+  new Command()
+    .name("validate")
+    .description("Validate a model definition against its schema")
+    .example("Validate a model", "swamp model validate my-server")
+    .example("Validate all models", "swamp model validate")
+    .example(
+      "Filter by label",
+      "swamp model validate --label production",
+    )
+    .arguments("[model_id_or_name:string]")
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    )
+    .option(
+      "--label <label:string>",
+      "Only run checks with this label",
+      { collect: true },
+    )
+    .option(
+      "--method <method:string>",
+      "Only run checks that apply to this method",
+    ),
+).action(
+  async function (options: AnyOptions, modelIdOrName?: string) {
+    const cliCtx = createContext(options as GlobalOptions, [
+      "model",
+      "validate",
+    ]);
 
+    const server = resolveServeUrl(options.server as string | undefined);
+    if (server) {
       const labels = options.label as string[] | undefined;
       const method = options.method as string | undefined;
-      const hasCheckOptions = (labels && labels.length > 0) || method;
-
-      const { repoDir, datastoreResolver } = hasCheckOptions
-        ? await requireInitializedRepo({
-          repoDir: resolveRepoDir(options.repoDir),
-          outputMode: cliCtx.outputMode,
-        })
-        : await requireInitializedRepoReadOnly({
-          repoDir: resolveRepoDir(options.repoDir),
-          outputMode: cliCtx.outputMode,
-        });
-
-      await modelRegistry.ensureLoaded();
-      const ctx = createLibSwampContext({ logger: cliCtx.logger });
-      const deps = createModelValidateDeps(
-        repoDir,
-        { labels, method },
-        datastoreResolver,
+      const token = await resolveServerToken(
+        server,
+        options.token as string | undefined,
       );
-
+      const response = await requestServerResponse<ModelValidateResponse>(
+        { server, token },
+        {
+          type: "model.validate",
+          payload: { modelIdOrName, labels, method },
+        },
+      );
       const renderer = createModelValidateRenderer(cliCtx.outputMode);
       await consumeStream(
-        modelValidate(ctx, deps, { modelIdOrName }),
+        (async function* () {
+          yield {
+            kind: "completed" as const,
+            data: response
+              .data as unknown as ModelValidateData | ModelValidateAllData,
+          };
+        })(),
         renderer.handlers(),
       );
-
       if (!renderer.passed()) {
         Deno.exitCode = 1;
       }
-    },
-  );
+      return;
+    }
+
+    const labels = options.label as string[] | undefined;
+    const method = options.method as string | undefined;
+    const hasCheckOptions = (labels && labels.length > 0) || method;
+
+    const { repoDir, datastoreResolver } = hasCheckOptions
+      ? await requireInitializedRepo({
+        repoDir: resolveRepoDir(options.repoDir),
+        outputMode: cliCtx.outputMode,
+      })
+      : await requireInitializedRepoReadOnly({
+        repoDir: resolveRepoDir(options.repoDir),
+        outputMode: cliCtx.outputMode,
+      });
+
+    await modelRegistry.ensureLoaded();
+    const ctx = createLibSwampContext({ logger: cliCtx.logger });
+    const deps = createModelValidateDeps(
+      repoDir,
+      { labels, method },
+      datastoreResolver,
+    );
+
+    const renderer = createModelValidateRenderer(cliCtx.outputMode);
+    await consumeStream(
+      modelValidate(ctx, deps, { modelIdOrName }),
+      renderer.handlers(),
+    );
+
+    if (!renderer.passed()) {
+      Deno.exitCode = 1;
+    }
+  },
+);

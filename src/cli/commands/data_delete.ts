@@ -43,6 +43,13 @@ import {
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { DataDeleteResponse } from "../../serve/protocol.ts";
 import { UserError } from "../../domain/errors.ts";
 
 async function promptConfirmation(message: string): Promise<boolean> {
@@ -62,251 +69,288 @@ async function promptConfirmation(message: string): Promise<boolean> {
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-export const dataDeleteCommand = new Command()
-  .name("delete")
-  .description(
-    "Delete data artifacts: one by name, many by prefix, or all for a model",
-  )
-  .example(
-    "Delete an artifact (prompts for confirmation)",
-    "swamp data delete my-server hetzner-state",
-  )
-  .example(
-    "Delete using flags",
-    "swamp data delete --model my-server --name hetzner-state",
-  )
-  .example(
-    "Delete a specific version",
-    "swamp data delete my-server hetzner-state --version 2",
-  )
-  .example(
-    "Delete all data matching a prefix",
-    "swamp data delete my-server --prefix run-",
-  )
-  .example(
-    "Preview what --prefix would delete",
-    "swamp data delete my-server --prefix run- --dry-run",
-  )
-  .example(
-    "Delete all data for a model",
-    "swamp data delete my-server --all",
-  )
-  .example(
-    "Skip the confirmation prompt",
-    "swamp data delete my-server hetzner-state --force",
-  )
-  .arguments("[model_id_or_name:string] [data_name:string]")
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
-  .option(
-    "--model <model:string>",
-    "Model name or ID (alternative to positional argument)",
-  )
-  .option(
-    "--name <name:string>",
-    "Data name (alternative to positional argument)",
-  )
-  .option("--version <n:integer>", "Delete a specific version")
-  .option(
-    "--prefix <prefix:string>",
-    "Delete all data names starting with this prefix",
-  )
-  .option("--all", "Delete all data for the model")
-  .option("--dry-run", "Show what would be deleted without deleting")
-  .option("-f, --force", "Skip confirmation prompt")
-  .action(
-    async function (
-      options: AnyOptions,
-      positionalModel?: string,
-      positionalName?: string,
-    ) {
-      const modelIdOrName = (options.model as string | undefined) ??
-        positionalModel;
-      const dataName = (options.name as string | undefined) ?? positionalName;
-      const prefix = options.prefix as string | undefined;
-      const all = options.all as boolean | undefined;
-      const dryRun = options.dryRun as boolean | undefined;
+export const dataDeleteCommand = withRemoteOptions(
+  new Command()
+    .name("delete")
+    .description(
+      "Delete data artifacts: one by name, many by prefix, or all for a model",
+    )
+    .example(
+      "Delete an artifact (prompts for confirmation)",
+      "swamp data delete my-server hetzner-state",
+    )
+    .example(
+      "Delete using flags",
+      "swamp data delete --model my-server --name hetzner-state",
+    )
+    .example(
+      "Delete a specific version",
+      "swamp data delete my-server hetzner-state --version 2",
+    )
+    .example(
+      "Delete all data matching a prefix",
+      "swamp data delete my-server --prefix run-",
+    )
+    .example(
+      "Preview what --prefix would delete",
+      "swamp data delete my-server --prefix run- --dry-run",
+    )
+    .example(
+      "Delete all data for a model",
+      "swamp data delete my-server --all",
+    )
+    .example(
+      "Skip the confirmation prompt",
+      "swamp data delete my-server hetzner-state --force",
+    )
+    .arguments("[model_id_or_name:string] [data_name:string]")
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    )
+    .option(
+      "--model <model:string>",
+      "Model name or ID (alternative to positional argument)",
+    )
+    .option(
+      "--name <name:string>",
+      "Data name (alternative to positional argument)",
+    )
+    .option("--version <n:integer>", "Delete a specific version")
+    .option(
+      "--prefix <prefix:string>",
+      "Delete all data names starting with this prefix",
+    )
+    .option("--all", "Delete all data for the model")
+    .option("--dry-run", "Show what would be deleted without deleting")
+    .option("-f, --force", "Skip confirmation prompt"),
+).action(
+  async function (
+    options: AnyOptions,
+    positionalModel?: string,
+    positionalName?: string,
+  ) {
+    const modelIdOrName = (options.model as string | undefined) ??
+      positionalModel;
+    const dataName = (options.name as string | undefined) ?? positionalName;
+    const prefix = options.prefix as string | undefined;
+    const all = options.all as boolean | undefined;
+    const dryRun = options.dryRun as boolean | undefined;
 
-      const isBatchMode = prefix !== undefined || all;
+    const isBatchMode = prefix !== undefined || all;
+
+    if (isBatchMode) {
+      if (!modelIdOrName) {
+        throw new UserError(
+          "Model is required for batch delete. Use positional argument (swamp data delete <model> --prefix <prefix>) or flag (--model <model>).",
+        );
+      }
+      if (dataName) {
+        throw new UserError(
+          "Cannot combine data name with --prefix or --all. Use --prefix/--all for batch delete, or specify a data name for single delete.",
+        );
+      }
+      if (options.version !== undefined) {
+        throw new UserError(
+          "Cannot combine --version with --prefix or --all. Version-specific delete only applies to single data names.",
+        );
+      }
+      if (prefix !== undefined && prefix.length === 0) {
+        throw new UserError(
+          "--prefix value cannot be empty. Use --all to delete all data.",
+        );
+      }
+      if (prefix !== undefined && all) {
+        throw new UserError(
+          "Cannot combine --prefix and --all. Use one or the other.",
+        );
+      }
+    } else {
+      if (!modelIdOrName || !dataName) {
+        throw new UserError(
+          "Both model and data name are required. Use positional arguments (swamp data delete <model> <name>) or flags (--model <model> --name <name>).",
+        );
+      }
+      if (dryRun) {
+        throw new UserError(
+          "--dry-run is only supported with --prefix or --all.",
+        );
+      }
+    }
+
+    const cliCtx = createContext(options as GlobalOptions, [
+      "data",
+      "delete",
+    ]);
+
+    const server = resolveServeUrl(options.server as string | undefined);
+    if (server) {
+      if (isBatchMode) {
+        throw new UserError(
+          "Batch delete (--prefix, --all) is not supported with --server. Use single-item delete instead.",
+        );
+      }
+      const token = await resolveServerToken(
+        server,
+        options.token as string | undefined,
+      );
+      const response = await requestServerResponse<DataDeleteResponse>(
+        { server, token },
+        {
+          type: "data.delete",
+          payload: {
+            modelIdOrName: modelIdOrName!,
+            dataName: dataName!,
+            version: options.version as number | undefined,
+          },
+        },
+      );
+      const renderer = createDataDeleteRenderer(cliCtx.outputMode);
+      await consumeStream(
+        (async function* () {
+          yield {
+            kind: "completed" as const,
+            data: response
+              .data as unknown as import("../../libswamp/mod.ts").DataDeleteData,
+          };
+        })(),
+        renderer.handlers(),
+      );
+      return;
+    }
+
+    const {
+      repoDir,
+      repoContext,
+      datastoreResolver,
+      datastoreConfig,
+      syncService,
+    } = await requireInitializedRepoUnlocked({
+      repoDir: resolveRepoDir(options.repoDir),
+      outputMode: cliCtx.outputMode,
+    });
+
+    const preResult = await findDefinitionByIdOrName(
+      repoContext.definitionRepo,
+      modelIdOrName!,
+    );
+    if (!preResult) {
+      throw new UserError(`Model not found: ${modelIdOrName}`);
+    }
+
+    const lockResult = await acquireModelLocks(
+      datastoreConfig,
+      [
+        {
+          modelType: preResult.type.normalized,
+          modelId: preResult.definition.id,
+        },
+      ],
+      repoDir,
+      syncService,
+      repoContext.catalogStore,
+    );
+    if (lockResult.synced) repoContext.catalogStore.invalidate();
+
+    try {
+      const ctx = createLibSwampContext({ logger: cliCtx.logger });
+      const deps = createDataDeleteDeps(repoDir, datastoreResolver);
 
       if (isBatchMode) {
-        if (!modelIdOrName) {
-          throw new UserError(
-            "Model is required for batch delete. Use positional argument (swamp data delete <model> --prefix <prefix>) or flag (--model <model>).",
-          );
-        }
-        if (dataName) {
-          throw new UserError(
-            "Cannot combine data name with --prefix or --all. Use --prefix/--all for batch delete, or specify a data name for single delete.",
-          );
-        }
-        if (options.version !== undefined) {
-          throw new UserError(
-            "Cannot combine --version with --prefix or --all. Version-specific delete only applies to single data names.",
-          );
-        }
-        if (prefix !== undefined && prefix.length === 0) {
-          throw new UserError(
-            "--prefix value cannot be empty. Use --all to delete all data.",
-          );
-        }
-        if (prefix !== undefined && all) {
-          throw new UserError(
-            "Cannot combine --prefix and --all. Use one or the other.",
-          );
-        }
-      } else {
-        if (!modelIdOrName || !dataName) {
-          throw new UserError(
-            "Both model and data name are required. Use positional arguments (swamp data delete <model> <name>) or flags (--model <model> --name <name>).",
-          );
-        }
-        if (dryRun) {
-          throw new UserError(
-            "--dry-run is only supported with --prefix or --all.",
-          );
-        }
-      }
+        const filter: BatchDeleteFilter = all
+          ? { kind: "all" }
+          : { kind: "prefix", value: prefix! };
 
-      const cliCtx = createContext(options as GlobalOptions, [
-        "data",
-        "delete",
-      ]);
-
-      const {
-        repoDir,
-        repoContext,
-        datastoreResolver,
-        datastoreConfig,
-        syncService,
-      } = await requireInitializedRepoUnlocked({
-        repoDir: resolveRepoDir(options.repoDir),
-        outputMode: cliCtx.outputMode,
-      });
-
-      const preResult = await findDefinitionByIdOrName(
-        repoContext.definitionRepo,
-        modelIdOrName!,
-      );
-      if (!preResult) {
-        throw new UserError(`Model not found: ${modelIdOrName}`);
-      }
-
-      const lockResult = await acquireModelLocks(
-        datastoreConfig,
-        [
-          {
-            modelType: preResult.type.normalized,
-            modelId: preResult.definition.id,
-          },
-        ],
-        repoDir,
-        syncService,
-        repoContext.catalogStore,
-      );
-      if (lockResult.synced) repoContext.catalogStore.invalidate();
-
-      try {
-        const ctx = createLibSwampContext({ logger: cliCtx.logger });
-        const deps = createDataDeleteDeps(repoDir, datastoreResolver);
-
-        if (isBatchMode) {
-          const filter: BatchDeleteFilter = all
-            ? { kind: "all" }
-            : { kind: "prefix", value: prefix! };
-
-          // Phase 1: Preview + Prompt (unless --force or --dry-run).
-          if (cliCtx.outputMode === "log" && !options.force && !dryRun) {
-            let preview;
-            try {
-              preview = await dataBatchDeletePreview(ctx, deps, {
-                modelIdOrName: modelIdOrName!,
-                filter,
-              });
-            } catch (error) {
-              throw new UserError(
-                error instanceof Error ? error.message : String(error),
-              );
-            }
-
-            const filterDesc = filter.kind === "prefix"
-              ? `prefix "${filter.value}"`
-              : "all data";
-            const confirmed = await promptConfirmation(
-              `About to delete ${preview.totalItems} data artifact(s) (${preview.totalVersions} version(s)) matching ${filterDesc} from ${preview.modelName}. Proceed?`,
-            );
-            if (!confirmed) {
-              renderDataDeleteCancelled(cliCtx.outputMode);
-              return;
-            }
-          }
-
-          // Phase 2: Execute batch delete.
-          const renderer = createDataBatchDeleteRenderer(cliCtx.outputMode);
-          await consumeStream(
-            dataBatchDelete(ctx, deps, {
+        // Phase 1: Preview + Prompt (unless --force or --dry-run).
+        if (cliCtx.outputMode === "log" && !options.force && !dryRun) {
+          let preview;
+          try {
+            preview = await dataBatchDeletePreview(ctx, deps, {
               modelIdOrName: modelIdOrName!,
               filter,
-              dryRun: dryRun ?? false,
-            }),
-            renderer.handlers(),
-          );
-        } else {
-          const renderer = createDataDeleteRenderer(cliCtx.outputMode);
-
-          // Phase 1: Preview + Prompt (only in interactive log mode without --force).
-          if (cliCtx.outputMode === "log" && !options.force) {
-            let preview;
-            try {
-              preview = await dataDeletePreview(ctx, deps, {
-                modelIdOrName: modelIdOrName!,
-                dataName: dataName!,
-              });
-            } catch (error) {
-              throw new UserError(
-                error instanceof Error ? error.message : String(error),
-              );
-            }
-
-            const target = options.version !== undefined
-              ? `version ${options.version} of "${dataName}"`
-              : `${preview.versionsCount} version(s) of "${dataName}"`;
-            const confirmed = await promptConfirmation(
-              `About to delete ${target} from ${preview.modelName}. Proceed?`,
+            });
+          } catch (error) {
+            throw new UserError(
+              error instanceof Error ? error.message : String(error),
             );
-            if (!confirmed) {
-              renderDataDeleteCancelled(cliCtx.outputMode);
-              return;
-            }
           }
 
-          // Phase 2: Execute single delete.
-          await consumeStream(
-            dataDelete(ctx, deps, {
-              modelIdOrName: modelIdOrName!,
-              dataName: dataName!,
-              version: options.version,
-            }),
-            renderer.handlers(),
+          const filterDesc = filter.kind === "prefix"
+            ? `prefix "${filter.value}"`
+            : "all data";
+          const confirmed = await promptConfirmation(
+            `About to delete ${preview.totalItems} data artifact(s) (${preview.totalVersions} version(s)) matching ${filterDesc} from ${preview.modelName}. Proceed?`,
           );
+          if (!confirmed) {
+            renderDataDeleteCancelled(cliCtx.outputMode);
+            return;
+          }
         }
 
-        cliCtx.logger.debug("Data delete command completed");
-      } finally {
-        try {
-          await lockResult.flush();
-        } catch (releaseError) {
-          cliCtx.logger.warn(
-            "Failed to release locks during cleanup: {error}",
-            {
-              error: releaseError instanceof Error
-                ? releaseError.message
-                : String(releaseError),
-            },
+        // Phase 2: Execute batch delete.
+        const renderer = createDataBatchDeleteRenderer(cliCtx.outputMode);
+        await consumeStream(
+          dataBatchDelete(ctx, deps, {
+            modelIdOrName: modelIdOrName!,
+            filter,
+            dryRun: dryRun ?? false,
+          }),
+          renderer.handlers(),
+        );
+      } else {
+        const renderer = createDataDeleteRenderer(cliCtx.outputMode);
+
+        // Phase 1: Preview + Prompt (only in interactive log mode without --force).
+        if (cliCtx.outputMode === "log" && !options.force) {
+          let preview;
+          try {
+            preview = await dataDeletePreview(ctx, deps, {
+              modelIdOrName: modelIdOrName!,
+              dataName: dataName!,
+            });
+          } catch (error) {
+            throw new UserError(
+              error instanceof Error ? error.message : String(error),
+            );
+          }
+
+          const target = options.version !== undefined
+            ? `version ${options.version} of "${dataName}"`
+            : `${preview.versionsCount} version(s) of "${dataName}"`;
+          const confirmed = await promptConfirmation(
+            `About to delete ${target} from ${preview.modelName}. Proceed?`,
           );
+          if (!confirmed) {
+            renderDataDeleteCancelled(cliCtx.outputMode);
+            return;
+          }
         }
+
+        // Phase 2: Execute single delete.
+        await consumeStream(
+          dataDelete(ctx, deps, {
+            modelIdOrName: modelIdOrName!,
+            dataName: dataName!,
+            version: options.version,
+          }),
+          renderer.handlers(),
+        );
       }
-    },
-  );
+
+      cliCtx.logger.debug("Data delete command completed");
+    } finally {
+      try {
+        await lockResult.flush();
+      } catch (releaseError) {
+        cliCtx.logger.warn(
+          "Failed to release locks during cleanup: {error}",
+          {
+            error: releaseError instanceof Error
+              ? releaseError.message
+              : String(releaseError),
+          },
+        );
+      }
+    }
+  },
+);

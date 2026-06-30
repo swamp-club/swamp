@@ -23,14 +23,25 @@ import {
   createLibSwampContext,
   createModelOutputGetDeps,
   modelOutputGet,
+  type ModelOutputGetData,
 } from "../../libswamp/mod.ts";
-import { createModelOutputGetRenderer } from "../../presentation/renderers/model_output_get.ts";
+import {
+  createModelOutputGetRenderer,
+  renderModelOutputGet,
+} from "../../presentation/renderers/model_output_get.ts";
 import {
   createContext,
   type GlobalOptions,
   resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { ModelMethodHistoryGetResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -45,6 +56,27 @@ export async function modelMethodHistoryGetAction(
     "history",
     "get",
   ]);
+
+  const server = resolveServeUrl(options.server as string | undefined);
+  if (server) {
+    const token = await resolveServerToken(
+      server,
+      options.token as string | undefined,
+    );
+    const response = await requestServerResponse<ModelMethodHistoryGetResponse>(
+      { server, token },
+      {
+        type: "model.method.history.get",
+        payload: { outputIdOrModelName },
+      },
+    );
+    renderModelOutputGet(
+      response.data as unknown as ModelOutputGetData,
+      cliCtx.outputMode,
+    );
+    return;
+  }
+
   cliCtx.logger.debug`Getting method run: ${outputIdOrModelName}`;
 
   const { repoDir, datastoreResolver } = await requireInitializedRepoReadOnly(
@@ -66,17 +98,18 @@ export async function modelMethodHistoryGetAction(
   cliCtx.logger.debug("Model method history get command completed");
 }
 
-export const modelMethodHistoryGetCommand = new Command()
-  .name("get")
-  .description("Show details of a model method run")
-  .example("Show run details by ID", "swamp model method history get abc123")
-  .example(
-    "Show latest run for a model",
-    "swamp model method history get my-server",
-  )
-  .arguments("<output_id_or_model_name:string>")
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
-  .action(modelMethodHistoryGetAction);
+export const modelMethodHistoryGetCommand = withRemoteOptions(
+  new Command()
+    .name("get")
+    .description("Show details of a model method run")
+    .example("Show run details by ID", "swamp model method history get abc123")
+    .example(
+      "Show latest run for a model",
+      "swamp model method history get my-server",
+    )
+    .arguments("<output_id_or_model_name:string>")
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    ),
+).action(modelMethodHistoryGetAction);

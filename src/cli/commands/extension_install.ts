@@ -28,54 +28,89 @@ import {
   consumeStream,
   createLibSwampContext,
   extensionInstall,
+  type ExtensionInstallData,
 } from "../../libswamp/mod.ts";
 import { UserError } from "../../domain/errors.ts";
 import { createExtensionInstallRenderer } from "../../presentation/renderers/extension_install.ts";
 import { createExtensionInstallDeps } from "../create_extension_install_deps.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { ExtensionInstallResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-export const extensionInstallCommand = new Command()
-  .name("install")
-  .description(
-    "Restore pulled extensions from the lockfile.\n\nReads upstream_extensions.json and re-pulls any extensions whose source\nfiles are missing. Use after cloning a repo or in CI.\nTo add a new extension, use 'swamp extension pull <name>' instead.",
-  )
-  .example("Restore extensions from lockfile", "swamp extension install")
-  .arguments("[unexpected:string]")
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
-  .action(async function (options: AnyOptions, unexpected?: string) {
-    if (unexpected) {
-      throw new UserError(
-        `'swamp extension install' takes no arguments.\n` +
-          `To add a new extension, use: swamp extension pull ${unexpected}`,
-      );
-    }
+export const extensionInstallCommand = withRemoteOptions(
+  new Command()
+    .name("install")
+    .description(
+      "Restore pulled extensions from the lockfile.\n\nReads upstream_extensions.json and re-pulls any extensions whose source\nfiles are missing. Use after cloning a repo or in CI.\nTo add a new extension, use 'swamp extension pull <name>' instead.",
+    )
+    .example("Restore extensions from lockfile", "swamp extension install")
+    .arguments("[unexpected:string]")
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    ),
+).action(async function (options: AnyOptions, unexpected?: string) {
+  if (unexpected) {
+    throw new UserError(
+      `'swamp extension install' takes no arguments.\n` +
+        `To add a new extension, use: swamp extension pull ${unexpected}`,
+    );
+  }
 
-    const cliCtx = createContext(options as GlobalOptions, [
-      "extension",
-      "install",
-    ]);
-    cliCtx.logger.debug`Starting extension install`;
+  const cliCtx = createContext(options as GlobalOptions, [
+    "extension",
+    "install",
+  ]);
+  cliCtx.logger.debug`Starting extension install`;
 
-    const repoDir = resolveRepoDir(options.repoDir);
-    await requireInitializedRepoReadOnly({
-      repoDir,
-      outputMode: cliCtx.outputMode,
-    });
-
-    const deps = await createExtensionInstallDeps(repoDir, cliCtx.logger);
-
-    const ctx = createLibSwampContext({ logger: cliCtx.logger });
+  const server = resolveServeUrl(options.server as string | undefined);
+  if (server) {
+    const token = await resolveServerToken(
+      server,
+      options.token as string | undefined,
+    );
+    const response = await requestServerResponse<ExtensionInstallResponse>(
+      { server, token },
+      {
+        type: "extension.install",
+        payload: {},
+      },
+    );
     const renderer = createExtensionInstallRenderer(cliCtx.outputMode);
-
     await consumeStream(
-      extensionInstall(ctx, deps),
+      (async function* () {
+        yield {
+          kind: "completed" as const,
+          data: response.data as unknown as ExtensionInstallData,
+        };
+      })(),
       renderer.handlers(),
     );
+    return;
+  }
 
-    cliCtx.logger.debug("Extension install command completed");
+  const repoDir = resolveRepoDir(options.repoDir);
+  await requireInitializedRepoReadOnly({
+    repoDir,
+    outputMode: cliCtx.outputMode,
   });
+
+  const deps = await createExtensionInstallDeps(repoDir, cliCtx.logger);
+
+  const ctx = createLibSwampContext({ logger: cliCtx.logger });
+  const renderer = createExtensionInstallRenderer(cliCtx.outputMode);
+
+  await consumeStream(
+    extensionInstall(ctx, deps),
+    renderer.handlers(),
+  );
+
+  cliCtx.logger.debug("Extension install command completed");
+});

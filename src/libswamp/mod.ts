@@ -262,6 +262,22 @@ export {
   type WorkflowHistoryGetDeps,
   type WorkflowHistoryGetEvent,
 } from "./workflows/history_get.ts";
+export {
+  createWorkflowApproveDeps,
+  workflowApprove,
+  type WorkflowApproveData,
+  type WorkflowApproveDeps,
+  type WorkflowApproveEvent,
+  type WorkflowApproveInput,
+} from "./workflows/approve.ts";
+export {
+  createWorkflowRejectDeps,
+  workflowReject,
+  type WorkflowRejectData,
+  type WorkflowRejectDeps,
+  type WorkflowRejectEvent,
+  type WorkflowRejectInput,
+} from "./workflows/reject.ts";
 
 // Vault operations
 export {
@@ -583,6 +599,7 @@ export {
 export {
   createWorkflowHistoryLogsDeps,
   workflowHistoryLogs,
+  type WorkflowHistoryLogsCompletedData,
   type WorkflowHistoryLogsDeps,
   type WorkflowHistoryLogsEvent,
   type WorkflowHistoryLogsInput,
@@ -617,6 +634,7 @@ export {
 // Model method history logs operations
 export {
   createModelMethodHistoryLogsDeps,
+  type MethodHistoryLogsCompletedData,
   modelMethodHistoryLogs,
   type ModelMethodHistoryLogsDeps,
   type ModelMethodHistoryLogsEvent,
@@ -627,6 +645,7 @@ export {
 export {
   createModelOutputLogsDeps,
   modelOutputLogs,
+  type ModelOutputLogsData,
   type ModelOutputLogsDeps,
   type ModelOutputLogsEvent,
   type ModelOutputLogsInput,
@@ -636,6 +655,7 @@ export {
 export {
   createModelOutputDataDeps,
   modelOutputData,
+  type ModelOutputDataData,
   type ModelOutputDataDeps,
   type ModelOutputDataEvent,
   type ModelOutputDataInput,

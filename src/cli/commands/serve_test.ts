@@ -183,12 +183,22 @@ Deno.test("validateWebSocketOrigin: accepts absent origin (non-browser client)",
   assertEquals(result.allowed, true);
 });
 
-Deno.test("validateWebSocketOrigin: rejects DNS-rebinding host", () => {
+Deno.test("validateWebSocketOrigin: accepts proxy host on loopback bind", () => {
   const result = validateWebSocketOrigin(
-    "http://localhost",
-    "evil.com:9090",
+    null,
+    "demo.swamp-club.ai",
     "127.0.0.1",
     false,
+  );
+  assertEquals(result.allowed, true);
+});
+
+Deno.test("validateWebSocketOrigin: rejects untrusted host on off-loopback bind", () => {
+  const result = validateWebSocketOrigin(
+    null,
+    "evil.com:9090",
+    "0.0.0.0",
+    true,
   );
   assertEquals(result.allowed, false);
   assertStringIncludes(result.reason!, "untrusted host");

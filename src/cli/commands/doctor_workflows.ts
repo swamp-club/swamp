@@ -22,6 +22,7 @@ import { isAbsolute, join, resolve } from "@std/path";
 import {
   consumeStream,
   doctorWorkflows,
+  type DoctorWorkflowsReport,
   enumeratePulledExtensionDirs,
 } from "../../libswamp/mod.ts";
 import { createWorkflowDoctorRenderer } from "../../presentation/renderers/workflow_doctor.ts";
@@ -39,6 +40,13 @@ import {
   readSwampSources,
   resolveSourceExtensionDirs,
 } from "../../infrastructure/persistence/swamp_sources_repository.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { DoctorWorkflowsResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -51,66 +59,97 @@ async function getSourceWorkflowDirs(repoDir: string): Promise<string[]> {
   return collectDirsForKind(resolved, "workflows");
 }
 
-export const doctorWorkflowsCommand = new Command()
-  .description(
-    "Check that workflow YAML files in this repo load cleanly.",
-  )
-  .example("Check all workflows", "swamp doctor workflows")
-  .example("Machine-readable output for CI", "swamp doctor workflows --json")
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
-  .action(async function (options: AnyOptions) {
-    const cliCtx = createContext(options as GlobalOptions, [
-      "doctor",
-      "workflows",
-    ]);
-    cliCtx.logger.debug("Executing doctor workflows command");
+export const doctorWorkflowsCommand = withRemoteOptions(
+  new Command()
+    .description(
+      "Check that workflow YAML files in this repo load cleanly.",
+    )
+    .example("Check all workflows", "swamp doctor workflows")
+    .example("Machine-readable output for CI", "swamp doctor workflows --json")
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    ),
+).action(async function (options: AnyOptions) {
+  const cliCtx = createContext(options as GlobalOptions, [
+    "doctor",
+    "workflows",
+  ]);
+  cliCtx.logger.debug("Executing doctor workflows command");
 
-    const repoDir = resolveRepoDir(options.repoDir);
-    const { marker } = await resolveDatastoreForRepo(repoDir);
-
-    const yamlWorkflowsDir = join(repoDir, "workflows");
-
-    const workflowsDirRel = resolveWorkflowsDir(marker);
-    const workflowsDir = isAbsolute(workflowsDirRel)
-      ? workflowsDirRel
-      : resolve(repoDir, workflowsDirRel);
-
-    const sourceWorkflowDirs = await getSourceWorkflowDirs(repoDir);
-
-    const modelsDirRel = resolveModelsDir(marker);
-    const modelsDir = isAbsolute(modelsDirRel)
-      ? modelsDirRel
-      : resolve(repoDir, modelsDirRel);
-    const pulledWorkflowDirs = await enumeratePulledExtensionDirs(
-      join(modelsDir, "upstream_extensions.json"),
-      repoDir,
-      "workflows",
+  const server = resolveServeUrl(options.server as string | undefined);
+  if (server) {
+    const token = await resolveServerToken(
+      server,
+      options.token as string | undefined,
     );
-
-    const workflowDirs = [
-      yamlWorkflowsDir,
-      workflowsDir,
-      ...sourceWorkflowDirs,
-      ...pulledWorkflowDirs,
-    ];
-
-    const controller = new AbortController();
+    const response = await requestServerResponse<DoctorWorkflowsResponse>(
+      { server, token },
+      {
+        type: "doctor.workflows",
+        payload: {},
+      },
+    );
     const renderer = createWorkflowDoctorRenderer(cliCtx.outputMode);
-
     await consumeStream(
-      doctorWorkflows({
-        workflowDirs,
-        abortSignal: controller.signal,
-      }),
+      (async function* () {
+        yield {
+          kind: "completed" as const,
+          report: response
+            .data as unknown as DoctorWorkflowsReport,
+        };
+      })(),
       renderer.handlers(),
     );
-
-    cliCtx.logger.debug("doctor workflows command completed");
-
     if (renderer.overallStatus === "fail") {
       Deno.exit(1);
     }
-  });
+    return;
+  }
+
+  const repoDir = resolveRepoDir(options.repoDir);
+  const { marker } = await resolveDatastoreForRepo(repoDir);
+
+  const yamlWorkflowsDir = join(repoDir, "workflows");
+
+  const workflowsDirRel = resolveWorkflowsDir(marker);
+  const workflowsDir = isAbsolute(workflowsDirRel)
+    ? workflowsDirRel
+    : resolve(repoDir, workflowsDirRel);
+
+  const sourceWorkflowDirs = await getSourceWorkflowDirs(repoDir);
+
+  const modelsDirRel = resolveModelsDir(marker);
+  const modelsDir = isAbsolute(modelsDirRel)
+    ? modelsDirRel
+    : resolve(repoDir, modelsDirRel);
+  const pulledWorkflowDirs = await enumeratePulledExtensionDirs(
+    join(modelsDir, "upstream_extensions.json"),
+    repoDir,
+    "workflows",
+  );
+
+  const workflowDirs = [
+    yamlWorkflowsDir,
+    workflowsDir,
+    ...sourceWorkflowDirs,
+    ...pulledWorkflowDirs,
+  ];
+
+  const controller = new AbortController();
+  const renderer = createWorkflowDoctorRenderer(cliCtx.outputMode);
+
+  await consumeStream(
+    doctorWorkflows({
+      workflowDirs,
+      abortSignal: controller.signal,
+    }),
+    renderer.handlers(),
+  );
+
+  cliCtx.logger.debug("doctor workflows command completed");
+
+  if (renderer.overallStatus === "fail") {
+    Deno.exit(1);
+  }
+});

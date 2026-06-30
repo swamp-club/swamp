@@ -29,57 +29,100 @@ import {
   createLibSwampContext,
   createWorkflowHistoryLogsDeps,
   workflowHistoryLogs,
+  type WorkflowHistoryLogsCompletedData,
 } from "../../libswamp/mod.ts";
 import { createWorkflowHistoryLogsRenderer } from "../../presentation/renderers/workflow_history_logs.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { WorkflowHistoryLogsResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-export const workflowHistoryLogsCommand = new Command()
-  .name("logs")
-  .description("Show logs for a workflow run")
-  .example("Show run logs", "swamp workflow history logs deploy-pipeline")
-  .example("Tail last 50 lines", "swamp workflow history logs abc123 --tail 50")
-  .arguments("<run_id_or_workflow:string>")
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
-  .option("--tail <lines:number>", "Show only the last N lines")
-  .action(async function (
-    options: AnyOptions,
-    runIdOrWorkflow: string,
-  ) {
-    const cliCtx = createContext(
-      options as GlobalOptions,
-      ["workflow", "history", "logs"],
+export const workflowHistoryLogsCommand = withRemoteOptions(
+  new Command()
+    .name("logs")
+    .description("Show logs for a workflow run")
+    .example("Show run logs", "swamp workflow history logs deploy-pipeline")
+    .example(
+      "Tail last 50 lines",
+      "swamp workflow history logs abc123 --tail 50",
+    )
+    .arguments("<run_id_or_workflow:string>")
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    )
+    .option("--tail <lines:number>", "Show only the last N lines"),
+).action(async function (
+  options: AnyOptions,
+  runIdOrWorkflow: string,
+) {
+  const cliCtx = createContext(
+    options as GlobalOptions,
+    ["workflow", "history", "logs"],
+  );
+
+  const server = resolveServeUrl(options.server as string | undefined);
+  if (server) {
+    const token = await resolveServerToken(
+      server,
+      options.token as string | undefined,
     );
-    cliCtx.logger.debug`Getting logs for workflow run: ${runIdOrWorkflow}`;
-
-    const { repoDir, repoContext, datastoreResolver } =
-      await requireInitializedRepoReadOnly(
-        {
-          repoDir: resolveRepoDir(options.repoDir),
-          outputMode: cliCtx.outputMode,
-        },
-      );
-
-    const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createWorkflowHistoryLogsDeps(
-      repoDir,
-      datastoreResolver,
-      repoContext.workflowRepo,
+    const tail = options.tail as number | undefined;
+    const response = await requestServerResponse<
+      WorkflowHistoryLogsResponse
+    >(
+      { server, token },
+      {
+        type: "workflow.history.logs",
+        payload: { runIdOrWorkflow, tail },
+      },
     );
-
     const renderer = createWorkflowHistoryLogsRenderer(cliCtx.outputMode);
     await consumeStream(
-      workflowHistoryLogs(ctx, deps, {
-        runIdOrWorkflow,
-        tail: options.tail as number | undefined,
-        repoDir,
-      }),
+      (async function* () {
+        yield {
+          kind: "completed" as const,
+          data: response
+            .data as unknown as WorkflowHistoryLogsCompletedData,
+        };
+      })(),
       renderer.handlers(),
     );
+    return;
+  }
 
-    cliCtx.logger.debug("Workflow history logs command completed");
-  });
+  cliCtx.logger.debug`Getting logs for workflow run: ${runIdOrWorkflow}`;
+
+  const { repoDir, repoContext, datastoreResolver } =
+    await requireInitializedRepoReadOnly(
+      {
+        repoDir: resolveRepoDir(options.repoDir),
+        outputMode: cliCtx.outputMode,
+      },
+    );
+
+  const ctx = createLibSwampContext({ logger: cliCtx.logger });
+  const deps = createWorkflowHistoryLogsDeps(
+    repoDir,
+    datastoreResolver,
+    repoContext.workflowRepo,
+  );
+
+  const renderer = createWorkflowHistoryLogsRenderer(cliCtx.outputMode);
+  await consumeStream(
+    workflowHistoryLogs(ctx, deps, {
+      runIdOrWorkflow,
+      tail: options.tail as number | undefined,
+      repoDir,
+    }),
+    renderer.handlers(),
+  );
+
+  cliCtx.logger.debug("Workflow history logs command completed");
+});

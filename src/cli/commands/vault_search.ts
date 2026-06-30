@@ -25,6 +25,7 @@ import {
   vaultDescribe,
   type VaultDescribeData,
   vaultSearch,
+  type VaultSearchData,
   type VaultSearchDeps,
   type VaultSearchItem,
 } from "../../libswamp/mod.ts";
@@ -37,6 +38,13 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { VaultSearchResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -76,6 +84,32 @@ export async function vaultSearchAction(
   const effectiveMode = interactiveOutputMode(ctx);
   const libCtx = createLibSwampContext();
   ctx.logger.debug`Searching vaults with query: ${query ?? "(none)"}`;
+
+  const server = resolveServeUrl(options.server as string | undefined);
+  if (server) {
+    const token = await resolveServerToken(
+      server,
+      options.token as string | undefined,
+    );
+    const response = await requestServerResponse<VaultSearchResponse>(
+      { server, token },
+      {
+        type: "vault.search",
+        payload: { query },
+      },
+    );
+    const renderer = createVaultSearchRenderer(effectiveMode);
+    await consumeStream(
+      (async function* () {
+        yield {
+          kind: "completed" as const,
+          data: response.data as unknown as VaultSearchData,
+        };
+      })(),
+      renderer.handlers(),
+    );
+    return;
+  }
 
   const { repoContext } = await requireInitializedRepoReadOnly({
     repoDir: resolveRepoDir(options.repoDir),
@@ -118,14 +152,15 @@ export async function vaultSearchAction(
   ctx.logger.debug("Vault search command completed");
 }
 
-export const vaultSearchCommand = new Command()
-  .name("search")
-  .description("Search for vaults in the repository")
-  .example("Browse all vaults", "swamp vault search")
-  .example("Search by keyword", "swamp vault search aws")
-  .arguments("[query:string]")
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
-  .action(vaultSearchAction);
+export const vaultSearchCommand = withRemoteOptions(
+  new Command()
+    .name("search")
+    .description("Search for vaults in the repository")
+    .example("Browse all vaults", "swamp vault search")
+    .example("Search by keyword", "swamp vault search aws")
+    .arguments("[query:string]")
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    ),
+).action(vaultSearchAction);

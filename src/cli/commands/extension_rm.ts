@@ -31,6 +31,7 @@ import {
   createExtensionRmDeps,
   createLibSwampContext,
   extensionRm,
+  type ExtensionRmData,
   extensionRmPreview,
   parseExtensionRef,
   validateExtensionName,
@@ -40,6 +41,13 @@ import {
   createExtensionRmRenderer,
   renderExtensionRmCancelled,
 } from "../../presentation/renderers/extension_rm.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { ExtensionRmResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -58,78 +66,105 @@ async function promptConfirmation(message: string): Promise<boolean> {
   return response === "y" || response === "yes";
 }
 
-export const extensionRemoveCommand = new Command()
-  .name("rm")
-  .alias("remove")
-  .description("Remove a pulled extension and its files")
-  .example("Remove extension", "swamp extension rm @stack72/aws-ec2")
-  .example("Force remove", "swamp extension rm @stack72/aws-ec2 --force")
-  .arguments("<extension:string>")
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
-  .option("-f, --force", "Skip confirmation prompt")
-  .action(async function (options: AnyOptions, extension: string) {
-    const ctx = createContext(options as GlobalOptions, ["extension", "rm"]);
-    ctx.logger.debug`Starting extension remove`;
+export const extensionRemoveCommand = withRemoteOptions(
+  new Command()
+    .name("rm")
+    .alias("remove")
+    .description("Remove a pulled extension and its files")
+    .example("Remove extension", "swamp extension rm @stack72/aws-ec2")
+    .example("Force remove", "swamp extension rm @stack72/aws-ec2 --force")
+    .arguments("<extension:string>")
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    )
+    .option("-f, --force", "Skip confirmation prompt"),
+).action(async function (options: AnyOptions, extension: string) {
+  const ctx = createContext(options as GlobalOptions, ["extension", "rm"]);
+  ctx.logger.debug`Starting extension remove`;
 
-    const { repoDir, marker } = await requireRepoMarker(
-      resolveRepoDir(options.repoDir),
+  const ref = parseExtensionRef(extension);
+  validateExtensionName(ref.name);
+
+  const server = resolveServeUrl(options.server as string | undefined);
+  if (server) {
+    const token = await resolveServerToken(
+      server,
+      options.token as string | undefined,
     );
-
-    // Parse extension reference (ignore version if provided)
-    const ref = parseExtensionRef(extension);
-    validateExtensionName(ref.name);
-    const modelsDir = resolveModelsDir(marker);
-    const absoluteModelsDir = resolve(repoDir, modelsDir);
-    const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
-
-    // Warn if any extensions are still in a legacy layout. rm follows
-    // the lockfile's tracked paths so it works against either generation.
-    await warnLegacyExtensionLayout(
-      lockfilePath,
-      (msg) => ctx.logger.warn(msg),
+    const response = await requestServerResponse<ExtensionRmResponse>(
+      { server, token },
+      {
+        type: "extension.rm",
+        payload: { extensionName: ref.name },
+      },
     );
+    const renderer = createExtensionRmRenderer(ctx.outputMode);
+    await consumeStream(
+      (async function* () {
+        yield {
+          kind: "completed" as const,
+          data: response.data as unknown as ExtensionRmData,
+        };
+      })(),
+      renderer.handlers(),
+    );
+    return;
+  }
 
-    // Create libswamp context, deps, renderer.
-    // W2 (commit 4): the deps now own a catalog handle (via the W2
-    // ExtensionRepository) so the rm flow routes through
-    // RemoveExtensionService and prunes catalog rows (closes
-    // swamp-club#201). Catalog must be closed when we're done.
-    const libCtx = createLibSwampContext({ logger: ctx.logger });
-    const deps = await createExtensionRmDeps(repoDir, lockfilePath);
-    try {
-      const renderer = createExtensionRmRenderer(ctx.outputMode);
-      const input = { extensionName: ref.name };
+  const { repoDir, marker } = await requireRepoMarker(
+    resolveRepoDir(options.repoDir),
+  );
 
-      // Preview: validates extension, returns preview data
-      const preview = await extensionRmPreview(libCtx, deps, input);
+  const modelsDir = resolveModelsDir(marker);
+  const absoluteModelsDir = resolve(repoDir, modelsDir);
+  const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
 
-      // Dependency warning
-      if (preview.dependents.length > 0) {
-        renderer.renderDependencyWarning(preview.dependents);
-      }
+  // Warn if any extensions are still in a legacy layout. rm follows
+  // the lockfile's tracked paths so it works against either generation.
+  await warnLegacyExtensionLayout(
+    lockfilePath,
+    (msg) => ctx.logger.warn(msg),
+  );
 
-      // Confirmation prompt (log mode only, unless --force)
-      if (ctx.outputMode === "log" && !options.force) {
-        const confirmed = await promptConfirmation(
-          `Remove ${preview.name} (v${preview.version})? This will delete ${preview.fileCount} file(s).`,
-        );
-        if (!confirmed) {
-          renderExtensionRmCancelled(ctx.outputMode);
-          return;
-        }
-      }
+  // Create libswamp context, deps, renderer.
+  // W2 (commit 4): the deps now own a catalog handle (via the W2
+  // ExtensionRepository) so the rm flow routes through
+  // RemoveExtensionService and prunes catalog rows (closes
+  // swamp-club#201). Catalog must be closed when we're done.
+  const libCtx = createLibSwampContext({ logger: ctx.logger });
+  const deps = await createExtensionRmDeps(repoDir, lockfilePath);
+  try {
+    const renderer = createExtensionRmRenderer(ctx.outputMode);
+    const input = { extensionName: ref.name };
 
-      // Execute removal
-      await consumeStream(
-        extensionRm(libCtx, deps, input),
-        renderer.handlers(),
-      );
+    // Preview: validates extension, returns preview data
+    const preview = await extensionRmPreview(libCtx, deps, input);
 
-      ctx.logger.debug("Extension remove command completed");
-    } finally {
-      deps.repository.close();
+    // Dependency warning
+    if (preview.dependents.length > 0) {
+      renderer.renderDependencyWarning(preview.dependents);
     }
-  });
+
+    // Confirmation prompt (log mode only, unless --force)
+    if (ctx.outputMode === "log" && !options.force) {
+      const confirmed = await promptConfirmation(
+        `Remove ${preview.name} (v${preview.version})? This will delete ${preview.fileCount} file(s).`,
+      );
+      if (!confirmed) {
+        renderExtensionRmCancelled(ctx.outputMode);
+        return;
+      }
+    }
+
+    // Execute removal
+    await consumeStream(
+      extensionRm(libCtx, deps, input),
+      renderer.handlers(),
+    );
+
+    ctx.logger.debug("Extension remove command completed");
+  } finally {
+    deps.repository.close();
+  }
+});

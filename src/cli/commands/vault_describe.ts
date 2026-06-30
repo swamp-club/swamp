@@ -23,6 +23,7 @@ import {
   createLibSwampContext,
   createVaultDescribeDeps,
   vaultDescribe,
+  type VaultDescribeData,
 } from "../../libswamp/mod.ts";
 import { createVaultDescribeRenderer } from "../../presentation/renderers/vault_describe.ts";
 import {
@@ -31,41 +32,81 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { VaultDescribeResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-export const vaultDescribeCommand = new Command()
-  .name("describe")
-  .description("Describe a vault configuration")
-  .example("Describe a vault", "swamp vault describe my-vault")
-  .arguments("<vault_name_or_id:string>")
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
-  .option("-t, --type <type:string>", "Vault type (optional, narrows search)")
-  .action(async function (options: AnyOptions, vaultNameOrId: string) {
-    const cliCtx = createContext(options as GlobalOptions, [
-      "vault",
-      "describe",
-    ]);
-    cliCtx.logger.debug`Describing vault: ${vaultNameOrId}`;
+export const vaultDescribeCommand = withRemoteOptions(
+  new Command()
+    .name("describe")
+    .description("Describe a vault configuration")
+    .example("Describe a vault", "swamp vault describe my-vault")
+    .arguments("<vault_name_or_id:string>")
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    )
+    .option(
+      "-t, --type <type:string>",
+      "Vault type (optional, narrows search)",
+    ),
+).action(async function (options: AnyOptions, vaultNameOrId: string) {
+  const cliCtx = createContext(options as GlobalOptions, [
+    "vault",
+    "describe",
+  ]);
+  cliCtx.logger.debug`Describing vault: ${vaultNameOrId}`;
 
-    const { repoDir } = await requireInitializedRepoReadOnly({
-      repoDir: resolveRepoDir(options.repoDir),
-      outputMode: cliCtx.outputMode,
-    });
-    const vaultType = options.type as string | undefined;
-
-    const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createVaultDescribeDeps(repoDir);
-
+  const server = resolveServeUrl(options.server as string | undefined);
+  if (server) {
+    const token = await resolveServerToken(
+      server,
+      options.token as string | undefined,
+    );
+    const response = await requestServerResponse<VaultDescribeResponse>(
+      { server, token },
+      {
+        type: "vault.describe",
+        payload: {
+          vaultNameOrId,
+          vaultType: options.type as string | undefined,
+        },
+      },
+    );
     const renderer = createVaultDescribeRenderer(cliCtx.outputMode);
     await consumeStream(
-      vaultDescribe(ctx, deps, vaultNameOrId, vaultType),
+      (async function* () {
+        yield {
+          kind: "completed" as const,
+          data: response.data as unknown as VaultDescribeData,
+        };
+      })(),
       renderer.handlers(),
     );
+    return;
+  }
 
-    cliCtx.logger.debug("Vault describe command completed");
+  const { repoDir } = await requireInitializedRepoReadOnly({
+    repoDir: resolveRepoDir(options.repoDir),
+    outputMode: cliCtx.outputMode,
   });
+  const vaultType = options.type as string | undefined;
+
+  const ctx = createLibSwampContext({ logger: cliCtx.logger });
+  const deps = createVaultDescribeDeps(repoDir);
+
+  const renderer = createVaultDescribeRenderer(cliCtx.outputMode);
+  await consumeStream(
+    vaultDescribe(ctx, deps, vaultNameOrId, vaultType),
+    renderer.handlers(),
+  );
+
+  cliCtx.logger.debug("Vault describe command completed");
+});

@@ -38,6 +38,8 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { resolveDatastoreForRepo } from "../repo_context.ts";
+import { UserError } from "../../domain/errors.ts";
+import { resolveServeUrl, withRemoteOptions } from "../remote_run.ts";
 
 /**
  * Resolves the target AI tool for `doctor audit`. Priority: explicit
@@ -163,78 +165,86 @@ export function makeSwampSpawnFn(repoDir: string): SpawnFn {
  * Exits non-zero on any check fail so CI can gate on audit integration
  * health.
  */
-export const doctorAuditCommand = new Command()
-  .description(
-    "Verify that the AI-tool audit integration is healthy for the configured tool.",
-  )
-  .example("Check the tool configured in .swamp.yaml", "swamp doctor audit")
-  .example("Check a specific tool", "swamp doctor audit --tool kiro")
-  .example("Machine-readable output for CI", "swamp doctor audit --json")
-  .option(
-    "--tool <tool:string>",
-    "Override the tool from .swamp.yaml (claude | cursor | kiro | opencode | codex | copilot | none)",
-  )
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
-  .action(async function (options: AnyOptions) {
-    const cliCtx = createContext(options as GlobalOptions, ["doctor", "audit"]);
-    cliCtx.logger.debug("Executing doctor audit command");
+export const doctorAuditCommand = withRemoteOptions(
+  new Command()
+    .description(
+      "Verify that the AI-tool audit integration is healthy for the configured tool.",
+    )
+    .example("Check the tool configured in .swamp.yaml", "swamp doctor audit")
+    .example("Check a specific tool", "swamp doctor audit --tool kiro")
+    .example("Machine-readable output for CI", "swamp doctor audit --json")
+    .option(
+      "--tool <tool:string>",
+      "Override the tool from .swamp.yaml (claude | cursor | kiro | opencode | codex | copilot | none)",
+    )
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    ),
+).action(async function (options: AnyOptions) {
+  const cliCtx = createContext(options as GlobalOptions, ["doctor", "audit"]);
+  cliCtx.logger.debug("Executing doctor audit command");
 
-    const repoDir = resolveRepoDir(options.repoDir);
-    const { marker } = await resolveDatastoreForRepo(repoDir);
-    // Pass the primary enrolled tool (or undefined when no tools are
-    // enrolled) so resolveTargetTool throws NoToolConfiguredError only
-    // when neither the flag nor the marker provides a tool.
-    const resolvedTool = resolveTargetTool(
-      options.tool as string | undefined,
-      marker?.tools?.[0],
+  const server = resolveServeUrl(options.server as string | undefined);
+  if (server) {
+    throw new UserError(
+      "doctor audit is not supported with --server — it requires local process execution.",
     );
+  }
 
-    const auditDir = swampPath(repoDir, SWAMP_SUBDIRS.audit);
-    const controller = new AbortController();
-    const renderer = createAuditDoctorRenderer(cliCtx.outputMode);
+  const repoDir = resolveRepoDir(options.repoDir);
+  const { marker } = await resolveDatastoreForRepo(repoDir);
+  // Pass the primary enrolled tool (or undefined when no tools are
+  // enrolled) so resolveTargetTool throws NoToolConfiguredError only
+  // when neither the flag nor the marker provides a tool.
+  const resolvedTool = resolveTargetTool(
+    options.tool as string | undefined,
+    marker?.tools?.[0],
+  );
 
-    // Wire SIGINT to the controller so a Ctrl+C tears down any in-flight
-    // smoke-test child instead of leaving it reparented to init. After the
-    // first signal we remove the listener so a second Ctrl+C falls through
-    // to Deno's default exit-130 handler — that gives the user a force-exit
-    // escape hatch if a child hangs and ignores SIGTERM. SIGTERM isn't
-    // listened for here because Deno doesn't support it on Windows.
-    const onSigint = () => {
-      try {
-        Deno.removeSignalListener("SIGINT", onSigint);
-      } catch {
-        // Already removed (e.g. doctor finished before signal arrived).
-      }
-      controller.abort();
-    };
-    Deno.addSignalListener("SIGINT", onSigint);
+  const auditDir = swampPath(repoDir, SWAMP_SUBDIRS.audit);
+  const controller = new AbortController();
+  const renderer = createAuditDoctorRenderer(cliCtx.outputMode);
+
+  // Wire SIGINT to the controller so a Ctrl+C tears down any in-flight
+  // smoke-test child instead of leaving it reparented to init. After the
+  // first signal we remove the listener so a second Ctrl+C falls through
+  // to Deno's default exit-130 handler — that gives the user a force-exit
+  // escape hatch if a child hangs and ignores SIGTERM. SIGTERM isn't
+  // listened for here because Deno doesn't support it on Windows.
+  const onSigint = () => {
     try {
-      const commandResolver = defaultCommandResolver();
-      await consumeStream(
-        auditDoctor({
-          repoPath: repoDir,
-          auditDir,
-          tool: resolvedTool,
-          spawnSwamp: makeSwampSpawnFn(repoDir),
-          abortSignal: controller.signal,
-          resolveBinary: (name) => commandResolver.resolve(name),
-        }),
-        renderer.handlers(),
-      );
-    } finally {
-      try {
-        Deno.removeSignalListener("SIGINT", onSigint);
-      } catch {
-        // Listener may already be detached on a second signal.
-      }
+      Deno.removeSignalListener("SIGINT", onSigint);
+    } catch {
+      // Already removed (e.g. doctor finished before signal arrived).
     }
-
-    cliCtx.logger.debug("doctor audit command completed");
-
-    if (renderer.overallStatus === "fail") {
-      Deno.exit(1);
+    controller.abort();
+  };
+  Deno.addSignalListener("SIGINT", onSigint);
+  try {
+    const commandResolver = defaultCommandResolver();
+    await consumeStream(
+      auditDoctor({
+        repoPath: repoDir,
+        auditDir,
+        tool: resolvedTool,
+        spawnSwamp: makeSwampSpawnFn(repoDir),
+        abortSignal: controller.signal,
+        resolveBinary: (name) => commandResolver.resolve(name),
+      }),
+      renderer.handlers(),
+    );
+  } finally {
+    try {
+      Deno.removeSignalListener("SIGINT", onSigint);
+    } catch {
+      // Listener may already be detached on a second signal.
     }
-  });
+  }
+
+  cliCtx.logger.debug("doctor audit command completed");
+
+  if (renderer.overallStatus === "fail") {
+    Deno.exit(1);
+  }
+});

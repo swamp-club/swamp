@@ -24,6 +24,7 @@ import {
   type JobRunView,
   type StepRunView,
   workflowHistorySearch,
+  type WorkflowHistorySearchData,
   type WorkflowHistorySearchDeps,
   type WorkflowHistorySearchItem,
   type WorkflowRunView,
@@ -43,6 +44,13 @@ import {
   createWorkflowId,
   createWorkflowRunId,
 } from "../../domain/workflows/workflow_id.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { WorkflowHistorySearchResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -124,6 +132,35 @@ export async function workflowHistorySearchAction(
     ["workflow", "history", "search"],
   );
   const effectiveMode = interactiveOutputMode(ctx);
+
+  const server = resolveServeUrl(options.server as string | undefined);
+  if (server) {
+    const token = await resolveServerToken(
+      server,
+      options.token as string | undefined,
+    );
+    const response = await requestServerResponse<
+      WorkflowHistorySearchResponse
+    >(
+      { server, token },
+      {
+        type: "workflow.history.search",
+        payload: { query },
+      },
+    );
+    const renderer = createWorkflowHistorySearchRenderer(effectiveMode);
+    await consumeStream(
+      (async function* () {
+        yield {
+          kind: "completed" as const,
+          data: response.data as unknown as WorkflowHistorySearchData,
+        };
+      })(),
+      renderer.handlers(),
+    );
+    return;
+  }
+
   const libCtx = createLibSwampContext();
   ctx.logger.debug`Searching workflow history with query: ${query ?? "(none)"}`;
 
@@ -180,14 +217,15 @@ export async function workflowHistorySearchAction(
   ctx.logger.debug("Workflow history search command completed");
 }
 
-export const workflowHistorySearchCommand = new Command()
-  .name("search")
-  .description("Search workflow run history")
-  .example("Browse run history", "swamp workflow history search")
-  .example("Search runs", "swamp workflow history search deploy")
-  .arguments("[query:string]")
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
-  .action(workflowHistorySearchAction);
+export const workflowHistorySearchCommand = withRemoteOptions(
+  new Command()
+    .name("search")
+    .description("Search workflow run history")
+    .example("Browse run history", "swamp workflow history search")
+    .example("Search runs", "swamp workflow history search deploy")
+    .arguments("[query:string]")
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    ),
+).action(workflowHistorySearchAction);

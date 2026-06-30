@@ -31,48 +31,77 @@ import {
   createWorkerListDeps,
   withDefaults,
   workerList,
+  type WorkerListData,
   type WorkerListEvent,
 } from "../../libswamp/mod.ts";
 import { renderWorkerList } from "../../presentation/output/worker_output.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { WorkerListResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-export const workerListCommand = new Command()
-  .name("list")
-  .description(
-    "List workers in the pool: status, labels, platform, and last seen",
-  )
-  .example("List all workers", "swamp worker list")
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
-  .action(async function (options: AnyOptions) {
-    const cliCtx = createContext(options as GlobalOptions, [
-      "worker",
-      "list",
-    ]);
+export const workerListCommand = withRemoteOptions(
+  new Command()
+    .name("list")
+    .description(
+      "List workers in the pool: status, labels, platform, and last seen",
+    )
+    .example("List all workers", "swamp worker list")
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    ),
+).action(async function (options: AnyOptions) {
+  const cliCtx = createContext(options as GlobalOptions, [
+    "worker",
+    "list",
+  ]);
 
-    const { repoContext } = await requireInitializedRepoReadOnly({
-      repoDir: resolveRepoDir(options.repoDir),
-      outputMode: cliCtx.outputMode,
-    });
-
-    const libCtx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = createWorkerListDeps(repoContext.dataQueryService);
-
-    await consumeStream(
-      workerList(libCtx, deps),
-      withDefaults<WorkerListEvent>({
-        completed: (event) => {
-          renderWorkerList(event.data, cliCtx.outputMode);
-        },
-        error: (event) => {
-          throw new UserError(event.error.message);
-        },
-      }),
+  const server = resolveServeUrl(options.server as string | undefined);
+  if (server) {
+    const token = await resolveServerToken(
+      server,
+      options.token as string | undefined,
     );
+    const response = await requestServerResponse<WorkerListResponse>(
+      { server, token },
+      {
+        type: "worker.list",
+        payload: {},
+      },
+    );
+    renderWorkerList(
+      response.data as unknown as WorkerListData,
+      cliCtx.outputMode,
+    );
+    return;
+  }
 
-    cliCtx.logger.debug("Worker list command completed");
+  const { repoContext } = await requireInitializedRepoReadOnly({
+    repoDir: resolveRepoDir(options.repoDir),
+    outputMode: cliCtx.outputMode,
   });
+
+  const libCtx = createLibSwampContext({ logger: cliCtx.logger });
+  const deps = createWorkerListDeps(repoContext.dataQueryService);
+
+  await consumeStream(
+    workerList(libCtx, deps),
+    withDefaults<WorkerListEvent>({
+      completed: (event) => {
+        renderWorkerList(event.data, cliCtx.outputMode);
+      },
+      error: (event) => {
+        throw new UserError(event.error.message);
+      },
+    }),
+  );
+
+  cliCtx.logger.debug("Worker list command completed");
+});

@@ -23,14 +23,25 @@ import {
   createLibSwampContext,
   createModelOutputGetDeps,
   modelOutputGet,
+  type ModelOutputGetData,
 } from "../../libswamp/mod.ts";
-import { createModelOutputGetRenderer } from "../../presentation/renderers/model_output_get.ts";
+import {
+  createModelOutputGetRenderer,
+  renderModelOutputGet,
+} from "../../presentation/renderers/model_output_get.ts";
 import {
   createContext,
   type GlobalOptions,
   resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { ModelOutputGetResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -44,6 +55,27 @@ export async function modelOutputGetAction(
     "output",
     "get",
   ]);
+
+  const server = resolveServeUrl(options.server as string | undefined);
+  if (server) {
+    const token = await resolveServerToken(
+      server,
+      options.token as string | undefined,
+    );
+    const response = await requestServerResponse<ModelOutputGetResponse>(
+      { server, token },
+      {
+        type: "model.output.get",
+        payload: { outputIdOrModelName },
+      },
+    );
+    renderModelOutputGet(
+      response.data as unknown as ModelOutputGetData,
+      cliCtx.outputMode,
+    );
+    return;
+  }
+
   cliCtx.logger.debug`Getting output: ${outputIdOrModelName}`;
 
   const { repoDir, datastoreResolver } = await requireInitializedRepoReadOnly(
@@ -65,14 +97,18 @@ export async function modelOutputGetAction(
   cliCtx.logger.debug("Model output get command completed");
 }
 
-export const modelOutputGetCommand = new Command()
-  .name("get")
-  .description("Show details of a model output")
-  .example("Show output details by ID", "swamp model output get abc123")
-  .example("Show latest output for a model", "swamp model output get my-server")
-  .arguments("<output_id_or_model_name:string>")
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
-  .action(modelOutputGetAction);
+export const modelOutputGetCommand = withRemoteOptions(
+  new Command()
+    .name("get")
+    .description("Show details of a model output")
+    .example("Show output details by ID", "swamp model output get abc123")
+    .example(
+      "Show latest output for a model",
+      "swamp model output get my-server",
+    )
+    .arguments("<output_id_or_model_name:string>")
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    ),
+).action(modelOutputGetAction);

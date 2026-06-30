@@ -37,6 +37,7 @@ import { UserError } from "../domain/errors.ts";
 import type {
   ModelMethodRunPayload,
   ServerMessage,
+  WorkflowResumePayload,
   WorkflowRunPayload,
 } from "../serve/protocol.ts";
 import { deserializeEvent } from "../serve/serializer.ts";
@@ -149,6 +150,15 @@ export function runModelMethodOverServer(
 ): AsyncIterable<{ kind: string; [key: string]: unknown }> {
   return streamServerRun(options, {
     type: "model.method.run",
+    payload: options.payload,
+  });
+}
+
+export function resumeWorkflowOverServer(
+  options: ServerRunOptions & { payload: WorkflowResumePayload },
+): AsyncIterable<{ kind: string; [key: string]: unknown }> {
+  return streamServerRun(options, {
+    type: "workflow.resume",
     payload: options.payload,
   });
 }
@@ -294,8 +304,8 @@ export function withRemoteOptions<T extends AnyCommand>(command: T): T {
 }
 
 interface OutboundRequest {
-  type: "workflow.run" | "model.method.run";
-  payload: WorkflowRunPayload | ModelMethodRunPayload;
+  type: "workflow.run" | "model.method.run" | "workflow.resume";
+  payload: WorkflowRunPayload | ModelMethodRunPayload | WorkflowResumePayload;
 }
 
 /**

@@ -29,6 +29,7 @@ import {
   createExtensionListDeps,
   createLibSwampContext,
   extensionList,
+  type ExtensionListData,
   type ExtensionListEntry,
   result,
   warnLegacyExtensionLayout,
@@ -51,6 +52,13 @@ import {
   enrichExtensionList,
   type ExtensionListFreshnessDeps,
 } from "./extension_list_freshness.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { ExtensionListResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -75,125 +83,148 @@ export function shouldEnrich(args: {
   return args.isTerminal();
 }
 
-export const extensionListCommand = new Command()
-  .name("list")
-  .alias("ls")
-  .description("List upstream installed extensions")
-  .example("List installed extensions", "swamp extension list")
-  .example(
-    "List with freshness check (force on)",
-    "swamp extension list --check-updates",
-  )
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
-  .option(
-    "--check-updates",
-    "Check the registry for newer versions and show a 'latest' column. " +
-      "Runs by default when stdout is a terminal; pass this flag to force on " +
-      "(e.g. when using --json in CI).",
-    { conflicts: ["no-check-updates"] },
-  )
-  .option(
-    "--no-check-updates",
-    "Skip the registry check for newer versions, showing only installed data.",
-  )
-  .action(async function (options: AnyOptions) {
-    const cliCtx = createContext(options as GlobalOptions, [
-      "extension",
-      "list",
-    ]);
-    cliCtx.logger.debug`Starting extension list`;
+export const extensionListCommand = withRemoteOptions(
+  new Command()
+    .name("list")
+    .alias("ls")
+    .description("List upstream installed extensions")
+    .example("List installed extensions", "swamp extension list")
+    .example(
+      "List with freshness check (force on)",
+      "swamp extension list --check-updates",
+    )
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    )
+    .option(
+      "--check-updates",
+      "Check the registry for newer versions and show a 'latest' column. " +
+        "Runs by default when stdout is a terminal; pass this flag to force on " +
+        "(e.g. when using --json in CI).",
+      { conflicts: ["no-check-updates"] },
+    )
+    .option(
+      "--no-check-updates",
+      "Skip the registry check for newer versions, showing only installed data.",
+    ),
+).action(async function (options: AnyOptions) {
+  const cliCtx = createContext(options as GlobalOptions, [
+    "extension",
+    "list",
+  ]);
+  cliCtx.logger.debug`Starting extension list`;
 
-    const repoDir = resolveRepoDir(options.repoDir);
-    await requireInitializedRepoReadOnly({
-      repoDir,
-      outputMode: cliCtx.outputMode,
-    });
-
-    // Warn (don't block) if any extensions are still in a legacy layout.
-    // list reads the lockfile, which tolerates mixed-generation state.
-    const repoPath = RepoPath.create(repoDir);
-    const markerRepo = new RepoMarkerRepository();
-    const marker = await markerRepo.read(repoPath);
-    const modelsDir = resolveModelsDir(marker);
-    const absoluteModelsDir = resolve(repoDir, modelsDir);
-    const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
-    await warnLegacyExtensionLayout(
-      lockfilePath,
-      (msg) => cliCtx.logger.warn(msg),
+  const server = resolveServeUrl(options.server as string | undefined);
+  if (server) {
+    const token = await resolveServerToken(
+      server,
+      options.token as string | undefined,
     );
-
-    const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = await createExtensionListDeps(repoDir);
-
-    // Pull the bare list from the libswamp generator (pure local read).
-    const completed = await result(extensionList(ctx, deps));
-    const baseEntries: ExtensionListEntry[] = completed.data.extensions;
-
-    // Decide whether to enrich based on TTY-aware default + explicit flags.
-    const enrich = shouldEnrich({
-      checkUpdates: options.checkUpdates as boolean | undefined,
-      outputMode: cliCtx.outputMode,
-      isTerminal: () => Deno.stdout.isTerminal(),
-    });
-
-    let enrichedEntries: EnrichedExtensionListEntry[];
-    if (enrich && baseEntries.length > 0) {
-      const swampDir = join(resolve(repoDir), ".swamp");
-      const cacheRepository = new FileExtensionUpdateCheckRepository(swampDir);
-      const identity = await loadIdentity();
-      const apiClient = new ExtensionApiClient(resolveServerUrl(), identity);
-      const freshnessDeps: ExtensionListFreshnessDeps = {
-        getLatestVersion: async (name, channel?) => {
-          try {
-            if (channel && channel !== "stable") {
-              const versionInfo = await apiClient.getLatestVersion(
-                name,
-                undefined,
-                channel,
-              );
-              return versionInfo?.version ?? null;
-            }
-            const info = await apiClient.getExtension(name);
-            return info?.latestVersion ?? null;
-          } catch {
-            return null;
-          }
-        },
-        cacheRepository,
-        now: () => new Date(),
-        concurrency: DEFAULT_FRESHNESS_CONCURRENCY,
-      };
-      try {
-        enrichedEntries = await enrichExtensionList(
-          baseEntries,
-          freshnessDeps,
-        );
-      } catch (error) {
-        // Degrade to the bare list on any unexpected failure. Mirrors
-        // the swallow-and-degrade pattern used by
-        // checkForMissingPulledExtensions in cli/mod.ts.
-        cliCtx.logger.debug(
-          "Extension freshness enrichment failed; falling back to bare list: {error}",
-          {
-            error: error instanceof Error ? error.message : String(error),
-          },
-        );
-        enrichedEntries = baseEntries;
-      }
-    } else {
-      enrichedEntries = baseEntries;
-    }
-
+    const response = await requestServerResponse<ExtensionListResponse>(
+      { server, token },
+      {
+        type: "extension.list",
+        payload: {},
+      },
+    );
     const verbose = cliCtx.verbosity === "verbose";
     const renderer = createExtensionListRenderer(cliCtx.outputMode, verbose);
-    await renderer.handlers().resolving({ kind: "resolving" });
     await renderer.handlers().completed({
       kind: "completed",
-      data: { extensions: enrichedEntries },
+      data: response.data as unknown as ExtensionListData,
     });
+    return;
+  }
 
-    cliCtx.logger.debug("Extension list command completed");
+  const repoDir = resolveRepoDir(options.repoDir);
+  await requireInitializedRepoReadOnly({
+    repoDir,
+    outputMode: cliCtx.outputMode,
   });
+
+  // Warn (don't block) if any extensions are still in a legacy layout.
+  // list reads the lockfile, which tolerates mixed-generation state.
+  const repoPath = RepoPath.create(repoDir);
+  const markerRepo = new RepoMarkerRepository();
+  const marker = await markerRepo.read(repoPath);
+  const modelsDir = resolveModelsDir(marker);
+  const absoluteModelsDir = resolve(repoDir, modelsDir);
+  const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
+  await warnLegacyExtensionLayout(
+    lockfilePath,
+    (msg) => cliCtx.logger.warn(msg),
+  );
+
+  const ctx = createLibSwampContext({ logger: cliCtx.logger });
+  const deps = await createExtensionListDeps(repoDir);
+
+  // Pull the bare list from the libswamp generator (pure local read).
+  const completed = await result(extensionList(ctx, deps));
+  const baseEntries: ExtensionListEntry[] = completed.data.extensions;
+
+  // Decide whether to enrich based on TTY-aware default + explicit flags.
+  const enrich = shouldEnrich({
+    checkUpdates: options.checkUpdates as boolean | undefined,
+    outputMode: cliCtx.outputMode,
+    isTerminal: () => Deno.stdout.isTerminal(),
+  });
+
+  let enrichedEntries: EnrichedExtensionListEntry[];
+  if (enrich && baseEntries.length > 0) {
+    const swampDir = join(resolve(repoDir), ".swamp");
+    const cacheRepository = new FileExtensionUpdateCheckRepository(swampDir);
+    const identity = await loadIdentity();
+    const apiClient = new ExtensionApiClient(resolveServerUrl(), identity);
+    const freshnessDeps: ExtensionListFreshnessDeps = {
+      getLatestVersion: async (name, channel?) => {
+        try {
+          if (channel && channel !== "stable") {
+            const versionInfo = await apiClient.getLatestVersion(
+              name,
+              undefined,
+              channel,
+            );
+            return versionInfo?.version ?? null;
+          }
+          const info = await apiClient.getExtension(name);
+          return info?.latestVersion ?? null;
+        } catch {
+          return null;
+        }
+      },
+      cacheRepository,
+      now: () => new Date(),
+      concurrency: DEFAULT_FRESHNESS_CONCURRENCY,
+    };
+    try {
+      enrichedEntries = await enrichExtensionList(
+        baseEntries,
+        freshnessDeps,
+      );
+    } catch (error) {
+      // Degrade to the bare list on any unexpected failure. Mirrors
+      // the swallow-and-degrade pattern used by
+      // checkForMissingPulledExtensions in cli/mod.ts.
+      cliCtx.logger.debug(
+        "Extension freshness enrichment failed; falling back to bare list: {error}",
+        {
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
+      enrichedEntries = baseEntries;
+    }
+  } else {
+    enrichedEntries = baseEntries;
+  }
+
+  const verbose = cliCtx.verbosity === "verbose";
+  const renderer = createExtensionListRenderer(cliCtx.outputMode, verbose);
+  await renderer.handlers().resolving({ kind: "resolving" });
+  await renderer.handlers().completed({
+    kind: "completed",
+    data: { extensions: enrichedEntries },
+  });
+
+  cliCtx.logger.debug("Extension list command completed");
+});

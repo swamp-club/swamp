@@ -24,6 +24,7 @@ import {
   createModelOutputGetDeps,
   modelOutputGet,
   modelOutputSearch,
+  type ModelOutputSearchData,
   type ModelOutputSearchDeps,
 } from "../../libswamp/mod.ts";
 import { createModelOutputSearchRenderer } from "../../presentation/renderers/model_output_search.tsx";
@@ -37,6 +38,13 @@ import {
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
 import { createDefinitionId } from "../../domain/definitions/definition.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { ModelMethodHistorySearchResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -51,6 +59,35 @@ export async function modelMethodHistorySearchAction(
     "history",
     "search",
   ]);
+
+  const server = resolveServeUrl(options.server as string | undefined);
+  if (server) {
+    const token = await resolveServerToken(
+      server,
+      options.token as string | undefined,
+    );
+    const response = await requestServerResponse<
+      ModelMethodHistorySearchResponse
+    >(
+      { server, token },
+      {
+        type: "model.method.history.search",
+        payload: { query },
+      },
+    );
+    const renderer = createModelOutputSearchRenderer(ctx.outputMode);
+    await consumeStream(
+      (async function* () {
+        yield {
+          kind: "completed" as const,
+          data: response.data as unknown as ModelOutputSearchData,
+        };
+      })(),
+      renderer.handlers(),
+    );
+    return;
+  }
+
   const effectiveMode = interactiveOutputMode(ctx);
   const libCtx = createLibSwampContext();
   ctx.logger.debug`Searching method history with query: ${query ?? "(none)"}`;
@@ -93,14 +130,15 @@ export async function modelMethodHistorySearchAction(
   ctx.logger.debug("Model method history search command completed");
 }
 
-export const modelMethodHistorySearchCommand = new Command()
-  .name("search")
-  .description("Search model method run history")
-  .example("Browse all history", "swamp model method history search")
-  .example("Search by keyword", "swamp model method history search deploy")
-  .arguments("[query:string]")
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
-  .action(modelMethodHistorySearchAction);
+export const modelMethodHistorySearchCommand = withRemoteOptions(
+  new Command()
+    .name("search")
+    .description("Search model method run history")
+    .example("Browse all history", "swamp model method history search")
+    .example("Search by keyword", "swamp model method history search deploy")
+    .arguments("[query:string]")
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    ),
+).action(modelMethodHistorySearchAction);

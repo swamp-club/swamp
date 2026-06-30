@@ -23,31 +23,65 @@ import {
   createLibSwampContext,
   createModelGetDeps,
   modelGet,
+  type ModelGetData,
 } from "../../libswamp/mod.ts";
-import { createModelGetRenderer } from "../../presentation/renderers/model_get.ts";
+import {
+  createModelGetRenderer,
+  renderModelGet,
+} from "../../presentation/renderers/model_get.ts";
 import {
   createContext,
   type GlobalOptions,
   resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { ModelGetResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-export const modelGetCommand = new Command()
-  .name("get")
-  .description("Show details of a model definition")
-  .example("Show model details", "swamp model get my-server")
-  .example("JSON output", "swamp model get my-server --json")
-  .arguments("<model_id_or_name:model_name>")
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
+export const modelGetCommand = withRemoteOptions(
+  new Command()
+    .name("get")
+    .description("Show details of a model definition")
+    .example("Show model details", "swamp model get my-server")
+    .example("JSON output", "swamp model get my-server --json")
+    .arguments("<model_id_or_name:model_name>")
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    ),
+).action(
   // @ts-expect-error - Cliffy custom type returns unknown instead of string
-  .action(async function (options: AnyOptions, modelIdOrName: string) {
+  async function (options: AnyOptions, modelIdOrName: string) {
     const cliCtx = createContext(options as GlobalOptions, ["model", "get"]);
+
+    const server = resolveServeUrl(options.server as string | undefined);
+    if (server) {
+      const token = await resolveServerToken(
+        server,
+        options.token as string | undefined,
+      );
+      const response = await requestServerResponse<ModelGetResponse>(
+        { server, token },
+        {
+          type: "model.get",
+          payload: { modelIdOrName },
+        },
+      );
+      renderModelGet(
+        response.data as unknown as ModelGetData,
+        cliCtx.outputMode,
+      );
+      return;
+    }
+
     cliCtx.logger.debug`Getting model: ${modelIdOrName}`;
 
     const { repoDir } = await requireInitializedRepoReadOnly({
@@ -65,4 +99,5 @@ export const modelGetCommand = new Command()
     );
 
     cliCtx.logger.debug("Model get command completed");
-  });
+  },
+);

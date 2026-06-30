@@ -23,6 +23,7 @@ import {
   createDatastoreStatusDeps,
   createLibSwampContext,
   datastoreStatus,
+  type DatastoreStatusData,
 } from "../../libswamp/mod.ts";
 import { createDatastoreStatusRenderer } from "../../presentation/renderers/datastore_status.ts";
 import {
@@ -31,6 +32,13 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { DatastoreStatusResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -38,29 +46,56 @@ type AnyOptions = any;
 /**
  * Shows current datastore configuration and health.
  */
-export const datastoreStatusCommand = new Command()
-  .description("Show datastore configuration and health")
-  .example("Show datastore health", "swamp datastore status")
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
-  .action(async function (options: AnyOptions) {
-    const cliCtx = createContext(options as GlobalOptions, [
-      "datastore",
-      "status",
-    ]);
-    cliCtx.logger.debug("Executing datastore status command");
+export const datastoreStatusCommand = withRemoteOptions(
+  new Command()
+    .description("Show datastore configuration and health")
+    .example("Show datastore health", "swamp datastore status")
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    ),
+).action(async function (options: AnyOptions) {
+  const cliCtx = createContext(options as GlobalOptions, [
+    "datastore",
+    "status",
+  ]);
+  cliCtx.logger.debug("Executing datastore status command");
 
-    const { datastoreResolver } = await requireInitializedRepoReadOnly({
-      repoDir: resolveRepoDir(options.repoDir),
-      outputMode: cliCtx.outputMode,
-    });
-
-    const ctx = createLibSwampContext({ logger: cliCtx.logger });
-    const deps = await createDatastoreStatusDeps(datastoreResolver);
+  const server = resolveServeUrl(options.server as string | undefined);
+  if (server) {
+    const token = await resolveServerToken(
+      server,
+      options.token as string | undefined,
+    );
+    const response = await requestServerResponse<DatastoreStatusResponse>(
+      { server, token },
+      {
+        type: "datastore.status",
+        payload: {},
+      },
+    );
     const renderer = createDatastoreStatusRenderer(cliCtx.outputMode);
-    await consumeStream(datastoreStatus(ctx, deps), renderer.handlers());
+    await consumeStream(
+      (async function* () {
+        yield {
+          kind: "completed" as const,
+          data: response.data as unknown as DatastoreStatusData,
+        };
+      })(),
+      renderer.handlers(),
+    );
+    return;
+  }
 
-    cliCtx.logger.debug("Datastore status command completed");
+  const { datastoreResolver } = await requireInitializedRepoReadOnly({
+    repoDir: resolveRepoDir(options.repoDir),
+    outputMode: cliCtx.outputMode,
   });
+
+  const ctx = createLibSwampContext({ logger: cliCtx.logger });
+  const deps = await createDatastoreStatusDeps(datastoreResolver);
+  const renderer = createDatastoreStatusRenderer(cliCtx.outputMode);
+  await consumeStream(datastoreStatus(ctx, deps), renderer.handlers());
+
+  cliCtx.logger.debug("Datastore status command completed");
+});

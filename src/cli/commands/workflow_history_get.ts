@@ -23,6 +23,7 @@ import {
   createLibSwampContext,
   createWorkflowHistoryGetDeps,
   workflowHistoryGet,
+  type WorkflowRunView,
 } from "../../libswamp/mod.ts";
 import { createWorkflowHistoryGetRenderer } from "../../presentation/renderers/workflow_history_get.ts";
 import {
@@ -31,6 +32,13 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { WorkflowHistoryGetResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -44,6 +52,33 @@ export async function workflowHistoryGetAction(
     "history",
     "get",
   ]);
+
+  const server = resolveServeUrl(options.server as string | undefined);
+  if (server) {
+    const token = await resolveServerToken(
+      server,
+      options.token as string | undefined,
+    );
+    const response = await requestServerResponse<WorkflowHistoryGetResponse>(
+      { server, token },
+      {
+        type: "workflow.history.get",
+        payload: { workflowIdOrName },
+      },
+    );
+    const renderer = createWorkflowHistoryGetRenderer(cliCtx.outputMode);
+    await consumeStream(
+      (async function* () {
+        yield {
+          kind: "completed" as const,
+          data: response.data as unknown as WorkflowRunView,
+        };
+      })(),
+      renderer.handlers(),
+    );
+    return;
+  }
+
   cliCtx.logger.debug`Getting latest run for workflow: ${workflowIdOrName}`;
 
   const { repoDir, repoContext, datastoreResolver } =
@@ -70,14 +105,15 @@ export async function workflowHistoryGetAction(
   cliCtx.logger.debug("Workflow history get command completed");
 }
 
-export const workflowHistoryGetCommand = new Command()
-  .name("get")
-  .description("Show the latest run for a workflow")
-  .example("Show latest run", "swamp workflow history get deploy-pipeline")
-  .arguments("<workflow_id_or_name:workflow_name>")
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
+export const workflowHistoryGetCommand = withRemoteOptions(
+  new Command()
+    .name("get")
+    .description("Show the latest run for a workflow")
+    .example("Show latest run", "swamp workflow history get deploy-pipeline")
+    .arguments("<workflow_id_or_name:workflow_name>")
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    ),
   // @ts-expect-error - Cliffy custom type returns unknown instead of string
-  .action(workflowHistoryGetAction);
+).action(workflowHistoryGetAction);

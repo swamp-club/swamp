@@ -19,129 +19,139 @@
 
 import { Command } from "@cliffy/command";
 import {
+  consumeStream,
+  createLibSwampContext,
+  createWorkflowApproveDeps,
+  workflowApprove,
+  type WorkflowApproveData,
+  type WorkflowApproveEvent,
+} from "../../libswamp/mod.ts";
+import {
   createContext,
   type GlobalOptions,
   resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoUnlocked } from "../repo_context.ts";
-import { UserError } from "../../domain/errors.ts";
-import { resolveSuspendedRun } from "../../domain/workflows/suspended_run_resolver.ts";
-import { evaluateApprovalTimeout } from "../../domain/workflows/approval_timeout.ts";
-import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
+import {
+  requestServerResponse,
+  resolveServerToken,
+  resolveServeUrl,
+  withRemoteOptions,
+} from "../remote_run.ts";
+import type { WorkflowApproveResponse } from "../../serve/protocol.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
-export const workflowApproveCommand = new Command()
-  .name("approve")
-  .description("Approve a manual approval step in a suspended workflow run")
-  .example(
-    "Approve by workflow name",
-    "swamp workflow approve deploy-with-gate verify-build",
-  )
-  .example(
-    "Approve with reason",
-    "swamp workflow approve deploy-with-gate verify-build --reason 'Verified'",
-  )
-  .arguments("<workflow_id_or_name:string> <step_name:string>")
-  .option(
-    "--repo-dir <dir:string>",
-    "Repository directory (env: SWAMP_REPO_DIR)",
-  )
-  .option("--reason <reason:string>", "Reason for approval")
-  .option("--run <run_id:string>", "Target a specific run ID")
-  .action(
-    async function (
-      options: AnyOptions,
-      workflowIdOrName: string,
-      stepName: string,
-    ) {
-      const cliCtx = createContext(options as GlobalOptions, [
-        "workflow",
-        "approve",
-      ]);
+export const workflowApproveCommand = withRemoteOptions(
+  new Command()
+    .name("approve")
+    .description("Approve a manual approval step in a suspended workflow run")
+    .example(
+      "Approve by workflow name",
+      "swamp workflow approve deploy-with-gate verify-build",
+    )
+    .example(
+      "Approve with reason",
+      "swamp workflow approve deploy-with-gate verify-build --reason 'Verified'",
+    )
+    .arguments("<workflow_id_or_name:string> <step_name:string>")
+    .option(
+      "--repo-dir <dir:string>",
+      "Repository directory (env: SWAMP_REPO_DIR)",
+    )
+    .option("--reason <reason:string>", "Reason for approval")
+    .option("--run <run_id:string>", "Target a specific run ID"),
+).action(
+  async function (
+    options: AnyOptions,
+    workflowIdOrName: string,
+    stepName: string,
+  ) {
+    const cliCtx = createContext(options as GlobalOptions, [
+      "workflow",
+      "approve",
+    ]);
 
-      const { repoContext } = await requireInitializedRepoUnlocked({
-        repoDir: resolveRepoDir(options.repoDir),
-        outputMode: cliCtx.outputMode,
-      });
-
-      // Use the datastore-aware repositories from the RepositoryContext so the
-      // suspended-run lookup (and the post-approval save) resolve the same
-      // workflow-runs path the run was written to. Constructing
-      // YamlWorkflowRunRepository(repoDir) directly would bind to repo-local
-      // .swamp/workflow-runs/ and miss runs stored in a configured datastore.
-      const workflowRepo = repoContext.workflowRepo;
-      const runRepo = repoContext.workflowRunRepo;
-
-      const { run, workflowName, workflow } = await resolveSuspendedRun(
-        workflowRepo,
-        runRepo,
-        workflowIdOrName,
-        options.run,
+    const server = resolveServeUrl(options.server as string | undefined);
+    if (server) {
+      const token = await resolveServerToken(
+        server,
+        options.token as string | undefined,
       );
+      const response = await requestServerResponse<WorkflowApproveResponse>(
+        { server, token },
+        {
+          type: "workflow.approve",
+          payload: {
+            workflowIdOrName,
+            stepName,
+            reason: options.reason as string | undefined,
+            runId: options.run as string | undefined,
+          },
+        },
+      );
+      await consumeStream<WorkflowApproveEvent>(
+        (async function* () {
+          yield {
+            kind: "completed" as const,
+            data: response.data as unknown as WorkflowApproveData,
+          };
+        })(),
+        {
+          resolving: () => {},
+          completed: (e) => {
+            if (cliCtx.outputMode === "json") {
+              console.log(JSON.stringify(e.data));
+            } else {
+              cliCtx.logger
+                .info`Approved step ${e.data.stepName} in workflow ${e.data.workflowName}`;
+              cliCtx.logger
+                .info`After approval: swamp workflow resume ${e.data.workflowName}`;
+            }
+          },
+          error: (e) => {
+            throw new Error(e.error.message);
+          },
+        },
+      );
+      return;
+    }
 
-      let step:
-        | import("../../domain/workflows/workflow_run.ts").StepRun
-        | undefined;
-      let jobName: string | undefined;
-      for (const job of run.jobs) {
-        const s = job.getStep(stepName);
-        if (s && s.status === "waiting_approval") {
-          step = s;
-          jobName = job.jobName;
-          break;
-        }
-      }
-      if (!step || !jobName) {
-        throw new UserError(
-          `Step "${stepName}" is not awaiting approval in the suspended run`,
-        );
-      }
+    const { repoContext } = await requireInitializedRepoUnlocked({
+      repoDir: resolveRepoDir(options.repoDir),
+      outputMode: cliCtx.outputMode,
+    });
 
+    const ctx = createLibSwampContext({ logger: cliCtx.logger });
+    const deps = createWorkflowApproveDeps(
+      repoContext.workflowRepo,
+      repoContext.workflowRunRepo,
+    );
+
+    await consumeStream(
+      workflowApprove(ctx, deps, {
+        workflowIdOrName,
+        stepName,
+        reason: options.reason as string | undefined,
+        runId: options.run as string | undefined,
+      }),
       {
-        const wfJob = workflow.jobs.find((j) => j.name === jobName);
-        const wfStep = wfJob?.steps.find((s) => s.name === stepName);
-        const timeout = evaluateApprovalTimeout(
-          step.startedAt,
-          wfStep?.task.data,
-          new Date(),
-        );
-        if (timeout?.expired) {
-          throw new UserError(
-            `Approval timed out: step "${stepName}" has been waiting ${
-              Math.round(timeout.elapsedSeconds)
-            }s ` +
-              `(timeout: ${timeout.timeoutSeconds}s)`,
-          );
-        }
-      }
-
-      const decidedBy = Deno.env.get("USER") ??
-        Deno.env.get("USERNAME") ?? "unknown";
-      step.recordApprovalDecision({
-        approved: true,
-        reason: options.reason,
-        decidedBy,
-        decidedAt: new Date().toISOString(),
-      });
-      step.succeed();
-      await runRepo.save(createWorkflowId(run.workflowId), run);
-
-      if (cliCtx.outputMode === "json") {
-        console.log(JSON.stringify({
-          runId: run.id,
-          workflowName,
-          stepName,
-          approved: true,
-          decidedBy,
-          reason: options.reason ?? null,
-        }));
-      } else {
-        cliCtx.logger
-          .info`Approved step ${stepName} in workflow ${workflowName}`;
-        cliCtx.logger
-          .info`After approval: swamp workflow resume ${workflowName}`;
-      }
-    },
-  );
+        resolving: () => {},
+        completed: (e) => {
+          if (cliCtx.outputMode === "json") {
+            console.log(JSON.stringify(e.data));
+          } else {
+            cliCtx.logger
+              .info`Approved step ${e.data.stepName} in workflow ${e.data.workflowName}`;
+            cliCtx.logger
+              .info`After approval: swamp workflow resume ${e.data.workflowName}`;
+          }
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      },
+    );
+  },
+);
