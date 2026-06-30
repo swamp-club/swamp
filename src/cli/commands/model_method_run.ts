@@ -110,7 +110,25 @@ export const modelMethodRunCommand = new Command()
     'printf \'{"env":"dev"}\\n{"env":"prod"}\' | swamp model method run my-server deploy --stdin',
   )
   .description(
-    "Execute a method on a model. With @type prefix, auto-creates the definition if needed.",
+    `Execute a method on a model. With @type prefix, auto-creates the definition if needed.
+
+When --json is set, errors are written to stderr as a JSON envelope:
+
+    { "error": "<message>", "code": "<error_code>" }
+
+The "code" field is a stable, machine-readable identifier. Callers should match on "code" rather than parsing the error message. Known codes for this command:
+
+    lock_timeout             Another invocation holds the model lock (exit 75)
+    model_not_found          No model matches the given name
+    unknown_model_type       The @type prefix does not match any installed type
+    unknown_method           The model does not define the requested method
+    no_evaluated_definition  No evaluated definition exists (use --last-evaluated)
+    missing_deps             Required extension dependencies are not installed
+    method_execution_failed  The method's execution driver returned an error
+    not_authenticated        Not signed in (run 'swamp auth login')
+    cancelled                Operation was cancelled (e.g. Ctrl+C)
+
+Exit codes: 0 = success, 1 = general error, 75 = lock contention (temporary — retry with backoff).`,
   )
   .arguments(
     "<model_or_type:model_name> <method_name:string> [definition_name:string]",

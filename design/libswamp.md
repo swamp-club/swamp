@@ -777,6 +777,45 @@ expected errors. Cancellation is also an error event with
 Unexpected errors (bugs, infrastructure failures) may still throw and should be
 caught at the adapter boundary.
 
+### Known error codes
+
+Codes used across libswamp generators and the CLI error boundary:
+
+| Code                       | Origin             | Meaning                                              |
+| -------------------------- | ------------------ | ---------------------------------------------------- |
+| `not_authenticated`        | `libswamp/errors`  | No valid auth credentials                            |
+| `invalid_api_key`          | `libswamp/errors`  | Stored API key is no longer valid                    |
+| `cancelled`                | `libswamp/errors`  | Operation cancelled (e.g. Ctrl+C, AbortSignal)       |
+| `not_found`                | `libswamp/errors`  | Generic entity not found                             |
+| `already_exists`           | `libswamp/errors`  | Entity already exists                                |
+| `validation_failed`        | `libswamp/errors`  | Input or configuration validation failed             |
+| `lock_timeout`             | `distributed_lock` | Lock held by another process; timed out waiting      |
+| `model_not_found`          | `models/run`       | No model matches the given name                      |
+| `unknown_model_type`       | `models/run`       | Type prefix does not match any installed type         |
+| `unknown_method`           | `models/run`       | Model does not define the requested method            |
+| `no_evaluated_definition`  | `models/run`       | No evaluated definition exists                       |
+| `method_execution_failed`  | `models/run`       | Execution driver returned an error                   |
+| `missing_deps`             | `models/run`       | Required extension dependencies not installed         |
+| `workflow_not_found`       | `workflows/run`    | No workflow matches the given name                   |
+| `workflow_execution_failed`| `workflows/run`    | Workflow step execution failed                       |
+| `input_validation_failed`  | `workflows/run`    | Workflow input validation failed                     |
+
+This table is not exhaustive — generators may define additional codes for
+domain-specific errors. The `code` field is always a `snake_case` string.
+
+### CLI exit codes
+
+| Exit code | Meaning                                                    |
+| --------- | ---------------------------------------------------------- |
+| `0`       | Success                                                    |
+| `1`       | General error (default for all unrecognized error codes)   |
+| `2`       | Unknown command                                            |
+| `75`      | Lock contention / temporary failure (`lock_timeout`) — callers should retry with backoff |
+
+Callers that only need pass/fail should check `$? -ne 0`. Callers that
+want to handle specific failure modes (e.g. retry on lock contention)
+should match the numeric exit code.
+
 ### Error handling by adapters
 
 ```typescript
