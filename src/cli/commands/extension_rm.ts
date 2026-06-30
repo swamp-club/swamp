@@ -83,6 +83,9 @@ export const extensionRemoveCommand = withRemoteOptions(
   const ctx = createContext(options as GlobalOptions, ["extension", "rm"]);
   ctx.logger.debug`Starting extension remove`;
 
+  const ref = parseExtensionRef(extension);
+  validateExtensionName(ref.name);
+
   const server = resolveServeUrl(options.server as string | undefined);
   if (server) {
     const token = await resolveServerToken(
@@ -93,7 +96,7 @@ export const extensionRemoveCommand = withRemoteOptions(
       { server, token },
       {
         type: "extension.rm",
-        payload: { extensionName: extension },
+        payload: { extensionName: ref.name },
       },
     );
     const renderer = createExtensionRmRenderer(ctx.outputMode);
@@ -113,9 +116,6 @@ export const extensionRemoveCommand = withRemoteOptions(
     resolveRepoDir(options.repoDir),
   );
 
-  // Parse extension reference (ignore version if provided)
-  const ref = parseExtensionRef(extension);
-  validateExtensionName(ref.name);
   const modelsDir = resolveModelsDir(marker);
   const absoluteModelsDir = resolve(repoDir, modelsDir);
   const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");

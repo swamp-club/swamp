@@ -80,8 +80,6 @@ import {
   type DoctorWorkflowsDeps,
   extensionInfo,
   extensionList,
-  extensionSearch,
-  type ExtensionSearchDeps,
   mapWorkflowExecutionEvent,
   modelCreate,
   modelDelete,
@@ -725,7 +723,7 @@ const WorkflowApproveRequestSchema = z.object({
     stepName: z.string(),
     reason: z.string().optional(),
     runId: z.string().optional(),
-    decidedBy: z.string().optional(),
+    decidedBy: z.string().max(256).optional(),
   }),
 });
 
@@ -737,7 +735,7 @@ const WorkflowRejectRequestSchema = z.object({
     stepName: z.string(),
     reason: z.string().optional(),
     runId: z.string().optional(),
-    decidedBy: z.string().optional(),
+    decidedBy: z.string().max(256).optional(),
   }),
 });
 
@@ -4854,7 +4852,7 @@ async function handleWorkflowApprove(
         stepName: payload.stepName,
         reason: payload.reason,
         runId: payload.runId,
-        decidedBy: payload.decidedBy,
+        decidedBy: principal ? principalToString(principal) : payload.decidedBy,
       }),
       {
         resolving: () => {},
@@ -4923,7 +4921,7 @@ async function handleWorkflowReject(
         stepName: payload.stepName,
         reason: payload.reason,
         runId: payload.runId,
-        decidedBy: payload.decidedBy,
+        decidedBy: principal ? principalToString(principal) : payload.decidedBy,
       }),
       {
         resolving: () => {},
@@ -5471,77 +5469,21 @@ async function handleExtensionList(
   }
 }
 
+// deno-lint-ignore require-await
 async function handleExtensionSearch(
   socket: WebSocket,
-  ctx: ConnectionContext,
+  _ctx: ConnectionContext,
   requestId: string,
-  controller: AbortController,
-  principal: Principal | null,
-  payload?: ExtensionSearchPayload,
+  _controller: AbortController,
+  _principal: Principal | null,
+  _payload?: ExtensionSearchPayload,
 ): Promise<void> {
-  if (
-    !authorizeOrReject(socket, requestId, principal, "read", {
-      kind: "model",
-      name: "*",
-      fields: {},
-    }, ctx)
-  ) return;
-
-  try {
-    const libCtx = createLibSwampContext();
-    // TODO: ExtensionSearchDeps requires an API client with auth identity.
-    // The server would need to forward the principal's credentials to the
-    // swamp-club API. For now, construct deps without auth.
-    const deps: ExtensionSearchDeps = {
-      searchExtensions: (_params) => {
-        // Until the API client is wired through the serve layer, return
-        // an empty result set. A real implementation would use
-        // ExtensionApiClient with the principal's identity.
-        return Promise.resolve({
-          extensions: [],
-          meta: { total: 0, page: 1, perPage: 20 },
-        });
-      },
-    };
-
-    let result: Record<string, unknown> | undefined;
-    await consumeStream(
-      extensionSearch(libCtx, deps, {
-        query: payload?.query,
-        collective: payload?.collective,
-        platform: payload?.platform ? [payload.platform] : undefined,
-        label: payload?.label ? [payload.label] : undefined,
-        contentType: payload?.contentType ? [payload.contentType] : undefined,
-        channel: payload?.channel ? [payload.channel] : undefined,
-        sort: payload?.sort,
-        perPage: payload?.perPage,
-        page: payload?.page,
-      }),
-      {
-        resolving: () => {},
-        completed: (e) => {
-          result = e.data as unknown as Record<string, unknown>;
-        },
-        error: (e) => {
-          throw new Error(e.error.message);
-        },
-      },
-    );
-
-    if (controller.signal.aborted) {
-      sendError(socket, requestId, "cancelled", "Operation was cancelled");
-      return;
-    }
-
-    send(socket, {
-      type: "extension.search",
-      id: requestId,
-      payload: { data: result ?? {} },
-    });
-  } catch (error) {
-    const message = sanitizeErrorForClient(error);
-    sendError(socket, requestId, "extension_search_failed", message);
-  }
+  sendError(
+    socket,
+    requestId,
+    "not_implemented",
+    "extension.search is not yet available over the WebSocket API",
+  );
 }
 
 async function handleExtensionInfo(

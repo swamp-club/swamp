@@ -17,12 +17,14 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+import type { Workflow } from "../../domain/workflows/workflow.ts";
 import type { WorkflowRun } from "../../domain/workflows/workflow_run.ts";
 import type {
   WorkflowRepository,
   WorkflowRunRepository,
 } from "../../domain/workflows/repositories.ts";
 import { resolveSuspendedRun } from "../../domain/workflows/suspended_run_resolver.ts";
+import { evaluateApprovalTimeout } from "../../domain/workflows/approval_timeout.ts";
 import { createWorkflowId } from "../../domain/workflows/workflow_id.ts";
 import type { LibSwampContext } from "../context.ts";
 import type { SwampError } from "../errors.ts";
@@ -82,6 +84,7 @@ export async function* workflowReject(
         run: WorkflowRun;
         workflowName: string;
         workflowId: string;
+        workflow: Workflow;
       };
       try {
         resolved = await resolveSuspendedRun(
@@ -100,7 +103,7 @@ export async function* workflowReject(
         return;
       }
 
-      const { run, workflowName, workflowId } = resolved;
+      const { run, workflowName, workflowId, workflow } = resolved;
 
       let step:
         | import("../../domain/workflows/workflow_run.ts").StepRun
@@ -108,11 +111,13 @@ export async function* workflowReject(
       let matchedJob:
         | import("../../domain/workflows/workflow_run.ts").JobRun
         | undefined;
+      let jobName: string | undefined;
       for (const job of run.jobs) {
         const s = job.getStep(input.stepName);
         if (s && s.status === "waiting_approval") {
           step = s;
           matchedJob = job;
+          jobName = job.jobName;
           break;
         }
       }
@@ -121,6 +126,25 @@ export async function* workflowReject(
           kind: "error",
           error: validationFailed(
             `Step "${input.stepName}" is not awaiting approval in the suspended run`,
+          ),
+        };
+        return;
+      }
+
+      const wfJob = workflow.jobs.find((j) => j.name === jobName);
+      const wfStep = wfJob?.steps.find((s) => s.name === input.stepName);
+      const timeout = evaluateApprovalTimeout(
+        step.startedAt,
+        wfStep?.task.data,
+        new Date(),
+      );
+      if (timeout?.expired) {
+        yield {
+          kind: "error",
+          error: validationFailed(
+            `Approval timed out: step "${input.stepName}" has been waiting ${
+              Math.round(timeout.elapsedSeconds)
+            }s (timeout: ${timeout.timeoutSeconds}s)`,
           ),
         };
         return;
