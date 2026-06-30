@@ -735,6 +735,7 @@ export class ExtensionLoader {
           entry.state === "ValidationFailed" ||
           entry.state === "BundleBuildFailed"
         ) {
+          if (!this.sourceExistsOnDisk(entry.source_path)) continue;
           const name = entry.extension_name || entry.type_normalized;
           if (name && !skippedExtensions.has(name)) {
             skippedExtensions.add(name);
@@ -748,6 +749,16 @@ export class ExtensionLoader {
     for (const name of skippedExtensions) {
       this.logger
         .warn`Extension ${name} has broken bundles and is not available. Run 'swamp doctor extensions --repair' or 'swamp extension pull ${name} --force' to fix.`;
+    }
+  }
+
+  private sourceExistsOnDisk(sourcePath: string): boolean {
+    try {
+      Deno.statSync(sourcePath);
+      return true;
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) return true;
+      return false;
     }
   }
 

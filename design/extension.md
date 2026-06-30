@@ -1231,7 +1231,9 @@ Recovery paths:
 - **`swamp extension pull <name> --force`** manually re-downloads the extension
   including its pre-built bundle.
 - **User-facing warning:** `registerLazyFromCatalog` warns when extensions are
-  skipped due to failure states, directing users to the recovery commands.
+  skipped due to failure states, directing users to the recovery commands. The
+  warning checks source file existence before firing — stale catalog entries
+  for deleted source files are silently skipped (swamp-club#894).
 
 `BUNDLE_LAYOUT_VERSION` must be bumped whenever a change to the bundler, runtime
 interface, or zod global shape would make existing bundles incompatible.

@@ -21,6 +21,7 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import { join } from "@std/path";
 import { toFileUrl } from "@std/path";
 import { findStaleFiles, type FreshnessCatalog } from "./bundle_freshness.ts";
+import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
 import type { ExtensionTypeRow } from "../../infrastructure/persistence/extension_catalog_store.ts";
 
 Deno.test("importBundleByPath: non-empty fingerprint appends ?fp= to import URL", async () => {
@@ -211,4 +212,122 @@ Deno.test("fingerprint URL guard: distinct fingerprints produce distinct URLs", 
   assertEquals(url3.includes("?fp="), false);
   assertEquals(url4, baseUrl);
   assertEquals(url4.includes("?fp="), false);
+});
+
+// -- BundleBuildFailed stale-entry preservation (swamp-club#894) -----------
+
+Deno.test("findStaleFiles: BundleBuildFailed entries for missing sources are preserved in catalog", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp_stale_bbf_" });
+  try {
+    const dbPath = join(dir, "catalog.db");
+    const catalog = new ExtensionCatalogStore(dbPath);
+    try {
+      const existingSource = join(dir, "valid_model.ts");
+      const deletedSource = join(dir, "deleted_model.ts");
+      await Deno.writeTextFile(existingSource, "export const model = {};");
+
+      catalog.upsert({
+        source_path: existingSource,
+        type_normalized: "valid-model",
+        kind: "model",
+        bundle_path: join(dir, "valid_model.js"),
+        version: "1.0.0",
+        description: "",
+        extends_type: "",
+        source_mtime: "",
+        source_fingerprint: "fp-valid",
+        state: "Indexed",
+        extension_name: "@local/test",
+        extension_version: "1.0.0",
+        last_error: "",
+      });
+
+      catalog.upsert({
+        source_path: deletedSource,
+        type_normalized: "",
+        kind: "model",
+        bundle_path: "",
+        version: "1.0.0",
+        description: "",
+        extends_type: "",
+        source_mtime: "",
+        source_fingerprint: "fp-deleted",
+        state: "BundleBuildFailed",
+        extension_name: "@local/test",
+        extension_version: "1.0.0",
+        last_error: "some build error",
+      });
+
+      await findStaleFiles({
+        modelsDir: dir,
+        catalog,
+        discoverFiles: discoverExcludingTestFiles,
+        kinds: ["model"],
+      });
+
+      const remaining = catalog.findByKind("model");
+      const bbfEntry = remaining.find((r) => r.state === "BundleBuildFailed");
+      assertEquals(
+        bbfEntry !== undefined,
+        true,
+        "BundleBuildFailed entry for deleted source must be preserved by findStaleFiles (reconcile handles cleanup)",
+      );
+
+      const indexedEntry = remaining.find((r) => r.state === "Indexed");
+      assertEquals(
+        indexedEntry !== undefined,
+        true,
+        "Indexed entry for existing source must survive",
+      );
+    } finally {
+      catalog.close();
+    }
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
+});
+
+Deno.test("findStaleFiles: ValidationFailed entries for missing sources are removed from catalog", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp_stale_vf_" });
+  try {
+    const dbPath = join(dir, "catalog.db");
+    const catalog = new ExtensionCatalogStore(dbPath);
+    try {
+      const deletedSource = join(dir, "deleted_model.ts");
+
+      catalog.upsert({
+        source_path: deletedSource,
+        type_normalized: "",
+        kind: "model",
+        bundle_path: "",
+        version: "1.0.0",
+        description: "",
+        extends_type: "",
+        source_mtime: "",
+        source_fingerprint: "fp-deleted",
+        state: "ValidationFailed",
+        extension_name: "@local/test",
+        extension_version: "1.0.0",
+        last_error: "validation error",
+      });
+
+      await findStaleFiles({
+        modelsDir: dir,
+        catalog,
+        discoverFiles: discoverExcludingTestFiles,
+        kinds: ["model"],
+      });
+
+      const remaining = catalog.findByKind("model");
+      assertEquals(
+        remaining.length,
+        0,
+        "ValidationFailed entry for deleted source must be removed by findStaleFiles",
+      );
+    } finally {
+      catalog.close();
+    }
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
 });
