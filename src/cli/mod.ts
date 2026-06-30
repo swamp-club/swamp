@@ -914,7 +914,7 @@ async function checkForSupersededSkills(
         error:
           `${names.length} old swamp-managed skill(s) can be safely deleted: ${
             names.join(", ")
-          }. These have been replaced by the bundled swamp skill.`,
+          }. These have been replaced by the bundled swamp skill. Run 'swamp repo upgrade' to remove them.`,
       });
     }
   } catch {
