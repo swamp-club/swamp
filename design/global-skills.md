@@ -168,7 +168,7 @@ local copies manually.
 **During `swamp repo upgrade`**, local copies are detected and reported:
 
 ```
-WRN Local swamp skill copies are shadowing the globally installed skills.
+WRN Local copies of swamp, swamp-getting-started are shadowing the globally installed skills.
     Delete them manually:
       .claude/skills/swamp
       .claude/skills/swamp-getting-started

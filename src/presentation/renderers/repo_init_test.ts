@@ -27,6 +27,7 @@ import {
   createRepoInitRenderer,
   createRepoUpgradeRenderer,
 } from "./repo_init.ts";
+import { assertPathStringIncludes } from "../../infrastructure/persistence/path_test_helpers.ts";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 
 await initializeLogging({ noColor: true });
@@ -202,6 +203,32 @@ Deno.test(
   },
 );
 
+function captureUpgradeLogOutput(
+  events: RepoUpgradeEvent[],
+  opts?: { isAuthenticated?: boolean },
+): string {
+  return captureLog(() => {
+    const renderer = createRepoUpgradeRenderer("log", opts);
+    const handlers = renderer.handlers();
+    for (const event of events) {
+      switch (event.kind) {
+        case "upgrading":
+          handlers.upgrading?.(event);
+          break;
+        case "extensions":
+          handlers.extensions?.(event);
+          break;
+        case "completed":
+          handlers.completed?.(event);
+          break;
+        case "error":
+          handlers.error?.(event);
+          break;
+      }
+    }
+  });
+}
+
 /**
  * Runs a sequence of `RepoUpgradeEvent`s through the JSON renderer and
  * captures everything written to stdout. Used to assert the "exactly
@@ -331,5 +358,50 @@ Deno.test(
 
     const parsed = JSON.parse(output);
     assertEquals(parsed.extensionInstall, undefined);
+  },
+);
+
+Deno.test(
+  "LogRepoUpgradeRenderer: shadowing warning lists skill names explicitly",
+  () => {
+    const output = captureUpgradeLogOutput([
+      { kind: "upgrading" },
+      {
+        kind: "completed",
+        data: {
+          path: "/tmp/x",
+          previousVersion: "0.1.0",
+          newVersion: "0.1.1",
+          upgradedAt: "2026-04-24T00:00:00Z",
+          skillsUpdated: ["swamp", "swamp-getting-started"],
+          instructionsUpdated: false,
+          settingsUpdated: false,
+          gitignoreAction: "unchanged",
+          previousTools: ["claude"],
+          tools: ["claude"],
+          addedTools: [],
+          removedTools: [],
+          extensionsToReinstall: [],
+          localSkillCopies: [
+            {
+              skillsDir: "/home/user/.claude/skills",
+              names: ["swamp", "swamp-getting-started"],
+            },
+          ],
+          changedFiles: [],
+          tool: null,
+        },
+      },
+    ]);
+
+    assertStringIncludes(
+      output,
+      "Local copies of swamp, swamp-getting-started are shadowing",
+    );
+    assertPathStringIncludes(output, "/home/user/.claude/skills/swamp");
+    assertPathStringIncludes(
+      output,
+      "/home/user/.claude/skills/swamp-getting-started",
+    );
   },
 );

@@ -63,7 +63,7 @@ tools' skill directories for superseded subdirectories. If any are found, a
 warning is emitted via the deferred-warning system:
 
 ```
-WRN 2 superseded skill(s) found: swamp-data-query, swamp-extension-model. Run 'swamp repo upgrade' to update skills.
+WRN 2 old swamp-managed skill(s) can be safely deleted: swamp-data-query, swamp-extension-model. These have been replaced by the bundled swamp skill. Run 'swamp repo upgrade' to remove them.
 ```
 
 This check is non-fatal — it never blocks startup. `swamp repo upgrade`

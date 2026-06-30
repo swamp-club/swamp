@@ -911,9 +911,10 @@ async function checkForSupersededSkills(
       deferredWarnings.push({
         kind: "skills",
         file: repoDir,
-        error: `${names.length} superseded skill(s) found: ${
-          names.join(", ")
-        }. Run 'swamp repo upgrade' to update skills.`,
+        error:
+          `${names.length} old swamp-managed skill(s) can be safely deleted: ${
+            names.join(", ")
+          }. These have been replaced by the bundled swamp skill. Run 'swamp repo upgrade' to remove them.`,
       });
     }
   } catch {
@@ -945,6 +946,7 @@ async function checkForLocalBundledSkills(
     );
     if (localCopies.length === 0) return;
 
+    const allNames = localCopies.flatMap((c) => c.names);
     const dirs = localCopies.map((c) =>
       c.names.map((n) => `  ${join(c.skillsDir, n)}/`)
     ).flat();
@@ -953,9 +955,8 @@ async function checkForLocalBundledSkills(
       kind: "skill-migration",
       file: repoDir,
       error:
-        "Swamp skills are now installed globally but this repo still has local " +
-        "copies that take precedence. Run 'swamp repo upgrade' to clean up.\n\n" +
-        "  Local copies found:\n" +
+        `Local copies of ${allNames.join(", ")} are shadowing the globally ` +
+        "installed skills. Delete them manually:\n\n" +
         dirs.join("\n"),
     });
 
