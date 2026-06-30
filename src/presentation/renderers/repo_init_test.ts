@@ -27,6 +27,7 @@ import {
   createRepoInitRenderer,
   createRepoUpgradeRenderer,
 } from "./repo_init.ts";
+import { assertPathStringIncludes } from "../../infrastructure/persistence/path_test_helpers.ts";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
 
 await initializeLogging({ noColor: true });
@@ -397,8 +398,8 @@ Deno.test(
       output,
       "Local copies of swamp, swamp-getting-started are shadowing",
     );
-    assertStringIncludes(output, "/home/user/.claude/skills/swamp");
-    assertStringIncludes(
+    assertPathStringIncludes(output, "/home/user/.claude/skills/swamp");
+    assertPathStringIncludes(
       output,
       "/home/user/.claude/skills/swamp-getting-started",
     );
