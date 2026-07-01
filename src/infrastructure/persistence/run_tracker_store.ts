@@ -37,7 +37,7 @@ const logger = getLogger(["swamp", "persistence", "run-tracker"]);
 const RUN_TRACKER_DB_NAME = "run_tracker.db";
 
 export const DEFAULT_HEARTBEAT_INTERVAL_MS = 30_000;
-export const DEFAULT_STALE_TTL_MS = 90_000;
+export { STALE_TTL_MS as DEFAULT_STALE_TTL_MS } from "../../domain/models/active_run.ts";
 const RETENTION_DAYS = 7;
 const SCHEMA_VERSION = 1;
 
@@ -210,8 +210,16 @@ export class RunTrackerStore implements RunTrackerRepository {
     const now = new Date().toISOString();
     this.db.prepare(`
       UPDATE active_runs SET status = ?, completed_at = ?
-      WHERE id = ?
+      WHERE id = ? AND status IN ('running', 'suspended')
     `).run(status, now, runId);
+  }
+
+  reactivate(runId: string): void {
+    const now = new Date().toISOString();
+    this.db.prepare(`
+      UPDATE active_runs SET status = 'running', heartbeat_at = ?, completed_at = NULL
+      WHERE id = ? AND status = 'suspended'
+    `).run(now, runId);
   }
 
   findById(runId: string): ActiveRun | null {

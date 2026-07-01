@@ -465,6 +465,7 @@ Exit codes: 0 = success, 1 = general error, 75 = lock contention (temporary — 
         const message = error instanceof Error ? error.message : String(error);
         throw new UserError(`Method execution failed: ${message}`);
       } finally {
+        runTracker.close();
         shutdownHandle.dispose();
         exitSuppress.dispose();
         if (flushModelLocks) {

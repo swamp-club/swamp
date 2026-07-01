@@ -17,6 +17,8 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
+export const STALE_TTL_MS = 90_000;
+
 export const RunKinds = ["model_method", "workflow"] as const;
 export type RunKind = typeof RunKinds[number];
 
@@ -25,6 +27,7 @@ export const ActiveRunStatuses = [
   "completed",
   "failed",
   "cancelled",
+  "suspended",
 ] as const;
 export type ActiveRunStatus = typeof ActiveRunStatuses[number];
 

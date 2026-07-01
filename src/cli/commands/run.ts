@@ -167,20 +167,20 @@ const runDoctorCommand = withRemoteOptions(
             payload: { fix: !!options.fix },
           },
         );
+        const activeRuns = responseToActiveRuns({
+          runs: response.activeRuns ?? [],
+        });
+        const staleRuns = responseToActiveRuns({
+          runs: response.staleRuns ?? [],
+        });
         if (ctx.outputMode === "json") {
           writeDoctorRunsJson(
             response.totalTracked,
-            response.active,
-            response.stale,
+            activeRuns,
+            staleRuns,
             response.reaped,
           );
         } else {
-          const activeRuns = responseToActiveRuns({
-            runs: response.activeRuns ?? [],
-          });
-          const staleRuns = responseToActiveRuns({
-            runs: response.staleRuns ?? [],
-          });
           writeDoctorRunsLog(
             activeRuns,
             staleRuns,
@@ -213,8 +213,8 @@ const runDoctorCommand = withRemoteOptions(
         if (ctx.outputMode === "json") {
           writeDoctorRunsJson(
             allRuns.length,
-            active.length,
-            stale.length,
+            active,
+            stale,
             reaped,
           );
         } else {

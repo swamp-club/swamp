@@ -28,6 +28,7 @@ import type { DatastoreConfig } from "../domain/datastore/datastore_config.ts";
 import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
 import type { RunCancelRegistry } from "./run_cancel_registry.ts";
 import type { RunTrackerRepository } from "../domain/models/run_tracker_repository.ts";
+import { type ActiveRun, STALE_TTL_MS } from "../domain/models/active_run.ts";
 import {
   auditTimeline,
   consumeStream,
@@ -1747,6 +1748,7 @@ export function handleMessage(
         ctx,
         request.id,
         request.payload,
+        principal,
       ));
       break;
     case "run.doctor":
@@ -1755,6 +1757,7 @@ export function handleMessage(
         ctx,
         request.id,
         request.payload,
+        principal,
       ));
       break;
   }
@@ -5871,14 +5874,21 @@ function handleRunHistory(
   socket: WebSocket,
   ctx: ConnectionContext,
   requestId: string,
-  payload?: { active?: boolean; all?: boolean },
+  payload: { active?: boolean; all?: boolean } | undefined,
+  principal: Principal | null,
 ): void {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "admin", {
+      kind: "model",
+      name: "*",
+      fields: {},
+    }, ctx)
+  ) return;
   if (!ctx.runTracker) {
     sendError(socket, requestId, "not_available", "Run tracker not available");
     return;
   }
 
-  const STALE_TTL_MS = 90_000;
   const runs = payload?.active
     ? ctx.runTracker.findAllRunning()
     : payload?.all
@@ -5910,14 +5920,21 @@ function handleRunDoctor(
   socket: WebSocket,
   ctx: ConnectionContext,
   requestId: string,
-  payload?: { fix?: boolean },
+  payload: { fix?: boolean } | undefined,
+  principal: Principal | null,
 ): void {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "admin", {
+      kind: "model",
+      name: "*",
+      fields: {},
+    }, ctx)
+  ) return;
   if (!ctx.runTracker) {
     sendError(socket, requestId, "not_available", "Run tracker not available");
     return;
   }
 
-  const STALE_TTL_MS = 90_000;
   const allRuns = ctx.runTracker.findAll();
   const running = allRuns.filter((r) => r.status === "running");
   const stale = ctx.runTracker.findStaleRuns(STALE_TTL_MS);
@@ -5929,7 +5946,7 @@ function handleRunDoctor(
     reaped = reapedRuns.length;
   }
 
-  const mapRun = (r: import("../domain/models/active_run.ts").ActiveRun) => ({
+  const mapRun = (r: ActiveRun) => ({
     id: r.id,
     runKind: r.runKind,
     modelType: r.modelType,

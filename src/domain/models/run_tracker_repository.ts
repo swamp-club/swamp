@@ -26,6 +26,8 @@ export interface RunTrackerRepository {
 
   complete(runId: string, status: ActiveRunStatus): void;
 
+  reactivate(runId: string): void;
+
   findById(runId: string): ActiveRun | null;
 
   findAllRunning(): ActiveRun[];

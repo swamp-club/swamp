@@ -1357,6 +1357,7 @@ export class WorkflowExecutionService {
 
     let workflowRun: WorkflowRun | undefined;
     let workflowLogHandle: string | undefined;
+    let wfHeartbeatInterval: ReturnType<typeof setInterval> | undefined;
     try {
       const wfSetupSpan = tracer.startSpan("swamp.workflow.setup");
       let workflow: Workflow;
@@ -1496,7 +1497,6 @@ export class WorkflowExecutionService {
 
       await this.saveRun(workflow.id, run);
 
-      let wfHeartbeatInterval: ReturnType<typeof setInterval> | undefined;
       if (this.runTracker) {
         const tracker = this.runTracker;
         const runId = run.id;
@@ -1685,9 +1685,11 @@ export class WorkflowExecutionService {
       }
       runSpan.setStatus({ code: SpanStatusCode.OK });
     } catch (error) {
+      if (wfHeartbeatInterval) clearInterval(wfHeartbeatInterval);
       if (error instanceof WorkflowSuspendedError && workflowRun) {
-        // Suspended workflows pause heartbeat — the run stays "running"
-        // in the tracker so it's visible as in-flight during approval wait.
+        if (this.runTracker) {
+          this.runTracker.complete(workflowRun.id, "suspended");
+        }
         runFileSink.unregister(workflowLogHandle);
         yield {
           kind: "suspended" as const,
@@ -1874,6 +1876,21 @@ export class WorkflowExecutionService {
       swampSha: options?.swampSha,
     };
 
+    // Re-activate the tracker row (suspended → running) and start heartbeat
+    let resumeHeartbeatInterval: ReturnType<typeof setInterval> | undefined;
+    if (this.runTracker) {
+      this.runTracker.reactivate(existingRun.id);
+      const tracker = this.runTracker;
+      const runId = existingRun.id;
+      resumeHeartbeatInterval = setInterval(() => {
+        try {
+          tracker.heartbeat(runId);
+        } catch {
+          // Heartbeat failure is non-fatal
+        }
+      }, 30_000);
+    }
+
     const jobNodes: GraphNode[] = resolvedWorkflow.jobs.map((job) => ({
       name: job.name,
       weight: job.weight,
@@ -1968,6 +1985,7 @@ export class WorkflowExecutionService {
       }
 
       if (options?.signal?.aborted) {
+        if (resumeHeartbeatInterval) clearInterval(resumeHeartbeatInterval);
         if (this.runTracker) {
           this.runTracker.complete(existingRun.id, "cancelled");
         }
@@ -1980,6 +1998,7 @@ export class WorkflowExecutionService {
         return;
       }
 
+      if (resumeHeartbeatInterval) clearInterval(resumeHeartbeatInterval);
       if (this.runTracker) {
         this.runTracker.complete(existingRun.id, "completed");
       }
@@ -1999,7 +2018,11 @@ export class WorkflowExecutionService {
       await this.saveRun(workflow.id, existingRun);
       runFileSink.unregister(workflowLogHandle);
     } catch (error) {
+      if (resumeHeartbeatInterval) clearInterval(resumeHeartbeatInterval);
       if (error instanceof WorkflowSuspendedError) {
+        if (this.runTracker) {
+          this.runTracker.complete(existingRun.id, "suspended");
+        }
         runFileSink.unregister(workflowLogHandle);
         yield {
           kind: "suspended" as const,

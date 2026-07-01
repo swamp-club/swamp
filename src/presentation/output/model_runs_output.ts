@@ -19,10 +19,11 @@
 
 import { bold, dim, green, red, yellow } from "@std/fmt/colors";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
-import type { ActiveRun } from "../../domain/models/active_run.ts";
+import {
+  type ActiveRun,
+  STALE_TTL_MS,
+} from "../../domain/models/active_run.ts";
 import type { OutputMode } from "./output.ts";
-
-const STALE_TTL_MS = 90_000;
 
 function formatDuration(ms: number): string {
   if (ms < 60_000) return `${Math.round(ms / 1000)}s`;
@@ -124,7 +125,7 @@ export function writeDoctorRunsLog(
   fix: boolean,
 ): void {
   if (active.length === 0 && stale.length === 0) {
-    writeOutput("No active or stale model method runs.");
+    writeOutput("No active or stale runs.");
     return;
   }
 
@@ -177,11 +178,30 @@ export function writeDoctorRunsLog(
 
 export function writeDoctorRunsJson(
   totalTracked: number,
-  active: number,
-  stale: number,
+  activeRuns: ActiveRun[],
+  staleRuns: ActiveRun[],
   reaped: number,
 ): void {
-  console.log(JSON.stringify({ totalTracked, active, stale, reaped }));
+  const mapRun = (r: ActiveRun) => ({
+    id: r.id,
+    runKind: r.runKind,
+    modelType: r.modelType,
+    methodName: r.methodName,
+    workflowName: r.workflowName,
+    pid: r.pid,
+    hostname: r.hostname,
+    status: r.status,
+    startedAt: r.startedAt.toISOString(),
+    heartbeatAt: r.heartbeatAt.toISOString(),
+  });
+  console.log(JSON.stringify({
+    totalTracked,
+    active: activeRuns.length,
+    stale: staleRuns.length,
+    reaped,
+    activeRuns: activeRuns.map(mapRun),
+    staleRuns: staleRuns.map(mapRun),
+  }));
 }
 
 export function createModelRunsOutput(mode: OutputMode) {
