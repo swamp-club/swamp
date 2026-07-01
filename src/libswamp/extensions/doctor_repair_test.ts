@@ -522,3 +522,108 @@ Deno.test("repairExtensions: dry-run reports but does not prune unreachable rows
     true,
   );
 });
+
+Deno.test("repairExtensions: prunes OrphanedBundleOnly rows and evicts their bundles", async () => {
+  await withTempDir(async (dir) => {
+    const bundlePath = join(dir, "orphaned.js");
+    await Deno.writeTextFile(bundlePath, "// orphaned bundle");
+
+    const deleted: string[] = [];
+    const report = makeEmptyReport({
+      sourceDetails: [
+        {
+          sourcePath: "/fake/deleted-source.ts",
+          stateTag: "OrphanedBundleOnly",
+          fingerprint: "abc",
+          bundlePath,
+          kind: "model",
+        },
+      ],
+    });
+
+    const result = await repairExtensions({
+      aggregateReport: report,
+      deleteBySourcePaths: (paths) => {
+        deleted.push(...paths);
+        return paths.length;
+      },
+      apply: true,
+    });
+
+    assertEquals(result.prunedRowCount, 1);
+    assertEquals(result.evictedFileCount, 1);
+    assertEquals(deleted, ["/fake/deleted-source.ts"]);
+
+    let exists = true;
+    try {
+      await Deno.stat(bundlePath);
+    } catch {
+      exists = false;
+    }
+    assertFalse(exists);
+  });
+});
+
+Deno.test("repairExtensions: dry-run reports OrphanedBundleOnly without executing", async () => {
+  await withTempDir(async (dir) => {
+    const bundlePath = join(dir, "orphaned.js");
+    await Deno.writeTextFile(bundlePath, "// orphaned bundle");
+
+    let deleteCalled = false;
+    const report = makeEmptyReport({
+      sourceDetails: [
+        {
+          sourcePath: "/fake/deleted-source.ts",
+          stateTag: "OrphanedBundleOnly",
+          fingerprint: "abc",
+          bundlePath,
+          kind: "model",
+        },
+      ],
+    });
+
+    const result = await repairExtensions({
+      aggregateReport: report,
+      deleteBySourcePaths: () => {
+        deleteCalled = true;
+        return 0;
+      },
+      apply: false,
+    });
+
+    assertEquals(result.mode, "dry-run");
+    assertEquals(result.prunedRowCount, 1);
+    assertEquals(result.evictedFileCount, 1);
+    assertFalse(deleteCalled);
+
+    const stat = await Deno.stat(bundlePath);
+    assertEquals(stat.isFile, true);
+  });
+});
+
+Deno.test("repairExtensions: OrphanedBundleOnly prunes row even when bundle already missing", async () => {
+  const deleted: string[] = [];
+  const report = makeEmptyReport({
+    sourceDetails: [
+      {
+        sourcePath: "/fake/deleted-source.ts",
+        stateTag: "OrphanedBundleOnly",
+        fingerprint: "abc",
+        bundlePath: "/nonexistent/path/orphaned.js",
+        kind: "model",
+      },
+    ],
+  });
+
+  const result = await repairExtensions({
+    aggregateReport: report,
+    deleteBySourcePaths: (paths) => {
+      deleted.push(...paths);
+      return paths.length;
+    },
+    apply: true,
+  });
+
+  assertEquals(result.prunedRowCount, 1);
+  assertEquals(deleted, ["/fake/deleted-source.ts"]);
+});
