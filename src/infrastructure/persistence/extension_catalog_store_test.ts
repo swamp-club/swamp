@@ -594,6 +594,177 @@ for (
   );
 }
 
+// --- extends_type backfill migration tests (swamp-club#903) ---
+//
+// Pre-fix catalogs persisted extension rows with an empty extends_type via
+// the aggregate writer, so findExtensionsForType never matched them and the
+// extension's methods were silently dropped ("Unknown method"). Opening
+// through ExtensionCatalogStore must backfill extends_type from
+// type_normalized for Indexed extension rows, once, on catalog open.
+
+/**
+ * Seeds a DB carrying the full current schema plus the other migrations'
+ * markers, so opening it runs ONLY the swamp-club#903 extends_type
+ * backfill. Inserts the given extension row rows verbatim.
+ */
+function seedCatalogAwaitingExtendsBackfill(
+  dbPath: string,
+  rows: Array<{
+    sourcePath: string;
+    typeNormalized: string;
+    kind: string;
+    extendsType: string;
+    state: string;
+  }>,
+): void {
+  const seed = new DatabaseSync(dbPath);
+  seed.exec(`
+    CREATE TABLE bundle_types (
+      source_path        TEXT NOT NULL PRIMARY KEY,
+      type_normalized    TEXT NOT NULL,
+      kind               TEXT NOT NULL DEFAULT 'model',
+      bundle_path        TEXT NOT NULL,
+      version            TEXT NOT NULL DEFAULT '',
+      description        TEXT NOT NULL DEFAULT '',
+      extends_type       TEXT NOT NULL DEFAULT '',
+      source_mtime       TEXT NOT NULL DEFAULT '',
+      source_fingerprint TEXT NOT NULL DEFAULT '',
+      state              TEXT NOT NULL DEFAULT 'Indexed',
+      extension_name     TEXT NOT NULL DEFAULT '',
+      extension_version  TEXT NOT NULL DEFAULT '',
+      last_error         TEXT NOT NULL DEFAULT ''
+    );
+    CREATE TABLE bundle_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+  `);
+  // Mark the earlier migrations applied so only the #903 backfill runs.
+  const meta = seed.prepare(
+    "INSERT INTO bundle_meta (key, value) VALUES (?, 'true')",
+  );
+  meta.run("migration_applied:per-extension-aggregate-v3");
+  const insert = seed.prepare(
+    `INSERT INTO bundle_types (
+      source_path, type_normalized, kind, bundle_path, version,
+      description, extends_type, source_mtime, source_fingerprint, state,
+      extension_name, extension_version, last_error
+    ) VALUES (?, ?, ?, ?, '', '', ?, '', 'fp', ?, '@scope/ext', '1.0.0', '')`,
+  );
+  for (const r of rows) {
+    insert.run(
+      r.sourcePath,
+      r.typeNormalized,
+      r.kind,
+      "/bundle.js",
+      r.extendsType,
+      r.state,
+    );
+  }
+  seed.close();
+}
+
+Deno.test("ExtensionCatalogStore: backfills empty extends_type on Indexed extension rows (swamp-club#903)", () => {
+  const dbPath = makeTempDbPath();
+  const sourcePath = join(
+    dirname(dirname(dbPath)),
+    ".swamp",
+    "pulled-extensions",
+    "@scope",
+    "ext",
+    "models",
+    "probe.ts",
+  );
+  seedCatalogAwaitingExtendsBackfill(dbPath, [{
+    sourcePath,
+    typeNormalized: "@keeb/docker/compose",
+    kind: "extension",
+    extendsType: "",
+    state: "Indexed",
+  }]);
+
+  // Opening runs the backfill: the row now matches the merge query.
+  const store = new ExtensionCatalogStore(dbPath);
+  const matches = store.findExtensionsForType("@keeb/docker/compose");
+  assertEquals(matches.length, 1);
+  assertEquals(matches[0].extends_type, "@keeb/docker/compose");
+  store.close();
+});
+
+Deno.test("ExtensionCatalogStore: extends_type backfill leaves primary and non-Indexed rows untouched (swamp-club#903)", () => {
+  const dbPath = makeTempDbPath();
+  const base = join(dirname(dirname(dbPath)), ".swamp", "pulled-extensions");
+  seedCatalogAwaitingExtendsBackfill(dbPath, [
+    // Primary model — must stay empty.
+    {
+      sourcePath: join(base, "@scope", "base", "models", "thing.ts"),
+      typeNormalized: "@scope/base/thing",
+      kind: "model",
+      extendsType: "",
+      state: "Indexed",
+    },
+    // ValidationFailed extension — typeless, must stay empty so it keeps
+    // falling out of findExtensionsForType.
+    {
+      sourcePath: join(base, "@scope", "broken", "models", "bad.ts"),
+      typeNormalized: "",
+      kind: "extension",
+      extendsType: "",
+      state: "ValidationFailed",
+    },
+  ]);
+
+  const store = new ExtensionCatalogStore(dbPath);
+  assertEquals(
+    store.findByType("@scope/base/thing", "model")?.extends_type,
+    "",
+  );
+  assertEquals(store.findExtensionsForType("@scope/base/thing").length, 0);
+  store.close();
+});
+
+Deno.test("ExtensionCatalogStore: extends_type backfill runs at most once (swamp-club#903)", () => {
+  const dbPath = makeTempDbPath();
+  const sourcePath = join(
+    dirname(dirname(dbPath)),
+    ".swamp",
+    "pulled-extensions",
+    "@scope",
+    "ext",
+    "models",
+    "probe.ts",
+  );
+  seedCatalogAwaitingExtendsBackfill(dbPath, [{
+    sourcePath,
+    typeNormalized: "@keeb/docker/compose",
+    kind: "extension",
+    extendsType: "",
+    state: "Indexed",
+  }]);
+
+  // First open heals the seeded row and records the marker.
+  const store = new ExtensionCatalogStore(dbPath);
+  assertEquals(
+    store.findExtensionsForType("@keeb/docker/compose").length,
+    1,
+  );
+  store.close();
+
+  // Inject a second broken row directly, then reopen. Because the marker is
+  // set, the backfill does not run again and the new row stays empty —
+  // proving the once-only contract. (New rows written through the fixed
+  // aggregate writer already carry a correct extends_type, so this is a
+  // deliberately-broken injection, not a realistic post-fix state.)
+  const inject = new DatabaseSync(dbPath);
+  inject.prepare(
+    `INSERT INTO bundle_types (
+      source_path, type_normalized, kind, bundle_path, extends_type, state
+    ) VALUES (?, ?, 'extension', '/b.js', '', 'Indexed')`,
+  ).run(sourcePath + "2", "@keeb/docker/engine");
+  inject.close();
+
+  const store2 = new ExtensionCatalogStore(dbPath);
+  assertEquals(store2.findExtensionsForType("@keeb/docker/engine").length, 0);
+  store2.close();
+});
+
 // --- RowState column tests (swamp-club#211, W1a) ---
 //
 // The state column subsumes the legacy validation_failed boolean and

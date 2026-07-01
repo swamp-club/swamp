@@ -732,6 +732,17 @@ function sourceToRow(
     lastError = state.lastError;
   }
 
+  // For extension-kind sources the row's type_normalized IS the target
+  // type (state.type carries it for Indexed/Bundled), so extends_type
+  // must mirror it — matching the loader path (extension_loader.ts, which
+  // writes extends_type: typeNormalized). Without this the merge query
+  // `findExtensionsForType` (WHERE extends_type = ? AND kind = 'extension')
+  // never matches and the extension's methods are silently dropped
+  // (swamp-club#903). typeNormalized stays "" for the typeless states
+  // (ValidationFailed, OrphanedBundleOnly, ...), so broken extension rows
+  // still write "" and correctly fall out of the query.
+  const extendsType = source.kind === "extension" ? typeNormalized : "";
+
   return {
     source_path: source.id.canonicalPath,
     type_normalized: typeNormalized,
@@ -739,7 +750,7 @@ function sourceToRow(
     bundle_path: bundlePath,
     version: extension.version,
     description: "",
-    extends_type: "",
+    extends_type: extendsType,
     source_mtime: source.sourceMtime,
     source_fingerprint: source.fingerprint,
     state: state.tag,

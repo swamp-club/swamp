@@ -60,6 +60,23 @@ export const model = {
 };
 `;
 
+const MINIMAL_EXTENSION_CODE = (targetType: string) => `
+import { z } from "npm:zod@4";
+
+export const extension = {
+  type: "${targetType}",
+  methods: [
+    {
+      probe: {
+        description: "probe",
+        arguments: z.object({}),
+        execute: async () => ({ probed: true }),
+      },
+    },
+  ],
+};
+`;
+
 async function withFixtureRepo(
   fn: (args: {
     repoDir: string;
@@ -152,6 +169,43 @@ Deno.test(
           true,
           "must have an Indexed transition",
         );
+      },
+    );
+  },
+);
+
+Deno.test(
+  "ReconcileFromDisk: local extension gets extends_type so findExtensionsForType matches it (swamp-club#903)",
+  async () => {
+    await withFixtureRepo(
+      async ({ repoDir, repository, catalog, lockfileRepository }) => {
+        const ts = Date.now();
+        const baseType = `@test/reconcile-base-${ts}`;
+        await Deno.writeTextFile(
+          join(repoDir, "extensions", "models", "base.ts"),
+          MINIMAL_MODEL_CODE(baseType),
+        );
+        await Deno.writeTextFile(
+          join(repoDir, "extensions", "models", "ext.ts"),
+          MINIMAL_EXTENSION_CODE(baseType),
+        );
+
+        const service = new ReconcileFromDiskService({
+          denoRuntime: testDenoRuntime,
+          repository,
+          lockfileRepository,
+          repoDir,
+        });
+        const result = await service.execute();
+        assertEquals(result.applied, true);
+
+        // The reconcile path (saveAll → sourceToRow) is the sole writer here.
+        // Before the fix it wrote extends_type "", so the extension's methods
+        // were dropped. The row must now be findable by its target type.
+        const matches = catalog.findExtensionsForType(baseType);
+        assertEquals(matches.length, 1, "extension must target the base type");
+        assertEquals(matches[0].extends_type, baseType);
+        assertEquals(matches[0].kind, "extension");
       },
     );
   },
