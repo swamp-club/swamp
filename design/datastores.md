@@ -389,6 +389,10 @@ is how two repos sharing a single S3 bucket avoid syncing each other's data.
 
 #### Per-namespace index partitioning
 
+> **See also:** The [shard-first index](#shard-first-index) design extends
+> partitioning beyond per-namespace to per-model shards covering all datastore
+> subdirectories, eliminating the monolithic index entirely.
+
 Extensions that advertise `namespacedSync: true` partition their remote index
 per namespace:
 
@@ -445,6 +449,13 @@ when the extension does not implement them, the CLI warns that conflict
 detection is unavailable and proceeds with only the `.swamp.yaml` update.
 
 ### Two-Phase Sync
+
+> **Next step:** The two-phase sync narrows the critical section to the index
+> merge, but `commitPush` still reads/merges/writes the full monolithic index.
+> The [shard-first index](#shard-first-index) design eliminates the monolithic
+> index entirely — `commitPush` reads and writes only the touched per-model
+> partition shard(s), making lock-hold time proportional to the write size, not
+> the total index.
 
 When an extension advertises `twoPhaseSync: true` in its capabilities, swamp
 core splits the push into two phases to narrow the global-lock critical section:
@@ -513,6 +524,152 @@ their own concurrency control:
 Extensions that do not advertise `twoPhaseSync` (or do not implement
 `preparePush`/`commitPush`) continue to use the single-phase
 `pushChanged`-under-global-lock path — zero regression.
+
+### Shard-First Index
+
+The two-phase sync narrows the critical section to the index merge in
+`commitPush`, but `commitPush` still reads, parses, merges, and rewrites the
+full monolithic `.datastore-index.json` under the lock. On a high-churn
+namespace with a large index (e.g. ~98 MB, ~250K entries), this takes 26–35
+seconds over a real S3 endpoint — enough that only ~2 concurrent writers fit
+within the 60-second lock timeout.
+
+The shard-first index design eliminates the monolithic index as the source of
+truth during `commitPush`. Instead, the index is partitioned into per-model
+shard files under `_index/`, and `commitPush` reads and writes only the touched
+shard(s). Lock-hold time becomes proportional to the write size (typically KB),
+not the total index size (potentially hundreds of MB).
+
+#### Partition scheme
+
+Every datastore subdirectory is assigned a partition key strategy:
+
+| Subdirectory              | Partition key pattern                      | Granularity  |
+|---------------------------|--------------------------------------------|--------------|
+| `data/`                   | `data--{type}--{modelId}`                  | Per model    |
+| `outputs/`                | `outputs--{type}--{modelId}`               | Per model    |
+| `definitions-evaluated/`  | `definitions-evaluated--{type}--{modelId}` | Per model    |
+| `workflows-evaluated/`    | `workflows-evaluated--{workflowId}`        | Per workflow |
+| `workflow-runs/`          | `workflow-runs--{workflowId}`              | Per workflow |
+| `auto-definitions/`       | `auto-definitions`                         | Single shard |
+| `audit/`                  | `audit`                                    | Single shard |
+| `telemetry/`              | `telemetry`                                | Single shard |
+| `logs/`                   | `logs`                                     | Single shard |
+| `files/`                  | `files`                                    | Single shard |
+
+Model-scoped subdirectories (`data/`, `outputs/`, `definitions-evaluated/`)
+partition per model. Low-cardinality subdirectories (`audit/`, `telemetry/`,
+etc.) use a single shard each — they are small and rarely written concurrently.
+
+Each shard is stored as `_index/{partitionKey}.json`. A `_meta.json` file
+tracks all partition keys and a monotonic `commitSeq` counter:
+
+```json
+{
+  "version": 2,
+  "partitions": ["data--mytype--abc123", "outputs--mytype--abc123", "audit"],
+  "commitSeq": 42,
+  "lastCompacted": "2026-07-01T12:00:00.000Z"
+}
+```
+
+- `version: 2` distinguishes shard-first from the earlier `version: 1`
+  (dual-write) format. Readers seeing `version: 1` know the monolith is still
+  authoritative.
+- `commitSeq` is bumped on every `commitPush`, replacing the monolith ETag as
+  the zero-diff fast path fingerprint.
+
+#### Push path (`commitPush`)
+
+Under the global lock:
+
+1. Read `_meta.json` to get the current partition list and `commitSeq`.
+2. Read only the shard(s) touched by the manifest entries.
+3. Merge the manifest entries into those shard(s).
+4. Write the updated shard(s) back.
+5. If new partition keys were introduced (new model, new workflow), append them
+   to `_meta.json`.
+6. Bump `commitSeq` and write `_meta.json`.
+7. Clear the dirty flag.
+
+`preparePush` is unchanged — it uploads files outside the lock and returns an
+opaque manifest containing the affected relative paths, from which `commitPush`
+derives partition keys.
+
+#### Pull path
+
+**Scoped pull** (`pullChanged` with `context.models`): read the relevant model
+shard(s) from `_index/`. No monolith fallback needed when `_meta.json` version
+is 2.
+
+**Unscoped pull** (`pullChanged` without context): read `_meta.json` to discover
+all partition keys, then fetch all shards in parallel. Merge into the in-memory
+index. This replaces the single monolith GET with N parallel GETs — on S3/GCS
+this is typically faster because parallelism beats single-large-object latency.
+
+#### Shard cleanup
+
+When deletions empty a shard (all entries removed), the shard file is deleted
+from `_index/` and its key is removed from the `_meta.json` partitions list.
+This prevents unbounded growth of orphaned shard files after model deletion.
+
+#### Zero-diff fast path
+
+The sidecar caches `commitSeq`. On the next sync, the extension reads
+`_meta.json` and compares `commitSeq`. If unchanged, skip — no per-entry work.
+If changed, fetch the relevant shard(s).
+
+#### Migration
+
+Migration from monolithic to shard-first is an explicit one-time operation, not
+auto-triggered during normal writes. This avoids a race where multiple
+concurrent writers all independently read a large monolith and write redundant
+shards on a freshly upgraded extension.
+
+The migration command:
+
+1. Reads the existing `.datastore-index.json`.
+2. Partitions all entries into shards using the partition key scheme above.
+3. Writes all shard files to `_index/`.
+4. Writes `_meta.json` with `version: 2` and `commitSeq: 1`.
+
+This runs under the lock (it is a structural command) so there is no
+concurrent-migration race. It is idempotent — running it again produces the
+same result.
+
+**Pre-migration behavior:** When `_meta.json` is missing or `version: 1`,
+`commitPush` and `pullChanged` fall back to the monolithic path — identical to
+pre-shard-first behavior. An info-level log hints that migration is available.
+This means upgrading the extension alone causes zero regression.
+
+#### Backward compatibility
+
+**Phase 1 (initial release):** `commitPush` writes shards as the source of
+truth and also dual-writes the monolith as a derived artifact. Old extension
+versions continue to read the monolith. New versions read shards.
+
+**Phase 2 (future major version):** Stop writing the monolith. Old extension
+versions must upgrade.
+
+**Old writers:** If an old extension version writes the monolith but not shards,
+shard-first readers fall back to the monolith when `_meta.json` is missing or
+`version: 1`. This fallback is permanent, not just a migration path.
+
+#### Namespace interaction
+
+In namespaced mode, the shard path is `{namespace}/_index/`. The partition
+scheme is unchanged — the namespace prefix is applied by existing path
+resolution logic. `_meta.json` and all shards are per-namespace.
+
+#### Recovery
+
+If `_meta.json` is missing or corrupted, the extension lists the `_index/`
+prefix via `ListObjectsV2` to discover all shard files and rebuilds `_meta.json`
+automatically. This is a self-healing path — no operator intervention required.
+
+If an individual shard is missing or corrupted, the extension falls back to the
+monolith for that shard's entries (if the monolith exists). If no monolith, the
+shard is rebuilt by listing objects under the shard's path prefix.
 
 ### Zero-Diff Fast Path (Extension Guidance)
 
