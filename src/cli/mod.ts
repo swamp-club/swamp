@@ -118,6 +118,7 @@ import {
   projectEnvSnapshot,
   setActiveTelemetryService,
 } from "./telemetry_integration.ts";
+import type { CommandInvocationData } from "../domain/telemetry/command_invocation.ts";
 import { UserIdentityRepository } from "../infrastructure/persistence/user_identity_repository.ts";
 import { AuthRepository } from "../infrastructure/persistence/auth_repository.ts";
 import type { DatastorePathResolver } from "../domain/datastore/datastore_path_resolver.ts";
@@ -497,6 +498,21 @@ export function commandNeedsLoaderSetup(args: string[]): boolean {
     return false;
   }
   return true;
+}
+
+/**
+ * Checks whether the command is `audit record` (the PostToolUse hook).
+ * Hook commands need the fastest possible startup and must never exit
+ * non-zero from infrastructure code — they skip telemetry, update
+ * checks, and all post-parse teardown.
+ *
+ * @internal Exported for testing
+ */
+export function isHookCommand(
+  commandInfo: CommandInvocationData,
+): boolean {
+  return commandInfo.command === "audit" &&
+    commandInfo.subcommand === "record";
 }
 
 /** A deferred warning message to emit after logging is initialized. */
@@ -1153,11 +1169,16 @@ export async function runCli(args: string[]): Promise<void> {
   // Extract command info for telemetry (before parsing)
   const commandInfo = extractCommandInfo(args);
 
+  // Hook commands (audit record --from-hook) run as PostToolUse hooks and
+  // must be as fast as possible. Skip all non-essential startup and teardown
+  // to avoid infrastructure errors causing non-zero exit.
+  const hookMode = isHookCommand(commandInfo);
+
   const bootstrapSpan = getTracer().startSpan("swamp.cli.bootstrap");
 
   // Initialize telemetry service (only if in a swamp repo)
   let telemetryCtx: TelemetryContext | null = null;
-  if (!telemetryDisabled) {
+  if (!telemetryDisabled && !hookMode) {
     telemetryCtx = await initTelemetryService(repoDir);
   }
 
@@ -1168,23 +1189,28 @@ export async function runCli(args: string[]): Promise<void> {
     setActiveTelemetryService(telemetryCtx.service);
   }
 
-  // Read marker once for log level, extension loading, and auto-resolver
+  // Read marker once for log level, extension loading, and auto-resolver.
+  // Hook commands skip this — null marker gives default "info" log level.
   let marker: RepoMarkerData | null = null;
-  try {
-    const markerRepo = new RepoMarkerRepository();
-    const repoPath = RepoPath.create(repoDir);
-    marker = await markerRepo.read(repoPath);
-  } catch {
-    // Not in a swamp repo - marker stays null
+  if (!hookMode) {
+    try {
+      const markerRepo = new RepoMarkerRepository();
+      const repoPath = RepoPath.create(repoDir);
+      marker = await markerRepo.read(repoPath);
+    } catch {
+      // Not in a swamp repo - marker stays null
+    }
   }
 
   // Read extension sources (additional extension directories from
   // .swamp-sources.yaml). Resolved once and shared across all loaders.
   let resolvedSources: ResolvedSourceDirs[] = [];
-  const sourcesConfig = await readSwampSources(repoDir);
-  if (sourcesConfig) {
-    const expanded = await expandSourcePaths(sourcesConfig, repoDir);
-    resolvedSources = await resolveSourceExtensionDirs(expanded);
+  if (!hookMode) {
+    const sourcesConfig = await readSwampSources(repoDir);
+    if (sourcesConfig) {
+      const expanded = await expandSourcePaths(sourcesConfig, repoDir);
+      resolvedSources = await resolveSourceExtensionDirs(expanded);
+    }
   }
 
   // Configure lazy extension loaders on each registry.
@@ -1210,24 +1236,28 @@ export async function runCli(args: string[]): Promise<void> {
 
   // Load cached auth collectives for membership-based trust
   let authCollectives: string[] | undefined;
-  try {
-    const authRepo = new AuthRepository();
-    const creds = await authRepo.load();
-    authCollectives = creds?.collectives;
-  } catch {
-    // Auth file unreadable — continue without membership collectives
+  if (!hookMode) {
+    try {
+      const authRepo = new AuthRepository();
+      const creds = await authRepo.load();
+      authCollectives = creds?.collectives;
+    } catch {
+      // Auth file unreadable — continue without membership collectives
+    }
   }
 
   // Create auto-resolver for trusted collectives (merging membership collectives)
-  const autoResolverIdentity = await loadIdentity();
-  setAuthenticated(autoResolverIdentity.bearerToken !== undefined);
-  configureExtensionAutoResolver(
-    repoDir,
-    marker,
-    authCollectives,
-    getOutputModeFromArgs(args),
-    autoResolverIdentity,
-  );
+  if (!hookMode) {
+    const autoResolverIdentity = await loadIdentity();
+    setAuthenticated(autoResolverIdentity.bearerToken !== undefined);
+    configureExtensionAutoResolver(
+      repoDir,
+      marker,
+      authCollectives,
+      getOutputModeFromArgs(args),
+      autoResolverIdentity,
+    );
+  }
 
   const cli = new Command()
     .name("swamp")
@@ -1339,6 +1369,12 @@ export async function runCli(args: string[]): Promise<void> {
       await cli.parse(args);
     });
 
+    // Hook commands exit immediately — no teardown needed. The action's
+    // own try/catch handles all errors; skipping teardown prevents
+    // infrastructure failures (telemetry flush, update checks) from
+    // causing a non-zero exit that disrupts the user's coding session.
+    if (hookMode) return;
+
     // Flush datastore sync (push to S3 + release lock)
     const teardownSpan = getTracer().startSpan("swamp.cli.teardown");
     try {
@@ -1346,27 +1382,31 @@ export async function runCli(args: string[]): Promise<void> {
 
       // Record successful invocation
       if (telemetryCtx) {
-        await telemetryCtx.service.recordSuccess(commandInfo, startTime);
+        try {
+          await telemetryCtx.service.recordSuccess(commandInfo, startTime);
 
-        const sender = new HttpTelemetrySender(
-          telemetryCtx.telemetryEndpoint,
-          USER_AGENT,
-        );
-        const flushed = await telemetryCtx.service.flushTelemetry({
-          sender,
-          distinctId: telemetryCtx.userId ?? telemetryCtx.repoId,
-          repoId: telemetryCtx.repoId,
-          authToken: telemetryCtx.authToken ?? undefined,
-          keepFlushed: telemetryCtx.keepFlushed,
-          signal: AbortSignal.timeout(2000),
-        });
-        if (!flushed) {
-          logger
-            .warn`Telemetry flush failed — entries are queued locally and will retry on the next invocation`;
+          const sender = new HttpTelemetrySender(
+            telemetryCtx.telemetryEndpoint,
+            USER_AGENT,
+          );
+          const flushed = await telemetryCtx.service.flushTelemetry({
+            sender,
+            distinctId: telemetryCtx.userId ?? telemetryCtx.repoId,
+            repoId: telemetryCtx.repoId,
+            authToken: telemetryCtx.authToken ?? undefined,
+            keepFlushed: telemetryCtx.keepFlushed,
+            signal: AbortSignal.timeout(2000),
+          });
+          if (!flushed) {
+            logger
+              .warn`Telemetry flush failed — entries are queued locally and will retry on the next invocation`;
+          }
+
+          // Trigger cleanup asynchronously (fire-and-forget)
+          telemetryCtx.service.cleanupOldTelemetry();
+        } catch {
+          // Best effort — never break the CLI for telemetry failures
         }
-
-        // Trigger cleanup asynchronously (fire-and-forget)
-        telemetryCtx.service.cleanupOldTelemetry();
       }
 
       // Proactive update notification (after telemetry, before exit)

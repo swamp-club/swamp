@@ -20,6 +20,7 @@
 import { assertEquals } from "@std/assert";
 import {
   commandNeedsLoaderSetup,
+  isHookCommand,
   isLocalhostUrl,
   isTelemetryDisabledByConfig,
   isTelemetryDisabledByEnv,
@@ -29,6 +30,7 @@ import {
   resolveTelemetryEndpoint,
   resolveWorkflowsDir,
 } from "./mod.ts";
+import { extractCommandInfo } from "./telemetry_integration.ts";
 
 Deno.test("resolveModelsDir returns default 'extensions/models' when no config", () => {
   // Ensure env var is not set
@@ -620,5 +622,52 @@ Deno.test("commandNeedsLoaderSetup returns true for model type search with globa
   assertEquals(
     commandNeedsLoaderSetup(["--json", "model", "type", "search", "aws"]),
     true,
+  );
+});
+
+// isHookCommand tests
+
+Deno.test("isHookCommand: returns true for audit record --from-hook", () => {
+  assertEquals(
+    isHookCommand(extractCommandInfo(["audit", "record", "--from-hook"])),
+    true,
+  );
+});
+
+Deno.test("isHookCommand: returns true for audit record with --tool and --repo-dir", () => {
+  assertEquals(
+    isHookCommand(
+      extractCommandInfo([
+        "audit",
+        "record",
+        "--from-hook",
+        "--tool",
+        "cursor",
+        "--repo-dir",
+        "/tmp/repo",
+      ]),
+    ),
+    true,
+  );
+});
+
+Deno.test("isHookCommand: returns false for audit timeline viewer", () => {
+  assertEquals(
+    isHookCommand(extractCommandInfo(["audit"])),
+    false,
+  );
+});
+
+Deno.test("isHookCommand: returns false for model command", () => {
+  assertEquals(
+    isHookCommand(extractCommandInfo(["model", "create"])),
+    false,
+  );
+});
+
+Deno.test("isHookCommand: returns false for empty args", () => {
+  assertEquals(
+    isHookCommand(extractCommandInfo([])),
+    false,
   );
 });
