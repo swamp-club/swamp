@@ -69,6 +69,9 @@ import {
 } from "../../infrastructure/tracing/mod.ts";
 import { resolveOrCreateDefinition } from "./direct_execution.ts";
 import { autoGc } from "../data/gc.ts";
+import { ActiveRun } from "../../domain/models/active_run.ts";
+import type { RunTrackerRepository } from "../../domain/models/run_tracker_repository.ts";
+import { hostname } from "node:os";
 
 /**
  * Events emitted by the libswamp model method run generator.
@@ -194,6 +197,7 @@ export interface ModelMethodRunDeps {
     definition: Definition,
   ) => Promise<void>;
   getDefinitionPath?: (type: ModelType, id: string) => string;
+  runTracker?: RunTrackerRepository;
 }
 
 /**
@@ -588,7 +592,27 @@ export async function* modelMethodRun(
         });
         output.markRunning(Deno.pid);
         output.setLogFile(logFilePath);
-        await deps.outputRepo.save(modelType, input.methodName, output);
+
+        // Register with the run tracker (if available) and start heartbeat.
+        // Output YAML is only written in terminal state (write-once).
+        let heartbeatInterval: ReturnType<typeof setInterval> | undefined;
+        if (deps.runTracker) {
+          const activeRun = ActiveRun.createModelMethodRun({
+            id: output.id,
+            modelType: modelType.normalized,
+            methodName: input.methodName,
+            pid: Deno.pid,
+            hostname: hostname(),
+          });
+          deps.runTracker.register(activeRun);
+          heartbeatInterval = setInterval(() => {
+            try {
+              deps.runTracker!.heartbeat(output.id);
+            } catch {
+              // Heartbeat failure is non-fatal
+            }
+          }, 30_000);
+        }
 
         const vaultService = await deps.createVaultService();
         const executionService = deps.createExecutionService();
@@ -664,15 +688,23 @@ export async function* modelMethodRun(
             : String(error);
           const errorStack = error instanceof Error ? error.stack : undefined;
 
+          if (heartbeatInterval) clearInterval(heartbeatInterval);
+
           if (
             ctx.signal.aborted ||
             (error instanceof DOMException && error.name === "AbortError")
           ) {
             output.markCancelled("aborted");
             await deps.outputRepo.save(modelType, input.methodName, output);
+            if (deps.runTracker) {
+              deps.runTracker.complete(output.id, "cancelled");
+            }
           } else {
             output.markFailed({ message: errorMessage, stack: errorStack });
             await deps.outputRepo.save(modelType, input.methodName, output);
+            if (deps.runTracker) {
+              deps.runTracker.complete(output.id, "failed");
+            }
           }
 
           // Run method-summary report for failed executions so JSON consumers
@@ -825,9 +857,13 @@ export async function* modelMethodRun(
           }
         }
 
-        // Mark output as succeeded and save
+        // Mark output as succeeded and save (write-once)
+        if (heartbeatInterval) clearInterval(heartbeatInterval);
         output.markSucceeded();
         await deps.outputRepo.save(modelType, input.methodName, output);
+        if (deps.runTracker) {
+          deps.runTracker.complete(output.id, "completed");
+        }
 
         // --- Post-run reports ---
         const reportsSpan = getTracer().startSpan(

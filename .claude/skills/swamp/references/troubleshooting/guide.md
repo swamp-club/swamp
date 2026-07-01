@@ -22,18 +22,20 @@ returns non-zero on user-facing failure.
 
 ## The Four Tiers
 
-| Tier                | When to use                                  | Key tool                                        |
-| ------------------- | -------------------------------------------- | ----------------------------------------------- |
-| 1. Health checks    | Known integration issues (extensions, audit) | `swamp doctor extensions`, `swamp doctor audit` |
-| 2. Error inspection | Command failures, unexpected output          | stderr, `--json`, exit codes                    |
-| 3. Tracing          | Slow workflows, timing questions             | OpenTelemetry spans                             |
-| 4. Source reading   | Internal behavior questions                  | `swamp source fetch`                            |
+| Tier                | When to use                          | Key tool                                      |
+| ------------------- | ------------------------------------ | --------------------------------------------- |
+| 1. Health checks    | Known integration issues, stale runs | `swamp doctor extensions`, `swamp run doctor` |
+| 2. Error inspection | Command failures, unexpected output  | stderr, `--json`, exit codes                  |
+| 3. Tracing          | Slow workflows, timing questions     | OpenTelemetry spans                           |
+| 4. Source reading   | Internal behavior questions          | `swamp source fetch`                          |
 
 ## Symptom → tier index
 
 | Symptom                                           | Start at                              |
 | ------------------------------------------------- | ------------------------------------- |
 | Extension not loaded / `swamp-warning:` on stderr | Tier 1 → `swamp doctor extensions`    |
+| Run stuck in "running" / orphaned after crash     | Tier 1 → `swamp run doctor --fix`     |
+| "Is anything running right now?"                  | Tier 1 → `swamp run history --active` |
 | Command errored — message is clear                | Tier 2 → read it, fix the named issue |
 | Command errored — message is vague                | Tier 2 → re-run with `--json`         |
 | Workflow / method / sync is slow                  | Tier 3 → enable tracing               |

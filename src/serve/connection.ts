@@ -27,6 +27,7 @@ import type { RepositoryContext } from "../infrastructure/persistence/repository
 import type { DatastoreConfig } from "../domain/datastore/datastore_config.ts";
 import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
 import type { RunCancelRegistry } from "./run_cancel_registry.ts";
+import type { RunTrackerRepository } from "../domain/models/run_tracker_repository.ts";
 import {
   auditTimeline,
   consumeStream,
@@ -882,6 +883,23 @@ const DoctorExtensionsRequestSchema = z.object({
   id: z.string().min(1).max(256),
 });
 
+const RunHistoryRequestSchema = z.object({
+  type: z.literal("run.history"),
+  id: z.string().min(1).max(256),
+  payload: z.object({
+    active: z.boolean().optional(),
+    all: z.boolean().optional(),
+  }).optional(),
+});
+
+const RunDoctorRequestSchema = z.object({
+  type: z.literal("run.doctor"),
+  id: z.string().min(1).max(256),
+  payload: z.object({
+    fix: z.boolean().optional(),
+  }).optional(),
+});
+
 const ServerRequestSchema = z.discriminatedUnion("type", [
   WorkflowRunRequestSchema,
   ModelMethodRunRequestSchema,
@@ -947,6 +965,8 @@ const ServerRequestSchema = z.discriminatedUnion("type", [
   DoctorSecretsRequestSchema,
   DoctorWorkflowsRequestSchema,
   DoctorExtensionsRequestSchema,
+  RunHistoryRequestSchema,
+  RunDoctorRequestSchema,
   CancelRequestSchema,
 ]);
 
@@ -989,6 +1009,7 @@ export interface ConnectionContext {
   policySnapshotLoader?: PolicySnapshotLoader;
   authConfig: ServeAuthConfig;
   cancelRegistry?: RunCancelRegistry;
+  runTracker?: RunTrackerRepository;
 }
 
 export function handleConnection(
@@ -1720,6 +1741,22 @@ export function handleMessage(
         principal,
       );
       break;
+    case "run.history":
+      task = Promise.resolve(handleRunHistory(
+        socket,
+        ctx,
+        request.id,
+        request.payload,
+      ));
+      break;
+    case "run.doctor":
+      task = Promise.resolve(handleRunDoctor(
+        socket,
+        ctx,
+        request.id,
+        request.payload,
+      ));
+      break;
   }
 
   task
@@ -1876,6 +1913,7 @@ async function handleWorkflowRun(
         send(socket, { type: "event", id: requestId, event: serialized });
       },
       ctx.syncService,
+      ctx.runTracker,
     );
     send(socket, { type: "done", id: requestId });
   } catch (error) {
@@ -1972,7 +2010,7 @@ async function handleModelMethodRun(
     const deps = await createModelMethodRunDeps(
       ctx.repoDir,
       ctx.repoContext,
-      { directExecution: isDirectExecution },
+      { directExecution: isDirectExecution, runTracker: ctx.runTracker },
     );
     const libCtx = createLibSwampContext({ signal: controller.signal });
 
@@ -5015,6 +5053,7 @@ async function handleWorkflowResume(
       ctx.repoContext.markDirty,
       ctx.repoContext.unifiedDataRepo.namespace,
       stepLockHook,
+      ctx.runTracker,
     );
 
     const resumeGenerator = async function* (): AsyncGenerator<
@@ -5826,4 +5865,94 @@ function sendError(
   message: string,
 ): void {
   send(socket, { type: "error", id, error: { code, message } });
+}
+
+function handleRunHistory(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  payload?: { active?: boolean; all?: boolean },
+): void {
+  if (!ctx.runTracker) {
+    sendError(socket, requestId, "not_available", "Run tracker not available");
+    return;
+  }
+
+  const STALE_TTL_MS = 90_000;
+  const runs = payload?.active
+    ? ctx.runTracker.findAllRunning()
+    : payload?.all
+    ? ctx.runTracker.findAll()
+    : ctx.runTracker.findRecent();
+
+  send(socket, {
+    type: "run.history",
+    id: requestId,
+    payload: {
+      runs: runs.map((r) => ({
+        id: r.id,
+        runKind: r.runKind,
+        modelType: r.modelType,
+        methodName: r.methodName,
+        workflowName: r.workflowName,
+        pid: r.pid,
+        hostname: r.hostname,
+        status: r.status,
+        startedAt: r.startedAt.toISOString(),
+        heartbeatAt: r.heartbeatAt.toISOString(),
+        stale: r.isStale(STALE_TTL_MS),
+      })),
+    },
+  });
+}
+
+function handleRunDoctor(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  payload?: { fix?: boolean },
+): void {
+  if (!ctx.runTracker) {
+    sendError(socket, requestId, "not_available", "Run tracker not available");
+    return;
+  }
+
+  const STALE_TTL_MS = 90_000;
+  const allRuns = ctx.runTracker.findAll();
+  const running = allRuns.filter((r) => r.status === "running");
+  const stale = ctx.runTracker.findStaleRuns(STALE_TTL_MS);
+  const active = running.filter((r) => !r.isStale(STALE_TTL_MS));
+
+  let reaped = 0;
+  if (payload?.fix && stale.length > 0) {
+    const reapedRuns = ctx.runTracker.reapStaleRuns(STALE_TTL_MS);
+    reaped = reapedRuns.length;
+  }
+
+  const mapRun = (r: import("../domain/models/active_run.ts").ActiveRun) => ({
+    id: r.id,
+    runKind: r.runKind,
+    modelType: r.modelType,
+    methodName: r.methodName,
+    workflowName: r.workflowName,
+    pid: r.pid,
+    hostname: r.hostname,
+    status: r.status,
+    startedAt: r.startedAt.toISOString(),
+    heartbeatAt: r.heartbeatAt.toISOString(),
+    stale: r.isStale(STALE_TTL_MS),
+  });
+
+  send(socket, {
+    type: "run.doctor",
+    id: requestId,
+    payload: {
+      totalTracked: allRuns.length,
+      active: active.length,
+      stale: stale.length,
+      reaped,
+      activeRuns: active.map(mapRun),
+      staleRuns: stale.map(mapRun),
+    },
+  });
 }

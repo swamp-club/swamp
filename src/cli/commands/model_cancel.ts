@@ -26,6 +26,11 @@ import {
 import { requireInitializedRepoUnlocked } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
 import { killProcessTree } from "../../infrastructure/process/process_kill.ts";
+import {
+  DEFAULT_STALE_TTL_MS,
+  RunTrackerStore,
+} from "../../infrastructure/persistence/run_tracker_store.ts";
+import { swampPath } from "../../infrastructure/persistence/paths.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -56,38 +61,38 @@ export const modelCancelCommand = new Command()
       );
     }
 
-    const { repoContext } = await requireInitializedRepoUnlocked({
+    const { repoDir, repoContext } = await requireInitializedRepoUnlocked({
       repoDir: resolveRepoDir(options.repoDir),
       outputMode: cliCtx.outputMode,
     });
 
-    const outputRepo = repoContext.outputRepo;
     const reason = options.reason as string | undefined;
+    const runTracker = RunTrackerStore.fromSwampDir(swampPath(repoDir));
+    runTracker.reapStaleRuns(DEFAULT_STALE_TTL_MS);
 
     if (options.all) {
-      const allOutputs = await outputRepo.findAllGlobal();
-      const running = allOutputs.filter((o) => o.output.status === "running");
+      const trackerRuns = runTracker.findAllRunning();
 
-      if (running.length === 0) {
+      if (trackerRuns.length === 0) {
         if (cliCtx.outputMode === "json") {
           console.log(JSON.stringify({ cancelled: [] }));
         } else {
           cliCtx.logger.info("No running model method runs to cancel.");
         }
+        runTracker.close();
         return;
       }
 
       const cancelled: { id: string; type: string; method: string }[] = [];
-      for (const entry of running) {
-        if (entry.output.pid && entry.output.pid !== Deno.pid) {
-          await killProcessTree(entry.output.pid);
+      for (const run of trackerRuns) {
+        if (run.pid !== Deno.pid) {
+          await killProcessTree(run.pid);
         }
-        entry.output.markCancelled(reason);
-        await outputRepo.save(entry.type, entry.method, entry.output);
+        runTracker.complete(run.id, "cancelled");
         cancelled.push({
-          id: entry.output.id,
-          type: entry.type.normalized,
-          method: entry.method,
+          id: run.id,
+          type: run.modelType ?? "unknown",
+          method: run.methodName ?? "unknown",
         });
       }
 
@@ -103,6 +108,7 @@ export const modelCancelCommand = new Command()
           cliCtx.logger.info`  ${c.type}/${c.method} (${c.id})`;
         }
       }
+      runTracker.close();
       return;
     }
 
@@ -110,6 +116,7 @@ export const modelCancelCommand = new Command()
     const definitionRepo = repoContext.definitionRepo;
     const resolved = await definitionRepo.findByNameGlobal(modelIdOrName!);
     if (!resolved) {
+      runTracker.close();
       throw new UserError(
         `Model '${modelIdOrName}' not found`,
       );
@@ -117,38 +124,40 @@ export const modelCancelCommand = new Command()
 
     const { definition, type } = resolved;
 
-    const allOutputs = await outputRepo.findAll(type);
-    const running = allOutputs.filter(
-      (o) => o.definitionId === definition.id && o.status === "running",
+    const trackerRuns = runTracker.findAllRunning().filter(
+      (r) => r.modelType === type.normalized,
     );
 
-    if (running.length === 0) {
+    if (trackerRuns.length === 0) {
+      runTracker.close();
       throw new UserError(
         `No running method runs found for model '${definition.name}'`,
       );
     }
 
-    const latest = running.sort(
+    const latest = trackerRuns.sort(
       (a, b) => b.startedAt.getTime() - a.startedAt.getTime(),
     )[0];
 
-    if (latest.pid && latest.pid !== Deno.pid) {
+    if (latest.pid !== Deno.pid) {
       await killProcessTree(latest.pid);
     }
-    latest.markCancelled(reason);
-    await outputRepo.save(type, latest.methodName, latest);
+    runTracker.complete(latest.id, "cancelled");
 
     if (cliCtx.outputMode === "json") {
       console.log(JSON.stringify({
         id: latest.id,
         modelName: definition.name,
         type: type.normalized,
-        method: latest.methodName,
+        method: latest.methodName ?? "unknown",
         status: "cancelled",
         reason: reason ?? null,
       }));
     } else {
       cliCtx.logger
-        .info`Cancelled method run ${latest.methodName} for model ${definition.name} (${latest.id})`;
+        .info`Cancelled method run ${
+        latest.methodName ?? "unknown"
+      } for model ${definition.name} (${latest.id})`;
     }
+    runTracker.close();
   });

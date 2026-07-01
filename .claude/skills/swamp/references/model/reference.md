@@ -431,6 +431,31 @@ For single-output inspection, `swamp model output get <name> --json` is
 sufficient. For browsing N artifacts, `data query` with `--select` is the
 primary pattern.
 
+## Run Tracking
+
+swamp tracks in-flight runs — both model method executions and workflow runs —
+in a local SQLite database (`.swamp/run_tracker.db`). Every execution registers
+with the tracker, heartbeats every 30s, and completes on success/failure. Stale
+runs (heartbeat >90s old with a dead process) are automatically reaped on next
+invocation.
+
+The central command is `swamp run`:
+
+| Question                                  | Command                             |
+| ----------------------------------------- | ----------------------------------- |
+| What's running right now?                 | `swamp run history --active`        |
+| What ran recently (last 24h)?             | `swamp run history`                 |
+| Full history of tracked runs              | `swamp run history --all`           |
+| Structured output for scripting           | `swamp run history --json`          |
+| Are there stuck/orphaned runs?            | `swamp run doctor`                  |
+| Fix stuck runs automatically              | `swamp run doctor --fix`            |
+| Cancel a specific model's running method  | `swamp model cancel <name>`         |
+| Cancel all running model methods          | `swamp model cancel --all`          |
+| What completed runs exist (YAML outputs)? | `swamp model output search`         |
+| Execution history with duration/status    | `swamp model method history search` |
+
+See `swamp run history --help` for full details.
+
 ## Workflow Example
 
 **Design check — before creating a model, ask the user:**

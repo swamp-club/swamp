@@ -40,7 +40,11 @@ import type { DefinitionId } from "../../domain/definitions/definition.ts";
 import { resolveModelType } from "../../domain/extensions/extension_auto_resolver.ts";
 import { getAutoResolver } from "../auto_resolver_context.ts";
 import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
-import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
+import {
+  SWAMP_SUBDIRS,
+  swampPath,
+} from "../../infrastructure/persistence/paths.ts";
+import { RunTrackerStore } from "../../infrastructure/persistence/run_tracker_store.ts";
 import {
   createWorkflowId,
   createWorkflowRunId,
@@ -350,6 +354,7 @@ export const workflowRunCommand = new Command()
             repoContext.markDirty,
             repoContext.unifiedDataRepo.namespace,
             stepLockHook,
+            RunTrackerStore.fromSwampDir(swampPath(dir)),
           );
         },
         catalogStore: repoContext.catalogStore,

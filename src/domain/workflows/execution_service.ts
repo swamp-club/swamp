@@ -48,6 +48,9 @@ import {
 } from "../../infrastructure/persistence/paths.ts";
 import type { DefinitionRepository } from "../definitions/repositories.ts";
 import type { OutputRepository } from "../models/repositories.ts";
+import type { RunTrackerRepository } from "../models/run_tracker_repository.ts";
+import { ActiveRun } from "../models/active_run.ts";
+import { hostname } from "node:os";
 import type { UnifiedDataRepository } from "../data/repositories.ts";
 import type { MethodExecutionService } from "../models/method_execution_service.ts";
 import { YamlEvaluatedDefinitionRepository } from "../../infrastructure/persistence/yaml_evaluated_definition_repository.ts";
@@ -201,6 +204,7 @@ export interface StepExecutionContext {
    * namespaced data path.
    */
   namespace?: Namespace;
+  runTracker?: RunTrackerRepository;
 }
 
 /**
@@ -277,6 +281,7 @@ export interface StepExecutorDeps {
   vaultService: VaultService;
   expressionEvaluator: ExpressionEvaluationService;
   directTypeResolver?: DirectTypeResolver;
+  runTracker?: RunTrackerRepository;
 }
 
 /**
@@ -333,6 +338,9 @@ export class DefaultStepExecutor implements StepExecutor {
     });
     if (this._directTypeResolver) {
       deps.directTypeResolver = this._directTypeResolver;
+    }
+    if (ctx.runTracker) {
+      deps.runTracker = ctx.runTracker;
     }
     return deps;
   }
@@ -650,6 +658,27 @@ export class DefaultStepExecutor implements StepExecutor {
     }
     await outputRepo.save(modelType, task.methodName, output);
 
+    // Register with the run tracker (if available) and start heartbeat.
+    const { runTracker } = allDeps;
+    let heartbeatInterval: ReturnType<typeof setInterval> | undefined;
+    if (runTracker) {
+      const activeRun = ActiveRun.createModelMethodRun({
+        id: output.id,
+        modelType: modelType.normalized,
+        methodName: task.methodName,
+        pid: Deno.pid,
+        hostname: hostname(),
+      });
+      runTracker.register(activeRun);
+      heartbeatInterval = setInterval(() => {
+        try {
+          runTracker.heartbeat(output.id);
+        } catch {
+          // Heartbeat failure is non-fatal
+        }
+      }, 30_000);
+    }
+
     // Declared outside try so the catch block can record artifacts written
     // before a throw (e.g. model writes data then throws on verdict=FAIL).
     // Each phase owns its mutations of this list; the orchestrator only
@@ -691,6 +720,9 @@ export class DefaultStepExecutor implements StepExecutor {
           secretBag,
         });
 
+        if (heartbeatInterval) clearInterval(heartbeatInterval);
+        if (runTracker) runTracker.complete(output.id, "completed");
+
         return await this.handleMethodSuccess({
           task,
           ctx,
@@ -709,6 +741,9 @@ export class DefaultStepExecutor implements StepExecutor {
           savedArtifacts,
         });
       } catch (error) {
+        if (heartbeatInterval) clearInterval(heartbeatInterval);
+        if (runTracker) runTracker.complete(output.id, "failed");
+
         await this.handleMethodFailure({
           task,
           ctx,
@@ -1254,6 +1289,7 @@ export class WorkflowExecutionService {
     private readonly markDirty?: MarkDirtyHook,
     private readonly namespace: Namespace = SOLO_NAMESPACE,
     stepLockHook?: StepLockHook,
+    private readonly runTracker?: RunTrackerRepository,
   ) {
     this.executor = executor ??
       new DefaultStepExecutor(
@@ -1422,6 +1458,17 @@ export class WorkflowExecutionService {
         // Start execution
         run.start(Deno.pid);
 
+        // Register workflow run with the tracker
+        if (this.runTracker) {
+          const wfActiveRun = ActiveRun.createWorkflowRun({
+            id: run.id,
+            workflowName: workflow.name,
+            pid: Deno.pid,
+            hostname: hostname(),
+          });
+          this.runTracker.register(wfActiveRun);
+        }
+
         if (expressionContext) {
           expressionContext.run = {
             id: run.id,
@@ -1448,6 +1495,19 @@ export class WorkflowExecutionService {
       };
 
       await this.saveRun(workflow.id, run);
+
+      let wfHeartbeatInterval: ReturnType<typeof setInterval> | undefined;
+      if (this.runTracker) {
+        const tracker = this.runTracker;
+        const runId = run.id;
+        wfHeartbeatInterval = setInterval(() => {
+          try {
+            tracker.heartbeat(runId);
+          } catch {
+            // Heartbeat failure is non-fatal
+          }
+        }, 30_000);
+      }
 
       const stepOpts: StepOptions = {
         lastEvaluated: options?.lastEvaluated,
@@ -1572,6 +1632,8 @@ export class WorkflowExecutionService {
 
       // Check if the run was cancelled via abort signal
       if (options?.signal?.aborted) {
+        if (wfHeartbeatInterval) clearInterval(wfHeartbeatInterval);
+        if (this.runTracker) this.runTracker.complete(run.id, "cancelled");
         run.cancel(
           abortReason(options.signal),
         );
@@ -1583,6 +1645,8 @@ export class WorkflowExecutionService {
       }
 
       // Complete workflow
+      if (wfHeartbeatInterval) clearInterval(wfHeartbeatInterval);
+      if (this.runTracker) this.runTracker.complete(run.id, "completed");
       const wfTeardownSpan = tracer.startSpan("swamp.workflow.teardown");
       try {
         run.complete();
@@ -1622,6 +1686,8 @@ export class WorkflowExecutionService {
       runSpan.setStatus({ code: SpanStatusCode.OK });
     } catch (error) {
       if (error instanceof WorkflowSuspendedError && workflowRun) {
+        // Suspended workflows pause heartbeat — the run stays "running"
+        // in the tracker so it's visible as in-flight during approval wait.
         runFileSink.unregister(workflowLogHandle);
         yield {
           kind: "suspended" as const,
@@ -1637,6 +1703,9 @@ export class WorkflowExecutionService {
       if (
         workflowRun && options?.signal?.aborted
       ) {
+        if (this.runTracker) {
+          this.runTracker.complete(workflowRun.id, "cancelled");
+        }
         workflowRun.cancel(
           abortReason(options.signal),
         );
@@ -1650,6 +1719,9 @@ export class WorkflowExecutionService {
         return;
       }
       if (workflowRun) {
+        if (this.runTracker) {
+          this.runTracker.complete(workflowRun.id, "failed");
+        }
         workflowRun.complete();
         await this.saveRun(
           createWorkflowId(workflowRun.workflowId),
@@ -1896,6 +1968,9 @@ export class WorkflowExecutionService {
       }
 
       if (options?.signal?.aborted) {
+        if (this.runTracker) {
+          this.runTracker.complete(existingRun.id, "cancelled");
+        }
         existingRun.cancel(
           abortReason(options.signal),
         );
@@ -1905,6 +1980,9 @@ export class WorkflowExecutionService {
         return;
       }
 
+      if (this.runTracker) {
+        this.runTracker.complete(existingRun.id, "completed");
+      }
       existingRun.complete();
 
       yield* this.runWorkflowReports(
@@ -1934,6 +2012,9 @@ export class WorkflowExecutionService {
         return;
       }
       if (options?.signal?.aborted) {
+        if (this.runTracker) {
+          this.runTracker.complete(existingRun.id, "cancelled");
+        }
         existingRun.cancel(
           abortReason(options.signal),
         );
@@ -1941,6 +2022,9 @@ export class WorkflowExecutionService {
         yield { kind: "cancelled" as const, run: existingRun };
         runFileSink.unregister(workflowLogHandle);
         return;
+      }
+      if (this.runTracker) {
+        this.runTracker.complete(existingRun.id, "failed");
       }
       existingRun.complete();
       await this.saveRun(workflow.id, existingRun);
@@ -2323,6 +2407,7 @@ export class WorkflowExecutionService {
           dataBaseDir: this.dataBaseDir,
           catalogStore: this.catalogStore,
           namespace: this.namespace,
+          runTracker: this.runTracker,
         };
         return this.executor.execute(step, ctx);
       });
@@ -2560,6 +2645,8 @@ export class WorkflowExecutionService {
       undefined,
       this.markDirty,
       this.namespace,
+      undefined,
+      this.runTracker,
     );
 
     let childRun: WorkflowRun | undefined;

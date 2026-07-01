@@ -78,6 +78,10 @@ import { registerShutdownHandler } from "../../infrastructure/process/shutdown_h
 import { suppressSyncExitOnSignal } from "../../infrastructure/persistence/datastore_sync_coordinator.ts";
 import { parseTimeout } from "../duration_parser.ts";
 import { isAuthenticated } from "../auth_context.ts";
+import {
+  DEFAULT_STALE_TTL_MS,
+  RunTrackerStore,
+} from "../../infrastructure/persistence/run_tracker_store.ts";
 
 // Cliffy's custom type system returns `unknown` for custom types like `model_name`,
 // but we need to pass `options` to functions expecting specific types. Using `any`
@@ -246,6 +250,9 @@ Exit codes: 0 = success, 1 = general error, 75 = lock contention (temporary — 
           outputMode: ctx.outputMode,
         });
 
+      const runTracker = RunTrackerStore.fromSwampDir(swampPath(repoDir));
+      runTracker.reapStaleRuns(DEFAULT_STALE_TTL_MS);
+
       const marker = await new RepoMarkerRepository().read(
         RepoPath.create(repoDir),
       );
@@ -357,6 +364,7 @@ Exit codes: 0 = success, 1 = general error, 75 = lock contention (temporary — 
             );
           }
           : undefined,
+        runTracker,
       };
 
       const timeoutMs = options.timeout

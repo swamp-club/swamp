@@ -35,7 +35,11 @@ import {
   type StepLockHook,
   WorkflowExecutionService,
 } from "../../domain/workflows/execution_service.ts";
-import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
+import {
+  SWAMP_SUBDIRS,
+  swampPath,
+} from "../../infrastructure/persistence/paths.ts";
+import { RunTrackerStore } from "../../infrastructure/persistence/run_tracker_store.ts";
 import { createWorkflowRunRenderer } from "../../presentation/renderers/workflow_run.ts";
 import { isAuthenticated } from "../auth_context.ts";
 import { resolveOrCreateDefinition } from "../../libswamp/mod.ts";
@@ -335,6 +339,7 @@ export const workflowResumeCommand = withRemoteOptions(
       repoContext.markDirty,
       repoContext.unifiedDataRepo.namespace,
       stepLockHook,
+      RunTrackerStore.fromSwampDir(swampPath(repoDir)),
     );
 
     const renderer = createWorkflowRunRenderer(cliCtx.outputMode, {

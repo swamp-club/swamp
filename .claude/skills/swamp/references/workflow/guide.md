@@ -45,6 +45,8 @@ skill.
 | Reject step        | `swamp workflow reject <workflow> <step>`                     |
 | Resume workflow    | `swamp workflow resume <workflow> [--input k=v]`              |
 | List approvals     | `swamp workflow approvals`                                    |
+| Active runs        | `swamp run history --active`                                  |
+| Recent runs        | `swamp run history`                                           |
 | View run history   | `swamp workflow history search --json`                        |
 | Get latest run     | `swamp workflow history get <workflow> --json`                |
 | View run logs      | `swamp workflow history logs <run_or_workflow> --json`        |

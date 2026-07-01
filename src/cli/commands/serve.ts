@@ -71,6 +71,11 @@ import { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_
 import { GRANT_MODEL_TYPE } from "../../domain/models/access/grant_model.ts";
 import { cleanupEmptyParentDirs } from "../../infrastructure/persistence/directory_cleanup.ts";
 import { join } from "@std/path";
+import {
+  DEFAULT_STALE_TTL_MS,
+  RunTrackerStore,
+} from "../../infrastructure/persistence/run_tracker_store.ts";
+import { swampPath } from "../../infrastructure/persistence/paths.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -672,20 +677,8 @@ export const serveCommand = new Command()
 
     const cancelRegistry = new RunCancelRegistry();
 
-    const connectionCtx = {
-      repoDir: resolvedRepoDir,
-      repoContext,
-      datastoreConfig,
-      syncService,
-      workerGateway,
-      policySnapshotLoader,
-      authConfig,
-      cancelRegistry,
-    };
-
     // Reap orphaned runs left in "running" state by a previous daemon.
-    // Only scan runs started within the last 7 days — anything older is
-    // either already terminal or so stale that it was cleaned up manually.
+    // Workflow runs still use YAML-based reaping (tracker wiring deferred to #519).
     const reapCutoff = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     const recentRuns = await repoContext.workflowRunRepo.findAllGlobalSince(
       reapCutoff,
@@ -700,19 +693,30 @@ export const serveCommand = new Command()
         await repoContext.workflowRunRepo.save(workflowId, run);
       }
     }
-    const recentOutputs = await repoContext.outputRepo.findAllGlobalSince(
-      reapCutoff,
+
+    // Model method runs use the SQLite run tracker for stale detection.
+    const runTracker = RunTrackerStore.fromSwampDir(
+      swampPath(resolvedRepoDir),
     );
-    for (const { output, type, method } of recentOutputs) {
-      if (output.status === "running") {
-        logger.warn(
-          "Reaping orphaned model output {outputId} (method: {methodName})",
-          { outputId: output.id, methodName: output.methodName },
-        );
-        output.markCancelled("daemon restarted");
-        await repoContext.outputRepo.save(type, method, output);
-      }
+    const reapedRuns = runTracker.reapStaleRuns(DEFAULT_STALE_TTL_MS);
+    for (const run of reapedRuns) {
+      logger.warn`Reaped stale model method run ${run.id} (method: ${
+        run.methodName ?? "unknown"
+      })`;
     }
+
+    const connectionCtx: import("../../serve/connection.ts").ConnectionContext =
+      {
+        repoDir: resolvedRepoDir,
+        repoContext,
+        datastoreConfig,
+        syncService,
+        workerGateway,
+        policySnapshotLoader,
+        authConfig,
+        cancelRegistry,
+        runTracker,
+      };
 
     const ac = new AbortController();
     const enableSchedule = options.schedule !== false;
@@ -733,6 +737,7 @@ export const serveCommand = new Command()
             signal,
             onEvent,
             syncService,
+            runTracker,
           ),
       });
 
