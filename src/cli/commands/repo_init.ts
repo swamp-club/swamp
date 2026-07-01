@@ -40,6 +40,7 @@ import {
 import { createExtensionInstallDeps } from "../create_extension_install_deps.ts";
 import { isAuthenticated } from "../auth_context.ts";
 import { VERSION } from "./version.ts";
+import { maybeEmitQuestEvent } from "../quest_event_emitter.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -113,6 +114,7 @@ export async function repoInitAction(
     renderer.handlers(),
   );
 
+  await maybeEmitQuestEvent(cliCtx.outputMode, "repo.init");
   cliCtx.logger.debug("Repo init command completed");
 }
 

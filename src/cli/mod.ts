@@ -48,6 +48,7 @@ import { reportCommand } from "./commands/report.ts";
 import { serveCommand } from "./commands/serve.ts";
 import { agentCommand } from "./commands/agent_setup.ts";
 import { workerCommand } from "./commands/worker.ts";
+import { questCommand } from "./commands/quest.ts";
 import { createHelpCommand } from "./commands/help.ts";
 import { unknownCommandErrorHandler } from "./unknown_command_handler.ts";
 import { groupCommandAction } from "./group_action.ts";
@@ -238,6 +239,7 @@ const NON_REPO_COMMANDS = new Set([
   "auth",
   "telemetry",
   "issue",
+  "quest",
 ]);
 
 /**
@@ -1319,7 +1321,8 @@ export async function runCli(args: string[]): Promise<void> {
     .command("report", reportCommand)
     .command("serve", serveCommand)
     .command("agent", agentCommand)
-    .command("worker", workerCommand);
+    .command("worker", workerCommand)
+    .command("quest", questCommand);
 
   // Register help command last — needs reference to the fully-built CLI tree
   cli.command("help", createHelpCommand(cli));
