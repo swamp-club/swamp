@@ -626,7 +626,14 @@ auto-triggered during normal writes. This avoids a race where multiple
 concurrent writers all independently read a large monolith and write redundant
 shards on a freshly upgraded extension.
 
-The migration command:
+The migration is triggered via the CLI:
+
+```
+swamp datastore migrate-index
+```
+
+The command acquires the distributed lock and calls
+`migrateMonolithToShards()` on the active sync service, which:
 
 1. Reads the existing `.datastore-index.json`.
 2. Partitions all entries into shards using the partition key scheme above.
@@ -635,12 +642,22 @@ The migration command:
 
 This runs under the lock (it is a structural command) so there is no
 concurrent-migration race. It is idempotent — running it again produces the
-same result.
+same result. If the monolithic index is empty, the command recovers by listing
+existing shard files in `_index/` and rebuilding `_meta.json`.
+
+The command handles several edge cases:
+
+- **Filesystem datastore** — reports that index migration is only available for
+  sync-capable custom datastores.
+- **Extension without migration support** — advises updating the datastore
+  extension to a version that supports shard-first indexing.
+- **Empty datastore** — recovers from `_index/` listing if shards already exist.
 
 **Pre-migration behavior:** When `_meta.json` is missing or `version: 1`,
 `commitPush` and `pullChanged` fall back to the monolithic path — identical to
-pre-shard-first behavior. An info-level log hints that migration is available.
-This means upgrading the extension alone causes zero regression.
+pre-shard-first behavior. An info-level log hints that migration is available
+via `swamp datastore migrate-index`. This means upgrading the extension alone
+causes zero regression.
 
 #### Backward compatibility
 

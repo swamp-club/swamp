@@ -290,6 +290,31 @@ export interface DatastoreSyncService {
     manifest: PushManifest,
     options?: DatastoreSyncOptions,
   ): Promise<number | void>;
+
+  /**
+   * Migrate the remote index from monolithic format to shard-first.
+   *
+   * Reads the existing monolithic `.datastore-index.json`, partitions all
+   * entries into shards, writes the shard files to `_index/`, and writes
+   * `_meta.json` with `version: 2`. Idempotent — running on an already-
+   * migrated index produces the same result.
+   *
+   * Must be called under the global distributed lock (structural command).
+   *
+   * Optional — only implemented by extensions whose index format supports
+   * shard-first partitioning. Core duck-types the method's presence before
+   * calling.
+   */
+  migrateMonolithToShards?(
+    options?: DatastoreSyncOptions,
+  ): Promise<MigrateIndexResult>;
+}
+
+/** Result of a shard-first index migration. */
+export interface MigrateIndexResult {
+  version: number;
+  partitions: string[];
+  commitSeq: number;
 }
 
 /** A single foreign catalog export: the namespace it came from and its rows. */

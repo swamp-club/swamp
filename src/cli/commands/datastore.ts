@@ -25,6 +25,7 @@ import { datastoreSyncCommand } from "./datastore_sync.ts";
 import { datastoreLockCommand } from "./datastore_lock.ts";
 import { datastoreCompactCommand } from "./datastore_compact.ts";
 import { datastoreCatalogPullCommand } from "./datastore_catalog_pull.ts";
+import { datastoreMigrateIndexCommand } from "./datastore_migrate_index.ts";
 import {
   datastoreNamespaceMigrateCommand,
   datastoreNamespaceSetCommand,
@@ -76,5 +77,6 @@ export const datastoreCommand = new Command()
   .command("sync", datastoreSyncCommand)
   .command("lock", datastoreLockCommand)
   .command("compact", datastoreCompactCommand)
+  .command("migrate-index", datastoreMigrateIndexCommand)
   .command("catalog", datastoreCatalogCommand)
   .command("namespace", datastoreNamespaceCommand);
