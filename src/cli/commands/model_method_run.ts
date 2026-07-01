@@ -251,240 +251,249 @@ Exit codes: 0 = success, 1 = general error, 75 = lock contention (temporary — 
         });
 
       const runTracker = RunTrackerStore.fromSwampDir(swampPath(repoDir));
-      runTracker.reapStaleRuns(DEFAULT_STALE_TTL_MS);
-
-      const marker = await new RepoMarkerRepository().read(
-        RepoPath.create(repoDir),
-      );
-      const autoGc = marker?.autoGc === true;
-
-      ctx.logger
-        .debug`Running method '${methodName}' on model: ${modelIdOrName}`;
-
-      const stdinContent = options.stdin ? await readStdin() : null;
-      let stdinItems: Record<string, unknown>[] | null = null;
-      if (stdinContent !== null) {
-        if (options.inputFile) {
-          throw new UserError(
-            "Cannot combine --stdin with --input-file.",
-          );
-        }
-        stdinItems = parseStdinContent(stdinContent);
-      }
-
-      const { inputs: cliInputs } = await parseInputs({
-        input: mergeInputArgs(options),
-        inputFile: stdinItems
-          ? undefined
-          : options.inputFile as string | undefined,
-      });
-
-      // Parse runtime tags
-      const runtimeTags = options.tag
-        ? parseTags(options.tag as string[])
-        : undefined;
-
-      // Load all extension registries needed for method execution in parallel
-      await Promise.all([
-        modelRegistry.ensureLoaded(),
-        vaultTypeRegistry.ensureLoaded(),
-        reportRegistry.ensureLoaded(),
-      ]);
-
-      const deps: ModelMethodRunDeps = {
-        repoDir,
-        lookupDefinition: (idOrName) =>
-          findDefinitionByIdOrName(repoContext.definitionRepo, idOrName),
-        getModelDef: (type) => resolveModelType(type, getAutoResolver()),
-        createEvaluationService: () => {
-          const dqs = new DataQueryService(
-            repoContext.catalogStore,
-            repoContext.unifiedDataRepo,
-          );
-          return new ExpressionEvaluationService(
-            repoContext.definitionRepo,
-            repoDir,
-            {
-              dataRepo: repoContext.unifiedDataRepo,
-              dataQueryService: dqs,
-            },
-          );
-        },
-        loadEvaluatedDefinition: (type, name) =>
-          repoContext.evaluatedDefinitionRepo.findByName(type, name),
-        saveEvaluatedDefinition: (type, definition) =>
-          repoContext.evaluatedDefinitionRepo.save(type, definition),
-        createExecutionService: () => new DefaultMethodExecutionService(),
-        createVaultService: () => VaultService.fromRepository(repoDir),
-        dataRepo: repoContext.unifiedDataRepo,
-        definitionRepo: repoContext.definitionRepo,
-        outputRepo: repoContext.outputRepo,
-        dataQueryService: new DataQueryService(
-          repoContext.catalogStore,
-          repoContext.unifiedDataRepo,
-        ),
-        createRunLog: async (modelType, method, definitionId) => {
-          const redactor = new SecretRedactor();
-          const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-          const logFilePath = join(
-            swampPath(repoDir, SWAMP_SUBDIRS.outputs),
-            modelType.normalized,
-            method,
-            `${definitionId}-${timestamp}.log`,
-          );
-          const logHandle = await runFileSink.register(
-            [],
-            logFilePath,
-            redactor,
-            swampPath(repoDir),
-          );
-          return {
-            logFilePath,
-            redactor,
-            cleanup: () => runFileSink.unregister(logHandle),
-          };
-        },
-        createAndSaveDefinition: isDirectExecution
-          ? async (type, definition) => {
-            const autoDefRepo = new YamlDefinitionRepository(
-              repoDir,
-              undefined,
-              repoContext.autoDefinitionsDir,
-              false,
-            );
-            await autoDefRepo.save(type, definition);
-          }
-          : undefined,
-        getDefinitionPath: isDirectExecution
-          ? (type, id) => {
-            return join(
-              repoContext.autoDefinitionsDir,
-              type.toDirectoryPath(),
-              `${id}.yaml`,
-            );
-          }
-          : undefined,
-        runTracker,
-      };
-
-      const timeoutMs = options.timeout
-        ? parseTimeout(options.timeout as string)
-        : undefined;
-      const abort = new AbortController();
-      const exitSuppress = suppressSyncExitOnSignal();
-      const shutdownHandle = registerShutdownHandler({
-        handler: () => abort.abort(),
-      });
-      const baseLibCtx = createLibSwampContext({ signal: abort.signal });
-      const libCtx = timeoutMs !== undefined
-        ? baseLibCtx.withTimeout(timeoutMs)
-        : baseLibCtx;
-
-      // Pre-lookup for per-model lock acquisition (reads YAML — no lock needed)
-      const preResult = await findDefinitionByIdOrName(
-        repoContext.definitionRepo,
-        modelIdOrName,
-      );
-      let flushModelLocks: (() => Promise<void>) | null = null;
-      if (preResult) {
-        const lockResult = await acquireModelLocks(
-          datastoreConfig,
-          [
-            {
-              modelType: preResult.type.normalized,
-              modelId: preResult.definition.id,
-            },
-          ],
-          repoDir,
-          syncService,
-          repoContext.catalogStore,
-        );
-        if (lockResult.synced) repoContext.catalogStore.invalidate();
-        flushModelLocks = lockResult.flush;
-      }
-
-      // Build the list of input sets to iterate over
-      const inputSets: Record<string, unknown>[] = stdinItems
-        ? stdinItems.map((item) =>
-          Object.keys(cliInputs).length > 0 ? deepMerge(item, cliInputs) : item
-        )
-        : [cliInputs];
-
       try {
-        for (let i = 0; i < inputSets.length; i++) {
-          if (inputSets.length > 1) {
-            ctx.logger
-              .info`Running method ${methodName} [${
-              i + 1
-            }/${inputSets.length}]`;
+        runTracker.reapStaleRuns(DEFAULT_STALE_TTL_MS);
+
+        const marker = await new RepoMarkerRepository().read(
+          RepoPath.create(repoDir),
+        );
+        const autoGc = marker?.autoGc === true;
+
+        ctx.logger
+          .debug`Running method '${methodName}' on model: ${modelIdOrName}`;
+
+        const stdinContent = options.stdin ? await readStdin() : null;
+        let stdinItems: Record<string, unknown>[] | null = null;
+        if (stdinContent !== null) {
+          if (options.inputFile) {
+            throw new UserError(
+              "Cannot combine --stdin with --input-file.",
+            );
           }
-
-          const renderer = createModelMethodRunRenderer(ctx.outputMode, {
-            modelName: modelIdOrName,
-            methodName,
-            isAuthenticated: isAuthenticated(),
-          });
-
-          await consumeStream(
-            modelMethodRun(libCtx, deps, {
-              modelIdOrName,
-              methodName,
-              inputs: inputSets[i],
-              lastEvaluated: options.lastEvaluated as boolean,
-              typeArg,
-              definitionName,
-              runtimeTags,
-              skipCheckNames: options.skipCheck as string[] | undefined,
-              skipCheckLabels: options.skipCheckLabel as string[] | undefined,
-              skipAllChecks: options.skipChecks as boolean | undefined,
-              skipReportNames: options.skipReport as string[] | undefined,
-              skipReportLabels: options.skipReportLabel as string[] | undefined,
-              skipAllReports: options.skipReports as boolean | undefined,
-              reportNames: options.report as string[] | undefined,
-              reportLabels: options.reportLabel as string[] | undefined,
-              swampSha: GIT_SHA || undefined,
-              autoGc,
-            }),
-            renderer.handlers(),
-          );
-
-          if (abort.signal.aborted) {
-            Deno.exitCode = 1;
-            return;
-          }
-
-          if (renderer.runFailed()) {
-            Deno.exitCode = 1;
-            return;
-          }
+          stdinItems = parseStdinContent(stdinContent);
         }
-      } catch (error) {
-        if (error instanceof UserError) {
-          throw error;
-        }
-        const message = error instanceof Error ? error.message : String(error);
-        throw new UserError(`Method execution failed: ${message}`);
-      } finally {
-        runTracker.close();
-        shutdownHandle.dispose();
-        exitSuppress.dispose();
-        if (flushModelLocks) {
-          try {
-            await flushModelLocks();
-          } catch (releaseError) {
-            ctx.logger.warn(
-              "Failed to release locks during cleanup: {error}",
+
+        const { inputs: cliInputs } = await parseInputs({
+          input: mergeInputArgs(options),
+          inputFile: stdinItems
+            ? undefined
+            : options.inputFile as string | undefined,
+        });
+
+        // Parse runtime tags
+        const runtimeTags = options.tag
+          ? parseTags(options.tag as string[])
+          : undefined;
+
+        // Load all extension registries needed for method execution in parallel
+        await Promise.all([
+          modelRegistry.ensureLoaded(),
+          vaultTypeRegistry.ensureLoaded(),
+          reportRegistry.ensureLoaded(),
+        ]);
+
+        const deps: ModelMethodRunDeps = {
+          repoDir,
+          lookupDefinition: (idOrName) =>
+            findDefinitionByIdOrName(repoContext.definitionRepo, idOrName),
+          getModelDef: (type) => resolveModelType(type, getAutoResolver()),
+          createEvaluationService: () => {
+            const dqs = new DataQueryService(
+              repoContext.catalogStore,
+              repoContext.unifiedDataRepo,
+            );
+            return new ExpressionEvaluationService(
+              repoContext.definitionRepo,
+              repoDir,
               {
-                error: releaseError instanceof Error
-                  ? releaseError.message
-                  : String(releaseError),
+                dataRepo: repoContext.unifiedDataRepo,
+                dataQueryService: dqs,
               },
             );
+          },
+          loadEvaluatedDefinition: (type, name) =>
+            repoContext.evaluatedDefinitionRepo.findByName(type, name),
+          saveEvaluatedDefinition: (type, definition) =>
+            repoContext.evaluatedDefinitionRepo.save(type, definition),
+          createExecutionService: () => new DefaultMethodExecutionService(),
+          createVaultService: () => VaultService.fromRepository(repoDir),
+          dataRepo: repoContext.unifiedDataRepo,
+          definitionRepo: repoContext.definitionRepo,
+          outputRepo: repoContext.outputRepo,
+          dataQueryService: new DataQueryService(
+            repoContext.catalogStore,
+            repoContext.unifiedDataRepo,
+          ),
+          createRunLog: async (modelType, method, definitionId) => {
+            const redactor = new SecretRedactor();
+            const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+            const logFilePath = join(
+              swampPath(repoDir, SWAMP_SUBDIRS.outputs),
+              modelType.normalized,
+              method,
+              `${definitionId}-${timestamp}.log`,
+            );
+            const logHandle = await runFileSink.register(
+              [],
+              logFilePath,
+              redactor,
+              swampPath(repoDir),
+            );
+            return {
+              logFilePath,
+              redactor,
+              cleanup: () => runFileSink.unregister(logHandle),
+            };
+          },
+          createAndSaveDefinition: isDirectExecution
+            ? async (type, definition) => {
+              const autoDefRepo = new YamlDefinitionRepository(
+                repoDir,
+                undefined,
+                repoContext.autoDefinitionsDir,
+                false,
+              );
+              await autoDefRepo.save(type, definition);
+            }
+            : undefined,
+          getDefinitionPath: isDirectExecution
+            ? (type, id) => {
+              return join(
+                repoContext.autoDefinitionsDir,
+                type.toDirectoryPath(),
+                `${id}.yaml`,
+              );
+            }
+            : undefined,
+          runTracker,
+        };
+
+        const timeoutMs = options.timeout
+          ? parseTimeout(options.timeout as string)
+          : undefined;
+        const abort = new AbortController();
+        const exitSuppress = suppressSyncExitOnSignal();
+        const shutdownHandle = registerShutdownHandler({
+          handler: () => abort.abort(),
+        });
+        const baseLibCtx = createLibSwampContext({ signal: abort.signal });
+        const libCtx = timeoutMs !== undefined
+          ? baseLibCtx.withTimeout(timeoutMs)
+          : baseLibCtx;
+
+        // Pre-lookup for per-model lock acquisition (reads YAML — no lock needed)
+        const preResult = await findDefinitionByIdOrName(
+          repoContext.definitionRepo,
+          modelIdOrName,
+        );
+        let flushModelLocks: (() => Promise<void>) | null = null;
+        if (preResult) {
+          const lockResult = await acquireModelLocks(
+            datastoreConfig,
+            [
+              {
+                modelType: preResult.type.normalized,
+                modelId: preResult.definition.id,
+              },
+            ],
+            repoDir,
+            syncService,
+            repoContext.catalogStore,
+          );
+          if (lockResult.synced) repoContext.catalogStore.invalidate();
+          flushModelLocks = lockResult.flush;
+        }
+
+        // Build the list of input sets to iterate over
+        const inputSets: Record<string, unknown>[] = stdinItems
+          ? stdinItems.map((item) =>
+            Object.keys(cliInputs).length > 0
+              ? deepMerge(item, cliInputs)
+              : item
+          )
+          : [cliInputs];
+
+        try {
+          for (let i = 0; i < inputSets.length; i++) {
+            if (inputSets.length > 1) {
+              ctx.logger
+                .info`Running method ${methodName} [${
+                i + 1
+              }/${inputSets.length}]`;
+            }
+
+            const renderer = createModelMethodRunRenderer(ctx.outputMode, {
+              modelName: modelIdOrName,
+              methodName,
+              isAuthenticated: isAuthenticated(),
+            });
+
+            await consumeStream(
+              modelMethodRun(libCtx, deps, {
+                modelIdOrName,
+                methodName,
+                inputs: inputSets[i],
+                lastEvaluated: options.lastEvaluated as boolean,
+                typeArg,
+                definitionName,
+                runtimeTags,
+                skipCheckNames: options.skipCheck as string[] | undefined,
+                skipCheckLabels: options.skipCheckLabel as string[] | undefined,
+                skipAllChecks: options.skipChecks as boolean | undefined,
+                skipReportNames: options.skipReport as string[] | undefined,
+                skipReportLabels: options.skipReportLabel as
+                  | string[]
+                  | undefined,
+                skipAllReports: options.skipReports as boolean | undefined,
+                reportNames: options.report as string[] | undefined,
+                reportLabels: options.reportLabel as string[] | undefined,
+                swampSha: GIT_SHA || undefined,
+                autoGc,
+              }),
+              renderer.handlers(),
+            );
+
+            if (abort.signal.aborted) {
+              Deno.exitCode = 1;
+              return;
+            }
+
+            if (renderer.runFailed()) {
+              Deno.exitCode = 1;
+              return;
+            }
+          }
+        } catch (error) {
+          if (error instanceof UserError) {
+            throw error;
+          }
+          const message = error instanceof Error
+            ? error.message
+            : String(error);
+          throw new UserError(`Method execution failed: ${message}`);
+        } finally {
+          shutdownHandle.dispose();
+          exitSuppress.dispose();
+          if (flushModelLocks) {
+            try {
+              await flushModelLocks();
+            } catch (releaseError) {
+              ctx.logger.warn(
+                "Failed to release locks during cleanup: {error}",
+                {
+                  error: releaseError instanceof Error
+                    ? releaseError.message
+                    : String(releaseError),
+                },
+              );
+            }
           }
         }
-      }
 
-      ctx.logger.debug("Method run command completed");
+        ctx.logger.debug("Method run command completed");
+      } finally {
+        runTracker.close();
+      }
     },
   );
 

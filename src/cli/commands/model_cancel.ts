@@ -91,7 +91,7 @@ export const modelCancelCommand = new Command()
           if (run.pid !== Deno.pid) {
             await killProcessTree(run.pid);
           }
-          runTracker.complete(run.id, "cancelled");
+          runTracker.complete(run.id, "cancelled", reason);
           cancelled.push({
             id: run.id,
             type: run.modelType ?? "unknown",

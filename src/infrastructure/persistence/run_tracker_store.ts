@@ -53,6 +53,7 @@ interface ActiveRunRow {
   heartbeat_at: string;
   status: string;
   completed_at: string | null;
+  cancel_reason: string | null;
 }
 
 export class RunTrackerStore implements RunTrackerRepository {
@@ -115,7 +116,7 @@ export class RunTrackerStore implements RunTrackerRepository {
     if (currentVersion >= SCHEMA_VERSION) return;
 
     if (currentVersion < 1) {
-      // v0 → v1: add completed_at column if table already exists without it
+      // v0 → v1: add completed_at and cancel_reason columns if table exists without them
       const tableExists = this.db.prepare(
         "SELECT name FROM sqlite_master WHERE type='table' AND name='active_runs'",
       ).get();
@@ -123,10 +124,14 @@ export class RunTrackerStore implements RunTrackerRepository {
         const columns = this.db.prepare(
           "PRAGMA table_info(active_runs)",
         ).all() as unknown as { name: string }[];
-        const hasCompletedAt = columns.some((c) => c.name === "completed_at");
-        if (!hasCompletedAt) {
+        if (!columns.some((c) => c.name === "completed_at")) {
           this.db.exec(
             "ALTER TABLE active_runs ADD COLUMN completed_at TEXT",
+          );
+        }
+        if (!columns.some((c) => c.name === "cancel_reason")) {
+          this.db.exec(
+            "ALTER TABLE active_runs ADD COLUMN cancel_reason TEXT",
           );
         }
       }
@@ -150,7 +155,8 @@ export class RunTrackerStore implements RunTrackerRepository {
         started_at    TEXT NOT NULL,
         heartbeat_at  TEXT NOT NULL,
         status        TEXT NOT NULL DEFAULT 'running',
-        completed_at  TEXT
+        completed_at  TEXT,
+        cancel_reason TEXT
       );
 
       CREATE INDEX IF NOT EXISTS idx_active_runs_status
@@ -206,12 +212,12 @@ export class RunTrackerStore implements RunTrackerRepository {
     }
   }
 
-  complete(runId: string, status: ActiveRunStatus): void {
+  complete(runId: string, status: ActiveRunStatus, reason?: string): void {
     const now = new Date().toISOString();
     this.db.prepare(`
-      UPDATE active_runs SET status = ?, completed_at = ?
+      UPDATE active_runs SET status = ?, completed_at = ?, cancel_reason = ?
       WHERE id = ? AND status IN ('running', 'suspended')
-    `).run(status, now, runId);
+    `).run(status, now, reason ?? null, runId);
   }
 
   reactivate(runId: string): void {

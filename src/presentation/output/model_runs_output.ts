@@ -155,13 +155,14 @@ export function writeDoctorRunsLog(
   if (stale.length > 0) {
     if (lines.length > 0) lines.push("");
     lines.push(bold(red(`${stale.length} stale run(s) detected:`)));
-    const headers = ["KIND", "NAME", "ID", "HEARTBEAT AGE", "PID"];
+    const headers = ["KIND", "NAME", "ID", "HEARTBEAT AGE", "PID", "HOST"];
     const rows = stale.map((r) => [
       r.runKind === "workflow" ? "workflow" : "method",
       runName(r),
       r.id.slice(0, 8),
       formatDuration(Date.now() - r.heartbeatAt.getTime()),
       String(r.pid),
+      r.hostname,
     ]);
     lines.push(...tableLines(headers, rows, (col, value) => {
       if (col === 2) return dim(value);

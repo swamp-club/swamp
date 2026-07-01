@@ -343,6 +343,7 @@ export const workflowRunCommand = new Command()
             };
           };
 
+          const tracker = RunTrackerStore.fromSwampDir(swampPath(dir));
           return new WorkflowExecutionService(
             wfRepo,
             rnRepo,
@@ -354,7 +355,7 @@ export const workflowRunCommand = new Command()
             repoContext.markDirty,
             repoContext.unifiedDataRepo.namespace,
             stepLockHook,
-            RunTrackerStore.fromSwampDir(swampPath(dir)),
+            tracker,
           );
         },
         catalogStore: repoContext.catalogStore,

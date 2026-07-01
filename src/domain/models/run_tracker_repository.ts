@@ -24,7 +24,7 @@ export interface RunTrackerRepository {
 
   heartbeat(runId: string): void;
 
-  complete(runId: string, status: ActiveRunStatus): void;
+  complete(runId: string, status: ActiveRunStatus, reason?: string): void;
 
   reactivate(runId: string): void;
 
