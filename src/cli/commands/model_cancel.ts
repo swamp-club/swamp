@@ -142,7 +142,7 @@ export const modelCancelCommand = new Command()
       if (latest.pid !== Deno.pid) {
         await killProcessTree(latest.pid);
       }
-      runTracker.complete(latest.id, "cancelled");
+      runTracker.complete(latest.id, "cancelled", reason);
 
       if (cliCtx.outputMode === "json") {
         console.log(JSON.stringify({
