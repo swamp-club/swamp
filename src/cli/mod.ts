@@ -27,6 +27,7 @@ import { getLogger, parseLogLevel } from "@logtape/logtape";
 import { initializeLogging } from "../infrastructure/logging/logger.ts";
 import { VERSION, versionCommand } from "./commands/version.ts";
 import { modelCommand } from "./commands/model_create.ts";
+import { runCommand } from "./commands/run.ts";
 import { repoCommand, repoInitCommand } from "./commands/repo_init.ts";
 import { workflowCommand } from "./commands/workflow.ts";
 import { completionCommand } from "./commands/completion.ts";
@@ -1347,6 +1348,7 @@ export async function runCli(args: string[]): Promise<void> {
     .command("summarise", summariseCommand)
     .command("datastore", datastoreCommand)
     .command("doctor", doctorCommand)
+    .command("run", runCommand)
     .command("report", reportCommand)
     .command("serve", serveCommand)
     .command("agent", agentCommand)

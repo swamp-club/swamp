@@ -38,6 +38,7 @@ import {
   WorkflowExecutionService,
 } from "../domain/workflows/execution_service.ts";
 import { createWorkflowId } from "../domain/workflows/workflow_id.ts";
+import type { RunTrackerRepository } from "../domain/models/run_tracker_repository.ts";
 import { TriggerInputResolver } from "../domain/workflows/trigger_input_resolver.ts";
 import { buildEnvContext } from "../domain/expressions/model_resolver.ts";
 import { CelEvaluator } from "../infrastructure/cel/cel_evaluator.ts";
@@ -69,6 +70,7 @@ export async function createWorkflowRunDeps(
   repoDir: string,
   repoContext: RepositoryContext,
   stepLockHook?: StepLockHook,
+  runTracker?: RunTrackerRepository,
 ): Promise<WorkflowRunDeps> {
   await Promise.all([
     modelRegistry.ensureLoaded(),
@@ -153,6 +155,7 @@ export async function createWorkflowRunDeps(
         repoContext.markDirty,
         repoContext.unifiedDataRepo.namespace,
         stepLockHook,
+        runTracker,
       );
     },
     catalogStore: repoContext.catalogStore,
@@ -164,7 +167,10 @@ export async function createWorkflowRunDeps(
 export async function createModelMethodRunDeps(
   repoDir: string,
   repoContext: RepositoryContext,
-  options?: { directExecution?: boolean },
+  options?: {
+    directExecution?: boolean;
+    runTracker?: ModelMethodRunDeps["runTracker"];
+  },
 ): Promise<ModelMethodRunDeps> {
   await Promise.all([
     modelRegistry.ensureLoaded(),
@@ -247,6 +253,7 @@ export async function createModelMethodRunDeps(
         );
       }
       : undefined,
+    runTracker: options?.runTracker,
   };
 }
 
@@ -266,13 +273,8 @@ export async function executeWorkflowWithLocks(
   input: WorkflowRunInput,
   signal: AbortSignal,
   onEvent: (event: WorkflowRunEvent) => void,
-  /**
-   * Sync service shared with the repo context's markDirty hook so the
-   * fast-path watermark read here sees the writes the hook flipped. See
-   * `design/datastores.md` for the contract; omit only for filesystem
-   * datastores where no service exists.
-   */
   syncService?: DatastoreSyncService,
+  runTracker?: RunTrackerRepository,
 ): Promise<void> {
   // Pre-lookup workflow for trigger.inputs resolution
   const workflowRepo = repoContext.workflowRepo;
@@ -294,7 +296,12 @@ export async function executeWorkflowWithLocks(
     return result;
   };
 
-  const deps = await createWorkflowRunDeps(repoDir, repoContext, stepLockHook);
+  const deps = await createWorkflowRunDeps(
+    repoDir,
+    repoContext,
+    stepLockHook,
+    runTracker,
+  );
   const libCtx = createLibSwampContext({ signal });
 
   // Layer the workflow's trigger.inputs under any caller-supplied inputs so

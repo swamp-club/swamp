@@ -73,5 +73,10 @@ create per-input ephemeral instances for concurrent dispatch. See
 | Get output details  | `swamp model output get <output_or_model> --json`                    |
 | View output logs    | `swamp model output logs <output_id> --json`                         |
 | View output data    | `swamp model output data <output_id> --json`                         |
+| Cancel a run        | `swamp model cancel <name>`                                          |
+| Cancel all runs     | `swamp model cancel --all`                                           |
+| Active runs         | `swamp run history --active`                                         |
+| Recent runs         | `swamp run history`                                                  |
+| Diagnose stale runs | `swamp run doctor`                                                   |
 
 For detailed walkthroughs of each operation, see [reference.md](reference.md).

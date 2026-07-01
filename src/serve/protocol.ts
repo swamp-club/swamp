@@ -522,6 +522,16 @@ export type ServerRequest =
     id: string;
     payload?: DoctorExtensionsPayload;
   }
+  | {
+    type: "run.history";
+    id: string;
+    payload?: RunHistoryPayload;
+  }
+  | {
+    type: "run.doctor";
+    id: string;
+    payload?: RunDoctorPayload;
+  }
   | { type: "cancel"; id: string };
 
 // ── Outbound (server → client) ───────────────────────────────────────────
@@ -799,6 +809,40 @@ export interface DoctorExtensionsResponse {
   data: Record<string, unknown>;
 }
 
+export interface RunHistoryPayload {
+  active?: boolean;
+  all?: boolean;
+}
+
+export interface RunDoctorPayload {
+  fix?: boolean;
+}
+
+export interface RunHistoryResponse {
+  runs: Array<{
+    id: string;
+    runKind: string;
+    modelType: string | null;
+    methodName: string | null;
+    workflowName: string | null;
+    pid: number;
+    hostname: string;
+    status: string;
+    startedAt: string;
+    heartbeatAt: string;
+    stale: boolean;
+  }>;
+}
+
+export interface RunDoctorResponse {
+  totalTracked: number;
+  active: number;
+  stale: number;
+  reaped: number;
+  activeRuns: RunHistoryResponse["runs"];
+  staleRuns: RunHistoryResponse["runs"];
+}
+
 export type ServerMessage =
   | { type: "event"; id: string; event: SerializedEvent }
   | { type: "error"; id: string; error: SerializedError }
@@ -921,4 +965,6 @@ export type ServerMessage =
     type: "doctor.extensions";
     id: string;
     payload: DoctorExtensionsResponse;
-  };
+  }
+  | { type: "run.history"; id: string; payload: RunHistoryResponse }
+  | { type: "run.doctor"; id: string; payload: RunDoctorResponse };

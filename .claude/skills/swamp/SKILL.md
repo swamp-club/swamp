@@ -43,6 +43,7 @@ Route to the right guide based on what the user needs.
 | Extensions — create models/vaults/drivers/datastores/reports | [references/extension/guide.md](references/extension/guide.md)                 |
 | Publishing — push extensions to registry, deprecate          | [references/extension-publish/guide.md](references/extension-publish/guide.md) |
 | Issues — file bugs, features, security reports               | [references/issue/guide.md](references/issue/guide.md)                         |
+| Run tracking — active runs, stale detection, diagnostics     | [references/model/guide.md](references/model/guide.md)                         |
 | Troubleshooting — errors, health checks, diagnostics         | [references/troubleshooting/guide.md](references/troubleshooting/guide.md)     |
 
 ## Common Commands
@@ -65,6 +66,12 @@ swamp workflow create <name>                   # create a new workflow
 swamp workflow run <name>                      # execute a workflow
 swamp workflow validate <name>                 # validate DAG before running
 swamp workflow history <name>                  # view past workflow runs
+
+# Run tracking
+swamp run history                              # recent runs (last 24h)
+swamp run history --active                     # what's running right now?
+swamp run doctor                               # diagnose stale/orphaned runs
+swamp run doctor --fix                         # auto-reap stale runs
 
 # Vaults, Reports, Extensions
 swamp vault create <type> <name>               # create a vault for secrets

@@ -341,6 +341,22 @@ swamp workflow history logs 7c9e6679-7425-40de-944b-e07fc1f90ae7 build.compile -
 }
 ```
 
+### Run Tracking
+
+Workflow runs and their individual model method step executions are tracked in
+the SQLite run tracker (`.swamp/run_tracker.db`). Use `swamp run history` to see
+both workflow-level and step-level runs in a single view:
+
+```bash
+swamp run history --active    # what's running right now?
+swamp run history             # recent runs (last 24h)
+swamp run doctor              # diagnose stale/orphaned runs
+swamp run doctor --fix        # auto-reap stale runs
+```
+
+The history output shows the `KIND` column as `workflow` or `method`, with the
+workflow name or model/method name respectively.
+
 ## Workflow Inputs
 
 Workflows can define an `inputs` schema for parameterization. Inputs are

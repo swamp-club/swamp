@@ -35,57 +35,7 @@ import type {
 } from "../../domain/datastore/distributed_lock.ts";
 import { LockTimeoutError } from "../../domain/datastore/distributed_lock.ts";
 import { getSwampLogger } from "../logging/logger.ts";
-
-/**
- * Check if a process with the given PID is no longer running.
- *
- * POSIX hosts use `Deno.kill(pid, "SIGCONT")` — a no-op for live
- * processes, `NotFound` when the PID is gone. Windows shells out to
- * `tasklist`. Returns `false` (not dead) on any unexpected error so
- * TTL-based detection remains the fallback and a busted probe never
- * clobbers a valid lock.
- */
-function isProcessDead(pid: number): boolean {
-  if (Deno.build.os === "windows") {
-    return isProcessDeadWindows(pid);
-  }
-  try {
-    Deno.kill(pid, "SIGCONT");
-    return false; // Process exists
-  } catch (error) {
-    if (error instanceof Deno.errors.NotFound) {
-      return true; // Process does not exist
-    }
-    // PermissionDenied or other error — can't determine, fall back to TTL
-    return false;
-  }
-}
-
-function isProcessDeadWindows(pid: number): boolean {
-  try {
-    const result = new Deno.Command("tasklist", {
-      args: ["/FI", `PID eq ${pid}`, "/FO", "CSV", "/NH"],
-      stdout: "piped",
-      stderr: "null",
-    }).outputSync();
-    if (!result.success) {
-      // Non-zero exit from tasklist itself — fall back to TTL.
-      return false;
-    }
-    const stdout = new TextDecoder().decode(result.stdout);
-    // tasklist always exits 0 — alive vs dead is signalled by output content.
-    // The CSV row (with /NH) always quotes the PID in the second column:
-    //   "swamp.exe","1234","Console","1","123,456 K"
-    // The "no match" message is localized on non-English Windows
-    // (`INFO:` / `信息:` / `情報:` / `INFORMATIONEN:` …) but never
-    // contains a bare-quoted PID, so substring-matching `"<pid>"` is
-    // locale-agnostic.
-    return !stdout.includes(`"${pid}"`);
-  } catch {
-    // tasklist not on PATH, or spawn failed — fall back to TTL.
-    return false;
-  }
-}
+import { isProcessDead } from "../runtime/process.ts";
 
 const DEFAULT_TTL_MS = 30_000;
 const DEFAULT_RETRY_INTERVAL_MS = 1_000;
