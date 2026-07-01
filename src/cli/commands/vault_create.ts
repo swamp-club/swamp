@@ -32,6 +32,7 @@ import {
 } from "../context.ts";
 import { requireInitializedRepoUnlocked } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
+import { maybeEmitQuestEvent } from "../quest_event_emitter.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -130,6 +131,9 @@ export const vaultCreateCommand = new Command()
         renderer.handlers(),
       );
 
+      await maybeEmitQuestEvent(cliCtx.outputMode, "vault.create", {
+        name: vaultName,
+      });
       cliCtx.logger.debug("Vault create command completed");
     },
   );

@@ -23,6 +23,12 @@ import {
   mergeIdentityHeaders,
 } from "./client_identity.ts";
 import { parseRetryAfter, rateLimitError } from "./rate_limit.ts";
+import type { QuestEventResult } from "../../domain/quest/quest_event.ts";
+import type {
+  QuestBoard,
+  QuestHistoryEntry,
+  QuestProgress,
+} from "../../domain/quest/quest_progress.ts";
 
 export type { ClientIdentity };
 
@@ -522,6 +528,108 @@ export class SwampClubClient {
     );
 
     return { issues, total: data.total ?? issues.length };
+  }
+
+  async submitQuestEvent(
+    apiKey: string,
+    event: { type: string; metadata?: Record<string, unknown> },
+    signal?: AbortSignal,
+  ): Promise<QuestEventResult> {
+    const res = await this.fetch(
+      "/api/v1/quest/events",
+      {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          "x-api-key": apiKey,
+        },
+        body: JSON.stringify(event),
+      },
+      signal,
+    );
+
+    if (!res.ok) {
+      const text = await res.text();
+      throw new UserError(
+        `Failed to submit quest event (HTTP ${res.status}): ${text}`,
+      );
+    }
+
+    return await res.json();
+  }
+
+  async fetchQuestProgress(
+    apiKey: string,
+    signal?: AbortSignal,
+  ): Promise<QuestProgress> {
+    const res = await this.fetch(
+      "/api/v1/quest/progress",
+      {
+        method: "GET",
+        headers: { "x-api-key": apiKey },
+      },
+      signal,
+    );
+
+    if (!res.ok) {
+      const text = await res.text();
+      throw new UserError(
+        `Failed to fetch quest progress (HTTP ${res.status}): ${text}`,
+      );
+    }
+
+    return await res.json();
+  }
+
+  async fetchQuestBoard(
+    apiKey: string,
+    seasonSlug?: string,
+    signal?: AbortSignal,
+  ): Promise<QuestBoard> {
+    const path = seasonSlug
+      ? `/api/v1/quest/board?season=${encodeURIComponent(seasonSlug)}`
+      : "/api/v1/quest/board";
+    const res = await this.fetch(
+      path,
+      {
+        method: "GET",
+        headers: { "x-api-key": apiKey },
+      },
+      signal,
+    );
+
+    if (!res.ok) {
+      const text = await res.text();
+      throw new UserError(
+        `Failed to fetch quest board (HTTP ${res.status}): ${text}`,
+      );
+    }
+
+    return await res.json();
+  }
+
+  async fetchQuestHistory(
+    apiKey: string,
+    signal?: AbortSignal,
+  ): Promise<QuestHistoryEntry[]> {
+    const res = await this.fetch(
+      "/api/v1/quest/history",
+      {
+        method: "GET",
+        headers: { "x-api-key": apiKey },
+      },
+      signal,
+    );
+
+    if (!res.ok) {
+      const text = await res.text();
+      throw new UserError(
+        `Failed to fetch quest history (HTTP ${res.status}): ${text}`,
+      );
+    }
+
+    const data = await res.json();
+    return data.seasons ?? [];
   }
 
   private async fetch(
