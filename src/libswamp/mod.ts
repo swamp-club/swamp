@@ -1387,6 +1387,15 @@ export {
   type DatastoreCompactEvent,
 } from "./datastores/compact.ts";
 export {
+  createMigrateIndexDeps,
+  type CreateMigrateIndexDepsOptions,
+  datastoreMigrateIndex,
+  type MigrateIndexData,
+  type MigrateIndexDeps,
+  type MigrateIndexEvent,
+  type MigrateIndexResult,
+} from "./datastores/migrate_index.ts";
+export {
   datastoreNamespaceSet,
   type NamespaceSetData,
   type NamespaceSetDeps,
