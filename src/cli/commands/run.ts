@@ -24,6 +24,7 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoUnlocked } from "../repo_context.ts";
+import { UserError } from "../../domain/errors.ts";
 import {
   DEFAULT_STALE_TTL_MS,
   RunTrackerStore,
@@ -47,7 +48,10 @@ import type {
   RunDoctorResponse,
   RunHistoryResponse,
 } from "../../serve/protocol.ts";
-import { ActiveRun } from "../../domain/models/active_run.ts";
+import {
+  ActiveRun,
+  type ActiveRunStatus,
+} from "../../domain/models/active_run.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -64,7 +68,7 @@ function responseToActiveRuns(response: RunHistoryResponse): ActiveRun[] {
       hostname: r.hostname,
       startedAt: r.startedAt,
       heartbeatAt: r.heartbeatAt,
-      status: r.status as "running" | "completed" | "failed" | "cancelled",
+      status: r.status as ActiveRunStatus,
     })
   );
 }
@@ -84,9 +88,18 @@ const runHistoryCommand = withRemoteOptions(
       "--repo-dir <dir:string>",
       "Repository directory (env: SWAMP_REPO_DIR)",
     )
-    .option("--active", "Show only currently running")
-    .option("--all", "Show all tracked runs (not just recent)")
+    .option(
+      "--active",
+      "Show only currently running (mutually exclusive with --all)",
+    )
+    .option(
+      "--all",
+      "Show all tracked runs, not just recent (mutually exclusive with --active)",
+    )
     .action(async function (options: AnyOptions) {
+      if (options.active && options.all) {
+        throw new UserError("--active and --all are mutually exclusive");
+      }
       const ctx = createContext(options as GlobalOptions, ["run", "history"]);
 
       const server = resolveServeUrl(options.server as string | undefined);

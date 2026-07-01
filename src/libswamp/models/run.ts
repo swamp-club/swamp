@@ -593,7 +593,7 @@ export async function* modelMethodRun(
         output.markRunning(Deno.pid);
         output.setLogFile(logFilePath);
 
-        // Register with the run tracker (if available) and start heartbeat.
+        // Register with the run tracker (if available).
         // Output YAML is only written in terminal state (write-once).
         let heartbeatInterval: ReturnType<typeof setInterval> | undefined;
         if (deps.runTracker) {
@@ -605,6 +605,13 @@ export async function* modelMethodRun(
             hostname: hostname(),
           });
           deps.runTracker.register(activeRun);
+        }
+
+        const vaultService = await deps.createVaultService();
+        const executionService = deps.createExecutionService();
+
+        // Start heartbeat inside the try so it's always cleaned up on error.
+        if (deps.runTracker) {
           heartbeatInterval = setInterval(() => {
             try {
               deps.runTracker!.heartbeat(output.id);
@@ -613,9 +620,6 @@ export async function* modelMethodRun(
             }
           }, 30_000);
         }
-
-        const vaultService = await deps.createVaultService();
-        const executionService = deps.createExecutionService();
 
         preExecSpan.end();
         setupSpan.end();

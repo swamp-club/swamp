@@ -658,7 +658,7 @@ export class DefaultStepExecutor implements StepExecutor {
     }
     await outputRepo.save(modelType, task.methodName, output);
 
-    // Register with the run tracker (if available) and start heartbeat.
+    // Register with the run tracker (if available).
     const { runTracker } = allDeps;
     let heartbeatInterval: ReturnType<typeof setInterval> | undefined;
     if (runTracker) {
@@ -670,13 +670,6 @@ export class DefaultStepExecutor implements StepExecutor {
         hostname: hostname(),
       });
       runTracker.register(activeRun);
-      heartbeatInterval = setInterval(() => {
-        try {
-          runTracker.heartbeat(output.id);
-        } catch {
-          // Heartbeat failure is non-fatal
-        }
-      }, 30_000);
     }
 
     // Declared outside try so the catch block can record artifacts written
@@ -703,6 +696,16 @@ export class DefaultStepExecutor implements StepExecutor {
       flushLock = lockResult.flush;
     }
     try {
+      // Start heartbeat inside try so it's always cleaned up on error.
+      if (runTracker) {
+        heartbeatInterval = setInterval(() => {
+          try {
+            runTracker.heartbeat(output.id);
+          } catch {
+            // Heartbeat failure is non-fatal
+          }
+        }, 30_000);
+      }
       try {
         const result = await this.invokeMethod({
           task,

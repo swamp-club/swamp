@@ -73,7 +73,9 @@ export const modelCancelCommand = new Command()
       runTracker.reapStaleRuns(DEFAULT_STALE_TTL_MS);
 
       if (options.all) {
-        const trackerRuns = runTracker.findAllRunning();
+        const trackerRuns = runTracker.findAllRunning().filter(
+          (r) => r.runKind === "model_method",
+        );
 
         if (trackerRuns.length === 0) {
           if (cliCtx.outputMode === "json") {

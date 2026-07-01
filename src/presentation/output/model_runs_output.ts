@@ -131,12 +131,17 @@ export function writeDoctorRunsLog(
 
   const lines: string[] = [];
 
+  const runName = (r: ActiveRun) =>
+    r.runKind === "workflow"
+      ? r.workflowName ?? "unknown"
+      : `${r.modelType ?? "unknown"}/${r.methodName ?? "unknown"}`;
+
   if (active.length > 0) {
     lines.push(bold(`${active.length} active run(s):`));
-    const headers = ["MODEL", "METHOD", "ID", "AGE", "PID"];
+    const headers = ["KIND", "NAME", "ID", "AGE", "PID"];
     const rows = active.map((r) => [
-      r.modelType ?? "unknown",
-      r.methodName ?? "unknown",
+      r.runKind === "workflow" ? "workflow" : "method",
+      runName(r),
       r.id.slice(0, 8),
       formatDuration(Date.now() - r.startedAt.getTime()),
       String(r.pid),
@@ -150,10 +155,10 @@ export function writeDoctorRunsLog(
   if (stale.length > 0) {
     if (lines.length > 0) lines.push("");
     lines.push(bold(red(`${stale.length} stale run(s) detected:`)));
-    const headers = ["MODEL", "METHOD", "ID", "HEARTBEAT AGE", "PID"];
+    const headers = ["KIND", "NAME", "ID", "HEARTBEAT AGE", "PID"];
     const rows = stale.map((r) => [
-      r.modelType ?? "unknown",
-      r.methodName ?? "unknown",
+      r.runKind === "workflow" ? "workflow" : "method",
+      runName(r),
       r.id.slice(0, 8),
       formatDuration(Date.now() - r.heartbeatAt.getTime()),
       String(r.pid),
@@ -193,6 +198,7 @@ export function writeDoctorRunsJson(
     status: r.status,
     startedAt: r.startedAt.toISOString(),
     heartbeatAt: r.heartbeatAt.toISOString(),
+    stale: r.isStale(STALE_TTL_MS),
   });
   console.log(JSON.stringify({
     totalTracked,

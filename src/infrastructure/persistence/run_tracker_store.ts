@@ -165,7 +165,7 @@ export class RunTrackerStore implements RunTrackerRepository {
       Date.now() - RETENTION_DAYS * 24 * 60 * 60 * 1000,
     ).toISOString();
     const result = this.db.prepare(
-      "DELETE FROM active_runs WHERE status != 'running' AND completed_at IS NOT NULL AND completed_at < ?",
+      "DELETE FROM active_runs WHERE status NOT IN ('running', 'suspended') AND completed_at IS NOT NULL AND completed_at < ?",
     ).run(cutoff);
     if (result.changes > 0) {
       logger
