@@ -894,3 +894,98 @@ Deno.test("ExtensionRepository: I-Repo-1 allows multiple extension rows targetin
     }
   });
 });
+
+// ===== Test: swamp-club#903 — saving an extension-kind Source through the
+// aggregate populates extends_type so findExtensionsForType matches it =====
+Deno.test("ExtensionRepository: saving an Indexed extension Source persists extends_type = target (swamp-club#903)", () => {
+  withRepository((repo, cat, repoRoot) => {
+    const extRoot = `${repoRoot}/.swamp/pulled-extensions/@scope/ext`;
+    const abs = `${extRoot}/models/probe.ts`;
+    const ext = makeExtension({
+      name: "@scope/ext",
+      version: "1.0.0",
+      origin: "local",
+      extensionRoot: extRoot,
+      sources: [
+        makeSource({
+          id: makeSourceLocation(abs, extRoot),
+          kind: "extension",
+          fingerprint: "fp-probe",
+          state: {
+            tag: "Indexed",
+            type: "@keeb/docker/compose",
+            bundle: makeBundleLocation(
+              `${repoRoot}/.swamp/bundles/probe.js`,
+              "fp-probe",
+            ),
+          },
+          sourceMtime: "2026-01-15T10:00:00.000Z",
+        }),
+      ],
+    });
+    repo.save(ext);
+
+    // The persisted row carries the target type in extends_type...
+    const row = cat.findAll().find((r) => r.kind === "extension");
+    assert(row, "expected an extension row");
+    assertEquals(row.extends_type, "@keeb/docker/compose");
+
+    // ...so the runtime merge query finds it. Before the fix this returned
+    // nothing (extends_type was hardcoded ""), dropping the extension's
+    // methods with "Unknown method".
+    const matches = cat.findExtensionsForType("@keeb/docker/compose");
+    assertEquals(matches.length, 1);
+    assertPathEquals(matches[0].source_path, canonicalizePath(abs));
+  });
+});
+
+// ===== Test: swamp-club#903 — primary and non-Indexed extension rows keep
+// an empty extends_type (the gate is neither too broad nor self-defeating) =====
+Deno.test("ExtensionRepository: primary rows and ValidationFailed extension rows keep empty extends_type (swamp-club#903)", () => {
+  withRepository((repo, cat, repoRoot) => {
+    // Primary model source: extends_type stays "".
+    const primary = pulledExtension({
+      repoRoot,
+      name: "@scope/base",
+      version: "1.0.0",
+      sources: [{ relPath: "models/thing.ts", type: "@scope/base/thing" }],
+    });
+    repo.save(primary);
+    const primaryRow = cat.findAll().find((r) => r.kind === "model");
+    assert(primaryRow, "expected a model row");
+    assertEquals(primaryRow.extends_type, "");
+
+    // ValidationFailed extension source: typeless state → extends_type ""
+    // so it correctly falls out of findExtensionsForType.
+    const extRoot = `${repoRoot}/.swamp/pulled-extensions/@scope/broken`;
+    const abs = `${extRoot}/models/bad.ts`;
+    const broken = makeExtension({
+      name: "@scope/broken",
+      version: "1.0.0",
+      origin: "local",
+      extensionRoot: extRoot,
+      sources: [
+        makeSource({
+          id: makeSourceLocation(abs, extRoot),
+          kind: "extension",
+          fingerprint: "fp-bad",
+          state: {
+            tag: "ValidationFailed",
+            bundle: makeBundleLocation(
+              `${repoRoot}/.swamp/bundles/bad.js`,
+              "fp-bad",
+            ),
+            lastError: "schema rejected",
+          },
+          sourceMtime: "2026-01-15T10:00:00.000Z",
+        }),
+      ],
+    });
+    repo.save(broken);
+    const brokenRow = cat.findAll().find((r) =>
+      r.kind === "extension" && r.state === "ValidationFailed"
+    );
+    assert(brokenRow, "expected a ValidationFailed extension row");
+    assertEquals(brokenRow.extends_type, "");
+  });
+});

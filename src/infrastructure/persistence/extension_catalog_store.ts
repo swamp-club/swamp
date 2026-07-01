@@ -49,6 +49,18 @@ const VALIDATION_FAILED_DROPPED_MIGRATION_KEY =
   "migration_applied:validation-failed-dropped-v1";
 
 /**
+ * Marker key in bundle_meta recording that the extends_type backfill has
+ * run on this catalog. Pre-fix catalogs (swamp-club#903) persisted
+ * extension rows with an empty `extends_type` via the aggregate writer, so
+ * `findExtensionsForType` never matched them and their methods were
+ * dropped. The aggregate writer is fixed at the source, but existing rows
+ * whose fingerprint is unchanged never transition and so are never
+ * rewritten — this one-shot migration heals them on catalog open.
+ */
+const EXTENDS_TYPE_BACKFILL_MIGRATION_KEY =
+  "migration_applied:extension-extends-type-backfill-v1";
+
+/**
  * Bundle layout version stored in `bundle_meta`. Bumped whenever the
  * on-disk bundle path scheme changes; loaders compare this against the
  * catalog's current value via {@link ExtensionRepository.invalidationGuards}
@@ -285,6 +297,54 @@ export class ExtensionCatalogStore {
     // gated on its own bundle_meta marker AND a pragma_table_info probe
     // for defence in depth.
     this.dropValidationFailedColumn();
+    // swamp-club#903: heal extension rows that were persisted with an empty
+    // extends_type before the aggregate-writer fix. Runs last so `state`
+    // and `extends_type` are guaranteed present; gated on its own marker.
+    this.backfillExtensionExtendsType();
+  }
+
+  /**
+   * Returns true if {@link backfillExtensionExtendsType} has already run
+   * on this catalog.
+   */
+  private isExtendsTypeBackfilled(): boolean {
+    const stmt = this.db.prepare(
+      "SELECT value FROM bundle_meta WHERE key = ?",
+    );
+    const row = stmt.get(EXTENDS_TYPE_BACKFILL_MIGRATION_KEY) as
+      | { value: string }
+      | undefined;
+    return row?.value === "true";
+  }
+
+  /**
+   * swamp-club#903 data migration: backfill `extends_type` from
+   * `type_normalized` for Indexed extension rows left empty by the
+   * pre-fix aggregate writer. For an extension row `type_normalized` is
+   * the target type, and `extends_type` must equal it for the merge query
+   * (`findExtensionsForType`: WHERE extends_type = ? AND kind = 'extension')
+   * to match. Idempotent (empty-only predicate) and gated on a bundle_meta
+   * marker so it runs at most once. Extension rows are exempt from the
+   * I-Repo-1 uniqueness check, so backfilling cannot introduce a
+   * duplicate-type violation.
+   */
+  private backfillExtensionExtendsType(): void {
+    if (this.isExtendsTypeBackfilled()) return;
+    this.db
+      .prepare(
+        `UPDATE bundle_types
+           SET extends_type = type_normalized
+         WHERE kind = 'extension'
+           AND extends_type = ''
+           AND type_normalized <> ''
+           AND state = 'Indexed'`,
+      )
+      .run();
+    this.db
+      .prepare(
+        "INSERT OR REPLACE INTO bundle_meta (key, value) VALUES (?, 'true')",
+      )
+      .run(EXTENDS_TYPE_BACKFILL_MIGRATION_KEY);
   }
 
   /**
