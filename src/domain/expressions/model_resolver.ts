@@ -511,7 +511,7 @@ export class ModelResolver {
       // loaded only when its .resource or .file is accessed in a CEL expression.
       // The getter replaces itself with the loaded value after first access.
       const dataRepo = this.dataRepo;
-      const self = this;
+      const boundDataToRecord = this.dataToRecord.bind(this);
       let orphanData:
         | Array<{ data: Data; modelType: ModelType; modelId: string }>
         | null = null;
@@ -535,7 +535,7 @@ export class ModelResolver {
             const items = dataRepo.findAllForModelSync(mt, mid);
             for (const data of items) {
               if (data.isRenamed) continue;
-              const latestRecord = self.dataToRecord(
+              const latestRecord = boundDataToRecord(
                 data,
                 mt,
                 mid,
@@ -592,7 +592,7 @@ export class ModelResolver {
             for (const { data, modelType: mt, modelId: mid } of orphanData) {
               if (data.isRenamed) continue;
               if (data.tags["modelName"] !== defName) continue;
-              const latestRecord = self.dataToRecord(
+              const latestRecord = boundDataToRecord(
                 data,
                 mt,
                 mid,
