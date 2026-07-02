@@ -44,6 +44,7 @@ Route to the right guide based on what the user needs.
 | Publishing — push extensions to registry, deprecate          | [references/extension-publish/guide.md](references/extension-publish/guide.md) |
 | Issues — file bugs, features, security reports               | [references/issue/guide.md](references/issue/guide.md)                         |
 | Run tracking — active runs, stale detection, diagnostics     | [references/model/guide.md](references/model/guide.md)                         |
+| Architecture — which primitive to use, design trade-offs     | [references/architecture/guide.md](references/architecture/guide.md)           |
 | Troubleshooting — errors, health checks, diagnostics         | [references/troubleshooting/guide.md](references/troubleshooting/guide.md)     |
 
 ## Common Commands
@@ -100,3 +101,8 @@ swamp extension init <name>                    # scaffold a new extension
    method run fails, or any command errors unexpectedly, load
    [references/troubleshooting/guide.md](references/troubleshooting/guide.md)
    and diagnose before retrying or changing the definition.
+7. **Consult the architecture guide for design decisions.** Before choosing
+   between primitives (model vs. workflow vs. extension vs. report) or
+   explaining a design trade-off to a human, load
+   [references/architecture/guide.md](references/architecture/guide.md) and cite
+   the design doc or manual page you relied on.
