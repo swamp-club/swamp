@@ -145,23 +145,6 @@ export class DataQueryService {
   }
 
   /**
-   * Synchronous variant of getLatestRecord. Triggers sync backfill if needed.
-   * Vault resolution does NOT happen in the sync path.
-   */
-  getLatestRecordSync(
-    modelName: string,
-    dataName: string,
-    namespace?: string,
-  ): DataRecord | null {
-    if (!this.catalogStore.isPopulated()) {
-      this.backfillSync();
-    }
-    const row = this.catalogStore.findLatestRow(modelName, dataName, namespace);
-    if (!row) return null;
-    return fromRow(row, this.dataRepo, true, false);
-  }
-
-  /**
    * Queries data artifacts matching a CEL predicate.
    * Triggers backfill if the catalog is not yet populated.
    * Vault references in JSON attributes are resolved when a VaultService

@@ -200,7 +200,7 @@ export class CatalogStore {
       CREATE INDEX IF NOT EXISTS idx_catalog_step_name       ON catalog(step_name);
       CREATE INDEX IF NOT EXISTS idx_namespace               ON catalog(namespace);
       CREATE INDEX IF NOT EXISTS idx_catalog_is_latest       ON catalog(namespace, type_normalized, model_id, data_name, is_latest);
-      CREATE INDEX IF NOT EXISTS idx_catalog_latest_lookup  ON catalog(model_name, data_name, is_latest, namespace);
+      CREATE INDEX IF NOT EXISTS idx_catalog_latest_lookup ON catalog(model_name, data_name, is_latest, namespace);
 
       CREATE TABLE IF NOT EXISTS catalog_meta (
         key   TEXT PRIMARY KEY,
