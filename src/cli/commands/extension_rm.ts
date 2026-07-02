@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { join, resolve } from "@std/path";
+import { join, relative, resolve } from "@std/path";
 import {
   createContext,
   type GlobalOptions,
@@ -26,6 +26,8 @@ import {
 } from "../context.ts";
 import { requireRepoMarker } from "../repo_context.ts";
 import { resolveModelsDir } from "../resolve_models_dir.ts";
+import { resolvePrimaryTool } from "../../domain/repo/primary_tool.ts";
+import { resolveSkillsDir } from "../../domain/repo/skill_dirs.ts";
 import {
   consumeStream,
   createExtensionRmDeps,
@@ -120,11 +122,15 @@ export const extensionRemoveCommand = withRemoteOptions(
   const absoluteModelsDir = resolve(repoDir, modelsDir);
   const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
 
-  // Warn if any extensions are still in a legacy layout. rm follows
-  // the lockfile's tracked paths so it works against either generation.
+  const tool = resolvePrimaryTool(marker);
+  const skillsDirRelative = relative(
+    repoDir,
+    resolveSkillsDir(repoDir, tool),
+  );
   await warnLegacyExtensionLayout(
     lockfilePath,
     (msg) => ctx.logger.warn(msg),
+    skillsDirRelative,
   );
 
   // Create libswamp context, deps, renderer.

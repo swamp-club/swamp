@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { join, resolve } from "@std/path";
+import { join, relative, resolve } from "@std/path";
 import {
   createContext,
   type GlobalOptions,
@@ -86,12 +86,11 @@ export const extensionUpdateCommand = new Command()
     const tool = resolvePrimaryTool(marker);
     const skillsDir = resolveSkillsDir(repoDir, tool);
 
-    // 3. Warn (don't block) on legacy layout. update pulls new versions
-    // which write to the per-extension subtree, migrating each extension
-    // as it goes.
+    const skillsDirRelative = relative(repoDir, skillsDir);
     await warnLegacyExtensionLayout(
       lockfilePath,
       (msg) => cliCtx.logger.warn(msg),
+      skillsDirRelative,
     );
 
     // 4. Parse extension name if given

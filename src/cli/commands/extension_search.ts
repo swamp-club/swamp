@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { Command } from "@cliffy/command";
-import { join, resolve } from "@std/path";
+import { join, relative, resolve } from "@std/path";
 import {
   createContext,
   type GlobalOptions,
@@ -260,11 +260,14 @@ export const extensionSearchCommand = withRemoteOptions(
       "upstream_extensions.json",
     );
 
-    // Warn (don't block) on legacy layout. The pull that follows writes
-    // to the per-extension subtree regardless of existing layout state.
+    const skillsDirRelative = relative(
+      repoDir,
+      resolveSkillsDir(repoDir, resolvePrimaryTool(marker)),
+    );
     await warnLegacyExtensionLayout(
       lockfilePath,
       (msg) => ctx.logger.warn(msg),
+      skillsDirRelative,
     );
 
     const lockfileRepository = await LockfileRepository.create(lockfilePath);
