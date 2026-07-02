@@ -53,6 +53,7 @@ import { VaultService } from "../domain/vaults/vault_service.ts";
 import type { ActiveDispatch, DispatchRegistry } from "./dispatch_registry.ts";
 import type { BundleRegistry } from "./bundle_registry.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
+import type { UnifiedDataRepository } from "../domain/data/repositories.ts";
 
 const logger = getSwampLogger(["serve", "data-plane"]);
 
@@ -212,9 +213,7 @@ export class DataPlane {
     return this.#vaultService;
   }
 
-  #repoForWorker(
-    workerName: string,
-  ): import("../domain/data/repositories.ts").UnifiedDataRepository {
+  #repoForWorker(workerName: string): UnifiedDataRepository {
     const dispatch = this.#options.dispatches.forWorker(workerName);
     return dispatch?.dataRepo ?? this.#options.repoContext.unifiedDataRepo;
   }

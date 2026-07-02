@@ -23,6 +23,8 @@ import {
   DataQueryService,
   type ForeignContentFetcher,
 } from "./data_query_service.ts";
+import type { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
+import type { UnifiedDataRepository } from "./repositories.ts";
 import type { VaultService } from "../vaults/vault_service.ts";
 import type { SecretRedactor } from "../secrets/mod.ts";
 
@@ -50,24 +52,11 @@ export class CompositeDataQueryService extends DataQueryService {
   private readonly ephemeralQueryService: DataQueryService;
 
   constructor(
-    persistentQueryService: DataQueryService,
+    persistentCatalog: CatalogStore,
+    persistentRepo: UnifiedDataRepository,
     ephemeralQueryService: DataQueryService,
   ) {
-    // Inherit the persistent query service's catalog and repo via accessing
-    // its internal state is not possible, so we use a delegation pattern.
-    // We extend DataQueryService but override query/querySync to merge.
-    // The super constructor is called but we won't use its catalog — we
-    // delegate all calls to the two backing services.
-    //
-    // NOTE: We need access to the persistent service's catalog and repo for
-    // the super() call. Since DataQueryService doesn't expose these, we use
-    // the persistent service directly and override the query methods.
-    super(
-      // deno-lint-ignore no-explicit-any
-      (persistentQueryService as any).catalogStore,
-      // deno-lint-ignore no-explicit-any
-      (persistentQueryService as any).dataRepo,
-    );
+    super(persistentCatalog, persistentRepo);
     this.ephemeralQueryService = ephemeralQueryService;
   }
 
@@ -93,6 +82,7 @@ export class CompositeDataQueryService extends DataQueryService {
       this.ephemeralQueryService.query(predicate, options),
     ]);
 
+    // Projections (select) return opaque values — dedup is not possible
     if (options?.select) {
       return [
         ...(ephemeralResults as unknown[]),

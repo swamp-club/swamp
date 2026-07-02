@@ -70,8 +70,7 @@ import {
   type Principal,
   principalToString,
 } from "../../domain/access/principal.ts";
-import { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
-import { InMemoryUnifiedDataRepository } from "../../infrastructure/persistence/in_memory_data_repository.ts";
+import { createEphemeralStore } from "../../domain/data/ephemeral_store.ts";
 import {
   authorizeOrReject,
   type ConnectionContext,
@@ -739,10 +738,9 @@ export async function handleWorkflowResume(
     await createWorkflowRunDeps(ctx.repoDir, ctx.repoContext, stepLockHook);
 
     const resumeInputs = payload.inputs ?? {};
-    const ephemeralCatalog = new CatalogStore(":memory:");
-    const ephemeralRepo = new InMemoryUnifiedDataRepository(
-      ephemeralCatalog,
+    const ephemeral = createEphemeralStore(
       ctx.repoContext.unifiedDataRepo.namespace,
+      { isResume: true },
     );
 
     const service = new WorkflowExecutionService(
@@ -757,8 +755,8 @@ export async function handleWorkflowResume(
       ctx.repoContext.unifiedDataRepo.namespace,
       stepLockHook,
       ctx.runTracker,
-      ephemeralRepo,
-      ephemeralCatalog,
+      ephemeral.repo,
+      ephemeral.catalog,
     );
 
     const resumeGenerator = async function* (): AsyncGenerator<
@@ -774,12 +772,16 @@ export async function handleWorkflowResume(
       }
     };
 
-    for await (const event of resumeGenerator()) {
-      if (socket.readyState !== WebSocket.OPEN) break;
-      const serialized = serializeEvent(
-        event as { kind: string; [key: string]: unknown },
-      );
-      send(socket, { type: "event", id: requestId, event: serialized });
+    try {
+      for await (const event of resumeGenerator()) {
+        if (socket.readyState !== WebSocket.OPEN) break;
+        const serialized = serializeEvent(
+          event as { kind: string; [key: string]: unknown },
+        );
+        send(socket, { type: "event", id: requestId, event: serialized });
+      }
+    } finally {
+      ephemeral.dispose();
     }
     send(socket, { type: "done", id: requestId });
   } catch (error) {

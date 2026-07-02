@@ -410,7 +410,8 @@ export class DefaultStepExecutor implements StepExecutor {
     const dataQueryService: DataQueryService =
       opts.ephemeralRepo && opts.ephemeralCatalog
         ? new CompositeDataQueryService(
-          persistentQueryService,
+          opts.catalogStore,
+          fsDataRepo,
           new DataQueryService(opts.ephemeralCatalog, opts.ephemeralRepo),
         )
         : persistentQueryService;
@@ -1378,7 +1379,8 @@ export class WorkflowExecutionService {
     );
     const dataQueryService: DataQueryService = ephemeralRepo && ephemeralCatalog
       ? new CompositeDataQueryService(
-        persistentQueryService,
+        catalogStore,
+        fsDataRepo,
         new DataQueryService(ephemeralCatalog, ephemeralRepo),
       )
       : persistentQueryService;

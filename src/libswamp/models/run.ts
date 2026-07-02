@@ -44,11 +44,12 @@ import type { OutputRepository } from "../../domain/models/repositories.ts";
 import type { VaultService } from "../../domain/vaults/vault_service.ts";
 import type { ExpressionEvaluationService } from "../../domain/expressions/expression_evaluation_service.ts";
 import type { SecretRedactor } from "../../domain/secrets/mod.ts";
-import { DataQueryService } from "../../domain/data/data_query_service.ts";
-import { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
-import { InMemoryUnifiedDataRepository } from "../../infrastructure/persistence/in_memory_data_repository.ts";
-import { CompositeUnifiedDataRepository } from "../../domain/data/composite_data_repository.ts";
-import { CompositeDataQueryService } from "../../domain/data/composite_data_query_service.ts";
+import type { DataQueryService } from "../../domain/data/data_query_service.ts";
+import type { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
+import {
+  createEphemeralStore,
+  wrapWithEphemeral,
+} from "../../domain/data/ephemeral_store.ts";
 import { buildMethodContext } from "../../domain/models/method_context.ts";
 import { createExtensionCelEnvironment } from "../../infrastructure/cel/cel_evaluator.ts";
 import type {
@@ -187,9 +188,9 @@ export interface ModelMethodRunDeps {
   createExecutionService: () => MethodExecutionService;
   createVaultService: () => Promise<VaultService>;
   dataRepo: UnifiedDataRepository;
+  catalogStore?: CatalogStore;
   definitionRepo: YamlDefinitionRepository;
   outputRepo: OutputRepository;
-  /** Data query service — the executor derives context.queryData from this. */
   dataQueryService: DataQueryService;
   createRunLog: (
     modelType: ModelType,
@@ -244,22 +245,15 @@ export async function* modelMethodRun(
       "method.name": input.methodName,
     },
     (async function* () {
-      const ephemeralCatalog = new CatalogStore(":memory:");
-      const ephemeralRepo = new InMemoryUnifiedDataRepository(
-        ephemeralCatalog,
-        deps.dataRepo.namespace,
-      );
-      deps = {
-        ...deps,
-        dataRepo: new CompositeUnifiedDataRepository(
+      const ephemeral = createEphemeralStore(deps.dataRepo.namespace);
+      if (deps.catalogStore) {
+        const wrapped = wrapWithEphemeral(
           deps.dataRepo,
-          ephemeralRepo,
-        ),
-        dataQueryService: new CompositeDataQueryService(
-          deps.dataQueryService,
-          new DataQueryService(ephemeralCatalog, ephemeralRepo),
-        ),
-      };
+          deps.catalogStore,
+          ephemeral,
+        );
+        deps = { ...deps, ...wrapped };
+      }
 
       // --- Validate inputs phase ---
       yield { kind: "validating_inputs" };
@@ -1080,7 +1074,7 @@ export async function* modelMethodRun(
         }
       } finally {
         runLog.cleanup();
-        ephemeralRepo.dispose();
+        ephemeral.dispose();
       }
     })(),
   );

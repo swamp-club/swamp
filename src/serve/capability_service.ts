@@ -29,6 +29,7 @@
 
 import { ModelType } from "../domain/models/model_type.ts";
 import type { Data } from "../domain/data/data.ts";
+import type { UnifiedDataRepository } from "../domain/data/repositories.ts";
 import { createDataId } from "../domain/data/data_id.ts";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import { VaultService } from "../domain/vaults/vault_service.ts";
@@ -163,9 +164,7 @@ export class CapabilityService {
     }
   }
 
-  #repoForWorker(
-    workerName: string,
-  ): import("../domain/data/repositories.ts").UnifiedDataRepository {
+  #repoForWorker(workerName: string): UnifiedDataRepository {
     const dispatch = this.#dispatches?.forWorker(workerName);
     return dispatch?.dataRepo ?? this.#repoContext.unifiedDataRepo;
   }

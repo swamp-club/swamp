@@ -48,9 +48,9 @@ import {
   type InputValidationError,
   InputValidationService,
 } from "../../domain/inputs/mod.ts";
-import { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
-import { InMemoryUnifiedDataRepository } from "../../infrastructure/persistence/in_memory_data_repository.ts";
+import type { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
 import type { UnifiedDataRepository } from "../../domain/data/repositories.ts";
+import { createEphemeralStore } from "../../domain/data/ephemeral_store.ts";
 import type { DefinitionRepository } from "../../domain/definitions/repositories.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import { WorkflowTelemetryBridge } from "./telemetry_bridge.ts";
@@ -471,10 +471,7 @@ export async function* workflowRun(
     "swamp.workflow.run.command",
     { "workflow.id_or_name": input.workflowIdOrName },
     (async function* () {
-      const ephemeralCatalog = new CatalogStore(":memory:");
-      const ephemeralRepo = new InMemoryUnifiedDataRepository(
-        ephemeralCatalog,
-      );
+      const ephemeral = createEphemeralStore();
       let resolvedInput = input;
 
       yield { kind: "validating_inputs" };
@@ -527,8 +524,8 @@ export async function* workflowRun(
         deps.runRepo,
         deps.repoDir,
         deps.catalogStore,
-        ephemeralRepo,
-        ephemeralCatalog,
+        ephemeral.repo,
+        ephemeral.catalog,
       );
 
       // Per-method-invocation telemetry bridge. Constructed once per
@@ -628,7 +625,7 @@ export async function* workflowRun(
         if (telemetryBridge) {
           await telemetryBridge.finalize();
         }
-        ephemeralRepo.dispose();
+        ephemeral.dispose();
       }
     })(),
   );

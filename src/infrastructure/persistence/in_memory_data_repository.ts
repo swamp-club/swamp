@@ -34,13 +34,15 @@ import {
 } from "../../domain/data/repositories.ts";
 import type { CatalogStore } from "./catalog_store.ts";
 
+const SEP = "\0";
+
 function dataKey(
   typeNormalized: string,
   modelId: string,
   dataName: string,
   version: number,
 ): string {
-  return `${typeNormalized}:${modelId}:${dataName}:${version}`;
+  return `${typeNormalized}${SEP}${modelId}${SEP}${dataName}${SEP}${version}`;
 }
 
 function latestKey(
@@ -48,7 +50,7 @@ function latestKey(
   modelId: string,
   dataName: string,
 ): string {
-  return `${typeNormalized}:${modelId}:${dataName}`;
+  return `${typeNormalized}${SEP}${modelId}${SEP}${dataName}`;
 }
 
 export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
@@ -71,6 +73,13 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
   }
 
   dispose(): void {
+    for (const path of this.allocatedPaths.keys()) {
+      try {
+        Deno.removeSync(path);
+      } catch {
+        // Best-effort cleanup — file may already be gone
+      }
+    }
     this.dataMap.clear();
     this.contentMap.clear();
     this.latestVersionMap.clear();
@@ -287,6 +296,7 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
       if (
         alloc.typeNormalized === type.normalized &&
         alloc.modelId === modelId &&
+        alloc.data.name === data.name &&
         alloc.version === version
       ) {
         tempPath = path;
@@ -346,7 +356,7 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
     > = [];
 
     for (const [key, version] of this.latestVersionMap) {
-      const parts = key.split(":");
+      const parts = key.split(SEP);
       if (parts[0] !== type.normalized) continue;
       const dKey = dataKey(parts[0], parts[1], parts[2], version);
       const data = this.dataMap.get(dKey);
@@ -503,7 +513,7 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
 
     const toProcess = new Map<string, number[]>();
     for (const [key] of this.dataMap) {
-      const parts = key.split(":");
+      const parts = key.split(SEP);
       if (parts[0] !== type.normalized || parts[1] !== modelId) continue;
       const dataName = parts[2];
       const version = parseInt(parts[3], 10);
@@ -662,7 +672,16 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
     version?: number,
   ): Data | null {
     this.ensureNotDisposed();
+    return this.findByNameWithDepth(type, modelId, dataName, version, 0);
+  }
 
+  private findByNameWithDepth(
+    type: ModelType,
+    modelId: string,
+    dataName: string,
+    version: number | undefined,
+    depth: number,
+  ): Data | null {
     const v = version ?? this.getLatestVersionNumber(type, modelId, dataName);
     if (v === null) return null;
 
@@ -671,7 +690,14 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
     if (!data) return null;
 
     if (data.isRenamed && data.renamedTo) {
-      return this.findByNameSync(type, modelId, data.renamedTo);
+      if (depth >= 5) return null;
+      return this.findByNameWithDepth(
+        type,
+        modelId,
+        data.renamedTo,
+        undefined,
+        depth + 1,
+      );
     }
 
     return data;
@@ -683,7 +709,7 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
     dataName: string,
   ): number[] {
     this.ensureNotDisposed();
-    const prefix = `${type.normalized}:${modelId}:${dataName}:`;
+    const prefix = `${type.normalized}${SEP}${modelId}${SEP}${dataName}${SEP}`;
     const versions: number[] = [];
 
     for (const key of this.dataMap.keys()) {
@@ -717,7 +743,7 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
     const seen = new Set<string>();
 
     for (const [key, version] of this.latestVersionMap) {
-      const parts = key.split(":");
+      const parts = key.split(SEP);
       if (parts[0] !== type.normalized || parts[1] !== modelId) continue;
       const dataName = parts[2];
       if (seen.has(dataName)) continue;
@@ -742,7 +768,7 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
     > = [];
 
     for (const [key, version] of this.latestVersionMap) {
-      const parts = key.split(":");
+      const parts = key.split(SEP);
       const typeNorm = parts[0];
       const modelId = parts[1];
       const dataName = parts[2];
