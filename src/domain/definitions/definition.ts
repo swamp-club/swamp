@@ -18,6 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { z } from "zod";
+import {
+  GarbageCollectionSchema,
+  LifetimeSchema,
+} from "../data/data_metadata.ts";
 import { rejectRemovedDriverFields } from "../removed_driver_fields.ts";
 import {
   type ReportSelection,
@@ -138,6 +142,15 @@ export type CheckSelection = {
   skip?: string[];
 };
 
+const ResourceOverrideSchema = z.object({
+  lifetime: LifetimeSchema.optional(),
+  garbageCollection: GarbageCollectionSchema.optional(),
+});
+
+export type ResourceOverride = z.infer<typeof ResourceOverrideSchema>;
+
+export type ResourceOverrides = Record<string, ResourceOverride>;
+
 const DefinitionObjectSchema = z.object({
   type: z.string().optional(),
   typeVersion: z.preprocess(
@@ -168,6 +181,7 @@ const DefinitionObjectSchema = z.object({
   inputs: InputsSchemaSchema,
   checks: CheckSelectionSchema,
   reports: ReportSelectionSchema,
+  resources: z.record(z.string(), ResourceOverrideSchema).optional(),
 });
 
 /**
@@ -207,6 +221,7 @@ export interface CreateDefinitionProps {
   inputs?: InputsSchema;
   checks?: CheckSelection;
   reports?: ReportSelection;
+  resources?: ResourceOverrides;
 }
 
 /**
@@ -231,6 +246,7 @@ export class Definition {
     private _inputs: InputsSchema | undefined,
     private _checks: CheckSelection | undefined,
     private _reports: ReportSelection | undefined,
+    private _resources: ResourceOverrides | undefined,
   ) {}
 
   /**
@@ -255,6 +271,7 @@ export class Definition {
       inputs: props.inputs,
       checks: props.checks,
       reports: props.reports,
+      resources: props.resources,
     });
 
     return new Definition(
@@ -269,6 +286,7 @@ export class Definition {
       validated.inputs,
       validated.checks,
       validated.reports,
+      validated.resources,
     );
   }
 
@@ -292,6 +310,7 @@ export class Definition {
       validated.inputs,
       validated.checks,
       validated.reports,
+      validated.resources,
     );
   }
 
@@ -321,6 +340,7 @@ export class Definition {
       original._inputs ? structuredClone(original._inputs) : undefined,
       original._checks ? structuredClone(original._checks) : undefined,
       original._reports ? structuredClone(original._reports) : undefined,
+      original._resources ? structuredClone(original._resources) : undefined,
     );
   }
 
@@ -437,6 +457,10 @@ export class Definition {
   /**
    * Converts the definition to a plain data object for persistence.
    */
+  get resources(): ResourceOverrides | undefined {
+    return this._resources;
+  }
+
   toData(): DefinitionData {
     return {
       type: this.type,
@@ -450,6 +474,7 @@ export class Definition {
       inputs: this._inputs ? structuredClone(this._inputs) : undefined,
       checks: this._checks ? structuredClone(this._checks) : undefined,
       reports: this._reports ? structuredClone(this._reports) : undefined,
+      resources: this._resources ? structuredClone(this._resources) : undefined,
     };
   }
 

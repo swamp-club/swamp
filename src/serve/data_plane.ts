@@ -212,6 +212,13 @@ export class DataPlane {
     return this.#vaultService;
   }
 
+  #repoForWorker(
+    workerName: string,
+  ): import("../domain/data/repositories.ts").UnifiedDataRepository {
+    const dispatch = this.#options.dispatches.forWorker(workerName);
+    return dispatch?.dataRepo ?? this.#options.repoContext.unifiedDataRepo;
+  }
+
   // ── /data routes ───────────────────────────────────────────────────────
 
   async #handleData(
@@ -220,7 +227,7 @@ export class DataPlane {
     workerName: string,
   ): Promise<Response> {
     if (req.method === "GET" && segments.length === 5) {
-      return await this.#readArtifact(req, segments);
+      return await this.#readArtifact(req, segments, workerName);
     }
     if (req.method === "POST" && segments[1] === "resource") {
       return await this.#writeResource(req, workerName);
@@ -244,7 +251,11 @@ export class DataPlane {
     return errorResponse(404, "Unknown data-plane route");
   }
 
-  async #readArtifact(req: Request, segments: string[]): Promise<Response> {
+  async #readArtifact(
+    req: Request,
+    segments: string[],
+    workerName: string,
+  ): Promise<Response> {
     const [, rawType, rawModelId, rawDataName, rawVersion] = segments;
     const type = ModelType.create(decodeURIComponent(rawType));
     const modelId = decodeURIComponent(rawModelId);
@@ -254,7 +265,8 @@ export class DataPlane {
       return errorResponse(400, `Invalid version '${rawVersion}'`);
     }
 
-    const data = await this.#options.repoContext.unifiedDataRepo.findByName(
+    const repo = this.#repoForWorker(workerName);
+    const data = await repo.findByName(
       type,
       modelId,
       dataName,
@@ -271,7 +283,7 @@ export class DataPlane {
       return new Response(null, { status: 304, headers: { etag } });
     }
 
-    const stream = this.#options.repoContext.unifiedDataRepo.stream(
+    const stream = repo.stream(
       type,
       modelId,
       dataName,
@@ -299,8 +311,9 @@ export class DataPlane {
       return errorResponse(400, "Expected { specName, name, data }");
     }
 
+    const repo = this.#repoForWorker(workerName);
     const { writeResource } = createResourceWriter(
-      this.#options.repoContext.unifiedDataRepo,
+      repo,
       dispatch.modelType,
       dispatch.modelId,
       dispatch.modelDef.resources ?? {},
@@ -337,7 +350,8 @@ export class DataPlane {
     }
 
     try {
-      await this.#options.repoContext.unifiedDataRepo.delete(
+      const repo = this.#repoForWorker(workerName);
+      await repo.delete(
         dispatch.modelType,
         dispatch.modelId,
         body.name,
@@ -358,8 +372,9 @@ export class DataPlane {
       return errorResponse(400, "Expected { specName, name }");
     }
 
+    const repo = this.#repoForWorker(workerName);
     const { createFileWriter } = createFileWriterFactory(
-      this.#options.repoContext.unifiedDataRepo,
+      repo,
       dispatch.modelType,
       dispatch.modelId,
       dispatch.modelDef.files ?? {},

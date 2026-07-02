@@ -20,7 +20,7 @@
 import type { Data } from "./data.ts";
 import type { ModelType } from "../models/model_type.ts";
 import type { WorkflowRun } from "../workflows/workflow_run.ts";
-import type { FileSystemUnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
+import type { UnifiedDataRepository } from "./repositories.ts";
 import type { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
 import { createDefinitionId } from "../definitions/definition.ts";
 
@@ -50,7 +50,7 @@ export interface WorkflowDataItem {
 export class WorkflowDataService {
   constructor(
     private readonly definitionRepo: YamlDefinitionRepository,
-    private readonly dataRepo: FileSystemUnifiedDataRepository,
+    private readonly dataRepo: UnifiedDataRepository,
   ) {}
 
   /**

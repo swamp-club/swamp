@@ -134,8 +134,8 @@ export class DefaultDataLifecycleService implements DataLifecycleService {
     }
 
     if (lifetime === "ephemeral") {
-      // Not implemented yet - requires tracking execution context
-      logger.warn("Ephemeral lifetime is not yet implemented");
+      // Ephemeral data is routed to the in-memory repository by
+      // CompositeUnifiedDataRepository and never reaches persistent storage.
       return null;
     }
 

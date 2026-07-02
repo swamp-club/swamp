@@ -70,6 +70,8 @@ import {
   type Principal,
   principalToString,
 } from "../../domain/access/principal.ts";
+import { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
+import { InMemoryUnifiedDataRepository } from "../../infrastructure/persistence/in_memory_data_repository.ts";
 import {
   authorizeOrReject,
   type ConnectionContext,
@@ -737,6 +739,12 @@ export async function handleWorkflowResume(
     await createWorkflowRunDeps(ctx.repoDir, ctx.repoContext, stepLockHook);
 
     const resumeInputs = payload.inputs ?? {};
+    const ephemeralCatalog = new CatalogStore(":memory:");
+    const ephemeralRepo = new InMemoryUnifiedDataRepository(
+      ephemeralCatalog,
+      ctx.repoContext.unifiedDataRepo.namespace,
+    );
+
     const service = new WorkflowExecutionService(
       workflowRepo,
       runRepo,
@@ -749,6 +757,8 @@ export async function handleWorkflowResume(
       ctx.repoContext.unifiedDataRepo.namespace,
       stepLockHook,
       ctx.runTracker,
+      ephemeralRepo,
+      ephemeralCatalog,
     );
 
     const resumeGenerator = async function* (): AsyncGenerator<

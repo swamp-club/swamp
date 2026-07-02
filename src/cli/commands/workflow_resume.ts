@@ -53,6 +53,8 @@ import {
   mapWorkflowExecutionEvent,
 } from "../../libswamp/mod.ts";
 import type { WorkflowRunEvent } from "../../libswamp/mod.ts";
+import { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
+import { InMemoryUnifiedDataRepository } from "../../infrastructure/persistence/in_memory_data_repository.ts";
 import { GIT_SHA } from "./version.ts";
 import {
   deepMerge,
@@ -328,6 +330,12 @@ export const workflowResumeCommand = withRemoteOptions(
       };
     };
 
+    const ephemeralCatalog = new CatalogStore(":memory:");
+    const ephemeralRepo = new InMemoryUnifiedDataRepository(
+      ephemeralCatalog,
+      repoContext.unifiedDataRepo.namespace,
+    );
+
     const service = new WorkflowExecutionService(
       workflowRepo,
       runRepo,
@@ -340,6 +348,8 @@ export const workflowResumeCommand = withRemoteOptions(
       repoContext.unifiedDataRepo.namespace,
       stepLockHook,
       RunTrackerStore.fromSwampDir(swampPath(repoDir)),
+      ephemeralRepo,
+      ephemeralCatalog,
     );
 
     const renderer = createWorkflowRunRenderer(cliCtx.outputMode, {

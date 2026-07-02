@@ -163,22 +163,30 @@ export class CapabilityService {
     }
   }
 
+  #repoForWorker(
+    workerName: string,
+  ): import("../domain/data/repositories.ts").UnifiedDataRepository {
+    const dispatch = this.#dispatches?.forWorker(workerName);
+    return dispatch?.dataRepo ?? this.#repoContext.unifiedDataRepo;
+  }
+
   async getData(
     workerName: string,
     params: GetDataParams,
   ): Promise<GetDataResult> {
     this.#assertDispatchScope(workerName, params.modelType, "getData");
     const type = ModelType.create(params.modelType);
+    const repo = this.#repoForWorker(workerName);
     let data: Data | null = null;
     if (params.dataId !== undefined) {
-      data = await this.#repoContext.unifiedDataRepo.findById(
+      data = await repo.findById(
         type,
         params.modelId,
         createDataId(params.dataId),
         params.version,
       );
     } else if (params.dataName !== undefined) {
-      data = await this.#repoContext.unifiedDataRepo.findByName(
+      data = await repo.findByName(
         type,
         params.modelId,
         params.dataName,
@@ -244,8 +252,12 @@ export class CapabilityService {
     return records.map((record) => jsonSafeClone(record));
   }
 
-  listVersions(params: ListVersionsParams): Promise<number[]> {
-    return this.#repoContext.unifiedDataRepo.listVersions(
+  listVersions(
+    workerName: string,
+    params: ListVersionsParams,
+  ): Promise<number[]> {
+    const repo = this.#repoForWorker(workerName);
+    return repo.listVersions(
       ModelType.create(params.modelType),
       params.modelId,
       params.dataName,
@@ -258,14 +270,15 @@ export class CapabilityService {
   ): Promise<{ deleted: boolean }> {
     this.#assertDispatchScope(workerName, params.modelType, "deleteData");
     const type = ModelType.create(params.modelType);
+    const repo = this.#repoForWorker(workerName);
     if (params.removeLatestMarkerOnly) {
-      await this.#repoContext.unifiedDataRepo.removeLatestMarker(
+      await repo.removeLatestMarker(
         type,
         params.modelId,
         params.dataName,
       );
     } else {
-      await this.#repoContext.unifiedDataRepo.delete(
+      await repo.delete(
         type,
         params.modelId,
         params.dataName,
@@ -419,7 +432,7 @@ export class CapabilityService {
     channel.register(
       RemoteMethod.listVersions,
       safe((params) =>
-        this.listVersions(ListVersionsParamsSchema.parse(params))
+        this.listVersions(workerName, ListVersionsParamsSchema.parse(params))
       ),
     );
     channel.register(

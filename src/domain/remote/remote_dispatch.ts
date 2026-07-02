@@ -27,6 +27,7 @@
  * orchestrator fails with a clear error instead of silently running locally.
  */
 
+import type { UnifiedDataRepository } from "../data/repositories.ts";
 import type { ModelDefinition } from "../models/model.ts";
 import type { ModelType } from "../models/model_type.ts";
 import type { StepPlacement } from "./scheduler.ts";
@@ -58,6 +59,7 @@ export interface RemoteStepRequest {
   stepName?: string;
   signal?: AbortSignal;
   onEvent?: (event: RpcStreamEvent) => void;
+  dataRepo?: UnifiedDataRepository;
 }
 
 export interface RemoteStepResult {

@@ -26,6 +26,7 @@
  * design/remote-execution.md, "Authenticating the data plane").
  */
 
+import type { UnifiedDataRepository } from "../domain/data/repositories.ts";
 import type { ModelDefinition } from "../domain/models/model.ts";
 import type { ModelType } from "../domain/models/model_type.ts";
 
@@ -41,6 +42,7 @@ export interface ActiveDispatch {
   definitionName: string;
   definitionTags: Record<string, string>;
   runtimeTags?: Record<string, string>;
+  dataRepo?: UnifiedDataRepository;
 }
 
 export class DispatchRegistry {
