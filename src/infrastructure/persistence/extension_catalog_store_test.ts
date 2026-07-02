@@ -2053,6 +2053,47 @@ Deno.test("pruneUnreachableSources: preserves all rows under the repo root", () 
   store.close();
 });
 
+Deno.test("pruneUnreachableSources: preserves rows in protectedPaths even if outside repo root", () => {
+  const dbPath = makeTempDbPath();
+  const repoRoot = canonicalizePath(dirname(dirname(dbPath)));
+  const store = new ExtensionCatalogStore(dbPath);
+
+  const externalPath = "/external/repo/extensions/models/ext.ts";
+  const stalePath =
+    "/workspace/.swamp/pulled-extensions/@swamp/echo/models/echo.ts";
+
+  store.upsert(
+    makeRow({
+      source_path: join(repoRoot, "extensions", "models", "local.ts"),
+      type_normalized: "@test/local",
+      kind: "model",
+    }),
+  );
+  store.upsert(
+    makeRow({
+      source_path: externalPath,
+      type_normalized: "@test/ext",
+      kind: "model",
+    }),
+  );
+  store.upsert(
+    makeRow({
+      source_path: stalePath,
+      type_normalized: "@swamp/echo",
+      kind: "model",
+    }),
+  );
+
+  const protectedPaths = new Set([externalPath]);
+  const pruned = store.pruneUnreachableSources(repoRoot, protectedPaths);
+
+  assertEquals(pruned.length, 1);
+  assertEquals(pruned[0], stalePath);
+  assertEquals(store.findAll().length, 2);
+
+  store.close();
+});
+
 // ── resolveOriginConflicts ──────────────────────────────────────────
 
 Deno.test("resolveOriginConflicts: no-op when no pulled rows exist", () => {

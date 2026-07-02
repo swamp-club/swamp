@@ -1161,7 +1161,10 @@ export class ExtensionCatalogStore {
    * from prior container sessions (bind-mounted at a different path)
    * don't block catalog writes.
    */
-  pruneUnreachableSources(canonicalRepoRoot: string): string[] {
+  pruneUnreachableSources(
+    canonicalRepoRoot: string,
+    protectedPaths?: ReadonlySet<string>,
+  ): string[] {
     const prefix = canonicalRepoRoot.endsWith("/")
       ? canonicalRepoRoot
       : canonicalRepoRoot + "/";
@@ -1169,7 +1172,9 @@ export class ExtensionCatalogStore {
     const pruned: string[] = [];
     for (const row of rows) {
       if ((row.state ?? "Indexed") === "Tombstoned") continue;
-      if (!canonicalizePath(row.source_path).startsWith(prefix)) {
+      const canonical = canonicalizePath(row.source_path);
+      if (protectedPaths?.has(canonical)) continue;
+      if (!canonical.startsWith(prefix)) {
         this.removeBySourcePath(row.source_path);
         pruned.push(row.source_path);
       }

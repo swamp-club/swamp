@@ -173,6 +173,52 @@ Deno.test("buildAggregateState: detects bundle orphans", async () => {
   });
 });
 
+Deno.test("buildAggregateState: source-mounted bundle not reported as orphan", async () => {
+  await withTempDir(async (dir) => {
+    // Create a bundle file under .swamp/bundles/ for a source-mounted
+    // extension (source path is outside the repo root).
+    const bundleDir = join(dir, ".swamp", "bundles", "a1b2c3d4", "models");
+    await ensureDir(bundleDir);
+    const bundleFile = join(bundleDir, "ext_model.js");
+    await Deno.writeTextFile(bundleFile, "// source-mounted bundle");
+
+    const bundle = makeBundleLocation(bundleFile, "fp-ext");
+
+    // The source file is outside the repo root — this simulates a
+    // source-mounted extension.
+    const externalSourcePath = "/external/repo/extensions/models/ext_model.ts";
+    const source = makeSource({
+      id: makeSourceLocation(externalSourcePath, dir),
+      kind: "model",
+      fingerprint: "fp-ext",
+      state: { tag: "Indexed", type: "@test/ext-model", bundle },
+      sourceMtime: "2026-01-01T00:00:00.000Z",
+    });
+
+    const ext = makeExtension({
+      name: "@local/test",
+      version: "0.0.0",
+      origin: "local",
+      extensionRoot: dir,
+      sources: [source],
+    });
+
+    const report = await buildAggregateState({
+      extensions: [ext],
+      repoDir: dir,
+    });
+
+    assertEquals(
+      report.bundleOrphans.length,
+      0,
+      "Source-mounted bundle should not be an orphan",
+    );
+    assertEquals(report.orphanBundleFileCount, 0);
+    assertEquals(report.totalSources, 1);
+    assertEquals(report.healthySources, 1);
+  });
+});
+
 Deno.test("buildAggregateState: all 7 RowState tags counted", async () => {
   await withTempDir(async (dir) => {
     const bundle = makeBundleLocation(
