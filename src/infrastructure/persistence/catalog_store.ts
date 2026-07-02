@@ -200,6 +200,7 @@ export class CatalogStore {
       CREATE INDEX IF NOT EXISTS idx_catalog_step_name       ON catalog(step_name);
       CREATE INDEX IF NOT EXISTS idx_namespace               ON catalog(namespace);
       CREATE INDEX IF NOT EXISTS idx_catalog_is_latest       ON catalog(namespace, type_normalized, model_id, data_name, is_latest);
+      CREATE INDEX IF NOT EXISTS idx_catalog_latest_lookup  ON catalog(model_name, data_name, is_latest, namespace);
 
       CREATE TABLE IF NOT EXISTS catalog_meta (
         key   TEXT PRIMARY KEY,
@@ -559,6 +560,36 @@ export class CatalogStore {
       if (rows.length < ITERATE_PAGE_SIZE) break;
       offset += ITERATE_PAGE_SIZE;
     }
+  }
+
+  /**
+   * Direct indexed lookup for a single latest row by model name, data name,
+   * and optional namespace. Uses the idx_catalog_latest_lookup composite
+   * index instead of a full table scan.
+   */
+  findLatestRow(
+    modelName: string,
+    dataName: string,
+    namespace?: string,
+  ): CatalogRow | null {
+    if (namespace !== undefined) {
+      const stmt = this.db.prepare(
+        `SELECT * FROM catalog
+         WHERE model_name = ? AND data_name = ? AND is_latest = 1 AND namespace = ?
+         ORDER BY rowid DESC LIMIT 1`,
+      );
+      return (stmt.get(
+        modelName,
+        dataName,
+        namespace,
+      ) as unknown as CatalogRow) ?? null;
+    }
+    const stmt = this.db.prepare(
+      `SELECT * FROM catalog
+       WHERE model_name = ? AND data_name = ? AND is_latest = 1
+       ORDER BY rowid DESC LIMIT 1`,
+    );
+    return (stmt.get(modelName, dataName) as unknown as CatalogRow) ?? null;
   }
 
   /**
