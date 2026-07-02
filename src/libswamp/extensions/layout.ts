@@ -248,10 +248,19 @@ export function extractTopLevelRoot(
  * Returns a flat list of legacy entries (both gen-1 and gen-2) with their
  * generation tag so the upgrade migrator can branch.
  *
+ * `skillsDirRelative` (when provided, repo-relative) filters skill
+ * directory entries out of legacy classification — they are always
+ * considered current-layout regardless of physical location. Without
+ * this filter, the `tool=none` fallback at
+ * `.swamp/pulled-extensions/skills/<name>` is structurally identical to
+ * a gen-2 path and would be falsely flagged as legacy.
+ *
  * @param lockfilePath Full path to upstream_extensions.json
+ * @param skillsDirRelative Repo-relative skills directory path
  */
 export async function detectLegacyExtensionLayout(
   lockfilePath: string,
+  skillsDirRelative?: string,
 ): Promise<LegacyFileEntry[]> {
   const repo = await LockfileRepository.create(lockfilePath);
   const upstream = repo.getAllEntries();
@@ -260,6 +269,9 @@ export async function detectLegacyExtensionLayout(
   for (const [name, entry] of Object.entries(upstream)) {
     if (!entry.files) continue;
     for (const file of entry.files) {
+      if (isSkillDirEntry(file, skillsDirRelative)) {
+        continue;
+      }
       const generation = classifyExtensionFile(file);
       if (generation === "gen-1" || generation === "gen-2") {
         legacy.push({ extensionName: name, file, generation });
@@ -320,13 +332,21 @@ export function summariseLegacyLayout(
  * @param warn Invoked with a short human-readable message when legacy
  *   entries exist. Callers typically wire this to their logger's warn
  *   channel.
+ * @param skillsDirRelative Repo-relative skills directory path; filters
+ *   skill dir entries out of legacy classification so the `tool=none`
+ *   fallback at `.swamp/pulled-extensions/skills/<name>` is not falsely
+ *   flagged as gen-2.
  * @returns The legacy summary, or `undefined` if everything is current.
  */
 export async function warnLegacyExtensionLayout(
   lockfilePath: string,
   warn: (message: string) => void,
+  skillsDirRelative?: string,
 ): Promise<LegacyLayoutSummary | undefined> {
-  const legacy = await detectLegacyExtensionLayout(lockfilePath);
+  const legacy = await detectLegacyExtensionLayout(
+    lockfilePath,
+    skillsDirRelative,
+  );
   if (legacy.length === 0) return undefined;
   const summary = summariseLegacyLayout(legacy);
   warn(

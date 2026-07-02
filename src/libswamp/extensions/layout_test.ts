@@ -285,6 +285,72 @@ Deno.test("detectLegacyExtensionLayout: mixed generations in one lockfile", asyn
   }
 });
 
+Deno.test("detectLegacyExtensionLayout: excludes skill dir entries when skillsDirRelative provided", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    const lockfilePath = join(tmpDir, "upstream_extensions.json");
+    await Deno.writeTextFile(
+      lockfilePath,
+      JSON.stringify({
+        "@magistr/good-planning": {
+          version: "2026.06.12.1",
+          pulledAt: "2026-06-12T00:00:00Z",
+          files: [
+            ".swamp/pulled-extensions/@magistr/good-planning/models/plan.ts",
+            ".swamp/pulled-extensions/skills/good-planning",
+          ],
+        },
+      }),
+    );
+
+    const withFilter = await detectLegacyExtensionLayout(
+      lockfilePath,
+      ".swamp/pulled-extensions/skills",
+    );
+    assertEquals(withFilter, []);
+
+    const withoutFilter = await detectLegacyExtensionLayout(lockfilePath);
+    assertEquals(withoutFilter.length, 1);
+    assertEquals(
+      withoutFilter[0].file,
+      ".swamp/pulled-extensions/skills/good-planning",
+    );
+    assertEquals(withoutFilter[0].generation, "gen-2");
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("detectLegacyExtensionLayout: skill filter does not hide real gen-2 entries", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    const lockfilePath = join(tmpDir, "upstream_extensions.json");
+    await Deno.writeTextFile(
+      lockfilePath,
+      JSON.stringify({
+        "@scope/ext": {
+          version: "1.0.0",
+          pulledAt: "2026-01-01T00:00:00Z",
+          files: [
+            ".swamp/pulled-extensions/models/foo.ts",
+            ".swamp/pulled-extensions/skills/good-planning",
+          ],
+        },
+      }),
+    );
+
+    const legacy = await detectLegacyExtensionLayout(
+      lockfilePath,
+      ".swamp/pulled-extensions/skills",
+    );
+    assertEquals(legacy.length, 1);
+    assertEquals(legacy[0].file, ".swamp/pulled-extensions/models/foo.ts");
+    assertEquals(legacy[0].generation, "gen-2");
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
 Deno.test("detectLegacyExtensionLayout: returns empty when lockfile missing", async () => {
   const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
   try {
@@ -346,6 +412,45 @@ Deno.test("warnLegacyExtensionLayout: warns on legacy, returns summary", async (
       messages[0],
       "1 extension(s) pending migration. Run 'swamp repo upgrade' to complete.",
     );
+  } finally {
+    await Deno.remove(tmpDir, { recursive: true });
+  }
+});
+
+Deno.test("warnLegacyExtensionLayout: silent when all legacy-looking entries are skill dirs", async () => {
+  const tmpDir = await Deno.makeTempDir({ prefix: "swamp_test_" });
+  try {
+    const lockfilePath = join(tmpDir, "upstream_extensions.json");
+    await Deno.writeTextFile(
+      lockfilePath,
+      JSON.stringify({
+        "@magistr/good-planning": {
+          version: "2026.06.12.1",
+          pulledAt: "2026-06-12T00:00:00Z",
+          files: [
+            ".swamp/pulled-extensions/@magistr/good-planning/models/plan.ts",
+            ".swamp/pulled-extensions/skills/good-planning",
+          ],
+        },
+        "@magistr/fc-agent-proxy": {
+          version: "2026.06.12.1",
+          pulledAt: "2026-06-12T00:00:00Z",
+          files: [
+            ".swamp/pulled-extensions/@magistr/fc-agent-proxy/models/proxy.ts",
+            ".swamp/pulled-extensions/skills/fc-agent-proxy",
+          ],
+        },
+      }),
+    );
+
+    const messages: string[] = [];
+    const summary = await warnLegacyExtensionLayout(
+      lockfilePath,
+      (msg) => messages.push(msg),
+      ".swamp/pulled-extensions/skills",
+    );
+    assertEquals(summary, undefined);
+    assertEquals(messages, []);
   } finally {
     await Deno.remove(tmpDir, { recursive: true });
   }

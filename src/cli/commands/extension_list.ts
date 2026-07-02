@@ -24,7 +24,7 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { requireInitializedRepoReadOnly } from "../repo_context.ts";
-import { join, resolve } from "@std/path";
+import { join, relative, resolve } from "@std/path";
 import {
   createExtensionListDeps,
   createLibSwampContext,
@@ -39,6 +39,8 @@ import {
   RepoMarkerRepository,
 } from "../../infrastructure/persistence/repo_marker_repository.ts";
 import { RepoPath } from "../../domain/repo/repo_path.ts";
+import { resolvePrimaryTool } from "../../domain/repo/primary_tool.ts";
+import { resolveSkillsDir } from "../../domain/repo/skill_dirs.ts";
 import {
   createExtensionListRenderer,
   type EnrichedExtensionListEntry,
@@ -151,9 +153,15 @@ export const extensionListCommand = withRemoteOptions(
   const modelsDir = resolveModelsDir(marker);
   const absoluteModelsDir = resolve(repoDir, modelsDir);
   const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
+  const tool = resolvePrimaryTool(marker);
+  const skillsDirRelative = relative(
+    repoDir,
+    resolveSkillsDir(repoDir, tool),
+  );
   await warnLegacyExtensionLayout(
     lockfilePath,
     (msg) => cliCtx.logger.warn(msg),
+    skillsDirRelative,
   );
 
   const ctx = createLibSwampContext({ logger: cliCtx.logger });

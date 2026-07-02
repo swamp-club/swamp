@@ -19,7 +19,7 @@
 
 import { Command } from "@cliffy/command";
 import type { Logger } from "@logtape/logtape";
-import { join, resolve } from "@std/path";
+import { join, relative, resolve } from "@std/path";
 import type { DenoRuntime } from "../../domain/runtime/deno_runtime.ts";
 import { EmbeddedDenoRuntime } from "../../infrastructure/runtime/embedded_deno_runtime.ts";
 import { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
@@ -239,20 +239,14 @@ export const extensionPullCommand = new Command()
     const absoluteModelsDir = resolve(repoDir, modelsDir);
     const lockfilePath = join(absoluteModelsDir, "upstream_extensions.json");
 
-    // 5. Warn if any extensions are still in a legacy layout. We don't
-    // block — the lockfile tolerates mixed generations and the new pull
-    // writes to the per-extension subtree regardless.
+    const tool = resolvePrimaryTool(marker);
+    const skillsDir = resolveSkillsDir(repoDir, tool);
+    const skillsDirRelative = relative(repoDir, skillsDir);
     await warnLegacyExtensionLayout(
       lockfilePath,
       (msg) => ctx.logger.warn(msg),
+      skillsDirRelative,
     );
-
-    // 6. Resolve skills destination (tool-aware). Per-extension
-    // models/workflows/vaults/drivers/datastores/reports destinations
-    // are derived inside installExtension from `ref.name` — the CLI
-    // doesn't need to compute them.
-    const tool = resolvePrimaryTool(marker);
-    const skillsDir = resolveSkillsDir(repoDir, tool);
 
     // 7. Construct W2 service deps (denoRuntime + ExtensionRepository)
     // so phase 8 fires synchronously at install time. Both are required
