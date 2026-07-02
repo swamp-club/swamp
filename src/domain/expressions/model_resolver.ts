@@ -378,6 +378,71 @@ export interface ModelCoordinates {
 export type ModelCoordinatesMap = Map<string, ModelCoordinates[]>;
 
 /**
+ * Buckets data items into resource and file maps by specName/dataName.
+ * Shared by the per-coordinate loader and the orphan recovery fallback.
+ */
+function populateFromItems(
+  items: Data[],
+  result: {
+    resource?: Record<string, Record<string, DataRecord>>;
+    file?: Record<string, Record<string, FileDataRecord>>;
+  },
+  dataRepo: UnifiedDataRepository,
+  toRecord: (
+    data: Data,
+    modelType: ModelType,
+    modelId: string,
+    dataName: string,
+    version?: number,
+    modelName?: string,
+  ) => DataRecord | null,
+  defName: string,
+  overrideModelType?: ModelType,
+  overrideModelId?: string,
+): void {
+  for (const data of items) {
+    if (data.isRenamed) continue;
+    if (!overrideModelType || !overrideModelId) continue;
+    const mt = overrideModelType;
+    const mid = overrideModelId;
+    const latestRecord = toRecord(data, mt, mid, data.name, undefined, defName);
+    if (!latestRecord) continue;
+
+    const dataType = latestRecord.tags["type"];
+    if (dataType === "resource") {
+      if (!result.resource) result.resource = {};
+      const specName = latestRecord.tags["specName"] ?? data.name;
+      if (!result.resource[specName]) result.resource[specName] = {};
+      result.resource[specName][data.name] = latestRecord;
+    } else if (dataType === "file") {
+      if (!result.file) result.file = {};
+      const specName = latestRecord.tags["specName"] ?? data.name;
+      if (!result.file[specName]) result.file[specName] = {};
+      const contentPath = dataRepo.getContentPath(
+        mt,
+        mid,
+        data.name,
+        latestRecord.version,
+      );
+      try {
+        const stat = Deno.statSync(contentPath);
+        result.file[specName][data.name] = {
+          id: latestRecord.id,
+          version: latestRecord.version,
+          createdAt: latestRecord.createdAt,
+          path: contentPath,
+          size: stat.size,
+          contentType: latestRecord.tags["contentType"] ??
+            "application/octet-stream",
+        } as FileDataRecord;
+      } catch {
+        // File not found on disk, skip
+      }
+    }
+  }
+}
+
+/**
  * Resolves model references to build CEL evaluation context.
  */
 export class ModelResolver {
@@ -534,55 +599,17 @@ export class ModelResolver {
 
           for (const { modelType: mt, modelId: mid } of allCoords) {
             const items = dataRepo.findAllForModelSync(mt, mid);
-            for (const data of items) {
-              if (data.isRenamed) continue;
-              const latestRecord = boundDataToRecord(
-                data,
-                mt,
-                mid,
-                data.name,
-                undefined,
-                defName,
-              );
-              if (!latestRecord) continue;
-
-              const dataType = latestRecord.tags["type"];
-              if (dataType === "resource") {
-                if (!result.resource) result.resource = {};
-                const specName = latestRecord.tags["specName"] ?? data.name;
-                if (!result.resource[specName]) {
-                  result.resource[specName] = {};
-                }
-                result.resource[specName][data.name] = latestRecord;
-              } else if (dataType === "file") {
-                if (!result.file) result.file = {};
-                const specName = latestRecord.tags["specName"] ?? data.name;
-                if (!result.file[specName]) {
-                  result.file[specName] = {};
-                }
-                const contentPath = dataRepo.getContentPath(
-                  mt,
-                  mid,
-                  data.name,
-                  latestRecord.version,
-                );
-                try {
-                  const stat = Deno.statSync(contentPath);
-                  result.file[specName][data.name] = {
-                    id: latestRecord.id,
-                    version: latestRecord.version,
-                    createdAt: latestRecord.createdAt,
-                    path: contentPath,
-                    size: stat.size,
-                    contentType: latestRecord.tags["contentType"] ??
-                      "application/octet-stream",
-                  } as FileDataRecord;
-                } catch {
-                  // File not found on disk, skip
-                }
-              }
-            }
+            populateFromItems(
+              items,
+              result,
+              dataRepo,
+              boundDataToRecord,
+              defName,
+              mt,
+              mid,
+            );
           }
+
           // Orphan recovery: if no resource/file data found under current
           // coordinates, scan the full datastore once (shared across all
           // models) for orphan data tagged with this model's name.
@@ -590,47 +617,21 @@ export class ModelResolver {
             if (!orphanData) {
               orphanData = dataRepo.findAllGlobalSync();
             }
-            for (const { data, modelType: mt, modelId: mid } of orphanData) {
-              if (data.isRenamed) continue;
-              if (data.tags["modelName"] !== defName) continue;
-              const latestRecord = boundDataToRecord(
-                data,
+            for (
+              const { data, modelType: mt, modelId: mid } of orphanData
+            ) {
+              if (data.isRenamed || data.tags["modelName"] !== defName) {
+                continue;
+              }
+              populateFromItems(
+                [data],
+                result,
+                dataRepo,
+                boundDataToRecord,
+                defName,
                 mt,
                 mid,
-                data.name,
-                undefined,
-                defName,
               );
-              if (!latestRecord) continue;
-              const dataType = latestRecord.tags["type"];
-              if (dataType === "resource") {
-                if (!result.resource) result.resource = {};
-                const specName = latestRecord.tags["specName"] ?? data.name;
-                if (!result.resource[specName]) result.resource[specName] = {};
-                result.resource[specName][data.name] = latestRecord;
-              } else if (dataType === "file") {
-                if (!result.file) result.file = {};
-                const specName = latestRecord.tags["specName"] ?? data.name;
-                if (!result.file[specName]) result.file[specName] = {};
-                const contentPath = dataRepo.getContentPath(
-                  mt,
-                  mid,
-                  data.name,
-                  latestRecord.version,
-                );
-                try {
-                  const stat = Deno.statSync(contentPath);
-                  result.file[specName][data.name] = {
-                    id: latestRecord.id,
-                    version: latestRecord.version,
-                    createdAt: latestRecord.createdAt,
-                    path: contentPath,
-                    size: stat.size,
-                    contentType: latestRecord.tags["contentType"] ??
-                      "application/octet-stream",
-                  } as FileDataRecord;
-                } catch { /* skip */ }
-              }
             }
           }
 
