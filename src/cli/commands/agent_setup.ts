@@ -36,6 +36,9 @@ import {
   resolveRepoDir,
 } from "../context.ts";
 import { UserError } from "../../domain/errors.ts";
+import { RepoPath } from "../../domain/repo/repo_path.ts";
+import { RepoService } from "../../domain/repo/repo_service.ts";
+import { VERSION } from "./version.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -220,6 +223,13 @@ Some tools need a header like this to auto-load rules:
 
     await addCustomTool(repoDir, def);
 
+    const repoPath = RepoPath.create(repoDir);
+    const repoService = new RepoService(VERSION);
+    const isInitialized = await repoService.isInitialized(repoPath);
+    const setupCommand = isInitialized
+      ? `swamp repo upgrade --tool ${name}`
+      : `swamp repo init --tool ${name}`;
+
     await Deno.stdout.write(encoder.encode(`
 Custom agent "${name}" configured:
   Skills:        ${def.skillsDir}/
@@ -229,7 +239,7 @@ Custom agent "${name}" configured:
   Frontmatter:   ${def.frontmatter ? "yes" : "none"}
 
 Saved to .swamp-custom-tools.yaml
-Run \`swamp repo init --tool ${name}\` to set up this repo.
+Run \`${setupCommand}\` to set up this repo.
 `));
 
     cliCtx.logger.debug`Agent setup completed for ${name}`;
