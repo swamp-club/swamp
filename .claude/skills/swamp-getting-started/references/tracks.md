@@ -113,12 +113,13 @@ scope), delegate to the appropriate skill with context about what they built.
 Always pass along the user's original goal and what they built so the next skill
 doesn't start from zero.
 
-| User intent                             | Delegate to                 |
-| --------------------------------------- | --------------------------- |
-| Another model or edit the one they made | `swamp` (model guide)       |
-| Chain models together                   | `swamp` (workflow guide)    |
-| Secure credentials                      | `swamp` (vault guide)       |
-| Inspect or query their data             | `swamp` (data guide)        |
-| Build a typed model from scratch        | `swamp` (extension guide)   |
-| Share their work                        | `swamp` (extension-publish) |
-| Something is broken                     | `swamp` (troubleshooting)   |
+| User intent                              | Delegate to                 |
+| ---------------------------------------- | --------------------------- |
+| Another model or edit the one they made  | `swamp` (model guide)       |
+| Chain models together                    | `swamp` (workflow guide)    |
+| Secure credentials                       | `swamp` (vault guide)       |
+| Inspect or query their data              | `swamp` (data guide)        |
+| Build a typed model from scratch         | `swamp` (extension guide)   |
+| Share their work                         | `swamp` (extension-publish) |
+| Which primitive to use, design trade-off | `swamp` (architecture)      |
+| Something is broken                      | `swamp` (troubleshooting)   |
