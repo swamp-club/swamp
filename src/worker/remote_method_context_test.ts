@@ -68,7 +68,11 @@ interface StubCall {
   params: unknown;
 }
 
-function harness(scratchDir: string, extensionFilesDir?: string) {
+function harness(
+  scratchDir: string,
+  extensionFilesDir?: string,
+  artifactContent?: Record<string, unknown>,
+) {
   const calls: StubCall[] = [];
   // The orchestrator side of the control socket, with stub verb handlers.
   const worker: RpcChannel = new RpcChannel({
@@ -118,7 +122,9 @@ function harness(scratchDir: string, extensionFilesDir?: string) {
     readArtifact: (contentPath: string) => {
       calls.push({ method: "readArtifact", params: contentPath });
       return Promise.resolve(
-        new TextEncoder().encode(JSON.stringify({ loaded: true })),
+        new TextEncoder().encode(
+          JSON.stringify(artifactContent ?? { loaded: true }),
+        ),
       );
     },
     writeResource: (
@@ -215,6 +221,22 @@ Deno.test("remote context: readResource resolves metadata then fetches bytes", a
     const value = await h.context.readResource!("state-main");
     assertEquals(value, { loaded: true });
     assertEquals(h.calls.map((c) => c.method), ["getData", "readArtifact"]);
+  });
+});
+
+Deno.test("remote context: readResource resolves vault references in sensitive fields", async () => {
+  await withScratch(async (dir) => {
+    const h = harness(dir, undefined, {
+      username: "alice",
+      refreshToken: "${{ vault.get('my-vault', 'refresh-tok') }}",
+    });
+    const value = await h.context.readResource!("state-main");
+    assertEquals(value, { username: "alice", refreshToken: "s3cret" });
+    const resolveCall = h.calls.find((c) => c.method === "resolveSecret");
+    assertEquals(resolveCall?.params, {
+      vaultName: "my-vault",
+      secretKey: "refresh-tok",
+    });
   });
 });
 
