@@ -27,6 +27,7 @@ import type { Data } from "../data/data.ts";
 import type { DataRecord } from "../data/data_record.ts";
 import type { DataQueryService } from "../data/data_query_service.ts";
 import { isTextContentType } from "../data/content_type.ts";
+import { resolveVaultRefsInData } from "../models/data_writer.ts";
 import { ModelNotFoundError } from "./errors.ts";
 import { parseNamespacedModelName } from "../data/namespace.ts";
 import type { Namespace } from "../data/namespace.ts";
@@ -492,29 +493,12 @@ export class ModelResolver {
       context.model[definition.id] = modelData;
     }
 
-    // Build model coordinates map and populate model.resource/file eagerly.
-    // Uses findAllGlobal() to discover data from disk first, then matches
-    // to definitions. This handles the case where a model was deleted and
-    // recreated (new UUID) — data under the old UUID is still found.
+    // Build model coordinates map from definitions (O(definitions) not O(data)).
+    // model.resource and model.file are populated lazily on first access
+    // to avoid the O(N) findAllGlobal() filesystem walk.
     const coordsMap: ModelCoordinatesMap = new Map();
     if (this.dataRepo) {
-      // Build definition lookup maps
-      const defById = new Map<
-        string,
-        { definition: Definition; type: ModelType }
-      >();
-      const defsByType = new Map<
-        string,
-        Array<{ definition: Definition; type: ModelType }>
-      >();
-
       for (const { definition: def, type: defType } of allDefinitions) {
-        defById.set(def.id, { definition: def, type: defType });
-        const typeKey = defType.normalized;
-        if (!defsByType.has(typeKey)) defsByType.set(typeKey, []);
-        defsByType.get(typeKey)!.push({ definition: def, type: defType });
-
-        // Add current definition coordinates
         const coords: ModelCoordinates = {
           modelType: defType,
           modelId: def.id,
@@ -523,121 +507,177 @@ export class ModelResolver {
         coordsMap.get(def.name)!.push(coords);
       }
 
-      // Discover all data on disk for orphan recovery and eager population
-      const allGlobalData = await this.dataRepo.findAllGlobal();
+      // Lazy-load model.resource and model.file on first property access.
+      // Instead of walking all data on disk upfront, each model's data is
+      // loaded only when its .resource or .file is accessed in a CEL expression.
+      // The getter replaces itself with the loaded value after first access.
+      const dataRepo = this.dataRepo;
+      const boundDataToRecord = this.dataToRecord.bind(this);
+      let orphanData:
+        | Array<{ data: Data; modelType: ModelType; modelId: string }>
+        | null = null;
+      for (const { definition: def } of allDefinitions) {
+        const modelData = context.model[def.name];
+        if (!modelData) continue;
 
-      // Group data items by (modelType, modelId) — the disk coordinates
-      const groupKey = (mt: ModelType, mid: string) =>
-        `${mt.normalized}::${mid}`;
-      const groupedData = new Map<
-        string,
-        { modelType: ModelType; modelId: string; items: Data[] }
-      >();
-      for (const { data, modelType, modelId } of allGlobalData) {
-        const key = groupKey(modelType, modelId);
-        if (!groupedData.has(key)) {
-          groupedData.set(key, { modelType, modelId, items: [] });
-        }
-        groupedData.get(key)!.items.push(data);
-      }
+        const defName = def.name;
 
-      // Match each group to a definition and populate model.resource/file
-      for (const [_key, group] of groupedData) {
-        const { modelType, modelId, items } = group;
+        const loadResources = (): {
+          resource?: Record<string, Record<string, DataRecord>>;
+          file?: Record<string, Record<string, FileDataRecord>>;
+        } => {
+          const result: {
+            resource?: Record<string, Record<string, DataRecord>>;
+            file?: Record<string, Record<string, FileDataRecord>>;
+          } = {};
+          const allCoords = coordsMap.get(defName) ?? [];
 
-        // 1. Direct match: modelId matches a definition's UUID
-        let matchedDef = defById.get(modelId);
-
-        // 2. Orphan recovery by modelName tag
-        if (!matchedDef) {
-          const modelNameTag = items.find((d) => d.tags["modelName"])
-            ?.tags["modelName"];
-          if (modelNameTag) {
-            const defsOfType = defsByType.get(modelType.normalized) ?? [];
-            const nameMatch = defsOfType.find(
-              (d) => d.definition.name === modelNameTag,
-            );
-            if (nameMatch) matchedDef = nameMatch;
-          }
-        }
-
-        // 3. Orphan recovery by heuristic: only one definition of this type
-        if (!matchedDef) {
-          const defsOfType = defsByType.get(modelType.normalized) ?? [];
-          if (defsOfType.length === 1) {
-            matchedDef = defsOfType[0];
-          }
-        }
-
-        if (!matchedDef) continue;
-
-        const modelName = matchedDef.definition.name;
-
-        // Add orphan coordinates (disk modelId differs from current definition UUID)
-        if (modelId !== matchedDef.definition.id) {
-          const orphanCoords: ModelCoordinates = { modelType, modelId };
-          if (!coordsMap.has(modelName)) coordsMap.set(modelName, []);
-          const existing = coordsMap.get(modelName)!;
-          const alreadyTracked = existing.some(
-            (c) =>
-              c.modelType.normalized === modelType.normalized &&
-              c.modelId === modelId,
-          );
-          if (!alreadyTracked) existing.push(orphanCoords);
-        }
-
-        // Populate model.resource and model.file eagerly (backward compat)
-        // Skip renamed-tombstoned entries to avoid duplicates
-        const modelData = context.model[modelName];
-        if (modelData) {
-          for (const data of items) {
-            if (data.isRenamed) continue;
-            const latestRecord = this.dataToRecord(
-              data,
-              modelType,
-              modelId,
-              data.name,
-              undefined,
-              modelName,
-            );
-            if (!latestRecord) continue;
-
-            const dataType = latestRecord.tags["type"];
-
-            if (dataType === "resource") {
-              if (!modelData.resource) modelData.resource = {};
-              const specName = latestRecord.tags["specName"] ?? data.name;
-              if (!modelData.resource[specName]) {
-                modelData.resource[specName] = {};
-              }
-              modelData.resource[specName][data.name] = latestRecord;
-            } else if (dataType === "file") {
-              if (!modelData.file) modelData.file = {};
-              const specName = latestRecord.tags["specName"] ?? data.name;
-              if (!modelData.file[specName]) modelData.file[specName] = {};
-              const contentPath = this.dataRepo.getContentPath(
-                modelType,
-                modelId,
+          for (const { modelType: mt, modelId: mid } of allCoords) {
+            const items = dataRepo.findAllForModelSync(mt, mid);
+            for (const data of items) {
+              if (data.isRenamed) continue;
+              const latestRecord = boundDataToRecord(
+                data,
+                mt,
+                mid,
                 data.name,
-                latestRecord.version,
+                undefined,
+                defName,
               );
-              try {
-                const stat = Deno.statSync(contentPath);
-                modelData.file[specName][data.name] = {
-                  id: latestRecord.id,
-                  version: latestRecord.version,
-                  createdAt: latestRecord.createdAt,
-                  path: contentPath,
-                  size: stat.size,
-                  contentType: latestRecord.tags["contentType"] ??
-                    "application/octet-stream",
-                };
-              } catch {
-                // File not found on disk, skip
+              if (!latestRecord) continue;
+
+              const dataType = latestRecord.tags["type"];
+              if (dataType === "resource") {
+                if (!result.resource) result.resource = {};
+                const specName = latestRecord.tags["specName"] ?? data.name;
+                if (!result.resource[specName]) {
+                  result.resource[specName] = {};
+                }
+                result.resource[specName][data.name] = latestRecord;
+              } else if (dataType === "file") {
+                if (!result.file) result.file = {};
+                const specName = latestRecord.tags["specName"] ?? data.name;
+                if (!result.file[specName]) {
+                  result.file[specName] = {};
+                }
+                const contentPath = dataRepo.getContentPath(
+                  mt,
+                  mid,
+                  data.name,
+                  latestRecord.version,
+                );
+                try {
+                  const stat = Deno.statSync(contentPath);
+                  result.file[specName][data.name] = {
+                    id: latestRecord.id,
+                    version: latestRecord.version,
+                    createdAt: latestRecord.createdAt,
+                    path: contentPath,
+                    size: stat.size,
+                    contentType: latestRecord.tags["contentType"] ??
+                      "application/octet-stream",
+                  } as FileDataRecord;
+                } catch {
+                  // File not found on disk, skip
+                }
               }
             }
           }
-        }
+          // Orphan recovery: if no resource/file data found under current
+          // coordinates, scan the full datastore once (shared across all
+          // models) for orphan data tagged with this model's name.
+          if (!result.resource && !result.file) {
+            if (!orphanData) {
+              orphanData = dataRepo.findAllGlobalSync();
+            }
+            for (const { data, modelType: mt, modelId: mid } of orphanData) {
+              if (data.isRenamed) continue;
+              if (data.tags["modelName"] !== defName) continue;
+              const latestRecord = boundDataToRecord(
+                data,
+                mt,
+                mid,
+                data.name,
+                undefined,
+                defName,
+              );
+              if (!latestRecord) continue;
+              const dataType = latestRecord.tags["type"];
+              if (dataType === "resource") {
+                if (!result.resource) result.resource = {};
+                const specName = latestRecord.tags["specName"] ?? data.name;
+                if (!result.resource[specName]) result.resource[specName] = {};
+                result.resource[specName][data.name] = latestRecord;
+              } else if (dataType === "file") {
+                if (!result.file) result.file = {};
+                const specName = latestRecord.tags["specName"] ?? data.name;
+                if (!result.file[specName]) result.file[specName] = {};
+                const contentPath = dataRepo.getContentPath(
+                  mt,
+                  mid,
+                  data.name,
+                  latestRecord.version,
+                );
+                try {
+                  const stat = Deno.statSync(contentPath);
+                  result.file[specName][data.name] = {
+                    id: latestRecord.id,
+                    version: latestRecord.version,
+                    createdAt: latestRecord.createdAt,
+                    path: contentPath,
+                    size: stat.size,
+                    contentType: latestRecord.tags["contentType"] ??
+                      "application/octet-stream",
+                  } as FileDataRecord;
+                } catch { /* skip */ }
+              }
+            }
+          }
+
+          return result;
+        };
+
+        Object.defineProperty(modelData, "resource", {
+          configurable: true,
+          enumerable: true,
+          get() {
+            const loaded = loadResources();
+            Object.defineProperty(this, "resource", {
+              value: loaded.resource,
+              writable: true,
+              configurable: true,
+              enumerable: true,
+            });
+            Object.defineProperty(this, "file", {
+              value: loaded.file,
+              writable: true,
+              configurable: true,
+              enumerable: true,
+            });
+            return loaded.resource;
+          },
+        });
+
+        Object.defineProperty(modelData, "file", {
+          configurable: true,
+          enumerable: true,
+          get() {
+            const loaded = loadResources();
+            Object.defineProperty(this, "resource", {
+              value: loaded.resource,
+              writable: true,
+              configurable: true,
+              enumerable: true,
+            });
+            Object.defineProperty(this, "file", {
+              value: loaded.file,
+              writable: true,
+              configurable: true,
+              enumerable: true,
+            });
+            return loaded.file;
+          },
+        });
       }
     }
 
@@ -655,6 +695,7 @@ export class ModelResolver {
     // `forEach.in`) must go through `CelEvaluator.evaluateAsync`, which
     // cel-js natively propagates Promises through.
     const ownNamespace = this.dataRepo?.namespace ?? ("" as Namespace);
+    const latestCache = new Map<string, DataRecord | null>();
     context.data = {
       version: async (
         rawModelName: string,
@@ -679,18 +720,80 @@ export class ModelResolver {
         rawModelName: string,
         dataName: string,
       ): Promise<DataRecord | null> => {
-        if (!this.dataQueryService) return null;
+        if (!this.dataRepo) return null;
         const ns = routeNamespace(rawModelName, ownNamespace);
+
+        if (!ns.isWildcard) {
+          const nsForKey = ns.namespacePredicate
+            ? (ns.namespacePredicate.match(/ns == "([^"]*)"/)?.[1] ?? "")
+            : ownNamespace;
+          const cacheKey = `${nsForKey}\0${ns.modelName}\0${dataName}`;
+          if (latestCache.has(cacheKey)) return latestCache.get(cacheKey)!;
+
+          // Direct filesystem lookup via coordsMap — same O(1) path as
+          // `swamp data get`, bypassing the catalog entirely.
+          const coords = coordsMap.get(ns.modelName);
+          if (coords && coords.length > 0) {
+            for (const { modelType, modelId } of coords) {
+              const data = await this.dataRepo.findByName(
+                modelType,
+                modelId,
+                dataName,
+              );
+              if (data) {
+                const record = this.dataToRecord(
+                  data,
+                  modelType,
+                  modelId,
+                  dataName,
+                  undefined,
+                  ns.modelName,
+                );
+                if (record && Object.keys(record.attributes).length > 0) {
+                  try {
+                    const vs = await this.getVaultService();
+                    await resolveVaultRefsInData(record.attributes, vs);
+                  } catch {
+                    // Vault unavailable — leave refs unresolved
+                  }
+                }
+                latestCache.set(cacheKey, record);
+                return record;
+              }
+            }
+          }
+
+          // Fallback to the catalog for orphan data (no matching definition).
+          // Parse the resolved namespace from the predicate for cross-namespace
+          // lookups (e.g. "security:scanner" → namespace "security").
+          if (this.dataQueryService) {
+            const targetNs = ns.namespacePredicate
+              ? ns.namespacePredicate.match(
+                /ns == "([^"]*)"/,
+              )?.[1]
+              : (ownNamespace || undefined);
+            const record = await this.dataQueryService.getLatestRecord(
+              ns.modelName,
+              dataName,
+              targetNs,
+            );
+            latestCache.set(cacheKey, record);
+            return record;
+          }
+
+          latestCache.set(cacheKey, null);
+          return null;
+        }
+
+        // Wildcard lookups fall back to the catalog query path.
+        if (!this.dataQueryService) return null;
         const predicate = `modelName == "${escapeCelString(ns.modelName)}" ` +
           `&& name == "${escapeCelString(dataName)}"` +
           ns.namespacePredicate;
         const results = await this.dataQueryService.query(predicate, {
-          limit: ns.isWildcard ? undefined : 1,
           loadAttributes: true,
         }) as DataRecord[];
-        if (ns.isWildcard) {
-          checkWildcardAmbiguity(results, rawModelName);
-        }
+        checkWildcardAmbiguity(results, rawModelName);
         return results.length > 0 ? results[0] : null;
       },
       listVersions: (rawModelName: string, dataName: string): number[] => {

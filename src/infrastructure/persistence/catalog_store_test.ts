@@ -922,3 +922,82 @@ Deno.test("bulkUpsertForeign: updates existing foreign rows in place", () => {
 
   store.close();
 });
+
+Deno.test(
+  "CatalogStore: findLatestRow returns the latest row by model name and data name",
+  () => {
+    const store = new CatalogStore(makeTempDbPath());
+    store.upsert(
+      makeRow({
+        model_name: "my-model",
+        data_name: "my-data",
+        version: 1,
+        is_latest: 0,
+      }),
+    );
+    store.upsert(
+      makeRow({
+        model_name: "my-model",
+        data_name: "my-data",
+        version: 2,
+        is_latest: 1,
+      }),
+    );
+
+    const row = store.findLatestRow("my-model", "my-data");
+    assertEquals(row?.version, 2);
+    assertEquals(row?.is_latest, 1);
+    assertEquals(row?.model_name, "my-model");
+
+    store.close();
+  },
+);
+
+Deno.test(
+  "CatalogStore: findLatestRow returns null for non-existent data",
+  () => {
+    const store = new CatalogStore(makeTempDbPath());
+    store.upsert(
+      makeRow({ model_name: "my-model", data_name: "my-data" }),
+    );
+
+    assertEquals(store.findLatestRow("other-model", "my-data"), null);
+    assertEquals(store.findLatestRow("my-model", "other-data"), null);
+
+    store.close();
+  },
+);
+
+Deno.test(
+  "CatalogStore: findLatestRow scopes by namespace when provided",
+  () => {
+    const store = new CatalogStore(makeTempDbPath());
+    store.upsert(makeRow({
+      namespace: "ns-a",
+      model_name: "shared-model",
+      data_name: "shared-data",
+      model_id: "id-a",
+      id: "uuid-a",
+    }));
+    store.upsert(makeRow({
+      namespace: "ns-b",
+      model_name: "shared-model",
+      data_name: "shared-data",
+      model_id: "id-b",
+      id: "uuid-b",
+    }));
+
+    const rowA = store.findLatestRow("shared-model", "shared-data", "ns-a");
+    assertEquals(rowA?.id, "uuid-a");
+
+    const rowB = store.findLatestRow("shared-model", "shared-data", "ns-b");
+    assertEquals(rowB?.id, "uuid-b");
+
+    assertEquals(
+      store.findLatestRow("shared-model", "shared-data", "ns-c"),
+      null,
+    );
+
+    store.close();
+  },
+);
