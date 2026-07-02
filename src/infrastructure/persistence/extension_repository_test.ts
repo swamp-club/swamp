@@ -989,3 +989,67 @@ Deno.test("ExtensionRepository: primary rows and ValidationFailed extension rows
     assertEquals(brokenRow.extends_type, "");
   });
 });
+
+// ===== saveAll preserves source-mounted extension rows =====
+Deno.test("ExtensionRepository: saveAll preserves source-mounted rows outside repo root", () => {
+  withRepository((repo, cat, repoRoot) => {
+    const externalSourcePath =
+      "/external/arch-cloud-init/extensions/models/arch_cloud_init.ts";
+    const bundlePath = join(
+      repoRoot,
+      ".swamp",
+      "bundles",
+      "a1b2c3d4",
+      "models",
+      "arch_cloud_init.js",
+    );
+
+    const localSource = makeSource({
+      id: makeSourceLocation(
+        join(repoRoot, "extensions", "models", "local.ts"),
+        repoRoot,
+      ),
+      kind: "model",
+      fingerprint: "fp-local",
+      state: {
+        tag: "Indexed",
+        type: "@test/local",
+        bundle: makeBundleLocation(
+          join(repoRoot, ".swamp", "bundles", "local.js"),
+          "fp-local",
+        ),
+      },
+      sourceMtime: "2026-01-15T10:00:00.000Z",
+    });
+
+    const sourceMountedSource = makeSource({
+      id: makeSourceLocation(externalSourcePath, repoRoot),
+      kind: "model",
+      fingerprint: "fp-ext",
+      state: {
+        tag: "Indexed",
+        type: "@test/ext-model",
+        bundle: makeBundleLocation(bundlePath, "fp-ext"),
+      },
+      sourceMtime: "2026-01-15T10:00:00.000Z",
+    });
+
+    const ext = makeExtension({
+      name: "@local/test",
+      version: "0.0.0",
+      origin: "local",
+      extensionRoot: repoRoot,
+      sources: [localSource, sourceMountedSource],
+    });
+
+    repo.saveAll([ext]);
+
+    const rows = cat.findAll();
+    assertEquals(rows.length, 2, "both local and source-mounted rows survive");
+    const sourcePaths = rows.map((r) => r.source_path).sort();
+    assert(
+      sourcePaths.some((p) => p === canonicalizePath(externalSourcePath)),
+      "source-mounted row preserved",
+    );
+  });
+});
