@@ -45,6 +45,7 @@ import type { DefinitionRepository } from "../domain/definitions/repositories.ts
 import type { OutputRepository } from "../domain/models/repositories.ts";
 import type { DataQueryService } from "../domain/data/data_query_service.ts";
 import type { VaultService } from "../domain/vaults/vault_service.ts";
+import { resolveVaultRefsInData } from "../domain/models/data_writer.ts";
 import { SecretRedactor } from "../domain/secrets/mod.ts";
 import { createExtensionCelEnvironment } from "../infrastructure/cel/cel_evaluator.ts";
 import type { RpcChannel } from "../domain/remote/rpc_channel.ts";
@@ -505,6 +506,8 @@ export function createRemoteMethodContext(
       }, { signal }),
   } as unknown as DataQueryService;
 
+  const redactor = new SecretRedactor();
+
   const readResource = async (
     instanceName: string,
     version?: number,
@@ -518,10 +521,12 @@ export function createRemoteMethodContext(
     if (content === null) {
       return null;
     }
-    return JSON.parse(new TextDecoder().decode(content)) as Record<
+    const data = JSON.parse(new TextDecoder().decode(content)) as Record<
       string,
       unknown
     >;
+    await resolveVaultRefsInData(data, vaultService, redactor);
+    return data;
   };
 
   const deleteResource = async (instanceName: string): Promise<void> => {
@@ -556,7 +561,7 @@ export function createRemoteMethodContext(
     definitionRepository,
     outputRepository,
     vaultService,
-    redactor: new SecretRedactor(),
+    redactor,
     dataQueryService,
     writeResource: writers.writeResource,
     readResource,
