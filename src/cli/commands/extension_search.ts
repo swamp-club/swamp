@@ -27,6 +27,7 @@ import {
 import { requireRepoMarker } from "../repo_context.ts";
 import { resolveModelsDir } from "../resolve_models_dir.ts";
 import { UserError } from "../../domain/errors.ts";
+import { ReleaseChannel } from "../../domain/extensions/release_channel.ts";
 import {
   ExtensionApiClient,
 } from "../../infrastructure/http/extension_api_client.ts";
@@ -88,7 +89,7 @@ export const extensionSearchCommand = withRemoteOptions(
     )
     .option(
       "--channel <channel:string>",
-      "Filter by release channel: 'beta' or 'rc' (default: stable only)",
+      "Filter by release channel: 'beta', 'rc', or 'stable' (default: stable only)",
       { collect: true },
     )
     .option("--per-page <perPage:number>", "Results per page", { default: 20 })
@@ -144,13 +145,15 @@ export const extensionSearchCommand = withRemoteOptions(
   }
 
   // Validate channel values
-  const validChannels = ["beta", "rc"];
   for (const ch of options.channel ?? []) {
-    if (!validChannels.includes(ch)) {
+    if (!ReleaseChannel.isValid(ch)) {
       throw new UserError(
-        `Invalid channel: "${ch}". Must be one of: beta, rc. Stable is the default; omit --channel to use it.`,
+        `Invalid channel: "${ch}". Must be one of: beta, rc, stable.`,
       );
     }
+  }
+  if (options.channel) {
+    options.channel = options.channel.filter((ch: string) => ch !== "stable");
   }
 
   // Validate sort option value

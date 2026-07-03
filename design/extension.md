@@ -55,8 +55,8 @@ beta → rc → stable
 ```
 
 - **stable** — the default channel. All existing versions are stable. Omitting
-  `--channel` on push and pull means stable. Auto-resolve only considers
-  stable versions.
+  `--channel` or passing `--channel stable` on push and pull means stable.
+  Auto-resolve only considers stable versions.
 - **rc** — release candidate. Opt-in via `--channel rc`.
 - **beta** — early preview. Opt-in via `--channel beta`.
 
