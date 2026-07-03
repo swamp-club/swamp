@@ -58,6 +58,8 @@ import {
 } from "../../domain/repo/skill_dirs.ts";
 import { removeSupersededSkills } from "../../domain/repo/superseded_skills.ts";
 import { CustomToolSkillDirsRepository } from "../../infrastructure/persistence/custom_tool_skill_dirs_repository.ts";
+import { resolve, SEPARATOR } from "@std/path";
+import { homeDirectory } from "../../infrastructure/persistence/paths.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -109,15 +111,30 @@ async function syncGlobalSkills(
 
   if (customDirs.length === 0) return;
 
+  let home: string | null = null;
+  try {
+    home = homeDirectory();
+  } catch {
+    // Can't validate containment — skip custom dirs entirely
+  }
+  if (!home) return;
+
   const survivingCustomDirs: string[] = [];
   for (const dir of customDirs) {
-    if (!await dirExists(dir)) {
+    const resolved = resolve(dir);
+    if (
+      !resolved.startsWith(home + SEPARATOR) && resolved !== home
+    ) {
+      logger.debug`Skipping custom tool skill dir outside home: ${dir}`;
+      continue;
+    }
+    if (!await dirExists(resolved)) {
       logger.debug`Removing stale custom tool skill dir from registry: ${dir}`;
       continue;
     }
-    await skillAssets.copySkillsTo(dir);
-    await removeSupersededSkills(dir);
-    logger.info`Synced global skills to ${dir}`;
+    await skillAssets.copySkillsTo(resolved);
+    await removeSupersededSkills(resolved);
+    logger.info`Synced global skills to ${resolved}`;
     survivingCustomDirs.push(dir);
   }
 

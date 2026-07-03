@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { join } from "@std/path";
+import { join, resolve, SEPARATOR } from "@std/path";
 import { ensureDir } from "@std/fs";
 import { getLogger } from "@logtape/logtape";
 import { atomicWriteTextFile } from "../../infrastructure/persistence/atomic_write.ts";
@@ -572,19 +572,30 @@ export class RepoService {
     }
 
     for (const config of customConfigs) {
-      let globalDir: string;
+      let home: string;
       try {
-        globalDir = homeDirectory() + config.skillsDir.slice(1);
+        home = homeDirectory();
       } catch {
         logger
           .warn`Skipping global skill install for ${config.name}: home directory not available`;
         continue;
       }
 
+      const globalDir = resolve(
+        join(home, config.skillsDir.slice(2)),
+      );
+      if (
+        !globalDir.startsWith(home + SEPARATOR) && globalDir !== home
+      ) {
+        logger
+          .warn`Skipping global skill install for ${config.name}: path escapes home directory`;
+        continue;
+      }
+
       try {
         await this.skillAssets.copySkillsTo(globalDir);
         await removeSupersededSkills(globalDir);
-        logger.info`Installed global skills to ${globalDir}`;
+        logger.info`Synced global skills to ${globalDir}`;
         await customToolDirsRepo.addDir(globalDir);
       } catch (err) {
         logger
