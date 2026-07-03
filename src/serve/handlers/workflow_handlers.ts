@@ -70,7 +70,7 @@ import {
   type Principal,
   principalToString,
 } from "../../domain/access/principal.ts";
-import { createEphemeralStore } from "../../domain/data/ephemeral_store.ts";
+import { createEphemeralStore } from "../../infrastructure/persistence/ephemeral_store.ts";
 import {
   authorizeOrReject,
   type ConnectionContext,

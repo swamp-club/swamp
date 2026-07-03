@@ -53,7 +53,7 @@ import {
   mapWorkflowExecutionEvent,
 } from "../../libswamp/mod.ts";
 import type { WorkflowRunEvent } from "../../libswamp/mod.ts";
-import { createEphemeralStore } from "../../domain/data/ephemeral_store.ts";
+import { createEphemeralStore } from "../../infrastructure/persistence/ephemeral_store.ts";
 import { GIT_SHA } from "./version.ts";
 import {
   deepMerge,

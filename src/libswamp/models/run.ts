@@ -49,7 +49,7 @@ import type { CatalogStore } from "../../infrastructure/persistence/catalog_stor
 import {
   createEphemeralStore,
   wrapWithEphemeral,
-} from "../../domain/data/ephemeral_store.ts";
+} from "../../infrastructure/persistence/ephemeral_store.ts";
 import { buildMethodContext } from "../../domain/models/method_context.ts";
 import { createExtensionCelEnvironment } from "../../infrastructure/cel/cel_evaluator.ts";
 import type {

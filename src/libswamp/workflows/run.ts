@@ -50,7 +50,7 @@ import {
 } from "../../domain/inputs/mod.ts";
 import type { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
 import type { UnifiedDataRepository } from "../../domain/data/repositories.ts";
-import { createEphemeralStore } from "../../domain/data/ephemeral_store.ts";
+import { createEphemeralStore } from "../../infrastructure/persistence/ephemeral_store.ts";
 import type { DefinitionRepository } from "../../domain/definitions/repositories.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import { WorkflowTelemetryBridge } from "./telemetry_bridge.ts";

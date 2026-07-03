@@ -18,15 +18,15 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { getLogger } from "@logtape/logtape";
-import { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
-import { InMemoryUnifiedDataRepository } from "../../infrastructure/persistence/in_memory_data_repository.ts";
-import { DataQueryService } from "./data_query_service.ts";
+import { CatalogStore } from "./catalog_store.ts";
+import { InMemoryUnifiedDataRepository } from "./in_memory_data_repository.ts";
+import { DataQueryService } from "../../domain/data/data_query_service.ts";
+import { CompositeUnifiedDataRepository } from "../../domain/data/composite_data_repository.ts";
+import { CompositeDataQueryService } from "../../domain/data/composite_data_query_service.ts";
+import type { UnifiedDataRepository } from "../../domain/data/repositories.ts";
+import type { Namespace } from "../../domain/data/namespace.ts";
 
 const logger = getLogger(["swamp", "data", "ephemeral"]);
-import { CompositeUnifiedDataRepository } from "./composite_data_repository.ts";
-import { CompositeDataQueryService } from "./composite_data_query_service.ts";
-import type { UnifiedDataRepository } from "./repositories.ts";
-import type { Namespace } from "./namespace.ts";
 
 export interface EphemeralStore {
   repo: InMemoryUnifiedDataRepository;
