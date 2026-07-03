@@ -682,22 +682,63 @@ export class ModelResolver {
       }
     }
 
-    // Create data namespace — every helper delegates to DataQueryService.
-    // The query service owns the implicit `isLatest == true` injection, so
-    // helpers compose predicates as if the catalog exposed history directly.
-    //
-    // Point-lookup helpers (latest, version, findBySpec, findByTag,
-    // listVersions) default to own-namespace scoping. Cross-namespace access
-    // uses "ns:model" prefix syntax; wildcard "*:model" queries all namespaces
-    // with an ambiguity check. data.query() spans all namespaces by default.
-    //
-    // Most helpers are async because the query path resolves vault
-    // references in result attributes. Callers in sync CEL contexts (e.g.
-    // `forEach.in`) must go through `CelEvaluator.evaluateAsync`, which
-    // cel-js natively propagates Promises through.
     const ownNamespace = this.dataRepo?.namespace ?? ("" as Namespace);
+    context.data = this.buildDataNamespace(ownNamespace, coordsMap);
+
+    // Create file namespace for lazy-loading file contents
+    context.file = {
+      contents: (modelName: string, specName: string): string | null => {
+        const modelData = context.model[modelName];
+        if (!modelData?.file?.[specName]) return null;
+        // Get the first instance under the spec
+        const instances = modelData.file[specName];
+        const firstKey = Object.keys(instances)[0];
+        if (!firstKey) return null;
+        const filePath = instances[firstKey].path;
+        try {
+          return Deno.readTextFileSync(filePath);
+        } catch {
+          return null;
+        }
+      },
+    };
+
+    // Build self context if provided
+    if (selfDefinition && selfType) {
+      context.self = {
+        id: selfDefinition.id,
+        name: selfDefinition.name,
+        version: selfDefinition.version,
+        tags: selfDefinition.tags,
+        globalArguments: selfDefinition.globalArguments,
+      };
+    }
+
+    return context;
+  }
+
+  /**
+   * Builds a lightweight expression context with only the data and env
+   * namespaces — no definition loading, no model data, no file namespace.
+   * Used by --last-evaluated where definitions are already cached and only
+   * deferred data.* expressions need resolution at step execution time.
+   */
+  buildLightContext(): ExpressionContext {
+    const ownNamespace = this.dataRepo?.namespace ?? ("" as Namespace);
+    const context: ExpressionContext = {
+      model: {},
+      env: buildEnvContext(),
+    };
+    context.data = this.buildDataNamespace(ownNamespace, new Map());
+    return context;
+  }
+
+  private buildDataNamespace(
+    ownNamespace: Namespace,
+    coordsMap: ModelCoordinatesMap,
+  ): DataNamespace {
     const latestCache = new Map<string, DataRecord | null>();
-    context.data = {
+    return {
       version: async (
         rawModelName: string,
         dataName: string,
@@ -731,8 +772,6 @@ export class ModelResolver {
           const cacheKey = `${nsForKey}\0${ns.modelName}\0${dataName}`;
           if (latestCache.has(cacheKey)) return latestCache.get(cacheKey)!;
 
-          // Direct filesystem lookup via coordsMap — same O(1) path as
-          // `swamp data get`, bypassing the catalog entirely.
           const coords = coordsMap.get(ns.modelName);
           if (coords && coords.length > 0) {
             for (const { modelType, modelId } of coords) {
@@ -764,9 +803,6 @@ export class ModelResolver {
             }
           }
 
-          // Fallback to the catalog for orphan data (no matching definition).
-          // Parse the resolved namespace from the predicate for cross-namespace
-          // lookups (e.g. "security:scanner" → namespace "security").
           if (this.dataQueryService) {
             const targetNs = ns.namespacePredicate
               ? ns.namespacePredicate.match(
@@ -786,7 +822,6 @@ export class ModelResolver {
           return null;
         }
 
-        // Wildcard lookups fall back to the catalog query path.
         if (!this.dataQueryService) return null;
         const predicate = `modelName == "${escapeCelString(ns.modelName)}" ` +
           `&& name == "${escapeCelString(dataName)}"` +
@@ -800,16 +835,10 @@ export class ModelResolver {
       listVersions: (rawModelName: string, dataName: string): number[] => {
         if (!this.dataQueryService) return [];
         const ns = routeNamespace(rawModelName, ownNamespace);
-        // `version >= 0` is the history opt-in: it suppresses the implicit
-        // `isLatest == true` injection so every version of this data item
-        // is returned. The select projection extracts just the version
-        // numbers. querySync is used so this helper can be called from
-        // synchronous CEL contexts.
         const predicate = `modelName == "${escapeCelString(ns.modelName)}" ` +
           `&& name == "${escapeCelString(dataName)}" && version >= 0` +
           ns.namespacePredicate;
         if (ns.isWildcard) {
-          // Can't check ambiguity on projected number[], so query records first.
           const records = this.dataQueryService.querySync(
             predicate,
           ) as DataRecord[];
@@ -860,37 +889,6 @@ export class ModelResolver {
         return await this.dataQueryService.query(predicate, { select });
       },
     };
-
-    // Create file namespace for lazy-loading file contents
-    context.file = {
-      contents: (modelName: string, specName: string): string | null => {
-        const modelData = context.model[modelName];
-        if (!modelData?.file?.[specName]) return null;
-        // Get the first instance under the spec
-        const instances = modelData.file[specName];
-        const firstKey = Object.keys(instances)[0];
-        if (!firstKey) return null;
-        const filePath = instances[firstKey].path;
-        try {
-          return Deno.readTextFileSync(filePath);
-        } catch {
-          return null;
-        }
-      },
-    };
-
-    // Build self context if provided
-    if (selfDefinition && selfType) {
-      context.self = {
-        id: selfDefinition.id,
-        name: selfDefinition.name,
-        version: selfDefinition.version,
-        tags: selfDefinition.tags,
-        globalArguments: selfDefinition.globalArguments,
-      };
-    }
-
-    return context;
   }
 
   /**

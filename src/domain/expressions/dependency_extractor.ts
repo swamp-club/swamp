@@ -259,10 +259,11 @@ export function extractDataFunctionDependencies(expression: string): string[] {
  * Checks if an expression has any data function calls.
  *
  * @param expression - The CEL expression to check
- * @returns True if the expression contains data.version, data.latest, or data.listVersions
+ * @returns True if the expression contains any data.* function call
  */
 export function hasDataFunctionDependency(expression: string): boolean {
-  return /data\.(version|latest|listVersions|findBySpec)\s*\(/.test(expression);
+  return /data\.(version|latest|listVersions|findBySpec|query|findByTag)\s*\(/
+    .test(expression);
 }
 
 /**

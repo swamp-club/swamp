@@ -214,6 +214,22 @@ Deno.test("hasDataFunctionDependency returns true for data.listVersions", () => 
   );
 });
 
+Deno.test("hasDataFunctionDependency returns true for data.query", () => {
+  assertEquals(
+    hasDataFunctionDependency(
+      'data.query(\'modelName == "fleet" && specName == "host"\')',
+    ),
+    true,
+  );
+});
+
+Deno.test("hasDataFunctionDependency returns true for data.findByTag", () => {
+  assertEquals(
+    hasDataFunctionDependency("data.findByTag('env', 'prod')"),
+    true,
+  );
+});
+
 Deno.test("hasDataFunctionDependency returns false for other expressions", () => {
   assertEquals(hasDataFunctionDependency("model.foo.data.bar"), false);
   assertEquals(hasDataFunctionDependency("self.name"), false);
@@ -333,6 +349,22 @@ Deno.test("hasStepOutputDependency returns true for data function calls", () => 
 Deno.test("hasStepOutputDependency returns true for file.contents calls", () => {
   assertEquals(
     hasStepOutputDependency("file.contents('my-model', 'report')"),
+    true,
+  );
+});
+
+Deno.test("hasStepOutputDependency returns true for data.query calls", () => {
+  assertEquals(
+    hasStepOutputDependency(
+      "data.query('modelName == \"scanner\"')",
+    ),
+    true,
+  );
+});
+
+Deno.test("hasStepOutputDependency returns true for data.findByTag calls", () => {
+  assertEquals(
+    hasStepOutputDependency("data.findByTag('env', 'prod')"),
     true,
   );
 });

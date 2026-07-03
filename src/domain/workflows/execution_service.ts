@@ -89,7 +89,6 @@ import type { MethodResult, ModelDefinition } from "../models/model.ts";
 import { ExpressionEvaluationService } from "../expressions/expression_evaluation_service.ts";
 import { resolveAvailableExpressions } from "../expressions/available_expression_resolver.ts";
 import {
-  buildEnvContext,
   type DataRecord,
   type ExpressionContext,
   type FileDataRecord,
@@ -602,8 +601,15 @@ export class DefaultStepExecutor implements StepExecutor {
       }
       evaluatedDefinition = lastEvaluated;
 
-      // Values are already resolved in the pre-evaluated workflow
-      if (task.inputs) {
+      // Resolve deferred expressions (data.*, file.contents) that were
+      // skipped during workflow evaluate.  evaluateData only touches
+      // remaining ${{ }} markers; already-resolved values pass through.
+      if (task.inputs && ctx.expressionContext) {
+        stepInputs = await expressionEvaluator.evaluateData(
+          task.inputs,
+          ctx.expressionContext,
+        ) as Record<string, unknown>;
+      } else if (task.inputs) {
         stepInputs = task.inputs;
       }
     } else if (ctx.expressionContext) {
@@ -1461,13 +1467,10 @@ export class WorkflowExecutionService {
           // Use the fully evaluated workflow (forEach expanded, expressions resolved)
           workflow = lastEvaluated;
 
-          // Build a minimal expression context so step outputs can be tracked
-          // and deferred expressions (e.g. model.previous.resource.*) can be
-          // evaluated at step execution time.
-          expressionContext = {
-            model: {},
-            env: buildEnvContext(),
-          };
+          // Build a lightweight context with only data.* and env so
+          // deferred data expressions can be resolved at step execution
+          // time without the cost of loading all definitions from disk.
+          expressionContext = this.modelResolver.buildLightContext();
           if (options?.inputs) {
             expressionContext.inputs = options.inputs;
           }
