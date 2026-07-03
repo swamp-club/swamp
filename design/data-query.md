@@ -307,11 +307,17 @@ The catalog builds up incrementally:
 
 1. **Write-through** — every data mutation upserts or removes a catalog row.
    New data is immediately queryable.
-2. **Backfill on first query** — on the first call to `DataQueryService.query()`,
-   if the catalog is not marked as populated, a one-time `findAllGlobal()` runs,
-   bulk-inserts all existing metadata, and sets a `populated` flag in the
-   `catalog_meta` table.
-3. **Self-healing** — if `_catalog.db` is deleted or corrupted, the next query
+2. **Scoped backfill** — `getLatestRecord()` uses a three-tier lookup that
+   avoids the full `findAllGlobal()` walk. First it tries the indexed SQL
+   lookup (O(1) — catches write-through rows). If the catalog is not populated
+   and the row is missing (or stale), it runs a scoped filesystem walk for just
+   the requested `(modelName, dataName)` pair, upserts matching rows, and
+   retries. The `populated` flag is not set by scoped backfill.
+3. **Full backfill on first query** — on the first call to
+   `DataQueryService.query()`, if the catalog is not marked as populated, a
+   one-time `findAllGlobal()` runs, bulk-inserts all existing metadata, and
+   sets a `populated` flag in the `catalog_meta` table.
+4. **Self-healing** — if `_catalog.db` is deleted or corrupted, the next query
    triggers a backfill automatically.
 
 ### Remote Datastores (S3)

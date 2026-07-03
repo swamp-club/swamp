@@ -17,7 +17,7 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { assertEquals, assertThrows } from "@std/assert";
+import { assertEquals, assertNotEquals, assertThrows } from "@std/assert";
 import { join } from "@std/path";
 import { ensureDirSync } from "@std/fs";
 import { stringify as stringifyYaml } from "@std/yaml";
@@ -907,4 +907,208 @@ Deno.test("DataQueryService: foreign content fetcher does not fire for own names
   assertEquals(fetched, false);
 
   catalog.close();
+});
+
+// ── Scoped backfill tests (issue #919) ─────────────────────────────────────
+
+function createOnDiskData(
+  dir: string,
+  typeNormalized: string,
+  modelId: string,
+  dataName: string,
+  modelName: string,
+  version = 1,
+): void {
+  const versionDir = join(
+    dir,
+    ".swamp",
+    "data",
+    typeNormalized,
+    modelId,
+    dataName,
+    String(version),
+  );
+  ensureDirSync(versionDir);
+  Deno.writeTextFileSync(
+    join(versionDir, "raw"),
+    JSON.stringify({ value: `${modelName}/${dataName}` }),
+  );
+  Deno.writeTextFileSync(
+    join(versionDir, "metadata.yaml"),
+    stringifyYaml({
+      name: dataName,
+      id: "00000000-0000-1000-8000-000000000001",
+      version,
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 5,
+      streaming: false,
+      tags: { type: "resource", specName: dataName, modelName },
+      ownerDefinition: { ownerType: "model-method", ownerRef: modelId },
+      createdAt: "2026-01-01T00:00:00.000Z",
+    }),
+  );
+  Deno.writeTextFileSync(
+    join(dir, ".swamp", "data", typeNormalized, modelId, dataName, "latest"),
+    String(version),
+  );
+}
+
+Deno.test("getLatestRecord: check-first returns write-through row without backfill", async () => {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-scoped-test-" });
+  const dbPath = join(dir, ".swamp", "data", "_catalog.db");
+  const catalog = new CatalogStore(dbPath);
+  // Do NOT mark populated — simulates invalidated catalog
+
+  // Create data on disk + upsert via write-through
+  createOnDiskData(dir, "test-model", "model-001", "my-data", "ingest");
+  catalog.upsertNewVersion(makeRow());
+
+  const dataRepo = new FileSystemUnifiedDataRepository(dir, undefined, catalog);
+  const service = new DataQueryService(catalog, dataRepo);
+
+  const record = await service.getLatestRecord("ingest", "my-data");
+  assertNotEquals(record, null);
+  assertEquals(record!.name, "my-data");
+  assertEquals(record!.modelName, "ingest");
+
+  catalog.close();
+  Deno.removeSync(dir, { recursive: true });
+});
+
+Deno.test("getLatestRecord: stale row falls through to scoped backfill", async () => {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-scoped-stale-test-" });
+  const dbPath = join(dir, ".swamp", "data", "_catalog.db");
+  const catalog = new CatalogStore(dbPath);
+  // Do NOT mark populated
+
+  // Create a catalog row WITHOUT corresponding on-disk data (stale row)
+  catalog.upsertNewVersion(makeRow({
+    type_normalized: "stale-type",
+    model_id: "stale-model",
+    data_name: "stale-data",
+    model_name: "stale-model-name",
+  }));
+
+  const dataRepo = new FileSystemUnifiedDataRepository(dir, undefined, catalog);
+  const service = new DataQueryService(catalog, dataRepo);
+
+  // Should detect stale row and return null (no on-disk data to find)
+  const record = await service.getLatestRecord(
+    "stale-model-name",
+    "stale-data",
+  );
+  assertEquals(record, null);
+
+  catalog.close();
+  Deno.removeSync(dir, { recursive: true });
+});
+
+Deno.test("getLatestRecord: scoped backfill finds orphan data without full backfill", async () => {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-scoped-orphan-test-" });
+  const dbPath = join(dir, ".swamp", "data", "_catalog.db");
+  const catalog = new CatalogStore(dbPath);
+  // Do NOT mark populated
+
+  // Create multiple data items on disk — only one is the target
+  createOnDiskData(dir, "type-a", "model-aaa", "result", "model-a");
+  createOnDiskData(dir, "type-b", "model-bbb", "result", "model-b");
+  createOnDiskData(
+    dir,
+    "type-orphan",
+    "model-orphan",
+    "orphan-output",
+    "orphan-model",
+  );
+
+  const dataRepo = new FileSystemUnifiedDataRepository(dir, undefined, catalog);
+  const service = new DataQueryService(catalog, dataRepo);
+
+  // Look up the orphan data — should find it via scoped backfill
+  const record = await service.getLatestRecord("orphan-model", "orphan-output");
+  assertNotEquals(record, null);
+  assertEquals(record!.name, "orphan-output");
+  assertEquals(record!.modelName, "orphan-model");
+
+  // Catalog should NOT be marked as populated (scoped backfill doesn't set it)
+  assertEquals(catalog.isPopulated(), false);
+
+  catalog.close();
+  Deno.removeSync(dir, { recursive: true });
+});
+
+Deno.test("getLatestRecord: query() still triggers full backfill independently", async () => {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-scoped-query-test-" });
+  const dbPath = join(dir, ".swamp", "data", "_catalog.db");
+  const catalog = new CatalogStore(dbPath);
+  // Do NOT mark populated
+
+  createOnDiskData(dir, "type-a", "model-aaa", "result", "model-a");
+  createOnDiskData(dir, "type-b", "model-bbb", "output", "model-b");
+
+  const dataRepo = new FileSystemUnifiedDataRepository(dir, undefined, catalog);
+  const service = new DataQueryService(catalog, dataRepo);
+
+  // getLatestRecord for one item — scoped backfill
+  const record = await service.getLatestRecord("model-a", "result");
+  assertNotEquals(record, null);
+  assertEquals(catalog.isPopulated(), false);
+
+  // query() should trigger full backfill and find ALL data
+  const results = await service.query('modelName == "model-b"') as DataRecord[];
+  assertEquals(results.length, 1);
+  assertEquals(results[0].modelName, "model-b");
+  assertEquals(catalog.isPopulated(), true);
+
+  catalog.close();
+  Deno.removeSync(dir, { recursive: true });
+});
+
+Deno.test("getLatestRecord: populated catalog returns null for missing data", async () => {
+  const { catalog, service } = setupTest();
+  // setupTest calls markPopulated — catalog is populated
+
+  const record = await service.getLatestRecord("nonexistent", "missing");
+  assertEquals(record, null);
+
+  catalog.close();
+});
+
+Deno.test("getLatestRecord: namespace filtering works in scoped path", async () => {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-scoped-ns-test-" });
+  const dbPath = join(dir, ".swamp", "data", "_catalog.db");
+  const catalog = new CatalogStore(dbPath);
+  // Do NOT mark populated
+
+  // Create data on disk + catalog row with specific namespace
+  createOnDiskData(dir, "type-a", "model-aaa", "result", "model-a");
+  catalog.upsertNewVersion(makeRow({
+    namespace: "team-alpha",
+    type_normalized: "type-a",
+    model_id: "model-aaa",
+    data_name: "result",
+    model_name: "model-a",
+  }));
+
+  const dataRepo = new FileSystemUnifiedDataRepository(dir, undefined, catalog);
+  const service = new DataQueryService(catalog, dataRepo);
+
+  // Lookup with matching namespace — should find
+  const found = await service.getLatestRecord(
+    "model-a",
+    "result",
+    "team-alpha",
+  );
+  assertNotEquals(found, null);
+
+  // Lookup with wrong namespace — should not find
+  const notFound = await service.getLatestRecord(
+    "model-a",
+    "result",
+    "team-beta",
+  );
+  assertEquals(notFound, null);
+
+  catalog.close();
+  Deno.removeSync(dir, { recursive: true });
 });

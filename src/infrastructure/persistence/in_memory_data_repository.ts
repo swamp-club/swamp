@@ -816,4 +816,19 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
 
     return results;
   }
+
+  findByTaggedName(
+    modelName: string,
+    dataName: string,
+  ): Promise<Array<{ data: Data; modelType: ModelType; modelId: string }>> {
+    this.ensureNotDisposed();
+    return Promise.resolve(
+      this.findAllGlobalSync().filter(
+        ({ data }) =>
+          data.name === dataName &&
+          data.tags["modelName"] === modelName &&
+          !data.isRenamed && !data.isDeleted,
+      ),
+    );
+  }
 }

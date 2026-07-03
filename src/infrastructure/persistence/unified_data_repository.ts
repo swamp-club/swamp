@@ -1305,6 +1305,85 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     return results;
   }
 
+  async findByTaggedName(
+    modelName: string,
+    dataName: string,
+  ): Promise<Array<{ data: Data; modelType: ModelType; modelId: string }>> {
+    const results: Array<
+      { data: Data; modelType: ModelType; modelId: string }
+    > = [];
+    const baseDir = this.getBaseDir();
+    await this.collectByTaggedName(baseDir, [], dataName, modelName, results);
+    return results;
+  }
+
+  private async collectByTaggedName(
+    currentDir: string,
+    pathSegments: string[],
+    targetDataName: string,
+    targetModelName: string,
+    results: Array<{ data: Data; modelType: ModelType; modelId: string }>,
+  ): Promise<void> {
+    try {
+      const entries: string[] = [];
+      for await (const entry of Deno.readDir(currentDir)) {
+        if (entry.isDirectory && entry.name !== "_catalog.db") {
+          entries.push(entry.name);
+        }
+      }
+
+      for (const name of entries) {
+        const childPath = join(currentDir, name);
+        const childSegments = [...pathSegments, name];
+
+        if (await this.isModelIdDirectory(childPath)) {
+          if (childSegments.length < 2) continue;
+          const typeSegments = pathSegments;
+          const modelId = name;
+
+          // Probe for the target dataName directory under this model-id
+          const dataNameDir = join(childPath, targetDataName);
+          try {
+            const stat = await Deno.stat(dataNameDir);
+            if (!stat.isDirectory) continue;
+          } catch {
+            continue;
+          }
+
+          const typeStr = typeSegments.join("/");
+          try {
+            const modelType = ModelType.create(typeStr);
+            const data = await this.findByName(
+              modelType,
+              modelId,
+              targetDataName,
+            );
+            if (
+              data && !data.isRenamed && !data.isDeleted &&
+              data.tags["modelName"] === targetModelName
+            ) {
+              results.push({ data, modelType, modelId });
+            }
+          } catch {
+            // Skip invalid model types or read errors
+          }
+        } else {
+          await this.collectByTaggedName(
+            childPath,
+            childSegments,
+            targetDataName,
+            targetModelName,
+            results,
+          );
+        }
+      }
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) {
+        throw error;
+      }
+    }
+  }
+
   private collectAllDataSync(
     currentDir: string,
     pathSegments: string[],
