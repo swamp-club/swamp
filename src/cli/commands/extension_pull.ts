@@ -209,16 +209,19 @@ export const extensionPullCommand = new Command()
   .option("--force", "Overwrite existing files without prompting")
   .option(
     "--channel <channel:string>",
-    "Release channel: 'beta' or 'rc' (default: stable)",
+    "Release channel: 'beta', 'rc', or 'stable' (default: stable)",
   )
   .action(async function (options: AnyOptions, extension: string) {
-    const channel: string | undefined = options.channel;
+    let channel: string | undefined = options.channel;
     if (
-      channel !== undefined && !ReleaseChannel.isPrereleaseName(channel)
+      channel !== undefined && !ReleaseChannel.isValid(channel)
     ) {
       throw new UserError(
-        `Invalid channel: "${channel}". Must be one of: beta, rc. Stable is the default; omit --channel to use it.`,
+        `Invalid channel: "${channel}". Must be one of: beta, rc, stable.`,
       );
+    }
+    if (channel === "stable") {
+      channel = undefined;
     }
 
     const ctx = createContext(options as GlobalOptions, ["extension", "pull"]);

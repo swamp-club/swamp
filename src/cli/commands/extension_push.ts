@@ -203,7 +203,7 @@ export const extensionPushCommand = new Command()
   )
   .option(
     "--channel <channel:string>",
-    "Release channel: 'beta' or 'rc' (default: stable)",
+    "Release channel: 'beta', 'rc', or 'stable' (default: stable)",
   )
   .option(
     "--version-suffix <type:string>",
@@ -212,11 +212,14 @@ export const extensionPushCommand = new Command()
   .action(async function (options: ExtensionPushOptions, manifestPath: string) {
     if (
       options.channel !== undefined &&
-      !ReleaseChannel.isPrereleaseName(options.channel)
+      !ReleaseChannel.isValid(options.channel)
     ) {
       throw new UserError(
-        `Invalid channel: "${options.channel}". Must be one of: beta, rc. Stable is the default; omit --channel to use it.`,
+        `Invalid channel: "${options.channel}". Must be one of: beta, rc, stable.`,
       );
+    }
+    if (options.channel === "stable") {
+      options.channel = undefined;
     }
     if (
       options.versionSuffix !== undefined &&
