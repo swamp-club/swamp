@@ -418,4 +418,35 @@ export class CompositeUnifiedDataRepository implements UnifiedDataRepository {
     }
     return merged;
   }
+
+  async findByTaggedName(
+    modelName: string,
+    dataName: string,
+  ): Promise<Array<{ data: Data; modelType: ModelType; modelId: string }>> {
+    const ephResults = await this.ephemeral.findByTaggedName(
+      modelName,
+      dataName,
+    );
+    const persResults = await this.persistent.findByTaggedName(
+      modelName,
+      dataName,
+    );
+
+    const seen = new Set<string>();
+    const merged: Array<
+      { data: Data; modelType: ModelType; modelId: string }
+    > = [];
+    for (const item of ephResults) {
+      seen.add(
+        `${item.modelType.normalized}:${item.modelId}:${item.data.name}`,
+      );
+      merged.push(item);
+    }
+    for (const item of persResults) {
+      const key =
+        `${item.modelType.normalized}:${item.modelId}:${item.data.name}`;
+      if (!seen.has(key)) merged.push(item);
+    }
+    return merged;
+  }
 }

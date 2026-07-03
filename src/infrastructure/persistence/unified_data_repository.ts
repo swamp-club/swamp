@@ -59,6 +59,12 @@ export {
 
 const logger = getSwampLogger(["data", "repository"]);
 
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+function looksLikeModelId(name: string): boolean {
+  return UUID_RE.test(name);
+}
+
 /**
  * File system implementation of UnifiedDataRepository.
  *
@@ -1303,6 +1309,82 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     const baseDir = this.getBaseDir();
     this.collectAllDataSync(baseDir, [], results);
     return results;
+  }
+
+  async findByTaggedName(
+    modelName: string,
+    dataName: string,
+  ): Promise<Array<{ data: Data; modelType: ModelType; modelId: string }>> {
+    const results: Array<
+      { data: Data; modelType: ModelType; modelId: string }
+    > = [];
+    const baseDir = this.getBaseDir();
+    await this.collectByTaggedName(baseDir, [], dataName, modelName, results);
+    return results;
+  }
+
+  private async collectByTaggedName(
+    currentDir: string,
+    pathSegments: string[],
+    targetDataName: string,
+    targetModelName: string,
+    results: Array<{ data: Data; modelType: ModelType; modelId: string }>,
+  ): Promise<void> {
+    try {
+      const entries: string[] = [];
+      for await (const entry of Deno.readDir(currentDir)) {
+        if (entry.isDirectory) {
+          entries.push(entry.name);
+        }
+      }
+
+      for (const name of entries) {
+        const childPath = join(currentDir, name);
+
+        if (looksLikeModelId(name)) {
+          // Model-id directory — probe for the target dataName only.
+          if (pathSegments.length < 1) continue;
+          const dataNameDir = join(childPath, targetDataName);
+          try {
+            const stat = await Deno.stat(dataNameDir);
+            if (!stat.isDirectory) continue;
+          } catch {
+            continue;
+          }
+
+          const typeStr = pathSegments.join("/");
+          try {
+            const modelType = ModelType.create(typeStr);
+            const data = await this.findByName(
+              modelType,
+              name,
+              targetDataName,
+            );
+            if (
+              data && !data.isRenamed && !data.isDeleted &&
+              data.tags["modelName"] === targetModelName
+            ) {
+              results.push({ data, modelType, modelId: name });
+            }
+          } catch {
+            // Skip invalid model types or read errors
+          }
+        } else {
+          // Type directory — recurse.
+          await this.collectByTaggedName(
+            childPath,
+            [...pathSegments, name],
+            targetDataName,
+            targetModelName,
+            results,
+          );
+        }
+      }
+    } catch (error) {
+      if (!(error instanceof Deno.errors.NotFound)) {
+        throw error;
+      }
+    }
   }
 
   private collectAllDataSync(

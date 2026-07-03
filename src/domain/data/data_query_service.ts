@@ -34,7 +34,7 @@ import {
   referencesContent,
   validateFieldReferences,
 } from "./query_predicate.ts";
-import type { ModelType } from "../models/model_type.ts";
+import { ModelType } from "../models/model_type.ts";
 import type { Data } from "./data.ts";
 import { fromRow } from "./data_record_mapper.ts";
 import type { VaultService } from "../vaults/vault_service.ts";
@@ -106,30 +106,85 @@ export class DataQueryService {
 
   /**
    * Direct indexed lookup for the latest version of a specific data item.
-   * Bypasses the generic CEL-predicate-over-full-table-scan path by using
-   * a SQL WHERE query with the idx_catalog_latest_lookup index.
+   *
+   * Uses a three-tier strategy to avoid a full catalog backfill:
+   * 1. Try the indexed SQL lookup first — if the catalog is populated or the
+   *    row exists from a write-through update, return immediately.
+   * 2. If the catalog is not populated and the row exists but the on-disk
+   *    data is gone (stale row after invalidate()), fall through.
+   * 3. If the catalog is not populated and no row exists (or row was stale),
+   *    run a scoped backfill for just this (modelName, dataName) pair, then
+   *    retry the indexed lookup.
    */
   async getLatestRecord(
     modelName: string,
     dataName: string,
     namespace?: string,
   ): Promise<DataRecord | null> {
-    if (!this.catalogStore.isPopulated()) {
-      if (this.backfillPromise) {
-        await this.backfillPromise;
-      } else {
-        const promise = this.backfillAsync();
-        this.backfillPromise = promise;
-        try {
-          await promise;
-        } finally {
-          this.backfillPromise = null;
-        }
-      }
+    const populated = this.catalogStore.isPopulated();
+
+    // If a full backfill is already in-flight, await it — it will populate
+    // everything including our target.
+    if (!populated && this.backfillPromise) {
+      await this.backfillPromise;
+      return this.buildRecordFromRow(modelName, dataName, namespace);
     }
+
+    // Tier 1: try the indexed SQL lookup.
     const row = this.catalogStore.findLatestRow(modelName, dataName, namespace);
-    if (!row) return null;
-    const record = fromRow(row, this.dataRepo, true, false);
+    if (row) {
+      if (populated) {
+        return this.buildRecordFromRow(modelName, dataName, namespace, row);
+      }
+      // Catalog not populated — verify the data still exists on disk to
+      // guard against stale rows left behind after invalidate().
+      const content = this.dataRepo.getContentSync(
+        ModelType.create(row.type_normalized),
+        row.model_id,
+        row.data_name,
+        row.version,
+      );
+      if (content !== null) {
+        return this.buildRecordFromRow(modelName, dataName, namespace, row);
+      }
+      // Stale row — fall through to scoped backfill
+    }
+
+    if (populated) return null;
+
+    // Tier 2: scoped backfill for just this (modelName, dataName) pair.
+    await this.scopedBackfill(modelName, dataName);
+    const freshRow = this.catalogStore.findLatestRow(
+      modelName,
+      dataName,
+      namespace,
+    );
+    if (!freshRow) return null;
+    // Verify the row points to real on-disk data (it may be the same
+    // stale row that triggered the scoped backfill).
+    const freshContent = this.dataRepo.getContentSync(
+      ModelType.create(freshRow.type_normalized),
+      freshRow.model_id,
+      freshRow.data_name,
+      freshRow.version,
+    );
+    if (freshContent === null) return null;
+    return this.buildRecordFromRow(modelName, dataName, namespace, freshRow);
+  }
+
+  private async buildRecordFromRow(
+    modelName: string,
+    dataName: string,
+    namespace: string | undefined,
+    row?: CatalogRow | null,
+  ): Promise<DataRecord | null> {
+    const r = row ?? this.catalogStore.findLatestRow(
+      modelName,
+      dataName,
+      namespace,
+    );
+    if (!r) return null;
+    const record = fromRow(r, this.dataRepo, true, false);
     if (this.vaultService && Object.keys(record.attributes).length > 0) {
       try {
         await resolveVaultRefsInData(
@@ -142,6 +197,20 @@ export class DataQueryService {
       }
     }
     return record;
+  }
+
+  private async scopedBackfill(
+    modelName: string,
+    dataName: string,
+  ): Promise<void> {
+    const items = await this.dataRepo.findByTaggedName(modelName, dataName);
+
+    for (const { data: latest, modelType, modelId } of items) {
+      if (latest.isRenamed || latest.isDeleted) continue;
+      this.catalogStore.upsert(
+        this.toCatalogRow(latest, modelType, modelId, true),
+      );
+    }
   }
 
   /**

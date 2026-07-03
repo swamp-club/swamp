@@ -218,6 +218,7 @@ function createRemoteDataRepository(
     findAllForModelSync: () =>
       unsupported("dataRepository.findAllForModelSync"),
     findAllGlobalSync: () => unsupported("dataRepository.findAllGlobalSync"),
+    findByTaggedName: () => unsupported("dataRepository.findByTaggedName"),
   } as UnifiedDataRepository;
 }
 
