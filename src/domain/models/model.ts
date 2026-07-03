@@ -291,6 +291,7 @@ export interface MethodContext {
     target?: string;
     labels?: Record<string, string>;
     platform?: string;
+    queueTimeoutMs?: number;
   };
 
   /**

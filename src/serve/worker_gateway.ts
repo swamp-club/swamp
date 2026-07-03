@@ -139,6 +139,8 @@ export interface WorkerGatewayOptions {
   onWorkerDisconnected?: (worker: WorkerSnapshot) => void;
   /** The grace window elapsed without reconnection; the worker is gone. */
   onGraceExpired?: (worker: WorkerSnapshot) => void;
+  /** A worker enrolled or re-enrolled (including within the grace window). */
+  onWorkerEnrolled?: (worker: WorkerSnapshot) => void;
   /** Test seam: overrides the modelMethodRun-backed transition runner. */
   runModelMethod?: ModelMethodRunner;
   /**
@@ -453,8 +455,10 @@ export class WorkerGateway {
         worker: name,
         mode: reconnecting ? "reconnect" : "first-connect",
       });
+      const snap = this.#snapshot(entry);
+      this.#options.onWorkerEnrolled?.(snap);
       if (entry.status === "idle") {
-        this.#options.onWorkerIdle?.(this.#snapshot(entry));
+        this.#options.onWorkerIdle?.(snap);
       }
       return {
         workerId: name,

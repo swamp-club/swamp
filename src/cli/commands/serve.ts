@@ -238,6 +238,9 @@ export function collectServeExtraArgs(options: AnyOptions): string[] {
   if (options.wsIdleTimeout) {
     args.push("--ws-idle-timeout", options.wsIdleTimeout as string);
   }
+  if (options.queueTimeout) {
+    args.push("--queue-timeout", options.queueTimeout as string);
+  }
   return args;
 }
 
@@ -470,6 +473,11 @@ export const serveCommand = new Command()
     "WebSocket idle timeout — how long the server waits for a pong before closing the connection (env: SWAMP_WS_IDLE_TIMEOUT). " +
       "Accepts seconds (30), explicit units (2m, 5m), or 0 to disable. Default: 30s",
   )
+  .option(
+    "--queue-timeout <duration:string>",
+    "How long a placed step queues for a matching worker before timing out. " +
+      "Accepts seconds (60), explicit units (2m, 10m), or 0 to wait forever. Default: 60s",
+  )
   .example(
     "Enable TLS",
     "swamp serve --cert-file server.crt --key-file server.key",
@@ -531,6 +539,14 @@ export const serveCommand = new Command()
       }
     }
 
+    const queueTimeoutRaw = options.queueTimeout as string | undefined;
+    let queueTimeoutMs: number | undefined;
+    if (queueTimeoutRaw !== undefined) {
+      queueTimeoutMs = queueTimeoutRaw === "0"
+        ? 0
+        : parseTimeout(queueTimeoutRaw);
+    }
+
     const authConfig = buildServeAuthConfig({
       authMode: options.authMode as string | undefined,
       admins: options.admins as string | undefined,
@@ -584,6 +600,7 @@ export const serveCommand = new Command()
       repoContext,
       dispatches: dispatchRegistry,
       bundles: bundleRegistry,
+      queueTimeoutMs,
     });
     const workerGateway = new WorkerGateway({
       repoDir: resolvedRepoDir,
@@ -591,6 +608,8 @@ export const serveCommand = new Command()
       capabilityService,
       onWorkerIdle: (worker) => dispatchService.notifyWorkerIdle(worker),
       onGraceExpired: (worker) => dispatchService.notifyGraceExpired(worker),
+      onWorkerEnrolled: (worker) =>
+        dispatchService.notifyWorkerEnrolled(worker),
     });
     dispatchService.bindGateway(workerGateway);
     setRemoteStepDispatcher(dispatchService);

@@ -416,7 +416,26 @@ Deno.test("Step placement: target, labels, and platform round-trip through toDat
     target: "ci-runner-3",
     labels: { gpu: "true", region: "us-east" },
     platform: "linux/x86_64",
+    queueTimeoutMs: undefined,
   });
   const restored = Step.fromData(step.toData());
   assertEquals(restored.placement, step.placement);
+});
+
+Deno.test("Step placement: queueTimeout converts seconds to milliseconds", () => {
+  const step = Step.fromData({
+    name: "queued",
+    task: {
+      type: "model_method",
+      modelIdOrName: "my-model",
+      methodName: "run",
+    },
+    target: "worker-1",
+    queueTimeout: 30,
+  });
+  assertEquals(step.placement?.queueTimeoutMs, 30_000);
+  assertEquals(step.queueTimeout, 30);
+  const restored = Step.fromData(step.toData());
+  assertEquals(restored.queueTimeout, 30);
+  assertEquals(restored.placement?.queueTimeoutMs, 30_000);
 });

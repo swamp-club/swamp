@@ -19,6 +19,7 @@
 
 import { assertEquals, assertStringIncludes } from "@std/assert";
 import {
+  describePlacement,
   eligibleWorkers,
   hasPlacement,
   type SchedulableWorker,
@@ -68,14 +69,10 @@ Deno.test("scheduleStep: direct target on a busy worker queues", () => {
   assertEquals(scheduleStep({ target: "a" }, pool).kind, "queue");
 });
 
-Deno.test("scheduleStep: direct target not connected is unschedulable", () => {
+Deno.test("scheduleStep: direct target not connected queues", () => {
   const pool = [worker({ name: "a", connected: false })];
   const decision = scheduleStep({ target: "a" }, pool);
-  assertEquals(decision.kind, "unschedulable");
-  assertStringIncludes(
-    decision.kind === "unschedulable" ? decision.reason : "",
-    "target 'a'",
-  );
+  assertEquals(decision.kind, "queue");
 });
 
 Deno.test("scheduleStep: label selectors require every entry to match", () => {
@@ -104,7 +101,7 @@ Deno.test("scheduleStep: platform matches 'os' and 'os/arch' forms", () => {
   assertEquals(armOnly.map((w) => w.name), ["lin-arm"]);
   assertEquals(
     scheduleStep({ platform: "windows" }, pool).kind,
-    "unschedulable",
+    "queue",
   );
 });
 
@@ -141,13 +138,30 @@ Deno.test("scheduleStep: disconnected workers never match", () => {
   );
 });
 
-Deno.test("scheduleStep: unschedulable reason names the requirement", () => {
+Deno.test("scheduleStep: no-match placement queues", () => {
   const decision = scheduleStep(
     { labels: { gpu: "true" }, platform: "linux/aarch64" },
     [worker({ name: "plain" })],
   );
-  assertEquals(decision.kind, "unschedulable");
-  const reason = decision.kind === "unschedulable" ? decision.reason : "";
-  assertStringIncludes(reason, "gpu=true");
-  assertStringIncludes(reason, "linux/aarch64");
+  assertEquals(decision.kind, "queue");
+});
+
+Deno.test("describePlacement: names target requirement", () => {
+  assertEquals(
+    describePlacement({ target: "my-worker" }),
+    "target 'my-worker'",
+  );
+});
+
+Deno.test("describePlacement: names labels and platform", () => {
+  const desc = describePlacement({
+    labels: { gpu: "true" },
+    platform: "linux/aarch64",
+  });
+  assertStringIncludes(desc, "gpu=true");
+  assertStringIncludes(desc, "linux/aarch64");
+});
+
+Deno.test("describePlacement: falls back to 'any worker'", () => {
+  assertEquals(describePlacement({}), "any worker");
 });
