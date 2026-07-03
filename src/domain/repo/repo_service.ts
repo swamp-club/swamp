@@ -557,11 +557,21 @@ export class RepoService {
   private async installCustomToolGlobalSkills(
     configs: readonly ToolConfig[],
   ): Promise<void> {
-    const customToolDirsRepo = new CustomToolSkillDirsRepository();
-    for (const config of configs) {
-      if (config.isBuiltIn) continue;
-      if (!config.skillsDir.startsWith("~/")) continue;
+    const customConfigs = configs.filter((c) =>
+      !c.isBuiltIn && c.skillsDir.startsWith("~/")
+    );
+    if (customConfigs.length === 0) return;
 
+    let customToolDirsRepo: CustomToolSkillDirsRepository;
+    try {
+      customToolDirsRepo = new CustomToolSkillDirsRepository();
+    } catch {
+      logger
+        .warn`Skipping custom tool global skill install: config directory not available`;
+      return;
+    }
+
+    for (const config of customConfigs) {
       let globalDir: string;
       try {
         globalDir = homeDirectory() + config.skillsDir.slice(1);

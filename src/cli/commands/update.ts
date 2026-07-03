@@ -85,8 +85,14 @@ async function syncGlobalSkills(
     return;
   }
 
-  const customToolRepo = new CustomToolSkillDirsRepository();
-  const customDirs = await customToolRepo.read();
+  let customToolRepo: CustomToolSkillDirsRepository | null = null;
+  let customDirs: string[] = [];
+  try {
+    customToolRepo = new CustomToolSkillDirsRepository();
+    customDirs = await customToolRepo.read();
+  } catch {
+    // Config dir not available (e.g. HOME not set on Windows) — skip custom dirs
+  }
 
   const skillAssets = new SkillAssets();
 
@@ -101,6 +107,8 @@ async function syncGlobalSkills(
     logger.info`Synced global skills to ${dir}`;
   }
 
+  if (customDirs.length === 0) return;
+
   const survivingCustomDirs: string[] = [];
   for (const dir of customDirs) {
     if (!await dirExists(dir)) {
@@ -113,7 +121,7 @@ async function syncGlobalSkills(
     survivingCustomDirs.push(dir);
   }
 
-  if (survivingCustomDirs.length !== customDirs.length) {
+  if (survivingCustomDirs.length !== customDirs.length && customToolRepo) {
     try {
       await customToolRepo.write(survivingCustomDirs);
     } catch {
