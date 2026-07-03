@@ -59,7 +59,8 @@ export {
 
 const logger = getSwampLogger(["data", "repository"]);
 
-const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const UUID_RE =
+  /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 function looksLikeModelId(name: string): boolean {
   return UUID_RE.test(name);
 }
