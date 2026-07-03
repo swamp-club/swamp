@@ -242,6 +242,7 @@ function createMockDataRepo(): UnifiedDataRepository {
     getContentSync: () => null,
     findAllForModelSync: () => [],
     findAllGlobalSync: () => [],
+    findByTaggedName: () => Promise.resolve([]),
     rename: () => {
       throw new Error("not implemented");
     },

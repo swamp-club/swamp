@@ -440,4 +440,19 @@ export interface UnifiedDataRepository {
   findAllGlobalSync(): Array<
     { data: Data; modelType: ModelType; modelId: string }
   >;
+
+  /**
+   * Finds data matching a specific (modelName, dataName) pair by walking
+   * the filesystem and checking metadata tags. Used for scoped catalog
+   * backfill when the catalog is not yet populated but only a single
+   * data item is needed.
+   *
+   * @param modelName - The modelName tag value to match
+   * @param dataName - The data directory name to match
+   * @returns Array of matching data with their model type and model ID
+   */
+  findByTaggedName(
+    modelName: string,
+    dataName: string,
+  ): Promise<Array<{ data: Data; modelType: ModelType; modelId: string }>>;
 }
