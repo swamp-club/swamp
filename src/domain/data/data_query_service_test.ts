@@ -1011,12 +1011,24 @@ Deno.test("getLatestRecord: scoped backfill finds orphan data without full backf
   // Do NOT mark populated
 
   // Create multiple data items on disk — only one is the target
-  createOnDiskData(dir, "type-a", "model-aaa", "result", "model-a");
-  createOnDiskData(dir, "type-b", "model-bbb", "result", "model-b");
+  createOnDiskData(
+    dir,
+    "type-a",
+    "00000000-0000-4000-8000-000000000001",
+    "result",
+    "model-a",
+  );
+  createOnDiskData(
+    dir,
+    "type-b",
+    "00000000-0000-4000-8000-000000000002",
+    "result",
+    "model-b",
+  );
   createOnDiskData(
     dir,
     "type-orphan",
-    "model-orphan",
+    "00000000-0000-4000-8000-000000000003",
     "orphan-output",
     "orphan-model",
   );
@@ -1043,8 +1055,20 @@ Deno.test("getLatestRecord: query() still triggers full backfill independently",
   const catalog = new CatalogStore(dbPath);
   // Do NOT mark populated
 
-  createOnDiskData(dir, "type-a", "model-aaa", "result", "model-a");
-  createOnDiskData(dir, "type-b", "model-bbb", "output", "model-b");
+  createOnDiskData(
+    dir,
+    "type-a",
+    "00000000-0000-4000-8000-000000000011",
+    "result",
+    "model-a",
+  );
+  createOnDiskData(
+    dir,
+    "type-b",
+    "00000000-0000-4000-8000-000000000012",
+    "output",
+    "model-b",
+  );
 
   const dataRepo = new FileSystemUnifiedDataRepository(dir, undefined, catalog);
   const service = new DataQueryService(catalog, dataRepo);

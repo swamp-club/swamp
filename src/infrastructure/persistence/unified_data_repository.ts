@@ -59,6 +59,11 @@ export {
 
 const logger = getSwampLogger(["data", "repository"]);
 
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+function looksLikeModelId(name: string): boolean {
+  return UUID_RE.test(name);
+}
+
 /**
  * File system implementation of UnifiedDataRepository.
  *
@@ -1327,21 +1332,17 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     try {
       const entries: string[] = [];
       for await (const entry of Deno.readDir(currentDir)) {
-        if (entry.isDirectory && entry.name !== "_catalog.db") {
+        if (entry.isDirectory) {
           entries.push(entry.name);
         }
       }
 
       for (const name of entries) {
         const childPath = join(currentDir, name);
-        const childSegments = [...pathSegments, name];
 
-        if (await this.isModelIdDirectory(childPath)) {
-          if (childSegments.length < 2) continue;
-          const typeSegments = pathSegments;
-          const modelId = name;
-
-          // Probe for the target dataName directory under this model-id
+        if (looksLikeModelId(name)) {
+          // Model-id directory — probe for the target dataName only.
+          if (pathSegments.length < 1) continue;
           const dataNameDir = join(childPath, targetDataName);
           try {
             const stat = await Deno.stat(dataNameDir);
@@ -1350,27 +1351,28 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
             continue;
           }
 
-          const typeStr = typeSegments.join("/");
+          const typeStr = pathSegments.join("/");
           try {
             const modelType = ModelType.create(typeStr);
             const data = await this.findByName(
               modelType,
-              modelId,
+              name,
               targetDataName,
             );
             if (
               data && !data.isRenamed && !data.isDeleted &&
               data.tags["modelName"] === targetModelName
             ) {
-              results.push({ data, modelType, modelId });
+              results.push({ data, modelType, modelId: name });
             }
           } catch {
             // Skip invalid model types or read errors
           }
         } else {
+          // Type directory — recurse.
           await this.collectByTaggedName(
             childPath,
-            childSegments,
+            [...pathSegments, name],
             targetDataName,
             targetModelName,
             results,

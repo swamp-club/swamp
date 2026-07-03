@@ -204,43 +204,12 @@ export class DataQueryService {
     dataName: string,
   ): Promise<void> {
     const items = await this.dataRepo.findByTaggedName(modelName, dataName);
-    const rows: CatalogRow[] = [];
 
     for (const { data: latest, modelType, modelId } of items) {
       if (latest.isRenamed || latest.isDeleted) continue;
-      const versions = await this.dataRepo.listVersions(
-        modelType,
-        modelId,
-        latest.name,
+      this.catalogStore.upsert(
+        this.toCatalogRow(latest, modelType, modelId, true),
       );
-      if (versions.length === 0) continue;
-      const maxVersion = Math.max(...versions);
-      for (const version of versions) {
-        try {
-          const data = version === latest.version
-            ? latest
-            : await this.dataRepo.findByName(
-              modelType,
-              modelId,
-              latest.name,
-              version,
-            );
-          if (!data) continue;
-          if (data.isRenamed || data.isDeleted) continue;
-          rows.push(
-            this.toCatalogRow(data, modelType, modelId, version === maxVersion),
-          );
-        } catch (error) {
-          logger
-            .debug`Skipping ${modelType.normalized}/${modelId}/${latest.name}@${version} during scoped backfill: ${
-            String(error)
-          }`;
-        }
-      }
-    }
-
-    for (const row of rows) {
-      this.catalogStore.upsert(row);
     }
   }
 
