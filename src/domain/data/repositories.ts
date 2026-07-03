@@ -41,6 +41,26 @@ export class OwnershipValidationError extends Error {
 }
 
 /**
+ * Error thrown when the ephemeral data memory budget is exceeded.
+ */
+export class EphemeralBudgetExceededError extends Error {
+  constructor(
+    readonly currentBytes: number,
+    readonly contentBytes: number,
+    readonly maxBytes: number,
+  ) {
+    const usedMB = Math.round(currentBytes / 1024 / 1024);
+    const maxMB = Math.round(maxBytes / 1024 / 1024);
+    super(
+      `Ephemeral data budget exceeded: ${usedMB} MB used, ` +
+        `write of ${contentBytes} bytes would exceed ${maxMB} MB limit. ` +
+        `Use "workflow" or "infinite" lifetime for large data.`,
+    );
+    this.name = "EphemeralBudgetExceededError";
+  }
+}
+
+/**
  * Result of garbage collection operation.
  */
 export interface GarbageCollectionResult {
