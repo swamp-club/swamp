@@ -17,13 +17,14 @@
 // You should have received a copy of the GNU Affero General Public License
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
-import { join } from "@std/path";
+import { join, resolve, SEPARATOR } from "@std/path";
 import { ensureDir } from "@std/fs";
 import { getLogger } from "@logtape/logtape";
 import { atomicWriteTextFile } from "../../infrastructure/persistence/atomic_write.ts";
 import { defaultCommandResolver } from "../../infrastructure/process/resolve_command.ts";
 import type { RepoPath } from "./repo_path.ts";
 import {
+  homeDirectory,
   SWAMP_SUBDIRS,
   swampPath,
 } from "../../infrastructure/persistence/paths.ts";
@@ -44,6 +45,7 @@ import { removeSupersededSkills } from "./superseded_skills.ts";
 import { assertPathContained, type ToolConfig } from "./custom_tool.ts";
 import { ToolResolver } from "./tool_resolver.ts";
 import { readCustomTools } from "../../infrastructure/persistence/custom_tools_repository.ts";
+import { CustomToolSkillDirsRepository } from "../../infrastructure/persistence/custom_tool_skill_dirs_repository.ts";
 
 const logger = getLogger(["swamp", "repo", "service"]);
 
@@ -334,6 +336,9 @@ export class RepoService {
       settingsCreated = settingsCreated || r.settingsChanged;
     }
 
+    // Install skills for custom tools with global (~/prefixed) skillsDir
+    await this.installCustomToolGlobalSkills(resolvedConfigs);
+
     // Always manage .gitignore on init (single call with resolved configs)
     const gitignoreAction = await this.ensureGitignoreSection(
       repoPath,
@@ -447,6 +452,9 @@ export class RepoService {
       changedFiles.push(...r.changedFiles);
     }
 
+    // Install skills for custom tools with global (~/prefixed) skillsDir
+    await this.installCustomToolGlobalSkills(resolvedConfigs);
+
     // Determine gitignore management: CLI flag > marker preference > default off
     const shouldManageGitignore = options.includeGitignore ??
       existingMarker.gitignoreManaged ?? false;
@@ -539,6 +547,63 @@ export class RepoService {
       logger.info`Installed global skills to ${dir}`;
     }
     return this.skillAssets.getSkillNames();
+  }
+
+  /**
+   * Installs bundled skills to global directories for custom tools whose
+   * skillsDir starts with ~/ (home-relative). Registers each directory
+   * in custom-tool-skill-dirs.json so swamp update can discover them.
+   */
+  private async installCustomToolGlobalSkills(
+    configs: readonly ToolConfig[],
+  ): Promise<void> {
+    const customConfigs = configs.filter((c) =>
+      !c.isBuiltIn && c.skillsDir.startsWith("~/")
+    );
+    if (customConfigs.length === 0) return;
+
+    let customToolDirsRepo: CustomToolSkillDirsRepository;
+    try {
+      customToolDirsRepo = new CustomToolSkillDirsRepository();
+    } catch {
+      logger
+        .warn`Skipping custom tool global skill install: config directory not available`;
+      return;
+    }
+
+    for (const config of customConfigs) {
+      let home: string;
+      try {
+        home = homeDirectory();
+      } catch {
+        logger
+          .warn`Skipping global skill install for ${config.name}: home directory not available`;
+        continue;
+      }
+
+      const globalDir = resolve(
+        join(home, config.skillsDir.slice(2)),
+      );
+      if (
+        !globalDir.startsWith(home + SEPARATOR) && globalDir !== home
+      ) {
+        logger
+          .warn`Skipping global skill install for ${config.name}: path escapes home directory`;
+        continue;
+      }
+
+      try {
+        await this.skillAssets.copySkillsTo(globalDir);
+        await removeSupersededSkills(globalDir);
+        logger.info`Synced global skills to ${globalDir}`;
+        await customToolDirsRepo.addDir(globalDir);
+      } catch (err) {
+        logger
+          .warn`Failed to install global skills for custom tool ${config.name}: ${
+          err instanceof Error ? err.message : String(err)
+        }`;
+      }
+    }
   }
 
   /**
