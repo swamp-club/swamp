@@ -28,6 +28,7 @@ import {
 import type { Namespace } from "../../domain/data/namespace.ts";
 import { SOLO_NAMESPACE } from "../../domain/data/namespace.ts";
 import {
+  EphemeralBudgetExceededError,
   type GarbageCollectionResult,
   OwnershipValidationError,
   type UnifiedDataRepository,
@@ -53,6 +54,8 @@ function latestKey(
   return `${typeNormalized}${SEP}${modelId}${SEP}${dataName}`;
 }
 
+export const DEFAULT_EPHEMERAL_MAX_BYTES = 512 * 1024 * 1024; // 512 MB
+
 export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
   private readonly dataMap = new Map<string, Data>();
   private readonly contentMap = new Map<string, Uint8Array>();
@@ -64,11 +67,15 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
     version: number;
   }>();
   private disposed = false;
+  private totalBytes = 0;
+  private readonly maxBytes: number;
 
   constructor(
     private readonly catalogStore: CatalogStore,
     public readonly namespace: Namespace = SOLO_NAMESPACE,
+    maxBytes?: number,
   ) {
+    this.maxBytes = maxBytes ?? DEFAULT_EPHEMERAL_MAX_BYTES;
     catalogStore.markPopulated();
   }
 
@@ -90,6 +97,16 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
   private ensureNotDisposed(): void {
     if (this.disposed) {
       throw new Error("InMemoryUnifiedDataRepository has been disposed");
+    }
+  }
+
+  private ensureBudget(additionalBytes: number): void {
+    if (this.totalBytes + additionalBytes > this.maxBytes) {
+      throw new EphemeralBudgetExceededError(
+        this.totalBytes,
+        additionalBytes,
+        this.maxBytes,
+      );
     }
   }
 
@@ -190,6 +207,7 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
     }
 
     const newVersion = this.nextVersion(type, modelId, data.name);
+    this.ensureBudget(content.length);
 
     const dataToSave = data.withNewVersion({
       version: newVersion,
@@ -200,6 +218,7 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
     const key = dataKey(type.normalized, modelId, data.name, newVersion);
     this.dataMap.set(key, dataToSave);
     this.contentMap.set(key, content);
+    this.totalBytes += content.length;
     this.latestVersionMap.set(
       latestKey(type.normalized, modelId, data.name),
       newVersion,
@@ -228,12 +247,15 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
       throw new Error(`Data "${dataName}" is not configured for streaming`);
     }
 
+    this.ensureBudget(content.length);
+
     const key = dataKey(type.normalized, modelId, dataName, latestVersion);
     const existing = this.contentMap.get(key) ?? new Uint8Array(0);
     const merged = new Uint8Array(existing.length + content.length);
     merged.set(existing);
     merged.set(content, existing.length);
     this.contentMap.set(key, merged);
+    this.totalBytes += content.length;
 
     const updatedData = data.withNewVersion({
       version: latestVersion,
@@ -313,6 +335,8 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
       content = new Uint8Array(0);
     }
 
+    this.ensureBudget(content.length);
+
     const checksum = await this.computeChecksum(content);
     const size = content.length;
 
@@ -325,6 +349,7 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
     const key = dataKey(type.normalized, modelId, data.name, version);
     this.dataMap.set(key, dataToSave);
     this.contentMap.set(key, content);
+    this.totalBytes += content.length;
     this.latestVersionMap.set(
       latestKey(type.normalized, modelId, data.name),
       version,
@@ -457,6 +482,8 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
 
     if (version !== undefined) {
       const key = dataKey(type.normalized, modelId, dataName, version);
+      const content = this.contentMap.get(key);
+      if (content) this.totalBytes -= content.length;
       this.dataMap.delete(key);
       this.contentMap.delete(key);
 
@@ -479,6 +506,8 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
       const versions = this.listVersionsSync(type, modelId, dataName);
       for (const v of versions) {
         const key = dataKey(type.normalized, modelId, dataName, v);
+        const content = this.contentMap.get(key);
+        if (content) this.totalBytes -= content.length;
         this.dataMap.delete(key);
         this.contentMap.delete(key);
       }
@@ -543,6 +572,7 @@ export class InMemoryUnifiedDataRepository implements UnifiedDataRepository {
         versionsRemoved++;
 
         if (!options?.dryRun) {
+          if (content) this.totalBytes -= content.length;
           this.dataMap.delete(key);
           this.contentMap.delete(key);
         }

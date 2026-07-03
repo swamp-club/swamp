@@ -22,7 +22,10 @@ import { InMemoryUnifiedDataRepository } from "./in_memory_data_repository.ts";
 import { CatalogStore } from "./catalog_store.ts";
 import { Data } from "../../domain/data/data.ts";
 import { ModelType } from "../../domain/models/model_type.ts";
-import { OwnershipValidationError } from "../../domain/data/repositories.ts";
+import {
+  EphemeralBudgetExceededError,
+  OwnershipValidationError,
+} from "../../domain/data/repositories.ts";
 
 function createTestData(overrides: Partial<{
   name: string;
@@ -49,12 +52,16 @@ const TEST_TYPE = ModelType.create("test/type");
 const TEST_MODEL_ID = "test-model-id";
 const TEST_CONTENT = new TextEncoder().encode('{"key": "value"}');
 
-function createRepo(): {
+function createRepo(maxBytes?: number): {
   repo: InMemoryUnifiedDataRepository;
   catalog: CatalogStore;
 } {
   const catalog = new CatalogStore(":memory:");
-  const repo = new InMemoryUnifiedDataRepository(catalog);
+  const repo = new InMemoryUnifiedDataRepository(
+    catalog,
+    undefined,
+    maxBytes,
+  );
   return { repo, catalog };
 }
 
@@ -449,4 +456,91 @@ Deno.test("collectGarbage: dryRun does not remove versions", async () => {
     "test-data",
   );
   assertEquals(versions, [1, 2, 3, 4, 5]);
+});
+
+// --- Budget enforcement ---
+
+Deno.test("save: rejects when content exceeds budget", async () => {
+  const { repo } = createRepo(32);
+  const data = createTestData();
+  const bigContent = new Uint8Array(64);
+
+  await assertRejects(
+    () => repo.save(TEST_TYPE, TEST_MODEL_ID, data, bigContent),
+    EphemeralBudgetExceededError,
+  );
+});
+
+Deno.test("save: rejects when cumulative writes exceed budget", async () => {
+  const { repo } = createRepo(TEST_CONTENT.length + 10);
+  const data = createTestData();
+
+  await repo.save(TEST_TYPE, TEST_MODEL_ID, data, TEST_CONTENT);
+
+  await assertRejects(
+    () =>
+      repo.save(
+        TEST_TYPE,
+        TEST_MODEL_ID,
+        data,
+        TEST_CONTENT,
+      ),
+    EphemeralBudgetExceededError,
+  );
+});
+
+Deno.test("save: allows write after delete frees budget", async () => {
+  const { repo } = createRepo(TEST_CONTENT.length + 10);
+  const data = createTestData();
+
+  await repo.save(TEST_TYPE, TEST_MODEL_ID, data, TEST_CONTENT);
+  await repo.delete(TEST_TYPE, TEST_MODEL_ID, "test-data");
+
+  const result = await repo.save(TEST_TYPE, TEST_MODEL_ID, data, TEST_CONTENT);
+  assertEquals(result.version, 1);
+});
+
+Deno.test("append: rejects when appended content exceeds budget", async () => {
+  const { repo } = createRepo(TEST_CONTENT.length + 4);
+  const data = createTestData({ streaming: true });
+  await repo.save(TEST_TYPE, TEST_MODEL_ID, data, TEST_CONTENT);
+
+  await assertRejects(
+    () =>
+      repo.append(
+        TEST_TYPE,
+        TEST_MODEL_ID,
+        "test-data",
+        new Uint8Array(10),
+      ),
+    EphemeralBudgetExceededError,
+  );
+});
+
+Deno.test("finalizeVersion: rejects when finalized content exceeds budget", async () => {
+  const { repo } = createRepo(8);
+  const data = createTestData();
+
+  const alloc = await repo.allocateVersion(TEST_TYPE, TEST_MODEL_ID, data);
+  const bigContent = new Uint8Array(16);
+  await Deno.writeFile(alloc.contentPath, bigContent);
+
+  await assertRejects(
+    () => repo.finalizeVersion(TEST_TYPE, TEST_MODEL_ID, data, alloc.version),
+    EphemeralBudgetExceededError,
+  );
+});
+
+Deno.test("collectGarbage: frees budget for reclaimed bytes", async () => {
+  const gcKeep = 1;
+  const { repo } = createRepo(TEST_CONTENT.length * 3);
+  const data = createTestData({ garbageCollection: gcKeep });
+
+  await repo.save(TEST_TYPE, TEST_MODEL_ID, data, TEST_CONTENT);
+  await repo.save(TEST_TYPE, TEST_MODEL_ID, data, TEST_CONTENT);
+
+  await repo.collectGarbage(TEST_TYPE, TEST_MODEL_ID);
+
+  const result = await repo.save(TEST_TYPE, TEST_MODEL_ID, data, TEST_CONTENT);
+  assertEquals(result.version, 3);
 });
