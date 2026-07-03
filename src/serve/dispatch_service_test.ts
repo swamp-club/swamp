@@ -224,15 +224,36 @@ Deno.test("DispatchService: remote method error fails the lease and rethrows", a
   );
 });
 
-Deno.test("DispatchService: unschedulable placement fails fast", async () => {
-  const h = createHarness();
+Deno.test("DispatchService: no-match placement queues then times out", async () => {
+  const h = createHarness({ queueTimeoutMs: 100 });
   await assertRejects(
     () =>
       h.service.executeRemote(
-        stepRequest({ placement: { labels: { gpu: "true" } } }),
+        stepRequest({
+          placement: { labels: { gpu: "true" }, platform: "linux" },
+        }),
       ),
     Error,
-    "No connected worker matches",
+    "Timed out waiting for a worker matching",
+  );
+  assertEquals(h.transitions.length, 0);
+});
+
+Deno.test("DispatchService: per-step queueTimeout overrides serve-level default", async () => {
+  const h = createHarness({ queueTimeoutMs: 60_000 });
+  await assertRejects(
+    () =>
+      h.service.executeRemote(
+        stepRequest({
+          placement: {
+            labels: { gpu: "true" },
+            platform: "linux",
+            queueTimeoutMs: 100,
+          },
+        }),
+      ),
+    Error,
+    "Timed out waiting for a worker matching",
   );
   assertEquals(h.transitions.length, 0);
 });
@@ -432,6 +453,37 @@ Deno.test("DispatchService: worker_busy desync re-queues instead of failing the 
     h.transitions.map((t) => t.methodName),
     ["acquire", "expire", "acquire", "complete"],
   );
+});
+
+Deno.test("DispatchService: wake-on-enroll dispatches to newly enrolled worker", async () => {
+  const h = createHarness({ workers: [], queueTimeoutMs: 5_000 });
+  const pending = h.service.executeRemote(
+    stepRequest({ placement: { platform: "linux" } }),
+  );
+  await new Promise((r) => setTimeout(r, 30));
+  assertEquals(h.dispatchCalls.length, 0);
+
+  h.pool.set("new-worker", snapshot({ name: "new-worker" }));
+  h.service.notifyWorkerEnrolled(snapshot({ name: "new-worker" }));
+  const result = await pending;
+  assertEquals(h.dispatchCalls.length, 1);
+  assertEquals(h.dispatchCalls[0].name, "new-worker");
+  assertEquals(result.outputs.length, 1);
+});
+
+Deno.test("DispatchService: timeout error contains placement description", async () => {
+  const h = createHarness({ queueTimeoutMs: 100 });
+  const error = await assertRejects(
+    () =>
+      h.service.executeRemote(
+        stepRequest({
+          placement: { labels: { gpu: "true" }, platform: "linux/aarch64" },
+        }),
+      ),
+    Error,
+  );
+  assertStringIncludes(error.message, "gpu=true");
+  assertStringIncludes(error.message, "linux/aarch64");
 });
 
 Deno.test("DispatchService: forwards trace headers and reports the executing worker", async () => {

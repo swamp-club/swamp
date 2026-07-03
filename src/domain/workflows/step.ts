@@ -91,6 +91,7 @@ const StepObjectSchema = z.object({
   target: z.string().optional(),
   labels: z.record(z.string(), z.string()).optional(),
   platform: z.string().optional(),
+  queueTimeout: z.number().nonnegative().optional(),
 });
 
 /**
@@ -144,6 +145,7 @@ export interface CreateStepProps {
   target?: string;
   labels?: Record<string, string>;
   platform?: string;
+  queueTimeout?: number;
 }
 
 /**
@@ -171,6 +173,7 @@ export class Step {
     readonly target: string | undefined,
     readonly labels: Record<string, string> | undefined,
     readonly platform: string | undefined,
+    readonly queueTimeout: number | undefined,
   ) {}
 
   /**
@@ -193,6 +196,7 @@ export class Step {
       target: props.target,
       labels: props.labels,
       platform: props.platform,
+      queueTimeout: props.queueTimeout,
     });
 
     return Step.fromData(data);
@@ -237,6 +241,7 @@ export class Step {
       validated.target,
       validated.labels,
       validated.platform,
+      validated.queueTimeout,
     );
   }
 
@@ -298,6 +303,7 @@ export class Step {
       target: this.target,
       labels: this.labels,
       platform: this.platform,
+      queueTimeout: this.queueTimeout,
     };
   }
 
@@ -306,7 +312,12 @@ export class Step {
    * placement-free steps run on the loopback executor.
    */
   get placement():
-    | { target?: string; labels?: Record<string, string>; platform?: string }
+    | {
+      target?: string;
+      labels?: Record<string, string>;
+      platform?: string;
+      queueTimeoutMs?: number;
+    }
     | undefined {
     if (
       this.target === undefined && this.platform === undefined &&
@@ -318,6 +329,9 @@ export class Step {
       target: this.target,
       labels: this.labels,
       platform: this.platform,
+      queueTimeoutMs: this.queueTimeout !== undefined
+        ? this.queueTimeout * 1000
+        : undefined,
     };
   }
 }

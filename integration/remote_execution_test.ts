@@ -325,7 +325,11 @@ async function withTempDir(fn: (dir: string) => Promise<void>): Promise<void> {
 }
 
 function remoteStepRequest(overrides?: {
-  placement?: { target?: string; labels?: Record<string, string> };
+  placement?: {
+    target?: string;
+    labels?: Record<string, string>;
+    queueTimeoutMs?: number;
+  };
   methodArgs?: Record<string, unknown>;
   signal?: AbortSignal;
 }) {
@@ -441,15 +445,17 @@ Deno.test({
         );
         assertEquals(after.priorWasNull, false);
 
-        // ── Scheduling ───────────────────────────────────────────────────
-        const unschedulable = await assertRejects(
+        // ── Scheduling: no-match placement queues then times out ────────
+        const queueTimeout = await assertRejects(
           () =>
             orchestrator.dispatchService.executeRemote(
-              remoteStepRequest({ placement: { target: "ghost" } }),
+              remoteStepRequest({
+                placement: { target: "ghost", queueTimeoutMs: 1_500 },
+              }),
             ),
           Error,
         );
-        assertStringIncludes(unschedulable.message, "No connected worker");
+        assertStringIncludes(queueTimeout.message, "target 'ghost'");
 
         const targeted = await orchestrator.dispatchService.executeRemote(
           remoteStepRequest({

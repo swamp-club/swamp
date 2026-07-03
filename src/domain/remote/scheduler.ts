@@ -36,6 +36,8 @@ export interface StepPlacement {
   labels?: Record<string, string>;
   /** Required platform, e.g. "linux" or "linux/x86_64". */
   platform?: string;
+  /** Per-step queue timeout in milliseconds; overrides the serve-level default. */
+  queueTimeoutMs?: number;
 }
 
 /** The slice of worker state scheduling looks at. */
@@ -51,8 +53,27 @@ export interface SchedulableWorker {
 
 export type ScheduleDecision =
   | { kind: "dispatch"; worker: SchedulableWorker }
-  | { kind: "queue" }
-  | { kind: "unschedulable"; reason: string };
+  | { kind: "queue" };
+
+/**
+ * Human-readable description of a placement requirement, for use in
+ * timeout errors and step_queued events.
+ */
+export function describePlacement(placement: StepPlacement): string {
+  if (placement.target !== undefined) {
+    return `target '${placement.target}'`;
+  }
+  const parts = [
+    placement.labels && Object.keys(placement.labels).length > 0
+      ? `labels ${
+        Object.entries(placement.labels).map(([k, v]) => `${k}=${v}`)
+          .join(",")
+      }`
+      : null,
+    placement.platform ? `platform '${placement.platform}'` : null,
+  ].filter((part) => part !== null).join(" and ");
+  return parts || "any worker";
+}
 
 /** True when a step declares any placement requirement at all. */
 export function hasPlacement(placement: StepPlacement | undefined): boolean {
@@ -114,9 +135,9 @@ export function eligibleWorkers(
 
 /**
  * Decide where a step goes right now. `dispatch` names an idle eligible
- * worker; `queue` means eligible workers exist but all are busy; and
- * `unschedulable` means no connected worker can ever satisfy the placement
- * (the step fails fast rather than queueing forever).
+ * worker; `queue` means every eligible worker is busy, or no connected
+ * worker matches the placement at all — the step waits for a pool change
+ * either way.
  */
 export function scheduleStep(
   placement: StepPlacement,
@@ -124,21 +145,7 @@ export function scheduleStep(
 ): ScheduleDecision {
   const eligible = eligibleWorkers(placement, pool);
   if (eligible.length === 0) {
-    const requirement = placement.target !== undefined
-      ? `target '${placement.target}'`
-      : [
-        placement.labels && Object.keys(placement.labels).length > 0
-          ? `labels ${
-            Object.entries(placement.labels).map(([k, v]) => `${k}=${v}`)
-              .join(",")
-          }`
-          : null,
-        placement.platform ? `platform '${placement.platform}'` : null,
-      ].filter((part) => part !== null).join(" and ") || "any worker";
-    return {
-      kind: "unschedulable",
-      reason: `No connected worker matches ${requirement}`,
-    };
+    return { kind: "queue" };
   }
   const idle = eligible
     .filter((worker) => worker.status === "idle")

@@ -52,6 +52,7 @@ import {
 } from "../domain/remote/protocol.ts";
 import { ChannelClosedError, RpcError } from "../domain/remote/rpc_channel.ts";
 import {
+  describePlacement,
   hasPlacement,
   type ScheduleDecision,
   scheduleStep,
@@ -75,7 +76,7 @@ const logger = getSwampLogger(["serve", "dispatch"]);
 export const BUILTIN_BUNDLE_PREFIX = "builtin:";
 
 /** Default ceiling on how long a step queues for a matching worker. */
-export const DEFAULT_QUEUE_TIMEOUT_MS = 10 * 60 * 1000;
+export const DEFAULT_QUEUE_TIMEOUT_MS = 60 * 1000;
 
 async function sha256Hex(text: string): Promise<string> {
   const digest = await crypto.subtle.digest(
@@ -158,6 +159,11 @@ export class DispatchService {
     this.#wakePoolWaiters();
   }
 
+  /** Gateway hook: a worker enrolled or re-enrolled — wake queued steps. */
+  notifyWorkerEnrolled(_worker: WorkerSnapshot): void {
+    this.#wakePoolWaiters();
+  }
+
   /**
    * Data-plane hook, awaited BEFORE the first durable write persists, so a
    * lease can never say "no writes" while a write exists. The converse
@@ -181,7 +187,11 @@ export class DispatchService {
     if (this.#gateway === null) {
       throw new Error("DispatchService has no gateway bound");
     }
-    const deadline = Date.now() + this.#queueTimeoutMs;
+    const effectiveTimeoutMs = request.placement.queueTimeoutMs ??
+      this.#queueTimeoutMs;
+    const deadline = effectiveTimeoutMs === 0
+      ? null
+      : Date.now() + effectiveTimeoutMs;
 
     while (true) {
       request.signal?.throwIfAborted();
@@ -216,7 +226,7 @@ export class DispatchService {
             { worker: workerName },
           );
           await this.#waitForPoolChange(
-            Math.max(deadline - Date.now(), 0),
+            deadline !== null ? Math.max(deadline - Date.now(), 0) : 60_000,
             request.signal,
           );
           continue;
@@ -364,11 +374,11 @@ export class DispatchService {
     }
   }
 
-  /** Schedule against the live pool, queueing while eligible workers are busy. */
+  /** Schedule against the live pool, queueing while eligible workers are busy or absent. */
   async #acquireWorker(
     placement: StepPlacement,
     signal: AbortSignal | undefined,
-    deadline: number,
+    deadline: number | null,
   ): Promise<string> {
     while (true) {
       signal?.throwIfAborted();
@@ -380,16 +390,19 @@ export class DispatchService {
         this.#reserved.add(decision.worker.name);
         return decision.worker.name;
       }
-      if (decision.kind === "unschedulable") {
-        throw new Error(decision.reason);
+      if (deadline !== null) {
+        const remaining = deadline - Date.now();
+        if (remaining <= 0) {
+          throw new Error(
+            `Timed out waiting for a worker matching ${
+              describePlacement(placement)
+            } to become available`,
+          );
+        }
+        await this.#waitForPoolChange(remaining, signal);
+      } else {
+        await this.#waitForPoolChange(60_000, signal);
       }
-      const remaining = deadline - Date.now();
-      if (remaining <= 0) {
-        throw new Error(
-          "Timed out waiting for a matching worker to become available",
-        );
-      }
-      await this.#waitForPoolChange(remaining, signal);
     }
   }
 
