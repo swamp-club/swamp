@@ -33,7 +33,10 @@ import { UserError } from "../domain/errors.ts";
  * Returns milliseconds, always > 0. Throws `UserError` on non-positive
  * values or unrecognized formats.
  */
-export function parseTimeout(value: string): number {
+export function parseTimeout(
+  value: string,
+  flagName = "--timeout",
+): number {
   const trimmed = value.trim();
 
   // Bare integer → seconds (matches `swamp datastore sync --timeout`).
@@ -41,7 +44,7 @@ export function parseTimeout(value: string): number {
     const seconds = parseInt(trimmed, 10);
     if (seconds <= 0) {
       throw new UserError(
-        `Invalid --timeout value "${value}": must be positive`,
+        `Invalid ${flagName} value "${value}": must be positive`,
       );
     }
     return seconds * 1000;
@@ -54,7 +57,7 @@ export function parseTimeout(value: string): number {
     const seconds = parseInt(secondsMatch[1], 10);
     if (seconds <= 0) {
       throw new UserError(
-        `Invalid --timeout value "${value}": must be positive`,
+        `Invalid ${flagName} value "${value}": must be positive`,
       );
     }
     return seconds * 1000;
@@ -63,7 +66,7 @@ export function parseTimeout(value: string): number {
   const ms = parseDuration(trimmed);
   if (ms <= 0) {
     throw new UserError(
-      `Invalid --timeout value "${value}": must be positive`,
+      `Invalid ${flagName} value "${value}": must be positive`,
     );
   }
   return ms;

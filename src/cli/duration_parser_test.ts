@@ -55,3 +55,19 @@ Deno.test("parseTimeout: rejects unrecognized format", () => {
 Deno.test("parseTimeout: trims whitespace", () => {
   assertEquals(parseTimeout(" 1s "), 1000);
 });
+
+Deno.test("parseTimeout: error message uses custom flag name", () => {
+  assertThrows(
+    () => parseTimeout("0", "--queue-timeout"),
+    UserError,
+    "--queue-timeout",
+  );
+});
+
+Deno.test("parseTimeout: error message defaults to --timeout", () => {
+  assertThrows(
+    () => parseTimeout("0"),
+    UserError,
+    "--timeout",
+  );
+});

@@ -78,6 +78,15 @@ export const BUILTIN_BUNDLE_PREFIX = "builtin:";
 /** Default ceiling on how long a step queues for a matching worker. */
 export const DEFAULT_QUEUE_TIMEOUT_MS = 60 * 1000;
 
+/**
+ * Cap on a single #waitForPoolChange call when the deadline is null
+ * (wait-forever). The actual poll interval is Math.min(this, 5_000)
+ * inside #waitForPoolChange, so this value never takes effect directly —
+ * the 5s backstop always wins. It exists only to satisfy the maxWaitMs
+ * parameter; the real wake signal is onWorkerEnrolled/onWorkerIdle.
+ */
+const WAIT_FOREVER_POLL_CAP_MS = 60 * 1000;
+
 async function sha256Hex(text: string): Promise<string> {
   const digest = await crypto.subtle.digest(
     "SHA-256",
@@ -226,7 +235,9 @@ export class DispatchService {
             { worker: workerName },
           );
           await this.#waitForPoolChange(
-            deadline !== null ? Math.max(deadline - Date.now(), 0) : 60_000,
+            deadline !== null
+              ? Math.max(deadline - Date.now(), 0)
+              : WAIT_FOREVER_POLL_CAP_MS,
             request.signal,
           );
           continue;
@@ -401,7 +412,7 @@ export class DispatchService {
         }
         await this.#waitForPoolChange(remaining, signal);
       } else {
-        await this.#waitForPoolChange(60_000, signal);
+        await this.#waitForPoolChange(WAIT_FOREVER_POLL_CAP_MS, signal);
       }
     }
   }

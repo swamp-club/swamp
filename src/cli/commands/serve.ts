@@ -475,8 +475,8 @@ export const serveCommand = new Command()
   )
   .option(
     "--queue-timeout <duration:string>",
-    "How long a placed step queues for a matching worker before timing out. " +
-      "Accepts seconds (60), explicit units (2m, 10m), or 0 to wait forever. Default: 60s",
+    "How long a placed step queues for a matching worker before timing out (env: SWAMP_QUEUE_TIMEOUT). " +
+      "Accepts seconds (60), explicit units (2m, 10m), or 0 to disable. Default: 60s",
   )
   .example(
     "Enable TLS",
@@ -539,12 +539,14 @@ export const serveCommand = new Command()
       }
     }
 
-    const queueTimeoutRaw = options.queueTimeout as string | undefined;
+    const queueTimeoutRaw = (options.queueTimeout as string | undefined) ??
+      Deno.env.get("SWAMP_QUEUE_TIMEOUT") ?? undefined;
     let queueTimeoutMs: number | undefined;
     if (queueTimeoutRaw !== undefined) {
-      queueTimeoutMs = queueTimeoutRaw === "0"
+      const normalized = queueTimeoutRaw.trim().replace(/^0[smhdw].*$/i, "0");
+      queueTimeoutMs = normalized === "0"
         ? 0
-        : parseTimeout(queueTimeoutRaw);
+        : parseTimeout(queueTimeoutRaw, "--queue-timeout");
     }
 
     const authConfig = buildServeAuthConfig({
