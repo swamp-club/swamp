@@ -114,14 +114,46 @@ Today these commands copy skills into the repo. Under the new model:
 Global skills are synced automatically in three places:
 
 1. **`swamp update`** — after the binary is updated (interactive and background),
-   skills are written to all global tool directories. This is the primary sync
-   path and requires no repo context.
+   skills are written to existing global tool directories. For built-in tools,
+   only directories that already exist on disk are synced — `swamp update` does
+   not create new directories. For custom tools, directories registered in
+   `custom-tool-skill-dirs.json` are synced (see below). Stale registry entries
+   for deleted directories are pruned automatically.
 2. **`swamp repo init`** — writes global skills as part of first-time setup.
+   Creates built-in tool directories and custom tool global directories.
 3. **`swamp repo upgrade`** — writes global skills as part of the upgrade flow.
+   Creates built-in tool directories and custom tool global directories.
 
 The bundled skill files in the binary are the source of truth. The sync is
 idempotent — writing the same content is harmless. Failures during sync (e.g.,
 permissions, disk full) log a warning and do not block the update or command.
+
+### Custom Tool Global Skills
+
+Custom tools (defined via `swamp agent setup` / `.swamp-custom-tools.yaml`) with
+a home-relative `skillsDir` (starting with `~/`) are treated as global skill
+directories. During `repo init` and `repo upgrade`, swamp expands the `~/`
+prefix, copies bundled skills to the resolved path, and registers the absolute
+path in `~/.config/swamp/custom-tool-skill-dirs.json`.
+
+This registry bridges the gap between repo-scoped custom tool configuration and
+the repo-less `swamp update` command. Without it, `swamp update` has no way to
+discover custom tool directories.
+
+The registry is a simple JSON array of absolute directory paths:
+
+```json
+["/home/user/.pi/agent/skills", "/home/user/.foo/skills"]
+```
+
+Custom tools with repo-relative `skillsDir` (not `~/`-prefixed) are not
+registered — those are project-local directories, not global skill targets.
+
+> **Note:** The original design proposed a separate `globalSkillsDir` field on
+> `CustomToolDefinition`. The current implementation infers global intent from
+> the `~/` prefix on the existing `skillsDir` field instead. This is simpler and
+> covers the common case. The `globalSkillsDir` field can be added later if
+> finer-grained control is needed.
 
 ## Migration: Local to Global
 

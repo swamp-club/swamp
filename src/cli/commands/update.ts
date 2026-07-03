@@ -57,11 +57,21 @@ import {
   resolveUniqueGlobalSkillsDirs,
 } from "../../domain/repo/skill_dirs.ts";
 import { removeSupersededSkills } from "../../domain/repo/superseded_skills.ts";
+import { CustomToolSkillDirsRepository } from "../../infrastructure/persistence/custom_tool_skill_dirs_repository.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
 
 const BACKGROUND_TIMEOUT_MS = 5 * 60 * 1000;
+
+async function dirExists(path: string): Promise<boolean> {
+  try {
+    const stat = await Deno.stat(path);
+    return stat.isDirectory;
+  } catch {
+    return false;
+  }
+}
 
 async function syncGlobalSkills(
   logger: ReturnType<typeof getSwampLogger>,
@@ -74,13 +84,41 @@ async function syncGlobalSkills(
     logger.warn`Skipping global skill sync: home directory not available`;
     return;
   }
-  if (globalDirs.length === 0) return;
+
+  const customToolRepo = new CustomToolSkillDirsRepository();
+  const customDirs = await customToolRepo.read();
 
   const skillAssets = new SkillAssets();
+
   for (const dir of globalDirs) {
+    if (!await dirExists(dir)) {
+      logger
+        .debug`Skipping global skill sync for ${dir}: directory does not exist`;
+      continue;
+    }
     await skillAssets.copySkillsTo(dir);
     await removeSupersededSkills(dir);
     logger.info`Synced global skills to ${dir}`;
+  }
+
+  const survivingCustomDirs: string[] = [];
+  for (const dir of customDirs) {
+    if (!await dirExists(dir)) {
+      logger.debug`Removing stale custom tool skill dir from registry: ${dir}`;
+      continue;
+    }
+    await skillAssets.copySkillsTo(dir);
+    await removeSupersededSkills(dir);
+    logger.info`Synced global skills to ${dir}`;
+    survivingCustomDirs.push(dir);
+  }
+
+  if (survivingCustomDirs.length !== customDirs.length) {
+    try {
+      await customToolRepo.write(survivingCustomDirs);
+    } catch {
+      logger.warn`Failed to update custom tool skill dirs registry`;
+    }
   }
 }
 
