@@ -168,6 +168,29 @@ export class DefaultWorkflowValidationService
       );
     }
 
+    // 10. queueTimeout without placement is a no-op
+    results.push(...this.validateQueueTimeoutPlacement(workflow));
+
+    return results;
+  }
+
+  private validateQueueTimeoutPlacement(
+    workflow: Workflow,
+  ): WorkflowValidationResult[] {
+    const results: WorkflowValidationResult[] = [];
+    for (const job of workflow.jobs) {
+      for (const step of job.steps) {
+        if (step.queueTimeout !== undefined && step.placement === undefined) {
+          results.push(
+            WorkflowValidationResult.warning(
+              `queueTimeout without placement in job '${job.name}' step '${step.name}'`,
+              `Step '${step.name}' sets queueTimeout but has no target, labels, or platform — ` +
+                `queueTimeout only applies to remote-execution steps with placement requirements`,
+            ),
+          );
+        }
+      }
+    }
     return results;
   }
 

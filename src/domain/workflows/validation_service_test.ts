@@ -1578,3 +1578,53 @@ Deno.test("validateGlobalArgInputRefs: handles bracket notation input references
   );
   assertEquals(result?.passed, true);
 });
+
+Deno.test("validate: warns when queueTimeout is set without placement", async () => {
+  const workflow = Workflow.create({
+    name: "queue-timeout-no-placement",
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "misconfig",
+            task: StepTask.model("test-model", "run"),
+            queueTimeout: 30,
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await service.validate(workflow);
+  const warning = results.find((r) =>
+    r.name.includes("queueTimeout without placement")
+  );
+  assertEquals(warning?.passed, true);
+  assertEquals(warning?.warning, true);
+});
+
+Deno.test("validate: no warning when queueTimeout is set with placement", async () => {
+  const workflow = Workflow.create({
+    name: "queue-timeout-with-placement",
+    jobs: [
+      Job.create({
+        name: "main",
+        steps: [
+          Step.create({
+            name: "correct",
+            task: StepTask.model("test-model", "run"),
+            queueTimeout: 30,
+            target: "worker-1",
+          }),
+        ],
+      }),
+    ],
+  });
+
+  const results = await service.validate(workflow);
+  const warning = results.find((r) =>
+    r.name.includes("queueTimeout without placement")
+  );
+  assertEquals(warning, undefined);
+});
