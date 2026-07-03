@@ -113,6 +113,11 @@ Deno.test("coerceToSuffix: sanitizes unsafe characters in object id property", (
   );
 });
 
+Deno.test("coerceToSuffix: null bytes between dots do not reassemble into double dots", () => {
+  assertEquals(coerceToSuffix(".\0."), "--");
+  assertEquals(coerceToSuffix(".\0./secret"), "----secret");
+});
+
 Deno.test("coerceToSuffix: sanitizes unsafe characters in JSON stringify fallback", () => {
   const val = { path: "a/b" };
   assertEquals(coerceToSuffix(val), '{"path":"a--b"}');

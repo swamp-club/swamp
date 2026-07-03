@@ -22,9 +22,9 @@ const MAX_SUFFIX_LENGTH = 64;
 
 function sanitizeSuffix(raw: string): string {
   return raw
+    .replace(/\0/g, "")
     .replace(/\.\./g, "--")
-    .replace(/[/\\]/g, "--")
-    .replace(/\0/g, "");
+    .replace(/[/\\]/g, "--");
 }
 
 /**
