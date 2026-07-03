@@ -61,6 +61,10 @@ import { type Namespace, SOLO_NAMESPACE } from "../data/namespace.ts";
 import type { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
 import type { MarkDirtyHook } from "../datastore/datastore_sync_service.ts";
 import { DataQueryService } from "../data/data_query_service.ts";
+import { CompositeUnifiedDataRepository } from "../data/composite_data_repository.ts";
+import { CompositeDataQueryService } from "../data/composite_data_query_service.ts";
+import type { ResourceOverrides } from "../definitions/definition.ts";
+import type { DataOutputOverride } from "../models/data_output_override.ts";
 import {
   fromFileHandle,
   fromResourceHandle,
@@ -144,6 +148,33 @@ export class WorkflowSuspendedError extends Error {
   }
 }
 
+function mergeDataOutputOverrides(
+  definitionResources: ResourceOverrides | undefined,
+  stepOverrides: DataOutputOverride[] | undefined,
+): DataOutputOverride[] | undefined {
+  const defOverrides: DataOutputOverride[] = definitionResources
+    ? Object.entries(definitionResources).map(([specName, override]) => ({
+      specName,
+      lifetime: override.lifetime,
+      garbageCollection: override.garbageCollection,
+    }))
+    : [];
+
+  if (defOverrides.length === 0) return stepOverrides;
+  if (!stepOverrides || stepOverrides.length === 0) return defOverrides;
+
+  const merged = [...defOverrides];
+  for (const stepOvr of stepOverrides) {
+    const idx = merged.findIndex((o) => o.specName === stepOvr.specName);
+    if (idx >= 0) {
+      merged[idx] = stepOvr;
+    } else {
+      merged.push(stepOvr);
+    }
+  }
+  return merged;
+}
+
 /**
  * Context for step execution.
  */
@@ -205,6 +236,8 @@ export interface StepExecutionContext {
    */
   namespace?: Namespace;
   runTracker?: RunTrackerRepository;
+  ephemeralRepo?: UnifiedDataRepository;
+  ephemeralCatalog?: CatalogStore;
 }
 
 /**
@@ -335,6 +368,8 @@ export class DefaultStepExecutor implements StepExecutor {
       catalogStore: ctx.catalogStore,
       markDirty: this.markDirty,
       namespace: ctx.namespace,
+      ephemeralRepo: ctx.ephemeralRepo,
+      ephemeralCatalog: ctx.ephemeralCatalog,
     });
     if (this._directTypeResolver) {
       deps.directTypeResolver = this._directTypeResolver;
@@ -352,10 +387,12 @@ export class DefaultStepExecutor implements StepExecutor {
       catalogStore: CatalogStore;
       markDirty?: MarkDirtyHook;
       namespace?: Namespace;
+      ephemeralRepo?: UnifiedDataRepository;
+      ephemeralCatalog?: CatalogStore;
     },
   ): Promise<StepExecutorDeps> {
     const definitionRepo = new YamlDefinitionRepository(repoDir);
-    const unifiedDataRepo = new FileSystemUnifiedDataRepository(
+    const fsDataRepo = new FileSystemUnifiedDataRepository(
       repoDir,
       opts.dataBaseDir,
       opts.catalogStore,
@@ -363,10 +400,21 @@ export class DefaultStepExecutor implements StepExecutor {
       undefined,
       opts.namespace ?? SOLO_NAMESPACE,
     );
-    const dataQueryService = new DataQueryService(
+    const unifiedDataRepo: UnifiedDataRepository = opts.ephemeralRepo
+      ? new CompositeUnifiedDataRepository(fsDataRepo, opts.ephemeralRepo)
+      : fsDataRepo;
+    const persistentQueryService = new DataQueryService(
       opts.catalogStore,
-      unifiedDataRepo,
+      fsDataRepo,
     );
+    const dataQueryService: DataQueryService =
+      opts.ephemeralRepo && opts.ephemeralCatalog
+        ? new CompositeDataQueryService(
+          opts.catalogStore,
+          fsDataRepo,
+          new DataQueryService(opts.ephemeralCatalog, opts.ephemeralRepo),
+        )
+        : persistentQueryService;
     return {
       definitionRepo,
       unifiedDataRepo,
@@ -928,7 +976,10 @@ export class DefaultStepExecutor implements StepExecutor {
           logger: runLogger,
           tagOverrides: workflowTagOverrides,
           runtimeTags: ctx.runtimeTags,
-          dataOutputOverrides: stepDataOutputOverrides,
+          dataOutputOverrides: mergeDataOutputOverrides(
+            evaluatedDefinition.resources,
+            stepDataOutputOverrides,
+          ),
           vaultSecrets: secretBag,
           placement: ctx.step?.placement,
           skipCheckNames: ctx.skipCheckNames,
@@ -1274,7 +1325,7 @@ export class WorkflowExecutionService {
   private readonly definitionRepo: YamlDefinitionRepository;
   private readonly evaluatedDefRepo: YamlEvaluatedDefinitionRepository;
   private readonly modelResolver: ModelResolver;
-  private readonly dataRepo: FileSystemUnifiedDataRepository;
+  private readonly dataRepo: UnifiedDataRepository;
   private readonly dataBaseDir?: string;
   private readonly catalogStore: CatalogStore;
   private readonly workflowReportRunner = new WorkflowReportRunner();
@@ -1293,6 +1344,8 @@ export class WorkflowExecutionService {
     private readonly namespace: Namespace = SOLO_NAMESPACE,
     stepLockHook?: StepLockHook,
     private readonly runTracker?: RunTrackerRepository,
+    private readonly ephemeralRepo?: UnifiedDataRepository,
+    private readonly ephemeralCatalog?: CatalogStore,
   ) {
     this.executor = executor ??
       new DefaultStepExecutor(
@@ -1309,7 +1362,7 @@ export class WorkflowExecutionService {
       undefined,
       markDirty,
     );
-    this.dataRepo = new FileSystemUnifiedDataRepository(
+    const fsDataRepo = new FileSystemUnifiedDataRepository(
       repoDir,
       dataBaseDir,
       catalogStore,
@@ -1317,7 +1370,20 @@ export class WorkflowExecutionService {
       undefined,
       namespace,
     );
-    const dataQueryService = new DataQueryService(catalogStore, this.dataRepo);
+    this.dataRepo = ephemeralRepo
+      ? new CompositeUnifiedDataRepository(fsDataRepo, ephemeralRepo)
+      : fsDataRepo;
+    const persistentQueryService = new DataQueryService(
+      catalogStore,
+      fsDataRepo,
+    );
+    const dataQueryService: DataQueryService = ephemeralRepo && ephemeralCatalog
+      ? new CompositeDataQueryService(
+        catalogStore,
+        fsDataRepo,
+        new DataQueryService(ephemeralCatalog, ephemeralRepo),
+      )
+      : persistentQueryService;
     this.modelResolver = new ModelResolver(this.definitionRepo, {
       repoDir,
       dataRepo: this.dataRepo,
@@ -2434,6 +2500,8 @@ export class WorkflowExecutionService {
           catalogStore: this.catalogStore,
           namespace: this.namespace,
           runTracker: this.runTracker,
+          ephemeralRepo: this.ephemeralRepo,
+          ephemeralCatalog: this.ephemeralCatalog,
         };
         return this.executor.execute(step, ctx);
       });
@@ -2673,6 +2741,8 @@ export class WorkflowExecutionService {
       this.namespace,
       undefined,
       this.runTracker,
+      this.ephemeralRepo,
+      this.ephemeralCatalog,
     );
 
     let childRun: WorkflowRun | undefined;

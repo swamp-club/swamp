@@ -262,6 +262,7 @@ export class DispatchService {
       definitionName: request.definitionName,
       definitionTags: request.definitionTags,
       runtimeTags: request.runtimeTags,
+      dataRepo: request.dataRepo,
     });
 
     const params: DispatchParams = {

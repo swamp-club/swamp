@@ -53,6 +53,7 @@ import {
   mapWorkflowExecutionEvent,
 } from "../../libswamp/mod.ts";
 import type { WorkflowRunEvent } from "../../libswamp/mod.ts";
+import { createEphemeralStore } from "../../infrastructure/persistence/ephemeral_store.ts";
 import { GIT_SHA } from "./version.ts";
 import {
   deepMerge,
@@ -328,6 +329,11 @@ export const workflowResumeCommand = withRemoteOptions(
       };
     };
 
+    const ephemeral = createEphemeralStore(
+      repoContext.unifiedDataRepo.namespace,
+      { isResume: true },
+    );
+
     const service = new WorkflowExecutionService(
       workflowRepo,
       runRepo,
@@ -340,6 +346,8 @@ export const workflowResumeCommand = withRemoteOptions(
       repoContext.unifiedDataRepo.namespace,
       stepLockHook,
       RunTrackerStore.fromSwampDir(swampPath(repoDir)),
+      ephemeral.repo,
+      ephemeral.catalog,
     );
 
     const renderer = createWorkflowRunRenderer(cliCtx.outputMode, {
@@ -361,7 +369,11 @@ export const workflowResumeCommand = withRemoteOptions(
       }
     };
 
-    await consumeStream(resumeGenerator(), renderer.handlers());
+    try {
+      await consumeStream(resumeGenerator(), renderer.handlers());
+    } finally {
+      ephemeral.dispose();
+    }
 
     if (renderer.workflowFailed()) {
       Deno.exitCode = 1;

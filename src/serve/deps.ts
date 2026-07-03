@@ -85,7 +85,14 @@ export async function createWorkflowRunDeps(
       return await repo.findByName(idOrName) ??
         await repo.findById(createWorkflowId(idOrName));
     },
-    createExecutionService: (wfRepo, rnRepo, dir, catalogStore) => {
+    createExecutionService: (
+      wfRepo,
+      rnRepo,
+      dir,
+      catalogStore,
+      ephRepo,
+      ephCatalog,
+    ) => {
       // Direct type execution (auto-create-then-run steps) must work over
       // serve exactly as it does locally — serve is the only way to run
       // workflows with worker placement. Mirrors the CLI's resolver in
@@ -156,6 +163,8 @@ export async function createWorkflowRunDeps(
         repoContext.unifiedDataRepo.namespace,
         stepLockHook,
         runTracker,
+        ephRepo,
+        ephCatalog,
       );
     },
     catalogStore: repoContext.catalogStore,

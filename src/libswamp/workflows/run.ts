@@ -49,7 +49,8 @@ import {
   InputValidationService,
 } from "../../domain/inputs/mod.ts";
 import type { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
-import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
+import type { UnifiedDataRepository } from "../../domain/data/repositories.ts";
+import { createEphemeralStore } from "../../infrastructure/persistence/ephemeral_store.ts";
 import type { DefinitionRepository } from "../../domain/definitions/repositories.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import { WorkflowTelemetryBridge } from "./telemetry_bridge.ts";
@@ -231,6 +232,8 @@ export interface WorkflowRunDeps {
     runRepo: WorkflowRunRepository,
     repoDir: string,
     catalogStore: CatalogStore,
+    ephemeralRepo?: UnifiedDataRepository,
+    ephemeralCatalog?: CatalogStore,
   ) => WorkflowExecutionService;
   catalogStore: CatalogStore;
   dataRepo?: UnifiedDataRepository;
@@ -468,6 +471,7 @@ export async function* workflowRun(
     "swamp.workflow.run.command",
     { "workflow.id_or_name": input.workflowIdOrName },
     (async function* () {
+      const ephemeral = createEphemeralStore();
       let resolvedInput = input;
 
       yield { kind: "validating_inputs" };
@@ -520,6 +524,8 @@ export async function* workflowRun(
         deps.runRepo,
         deps.repoDir,
         deps.catalogStore,
+        ephemeral.repo,
+        ephemeral.catalog,
       );
 
       // Per-method-invocation telemetry bridge. Constructed once per
@@ -619,6 +625,7 @@ export async function* workflowRun(
         if (telemetryBridge) {
           await telemetryBridge.finalize();
         }
+        ephemeral.dispose();
       }
     })(),
   );

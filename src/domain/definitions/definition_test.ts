@@ -263,6 +263,7 @@ Deno.test("Definition.toData returns correct structure", () => {
     },
     checks: undefined,
     reports: undefined,
+    resources: undefined,
   });
 });
 

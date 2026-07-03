@@ -367,6 +367,7 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
         jobName: context.tagOverrides?.job,
         stepName: context.tagOverrides?.step,
         signal: context.signal,
+        dataRepo: context.dataRepository,
         onEvent: context.onEvent
           ? (event: RpcStreamEvent) => {
             if (event.kind === "method_event" && "event" in event) {

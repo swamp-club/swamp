@@ -276,7 +276,14 @@ export const workflowRunCommand = new Command()
           return await repo.findByName(idOrName) ??
             await repo.findById(createWorkflowId(idOrName));
         },
-        createExecutionService: (wfRepo, rnRepo, dir, catalogStore) => {
+        createExecutionService: (
+          wfRepo,
+          rnRepo,
+          dir,
+          catalogStore,
+          ephRepo,
+          ephCatalog,
+        ) => {
           const directResolver: DirectTypeResolver = async (
             typeArg,
             defName,
@@ -356,6 +363,8 @@ export const workflowRunCommand = new Command()
             repoContext.unifiedDataRepo.namespace,
             stepLockHook,
             tracker,
+            ephRepo,
+            ephCatalog,
           );
         },
         catalogStore: repoContext.catalogStore,

@@ -39,12 +39,17 @@ import { ModelType } from "../../domain/models/model_type.ts";
 import type { ModelDefinition } from "../../domain/models/model.ts";
 import type { MethodExecutionService } from "../../domain/models/method_execution_service.ts";
 import type { YamlDefinitionRepository } from "../../infrastructure/persistence/yaml_definition_repository.ts";
-import type { UnifiedDataRepository } from "../../infrastructure/persistence/unified_data_repository.ts";
+import type { UnifiedDataRepository } from "../../domain/data/repositories.ts";
 import type { OutputRepository } from "../../domain/models/repositories.ts";
 import type { VaultService } from "../../domain/vaults/vault_service.ts";
 import type { ExpressionEvaluationService } from "../../domain/expressions/expression_evaluation_service.ts";
 import type { SecretRedactor } from "../../domain/secrets/mod.ts";
 import type { DataQueryService } from "../../domain/data/data_query_service.ts";
+import type { CatalogStore } from "../../infrastructure/persistence/catalog_store.ts";
+import {
+  createEphemeralStore,
+  wrapWithEphemeral,
+} from "../../infrastructure/persistence/ephemeral_store.ts";
 import { buildMethodContext } from "../../domain/models/method_context.ts";
 import { createExtensionCelEnvironment } from "../../infrastructure/cel/cel_evaluator.ts";
 import type {
@@ -183,9 +188,9 @@ export interface ModelMethodRunDeps {
   createExecutionService: () => MethodExecutionService;
   createVaultService: () => Promise<VaultService>;
   dataRepo: UnifiedDataRepository;
+  catalogStore?: CatalogStore;
   definitionRepo: YamlDefinitionRepository;
   outputRepo: OutputRepository;
-  /** Data query service — the executor derives context.queryData from this. */
   dataQueryService: DataQueryService;
   createRunLog: (
     modelType: ModelType,
@@ -240,6 +245,16 @@ export async function* modelMethodRun(
       "method.name": input.methodName,
     },
     (async function* () {
+      const ephemeral = createEphemeralStore(deps.dataRepo.namespace);
+      if (deps.catalogStore) {
+        const wrapped = wrapWithEphemeral(
+          deps.dataRepo,
+          deps.catalogStore,
+          ephemeral,
+        );
+        deps = { ...deps, ...wrapped };
+      }
+
       // --- Validate inputs phase ---
       yield { kind: "validating_inputs" };
 
@@ -659,6 +674,15 @@ export async function* modelMethodRun(
                     methodName: input.methodName,
                     logger: getRunLogger(definition.name, input.methodName),
                     runtimeTags: input.runtimeTags,
+                    dataOutputOverrides: evaluatedDefinition.resources
+                      ? Object.entries(
+                        evaluatedDefinition.resources,
+                      ).map(([specName, override]) => ({
+                        specName,
+                        lifetime: override.lifetime,
+                        garbageCollection: override.garbageCollection,
+                      }))
+                      : undefined,
                     vaultSecrets: secretBag,
                     skipCheckNames: input.skipCheckNames,
                     skipCheckLabels: input.skipCheckLabels,
@@ -1050,6 +1074,7 @@ export async function* modelMethodRun(
         }
       } finally {
         runLog.cleanup();
+        ephemeral.dispose();
       }
     })(),
   );

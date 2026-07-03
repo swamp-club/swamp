@@ -643,3 +643,54 @@ CatalogStore  CelEvaluator
 
 Both `CatalogStore` and `DataQueryService` are wired through
 `RepositoryContext` via `createRepositoryContext()`.
+
+## Ephemeral Data
+
+Data with `lifetime: "ephemeral"` lives only in memory for the duration of a
+workflow run or method run. It uses a parallel in-memory stack:
+
+- **`InMemoryUnifiedDataRepository`** — `Map`-based storage, no disk I/O.
+  `allocateVersion` creates a temp file for `DataWriter` compatibility;
+  `finalizeVersion` reads it into memory and deletes it.
+- **`:memory:` `CatalogStore`** — a separate SQLite instance so queries work
+  transparently. Marked as pre-populated to skip filesystem backfill.
+- **`CompositeUnifiedDataRepository`** — wraps the filesystem and in-memory
+  repos. Writes route by `data.lifetime === "ephemeral"`. Reads check ephemeral
+  first, fall back to persistent. `data.latest()` resolves transparently.
+- **`CompositeDataQueryService`** — merges query results from both catalogs
+  with deduplication.
+
+### Lifecycle scoping
+
+The ephemeral store is created at the start of each execution and disposed in
+the `finally` block:
+
+- **Workflow runs** — `workflowRun()` creates the store, passes it through
+  `createExecutionService` → `WorkflowExecutionService` constructor. All steps
+  share the same store so downstream steps can read upstream ephemeral data.
+- **Standalone method runs** — `modelMethodRun()` creates and disposes its own
+  store.
+- **Workflow resume** — a fresh store is created. Ephemeral data from before
+  suspension is lost (by design — use `"workflow"` or `"infinite"` lifetime for
+  data that must survive suspension).
+
+### Definition-level overrides
+
+Definitions can override a model type's default resource lifetime:
+
+```yaml
+resources:
+  result:
+    lifetime: ephemeral
+    garbageCollection: 3
+```
+
+These are converted to `dataOutputOverrides` and merged with any workflow step
+overrides (step wins).
+
+### Remote execution
+
+Each `ActiveDispatch` carries the per-execution composite repo. The data plane
+resolves `dispatch.dataRepo` for each worker's reads and writes, so remote
+workers transparently access ephemeral data through the same composite as local
+steps.
