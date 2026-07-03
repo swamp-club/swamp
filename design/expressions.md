@@ -436,6 +436,20 @@ inputs:
 `data.query()` results have the same `DataRecord[]` shape as the shortcuts
 — anything you can do with a shortcut result, you can do with a query result.
 
+### Step-output deferral in workflows
+
+All `data.*` functions (`data.latest`, `data.version`, `data.listVersions`,
+`data.findBySpec`, `data.query`, `data.findByTag`) are classified as
+step-output dependencies. In workflow step `task.inputs`, they are **deferred**
+past workflow evaluation and resolved at step execution time — after upstream
+steps have run and their data is available. This enables patterns where step 1
+produces ephemeral data and step 2 consumes it via `data.findBySpec()` or
+`data.query()`.
+
+The `--last-evaluated` flag preserves this behavior: deferred expressions saved
+as raw `${{ }}` in the evaluated workflow are resolved at step execution time
+against the current data store.
+
 ## Sensitive Data
 
 You should be able to access sensitive data by referencing the storage keys they
