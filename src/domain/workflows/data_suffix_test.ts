@@ -68,3 +68,52 @@ Deno.test("coerceToSuffix: skips null/undefined properties", () => {
     "fallback-id",
   );
 });
+
+Deno.test("coerceToSuffix: sanitizes forward slashes in primitives", () => {
+  assertEquals(coerceToSuffix("o11n/macos-runner"), "o11n--macos-runner");
+});
+
+Deno.test("coerceToSuffix: sanitizes backslashes in primitives", () => {
+  assertEquals(coerceToSuffix("path\\to\\thing"), "path--to--thing");
+});
+
+Deno.test("coerceToSuffix: sanitizes double dots in primitives", () => {
+  assertEquals(coerceToSuffix("../secret"), "----secret");
+});
+
+Deno.test("coerceToSuffix: sanitizes null bytes in primitives", () => {
+  assertEquals(coerceToSuffix("bad\0value"), "badvalue");
+});
+
+Deno.test("coerceToSuffix: sanitizes multiple unsafe patterns together", () => {
+  assertEquals(
+    coerceToSuffix("a/b\\c..d\0e"),
+    "a--b--c--de",
+  );
+});
+
+Deno.test("coerceToSuffix: sanitizes unsafe characters in object key property", () => {
+  assertEquals(
+    coerceToSuffix({ key: "group/repo", value: "stuff" }),
+    "group--repo",
+  );
+});
+
+Deno.test("coerceToSuffix: sanitizes unsafe characters in object name property", () => {
+  assertEquals(
+    coerceToSuffix({ name: "path\\file", id: "123" }),
+    "path--file",
+  );
+});
+
+Deno.test("coerceToSuffix: sanitizes unsafe characters in object id property", () => {
+  assertEquals(
+    coerceToSuffix({ id: "../escape", other: "data" }),
+    "----escape",
+  );
+});
+
+Deno.test("coerceToSuffix: sanitizes unsafe characters in JSON stringify fallback", () => {
+  const val = { path: "a/b" };
+  assertEquals(coerceToSuffix(val), '{"path":"a--b"}');
+});

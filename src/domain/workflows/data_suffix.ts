@@ -20,6 +20,13 @@
 /** Maximum length for a coerced suffix before truncation. */
 const MAX_SUFFIX_LENGTH = 64;
 
+function sanitizeSuffix(raw: string): string {
+  return raw
+    .replace(/\.\./g, "--")
+    .replace(/[/\\]/g, "--")
+    .replace(/\0/g, "");
+}
+
 /**
  * Safely converts an unknown value to a string suitable for use as a
  * data artifact name suffix. For objects, tries common identifier
@@ -34,15 +41,15 @@ export function coerceToSuffix(val: unknown): string {
     return "";
   }
   if (typeof val !== "object") {
-    return String(val);
+    return sanitizeSuffix(String(val));
   }
   const obj = val as Record<string, unknown>;
   for (const prop of ["key", "name", "id"]) {
     if (prop in obj && obj[prop] !== undefined && obj[prop] !== null) {
-      return String(obj[prop]);
+      return sanitizeSuffix(String(obj[prop]));
     }
   }
-  const json = JSON.stringify(val);
+  const json = sanitizeSuffix(JSON.stringify(val));
   if (json.length <= MAX_SUFFIX_LENGTH) {
     return json;
   }
