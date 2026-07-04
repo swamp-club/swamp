@@ -34,7 +34,10 @@ import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import { modelMethodRun, type ModelMethodRunEvent } from "../models/run.ts";
 import type { RepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
 import { VaultService } from "../../domain/vaults/vault_service.ts";
-import { ENROLLMENT_TOKEN_MODEL_TYPE } from "../../domain/models/worker/enrollment_token_model.ts";
+import {
+  ENROLLMENT_TOKEN_MODEL_TYPE,
+  type MaxEnrollments,
+} from "../../domain/models/worker/enrollment_token_model.ts";
 import { createWorkerModelRunDeps } from "./run_deps.ts";
 
 /** Data payload for the completed event. */
@@ -56,13 +59,19 @@ export interface WorkerTokenCreateInput {
   durationMs: number;
   /** Omit to use the repo's sole configured vault. */
   vaultName?: string;
+  maxEnrollments?: MaxEnrollments;
 }
 
 /** Dependencies for the worker token create operation. */
 export interface WorkerTokenCreateDeps {
   listVaultNames: () => Promise<string[]>;
   runMint: (
-    input: { name: string; durationMs: number; vaultName: string },
+    input: {
+      name: string;
+      durationMs: number;
+      vaultName: string;
+      maxEnrollments?: MaxEnrollments;
+    },
   ) => AsyncIterable<ModelMethodRunEvent>;
   readSecret: (vaultName: string, secretKey: string) => Promise<string>;
 }
@@ -84,6 +93,9 @@ export async function createWorkerTokenCreateDeps(
         inputs: {
           durationMs: input.durationMs,
           vaultName: input.vaultName,
+          ...(input.maxEnrollments !== undefined
+            ? { maxEnrollments: input.maxEnrollments }
+            : {}),
         },
         lastEvaluated: false,
         typeArg: ENROLLMENT_TOKEN_MODEL_TYPE.normalized,
@@ -166,6 +178,7 @@ export async function* workerTokenCreate(
           name: input.name,
           durationMs: input.durationMs,
           vaultName,
+          maxEnrollments: input.maxEnrollments,
         })
       ) {
         if (event.kind === "error") {

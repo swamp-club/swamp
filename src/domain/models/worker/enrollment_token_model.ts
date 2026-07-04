@@ -24,12 +24,13 @@
  * One model instance per token, named by the token name. The token's
  * plaintext only ever lives in a vault — the resource records the vault
  * reference and the lifecycle state machine `unused → enrolled → expired`
- * (plus `revoked`). First redemption binds the token to the presenting
- * machine id; the bound machine may redeem again (worker restarts and
- * reboots) until the lifetime expires, while any other machine is rejected.
- * The datastore provides no compare-and-swap, so the `unused → enrolled`
- * transition is made atomic by the orchestrator process serializing all
- * token transitions in memory — it is the sole writer of this model.
+ * (plus `revoked`). A token's `maxEnrollments` controls how many distinct
+ * machines may bind: `1` (the default) gives single-machine semantics,
+ * a higher number or `"unlimited"` creates a fleet token. Each bound
+ * machine may redeem again (worker restarts and reboots) until the
+ * lifetime expires. The datastore provides no compare-and-swap, so
+ * transitions are made atomic by the orchestrator process serializing
+ * all token transitions in memory — it is the sole writer of this model.
  */
 
 import { z } from "zod";
@@ -56,6 +57,20 @@ export const TokenStateSchema = z.enum([
 
 export type TokenState = z.infer<typeof TokenStateSchema>;
 
+export const MaxEnrollmentsSchema = z.union([
+  z.number().int().positive(),
+  z.literal("unlimited"),
+]);
+
+export type MaxEnrollments = z.infer<typeof MaxEnrollmentsSchema>;
+
+const BindingSchema = z.object({
+  machineId: z.string(),
+  enrolledAt: z.string().datetime(),
+});
+
+export type Binding = z.infer<typeof BindingSchema>;
+
 export const EnrollmentTokenSchema = z.object({
   name: z.string().describe("Token name; the worker's pool-addressable handle"),
   state: TokenStateSchema,
@@ -65,13 +80,28 @@ export const EnrollmentTokenSchema = z.object({
   /** Vault reference to the token plaintext — never the secret itself. */
   vaultName: z.string(),
   secretKey: z.string(),
-  /** Durable machine id bound on first redemption. */
+  maxEnrollments: MaxEnrollmentsSchema.default(1),
+  bindings: z.array(BindingSchema).default([]),
+  /** @deprecated Legacy field — kept so Zod parses old records. */
   boundMachineId: z.string().optional(),
+  /** @deprecated Legacy field — kept so Zod parses old records. */
   enrolledAt: z.string().datetime().optional(),
   revokedAt: z.string().datetime().optional(),
+}).transform((token) => {
+  const { boundMachineId, enrolledAt, ...rest } = token;
+  if (boundMachineId && rest.bindings.length === 0) {
+    return {
+      ...rest,
+      bindings: [{
+        machineId: boundMachineId,
+        enrolledAt: enrolledAt ?? rest.createdAt,
+      }],
+    };
+  }
+  return rest;
 });
 
-export type EnrollmentToken = z.infer<typeof EnrollmentTokenSchema>;
+export type EnrollmentToken = z.output<typeof EnrollmentTokenSchema>;
 
 const TOKEN_DATA_NAME = "token-main";
 
@@ -101,6 +131,7 @@ const MintArgsSchema = z.object({
   vaultName: z.string().min(1).describe(
     "Vault that stores the token plaintext",
   ),
+  maxEnrollments: MaxEnrollmentsSchema.default(1),
 });
 
 async function mint(
@@ -123,13 +154,15 @@ async function mint(
   await context.vaultService.put(args.vaultName, secretKey, plaintext);
 
   const now = Date.now();
-  const token: EnrollmentToken = {
+  const token = {
     name,
-    state: "unused",
+    state: "unused" as const,
     createdAt: new Date(now).toISOString(),
     expiresAt: new Date(now + args.durationMs).toISOString(),
     vaultName: args.vaultName,
     secretKey,
+    maxEnrollments: args.maxEnrollments,
+    bindings: [] as Binding[],
   };
   const handle = await context.writeResource!("token", TOKEN_DATA_NAME, token);
   return { dataHandles: [handle] };
@@ -141,11 +174,12 @@ const RedeemArgsSchema = z.object({
 });
 
 /**
- * Redeem the token at enrollment, or re-authenticate the bound machine on
- * reconnect or restart. First redemption transitions `unused → enrolled` and
- * binds the machine id (a new resource version); a matching re-redemption
- * validates without writing. Expiry is a hard deadline for both: past
- * `expiresAt` even the bound machine is rejected. Every failure throws.
+ * Redeem the token at enrollment, or re-authenticate a bound machine on
+ * reconnect or restart. First redemption transitions `unused → enrolled`;
+ * subsequent machines are appended to the bindings list until the
+ * `maxEnrollments` allowance is exhausted. A known machineId re-auths
+ * without writing. Expiry is a hard deadline: past `expiresAt` every
+ * machine is rejected. Every failure throws.
  */
 async function redeem(
   args: z.infer<typeof RedeemArgsSchema>,
@@ -172,39 +206,34 @@ async function redeem(
     throw new Error(`Enrollment token '${name}' does not match`);
   }
 
-  if (token.state === "enrolled") {
-    if (token.boundMachineId === args.machineId) {
-      // Re-authentication of the bound machine: valid, no state change.
-      return { dataHandles: [] };
-    }
-    if (token.boundMachineId !== undefined) {
-      throw new Error(
-        `Enrollment token '${name}' is already bound to another machine`,
-      );
-    }
-    // Enrolled before machine binding existed: adopt the presenting machine.
-    const adopted: EnrollmentToken = {
-      ...token,
-      boundMachineId: args.machineId,
-    };
-    const handle = await context.writeResource!(
-      "token",
-      TOKEN_DATA_NAME,
-      adopted,
-    );
-    return { dataHandles: [handle] };
+  const existingBinding = token.bindings.find(
+    (b) => b.machineId === args.machineId,
+  );
+  if (existingBinding) {
+    return { dataHandles: [] };
   }
 
-  const enrolled: EnrollmentToken = {
+  if (
+    token.maxEnrollments !== "unlimited" &&
+    token.bindings.length >= token.maxEnrollments
+  ) {
+    throw new Error(
+      `Enrollment token '${name}': enrollment allowance exhausted`,
+    );
+  }
+
+  const updated = {
     ...token,
-    state: "enrolled",
-    boundMachineId: args.machineId,
-    enrolledAt: new Date().toISOString(),
+    state: "enrolled" as const,
+    bindings: [
+      ...token.bindings,
+      { machineId: args.machineId, enrolledAt: new Date().toISOString() },
+    ],
   };
   const handle = await context.writeResource!(
     "token",
     TOKEN_DATA_NAME,
-    enrolled,
+    updated,
   );
   return { dataHandles: [handle] };
 }
@@ -255,7 +284,7 @@ async function expire(
  */
 export const enrollmentTokenModel: ModelDefinition = defineModel({
   type: ENROLLMENT_TOKEN_MODEL_TYPE,
-  version: "2026.06.11.1",
+  version: "2026.07.04.1",
   resources: {
     "token": {
       description:
@@ -275,7 +304,7 @@ export const enrollmentTokenModel: ModelDefinition = defineModel({
     },
     redeem: {
       description:
-        "Redeem at enrollment (unused → enrolled, binds machine id) or re-authenticate the bound machine",
+        "Redeem at enrollment (appends a binding) or re-authenticate a bound machine",
       kind: "action",
       arguments: RedeemArgsSchema,
       execute: redeem,

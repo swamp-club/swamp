@@ -83,6 +83,7 @@ export function workerDefinitionName(workerName: string): string {
 const EnrollArgsSchema = z.object({
   instanceUuid: z.string().min(1),
   tokenName: z.string().min(1),
+  workerName: z.string().min(1).optional(),
   labels: z.record(z.string(), z.string()).default({}),
   platform: z.string(),
   arch: z.string(),
@@ -96,10 +97,7 @@ async function enroll(
 ): Promise<MethodResult> {
   const now = new Date().toISOString();
   const state: WorkerState = {
-    // The pool-addressable name is the token name; the definition instance
-    // is prefixed (worker-<name>) so it cannot collide with the token's own
-    // instance in the shared definition-name namespace.
-    name: args.tokenName,
+    name: args.workerName ?? args.tokenName,
     instanceUuid: args.instanceUuid,
     tokenName: args.tokenName,
     status: "idle",

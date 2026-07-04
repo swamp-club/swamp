@@ -54,7 +54,7 @@ Three properties drove the design:
 | **Worker**           | A disposable swamp process that dials the orchestrator, enrolls, and executes dispatched steps with a remote `MethodContext`. |
 | **Executor**         | What a dispatch actually runs on: the **local loopback** (in-process on the orchestrator, no socket) or a **remote worker**. Either way, methods run in-process. |
 | **Enrollment**       | The first-connect handshake: redeem the token, bind it to the worker instance UUID, exchange version/labels, issue a session credential, admit the worker into the pool. |
-| **Enrollment token** | A named, time-boxed credential that enrolls exactly one worker once, then re-authenticates that same instance for the rest of its lifetime. A built-in model. |
+| **Enrollment token** | A named, time-boxed credential that enrolls one or more workers (controlled by `maxEnrollments`), then re-authenticates each bound instance for the rest of its lifetime. A built-in model. |
 | **Session credential** | The short-lived credential issued at enrollment that authenticates the worker's HTTP/2 data-plane requests.                |
 | **Dispatch**         | The orchestrator → worker request to run one `ExecutionRequest`. The unit of fan-out.                                       |
 | **Capability**       | A side-effecting function a running method reaches through its context, proxied back to the orchestrator. A finite, closed set. |
@@ -255,10 +255,14 @@ system. Each token is:
 - **Time-boxed** — a `--duration` lifetime that is a *hard deadline*: it bounds
   enrollment and reconnection, and when it elapses the orchestrator actively
   disconnects a connected worker. Continuing past it means minting a new token.
-- **One machine** — it enrolls exactly one machine. The first connect binds it
-  to the worker's `machineId` (a durable id persisted in the worker's cache
-  directory); an *enrollment* attempt from a different machine is rejected.
-- **Reconnect-for-lifetime** — after enrollment, the *bound machine* may
+- **Controlled enrollment** — `maxEnrollments` (default `1`) controls how many
+  distinct machines a token can bind. A single-enrollment token behaves as
+  before: first connect binds it to a `machineId`; a different machine is
+  rejected. A fleet token (`maxEnrollments > 1` or `"unlimited"`) accepts
+  multiple machines, each appended to a `bindings` list until the allowance is
+  exhausted. Each fleet member gets a distinct pool name
+  (`<tokenName>-<suffix>`) derived from a stable hash of its `machineId`.
+- **Reconnect-for-lifetime** — after enrollment, any *bound machine* may
   re-authenticate by presenting `{token, machineId}` as many times as needed
   until the lifetime expires. This is what survives a broken control socket
   *and* a process restart or reboot: the worker comes back as the same pool
@@ -266,8 +270,8 @@ system. Each token is:
 
 The token is a built-in **enrollment-token** model whose instances are swamp data,
 with states `unused → enrolled → expired`; the `unused → enrolled` transition
-records the bound `machineId`, and two workers cannot race to claim one
-token. The datastore itself provides no compare-and-swap — concurrent saves to
+appends a binding (`machineId` + `enrolledAt`) to the token's `bindings` list,
+and concurrent enrollment attempts are serialized by the orchestrator. The datastore itself provides no compare-and-swap — concurrent saves to
 one data item simply land as successive versions — so atomicity comes from the
 **orchestrator process serializing all token and lease transitions in memory**:
 it is the sole writer of these models, and enrollment for a given token is a
@@ -792,8 +796,8 @@ provisioning credentials and extensions onto workers:
   the step that needs them (consistent with the out-of-process resolution pattern
   in [execution-drivers.md](./execution-drivers.md#vault-secret-resolution)).
 
-- The **enrollment token** is named, time-boxed for first redemption, and
-  enrolls exactly one machine, binding to the worker's durable `machineId`. The
+- The **enrollment token** is named, time-boxed, and enrolls up to
+  `maxEnrollments` machines, each binding to the worker's durable `machineId`. The
   `{token, machineId}` pair is a *bearer* reconnection secret rather than
   proof-of-possession — the machine id is client-asserted, so the binding
   contains *accidental* token reuse (pasting one token onto a second box),
@@ -843,7 +847,7 @@ provisioning credentials and extensions onto workers:
 In scope:
 
 - Worker dial-home + enrollment over `wss://` with a named, time-boxed token that
-  enrolls once and reconnects the same `{token, instanceUuid}` for its lifetime;
+  enrolls one or more machines and reconnects each `{token, machineId}` for its lifetime;
   `swamp worker token` commands and a built-in mint model that writes the token to
   a vault.
 - Drivers removed: in-process execution everywhere, isolation as a worker

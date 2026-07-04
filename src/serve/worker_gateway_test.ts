@@ -20,6 +20,7 @@
 import { assertEquals, assertRejects } from "@std/assert";
 import type { RepositoryContext } from "../infrastructure/persistence/repository_factory.ts";
 import {
+  fleetMemberSuffix,
   splitEnrollmentToken,
   WorkerGateway,
   type WorkerGatewayOptions,
@@ -470,4 +471,114 @@ Deno.test("WorkerGateway: a cancelled dispatch frees the worker only after it un
     dispatchParams("d-n"),
   );
   assertEquals(followUp.status, "success");
+});
+
+// ── Fleet token tests ──────────────────────────────────────────────────
+
+Deno.test("fleetMemberSuffix: returns a stable 4-char hex suffix", async () => {
+  const a = await fleetMemberSuffix("machine-1");
+  assertEquals(a.length, 4);
+  assertEquals(/^[0-9a-f]{4}$/.test(a), true);
+  // Stable across calls.
+  assertEquals(await fleetMemberSuffix("machine-1"), a);
+  // Different machines get different suffixes.
+  const b = await fleetMemberSuffix("machine-2");
+  assertEquals(b.length, 4);
+  assertEquals(a === b, false);
+});
+
+Deno.test("WorkerGateway: fleet token (maxEnrollments > 1) names workers with suffix", async () => {
+  const h = createHarness({
+    readTokenMaxEnrollments: () => Promise.resolve(3),
+  });
+  const { workerChannel: w1 } = connectWorkerSocket(h.gateway);
+  const result1 = await enroll(w1, {
+    ...enrollParams,
+    machineId: "machine-1",
+    instanceUuid: "uuid-1",
+  });
+  const suffix1 = await fleetMemberSuffix("machine-1");
+  assertEquals(result1.workerId, `ci-runner-3-${suffix1}`);
+
+  const { workerChannel: w2 } = connectWorkerSocket(h.gateway);
+  const result2 = await enroll(w2, {
+    ...enrollParams,
+    machineId: "machine-2",
+    instanceUuid: "uuid-2",
+  });
+  const suffix2 = await fleetMemberSuffix("machine-2");
+  assertEquals(result2.workerId, `ci-runner-3-${suffix2}`);
+
+  const workers = h.gateway.workers();
+  assertEquals(workers.length, 2);
+  const names = workers.map((w) => w.name).sort();
+  assertEquals(
+    names,
+    [`ci-runner-3-${suffix1}`, `ci-runner-3-${suffix2}`].sort(),
+  );
+});
+
+Deno.test("WorkerGateway: single-enrollment token (maxEnrollments === 1) uses plain token name", async () => {
+  const h = createHarness({
+    readTokenMaxEnrollments: () => Promise.resolve(1),
+  });
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  const result = await enroll(workerChannel);
+  assertEquals(result.workerId, "ci-runner-3");
+});
+
+Deno.test("WorkerGateway: fleet token auto-injects fleet label", async () => {
+  const h = createHarness({
+    readTokenMaxEnrollments: () => Promise.resolve(5),
+  });
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  await enroll(workerChannel);
+  const enrollTransition = h.transitions.find((t) => t.methodName === "enroll");
+  const labels = enrollTransition?.inputs.labels as Record<string, string>;
+  assertEquals(labels.fleet, "ci-runner-3");
+  assertEquals(labels.region, "us-east");
+});
+
+Deno.test("WorkerGateway: worker-supplied fleet label wins over auto-injection", async () => {
+  const h = createHarness({
+    readTokenMaxEnrollments: () => Promise.resolve(5),
+  });
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  await enroll(workerChannel, {
+    ...enrollParams,
+    labels: { region: "us-east", fleet: "custom-fleet" },
+  });
+  const enrollTransition = h.transitions.find((t) => t.methodName === "enroll");
+  const labels = enrollTransition?.inputs.labels as Record<string, string>;
+  assertEquals(labels.fleet, "custom-fleet");
+});
+
+Deno.test("WorkerGateway: fleet worker naming is stable across reconnects", async () => {
+  const h = createHarness({
+    graceWindowMs: 200,
+    readTokenMaxEnrollments: () => Promise.resolve(3),
+  });
+  const first = connectWorkerSocket(h.gateway);
+  const result1 = await enroll(first.workerChannel);
+  const suffix = await fleetMemberSuffix("machine-1");
+  assertEquals(result1.workerId, `ci-runner-3-${suffix}`);
+
+  first.dropSocket();
+  await new Promise((r) => setTimeout(r, 5));
+
+  const second = connectWorkerSocket(h.gateway);
+  const result2 = await enroll(second.workerChannel);
+  assertEquals(result2.workerId, `ci-runner-3-${suffix}`);
+  assertEquals(h.gateway.workers().length, 1);
+  second.dropSocket();
+  await new Promise((r) => setTimeout(r, 250));
+});
+
+Deno.test("WorkerGateway: null readTokenMaxEnrollments defaults to single-machine naming", async () => {
+  const h = createHarness({
+    readTokenMaxEnrollments: () => Promise.resolve(null),
+  });
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  const result = await enroll(workerChannel);
+  assertEquals(result.workerId, "ci-runner-3");
 });

@@ -153,7 +153,8 @@ Deno.test("workerTokenList: overlays expired display state on stale live tokens"
   >;
   assertEquals(completed.data.tokens[0].state, "enrolled");
   assertEquals(completed.data.tokens[0].effectiveState, "expired");
-  assertEquals(completed.data.tokens[0].boundMachineId, "machine-9");
+  assertEquals(completed.data.tokens[0].bindingCount, 1);
+  assertEquals(completed.data.tokens[0].bindings[0].machineId, "machine-9");
 });
 
 Deno.test("workerTokenList: skips malformed records and sorts by name", async () => {
