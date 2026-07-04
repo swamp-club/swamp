@@ -656,6 +656,11 @@ const WorkerListRequestSchema = z.object({
   id: z.string().min(1).max(256),
 });
 
+const WorkerQueueListRequestSchema = z.object({
+  type: z.literal("worker.queue.list"),
+  id: z.string().min(1).max(256),
+});
+
 const DatastoreStatusRequestSchema = z.object({
   type: z.literal("datastore.status"),
   id: z.string().min(1).max(256),
@@ -803,6 +808,7 @@ const ServerRequestSchema = z.discriminatedUnion("type", [
   VaultSearchRequestSchema,
   VaultAnnotateRequestSchema,
   WorkerListRequestSchema,
+  WorkerQueueListRequestSchema,
   DatastoreStatusRequestSchema,
   ExtensionListRequestSchema,
   ExtensionSearchRequestSchema,

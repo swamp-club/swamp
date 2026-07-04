@@ -207,7 +207,9 @@ export class DispatchService {
       : Date.now() + effectiveTimeoutMs;
 
     let currentQueueId: string | null = null;
+    let lastDispatchId: string | null = null;
     const emitQueued = () => {
+      if (currentQueueId !== null) return;
       request.onEvent?.({
         kind: "queued",
         requirement: describePlacement(request.placement),
@@ -255,11 +257,15 @@ export class DispatchService {
         );
         try {
           const result = await this.#dispatchOnce(workerName, request);
-          endQueue("mark_dispatched");
+          lastDispatchId = result.dispatchId;
+          endQueue("mark_dispatched", { dispatchId: result.dispatchId });
           return result;
         } catch (error) {
           if (error instanceof WorkerLostError) {
             if (error.hadWrites) {
+              endQueue("mark_dispatched", {
+                dispatchId: error.dispatchId ?? "unknown",
+              });
               throw new Error(
                 `Worker '${workerName}' disconnected after step '${
                   request.stepName ?? request.methodName
@@ -270,7 +276,9 @@ export class DispatchService {
               "Worker {worker} lost a no-write dispatch; re-scheduling",
               { worker: workerName },
             );
-            endQueue("mark_dispatched");
+            endQueue("mark_dispatched", {
+              dispatchId: error.dispatchId ?? "unknown",
+            });
             continue;
           }
           if (error instanceof RpcError && error.code === "worker_busy") {
@@ -281,7 +289,9 @@ export class DispatchService {
               "Worker {worker} reported busy on dispatch; re-queueing step",
               { worker: workerName },
             );
-            endQueue("mark_dispatched");
+            endQueue("mark_dispatched", {
+              dispatchId: lastDispatchId ?? "unknown",
+            });
             await this.#waitForPoolChange(
               deadline !== null
                 ? Math.max(deadline - Date.now(), 0)
@@ -296,12 +306,15 @@ export class DispatchService {
         }
       }
     } catch (error) {
-      if (
-        currentQueueId !== null &&
-        error instanceof Error &&
-        error.message.startsWith("Timed out waiting for a worker")
-      ) {
-        endQueue("timeout");
+      if (currentQueueId !== null) {
+        if (
+          error instanceof Error &&
+          error.message.startsWith("Timed out waiting for a worker")
+        ) {
+          endQueue("timeout");
+        } else {
+          endQueue("cancel");
+        }
       }
       throw error;
     } finally {
@@ -312,7 +325,7 @@ export class DispatchService {
   async #dispatchOnce(
     workerName: string,
     request: RemoteStepRequest,
-  ): Promise<RemoteStepResult> {
+  ): Promise<RemoteStepResult & { dispatchId: string }> {
     const gateway = this.#gateway!;
     const dispatchId = crypto.randomUUID();
     const leaseId = dispatchId;
@@ -392,6 +405,7 @@ export class DispatchService {
         durationMs: result.durationMs,
         followUpActions: result.followUpActions,
         workerName,
+        dispatchId,
       };
     } catch (error) {
       if (
@@ -425,7 +439,7 @@ export class DispatchService {
             }; no writes had occurred`,
           });
         }
-        throw new WorkerLostError(workerName, hadWrites);
+        throw new WorkerLostError(workerName, hadWrites, dispatchId);
       }
       // Anything else (worker_busy desync, unexpected RPC failure): the
       // attempt is abandoned, not a method failure — end the lease so it
@@ -627,13 +641,15 @@ export class DispatchService {
 export class WorkerLostError extends Error {
   readonly workerName: string;
   readonly hadWrites: boolean;
+  readonly dispatchId: string;
 
-  constructor(workerName: string, hadWrites: boolean) {
+  constructor(workerName: string, hadWrites: boolean, dispatchId: string) {
     super(
       `Worker '${workerName}' disconnected mid-dispatch (writes: ${hadWrites})`,
     );
     this.name = "WorkerLostError";
     this.workerName = workerName;
     this.hadWrites = hadWrites;
+    this.dispatchId = dispatchId;
   }
 }
