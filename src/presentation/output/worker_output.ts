@@ -105,7 +105,9 @@ export function renderWorkerTokenCreate(
   const lines = [
     `${bold(cyan("Token:"))} ${bold(data.name)}`,
     `${bold(cyan("Expires:"))} ${data.expiresAt}`,
-    `${bold(cyan("Max enrollments:"))} ${data.maxEnrollments}`,
+    ...(data.maxEnrollments !== 1
+      ? [`${bold(cyan("Max enrollments:"))} ${data.maxEnrollments}`]
+      : []),
     `${bold(cyan("Vault:"))} ${data.vaultRef.vaultName} ${
       dim(`(key ${data.vaultRef.secretKey})`)
     }`,
@@ -140,14 +142,20 @@ export function renderWorkerTokenList(
     return;
   }
   const rows = data.tokens.map((token) => {
-    const allowance = token.maxEnrollments === "unlimited"
-      ? "unlimited"
-      : String(token.maxEnrollments);
+    let enrollment: string;
+    if (token.maxEnrollments === 1) {
+      enrollment = token.bindings[0]?.machineId ?? "-";
+    } else {
+      const allowance = token.maxEnrollments === "unlimited"
+        ? "unlimited"
+        : String(token.maxEnrollments);
+      enrollment = `${token.bindingCount} / ${allowance}`;
+    }
     return [
       token.name,
       token.effectiveState,
       token.expiresAt,
-      `${token.bindingCount} / ${allowance}`,
+      enrollment,
     ];
   });
   const lines = tableLines(
