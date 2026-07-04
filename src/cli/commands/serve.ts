@@ -76,6 +76,7 @@ import {
   RunTrackerStore,
 } from "../../infrastructure/persistence/run_tracker_store.ts";
 import { swampPath } from "../../infrastructure/persistence/paths.ts";
+import { sweepStaleRecords } from "../../serve/boot_reconciliation.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -724,6 +725,21 @@ export const serveCommand = new Command()
       logger.warn`Reaped stale model method run ${run.id} (method: ${
         run.methodName ?? "unknown"
       })`;
+    }
+
+    const swept = await sweepStaleRecords({
+      repoDir: resolvedRepoDir,
+      repoContext,
+    });
+    if (swept.leases + swept.pendingDispatches + swept.workers > 0) {
+      logger.info(
+        "Boot reconciliation: swept {leases} lease(s), {pendingDispatches} pending dispatch(es), {workers} worker(s)",
+        {
+          leases: swept.leases,
+          pendingDispatches: swept.pendingDispatches,
+          workers: swept.workers,
+        },
+      );
     }
 
     const connectionCtx: import("../../serve/connection.ts").ConnectionContext =
