@@ -119,6 +119,54 @@ import { getTracer, SpanStatusCode } from "../../infrastructure/tracing/mod.ts";
 import { extractSensitiveFieldValues } from "../models/sensitive_field_extractor.ts";
 
 /**
+ * Resolves a task field that may be a record, an expression string, or a
+ * non-record value left behind by resolveAvailableExpressions. Returns a
+ * validated Record or undefined. Throws UserError for user-authored mistakes
+ * (wrong expression result type, missing context).
+ */
+function resolveRecordExpression(
+  value: Record<string, unknown> | string | undefined,
+  fieldName: string,
+  expressionContext: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string") {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+      throw new UserError(
+        `${fieldName} must be a record, got ${
+          Array.isArray(value) ? "an array" : typeof value
+        }`,
+      );
+    }
+    return value;
+  }
+  const cel = extractCelExpression(value);
+  if (!cel) {
+    throw new UserError(
+      `${fieldName} must be a record, got a string`,
+    );
+  }
+  if (!expressionContext) {
+    throw new UserError(
+      `${fieldName} expression "$\{{ ${cel} }}" could not be resolved: no expression context available`,
+    );
+  }
+  const celEvaluator = new CelEvaluator();
+  const resolved = celEvaluator.evaluate(cel, expressionContext);
+  if (
+    resolved === null || resolved === undefined ||
+    typeof resolved !== "object" || Array.isArray(resolved)
+  ) {
+    throw new UserError(
+      `${fieldName} expression "$\{{ ${cel} }}" evaluated to ${
+        Array.isArray(resolved) ? "an array" : typeof resolved
+      }, expected a record`,
+    );
+  }
+  return resolved as Record<string, unknown>;
+}
+
+/**
  * Extracts a human-readable reason from an AbortSignal. Returns the
  * Error message when the reason is an Error, or "aborted" otherwise.
  */
@@ -489,50 +537,19 @@ export class DefaultStepExecutor implements StepExecutor {
 
     // Resolve whole-field expression strings for inputs/globalArgs that survived
     // resolveAvailableExpressions (e.g., deferred step-output dependencies).
-    if (typeof task.inputs === "string") {
-      const cel = extractCelExpression(task.inputs);
-      if (cel && ctx.expressionContext) {
-        const celEvaluator = new CelEvaluator();
-        const resolved = celEvaluator.evaluate(cel, ctx.expressionContext);
-        if (
-          resolved === null || resolved === undefined ||
-          typeof resolved !== "object" || Array.isArray(resolved)
-        ) {
-          throw new Error(
-            `task.inputs expression "$\{{ ${cel} }}" evaluated to ${
-              Array.isArray(resolved) ? "an array" : typeof resolved
-            }, expected a record`,
-          );
-        }
-        task = { ...task, inputs: resolved as Record<string, unknown> };
-      } else if (cel) {
-        throw new Error(
-          `task.inputs expression "$\{{ ${cel} }}" could not be resolved: no expression context available`,
-        );
-      }
-    }
-    if (typeof task.globalArgs === "string") {
-      const cel = extractCelExpression(task.globalArgs);
-      if (cel && ctx.expressionContext) {
-        const celEvaluator = new CelEvaluator();
-        const resolved = celEvaluator.evaluate(cel, ctx.expressionContext);
-        if (
-          resolved === null || resolved === undefined ||
-          typeof resolved !== "object" || Array.isArray(resolved)
-        ) {
-          throw new Error(
-            `task.globalArgs expression "$\{{ ${cel} }}" evaluated to ${
-              Array.isArray(resolved) ? "an array" : typeof resolved
-            }, expected a record`,
-          );
-        }
-        task = { ...task, globalArgs: resolved as Record<string, unknown> };
-      } else if (cel) {
-        throw new Error(
-          `task.globalArgs expression "$\{{ ${cel} }}" could not be resolved: no expression context available`,
-        );
-      }
-    }
+    task = {
+      ...task,
+      inputs: resolveRecordExpression(
+        task.inputs,
+        "task.inputs",
+        ctx.expressionContext,
+      ),
+      globalArgs: resolveRecordExpression(
+        task.globalArgs,
+        "task.globalArgs",
+        ctx.expressionContext,
+      ),
+    };
 
     let originalDefinition: Definition;
     let modelType: ModelType;
@@ -2748,28 +2765,14 @@ export class WorkflowExecutionService {
 
     // Resolve whole-field expression string for inputs that survived
     // resolveAvailableExpressions (e.g., deferred step-output dependencies).
-    if (typeof task.inputs === "string") {
-      const cel = extractCelExpression(task.inputs);
-      if (cel && expressionContext) {
-        const celEvaluator = new CelEvaluator();
-        const resolved = celEvaluator.evaluate(cel, expressionContext);
-        if (
-          resolved === null || resolved === undefined ||
-          typeof resolved !== "object" || Array.isArray(resolved)
-        ) {
-          throw new Error(
-            `task.inputs expression "$\{{ ${cel} }}" evaluated to ${
-              Array.isArray(resolved) ? "an array" : typeof resolved
-            }, expected a record`,
-          );
-        }
-        task = { ...task, inputs: resolved as Record<string, unknown> };
-      } else if (cel) {
-        throw new Error(
-          `task.inputs expression "$\{{ ${cel} }}" could not be resolved: no expression context available`,
-        );
-      }
-    }
+    task = {
+      ...task,
+      inputs: resolveRecordExpression(
+        task.inputs,
+        "task.inputs",
+        expressionContext,
+      ),
+    };
 
     // Recursion guard
     const depth = options.workflowNestingDepth ?? 0;
