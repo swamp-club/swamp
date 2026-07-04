@@ -29,6 +29,7 @@ function makeDeps(overrides: Partial<IssueEditDeps> = {}): IssueEditDeps {
       Promise.resolve({
         title: "Updated title",
         body: "Updated body",
+        type: "bug",
         url: "https://swamp-club.com/lab/42",
       }),
     ...overrides,
@@ -76,6 +77,7 @@ Deno.test("issueEdit: yields noop when nothing changes", async () => {
       return Promise.resolve({
         title: "Same",
         body: "Same",
+        type: "bug",
         url: "https://swamp-club.com/lab/42",
       });
     },
@@ -97,13 +99,14 @@ Deno.test("issueEdit: yields noop when nothing changes", async () => {
 });
 
 Deno.test("issueEdit: sends only changed fields to updateIssue", async () => {
-  let capturedFields: { title?: string; body?: string } = {};
+  let capturedFields: { title?: string; body?: string; type?: string } = {};
   const deps = makeDeps({
     updateIssue: (input) => {
       capturedFields = input.fields;
       return Promise.resolve({
         title: input.fields.title ?? "Original",
         body: input.fields.body ?? "Original",
+        type: "bug",
         url: "https://swamp-club.com/lab/42",
       });
     },
@@ -141,13 +144,14 @@ Deno.test("issueEdit: rejects empty title", async () => {
 });
 
 Deno.test("issueEdit: sends both fields when both change", async () => {
-  let capturedFields: { title?: string; body?: string } = {};
+  let capturedFields: { title?: string; body?: string; type?: string } = {};
   const deps = makeDeps({
     updateIssue: (input) => {
       capturedFields = input.fields;
       return Promise.resolve({
         title: "New title",
         body: "New body",
+        type: "bug",
         url: "https://swamp-club.com/lab/42",
       });
     },
@@ -165,4 +169,112 @@ Deno.test("issueEdit: sends both fields when both change", async () => {
 
   assertEquals(capturedFields.title, "New title");
   assertEquals(capturedFields.body, "New body");
+});
+
+Deno.test("issueEdit: yields completed when type changes", async () => {
+  const deps = makeDeps({
+    updateIssue: () =>
+      Promise.resolve({
+        title: "Same",
+        body: "Same",
+        type: "security",
+        url: "https://swamp-club.com/lab/42",
+      }),
+  });
+
+  const events = await collect<IssueEditEvent>(
+    issueEdit(createLibSwampContext(), deps, {
+      issueNumber: 42,
+      title: "Same",
+      body: "Same",
+      type: "security",
+      originalTitle: "Same",
+      originalBody: "Same",
+      originalType: "bug",
+    }),
+  );
+
+  assertEquals(events.length, 1);
+  assertEquals(events[0].kind, "completed");
+  const completed = events[0] as Extract<IssueEditEvent, { kind: "completed" }>;
+  assertEquals(completed.data.type, "security");
+});
+
+Deno.test("issueEdit: yields noop when type is unchanged", async () => {
+  let updateCalled = false;
+  const deps = makeDeps({
+    updateIssue: () => {
+      updateCalled = true;
+      return Promise.resolve({
+        title: "Same",
+        body: "Same",
+        type: "bug",
+        url: "https://swamp-club.com/lab/42",
+      });
+    },
+  });
+
+  const events = await collect<IssueEditEvent>(
+    issueEdit(createLibSwampContext(), deps, {
+      issueNumber: 5,
+      title: "Same",
+      body: "Same",
+      type: "bug",
+      originalTitle: "Same",
+      originalBody: "Same",
+      originalType: "bug",
+    }),
+  );
+
+  assertEquals(events.length, 1);
+  assertEquals(events[0].kind, "noop");
+  assertEquals(updateCalled, false);
+});
+
+Deno.test("issueEdit: sends type and title when both change", async () => {
+  let capturedFields: { title?: string; body?: string; type?: string } = {};
+  const deps = makeDeps({
+    updateIssue: (input) => {
+      capturedFields = input.fields;
+      return Promise.resolve({
+        title: "New title",
+        body: "Same body",
+        type: "security",
+        url: "https://swamp-club.com/lab/42",
+      });
+    },
+  });
+
+  await collect(
+    issueEdit(createLibSwampContext(), deps, {
+      issueNumber: 1,
+      title: "New title",
+      body: "Same body",
+      type: "security",
+      originalTitle: "Old title",
+      originalBody: "Same body",
+      originalType: "bug",
+    }),
+  );
+
+  assertEquals(capturedFields.title, "New title");
+  assertEquals(capturedFields.body, undefined);
+  assertEquals(capturedFields.type, "security");
+});
+
+Deno.test("issueEdit: omits type from data when type did not change", async () => {
+  const events = await collect<IssueEditEvent>(
+    issueEdit(createLibSwampContext(), makeDeps(), {
+      issueNumber: 42,
+      title: "New title",
+      body: "Same body",
+      originalTitle: "Old title",
+      originalBody: "Same body",
+      originalType: "bug",
+    }),
+  );
+
+  assertEquals(events.length, 1);
+  const completed = events[0] as Extract<IssueEditEvent, { kind: "completed" }>;
+  assertEquals(completed.data.type, undefined);
 });

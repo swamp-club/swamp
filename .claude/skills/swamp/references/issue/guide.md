@@ -10,9 +10,12 @@ To view an existing issue, use `swamp issue get <number>` — this fetches and
 displays the issue's title, type, status, author, body, assignees, and comment
 count.
 
-To edit an existing issue's title or body, use `swamp issue edit <number>`. This
-opens `$EDITOR` pre-filled with the current title and body. Use `--title` and/or
-`--body` flags to skip the editor. Only the issue author (or admins) can edit.
+To edit an existing issue's title, body, or type, use
+`swamp issue edit <number>`. This opens `$EDITOR` pre-filled with the current
+title, type, and body. Use `--title`, `--body`, and/or `--type` flags to skip
+the editor. Only the issue author (or admins) can edit. Authors can change the
+type to `security` to restrict visibility, but cannot change it back from
+`security` — only admins can de-escalate.
 
 With `--extension <name>`, reports are routed to the extension's publisher
 instead — either as a tagged swamp.club Lab issue (for `@swamp/*` extensions) or
@@ -38,7 +41,7 @@ directly.
 | ----------------------------- | --------------------------------------------------------------------------------------------- |
 | `swamp issue search [query]`  | Search or list issues by keyword, with optional `--type`, `--status`, `--source`, `--limit`   |
 | `swamp issue get <number>`    | Fetch and display issue details (title, type, status, author, body, assignees, comment count) |
-| `swamp issue edit <number>`   | Edit title and/or body of an existing issue (author or admin only)                            |
+| `swamp issue edit <number>`   | Edit title, body, or type of an existing issue (author or admin only)                         |
 | `swamp issue bug`             | Title, description, steps to reproduce, environment                                           |
 | `swamp issue feature`         | Title, problem statement, proposed solution, alternatives                                     |
 | `swamp issue security`        | Title, description, reproduction, affected components, impact                                 |
@@ -55,6 +58,7 @@ swamp issue get 42 --json
 swamp issue edit 42
 swamp issue edit 42 --title "Updated title"
 swamp issue edit 42 --title "Updated title" --body "Updated body" --json
+swamp issue edit 42 --type security
 swamp issue bug --title "CLI crashes on empty input" --body "When running..." --json
 swamp issue feature --title "Add dark mode" --body "I'd like..." --json
 swamp issue security --title "..." --body "..." --json
