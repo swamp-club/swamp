@@ -211,6 +211,32 @@ Deno.test({
 });
 
 Deno.test({
+  name:
+    "auth nudge: exit banner suppressed for auth commands even when unauthenticated",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    await withTempDir(async (repoDir) => {
+      await withTempDir(async (configDir) => {
+        await initializeTestRepo(repoDir);
+
+        const result = await runCliCommand(
+          ["auth", "whoami", "--no-telemetry"],
+          repoDir,
+          { XDG_CONFIG_HOME: configDir, NO_COLOR: "1" },
+        );
+
+        const combined = result.stdout + result.stderr;
+        assertEquals(
+          combined.includes(AUTH_NUDGE_MESSAGE),
+          false,
+          "nudge should not appear after auth commands",
+        );
+      });
+    });
+  },
+});
+
+Deno.test({
   name: "auth nudge: exit banner suppressed in --json mode",
   ignore: Deno.build.os === "windows",
   fn: async () => {

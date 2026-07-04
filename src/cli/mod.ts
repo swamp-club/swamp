@@ -1508,15 +1508,17 @@ export async function runCli(args: string[]): Promise<void> {
 
       // Auth nudge banner (throttled to once per day, suppressed once logged in).
       // Skip for commands whose renderers already include their own inline
-      // nudge to avoid showing it twice. If you add an inline nudge to a
-      // new renderer, add the command here too.
+      // nudge to avoid showing it twice, and for auth commands (which handle
+      // authentication directly — showing "please log in" after a successful
+      // login is confusing).
       //   - repo init/upgrade: src/presentation/renderers/repo_init.ts
       //   - model method run: src/presentation/renderers/model_method_run.ts
       //   - workflow run/resume: src/presentation/renderers/workflow_run.ts
       //   - access grant/group: via model_method_run renderer
+      //   - auth *: authentication commands manage login state directly
       {
         const outputMode = getOutputModeFromArgs(args);
-        const hasInlineNudge = (commandInfo.command === "repo" &&
+        const skipNudge = (commandInfo.command === "repo" &&
           (commandInfo.subcommand === "init" ||
             commandInfo.subcommand === "upgrade")) ||
           (commandInfo.command === "model" &&
@@ -1524,8 +1526,9 @@ export async function runCli(args: string[]): Promise<void> {
           (commandInfo.command === "workflow" &&
             (commandInfo.subcommand === "run" ||
               commandInfo.subcommand === "resume")) ||
-          commandInfo.command === "access";
-        if (outputMode === "log" && !isAuthenticated() && !hasInlineNudge) {
+          commandInfo.command === "access" ||
+          commandInfo.command === "auth";
+        if (outputMode === "log" && !isAuthenticated() && !skipNudge) {
           try {
             const nudgeRepo = new AuthNudgeRepository();
             const nudgeState = await nudgeRepo.read();
