@@ -121,7 +121,7 @@ export const issueEditCommand = new Command()
   )
   .option(
     "--type <type:string>",
-    "Change issue type (bug, feature, or security)",
+    "Change issue type (bug, feature, or security); escalating to security restricts visibility and cannot be reversed by non-admins",
   )
   .action(async function (options: AnyOptions, issueNumber: number) {
     const ctx = createContext(options as GlobalOptions, ["issue", "edit"]);

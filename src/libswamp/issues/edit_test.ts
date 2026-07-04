@@ -262,7 +262,7 @@ Deno.test("issueEdit: sends type and title when both change", async () => {
   assertEquals(capturedFields.type, "security");
 });
 
-Deno.test("issueEdit: omits type from data when type did not change", async () => {
+Deno.test("issueEdit: includes type in data even when type did not change", async () => {
   const events = await collect<IssueEditEvent>(
     issueEdit(createLibSwampContext(), makeDeps(), {
       issueNumber: 42,
@@ -276,5 +276,5 @@ Deno.test("issueEdit: omits type from data when type did not change", async () =
 
   assertEquals(events.length, 1);
   const completed = events[0] as Extract<IssueEditEvent, { kind: "completed" }>;
-  assertEquals(completed.data.type, undefined);
+  assertEquals(completed.data.type, "bug");
 });

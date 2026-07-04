@@ -27,7 +27,7 @@ export interface IssueEditData {
   title: string;
   body: string;
   url: string;
-  type?: string;
+  type: string;
 }
 
 export type IssueEditEvent =
@@ -100,7 +100,7 @@ export async function* issueEdit(
           title: result.title,
           body: result.body,
           url: result.url,
-          ...(fields.type !== undefined ? { type: result.type } : {}),
+          type: result.type,
         },
       };
     })(),
