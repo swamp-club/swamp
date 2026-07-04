@@ -21,12 +21,14 @@ import { assertEquals, assertStringIncludes } from "@std/assert";
 import { stripAnsiCode } from "@std/fmt/colors";
 import type {
   WorkerListData,
+  WorkerQueueListData,
   WorkerTokenCreateData,
   WorkerTokenListData,
   WorkerTokenRevokeData,
 } from "../../libswamp/mod.ts";
 import {
   renderWorkerList,
+  renderWorkerQueue,
   renderWorkerStatus,
   renderWorkerTokenCreate,
   renderWorkerTokenList,
@@ -304,4 +306,82 @@ Deno.test("renderWorkerStatus: dispatch events serialize whole in json mode", ()
   const parsed = JSON.parse(output);
   assertEquals(parsed.kind, "dispatch_started");
   assertEquals(parsed.dispatchId, "d-1");
+});
+
+// ── renderWorkerQueue ──────────────────────────────────────────────
+
+const queueData: WorkerQueueListData = {
+  items: [
+    {
+      queueId: "q-1",
+      requirement: "tier=smoke, platform=linux",
+      workflowName: "deploy",
+      jobName: "main",
+      stepName: "build",
+      modelType: "@acme/widget",
+      methodName: "create",
+      queuedAt: "2026-07-04T00:00:00.000Z",
+      ageMs: 65_000,
+    },
+    {
+      queueId: "q-2",
+      requirement: "any worker",
+      workflowName: undefined,
+      jobName: undefined,
+      stepName: undefined,
+      modelType: "command/shell",
+      methodName: "execute",
+      queuedAt: "2026-07-04T00:01:00.000Z",
+      ageMs: 5_000,
+    },
+  ],
+  count: 2,
+};
+
+Deno.test("renderWorkerQueue: log mode renders the table with columns", () => {
+  const output = stripAnsiCode(
+    captureLogs(() => renderWorkerQueue(queueData, "log")),
+  );
+  assertStringIncludes(output, "REQUIREMENT");
+  assertStringIncludes(output, "STEP");
+  assertStringIncludes(output, "MODEL");
+  assertStringIncludes(output, "QUEUED AT");
+  assertStringIncludes(output, "AGE");
+  assertStringIncludes(output, "tier=smoke, platform=linux");
+  assertStringIncludes(output, "build");
+  assertStringIncludes(output, "@acme/widget");
+  assertStringIncludes(output, "any worker");
+  assertStringIncludes(output, "command/shell.execute");
+});
+
+Deno.test("renderWorkerQueue: log mode shows empty-state message", () => {
+  const output = stripAnsiCode(
+    captureLogs(() => renderWorkerQueue({ items: [], count: 0 }, "log")),
+  );
+  assertStringIncludes(output, "No steps are currently queued.");
+});
+
+Deno.test("renderWorkerQueue: json mode emits the array of items", () => {
+  const output = captureLogs(() => renderWorkerQueue(queueData, "json"));
+  const parsed = JSON.parse(output) as WorkerQueueListData["items"];
+  assertEquals(parsed.length, 2);
+  assertEquals(parsed[0].queueId, "q-1");
+  assertEquals(parsed[0].requirement, "tier=smoke, platform=linux");
+  assertEquals(parsed[1].stepName, undefined);
+  assertEquals(parsed[1].modelType, "command/shell");
+});
+
+Deno.test("renderWorkerQueue: json mode emits empty array for no items", () => {
+  const output = captureLogs(() =>
+    renderWorkerQueue({ items: [], count: 0 }, "json")
+  );
+  const parsed = JSON.parse(output);
+  assertEquals(parsed, []);
+});
+
+Deno.test("renderWorkerQueue: step column falls back to modelType.methodName when stepName is undefined", () => {
+  const output = stripAnsiCode(
+    captureLogs(() => renderWorkerQueue(queueData, "log")),
+  );
+  assertStringIncludes(output, "command/shell.execute");
 });

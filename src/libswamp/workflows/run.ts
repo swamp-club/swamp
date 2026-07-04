@@ -145,6 +145,12 @@ export type WorkflowRunEvent =
     line: string;
   }
   | {
+    kind: "step_queued";
+    jobId: string;
+    stepId: string;
+    requirement: string;
+  }
+  | {
     kind: "method_event";
     jobId: string;
     stepId: string;
@@ -442,6 +448,7 @@ export function mapWorkflowExecutionEvent(
     case "step_completed":
     case "step_skipped":
     case "approval_requested":
+    case "step_queued":
     case "step_failed":
     case "model_resolved":
     case "env_var_warning":

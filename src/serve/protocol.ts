@@ -341,6 +341,8 @@ export interface VaultAnnotatePayload {
 
 export type WorkerListPayload = Record<string, never>;
 
+export type WorkerQueueListPayload = Record<string, never>;
+
 export type DatastoreStatusPayload = Record<string, never>;
 
 // ── Extension operations ─────────────────────────────────────────────
@@ -499,6 +501,11 @@ export type ServerRequest =
     payload?: ReportTypeSearchPayload;
   }
   | { type: "worker.list"; id: string; payload?: WorkerListPayload }
+  | {
+    type: "worker.queue.list";
+    id: string;
+    payload?: WorkerQueueListPayload;
+  }
   | { type: "datastore.status"; id: string; payload?: DatastoreStatusPayload }
   | { type: "extension.list"; id: string; payload?: ExtensionListPayload }
   | { type: "extension.search"; id: string; payload?: ExtensionSearchPayload }
@@ -765,6 +772,10 @@ export interface WorkerListResponse {
   data: Record<string, unknown>;
 }
 
+export interface WorkerQueueListResponse {
+  data: Record<string, unknown>;
+}
+
 export interface DatastoreStatusResponse {
   data: Record<string, unknown>;
 }
@@ -947,6 +958,11 @@ export type ServerMessage =
     payload: ReportTypeSearchResponse;
   }
   | { type: "worker.list"; id: string; payload: WorkerListResponse }
+  | {
+    type: "worker.queue.list";
+    id: string;
+    payload: WorkerQueueListResponse;
+  }
   | { type: "datastore.status"; id: string; payload: DatastoreStatusResponse }
   | { type: "extension.list"; id: string; payload: ExtensionListResponse }
   | { type: "extension.search"; id: string; payload: ExtensionSearchResponse }

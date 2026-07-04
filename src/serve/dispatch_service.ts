@@ -42,6 +42,10 @@ import {
   STEP_LEASE_MODEL_TYPE,
 } from "../domain/models/worker/step_lease_model.ts";
 import {
+  PENDING_DISPATCH_INSTANCE_NAME,
+  PENDING_DISPATCH_MODEL_TYPE,
+} from "../domain/models/worker/pending_dispatch_model.ts";
+import {
   captureEnvironmentSnapshot,
 } from "../domain/remote/environment_snapshot.ts";
 import {
@@ -202,57 +206,126 @@ export class DispatchService {
       ? null
       : Date.now() + effectiveTimeoutMs;
 
-    while (true) {
-      request.signal?.throwIfAborted();
-      const workerName = await this.#acquireWorker(
-        request.placement,
-        request.signal,
-        deadline,
-      );
-      try {
-        return await this.#dispatchOnce(workerName, request);
-      } catch (error) {
-        if (error instanceof WorkerLostError) {
-          if (error.hadWrites) {
-            throw new Error(
-              `Worker '${workerName}' disconnected after step '${
-                request.stepName ?? request.methodName
-              }' had written data — failing the run (write-then-drop)`,
+    let currentQueueId: string | null = null;
+    let lastDispatchId: string | null = null;
+    const emitQueued = () => {
+      if (currentQueueId !== null) return;
+      request.onEvent?.({
+        kind: "queued",
+        requirement: describePlacement(request.placement),
+      });
+      currentQueueId = crypto.randomUUID();
+      this.#pendingTransition("enqueue", {
+        queueId: currentQueueId,
+        target: request.placement.target,
+        labels: request.placement.labels,
+        platform: request.placement.platform,
+        workflowName: request.workflowName,
+        jobName: request.jobName,
+        stepName: request.stepName,
+        modelType: request.modelType.normalized,
+        methodName: request.methodName,
+        queuedAt: new Date().toISOString(),
+      });
+    };
+
+    const endQueue = (
+      method: "mark_dispatched" | "timeout" | "cancel",
+      extra?: Record<string, unknown>,
+    ) => {
+      if (currentQueueId === null) return;
+      const queueId = currentQueueId;
+      currentQueueId = null;
+      this.#pendingTransition(method, {
+        queueId,
+        endedAt: new Date().toISOString(),
+        ...extra,
+      });
+    };
+
+    const onAbort = () => endQueue("cancel");
+    request.signal?.addEventListener("abort", onAbort, { once: true });
+
+    try {
+      while (true) {
+        request.signal?.throwIfAborted();
+        const workerName = await this.#acquireWorker(
+          request.placement,
+          request.signal,
+          deadline,
+          emitQueued,
+        );
+        try {
+          const result = await this.#dispatchOnce(workerName, request);
+          lastDispatchId = result.dispatchId;
+          endQueue("mark_dispatched", { dispatchId: result.dispatchId });
+          return result;
+        } catch (error) {
+          if (error instanceof WorkerLostError) {
+            if (error.hadWrites) {
+              endQueue("mark_dispatched", {
+                dispatchId: error.dispatchId ?? "unknown",
+              });
+              throw new Error(
+                `Worker '${workerName}' disconnected after step '${
+                  request.stepName ?? request.methodName
+                }' had written data — failing the run (write-then-drop)`,
+              );
+            }
+            logger.warn(
+              "Worker {worker} lost a no-write dispatch; re-scheduling",
+              { worker: workerName },
             );
+            endQueue("mark_dispatched", {
+              dispatchId: error.dispatchId ?? "unknown",
+            });
+            continue;
           }
-          logger.warn(
-            "Worker {worker} lost a no-write dispatch; re-scheduling",
-            { worker: workerName },
-          );
-          continue;
+          if (error instanceof RpcError && error.code === "worker_busy") {
+            // Transient orchestrator/worker view desync (e.g. a cancel grace
+            // period elapsed before the worker freed its serial slot). The
+            // worker IS busy — treat it like any busy worker and re-queue.
+            logger.warn(
+              "Worker {worker} reported busy on dispatch; re-queueing step",
+              { worker: workerName },
+            );
+            endQueue("mark_dispatched", {
+              dispatchId: lastDispatchId ?? "unknown",
+            });
+            await this.#waitForPoolChange(
+              deadline !== null
+                ? Math.max(deadline - Date.now(), 0)
+                : WAIT_FOREVER_POLL_CAP_MS,
+              request.signal,
+            );
+            continue;
+          }
+          throw error;
+        } finally {
+          this.#reserved.delete(workerName);
         }
-        if (error instanceof RpcError && error.code === "worker_busy") {
-          // Transient orchestrator/worker view desync (e.g. a cancel grace
-          // period elapsed before the worker freed its serial slot). The
-          // worker IS busy — treat it like any busy worker and re-queue.
-          logger.warn(
-            "Worker {worker} reported busy on dispatch; re-queueing step",
-            { worker: workerName },
-          );
-          await this.#waitForPoolChange(
-            deadline !== null
-              ? Math.max(deadline - Date.now(), 0)
-              : WAIT_FOREVER_POLL_CAP_MS,
-            request.signal,
-          );
-          continue;
-        }
-        throw error;
-      } finally {
-        this.#reserved.delete(workerName);
       }
+    } catch (error) {
+      if (currentQueueId !== null) {
+        if (
+          error instanceof Error &&
+          error.message.startsWith("Timed out waiting for a worker")
+        ) {
+          endQueue("timeout");
+        } else {
+          endQueue("cancel");
+        }
+      }
+      throw error;
+    } finally {
+      request.signal?.removeEventListener("abort", onAbort);
     }
   }
 
   async #dispatchOnce(
     workerName: string,
     request: RemoteStepRequest,
-  ): Promise<RemoteStepResult> {
+  ): Promise<RemoteStepResult & { dispatchId: string }> {
     const gateway = this.#gateway!;
     const dispatchId = crypto.randomUUID();
     const leaseId = dispatchId;
@@ -332,6 +405,7 @@ export class DispatchService {
         durationMs: result.durationMs,
         followUpActions: result.followUpActions,
         workerName,
+        dispatchId,
       };
     } catch (error) {
       if (
@@ -365,7 +439,7 @@ export class DispatchService {
             }; no writes had occurred`,
           });
         }
-        throw new WorkerLostError(workerName, hadWrites);
+        throw new WorkerLostError(workerName, hadWrites, dispatchId);
       }
       // Anything else (worker_busy desync, unexpected RPC failure): the
       // attempt is abandoned, not a method failure — end the lease so it
@@ -390,6 +464,7 @@ export class DispatchService {
     placement: StepPlacement,
     signal: AbortSignal | undefined,
     deadline: number | null,
+    onQueued?: () => void,
   ): Promise<string> {
     while (true) {
       signal?.throwIfAborted();
@@ -401,6 +476,7 @@ export class DispatchService {
         this.#reserved.add(decision.worker.name);
         return decision.worker.name;
       }
+      onQueued?.();
       if (deadline !== null) {
         const remaining = deadline - Date.now();
         if (remaining <= 0) {
@@ -495,6 +571,20 @@ export class DispatchService {
     return fingerprint;
   }
 
+  #pendingTransition(
+    methodName: string,
+    inputs: Record<string, unknown>,
+  ): void {
+    const run = () =>
+      this.#runModelMethod({
+        typeArg: PENDING_DISPATCH_MODEL_TYPE.normalized,
+        definitionName: PENDING_DISPATCH_INSTANCE_NAME,
+        methodName,
+        inputs,
+      }).catch(() => {});
+    this.#transitionTail = this.#transitionTail.then(run, run);
+  }
+
   #leaseTransition(
     methodName: string,
     inputs: Record<string, unknown>,
@@ -551,13 +641,15 @@ export class DispatchService {
 export class WorkerLostError extends Error {
   readonly workerName: string;
   readonly hadWrites: boolean;
+  readonly dispatchId: string;
 
-  constructor(workerName: string, hadWrites: boolean) {
+  constructor(workerName: string, hadWrites: boolean, dispatchId: string) {
     super(
       `Worker '${workerName}' disconnected mid-dispatch (writes: ${hadWrites})`,
     );
     this.name = "WorkerLostError";
     this.workerName = workerName;
     this.hadWrites = hadWrites;
+    this.dispatchId = dispatchId;
   }
 }

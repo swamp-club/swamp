@@ -45,4 +45,8 @@ export type MethodExecutionEvent =
   | {
     type: "vault_single_quote_warning";
     message: string;
+  }
+  | {
+    type: "step_queued";
+    requirement: string;
   };

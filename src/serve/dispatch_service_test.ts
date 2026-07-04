@@ -83,7 +83,11 @@ function createHarness(options?: {
   );
   const dispatchCalls: Array<{ name: string; params: DispatchParams }> = [];
   const transitions: Array<
-    { methodName: string; inputs: Record<string, unknown> }
+    {
+      typeArg: string;
+      methodName: string;
+      inputs: Record<string, unknown>;
+    }
   > = [];
   let behavior: DispatchBehavior = () =>
     Promise.resolve({
@@ -122,7 +126,11 @@ function createHarness(options?: {
     bundles,
     queueTimeoutMs: options?.queueTimeoutMs ?? 2_000,
     runModelMethod: (input) => {
-      transitions.push({ methodName: input.methodName, inputs: input.inputs });
+      transitions.push({
+        typeArg: input.typeArg,
+        methodName: input.methodName,
+        inputs: input.inputs,
+      });
       return Promise.resolve();
     },
     captureEnvironment: () => ({ SHIPPED: "yes" }),
@@ -236,7 +244,10 @@ Deno.test("DispatchService: no-match placement queues then times out", async () 
     Error,
     "Timed out waiting for a worker matching",
   );
-  assertEquals(h.transitions.length, 0);
+  const leaseTransitions = h.transitions.filter((t) =>
+    t.typeArg === "swamp/step-lease"
+  );
+  assertEquals(leaseTransitions.length, 0);
 });
 
 Deno.test("DispatchService: per-step queueTimeout overrides serve-level default", async () => {
@@ -255,7 +266,10 @@ Deno.test("DispatchService: per-step queueTimeout overrides serve-level default"
     Error,
     "Timed out waiting for a worker matching",
   );
-  assertEquals(h.transitions.length, 0);
+  const leaseTransitions = h.transitions.filter((t) =>
+    t.typeArg === "swamp/step-lease"
+  );
+  assertEquals(leaseTransitions.length, 0);
 });
 
 Deno.test("DispatchService: queues while eligible workers are busy", async () => {

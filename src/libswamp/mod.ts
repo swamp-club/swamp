@@ -381,6 +381,14 @@ export {
   type WorkerTokenRevokeInput,
 } from "./worker/token_revoke.ts";
 export { createWorkerModelRunDeps } from "./worker/run_deps.ts";
+export {
+  createWorkerQueueListDeps,
+  workerQueueList,
+  type WorkerQueueListData,
+  type WorkerQueueListDeps,
+  type WorkerQueueListEvent,
+  type WorkerQueueListItem,
+} from "./worker/queue_list.ts";
 
 // Server token operations (user authentication for swamp serve)
 export {

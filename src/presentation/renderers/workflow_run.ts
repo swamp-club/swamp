@@ -100,6 +100,12 @@ class LogWorkflowRunRenderer implements WorkflowRunRenderer {
           "Step skipped",
         );
       },
+      step_queued: (e) => {
+        getWorkflowRunLogger(this.workflowName, e.jobId, e.stepId).info(
+          "Waiting for a worker matching {requirement}",
+          { requirement: e.requirement },
+        );
+      },
       step_failed: (e) => {
         getWorkflowRunLogger(this.workflowName, e.jobId, e.stepId).error(
           "Step failed: {error}",
@@ -314,6 +320,7 @@ class JsonWorkflowRunRenderer implements WorkflowRunRenderer {
       step_started: () => {},
       step_completed: () => {},
       step_skipped: () => {},
+      step_queued: () => {},
       step_failed: () => {},
       approval_requested: () => {},
       model_resolved: () => {},

@@ -378,6 +378,13 @@ export class DefaultMethodExecutionService implements MethodExecutionService {
                   >
                 >[0],
               );
+            } else if (
+              event.kind === "queued" && "requirement" in event
+            ) {
+              context.onEvent!({
+                type: "step_queued",
+                requirement: event.requirement as string,
+              });
             }
           }
           : undefined,
