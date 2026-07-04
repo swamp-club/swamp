@@ -372,6 +372,7 @@ export {
   type WorkerTokenCreateEvent,
   type WorkerTokenCreateInput,
 } from "./worker/token_create.ts";
+export type { MaxEnrollments } from "./worker/token_create.ts";
 export {
   createWorkerTokenRevokeDeps,
   workerTokenRevoke,

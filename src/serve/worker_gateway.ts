@@ -57,6 +57,7 @@ import {
 import {
   ENROLLMENT_TOKEN_MODEL_TYPE,
   EnrollmentTokenSchema,
+  type MaxEnrollments,
 } from "../domain/models/worker/enrollment_token_model.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 
@@ -86,6 +87,24 @@ export function splitEnrollmentToken(
   return { name: presented.slice(0, dot), secret: presented.slice(dot + 1) };
 }
 
+/**
+ * Stable 8-hex-char suffix derived from a machineId, used to give each
+ * fleet member a distinct worker name: `<tokenName>-<suffix>`.
+ *
+ * 4 bytes → ~4 billion values; birthday-paradox collision is negligible
+ * for any practical fleet size.
+ */
+export async function fleetMemberSuffix(machineId: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(machineId),
+  );
+  return Array.from(new Uint8Array(digest))
+    .slice(0, 4)
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
+}
+
 export interface WorkerSnapshot {
   name: string;
   instanceUuid: string;
@@ -100,6 +119,8 @@ export interface WorkerSnapshot {
 
 interface WorkerEntry {
   name: string;
+  /** The enrollment-token model instance name (differs from `name` for fleet workers). */
+  tokenName: string;
   instanceUuid: string;
   labels: Record<string, string>;
   platform: string;
@@ -148,6 +169,13 @@ export interface WorkerGatewayOptions {
    * expiry enforcement for that worker. Defaults to a datastore query.
    */
   readTokenExpiresAt?: (tokenName: string) => Promise<string | null>;
+  /**
+   * Test seam: reads a token's `maxEnrollments` after redemption for fleet
+   * naming. Defaults to a datastore query.
+   */
+  readTokenMaxEnrollments?: (
+    tokenName: string,
+  ) => Promise<MaxEnrollments | null>;
 }
 
 /** Tracks one attached control socket before/after enrollment. */
@@ -164,6 +192,9 @@ export class WorkerGateway {
   readonly #graceWindowMs: number;
   readonly #runModelMethod: ModelMethodRunner;
   readonly #readTokenExpiresAt: (tokenName: string) => Promise<string | null>;
+  readonly #readTokenMaxEnrollments: (
+    tokenName: string,
+  ) => Promise<MaxEnrollments | null>;
   /** Serializes every token/worker/lease transition (sole-writer rule). */
   #transitionTail: Promise<unknown> = Promise.resolve();
 
@@ -176,6 +207,8 @@ export class WorkerGateway {
       ((input) => this.#defaultRunModelMethod(input));
     this.#readTokenExpiresAt = options.readTokenExpiresAt ??
       ((tokenName) => this.#defaultReadTokenExpiresAt(tokenName));
+    this.#readTokenMaxEnrollments = options.readTokenMaxEnrollments ??
+      ((tokenName) => this.#defaultReadTokenMaxEnrollments(tokenName));
   }
 
   /** The credential service the data plane authenticates against. */
@@ -349,21 +382,10 @@ export class WorkerGateway {
     const { name, secret } = split;
 
     return await this.#recordTransition<EnrollResult>(async () => {
-      const existing = this.#workers.get(name);
-      if (
-        existing && existing.channel !== null &&
-        existing.instanceUuid !== params.instanceUuid
-      ) {
-        throw new RpcError({
-          code: "already_connected",
-          message: `Worker '${name}' is already connected`,
-        });
-      }
-
-      // Redeem validates state, expiry, the secret, and machine binding —
-      // and performs the unused → enrolled transition on first redemption.
-      // The bound machine may redeem again (restart, reboot); any other
-      // machine is rejected.
+      // Redeem validates state, expiry, the secret, and allowance — and
+      // appends a binding on first enrollment or re-auths a known machine.
+      // Must happen before the already-connected check because the worker
+      // name depends on maxEnrollments (fleet vs single-machine).
       await this.#runModelMethod({
         typeArg: ENROLLMENT_TOKEN_MODEL_TYPE.normalized,
         definitionName: name,
@@ -373,6 +395,22 @@ export class WorkerGateway {
           machineId: params.machineId,
         },
       });
+
+      const maxEnrollments = await this.#readTokenMaxEnrollments(name) ?? 1;
+      const workerName = maxEnrollments === 1
+        ? name
+        : `${name}-${await fleetMemberSuffix(params.machineId)}`;
+
+      const existing = this.#workers.get(workerName);
+      if (
+        existing && existing.channel !== null &&
+        existing.instanceUuid !== params.instanceUuid
+      ) {
+        throw new RpcError({
+          code: "already_connected",
+          message: `Worker '${workerName}' is already connected`,
+        });
+      }
 
       const reconnecting = existing !== undefined &&
         existing.instanceUuid === params.instanceUuid;
@@ -389,11 +427,24 @@ export class WorkerGateway {
         existing.expiryTimer = undefined;
       }
 
+      // Auto-inject fleet label for multi-machine tokens.
+      const labels = { ...params.labels };
+      if (maxEnrollments !== 1) {
+        if (labels.fleet !== undefined) {
+          logger.warn(
+            "Worker {worker} supplies its own fleet label {fleet}; keeping it instead of auto-injecting {tokenName}",
+            { worker: workerName, fleet: labels.fleet, tokenName: name },
+          );
+        } else {
+          labels.fleet = name;
+        }
+      }
+
       if (reconnecting) {
         existing.channel = state.channel;
         await this.#runModelMethod({
           typeArg: WORKER_MODEL_TYPE.normalized,
-          definitionName: workerDefinitionName(name),
+          definitionName: workerDefinitionName(workerName),
           methodName: "set_status",
           inputs: existing.status === "busy"
             ? { status: "busy", dispatchId: existing.dispatchId ?? undefined }
@@ -402,12 +453,13 @@ export class WorkerGateway {
       } else {
         await this.#runModelMethod({
           typeArg: WORKER_MODEL_TYPE.normalized,
-          definitionName: workerDefinitionName(name),
+          definitionName: workerDefinitionName(workerName),
           methodName: "enroll",
           inputs: {
             instanceUuid: params.instanceUuid,
             tokenName: name,
-            labels: params.labels,
+            workerName,
+            labels,
             platform: params.platform,
             arch: params.arch,
             swampVersion: params.swampVersion,
@@ -420,9 +472,10 @@ export class WorkerGateway {
       // the capability handlers, and issue the credential, so a failed
       // enrollment leaves no orphaned state behind.
       const entry: WorkerEntry = reconnecting ? existing : {
-        name,
+        name: workerName,
+        tokenName: name,
         instanceUuid: params.instanceUuid,
-        labels: params.labels,
+        labels,
         platform: params.platform,
         arch: params.arch,
         swampVersion: params.swampVersion,
@@ -433,8 +486,8 @@ export class WorkerGateway {
       };
       entry.channel = state.channel;
       entry.closeSocket = state.closeSocket;
-      this.#workers.set(name, entry);
-      state.workerName = name;
+      this.#workers.set(workerName, entry);
+      state.workerName = workerName;
 
       // The token lifetime is a hard deadline: when it elapses, disconnect
       // the worker. Re-enrollment is then rejected as expired, so the
@@ -444,15 +497,18 @@ export class WorkerGateway {
         this.#scheduleTokenExpiry(entry, Date.parse(expiresAt));
       }
 
-      this.#options.capabilityService.registerHandlers(state.channel, name);
+      this.#options.capabilityService.registerHandlers(
+        state.channel,
+        workerName,
+      );
       state.channel.register(
         RemoteMethod.sessionRefresh,
-        () => this.#handleSessionRefresh(name),
+        () => this.#handleSessionRefresh(workerName),
       );
 
-      const session = this.#sessions.issue(name);
+      const session = this.#sessions.issue(workerName);
       logger.info("Worker {worker} enrolled ({mode})", {
-        worker: name,
+        worker: workerName,
         mode: reconnecting ? "reconnect" : "first-connect",
       });
       const snap = this.#snapshot(entry);
@@ -461,7 +517,7 @@ export class WorkerGateway {
         this.#options.onWorkerIdle?.(snap);
       }
       return {
-        workerId: name,
+        workerId: workerName,
         sessionCredential: session.credential,
         sessionExpiresAtMs: session.expiresAtMs,
         protocolVersion: REMOTE_PROTOCOL_VERSION,
@@ -552,27 +608,27 @@ export class WorkerGateway {
    * worker's re-enrollment attempt is rejected as expired, so it cannot
    * return on this token.
    */
-  #handleTokenExpired(name: string): void {
-    const entry = this.#workers.get(name);
+  #handleTokenExpired(workerName: string): void {
+    const entry = this.#workers.get(workerName);
     if (!entry) {
       return;
     }
     entry.expiryTimer = undefined;
     logger.info("Enrollment token for {worker} expired — disconnecting", {
-      worker: name,
+      worker: workerName,
     });
     // Bookkeeping only: redeem independently rejects on time, so a failure
     // here just delays the durable record catching up.
     this.#recordTransition(() =>
       this.#runModelMethod({
         typeArg: ENROLLMENT_TOKEN_MODEL_TYPE.normalized,
-        definitionName: name,
+        definitionName: entry.tokenName,
         methodName: "expire",
         inputs: {},
       })
     ).catch((error: unknown) => {
       logger.warn("Failed to record token expiry for {worker}: {error}", {
-        worker: name,
+        worker: workerName,
         error: error instanceof Error ? error.message : String(error),
       });
     });
@@ -646,6 +702,44 @@ export class WorkerGateway {
         worker: tokenName,
         error: error instanceof Error ? error.message : String(error),
       });
+    }
+    return null;
+  }
+
+  async #defaultReadTokenMaxEnrollments(
+    tokenName: string,
+  ): Promise<MaxEnrollments | null> {
+    try {
+      const dataItems = await this.#options.repoContext.unifiedDataRepo
+        .findAllForType(ENROLLMENT_TOKEN_MODEL_TYPE);
+      for (const { data, modelType, modelId } of dataItems) {
+        if (data.isRenamed || data.isDeleted) continue;
+        if (data.name !== TOKEN_DATA_NAME) continue;
+        const content = await this.#options.repoContext.unifiedDataRepo
+          .getContent(modelType, modelId, data.name);
+        if (!content) continue;
+        let attrs: Record<string, unknown>;
+        try {
+          attrs = JSON.parse(new TextDecoder().decode(content)) as Record<
+            string,
+            unknown
+          >;
+        } catch {
+          continue;
+        }
+        const parsed = EnrollmentTokenSchema.safeParse(attrs);
+        if (parsed.success && parsed.data.name === tokenName) {
+          return parsed.data.maxEnrollments;
+        }
+      }
+    } catch (error) {
+      logger.warn(
+        "Failed to read token maxEnrollments for {worker}: {error}",
+        {
+          worker: tokenName,
+          error: error instanceof Error ? error.message : String(error),
+        },
+      );
     }
     return null;
   }

@@ -24,14 +24,32 @@ import {
   assertStringIncludes,
 } from "@std/assert";
 import {
+  type Binding,
   ENROLLMENT_TOKEN_MODEL_TYPE,
   enrollmentTokenModel,
+  type MaxEnrollments,
   tokenSecretKey,
 } from "./enrollment_token_model.ts";
 import { timingSafeEqual } from "../../crypto/timing_safe_equal.ts";
 import { createInMemoryWorkerContext } from "./worker_test_helpers.ts";
 
-const mintArgs = { durationMs: 60_000, vaultName: "local" };
+const mintArgs = {
+  durationMs: 60_000,
+  vaultName: "local",
+  maxEnrollments: 1 as const,
+};
+
+function tokenBindings(
+  store: Map<string, Record<string, unknown>>,
+): Binding[] {
+  return store.get("token-main")!.bindings as Binding[];
+}
+
+function tokenMaxEnrollments(
+  store: Map<string, Record<string, unknown>>,
+): MaxEnrollments {
+  return store.get("token-main")!.maxEnrollments as MaxEnrollments;
+}
 
 async function mintToken(name = "ci-runner-3") {
   const harness = createInMemoryWorkerContext(
@@ -49,9 +67,10 @@ Deno.test("enrollmentTokenModel: mint writes the secret to the vault, never to d
   assertEquals(token.state, "unused");
   assertEquals(token.vaultName, "local");
   assertEquals(token.secretKey, tokenSecretKey("ci-runner-3"));
+  assertEquals(tokenMaxEnrollments(store), 1);
+  assertEquals(tokenBindings(store), []);
   assertEquals(typeof plaintext, "string");
   assertEquals(plaintext.length, 64);
-  // The plaintext must not appear anywhere in the persisted record.
   assertEquals(JSON.stringify(token).includes(plaintext), false);
 });
 
@@ -72,8 +91,10 @@ Deno.test("enrollmentTokenModel: redeem transitions unused → enrolled and bind
   );
   const token = store.get("token-main")!;
   assertEquals(token.state, "enrolled");
-  assertEquals(token.boundMachineId, "machine-1");
-  assertEquals(typeof token.enrolledAt, "string");
+  const bindings = tokenBindings(store);
+  assertEquals(bindings.length, 1);
+  assertEquals(bindings[0].machineId, "machine-1");
+  assertEquals(typeof bindings[0].enrolledAt, "string");
 });
 
 Deno.test("enrollmentTokenModel: redeem with a wrong token fails", async () => {
@@ -103,7 +124,7 @@ Deno.test("enrollmentTokenModel: re-auth of the bound machine succeeds without a
   assertEquals(versions.get("token-main"), versionsAfterEnroll);
 });
 
-Deno.test("enrollmentTokenModel: a second machine cannot claim an enrolled token", async () => {
+Deno.test("enrollmentTokenModel: a second machine cannot claim a single-enrollment token", async () => {
   const { context, plaintext } = await mintToken();
   await enrollmentTokenModel.methods.redeem.execute(
     { presentedToken: plaintext, machineId: "machine-1" },
@@ -117,7 +138,7 @@ Deno.test("enrollmentTokenModel: a second machine cannot claim an enrolled token
       ),
     Error,
   );
-  assertStringIncludes(error.message, "already bound");
+  assertStringIncludes(error.message, "allowance exhausted");
 });
 
 Deno.test("enrollmentTokenModel: redeem of an expired unused token fails", async () => {
@@ -163,20 +184,40 @@ Deno.test("enrollmentTokenModel: even the bound machine cannot redeem past the t
   );
 });
 
-Deno.test("enrollmentTokenModel: an enrolled token without a bound machine adopts the presenter", async () => {
-  // Records written before machine binding existed have state "enrolled"
-  // but no boundMachineId — the next redemption adopts that machine.
-  const { context, store, plaintext } = await mintToken();
-  await enrollmentTokenModel.methods.redeem.execute(
-    { presentedToken: plaintext, machineId: "machine-1" },
-    context,
+Deno.test("enrollmentTokenModel: legacy record with boundMachineId migrates to bindings on read", async () => {
+  const harness = createInMemoryWorkerContext(
+    ENROLLMENT_TOKEN_MODEL_TYPE,
+    "legacy",
   );
-  delete store.get("token-main")!.boundMachineId;
+  // Simulate a legacy record with boundMachineId instead of bindings.
+  const legacyRecord = {
+    name: "legacy",
+    state: "enrolled",
+    createdAt: new Date().toISOString(),
+    expiresAt: new Date(Date.now() + 60_000).toISOString(),
+    vaultName: "local",
+    secretKey: "worker-token-legacy",
+    boundMachineId: "machine-1",
+    enrolledAt: "2026-06-01T00:00:00.000Z",
+  };
+  harness.store.set("token-main", legacyRecord as Record<string, unknown>);
+  harness.vault.set("local/worker-token-legacy", "test-secret");
+
+  // Re-auth of the migrated machine should work.
   await enrollmentTokenModel.methods.redeem.execute(
-    { presentedToken: plaintext, machineId: "machine-2" },
-    context,
+    { presentedToken: "test-secret", machineId: "machine-1" },
+    harness.context,
   );
-  assertEquals(store.get("token-main")!.boundMachineId, "machine-2");
+  // The second machine is rejected (maxEnrollments defaults to 1).
+  const error = await assertRejects(
+    () =>
+      enrollmentTokenModel.methods.redeem.execute(
+        { presentedToken: "test-secret", machineId: "machine-2" },
+        harness.context,
+      ),
+    Error,
+  );
+  assertStringIncludes(error.message, "allowance exhausted");
 });
 
 Deno.test("enrollmentTokenModel: revoke blocks subsequent redemption", async () => {
@@ -212,6 +253,108 @@ Deno.test("enrollmentTokenModel: minted tokens are unique", async () => {
   const a = await mintToken("a");
   const b = await mintToken("b");
   assertNotEquals(a.plaintext, b.plaintext);
+});
+
+async function mintFleetToken(
+  name = "pool",
+  maxEnrollments: number | "unlimited" = 3,
+) {
+  const harness = createInMemoryWorkerContext(
+    ENROLLMENT_TOKEN_MODEL_TYPE,
+    name,
+  );
+  await enrollmentTokenModel.methods.mint.execute(
+    { durationMs: 60_000, vaultName: "local", maxEnrollments },
+    harness.context,
+  );
+  const plaintext = harness.vault.get(`local/${tokenSecretKey(name)}`)!;
+  return { ...harness, plaintext };
+}
+
+Deno.test("enrollmentTokenModel: maxEnrollments: 3 allows three machines, rejects the fourth", async () => {
+  const { context, store, plaintext } = await mintFleetToken("pool", 3);
+  assertEquals(tokenMaxEnrollments(store), 3);
+
+  await enrollmentTokenModel.methods.redeem.execute(
+    { presentedToken: plaintext, machineId: "m1" },
+    context,
+  );
+  await enrollmentTokenModel.methods.redeem.execute(
+    { presentedToken: plaintext, machineId: "m2" },
+    context,
+  );
+  await enrollmentTokenModel.methods.redeem.execute(
+    { presentedToken: plaintext, machineId: "m3" },
+    context,
+  );
+  assertEquals(tokenBindings(store).length, 3);
+
+  const error = await assertRejects(
+    () =>
+      enrollmentTokenModel.methods.redeem.execute(
+        { presentedToken: plaintext, machineId: "m4" },
+        context,
+      ),
+    Error,
+  );
+  assertStringIncludes(error.message, "allowance exhausted");
+});
+
+Deno.test("enrollmentTokenModel: maxEnrollments: unlimited allows N machines", async () => {
+  const { context, store, plaintext } = await mintFleetToken(
+    "fleet",
+    "unlimited",
+  );
+  assertEquals(tokenMaxEnrollments(store), "unlimited");
+
+  for (let i = 0; i < 10; i++) {
+    await enrollmentTokenModel.methods.redeem.execute(
+      { presentedToken: plaintext, machineId: `m${i}` },
+      context,
+    );
+  }
+  assertEquals(tokenBindings(store).length, 10);
+});
+
+Deno.test("enrollmentTokenModel: re-auth of a known machine does not append a duplicate binding", async () => {
+  const { context, store, plaintext, versions } = await mintFleetToken(
+    "pool2",
+    3,
+  );
+  await enrollmentTokenModel.methods.redeem.execute(
+    { presentedToken: plaintext, machineId: "m1" },
+    context,
+  );
+  const versionsAfterEnroll = versions.get("token-main");
+  await enrollmentTokenModel.methods.redeem.execute(
+    { presentedToken: plaintext, machineId: "m1" },
+    context,
+  );
+  assertEquals(versions.get("token-main"), versionsAfterEnroll);
+  assertEquals(tokenBindings(store).length, 1);
+});
+
+Deno.test("enrollmentTokenModel: revoke disconnects all bindings", async () => {
+  const { context, store, plaintext } = await mintFleetToken("pool3", 3);
+  await enrollmentTokenModel.methods.redeem.execute(
+    { presentedToken: plaintext, machineId: "m1" },
+    context,
+  );
+  await enrollmentTokenModel.methods.redeem.execute(
+    { presentedToken: plaintext, machineId: "m2" },
+    context,
+  );
+  await enrollmentTokenModel.methods.revoke.execute({}, context);
+  assertEquals(store.get("token-main")!.state, "revoked");
+  await assertRejects(
+    () =>
+      enrollmentTokenModel.methods.redeem.execute(
+        { presentedToken: plaintext, machineId: "m1" },
+        context,
+      ),
+    Error,
+    "revoked",
+  );
 });
 
 Deno.test("timingSafeEqual: equal and unequal strings", () => {

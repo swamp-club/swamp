@@ -32,8 +32,10 @@ import type { DataRecord } from "../../domain/data/data_record.ts";
 import type { DataQueryService } from "../../domain/data/data_query_service.ts";
 import { withGeneratorSpan } from "../../infrastructure/tracing/mod.ts";
 import {
+  type Binding,
   ENROLLMENT_TOKEN_MODEL_TYPE,
   EnrollmentTokenSchema,
+  type MaxEnrollments,
   type TokenState,
 } from "../../domain/models/worker/enrollment_token_model.ts";
 import {
@@ -58,7 +60,9 @@ export interface WorkerTokenListItem {
   effectiveState: TokenState;
   createdAt: string;
   expiresAt: string;
-  boundMachineId?: string;
+  maxEnrollments: MaxEnrollments;
+  bindingCount: number;
+  bindings: Binding[];
   vaultName: string;
   secretKey: string;
 }
@@ -172,7 +176,9 @@ export async function* workerTokenList(
             ),
             createdAt: token.createdAt,
             expiresAt: token.expiresAt,
-            boundMachineId: token.boundMachineId,
+            maxEnrollments: token.maxEnrollments,
+            bindingCount: token.bindings.length,
+            bindings: token.bindings,
             vaultName: token.vaultName,
             secretKey: token.secretKey,
           });

@@ -101,6 +101,7 @@ Deno.test("workerTokenCreate: mints and yields the plaintext once", async () => 
     name: "ci-runner-3",
     token: "ci-runner-3.plaintext-token",
     expiresAt: EXPIRES_AT,
+    maxEnrollments: 1,
     vaultRef: {
       vaultName: "main-vault",
       secretKey: "worker-token-ci-runner-3",

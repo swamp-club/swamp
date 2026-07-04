@@ -153,7 +153,10 @@ interface Orchestrator {
   dispatchService: DispatchService;
   serverUrl: string;
   shutdown: () => Promise<void>;
-  mintToken: (name: string) => Promise<string>;
+  mintToken: (
+    name: string,
+    opts?: { maxEnrollments?: number | "unlimited" },
+  ) => Promise<string>;
   runModelMethod: (input: {
     typeArg: string;
     definitionName: string;
@@ -286,12 +289,21 @@ async function startOrchestrator(
   );
   const port = server.addr.port;
 
-  const mintToken = async (name: string): Promise<string> => {
+  const mintToken = async (
+    name: string,
+    opts?: { maxEnrollments?: number | "unlimited" },
+  ): Promise<string> => {
     await runModelMethod({
       typeArg: ENROLLMENT_TOKEN_MODEL_TYPE.normalized,
       definitionName: name,
       methodName: "mint",
-      inputs: { durationMs: 10 * 60 * 1000, vaultName: "local" },
+      inputs: {
+        durationMs: 10 * 60 * 1000,
+        vaultName: "local",
+        ...(opts?.maxEnrollments !== undefined
+          ? { maxEnrollments: opts.maxEnrollments }
+          : {}),
+      },
     });
     const vault = await VaultService.fromRepository(repoDir);
     const plaintext = await vault.get("local", tokenSecretKey(name));
@@ -660,6 +672,76 @@ Deno.test({
         assertStringIncludes(error.message, "does not match");
         assertEquals(orchestrator.gateway.workers().length, 0);
       } finally {
+        await orchestrator.shutdown();
+      }
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "remote execution: fleet token enrolls two workers with distinct pool identities, both dispatchable",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withTempDir(async (dir) => {
+      const orchestrator = await startOrchestrator(dir);
+      const stops: AbortController[] = [];
+      const dones: Promise<void>[] = [];
+      try {
+        const token = await orchestrator.mintToken("fleet-pool", {
+          maxEnrollments: 3,
+        });
+
+        for (const i of [1, 2]) {
+          const stop = new AbortController();
+          stops.push(stop);
+          dones.push(runWorker({
+            url: orchestrator.serverUrl,
+            token,
+            labels: { tier: "it", idx: String(i) },
+            swampVersion: "test",
+            cacheDir: join(dir, `worker-cache-${i}`),
+            signal: stop.signal,
+          }));
+        }
+        await waitFor(
+          () => orchestrator.gateway.workers().length === 2,
+          "two fleet workers enrolled",
+        );
+
+        const workers = orchestrator.gateway.workers();
+        assertEquals(workers.length, 2);
+        const names = workers.map((w) => w.name).sort();
+        assertEquals(names[0].startsWith("fleet-pool-"), true);
+        assertEquals(names[1].startsWith("fleet-pool-"), true);
+        assertEquals(names[0] !== names[1], true);
+
+        for (const worker of workers) {
+          assertEquals(worker.labels.fleet, "fleet-pool");
+          assertEquals(worker.status, "idle");
+          assertEquals(worker.connected, true);
+        }
+
+        // Both fleet members are dispatchable.
+        const result1 = await orchestrator.dispatchService.executeRemote(
+          remoteStepRequest({
+            placement: { target: names[0] },
+            methodArgs: { echo: "worker-1" },
+          }),
+        );
+        assertEquals(result1.outputs.length > 0, true);
+
+        const result2 = await orchestrator.dispatchService.executeRemote(
+          remoteStepRequest({
+            placement: { target: names[1] },
+            methodArgs: { echo: "worker-2" },
+          }),
+        );
+        assertEquals(result2.outputs.length > 0, true);
+      } finally {
+        for (const stop of stops) stop.abort();
+        await Promise.allSettled(dones);
         await orchestrator.shutdown();
       }
     });

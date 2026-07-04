@@ -33,6 +33,7 @@ import {
   consumeStream,
   createLibSwampContext,
   createWorkerTokenCreateDeps,
+  type MaxEnrollments,
   parseDuration,
   withDefaults,
   workerTokenCreate,
@@ -57,6 +58,10 @@ export const workerTokenCreateCommand = new Command()
     "Choose the vault that stores the plaintext",
     "swamp worker token create ci-runner-3 --duration 7d --vault prod-vault",
   )
+  .example(
+    "Mint a fleet token for 3 machines",
+    "swamp worker token create ci-fleet --duration 24h --max-enrollments 3",
+  )
   .arguments("<name:string>")
   .option(
     "--repo-dir <dir:string>",
@@ -71,6 +76,10 @@ export const workerTokenCreateCommand = new Command()
     "--vault <vault:string>",
     "Vault that stores the token plaintext (defaults to the sole configured vault)",
   )
+  .option(
+    "--max-enrollments <n:string>",
+    'Maximum machines this token can enroll (positive integer or "unlimited"). Default: 1',
+  )
   .action(async function (options: AnyOptions, name: string) {
     const cliCtx = createContext(options as GlobalOptions, [
       "worker",
@@ -83,6 +92,22 @@ export const workerTokenCreateCommand = new Command()
       throw new UserError(
         `Invalid --duration value "${options.duration}": must be positive`,
       );
+    }
+
+    let maxEnrollments: MaxEnrollments = 1;
+    if (options.maxEnrollments !== undefined) {
+      const raw = options.maxEnrollments as string;
+      if (raw === "unlimited") {
+        maxEnrollments = "unlimited";
+      } else {
+        const parsed = Number(raw);
+        if (!Number.isInteger(parsed) || parsed <= 0) {
+          throw new UserError(
+            `Invalid --max-enrollments value "${raw}": must be a positive integer or "unlimited"`,
+          );
+        }
+        maxEnrollments = parsed;
+      }
     }
 
     const { repoDir, repoContext, datastoreConfig, syncService } =
@@ -131,6 +156,7 @@ export const workerTokenCreateCommand = new Command()
           name,
           durationMs,
           vaultName: options.vault as string | undefined,
+          maxEnrollments,
         }),
         withDefaults<WorkerTokenCreateEvent>({
           completed: (event) => {

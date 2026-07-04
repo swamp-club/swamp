@@ -51,6 +51,7 @@ const createData: WorkerTokenCreateData = {
   name: "ci-runner-3",
   token: "swamp-token-plaintext",
   expiresAt: "2026-06-10T00:00:00.000Z",
+  maxEnrollments: 1,
   vaultRef: { vaultName: "main-vault", secretKey: "worker-token-ci-runner-3" },
 };
 
@@ -86,7 +87,12 @@ const tokenListData: WorkerTokenListData = {
       effectiveState: "enrolled",
       createdAt: "2026-06-09T00:00:00.000Z",
       expiresAt: "2026-06-10T00:00:00.000Z",
-      boundMachineId: "machine-42",
+      maxEnrollments: 1,
+      bindingCount: 1,
+      bindings: [{
+        machineId: "machine-42",
+        enrolledAt: "2026-06-09T01:00:00.000Z",
+      }],
       vaultName: "main-vault",
       secretKey: "worker-token-ci-runner-3",
     },
@@ -96,6 +102,9 @@ const tokenListData: WorkerTokenListData = {
       effectiveState: "expired",
       createdAt: "2026-06-01T00:00:00.000Z",
       expiresAt: "2026-06-02T00:00:00.000Z",
+      maxEnrollments: 1,
+      bindingCount: 0,
+      bindings: [],
       vaultName: "main-vault",
       secretKey: "worker-token-stale",
     },
@@ -110,10 +119,10 @@ Deno.test("renderWorkerTokenList: log mode renders the table with display state"
   assertStringIncludes(output, "NAME");
   assertStringIncludes(output, "STATE");
   assertStringIncludes(output, "EXPIRES");
-  assertStringIncludes(output, "BOUND MACHINE");
+  assertStringIncludes(output, "ENROLLMENTS");
   assertStringIncludes(output, "ci-runner-3");
   assertStringIncludes(output, "enrolled");
-  assertStringIncludes(output, "machine-42");
+  assertStringIncludes(output, "1 / 1");
   // Display-level expiry overlay
   assertStringIncludes(output, "expired");
 });
