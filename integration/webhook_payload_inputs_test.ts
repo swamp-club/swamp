@@ -141,7 +141,8 @@ async function withRepo(
 
 function stepIdentifier(workflow: Workflow): unknown {
   const data = workflow.jobs[0].steps[0].task.data;
-  return "inputs" in data ? data.inputs?.identifier : undefined;
+  if (!("inputs" in data) || typeof data.inputs === "string") return undefined;
+  return data.inputs?.identifier;
 }
 
 Deno.test({

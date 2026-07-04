@@ -24,6 +24,7 @@ import {
   extractExpressions,
   extractInputReferences,
   extractInputReferencesFromCel,
+  isTaskGlobalArgsPath,
   isTaskInputsPath,
   isTriggerInputsPath,
   replaceExpressions,
@@ -305,6 +306,36 @@ Deno.test("isTaskInputsPath returns false for step name", () => {
 Deno.test("isTaskInputsPath returns false for model definition attribute", () => {
   assertEquals(
     isTaskInputsPath("attributes.vpc_id"),
+    false,
+  );
+});
+
+Deno.test("isTaskInputsPath returns true for the inputs field itself", () => {
+  assertEquals(
+    isTaskInputsPath("jobs[0].steps[0].task.inputs"),
+    true,
+  );
+});
+
+// Tests for isTaskGlobalArgsPath
+
+Deno.test("isTaskGlobalArgsPath returns true for globalArgs with dot path", () => {
+  assertEquals(
+    isTaskGlobalArgsPath("jobs[0].steps[0].task.globalArgs.name"),
+    true,
+  );
+});
+
+Deno.test("isTaskGlobalArgsPath returns true for globalArgs field itself", () => {
+  assertEquals(
+    isTaskGlobalArgsPath("jobs[0].steps[0].task.globalArgs"),
+    true,
+  );
+});
+
+Deno.test("isTaskGlobalArgsPath returns false for task.inputs", () => {
+  assertEquals(
+    isTaskGlobalArgsPath("jobs[0].steps[0].task.inputs.foo"),
     false,
   );
 });
