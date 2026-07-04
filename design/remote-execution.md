@@ -341,6 +341,29 @@ orchestrator runs data GC over its own bookkeeping models periodically, so
 control-plane churn cannot grow the datastore without bound while recent
 history stays queryable.
 
+### Boot reconciliation
+
+When `swamp serve` starts, it sweeps the three bookkeeping models for records
+left stale by a prior crash or unclean shutdown:
+
+- **Step leases** in `active` state → transitioned to `expired` (the worker is
+  gone; no step is executing).
+- **Pending dispatches** in `waiting` state → transitioned to `orphaned` (no
+  in-memory queue episode exists to fulfill them).
+- **Workers** not in `disconnected` status → transitioned to `disconnected`
+  (no live WebSocket session backs them).
+
+The sweep runs through the model-method runner (`createWorkerModelRunDeps` +
+`modelMethodRun` with `skipAllReports`), preserving the sole-writer invariant —
+state transitions are serialized through the transition tail, not applied by
+direct datastore writes. Individual transition failures warn but do not abort
+startup; a single corrupted record cannot prevent the orchestrator from serving.
+
+The sweep completes before `Deno.serve` accepts traffic. Workers that reconnect
+during the sweep re-enroll normally after it finishes — the sweep transitions
+their stale record, and re-enrollment creates a fresh one. On a clean boot (no
+stale records match the predicates) the sweep is a no-op and logs nothing.
+
 ## The remote `MethodContext`
 
 The heart of the design: on a worker, the injected `MethodContext`

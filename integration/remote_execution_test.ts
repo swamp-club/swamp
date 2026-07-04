@@ -59,6 +59,7 @@ import {
   ENROLLMENT_TOKEN_MODEL_TYPE,
   tokenSecretKey,
 } from "../src/domain/models/worker/enrollment_token_model.ts";
+import { sweepStaleRecords } from "../src/serve/boot_reconciliation.ts";
 
 // Import models barrel to trigger built-in registration.
 import "../src/domain/models/models.ts";
@@ -161,33 +162,40 @@ interface Orchestrator {
   }) => Promise<void>;
 }
 
-async function startOrchestrator(repoDir: string): Promise<Orchestrator> {
-  const libCtx = createLibSwampContext({});
-  await consumeStream(
-    repoInit(libCtx, createRepoInitDeps("20260101.120000.0"), {
-      path: repoDir,
-      force: false,
-      version: "20260101.120000.0",
-    }),
-    withDefaults({
-      error: (event) => {
-        throw new Error(String(event.error?.message ?? "repo init failed"));
-      },
-    }),
-  );
-  await consumeStream(
-    vaultCreate(libCtx, await createVaultCreateDeps(repoDir), {
-      vaultType: "local_encryption",
-      name: "local",
-      config: { auto_generate: true, base_dir: repoDir },
-      repoDir,
-    }),
-    withDefaults({
-      error: (event) => {
-        throw new Error(String(event.error?.message ?? "vault create failed"));
-      },
-    }),
-  );
+async function startOrchestrator(
+  repoDir: string,
+  opts?: { skipInit?: boolean },
+): Promise<Orchestrator> {
+  if (!opts?.skipInit) {
+    const libCtx = createLibSwampContext({});
+    await consumeStream(
+      repoInit(libCtx, createRepoInitDeps("20260101.120000.0"), {
+        path: repoDir,
+        force: false,
+        version: "20260101.120000.0",
+      }),
+      withDefaults({
+        error: (event) => {
+          throw new Error(String(event.error?.message ?? "repo init failed"));
+        },
+      }),
+    );
+    await consumeStream(
+      vaultCreate(libCtx, await createVaultCreateDeps(repoDir), {
+        vaultType: "local_encryption",
+        name: "local",
+        config: { auto_generate: true, base_dir: repoDir },
+        repoDir,
+      }),
+      withDefaults({
+        error: (event) => {
+          throw new Error(
+            String(event.error?.message ?? "vault create failed"),
+          );
+        },
+      }),
+    );
+  }
 
   const repoContext = createRepositoryContext({ repoDir });
 
@@ -233,6 +241,7 @@ async function startOrchestrator(repoDir: string): Promise<Orchestrator> {
     graceWindowMs: 1_000,
     onWorkerIdle: (worker) => dispatchService.notifyWorkerIdle(worker),
     onGraceExpired: (worker) => dispatchService.notifyGraceExpired(worker),
+    onWorkerEnrolled: (worker) => dispatchService.notifyWorkerEnrolled(worker),
   });
   dispatchService.bindGateway(gateway);
   const dataPlane = new DataPlane({
@@ -244,6 +253,8 @@ async function startOrchestrator(repoDir: string): Promise<Orchestrator> {
     onFirstWrite: (dispatch) => dispatchService.recordFirstWrite(dispatch),
   });
   dispatchService.setOnDispatchEnd((id) => dataPlane.releaseDispatch(id));
+
+  await sweepStaleRecords({ repoDir, repoContext });
 
   const server = Deno.serve(
     { port: 0, hostname: "127.0.0.1", onListen: () => {} },
@@ -508,6 +519,119 @@ Deno.test({
         if (workerDone) {
           await workerDone.catch(() => {});
         }
+        await orchestrator.shutdown();
+      }
+    });
+  },
+});
+
+Deno.test({
+  name:
+    "remote execution: elastic queueing — empty pool queues, worker enrolls, step dispatches",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withTempDir(async (dir) => {
+      const orchestrator = await startOrchestrator(dir);
+      const workerStop = new AbortController();
+      let workerDone: Promise<void> | null = null;
+      try {
+        const token = await orchestrator.mintToken("queue-worker");
+
+        const pending = orchestrator.dispatchService.executeRemote(
+          remoteStepRequest({
+            placement: { labels: { tier: "it" }, queueTimeoutMs: 10_000 },
+          }),
+        );
+
+        await new Promise((r) => setTimeout(r, 200));
+
+        assertEquals(orchestrator.gateway.workers().length, 0);
+
+        workerDone = runWorker({
+          url: orchestrator.serverUrl,
+          token,
+          labels: { tier: "it" },
+          swampVersion: "test",
+          cacheDir: join(dir, "worker-cache"),
+          signal: workerStop.signal,
+        });
+
+        const result = await pending;
+        assertEquals(result.outputs.length, 2);
+
+        await waitFor(
+          () => orchestrator.gateway.worker("queue-worker")?.status === "idle",
+          "worker to return to idle",
+        );
+      } finally {
+        workerStop.abort();
+        if (workerDone) await workerDone.catch(() => {});
+        await orchestrator.shutdown();
+      }
+    });
+  },
+});
+
+Deno.test({
+  name: "remote execution: boot reconciliation marks stale records",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    await withTempDir(async (dir) => {
+      let orchestrator = await startOrchestrator(dir);
+      const workerStop = new AbortController();
+      let workerDone: Promise<void> | null = null;
+      try {
+        const token = await orchestrator.mintToken("recon-worker");
+
+        workerDone = runWorker({
+          url: orchestrator.serverUrl,
+          token,
+          labels: { tier: "it" },
+          swampVersion: "test",
+          cacheDir: join(dir, "worker-cache"),
+          signal: workerStop.signal,
+        });
+
+        await waitFor(
+          () => orchestrator.gateway.workers().length === 1,
+          "worker enrollment",
+        );
+
+        const result = await orchestrator.dispatchService.executeRemote(
+          remoteStepRequest(),
+        );
+        assertEquals(result.outputs.length, 2);
+      } finally {
+        workerStop.abort();
+        if (workerDone) await workerDone.catch(() => {});
+        await orchestrator.shutdown();
+      }
+
+      // After first shutdown, the worker record should still show as
+      // non-disconnected (shutdown doesn't clean up worker model state).
+      // Second boot runs reconciliation and sweeps stale records.
+      orchestrator = await startOrchestrator(dir, { skipInit: true });
+      try {
+        const leases = await orchestrator.repoContext.dataQueryService.query(
+          'modelType == "swamp/step-lease" && attributes.state == "active"',
+          { loadAttributes: true },
+        ) as Array<{ attributes?: Record<string, unknown> }>;
+        assertEquals(leases.length, 0);
+
+        const pending = await orchestrator.repoContext.dataQueryService.query(
+          'modelType == "swamp/pending-dispatch" && attributes.state == "waiting"',
+          { loadAttributes: true },
+        ) as Array<{ attributes?: Record<string, unknown> }>;
+        assertEquals(pending.length, 0);
+
+        const workers = await orchestrator.repoContext.dataQueryService.query(
+          'modelType == "swamp/worker" && name == "state-main" && attributes.status != "disconnected"',
+          { loadAttributes: true },
+        ) as Array<{ attributes?: Record<string, unknown> }>;
+        assertEquals(workers.length, 0);
+      } finally {
         await orchestrator.shutdown();
       }
     });
