@@ -35,6 +35,7 @@ import {
   createExtensionListDeps,
   createLibSwampContext,
   createWorkerListDeps,
+  createWorkerQueueListDeps,
   doctorSecrets,
   doctorVaults,
   doctorWorkflows,
@@ -42,6 +43,7 @@ import {
   extensionInfo,
   extensionList,
   workerList,
+  workerQueueList,
 } from "../../libswamp/mod.ts";
 import type {
   AuditTimelinePayload,
@@ -111,6 +113,55 @@ export async function handleWorkerList(
   } catch (error) {
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "worker_list_failed", message);
+  }
+}
+
+export async function handleWorkerQueueList(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  controller: AbortController,
+  principal: Principal | null,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "admin", {
+      kind: "access",
+      name: "*",
+      fields: {},
+    }, ctx)
+  ) return;
+
+  try {
+    const libCtx = createLibSwampContext();
+    const deps = createWorkerQueueListDeps(ctx.repoContext.dataQueryService);
+
+    let result: Record<string, unknown> | undefined;
+    await consumeStream(
+      workerQueueList(libCtx, deps),
+      {
+        resolving: () => {},
+        completed: (e) => {
+          result = e.data as unknown as Record<string, unknown>;
+        },
+        error: (e) => {
+          throw new Error(e.error.message);
+        },
+      },
+    );
+
+    if (controller.signal.aborted) {
+      sendError(socket, requestId, "cancelled", "Operation was cancelled");
+      return;
+    }
+
+    send(socket, {
+      type: "worker.queue.list",
+      id: requestId,
+      payload: { data: result ?? {} },
+    });
+  } catch (error) {
+    const message = sanitizeErrorForClient(error);
+    sendError(socket, requestId, "worker_queue_list_failed", message);
   }
 }
 

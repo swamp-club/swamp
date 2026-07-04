@@ -27,6 +27,7 @@ import { bold, cyan, dim, green, red, yellow } from "@std/fmt/colors";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import type {
   WorkerListData,
+  WorkerQueueListData,
   WorkerTokenCreateData,
   WorkerTokenListData,
   WorkerTokenRevokeData,
@@ -213,6 +214,41 @@ export function renderWorkerList(
     ["NAME", "STATUS", "LABELS", "PLATFORM/ARCH", "LAST SEEN"],
     rows,
     (column, value) => (column === 1 ? colorWorkerStatus(value) : value),
+  );
+  writeOutput(lines.join("\n"));
+}
+
+function formatAge(ms: number): string {
+  if (ms < 1_000) return "<1s";
+  if (ms < 60_000) return `${Math.floor(ms / 1_000)}s`;
+  if (ms < 3_600_000) return `${Math.floor(ms / 60_000)}m`;
+  return `${Math.floor(ms / 3_600_000)}h${
+    Math.floor((ms % 3_600_000) / 60_000)
+  }m`;
+}
+
+export function renderWorkerQueue(
+  data: WorkerQueueListData,
+  mode: OutputMode,
+): void {
+  if (mode === "json") {
+    console.log(JSON.stringify(data.items, null, 2));
+    return;
+  }
+  if (data.items.length === 0) {
+    writeOutput("No steps are currently queued.");
+    return;
+  }
+  const rows = data.items.map((item) => [
+    item.requirement,
+    item.stepName ?? `${item.modelType}.${item.methodName}`,
+    item.modelType,
+    item.queuedAt,
+    formatAge(item.ageMs),
+  ]);
+  const lines = tableLines(
+    ["REQUIREMENT", "STEP", "MODEL", "QUEUED AT", "AGE"],
+    rows,
   );
   writeOutput(lines.join("\n"));
 }

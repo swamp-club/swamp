@@ -245,6 +245,12 @@ Deno.test("deserializeEvent: run events round-trip renderer-equivalent through J
       status: "succeeded",
       finishedAt: "2026-06-10T00:00:00Z",
     },
+    {
+      kind: "step_queued",
+      jobId: "main",
+      stepId: "deploy",
+      requirement: "target=prod, platform=linux",
+    },
   ];
   for (const event of corpus) {
     const wire = JSON.parse(JSON.stringify(serializeEvent(event)));

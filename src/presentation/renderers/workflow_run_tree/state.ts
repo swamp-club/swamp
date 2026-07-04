@@ -41,6 +41,7 @@ export interface StepState {
   id: string;
   status:
     | "pending"
+    | "queued"
     | "running"
     | "waiting_approval"
     | "completed"
@@ -54,6 +55,7 @@ export interface StepState {
   allowedFailure: boolean;
   reports: StepReport[];
   approvalPrompt: string | null;
+  requirement: string | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -179,6 +181,7 @@ function getOrCreateStep(job: JobState, stepId: string): StepState {
     allowedFailure: false,
     reports: [],
     approvalPrompt: null,
+    requirement: null,
   };
 }
 
@@ -496,6 +499,26 @@ function treeReducerSingle(
       steps.set(event.stepId, { ...step, outputBuffer });
 
       const jobs = updateJob(state.jobs, event.jobId, { steps });
+      return { ...state, jobs };
+    }
+
+    case "step_queued": {
+      const job = state.jobs.get(event.jobId);
+      if (!job) return state;
+
+      const step = getOrCreateStep(job, event.stepId);
+      const steps = new Map(job.steps);
+      steps.set(event.stepId, {
+        ...step,
+        status: "queued",
+        requirement: event.requirement,
+      });
+
+      const stepOrder = job.stepOrder.includes(event.stepId)
+        ? job.stepOrder
+        : [...job.stepOrder, event.stepId];
+
+      const jobs = updateJob(state.jobs, event.jobId, { steps, stepOrder });
       return { ...state, jobs };
     }
 

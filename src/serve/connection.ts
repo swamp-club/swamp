@@ -105,6 +105,7 @@ import {
   handleRunDoctor,
   handleRunHistory,
   handleWorkerList,
+  handleWorkerQueueList,
 } from "./handlers/admin_handlers.ts";
 import {
   type ConnectionContext,
@@ -1457,6 +1458,15 @@ export function handleMessage(
       break;
     case "worker.list":
       task = handleWorkerList(
+        socket,
+        ctx,
+        request.id,
+        controller,
+        principal,
+      );
+      break;
+    case "worker.queue.list":
+      task = handleWorkerQueueList(
         socket,
         ctx,
         request.id,

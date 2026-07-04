@@ -121,6 +121,12 @@ export type WorkflowExecutionEvent =
     line: string;
   }
   | {
+    kind: "step_queued";
+    jobId: string;
+    stepId: string;
+    requirement: string;
+  }
+  | {
     kind: "method_event";
     jobId: string;
     stepId: string;

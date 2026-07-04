@@ -998,6 +998,13 @@ export class DefaultStepExecutor implements StepExecutor {
                   stream: event.stream,
                   line: event.line,
                 });
+              } else if (event.type === "step_queued") {
+                ctx.emitEvent!({
+                  kind: "step_queued",
+                  jobId: ctx.jobName,
+                  stepId: ctx.stepName,
+                  requirement: event.requirement,
+                });
               } else {
                 ctx.emitEvent!({
                   kind: "method_event",

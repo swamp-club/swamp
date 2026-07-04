@@ -24,6 +24,7 @@ import { Text } from "ink";
 interface StatusIconProps {
   status:
     | "pending"
+    | "queued"
     | "waiting"
     | "blocked"
     | "running"
@@ -49,6 +50,7 @@ export function StatusIcon({ status, spinnerFrame }: StatusIconProps) {
       return <Text color="cyan">{(spinnerFrame ?? "\u280B") + " "}</Text>;
     case "waiting_approval":
       return <Text color="yellow">\u23F8</Text>;
+    case "queued":
     case "pending":
     case "waiting":
     case "blocked":
