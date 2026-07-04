@@ -27,6 +27,7 @@ export interface IssueEditData {
   title: string;
   body: string;
   url: string;
+  type: string;
 }
 
 export type IssueEditEvent =
@@ -38,15 +39,17 @@ export interface IssueEditInput {
   issueNumber: number;
   title?: string;
   body?: string;
+  type?: string;
   originalTitle: string;
   originalBody: string;
+  originalType?: string;
 }
 
 export interface IssueEditDeps {
   updateIssue: (input: {
     issueNumber: number;
-    fields: { title?: string; body?: string };
-  }) => Promise<{ title: string; body: string; url: string }>;
+    fields: { title?: string; body?: string; type?: string };
+  }) => Promise<{ title: string; body: string; type: string; url: string }>;
 }
 
 export async function* issueEdit(
@@ -60,7 +63,7 @@ export async function* issueEdit(
     (async function* () {
       ctx.logger.debug`Editing issue #${input.issueNumber}`;
 
-      const fields: { title?: string; body?: string } = {};
+      const fields: { title?: string; body?: string; type?: string } = {};
 
       if (
         input.title !== undefined && input.title !== input.originalTitle
@@ -69,6 +72,11 @@ export async function* issueEdit(
       }
       if (input.body !== undefined && input.body !== input.originalBody) {
         fields.body = input.body;
+      }
+      if (
+        input.type !== undefined && input.type !== input.originalType
+      ) {
+        fields.type = input.type;
       }
 
       if (Object.keys(fields).length === 0) {
@@ -92,6 +100,7 @@ export async function* issueEdit(
           title: result.title,
           body: result.body,
           url: result.url,
+          type: result.type,
         },
       };
     })(),

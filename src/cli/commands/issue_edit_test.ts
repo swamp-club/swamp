@@ -89,3 +89,56 @@ Deno.test("buildEditTemplate: round-trips multiline body", () => {
   assertEquals(parsed?.title, "Title");
   assertEquals(parsed?.body, body);
 });
+
+Deno.test("buildEditTemplate: includes type section when type is provided", () => {
+  const template = buildEditTemplate("Title", "Body", "bug");
+  const parsed = parseEditContent(template);
+  assertEquals(parsed?.title, "Title");
+  assertEquals(parsed?.body, "Body");
+  assertEquals(parsed?.type, "bug");
+});
+
+Deno.test("buildEditTemplate: round-trips with type", () => {
+  const template = buildEditTemplate("My Title", "My body content", "security");
+  const parsed = parseEditContent(template);
+  assertEquals(parsed?.title, "My Title");
+  assertEquals(parsed?.body, "My body content");
+  assertEquals(parsed?.type, "security");
+});
+
+Deno.test("parseEditContent: extracts type from template", () => {
+  const content = `## Title
+My Title
+
+## Type (bug, feature, or security)
+feature
+
+## Body
+Some body text.
+`;
+  const result = parseEditContent(content);
+  assertEquals(result?.title, "My Title");
+  assertEquals(result?.type, "feature");
+  assertEquals(result?.body, "Some body text.");
+});
+
+Deno.test("parseEditContent: returns undefined type when type section is absent", () => {
+  const content = `## Title
+My Title
+
+## Body
+Some body text.
+`;
+  const result = parseEditContent(content);
+  assertEquals(result?.title, "My Title");
+  assertEquals(result?.type, undefined);
+  assertEquals(result?.body, "Some body text.");
+});
+
+Deno.test("buildEditTemplate: omits type section when type is not provided", () => {
+  const template = buildEditTemplate("Title", "Body");
+  const parsed = parseEditContent(template);
+  assertEquals(parsed?.title, "Title");
+  assertEquals(parsed?.body, "Body");
+  assertEquals(parsed?.type, undefined);
+});

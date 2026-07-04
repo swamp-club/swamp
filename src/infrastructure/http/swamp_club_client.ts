@@ -364,14 +364,14 @@ export class SwampClubClient {
   }
 
   /**
-   * Update the title and/or body of an existing Lab issue.
+   * Update fields of an existing Lab issue.
    * Authenticates using the x-api-key header.
    */
   async updateIssue(
     apiKey: string,
     issueNumber: number,
-    fields: { title?: string; body?: string },
-  ): Promise<{ title: string; body: string }> {
+    fields: { title?: string; body?: string; type?: string },
+  ): Promise<{ title: string; body: string; type: string }> {
     const res = await this.fetch(
       `/api/v1/lab/issues/${issueNumber}`,
       {
@@ -415,7 +415,11 @@ export class SwampClubClient {
     }
 
     const data = await res.json();
-    return { title: data.issue.title, body: data.issue.body };
+    return {
+      title: data.issue.title,
+      body: data.issue.body,
+      type: data.issue.type,
+    };
   }
 
   /**

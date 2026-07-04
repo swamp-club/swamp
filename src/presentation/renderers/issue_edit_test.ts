@@ -50,6 +50,7 @@ Deno.test("createIssueEditRenderer: json completed handler outputs structured da
         title: "Updated title",
         body: "Updated body",
         url: "https://swamp-club.com/lab/42",
+        type: "bug",
       },
     })
   );
@@ -58,6 +59,7 @@ Deno.test("createIssueEditRenderer: json completed handler outputs structured da
   assertEquals(parsed.title, "Updated title");
   assertEquals(parsed.body, "Updated body");
   assertEquals(parsed.url, "https://swamp-club.com/lab/42");
+  assertEquals(parsed.type, "bug");
 });
 
 Deno.test("createIssueEditRenderer: json noop handler outputs status", () => {
@@ -84,6 +86,7 @@ Deno.test("createIssueEditRenderer: log completed handler does not throw", () =>
       title: "Updated",
       body: "Body",
       url: "https://swamp-club.com/lab/42",
+      type: "feature",
     },
   });
 });
@@ -108,6 +111,7 @@ Deno.test("createIssueEditRenderer: json completed output is valid JSON with url
         title: "T",
         body: "B",
         url: "https://example.com/lab/100",
+        type: "security",
       },
     })
   );
