@@ -38,6 +38,8 @@ import {
   ENROLLMENT_TOKEN_MODEL_TYPE,
   type MaxEnrollments,
 } from "../../domain/models/worker/enrollment_token_model.ts";
+
+export type { MaxEnrollments } from "../../domain/models/worker/enrollment_token_model.ts";
 import { createWorkerModelRunDeps } from "./run_deps.ts";
 
 /** Data payload for the completed event. */
@@ -46,6 +48,7 @@ export interface WorkerTokenCreateData {
   /** Token plaintext — shown once, never persisted outside the vault. */
   token: string;
   expiresAt: string;
+  maxEnrollments: MaxEnrollments;
   vaultRef: { vaultName: string; secretKey: string };
 }
 
@@ -221,6 +224,7 @@ export async function* workerTokenCreate(
           // splitEnrollmentToken in src/serve/worker_gateway.ts).
           token: `${input.name}.${plaintext}`,
           expiresAt: tokenRecord.expiresAt,
+          maxEnrollments: (tokenRecord.maxEnrollments as MaxEnrollments) ?? 1,
           vaultRef: { vaultName, secretKey },
         },
       };

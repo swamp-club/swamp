@@ -475,15 +475,13 @@ Deno.test("WorkerGateway: a cancelled dispatch frees the worker only after it un
 
 // ── Fleet token tests ──────────────────────────────────────────────────
 
-Deno.test("fleetMemberSuffix: returns a stable 4-char hex suffix", async () => {
+Deno.test("fleetMemberSuffix: returns a stable 8-char hex suffix", async () => {
   const a = await fleetMemberSuffix("machine-1");
-  assertEquals(a.length, 4);
-  assertEquals(/^[0-9a-f]{4}$/.test(a), true);
-  // Stable across calls.
+  assertEquals(a.length, 8);
+  assertEquals(/^[0-9a-f]{8}$/.test(a), true);
   assertEquals(await fleetMemberSuffix("machine-1"), a);
-  // Different machines get different suffixes.
   const b = await fleetMemberSuffix("machine-2");
-  assertEquals(b.length, 4);
+  assertEquals(b.length, 8);
   assertEquals(a === b, false);
 });
 
@@ -581,4 +579,25 @@ Deno.test("WorkerGateway: null readTokenMaxEnrollments defaults to single-machin
   const { workerChannel } = connectWorkerSocket(h.gateway);
   const result = await enroll(workerChannel);
   assertEquals(result.workerId, "ci-runner-3");
+});
+
+Deno.test("WorkerGateway: fleet token expiry records expire on the token name, not the worker name", async () => {
+  const h = createHarness({
+    graceWindowMs: 20,
+    readTokenExpiresAt: () =>
+      Promise.resolve(new Date(Date.now() + 30).toISOString()),
+    readTokenMaxEnrollments: () => Promise.resolve(3),
+  });
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  const result = await enroll(workerChannel);
+  const suffix = await fleetMemberSuffix("machine-1");
+  assertEquals(result.workerId, `ci-runner-3-${suffix}`);
+
+  await new Promise((r) => setTimeout(r, 100));
+  const expires = h.transitions.filter((t) => t.methodName === "expire");
+  assertEquals(expires.length, 1);
+  assertEquals(expires[0].typeArg, "swamp/enrollment-token");
+  assertEquals(expires[0].definitionName, "ci-runner-3");
+  assertEquals(h.graceExpired.length, 1);
+  assertEquals(h.gateway.workers().length, 0);
 });

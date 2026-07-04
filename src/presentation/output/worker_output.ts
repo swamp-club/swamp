@@ -105,6 +105,7 @@ export function renderWorkerTokenCreate(
   const lines = [
     `${bold(cyan("Token:"))} ${bold(data.name)}`,
     `${bold(cyan("Expires:"))} ${data.expiresAt}`,
+    `${bold(cyan("Max enrollments:"))} ${data.maxEnrollments}`,
     `${bold(cyan("Vault:"))} ${data.vaultRef.vaultName} ${
       dim(`(key ${data.vaultRef.secretKey})`)
     }`,

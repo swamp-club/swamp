@@ -28,12 +28,12 @@ import {
   requireInitializedRepoUnlocked,
 } from "../repo_context.ts";
 import { UserError } from "../../domain/errors.ts";
-import type { MaxEnrollments } from "../../domain/models/worker/enrollment_token_model.ts";
 import { findDefinitionByIdOrName } from "../../domain/models/model_lookup.ts";
 import {
   consumeStream,
   createLibSwampContext,
   createWorkerTokenCreateDeps,
+  type MaxEnrollments,
   parseDuration,
   withDefaults,
   workerTokenCreate,
@@ -57,6 +57,10 @@ export const workerTokenCreateCommand = new Command()
   .example(
     "Choose the vault that stores the plaintext",
     "swamp worker token create ci-runner-3 --duration 7d --vault prod-vault",
+  )
+  .example(
+    "Mint a fleet token for 3 machines",
+    "swamp worker token create ci-fleet --duration 24h --max-enrollments 3",
   )
   .arguments("<name:string>")
   .option(

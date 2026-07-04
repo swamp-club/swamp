@@ -88,8 +88,11 @@ export function splitEnrollmentToken(
 }
 
 /**
- * Stable 4-hex-char suffix derived from a machineId, used to give each
+ * Stable 8-hex-char suffix derived from a machineId, used to give each
  * fleet member a distinct worker name: `<tokenName>-<suffix>`.
+ *
+ * 4 bytes → ~4 billion values; birthday-paradox collision is negligible
+ * for any practical fleet size.
  */
 export async function fleetMemberSuffix(machineId: string): Promise<string> {
   const digest = await crypto.subtle.digest(
@@ -97,7 +100,7 @@ export async function fleetMemberSuffix(machineId: string): Promise<string> {
     new TextEncoder().encode(machineId),
   );
   return Array.from(new Uint8Array(digest))
-    .slice(0, 2)
+    .slice(0, 4)
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
 }
@@ -116,6 +119,8 @@ export interface WorkerSnapshot {
 
 interface WorkerEntry {
   name: string;
+  /** The enrollment-token model instance name (differs from `name` for fleet workers). */
+  tokenName: string;
   instanceUuid: string;
   labels: Record<string, string>;
   platform: string;
@@ -468,6 +473,7 @@ export class WorkerGateway {
       // enrollment leaves no orphaned state behind.
       const entry: WorkerEntry = reconnecting ? existing : {
         name: workerName,
+        tokenName: name,
         instanceUuid: params.instanceUuid,
         labels,
         platform: params.platform,
@@ -602,27 +608,27 @@ export class WorkerGateway {
    * worker's re-enrollment attempt is rejected as expired, so it cannot
    * return on this token.
    */
-  #handleTokenExpired(name: string): void {
-    const entry = this.#workers.get(name);
+  #handleTokenExpired(workerName: string): void {
+    const entry = this.#workers.get(workerName);
     if (!entry) {
       return;
     }
     entry.expiryTimer = undefined;
     logger.info("Enrollment token for {worker} expired — disconnecting", {
-      worker: name,
+      worker: workerName,
     });
     // Bookkeeping only: redeem independently rejects on time, so a failure
     // here just delays the durable record catching up.
     this.#recordTransition(() =>
       this.#runModelMethod({
         typeArg: ENROLLMENT_TOKEN_MODEL_TYPE.normalized,
-        definitionName: name,
+        definitionName: entry.tokenName,
         methodName: "expire",
         inputs: {},
       })
     ).catch((error: unknown) => {
       logger.warn("Failed to record token expiry for {worker}: {error}", {
-        worker: name,
+        worker: workerName,
         error: error instanceof Error ? error.message : String(error),
       });
     });
