@@ -122,7 +122,7 @@ Deno.test("renderWorkerTokenList: log mode renders the table with display state"
   assertStringIncludes(output, "ENROLLMENTS");
   assertStringIncludes(output, "ci-runner-3");
   assertStringIncludes(output, "enrolled");
-  assertStringIncludes(output, "1 / 1");
+  assertStringIncludes(output, "machine-42");
   // Display-level expiry overlay
   assertStringIncludes(output, "expired");
 });
