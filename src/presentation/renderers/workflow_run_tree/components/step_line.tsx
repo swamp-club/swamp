@@ -50,11 +50,16 @@ export function StepLine({ step, prefix }: StepLineProps) {
     ? ` — ${step.approvalPrompt}`
     : "";
 
+  const queuedHint = step.status === "queued" && step.requirement
+    ? ` — waiting for ${step.requirement}`
+    : "";
+
   return (
     <Box>
       <Text dimColor>{prefix}</Text>
       <Text>{label}</Text>
       {approvalHint ? <Text color="yellow">{approvalHint}</Text> : null}
+      {queuedHint ? <Text dimColor color="yellow">{queuedHint}</Text> : null}
       <Box flexGrow={1} />
       <Text>
         <StatusIcon status={step.status} spinnerFrame={spinnerFrame} />
