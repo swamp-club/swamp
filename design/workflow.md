@@ -76,10 +76,28 @@ task:
 `globalArgs` is only valid with direct type execution — the schema rejects it
 for `modelIdOrName` tasks.
 
+Both `inputs` and `globalArgs` accept either a literal YAML record or a single
+CEL expression that evaluates to a record at runtime:
+
+```yaml
+# Literal record (individual values may contain expressions)
+inputs:
+  host: ${{ self.host }}
+  port: 443
+
+# Whole-field expression (must evaluate to a record)
+inputs: ${{ self.item.implementation.inputs }}
+globalArgs: ${{ self.item.implementation.globalArgs }}
+```
+
+Whole-field expressions are validated after evaluation — if the expression
+produces a non-record value (null, array, number, string), the step fails with a
+clear error.
+
 For `forEach` steps, `self.*` CEL template expressions resolve in every task
 target field — `modelIdOrName`, `modelName`, `methodName`, and (for workflow
-tasks) `workflowIdOrName` — as well as the step `name`, `inputs`, and shell
-`args`:
+tasks) `workflowIdOrName` — as well as the step `name`, `inputs`, and
+`globalArgs`:
 
 ```yaml
 - name: scan-${{self.host}}

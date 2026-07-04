@@ -428,3 +428,92 @@ Deno.test("StepTaskSchema throws clear error for arguments instead of inputs", (
     'Did you mean "inputs"',
   );
 });
+
+// Dynamic expression inputs/globalArgs
+
+Deno.test("StepTaskSchema accepts expression string for model_method inputs", () => {
+  const result = StepTaskSchema.parse({
+    type: "model_method",
+    modelType: "@foo/bar",
+    modelName: "test",
+    methodName: "run",
+    inputs: "${{ self.item.implementation.inputs }}",
+  });
+  assertEquals(result.type, "model_method");
+  if (result.type === "model_method") {
+    assertEquals(result.inputs, "${{ self.item.implementation.inputs }}");
+  }
+});
+
+Deno.test("StepTaskSchema accepts expression string for model_method globalArgs", () => {
+  const result = StepTaskSchema.parse({
+    type: "model_method",
+    modelType: "@foo/bar",
+    modelName: "test",
+    methodName: "run",
+    globalArgs: "${{ self.item.implementation.globalArgs }}",
+  });
+  assertEquals(result.type, "model_method");
+  if (result.type === "model_method") {
+    assertEquals(
+      result.globalArgs,
+      "${{ self.item.implementation.globalArgs }}",
+    );
+  }
+});
+
+Deno.test("StepTaskSchema accepts expression string for workflow inputs", () => {
+  const result = StepTaskSchema.parse({
+    type: "workflow",
+    workflowIdOrName: "my-workflow",
+    inputs: "${{ self.item.inputs }}",
+  });
+  assertEquals(result.type, "workflow");
+  if (result.type === "workflow") {
+    assertEquals(result.inputs, "${{ self.item.inputs }}");
+  }
+});
+
+Deno.test("StepTaskSchema rejects non-expression string for inputs", () => {
+  assertThrows(
+    () => {
+      StepTaskSchema.parse({
+        type: "model_method",
+        modelType: "@foo/bar",
+        modelName: "test",
+        methodName: "run",
+        inputs: "not an expression",
+      });
+    },
+  );
+});
+
+Deno.test("StepTaskSchema accepts expression with optional chaining", () => {
+  const result = StepTaskSchema.parse({
+    type: "model_method",
+    modelType: "@foo/bar",
+    modelName: "test",
+    methodName: "run",
+    inputs: "${{ self?.item?.implementation?.inputs }}",
+  });
+  assertEquals(result.type, "model_method");
+  if (result.type === "model_method") {
+    assertEquals(
+      result.inputs,
+      "${{ self?.item?.implementation?.inputs }}",
+    );
+  }
+});
+
+Deno.test("StepTaskSchema still accepts record inputs", () => {
+  const result = StepTaskSchema.parse({
+    type: "model_method",
+    modelIdOrName: "my-model",
+    methodName: "run",
+    inputs: { foo: "bar", count: 42 },
+  });
+  assertEquals(result.type, "model_method");
+  if (result.type === "model_method") {
+    assertEquals(result.inputs, { foo: "bar", count: 42 });
+  }
+});

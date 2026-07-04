@@ -19,6 +19,13 @@
 
 import { z } from "zod";
 
+const EXPRESSION_PATTERN = /^\$\{\{\s*.+?\s*\}\}$/;
+
+const recordOrExpression = z.union([
+  z.record(z.string(), z.unknown()),
+  z.string().regex(EXPRESSION_PATTERN),
+]).optional();
+
 /**
  * Raw schema for step tasks (without backward compat preprocessing).
  *
@@ -33,13 +40,13 @@ const StepTaskRawSchema = z.discriminatedUnion("type", [
     modelType: z.string().min(1).optional(),
     modelName: z.string().min(1).optional(),
     methodName: z.string().min(1),
-    inputs: z.record(z.string(), z.unknown()).optional(),
-    globalArgs: z.record(z.string(), z.unknown()).optional(),
+    inputs: recordOrExpression,
+    globalArgs: recordOrExpression,
   }),
   z.object({
     type: z.literal("workflow"),
     workflowIdOrName: z.string().min(1),
-    inputs: z.record(z.string(), z.unknown()).optional(),
+    inputs: recordOrExpression,
   }),
   z.object({
     type: z.literal("manual_approval"),
