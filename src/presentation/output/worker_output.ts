@@ -33,7 +33,7 @@ import type {
   WorkerTokenRevokeData,
 } from "../../libswamp/mod.ts";
 import type { WorkerStatusEvent } from "../../worker/connect.ts";
-import type { WorkerVerifyData } from "../../cli/commands/worker_verify.ts";
+import type { WorkerVerifyData } from "../../serve/protocol.ts";
 import type { OutputMode } from "./output.ts";
 
 const checkmark = "\u2713"; // ✓
@@ -233,6 +233,13 @@ export function renderWorkerList(
     (column, value) => (column === 1 ? colorWorkerStatus(value) : value),
   );
   writeOutput(lines.join("\n"));
+  if (data.workers.some((w) => w.status === "unverified")) {
+    writeOutput(
+      dim(
+        "Some workers are unverified — run 'swamp worker verify' to diagnose.",
+      ),
+    );
+  }
 }
 
 function formatAge(ms: number): string {
@@ -379,10 +386,20 @@ export function renderWorkerVerify(
   );
   writeOutput(lines.join("\n"));
   writeOutput("");
-  const summary = data.passed === data.total
-    ? green(`All ${data.total} worker(s) passed verification.`)
-    : red(
-      `${data.failed} of ${data.total} worker(s) failed verification.`,
+  if (data.passed === data.total) {
+    writeOutput(green(`All ${data.total} worker(s) passed verification.`));
+  } else {
+    const failCount = data.workers.filter((w) => w.status === "fail").length;
+    const errorCount = data.workers.filter((w) => w.status === "error").length;
+    const parts: string[] = [];
+    if (failCount > 0) parts.push(`${failCount} failed`);
+    if (errorCount > 0) parts.push(`${errorCount} unreachable`);
+    writeOutput(
+      red(
+        `${
+          parts.join(", ")
+        } of ${data.total} worker(s) did not pass verification.`,
+      ),
     );
-  writeOutput(summary);
+  }
 }

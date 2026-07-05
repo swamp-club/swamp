@@ -50,13 +50,10 @@ import type {
   ExtensionInfoPayload,
   ExtensionRmPayload,
   ExtensionSearchPayload,
+  WorkerProbeResult,
   WorkerVerifyPayload,
 } from "../protocol.ts";
-import {
-  FLEET_PROBE_DEFINITION_ID,
-  FLEET_PROBE_MODEL_TYPE,
-  fleetProbeModel,
-} from "../../domain/models/worker/fleet_probe_model.ts";
+import { dispatchFleetProbe } from "../fleet_probe_dispatch.ts";
 import {
   SWAMP_SUBDIRS,
   swampPath,
@@ -220,91 +217,19 @@ export async function handleWorkerVerify(
     }
 
     const connectedWorkers = workers.filter((w) => w.connected);
-
-    interface WorkerProbeResult {
-      name: string;
-      status: "pass" | "fail" | "error";
-      platform?: string;
-      arch?: string;
-      probeMarkerOk?: boolean;
-      queryOk?: boolean;
-      dataPlaneOk?: boolean;
-      failures?: string[];
-      error?: string;
-    }
-
     const results: WorkerProbeResult[] = [];
 
     for (const worker of connectedWorkers) {
       if (controller.signal.aborted) break;
-
-      try {
-        const result = await ctx.dispatchService.executeRemote({
-          placement: { target: worker.name },
-          modelDef: fleetProbeModel,
-          modelType: FLEET_PROBE_MODEL_TYPE,
-          modelId: FLEET_PROBE_DEFINITION_ID,
-          methodName: "verify",
-          definitionName: "probe",
-          definitionTags: {},
-          definitionMeta: {
-            id: FLEET_PROBE_DEFINITION_ID,
-            name: "probe",
-            version: 1,
-            tags: {},
-          },
-          globalArgs: {},
-          methodArgs: {},
-          probeMarker: "fleet-verify",
-          skipScheduler: true,
-          signal: controller.signal,
-        });
-
-        const output = result.outputs.find((o) => o.specName === "result");
-        if (output) {
-          const bytes = await ctx.repoContext.unifiedDataRepo.getContent(
-            FLEET_PROBE_MODEL_TYPE,
-            FLEET_PROBE_DEFINITION_ID,
-            output.name,
-            output.version,
-          );
-          if (bytes) {
-            const content = JSON.parse(
-              new TextDecoder().decode(bytes),
-            ) as Record<string, unknown>;
-            const allOk = content.probeMarkerOk === true &&
-              content.queryOk === true && content.dataPlaneOk === true;
-            results.push({
-              name: worker.name,
-              status: allOk ? "pass" : "fail",
-              platform: content.platform as string,
-              arch: content.arch as string,
-              probeMarkerOk: content.probeMarkerOk as boolean,
-              queryOk: content.queryOk as boolean,
-              dataPlaneOk: content.dataPlaneOk as boolean,
-              failures: content.failures as string[],
-            });
-          } else {
-            results.push({
-              name: worker.name,
-              status: "error",
-              error: "Probe output not readable",
-            });
-          }
-        } else {
-          results.push({
-            name: worker.name,
-            status: "error",
-            error: "No probe result in dispatch output",
-          });
-        }
-      } catch (error) {
-        results.push({
-          name: worker.name,
-          status: "error",
-          error: error instanceof Error ? error.message : String(error),
-        });
-      }
+      results.push(
+        await dispatchFleetProbe(
+          ctx.dispatchService,
+          ctx.repoContext.unifiedDataRepo,
+          worker.name,
+          "fleet-verify",
+          controller.signal,
+        ),
+      );
     }
 
     send(socket, {

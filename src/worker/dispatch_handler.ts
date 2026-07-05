@@ -219,7 +219,8 @@ async function handleDispatch(
       );
     }
 
-    const methodArgs = params.probeMarker !== undefined
+    const methodArgs = params.probeMarker !== undefined &&
+        execution.modelType === "swamp/fleet-probe"
       ? { ...execution.methodArgs, probeMarker: params.probeMarker }
       : execution.methodArgs;
 

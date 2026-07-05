@@ -33,11 +33,7 @@ import { parsePrincipal } from "../../domain/access/principal.ts";
 import { executeWorkflowWithLocks } from "../../serve/deps.ts";
 import { CapabilityService } from "../../serve/capability_service.ts";
 import { WorkerGateway } from "../../serve/worker_gateway.ts";
-import {
-  FLEET_PROBE_DEFINITION_ID,
-  FLEET_PROBE_MODEL_TYPE,
-  fleetProbeModel,
-} from "../../domain/models/worker/fleet_probe_model.ts";
+import { dispatchFleetProbe } from "../../serve/fleet_probe_dispatch.ts";
 import { DispatchService } from "../../serve/dispatch_service.ts";
 import { DispatchRegistry } from "../../serve/dispatch_registry.ts";
 import { BundleRegistry } from "../../serve/bundle_registry.ts";
@@ -247,6 +243,9 @@ export function collectServeExtraArgs(options: AnyOptions): string[] {
   if (options.queueTimeout) {
     args.push("--queue-timeout", options.queueTimeout as string);
   }
+  if (options.verifyOnEnroll) {
+    args.push("--verify-on-enroll");
+  }
   return args;
 }
 
@@ -316,6 +315,10 @@ const daemonEnableCommand = new Command()
   .option(
     "--trust-proxy",
     "Trust X-Forwarded-For header for client IP in token auth rate limiting",
+  )
+  .option(
+    "--verify-on-enroll",
+    "Run a fleet probe on each enrolling worker before it becomes schedulable",
   )
   .example("Enable daemon", "swamp serve daemon enable")
   .example(
@@ -486,7 +489,7 @@ export const serveCommand = new Command()
   )
   .option(
     "--verify-on-enroll",
-    "Run a fleet probe on each enrolling worker before it becomes schedulable — workers that fail are marked unverified (opt-in)",
+    "Run a fleet probe on each enrolling worker before it becomes schedulable — workers that fail are marked unverified (env: SWAMP_VERIFY_ON_ENROLL)",
   )
   .example(
     "Enable TLS",
@@ -614,7 +617,8 @@ export const serveCommand = new Command()
       bundles: bundleRegistry,
       queueTimeoutMs,
     });
-    const verifyOnEnroll = options.verifyOnEnroll === true;
+    const verifyOnEnroll = options.verifyOnEnroll === true ||
+      Deno.env.get("SWAMP_VERIFY_ON_ENROLL") === "true";
     const workerGateway = new WorkerGateway({
       repoDir: resolvedRepoDir,
       repoContext,
@@ -626,67 +630,22 @@ export const serveCommand = new Command()
       verifyOnEnroll,
       verifyWorker: verifyOnEnroll
         ? async (workerName) => {
-          try {
-            const result = await dispatchService.executeRemote({
-              placement: { target: workerName },
-              modelDef: fleetProbeModel,
-              modelType: FLEET_PROBE_MODEL_TYPE,
-              modelId: FLEET_PROBE_DEFINITION_ID,
-              methodName: "verify",
-              definitionName: "probe",
-              definitionTags: {},
-              definitionMeta: {
-                id: FLEET_PROBE_DEFINITION_ID,
-                name: "probe",
-                version: 1,
-                tags: {},
-              },
-              globalArgs: {},
-              methodArgs: {},
-              probeMarker: "verify-on-enroll",
-              skipScheduler: true,
-            });
-            const output = result.outputs.find((o) => o.specName === "result");
-            if (output) {
-              const bytes = await repoContext.unifiedDataRepo.getContent(
-                FLEET_PROBE_MODEL_TYPE,
-                FLEET_PROBE_DEFINITION_ID,
-                output.name,
-                output.version,
-              );
-              if (bytes) {
-                const content = JSON.parse(
-                  new TextDecoder().decode(bytes),
-                ) as Record<string, unknown>;
-                const ok = content.probeMarkerOk === true &&
-                  content.queryOk === true && content.dataPlaneOk === true;
-                if (!ok) {
-                  return {
-                    ok: false,
-                    failureReason: (content.failures as string[])?.join(
-                      "; ",
-                    ) ?? "probe failed",
-                  };
-                }
-                return { ok: true };
-              }
-              return {
-                ok: false,
-                failureReason: "Probe output not readable",
-              };
-            }
-            return {
-              ok: false,
-              failureReason: "No probe result in dispatch output",
-            };
-          } catch (error) {
-            return {
-              ok: false,
-              failureReason: error instanceof Error
-                ? error.message
-                : String(error),
-            };
+          const probe = await dispatchFleetProbe(
+            dispatchService,
+            repoContext.unifiedDataRepo,
+            workerName,
+            "verify-on-enroll",
+            AbortSignal.timeout(60_000),
+          );
+          if (probe.status === "pass") {
+            return { ok: true };
           }
+          return {
+            ok: false,
+            failureReason: probe.status === "error"
+              ? probe.error ?? "probe error"
+              : (probe.failures ?? []).join("; ") || "probe failed",
+          };
         }
         : undefined,
     });

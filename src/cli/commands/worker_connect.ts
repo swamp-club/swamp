@@ -27,6 +27,7 @@
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { UserError } from "../../domain/errors.ts";
+import { parseLabels } from "./worker_shared.ts";
 import { runWorker } from "../../worker/connect.ts";
 import { renderWorkerStatus } from "../../presentation/output/worker_output.ts";
 import { VERSION } from "./version.ts";
@@ -38,20 +39,6 @@ import "../../domain/models/models.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
-
-function parseLabels(labelFlags: string[] | undefined): Record<string, string> {
-  const labels: Record<string, string> = {};
-  for (const flag of labelFlags ?? []) {
-    const eq = flag.indexOf("=");
-    if (eq <= 0 || eq === flag.length - 1) {
-      throw new UserError(
-        `Invalid label '${flag}' — expected the form key=value`,
-      );
-    }
-    labels[flag.slice(0, eq)] = flag.slice(eq + 1);
-  }
-  return labels;
-}
 
 function parseCommaSeparatedLabels(envValue: string): Record<string, string> {
   const labels: Record<string, string> = {};
