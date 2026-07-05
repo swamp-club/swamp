@@ -103,7 +103,7 @@ export const workerConnectCommand = new Command()
   )
   .option(
     "--idle-timeout <duration:string>",
-    "Drain and exit 0 after being continuously idle for this duration (env: SWAMP_WORKER_IDLE_TIMEOUT)",
+    "Drain and exit 0 after being continuously idle for this duration (e.g. 30s, 5m, 1h) (env: SWAMP_WORKER_IDLE_TIMEOUT)",
   )
   .action(async function (options: AnyOptions, urlArg?: string) {
     const cliCtx = createContext(options as GlobalOptions, [
@@ -159,7 +159,7 @@ export const workerConnectCommand = new Command()
     const idleTimeoutRaw = (options.idleTimeout as string | undefined) ??
       Deno.env.get("SWAMP_WORKER_IDLE_TIMEOUT");
     const idleTimeoutMs = idleTimeoutRaw !== undefined
-      ? parseTimeout(idleTimeoutRaw)
+      ? parseTimeout(idleTimeoutRaw, "--idle-timeout")
       : undefined;
 
     let requestDrain: ((reason: WorkerExitReason) => void) | null = null;

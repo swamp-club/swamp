@@ -297,6 +297,9 @@ export class WorkerGateway {
     if (entry.status === "unverified" && !params.probeMarker) {
       throw new Error(`Worker '${name}' is unverified`);
     }
+    if (entry.status === "draining") {
+      throw new Error(`Worker '${name}' is draining`);
+    }
 
     logger.info(
       "Dispatching {modelType}.{methodName} (step {step}) to worker {worker} [{dispatchId}]",
@@ -347,6 +350,8 @@ export class WorkerGateway {
       return result;
     } finally {
       entry.dispatchId = null;
+      // Cast: TS narrows status to "busy" from the assignment above, but
+      // #handleDrain may have changed it to "draining" across the await.
       const currentStatus = entry.status as string;
       if (entry.channel === null || entry.channel.closed) {
         // The socket dropped mid-dispatch. The in-memory status returns to

@@ -208,6 +208,10 @@ export async function runWorker(
           currentDrainHandle = handle;
           currentChannel = channel;
           currentCloseConnection = close;
+          if (drainReason !== null) {
+            close();
+            return;
+          }
           startIdleTimer();
         },
         onDispatchStarted: () => {
@@ -224,7 +228,6 @@ export async function runWorker(
             startIdleTimer();
           }
         },
-        drainReason: () => drainReason,
       });
       options.onStatus?.({ kind: "disconnected", reason: outcome });
       delayMs = RECONNECT_BASE_DELAY_MS;
@@ -319,7 +322,6 @@ interface ConnectOnceArgs {
   ) => void;
   onDispatchStarted: () => void;
   onDispatchFinished: () => void;
-  drainReason: () => WorkerExitReason | null;
 }
 
 /** One socket lifetime: connect, enroll, serve dispatches until close. */
