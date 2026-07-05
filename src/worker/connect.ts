@@ -143,6 +143,7 @@ export async function runWorker(
   let currentDrainHandle: DispatchHandlerHandle | null = null;
   let currentChannel: RpcChannel | null = null;
   let currentCloseConnection: (() => void) | null = null;
+  let _drainPromise: Promise<void> | null = null;
 
   const startIdleTimer = () => {
     if (options.idleTimeoutMs === undefined || drainReason !== null) return;
@@ -170,7 +171,7 @@ export async function runWorker(
     const channel = currentChannel;
     const close = currentCloseConnection;
     if (handle) {
-      handle.drain().then(() => {
+      _drainPromise = handle.drain().then(() => {
         options.onStatus?.({ kind: "drain_complete" });
         if (!channel) {
           close?.();
