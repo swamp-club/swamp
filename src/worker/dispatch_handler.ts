@@ -219,6 +219,10 @@ async function handleDispatch(
       );
     }
 
+    const methodArgs = params.probeMarker !== undefined
+      ? { ...execution.methodArgs, probeMarker: params.probeMarker }
+      : execution.methodArgs;
+
     const definition = Definition.create({
       type: execution.modelType,
       id: execution.definitionMeta.id,
@@ -226,7 +230,7 @@ async function handleDispatch(
       version: execution.definitionMeta.version,
       tags: execution.definitionMeta.tags,
       globalArguments: execution.globalArgs,
-      methods: { [execution.methodName]: { arguments: execution.methodArgs } },
+      methods: { [execution.methodName]: { arguments: methodArgs } },
     });
 
     const remote = createRemoteMethodContext({

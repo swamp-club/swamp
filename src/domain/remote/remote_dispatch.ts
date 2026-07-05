@@ -60,6 +60,15 @@ export interface RemoteStepRequest {
   signal?: AbortSignal;
   onEvent?: (event: RpcStreamEvent) => void;
   dataRepo?: UnifiedDataRepository;
+  /** Dispatch-level probe marker for fleet verification. */
+  probeMarker?: string;
+  /**
+   * Bypass the scheduler and dispatch directly to the targeted worker.
+   * Only used by the fleet verification probe, which must reach workers
+   * in "unverified" status that the scheduler would otherwise exclude.
+   * Requires `placement.target` to be set.
+   */
+  skipScheduler?: boolean;
 }
 
 export interface RemoteStepResult {

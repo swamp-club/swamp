@@ -112,9 +112,10 @@ export interface WorkerSnapshot {
   platform: string;
   arch: string;
   swampVersion: string;
-  status: "idle" | "busy";
+  status: "idle" | "busy" | "unverified";
   connected: boolean;
   dispatchId: string | null;
+  verifyFailureReason?: string;
 }
 
 interface WorkerEntry {
@@ -129,8 +130,9 @@ interface WorkerEntry {
   channel: RpcChannel | null;
   /** Force-closes the current control socket (absent for test transports). */
   closeSocket: (() => void) | null;
-  status: "idle" | "busy";
+  status: "idle" | "busy" | "unverified";
   dispatchId: string | null;
+  verifyFailureReason?: string;
   graceTimer?: ReturnType<typeof setTimeout>;
   /** Fires at the token's `expiresAt` to disconnect the worker. */
   expiryTimer?: ReturnType<typeof setTimeout>;
@@ -162,6 +164,19 @@ export interface WorkerGatewayOptions {
   onGraceExpired?: (worker: WorkerSnapshot) => void;
   /** A worker enrolled or re-enrolled (including within the grace window). */
   onWorkerEnrolled?: (worker: WorkerSnapshot) => void;
+  /**
+   * When true, dispatch a fleet probe to each enrolling worker before it
+   * becomes schedulable. Workers that fail the probe are marked `unverified`.
+   * Requires `verifyWorker` to be set.
+   */
+  verifyOnEnroll?: boolean;
+  /**
+   * Dispatches the fleet probe to a worker and returns whether it passed.
+   * Wired by the serve command to use the DispatchService.
+   */
+  verifyWorker?: (
+    workerName: string,
+  ) => Promise<{ ok: boolean; failureReason?: string }>;
   /** Test seam: overrides the modelMethodRun-backed transition runner. */
   runModelMethod?: ModelMethodRunner;
   /**
@@ -276,6 +291,9 @@ export class WorkerGateway {
     }
     if (entry.status === "busy") {
       throw new Error(`Worker '${name}' is busy`);
+    }
+    if (entry.status === "unverified" && !params.probeMarker) {
+      throw new Error(`Worker '${name}' is unverified`);
     }
 
     logger.info(
@@ -471,6 +489,9 @@ export class WorkerGateway {
       // All durable transitions succeeded — only now mutate the pool, wire
       // the capability handlers, and issue the credential, so a failed
       // enrollment leaves no orphaned state behind.
+      const initialStatus = this.#options.verifyOnEnroll
+        ? "unverified"
+        : "idle";
       const entry: WorkerEntry = reconnecting ? existing : {
         name: workerName,
         tokenName: name,
@@ -481,9 +502,12 @@ export class WorkerGateway {
         swampVersion: params.swampVersion,
         channel: state.channel,
         closeSocket: state.closeSocket,
-        status: "idle",
+        status: initialStatus,
         dispatchId: null,
       };
+      if (reconnecting && this.#options.verifyOnEnroll) {
+        entry.status = "unverified";
+      }
       entry.channel = state.channel;
       entry.closeSocket = state.closeSocket;
       this.#workers.set(workerName, entry);
@@ -511,11 +535,25 @@ export class WorkerGateway {
         worker: workerName,
         mode: reconnecting ? "reconnect" : "first-connect",
       });
-      const snap = this.#snapshot(entry);
-      this.#options.onWorkerEnrolled?.(snap);
-      if (entry.status === "idle") {
-        this.#options.onWorkerIdle?.(snap);
+
+      if (this.#options.verifyOnEnroll && this.#options.verifyWorker) {
+        this.#runEnrollmentVerify(workerName).catch((e: unknown) => {
+          logger.error(
+            "Enrollment verify failed unexpectedly for {worker}: {error}",
+            {
+              worker: workerName,
+              error: e instanceof Error ? e.message : String(e),
+            },
+          );
+        });
+      } else {
+        const snap = this.#snapshot(entry);
+        this.#options.onWorkerEnrolled?.(snap);
+        if (entry.status === "idle") {
+          this.#options.onWorkerIdle?.(snap);
+        }
       }
+
       return {
         workerId: workerName,
         sessionCredential: session.credential,
@@ -643,6 +681,77 @@ export class WorkerGateway {
     }
   }
 
+  async #runEnrollmentVerify(workerName: string): Promise<void> {
+    const verifyWorker = this.#options.verifyWorker!;
+    try {
+      const probeResult = await verifyWorker(workerName);
+      const entry = this.#workers.get(workerName);
+      if (!entry) return;
+      if (probeResult.ok) {
+        await this.#recordTransition(async () => {
+          entry.status = "idle";
+          entry.verifyFailureReason = undefined;
+          await this.#runModelMethod({
+            typeArg: "swamp/worker",
+            definitionName: workerDefinitionName(workerName),
+            methodName: "set_status",
+            inputs: { status: "idle" },
+          });
+        });
+        const snap = this.#snapshot(entry);
+        this.#options.onWorkerEnrolled?.(snap);
+        this.#options.onWorkerIdle?.(snap);
+      } else {
+        await this.#recordTransition(async () => {
+          entry.verifyFailureReason = probeResult.failureReason;
+          await this.#runModelMethod({
+            typeArg: "swamp/worker",
+            definitionName: workerDefinitionName(workerName),
+            methodName: "set_status",
+            inputs: {
+              status: "unverified",
+              verifyFailureReason: probeResult.failureReason,
+            },
+          });
+        });
+        logger.warn(
+          "Worker {worker} failed enrollment verification: {reason}",
+          { worker: workerName, reason: probeResult.failureReason ?? "" },
+        );
+      }
+    } catch (error) {
+      const entry = this.#workers.get(workerName);
+      if (!entry) return;
+      const reason = error instanceof Error ? error.message : String(error);
+      entry.verifyFailureReason = reason;
+      await this.#recordTransition(async () => {
+        await this.#runModelMethod({
+          typeArg: "swamp/worker",
+          definitionName: workerDefinitionName(workerName),
+          methodName: "set_status",
+          inputs: {
+            status: "unverified",
+            verifyFailureReason: reason,
+          },
+        });
+      }).catch((persistError: unknown) => {
+        logger.warn(
+          "Failed to persist unverified status for {worker}: {error}",
+          {
+            worker: workerName,
+            error: persistError instanceof Error
+              ? persistError.message
+              : String(persistError),
+          },
+        );
+      });
+      logger.warn(
+        "Worker {worker} verification probe errored: {reason}",
+        { worker: workerName, reason },
+      );
+    }
+  }
+
   #snapshot(entry: WorkerEntry): WorkerSnapshot {
     return {
       name: entry.name,
@@ -654,6 +763,7 @@ export class WorkerGateway {
       status: entry.status,
       connected: entry.channel !== null,
       dispatchId: entry.dispatchId,
+      verifyFailureReason: entry.verifyFailureReason,
     };
   }
 

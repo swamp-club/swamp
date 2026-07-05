@@ -257,6 +257,13 @@ export const DispatchParamsSchema = z.object({
     jobName: z.string().optional(),
     stepName: z.string().optional(),
   }).optional(),
+  /**
+   * Dispatch-level signal for verification probes. When set, the fleet
+   * probe model receives this value in its method args to confirm that
+   * dispatch-level metadata arrives intact. Travels via DispatchParams
+   * rather than the environment snapshot (which denylists SWAMP_* vars).
+   */
+  probeMarker: z.string().optional(),
 });
 
 export type DispatchParams = z.infer<typeof DispatchParamsSchema>;

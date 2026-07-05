@@ -39,7 +39,12 @@ import {
 
 export const WORKER_MODEL_TYPE = ModelType.create("swamp/worker");
 
-export const WorkerStatusSchema = z.enum(["idle", "busy", "disconnected"]);
+export const WorkerStatusSchema = z.enum([
+  "idle",
+  "busy",
+  "disconnected",
+  "unverified",
+]);
 
 export type WorkerStatus = z.infer<typeof WorkerStatusSchema>;
 
@@ -58,6 +63,9 @@ export const WorkerStateSchema = z.object({
   disconnectedAt: z.string().datetime().optional(),
   currentDispatchId: z.string().nullable().describe(
     "Dispatch in flight on this worker, or null when idle",
+  ),
+  verifyFailureReason: z.string().optional().describe(
+    "Why the enrollment verification probe failed (present only when status is 'unverified')",
   ),
 });
 
@@ -117,6 +125,7 @@ async function enroll(
 const SetStatusArgsSchema = z.object({
   status: WorkerStatusSchema,
   dispatchId: z.string().optional(),
+  verifyFailureReason: z.string().optional(),
 });
 
 async function setStatus(
@@ -133,6 +142,9 @@ async function setStatus(
       ? (args.dispatchId ?? null)
       : null,
     ...(args.status === "disconnected" ? { disconnectedAt: now } : {}),
+    verifyFailureReason: args.status === "unverified"
+      ? args.verifyFailureReason
+      : undefined,
   };
   const handle = await context.writeResource!("state", STATE_DATA_NAME, state);
   return { dataHandles: [handle] };
@@ -143,7 +155,7 @@ async function setStatus(
  */
 export const workerModel: ModelDefinition = defineModel({
   type: WORKER_MODEL_TYPE,
-  version: "2026.06.09.1",
+  version: "2026.07.04.1",
   resources: {
     "state": {
       description:
@@ -163,7 +175,8 @@ export const workerModel: ModelDefinition = defineModel({
       execute: enroll,
     },
     set_status: {
-      description: "Record a worker status change (idle/busy/disconnected)",
+      description:
+        "Record a worker status change (idle/busy/disconnected/unverified)",
       kind: "update",
       arguments: SetStatusArgsSchema,
       execute: setStatus,

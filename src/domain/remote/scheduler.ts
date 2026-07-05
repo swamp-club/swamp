@@ -47,7 +47,7 @@ export interface SchedulableWorker {
   labels: Record<string, string>;
   platform: string;
   arch: string;
-  status: "idle" | "busy";
+  status: "idle" | "busy" | "unverified";
   connected: boolean;
 }
 
@@ -117,6 +117,9 @@ export function eligibleWorkers(
     if (placement.target !== undefined) {
       return worker.name === placement.target ||
         worker.instanceUuid === placement.target;
+    }
+    if (worker.status === "unverified") {
+      return false;
     }
     if (
       placement.labels !== undefined && !matchesLabels(worker, placement.labels)

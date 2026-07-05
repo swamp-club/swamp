@@ -343,6 +343,11 @@ export type WorkerListPayload = Record<string, never>;
 
 export type WorkerQueueListPayload = Record<string, never>;
 
+export interface WorkerVerifyPayload {
+  workerName?: string;
+  labels?: Record<string, string>;
+}
+
 export type DatastoreStatusPayload = Record<string, never>;
 
 // ── Extension operations ─────────────────────────────────────────────
@@ -506,6 +511,7 @@ export type ServerRequest =
     id: string;
     payload?: WorkerQueueListPayload;
   }
+  | { type: "worker.verify"; id: string; payload?: WorkerVerifyPayload }
   | { type: "datastore.status"; id: string; payload?: DatastoreStatusPayload }
   | { type: "extension.list"; id: string; payload?: ExtensionListPayload }
   | { type: "extension.search"; id: string; payload?: ExtensionSearchPayload }
@@ -776,6 +782,10 @@ export interface WorkerQueueListResponse {
   data: Record<string, unknown>;
 }
 
+export interface WorkerVerifyResponse {
+  data: Record<string, unknown>;
+}
+
 export interface DatastoreStatusResponse {
   data: Record<string, unknown>;
 }
@@ -963,6 +973,7 @@ export type ServerMessage =
     id: string;
     payload: WorkerQueueListResponse;
   }
+  | { type: "worker.verify"; id: string; payload: WorkerVerifyResponse }
   | { type: "datastore.status"; id: string; payload: DatastoreStatusResponse }
   | { type: "extension.list"; id: string; payload: ExtensionListResponse }
   | { type: "extension.search"; id: string; payload: ExtensionSearchResponse }

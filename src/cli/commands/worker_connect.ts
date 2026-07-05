@@ -53,6 +53,22 @@ function parseLabels(labelFlags: string[] | undefined): Record<string, string> {
   return labels;
 }
 
+function parseCommaSeparatedLabels(envValue: string): Record<string, string> {
+  const labels: Record<string, string> = {};
+  for (const pair of envValue.split(",")) {
+    const trimmed = pair.trim();
+    if (trimmed === "") continue;
+    const eq = trimmed.indexOf("=");
+    if (eq <= 0 || eq === trimmed.length - 1) {
+      throw new UserError(
+        `Invalid label '${trimmed}' in SWAMP_WORKER_LABELS — expected the form key=value`,
+      );
+    }
+    labels[trimmed.slice(0, eq)] = trimmed.slice(eq + 1);
+  }
+  return labels;
+}
+
 export const workerConnectCommand = new Command()
   .name("connect")
   .description(
@@ -70,13 +86,18 @@ export const workerConnectCommand = new Command()
     "Survive restarts on one token (stable machine identity)",
     "swamp worker connect wss://orch:4000 --token <token> --cache-dir /var/lib/swamp-worker",
   )
-  .arguments("<url:string>")
-  .option("--token <token:string>", "Enrollment token (<name>.<secret>)", {
-    required: true,
-  })
+  .example(
+    "Connect using environment variables only (containers, cloud-init)",
+    "SWAMP_ORCHESTRATOR_URL=wss://orch:4000 SWAMP_WORKER_TOKEN=tok.secret swamp worker connect",
+  )
+  .arguments("[url:string]")
+  .option(
+    "--token <token:string>",
+    "Enrollment token (<name>.<secret>) (env: SWAMP_WORKER_TOKEN)",
+  )
   .option(
     "--label <label:string>",
-    "Scheduling label key=value (repeatable)",
+    "Scheduling label key=value (repeatable) (env: SWAMP_WORKER_LABELS, comma-separated)",
     { collect: true },
   )
   .option(
@@ -85,20 +106,45 @@ export const workerConnectCommand = new Command()
   )
   .option(
     "--cache-dir <dir:string>",
-    "Bundle/asset cache directory; also stores the machine id the enrollment token binds to — set a stable directory so the worker can re-enroll after a restart (defaults to a fresh temp dir)",
+    "Bundle/asset cache directory; also stores the machine id the enrollment token binds to — set a stable directory so the worker can re-enroll after a restart (defaults to a fresh temp dir) (env: SWAMP_WORKER_CACHE_DIR)",
   )
   .option("--no-reconnect", "Exit when the control socket closes")
-  .action(async function (options: AnyOptions, url: string) {
+  .action(async function (options: AnyOptions, urlArg?: string) {
     const cliCtx = createContext(options as GlobalOptions, [
       "worker",
       "connect",
     ]);
+
+    const url = urlArg ?? Deno.env.get("SWAMP_ORCHESTRATOR_URL");
+    if (url === undefined) {
+      throw new UserError(
+        "Missing orchestrator URL — pass it as a positional argument or set SWAMP_ORCHESTRATOR_URL",
+      );
+    }
 
     if (!url.startsWith("ws://") && !url.startsWith("wss://")) {
       throw new UserError(
         `Orchestrator URL must start with ws:// or wss:// (got '${url}')`,
       );
     }
+
+    const token = (options.token as string | undefined) ??
+      Deno.env.get("SWAMP_WORKER_TOKEN");
+    if (token === undefined) {
+      throw new UserError(
+        "Missing enrollment token — pass --token or set SWAMP_WORKER_TOKEN",
+      );
+    }
+
+    const flagLabels = parseLabels(options.label);
+    const envLabelsRaw = Deno.env.get("SWAMP_WORKER_LABELS");
+    const envLabels = envLabelsRaw
+      ? parseCommaSeparatedLabels(envLabelsRaw)
+      : {};
+    const labels = { ...envLabels, ...flagLabels };
+
+    const cacheDir = (options.cacheDir as string | undefined) ??
+      Deno.env.get("SWAMP_WORKER_CACHE_DIR");
 
     const ac = new AbortController();
     registerShutdownHandler({
@@ -110,11 +156,11 @@ export const workerConnectCommand = new Command()
     try {
       await runWorker({
         url,
-        token: options.token,
-        labels: parseLabels(options.label),
+        token,
+        labels,
         swampVersion: VERSION,
         dataPlaneUrl: options.dataPlaneUrl,
-        cacheDir: options.cacheDir,
+        cacheDir,
         reconnect: options.reconnect !== false,
         signal: ac.signal,
         onStatus: (event) => renderWorkerStatus(event, cliCtx.outputMode),

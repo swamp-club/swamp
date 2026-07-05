@@ -39,6 +39,7 @@ import "./worker/worker_model.ts";
 import "./worker/enrollment_token_model.ts";
 import "./worker/step_lease_model.ts";
 import "./worker/pending_dispatch_model.ts";
+import "./worker/fleet_probe_model.ts";
 
 // Access control models (grants, groups, server tokens) — see
 // src/domain/access/ for the bounded context's shared value objects.
@@ -61,6 +62,7 @@ for (
     "swamp/worker",
     "swamp/step-lease",
     "swamp/pending-dispatch",
+    "swamp/fleet-probe",
     "swamp/server-token",
     "swamp/grant",
     "swamp/group",

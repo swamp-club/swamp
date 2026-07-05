@@ -33,6 +33,7 @@ import type {
   WorkerTokenRevokeData,
 } from "../../libswamp/mod.ts";
 import type { WorkerStatusEvent } from "../../worker/connect.ts";
+import type { WorkerVerifyData } from "../../cli/commands/worker_verify.ts";
 import type { OutputMode } from "./output.ts";
 
 const checkmark = "\u2713"; // ✓
@@ -85,6 +86,8 @@ function colorWorkerStatus(status: string): string {
       return status.replace(trimmed, cyan(trimmed));
     case "disconnected":
       return status.replace(trimmed, red(trimmed));
+    case "unverified":
+      return status.replace(trimmed, yellow(trimmed));
     default:
       return status;
   }
@@ -333,4 +336,53 @@ export function renderWorkerStatus(
       break;
     }
   }
+}
+
+/**
+ * Renders fleet probe verification results. JSON mode emits the full
+ * structured response; log mode shows a per-worker pass/fail table.
+ */
+export function renderWorkerVerify(
+  data: WorkerVerifyData,
+  mode: OutputMode,
+): void {
+  if (mode === "json") {
+    console.log(JSON.stringify(data, null, 2));
+    return;
+  }
+  if (data.workers.length === 0) {
+    writeOutput(
+      dim("No connected workers found to verify."),
+    );
+    return;
+  }
+  const rows = data.workers.map((w) => {
+    const statusLabel = w.status === "pass"
+      ? checkmark + " pass"
+      : w.status === "fail"
+      ? "✗ fail"
+      : "! error";
+    const detail = w.status === "error"
+      ? (w.error ?? "")
+      : (w.failures ?? []).join("; ");
+    return [w.name, statusLabel, w.platform ?? "-", w.arch ?? "-", detail];
+  });
+  const lines = tableLines(
+    ["WORKER", "STATUS", "PLATFORM", "ARCH", "DETAILS"],
+    rows,
+    (col, value) => {
+      if (col !== 1) return value;
+      if (value.includes("pass")) return green(value);
+      if (value.includes("fail")) return red(value);
+      return yellow(value);
+    },
+  );
+  writeOutput(lines.join("\n"));
+  writeOutput("");
+  const summary = data.passed === data.total
+    ? green(`All ${data.total} worker(s) passed verification.`)
+    : red(
+      `${data.failed} of ${data.total} worker(s) failed verification.`,
+    );
+  writeOutput(summary);
 }
