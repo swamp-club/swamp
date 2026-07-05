@@ -3352,8 +3352,9 @@ Deno.test("resume merges override inputs over the suspended run's inputs", async
     // step: both `region` and `authKey` resolved to the resume values.
     const hardenTask = executor.captured[0].step.task.data;
     if (hardenTask.type === "model_method") {
-      assertEquals(hardenTask.inputs?.region, "us-west");
-      assertEquals(hardenTask.inputs?.authKey, "tskey-abc123");
+      const inputs = hardenTask.inputs as Record<string, unknown> | undefined;
+      assertEquals(inputs?.region, "us-west");
+      assertEquals(inputs?.authKey, "tskey-abc123");
     }
 
     // Audit records only the resume-time KEY NAMES, never the secret values.

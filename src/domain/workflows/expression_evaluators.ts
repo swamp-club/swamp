@@ -92,7 +92,7 @@ export class WorkflowExpressionEvaluator {
         continue;
       }
       // self.* references forEach variables resolved at runtime.
-      if (expr.celExpression.match(/\bself\./)) {
+      if (expr.celExpression.match(/\bself\??\./)) {
         continue;
       }
       // run.* and workflowRunId are only available at step execution

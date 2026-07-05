@@ -134,8 +134,11 @@ Deno.test("WorkflowExpressionEvaluator: skips run.* (resolved at step execution 
   const result = await evaluator.evaluate(workflow, emptyContext());
   assertEquals(result.expressionsEvaluated, 0);
   const step = result.workflow.jobs[0].steps[0];
-  const inputs = ("inputs" in step.task.data ? step.task.data.inputs : {}) ??
-    {};
+  const inputs =
+    (("inputs" in step.task.data ? step.task.data.inputs : {}) ?? {}) as Record<
+      string,
+      unknown
+    >;
   assertEquals(inputs["resourceKey"], "vms-${{ run.id }}");
   assertEquals(inputs["wfName"], "${{ run.workflowName }}");
 });
@@ -161,8 +164,11 @@ Deno.test("WorkflowExpressionEvaluator: skips bare workflowRunId (resolved at st
   const result = await evaluator.evaluate(workflow, emptyContext());
   assertEquals(result.expressionsEvaluated, 0);
   const step = result.workflow.jobs[0].steps[0];
-  const inputs = ("inputs" in step.task.data ? step.task.data.inputs : {}) ??
-    {};
+  const inputs =
+    (("inputs" in step.task.data ? step.task.data.inputs : {}) ?? {}) as Record<
+      string,
+      unknown
+    >;
   assertEquals(inputs["runId"], "${{ workflowRunId }}");
 });
 

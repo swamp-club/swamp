@@ -210,14 +210,26 @@ export function extractCelExpression(raw: string): string | null {
 }
 
 /**
- * Checks if an expression path is within a step's task.inputs.
- * These paths contain `.task.inputs.` or `.task.inputs[`.
+ * Checks if an expression path is at or within a step's task.inputs.
  *
  * @param path - The expression path (e.g., "jobs[0].steps[1].task.inputs.vpc_id")
- * @returns True if the path is within a step's task.inputs
+ * @returns True if the path is at or within a step's task.inputs
  */
 export function isTaskInputsPath(path: string): boolean {
-  return path.includes(".task.inputs.") || path.includes(".task.inputs[");
+  return path.includes(".task.inputs.") || path.includes(".task.inputs[") ||
+    path.endsWith(".task.inputs");
+}
+
+/**
+ * Checks if an expression path is at or within a step's task.globalArgs.
+ *
+ * @param path - The expression path
+ * @returns True if the path is at or within a step's task.globalArgs
+ */
+export function isTaskGlobalArgsPath(path: string): boolean {
+  return path.includes(".task.globalArgs.") ||
+    path.includes(".task.globalArgs[") ||
+    path.endsWith(".task.globalArgs");
 }
 
 /**

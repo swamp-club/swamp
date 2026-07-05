@@ -88,6 +88,7 @@ import type { ModelType } from "../models/model_type.ts";
 import type { MethodResult, ModelDefinition } from "../models/model.ts";
 import { ExpressionEvaluationService } from "../expressions/expression_evaluation_service.ts";
 import { resolveAvailableExpressions } from "../expressions/available_expression_resolver.ts";
+import { extractCelExpression } from "../expressions/expression_parser.ts";
 import {
   type DataRecord,
   type ExpressionContext,
@@ -116,6 +117,54 @@ import { withEventBridge } from "../../infrastructure/stream/event_bridge.ts";
 import type { ReportFilterOptions } from "../reports/report_execution_service.ts";
 import { getTracer, SpanStatusCode } from "../../infrastructure/tracing/mod.ts";
 import { extractSensitiveFieldValues } from "../models/sensitive_field_extractor.ts";
+
+/**
+ * Resolves a task field that may be a record, an expression string, or a
+ * non-record value left behind by resolveAvailableExpressions. Returns a
+ * validated Record or undefined. Throws UserError for user-authored mistakes
+ * (wrong expression result type, missing context).
+ */
+function resolveRecordExpression(
+  value: Record<string, unknown> | string | undefined,
+  fieldName: string,
+  expressionContext: Record<string, unknown> | undefined,
+): Record<string, unknown> | undefined {
+  if (value === undefined) return undefined;
+  if (typeof value !== "string") {
+    if (typeof value !== "object" || value === null || Array.isArray(value)) {
+      throw new UserError(
+        `${fieldName} must be a record, got ${
+          Array.isArray(value) ? "an array" : typeof value
+        }`,
+      );
+    }
+    return value;
+  }
+  const cel = extractCelExpression(value);
+  if (!cel) {
+    throw new UserError(
+      `${fieldName} must be a record, got a string`,
+    );
+  }
+  if (!expressionContext) {
+    throw new UserError(
+      `${fieldName} expression "$\{{ ${cel} }}" could not be resolved: no expression context available`,
+    );
+  }
+  const celEvaluator = new CelEvaluator();
+  const resolved = celEvaluator.evaluate(cel, expressionContext);
+  if (
+    resolved === null || resolved === undefined ||
+    typeof resolved !== "object" || Array.isArray(resolved)
+  ) {
+    throw new UserError(
+      `${fieldName} expression "$\{{ ${cel} }}" evaluated to ${
+        Array.isArray(resolved) ? "an array" : typeof resolved
+      }, expected a record`,
+    );
+  }
+  return resolved as Record<string, unknown>;
+}
 
 /**
  * Extracts a human-readable reason from an AbortSignal. Returns the
@@ -455,8 +504,8 @@ export class DefaultStepExecutor implements StepExecutor {
       modelType?: string;
       modelName?: string;
       methodName: string;
-      inputs?: Record<string, unknown>;
-      globalArgs?: Record<string, unknown>;
+      inputs?: Record<string, unknown> | string;
+      globalArgs?: Record<string, unknown> | string;
     },
     ctx: StepExecutionContext,
   ): Promise<unknown> {
@@ -486,6 +535,22 @@ export class DefaultStepExecutor implements StepExecutor {
       ) as typeof task;
     }
 
+    // Resolve whole-field expression strings for inputs/globalArgs that survived
+    // resolveAvailableExpressions (e.g., deferred step-output dependencies).
+    task = {
+      ...task,
+      inputs: resolveRecordExpression(
+        task.inputs,
+        "task.inputs",
+        ctx.expressionContext,
+      ),
+      globalArgs: resolveRecordExpression(
+        task.globalArgs,
+        "task.globalArgs",
+        ctx.expressionContext,
+      ),
+    };
+
     let originalDefinition: Definition;
     let modelType: ModelType;
 
@@ -502,8 +567,8 @@ export class DefaultStepExecutor implements StepExecutor {
         task.modelType,
         task.modelName,
         task.methodName,
-        task.inputs ?? {},
-        task.globalArgs,
+        (task.inputs ?? {}) as Record<string, unknown>,
+        task.globalArgs as Record<string, unknown> | undefined,
       );
 
       originalDefinition = result.definition;
@@ -610,7 +675,7 @@ export class DefaultStepExecutor implements StepExecutor {
           ctx.expressionContext,
         ) as Record<string, unknown>;
       } else if (task.inputs) {
-        stepInputs = task.inputs;
+        stepInputs = task.inputs as Record<string, unknown>;
       }
     } else if (ctx.expressionContext) {
       runLogger.debug("Evaluating expressions");
@@ -760,9 +825,16 @@ export class DefaultStepExecutor implements StepExecutor {
           }
         }, 30_000);
       }
+      const narrowedTask = task as {
+        modelIdOrName?: string;
+        modelType?: string;
+        modelName?: string;
+        methodName: string;
+        inputs?: Record<string, unknown>;
+      };
       try {
         const result = await this.invokeMethod({
-          task,
+          task: narrowedTask,
           ctx,
           executionService,
           unifiedDataRepo,
@@ -781,7 +853,7 @@ export class DefaultStepExecutor implements StepExecutor {
         if (runTracker) runTracker.complete(output.id, "completed");
 
         return await this.handleMethodSuccess({
-          task,
+          task: narrowedTask,
           ctx,
           outputRepo,
           unifiedDataRepo,
@@ -802,7 +874,7 @@ export class DefaultStepExecutor implements StepExecutor {
         if (runTracker) runTracker.complete(output.id, "failed");
 
         await this.handleMethodFailure({
-          task,
+          task: narrowedTask,
           ctx,
           outputRepo,
           unifiedDataRepo,
@@ -2669,7 +2741,10 @@ export class WorkflowExecutionService {
     job: Job,
     stepRun: import("./workflow_run.ts").StepRun,
     stepName: string,
-    task: { workflowIdOrName: string; inputs?: Record<string, unknown> },
+    task: {
+      workflowIdOrName: string;
+      inputs?: Record<string, unknown> | string;
+    },
     expressionContext: ExpressionContext | undefined,
     options: StepOptions,
   ): AsyncGenerator<WorkflowExecutionEvent> {
@@ -2687,6 +2762,17 @@ export class WorkflowExecutionService {
         (expr, context) => celEvaluator.evaluate(expr, context),
       ) as typeof task;
     }
+
+    // Resolve whole-field expression string for inputs that survived
+    // resolveAvailableExpressions (e.g., deferred step-output dependencies).
+    task = {
+      ...task,
+      inputs: resolveRecordExpression(
+        task.inputs,
+        "task.inputs",
+        expressionContext,
+      ),
+    };
 
     // Recursion guard
     const depth = options.workflowNestingDepth ?? 0;
@@ -2724,8 +2810,8 @@ export class WorkflowExecutionService {
 
     // Evaluate inputs using the expression context. Reuse the
     // per-instance evaluator (was previously constructed per call).
-    let evaluatedInputs = task.inputs;
-    if (task.inputs && expressionContext) {
+    let evaluatedInputs = task.inputs as Record<string, unknown> | undefined;
+    if (task.inputs && typeof task.inputs !== "string" && expressionContext) {
       evaluatedInputs = await this.expressionEvaluator.evaluateData(
         task.inputs,
         expressionContext,

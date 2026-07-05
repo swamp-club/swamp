@@ -417,7 +417,9 @@ export class DefaultWorkflowValidationService
                 step.name,
                 modelRef,
                 taskData.methodName,
-                taskData.inputs,
+                typeof taskData.inputs === "string"
+                  ? undefined
+                  : taskData.inputs,
                 taskData.modelType,
               ),
             );
@@ -428,7 +430,7 @@ export class DefaultWorkflowValidationService
               job.name,
               step.name,
               taskData.workflowIdOrName,
-              taskData.inputs,
+              typeof taskData.inputs === "string" ? undefined : taskData.inputs,
             ),
           );
         }
