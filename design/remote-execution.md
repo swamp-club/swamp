@@ -508,11 +508,41 @@ running on the orchestrator host would. Scoping the snapshot (allowlists per
 token or per label) is a later refinement; v1 chooses single-host fidelity over
 introducing a new partial-environment failure mode.
 
-Because the overlay mutates the worker's process-global environment, **v1
-workers execute dispatches serially** (one in flight per worker; an
-overlapping dispatch is rejected with `worker_busy`). Parallel dispatch per
-worker requires subprocess-level environment isolation and is future work —
-fan-out comes from many workers, not from concurrency inside one.
+Workers execute dispatches serially (one in flight per worker; an overlapping
+dispatch is rejected with `worker_busy`).
+
+### Dispatch runners (phase 4a)
+
+Each dispatch spawns a **dispatch runner** — a child process of the same swamp
+binary (`swamp worker exec-dispatch`, a hidden subcommand). The environment
+snapshot is applied as the child's spawn environment via `overlayEnvironment`
+(no global mutation of `Deno.env`). W3C trace context headers are overlaid on
+top of the snapshot at spawn time.
+
+The supervisor (worker process) communicates with the runner over
+length-prefixed stdio frames (`StdioTransport`), using the same `RpcChannel`
+that the orchestrator–worker control socket uses. A capability bridge forwards
+the 9 metadata-RPC capability verbs (`getData`, `queryData`, `listVersions`,
+`deleteData`, `resolveSecret`, `putSecret`, `readDefinition`, `readOutput`,
+`resolveModel`) from the runner to the orchestrator. Data-plane HTTP operations
+go directly from the runner to the orchestrator using the session credential.
+
+The runner receives bootstrap parameters as its first stdin frame:
+`RunnerBootstrapParams` carrying the session credential, data-plane URL, cache
+directory path, and the full `DispatchParams`. The session credential is a
+static snapshot — safe at capacity 1 where dispatches are serial.
+
+**Cancel propagation** is nested: the orchestrator's `CANCEL_GRACE_MS` (30 s)
+bounds the supervisor, which forwards `rpc.cancel` to the runner immediately
+and kills the child process after `RUNNER_CANCEL_GRACE_MS` (~10 s) if it does
+not respond. This leaves ~20 s for cleanup and the response frame.
+
+**Crash isolation**: a runner crash (non-zero exit or stdio channel close) fails
+only that dispatch — the worker stays enrolled and accepts the next dispatch.
+
+Phase 4a ships at capacity 1 — identical behavior to the prior in-process path,
+plus crash isolation and clean environment handling. Phase 4b adds `--concurrency
+N` slots, where the supervisor manages N concurrent runners.
 
 ## Shipping extension code
 
@@ -854,10 +884,11 @@ In scope:
   enrolls one or more machines and reconnects each `{token, machineId}` for its lifetime;
   `swamp worker token` commands and a built-in mint model that writes the token to
   a vault.
-- Drivers removed: in-process execution everywhere, isolation as a worker
-  deployment property, the local loopback executor for single-host.
-- Extension code fetched over the data plane on a cache miss and loaded
-  in-process — model and report bundles, plus lazy co-located asset fetch.
+- Drivers removed: isolation as a worker deployment property, the local
+  loopback executor for single-host.
+- Each dispatch runs in a child process (dispatch runner) for crash isolation
+  and clean environment handling; extension code fetched over the data plane on
+  a cache miss and loaded in the runner process.
 - Remote `MethodContext` with the full 14-verb capability protocol proxied home,
   including the spool-on-finalize `getFilePath` and per-request-durable
   `appendData` write modes; checks and reports run on the executor.

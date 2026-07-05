@@ -20,96 +20,37 @@
 /**
  * The worker's dispatch handler (see design/remote-execution.md).
  *
- * Executes one dispatched step in-process: applies the shipped environment
- * snapshot, loads the model (built-in registry or fetched bundle), builds
- * the remote MethodContext, and runs the method through the same
- * DefaultMethodExecutionService a local run uses. Dispatches execute
- * SERIALLY — the environment overlay mutates process-global state, which is
- * only correct without concurrent dispatches (v1 worker concurrency = 1;
- * recorded in the design doc).
+ * Each dispatch spawns a child process (dispatch runner) via
+ * `swamp worker exec-dispatch`. The environment snapshot is applied as the
+ * child's spawn environment (no global mutation). The supervisor bridges
+ * capability RPCs between the child and the orchestrator over a
+ * StdioTransport. A runner crash fails only that dispatch, not the worker.
+ *
+ * Dispatches execute SERIALLY — capacity 1, same as before. Phase 4b adds
+ * concurrency slots on top.
  */
 
-import { Definition } from "../domain/definitions/definition.ts";
-import { DefaultMethodExecutionService } from "../domain/models/method_execution_service.ts";
-import type { DataHandle, MethodResult } from "../domain/models/model.ts";
-import { withConsoleGuard } from "../domain/models/console_guard.ts";
+import { overlayEnvironment } from "../domain/remote/environment_snapshot.ts";
 import {
-  type EnvironmentSnapshot,
-  isDeniedEnvVar,
-} from "../domain/remote/environment_snapshot.ts";
-import {
-  type DispatchOutput,
   DispatchParamsSchema,
   type DispatchResult,
   WorkerMethod,
 } from "../domain/remote/protocol.ts";
 import {
-  type RpcChannel,
+  RpcChannel,
   RpcError,
   type RpcHandlerContext,
 } from "../domain/remote/rpc_channel.ts";
-import type { DataPlaneClient } from "./data_plane_client.ts";
-import type { WorkerBundleCache } from "./bundle_cache.ts";
-import { createRemoteMethodContext } from "./remote_method_context.ts";
+import {
+  createStdioReader,
+  StdioTransport,
+} from "../domain/remote/stdio_transport.ts";
+import { bridgeCapabilityVerbs } from "./runner_bridge.ts";
+import type { RunnerBootstrapParams } from "./runner_protocol.ts";
+import { RUNNER_CANCEL_GRACE_MS } from "./runner_protocol.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
 
 const logger = getSwampLogger(["worker", "dispatch"]);
-
-/**
- * Apply a shipped environment snapshot to the process env, returning the
- * restore function. Denylisted names never apply (defense in depth — a
- * conforming orchestrator never ships them). The restore function runs on
- * every exit path, including throw and cancel.
- */
-export function applyEnvironmentOverlay(
-  snapshot: EnvironmentSnapshot,
-): () => void {
-  const saved = new Map<string, string | undefined>();
-  for (const [name, value] of Object.entries(snapshot)) {
-    if (isDeniedEnvVar(name)) {
-      continue;
-    }
-    saved.set(name, Deno.env.get(name));
-    Deno.env.set(name, value);
-  }
-  return () => {
-    for (const [name, previous] of saved) {
-      if (previous === undefined) {
-        Deno.env.delete(name);
-      } else {
-        Deno.env.set(name, previous);
-      }
-    }
-  };
-}
-
-function toOutputs(handles: DataHandle[]): DispatchOutput[] {
-  return handles.map((handle) => ({
-    dataId: String(handle.dataId),
-    version: handle.version,
-    name: handle.name,
-    specName: handle.specName,
-    type: handle.kind,
-  }));
-}
-
-/**
- * Follow-up actions travel serialized; `continueCondition` is a function
- * and cannot cross the wire — the orchestrator re-evaluates conditions
- * against the returned handles.
- */
-function serializeFollowUpActions(
-  result: MethodResult,
-): unknown[] | undefined {
-  if (!result.followUpActions || result.followUpActions.length === 0) {
-    return undefined;
-  }
-  return result.followUpActions.map((action) => ({
-    methodName: action.methodName,
-    delayMs: action.delayMs,
-    maxRetries: action.maxRetries,
-  }));
-}
 
 /** Worker-visible lifecycle of one dispatch, for connect-mode output. */
 export type WorkerDispatchEvent =
@@ -133,12 +74,16 @@ export type WorkerDispatchEvent =
 
 export interface DispatchHandlerOptions {
   channel: RpcChannel;
-  client: DataPlaneClient;
-  bundleCache: WorkerBundleCache;
+  /** Session credential getter for the data plane. */
+  sessionCredential: () => string;
+  /** Base URL of the orchestrator's HTTP data plane. */
+  dataPlaneUrl: string;
+  /** Path to the shared bundle cache directory. */
+  cacheDirPath: string;
   /** Receives dispatch start/finish notifications (connect-mode output). */
   onDispatch?: (event: WorkerDispatchEvent) => void;
-  /** Test seam: overrides the method executor. */
-  executor?: Pick<DefaultMethodExecutionService, "execute">;
+  /** Override the runner command + args (test seam). */
+  runnerCommand?: { cmd: string; args: string[] };
 }
 
 export interface DispatchHandlerHandle {
@@ -198,7 +143,6 @@ async function handleDispatch(
   const params = DispatchParamsSchema.parse(rawParams);
   const execution = params.execution;
   const start = performance.now();
-  const logs: string[] = [];
 
   logger.info(
     "Dispatch {dispatchId} started: {modelType}.{methodName}",
@@ -217,104 +161,159 @@ async function handleDispatch(
     stepName: params.step?.stepName,
   });
 
-  const scratchDir = await Deno.makeTempDir({
-    prefix: `swamp-dispatch-${params.dispatchId.slice(0, 8)}-`,
-  });
-  const restoreEnv = applyEnvironmentOverlay(params.environmentSnapshot);
-  // W3C trace context applies after the overlay so the dispatch-specific
-  // parent always wins; extensions and subprocesses that initialize their
-  // own OTel SDK read TRACEPARENT/TRACESTATE to join the orchestrator's
-  // trace (mirrors the in-process executor).
-  const restoreTrace = applyEnvironmentOverlay(
-    Object.fromEntries(
-      Object.entries(execution.traceHeaders ?? {}).map((
-        [key, value],
-      ) => [key.toUpperCase().replace(/-/g, "_"), value]),
-    ),
+  // Build the spawn environment: overlay the shipped snapshot onto the
+  // worker's own environment, then apply W3C trace context on top.
+  let spawnEnv = overlayEnvironment(
+    Deno.env.toObject(),
+    params.environmentSnapshot,
   );
-  let getHandles: () => DataHandle[] = () => [];
+  if (execution.traceHeaders) {
+    const traceEnv: Record<string, string> = {};
+    for (const [key, value] of Object.entries(execution.traceHeaders)) {
+      traceEnv[key.toUpperCase().replace(/-/g, "_")] = value;
+    }
+    spawnEnv = { ...spawnEnv, ...traceEnv };
+  }
+
+  const bootstrapParams: RunnerBootstrapParams = {
+    sessionCredential: options.sessionCredential(),
+    dataPlaneUrl: options.dataPlaneUrl,
+    cacheDirPath: options.cacheDirPath,
+    dispatch: params,
+  };
+
+  const runnerCmd = options.runnerCommand ?? deriveRunnerCommand();
+  const child = new Deno.Command(runnerCmd.cmd, {
+    args: runnerCmd.args,
+    stdin: "piped",
+    stdout: "piped",
+    stderr: "piped",
+    env: spawnEnv,
+  }).spawn();
+
+  const childTransport = new StdioTransport(child.stdin);
+  const childChannel = new RpcChannel(childTransport);
+  const cancelController = new AbortController();
+
+  // Bridge capability verbs from child → orchestrator.
+  bridgeCapabilityVerbs({
+    childChannel,
+    orchestratorChannel: options.channel,
+    signal: cancelController.signal,
+  });
+
+  // Forward stream events from the child to the orchestrator.
+  childChannel.register("runner.event", (eventParams: unknown) => {
+    const p = eventParams as { event: Record<string, unknown> };
+    ctx.stream({ kind: "method_event", event: p.event });
+    return Promise.resolve({});
+  });
+
+  // Start reading from the child's stdout and stderr BEFORE sending
+  // the bootstrap frame. If the child responds before the supervisor
+  // starts reading, the pipe buffer fills and both sides deadlock.
+  const resultBox: { value: DispatchResult | null } = { value: null };
+  const readerDone = createStdioReader(
+    child.stdout,
+    (data) => {
+      const parsed = JSON.parse(data) as Record<string, unknown>;
+      if (parsed.type === "runner.result") {
+        resultBox.value = parsed.result as DispatchResult;
+        // Close the child's stdin so its reader gets EOF and it can exit.
+        childTransport.close().catch(() => {});
+      } else {
+        childChannel.handleRaw(data);
+      }
+    },
+    () => {
+      childChannel.close("child stdout closed");
+    },
+  );
+
+  const stderrChunks: Uint8Array[] = [];
+  const stderrDone = (async () => {
+    const reader = child.stderr.getReader();
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      stderrChunks.push(new Uint8Array(value));
+    }
+    reader.releaseLock();
+  })();
+
+  // Send bootstrap params as the first frame (after readers are active).
+  childTransport.send(JSON.stringify(bootstrapParams));
+
+  // Cancel propagation: forward to child, kill after RUNNER_CANCEL_GRACE_MS.
+  const onCancel = () => {
+    childChannel.call("runner.cancel", {}, {
+      timeoutMs: RUNNER_CANCEL_GRACE_MS,
+    }).catch(() => {
+      try {
+        child.kill("SIGKILL");
+      } catch {
+        // Already dead.
+      }
+    });
+    cancelController.abort();
+  };
+  ctx.signal.addEventListener("abort", onCancel, { once: true });
 
   try {
-    const { modelDef, filesDir } = await options.bundleCache.load(
-      params.bundleFingerprint,
-      ctx.signal,
-    );
-    const method = modelDef.methods[execution.methodName];
-    if (!method) {
-      throw new Error(
-        `Method '${execution.methodName}' not found on model '${execution.modelType}'`,
-      );
+    // Wait for the child to finish.
+    const status = await child.status;
+    await readerDone.catch(() => {});
+    await stderrDone.catch(() => {});
+
+    const durationMs = performance.now() - start;
+
+    // Log child stderr.
+    if (stderrChunks.length > 0) {
+      const stderr = new TextDecoder().decode(concatChunks(stderrChunks));
+      if (stderr.trim()) {
+        for (const line of stderr.trim().split("\n")) {
+          logger.debug("Runner [{dispatchId}]: {line}", {
+            dispatchId: params.dispatchId,
+            line,
+          });
+        }
+      }
     }
 
-    const methodArgs = params.probeMarker !== undefined &&
-        execution.modelType === "swamp/fleet-probe"
-      ? { ...execution.methodArgs, probeMarker: params.probeMarker }
-      : execution.methodArgs;
-
-    const definition = Definition.create({
-      type: execution.modelType,
-      id: execution.definitionMeta.id,
-      name: execution.definitionMeta.name,
-      version: execution.definitionMeta.version,
-      tags: execution.definitionMeta.tags,
-      globalArguments: execution.globalArgs,
-      methods: { [execution.methodName]: { arguments: methodArgs } },
-    });
-
-    const remote = createRemoteMethodContext({
-      channel: options.channel,
-      client: options.client,
-      dispatch: params,
-      scratchDir,
-      extensionFilesDir: filesDir ?? modelDef.extensionFilesRoot,
-      signal: ctx.signal,
-      onEvent: (event) => {
-        ctx.stream({ kind: "method_event", event: { ...event } });
-      },
-    });
-    getHandles = remote.getHandles;
-
-    const executor = options.executor ?? new DefaultMethodExecutionService();
-    const result = await withConsoleGuard(
-      () => executor.execute(definition, method, remote.context),
-      logs,
-    );
-
-    const handles = result.dataHandles?.length
-      ? result.dataHandles
-      : remote.getHandles();
-    const durationMs = performance.now() - start;
-    logger.info(
-      "Dispatch {dispatchId} finished: {modelType}.{methodName} succeeded in {durationMs}ms",
-      {
+    const result = resultBox.value;
+    if (result) {
+      const statusStr = result.status === "success" ? "succeeded" : "failed";
+      logger.info(
+        "Dispatch {dispatchId} finished: {modelType}.{methodName} {status} in {durationMs}ms",
+        {
+          dispatchId: params.dispatchId,
+          modelType: execution.modelType,
+          methodName: execution.methodName,
+          status: statusStr,
+          durationMs: Math.round(durationMs),
+        },
+      );
+      options.onDispatch?.({
+        kind: "dispatch_finished",
         dispatchId: params.dispatchId,
         modelType: execution.modelType,
         methodName: execution.methodName,
-        durationMs: Math.round(durationMs),
-      },
-    );
-    options.onDispatch?.({
-      kind: "dispatch_finished",
-      dispatchId: params.dispatchId,
-      modelType: execution.modelType,
-      methodName: execution.methodName,
-      status: "success",
-      durationMs,
-    });
-    return {
-      status: "success",
-      outputs: toOutputs(handles),
-      logs,
-      durationMs,
-      followUpActions: serializeFollowUpActions(result),
-    };
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
+        status: result.status,
+        durationMs,
+        error: result.error,
+      });
+      return result;
+    }
+
+    // Child exited without sending a result — treat as crash.
+    const message = status.success
+      ? "Runner exited without sending a result"
+      : `Runner crashed with exit code ${status.code}`;
+
     logger.warn("Dispatch {dispatchId} failed: {error}", {
       dispatchId: params.dispatchId,
       error: message,
     });
-    const durationMs = performance.now() - start;
     options.onDispatch?.({
       kind: "dispatch_finished",
       dispatchId: params.dispatchId,
@@ -324,18 +323,52 @@ async function handleDispatch(
       durationMs,
       error: message,
     });
-    // Writes that landed before the throw stay visible — the same
-    // write-then-throw contract as a local run.
     return {
       status: "error",
       error: message,
-      outputs: toOutputs(getHandles()),
-      logs,
+      outputs: [],
+      logs: [],
       durationMs,
     };
   } finally {
-    restoreTrace();
-    restoreEnv();
-    await Deno.remove(scratchDir, { recursive: true }).catch(() => {});
+    ctx.signal.removeEventListener("abort", onCancel);
+    await childTransport.close();
   }
+}
+
+function deriveRunnerCommand(): { cmd: string; args: string[] } {
+  const execPath = Deno.execPath();
+  const base = execPath.split("/").pop() ?? execPath.split("\\").pop() ?? "";
+  if (base === "deno" || base === "deno.exe") {
+    const entryPoint = new URL(
+      "../cli/commands/worker_exec_dispatch_entry.ts",
+      import.meta.url,
+    ).pathname;
+    return {
+      cmd: execPath,
+      args: [
+        "run",
+        "--unstable-bundle",
+        "--allow-read",
+        "--allow-write",
+        "--allow-env",
+        "--allow-run",
+        "--allow-net",
+        "--allow-sys",
+        entryPoint,
+      ],
+    };
+  }
+  return { cmd: execPath, args: ["worker", "exec-dispatch"] };
+}
+
+function concatChunks(chunks: Uint8Array[]): Uint8Array {
+  const totalLength = chunks.reduce((sum, c) => sum + c.byteLength, 0);
+  const result = new Uint8Array(totalLength);
+  let offset = 0;
+  for (const chunk of chunks) {
+    result.set(chunk, offset);
+    offset += chunk.byteLength;
+  }
+  return result;
 }
