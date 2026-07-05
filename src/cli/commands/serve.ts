@@ -627,6 +627,8 @@ export const serveCommand = new Command()
       onGraceExpired: (worker) => dispatchService.notifyGraceExpired(worker),
       onWorkerEnrolled: (worker) =>
         dispatchService.notifyWorkerEnrolled(worker),
+      onWorkerDraining: (worker) =>
+        dispatchService.notifyWorkerDraining(worker),
       verifyOnEnroll,
       verifyWorker: verifyOnEnroll
         ? async (workerName) => {

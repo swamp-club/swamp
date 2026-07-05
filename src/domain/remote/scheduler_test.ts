@@ -193,3 +193,24 @@ Deno.test("scheduleStep: targeted dispatch to unverified worker queues", () => {
   const decision = scheduleStep({ target: "a" }, pool);
   assertEquals(decision.kind, "queue");
 });
+
+Deno.test("eligibleWorkers: draining workers excluded from non-targeted placement", () => {
+  const pool = [
+    worker({ name: "a", status: "draining" }),
+    worker({ name: "b", status: "idle" }),
+  ];
+  const eligible = eligibleWorkers({}, pool);
+  assertEquals(eligible.length, 1);
+  assertEquals(eligible[0].name, "b");
+});
+
+Deno.test("eligibleWorkers: targeted placement excludes draining worker", () => {
+  const pool = [worker({ name: "drain-target", status: "draining" })];
+  const eligible = eligibleWorkers({ target: "drain-target" }, pool);
+  assertEquals(eligible.length, 0);
+});
+
+Deno.test("scheduleStep: draining workers are not scheduled", () => {
+  const pool = [worker({ name: "a", status: "draining" })];
+  assertEquals(scheduleStep({}, pool).kind, "queue");
+});

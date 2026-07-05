@@ -334,3 +334,108 @@ Deno.test("dispatch handler: trace context applies during the method and restore
   assertEquals(seenTraceparent, "00-abc123-def456-01");
   assertEquals(Deno.env.get("TRACEPARENT"), undefined);
 });
+
+Deno.test("dispatch handler: draining rejects with worker_draining", async () => {
+  const { worker, orchestrator } = channelPair();
+  const { client } = stubClient();
+  const handle = registerDispatchHandler({
+    channel: worker,
+    client,
+    bundleCache,
+  });
+  methodBehavior = () => Promise.resolve();
+
+  await handle.drain();
+
+  let drainError: RpcError | null = null;
+  try {
+    await orchestrator.call<DispatchResult>(
+      WorkerMethod.dispatch,
+      dispatchParams(),
+      { timeoutMs: null },
+    );
+  } catch (error) {
+    drainError = error as RpcError;
+  }
+  assertEquals(drainError?.code, "worker_draining");
+});
+
+Deno.test("dispatch handler: drain() resolves immediately when idle", async () => {
+  const { worker } = channelPair();
+  const { client } = stubClient();
+  const handle = registerDispatchHandler({
+    channel: worker,
+    client,
+    bundleCache,
+  });
+  methodBehavior = () => Promise.resolve();
+
+  await handle.drain();
+});
+
+Deno.test("dispatch handler: drain() resolves after in-flight dispatch completes", async () => {
+  const { worker, orchestrator } = channelPair();
+  const { client } = stubClient();
+  const handle = registerDispatchHandler({
+    channel: worker,
+    client,
+    bundleCache,
+  });
+
+  let gate: { resolve: () => void };
+  methodBehavior = () =>
+    new Promise<void>((resolve) => {
+      gate = { resolve };
+    });
+
+  const dispatchDone = orchestrator.call<DispatchResult>(
+    WorkerMethod.dispatch,
+    dispatchParams(),
+    { timeoutMs: null },
+  );
+  await new Promise((r) => setTimeout(r, 20));
+
+  let drained = false;
+  const drainDone = handle.drain().then(() => {
+    drained = true;
+  });
+
+  assertEquals(drained, false);
+  gate!.resolve();
+  await drainDone;
+  assertEquals(drained, true);
+
+  const result = await dispatchDone;
+  assertEquals(result.status, "success");
+});
+
+Deno.test("dispatch handler: in-flight dispatch completes normally during drain", async () => {
+  const { worker, orchestrator } = channelPair();
+  const { client, resourceWrites } = stubClient();
+  const handle = registerDispatchHandler({
+    channel: worker,
+    client,
+    bundleCache,
+  });
+
+  let gate: { resolve: () => void };
+  methodBehavior = () =>
+    new Promise<void>((resolve) => {
+      gate = { resolve };
+    });
+
+  const dispatchDone = orchestrator.call<DispatchResult>(
+    WorkerMethod.dispatch,
+    dispatchParams(),
+    { timeoutMs: null },
+  );
+  await new Promise((r) => setTimeout(r, 20));
+
+  const drainDone = handle.drain();
+  gate!.resolve();
+  await drainDone;
+
+  const result = await dispatchDone;
+  assertEquals(result.status, "success");
+  assertEquals(resourceWrites.length, 1);
+});

@@ -88,6 +88,8 @@ function colorWorkerStatus(status: string): string {
       return status.replace(trimmed, red(trimmed));
     case "unverified":
       return status.replace(trimmed, yellow(trimmed));
+    case "draining":
+      return status.replace(trimmed, yellow(trimmed));
     default:
       return status;
   }
@@ -309,6 +311,14 @@ export function renderWorkerStatus(
       break;
     case "stopped":
       writeOutput(dim(`Worker stopped: ${event.reason}`));
+      break;
+    case "draining":
+      writeOutput(
+        yellow(`Draining (${event.reason}) — finishing in-flight work...`),
+      );
+      break;
+    case "drain_complete":
+      writeOutput(dim("Drain complete — disconnecting"));
       break;
     case "dispatch_started": {
       const where = event.workflowName

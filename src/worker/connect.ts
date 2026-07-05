@@ -44,6 +44,7 @@ import {
 } from "./data_plane_client.ts";
 import { WorkerBundleCache } from "./bundle_cache.ts";
 import {
+  type DispatchHandlerHandle,
   registerDispatchHandler,
   type WorkerDispatchEvent,
 } from "./dispatch_handler.ts";
@@ -64,7 +65,20 @@ export type WorkerStatusEvent =
   | { kind: "disconnected"; reason: string }
   | { kind: "retrying"; delayMs: number }
   | { kind: "stopped"; reason: string }
+  | { kind: "draining"; reason: WorkerExitReason }
+  | { kind: "drain_complete" }
   | WorkerDispatchEvent;
+
+export type WorkerExitReason =
+  | "signal"
+  | "max-dispatches"
+  | "idle-timeout"
+  | "shutdown"
+  | "error";
+
+export interface WorkerExitResult {
+  reason: WorkerExitReason;
+}
 
 export interface RunWorkerOptions {
   /** Orchestrator control-socket URL (ws:// or wss://). */
@@ -83,6 +97,16 @@ export interface RunWorkerOptions {
   onStatus?: (event: WorkerStatusEvent) => void;
   /** Reconnect on socket loss (default true). */
   reconnect?: boolean;
+  /** Drain and exit 0 after N dispatches complete. */
+  maxDispatches?: number;
+  /** Drain and exit 0 after being continuously idle for this many ms. */
+  idleTimeoutMs?: number;
+  /**
+   * Called once during setup with a function that triggers drain from
+   * outside (e.g. signal handler). The caller can store this and invoke
+   * it when a signal arrives.
+   */
+  onDrainAvailable?: (requestDrain: (reason: WorkerExitReason) => void) => void;
   /** Test seam: WebSocket factory. */
   createSocket?: (url: string) => WebSocket;
 }
@@ -94,9 +118,12 @@ interface SessionState {
 
 /**
  * Run the worker until the signal aborts, enrollment is permanently
- * rejected, or (with reconnect disabled) the socket closes.
+ * rejected, a lifecycle policy triggers drain, or (with reconnect
+ * disabled) the socket closes.
  */
-export async function runWorker(options: RunWorkerOptions): Promise<void> {
+export async function runWorker(
+  options: RunWorkerOptions,
+): Promise<WorkerExitResult> {
   const instanceUuid = crypto.randomUUID();
   const session: SessionState = { credential: "", expiresAtMs: 0 };
   const dataPlaneUrl = options.dataPlaneUrl ??
@@ -110,9 +137,63 @@ export async function runWorker(options: RunWorkerOptions): Promise<void> {
   const machineId = await loadOrCreateMachineId(cacheDir);
   const bundleCache = new WorkerBundleCache(join(cacheDir, "bundles"), client);
 
+  let drainReason: WorkerExitReason | null = null;
+  let dispatchCount = 0;
+  let idleTimer: ReturnType<typeof setTimeout> | undefined;
+  let currentDrainHandle: DispatchHandlerHandle | null = null;
+  let currentChannel: RpcChannel | null = null;
+  let currentCloseConnection: (() => void) | null = null;
+
+  const startIdleTimer = () => {
+    if (options.idleTimeoutMs === undefined || drainReason !== null) return;
+    clearIdleTimer();
+    idleTimer = setTimeout(() => {
+      idleTimer = undefined;
+      triggerDrain("idle-timeout");
+    }, options.idleTimeoutMs);
+  };
+
+  const clearIdleTimer = () => {
+    if (idleTimer !== undefined) {
+      clearTimeout(idleTimer);
+      idleTimer = undefined;
+    }
+  };
+
+  const triggerDrain = (reason: WorkerExitReason) => {
+    if (drainReason !== null) return;
+    drainReason = reason;
+    clearIdleTimer();
+    options.onStatus?.({ kind: "draining", reason });
+
+    const handle = currentDrainHandle;
+    const channel = currentChannel;
+    const close = currentCloseConnection;
+    if (handle) {
+      handle.drain().then(() => {
+        options.onStatus?.({ kind: "drain_complete" });
+        if (!channel) {
+          close?.();
+          return;
+        }
+        return channel.call(RemoteMethod.drain, {}).then(() => {
+          close?.();
+        }).catch(() => {
+          close?.();
+        });
+      }).catch(() => {
+        close?.();
+      });
+    } else {
+      close?.();
+    }
+  };
+
+  options.onDrainAvailable?.(triggerDrain);
+
   let attempt = 0;
   let delayMs = RECONNECT_BASE_DELAY_MS;
-  while (!(options.signal?.aborted ?? false)) {
+  while (!(options.signal?.aborted ?? false) && drainReason === null) {
     attempt++;
     options.onStatus?.({ kind: "connecting", url: options.url, attempt });
     try {
@@ -123,6 +204,27 @@ export async function runWorker(options: RunWorkerOptions): Promise<void> {
         session,
         client,
         bundleCache,
+        onDispatchHandlerRegistered: (handle, channel, close) => {
+          currentDrainHandle = handle;
+          currentChannel = channel;
+          currentCloseConnection = close;
+          startIdleTimer();
+        },
+        onDispatchStarted: () => {
+          clearIdleTimer();
+        },
+        onDispatchFinished: () => {
+          dispatchCount++;
+          if (
+            options.maxDispatches !== undefined &&
+            dispatchCount >= options.maxDispatches
+          ) {
+            triggerDrain("max-dispatches");
+          } else {
+            startIdleTimer();
+          }
+        },
+        drainReason: () => drainReason,
       });
       options.onStatus?.({ kind: "disconnected", reason: outcome });
       delayMs = RECONNECT_BASE_DELAY_MS;
@@ -134,14 +236,21 @@ export async function runWorker(options: RunWorkerOptions): Promise<void> {
       }
       options.onStatus?.({ kind: "disconnected", reason: message });
     }
-    if (options.reconnect === false || (options.signal?.aborted ?? false)) {
+    if (
+      options.reconnect === false || (options.signal?.aborted ?? false) ||
+      drainReason !== null
+    ) {
       break;
     }
     options.onStatus?.({ kind: "retrying", delayMs });
     await abortableDelay(delayMs, options.signal);
     delayMs = Math.min(delayMs * 2, RECONNECT_MAX_DELAY_MS);
   }
-  options.onStatus?.({ kind: "stopped", reason: "shutdown" });
+
+  clearIdleTimer();
+  const reason = drainReason ?? "shutdown";
+  options.onStatus?.({ kind: "stopped", reason });
+  return { reason };
 }
 
 const MACHINE_ID_FILE = "machine-id";
@@ -203,6 +312,14 @@ interface ConnectOnceArgs {
   session: SessionState;
   client: DataPlaneClient;
   bundleCache: WorkerBundleCache;
+  onDispatchHandlerRegistered: (
+    handle: DispatchHandlerHandle,
+    channel: RpcChannel,
+    closeConnection: () => void,
+  ) => void;
+  onDispatchStarted: () => void;
+  onDispatchFinished: () => void;
+  drainReason: () => WorkerExitReason | null;
 }
 
 /** One socket lifetime: connect, enroll, serve dispatches until close. */
@@ -278,12 +395,24 @@ function connectOnce(args: ConnectOnceArgs): Promise<string> {
         enrolled = true;
         session.credential = result.sessionCredential;
         session.expiresAtMs = result.sessionExpiresAtMs;
-        registerDispatchHandler({
+        const handle = registerDispatchHandler({
           channel,
           client: args.client,
           bundleCache: args.bundleCache,
-          onDispatch: (event) => options.onStatus?.(event),
+          onDispatch: (event) => {
+            if (event.kind === "dispatch_started") {
+              args.onDispatchStarted();
+            } else if (event.kind === "dispatch_finished") {
+              args.onDispatchFinished();
+            }
+            options.onStatus?.(event);
+          },
         });
+        args.onDispatchHandlerRegistered(
+          handle,
+          channel,
+          () => finish("drained"),
+        );
         scheduleRefresh();
         logger.info("Enrolled as {workerId}", { workerId: result.workerId });
         options.onStatus?.({

@@ -28,10 +28,11 @@ import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { UserError } from "../../domain/errors.ts";
 import { parseLabels } from "./worker_shared.ts";
-import { runWorker } from "../../worker/connect.ts";
+import { runWorker, type WorkerExitReason } from "../../worker/connect.ts";
 import { renderWorkerStatus } from "../../presentation/output/worker_output.ts";
 import { VERSION } from "./version.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
+import { parseTimeout } from "../duration_parser.ts";
 
 // Import models barrel so built-in models resolve from the worker's own
 // registry when a `builtin:` bundle fingerprint is dispatched.
@@ -96,6 +97,14 @@ export const workerConnectCommand = new Command()
     "Bundle/asset cache directory; also stores the machine id the enrollment token binds to — set a stable directory so the worker can re-enroll after a restart (defaults to a fresh temp dir) (env: SWAMP_WORKER_CACHE_DIR)",
   )
   .option("--no-reconnect", "Exit when the control socket closes")
+  .option(
+    "--max-dispatches <n:number>",
+    "Drain and exit 0 after N dispatches complete (env: SWAMP_WORKER_MAX_DISPATCHES)",
+  )
+  .option(
+    "--idle-timeout <duration:string>",
+    "Drain and exit 0 after being continuously idle for this duration (env: SWAMP_WORKER_IDLE_TIMEOUT)",
+  )
   .action(async function (options: AnyOptions, urlArg?: string) {
     const cliCtx = createContext(options as GlobalOptions, [
       "worker",
@@ -133,15 +142,44 @@ export const workerConnectCommand = new Command()
     const cacheDir = (options.cacheDir as string | undefined) ??
       Deno.env.get("SWAMP_WORKER_CACHE_DIR");
 
+    const maxDispatchesRaw = (options.maxDispatches as number | undefined) ??
+      (() => {
+        const env = Deno.env.get("SWAMP_WORKER_MAX_DISPATCHES");
+        return env !== undefined ? parseInt(env, 10) : undefined;
+      })();
+    if (
+      maxDispatchesRaw !== undefined &&
+      (isNaN(maxDispatchesRaw) || maxDispatchesRaw < 1)
+    ) {
+      throw new UserError(
+        "--max-dispatches must be a positive integer",
+      );
+    }
+
+    const idleTimeoutRaw = (options.idleTimeout as string | undefined) ??
+      Deno.env.get("SWAMP_WORKER_IDLE_TIMEOUT");
+    const idleTimeoutMs = idleTimeoutRaw !== undefined
+      ? parseTimeout(idleTimeoutRaw)
+      : undefined;
+
+    let requestDrain: ((reason: WorkerExitReason) => void) | null = null;
+    let signalCount = 0;
     const ac = new AbortController();
-    registerShutdownHandler({
+    const shutdownHandle = registerShutdownHandler({
       handler: () => {
-        ac.abort();
+        signalCount++;
+        if (signalCount === 1 && requestDrain) {
+          requestDrain("signal");
+        } else if (signalCount === 1) {
+          ac.abort();
+        } else {
+          Deno.exit(1);
+        }
       },
     });
 
     try {
-      await runWorker({
+      const result = await runWorker({
         url,
         token,
         labels,
@@ -149,12 +187,26 @@ export const workerConnectCommand = new Command()
         dataPlaneUrl: options.dataPlaneUrl,
         cacheDir,
         reconnect: options.reconnect !== false,
+        maxDispatches: maxDispatchesRaw,
+        idleTimeoutMs,
         signal: ac.signal,
-        onStatus: (event) => renderWorkerStatus(event, cliCtx.outputMode),
+        onStatus: (event) => {
+          renderWorkerStatus(event, cliCtx.outputMode);
+        },
+        onDrainAvailable: (drain) => {
+          requestDrain = drain;
+        },
       });
+
+      const policyComplete = result.reason !== "error";
+      if (!policyComplete) {
+        Deno.exit(1);
+      }
     } catch (error) {
       throw new UserError(
         error instanceof Error ? error.message : String(error),
       );
+    } finally {
+      shutdownHandle.dispose();
     }
   });

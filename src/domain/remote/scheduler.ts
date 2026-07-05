@@ -47,7 +47,7 @@ export interface SchedulableWorker {
   labels: Record<string, string>;
   platform: string;
   arch: string;
-  status: "idle" | "busy" | "unverified";
+  status: "idle" | "busy" | "unverified" | "draining";
   connected: boolean;
 }
 
@@ -115,10 +115,11 @@ export function eligibleWorkers(
       return false;
     }
     if (placement.target !== undefined) {
+      if (worker.status === "draining") return false;
       return worker.name === placement.target ||
         worker.instanceUuid === placement.target;
     }
-    if (worker.status === "unverified") {
+    if (worker.status === "unverified" || worker.status === "draining") {
       return false;
     }
     if (

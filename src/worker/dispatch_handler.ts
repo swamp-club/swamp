@@ -141,12 +141,26 @@ export interface DispatchHandlerOptions {
   executor?: Pick<DefaultMethodExecutionService, "execute">;
 }
 
+export interface DispatchHandlerHandle {
+  /** Signal the handler to reject new dispatches and resolve when in-flight work completes. */
+  drain: () => Promise<void>;
+}
+
 /** Registers the dispatch handler on an enrolled worker channel. */
 export function registerDispatchHandler(
   options: DispatchHandlerOptions,
-): void {
+): DispatchHandlerHandle {
   let busy = false;
+  let draining = false;
+  let onDrainComplete: (() => void) | null = null;
+
   options.channel.register(WorkerMethod.dispatch, async (rawParams, ctx) => {
+    if (draining) {
+      throw new RpcError({
+        code: "worker_draining",
+        message: "Worker is draining — no new dispatches accepted",
+      });
+    }
     if (busy) {
       throw new RpcError({
         code: "worker_busy",
@@ -159,8 +173,21 @@ export function registerDispatchHandler(
       return await handleDispatch(rawParams, ctx, options);
     } finally {
       busy = false;
+      if (draining && onDrainComplete) {
+        onDrainComplete();
+      }
     }
   });
+
+  return {
+    drain: () => {
+      draining = true;
+      if (!busy) return Promise.resolve();
+      return new Promise<void>((resolve) => {
+        onDrainComplete = resolve;
+      });
+    },
+  };
 }
 
 async function handleDispatch(

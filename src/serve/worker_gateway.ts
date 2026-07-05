@@ -112,7 +112,7 @@ export interface WorkerSnapshot {
   platform: string;
   arch: string;
   swampVersion: string;
-  status: "idle" | "busy" | "unverified";
+  status: "idle" | "busy" | "unverified" | "draining";
   connected: boolean;
   dispatchId: string | null;
   verifyFailureReason?: string;
@@ -130,7 +130,7 @@ interface WorkerEntry {
   channel: RpcChannel | null;
   /** Force-closes the current control socket (absent for test transports). */
   closeSocket: (() => void) | null;
-  status: "idle" | "busy" | "unverified";
+  status: "idle" | "busy" | "unverified" | "draining";
   dispatchId: string | null;
   verifyFailureReason?: string;
   graceTimer?: ReturnType<typeof setTimeout>;
@@ -164,6 +164,8 @@ export interface WorkerGatewayOptions {
   onGraceExpired?: (worker: WorkerSnapshot) => void;
   /** A worker enrolled or re-enrolled (including within the grace window). */
   onWorkerEnrolled?: (worker: WorkerSnapshot) => void;
+  /** A worker announced it is draining (no longer schedulable). */
+  onWorkerDraining?: (worker: WorkerSnapshot) => void;
   /**
    * When true, dispatch a fleet probe to each enrolling worker before it
    * becomes schedulable. Workers that fail the probe are marked `unverified`.
@@ -345,12 +347,13 @@ export class WorkerGateway {
       return result;
     } finally {
       entry.dispatchId = null;
+      const currentStatus = entry.status as string;
       if (entry.channel === null || entry.channel.closed) {
         // The socket dropped mid-dispatch. The in-memory status returns to
         // idle so a reconnect within the grace window is schedulable again;
         // the durable record already says "disconnected".
         entry.status = "idle";
-      } else {
+      } else if (currentStatus !== "draining") {
         entry.status = "idle";
         await this.#recordTransition(() =>
           this.#runModelMethod({
@@ -529,6 +532,10 @@ export class WorkerGateway {
         RemoteMethod.sessionRefresh,
         () => this.#handleSessionRefresh(workerName),
       );
+      state.channel.register(
+        RemoteMethod.drain,
+        () => this.#handleDrain(workerName),
+      );
 
       const session = this.#sessions.issue(workerName);
       logger.info("Worker {worker} enrolled ({mode})", {
@@ -571,6 +578,22 @@ export class WorkerGateway {
     });
   }
 
+  async #handleDrain(workerName: string): Promise<void> {
+    const entry = this.#workers.get(workerName);
+    if (!entry) return;
+    logger.info("Worker {worker} is draining", { worker: workerName });
+    entry.status = "draining";
+    await this.#recordTransition(() =>
+      this.#runModelMethod({
+        typeArg: WORKER_MODEL_TYPE.normalized,
+        definitionName: workerDefinitionName(workerName),
+        methodName: "set_status",
+        inputs: { status: "draining" },
+      })
+    );
+    this.#options.onWorkerDraining?.(this.#snapshot(entry));
+  }
+
   #handleSocketClosed(state: SocketState): void {
     state.channel.close("control socket closed");
     const name = state.workerName;
@@ -602,6 +625,20 @@ export class WorkerGateway {
         },
       );
     });
+
+    if (entry.status === "draining") {
+      if (entry.expiryTimer !== undefined) {
+        clearTimeout(entry.expiryTimer);
+        entry.expiryTimer = undefined;
+      }
+      this.#workers.delete(name);
+      this.#sessions.revokeForWorker(name);
+      logger.info("Draining worker {worker} disconnected — removed from pool", {
+        worker: name,
+      });
+      this.#options.onWorkerDisconnected?.(snapshot);
+      return;
+    }
 
     entry.graceTimer = setTimeout(() => {
       entry.graceTimer = undefined;

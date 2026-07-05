@@ -694,3 +694,45 @@ Deno.test("WorkerGateway: without verifyOnEnroll — worker becomes idle immedia
   assertEquals(h.idle.length, 1);
   assertEquals(enrolled.length, 1);
 });
+
+Deno.test("WorkerGateway: worker.drain sets status to draining", async () => {
+  const draining: WorkerSnapshot[] = [];
+  const h = createHarness({
+    onWorkerDraining: (w) => draining.push(w),
+  });
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  await enroll(workerChannel);
+
+  await workerChannel.call(RemoteMethod.drain, {});
+  const workers = h.gateway.workers();
+  assertEquals(workers[0].status, "draining");
+  assertEquals(draining.length, 1);
+  assertEquals(draining[0].status, "draining");
+  const setStatusCalls = h.transitions.filter(
+    (t) => t.methodName === "set_status",
+  );
+  assertEquals(
+    setStatusCalls.some((t) => t.inputs.status === "draining"),
+    true,
+  );
+});
+
+Deno.test("WorkerGateway: draining worker disconnect skips grace window", async () => {
+  const h = createHarness({
+    graceWindowMs: 60_000,
+    onWorkerDraining: () => {},
+  });
+  const { workerChannel, dropSocket } = connectWorkerSocket(h.gateway);
+  await enroll(workerChannel);
+
+  await workerChannel.call(RemoteMethod.drain, {});
+  assertEquals(h.gateway.workers()[0].status, "draining");
+
+  dropSocket();
+  await new Promise((r) => setTimeout(r, 10));
+
+  assertEquals(h.gateway.workers().length, 0);
+  assertEquals(h.gateway.pendingGraceWindows, 0);
+  assertEquals(h.graceExpired.length, 0);
+  assertEquals(h.disconnected.length, 1);
+});
