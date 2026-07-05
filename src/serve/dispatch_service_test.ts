@@ -513,3 +513,31 @@ Deno.test("DispatchService: forwards trace headers and reports the executing wor
   );
   assertEquals(result.workerName, "w1");
 });
+
+Deno.test("DispatchService: worker_draining re-queues instead of failing the run", async () => {
+  const h = createHarness();
+  let attempts = 0;
+  h.setBehavior(() => {
+    attempts++;
+    if (attempts === 1) {
+      queueMicrotask(() =>
+        h.service.notifyWorkerIdle(snapshot({ name: "w1" }))
+      );
+      return Promise.reject(
+        new RpcError({
+          code: "worker_draining",
+          message: "Worker is draining — no new dispatches accepted",
+        }),
+      );
+    }
+    return Promise.resolve({
+      status: "success",
+      outputs: [],
+      logs: [],
+      durationMs: 1,
+    });
+  });
+  const result = await h.service.executeRemote(stepRequest());
+  assertEquals(result.durationMs, 1);
+  assertEquals(attempts, 2);
+});

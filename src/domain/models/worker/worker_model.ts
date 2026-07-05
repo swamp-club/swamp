@@ -44,6 +44,7 @@ export const WorkerStatusSchema = z.enum([
   "busy",
   "disconnected",
   "unverified",
+  "draining",
 ]);
 
 export type WorkerStatus = z.infer<typeof WorkerStatusSchema>;
@@ -155,7 +156,7 @@ async function setStatus(
  */
 export const workerModel: ModelDefinition = defineModel({
   type: WORKER_MODEL_TYPE,
-  version: "2026.07.04.1",
+  version: "2026.07.05.1",
   resources: {
     "state": {
       description:
@@ -176,7 +177,7 @@ export const workerModel: ModelDefinition = defineModel({
     },
     set_status: {
       description:
-        "Record a worker status change (idle/busy/disconnected/unverified)",
+        "Record a worker status change (idle/busy/disconnected/unverified/draining)",
       kind: "update",
       arguments: SetStatusArgsSchema,
       execute: setStatus,

@@ -54,7 +54,7 @@ import { DispatchService } from "../src/serve/dispatch_service.ts";
 import { DispatchRegistry } from "../src/serve/dispatch_registry.ts";
 import { BundleRegistry } from "../src/serve/bundle_registry.ts";
 import { DataPlane } from "../src/serve/data_plane.ts";
-import { runWorker } from "../src/worker/connect.ts";
+import { runWorker, type WorkerExitResult } from "../src/worker/connect.ts";
 import {
   ENROLLMENT_TOKEN_MODEL_TYPE,
   tokenSecretKey,
@@ -387,7 +387,7 @@ Deno.test({
     await withTempDir(async (dir) => {
       const orchestrator = await startOrchestrator(dir);
       const workerStop = new AbortController();
-      let workerDone: Promise<void> | null = null;
+      let workerDone: Promise<WorkerExitResult> | null = null;
       try {
         const token = await orchestrator.mintToken("it-worker");
 
@@ -546,7 +546,7 @@ Deno.test({
     await withTempDir(async (dir) => {
       const orchestrator = await startOrchestrator(dir);
       const workerStop = new AbortController();
-      let workerDone: Promise<void> | null = null;
+      let workerDone: Promise<WorkerExitResult> | null = null;
       try {
         const token = await orchestrator.mintToken("queue-worker");
 
@@ -593,7 +593,7 @@ Deno.test({
     await withTempDir(async (dir) => {
       let orchestrator = await startOrchestrator(dir);
       const workerStop = new AbortController();
-      let workerDone: Promise<void> | null = null;
+      let workerDone: Promise<WorkerExitResult> | null = null;
       try {
         const token = await orchestrator.mintToken("recon-worker");
 
@@ -687,7 +687,7 @@ Deno.test({
     await withTempDir(async (dir) => {
       const orchestrator = await startOrchestrator(dir);
       const stops: AbortController[] = [];
-      const dones: Promise<void>[] = [];
+      const dones: Promise<WorkerExitResult>[] = [];
       try {
         const token = await orchestrator.mintToken("fleet-pool", {
           maxEnrollments: 3,

@@ -38,6 +38,19 @@ import type { OutputMode } from "./output.ts";
 
 const checkmark = "\u2713"; // ✓
 
+function humanStopReason(reason: string): string {
+  switch (reason) {
+    case "max-dispatches":
+      return "reached max dispatches";
+    case "idle-timeout":
+      return "idle timeout elapsed";
+    case "signal":
+      return "received shutdown signal";
+    default:
+      return reason;
+  }
+}
+
 /** Pads each cell to its column width and joins with two spaces. */
 function tableLines(
   headers: string[],
@@ -87,6 +100,7 @@ function colorWorkerStatus(status: string): string {
     case "disconnected":
       return status.replace(trimmed, red(trimmed));
     case "unverified":
+    case "draining":
       return status.replace(trimmed, yellow(trimmed));
     default:
       return status;
@@ -240,6 +254,13 @@ export function renderWorkerList(
       ),
     );
   }
+  if (data.workers.some((w) => w.status === "draining")) {
+    writeOutput(
+      dim(
+        "Some workers are draining — they will exit once their current dispatch completes.",
+      ),
+    );
+  }
 }
 
 function formatAge(ms: number): string {
@@ -308,7 +329,15 @@ export function renderWorkerStatus(
       writeOutput(dim(`Reconnecting in ${Math.round(event.delayMs / 1000)}s`));
       break;
     case "stopped":
-      writeOutput(dim(`Worker stopped: ${event.reason}`));
+      writeOutput(dim(`Worker stopped: ${humanStopReason(event.reason)}`));
+      break;
+    case "draining":
+      writeOutput(
+        yellow(`Draining (${event.reason}) — finishing in-flight work...`),
+      );
+      break;
+    case "drain_complete":
+      writeOutput(dim("Drain complete — disconnecting"));
       break;
     case "dispatch_started": {
       const where = event.workflowName

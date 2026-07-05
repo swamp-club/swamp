@@ -177,6 +177,11 @@ export class DispatchService {
     this.#wakePoolWaiters();
   }
 
+  /** Gateway hook: a worker started draining — wake queued steps to re-evaluate. */
+  notifyWorkerDraining(_worker: WorkerSnapshot): void {
+    this.#wakePoolWaiters();
+  }
+
   /**
    * Data-plane hook, awaited BEFORE the first durable write persists, so a
    * lease can never say "no writes" while a write exists. The converse
@@ -283,13 +288,14 @@ export class DispatchService {
             });
             continue;
           }
-          if (error instanceof RpcError && error.code === "worker_busy") {
-            // Transient orchestrator/worker view desync (e.g. a cancel grace
-            // period elapsed before the worker freed its serial slot). The
-            // worker IS busy — treat it like any busy worker and re-queue.
+          if (
+            error instanceof RpcError &&
+            (error.code === "worker_busy" ||
+              error.code === "worker_draining")
+          ) {
             logger.warn(
-              "Worker {worker} reported busy on dispatch; re-queueing step",
-              { worker: workerName },
+              "Worker {worker} reported {code} on dispatch; re-queueing step",
+              { worker: workerName, code: error.code },
             );
             endQueue("mark_dispatched", {
               dispatchId: lastDispatchId ?? "unknown",

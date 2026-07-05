@@ -39,7 +39,7 @@ import { z } from "zod";
  * dispatch, never mid-run. Also pins the capability-verb inventory — any
  * change to the verbs below requires a version bump.
  */
-export const REMOTE_PROTOCOL_VERSION = 2;
+export const REMOTE_PROTOCOL_VERSION = 3;
 
 // ── RPC framing ──────────────────────────────────────────────────────────
 
@@ -139,6 +139,8 @@ export const RemoteMethod = {
   enroll: "worker.enroll",
   /** Sliding-window refresh of the data-plane session credential. */
   sessionRefresh: "worker.session.refresh",
+  /** Worker notifies orchestrator it is draining (no new dispatches). */
+  drain: "worker.drain",
 
   // Capability verbs (metadata half — bytes ride the data plane).
   getData: "capability.getData",
