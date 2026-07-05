@@ -35,7 +35,7 @@ import {
   renderWorkerTokenRevoke,
   renderWorkerVerify,
 } from "./worker_output.ts";
-import type { WorkerVerifyData } from "../../cli/commands/worker_verify.ts";
+import type { WorkerVerifyData } from "../../serve/protocol.ts";
 
 function captureLogs(run: () => void): string {
   const logs: string[] = [];
@@ -472,7 +472,7 @@ Deno.test("renderWorkerVerify: log mode shows failure details", () => {
   assertStringIncludes(output, "w2");
   assertStringIncludes(output, "fail");
   assertStringIncludes(output, "queryData: capability RPC channel failed");
-  assertStringIncludes(output, "1 of 2 worker(s) failed");
+  assertStringIncludes(output, "1 failed");
 });
 
 Deno.test("renderWorkerVerify: log mode handles empty workers", () => {

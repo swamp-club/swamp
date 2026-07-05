@@ -686,7 +686,7 @@ export class WorkerGateway {
     try {
       const probeResult = await verifyWorker(workerName);
       const entry = this.#workers.get(workerName);
-      if (!entry) return;
+      if (!entry || entry.channel === null) return;
       if (probeResult.ok) {
         await this.#recordTransition(async () => {
           entry.status = "idle";
@@ -721,10 +721,10 @@ export class WorkerGateway {
       }
     } catch (error) {
       const entry = this.#workers.get(workerName);
-      if (!entry) return;
+      if (!entry || entry.channel === null) return;
       const reason = error instanceof Error ? error.message : String(error);
-      entry.verifyFailureReason = reason;
       await this.#recordTransition(async () => {
+        entry.verifyFailureReason = reason;
         await this.#runModelMethod({
           typeArg: "swamp/worker",
           definitionName: workerDefinitionName(workerName),

@@ -20,31 +20,21 @@
 import { Command } from "@cliffy/command";
 import { createContext, type GlobalOptions } from "../context.ts";
 import { UserError } from "../../domain/errors.ts";
+import { parseLabels } from "./worker_shared.ts";
 import {
   requestServerResponse,
   resolveServerToken,
   resolveServeUrl,
   withRemoteOptions,
 } from "../remote_run.ts";
-import type { WorkerVerifyResponse } from "../../serve/protocol.ts";
+import type {
+  WorkerVerifyData,
+  WorkerVerifyResponse,
+} from "../../serve/protocol.ts";
 import { renderWorkerVerify } from "../../presentation/output/worker_output.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
-
-function parseLabels(labelFlags: string[] | undefined): Record<string, string> {
-  const labels: Record<string, string> = {};
-  for (const flag of labelFlags ?? []) {
-    const eq = flag.indexOf("=");
-    if (eq <= 0 || eq === flag.length - 1) {
-      throw new UserError(
-        `Invalid label '${flag}' — expected the form key=value`,
-      );
-    }
-    labels[flag.slice(0, eq)] = flag.slice(eq + 1);
-  }
-  return labels;
-}
 
 export const workerVerifyCommand = withRemoteOptions(
   new Command()
@@ -99,21 +89,7 @@ export const workerVerifyCommand = withRemoteOptions(
   }
 });
 
-export interface WorkerVerifyData {
-  workers: WorkerProbeResult[];
-  total: number;
-  passed: number;
-  failed: number;
-}
-
-export interface WorkerProbeResult {
-  name: string;
-  status: "pass" | "fail" | "error";
-  platform?: string;
-  arch?: string;
-  probeMarkerOk?: boolean;
-  queryOk?: boolean;
-  dataPlaneOk?: boolean;
-  failures?: string[];
-  error?: string;
-}
+export type {
+  WorkerProbeResult,
+  WorkerVerifyData,
+} from "../../serve/protocol.ts";

@@ -782,6 +782,25 @@ export interface WorkerQueueListResponse {
   data: Record<string, unknown>;
 }
 
+export interface WorkerProbeResult {
+  name: string;
+  status: "pass" | "fail" | "error";
+  platform?: string;
+  arch?: string;
+  probeMarkerOk?: boolean;
+  queryOk?: boolean;
+  dataPlaneOk?: boolean;
+  failures?: string[];
+  error?: string;
+}
+
+export interface WorkerVerifyData {
+  workers: WorkerProbeResult[];
+  total: number;
+  passed: number;
+  failed: number;
+}
+
 export interface WorkerVerifyResponse {
   data: Record<string, unknown>;
 }
