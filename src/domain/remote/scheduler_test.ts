@@ -188,9 +188,8 @@ Deno.test("eligibleWorkers: targeted placement reaches unverified worker", () =>
   assertEquals(eligible[0].name, "probe-target");
 });
 
-Deno.test("scheduleStep: targeted dispatch to unverified worker dispatches", () => {
+Deno.test("scheduleStep: targeted dispatch to unverified worker queues", () => {
   const pool = [worker({ name: "a", status: "unverified" })];
   const decision = scheduleStep({ target: "a" }, pool);
-  assertEquals(decision.kind, "dispatch");
-  assertEquals(decision.kind === "dispatch" ? decision.worker.name : "", "a");
+  assertEquals(decision.kind, "queue");
 });

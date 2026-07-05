@@ -644,6 +644,7 @@ export const serveCommand = new Command()
               globalArgs: {},
               methodArgs: {},
               probeMarker: "verify-on-enroll",
+              skipScheduler: true,
             });
             const output = result.outputs.find((o) => o.specName === "result");
             if (output) {

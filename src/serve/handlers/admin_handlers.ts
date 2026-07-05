@@ -256,6 +256,7 @@ export async function handleWorkerVerify(
           globalArgs: {},
           methodArgs: {},
           probeMarker: "fleet-verify",
+          skipScheduler: true,
           signal: controller.signal,
         });
 

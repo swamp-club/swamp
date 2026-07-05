@@ -150,14 +150,11 @@ export function scheduleStep(
   if (eligible.length === 0) {
     return { kind: "queue" };
   }
-  const dispatchable = eligible
-    .filter((worker) =>
-      worker.status === "idle" ||
-      (worker.status === "unverified" && placement.target !== undefined)
-    )
+  const idle = eligible
+    .filter((worker) => worker.status === "idle")
     .sort((a, b) => a.name.localeCompare(b.name));
-  if (dispatchable.length === 0) {
+  if (idle.length === 0) {
     return { kind: "queue" };
   }
-  return { kind: "dispatch", worker: dispatchable[0] };
+  return { kind: "dispatch", worker: idle[0] };
 }

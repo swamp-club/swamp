@@ -249,12 +249,14 @@ export class DispatchService {
     try {
       while (true) {
         request.signal?.throwIfAborted();
-        const workerName = await this.#acquireWorker(
-          request.placement,
-          request.signal,
-          deadline,
-          emitQueued,
-        );
+        const workerName = request.skipScheduler && request.placement.target
+          ? request.placement.target
+          : await this.#acquireWorker(
+            request.placement,
+            request.signal,
+            deadline,
+            emitQueued,
+          );
         try {
           const result = await this.#dispatchOnce(workerName, request);
           lastDispatchId = result.dispatchId;
