@@ -78,6 +78,14 @@ export const workerConnectCommand = new Command()
     "Connect using environment variables only (containers, cloud-init)",
     "SWAMP_ORCHESTRATOR_URL=wss://orch:4000 SWAMP_WORKER_TOKEN=tok.secret swamp worker connect",
   )
+  .example(
+    "Exit after one dispatch (batch/CI mode)",
+    "swamp worker connect wss://orch:4000 --token <token> --max-dispatches 1",
+  )
+  .example(
+    "Auto-shutdown after 5 minutes of inactivity",
+    "swamp worker connect wss://orch:4000 --token <token> --idle-timeout 5m",
+  )
   .arguments("[url:string]")
   .option(
     "--token <token:string>",
@@ -145,11 +153,12 @@ export const workerConnectCommand = new Command()
     const maxDispatchesRaw = (options.maxDispatches as number | undefined) ??
       (() => {
         const env = Deno.env.get("SWAMP_WORKER_MAX_DISPATCHES");
-        return env !== undefined ? parseInt(env, 10) : undefined;
+        return env !== undefined ? Number(env) : undefined;
       })();
     if (
       maxDispatchesRaw !== undefined &&
-      (isNaN(maxDispatchesRaw) || maxDispatchesRaw < 1)
+      (isNaN(maxDispatchesRaw) || !Number.isInteger(maxDispatchesRaw) ||
+        maxDispatchesRaw < 1)
     ) {
       throw new UserError(
         "--max-dispatches must be a positive integer",

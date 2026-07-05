@@ -357,7 +357,9 @@ export class WorkerGateway {
         // The socket dropped mid-dispatch. The in-memory status returns to
         // idle so a reconnect within the grace window is schedulable again;
         // the durable record already says "disconnected".
-        entry.status = "idle";
+        if (currentStatus !== "draining") {
+          entry.status = "idle";
+        }
       } else if (currentStatus !== "draining") {
         entry.status = "idle";
         await this.#recordTransition(() =>
@@ -730,19 +732,21 @@ export class WorkerGateway {
       const entry = this.#workers.get(workerName);
       if (!entry || entry.channel === null) return;
       if (probeResult.ok) {
-        await this.#recordTransition(async () => {
-          entry.status = "idle";
-          entry.verifyFailureReason = undefined;
-          await this.#runModelMethod({
-            typeArg: "swamp/worker",
-            definitionName: workerDefinitionName(workerName),
-            methodName: "set_status",
-            inputs: { status: "idle" },
+        if (entry.status !== "draining") {
+          await this.#recordTransition(async () => {
+            entry.status = "idle";
+            entry.verifyFailureReason = undefined;
+            await this.#runModelMethod({
+              typeArg: "swamp/worker",
+              definitionName: workerDefinitionName(workerName),
+              methodName: "set_status",
+              inputs: { status: "idle" },
+            });
           });
-        });
-        const snap = this.#snapshot(entry);
-        this.#options.onWorkerEnrolled?.(snap);
-        this.#options.onWorkerIdle?.(snap);
+          const snap = this.#snapshot(entry);
+          this.#options.onWorkerEnrolled?.(snap);
+          this.#options.onWorkerIdle?.(snap);
+        }
       } else {
         await this.#recordTransition(async () => {
           entry.verifyFailureReason = probeResult.failureReason;

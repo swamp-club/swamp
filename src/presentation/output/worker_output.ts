@@ -257,7 +257,7 @@ export function renderWorkerList(
   if (data.workers.some((w) => w.status === "draining")) {
     writeOutput(
       dim(
-        "Some workers are draining — they will exit once their current dispatch completes.",
+        "Some workers are draining — they will exit after finishing any in-flight work.",
       ),
     );
   }
@@ -333,7 +333,11 @@ export function renderWorkerStatus(
       break;
     case "draining":
       writeOutput(
-        yellow(`Draining (${event.reason}) — finishing in-flight work...`),
+        yellow(
+          `Draining (${
+            humanStopReason(event.reason)
+          }) — finishing in-flight work...`,
+        ),
       );
       break;
     case "drain_complete":
