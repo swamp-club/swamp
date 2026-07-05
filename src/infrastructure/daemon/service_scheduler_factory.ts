@@ -23,20 +23,7 @@ import { UserError } from "../../domain/errors.ts";
 import { detectBinaryOwnership } from "../update/scheduler_factory.ts";
 import { LaunchdServiceScheduler } from "./launchd_service_scheduler.ts";
 import { SystemdServiceScheduler } from "./systemd_service_scheduler.ts";
-
-async function hasSystemctl(): Promise<boolean> {
-  try {
-    const cmd = new Deno.Command("systemctl", {
-      args: ["--version"],
-      stdout: "null",
-      stderr: "null",
-    });
-    const result = await cmd.output();
-    return result.success;
-  } catch {
-    return false;
-  }
-}
+import { hasSystemctl } from "./has_systemctl.ts";
 
 export async function resolveServiceMode(): Promise<LaunchdMode> {
   let currentUid: number | null = null;
