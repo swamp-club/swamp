@@ -73,7 +73,7 @@ async function readState(
 
 export const model = {
   type: "@swamp/issue-lifecycle",
-  version: "2026.06.29.1",
+  version: "2026.07.05.1",
   globalArguments: GlobalArgsSchema,
 
   upgrades: [
@@ -152,6 +152,14 @@ export const model = {
         "against the approved plan. New codeConformanceReview resource, " +
         "code_conformance_review and justify_deviations methods, " +
         "code-conformance-clear check gating link_pr. " +
+        "No globalArguments changes.",
+      upgradeAttributes: (old: Record<string, unknown>) => old,
+    },
+    {
+      toVersion: "2026.07.05.1",
+      description:
+        "Truncate lifecycle entry summaries to 2000 chars in postLifecycleEntry " +
+        "to prevent silent 400 rejections from the swamp-club API. " +
         "No globalArguments changes.",
       upgradeAttributes: (old: Record<string, unknown>) => old,
     },

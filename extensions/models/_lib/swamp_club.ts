@@ -21,6 +21,8 @@
 import { join } from "@std/path";
 import type { IssueType } from "./schemas.ts";
 
+export const LIFECYCLE_SUMMARY_MAX_CHARS = 2000;
+
 export interface LifecycleEntryParams {
   step: string;
   targetStatus: string;
@@ -151,6 +153,10 @@ export class SwampClubClient {
     try {
       const url =
         `${this.baseUrl}/api/v1/lab/issues/${this.issueNumber}/lifecycle`;
+      let summary = params.summary;
+      if (summary.length > LIFECYCLE_SUMMARY_MAX_CHARS) {
+        summary = summary.slice(0, LIFECYCLE_SUMMARY_MAX_CHARS - 3) + "...";
+      }
       const res = await fetch(url, {
         method: "POST",
         headers: {
@@ -160,7 +166,7 @@ export class SwampClubClient {
         body: JSON.stringify({
           step: params.step,
           targetStatus: params.targetStatus,
-          summary: params.summary,
+          summary,
           emoji: params.emoji,
           payload: params.payload,
           body: params.body,
