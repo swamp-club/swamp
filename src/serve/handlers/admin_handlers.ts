@@ -50,7 +50,13 @@ import type {
   ExtensionInfoPayload,
   ExtensionRmPayload,
   ExtensionSearchPayload,
+  WorkerVerifyPayload,
 } from "../protocol.ts";
+import {
+  FLEET_PROBE_DEFINITION_ID,
+  FLEET_PROBE_MODEL_TYPE,
+  fleetProbeModel,
+} from "../../domain/models/worker/fleet_probe_model.ts";
 import {
   SWAMP_SUBDIRS,
   swampPath,
@@ -162,6 +168,159 @@ export async function handleWorkerQueueList(
   } catch (error) {
     const message = sanitizeErrorForClient(error);
     sendError(socket, requestId, "worker_queue_list_failed", message);
+  }
+}
+
+export async function handleWorkerVerify(
+  socket: WebSocket,
+  ctx: ConnectionContext,
+  requestId: string,
+  payload: WorkerVerifyPayload | undefined,
+  controller: AbortController,
+  principal: Principal | null,
+): Promise<void> {
+  if (
+    !authorizeOrReject(socket, requestId, principal, "admin", {
+      kind: "access",
+      name: "*",
+      fields: {},
+    }, ctx)
+  ) return;
+
+  if (!ctx.workerGateway) {
+    sendError(
+      socket,
+      requestId,
+      "not_available",
+      "Worker gateway not available",
+    );
+    return;
+  }
+
+  if (!ctx.dispatchService) {
+    sendError(
+      socket,
+      requestId,
+      "not_available",
+      "Dispatch service not available",
+    );
+    return;
+  }
+
+  try {
+    let workers = ctx.workerGateway.workers();
+
+    if (payload?.workerName) {
+      workers = workers.filter((w) => w.name === payload.workerName);
+    } else if (payload?.labels) {
+      const requiredLabels = payload.labels;
+      workers = workers.filter((w) =>
+        Object.entries(requiredLabels).every(([k, v]) => w.labels[k] === v)
+      );
+    }
+
+    const connectedWorkers = workers.filter((w) => w.connected);
+
+    interface WorkerProbeResult {
+      name: string;
+      status: "pass" | "fail" | "error";
+      platform?: string;
+      arch?: string;
+      probeMarkerOk?: boolean;
+      queryOk?: boolean;
+      dataPlaneOk?: boolean;
+      failures?: string[];
+      error?: string;
+    }
+
+    const results: WorkerProbeResult[] = [];
+
+    for (const worker of connectedWorkers) {
+      if (controller.signal.aborted) break;
+
+      try {
+        const result = await ctx.dispatchService.executeRemote({
+          placement: { target: worker.name },
+          modelDef: fleetProbeModel,
+          modelType: FLEET_PROBE_MODEL_TYPE,
+          modelId: FLEET_PROBE_DEFINITION_ID,
+          methodName: "verify",
+          definitionName: "probe",
+          definitionTags: {},
+          definitionMeta: {
+            id: FLEET_PROBE_DEFINITION_ID,
+            name: "probe",
+            version: 1,
+            tags: {},
+          },
+          globalArgs: {},
+          methodArgs: {},
+          probeMarker: "fleet-verify",
+          signal: controller.signal,
+        });
+
+        const output = result.outputs.find((o) => o.specName === "result");
+        if (output) {
+          const bytes = await ctx.repoContext.unifiedDataRepo.getContent(
+            FLEET_PROBE_MODEL_TYPE,
+            FLEET_PROBE_DEFINITION_ID,
+            output.name,
+            output.version,
+          );
+          if (bytes) {
+            const content = JSON.parse(
+              new TextDecoder().decode(bytes),
+            ) as Record<string, unknown>;
+            const allOk = content.probeMarkerOk === true &&
+              content.queryOk === true && content.dataPlaneOk === true;
+            results.push({
+              name: worker.name,
+              status: allOk ? "pass" : "fail",
+              platform: content.platform as string,
+              arch: content.arch as string,
+              probeMarkerOk: content.probeMarkerOk as boolean,
+              queryOk: content.queryOk as boolean,
+              dataPlaneOk: content.dataPlaneOk as boolean,
+              failures: content.failures as string[],
+            });
+          } else {
+            results.push({
+              name: worker.name,
+              status: "error",
+              error: "Probe output not readable",
+            });
+          }
+        } else {
+          results.push({
+            name: worker.name,
+            status: "error",
+            error: "No probe result in dispatch output",
+          });
+        }
+      } catch (error) {
+        results.push({
+          name: worker.name,
+          status: "error",
+          error: error instanceof Error ? error.message : String(error),
+        });
+      }
+    }
+
+    send(socket, {
+      type: "worker.verify",
+      id: requestId,
+      payload: {
+        data: {
+          workers: results,
+          total: connectedWorkers.length,
+          passed: results.filter((r) => r.status === "pass").length,
+          failed: results.filter((r) => r.status !== "pass").length,
+        },
+      },
+    });
+  } catch (error) {
+    const message = sanitizeErrorForClient(error);
+    sendError(socket, requestId, "worker_verify_failed", message);
   }
 }
 

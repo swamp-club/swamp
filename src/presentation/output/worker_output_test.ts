@@ -33,7 +33,9 @@ import {
   renderWorkerTokenCreate,
   renderWorkerTokenList,
   renderWorkerTokenRevoke,
+  renderWorkerVerify,
 } from "./worker_output.ts";
+import type { WorkerVerifyData } from "../../cli/commands/worker_verify.ts";
 
 function captureLogs(run: () => void): string {
   const logs: string[] = [];
@@ -393,4 +395,94 @@ Deno.test("renderWorkerQueue: step column falls back to modelType.methodName whe
     captureLogs(() => renderWorkerQueue(queueData, "log")),
   );
   assertStringIncludes(output, "command/shell.execute");
+});
+
+// ── renderWorkerVerify ────────────────────────────────────────────────
+
+const verifyDataAllPass: WorkerVerifyData = {
+  workers: [
+    {
+      name: "w1",
+      status: "pass",
+      platform: "linux",
+      arch: "x86_64",
+      probeMarkerOk: true,
+      queryOk: true,
+      dataPlaneOk: true,
+      failures: [],
+    },
+  ],
+  total: 1,
+  passed: 1,
+  failed: 0,
+};
+
+const verifyDataMixed: WorkerVerifyData = {
+  workers: [
+    {
+      name: "w1",
+      status: "pass",
+      platform: "linux",
+      arch: "x86_64",
+      probeMarkerOk: true,
+      queryOk: true,
+      dataPlaneOk: true,
+      failures: [],
+    },
+    {
+      name: "w2",
+      status: "fail",
+      platform: "linux",
+      arch: "aarch64",
+      probeMarkerOk: true,
+      queryOk: false,
+      dataPlaneOk: false,
+      failures: ["queryData: capability RPC channel failed"],
+    },
+  ],
+  total: 2,
+  passed: 1,
+  failed: 1,
+};
+
+Deno.test("renderWorkerVerify: json mode emits structured data", () => {
+  const output = captureLogs(() =>
+    renderWorkerVerify(verifyDataAllPass, "json")
+  );
+  const parsed = JSON.parse(output);
+  assertEquals(parsed.total, 1);
+  assertEquals(parsed.passed, 1);
+  assertEquals(parsed.workers[0].name, "w1");
+  assertEquals(parsed.workers[0].status, "pass");
+});
+
+Deno.test("renderWorkerVerify: log mode shows worker names and status", () => {
+  const output = stripAnsiCode(
+    captureLogs(() => renderWorkerVerify(verifyDataAllPass, "log")),
+  );
+  assertStringIncludes(output, "w1");
+  assertStringIncludes(output, "pass");
+  assertStringIncludes(output, "All 1 worker(s) passed");
+});
+
+Deno.test("renderWorkerVerify: log mode shows failure details", () => {
+  const output = stripAnsiCode(
+    captureLogs(() => renderWorkerVerify(verifyDataMixed, "log")),
+  );
+  assertStringIncludes(output, "w2");
+  assertStringIncludes(output, "fail");
+  assertStringIncludes(output, "queryData: capability RPC channel failed");
+  assertStringIncludes(output, "1 of 2 worker(s) failed");
+});
+
+Deno.test("renderWorkerVerify: log mode handles empty workers", () => {
+  const output = stripAnsiCode(
+    captureLogs(() =>
+      renderWorkerVerify(
+        { workers: [], total: 0, passed: 0, failed: 0 },
+        "log",
+      )
+    ),
+  );
+  assertStringIncludes(output, "No connected workers");
 });

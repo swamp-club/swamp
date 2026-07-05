@@ -165,3 +165,32 @@ Deno.test("describePlacement: names labels and platform", () => {
 Deno.test("describePlacement: falls back to 'any worker'", () => {
   assertEquals(describePlacement({}), "any worker");
 });
+
+Deno.test("eligibleWorkers: excludes unverified workers", () => {
+  const pool = [
+    worker({ name: "ok", status: "idle" }),
+    worker({ name: "bad", status: "unverified" }),
+  ];
+  const eligible = eligibleWorkers({}, pool);
+  assertEquals(eligible.length, 1);
+  assertEquals(eligible[0].name, "ok");
+});
+
+Deno.test("scheduleStep: unverified worker is never dispatched to without target", () => {
+  const pool = [worker({ name: "a", status: "unverified" })];
+  assertEquals(scheduleStep({}, pool).kind, "queue");
+});
+
+Deno.test("eligibleWorkers: targeted placement reaches unverified worker", () => {
+  const pool = [worker({ name: "probe-target", status: "unverified" })];
+  const eligible = eligibleWorkers({ target: "probe-target" }, pool);
+  assertEquals(eligible.length, 1);
+  assertEquals(eligible[0].name, "probe-target");
+});
+
+Deno.test("scheduleStep: targeted dispatch to unverified worker dispatches", () => {
+  const pool = [worker({ name: "a", status: "unverified" })];
+  const decision = scheduleStep({ target: "a" }, pool);
+  assertEquals(decision.kind, "dispatch");
+  assertEquals(decision.kind === "dispatch" ? decision.worker.name : "", "a");
+});

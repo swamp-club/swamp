@@ -60,6 +60,8 @@ export interface RemoteStepRequest {
   signal?: AbortSignal;
   onEvent?: (event: RpcStreamEvent) => void;
   dataRepo?: UnifiedDataRepository;
+  /** Dispatch-level probe marker for fleet verification. */
+  probeMarker?: string;
 }
 
 export interface RemoteStepResult {

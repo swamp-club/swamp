@@ -47,7 +47,7 @@ export interface SchedulableWorker {
   labels: Record<string, string>;
   platform: string;
   arch: string;
-  status: "idle" | "busy";
+  status: "idle" | "busy" | "unverified";
   connected: boolean;
 }
 
@@ -118,6 +118,9 @@ export function eligibleWorkers(
       return worker.name === placement.target ||
         worker.instanceUuid === placement.target;
     }
+    if (worker.status === "unverified") {
+      return false;
+    }
     if (
       placement.labels !== undefined && !matchesLabels(worker, placement.labels)
     ) {
@@ -147,11 +150,14 @@ export function scheduleStep(
   if (eligible.length === 0) {
     return { kind: "queue" };
   }
-  const idle = eligible
-    .filter((worker) => worker.status === "idle")
+  const dispatchable = eligible
+    .filter((worker) =>
+      worker.status === "idle" ||
+      (worker.status === "unverified" && placement.target !== undefined)
+    )
     .sort((a, b) => a.name.localeCompare(b.name));
-  if (idle.length === 0) {
+  if (dispatchable.length === 0) {
     return { kind: "queue" };
   }
-  return { kind: "dispatch", worker: idle[0] };
+  return { kind: "dispatch", worker: dispatchable[0] };
 }

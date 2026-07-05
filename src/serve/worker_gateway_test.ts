@@ -601,3 +601,96 @@ Deno.test("WorkerGateway: fleet token expiry records expire on the token name, n
   assertEquals(h.graceExpired.length, 1);
   assertEquals(h.gateway.workers().length, 0);
 });
+
+Deno.test("WorkerGateway: verifyOnEnroll — worker starts as unverified and transitions to idle on probe pass", async () => {
+  const enrolled: WorkerSnapshot[] = [];
+  let resolveProbe!: () => void;
+  const probePromise = new Promise<void>((r) => {
+    resolveProbe = r;
+  });
+  const h = createHarness({
+    verifyOnEnroll: true,
+    verifyWorker: async () => {
+      await probePromise;
+      return { ok: true };
+    },
+    onWorkerEnrolled: (w) => enrolled.push(w),
+  });
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  await enroll(workerChannel);
+
+  const before = h.gateway.workers();
+  assertEquals(before.length, 1);
+  assertEquals(before[0].status, "unverified");
+  assertEquals(h.idle.length, 0);
+  assertEquals(enrolled.length, 0);
+
+  resolveProbe();
+  await new Promise((r) => setTimeout(r, 50));
+
+  const after = h.gateway.workers();
+  assertEquals(after[0].status, "idle");
+  assertEquals(h.idle.length, 1);
+  assertEquals(enrolled.length, 1);
+  const setIdle = h.transitions.filter((t) =>
+    t.methodName === "set_status" && t.inputs.status === "idle"
+  );
+  assertEquals(setIdle.length, 1);
+});
+
+Deno.test("WorkerGateway: verifyOnEnroll — probe failure leaves worker unverified with reason", async () => {
+  const enrolled: WorkerSnapshot[] = [];
+  const h = createHarness({
+    verifyOnEnroll: true,
+    verifyWorker: () =>
+      Promise.resolve({ ok: false, failureReason: "data plane broken" }),
+    onWorkerEnrolled: (w) => enrolled.push(w),
+  });
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  await enroll(workerChannel);
+  await new Promise((r) => setTimeout(r, 50));
+
+  const workers = h.gateway.workers();
+  assertEquals(workers.length, 1);
+  assertEquals(workers[0].status, "unverified");
+  assertEquals(workers[0].verifyFailureReason, "data plane broken");
+  assertEquals(h.idle.length, 0);
+  assertEquals(enrolled.length, 0);
+  const setUnverified = h.transitions.filter((t) =>
+    t.methodName === "set_status" && t.inputs.status === "unverified"
+  );
+  assertEquals(setUnverified.length, 1);
+  assertEquals(
+    setUnverified[0].inputs.verifyFailureReason,
+    "data plane broken",
+  );
+});
+
+Deno.test("WorkerGateway: verifyOnEnroll — probe error leaves worker unverified with error message", async () => {
+  const h = createHarness({
+    verifyOnEnroll: true,
+    verifyWorker: () => Promise.reject(new Error("dispatch timeout")),
+  });
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  await enroll(workerChannel);
+  await new Promise((r) => setTimeout(r, 50));
+
+  const workers = h.gateway.workers();
+  assertEquals(workers[0].status, "unverified");
+  assertEquals(workers[0].verifyFailureReason, "dispatch timeout");
+  assertEquals(h.idle.length, 0);
+});
+
+Deno.test("WorkerGateway: without verifyOnEnroll — worker becomes idle immediately", async () => {
+  const enrolled: WorkerSnapshot[] = [];
+  const h = createHarness({
+    onWorkerEnrolled: (w) => enrolled.push(w),
+  });
+  const { workerChannel } = connectWorkerSocket(h.gateway);
+  await enroll(workerChannel);
+
+  const workers = h.gateway.workers();
+  assertEquals(workers[0].status, "idle");
+  assertEquals(h.idle.length, 1);
+  assertEquals(enrolled.length, 1);
+});

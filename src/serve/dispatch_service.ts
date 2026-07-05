@@ -382,6 +382,7 @@ export class DispatchService {
         jobName: request.jobName,
         stepName: request.stepName,
       },
+      probeMarker: request.probeMarker,
     };
 
     try {

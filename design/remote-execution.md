@@ -61,6 +61,10 @@ Three properties drove the design:
 | **Step lease**       | The orchestrator's record that a given step is in flight on a given worker. A built-in model.                               |
 | **Environment snapshot** | The orchestrator's full process environment, shipped with each dispatch and held in worker memory only for the step's duration. |
 | **Spool file**       | The worker-local file backing `getFilePath()` on a remote executor; uploaded to the orchestrator as one streamed `PUT` on `finalize()`. |
+| **Fleet probe**      | A built-in model (`swamp/fleet-probe`) whose single `verify` method exercises every seam between worker and orchestrator: dispatch metadata (`probeMarker`), capability RPC (`queryData`), and the HTTP data plane (`writeResource`/`readResource`). Used by `swamp worker verify` and `--verify-on-enroll`. |
+| **Probe marker**     | A dispatch-level string (`probeMarker` on `DispatchParams`) that the worker merges into the method's args. Confirms dispatch-level metadata arrives intact. Travels via `DispatchParams`, not the environment snapshot (which denylists `SWAMP_*` variables). |
+| **Verify-on-enroll** | Opt-in orchestrator flag (`--verify-on-enroll`) that dispatches the fleet probe to each enrolling worker before it becomes schedulable. Workers that fail enter `unverified` status and are excluded from scheduling. |
+| **Unverified**       | A worker status indicating the enrollment verification probe failed. Unverified workers are visible in `swamp worker list` with their failure reason but are excluded from `eligibleWorkers` and never receive dispatches. |
 
 The orchestrator's own bookkeeping — the worker pool, token lifecycle, and step
 leases — is **persisted as swamp data** by first-class built-in models, written

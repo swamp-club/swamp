@@ -106,6 +106,7 @@ import {
   handleRunHistory,
   handleWorkerList,
   handleWorkerQueueList,
+  handleWorkerVerify,
 } from "./handlers/admin_handlers.ts";
 import {
   type ConnectionContext,
@@ -661,6 +662,15 @@ const WorkerQueueListRequestSchema = z.object({
   id: z.string().min(1).max(256),
 });
 
+const WorkerVerifyRequestSchema = z.object({
+  type: z.literal("worker.verify"),
+  id: z.string().min(1).max(256),
+  payload: z.object({
+    workerName: z.string().optional(),
+    labels: z.record(z.string(), z.string()).optional(),
+  }).optional(),
+});
+
 const DatastoreStatusRequestSchema = z.object({
   type: z.literal("datastore.status"),
   id: z.string().min(1).max(256),
@@ -809,6 +819,7 @@ const ServerRequestSchema = z.discriminatedUnion("type", [
   VaultAnnotateRequestSchema,
   WorkerListRequestSchema,
   WorkerQueueListRequestSchema,
+  WorkerVerifyRequestSchema,
   DatastoreStatusRequestSchema,
   ExtensionListRequestSchema,
   ExtensionSearchRequestSchema,
@@ -1476,6 +1487,16 @@ export function handleMessage(
         socket,
         ctx,
         request.id,
+        controller,
+        principal,
+      );
+      break;
+    case "worker.verify":
+      task = handleWorkerVerify(
+        socket,
+        ctx,
+        request.id,
+        request.payload,
         controller,
         principal,
       );
