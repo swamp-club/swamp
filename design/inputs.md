@@ -208,6 +208,33 @@ parsed value is used. If parsing fails or the result is a different JSON type
 (e.g. `null`, a number), the value remains as a string and downstream
 validation reports the mismatch.
 
+### File references via `@`
+
+Values starting with `@` are read as file paths:
+
+```sh
+swamp model method run my-model deploy --input cert=@/path/to/cert.pem
+swamp model method run my-model deploy --input token=@~/secrets/token.txt
+```
+
+To pass a literal `@`, escape it with `\`:
+
+```sh
+swamp model method run my-model search --input email=\@user
+```
+
+**Scoped identifiers** (`@namespace/name`) are recognized and passed through
+literally — they are not treated as file paths. This covers swamp type
+identifiers like `@hivemq/base-images` or `@swamp/aws/ec2/vpc`. The heuristic:
+if the value after `@` starts with a letter, contains at least one `/`, and has
+no `.` characters, it is a scoped identifier. File paths with extensions (e.g.
+`@path/to/file.txt`) are still read as files.
+
+```sh
+# Passes @hivemq/base-images as the literal value (not a file path)
+swamp model method run my-model check --input sourceType=@hivemq/base-images
+```
+
 ### JSON-typed values via `:json` suffix
 
 Append `:json` to the leaf segment of a key to parse the value as JSON
