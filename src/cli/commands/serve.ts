@@ -505,7 +505,7 @@ export const serveCommand = new Command()
   .option(
     "--queue-timeout <duration:string>",
     "How long a placed step queues for a matching worker before timing out (env: SWAMP_QUEUE_TIMEOUT). " +
-      "Accepts seconds (60), explicit units (2m, 10m), or 0 to disable. Default: 60s",
+      "Accepts seconds (60), explicit units (2m, 10m), or 0 to disable. Default: 10m",
   )
   .option(
     "--verify-on-enroll",
