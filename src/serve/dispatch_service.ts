@@ -80,7 +80,7 @@ const logger = getSwampLogger(["serve", "dispatch"]);
 export const BUILTIN_BUNDLE_PREFIX = "builtin:";
 
 /** Default ceiling on how long a step queues for a matching worker. */
-export const DEFAULT_QUEUE_TIMEOUT_MS = 60 * 1000;
+export const DEFAULT_QUEUE_TIMEOUT_MS = 600 * 1000;
 
 /**
  * Cap on a single #waitForPoolChange call when the deadline is null
