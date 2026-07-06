@@ -45,6 +45,7 @@ import {
   createStdioReader,
   StdioTransport,
 } from "../domain/remote/stdio_transport.ts";
+import { fromFileUrl } from "@std/path";
 import { bridgeCapabilityVerbs } from "./runner_bridge.ts";
 import type { RunnerBootstrapParams } from "./runner_protocol.ts";
 import { RUNNER_CANCEL_GRACE_MS } from "./runner_protocol.ts";
@@ -246,16 +247,16 @@ async function handleDispatch(
 
   // Cancel propagation: forward to child, kill after RUNNER_CANCEL_GRACE_MS.
   const onCancel = () => {
+    cancelController.abort();
     childChannel.call("runner.cancel", {}, {
       timeoutMs: RUNNER_CANCEL_GRACE_MS,
     }).catch(() => {
       try {
-        child.kill("SIGKILL");
+        child.kill();
       } catch {
         // Already dead.
       }
     });
-    cancelController.abort();
   };
   ctx.signal.addEventListener("abort", onCancel, { once: true });
 
@@ -332,7 +333,7 @@ async function handleDispatch(
     };
   } finally {
     ctx.signal.removeEventListener("abort", onCancel);
-    await childTransport.close();
+    await childTransport.close().catch(() => {});
   }
 }
 
@@ -340,10 +341,12 @@ function deriveRunnerCommand(): { cmd: string; args: string[] } {
   const execPath = Deno.execPath();
   const base = execPath.split("/").pop() ?? execPath.split("\\").pop() ?? "";
   if (base === "deno" || base === "deno.exe") {
-    const entryPoint = new URL(
-      "../cli/commands/worker_exec_dispatch_entry.ts",
-      import.meta.url,
-    ).pathname;
+    const entryPoint = fromFileUrl(
+      new URL(
+        "../cli/commands/worker_exec_dispatch_entry.ts",
+        import.meta.url,
+      ),
+    );
     return {
       cmd: execPath,
       args: [
