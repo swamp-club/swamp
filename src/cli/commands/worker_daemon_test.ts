@@ -18,7 +18,7 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 import { assertEquals } from "@std/assert";
-import { collectWorkerExtraArgs } from "./worker_daemon.ts";
+import { collectWorkerEnv, collectWorkerExtraArgs } from "./worker_daemon.ts";
 
 Deno.test("collectWorkerExtraArgs: includes data-plane-url when provided", () => {
   const args = collectWorkerExtraArgs({
@@ -47,4 +47,29 @@ Deno.test("collectWorkerExtraArgs: combines multiple options", () => {
     "https://dp.internal",
     "--no-reconnect",
   ]);
+});
+
+Deno.test("collectWorkerEnv: includes SWAMP_SERVER_TOKEN when provided", () => {
+  const env = collectWorkerEnv({
+    url: "wss://orch:9090",
+    token: "tok.secret",
+    serverToken: "admin.secret",
+  });
+  assertEquals(env["SWAMP_SERVER_TOKEN"], "admin.secret");
+  assertEquals(env["SWAMP_WORKER_TOKEN"], "tok.secret");
+  assertEquals(env["SWAMP_ORCHESTRATOR_URL"], "wss://orch:9090");
+});
+
+Deno.test("collectWorkerEnv: omits SWAMP_SERVER_TOKEN when not provided", () => {
+  const env = collectWorkerEnv({
+    url: "wss://orch:9090",
+    token: "tok.secret",
+  });
+  assertEquals(env["SWAMP_SERVER_TOKEN"], undefined);
+  assertEquals(env["SWAMP_WORKER_TOKEN"], "tok.secret");
+});
+
+Deno.test("collectWorkerEnv: returns empty when no options", () => {
+  const env = collectWorkerEnv({});
+  assertEquals(Object.keys(env).length, 0);
 });
