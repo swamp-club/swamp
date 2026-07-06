@@ -97,6 +97,8 @@ export interface RunWorkerOptions {
   maxDispatches?: number;
   /** Drain and exit 0 after being continuously idle for this many ms. */
   idleTimeoutMs?: number;
+  /** Number of concurrent dispatch slots (default 1). */
+  concurrency?: number;
   /**
    * Called once during setup with a function that triggers drain from
    * outside (e.g. signal handler). The caller can store this and invoke
@@ -130,8 +132,10 @@ export async function runWorker(
     await Deno.makeTempDir({ prefix: "swamp-worker-cache-" });
   const machineId = await loadOrCreateMachineId(cacheDir);
 
+  const concurrency = options.concurrency ?? 1;
   let drainReason: WorkerExitReason | null = null;
   let dispatchCount = 0;
+  let activeDispatches = 0;
   let idleTimer: ReturnType<typeof setTimeout> | undefined;
   let currentDrainHandle: DispatchHandlerHandle | null = null;
   let currentChannel: RpcChannel | null = null;
@@ -198,6 +202,7 @@ export async function runWorker(
         session,
         dataPlaneUrl,
         cacheDirPath: join(cacheDir, "bundles"),
+        concurrency,
         onDispatchHandlerRegistered: (handle, channel, close) => {
           currentDrainHandle = handle;
           currentChannel = channel;
@@ -209,16 +214,18 @@ export async function runWorker(
           startIdleTimer();
         },
         onDispatchStarted: () => {
+          activeDispatches++;
           clearIdleTimer();
         },
         onDispatchFinished: () => {
+          activeDispatches--;
           dispatchCount++;
           if (
             options.maxDispatches !== undefined &&
             dispatchCount >= options.maxDispatches
           ) {
             triggerDrain("max-dispatches");
-          } else {
+          } else if (activeDispatches === 0) {
             startIdleTimer();
           }
         },
@@ -309,6 +316,7 @@ interface ConnectOnceArgs {
   session: SessionState;
   dataPlaneUrl: string;
   cacheDirPath: string;
+  concurrency: number;
   onDispatchHandlerRegistered: (
     handle: DispatchHandlerHandle,
     channel: RpcChannel,
@@ -387,6 +395,7 @@ function connectOnce(args: ConnectOnceArgs): Promise<string> {
         platform: Deno.build.os,
         arch: Deno.build.arch,
         labels: options.labels ?? {},
+        resourceLimits: { capacity: args.concurrency },
       }).then((result) => {
         enrolled = true;
         session.credential = result.sessionCredential;
@@ -396,6 +405,7 @@ function connectOnce(args: ConnectOnceArgs): Promise<string> {
           sessionCredential: () => session.credential,
           dataPlaneUrl: args.dataPlaneUrl,
           cacheDirPath: args.cacheDirPath,
+          capacity: args.concurrency,
           runnerCommand: options.runnerCommand,
           onDispatch: (event) => {
             if (event.kind === "dispatch_started") {

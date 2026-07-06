@@ -31,6 +31,8 @@ export interface SessionCredentialRecord {
   workerId: string;
   /** Epoch ms after which the credential no longer verifies. */
   expiresAtMs: number;
+  /** When set, this credential is scoped to a specific dispatch. */
+  dispatchId?: string;
 }
 
 /** Default credential lifetime: 15 minutes, refreshed well before expiry. */
@@ -64,8 +66,9 @@ export class SessionCredentialService {
   }
 
   /**
-   * Issue a fresh credential for a worker, revoking any prior one — a worker
-   * holds exactly one valid session credential at a time.
+   * Issue a fresh control-channel credential for a worker, revoking any
+   * prior control-channel credential. Per-dispatch credentials are not
+   * affected by this call.
    */
   issue(workerId: string): SessionCredentialRecord {
     this.revokeForWorker(workerId);
@@ -80,10 +83,31 @@ export class SessionCredentialService {
   }
 
   /**
-   * Verify a presented credential. Returns the worker id it authenticates,
-   * or null when unknown or expired. Expired records are pruned on sight.
+   * Issue a per-dispatch credential. These are independent of the
+   * control-channel credential and are not revoked by `issue()` or
+   * `refresh()`. They are revoked explicitly via `revokeDispatch()`.
    */
-  verify(credential: string): string | null {
+  issueForDispatch(
+    workerId: string,
+    dispatchId: string,
+  ): SessionCredentialRecord {
+    const record: SessionCredentialRecord = {
+      credential: generateOpaqueToken(),
+      workerId,
+      expiresAtMs: this.#now() + this.#ttlMs,
+      dispatchId,
+    };
+    this.#byCredential.set(record.credential, record);
+    return record;
+  }
+
+  /**
+   * Verify a presented credential. Returns the worker id and optional
+   * dispatch id it authenticates, or null when unknown or expired.
+   */
+  verify(
+    credential: string,
+  ): { workerId: string; dispatchId?: string } | null {
     const record = this.#byCredential.get(credential);
     if (!record) {
       return null;
@@ -95,28 +119,54 @@ export class SessionCredentialService {
       }
       return null;
     }
-    return record.workerId;
+    return {
+      workerId: record.workerId,
+      dispatchId: record.dispatchId,
+    };
   }
 
   /**
-   * Slide the window forward: re-issue against a currently valid credential.
-   * Returns null when the presented credential is not valid, in which case
-   * the worker must re-enroll.
+   * Slide the window forward: re-issue against a currently valid
+   * control-channel credential. Does not affect dispatch credentials.
    */
   refresh(credential: string): SessionCredentialRecord | null {
-    const workerId = this.verify(credential);
-    if (workerId === null) {
+    const result = this.verify(credential);
+    if (result === null) {
       return null;
     }
-    return this.issue(workerId);
+    if (result.dispatchId) {
+      return null;
+    }
+    return this.issue(result.workerId);
   }
 
-  /** Revoke the worker's current credential, if any. */
+  /** Revoke the worker's control-channel credential, if any. */
   revokeForWorker(workerId: string): void {
     const credential = this.#byWorker.get(workerId);
     if (credential !== undefined) {
       this.#byCredential.delete(credential);
       this.#byWorker.delete(workerId);
+    }
+  }
+
+  /** Revoke all credentials for a worker (control + dispatch). */
+  revokeAllForWorker(workerId: string): void {
+    this.revokeForWorker(workerId);
+    for (const [cred, record] of this.#byCredential) {
+      if (record.workerId === workerId) {
+        this.#byCredential.delete(cred);
+      }
+    }
+  }
+
+  /** Revoke a specific dispatch credential by dispatch id. */
+  revokeDispatch(workerId: string, dispatchId: string): void {
+    for (const [cred, record] of this.#byCredential) {
+      if (
+        record.workerId === workerId && record.dispatchId === dispatchId
+      ) {
+        this.#byCredential.delete(cred);
+      }
     }
   }
 }

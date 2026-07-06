@@ -44,6 +44,7 @@ Deno.test("bridgeCapabilityVerbs: forwards getData from runner to orchestrator",
   bridgeCapabilityVerbs({
     childChannel: runnerPair.b,
     orchestratorChannel: orchPair.a,
+    dispatchId: "test-dispatch",
     signal: AbortSignal.timeout(5_000),
   });
 
@@ -57,6 +58,7 @@ Deno.test("bridgeCapabilityVerbs: forwards getData from runner to orchestrator",
     modelType: "test",
     modelId: "m1",
     dataName: "out",
+    dispatchId: "test-dispatch",
   });
 });
 
@@ -75,6 +77,7 @@ Deno.test("bridgeCapabilityVerbs: forwards all 9 capability verbs", async () => 
   bridgeCapabilityVerbs({
     childChannel: runnerPair.b,
     orchestratorChannel: orchPair.a,
+    dispatchId: "test-dispatch",
     signal: AbortSignal.timeout(5_000),
   });
 
@@ -97,6 +100,7 @@ Deno.test("bridgeCapabilityVerbs: propagates orchestrator errors to runner", asy
   bridgeCapabilityVerbs({
     childChannel: runnerPair.b,
     orchestratorChannel: orchPair.a,
+    dispatchId: "test-dispatch",
     signal: AbortSignal.timeout(5_000),
   });
 
@@ -129,6 +133,7 @@ Deno.test("bridgeCapabilityVerbs: cancel signal aborts bridged call", async () =
   bridgeCapabilityVerbs({
     childChannel: runnerPair.b,
     orchestratorChannel: orchPair.a,
+    dispatchId: "test-dispatch",
     signal: controller.signal,
   });
 

@@ -25,11 +25,9 @@ import { DispatchParamsSchema } from "../domain/remote/protocol.ts";
  * dispatch runner. The runner reads this to set up its data-plane client,
  * bundle cache, and RPC channel before executing the dispatch.
  *
- * The session credential is a static snapshot taken at spawn time. At
- * capacity 1 (phase 4a) this is safe — dispatches are serial and the
- * credential TTL exceeds any single dispatch duration. Phase 4b must add
- * a credential refresh forwarding mechanism for concurrent long-running
- * dispatches.
+ * Each runner receives a per-dispatch credential that is independent of
+ * the control-channel credential. Session refreshes on the control
+ * channel do not invalidate dispatch credentials.
  */
 export const RunnerBootstrapParamsSchema = z.object({
   /** Bearer credential for the HTTP data plane (static at spawn time). */

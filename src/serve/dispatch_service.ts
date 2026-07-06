@@ -135,8 +135,8 @@ export class DispatchService {
   readonly #captureEnvironment: () => Record<string, string>;
   #gateway: DispatchGateway | null = null;
   #onDispatchEnd: ((dispatchId: string) => void) | null = null;
-  /** Workers picked by a queued step but not yet marked busy. */
-  readonly #reserved = new Set<string>();
+  /** Per-worker reservation count for queued steps not yet dispatched. */
+  readonly #reserved = new Map<string, number>();
   /** Dispatches that performed at least one durable write. */
   readonly #writesByDispatch = new Set<string>();
   /** Steps waiting for the pool to change (a worker idled or expired). */
@@ -310,7 +310,12 @@ export class DispatchService {
           }
           throw error;
         } finally {
-          this.#reserved.delete(workerName);
+          const count = this.#reserved.get(workerName) ?? 0;
+          if (count <= 1) {
+            this.#reserved.delete(workerName);
+          } else {
+            this.#reserved.set(workerName, count - 1);
+          }
         }
       }
     } catch (error) {
@@ -482,7 +487,8 @@ export class DispatchService {
         this.#poolSnapshot(),
       );
       if (decision.kind === "dispatch") {
-        this.#reserved.add(decision.worker.name);
+        const current = this.#reserved.get(decision.worker.name) ?? 0;
+        this.#reserved.set(decision.worker.name, current + 1);
         return decision.worker.name;
       }
       onQueued?.();
@@ -502,13 +508,23 @@ export class DispatchService {
     }
   }
 
-  /** The live pool with steps' not-yet-busy reservations applied. */
+  /** The live pool with reservation counts overlaid onto active dispatch counts. */
   #poolSnapshot(): WorkerSnapshot[] {
-    return this.#gateway!.workers().map((worker) =>
-      this.#reserved.has(worker.name) && worker.status === "idle"
-        ? { ...worker, status: "busy" as const }
-        : worker
-    );
+    return this.#gateway!.workers().map((worker) => {
+      const reservations = this.#reserved.get(worker.name) ?? 0;
+      if (reservations === 0) return worker;
+      const virtualIds = [
+        ...worker.activeDispatchIds,
+        ...Array.from({ length: reservations }, (_, i) => `__reserved_${i}`),
+      ];
+      return {
+        ...worker,
+        activeDispatchIds: virtualIds,
+        status: virtualIds.length >= worker.capacity
+          ? "busy" as const
+          : worker.status,
+      };
+    });
   }
 
   #wakePoolWaiters(): void {

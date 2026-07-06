@@ -508,8 +508,10 @@ running on the orchestrator host would. Scoping the snapshot (allowlists per
 token or per label) is a later refinement; v1 chooses single-host fidelity over
 introducing a new partial-environment failure mode.
 
-Workers execute dispatches serially (one in flight per worker; an overlapping
-dispatch is rejected with `worker_busy`).
+Workers accept up to `capacity` concurrent dispatches (configured via
+`--concurrency N` on `worker connect`, default 1). When all slots are full, an
+overlapping dispatch is rejected with `worker_busy` and re-queued by the
+orchestrator.
 
 ### Dispatch runners (phase 4a)
 
@@ -525,12 +527,15 @@ that the orchestrator–worker control socket uses. A capability bridge forwards
 the 9 metadata-RPC capability verbs (`getData`, `queryData`, `listVersions`,
 `deleteData`, `resolveSecret`, `putSecret`, `readDefinition`, `readOutput`,
 `resolveModel`) from the runner to the orchestrator. Data-plane HTTP operations
-go directly from the runner to the orchestrator using the session credential.
+go directly from the runner to the orchestrator using a per-dispatch credential.
 
 The runner receives bootstrap parameters as its first stdin frame:
-`RunnerBootstrapParams` carrying the session credential, data-plane URL, cache
-directory path, and the full `DispatchParams`. The session credential is a
-static snapshot — safe at capacity 1 where dispatches are serial.
+`RunnerBootstrapParams` carrying a per-dispatch session credential, data-plane
+URL, cache directory path, and the full `DispatchParams`. Each dispatch gets its
+own credential (issued by `SessionCredentialService.issueForDispatch`) that
+encodes the `dispatchId`; session refreshes on the control channel do not
+invalidate dispatch credentials. The data plane cross-checks
+`credential.dispatchId` against the authenticated dispatch to prevent spoofing.
 
 **Cancel propagation** is nested: the orchestrator's `CANCEL_GRACE_MS` (30 s)
 bounds the supervisor, which forwards `rpc.cancel` to the runner immediately
@@ -540,9 +545,29 @@ not respond. This leaves ~20 s for cleanup and the response frame.
 **Crash isolation**: a runner crash (non-zero exit or stdio channel close) fails
 only that dispatch — the worker stays enrolled and accepts the next dispatch.
 
-Phase 4a ships at capacity 1 — identical behavior to the prior in-process path,
-plus crash isolation and clean environment handling. Phase 4b adds `--concurrency
-N` slots, where the supervisor manages N concurrent runners.
+Phase 4a shipped at capacity 1 — identical behavior to the prior in-process
+path, plus crash isolation and clean environment handling.
+
+### Concurrent dispatch (phase 4b)
+
+Phase 4b adds `--concurrency N` (or `"auto"` for CPU count) to `worker connect`.
+The worker advertises its capacity via `resourceLimits.capacity` at enrollment
+(protocol version 4). The scheduler picks the worker with the most free slots
+(least-loaded tiebreak, then name for determinism). The `DispatchRegistry`
+tracks N active dispatches per worker keyed by `(workerName, dispatchId)`.
+
+**Per-dispatch credentials**: each runner receives its own credential from
+`SessionCredentialService.issueForDispatch(workerId, dispatchId)`. This
+credential is independent of the control-channel credential — session refreshes
+do not invalidate in-flight runners. Credentials are revoked when the dispatch
+completes. The capability bridge injects `dispatchId` into every RPC verb so
+the `CapabilityService` can resolve the correct dispatch for model-type scope
+isolation.
+
+**Idle semantics**: a worker is "idle" when `activeDispatchIds.length === 0`.
+The idle timeout starts only when all slots are empty. `maxDispatches` counts
+total completed dispatches, not concurrent ones. Drain waits for all active
+runners to finish (`activeRunners === 0`).
 
 ## Shipping extension code
 

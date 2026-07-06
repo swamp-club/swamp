@@ -197,7 +197,8 @@ const workerListData: WorkerListData = {
       instanceUuid: "uuid-42",
       enrolledAt: "2026-06-09T00:00:00.000Z",
       lastSeenAt: "2026-06-09T12:00:00.000Z",
-      currentDispatchId: "dispatch-7",
+      capacity: 1,
+      activeDispatchIds: ["dispatch-7"],
     },
     {
       name: "mac-builder",
@@ -208,7 +209,8 @@ const workerListData: WorkerListData = {
       instanceUuid: "uuid-43",
       enrolledAt: "2026-06-09T00:00:00.000Z",
       lastSeenAt: "2026-06-09T11:00:00.000Z",
-      currentDispatchId: null,
+      capacity: 1,
+      activeDispatchIds: [],
     },
   ],
   count: 2,
@@ -255,7 +257,7 @@ Deno.test("renderWorkerList: json mode emits the array of records", () => {
   assertEquals(parsed.length, 2);
   assertEquals(parsed[0].status, "busy");
   assertEquals(parsed[0].labels, { os: "linux", gpu: "none" });
-  assertEquals(parsed[1].currentDispatchId, null);
+  assertEquals(parsed[1].activeDispatchIds, []);
 });
 
 Deno.test("renderWorkerStatus: dispatch lifecycle renders start and finish", () => {

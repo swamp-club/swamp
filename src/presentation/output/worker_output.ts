@@ -234,15 +234,19 @@ export function renderWorkerList(
     );
     return;
   }
-  const rows = data.workers.map((worker) => [
-    worker.name,
-    worker.status,
-    formatLabels(worker.labels),
-    `${worker.platform}/${worker.arch}`,
-    worker.lastSeenAt,
-  ]);
+  const rows = data.workers.map((worker) => {
+    const load = `${worker.activeDispatchIds.length}/${worker.capacity}`;
+    return [
+      worker.name,
+      worker.status,
+      load,
+      formatLabels(worker.labels),
+      `${worker.platform}/${worker.arch}`,
+      worker.lastSeenAt,
+    ];
+  });
   const lines = tableLines(
-    ["NAME", "STATUS", "LABELS", "PLATFORM/ARCH", "LAST SEEN"],
+    ["NAME", "STATUS", "SLOTS", "LABELS", "PLATFORM/ARCH", "LAST SEEN"],
     rows,
     (column, value) => (column === 1 ? colorWorkerStatus(value) : value),
   );

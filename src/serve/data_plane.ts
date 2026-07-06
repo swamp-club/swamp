@@ -60,7 +60,11 @@ const logger = getSwampLogger(["serve", "data-plane"]);
 export interface DataPlaneOptions {
   repoDir: string;
   repoContext: RepositoryContext;
-  sessions: { verify(credential: string): string | null };
+  sessions: {
+    verify(
+      credential: string,
+    ): { workerId: string; dispatchId?: string } | null;
+  };
   dispatches: DispatchRegistry;
   bundles: BundleRegistry;
   /** Fired on a dispatch's first durable write (drives lease.mark_writes). */
@@ -151,8 +155,8 @@ export class DataPlane {
       return null;
     }
 
-    const workerName = this.#authenticate(req);
-    if (workerName === null) {
+    const auth = this.#authenticate(req);
+    if (auth === null) {
       return errorResponse(401, "Missing or invalid session credential");
     }
 
@@ -160,7 +164,12 @@ export class DataPlane {
       if (root === "bundle") {
         return this.#handleBundle(req, segments);
       }
-      return await this.#handleData(req, segments, workerName);
+      return await this.#handleData(
+        req,
+        segments,
+        auth.workerName,
+        auth.dispatchId,
+      );
     } catch (error) {
       if (error instanceof DataPlaneError) {
         return errorResponse(error.status, error.message);
@@ -175,23 +184,49 @@ export class DataPlane {
     }
   }
 
-  #authenticate(req: Request): string | null {
+  #authenticate(
+    req: Request,
+  ): { workerName: string; dispatchId?: string } | null {
     const header = req.headers.get("authorization");
     if (header === null || !header.startsWith("Bearer ")) {
       return null;
     }
-    return this.#options.sessions.verify(header.slice("Bearer ".length));
+    const result = this.#options.sessions.verify(
+      header.slice("Bearer ".length),
+    );
+    if (result === null) return null;
+    return { workerName: result.workerId, dispatchId: result.dispatchId };
   }
 
-  #activeDispatch(workerName: string): ActiveDispatch {
-    const dispatch = this.#options.dispatches.forWorker(workerName);
-    if (dispatch === null) {
+  #activeDispatch(
+    workerName: string,
+    dispatchId?: string,
+  ): ActiveDispatch {
+    if (dispatchId) {
+      const dispatch = this.#options.dispatches.forDispatch(
+        workerName,
+        dispatchId,
+      );
+      if (dispatch === null) {
+        throw new DataPlaneError(
+          400,
+          `Dispatch '${dispatchId}' not found for worker '${workerName}'`,
+        );
+      }
+      return dispatch;
+    }
+    const dispatches = this.#options.dispatches.forWorker(workerName);
+    if (dispatches.length === 0) {
       throw new DataPlaneError(
         400,
         `Worker '${workerName}' has no active dispatch — writes are lease-scoped`,
       );
     }
-    return dispatch;
+    if (dispatches.length === 1) return dispatches[0];
+    throw new DataPlaneError(
+      400,
+      `Worker '${workerName}' has ${dispatches.length} active dispatches — dispatch credential required`,
+    );
   }
 
   async #recordWrite(dispatch: ActiveDispatch): Promise<void> {
@@ -213,9 +248,22 @@ export class DataPlane {
     return this.#vaultService;
   }
 
-  #repoForWorker(workerName: string): UnifiedDataRepository {
-    const dispatch = this.#options.dispatches.forWorker(workerName);
-    return dispatch?.dataRepo ?? this.#options.repoContext.unifiedDataRepo;
+  #repoForWorker(
+    workerName: string,
+    dispatchId?: string,
+  ): UnifiedDataRepository {
+    if (dispatchId) {
+      const dispatch = this.#options.dispatches.forDispatch(
+        workerName,
+        dispatchId,
+      );
+      if (dispatch?.dataRepo) return dispatch.dataRepo;
+    }
+    const dispatches = this.#options.dispatches.forWorker(workerName);
+    if (dispatches.length === 1 && dispatches[0].dataRepo) {
+      return dispatches[0].dataRepo;
+    }
+    return this.#options.repoContext.unifiedDataRepo;
   }
 
   // ── /data routes ───────────────────────────────────────────────────────
@@ -224,19 +272,20 @@ export class DataPlane {
     req: Request,
     segments: string[],
     workerName: string,
+    dispatchId?: string,
   ): Promise<Response> {
     if (req.method === "GET" && segments.length === 5) {
-      return await this.#readArtifact(req, segments, workerName);
+      return await this.#readArtifact(req, segments, workerName, dispatchId);
     }
     if (req.method === "POST" && segments[1] === "resource") {
-      return await this.#writeResource(req, workerName);
+      return await this.#writeResource(req, workerName, dispatchId);
     }
     if (req.method === "DELETE" && segments[1] === "resource") {
-      return await this.#deleteResource(req, workerName);
+      return await this.#deleteResource(req, workerName, dispatchId);
     }
     if (req.method === "POST" && segments[1] === "writers") {
       if (segments.length === 2) {
-        return await this.#openWriter(req, workerName);
+        return await this.#openWriter(req, workerName, dispatchId);
       }
       if (segments.length === 4) {
         return await this.#writerAction(
@@ -254,6 +303,7 @@ export class DataPlane {
     req: Request,
     segments: string[],
     workerName: string,
+    dispatchId?: string,
   ): Promise<Response> {
     const [, rawType, rawModelId, rawDataName, rawVersion] = segments;
     const type = ModelType.create(decodeURIComponent(rawType));
@@ -264,7 +314,7 @@ export class DataPlane {
       return errorResponse(400, `Invalid version '${rawVersion}'`);
     }
 
-    const repo = this.#repoForWorker(workerName);
+    const repo = this.#repoForWorker(workerName, dispatchId);
     const data = await repo.findByName(
       type,
       modelId,
@@ -299,8 +349,12 @@ export class DataPlane {
     return new Response(ReadableStream.from(stream), { headers });
   }
 
-  async #writeResource(req: Request, workerName: string): Promise<Response> {
-    const dispatch = this.#activeDispatch(workerName);
+  async #writeResource(
+    req: Request,
+    workerName: string,
+    dispatchId?: string,
+  ): Promise<Response> {
+    const dispatch = this.#activeDispatch(workerName, dispatchId);
     const body = await req.json() as {
       specName?: string;
       name?: string;
@@ -310,7 +364,7 @@ export class DataPlane {
       return errorResponse(400, "Expected { specName, name, data }");
     }
 
-    const repo = this.#repoForWorker(workerName);
+    const repo = this.#repoForWorker(workerName, dispatchId);
     const { writeResource } = createResourceWriter(
       repo,
       dispatch.modelType,
@@ -341,15 +395,19 @@ export class DataPlane {
     return json(handleToJson(handle));
   }
 
-  async #deleteResource(req: Request, workerName: string): Promise<Response> {
-    const dispatch = this.#activeDispatch(workerName);
+  async #deleteResource(
+    req: Request,
+    workerName: string,
+    dispatchId?: string,
+  ): Promise<Response> {
+    const dispatch = this.#activeDispatch(workerName, dispatchId);
     const body = await req.json() as { name?: string };
     if (!body.name) {
       return errorResponse(400, "Expected { name }");
     }
 
     try {
-      const repo = this.#repoForWorker(workerName);
+      const repo = this.#repoForWorker(workerName, dispatchId);
       await repo.delete(
         dispatch.modelType,
         dispatch.modelId,
@@ -364,14 +422,18 @@ export class DataPlane {
     return new Response(null, { status: 204 });
   }
 
-  async #openWriter(req: Request, workerName: string): Promise<Response> {
-    const dispatch = this.#activeDispatch(workerName);
+  async #openWriter(
+    req: Request,
+    workerName: string,
+    dispatchId?: string,
+  ): Promise<Response> {
+    const dispatch = this.#activeDispatch(workerName, dispatchId);
     const body = await req.json() as { specName?: string; name?: string };
     if (!body.specName || !body.name) {
       return errorResponse(400, "Expected { specName, name }");
     }
 
-    const repo = this.#repoForWorker(workerName);
+    const repo = this.#repoForWorker(workerName, dispatchId);
     const { createFileWriter } = createFileWriterFactory(
       repo,
       dispatch.modelType,
@@ -404,7 +466,7 @@ export class DataPlane {
     if (!session || session.workerName !== workerName) {
       return errorResponse(404, `Unknown writer '${writerId}'`);
     }
-    const dispatch = this.#activeDispatch(workerName);
+    const dispatch = this.#activeDispatch(workerName, session.dispatchId);
     if (dispatch.dispatchId !== session.dispatchId) {
       return errorResponse(409, "Writer belongs to a finished dispatch");
     }

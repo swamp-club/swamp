@@ -113,6 +113,10 @@ export const workerConnectCommand = new Command()
     "--idle-timeout <duration:string>",
     "Drain and exit 0 after being continuously idle for this duration (e.g. 30s, 5m, 1h) (env: SWAMP_WORKER_IDLE_TIMEOUT)",
   )
+  .option(
+    "--concurrency <n:string>",
+    'Number of concurrent dispatch slots ("auto" = CPU count, min 1). Default: 1 (env: SWAMP_WORKER_CONCURRENCY)',
+  )
   .action(async function (options: AnyOptions, urlArg?: string) {
     const cliCtx = createContext(options as GlobalOptions, [
       "worker",
@@ -171,6 +175,23 @@ export const workerConnectCommand = new Command()
       ? parseTimeout(idleTimeoutRaw, "--idle-timeout")
       : undefined;
 
+    const concurrencyRaw = (options.concurrency as string | undefined) ??
+      Deno.env.get("SWAMP_WORKER_CONCURRENCY");
+    let concurrency = 1;
+    if (concurrencyRaw !== undefined) {
+      if (concurrencyRaw === "auto") {
+        concurrency = Math.max(1, navigator.hardwareConcurrency ?? 1);
+      } else {
+        const parsed = Number(concurrencyRaw);
+        if (isNaN(parsed) || !Number.isInteger(parsed) || parsed < 1) {
+          throw new UserError(
+            '--concurrency must be a positive integer or "auto"',
+          );
+        }
+        concurrency = parsed;
+      }
+    }
+
     let requestDrain: ((reason: WorkerExitReason) => void) | null = null;
     let signalCount = 0;
     const ac = new AbortController();
@@ -198,6 +219,7 @@ export const workerConnectCommand = new Command()
         reconnect: options.reconnect !== false,
         maxDispatches: maxDispatchesRaw,
         idleTimeoutMs,
+        concurrency,
         signal: ac.signal,
         onStatus: (event) => {
           renderWorkerStatus(event, cliCtx.outputMode);

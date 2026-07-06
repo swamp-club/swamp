@@ -114,7 +114,8 @@ export interface WorkerSnapshot {
   swampVersion: string;
   status: "idle" | "busy" | "unverified" | "draining";
   connected: boolean;
-  dispatchId: string | null;
+  capacity: number;
+  activeDispatchIds: string[];
   verifyFailureReason?: string;
 }
 
@@ -131,7 +132,8 @@ interface WorkerEntry {
   /** Force-closes the current control socket (absent for test transports). */
   closeSocket: (() => void) | null;
   status: "idle" | "busy" | "unverified" | "draining";
-  dispatchId: string | null;
+  capacity: number;
+  activeDispatchIds: string[];
   verifyFailureReason?: string;
   graceTimer?: ReturnType<typeof setTimeout>;
   /** Fires at the token's `expiresAt` to disconnect the worker. */
@@ -291,8 +293,8 @@ export class WorkerGateway {
     if (entry.channel === null) {
       throw new Error(`Worker '${name}' is disconnected`);
     }
-    if (entry.status === "busy") {
-      throw new Error(`Worker '${name}' is busy`);
+    if (entry.activeDispatchIds.length >= entry.capacity) {
+      throw new Error(`Worker '${name}' is at capacity`);
     }
     if (entry.status === "unverified" && !params.probeMarker) {
       throw new Error(`Worker '${name}' is unverified`);
@@ -312,28 +314,37 @@ export class WorkerGateway {
       },
     );
     const dispatchStart = performance.now();
+    entry.activeDispatchIds.push(params.dispatchId);
     entry.status = "busy";
-    entry.dispatchId = params.dispatchId;
     await this.#recordTransition(() =>
       this.#runModelMethod({
         typeArg: WORKER_MODEL_TYPE.normalized,
         definitionName: workerDefinitionName(name),
         methodName: "set_status",
-        inputs: { status: "busy", dispatchId: params.dispatchId },
+        inputs: {
+          status: "busy",
+          activeDispatchIds: [...entry.activeDispatchIds],
+        },
       })
     );
 
+    const dispatchCredential = this.#sessions.issueForDispatch(
+      name,
+      params.dispatchId,
+    );
+
     try {
+      const dispatchParams = {
+        ...params,
+        dispatchCredential: dispatchCredential.credential,
+      };
       const raw = await entry.channel.call(
         WorkerMethod.dispatch,
-        params,
+        dispatchParams,
         {
           timeoutMs: null,
           signal: options?.signal,
           onStream: options?.onEvent,
-          // A cancelled dispatch must stay pending until the worker's
-          // serial slot has actually freed — otherwise the next dispatch
-          // races the worker's busy guard.
           waitForPeerOnCancel: true,
         },
       );
@@ -349,32 +360,54 @@ export class WorkerGateway {
       );
       return result;
     } finally {
-      entry.dispatchId = null;
-      // Cast: TS narrows status to "busy" from the assignment above, but
-      // #handleDrain may have changed it to "draining" across the await.
+      entry.activeDispatchIds = entry.activeDispatchIds.filter(
+        (id) => id !== params.dispatchId,
+      );
+      this.#sessions.revokeDispatch(name, params.dispatchId);
       const currentStatus = entry.status as string;
       if (entry.channel === null || entry.channel.closed) {
-        // The socket dropped mid-dispatch. The in-memory status returns to
-        // idle so a reconnect within the grace window is schedulable again;
-        // the durable record already says "disconnected".
-        if (currentStatus !== "draining") {
+        if (
+          currentStatus !== "draining" && entry.activeDispatchIds.length === 0
+        ) {
           entry.status = "idle";
         }
       } else if (currentStatus !== "draining") {
-        entry.status = "idle";
-        await this.#recordTransition(() =>
-          this.#runModelMethod({
-            typeArg: WORKER_MODEL_TYPE.normalized,
-            definitionName: workerDefinitionName(name),
-            methodName: "set_status",
-            inputs: { status: "idle" },
-          })
-        ).catch((error: unknown) => {
-          logger.warn("Failed to record idle status for {worker}: {error}", {
-            worker: name,
-            error: error instanceof Error ? error.message : String(error),
+        if (entry.activeDispatchIds.length === 0) {
+          entry.status = "idle";
+          await this.#recordTransition(() =>
+            this.#runModelMethod({
+              typeArg: WORKER_MODEL_TYPE.normalized,
+              definitionName: workerDefinitionName(name),
+              methodName: "set_status",
+              inputs: { status: "idle" },
+            })
+          ).catch((error: unknown) => {
+            logger.warn("Failed to record idle status for {worker}: {error}", {
+              worker: name,
+              error: error instanceof Error ? error.message : String(error),
+            });
           });
-        });
+        } else {
+          await this.#recordTransition(() =>
+            this.#runModelMethod({
+              typeArg: WORKER_MODEL_TYPE.normalized,
+              definitionName: workerDefinitionName(name),
+              methodName: "set_status",
+              inputs: {
+                status: "busy",
+                activeDispatchIds: [...entry.activeDispatchIds],
+              },
+            })
+          ).catch((error: unknown) => {
+            logger.warn(
+              "Failed to record dispatch-end status for {worker}: {error}",
+              {
+                worker: name,
+                error: error instanceof Error ? error.message : String(error),
+              },
+            );
+          });
+        }
         this.#options.onWorkerIdle?.(this.#snapshot(entry));
       }
     }
@@ -468,14 +501,20 @@ export class WorkerGateway {
         }
       }
 
+      const capacity = (params.resourceLimits?.capacity as number) ?? 1;
+
       if (reconnecting) {
         existing.channel = state.channel;
+        existing.capacity = capacity;
         await this.#runModelMethod({
           typeArg: WORKER_MODEL_TYPE.normalized,
           definitionName: workerDefinitionName(workerName),
           methodName: "set_status",
-          inputs: existing.status === "busy"
-            ? { status: "busy", dispatchId: existing.dispatchId ?? undefined }
+          inputs: existing.activeDispatchIds.length > 0
+            ? {
+              status: "busy",
+              activeDispatchIds: [...existing.activeDispatchIds],
+            }
             : { status: "idle" },
         });
       } else {
@@ -492,6 +531,7 @@ export class WorkerGateway {
             arch: params.arch,
             swampVersion: params.swampVersion,
             protocolVersion: params.protocolVersion,
+            capacity,
           },
         });
       }
@@ -513,7 +553,8 @@ export class WorkerGateway {
         channel: state.channel,
         closeSocket: state.closeSocket,
         status: initialStatus,
-        dispatchId: null,
+        capacity,
+        activeDispatchIds: [],
       };
       if (reconnecting && this.#options.verifyOnEnroll) {
         entry.status = "unverified";
@@ -639,7 +680,7 @@ export class WorkerGateway {
         entry.expiryTimer = undefined;
       }
       this.#workers.delete(name);
-      this.#sessions.revokeForWorker(name);
+      this.#sessions.revokeAllForWorker(name);
       logger.info("Draining worker {worker} disconnected — removed from pool", {
         worker: name,
       });
@@ -654,7 +695,7 @@ export class WorkerGateway {
         entry.expiryTimer = undefined;
       }
       this.#workers.delete(name);
-      this.#sessions.revokeForWorker(name);
+      this.#sessions.revokeAllForWorker(name);
       logger.info("Reconnection grace window expired for {worker}", {
         worker: name,
       });
@@ -808,7 +849,8 @@ export class WorkerGateway {
       swampVersion: entry.swampVersion,
       status: entry.status,
       connected: entry.channel !== null,
-      dispatchId: entry.dispatchId,
+      capacity: entry.capacity,
+      activeDispatchIds: [...entry.activeDispatchIds],
       verifyFailureReason: entry.verifyFailureReason,
     };
   }

@@ -49,6 +49,8 @@ export interface RunnerBridgeOptions {
   childChannel: RpcChannel;
   /** RPC channel to the orchestrator (over WebSocket). */
   orchestratorChannel: RpcChannel;
+  /** Dispatch ID injected into every bridged call for dispatch-scoped auth. */
+  dispatchId: string;
   /** Signal to abort all bridged calls (e.g. dispatch cancelled). */
   signal: AbortSignal;
   /** Receives stream events from the child to forward to the orchestrator. */
@@ -64,7 +66,7 @@ export interface RunnerBridgeOptions {
 export function bridgeCapabilityVerbs(
   options: RunnerBridgeOptions,
 ): void {
-  const { childChannel, orchestratorChannel, signal } = options;
+  const { childChannel, orchestratorChannel, dispatchId, signal } = options;
 
   for (const verb of BRIDGED_VERBS) {
     childChannel.register(
@@ -72,7 +74,8 @@ export function bridgeCapabilityVerbs(
       async (params: unknown, ctx: RpcHandlerContext) => {
         logger.debug("Bridging {verb} from runner to orchestrator", { verb });
         const combinedSignal = AbortSignal.any([signal, ctx.signal]);
-        return await orchestratorChannel.call(verb, params, {
+        const wrapped = { ...(params as Record<string, unknown>), dispatchId };
+        return await orchestratorChannel.call(verb, wrapped, {
           signal: combinedSignal,
           timeoutMs: null,
           onStream: options.onChildStream

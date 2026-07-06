@@ -26,8 +26,9 @@
  * capability RPCs between the child and the orchestrator over a
  * StdioTransport. A runner crash fails only that dispatch, not the worker.
  *
- * Dispatches execute SERIALLY — capacity 1, same as before. Phase 4b adds
- * concurrency slots on top.
+ * Each dispatch spawns one runner. The handler accepts up to `capacity`
+ * concurrent dispatches, rejecting with `worker_busy` when all slots are full.
+ * Capacity 1 is byte-for-byte identical to the prior serial behavior.
  */
 
 import { overlayEnvironment } from "../domain/remote/environment_snapshot.ts";
@@ -81,6 +82,8 @@ export interface DispatchHandlerOptions {
   dataPlaneUrl: string;
   /** Path to the shared bundle cache directory. */
   cacheDirPath: string;
+  /** Maximum concurrent dispatches (default 1). */
+  capacity: number;
   /** Receives dispatch start/finish notifications (connect-mode output). */
   onDispatch?: (event: WorkerDispatchEvent) => void;
   /** Override the runner command + args (test seam). */
@@ -96,7 +99,8 @@ export interface DispatchHandlerHandle {
 export function registerDispatchHandler(
   options: DispatchHandlerOptions,
 ): DispatchHandlerHandle {
-  let busy = false;
+  let activeRunners = 0;
+  const capacity = options.capacity;
   let draining = false;
   let onDrainComplete: (() => void) | null = null;
 
@@ -107,19 +111,19 @@ export function registerDispatchHandler(
         message: "Worker is draining — no new dispatches accepted",
       });
     }
-    if (busy) {
+    if (activeRunners >= capacity) {
       throw new RpcError({
         code: "worker_busy",
         message:
-          "Worker is already executing a dispatch (v1 dispatches are serial)",
+          `Worker is at capacity (${activeRunners}/${capacity} slots in use)`,
       });
     }
-    busy = true;
+    activeRunners++;
     try {
       return await handleDispatch(rawParams, ctx, options);
     } finally {
-      busy = false;
-      if (draining && onDrainComplete) {
+      activeRunners--;
+      if (draining && activeRunners === 0 && onDrainComplete) {
         onDrainComplete();
       }
     }
@@ -128,7 +132,7 @@ export function registerDispatchHandler(
   return {
     drain: () => {
       draining = true;
-      if (!busy) return Promise.resolve();
+      if (activeRunners === 0) return Promise.resolve();
       return new Promise<void>((resolve) => {
         onDrainComplete = resolve;
       });
@@ -176,8 +180,12 @@ async function handleDispatch(
     spawnEnv = overlayEnvironment(spawnEnv, traceSnapshot);
   }
 
+  const rawParams2 = rawParams as Record<string, unknown>;
+  const dispatchCredential = rawParams2.dispatchCredential as
+    | string
+    | undefined;
   const bootstrapParams: RunnerBootstrapParams = {
-    sessionCredential: options.sessionCredential(),
+    sessionCredential: dispatchCredential ?? options.sessionCredential(),
     dataPlaneUrl: options.dataPlaneUrl,
     cacheDirPath: options.cacheDirPath,
     dispatch: params,
@@ -200,6 +208,7 @@ async function handleDispatch(
   bridgeCapabilityVerbs({
     childChannel,
     orchestratorChannel: options.channel,
+    dispatchId: params.dispatchId,
     signal: cancelController.signal,
   });
 

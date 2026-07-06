@@ -49,6 +49,8 @@ export interface SchedulableWorker {
   arch: string;
   status: "idle" | "busy" | "unverified" | "draining";
   connected: boolean;
+  capacity: number;
+  activeDispatchIds: string[];
 }
 
 export type ScheduleDecision =
@@ -138,10 +140,10 @@ export function eligibleWorkers(
 }
 
 /**
- * Decide where a step goes right now. `dispatch` names an idle eligible
- * worker; `queue` means every eligible worker is busy, or no connected
- * worker matches the placement at all — the step waits for a pool change
- * either way.
+ * Decide where a step goes right now. `dispatch` names an eligible worker
+ * with available capacity; `queue` means every eligible worker is at
+ * capacity, or no connected worker matches the placement at all.
+ * Tiebreak: most free slots first, then name for determinism.
  */
 export function scheduleStep(
   placement: StepPlacement,
@@ -151,11 +153,19 @@ export function scheduleStep(
   if (eligible.length === 0) {
     return { kind: "queue" };
   }
-  const idle = eligible
-    .filter((worker) => worker.status === "idle")
-    .sort((a, b) => a.name.localeCompare(b.name));
-  if (idle.length === 0) {
+  const schedulable = eligible
+    .filter((worker) =>
+      worker.status !== "unverified" &&
+      worker.activeDispatchIds.length < worker.capacity
+    )
+    .sort((a, b) => {
+      const freeA = a.capacity - a.activeDispatchIds.length;
+      const freeB = b.capacity - b.activeDispatchIds.length;
+      if (freeA !== freeB) return freeB - freeA;
+      return a.name.localeCompare(b.name);
+    });
+  if (schedulable.length === 0) {
     return { kind: "queue" };
   }
-  return { kind: "dispatch", worker: idle[0] };
+  return { kind: "dispatch", worker: schedulable[0] };
 }

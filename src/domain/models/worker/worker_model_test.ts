@@ -29,6 +29,7 @@ const enrollArgs = {
   arch: "x86_64",
   swampVersion: "1.0.0",
   protocolVersion: 1,
+  capacity: 1,
 };
 
 Deno.test("workerModel: enroll records an idle worker", async () => {
@@ -42,7 +43,8 @@ Deno.test("workerModel: enroll records an idle worker", async () => {
   assertEquals(state.status, "idle");
   assertEquals(state.name, "ci-runner-3");
   assertEquals(state.instanceUuid, "uuid-1");
-  assertEquals(state.currentDispatchId, null);
+  assertEquals(state.capacity, 1);
+  assertEquals(state.activeDispatchIds, []);
   assertEquals((state.labels as Record<string, string>).region, "us-east");
 });
 
@@ -53,12 +55,12 @@ Deno.test("workerModel: set_status busy records the dispatch id", async () => {
   );
   await workerModel.methods.enroll.execute(enrollArgs, context);
   await workerModel.methods.set_status.execute(
-    { status: "busy", dispatchId: "d-42" },
+    { status: "busy", activeDispatchIds: ["d-42"] },
     context,
   );
   const state = store.get("state-main")!;
   assertEquals(state.status, "busy");
-  assertEquals(state.currentDispatchId, "d-42");
+  assertEquals(state.activeDispatchIds, ["d-42"]);
 });
 
 Deno.test("workerModel: set_status idle clears the dispatch id", async () => {
@@ -68,13 +70,13 @@ Deno.test("workerModel: set_status idle clears the dispatch id", async () => {
   );
   await workerModel.methods.enroll.execute(enrollArgs, context);
   await workerModel.methods.set_status.execute(
-    { status: "busy", dispatchId: "d-42" },
+    { status: "busy", activeDispatchIds: ["d-42"] },
     context,
   );
   await workerModel.methods.set_status.execute({ status: "idle" }, context);
   const state = store.get("state-main")!;
   assertEquals(state.status, "idle");
-  assertEquals(state.currentDispatchId, null);
+  assertEquals(state.activeDispatchIds, []);
 });
 
 Deno.test("workerModel: set_status disconnected stamps disconnectedAt", async () => {

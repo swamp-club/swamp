@@ -64,7 +64,8 @@ function snapshot(
     swampVersion: "1.0.0",
     status: "idle",
     connected: true,
-    dispatchId: null,
+    capacity: 1,
+    activeDispatchIds: [],
     ...overrides,
   };
 }
@@ -192,7 +193,7 @@ Deno.test("DispatchService: dispatches a step and completes its lease", async ()
     ["acquire", "complete"],
   );
   // The dispatch registry is empty again after completion.
-  assertEquals(h.dispatches.forWorker("w1"), null);
+  assertEquals(h.dispatches.forWorker("w1"), []);
 });
 
 Deno.test("DispatchService: extension bundles register by content fingerprint", async () => {
@@ -308,7 +309,14 @@ Deno.test("DispatchService: queues while eligible workers are busy", async () =>
 
 Deno.test("DispatchService: queue wait times out with a clear error", async () => {
   const h = createHarness({
-    workers: [snapshot({ name: "w1", status: "busy" })],
+    workers: [
+      snapshot({
+        name: "w1",
+        status: "busy",
+        activeDispatchIds: ["d-existing"],
+        capacity: 1,
+      }),
+    ],
     queueTimeoutMs: 50,
   });
   await assertRejects(
@@ -404,7 +412,14 @@ Deno.test("DispatchService: recordFirstWrite marks the lease exactly once", asyn
 
 Deno.test("DispatchService: abort during queue wait rejects", async () => {
   const h = createHarness({
-    workers: [snapshot({ name: "w1", status: "busy" })],
+    workers: [
+      snapshot({
+        name: "w1",
+        status: "busy",
+        activeDispatchIds: ["d-existing"],
+        capacity: 1,
+      }),
+    ],
   });
   const controller = new AbortController();
   const pending = h.service.executeRemote(

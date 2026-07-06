@@ -36,6 +36,8 @@ function worker(
     arch: "x86_64",
     status: "idle",
     connected: true,
+    capacity: 1,
+    activeDispatchIds: [],
     ...overrides,
   };
 }
@@ -65,7 +67,14 @@ Deno.test("scheduleStep: direct target matches by name or instance uuid", () => 
 });
 
 Deno.test("scheduleStep: direct target on a busy worker queues", () => {
-  const pool = [worker({ name: "a", status: "busy" })];
+  const pool = [
+    worker({
+      name: "a",
+      status: "busy",
+      activeDispatchIds: ["d1"],
+      capacity: 1,
+    }),
+  ];
   assertEquals(scheduleStep({ target: "a" }, pool).kind, "queue");
 });
 
@@ -107,8 +116,20 @@ Deno.test("scheduleStep: platform matches 'os' and 'os/arch' forms", () => {
 
 Deno.test("scheduleStep: all-busy eligible pool queues rather than failing", () => {
   const pool = [
-    worker({ name: "a", status: "busy", labels: { gpu: "true" } }),
-    worker({ name: "b", status: "busy", labels: { gpu: "true" } }),
+    worker({
+      name: "a",
+      status: "busy",
+      labels: { gpu: "true" },
+      activeDispatchIds: ["d1"],
+      capacity: 1,
+    }),
+    worker({
+      name: "b",
+      status: "busy",
+      labels: { gpu: "true" },
+      activeDispatchIds: ["d2"],
+      capacity: 1,
+    }),
   ];
   assertEquals(scheduleStep({ labels: { gpu: "true" } }, pool).kind, "queue");
 });
@@ -189,7 +210,14 @@ Deno.test("eligibleWorkers: targeted placement reaches unverified worker", () =>
 });
 
 Deno.test("scheduleStep: targeted dispatch to unverified worker queues", () => {
-  const pool = [worker({ name: "a", status: "unverified" })];
+  const pool = [
+    worker({
+      name: "a",
+      status: "unverified",
+      activeDispatchIds: ["d1"],
+      capacity: 1,
+    }),
+  ];
   const decision = scheduleStep({ target: "a" }, pool);
   assertEquals(decision.kind, "queue");
 });
@@ -213,4 +241,79 @@ Deno.test("eligibleWorkers: targeted placement excludes draining worker", () => 
 Deno.test("scheduleStep: draining workers are not scheduled", () => {
   const pool = [worker({ name: "a", status: "draining" })];
   assertEquals(scheduleStep({}, pool).kind, "queue");
+});
+
+Deno.test("scheduleStep: least-loaded tiebreak picks worker with most free slots", () => {
+  const pool = [
+    worker({
+      name: "heavy",
+      status: "busy",
+      capacity: 8,
+      activeDispatchIds: ["d1", "d2", "d3", "d4", "d5", "d6"],
+    }),
+    worker({
+      name: "light",
+      status: "busy",
+      capacity: 8,
+      activeDispatchIds: ["d1", "d2"],
+    }),
+  ];
+  const decision = scheduleStep({}, pool);
+  assertEquals(decision.kind, "dispatch");
+  assertEquals(
+    decision.kind === "dispatch" ? decision.worker.name : "",
+    "light",
+  );
+});
+
+Deno.test("scheduleStep: equal free slots breaks on name", () => {
+  const pool = [
+    worker({
+      name: "zulu",
+      status: "busy",
+      capacity: 8,
+      activeDispatchIds: ["d1", "d2", "d3", "d4"],
+    }),
+    worker({
+      name: "alpha",
+      status: "busy",
+      capacity: 8,
+      activeDispatchIds: ["d1", "d2", "d3", "d4"],
+    }),
+  ];
+  const decision = scheduleStep({}, pool);
+  assertEquals(decision.kind, "dispatch");
+  assertEquals(
+    decision.kind === "dispatch" ? decision.worker.name : "",
+    "alpha",
+  );
+});
+
+Deno.test("scheduleStep: worker at capacity is not schedulable", () => {
+  const pool = [
+    worker({
+      name: "full",
+      status: "busy",
+      capacity: 4,
+      activeDispatchIds: ["d1", "d2", "d3", "d4"],
+    }),
+  ];
+  assertEquals(scheduleStep({}, pool).kind, "queue");
+});
+
+Deno.test("scheduleStep: multi-capacity worker with available slots dispatches", () => {
+  const pool = [
+    worker({
+      name: "partial",
+      status: "busy",
+      capacity: 4,
+      activeDispatchIds: ["d1", "d2"],
+    }),
+  ];
+  const decision = scheduleStep({}, pool);
+  assertEquals(decision.kind, "dispatch");
+  assertEquals(
+    decision.kind === "dispatch" ? decision.worker.name : "",
+    "partial",
+  );
 });

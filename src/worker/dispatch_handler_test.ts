@@ -99,6 +99,7 @@ Deno.test("registerDispatchHandler: draining rejects with worker_draining", asyn
     sessionCredential: () => "test-cred",
     dataPlaneUrl: "http://localhost:0",
     cacheDirPath: "/tmp/test-cache",
+    capacity: 1,
   });
 
   await handle.drain();
@@ -123,6 +124,7 @@ Deno.test("registerDispatchHandler: drain() resolves immediately when idle", asy
     sessionCredential: () => "test-cred",
     dataPlaneUrl: "http://localhost:0",
     cacheDirPath: "/tmp/test-cache",
+    capacity: 1,
   });
 
   await handle.drain();
