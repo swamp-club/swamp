@@ -40,6 +40,7 @@ import { StepTask } from "../src/domain/workflows/step_task.ts";
 import { YamlWorkflowRepository } from "../src/infrastructure/persistence/yaml_workflow_repository.ts";
 import { requireInitializedRepoUnlocked } from "../src/cli/repo_context.ts";
 import { handleConnection } from "../src/serve/connection.ts";
+import { DefaultDatastorePathResolver } from "../src/infrastructure/persistence/default_datastore_path_resolver.ts";
 import { runWorkflowOverServer } from "../src/cli/remote_run.ts";
 import { createWorkflowRunRenderer } from "../src/presentation/renderers/workflow_run.ts";
 import type { WorkflowRunEvent } from "../src/libswamp/mod.ts";
@@ -101,6 +102,10 @@ async function withServeRepo(
       repoDir: resolvedRepoDir,
       repoContext,
       datastoreConfig,
+      datastoreResolver: new DefaultDatastorePathResolver(
+        resolvedRepoDir,
+        datastoreConfig,
+      ),
       syncService,
       authConfig: {
         mode: "none" as const,

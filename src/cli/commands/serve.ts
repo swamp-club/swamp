@@ -77,6 +77,7 @@ import {
   RunTrackerStore,
 } from "../../infrastructure/persistence/run_tracker_store.ts";
 import { swampPath } from "../../infrastructure/persistence/paths.ts";
+import { DefaultDatastorePathResolver } from "../../infrastructure/persistence/default_datastore_path_resolver.ts";
 import { sweepStaleRecords } from "../../serve/boot_reconciliation.ts";
 
 // deno-lint-ignore no-explicit-any
@@ -779,11 +780,16 @@ export const serveCommand = new Command()
       );
     }
 
+    const datastoreResolver = new DefaultDatastorePathResolver(
+      resolvedRepoDir,
+      datastoreConfig,
+    );
     const connectionCtx: import("../../serve/connection.ts").ConnectionContext =
       {
         repoDir: resolvedRepoDir,
         repoContext,
         datastoreConfig,
+        datastoreResolver,
         syncService,
         workerGateway,
         policySnapshotLoader,

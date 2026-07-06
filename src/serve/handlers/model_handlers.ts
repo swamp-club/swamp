@@ -486,7 +486,7 @@ export async function handleModelDelete(
 
   try {
     const libCtx = createLibSwampContext();
-    const deps = createModelDeleteDeps(ctx.repoDir);
+    const deps = createModelDeleteDeps(ctx.repoDir, ctx.datastoreResolver);
 
     const preview = await modelDeletePreview(
       libCtx,
@@ -622,7 +622,7 @@ export async function handleModelOutputData(
 
   try {
     const libCtx = createLibSwampContext();
-    const deps = createModelOutputDataDeps(ctx.repoDir);
+    const deps = createModelOutputDataDeps(ctx.repoDir, ctx.datastoreResolver);
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(
@@ -682,7 +682,7 @@ export async function handleModelOutputLogs(
 
   try {
     const libCtx = createLibSwampContext();
-    const deps = createModelOutputLogsDeps(ctx.repoDir);
+    const deps = createModelOutputLogsDeps(ctx.repoDir, ctx.datastoreResolver);
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(
