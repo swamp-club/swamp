@@ -23,6 +23,7 @@ import type {
   WorkerDaemonScheduler,
   WorkerDaemonStatus,
 } from "../../domain/worker/worker_daemon_scheduler.ts";
+import { UserError } from "../../domain/errors.ts";
 import type { LaunchdMode } from "../update/launchd_scheduler.ts";
 import {
   escapeSystemdPath,
@@ -113,14 +114,26 @@ export class SystemdWorkerScheduler implements WorkerDaemonScheduler {
   async enable(config: WorkerDaemonConfig): Promise<void> {
     await this.disable();
 
-    const dir = systemdUnitDir(this.mode);
-    await Deno.mkdir(dir, { recursive: true });
+    try {
+      const dir = systemdUnitDir(this.mode);
+      await Deno.mkdir(dir, { recursive: true });
 
-    await atomicWriteTextFile(
-      servicePath(this.mode),
-      buildWorkerService(config, this.mode),
-      { mode: 0o600 },
-    );
+      await atomicWriteTextFile(
+        servicePath(this.mode),
+        buildWorkerService(config, this.mode),
+        { mode: 0o600 },
+      );
+    } catch (err: unknown) {
+      if (err instanceof Deno.errors.PermissionDenied) {
+        const dir = systemdUnitDir(this.mode);
+        throw new UserError(
+          `Permission denied writing to ${dir}.\n\n` +
+            `  Option 1: Run with sudo for a system-wide service\n` +
+            `  Option 2: Use --user to install as a per-user service`,
+        );
+      }
+      throw err;
+    }
 
     await systemctl(this.mode, "daemon-reload");
     const result = await systemctl(

@@ -48,6 +48,7 @@ import {
   renderDaemonDisabled,
   renderDaemonEnabled,
   renderDaemonStatus,
+  type ServiceMode,
 } from "../../presentation/output/serve_daemon_output.ts";
 import { groupCommandAction } from "../group_action.ts";
 import { ScheduledExecutionService } from "../../libswamp/mod.ts";
@@ -253,6 +254,10 @@ const daemonEnableCommand = new Command()
   .name("enable")
   .description("Enable swamp serve as a system daemon (launchd/systemd)")
   .option(
+    "--user",
+    "Install as a per-user service (systemd --user / launchd agent)",
+  )
+  .option(
     "--repo-dir <dir:string>",
     "Repository directory (env: SWAMP_REPO_DIR)",
   )
@@ -336,7 +341,9 @@ const daemonEnableCommand = new Command()
       "enable",
     ]);
     const repoDir = resolveRepoDir(options.repoDir as string | undefined);
-    const mode = await resolveServiceMode();
+    const mode = await resolveServiceMode({
+      user: options.user as boolean | undefined,
+    });
     const scheduler = await createServiceScheduler({ mode });
     const extraArgs = collectServeExtraArgs(options);
 
@@ -350,12 +357,19 @@ const daemonEnableCommand = new Command()
       extraArgs: extraArgs.length > 0 ? extraArgs : undefined,
     });
 
-    renderDaemonEnabled(ctx.outputMode);
+    const svcMode: ServiceMode = mode === "agent"
+      ? "user service"
+      : "system service";
+    renderDaemonEnabled(ctx.outputMode, svcMode);
   });
 
 const daemonDisableCommand = new Command()
   .name("disable")
   .description("Disable and remove the swamp serve daemon")
+  .option(
+    "--user",
+    "Target the per-user service (systemd --user / launchd agent)",
+  )
   .example("Disable daemon", "swamp serve daemon disable")
   .action(async function (options: AnyOptions) {
     const ctx = createContext(options as GlobalOptions, [
@@ -363,17 +377,26 @@ const daemonDisableCommand = new Command()
       "daemon",
       "disable",
     ]);
-    const mode = await resolveServiceMode();
+    const mode = await resolveServiceMode({
+      user: options.user as boolean | undefined,
+    });
     const scheduler = await createServiceScheduler({ mode });
 
     await scheduler.disable();
 
-    renderDaemonDisabled(ctx.outputMode);
+    const svcMode: ServiceMode = mode === "agent"
+      ? "user service"
+      : "system service";
+    renderDaemonDisabled(ctx.outputMode, svcMode);
   });
 
 const daemonStatusCommand = new Command()
   .name("status")
   .description("Show the status of the swamp serve daemon")
+  .option(
+    "--user",
+    "Target the per-user service (systemd --user / launchd agent)",
+  )
   .example("Check daemon status", "swamp serve daemon status")
   .action(async function (options: AnyOptions) {
     const ctx = createContext(options as GlobalOptions, [
@@ -381,7 +404,9 @@ const daemonStatusCommand = new Command()
       "daemon",
       "status",
     ]);
-    const mode = await resolveServiceMode();
+    const mode = await resolveServiceMode({
+      user: options.user as boolean | undefined,
+    });
     const scheduler = await createServiceScheduler({ mode });
 
     const status = await scheduler.status();

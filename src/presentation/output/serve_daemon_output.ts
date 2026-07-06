@@ -22,23 +22,47 @@ import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import type { ServiceStatus } from "../../domain/serve/service_scheduler.ts";
 import type { OutputMode } from "./output.ts";
 
-export function renderDaemonEnabled(mode: OutputMode): void {
+export type ServiceMode = "user service" | "system service";
+
+export function renderDaemonEnabled(
+  mode: OutputMode,
+  serviceMode: ServiceMode,
+): void {
   if (mode === "json") {
     // deno-lint-ignore no-console
-    console.log(JSON.stringify({ enabled: true }, null, 2));
+    console.log(
+      JSON.stringify(
+        { enabled: true, serviceMode },
+        null,
+        2,
+      ),
+    );
   } else {
     writeOutput(
-      `${green("✓")} Daemon enabled — swamp serve will start automatically`,
+      `${
+        green("✓")
+      } Daemon enabled as ${serviceMode} — swamp serve will start automatically`,
     );
   }
 }
 
-export function renderDaemonDisabled(mode: OutputMode): void {
+export function renderDaemonDisabled(
+  mode: OutputMode,
+  serviceMode: ServiceMode,
+): void {
   if (mode === "json") {
     // deno-lint-ignore no-console
-    console.log(JSON.stringify({ enabled: false }, null, 2));
+    console.log(
+      JSON.stringify(
+        { enabled: false, serviceMode },
+        null,
+        2,
+      ),
+    );
   } else {
-    writeOutput(`${green("✓")} Daemon disabled — service definition removed`);
+    writeOutput(
+      `${green("✓")} Daemon disabled — ${serviceMode} definition removed`,
+    );
   }
 }
 

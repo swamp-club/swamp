@@ -38,26 +38,45 @@ function captureLogs(run: () => void): string {
   return logs.join("\n");
 }
 
-Deno.test("renderWorkerDaemonEnabled: json mode outputs enabled true", () => {
-  const output = captureLogs(() => renderWorkerDaemonEnabled("json"));
+Deno.test("renderWorkerDaemonEnabled: json mode outputs enabled true with user service", () => {
+  const output = captureLogs(() =>
+    renderWorkerDaemonEnabled("json", "user service")
+  );
   const parsed = JSON.parse(output);
-  assertEquals(parsed, { enabled: true });
+  assertEquals(parsed, { enabled: true, serviceMode: "user service" });
+});
+
+Deno.test("renderWorkerDaemonEnabled: json mode system service", () => {
+  const output = captureLogs(() =>
+    renderWorkerDaemonEnabled("json", "system service")
+  );
+  const parsed = JSON.parse(output);
+  assertEquals(parsed, { enabled: true, serviceMode: "system service" });
 });
 
 Deno.test("renderWorkerDaemonEnabled: log mode mentions worker daemon", () => {
-  const output = captureLogs(() => renderWorkerDaemonEnabled("log"));
+  const output = captureLogs(() =>
+    renderWorkerDaemonEnabled("log", "user service")
+  );
   assertStringIncludes(stripAnsiCode(output), "Worker daemon enabled");
+  assertStringIncludes(stripAnsiCode(output), "user service");
 });
 
-Deno.test("renderWorkerDaemonDisabled: json mode outputs enabled false", () => {
-  const output = captureLogs(() => renderWorkerDaemonDisabled("json"));
+Deno.test("renderWorkerDaemonDisabled: json mode outputs enabled false with service mode", () => {
+  const output = captureLogs(() =>
+    renderWorkerDaemonDisabled("json", "user service")
+  );
   const parsed = JSON.parse(output);
-  assertEquals(parsed, { enabled: false });
+  assertEquals(parsed, { enabled: false, serviceMode: "user service" });
 });
 
 Deno.test("renderWorkerDaemonDisabled: log mode mentions disabled", () => {
-  const output = captureLogs(() => renderWorkerDaemonDisabled("log"));
-  assertStringIncludes(stripAnsiCode(output), "Worker daemon disabled");
+  const output = captureLogs(() =>
+    renderWorkerDaemonDisabled("log", "system service")
+  );
+  const stripped = stripAnsiCode(output);
+  assertStringIncludes(stripped, "Worker daemon disabled");
+  assertStringIncludes(stripped, "system service");
 });
 
 Deno.test("renderWorkerDaemonStatus: json mode outputs full status", () => {

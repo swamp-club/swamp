@@ -21,27 +21,48 @@ import { bold, dim, green, red } from "@std/fmt/colors";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import type { WorkerDaemonStatus } from "../../domain/worker/worker_daemon_scheduler.ts";
 import type { OutputMode } from "./output.ts";
+import type { ServiceMode } from "./serve_daemon_output.ts";
 
-export function renderWorkerDaemonEnabled(mode: OutputMode): void {
+export function renderWorkerDaemonEnabled(
+  mode: OutputMode,
+  serviceMode: ServiceMode,
+): void {
   if (mode === "json") {
     // deno-lint-ignore no-console
-    console.log(JSON.stringify({ enabled: true }, null, 2));
+    console.log(
+      JSON.stringify(
+        { enabled: true, serviceMode },
+        null,
+        2,
+      ),
+    );
   } else {
     writeOutput(
       `${
         green("✓")
-      } Worker daemon enabled — swamp worker connect will start automatically`,
+      } Worker daemon enabled as ${serviceMode} — swamp worker connect will start automatically`,
     );
   }
 }
 
-export function renderWorkerDaemonDisabled(mode: OutputMode): void {
+export function renderWorkerDaemonDisabled(
+  mode: OutputMode,
+  serviceMode: ServiceMode,
+): void {
   if (mode === "json") {
     // deno-lint-ignore no-console
-    console.log(JSON.stringify({ enabled: false }, null, 2));
+    console.log(
+      JSON.stringify(
+        { enabled: false, serviceMode },
+        null,
+        2,
+      ),
+    );
   } else {
     writeOutput(
-      `${green("✓")} Worker daemon disabled — service definition removed`,
+      `${
+        green("✓")
+      } Worker daemon disabled — ${serviceMode} definition removed`,
     );
   }
 }
