@@ -88,7 +88,8 @@ export interface WorkerListItem {
   instanceUuid: string;
   enrolledAt: string;
   lastSeenAt: string;
-  currentDispatchId: string | null;
+  capacity: number;
+  activeDispatchIds: string[];
 }
 
 /** Data payload for the worker list completed event. */
@@ -232,7 +233,8 @@ export async function* workerList(
             instanceUuid: state.instanceUuid,
             enrolledAt: state.enrolledAt,
             lastSeenAt: state.lastSeenAt,
-            currentDispatchId: state.currentDispatchId,
+            capacity: state.capacity ?? 1,
+            activeDispatchIds: state.activeDispatchIds ?? [],
           });
         }
         workers.sort((a, b) => a.name.localeCompare(b.name));

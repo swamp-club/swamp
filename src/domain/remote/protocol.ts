@@ -39,7 +39,7 @@ import { z } from "zod";
  * dispatch, never mid-run. Also pins the capability-verb inventory — any
  * change to the verbs below requires a version bump.
  */
-export const REMOTE_PROTOCOL_VERSION = 3;
+export const REMOTE_PROTOCOL_VERSION = 4;
 
 // ── RPC framing ──────────────────────────────────────────────────────────
 

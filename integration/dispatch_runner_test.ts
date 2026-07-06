@@ -225,6 +225,7 @@ Deno.test("capability bridge: orchestrator error message propagates to runner", 
   bridgeCapabilityVerbs({
     childChannel: runnerPair.b,
     orchestratorChannel: orchPair.a,
+    dispatchId: "test-dispatch",
     signal: AbortSignal.timeout(5_000),
   });
 

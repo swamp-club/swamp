@@ -28,7 +28,10 @@ Deno.test("SessionCredentialService: issue then verify returns the worker id", (
   const clock = { nowMs: 0 };
   const service = serviceAt(clock);
   const record = service.issue("worker-1");
-  assertEquals(service.verify(record.credential), "worker-1");
+  assertEquals(service.verify(record.credential), {
+    workerId: "worker-1",
+    dispatchId: undefined,
+  });
   assertEquals(record.expiresAtMs, 1000);
 });
 
@@ -56,7 +59,7 @@ Deno.test("SessionCredentialService: refresh slides the window with a new creden
   assertEquals(second!.expiresAtMs, 1900);
   // The old credential is revoked by the refresh.
   assertEquals(service.verify(first.credential), null);
-  assertEquals(service.verify(second!.credential), "worker-1");
+  assertEquals(service.verify(second!.credential)?.workerId, "worker-1");
 });
 
 Deno.test("SessionCredentialService: refresh of an expired credential fails", () => {
@@ -73,7 +76,7 @@ Deno.test("SessionCredentialService: issue revokes the worker's prior credential
   const first = service.issue("worker-1");
   const second = service.issue("worker-1");
   assertEquals(service.verify(first.credential), null);
-  assertEquals(service.verify(second.credential), "worker-1");
+  assertEquals(service.verify(second.credential)?.workerId, "worker-1");
 });
 
 Deno.test("SessionCredentialService: revokeForWorker invalidates the credential", () => {
@@ -90,6 +93,6 @@ Deno.test("SessionCredentialService: credentials are distinct per worker", () =>
   const a = service.issue("worker-a");
   const b = service.issue("worker-b");
   assertNotEquals(a.credential, b.credential);
-  assertEquals(service.verify(a.credential), "worker-a");
-  assertEquals(service.verify(b.credential), "worker-b");
+  assertEquals(service.verify(a.credential)?.workerId, "worker-a");
+  assertEquals(service.verify(b.credential)?.workerId, "worker-b");
 });

@@ -143,7 +143,7 @@ Deno.test("WorkerGateway: enrollment redeems the token, records the worker, issu
   assertEquals(result.protocolVersion, REMOTE_PROTOCOL_VERSION);
   assertEquals(typeof result.sessionCredential, "string");
   assertEquals(
-    h.gateway.sessions.verify(result.sessionCredential),
+    h.gateway.sessions.verify(result.sessionCredential)?.workerId,
     "ci-runner-3",
   );
 
@@ -214,7 +214,7 @@ Deno.test("WorkerGateway: session refresh issues a fresh sliding credential", as
     { sessionCredential: string; sessionExpiresAtMs: number }
   >(RemoteMethod.sessionRefresh, {});
   assertEquals(
-    h.gateway.sessions.verify(refreshed.sessionCredential),
+    h.gateway.sessions.verify(refreshed.sessionCredential)?.workerId,
     "ci-runner-3",
   );
   assertEquals(h.gateway.sessions.verify(first.sessionCredential), null);
@@ -287,7 +287,7 @@ Deno.test("WorkerGateway: dispatch to a busy worker rejects", async () => {
   await assertRejects(
     () => h.gateway.dispatch("ci-runner-3", dispatchParams("d-2")),
     Error,
-    "busy",
+    "at capacity",
   );
   gate.resolve();
   await first;

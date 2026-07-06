@@ -204,7 +204,9 @@ async function withHarness(
     const plane = new DataPlane({
       repoDir: tempDir,
       repoContext: { unifiedDataRepo: repo } as unknown as RepositoryContext,
-      sessions: { verify: (c) => (c === "good-credential" ? "w1" : null) },
+      sessions: {
+        verify: (c) => c === "good-credential" ? { workerId: "w1" } : null,
+      },
       dispatches,
       bundles,
       onFirstWrite: (d) => {

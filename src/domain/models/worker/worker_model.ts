@@ -62,8 +62,14 @@ export const WorkerStateSchema = z.object({
   enrolledAt: z.string().datetime(),
   lastSeenAt: z.string().datetime(),
   disconnectedAt: z.string().datetime().optional(),
-  currentDispatchId: z.string().nullable().describe(
-    "Dispatch in flight on this worker, or null when idle",
+  capacity: z.number().int().min(1).default(1).describe(
+    "Maximum concurrent dispatch slots advertised at enrollment",
+  ),
+  activeDispatchIds: z.array(z.string()).default([]).describe(
+    "Dispatches currently in flight on this worker",
+  ),
+  currentDispatchId: z.string().nullable().optional().describe(
+    "Deprecated: migration fallback from pre-4b single-dispatch state",
   ),
   verifyFailureReason: z.string().optional().describe(
     "Why the enrollment verification probe failed (present only when status is 'unverified')",
@@ -98,6 +104,7 @@ const EnrollArgsSchema = z.object({
   arch: z.string(),
   swampVersion: z.string(),
   protocolVersion: z.number().int(),
+  capacity: z.number().int().min(1).default(1),
 });
 
 async function enroll(
@@ -117,7 +124,8 @@ async function enroll(
     protocolVersion: args.protocolVersion,
     enrolledAt: now,
     lastSeenAt: now,
-    currentDispatchId: null,
+    capacity: args.capacity,
+    activeDispatchIds: [],
   };
   const handle = await context.writeResource!("state", STATE_DATA_NAME, state);
   return { dataHandles: [handle] };
@@ -126,6 +134,7 @@ async function enroll(
 const SetStatusArgsSchema = z.object({
   status: WorkerStatusSchema,
   dispatchId: z.string().optional(),
+  activeDispatchIds: z.array(z.string()).optional(),
   verifyFailureReason: z.string().optional(),
 });
 
@@ -135,13 +144,14 @@ async function setStatus(
 ): Promise<MethodResult> {
   const current = await readState(context);
   const now = new Date().toISOString();
+  const dispatchIds = args.activeDispatchIds ?? current.activeDispatchIds ?? [];
   const state: WorkerState = {
     ...current,
     status: args.status,
     lastSeenAt: now,
-    currentDispatchId: args.status === "busy"
-      ? (args.dispatchId ?? null)
-      : null,
+    activeDispatchIds: args.status === "idle" || args.status === "disconnected"
+      ? []
+      : dispatchIds,
     ...(args.status === "disconnected" ? { disconnectedAt: now } : {}),
     verifyFailureReason: args.status === "unverified"
       ? args.verifyFailureReason
@@ -156,7 +166,7 @@ async function setStatus(
  */
 export const workerModel: ModelDefinition = defineModel({
   type: WORKER_MODEL_TYPE,
-  version: "2026.07.05.1",
+  version: "2026.07.06.1",
   resources: {
     "state": {
       description:

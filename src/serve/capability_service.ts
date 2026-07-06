@@ -60,7 +60,7 @@ import {
 } from "../domain/remote/protocol.ts";
 import type { RpcChannel } from "../domain/remote/rpc_channel.ts";
 import { jsonSafeClone } from "./serializer.ts";
-import type { DispatchRegistry } from "./dispatch_registry.ts";
+import type { ActiveDispatch, DispatchRegistry } from "./dispatch_registry.ts";
 import { GRANT_MODEL_TYPE } from "../domain/models/access/grant_model.ts";
 import { GROUP_MODEL_TYPE } from "../domain/models/access/group_model.ts";
 import { SERVER_TOKEN_MODEL_TYPE } from "../domain/models/access/server_token_model.ts";
@@ -146,11 +146,12 @@ export class CapabilityService {
 
   #assertDispatchScope(
     workerName: string,
+    dispatchId: string | undefined,
     paramModelType: string,
     verb: string,
   ): void {
     if (!this.#dispatches) return;
-    const dispatch = this.#dispatches.forWorker(workerName);
+    const dispatch = this.#resolveDispatch(workerName, dispatchId, verb);
     if (!dispatch) {
       throw new Error(
         `${verb}: worker '${workerName}' has no active dispatch`,
@@ -164,18 +165,52 @@ export class CapabilityService {
     }
   }
 
-  #repoForWorker(workerName: string): UnifiedDataRepository {
-    const dispatch = this.#dispatches?.forWorker(workerName);
-    return dispatch?.dataRepo ?? this.#repoContext.unifiedDataRepo;
+  #resolveDispatch(
+    workerName: string,
+    dispatchId: string | undefined,
+    verb: string,
+  ): ActiveDispatch | null {
+    if (!this.#dispatches) return null;
+    if (dispatchId) {
+      return this.#dispatches.forDispatch(workerName, dispatchId);
+    }
+    const dispatches = this.#dispatches.forWorker(workerName);
+    if (dispatches.length === 1) return dispatches[0];
+    if (dispatches.length === 0) return null;
+    throw new Error(
+      `${verb}: worker '${workerName}' has ${dispatches.length} active dispatches — dispatchId is required`,
+    );
+  }
+
+  #repoForWorker(
+    workerName: string,
+    dispatchId?: string,
+  ): UnifiedDataRepository {
+    if (this.#dispatches && dispatchId) {
+      const dispatch = this.#dispatches.forDispatch(workerName, dispatchId);
+      if (dispatch?.dataRepo) return dispatch.dataRepo;
+    }
+    if (this.#dispatches) {
+      const dispatches = this.#dispatches.forWorker(workerName);
+      if (dispatches.length === 1 && dispatches[0].dataRepo) {
+        return dispatches[0].dataRepo;
+      }
+    }
+    return this.#repoContext.unifiedDataRepo;
   }
 
   async getData(
     workerName: string,
-    params: GetDataParams,
+    params: GetDataParams & { dispatchId?: string },
   ): Promise<GetDataResult> {
-    this.#assertDispatchScope(workerName, params.modelType, "getData");
+    this.#assertDispatchScope(
+      workerName,
+      params.dispatchId,
+      params.modelType,
+      "getData",
+    );
     const type = ModelType.create(params.modelType);
-    const repo = this.#repoForWorker(workerName);
+    const repo = this.#repoForWorker(workerName, params.dispatchId);
     let data: Data | null = null;
     if (params.dataId !== undefined) {
       data = await repo.findById(
@@ -216,13 +251,17 @@ export class CapabilityService {
 
   async queryData(
     workerName: string,
-    params: QueryDataParams,
+    params: QueryDataParams & { dispatchId?: string },
   ): Promise<unknown[]> {
     if (params.predicate.length > MAX_CAPABILITY_PREDICATE_LENGTH) {
       throw new Error("Query predicate exceeds maximum length");
     }
     if (this.#dispatches) {
-      const dispatch = this.#dispatches.forWorker(workerName);
+      const dispatch = this.#resolveDispatch(
+        workerName,
+        params.dispatchId,
+        "queryData",
+      );
       if (!dispatch) {
         throw new Error(
           `queryData: worker '${workerName}' has no active dispatch`,
@@ -253,9 +292,9 @@ export class CapabilityService {
 
   listVersions(
     workerName: string,
-    params: ListVersionsParams,
+    params: ListVersionsParams & { dispatchId?: string },
   ): Promise<number[]> {
-    const repo = this.#repoForWorker(workerName);
+    const repo = this.#repoForWorker(workerName, params.dispatchId);
     return repo.listVersions(
       ModelType.create(params.modelType),
       params.modelId,
@@ -265,11 +304,16 @@ export class CapabilityService {
 
   async deleteData(
     workerName: string,
-    params: DeleteDataParams,
+    params: DeleteDataParams & { dispatchId?: string },
   ): Promise<{ deleted: boolean }> {
-    this.#assertDispatchScope(workerName, params.modelType, "deleteData");
+    this.#assertDispatchScope(
+      workerName,
+      params.dispatchId,
+      params.modelType,
+      "deleteData",
+    );
     const type = ModelType.create(params.modelType);
-    const repo = this.#repoForWorker(workerName);
+    const repo = this.#repoForWorker(workerName, params.dispatchId);
     if (params.removeLatestMarkerOnly) {
       await repo.removeLatestMarker(
         type,
@@ -289,12 +333,14 @@ export class CapabilityService {
 
   async resolveSecret(
     workerName: string,
-    params: ResolveSecretParams,
+    params: ResolveSecretParams & { dispatchId?: string },
   ): Promise<{ value: unknown }> {
-    // Secrets are not model-type-scoped (any method may reference a vault
-    // secret), so we verify only that the worker has an active dispatch.
     if (this.#dispatches) {
-      const dispatch = this.#dispatches.forWorker(workerName);
+      const dispatch = this.#resolveDispatch(
+        workerName,
+        params.dispatchId,
+        "resolveSecret",
+      );
       if (!dispatch) {
         throw new Error(
           `resolveSecret: worker '${workerName}' has no active dispatch`,
@@ -315,15 +361,14 @@ export class CapabilityService {
 
   async putSecret(
     workerName: string,
-    params: PutSecretParams,
+    params: PutSecretParams & { dispatchId?: string },
   ): Promise<{ ok: boolean }> {
-    // Secrets are not model-type-scoped: any method may write to any vault
-    // key via context.vaultService.put, so we verify only that the worker
-    // has an active dispatch (not that the vault key relates to the
-    // dispatched model type). deleteData uses the stricter
-    // #assertDispatchScope because data artifacts are model-type-addressed.
     if (this.#dispatches) {
-      const dispatch = this.#dispatches.forWorker(workerName);
+      const dispatch = this.#resolveDispatch(
+        workerName,
+        params.dispatchId,
+        "putSecret",
+      );
       if (!dispatch) {
         throw new Error(
           `putSecret: worker '${workerName}' has no active dispatch`,

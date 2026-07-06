@@ -18,12 +18,10 @@
 // along with Swamp.  If not, see <https://www.gnu.org/licenses/>.
 
 /**
- * Registry of in-flight dispatches, keyed by worker name. The dispatcher
- * registers a dispatch before sending it and unregisters it when the result
- * (or failure) lands; the data plane consults it to authorize and shape a
- * worker's writes — a worker may only write through the declared output
- * specs of the model method it is currently leased to run (see
- * design/remote-execution.md, "Authenticating the data plane").
+ * Registry of in-flight dispatches, keyed by (worker name, dispatch id).
+ * A worker may have up to its capacity in concurrent active dispatches.
+ * The data plane and capability service consult this to authorize and
+ * scope a worker's operations to the correct dispatch.
  */
 
 import type { UnifiedDataRepository } from "../domain/data/repositories.ts";
@@ -46,25 +44,37 @@ export interface ActiveDispatch {
 }
 
 export class DispatchRegistry {
-  readonly #byWorker = new Map<string, ActiveDispatch>();
+  readonly #byWorker = new Map<string, Map<string, ActiveDispatch>>();
 
   register(dispatch: ActiveDispatch): void {
-    if (this.#byWorker.has(dispatch.workerName)) {
-      throw new Error(
-        `Worker '${dispatch.workerName}' already has an active dispatch`,
-      );
+    let dispatches = this.#byWorker.get(dispatch.workerName);
+    if (!dispatches) {
+      dispatches = new Map();
+      this.#byWorker.set(dispatch.workerName, dispatches);
     }
-    this.#byWorker.set(dispatch.workerName, dispatch);
+    dispatches.set(dispatch.dispatchId, dispatch);
   }
 
   unregister(workerName: string, dispatchId: string): void {
-    const active = this.#byWorker.get(workerName);
-    if (active && active.dispatchId === dispatchId) {
-      this.#byWorker.delete(workerName);
+    const dispatches = this.#byWorker.get(workerName);
+    if (dispatches) {
+      dispatches.delete(dispatchId);
+      if (dispatches.size === 0) {
+        this.#byWorker.delete(workerName);
+      }
     }
   }
 
-  forWorker(workerName: string): ActiveDispatch | null {
-    return this.#byWorker.get(workerName) ?? null;
+  forDispatch(workerName: string, dispatchId: string): ActiveDispatch | null {
+    return this.#byWorker.get(workerName)?.get(dispatchId) ?? null;
+  }
+
+  forWorker(workerName: string): ActiveDispatch[] {
+    const dispatches = this.#byWorker.get(workerName);
+    return dispatches ? [...dispatches.values()] : [];
+  }
+
+  activeCount(workerName: string): number {
+    return this.#byWorker.get(workerName)?.size ?? 0;
   }
 }

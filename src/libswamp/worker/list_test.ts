@@ -95,7 +95,8 @@ function workerAttributes(
     protocolVersion: 1,
     enrolledAt: "2026-06-09T00:00:00.000Z",
     lastSeenAt: "2026-06-09T01:00:00.000Z",
-    currentDispatchId: null,
+    capacity: 1,
+    activeDispatchIds: [],
     ...overrides,
   };
 }
@@ -197,7 +198,8 @@ Deno.test("workerList: yields completed with mapped workers sorted by name", asy
       "state-main",
       workerAttributes("worker-a", {
         status: "busy",
-        currentDispatchId: "dispatch-7",
+        capacity: 1,
+        activeDispatchIds: ["dispatch-7"],
       }),
     ),
   ]);
@@ -216,7 +218,7 @@ Deno.test("workerList: yields completed with mapped workers sorted by name", asy
     ["worker-a", "worker-b"],
   );
   assertEquals(completed.data.workers[0].status, "busy");
-  assertEquals(completed.data.workers[0].currentDispatchId, "dispatch-7");
+  assertEquals(completed.data.workers[0].activeDispatchIds, ["dispatch-7"]);
   assertEquals(completed.data.workers[1].labels, { os: "linux" });
   assertEquals(completed.data.workers[1].platform, "linux");
   assertEquals(completed.data.workers[1].arch, "x86_64");
