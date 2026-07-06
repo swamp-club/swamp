@@ -138,6 +138,38 @@ export interface MethodExecutionEvent {
 }
 
 /**
+ * Record returned by cross-model data reads.
+ * Represents a single version of a named data item with parsed content.
+ */
+export interface DataRecord {
+  id: string;
+  name: string;
+  version: number;
+  isLatest: boolean;
+  createdAt: string;
+  namespace: string;
+  attributes: Record<string, unknown>;
+  tags: Record<string, string>;
+  modelName: string;
+  modelId: string;
+  modelType: string;
+  specName: string;
+  dataType: string;
+  contentType: string;
+  lifetime: string;
+  ownerType: string;
+  streaming: boolean;
+  size: number;
+  content: string;
+  ownerRef: string;
+  workflowRunId: string;
+  workflowName: string;
+  jobName: string;
+  stepName: string;
+  source: string;
+}
+
+/**
  * The context object passed to extension model `execute` functions.
  *
  * This is the extension-author-facing subset of swamp's internal MethodContext.
@@ -180,6 +212,16 @@ export interface MethodContext<TGlobalArgs = Record<string, unknown>> {
   ) => Promise<Record<string, unknown> | null>;
   /** Create a file writer for binary/streaming content. */
   createFileWriter: (specName: string, name: string) => DataWriter;
+  /**
+   * Read data from another model by name.
+   * Resolves the model name, reads all data items, parses JSON content,
+   * and resolves vault references. Optionally filter by spec name.
+   * Returns an empty array if the model doesn't exist or has no data.
+   */
+  readModelData: (
+    modelName: string,
+    specName?: string,
+  ) => Promise<DataRecord[]>;
   /**
    * Build a fresh, isolated cel-js `Environment` seeded with swamp's
    * baseline arithmetic-overload registrations. Use this to evaluate

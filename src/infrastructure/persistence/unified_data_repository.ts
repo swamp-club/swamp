@@ -37,6 +37,7 @@ import {
   ModelType,
   type ModelTypeInput,
 } from "../../domain/models/model_type.ts";
+import { isUuid } from "../../domain/models/model_lookup.ts";
 import type {
   HydrateFileHook,
   MarkDirtyHook,
@@ -522,6 +523,10 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     type: ModelTypeInput,
     modelId: string,
   ): Promise<Data[]> {
+    if (!isUuid(modelId)) {
+      logger
+        .warn`findAllForModel called with model name ${modelId} instead of a UUID — use context.readModelData(${modelId}) for cross-model access by name`;
+    }
     type = coerceModelType(type);
     const dataDir = this.getModelDataDir(type, modelId);
     const results: Data[] = [];
@@ -724,6 +729,10 @@ export class FileSystemUnifiedDataRepository implements UnifiedDataRepository {
     dataName: string,
     version?: number,
   ): Promise<Uint8Array | null> {
+    if (!isUuid(modelId)) {
+      logger
+        .warn`getContent called with model name ${modelId} instead of a UUID — use context.readModelData(${modelId}) for cross-model access by name`;
+    }
     type = coerceModelType(type);
     const versionToRead = version ??
       await this.getLatestVersion(type, modelId, dataName);
