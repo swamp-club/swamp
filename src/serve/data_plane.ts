@@ -248,7 +248,17 @@ export class DataPlane {
     return this.#vaultService;
   }
 
-  #repoForWorker(workerName: string): UnifiedDataRepository {
+  #repoForWorker(
+    workerName: string,
+    dispatchId?: string,
+  ): UnifiedDataRepository {
+    if (dispatchId) {
+      const dispatch = this.#options.dispatches.forDispatch(
+        workerName,
+        dispatchId,
+      );
+      if (dispatch?.dataRepo) return dispatch.dataRepo;
+    }
     const dispatches = this.#options.dispatches.forWorker(workerName);
     if (dispatches.length === 1 && dispatches[0].dataRepo) {
       return dispatches[0].dataRepo;
@@ -265,7 +275,7 @@ export class DataPlane {
     dispatchId?: string,
   ): Promise<Response> {
     if (req.method === "GET" && segments.length === 5) {
-      return await this.#readArtifact(req, segments, workerName);
+      return await this.#readArtifact(req, segments, workerName, dispatchId);
     }
     if (req.method === "POST" && segments[1] === "resource") {
       return await this.#writeResource(req, workerName, dispatchId);
@@ -293,6 +303,7 @@ export class DataPlane {
     req: Request,
     segments: string[],
     workerName: string,
+    dispatchId?: string,
   ): Promise<Response> {
     const [, rawType, rawModelId, rawDataName, rawVersion] = segments;
     const type = ModelType.create(decodeURIComponent(rawType));
@@ -303,7 +314,7 @@ export class DataPlane {
       return errorResponse(400, `Invalid version '${rawVersion}'`);
     }
 
-    const repo = this.#repoForWorker(workerName);
+    const repo = this.#repoForWorker(workerName, dispatchId);
     const data = await repo.findByName(
       type,
       modelId,

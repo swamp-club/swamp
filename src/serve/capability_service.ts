@@ -461,43 +461,63 @@ export class CapabilityService {
       }
     };
 
+    const extractDispatchId = (params: unknown): string | undefined =>
+      (params as Record<string, unknown> | null)?.dispatchId as
+        | string
+        | undefined;
+
     channel.register(
       RemoteMethod.getData,
       safe((params) =>
-        this.getData(workerName, GetDataParamsSchema.parse(params))
+        this.getData(workerName, {
+          ...GetDataParamsSchema.parse(params),
+          dispatchId: extractDispatchId(params),
+        })
       ),
     );
     channel.register(
       RemoteMethod.queryData,
       safe((params) =>
-        this.queryData(workerName, QueryDataParamsSchema.parse(params))
+        this.queryData(workerName, {
+          ...QueryDataParamsSchema.parse(params),
+          dispatchId: extractDispatchId(params),
+        })
       ),
     );
     channel.register(
       RemoteMethod.listVersions,
       safe((params) =>
-        this.listVersions(workerName, ListVersionsParamsSchema.parse(params))
+        this.listVersions(workerName, {
+          ...ListVersionsParamsSchema.parse(params),
+          dispatchId: extractDispatchId(params),
+        })
       ),
     );
     channel.register(
       RemoteMethod.deleteData,
       safe((params) =>
-        this.deleteData(workerName, DeleteDataParamsSchema.parse(params))
+        this.deleteData(workerName, {
+          ...DeleteDataParamsSchema.parse(params),
+          dispatchId: extractDispatchId(params),
+        })
       ),
     );
     channel.register(
       RemoteMethod.resolveSecret,
       safe((params) =>
-        this.resolveSecret(
-          workerName,
-          ResolveSecretParamsSchema.parse(params),
-        )
+        this.resolveSecret(workerName, {
+          ...ResolveSecretParamsSchema.parse(params),
+          dispatchId: extractDispatchId(params),
+        })
       ),
     );
     channel.register(
       RemoteMethod.putSecret,
       safe((params) =>
-        this.putSecret(workerName, PutSecretParamsSchema.parse(params))
+        this.putSecret(workerName, {
+          ...PutSecretParamsSchema.parse(params),
+          dispatchId: extractDispatchId(params),
+        })
       ),
     );
     channel.register(
