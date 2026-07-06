@@ -19,7 +19,11 @@
 
 import { assertEquals, assertStringIncludes, assertThrows } from "@std/assert";
 import { initializeLogging } from "../../infrastructure/logging/logger.ts";
-import { assertOffLoopbackSecurity, validateWebSocketOrigin } from "./serve.ts";
+import {
+  assertOffLoopbackSecurity,
+  collectServeExtraArgs,
+  validateWebSocketOrigin,
+} from "./serve.ts";
 import { UserError } from "../../domain/errors.ts";
 
 // Initialize logging for tests
@@ -279,4 +283,101 @@ Deno.test("validateWebSocketOrigin: rejects malformed origin", () => {
   );
   assertEquals(result.allowed, false);
   assertStringIncludes(result.reason!, "malformed origin");
+});
+
+// --- Trusted hosts ---
+
+Deno.test("validateWebSocketOrigin: accepts trusted host on off-loopback bind", () => {
+  const result = validateWebSocketOrigin(
+    null,
+    "host.docker.internal:9090",
+    "0.0.0.0",
+    true,
+    ["host.docker.internal"],
+  );
+  assertEquals(result.allowed, true);
+});
+
+Deno.test("validateWebSocketOrigin: rejects untrusted host even with other trusted hosts", () => {
+  const result = validateWebSocketOrigin(
+    null,
+    "evil.com:9090",
+    "0.0.0.0",
+    true,
+    ["host.docker.internal"],
+  );
+  assertEquals(result.allowed, false);
+  assertStringIncludes(result.reason!, "untrusted host");
+});
+
+Deno.test("validateWebSocketOrigin: trusted hosts are case-insensitive", () => {
+  const result = validateWebSocketOrigin(
+    null,
+    "Host.Docker.Internal:9090",
+    "0.0.0.0",
+    true,
+    ["host.docker.internal"],
+  );
+  assertEquals(result.allowed, true);
+});
+
+Deno.test("validateWebSocketOrigin: multiple trusted hosts", () => {
+  const result1 = validateWebSocketOrigin(
+    null,
+    "host.docker.internal:9090",
+    "0.0.0.0",
+    true,
+    ["host.docker.internal", "host.minikube.internal"],
+  );
+  assertEquals(result1.allowed, true);
+
+  const result2 = validateWebSocketOrigin(
+    null,
+    "host.minikube.internal:9090",
+    "0.0.0.0",
+    true,
+    ["host.docker.internal", "host.minikube.internal"],
+  );
+  assertEquals(result2.allowed, true);
+});
+
+Deno.test("validateWebSocketOrigin: trusted hosts do not affect origin validation", () => {
+  const result = validateWebSocketOrigin(
+    "http://host.docker.internal",
+    "host.docker.internal:9090",
+    "0.0.0.0",
+    true,
+    ["host.docker.internal"],
+  );
+  assertEquals(result.allowed, false);
+  assertStringIncludes(result.reason!, "untrusted origin");
+});
+
+Deno.test("validateWebSocketOrigin: empty trusted hosts array has no effect", () => {
+  const result = validateWebSocketOrigin(
+    null,
+    "evil.com:9090",
+    "0.0.0.0",
+    true,
+    [],
+  );
+  assertEquals(result.allowed, false);
+  assertStringIncludes(result.reason!, "untrusted host");
+});
+
+// --- collectServeExtraArgs ---
+
+Deno.test("collectServeExtraArgs: forwards --trusted-hosts", () => {
+  const args = collectServeExtraArgs({
+    trustedHosts: "host.docker.internal,host.minikube.internal",
+  });
+  assertEquals(args, [
+    "--trusted-hosts",
+    "host.docker.internal,host.minikube.internal",
+  ]);
+});
+
+Deno.test("collectServeExtraArgs: omits --trusted-hosts when not set", () => {
+  const args = collectServeExtraArgs({});
+  assertEquals(args, []);
 });
