@@ -433,7 +433,7 @@ export class DataPlane {
       return errorResponse(400, "Expected { specName, name }");
     }
 
-    const repo = this.#repoForWorker(workerName);
+    const repo = this.#repoForWorker(workerName, dispatchId);
     const { createFileWriter } = createFileWriterFactory(
       repo,
       dispatch.modelType,
@@ -466,7 +466,7 @@ export class DataPlane {
     if (!session || session.workerName !== workerName) {
       return errorResponse(404, `Unknown writer '${writerId}'`);
     }
-    const dispatch = this.#activeDispatch(workerName);
+    const dispatch = this.#activeDispatch(workerName, session.dispatchId);
     if (dispatch.dispatchId !== session.dispatchId) {
       return errorResponse(409, "Writer belongs to a finished dispatch");
     }
