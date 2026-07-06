@@ -299,15 +299,66 @@ Deno.test("DataQueryService: attributes filter with content on disk", () => {
   catalog.close();
 });
 
-Deno.test("DataQueryService: no-attributes predicate skips content", () => {
+Deno.test("DataQueryService: no-attributes predicate hydrates matched results", () => {
+  const dir = Deno.makeTempDirSync({ prefix: "swamp-query-hydrate-" });
+  const dbPath = join(dir, ".swamp", "data", "_catalog.db");
+  const catalog = new CatalogStore(dbPath);
+  catalog.markPopulated();
+
+  const dataDir = join(
+    dir,
+    ".swamp",
+    "data",
+    "test-model",
+    "model-001",
+    "my-data",
+    "1",
+  );
+  ensureDirSync(dataDir);
+  Deno.writeTextFileSync(
+    join(dataDir, "raw"),
+    JSON.stringify({ status: "ok", count: 7 }),
+  );
+  Deno.writeTextFileSync(
+    join(dataDir, "metadata.yaml"),
+    stringifyYaml({
+      name: "my-data",
+      id: "00000000-0000-1000-8000-000000000001",
+      version: 1,
+      contentType: "application/json",
+      lifetime: "infinite",
+      garbageCollection: 10,
+      streaming: false,
+      tags: { type: "resource", specName: "result", modelName: "ingest" },
+      ownerDefinition: { ownerType: "model-method", ownerRef: "test" },
+      createdAt: "2026-01-01T00:00:00.000Z",
+    }),
+  );
+  Deno.writeTextFileSync(
+    join(dir, ".swamp", "data", "test-model", "model-001", "my-data", "latest"),
+    "1",
+  );
+
+  catalog.upsert(makeRow());
+  const dataRepo = new FileSystemUnifiedDataRepository(dir, undefined, catalog);
+  const service = new DataQueryService(catalog, dataRepo);
+
+  const results = service.querySync('modelName == "ingest"') as DataRecord[];
+  assertEquals(results.length, 1);
+  assertEquals(results[0].attributes["status"], "ok");
+  assertEquals(results[0].attributes["count"], 7);
+  catalog.close();
+});
+
+Deno.test("DataQueryService: select projection skips hydration", () => {
   const { catalog, service } = setupTest();
   catalog.upsert(makeRow({ content_type: "application/json" }));
 
-  // This predicate doesn't reference attributes, so content should not be loaded
-  const results = service.querySync('modelName == "ingest"') as DataRecord[];
+  const results = service.querySync('modelName == "ingest"', {
+    select: "name",
+  }) as string[];
   assertEquals(results.length, 1);
-  // attributes should be empty since content was not loaded
-  assertEquals(results[0].attributes, {});
+  assertEquals(results[0], "my-data");
   catalog.close();
 });
 
