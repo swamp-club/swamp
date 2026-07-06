@@ -47,6 +47,7 @@ import {
   RunnerBootstrapParamsSchema,
 } from "./runner_protocol.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
+import { resolveExtraHeaders } from "../domain/auth/extra_headers.ts";
 
 const logger = getSwampLogger(["worker", "runner"]);
 
@@ -134,6 +135,7 @@ export async function runDispatchRunner(
   const client = new DataPlaneClient({
     baseUrl: params.dataPlaneUrl,
     credential: () => params.sessionCredential,
+    extraHeaders: resolveExtraHeaders(),
   });
   const bundleCache = new WorkerBundleCache(params.cacheDirPath, client);
 

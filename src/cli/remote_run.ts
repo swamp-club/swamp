@@ -43,6 +43,7 @@ import type {
 import { deserializeEvent } from "../serve/serializer.ts";
 import type { ServerCredentialRepository } from "../domain/auth/server_credential.ts";
 import { FileServerCredentialRepository } from "../infrastructure/persistence/server_credential_repository.ts";
+import { resolveExtraHeaders } from "../domain/auth/extra_headers.ts";
 
 /**
  * Resolves the server URL from the `--server` flag with `SWAMP_SERVE_URL`
@@ -66,8 +67,10 @@ export interface ServerRunOptions {
   /** Server token (`<name>.<secret>`) for authentication. */
   token?: string;
   signal?: AbortSignal;
+  /** Extra headers for proxy/tunnel pass-through (env: SWAMP_SERVE_EXTRA_HEADERS). */
+  headers?: Record<string, string>;
   /** Test seam: WebSocket factory. */
-  createSocket?: (url: string) => WebSocket;
+  createSocket?: (url: string, headers?: Record<string, string>) => WebSocket;
 }
 
 /**
@@ -170,7 +173,9 @@ export interface RequestResponseOptions {
   server: string;
   token?: string;
   signal?: AbortSignal;
-  createSocket?: (url: string) => WebSocket;
+  /** Extra headers for proxy/tunnel pass-through (env: SWAMP_SERVE_EXTRA_HEADERS). */
+  headers?: Record<string, string>;
+  createSocket?: (url: string, headers?: Record<string, string>) => WebSocket;
   timeoutMs?: number;
 }
 
@@ -180,8 +185,9 @@ export function requestServerResponse<T>(
 ): Promise<T> {
   const baseUrl = normalizeServerUrl(options.server);
   const url = appendTokenToUrl(baseUrl, options.token);
+  const headers = options.headers ?? resolveExtraHeaders();
   const requestId = request.id ?? crypto.randomUUID();
-  const socket = (options.createSocket ?? ((u) => new WebSocket(u)))(url);
+  const socket = (options.createSocket ?? defaultCreateSocket)(url, headers);
   const timeoutMs = options.timeoutMs ?? REQUEST_RESPONSE_TIMEOUT_MS;
 
   return new Promise<T>((resolve, reject) => {
@@ -303,6 +309,16 @@ export function withRemoteOptions<T extends AnyCommand>(command: T): T {
     ) as T;
 }
 
+function defaultCreateSocket(
+  url: string,
+  headers?: Record<string, string>,
+): WebSocket {
+  if (headers && Object.keys(headers).length > 0) {
+    return new WebSocket(url, { headers });
+  }
+  return new WebSocket(url);
+}
+
 interface OutboundRequest {
   type: "workflow.run" | "model.method.run" | "workflow.resume";
   payload: WorkflowRunPayload | ModelMethodRunPayload | WorkflowResumePayload;
@@ -319,8 +335,9 @@ async function* streamServerRun(
 ): AsyncIterable<{ kind: string; [key: string]: unknown }> {
   const baseUrl = normalizeServerUrl(options.server);
   const url = appendTokenToUrl(baseUrl, options.token);
+  const headers = options.headers ?? resolveExtraHeaders();
   const requestId = crypto.randomUUID();
-  const socket = (options.createSocket ?? ((u) => new WebSocket(u)))(url);
+  const socket = (options.createSocket ?? defaultCreateSocket)(url, headers);
 
   // Push-queue bridging socket callbacks to the generator.
   const queue: ServerMessage[] = [];

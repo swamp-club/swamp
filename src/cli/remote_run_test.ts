@@ -484,6 +484,153 @@ Deno.test("resolveServerToken: converts ws URL to http for credential lookup", a
   assertEquals(result, "stored.ws-lookup");
 });
 
+// ── extra headers tests ────────────────────────────────────────────────
+
+function headerCapturingServer(): {
+  url: string;
+  shutdown: () => Promise<void>;
+  capturedHeaders: () => Headers;
+} {
+  let captured: Headers = new Headers();
+  const server = Deno.serve(
+    { port: 0, hostname: "127.0.0.1", onListen: () => {} },
+    (req) => {
+      captured = req.headers;
+      const { socket, response } = Deno.upgradeWebSocket(req);
+      socket.onmessage = (event) => {
+        const parsed = JSON.parse(event.data as string);
+        socket.send(
+          JSON.stringify({
+            type: "done",
+            id: parsed.id,
+          }),
+        );
+      };
+      return response;
+    },
+  );
+  return {
+    url: `ws://127.0.0.1:${server.addr.port}`,
+    shutdown: () => server.shutdown(),
+    capturedHeaders: () => captured,
+  };
+}
+
+Deno.test({
+  name: "remote run: sends extra headers from options on WebSocket upgrade",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const server = headerCapturingServer();
+    try {
+      for await (
+        const _ of runWorkflowOverServer({
+          server: server.url,
+          headers: { "X-Tunnel-Token": "secret123", "X-Proxy-Auth": "pass" },
+          payload: { workflowIdOrName: "wf" },
+        })
+        // deno-lint-ignore no-empty
+      ) {}
+      assertEquals(
+        server.capturedHeaders().get("x-tunnel-token"),
+        "secret123",
+      );
+      assertEquals(server.capturedHeaders().get("x-proxy-auth"), "pass");
+    } finally {
+      await server.shutdown();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "requestServerResponse: sends extra headers from options on WebSocket upgrade",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    let captured: Headers = new Headers();
+    const server = Deno.serve(
+      { port: 0, hostname: "127.0.0.1", onListen: () => {} },
+      (req) => {
+        captured = req.headers;
+        const { socket, response } = Deno.upgradeWebSocket(req);
+        socket.onmessage = (event) => {
+          const parsed = JSON.parse(event.data as string);
+          socket.send(JSON.stringify({
+            type: "test.response",
+            id: parsed.id,
+            payload: { ok: true },
+          }));
+        };
+        return response;
+      },
+    );
+    const url = `ws://127.0.0.1:${server.addr.port}`;
+    try {
+      await requestServerResponse<Record<string, unknown>>(
+        { server: url, headers: { "X-Custom": "val" } },
+        { type: "test" },
+      );
+      assertEquals(captured.get("x-custom"), "val");
+    } finally {
+      await server.shutdown();
+    }
+  },
+});
+
+Deno.test({
+  name:
+    "remote run: resolves extra headers from SWAMP_SERVE_EXTRA_HEADERS env var",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const server = headerCapturingServer();
+    const prev = Deno.env.get("SWAMP_SERVE_EXTRA_HEADERS");
+    try {
+      Deno.env.set("SWAMP_SERVE_EXTRA_HEADERS", "X-From-Env: envvalue");
+      for await (
+        const _ of runWorkflowOverServer({
+          server: server.url,
+          payload: { workflowIdOrName: "wf" },
+        })
+        // deno-lint-ignore no-empty
+      ) {}
+      assertEquals(server.capturedHeaders().get("x-from-env"), "envvalue");
+    } finally {
+      if (prev !== undefined) Deno.env.set("SWAMP_SERVE_EXTRA_HEADERS", prev);
+      else Deno.env.delete("SWAMP_SERVE_EXTRA_HEADERS");
+      await server.shutdown();
+    }
+  },
+});
+
+Deno.test({
+  name: "remote run: explicit headers option takes precedence over env var",
+  sanitizeOps: false,
+  sanitizeResources: false,
+  fn: async () => {
+    const server = headerCapturingServer();
+    const prev = Deno.env.get("SWAMP_SERVE_EXTRA_HEADERS");
+    try {
+      Deno.env.set("SWAMP_SERVE_EXTRA_HEADERS", "X-Env: should-not-appear");
+      for await (
+        const _ of runWorkflowOverServer({
+          server: server.url,
+          headers: { "X-Explicit": "wins" },
+          payload: { workflowIdOrName: "wf" },
+        })
+        // deno-lint-ignore no-empty
+      ) {}
+      assertEquals(server.capturedHeaders().get("x-explicit"), "wins");
+      assertEquals(server.capturedHeaders().get("x-env"), null);
+    } finally {
+      if (prev !== undefined) Deno.env.set("SWAMP_SERVE_EXTRA_HEADERS", prev);
+      else Deno.env.delete("SWAMP_SERVE_EXTRA_HEADERS");
+      await server.shutdown();
+    }
+  },
+});
+
 Deno.test("resolveServerToken: returns undefined when no credential", async () => {
   const emptyRepo: ServerCredentialRepository = {
     get: () => Promise.resolve(null),

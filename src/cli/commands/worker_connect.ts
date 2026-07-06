@@ -33,6 +33,7 @@ import { renderWorkerStatus } from "../../presentation/output/worker_output.ts";
 import { VERSION } from "./version.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
 import { parseTimeout } from "../duration_parser.ts";
+import { resolveExtraHeaders } from "../../domain/auth/extra_headers.ts";
 
 // Import models barrel so built-in models resolve from the worker's own
 // registry when a `builtin:` bundle fingerprint is dispatched.
@@ -213,6 +214,7 @@ export const workerConnectCommand = new Command()
     });
 
     try {
+      const extraHeaders = resolveExtraHeaders();
       const result = await runWorker({
         url,
         token,
@@ -220,6 +222,7 @@ export const workerConnectCommand = new Command()
         swampVersion: VERSION,
         dataPlaneUrl: options.dataPlaneUrl,
         cacheDir,
+        headers: extraHeaders,
         reconnect: options.reconnect !== false,
         maxDispatches: maxDispatchesRaw,
         idleTimeoutMs,
