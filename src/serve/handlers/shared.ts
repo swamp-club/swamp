@@ -23,6 +23,7 @@
 
 import type { RepositoryContext } from "../../infrastructure/persistence/repository_factory.ts";
 import type { DatastoreConfig } from "../../domain/datastore/datastore_config.ts";
+import type { DatastorePathResolver } from "../../domain/datastore/datastore_path_resolver.ts";
 import type { DatastoreSyncService } from "../../domain/datastore/datastore_sync_service.ts";
 import type { RunCancelRegistry } from "../run_cancel_registry.ts";
 import type { RunTrackerRepository } from "../../domain/models/run_tracker_repository.ts";
@@ -75,6 +76,7 @@ export interface ConnectionContext {
   repoDir: string;
   repoContext: RepositoryContext;
   datastoreConfig: DatastoreConfig;
+  datastoreResolver: DatastorePathResolver;
   /**
    * Shared sync service instance. Same one the repo context's markDirty hook
    * references — see `design/datastores.md`. Undefined for filesystem

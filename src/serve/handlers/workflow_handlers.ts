@@ -71,6 +71,8 @@ import {
   principalToString,
 } from "../../domain/access/principal.ts";
 import { createEphemeralStore } from "../../infrastructure/persistence/ephemeral_store.ts";
+import { DefaultDatastorePathResolver } from "../../infrastructure/persistence/default_datastore_path_resolver.ts";
+import { SWAMP_SUBDIRS } from "../../infrastructure/persistence/paths.ts";
 import {
   authorizeOrReject,
   type ConnectionContext,
@@ -735,7 +737,12 @@ export async function handleWorkflowResume(
 
     // Ensure model/vault/report registries are loaded (mirrors
     // createWorkflowRunDeps).
-    await createWorkflowRunDeps(ctx.repoDir, ctx.repoContext, stepLockHook);
+    await createWorkflowRunDeps(
+      ctx.repoDir,
+      ctx.repoContext,
+      ctx.datastoreConfig,
+      stepLockHook,
+    );
 
     const resumeInputs = payload.inputs ?? {};
     const ephemeral = createEphemeralStore(
@@ -743,12 +750,16 @@ export async function handleWorkflowResume(
       { isResume: true },
     );
 
+    const resolver = new DefaultDatastorePathResolver(
+      ctx.repoDir,
+      ctx.datastoreConfig,
+    );
     const service = new WorkflowExecutionService(
       workflowRepo,
       runRepo,
       ctx.repoDir,
       undefined,
-      undefined,
+      resolver.resolvePath(SWAMP_SUBDIRS.data),
       ctx.repoContext.catalogStore,
       undefined,
       ctx.repoContext.markDirty,

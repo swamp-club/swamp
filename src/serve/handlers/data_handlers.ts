@@ -427,7 +427,7 @@ export async function handleDataDelete(
 
   try {
     const libCtx = createLibSwampContext();
-    const deps = createDataDeleteDeps(ctx.repoDir);
+    const deps = createDataDeleteDeps(ctx.repoDir, ctx.datastoreResolver);
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(
@@ -486,7 +486,7 @@ export async function handleDataRename(
 
   try {
     const libCtx = createLibSwampContext();
-    const deps = createDataRenameDeps(ctx.repoDir);
+    const deps = createDataRenameDeps(ctx.repoDir, ctx.datastoreResolver);
 
     let result: Record<string, unknown> | undefined;
     await consumeStream(

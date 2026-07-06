@@ -64,11 +64,13 @@ import { vaultTypeRegistry } from "../domain/vaults/vault_type_registry.ts";
 import { reportRegistry } from "../domain/reports/report_registry.ts";
 import type { DatastoreConfig } from "../domain/datastore/datastore_config.ts";
 import type { DatastoreSyncService } from "../domain/datastore/datastore_sync_service.ts";
+import { DefaultDatastorePathResolver } from "../infrastructure/persistence/default_datastore_path_resolver.ts";
 import { acquireModelLocks } from "../cli/repo_context.ts";
 
 export async function createWorkflowRunDeps(
   repoDir: string,
   repoContext: RepositoryContext,
+  datastoreConfig: DatastoreConfig,
   stepLockHook?: StepLockHook,
   runTracker?: RunTrackerRepository,
 ): Promise<WorkflowRunDeps> {
@@ -151,12 +153,13 @@ export async function createWorkflowRunDeps(
           routedMethodInputs: result.routedInputs.methodArguments,
         };
       };
+      const resolver = new DefaultDatastorePathResolver(dir, datastoreConfig);
       return new WorkflowExecutionService(
         wfRepo,
         rnRepo,
         dir,
         undefined,
-        undefined,
+        resolver.resolvePath(SWAMP_SUBDIRS.data),
         catalogStore,
         directResolver,
         repoContext.markDirty,
@@ -308,6 +311,7 @@ export async function executeWorkflowWithLocks(
   const deps = await createWorkflowRunDeps(
     repoDir,
     repoContext,
+    datastoreConfig,
     stepLockHook,
     runTracker,
   );
