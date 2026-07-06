@@ -34,6 +34,7 @@ import { VERSION } from "./version.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
 import { parseTimeout } from "../duration_parser.ts";
 import { resolveExtraHeaders } from "../../domain/auth/extra_headers.ts";
+import { appendTokenToUrl } from "../remote_run.ts";
 
 // Import models barrel so built-in models resolve from the worker's own
 // registry when a `builtin:` bundle fingerprint is dispatched.
@@ -92,6 +93,10 @@ export const workerConnectCommand = new Command()
     "swamp worker connect wss://orch:4000 --token <token> --concurrency auto",
   )
   .example(
+    "Connect to a token-authenticated orchestrator",
+    "swamp worker connect wss://orch:9090 --server-token admin.secret --token worker-pool.enrollment-secret",
+  )
+  .example(
     "Connect through a reverse-proxy that requires a tunnel token",
     "SWAMP_SERVE_EXTRA_HEADERS=$'Tunnel-Token: abc123' swamp worker connect wss://orch.internal:4000 --token tok.secret",
   )
@@ -99,6 +104,10 @@ export const workerConnectCommand = new Command()
   .option(
     "--token <token:string>",
     "Enrollment token (<name>.<secret>) (env: SWAMP_WORKER_TOKEN)",
+  )
+  .option(
+    "--server-token <token:string>",
+    "Server access token for authenticating the WebSocket connection (<name>.<secret>) (env: SWAMP_SERVER_TOKEN)",
   )
   .option(
     "--label <label:string>",
@@ -144,6 +153,9 @@ export const workerConnectCommand = new Command()
         `Orchestrator URL must start with ws:// or wss:// (got '${url}')`,
       );
     }
+
+    const serverToken = (options.serverToken as string | undefined) ??
+      Deno.env.get("SWAMP_SERVER_TOKEN");
 
     const token = (options.token as string | undefined) ??
       Deno.env.get("SWAMP_WORKER_TOKEN");
@@ -219,8 +231,9 @@ export const workerConnectCommand = new Command()
 
     try {
       const extraHeaders = resolveExtraHeaders();
+      const authenticatedUrl = appendTokenToUrl(url, serverToken);
       const result = await runWorker({
-        url,
+        url: authenticatedUrl,
         token,
         labels,
         swampVersion: VERSION,

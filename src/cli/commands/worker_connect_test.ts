@@ -59,3 +59,11 @@ Deno.test("workerConnectCommand: --label option is collectible", async () => {
   assertEquals(labelOpt !== undefined, true);
   assertEquals(labelOpt?.collect, true);
 });
+
+Deno.test("workerConnectCommand: --server-token option exists", async () => {
+  const { workerConnectCommand } = await import("./worker_connect.ts");
+  const options = workerConnectCommand.getOptions();
+  const serverTokenOpt = options.find((o) => o.name === "server-token");
+  assertEquals(serverTokenOpt !== undefined, true);
+  assertEquals(serverTokenOpt?.required ?? false, false);
+});

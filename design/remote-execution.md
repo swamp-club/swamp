@@ -110,6 +110,25 @@ swamp worker token create ci-runner-3 --duration 1h    # on/near the orchestrato
 swamp worker connect wss://orchestrator.internal:4000 --token <token>   # on the worker
 ```
 
+When the orchestrator runs with `--auth-mode token`, the worker must also
+provide a server access token to authenticate the WebSocket upgrade. The
+`--server-token` flag (or `SWAMP_SERVER_TOKEN` env var) passes this separately
+from the enrollment token — the server token authenticates the transport
+connection, while the enrollment token authenticates the worker's identity
+inside the RPC handshake:
+
+```bash
+swamp worker connect wss://orch:9090 \
+  --server-token admin.secret \
+  --token worker-pool.enrollment-secret \
+  --label tier=ci
+```
+
+The CLI appends the server token as a `?token=` query parameter to the
+WebSocket URL before connecting, using the same `appendTokenToUrl` helper as
+`--server` commands. This avoids leaking the token in `SWAMP_ORCHESTRATOR_URL`
+environment dumps or process listings.
+
 ### A symmetric control protocol, two handler registries
 
 Today `src/serve/` couples two roles: the websocket *server* is also the

@@ -44,7 +44,7 @@ export function collectWorkerExtraArgs(options: AnyOptions): string[] {
   return args;
 }
 
-function collectWorkerEnv(options: AnyOptions): Record<string, string> {
+export function collectWorkerEnv(options: AnyOptions): Record<string, string> {
   const env: Record<string, string> = {};
 
   const url = options.url as string | undefined;
@@ -55,6 +55,11 @@ function collectWorkerEnv(options: AnyOptions): Record<string, string> {
   const token = options.token as string | undefined;
   if (token) {
     env["SWAMP_WORKER_TOKEN"] = token;
+  }
+
+  const serverToken = options.serverToken as string | undefined;
+  if (serverToken) {
+    env["SWAMP_SERVER_TOKEN"] = serverToken;
   }
 
   const labels = options.label as string[] | undefined;
@@ -93,6 +98,10 @@ const daemonEnableCommand = new Command()
     "Enrollment token (<name>.<secret>)",
   )
   .option(
+    "--server-token <token:string>",
+    "Server access token for authenticating the WebSocket connection (<name>.<secret>)",
+  )
+  .option(
     "--label <label:string>",
     "Scheduling label key=value (repeatable)",
     { collect: true },
@@ -117,6 +126,10 @@ const daemonEnableCommand = new Command()
   .example(
     "Enable worker daemon",
     "swamp worker daemon enable wss://orch:9090 --token tok.secret --label tier=ci --cache-dir /var/lib/swamp-worker",
+  )
+  .example(
+    "Enable with a token-authenticated orchestrator",
+    "swamp worker daemon enable wss://orch:9090 --token tok.secret --server-token admin.secret --label tier=ci",
   )
   .example(
     "Enable with lifecycle policies",
