@@ -20,6 +20,7 @@
 import { assertEquals, assertRejects, assertStringIncludes } from "@std/assert";
 import {
   deepMerge,
+  isScopedIdentifier,
   mergeInputArgs,
   parseInputs,
   parseKeyValueInputs,
@@ -121,7 +122,7 @@ Deno.test("parseKeyValueInputs: @file reads file contents", async () => {
   }
 });
 
-Deno.test("parseKeyValueInputs: @file with missing file throws", async () => {
+Deno.test("parseKeyValueInputs: @file with missing file throws with escape hint", async () => {
   const err = await assertRejects(
     () => parseKeyValueInputs(["key=@/nonexistent/path/file.txt"]),
     Error,
@@ -129,6 +130,10 @@ Deno.test("parseKeyValueInputs: @file with missing file throws", async () => {
   assertStringIncludes(
     (err as Error).message,
     'Input file not found for key "key"',
+  );
+  assertStringIncludes(
+    (err as Error).message,
+    "\\@",
   );
 });
 
@@ -138,6 +143,83 @@ Deno.test("parseKeyValueInputs: @file with dot notation", async () => {
     await Deno.writeTextFile(tempFile, "cert-data");
     const result = await parseKeyValueInputs([`server.cert=@${tempFile}`]);
     assertEquals(result, { server: { cert: "cert-data" } });
+  } finally {
+    await Deno.remove(tempFile);
+  }
+});
+
+// --- isScopedIdentifier ---
+
+Deno.test("isScopedIdentifier: matches two-segment scoped type", () => {
+  assertEquals(isScopedIdentifier("@hivemq/base-images"), true);
+});
+
+Deno.test("isScopedIdentifier: matches multi-segment scoped type", () => {
+  assertEquals(isScopedIdentifier("@swamp/aws/ec2/vpc"), true);
+});
+
+Deno.test("isScopedIdentifier: matches reserved collectives", () => {
+  assertEquals(isScopedIdentifier("@swamp/echo"), true);
+  assertEquals(isScopedIdentifier("@swamp/issue-lifecycle"), true);
+});
+
+Deno.test("isScopedIdentifier: rejects bare @filename (no slash)", () => {
+  assertEquals(isScopedIdentifier("@myfile.txt"), false);
+});
+
+Deno.test("isScopedIdentifier: rejects file path with extension", () => {
+  assertEquals(isScopedIdentifier("@path/to/file.txt"), false);
+});
+
+Deno.test("isScopedIdentifier: rejects absolute path", () => {
+  assertEquals(isScopedIdentifier("@/absolute/path"), false);
+});
+
+Deno.test("isScopedIdentifier: rejects relative path with dot prefix", () => {
+  assertEquals(isScopedIdentifier("@./relative/path"), false);
+});
+
+Deno.test("isScopedIdentifier: rejects tilde path", () => {
+  assertEquals(isScopedIdentifier("@~/home/file"), false);
+});
+
+Deno.test("isScopedIdentifier: rejects value without @", () => {
+  assertEquals(isScopedIdentifier("hivemq/base-images"), false);
+});
+
+Deno.test("isScopedIdentifier: rejects namespace-only (no slash)", () => {
+  assertEquals(isScopedIdentifier("@hivemq"), false);
+});
+
+// --- parseKeyValueInputs: scoped identifier passthrough ---
+
+Deno.test("parseKeyValueInputs: scoped identifier passes through literally", async () => {
+  const result = await parseKeyValueInputs([
+    "sourceType=@hivemq/base-images",
+  ]);
+  assertEquals(result, { sourceType: "@hivemq/base-images" });
+});
+
+Deno.test("parseKeyValueInputs: multi-segment scoped identifier passes through", async () => {
+  const result = await parseKeyValueInputs([
+    "type=@swamp/aws/ec2/vpc",
+  ]);
+  assertEquals(result, { type: "@swamp/aws/ec2/vpc" });
+});
+
+Deno.test("parseKeyValueInputs: scoped identifier with dot-notation key", async () => {
+  const result = await parseKeyValueInputs([
+    "config.type=@myorg/deployer",
+  ]);
+  assertEquals(result, { config: { type: "@myorg/deployer" } });
+});
+
+Deno.test("parseKeyValueInputs: @file with extension still reads file", async () => {
+  const tempFile = await Deno.makeTempFile({ suffix: ".txt" });
+  try {
+    await Deno.writeTextFile(tempFile, "from-file");
+    const result = await parseKeyValueInputs([`key=@${tempFile}`]);
+    assertEquals(result, { key: "from-file" });
   } finally {
     await Deno.remove(tempFile);
   }
@@ -211,6 +293,10 @@ Deno.test({
       assertStringIncludes(
         (caught as Error).message,
         "~/definitely-missing.txt",
+      );
+      assertStringIncludes(
+        (caught as Error).message,
+        "\\@",
       );
     } finally {
       if (originalHome !== undefined) {

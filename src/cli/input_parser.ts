@@ -77,6 +77,22 @@ export function setNestedValue(
   current[parts[parts.length - 1]] = value;
 }
 
+// Scoped identifier: @namespace/name with optional sub-segments.
+// Segments are alphanumeric + hyphens/underscores; no dots (which
+// would indicate a file extension). Distinguishes @hivemq/base-images
+// from @path/to/file.txt.
+const SCOPED_IDENTIFIER_RE =
+  /^@[a-zA-Z][a-zA-Z0-9_-]*\/[a-zA-Z0-9][a-zA-Z0-9_\/-]*$/;
+
+/**
+ * Returns true when the value looks like a scoped identifier
+ * (e.g. `@hivemq/base-images`, `@swamp/aws/ec2/vpc`) rather than
+ * a file path.
+ */
+export function isScopedIdentifier(value: string): boolean {
+  return SCOPED_IDENTIFIER_RE.test(value);
+}
+
 /**
  * Resolves a file reference value (prefixed with @) to its file contents.
  * Supports tilde expansion for home directory paths.
@@ -102,7 +118,8 @@ async function resolveFileValue(
   } catch (error) {
     if (error instanceof Deno.errors.NotFound) {
       throw new UserError(
-        `Input file not found for key "${key}": ${resolvedPath}`,
+        `Input file not found for key "${key}": ${resolvedPath}` +
+          `. Values starting with @ are read as file paths; use \\@ for a literal @ or :json suffix to bypass`,
       );
     }
     const message = error instanceof Error ? error.message : String(error);
@@ -117,6 +134,7 @@ async function resolveFileValue(
  *
  * - Dot notation creates nested objects: `server.host=localhost`
  * - Values starting with `@` read file contents: `key=@path/to/file`
+ * - Scoped identifiers (`@scope/name`) pass through literally
  * - Escaped `@` with `\@` produces a literal `@`: `key=\@literal`
  * - Splits on first `=` only, so values can contain `=`
  * - `:json` suffix on the leaf segment of the key parses the value as
@@ -174,8 +192,8 @@ export async function parseKeyValueInputs(
     if (value.startsWith("\\@")) {
       // Escaped @ — use literal value without the backslash
       value = value.slice(1);
-    } else if (value.startsWith("@")) {
-      // File reference — read file contents
+    } else if (value.startsWith("@") && !isScopedIdentifier(value)) {
+      // File reference — read file contents (but not scoped identifiers)
       const filePath = value.slice(1);
       value = await resolveFileValue(key, filePath);
     }
