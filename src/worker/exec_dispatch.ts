@@ -222,10 +222,6 @@ export async function runDispatchRunner(
     await Deno.remove(scratchDir, { recursive: true }).catch(() => {});
   }
 
-  // Send the result as the final RPC frame and exit. Do not await
-  // readerDone — the stdin reader blocks on read() until the supervisor
-  // closes the pipe, but the supervisor waits on child.status first.
-  // Exiting the process closes all handles cleanly.
-  transport.send(JSON.stringify({ type: "runner.result", result }));
-  transport.releaseLock();
+  await transport.sendFinal(JSON.stringify({ type: "runner.result", result }));
+  Deno.exit(0);
 }

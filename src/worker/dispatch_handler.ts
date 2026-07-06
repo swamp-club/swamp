@@ -220,8 +220,6 @@ async function handleDispatch(
       const parsed = JSON.parse(data) as Record<string, unknown>;
       if (parsed.type === "runner.result") {
         resultBox.value = parsed.result as DispatchResult;
-        // Close the child's stdin so its reader gets EOF and it can exit.
-        childTransport.shutdown();
       } else {
         childChannel.handleRaw(data);
       }
@@ -333,7 +331,7 @@ async function handleDispatch(
     };
   } finally {
     ctx.signal.removeEventListener("abort", onCancel);
-    childTransport.releaseLock();
+    childTransport.close();
   }
 }
 
