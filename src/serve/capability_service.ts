@@ -318,7 +318,7 @@ export class CapabilityService {
     params: PutSecretParams,
   ): Promise<{ ok: boolean }> {
     // Secrets are not model-type-scoped: any method may write to any vault
-    // key via the context.putSecret API, so we verify only that the worker
+    // key via context.vaultService.put, so we verify only that the worker
     // has an active dispatch (not that the vault key relates to the
     // dispatched model type). deleteData uses the stricter
     // #assertDispatchScope because data artifacts are model-type-addressed.
