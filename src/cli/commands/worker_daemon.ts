@@ -28,6 +28,7 @@ import {
   renderWorkerDaemonEnabled,
   renderWorkerDaemonStatus,
 } from "../../presentation/output/worker_daemon_output.ts";
+import { toServiceMode } from "../../presentation/output/serve_daemon_output.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -84,6 +85,10 @@ const daemonEnableCommand = new Command()
   .description("Enable swamp worker as a system daemon (launchd/systemd)")
   .arguments("[url:string]")
   .option(
+    "--user",
+    "Install as a per-user service (systemd --user / launchd agent)",
+  )
+  .option(
     "--token <token:string>",
     "Enrollment token (<name>.<secret>)",
   )
@@ -138,7 +143,9 @@ const daemonEnableCommand = new Command()
     }
 
     const resolvedOptions = { ...options, url: urlArg };
-    const mode = await resolveServiceMode();
+    const mode = await resolveServiceMode({
+      user: options.user as boolean | undefined,
+    });
     const scheduler = await createWorkerDaemonScheduler({ mode });
     const extraArgs = collectWorkerExtraArgs(options);
     const env = collectWorkerEnv(resolvedOptions);
@@ -150,12 +157,16 @@ const daemonEnableCommand = new Command()
       cacheDir: options.cacheDir as string | undefined,
     });
 
-    renderWorkerDaemonEnabled(ctx.outputMode);
+    renderWorkerDaemonEnabled(ctx.outputMode, toServiceMode(mode));
   });
 
 const daemonDisableCommand = new Command()
   .name("disable")
   .description("Disable and remove the swamp worker daemon")
+  .option(
+    "--user",
+    "Target the per-user service (systemd --user / launchd agent)",
+  )
   .example("Disable worker daemon", "swamp worker daemon disable")
   .action(async function (options: AnyOptions) {
     const ctx = createContext(options as GlobalOptions, [
@@ -163,17 +174,23 @@ const daemonDisableCommand = new Command()
       "daemon",
       "disable",
     ]);
-    const mode = await resolveServiceMode();
+    const mode = await resolveServiceMode({
+      user: options.user as boolean | undefined,
+    });
     const scheduler = await createWorkerDaemonScheduler({ mode });
 
     await scheduler.disable();
 
-    renderWorkerDaemonDisabled(ctx.outputMode);
+    renderWorkerDaemonDisabled(ctx.outputMode, toServiceMode(mode));
   });
 
 const daemonStatusCommand = new Command()
   .name("status")
   .description("Show the status of the swamp worker daemon")
+  .option(
+    "--user",
+    "Target the per-user service (systemd --user / launchd agent)",
+  )
   .example("Check worker daemon status", "swamp worker daemon status")
   .action(async function (options: AnyOptions) {
     const ctx = createContext(options as GlobalOptions, [
@@ -181,12 +198,14 @@ const daemonStatusCommand = new Command()
       "daemon",
       "status",
     ]);
-    const mode = await resolveServiceMode();
+    const mode = await resolveServiceMode({
+      user: options.user as boolean | undefined,
+    });
     const scheduler = await createWorkerDaemonScheduler({ mode });
 
     const status = await scheduler.status();
 
-    renderWorkerDaemonStatus(status, ctx.outputMode);
+    renderWorkerDaemonStatus(status, ctx.outputMode, toServiceMode(mode));
   });
 
 export const workerDaemonCommand = new Command()

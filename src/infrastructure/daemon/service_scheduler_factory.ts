@@ -25,7 +25,13 @@ import { LaunchdServiceScheduler } from "./launchd_service_scheduler.ts";
 import { SystemdServiceScheduler } from "./systemd_service_scheduler.ts";
 import { hasSystemctl } from "./has_systemctl.ts";
 
-export async function resolveServiceMode(): Promise<LaunchdMode> {
+export async function resolveServiceMode(
+  options?: { user?: boolean },
+): Promise<LaunchdMode> {
+  if (options?.user) {
+    return "agent";
+  }
+
   let currentUid: number | null = null;
   let binaryUid: number | null = null;
   try {

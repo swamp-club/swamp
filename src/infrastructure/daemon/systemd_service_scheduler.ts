@@ -23,6 +23,7 @@ import type {
   ServiceScheduler,
   ServiceStatus,
 } from "../../domain/serve/service_scheduler.ts";
+import { UserError } from "../../domain/errors.ts";
 import type { LaunchdMode } from "../update/launchd_scheduler.ts";
 import {
   escapeSystemdPath,
@@ -120,14 +121,28 @@ export class SystemdServiceScheduler implements ServiceScheduler {
   async enable(config: ServiceConfig): Promise<void> {
     await this.disable();
 
-    const dir = systemdUnitDir(this.mode);
-    await Deno.mkdir(dir, { recursive: true });
+    try {
+      const dir = systemdUnitDir(this.mode);
+      await Deno.mkdir(dir, { recursive: true });
 
-    await atomicWriteTextFile(
-      servicePath(this.mode),
-      buildServeService(config, this.mode),
-      { mode: 0o600 },
-    );
+      await atomicWriteTextFile(
+        servicePath(this.mode),
+        buildServeService(config, this.mode),
+        { mode: 0o600 },
+      );
+    } catch (err: unknown) {
+      if (err instanceof Deno.errors.PermissionDenied) {
+        const dir = systemdUnitDir(this.mode);
+        const hint = this.mode === "agent"
+          ? `  Check permissions on ${dir} and its parent directories`
+          : `  Option 1: Run with sudo for a system-wide service\n` +
+            `  Option 2: Use --user to install as a per-user service`;
+        throw new UserError(
+          `Permission denied writing to ${dir}.\n\n${hint}`,
+        );
+      }
+      throw err;
+    }
 
     await systemctl(this.mode, "daemon-reload");
     const result = await systemctl(
