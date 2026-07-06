@@ -33,6 +33,7 @@ import { renderWorkerStatus } from "../../presentation/output/worker_output.ts";
 import { VERSION } from "./version.ts";
 import { registerShutdownHandler } from "../../infrastructure/process/shutdown_handlers.ts";
 import { parseTimeout } from "../duration_parser.ts";
+import { resolveExtraHeaders } from "../../domain/auth/extra_headers.ts";
 
 // Import models barrel so built-in models resolve from the worker's own
 // registry when a `builtin:` bundle fingerprint is dispatched.
@@ -89,6 +90,10 @@ export const workerConnectCommand = new Command()
   .example(
     "Run up to one dispatch per CPU core",
     "swamp worker connect wss://orch:4000 --token <token> --concurrency auto",
+  )
+  .example(
+    "Connect through a reverse-proxy that requires a tunnel token",
+    "SWAMP_SERVE_EXTRA_HEADERS=$'Tunnel-Token: abc123' swamp worker connect wss://orch.internal:4000 --token tok.secret",
   )
   .arguments("[url:string]")
   .option(
@@ -213,6 +218,7 @@ export const workerConnectCommand = new Command()
     });
 
     try {
+      const extraHeaders = resolveExtraHeaders();
       const result = await runWorker({
         url,
         token,
@@ -220,6 +226,7 @@ export const workerConnectCommand = new Command()
         swampVersion: VERSION,
         dataPlaneUrl: options.dataPlaneUrl,
         cacheDir,
+        headers: extraHeaders,
         reconnect: options.reconnect !== false,
         maxDispatches: maxDispatchesRaw,
         idleTimeoutMs,

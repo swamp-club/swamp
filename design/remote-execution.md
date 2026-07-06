@@ -186,11 +186,32 @@ stored credentials in `~/.config/swamp/servers.json` (managed by
 `swamp access token mint/list/revoke`.
 
 The token travels as a `?token=` query parameter on the WebSocket upgrade URL.
-This is the standard WebSocket auth pattern (the browser WebSocket API does not
-support custom headers on upgrade requests), but the plaintext will appear in
-any reverse proxy or load balancer access logs that capture the full request
-URL. Use TLS (`wss://`) for non-loopback deployments and configure access-log
-redaction on any intermediary that fronts the server.
+This avoids the browser WebSocket limitation (no custom headers), but the
+plaintext will appear in any reverse proxy or load balancer access logs that
+capture the full request URL. Use TLS (`wss://`) for non-loopback deployments
+and configure access-log redaction on any intermediary that fronts the server.
+
+### Extra headers for reverse proxies and tunnels
+
+When a `swamp serve` instance sits behind a reverse proxy or tunnel that
+requires custom HTTP headers (e.g. `Tunnel-Token`, provider-specific access
+headers), clients can inject arbitrary pass-through headers via the
+`SWAMP_SERVE_EXTRA_HEADERS` environment variable. The format is
+newline-separated `Name: value` entries:
+
+```
+export SWAMP_SERVE_EXTRA_HEADERS=$'Tunnel-Token: abc123\nX-Proxy-Auth: def456'
+```
+
+These headers are applied to the WebSocket upgrade request (using Deno 2.x's
+non-standard `WebSocket({ headers })` extension) and, for workers, to all HTTP
+data-plane requests. They are pure pass-through — `swamp serve` itself does not
+read or require them. Header values may contain secrets and are never logged;
+only header names appear in debug output (as a count).
+
+Reserved header names (`Authorization`, `Host`, `Upgrade`, `Connection`) are
+rejected to prevent conflicts with swamp's internal protocol headers. Values
+containing control characters are also rejected to prevent header injection.
 
 ## No execution drivers
 

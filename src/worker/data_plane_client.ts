@@ -52,6 +52,8 @@ export interface DataPlaneClientOptions {
   fetchImpl?: typeof fetch;
   /** Maximum cached artifacts before oldest is evicted. Defaults to 1000. */
   maxCacheEntries?: number;
+  /** Extra headers for proxy/tunnel pass-through (env: SWAMP_SERVE_EXTRA_HEADERS). */
+  extraHeaders?: Record<string, string>;
 }
 
 function combineSignals(
@@ -105,6 +107,7 @@ export class DataPlaneClient {
       method,
       body: init?.body,
       headers: {
+        ...this.#options.extraHeaders,
         authorization: `Bearer ${this.#options.credential()}`,
         ...init?.headers,
       },

@@ -105,8 +105,10 @@ export interface RunWorkerOptions {
    * it when a signal arrives.
    */
   onDrainAvailable?: (requestDrain: (reason: WorkerExitReason) => void) => void;
+  /** Extra headers for proxy/tunnel pass-through (env: SWAMP_SERVE_EXTRA_HEADERS). */
+  headers?: Record<string, string>;
   /** Test seam: WebSocket factory. */
-  createSocket?: (url: string) => WebSocket;
+  createSocket?: (url: string, headers?: Record<string, string>) => WebSocket;
   /** Test seam: override the runner command for the dispatch child process. */
   runnerCommand?: { cmd: string; args: string[] };
 }
@@ -330,8 +332,13 @@ interface ConnectOnceArgs {
 function connectOnce(args: ConnectOnceArgs): Promise<string> {
   const { options, instanceUuid, machineId, session } = args;
   return new Promise<string>((resolve, reject) => {
-    const socket = (options.createSocket ?? ((url) => new WebSocket(url)))(
+    const defaultCreate = (url: string, headers?: Record<string, string>) =>
+      headers && Object.keys(headers).length > 0
+        ? new WebSocket(url, { headers })
+        : new WebSocket(url);
+    const socket = (options.createSocket ?? defaultCreate)(
       options.url,
+      options.headers,
     );
     const channel = new RpcChannel({ send: (data) => socket.send(data) });
     let enrolled = false;
