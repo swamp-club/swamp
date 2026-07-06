@@ -243,18 +243,21 @@ async function handleDispatch(
   // Send bootstrap params as the first frame (after readers are active).
   childTransport.send(JSON.stringify(bootstrapParams));
 
-  // Cancel propagation: forward to child, kill after RUNNER_CANCEL_GRACE_MS.
+  let killTimer: ReturnType<typeof setTimeout> | undefined;
   const onCancel = () => {
     cancelController.abort();
+    // Try cooperative cancel; force-kill after the grace period
+    // regardless of whether the cooperative path succeeded.
     childChannel.call("runner.cancel", {}, {
       timeoutMs: RUNNER_CANCEL_GRACE_MS,
-    }).catch(() => {
+    }).catch(() => {});
+    killTimer = setTimeout(() => {
       try {
         child.kill();
       } catch {
-        // Already dead.
+        // Already exited.
       }
-    });
+    }, RUNNER_CANCEL_GRACE_MS);
   };
   ctx.signal.addEventListener("abort", onCancel, { once: true });
 
@@ -331,6 +334,7 @@ async function handleDispatch(
     };
   } finally {
     ctx.signal.removeEventListener("abort", onCancel);
+    if (killTimer !== undefined) clearTimeout(killTimer);
     childTransport.close();
   }
 }
