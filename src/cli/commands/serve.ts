@@ -48,7 +48,7 @@ import {
   renderDaemonDisabled,
   renderDaemonEnabled,
   renderDaemonStatus,
-  type ServiceMode,
+  toServiceMode,
 } from "../../presentation/output/serve_daemon_output.ts";
 import { groupCommandAction } from "../group_action.ts";
 import { ScheduledExecutionService } from "../../libswamp/mod.ts";
@@ -357,10 +357,7 @@ const daemonEnableCommand = new Command()
       extraArgs: extraArgs.length > 0 ? extraArgs : undefined,
     });
 
-    const svcMode: ServiceMode = mode === "agent"
-      ? "user service"
-      : "system service";
-    renderDaemonEnabled(ctx.outputMode, svcMode);
+    renderDaemonEnabled(ctx.outputMode, toServiceMode(mode));
   });
 
 const daemonDisableCommand = new Command()
@@ -384,10 +381,7 @@ const daemonDisableCommand = new Command()
 
     await scheduler.disable();
 
-    const svcMode: ServiceMode = mode === "agent"
-      ? "user service"
-      : "system service";
-    renderDaemonDisabled(ctx.outputMode, svcMode);
+    renderDaemonDisabled(ctx.outputMode, toServiceMode(mode));
   });
 
 const daemonStatusCommand = new Command()
@@ -411,7 +405,7 @@ const daemonStatusCommand = new Command()
 
     const status = await scheduler.status();
 
-    renderDaemonStatus(status, ctx.outputMode);
+    renderDaemonStatus(status, ctx.outputMode, toServiceMode(mode));
   });
 
 const daemonCommand = new Command()

@@ -28,7 +28,7 @@ import {
   renderWorkerDaemonEnabled,
   renderWorkerDaemonStatus,
 } from "../../presentation/output/worker_daemon_output.ts";
-import type { ServiceMode } from "../../presentation/output/serve_daemon_output.ts";
+import { toServiceMode } from "../../presentation/output/serve_daemon_output.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -157,10 +157,7 @@ const daemonEnableCommand = new Command()
       cacheDir: options.cacheDir as string | undefined,
     });
 
-    const svcMode: ServiceMode = mode === "agent"
-      ? "user service"
-      : "system service";
-    renderWorkerDaemonEnabled(ctx.outputMode, svcMode);
+    renderWorkerDaemonEnabled(ctx.outputMode, toServiceMode(mode));
   });
 
 const daemonDisableCommand = new Command()
@@ -184,10 +181,7 @@ const daemonDisableCommand = new Command()
 
     await scheduler.disable();
 
-    const svcMode: ServiceMode = mode === "agent"
-      ? "user service"
-      : "system service";
-    renderWorkerDaemonDisabled(ctx.outputMode, svcMode);
+    renderWorkerDaemonDisabled(ctx.outputMode, toServiceMode(mode));
   });
 
 const daemonStatusCommand = new Command()
@@ -211,7 +205,7 @@ const daemonStatusCommand = new Command()
 
     const status = await scheduler.status();
 
-    renderWorkerDaemonStatus(status, ctx.outputMode);
+    renderWorkerDaemonStatus(status, ctx.outputMode, toServiceMode(mode));
   });
 
 export const workerDaemonCommand = new Command()

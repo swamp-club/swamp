@@ -22,7 +22,15 @@ import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import type { ServiceStatus } from "../../domain/serve/service_scheduler.ts";
 import type { OutputMode } from "./output.ts";
 
-export type ServiceMode = "user service" | "system service";
+export type ServiceMode = "user" | "system";
+
+export function serviceModeLabel(serviceMode: ServiceMode): string {
+  return serviceMode === "user" ? "user service" : "system service";
+}
+
+export function toServiceMode(launchdMode: "agent" | "daemon"): ServiceMode {
+  return launchdMode === "agent" ? "user" : "system";
+}
 
 export function renderDaemonEnabled(
   mode: OutputMode,
@@ -38,10 +46,11 @@ export function renderDaemonEnabled(
       ),
     );
   } else {
+    const label = serviceModeLabel(serviceMode);
     writeOutput(
       `${
         green("✓")
-      } Daemon enabled as ${serviceMode} — swamp serve will start automatically`,
+      } Daemon enabled as ${label} — swamp serve will start automatically`,
     );
   }
 }
@@ -60,8 +69,9 @@ export function renderDaemonDisabled(
       ),
     );
   } else {
+    const label = serviceModeLabel(serviceMode);
     writeOutput(
-      `${green("✓")} Daemon disabled — ${serviceMode} definition removed`,
+      `${green("✓")} Daemon disabled — ${label} definition removed`,
     );
   }
 }
@@ -69,15 +79,20 @@ export function renderDaemonDisabled(
 export function renderDaemonStatus(
   status: ServiceStatus,
   mode: OutputMode,
+  serviceMode: ServiceMode,
 ): void {
   if (mode === "json") {
     // deno-lint-ignore no-console
-    console.log(JSON.stringify(status, null, 2));
+    console.log(JSON.stringify({ ...status, serviceMode }, null, 2));
     return;
   }
 
+  const label = serviceModeLabel(serviceMode);
+
   if (!status.enabled) {
-    writeOutput(`${dim("Status:")} ${dim("not configured")}`);
+    writeOutput(
+      `${dim(`Status (${label}):`)} ${dim("not configured")}`,
+    );
     writeOutput(
       `${dim("Run")} ${bold("swamp serve daemon enable")} ${
         dim("to set up the daemon")
@@ -88,7 +103,7 @@ export function renderDaemonStatus(
 
   const stateLabel = status.running ? green("running") : red("stopped");
 
-  writeOutput(`${dim("Status:")}  ${stateLabel}`);
+  writeOutput(`${dim(`Status (${label}):`)}  ${stateLabel}`);
   writeOutput(`${dim("Enabled:")} ${green("yes")}`);
   if (status.pid !== undefined) {
     writeOutput(`${dim("PID:")}     ${String(status.pid)}`);

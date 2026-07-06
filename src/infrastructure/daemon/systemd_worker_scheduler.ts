@@ -126,10 +126,12 @@ export class SystemdWorkerScheduler implements WorkerDaemonScheduler {
     } catch (err: unknown) {
       if (err instanceof Deno.errors.PermissionDenied) {
         const dir = systemdUnitDir(this.mode);
+        const hint = this.mode === "agent"
+          ? `  Check permissions on ${dir} and its parent directories`
+          : `  Option 1: Run with sudo for a system-wide service\n` +
+            `  Option 2: Use --user to install as a per-user service`;
         throw new UserError(
-          `Permission denied writing to ${dir}.\n\n` +
-            `  Option 1: Run with sudo for a system-wide service\n` +
-            `  Option 2: Use --user to install as a per-user service`,
+          `Permission denied writing to ${dir}.\n\n${hint}`,
         );
       }
       throw err;

@@ -25,7 +25,7 @@ Deno.test("resolveServiceMode: returns agent when user flag is true", async () =
   assertEquals(mode, "agent");
 });
 
-Deno.test("resolveServiceMode: returns agent when user flag is undefined", async () => {
+Deno.test("resolveServiceMode: user undefined behaves same as no options", async () => {
   const mode = await resolveServiceMode({ user: undefined });
   assertEquals(mode, await resolveServiceMode());
 });

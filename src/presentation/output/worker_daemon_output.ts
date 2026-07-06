@@ -21,7 +21,7 @@ import { bold, dim, green, red } from "@std/fmt/colors";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import type { WorkerDaemonStatus } from "../../domain/worker/worker_daemon_scheduler.ts";
 import type { OutputMode } from "./output.ts";
-import type { ServiceMode } from "./serve_daemon_output.ts";
+import { type ServiceMode, serviceModeLabel } from "./serve_daemon_output.ts";
 
 export function renderWorkerDaemonEnabled(
   mode: OutputMode,
@@ -37,10 +37,11 @@ export function renderWorkerDaemonEnabled(
       ),
     );
   } else {
+    const label = serviceModeLabel(serviceMode);
     writeOutput(
       `${
         green("✓")
-      } Worker daemon enabled as ${serviceMode} — swamp worker connect will start automatically`,
+      } Worker daemon enabled as ${label} — swamp worker connect will start automatically`,
     );
   }
 }
@@ -59,10 +60,9 @@ export function renderWorkerDaemonDisabled(
       ),
     );
   } else {
+    const label = serviceModeLabel(serviceMode);
     writeOutput(
-      `${
-        green("✓")
-      } Worker daemon disabled — ${serviceMode} definition removed`,
+      `${green("✓")} Worker daemon disabled — ${label} definition removed`,
     );
   }
 }
@@ -70,15 +70,20 @@ export function renderWorkerDaemonDisabled(
 export function renderWorkerDaemonStatus(
   status: WorkerDaemonStatus,
   mode: OutputMode,
+  serviceMode: ServiceMode,
 ): void {
   if (mode === "json") {
     // deno-lint-ignore no-console
-    console.log(JSON.stringify(status, null, 2));
+    console.log(JSON.stringify({ ...status, serviceMode }, null, 2));
     return;
   }
 
+  const label = serviceModeLabel(serviceMode);
+
   if (!status.enabled) {
-    writeOutput(`${dim("Status:")} ${dim("not configured")}`);
+    writeOutput(
+      `${dim(`Status (${label}):`)} ${dim("not configured")}`,
+    );
     writeOutput(
       `${dim("Run")} ${bold("swamp worker daemon enable")} ${
         dim("to set up the daemon")
@@ -89,7 +94,7 @@ export function renderWorkerDaemonStatus(
 
   const stateLabel = status.running ? green("running") : red("stopped");
 
-  writeOutput(`${dim("Status:")}  ${stateLabel}`);
+  writeOutput(`${dim(`Status (${label}):`)}  ${stateLabel}`);
   writeOutput(`${dim("Enabled:")} ${green("yes")}`);
   if (status.pid !== undefined) {
     writeOutput(`${dim("PID:")}     ${String(status.pid)}`);
