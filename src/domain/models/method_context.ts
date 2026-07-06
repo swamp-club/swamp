@@ -23,6 +23,10 @@
 
 import type { MethodContext } from "./model.ts";
 import { resolveExtensionFile } from "../extensions/extension_file_resolver.ts";
+import { isUuid } from "./model_lookup.ts";
+import type { UnifiedDataRepository } from "../data/repositories.ts";
+import type { DefinitionRepository } from "../definitions/repositories.ts";
+import type { ModelTypeInput } from "./model_type.ts";
 
 /**
  * Startup-scoped dependencies shared across every method invocation in a
@@ -110,7 +114,10 @@ export function buildMethodContext(
     definition: invocation.definition,
     methodName: invocation.methodName,
     logger: invocation.logger,
-    dataRepository: common.dataRepository,
+    dataRepository: withNameResolution(
+      common.dataRepository,
+      common.definitionRepository,
+    ),
     definitionRepository: common.definitionRepository,
     outputRepository: common.outputRepository,
     vaultService: common.vaultService,
@@ -135,4 +142,39 @@ export function buildMethodContext(
     extensionFile: (relPath: string) => resolveExtensionFile(root, relPath),
     createCelEnvironment: common.createCelEnvironment,
   };
+}
+
+async function resolveModelId(
+  definitionRepo: DefinitionRepository,
+  modelId: string,
+): Promise<string> {
+  if (isUuid(modelId)) return modelId;
+  const result = await definitionRepo.findByNameGlobal(modelId);
+  if (result) return result.definition.id;
+  return modelId;
+}
+
+function withNameResolution(
+  repo: UnifiedDataRepository,
+  definitionRepo: DefinitionRepository,
+): UnifiedDataRepository {
+  return Object.create(repo, {
+    findAllForModel: {
+      value: async (type: ModelTypeInput, modelId: string) => {
+        const resolved = await resolveModelId(definitionRepo, modelId);
+        return repo.findAllForModel(type, resolved);
+      },
+    },
+    getContent: {
+      value: async (
+        type: ModelTypeInput,
+        modelId: string,
+        dataName: string,
+        version?: number,
+      ) => {
+        const resolved = await resolveModelId(definitionRepo, modelId);
+        return repo.getContent(type, resolved, dataName, version);
+      },
+    },
+  });
 }

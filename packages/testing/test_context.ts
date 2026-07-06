@@ -308,6 +308,7 @@ export function createModelTestContext(
     writeResource,
     readResource,
     createFileWriter,
+    readModelData: () => Promise.resolve([]),
     createCelEnvironment: createExtensionCelEnvironment,
     onEvent,
   };

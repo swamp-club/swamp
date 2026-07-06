@@ -94,6 +94,50 @@ Deno.test("listVersions rejects dataName with path traversal", async () => {
   );
 });
 
+Deno.test("findAllForModel: warns and returns empty for model name instead of UUID", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const catalogStore = new CatalogStore(join(tmpDir, "_catalog.db"));
+    const repo = new FileSystemUnifiedDataRepository(
+      tmpDir,
+      undefined,
+      catalogStore,
+    );
+    const result = await repo.findAllForModel(testType, "my-model-name");
+    assertEquals(result, []);
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  }
+});
+
+Deno.test("getContent: warns and returns null for model name instead of UUID", async () => {
+  const tmpDir = await Deno.makeTempDir();
+  try {
+    const catalogStore = new CatalogStore(join(tmpDir, "_catalog.db"));
+    const repo = new FileSystemUnifiedDataRepository(
+      tmpDir,
+      undefined,
+      catalogStore,
+    );
+    const result = await repo.getContent(
+      testType,
+      "my-model-name",
+      "some-data",
+    );
+    assertEquals(result, null);
+  } finally {
+    if (Deno.build.os === "windows") {
+      await Deno.remove(tmpDir, { recursive: true }).catch(() => {});
+    } else {
+      await Deno.remove(tmpDir, { recursive: true });
+    }
+  }
+});
+
 const owner = {
   ownerType: "model-method" as const,
   ownerRef: "test/model:test-method",

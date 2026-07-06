@@ -39,10 +39,13 @@ import type {
 
 import type {
   DataHandle as TestingDataHandle,
+  DataRecord as TestingDataRecord,
   DataWriter as TestingDataWriter,
   MethodContext as TestingMethodContext,
   MethodResult as TestingMethodResult,
 } from "../../../packages/testing/types.ts";
+
+import type { DataRecord as CanonicalDataRecord } from "../data/data_record.ts";
 
 import type {
   MethodDefinition as TestingMethodDefinition,
@@ -87,8 +90,73 @@ function _checkContextFields(ctx: TestingMethodContext) {
   const _defVersion: number = ctx.definition.version;
   const _defTags: Record<string, string> = ctx.definition.tags;
 
+  // readModelData return type uses the testing DataRecord
+  const _readModelData: (
+    modelName: string,
+    specName?: string,
+  ) => Promise<TestingDataRecord[]> = ctx.readModelData;
+
   void [_signal, _repoDir, _globalArgs, _methodName, _createCelEnvironment];
-  void [_defName, _defId, _defVersion, _defTags];
+  void [_defName, _defId, _defVersion, _defTags, _readModelData];
+}
+
+// DataRecord: verify every testing field has a compatible canonical field type.
+function _checkDataRecordFields(record: TestingDataRecord) {
+  const _id: CanonicalDataRecord["id"] = record.id;
+  const _name: CanonicalDataRecord["name"] = record.name;
+  const _version: CanonicalDataRecord["version"] = record.version;
+  const _isLatest: CanonicalDataRecord["isLatest"] = record.isLatest;
+  const _createdAt: CanonicalDataRecord["createdAt"] = record.createdAt;
+  const _namespace: CanonicalDataRecord["namespace"] = record.namespace;
+  const _attributes: CanonicalDataRecord["attributes"] = record.attributes;
+  const _tags: CanonicalDataRecord["tags"] = record.tags;
+  const _modelName: CanonicalDataRecord["modelName"] = record.modelName;
+  const _modelId: CanonicalDataRecord["modelId"] = record.modelId;
+  const _modelType: CanonicalDataRecord["modelType"] = record.modelType;
+  const _specName: CanonicalDataRecord["specName"] = record.specName;
+  const _dataType: CanonicalDataRecord["dataType"] = record.dataType;
+  const _contentType: CanonicalDataRecord["contentType"] = record.contentType;
+  const _lifetime: CanonicalDataRecord["lifetime"] = record.lifetime;
+  const _ownerType: CanonicalDataRecord["ownerType"] = record.ownerType;
+  const _streaming: CanonicalDataRecord["streaming"] = record.streaming;
+  const _size: CanonicalDataRecord["size"] = record.size;
+  const _content: CanonicalDataRecord["content"] = record.content;
+  const _ownerRef: CanonicalDataRecord["ownerRef"] = record.ownerRef;
+  const _workflowRunId: CanonicalDataRecord["workflowRunId"] =
+    record.workflowRunId;
+  const _workflowName: CanonicalDataRecord["workflowName"] =
+    record.workflowName;
+  const _jobName: CanonicalDataRecord["jobName"] = record.jobName;
+  const _stepName: CanonicalDataRecord["stepName"] = record.stepName;
+  const _source: CanonicalDataRecord["source"] = record.source;
+
+  void [
+    _id,
+    _name,
+    _version,
+    _isLatest,
+    _createdAt,
+    _namespace,
+    _attributes,
+    _tags,
+    _modelName,
+    _modelId,
+    _modelType,
+    _specName,
+    _dataType,
+    _contentType,
+    _lifetime,
+    _ownerType,
+    _streaming,
+    _size,
+    _content,
+    _ownerRef,
+    _workflowRunId,
+    _workflowName,
+    _jobName,
+    _stepName,
+    _source,
+  ];
 }
 
 // DataHandle: verify field-by-field.
@@ -218,6 +286,7 @@ Deno.test("testing package types: compile-time compatibility check", () => {
   void [
     _checkContextFields,
     _checkDataHandleFields,
+    _checkDataRecordFields,
     _checkDataWriterFields,
     _checkMethodResultFields,
     _checkMethodDefinitionFields,
