@@ -378,6 +378,8 @@ export class DataQueryService {
     // CEL reserves "namespace" as an identifier, so we expose an "ns" alias
     // via a prototype-chain overlay — the record itself is not mutated.
     const results: DataRecord[] = [];
+    const needsHydration = !needsAttributes && !selectParsed;
+    const matchedRows: CatalogRow[] = [];
     for (const row of this.catalogStore.iterate()) {
       const record = this.rowToRecord(row, needsAttributes, needsContent);
       const ctx = Object.create(
@@ -388,6 +390,7 @@ export class DataQueryService {
         const match = parsed(ctx);
         if (match === true) {
           results.push(record);
+          if (needsHydration) matchedRows.push(row);
           if (results.length >= limit) break;
         }
       } catch (error) {
@@ -395,6 +398,15 @@ export class DataQueryService {
           .debug`Query predicate skipped row ${row.model_name}/${row.data_name}: ${
           String(error)
         }`;
+      }
+    }
+
+    // Hydrate matched records with attributes when the predicate didn't
+    // require them for filtering. Only applies to non-projected results —
+    // projections handle attribute loading via AST analysis above.
+    if (needsHydration) {
+      for (let i = 0; i < results.length; i++) {
+        results[i] = this.rowToRecord(matchedRows[i], true, needsContent);
       }
     }
 
