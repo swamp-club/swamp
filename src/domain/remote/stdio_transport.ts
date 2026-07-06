@@ -43,7 +43,17 @@ export class StdioTransport implements RpcTransport {
     this.#writer.write(frame).catch(() => {});
   }
 
-  close(): void {
+  /**
+   * Close the underlying writer, signalling EOF to the reader. The
+   * returned promise resolves once queued writes flush; callers that
+   * don't need to wait can fire-and-forget with `.catch(() => {})`.
+   */
+  shutdown(): Promise<void> {
+    return this.#writer.close().catch(() => {});
+  }
+
+  /** Release the writer lock without closing the stream. */
+  releaseLock(): void {
     try {
       this.#writer.releaseLock();
     } catch {

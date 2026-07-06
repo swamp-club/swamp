@@ -62,10 +62,8 @@ Deno.test("StdioTransport + RpcChannel: end-to-end RPC over stdio pipes", async 
 
   channelA.close("done");
   channelB.close("done");
-  transportA.close();
-  transportB.close();
-  await aOut.close();
-  await bOut.close();
+  await transportA.shutdown();
+  await transportB.shutdown();
   await readerADone.catch(() => {});
   await readerBDone.catch(() => {});
 });
@@ -107,10 +105,8 @@ Deno.test("StdioTransport + RpcChannel: stream events flow through bridge", asyn
 
   channelA.close("done");
   channelB.close("done");
-  transportA.close();
-  transportB.close();
-  await aOut.close();
-  await bOut.close();
+  await transportA.shutdown();
+  await transportB.shutdown();
   await readerADone.catch(() => {});
   await readerBDone.catch(() => {});
 });

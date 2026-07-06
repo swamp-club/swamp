@@ -43,8 +43,7 @@ Deno.test("StdioTransport: frame round-trip through pipe", async () => {
 
   transport.send('{"method":"echo","params":{}}');
   transport.send('{"method":"ping","params":{"x":1}}');
-  transport.close();
-  await writable.close();
+  await transport.shutdown();
   await readerDone;
 
   assertEquals(received, [
