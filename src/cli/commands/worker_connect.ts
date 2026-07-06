@@ -86,6 +86,10 @@ export const workerConnectCommand = new Command()
     "Auto-shutdown after 5 minutes of inactivity",
     "swamp worker connect wss://orch:4000 --token <token> --idle-timeout 5m",
   )
+  .example(
+    "Run up to one dispatch per CPU core",
+    "swamp worker connect wss://orch:4000 --token <token> --concurrency auto",
+  )
   .arguments("[url:string]")
   .option(
     "--token <token:string>",
