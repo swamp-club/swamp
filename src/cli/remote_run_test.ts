@@ -495,7 +495,7 @@ function headerCapturingServer(): {
   const server = Deno.serve(
     { port: 0, hostname: "127.0.0.1", onListen: () => {} },
     (req) => {
-      captured = req.headers;
+      captured = new Headers(req.headers);
       const { socket, response } = Deno.upgradeWebSocket(req);
       socket.onmessage = (event) => {
         const parsed = JSON.parse(event.data as string);
@@ -552,7 +552,7 @@ Deno.test({
     const server = Deno.serve(
       { port: 0, hostname: "127.0.0.1", onListen: () => {} },
       (req) => {
-        captured = req.headers;
+        captured = new Headers(req.headers);
         const { socket, response } = Deno.upgradeWebSocket(req);
         socket.onmessage = (event) => {
           const parsed = JSON.parse(event.data as string);
