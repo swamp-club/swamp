@@ -96,3 +96,66 @@ Deno.test("SessionCredentialService: credentials are distinct per worker", () =>
   assertEquals(service.verify(a.credential)?.workerId, "worker-a");
   assertEquals(service.verify(b.credential)?.workerId, "worker-b");
 });
+
+Deno.test("SessionCredentialService: issueForDispatch creates a credential with workerId and dispatchId", () => {
+  const clock = { nowMs: 0 };
+  const service = serviceAt(clock);
+  const record = service.issueForDispatch("worker-1", "dispatch-42");
+  assertEquals(service.verify(record.credential), {
+    workerId: "worker-1",
+    dispatchId: "dispatch-42",
+  });
+});
+
+Deno.test("SessionCredentialService: revokeDispatch revokes only the targeted dispatch credential", () => {
+  const clock = { nowMs: 0 };
+  const service = serviceAt(clock);
+  const control = service.issue("worker-1");
+  const d1 = service.issueForDispatch("worker-1", "dispatch-1");
+  const d2 = service.issueForDispatch("worker-1", "dispatch-2");
+
+  service.revokeDispatch("worker-1", "dispatch-1");
+
+  assertEquals(service.verify(d1.credential), null);
+  assertEquals(service.verify(d2.credential)?.dispatchId, "dispatch-2");
+  assertEquals(service.verify(control.credential)?.workerId, "worker-1");
+});
+
+Deno.test("SessionCredentialService: revokeAllForWorker revokes control and dispatch credentials", () => {
+  const clock = { nowMs: 0 };
+  const service = serviceAt(clock);
+  const control = service.issue("worker-1");
+  const d1 = service.issueForDispatch("worker-1", "dispatch-1");
+  const d2 = service.issueForDispatch("worker-1", "dispatch-2");
+  const other = service.issue("worker-2");
+
+  service.revokeAllForWorker("worker-1");
+
+  assertEquals(service.verify(control.credential), null);
+  assertEquals(service.verify(d1.credential), null);
+  assertEquals(service.verify(d2.credential), null);
+  assertEquals(service.verify(other.credential)?.workerId, "worker-2");
+});
+
+Deno.test("SessionCredentialService: refresh returns null for dispatch credentials", () => {
+  const clock = { nowMs: 0 };
+  const service = serviceAt(clock);
+  const dispatch = service.issueForDispatch("worker-1", "dispatch-1");
+  assertEquals(service.refresh(dispatch.credential), null);
+  assertEquals(
+    service.verify(dispatch.credential)?.dispatchId,
+    "dispatch-1",
+  );
+});
+
+Deno.test("SessionCredentialService: control-channel issue does not revoke dispatch credentials", () => {
+  const clock = { nowMs: 0 };
+  const service = serviceAt(clock);
+  const d1 = service.issueForDispatch("worker-1", "dispatch-1");
+  const first = service.issue("worker-1");
+  const second = service.issue("worker-1");
+
+  assertEquals(service.verify(first.credential), null);
+  assertEquals(service.verify(second.credential)?.workerId, "worker-1");
+  assertEquals(service.verify(d1.credential)?.dispatchId, "dispatch-1");
+});

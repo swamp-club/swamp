@@ -154,7 +154,10 @@ export function scheduleStep(
     return { kind: "queue" };
   }
   const schedulable = eligible
-    .filter((worker) => worker.activeDispatchIds.length < worker.capacity)
+    .filter((worker) =>
+      worker.status !== "unverified" &&
+      worker.activeDispatchIds.length < worker.capacity
+    )
     .sort((a, b) => {
       const freeA = a.capacity - a.activeDispatchIds.length;
       const freeB = b.capacity - b.activeDispatchIds.length;

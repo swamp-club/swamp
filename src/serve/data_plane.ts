@@ -364,7 +364,7 @@ export class DataPlane {
       return errorResponse(400, "Expected { specName, name, data }");
     }
 
-    const repo = this.#repoForWorker(workerName);
+    const repo = this.#repoForWorker(workerName, dispatchId);
     const { writeResource } = createResourceWriter(
       repo,
       dispatch.modelType,
@@ -407,7 +407,7 @@ export class DataPlane {
     }
 
     try {
-      const repo = this.#repoForWorker(workerName);
+      const repo = this.#repoForWorker(workerName, dispatchId);
       await repo.delete(
         dispatch.modelType,
         dispatch.modelId,
