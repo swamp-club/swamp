@@ -38,11 +38,7 @@ import {
   RemoteMethod,
   type SessionRefreshResult,
 } from "../domain/remote/protocol.ts";
-import {
-  DataPlaneClient,
-  dataPlaneUrlFromConnectUrl,
-} from "./data_plane_client.ts";
-import { WorkerBundleCache } from "./bundle_cache.ts";
+import { dataPlaneUrlFromConnectUrl } from "./data_plane_client.ts";
 import {
   type DispatchHandlerHandle,
   registerDispatchHandler,
@@ -109,6 +105,8 @@ export interface RunWorkerOptions {
   onDrainAvailable?: (requestDrain: (reason: WorkerExitReason) => void) => void;
   /** Test seam: WebSocket factory. */
   createSocket?: (url: string) => WebSocket;
+  /** Test seam: override the runner command for the dispatch child process. */
+  runnerCommand?: { cmd: string; args: string[] };
 }
 
 interface SessionState {
@@ -128,14 +126,9 @@ export async function runWorker(
   const session: SessionState = { credential: "", expiresAtMs: 0 };
   const dataPlaneUrl = options.dataPlaneUrl ??
     dataPlaneUrlFromConnectUrl(options.url);
-  const client = new DataPlaneClient({
-    baseUrl: dataPlaneUrl,
-    credential: () => session.credential,
-  });
   const cacheDir = options.cacheDir ??
     await Deno.makeTempDir({ prefix: "swamp-worker-cache-" });
   const machineId = await loadOrCreateMachineId(cacheDir);
-  const bundleCache = new WorkerBundleCache(join(cacheDir, "bundles"), client);
 
   let drainReason: WorkerExitReason | null = null;
   let dispatchCount = 0;
@@ -203,8 +196,8 @@ export async function runWorker(
         instanceUuid,
         machineId,
         session,
-        client,
-        bundleCache,
+        dataPlaneUrl,
+        cacheDirPath: join(cacheDir, "bundles"),
         onDispatchHandlerRegistered: (handle, channel, close) => {
           currentDrainHandle = handle;
           currentChannel = channel;
@@ -314,8 +307,8 @@ interface ConnectOnceArgs {
   instanceUuid: string;
   machineId: string;
   session: SessionState;
-  client: DataPlaneClient;
-  bundleCache: WorkerBundleCache;
+  dataPlaneUrl: string;
+  cacheDirPath: string;
   onDispatchHandlerRegistered: (
     handle: DispatchHandlerHandle,
     channel: RpcChannel,
@@ -400,8 +393,10 @@ function connectOnce(args: ConnectOnceArgs): Promise<string> {
         session.expiresAtMs = result.sessionExpiresAtMs;
         const handle = registerDispatchHandler({
           channel,
-          client: args.client,
-          bundleCache: args.bundleCache,
+          sessionCredential: () => session.credential,
+          dataPlaneUrl: args.dataPlaneUrl,
+          cacheDirPath: args.cacheDirPath,
+          runnerCommand: options.runnerCommand,
           onDispatch: (event) => {
             if (event.kind === "dispatch_started") {
               args.onDispatchStarted();

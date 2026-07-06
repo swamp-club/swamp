@@ -36,6 +36,18 @@ export interface LoggingOptions {
   logLevel?: LogLevel;
   jsonMode?: boolean;
   noColor?: boolean;
+  /** Write all log output to stderr only (for dispatch runners where stdout carries RPC frames). */
+  stderrOnly?: boolean;
+}
+
+const stderrEncoder = new TextEncoder();
+const stderrFormatter = getTextFormatter();
+
+function createStderrSink(): Sink {
+  return (record) => {
+    const text = stderrFormatter(record);
+    Deno.stderr.writeSync(stderrEncoder.encode(text + "\n"));
+  };
 }
 
 let isInitialized = false;
@@ -50,10 +62,14 @@ export async function initializeLogging(
 
   const logLevel: LogLevel = options.logLevel ?? "info";
 
+  const consoleSink: Sink = options.stderrOnly
+    ? createStderrSink()
+    : options.noColor
+    ? getConsoleSink({ formatter: getTextFormatter() })
+    : getConsoleSink();
+
   const sinks: Record<string, Sink | (Sink & Disposable)> = {
-    console: options.noColor
-      ? getConsoleSink({ formatter: getTextFormatter() })
-      : getConsoleSink(),
+    console: consoleSink,
     runFile: runFileSink.sink,
   };
 

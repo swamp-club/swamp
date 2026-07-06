@@ -37,7 +37,7 @@ inspect the pool with `swamp worker list`.
 ## Placing steps on workers
 
 A step declaring any placement field dispatches to a matching worker instead of
-running in-process; steps without placement are unaffected:
+running locally; steps without placement are unaffected:
 
 ```yaml
 steps:
