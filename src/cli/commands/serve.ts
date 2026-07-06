@@ -147,6 +147,7 @@ export function validateWebSocketOrigin(
   hostHeader: string | null,
   bindHost: string,
   tlsEnabled: boolean,
+  trustedHosts?: readonly string[],
 ): { allowed: boolean; reason?: string } {
   if (origin) {
     const TRUSTED_ORIGINS = new Set([
@@ -193,6 +194,11 @@ export function validateWebSocketOrigin(
       "::1",
       bindHost.toLowerCase(),
     ]);
+    if (trustedHosts) {
+      for (const h of trustedHosts) {
+        TRUSTED_HOSTS.add(h.toLowerCase());
+      }
+    }
     if (!TRUSTED_HOSTS.has(hostName)) {
       return { allowed: false, reason: `untrusted host: ${hostHeader}` };
     }
@@ -247,6 +253,9 @@ export function collectServeExtraArgs(options: AnyOptions): string[] {
   }
   if (options.verifyOnEnroll) {
     args.push("--verify-on-enroll");
+  }
+  if (options.trustedHosts) {
+    args.push("--trusted-hosts", options.trustedHosts as string);
   }
   return args;
 }
@@ -325,6 +334,10 @@ const daemonEnableCommand = new Command()
   .option(
     "--verify-on-enroll",
     "Run a fleet probe on each enrolling worker before it becomes schedulable",
+  )
+  .option(
+    "--trusted-hosts <hosts:string>",
+    "Comma-separated hostnames to trust for Host header validation (env: SWAMP_TRUSTED_HOSTS)",
   )
   .example("Enable daemon", "swamp serve daemon enable")
   .example(
@@ -511,6 +524,13 @@ export const serveCommand = new Command()
     "--verify-on-enroll",
     "Run a fleet probe on each enrolling worker before it becomes schedulable — workers that fail are marked unverified (env: SWAMP_VERIFY_ON_ENROLL)",
   )
+  .option(
+    "--trusted-hosts <hosts:string>",
+    "Comma-separated hostnames to trust for Host header validation when binding off-loopback " +
+      "(e.g. host.docker.internal,host.minikube.internal). " +
+      "Preserves the DNS rebinding defense while allowing Docker/Kubernetes worker connections " +
+      "(env: SWAMP_TRUSTED_HOSTS)",
+  )
   .example(
     "Enable TLS",
     "swamp serve --cert-file server.crt --key-file server.key",
@@ -531,6 +551,11 @@ export const serveCommand = new Command()
     "Webhook with a provider scheme",
     "swamp serve --webhook '/hooks/linear:my-workflow:@env=LINEAR_SECRET:linear' " +
       "--webhook '/hooks/custom:my-workflow:@env=CUSTOM_SECRET:generic:X-Signature:sha256='",
+  )
+  .example(
+    "Docker workers",
+    "swamp serve --host 0.0.0.0 --trusted-hosts host.docker.internal " +
+      "--cert-file server.crt --key-file server.key --auth-mode token",
   )
   .action(async function (options: AnyOptions) {
     const ctx = createContext(options as GlobalOptions, ["serve"]);
@@ -608,6 +633,14 @@ export const serveCommand = new Command()
     }
 
     assertOffLoopbackSecurity(host, tlsEnabled, authConfig.mode);
+
+    const trustedHostsRaw = (options.trustedHosts as string | undefined) ??
+      Deno.env.get("SWAMP_TRUSTED_HOSTS") ?? undefined;
+    const trustedHosts = trustedHostsRaw
+      ? trustedHostsRaw.split(",").map((h) => h.trim()).filter((h) =>
+        h.length > 0
+      )
+      : undefined;
 
     ctx.logger.info`Initializing repository at ${repoDir}`;
 
@@ -1003,6 +1036,7 @@ export const serveCommand = new Command()
             req.headers.get("host"),
             host,
             tlsEnabled,
+            trustedHosts,
           );
           if (!originCheck.allowed) {
             logger.warn(
