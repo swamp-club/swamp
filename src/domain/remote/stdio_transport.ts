@@ -43,11 +43,11 @@ export class StdioTransport implements RpcTransport {
     this.#writer.write(frame).catch(() => {});
   }
 
-  async close(): Promise<void> {
+  close(): void {
     try {
-      await this.#writer.close();
+      this.#writer.releaseLock();
     } catch {
-      // Already closed or released.
+      // Already released.
     }
   }
 }

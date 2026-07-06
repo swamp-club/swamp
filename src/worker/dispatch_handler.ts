@@ -221,7 +221,8 @@ async function handleDispatch(
       if (parsed.type === "runner.result") {
         resultBox.value = parsed.result as DispatchResult;
         // Close the child's stdin so its reader gets EOF and it can exit.
-        childTransport.close().catch(() => {});
+        childTransport.close();
+        child.stdin.close().catch(() => {});
       } else {
         childChannel.handleRaw(data);
       }
@@ -333,7 +334,7 @@ async function handleDispatch(
     };
   } finally {
     ctx.signal.removeEventListener("abort", onCancel);
-    await childTransport.close().catch(() => {});
+    childTransport.close();
   }
 }
 

@@ -227,5 +227,5 @@ export async function runDispatchRunner(
   // closes the pipe, but the supervisor waits on child.status first.
   // Exiting the process closes all handles cleanly.
   transport.send(JSON.stringify({ type: "runner.result", result }));
-  await transport.close();
+  transport.close();
 }
