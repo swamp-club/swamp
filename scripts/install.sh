@@ -97,7 +97,7 @@ main() {
   info "  3. Join the community:"
   info "       https://discord.gg/swamp-club"
   info ""
-  info "Learn more: https://github.com/systeminit/swamp"
+  info "Learn more: https://github.com/swamp-club/swamp"
 }
 
 parse_cli_args() {
