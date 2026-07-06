@@ -95,11 +95,13 @@ export async function runDispatchRunner(
   // Read the bootstrap frame (first frame on stdin).
   let bootstrapParams: RunnerBootstrapParams | null = null;
   let bootstrapResolve: (() => void) | null = null;
-  const bootstrapReady = new Promise<void>((resolve) => {
+  let bootstrapReject: ((err: Error) => void) | null = null;
+  const bootstrapReady = new Promise<void>((resolve, reject) => {
     bootstrapResolve = resolve;
+    bootstrapReject = reject;
   });
 
-  createStdioReader(
+  const readerDone = createStdioReader(
     stdin,
     (data) => {
       if (bootstrapParams === null) {
@@ -112,8 +114,10 @@ export async function runDispatchRunner(
     () => {
       channel.close("stdin closed");
       cancelController.abort();
+      bootstrapReject?.(new Error("stdin closed before bootstrap frame"));
     },
   );
+  readerDone.catch(() => {});
 
   // Register cancel handler — the supervisor forwards rpc.cancel as a
   // direct "runner.cancel" call on our channel.

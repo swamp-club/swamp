@@ -45,7 +45,7 @@ import {
   createStdioReader,
   StdioTransport,
 } from "../domain/remote/stdio_transport.ts";
-import { fromFileUrl } from "@std/path";
+import { basename, fromFileUrl } from "@std/path";
 import { bridgeCapabilityVerbs } from "./runner_bridge.ts";
 import type { RunnerBootstrapParams } from "./runner_protocol.ts";
 import { RUNNER_CANCEL_GRACE_MS } from "./runner_protocol.ts";
@@ -169,11 +169,11 @@ async function handleDispatch(
     params.environmentSnapshot,
   );
   if (execution.traceHeaders) {
-    const traceEnv: Record<string, string> = {};
+    const traceSnapshot: Record<string, string> = {};
     for (const [key, value] of Object.entries(execution.traceHeaders)) {
-      traceEnv[key.toUpperCase().replace(/-/g, "_")] = value;
+      traceSnapshot[key.toUpperCase().replace(/-/g, "_")] = value;
     }
-    spawnEnv = { ...spawnEnv, ...traceEnv };
+    spawnEnv = overlayEnvironment(spawnEnv, traceSnapshot);
   }
 
   const bootstrapParams: RunnerBootstrapParams = {
@@ -341,7 +341,7 @@ async function handleDispatch(
 
 function deriveRunnerCommand(): { cmd: string; args: string[] } {
   const execPath = Deno.execPath();
-  const base = execPath.split("/").pop() ?? execPath.split("\\").pop() ?? "";
+  const base = basename(execPath);
   if (base === "deno" || base === "deno.exe") {
     const entryPoint = fromFileUrl(
       new URL(
