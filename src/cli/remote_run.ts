@@ -301,7 +301,7 @@ export function withRemoteOptions<T extends AnyCommand>(command: T): T {
   return command
     .option(
       "--server <url:string>",
-      "Run through a 'swamp serve' server (ws:// or http://) instead of locally; no local repo required (env: SWAMP_SERVE_URL).",
+      "Run through a 'swamp serve' server (ws:// or http://) instead of locally; no local repo required (env: SWAMP_SERVE_URL). For proxy/tunnel pass-through headers see SWAMP_SERVE_EXTRA_HEADERS.",
     )
     .option(
       "--token <token:string>",

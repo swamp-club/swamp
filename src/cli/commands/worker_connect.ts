@@ -91,6 +91,10 @@ export const workerConnectCommand = new Command()
     "Run up to one dispatch per CPU core",
     "swamp worker connect wss://orch:4000 --token <token> --concurrency auto",
   )
+  .example(
+    "Connect through a reverse-proxy that requires a tunnel token",
+    "SWAMP_SERVE_EXTRA_HEADERS=$'Tunnel-Token: abc123' swamp worker connect wss://orch.internal:4000 --token tok.secret",
+  )
   .arguments("[url:string]")
   .option(
     "--token <token:string>",
