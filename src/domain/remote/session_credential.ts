@@ -57,6 +57,8 @@ export function generateOpaqueToken(): string {
 export class SessionCredentialService {
   #byCredential = new Map<string, SessionCredentialRecord>();
   #byWorker = new Map<string, string>();
+  #byDispatch = new Map<string, string>();
+  #credentialsByWorker = new Map<string, Set<string>>();
   readonly #ttlMs: number;
   readonly #now: () => number;
 
@@ -79,6 +81,12 @@ export class SessionCredentialService {
     };
     this.#byCredential.set(record.credential, record);
     this.#byWorker.set(workerId, record.credential);
+    let workerCreds = this.#credentialsByWorker.get(workerId);
+    if (!workerCreds) {
+      workerCreds = new Set();
+      this.#credentialsByWorker.set(workerId, workerCreds);
+    }
+    workerCreds.add(record.credential);
     return record;
   }
 
@@ -98,6 +106,13 @@ export class SessionCredentialService {
       dispatchId,
     };
     this.#byCredential.set(record.credential, record);
+    this.#byDispatch.set(dispatchId, record.credential);
+    let workerCreds = this.#credentialsByWorker.get(workerId);
+    if (!workerCreds) {
+      workerCreds = new Set();
+      this.#credentialsByWorker.set(workerId, workerCreds);
+    }
+    workerCreds.add(record.credential);
     return record;
   }
 
@@ -113,10 +128,7 @@ export class SessionCredentialService {
       return null;
     }
     if (record.expiresAtMs <= this.#now()) {
-      this.#byCredential.delete(credential);
-      if (this.#byWorker.get(record.workerId) === credential) {
-        this.#byWorker.delete(record.workerId);
-      }
+      this.#deleteCredential(record);
       return null;
     }
     return {
@@ -140,33 +152,49 @@ export class SessionCredentialService {
     return this.issue(result.workerId);
   }
 
+  #deleteCredential(record: SessionCredentialRecord): void {
+    this.#byCredential.delete(record.credential);
+    if (this.#byWorker.get(record.workerId) === record.credential) {
+      this.#byWorker.delete(record.workerId);
+    }
+    if (record.dispatchId) {
+      this.#byDispatch.delete(record.dispatchId);
+    }
+    this.#credentialsByWorker.get(record.workerId)?.delete(record.credential);
+  }
+
   /** Revoke the worker's control-channel credential, if any. */
   revokeForWorker(workerId: string): void {
     const credential = this.#byWorker.get(workerId);
     if (credential !== undefined) {
       this.#byCredential.delete(credential);
       this.#byWorker.delete(workerId);
+      this.#credentialsByWorker.get(workerId)?.delete(credential);
     }
   }
 
   /** Revoke all credentials for a worker (control + dispatch). */
   revokeAllForWorker(workerId: string): void {
-    this.revokeForWorker(workerId);
-    for (const [cred, record] of this.#byCredential) {
-      if (record.workerId === workerId) {
+    this.#byWorker.delete(workerId);
+    const creds = this.#credentialsByWorker.get(workerId);
+    if (creds) {
+      for (const cred of creds) {
+        const record = this.#byCredential.get(cred);
+        if (record?.dispatchId) {
+          this.#byDispatch.delete(record.dispatchId);
+        }
         this.#byCredential.delete(cred);
       }
+      this.#credentialsByWorker.delete(workerId);
     }
   }
 
   /** Revoke a specific dispatch credential by dispatch id. */
   revokeDispatch(workerId: string, dispatchId: string): void {
-    for (const [cred, record] of this.#byCredential) {
-      if (
-        record.workerId === workerId && record.dispatchId === dispatchId
-      ) {
-        this.#byCredential.delete(cred);
-      }
-    }
+    const credential = this.#byDispatch.get(dispatchId);
+    if (credential === undefined) return;
+    const record = this.#byCredential.get(credential);
+    if (!record || record.workerId !== workerId) return;
+    this.#deleteCredential(record);
   }
 }
