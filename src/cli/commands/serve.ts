@@ -28,6 +28,13 @@ import { UserError } from "../../domain/errors.ts";
 import { parseTimeout } from "../duration_parser.ts";
 import { buildServeAuthConfig } from "../../domain/access/serve_auth_config.ts";
 import { handleConnection } from "../../serve/connection.ts";
+import { setConnectionCollectives } from "../../serve/handlers/shared.ts";
+import {
+  createDeviceAuthDeps,
+  handleDeviceAuth,
+} from "../../serve/device_auth_handler.ts";
+import { resolveOAuthClientCredentials } from "../../serve/oauth_registration.ts";
+import { VaultService } from "../../domain/vaults/vault_service.ts";
 import { authenticateServerToken } from "../../serve/token_auth.ts";
 import { parsePrincipal } from "../../domain/access/principal.ts";
 import { executeWorkflowWithLocks } from "../../serve/deps.ts";
@@ -314,7 +321,7 @@ const daemonEnableCommand = new Command()
   )
   .option(
     "--allowed-users <list:string>",
-    "Comma-separated user identifiers for OAuth admission policy",
+    "Comma-separated swamp-club usernames or user:<sub> subjects for OAuth admission policy",
   )
   .option(
     "--oauth-provider <url:string>",
@@ -322,7 +329,7 @@ const daemonEnableCommand = new Command()
   )
   .option(
     "--oauth-client-id <id:string>",
-    "OAuth client ID (required for oauth mode)",
+    "OAuth client ID — auto-registered on first start if omitted",
   )
   .option(
     "--groups-field <field:string>",
@@ -493,7 +500,7 @@ export const serveCommand = new Command()
   )
   .option(
     "--allowed-users <list:string>",
-    "Comma-separated user identifiers for OAuth admission policy",
+    "Comma-separated swamp-club usernames or user:<sub> subjects for OAuth admission policy",
   )
   .option(
     "--oauth-provider <url:string>",
@@ -501,7 +508,7 @@ export const serveCommand = new Command()
   )
   .option(
     "--oauth-client-id <id:string>",
-    "OAuth client ID (required for oauth mode)",
+    "OAuth client ID — auto-registered on first start if omitted",
   )
   .option(
     "--groups-field <field:string>",
@@ -754,6 +761,237 @@ export const serveCommand = new Command()
         join(grantSourceDir, "_placeholder"),
         modelsDir,
       );
+    }
+
+    let oauthClientSecret = "";
+    if (authConfig.mode === "oauth") {
+      const vaultService = await VaultService.fromRepository(resolvedRepoDir);
+      const vaultNames = vaultService.getVaultNames();
+      if (vaultNames.length === 0) {
+        throw new UserError(
+          "oauth mode requires a vault — run 'swamp vault create local default' first",
+        );
+      }
+      const vaultName = vaultNames[0];
+      const credentials = await resolveOAuthClientCredentials(
+        {
+          getVaultSecret: async (v, k) => {
+            try {
+              return await vaultService.get(v, k);
+            } catch {
+              return null;
+            }
+          },
+          putVaultSecret: (v, k, val) => vaultService.put(v, k, val),
+          registerClient: async (providerUrl, signal) => {
+            const { startDeviceGrant, pollForToken } = await import(
+              "../../serve/oauth_client.ts"
+            );
+            const { BOOTSTRAP_CLIENT_ID } = await import(
+              "../../serve/oauth_registration.ts"
+            );
+            const { DeviceGrantPollError } = await import(
+              "../../serve/oauth_client.ts"
+            );
+
+            const grant = await startDeviceGrant(
+              providerUrl,
+              BOOTSTRAP_CLIENT_ID,
+              signal,
+            );
+
+            const verifyUrl = grant.verificationUriComplete ||
+              grant.verificationUri;
+            logger.info(
+              "First-time OAuth setup — visit {uri} and verify code: {code}",
+              { uri: verifyUrl, code: grant.userCode },
+            );
+
+            let currentIntervalMs = (grant.interval || 5) * 1000;
+            const deadline = Date.now() + grant.expiresIn * 1000;
+            let tokenResponse;
+            while (Date.now() < deadline) {
+              try {
+                tokenResponse = await pollForToken(
+                  providerUrl,
+                  BOOTSTRAP_CLIENT_ID,
+                  "",
+                  grant.deviceCode,
+                  signal,
+                );
+                break;
+              } catch (err) {
+                if (err instanceof DeviceGrantPollError) {
+                  if (err.code === "slow_down") {
+                    currentIntervalMs += 5000;
+                  }
+                  if (
+                    err.code === "authorization_pending" ||
+                    err.code === "slow_down"
+                  ) {
+                    await new Promise((resolve) =>
+                      setTimeout(resolve, currentIntervalMs)
+                    );
+                    continue;
+                  }
+                }
+                throw err;
+              }
+            }
+            if (!tokenResponse) {
+              throw new Error("Bootstrap device grant timed out");
+            }
+
+            const resp = await fetch(
+              `${providerUrl}/api/auth/oauth2/register`,
+              {
+                method: "POST",
+                headers: {
+                  "content-type": "application/json",
+                  "authorization": `Bearer ${tokenResponse.accessToken}`,
+                },
+                body: JSON.stringify({
+                  client_name: `swamp-serve-${crypto.randomUUID().slice(0, 8)}`,
+                  redirect_uris: ["http://localhost"],
+                  grant_types: ["authorization_code"],
+                  scope: "openid profile email collectives",
+                }),
+                signal,
+              },
+            );
+            if (!resp.ok) {
+              const body = await resp.text().catch(() => "");
+              throw new Error(
+                `OAuth client registration failed: ${resp.status} ${resp.statusText}${
+                  body ? ` — ${body}` : ""
+                }`,
+              );
+            }
+            const data = await resp.json();
+            return {
+              clientId: data.client_id as string,
+              clientSecret: data.client_secret as string,
+              accessToken: tokenResponse.accessToken,
+            };
+          },
+        },
+        authConfig.oauthProvider,
+        vaultName,
+        authConfig.oauthClientId,
+        AbortSignal.timeout(300_000),
+      );
+      authConfig.oauthClientId = credentials.clientId;
+      oauthClientSecret = credentials.clientSecret;
+      logger.info(
+        "OAuth client credentials resolved (clientId: {clientId})",
+        { clientId: credentials.clientId },
+      );
+
+      if (credentials.accessToken) {
+        const { resolveUsername } = await import(
+          "../../serve/oauth_client.ts"
+        );
+        const { storeResolvedAdmins } = await import(
+          "../../serve/oauth_registration.ts"
+        );
+        const resolvedMap: Record<string, string> = {};
+        for (let i = 0; i < authConfig.admins.length; i++) {
+          const admin = authConfig.admins[i];
+          const username = admin.startsWith("user:") ? admin.slice(5) : admin;
+          try {
+            const sub = await resolveUsername(
+              authConfig.oauthProvider,
+              username,
+              credentials.accessToken,
+              AbortSignal.timeout(10_000),
+            );
+            authConfig.admins[i] = `user:${sub}`;
+            resolvedMap[username] = sub;
+            logger.info("Resolved admin {username} to user:{sub}", {
+              username,
+              sub,
+            });
+          } catch (err) {
+            throw new UserError(
+              `Failed to resolve admin '${admin}': ${
+                err instanceof Error ? err.message : String(err)
+              }. Ensure the username exists on ${authConfig.oauthProvider}.`,
+            );
+          }
+        }
+        for (let i = 0; i < authConfig.allowedUsers.length; i++) {
+          const entry = authConfig.allowedUsers[i];
+          const username = entry.startsWith("user:") ? entry.slice(5) : entry;
+          try {
+            const sub = await resolveUsername(
+              authConfig.oauthProvider,
+              username,
+              credentials.accessToken,
+              AbortSignal.timeout(10_000),
+            );
+            authConfig.allowedUsers[i] = sub;
+            resolvedMap[`allowed:${username}`] = sub;
+            logger.info("Resolved allowed-user {username} to {sub}", {
+              username,
+              sub,
+            });
+          } catch (err) {
+            throw new UserError(
+              `Failed to resolve allowed-user '${entry}': ${
+                err instanceof Error ? err.message : String(err)
+              }. Ensure the username exists on ${authConfig.oauthProvider}.`,
+            );
+          }
+        }
+        await storeResolvedAdmins(
+          { putVaultSecret: (v, k, val) => vaultService.put(v, k, val) },
+          vaultName,
+          resolvedMap,
+        );
+      } else if (credentials.resolvedAdmins) {
+        for (let i = 0; i < authConfig.admins.length; i++) {
+          const admin = authConfig.admins[i];
+          const username = admin.startsWith("user:") ? admin.slice(5) : admin;
+          const cachedSub = credentials.resolvedAdmins[username];
+          if (cachedSub) {
+            authConfig.admins[i] = `user:${cachedSub}`;
+            logger.info(
+              "Using cached admin resolution: {username} → user:{sub}",
+              { username, sub: cachedSub },
+            );
+          } else {
+            throw new UserError(
+              `Admin '${admin}' not found in cached resolutions. ` +
+                "Clear stored credentials to re-register: " +
+                `swamp vault delete ${vaultName} oauth-client-id`,
+            );
+          }
+        }
+        for (let i = 0; i < authConfig.allowedUsers.length; i++) {
+          const entry = authConfig.allowedUsers[i];
+          const username = entry.startsWith("user:") ? entry.slice(5) : entry;
+          const cachedSub = credentials.resolvedAdmins[`allowed:${username}`];
+          if (cachedSub) {
+            authConfig.allowedUsers[i] = cachedSub;
+            logger.info(
+              "Using cached allowed-user resolution: {username} → {sub}",
+              { username, sub: cachedSub },
+            );
+          } else {
+            throw new UserError(
+              `Allowed-user '${entry}' not found in cached resolutions. ` +
+                "Clear stored credentials to re-register: " +
+                `swamp vault delete ${vaultName} oauth-client-id`,
+            );
+          }
+        }
+      } else {
+        throw new UserError(
+          "Cannot resolve usernames — no access token and no cached resolutions. " +
+            "Clear stored credentials to re-register: " +
+            `swamp vault delete ${vaultName} oauth-client-id`,
+        );
+      }
     }
 
     const autoDefRepo = new YamlDefinitionRepository(
@@ -1053,13 +1291,6 @@ export const serveCommand = new Command()
           }
 
           if (authConfig.mode !== "none") {
-            if (authConfig.mode !== "token") {
-              return new Response(
-                "WebSocket authentication is not supported for this server configuration",
-                { status: 501 },
-              );
-            }
-
             if (!checkRateLimit(remoteAddr)) {
               logger.warn("WebSocket auth rate-limited from {ip}", {
                 ip: remoteAddr,
@@ -1097,6 +1328,7 @@ export const serveCommand = new Command()
               req,
               wsUpgradeOpts,
             );
+            setConnectionCollectives(socket, result.collectives);
             handleConnection(socket, connectionCtx, principal);
             return response;
           }
@@ -1195,6 +1427,55 @@ export const serveCommand = new Command()
             }
             return Response.json({ status: "cancelled", count });
           }
+        }
+
+        // Device authorization endpoints (OAuth mode only)
+        if (authConfig.mode === "oauth" && authConfig.oauthClientId) {
+          const url = new URL(req.url);
+          if (url.pathname === "/auth/device") {
+            const deviceRemoteAddr = trustProxy
+              ? (req.headers.get("x-forwarded-for")
+                ?.split(",")[0]?.trim() ??
+                info.remoteAddr.hostname)
+              : info.remoteAddr.hostname;
+            if (!checkRateLimit(deviceRemoteAddr)) {
+              return new Response(
+                JSON.stringify({ error: "Too Many Requests" }),
+                {
+                  status: 429,
+                  headers: { "content-type": "application/json" },
+                },
+              );
+            }
+          }
+          const oauthConfig = {
+            ...authConfig,
+            oauthClientId: authConfig.oauthClientId!,
+          };
+          const deviceAuthDeps = createDeviceAuthDeps(
+            oauthConfig,
+            oauthClientSecret,
+            resolvedRepoDir,
+            repoContext,
+          );
+          const deviceAuthResponse = await handleDeviceAuth(
+            req,
+            deviceAuthDeps,
+          );
+          if (deviceAuthResponse) return deviceAuthResponse;
+        }
+
+        // Auth discovery (unauthenticated — mode is not sensitive)
+        if (
+          req.method === "GET" && new URL(req.url).pathname === "/auth/info"
+        ) {
+          const authInfo: Record<string, string> = { mode: authConfig.mode };
+          if (authConfig.mode === "oauth") {
+            authInfo.verificationBaseUri = authConfig.oauthProvider;
+          }
+          return new Response(JSON.stringify(authInfo), {
+            headers: { "content-type": "application/json" },
+          });
         }
 
         // Health check endpoint

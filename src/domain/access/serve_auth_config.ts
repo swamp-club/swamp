@@ -55,7 +55,15 @@ function parseCommaSeparated(value: string | undefined): string[] {
   return value.split(",").map((s) => s.trim()).filter((s) => s.length > 0);
 }
 
-function validateAdmins(admins: string[]): void {
+function validateAdmins(admins: string[], mode: string): void {
+  if (mode === "oauth") {
+    for (const admin of admins) {
+      if (admin.trim().length === 0) {
+        throw new UserError("--admins contains an empty value");
+      }
+    }
+    return;
+  }
   for (const admin of admins) {
     try {
       parseSubject(admin);
@@ -85,7 +93,7 @@ export function buildServeAuthConfig(
   const groupsField = input.groupsField ?? DEFAULT_GROUPS_FIELD;
 
   if (admins.length > 0) {
-    validateAdmins(admins);
+    validateAdmins(admins, mode);
   }
 
   if (mode === "token") {
@@ -102,9 +110,27 @@ export function buildServeAuthConfig(
         '--admins is required when --auth-mode is "oauth"',
       );
     }
-    if (!oauthClientId) {
+    if (allowedCollectives.length === 0 && allowedUsers.length === 0) {
       throw new UserError(
-        '--oauth-client-id is required when --auth-mode is "oauth"',
+        '--allowed-collectives or --allowed-users is required when --auth-mode is "oauth" — ' +
+          "without admission restrictions, any swamp-club user can connect",
+      );
+    }
+    let providerUrl: URL;
+    try {
+      providerUrl = new URL(oauthProvider);
+    } catch {
+      throw new UserError(
+        `Invalid --oauth-provider URL "${oauthProvider}": expected a valid URL`,
+      );
+    }
+    const isLocalhost = providerUrl.hostname === "localhost" ||
+      providerUrl.hostname === "127.0.0.1" ||
+      providerUrl.hostname === "::1";
+    if (providerUrl.protocol !== "https:" && !isLocalhost) {
+      throw new UserError(
+        `--oauth-provider must use HTTPS (got ${oauthProvider}). ` +
+          "HTTP is only allowed for localhost development.",
       );
     }
   }
