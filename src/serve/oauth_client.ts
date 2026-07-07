@@ -203,5 +203,10 @@ export async function resolveUsername(
     );
   }
   const data = await resp.json();
-  return data.sub as string;
+  if (typeof data.sub !== "string" || !data.sub) {
+    throw new Error(
+      `resolve-user response missing required 'sub' field for '${username}'`,
+    );
+  }
+  return data.sub;
 }

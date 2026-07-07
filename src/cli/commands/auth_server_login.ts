@@ -130,7 +130,17 @@ async function handleOAuthFlow(
   options: AnyOptions,
   cliCtx: { outputMode: string },
 ): Promise<void> {
-  const rawUrl = options.server as string;
+  let rawUrl = options.server as string;
+  try {
+    const parsed = new URL(rawUrl);
+    if (parsed.protocol === "ws:") parsed.protocol = "http:";
+    else if (parsed.protocol === "wss:") parsed.protocol = "https:";
+    rawUrl = parsed.href;
+  } catch {
+    throw new UserError(
+      `Invalid --server URL "${options.server}": expected ws://, wss://, http://, or https:// URL`,
+    );
+  }
   const normalizedUrl = normalizeServerUrl(rawUrl);
   const deps = createServerLoginDeps();
   const input = { serverUrl: rawUrl, signal: AbortSignal.timeout(300_000) };
