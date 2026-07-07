@@ -80,6 +80,7 @@ import {
 import { swampPath } from "../../infrastructure/persistence/paths.ts";
 import { DefaultDatastorePathResolver } from "../../infrastructure/persistence/default_datastore_path_resolver.ts";
 import { sweepStaleRecords } from "../../serve/boot_reconciliation.ts";
+import { installUnhandledRejectionGuard } from "../../serve/unhandled_rejection_guard.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -641,6 +642,8 @@ export const serveCommand = new Command()
         h.length > 0
       )
       : undefined;
+
+    const rejectionGuard = installUnhandledRejectionGuard();
 
     ctx.logger.info`Initializing repository at ${repoDir}`;
 
@@ -1245,6 +1248,7 @@ export const serveCommand = new Command()
         await scheduledExecution.stop();
       }
       await policySnapshotLoader.dispose();
+      rejectionGuard.dispose();
       setRemoteStepDispatcher(null);
       ac.abort();
       if (isJson) {
