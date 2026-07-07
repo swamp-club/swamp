@@ -220,7 +220,7 @@ export function renderWorkerList(
   mode: OutputMode,
 ): void {
   if (mode === "json") {
-    console.log(JSON.stringify(data.workers, null, 2));
+    console.log(JSON.stringify(data, null, 2));
     return;
   }
   if (data.workers.length === 0) {
@@ -229,7 +229,9 @@ export function renderWorkerList(
         [
           "No connected workers found.",
           dim(
-            `${data.filteredDisconnectedCount} disconnected worker(s) hidden — use --all to show all.`,
+            `${data.filteredDisconnectedCount} disconnected ${
+              data.filteredDisconnectedCount === 1 ? "worker" : "workers"
+            } hidden — use --all to show all.`,
           ),
         ].join("\n"),
       );
@@ -265,7 +267,9 @@ export function renderWorkerList(
   if (data.filteredDisconnectedCount) {
     writeOutput(
       dim(
-        `${data.filteredDisconnectedCount} disconnected worker(s) hidden — use --all to show all.`,
+        `${data.filteredDisconnectedCount} disconnected ${
+          data.filteredDisconnectedCount === 1 ? "worker" : "workers"
+        } hidden — use --all to show all.`,
       ),
     );
   }
