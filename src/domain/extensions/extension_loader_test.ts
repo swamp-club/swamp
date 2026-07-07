@@ -23,6 +23,11 @@ import { toFileUrl } from "@std/path";
 import { findStaleFiles, type FreshnessCatalog } from "./bundle_freshness.ts";
 import { ExtensionCatalogStore } from "../../infrastructure/persistence/extension_catalog_store.ts";
 import type { ExtensionTypeRow } from "../../infrastructure/persistence/extension_catalog_store.ts";
+import { ExtensionLoader } from "./extension_loader.ts";
+import type { KindAdapter } from "./kind_adapter.ts";
+import { ExtensionRepository } from "../../infrastructure/persistence/extension_repository.ts";
+import { LockfileRepository } from "../../infrastructure/persistence/lockfile_repository.ts";
+import type { DenoRuntime } from "../runtime/deno_runtime.ts";
 
 Deno.test("importBundleByPath: non-empty fingerprint appends ?fp= to import URL", async () => {
   const dir = await Deno.makeTempDir({ prefix: "swamp_fp_url_" });
@@ -323,6 +328,118 @@ Deno.test("findStaleFiles: ValidationFailed entries for missing sources are remo
         remaining.length,
         0,
         "ValidationFailed entry for deleted source must be removed by findStaleFiles",
+      );
+    } finally {
+      catalog.close();
+    }
+  } finally {
+    await Deno.remove(dir, { recursive: true }).catch(() => {});
+  }
+});
+
+// -- loadSingleType skip-with-warning for broken bundles (swamp-club#1018) ----
+
+function makeStubAdapter(loaded: Set<string>): KindAdapter {
+  return {
+    kind: "model",
+    bundleSubdir: "bundles",
+    catalogKinds: ["model"],
+    primaryExportKey: "model",
+    exportRegex: /export\s+const\s+model\s*[=:]/,
+    useResolver: false,
+    validatePrimaryExport() {
+      return { success: true, data: {} };
+    },
+    formatValidationError() {
+      return "validation error";
+    },
+    normalizeType() {
+      return "";
+    },
+    extractTypeFromSource() {
+      return null;
+    },
+    register() {},
+    registerLazy() {},
+    promoteFromLazy(_type, _validated, _module, _ctx) {
+      loaded.add(_type);
+    },
+    hasType(type) {
+      return loaded.has(type);
+    },
+    isFullyLoaded(type) {
+      return loaded.has(type);
+    },
+  };
+}
+
+const stubDenoRuntime: DenoRuntime = {
+  ensureDeno: () => Promise.resolve("/usr/bin/deno"),
+};
+
+Deno.test("loadSingleType: skips bundle without primary export and removes catalog entry", async () => {
+  const dir = await Deno.makeTempDir({ prefix: "swamp_1018_" });
+  try {
+    const bundlePath = join(dir, "helper.js");
+    await Deno.writeTextFile(
+      bundlePath,
+      "export const helper = true;\n",
+    );
+
+    const sourcePath = join(dir, "helper.ts");
+    await Deno.writeTextFile(sourcePath, "");
+
+    const dbPath = join(dir, "catalog.db");
+    const catalog = new ExtensionCatalogStore(dbPath);
+    try {
+      catalog.upsert({
+        type_normalized: "@test/broken",
+        kind: "model",
+        bundle_path: bundlePath,
+        source_path: sourcePath,
+        version: "1.0.0",
+        description: "",
+        extends_type: "",
+        source_mtime: "",
+        source_fingerprint: "",
+      });
+
+      assertEquals(
+        catalog.findByType("@test/broken", "model") !== undefined,
+        true,
+        "catalog entry must exist before loadSingleType",
+      );
+
+      const loaded = new Set<string>();
+      const adapter = makeStubAdapter(loaded);
+      const lockfileRepo = new LockfileRepository(join(dir, "lockfile.json"));
+      const repository = new ExtensionRepository({
+        catalog,
+        lockfileRepository: lockfileRepo,
+        repoRoot: dir,
+      });
+      const loader = new ExtensionLoader(
+        stubDenoRuntime,
+        adapter,
+        dir,
+        undefined,
+        repository,
+      );
+
+      await loader.loadSingleType("@test/broken", {
+        bundlePath,
+        sourcePath,
+      });
+
+      assertEquals(
+        loaded.has("@test/broken"),
+        false,
+        "broken bundle must not be promoted",
+      );
+      assertEquals(
+        catalog.findByType("@test/broken", "model"),
+        undefined,
+        "stale catalog entry must be removed after skip",
       );
     } finally {
       catalog.close();
