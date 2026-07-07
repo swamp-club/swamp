@@ -163,7 +163,7 @@ export async function getUserInfo(
   const data = await resp.json();
   const rawCollectives = data[groupsField];
   const collectives = Array.isArray(rawCollectives)
-    ? rawCollectives as string[]
+    ? rawCollectives.filter((c): c is string => typeof c === "string")
     : [];
   return {
     sub: data.sub,

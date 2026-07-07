@@ -22,6 +22,7 @@ import {
   DeviceGrantPollError,
   getUserInfo,
   pollForToken,
+  resolveUsername,
   startDeviceGrant,
 } from "./oauth_client.ts";
 
@@ -417,6 +418,86 @@ Deno.test("getUserInfo: throws on HTTP error", async () => {
       Error,
       "Userinfo request failed: 403",
     );
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+// ── resolveUsername ────────────────────────────────────────────────────
+
+Deno.test("resolveUsername: returns sub on success", async () => {
+  const mock = startMockServer(() =>
+    Response.json({ sub: "6a4d58696938eea73751f36b" })
+  );
+  try {
+    const sub = await resolveUsername(
+      `http://localhost:${mock.port}`,
+      "swampadmin",
+      "my-token",
+      AbortSignal.timeout(5000),
+    );
+    assertEquals(sub, "6a4d58696938eea73751f36b");
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("resolveUsername: throws on 404", async () => {
+  const mock = startMockServer(() =>
+    new Response("Not Found", { status: 404 })
+  );
+  try {
+    await assertRejects(
+      () =>
+        resolveUsername(
+          `http://localhost:${mock.port}`,
+          "nonexistent",
+          "my-token",
+          AbortSignal.timeout(5000),
+        ),
+      Error,
+      "Username 'nonexistent' not found",
+    );
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("resolveUsername: throws on other HTTP error", async () => {
+  const mock = startMockServer(() =>
+    new Response("Forbidden", { status: 403 })
+  );
+  try {
+    await assertRejects(
+      () =>
+        resolveUsername(
+          `http://localhost:${mock.port}`,
+          "someuser",
+          "bad-token",
+          AbortSignal.timeout(5000),
+        ),
+      Error,
+      "Failed to resolve username 'someuser': 403",
+    );
+  } finally {
+    await mock.shutdown();
+  }
+});
+
+Deno.test("resolveUsername: sends Bearer auth header", async () => {
+  let receivedAuth = "";
+  const mock = startMockServer((req) => {
+    receivedAuth = req.headers.get("authorization") ?? "";
+    return Response.json({ sub: "abc" });
+  });
+  try {
+    await resolveUsername(
+      `http://localhost:${mock.port}`,
+      "testuser",
+      "my-secret-token",
+      AbortSignal.timeout(5000),
+    );
+    assertEquals(receivedAuth, "Bearer my-secret-token");
   } finally {
     await mock.shutdown();
   }

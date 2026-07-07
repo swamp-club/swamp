@@ -321,7 +321,7 @@ const daemonEnableCommand = new Command()
   )
   .option(
     "--allowed-users <list:string>",
-    "Comma-separated user identifiers for OAuth admission policy",
+    "Comma-separated swamp-club usernames or user:<sub> subjects for OAuth admission policy",
   )
   .option(
     "--oauth-provider <url:string>",
@@ -329,7 +329,7 @@ const daemonEnableCommand = new Command()
   )
   .option(
     "--oauth-client-id <id:string>",
-    "OAuth client ID (required for oauth mode)",
+    "OAuth client ID — auto-registered on first start if omitted",
   )
   .option(
     "--groups-field <field:string>",
@@ -500,7 +500,7 @@ export const serveCommand = new Command()
   )
   .option(
     "--allowed-users <list:string>",
-    "Comma-separated user identifiers for OAuth admission policy",
+    "Comma-separated swamp-club usernames or user:<sub> subjects for OAuth admission policy",
   )
   .option(
     "--oauth-provider <url:string>",
@@ -508,7 +508,7 @@ export const serveCommand = new Command()
   )
   .option(
     "--oauth-client-id <id:string>",
-    "OAuth client ID (required for oauth mode)",
+    "OAuth client ID — auto-registered on first start if omitted",
   )
   .option(
     "--groups-field <field:string>",
@@ -800,18 +800,12 @@ export const serveCommand = new Command()
               signal,
             );
 
+            const verifyUrl = grant.verificationUriComplete ||
+              grant.verificationUri;
             logger.info(
-              "First-time OAuth setup — visit {uri} and enter code: {code}",
-              { uri: grant.verificationUri, code: grant.userCode },
+              "First-time OAuth setup — visit {uri} and verify code: {code}",
+              { uri: verifyUrl, code: grant.userCode },
             );
-            console.log("");
-            console.log(
-              `  Visit ${
-                grant.verificationUriComplete || grant.verificationUri
-              }`,
-            );
-            console.log(`  Verify code: ${grant.userCode}`);
-            console.log("");
 
             const intervalMs = (grant.interval || 5) * 1000;
             const deadline = Date.now() + grant.expiresIn * 1000;
@@ -1389,8 +1383,28 @@ export const serveCommand = new Command()
           }
         }
 
-        // Device authorization endpoints (OAuth mode only)
+        // Device authorization endpoints (OAuth mode only, rate-limited)
         if (authConfig.mode === "oauth" && authConfig.oauthClientId) {
+          const url = new URL(req.url);
+          if (
+            url.pathname === "/auth/device" ||
+            url.pathname === "/auth/device/token"
+          ) {
+            const deviceRemoteAddr = trustProxy
+              ? (req.headers.get("x-forwarded-for")
+                ?.split(",")[0]?.trim() ??
+                info.remoteAddr.hostname)
+              : info.remoteAddr.hostname;
+            if (!checkRateLimit(deviceRemoteAddr)) {
+              return new Response(
+                JSON.stringify({ error: "Too Many Requests" }),
+                {
+                  status: 429,
+                  headers: { "content-type": "application/json" },
+                },
+              );
+            }
+          }
           const deviceAuthDeps = createDeviceAuthDeps(
             authConfig,
             oauthClientSecret,

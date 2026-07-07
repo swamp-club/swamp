@@ -116,7 +116,14 @@ export function buildServeAuthConfig(
           "without admission restrictions, any swamp-club user can connect",
       );
     }
-    const providerUrl = new URL(oauthProvider);
+    let providerUrl: URL;
+    try {
+      providerUrl = new URL(oauthProvider);
+    } catch {
+      throw new UserError(
+        `Invalid --oauth-provider URL "${oauthProvider}": expected a valid URL`,
+      );
+    }
     const isLocalhost = providerUrl.hostname === "localhost" ||
       providerUrl.hostname === "127.0.0.1" ||
       providerUrl.hostname === "::1";

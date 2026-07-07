@@ -25,10 +25,7 @@ import { normalizeServerUrl } from "../../domain/auth/server_url.ts";
 import { splitServerToken } from "../../serve/token_auth.ts";
 import { writeOutput } from "../../infrastructure/logging/logger.ts";
 import { bold, green, yellow } from "@std/fmt/colors";
-import {
-  createServerLoginDeps,
-  serverLogin,
-} from "../../libswamp/auth/server_login.ts";
+import { createServerLoginDeps, serverLogin } from "../../libswamp/mod.ts";
 
 // deno-lint-ignore no-explicit-any
 type AnyOptions = any;
@@ -173,7 +170,12 @@ async function handleOAuthFlow(
         }
         break;
       case "browser_open_failed":
-        if (cliCtx.outputMode !== "json") {
+        if (cliCtx.outputMode === "json") {
+          console.log(JSON.stringify({
+            status: "browser_open_failed",
+            message: event.message,
+          }));
+        } else {
           writeOutput(yellow(event.message));
         }
         break;
@@ -184,6 +186,7 @@ async function handleOAuthFlow(
         if (cliCtx.outputMode === "json") {
           console.log(JSON.stringify({
             status: "authenticated",
+            serverUrl: rawUrl,
             principalId: event.data.principalId,
             principalEmail: event.data.principalEmail,
             displayName: event.data.displayName,
