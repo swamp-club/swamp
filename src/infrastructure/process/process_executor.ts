@@ -63,19 +63,39 @@ export interface ProcessResult {
 /**
  * Reads lines from a ReadableStream, calling onLine for each complete line.
  * Returns the full accumulated output as a string.
+ *
+ * When an AbortSignal is provided and fires, the read loop breaks and the
+ * function returns whatever output has been accumulated so far.
  */
 export async function streamLines(
   stream: ReadableStream<Uint8Array>,
   onLine?: (line: string) => void,
+  signal?: AbortSignal,
 ): Promise<string> {
   const reader = stream.getReader();
   const decoder = new TextDecoder();
   const lines: string[] = [];
   let buffer = "";
 
+  const abortPromise = signal
+    ? new Promise<ReadableStreamReadResult<Uint8Array>>((resolve) => {
+      if (signal.aborted) {
+        resolve({ done: true, value: undefined });
+        return;
+      }
+      signal.addEventListener("abort", () => {
+        resolve({ done: true, value: undefined });
+      }, { once: true });
+    })
+    : undefined;
+
   try {
     while (true) {
-      const { done, value } = await reader.read();
+      if (signal?.aborted) break;
+
+      const { done, value } = abortPromise
+        ? await Promise.race([reader.read(), abortPromise])
+        : await reader.read();
       if (done) break;
 
       buffer += decoder.decode(value, { stream: true });
@@ -97,11 +117,22 @@ export async function streamLines(
       onLine?.(buffer);
     }
   } finally {
-    reader.releaseLock();
+    try {
+      await reader.cancel();
+    } catch {
+      // Reader may already be closed
+    }
+    try {
+      reader.releaseLock();
+    } catch {
+      // Lock may already be released by cancel
+    }
   }
 
   return lines.join("\n");
 }
+
+const PIPE_DRAIN_GRACE_MS = 5000;
 
 /**
  * Executes a process with optional streaming through a logger.
@@ -135,22 +166,136 @@ export async function executeProcess(
   let stderr: string;
   let exitCode: number;
 
-  if (options.logger) {
-    // Streaming mode: log each line in real-time
+  if (options.timeoutMs) {
+    // Timeout path: race process.status against the timeout, then drain
+    // pipes separately.  This prevents orphaned child processes that hold
+    // pipes open from causing a spurious timeout when the command itself
+    // exited successfully.
     const process = command.spawn();
-    let timeoutId: ReturnType<typeof setTimeout> | undefined;
-    let timedOut = false;
+    const pipeAbort = new AbortController();
 
-    if (options.timeoutMs) {
-      timeoutId = setTimeout(() => {
-        timedOut = true;
+    const redact = (line: string) =>
+      options.redactor?.hasSecrets ? options.redactor.redact(line) : line;
+
+    let stdoutOnLine: ((line: string) => void) | undefined;
+    let stderrOnLine: ((line: string) => void) | undefined;
+
+    if (options.logger) {
+      const logger = options.logger;
+      const onOutput = options.onOutput;
+      stdoutOnLine = (line: string) => {
+        const redacted = redact(line);
+        if (onOutput) {
+          onOutput(redacted, "stdout");
+          logger.debug(redacted);
+        } else {
+          logger.info(redacted);
+        }
+      };
+      stderrOnLine = (line: string) => {
+        const redacted = redact(line);
+        if (onOutput) {
+          onOutput(redacted, "stderr");
+          logger.debug(redacted);
+        } else {
+          logger.warn(redacted);
+        }
+      };
+    }
+
+    // Start pipe reading immediately (prevents buffer deadlock)
+    const stdoutPromise = streamLines(
+      process.stdout,
+      stdoutOnLine,
+      pipeAbort.signal,
+    );
+    const stderrPromise = streamLines(
+      process.stderr,
+      stderrOnLine,
+      pipeAbort.signal,
+    );
+
+    let timedOut = false;
+    const timeoutId = setTimeout(() => {
+      timedOut = true;
+      try {
+        process.kill("SIGTERM");
+      } catch {
+        // Process may have already exited
+      }
+      pipeAbort.abort();
+    }, options.timeoutMs);
+
+    // Kill subprocess when abort signal fires
+    let abortHandler: (() => void) | undefined;
+    if (options.signal) {
+      if (options.signal.aborted) {
         try {
           process.kill("SIGTERM");
         } catch {
           // Process may have already exited
         }
-      }, options.timeoutMs);
+        pipeAbort.abort();
+      } else {
+        abortHandler = () => {
+          try {
+            process.kill("SIGTERM");
+          } catch {
+            // Process may have already exited
+          }
+          pipeAbort.abort();
+        };
+        options.signal.addEventListener("abort", abortHandler, { once: true });
+      }
     }
+
+    try {
+      // Wait for the direct child to exit — process.status resolves
+      // independently of pipe closure, so orphaned children holding pipes
+      // open do not block this.
+      const status = await process.status;
+      clearTimeout(timeoutId);
+
+      if (timedOut) {
+        throw new Error(`Command timed out after ${options.timeoutMs}ms`);
+      }
+
+      // Re-throw as AbortError if signal was responsible for the kill
+      if (options.signal?.aborted) {
+        throw new DOMException("The operation was aborted.", "AbortError");
+      }
+
+      exitCode = status.code;
+
+      // Process exited — drain pipes with a grace period.  If orphaned
+      // children hold pipes open past the deadline, abort the readers and
+      // return whatever output has been accumulated.
+      const graceTimeout = setTimeout(
+        () => pipeAbort.abort(),
+        PIPE_DRAIN_GRACE_MS,
+      );
+      try {
+        const pipeResults = await Promise.all([stdoutPromise, stderrPromise]);
+        stdout = pipeResults[0];
+        stderr = pipeResults[1];
+      } finally {
+        clearTimeout(graceTimeout);
+      }
+    } catch (err) {
+      // On timeout/abort, wait for pipe promises to settle
+      await Promise.all([
+        stdoutPromise.catch(() => {}),
+        stderrPromise.catch(() => {}),
+      ]);
+      throw err;
+    } finally {
+      if (abortHandler && options.signal) {
+        options.signal.removeEventListener("abort", abortHandler);
+      }
+    }
+  } else if (options.logger) {
+    // Streaming mode without timeout
+    const process = command.spawn();
 
     // Kill subprocess when abort signal fires
     let abortHandler: (() => void) | undefined;
@@ -204,47 +349,14 @@ export async function executeProcess(
       stderr = stderrResult;
       exitCode = status.code;
     } finally {
-      if (timeoutId !== undefined) {
-        clearTimeout(timeoutId);
-      }
       if (abortHandler && options.signal) {
         options.signal.removeEventListener("abort", abortHandler);
       }
     }
 
-    if (timedOut) {
-      throw new Error(`Command timed out after ${options.timeoutMs}ms`);
-    }
-
     // Re-throw as AbortError if signal was responsible for the kill
     if (options.signal?.aborted) {
       throw new DOMException("The operation was aborted.", "AbortError");
-    }
-  } else if (options.timeoutMs) {
-    // Buffered with timeout
-    const process = command.spawn();
-    let timedOut = false;
-
-    const timeoutId = setTimeout(() => {
-      timedOut = true;
-      try {
-        process.kill("SIGTERM");
-      } catch {
-        // Process may have already exited
-      }
-    }, options.timeoutMs);
-
-    try {
-      const output = await process.output();
-      stdout = new TextDecoder().decode(output.stdout);
-      stderr = new TextDecoder().decode(output.stderr);
-      exitCode = output.code;
-    } finally {
-      clearTimeout(timeoutId);
-    }
-
-    if (timedOut) {
-      throw new Error(`Command timed out after ${options.timeoutMs}ms`);
     }
   } else {
     // Simple buffered execution

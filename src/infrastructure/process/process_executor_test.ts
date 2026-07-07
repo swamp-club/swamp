@@ -278,6 +278,81 @@ Deno.test({
   },
 });
 
+// --- Surviving child process: timeout must not override the real exit code ---
+
+Deno.test({
+  name:
+    "executeProcess: timeout + surviving child returns actual exit code, not -1 (buffered mode)",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    // The main shell exits immediately with code 0, but backgrounds a child
+    // that holds the pipes open briefly.  With the old code this caused a
+    // spurious timeout error; the fix races process.status against the
+    // timeout so the real exit code is captured.
+    const result = await executeProcess({
+      command: "sh",
+      args: ["-c", "echo hello; sleep 1 & exit 0"],
+      timeoutMs: 10_000,
+    });
+
+    assertEquals(result.success, true);
+    assertEquals(result.exitCode, 0);
+    assertStringIncludes(result.stdout, "hello");
+  },
+});
+
+Deno.test({
+  name:
+    "executeProcess: timeout + surviving child returns actual exit code (streaming mode)",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    const infoLines: string[] = [];
+    const mockLogger = {
+      info: (line: string) => {
+        infoLines.push(line);
+      },
+      warn: () => {},
+      debug: () => {},
+    } as unknown as import("@logtape/logtape").Logger;
+
+    const result = await executeProcess({
+      command: "sh",
+      args: ["-c", "echo streamed; sleep 1 & exit 0"],
+      timeoutMs: 10_000,
+      logger: mockLogger,
+    });
+
+    assertEquals(result.success, true);
+    assertEquals(result.exitCode, 0);
+    assertEquals(infoLines.includes("streamed"), true);
+  },
+});
+
+Deno.test({
+  name:
+    "executeProcess: genuine timeout still throws even with surviving child fix",
+  ignore: Deno.build.os === "windows",
+  fn: async () => {
+    let caught: unknown;
+    try {
+      await executeProcess({
+        command: "sleep",
+        args: ["10"],
+        timeoutMs: 200,
+      });
+    } catch (err) {
+      caught = err;
+    }
+
+    assertEquals(
+      caught !== undefined,
+      true,
+      "expected executeProcess to throw on genuine timeout",
+    );
+    assertStringIncludes((caught as Error).message, "timed out");
+  },
+});
+
 Deno.test("executeProcess redacts secrets from streamed stdout lines", async () => {
   const infoLines: string[] = [];
   const warnLines: string[] = [];
