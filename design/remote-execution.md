@@ -600,7 +600,7 @@ tracks N active dispatches per worker keyed by `(workerName, dispatchId)`.
 `SessionCredentialService.issueForDispatch(workerId, dispatchId)`. This
 credential is independent of the control-channel credential — session refreshes
 do not invalidate in-flight runners. Credentials are revoked when the dispatch
-completes. The capability bridge injects `dispatchId` into every RPC verb so
+completes. The capability bridge overrides `dispatchId` in every RPC verb so
 the `CapabilityService` can resolve the correct dispatch for model-type scope
 isolation.
 

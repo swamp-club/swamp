@@ -74,7 +74,9 @@ export function bridgeCapabilityVerbs(
       async (params: unknown, ctx: RpcHandlerContext) => {
         logger.debug("Bridging {verb} from runner to orchestrator", { verb });
         const combinedSignal = AbortSignal.any([signal, ctx.signal]);
-        const wrapped = { ...(params as Record<string, unknown>), dispatchId };
+        const { dispatchId: _childDispatchId, ...childParams } =
+          params as Record<string, unknown>;
+        const wrapped = { ...childParams, dispatchId };
         return await orchestratorChannel.call(verb, wrapped, {
           signal: combinedSignal,
           timeoutMs: null,
