@@ -262,7 +262,7 @@ Deno.test("renderWorkerList: log mode shows disconnected hint when all filtered"
   );
   assertStringIncludes(output, "No connected workers found.");
   assertStringIncludes(output, "3 disconnected workers hidden");
-  assertStringIncludes(output, "--all");
+  assertStringIncludes(output, "swamp worker list --all");
 });
 
 Deno.test("renderWorkerList: log mode shows disconnected hint after table", () => {
@@ -289,7 +289,7 @@ Deno.test("renderWorkerList: log mode shows disconnected hint after table", () =
   );
   assertStringIncludes(output, "live-worker");
   assertStringIncludes(output, "2 disconnected workers hidden");
-  assertStringIncludes(output, "--all");
+  assertStringIncludes(output, "swamp worker list --all");
 });
 
 Deno.test("renderWorkerList: json mode emits the full data envelope", () => {

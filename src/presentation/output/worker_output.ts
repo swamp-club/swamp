@@ -231,7 +231,7 @@ export function renderWorkerList(
           dim(
             `${data.filteredDisconnectedCount} disconnected ${
               data.filteredDisconnectedCount === 1 ? "worker" : "workers"
-            } hidden — use --all to show all.`,
+            } hidden — use 'swamp worker list --all' to show all.`,
           ),
         ].join("\n"),
       );
@@ -269,7 +269,7 @@ export function renderWorkerList(
       dim(
         `${data.filteredDisconnectedCount} disconnected ${
           data.filteredDisconnectedCount === 1 ? "worker" : "workers"
-        } hidden — use --all to show all.`,
+        } hidden — use 'swamp worker list --all' to show all.`,
       ),
     );
   }
