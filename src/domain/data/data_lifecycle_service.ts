@@ -76,6 +76,61 @@ export interface LifecycleGCResult {
 }
 
 /**
+ * Predicate answering whether a model definition still exists for the given
+ * (type, modelId). Injected as a port so the lifecycle service stays decoupled
+ * from the definition repository — the libswamp layer wires this using the same
+ * definition lookup that `swamp model get` uses (covering both `models/` and
+ * `.swamp/auto-definitions/`).
+ */
+export type IsModelLive = (
+  type: ModelType,
+  modelId: string,
+) => Promise<boolean>;
+
+/**
+ * A model's orphaned data — data whose owning model definition no longer exists
+ * in its namespace. Aggregated per (type, modelId); every data name under an
+ * orphaned model is orphaned together.
+ */
+export interface OrphanedDataInfo {
+  type: ModelType;
+  modelId: string;
+  /** Human-readable model name, from the data tags (may be absent on old data). */
+  modelName?: string;
+  /** Distinct data names owned by the orphaned model. */
+  dataNames: string[];
+  /** Total versions across all data names. */
+  versionCount: number;
+  /** Bytes on disk across all versions. */
+  bytesReclaimed: number;
+}
+
+/**
+ * Result of orphaned-data reclamation.
+ */
+export interface OrphanReclamationResult {
+  /** Number of orphaned models whose data was reclaimed. */
+  modelsReclaimed: number;
+  /** Number of data entries (distinct data names) reclaimed. */
+  dataEntriesReclaimed: number;
+  /** Number of versions hard-deleted. */
+  versionsDeleted: number;
+  /** Bytes reclaimed. */
+  bytesReclaimed: number;
+  /** Whether this was a dry run. */
+  dryRun: boolean;
+  /** The orphaned models that were (or would be) reclaimed. */
+  reclaimedModels: Array<{
+    type: string;
+    modelId: string;
+    modelName?: string;
+    dataNames: string[];
+    versionCount: number;
+    bytesReclaimed: number;
+  }>;
+}
+
+/**
  * Service for managing data lifecycle and garbage collection.
  */
 export interface DataLifecycleService {
@@ -100,6 +155,25 @@ export interface DataLifecycleService {
   deleteExpiredData(options?: {
     dryRun?: boolean;
   }): Promise<LifecycleGCResult>;
+
+  /**
+   * Finds all orphaned data — data whose owning model definition no longer
+   * exists, per the injected `isModelLive` predicate. Results are aggregated
+   * per (type, modelId).
+   */
+  findOrphanedData(isModelLive: IsModelLive): Promise<OrphanedDataInfo[]>;
+
+  /**
+   * Reclaims orphaned data (all versions of every data name owned by a model
+   * with no live definition).
+   *
+   * @param options - The `isModelLive` predicate and an optional `dryRun` flag
+   * @returns Statistics about the operation
+   */
+  deleteOrphanedData(options: {
+    isModelLive: IsModelLive;
+    dryRun?: boolean;
+  }): Promise<OrphanReclamationResult>;
 
   /**
    * Checks if a data entry has expired.
@@ -390,6 +464,115 @@ export class DefaultDataLifecycleService implements DataLifecycleService {
       bytesReclaimed,
       dryRun,
       expiredEntries,
+    };
+  }
+
+  async findOrphanedData(
+    isModelLive: IsModelLive,
+  ): Promise<OrphanedDataInfo[]> {
+    const allData = await this.dataRepo.findAllGlobal();
+
+    // Group by (type, modelId) — the consistency boundary for a model's data.
+    const groups = new Map<
+      string,
+      { type: ModelType; modelId: string; items: Data[] }
+    >();
+    for (const { data, modelType, modelId } of allData) {
+      if (data.isDeleted) continue;
+      const key = `${modelType.toDirectoryPath()}/${modelId}`;
+      let group = groups.get(key);
+      if (!group) {
+        group = { type: modelType, modelId, items: [] };
+        groups.set(key, group);
+      }
+      group.items.push(data);
+    }
+
+    const orphans: OrphanedDataInfo[] = [];
+    for (const group of groups.values()) {
+      // A model is orphaned iff its definition no longer exists. This check
+      // matches `swamp model get` semantics (models/ AND auto-definitions/).
+      if (await isModelLive(group.type, group.modelId)) continue;
+
+      const dataNames = [...new Set(group.items.map((d) => d.name))];
+      let versionCount = 0;
+      let bytesReclaimed = 0;
+      for (const name of dataNames) {
+        const versions = await this.dataRepo.listVersions(
+          group.type,
+          group.modelId,
+          name,
+        );
+        versionCount += versions.length;
+        for (const version of versions) {
+          const contentPath = this.dataRepo.getContentPath(
+            group.type,
+            group.modelId,
+            name,
+            version,
+          );
+          try {
+            const stat = await Deno.stat(contentPath);
+            bytesReclaimed += stat.size;
+          } catch {
+            // Ignore stat errors for missing files
+          }
+        }
+      }
+
+      orphans.push({
+        type: group.type,
+        modelId: group.modelId,
+        modelName: group.items[0]?.tags.modelName,
+        dataNames,
+        versionCount,
+        bytesReclaimed,
+      });
+    }
+
+    return orphans;
+  }
+
+  async deleteOrphanedData(options: {
+    isModelLive: IsModelLive;
+    dryRun?: boolean;
+  }): Promise<OrphanReclamationResult> {
+    const dryRun = options.dryRun ?? false;
+    const orphans = await this.findOrphanedData(options.isModelLive);
+
+    let versionsDeleted = 0;
+    let bytesReclaimed = 0;
+    let dataEntriesReclaimed = 0;
+    const reclaimedModels: OrphanReclamationResult["reclaimedModels"] = [];
+
+    for (const orphan of orphans) {
+      versionsDeleted += orphan.versionCount;
+      bytesReclaimed += orphan.bytesReclaimed;
+      dataEntriesReclaimed += orphan.dataNames.length;
+
+      if (!dryRun) {
+        for (const name of orphan.dataNames) {
+          await this.dataRepo.delete(orphan.type, orphan.modelId, name);
+        }
+      }
+
+      reclaimedModels.push({
+        type: orphan.type.toDirectoryPath(),
+        modelId: orphan.modelId,
+        modelName: orphan.modelName,
+        dataNames: orphan.dataNames,
+        versionCount: orphan.versionCount,
+        bytesReclaimed: orphan.bytesReclaimed,
+      });
+    }
+
+    return {
+      modelsReclaimed: orphans.length,
+      dataEntriesReclaimed,
+      versionsDeleted,
+      bytesReclaimed,
+      dryRun,
+      reclaimedModels,
     };
   }
 }

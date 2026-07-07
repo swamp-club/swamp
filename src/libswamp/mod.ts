@@ -1104,6 +1104,19 @@ export {
   type VersionGcPreviewItem,
 } from "./data/gc.ts";
 
+// Data prune (orphaned-data reclamation)
+export {
+  createDataPruneDeps,
+  dataPrune,
+  type DataPruneData,
+  type DataPruneDeps,
+  type DataPruneEvent,
+  type DataPruneInput,
+  type DataPrunePreview,
+  dataPrunePreview,
+  type DataPrunePreviewItem,
+} from "./data/prune.ts";
+
 // Model create operations
 export {
   createModelCreateDeps,

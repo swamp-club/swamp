@@ -24,6 +24,7 @@ import { dataListCommand } from "./data_list.ts";
 import { dataSearchCommand } from "./data_search.ts";
 import { dataVersionsCommand } from "./data_versions.ts";
 import { dataGcCommand } from "./data_gc.ts";
+import { dataPruneCommand } from "./data_prune.ts";
 import { dataRenameCommand } from "./data_rename.ts";
 import { dataDeleteCommand } from "./data_delete.ts";
 import { dataQueryCommand } from "./data_query.ts";
@@ -38,5 +39,6 @@ export const dataCommand = new Command()
   .command("query", dataQueryCommand)
   .command("versions", dataVersionsCommand)
   .command("gc", dataGcCommand)
+  .command("prune", dataPruneCommand)
   .command("rename", dataRenameCommand)
   .command("delete", dataDeleteCommand);
