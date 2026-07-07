@@ -71,6 +71,7 @@ import type { WorkerSnapshot } from "./worker_gateway.ts";
 import type { ActiveDispatch, DispatchRegistry } from "./dispatch_registry.ts";
 import type { BundleRegistry } from "./bundle_registry.ts";
 import { getSwampLogger } from "../infrastructure/logging/logger.ts";
+import { extractVaultReferences } from "../domain/expressions/vault_reference_extractor.ts";
 
 export { hasPlacement };
 
@@ -370,6 +371,10 @@ export class DispatchService {
       definitionTags: request.definitionTags,
       runtimeTags: request.runtimeTags,
       dataRepo: request.dataRepo,
+      allowedSecrets: extractVaultReferences(
+        request.globalArgs,
+        request.methodArgs,
+      ),
     });
 
     const params: DispatchParams = {

@@ -59,8 +59,10 @@ const TOKEN_DATA_NAME = "token-main";
 
 const DEFAULT_DURATION_MS = 30 * 24 * 60 * 60 * 1000; // ~30 days
 
+export const SERVER_TOKEN_SECRET_KEY_PREFIX = "server-token-";
+
 export function serverTokenSecretKey(tokenName: string): string {
-  return `server-token-${tokenName}`;
+  return `${SERVER_TOKEN_SECRET_KEY_PREFIX}${tokenName}`;
 }
 
 async function readToken(context: MethodContext): Promise<ServerToken> {

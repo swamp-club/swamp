@@ -105,9 +105,11 @@ export type EnrollmentToken = z.output<typeof EnrollmentTokenSchema>;
 
 const TOKEN_DATA_NAME = "token-main";
 
+export const WORKER_TOKEN_SECRET_KEY_PREFIX = "worker-token-";
+
 /** Vault key under which a token's plaintext is stored. */
 export function tokenSecretKey(tokenName: string): string {
-  return `worker-token-${tokenName}`;
+  return `${WORKER_TOKEN_SECRET_KEY_PREFIX}${tokenName}`;
 }
 
 async function readToken(context: MethodContext): Promise<EnrollmentToken> {

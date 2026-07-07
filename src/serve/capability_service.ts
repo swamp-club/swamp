@@ -63,10 +63,21 @@ import { jsonSafeClone } from "./serializer.ts";
 import type { ActiveDispatch, DispatchRegistry } from "./dispatch_registry.ts";
 import { GRANT_MODEL_TYPE } from "../domain/models/access/grant_model.ts";
 import { GROUP_MODEL_TYPE } from "../domain/models/access/group_model.ts";
-import { SERVER_TOKEN_MODEL_TYPE } from "../domain/models/access/server_token_model.ts";
-import { ENROLLMENT_TOKEN_MODEL_TYPE } from "../domain/models/worker/enrollment_token_model.ts";
+import {
+  SERVER_TOKEN_MODEL_TYPE,
+  SERVER_TOKEN_SECRET_KEY_PREFIX,
+} from "../domain/models/access/server_token_model.ts";
+import {
+  ENROLLMENT_TOKEN_MODEL_TYPE,
+  WORKER_TOKEN_SECRET_KEY_PREFIX,
+} from "../domain/models/worker/enrollment_token_model.ts";
 import { WORKER_MODEL_TYPE } from "../domain/models/worker/worker_model.ts";
 import { STEP_LEASE_MODEL_TYPE } from "../domain/models/worker/step_lease_model.ts";
+
+const DENIED_SECRET_KEY_PREFIXES: readonly string[] = [
+  SERVER_TOKEN_SECRET_KEY_PREFIX,
+  WORKER_TOKEN_SECRET_KEY_PREFIX,
+];
 
 const DENIED_QUERY_MODEL_TYPES: readonly string[] = [
   GRANT_MODEL_TYPE.normalized,
@@ -336,6 +347,34 @@ export class CapabilityService {
     return { deleted: true };
   }
 
+  #assertSecretKeyNotDenied(secretKey: string, verb: string): void {
+    const normalized = secretKey.toLowerCase();
+    if (DENIED_SECRET_KEY_PREFIXES.some((p) => normalized.startsWith(p))) {
+      throw new Error(
+        `${verb}: access denied — infrastructure secrets are not accessible from dispatched methods`,
+      );
+    }
+  }
+
+  #assertSecretInAllowlist(
+    dispatch: ActiveDispatch,
+    vaultName: string,
+    secretKey: string,
+    verb: string,
+  ): void {
+    const allowed = dispatch.allowedSecrets;
+    if (!allowed) return;
+    if (allowed.hasDynamicRefs) return;
+    const isAllowed = allowed.staticRefs.some(
+      (ref) => ref.vaultName === vaultName && ref.secretKey === secretKey,
+    );
+    if (!isAllowed) {
+      throw new Error(
+        `${verb}: secret '${secretKey}' is not referenced by the dispatched step`,
+      );
+    }
+  }
+
   async resolveSecret(
     workerName: string,
     params: ResolveSecretParams & { dispatchId?: string },
@@ -351,6 +390,13 @@ export class CapabilityService {
           `resolveSecret: worker '${workerName}' has no active dispatch`,
         );
       }
+      this.#assertSecretKeyNotDenied(params.secretKey, "resolveSecret");
+      this.#assertSecretInAllowlist(
+        dispatch,
+        params.vaultName,
+        params.secretKey,
+        "resolveSecret",
+      );
     }
     const vault = await this.#vault();
     if (params.annotation) {
@@ -379,6 +425,7 @@ export class CapabilityService {
           `putSecret: worker '${workerName}' has no active dispatch`,
         );
       }
+      this.#assertSecretKeyNotDenied(params.secretKey, "putSecret");
     }
     const vault = await this.#vault();
     if (params.deleteAnnotation) {
