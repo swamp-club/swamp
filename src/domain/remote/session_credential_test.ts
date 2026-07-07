@@ -159,3 +159,61 @@ Deno.test("SessionCredentialService: control-channel issue does not revoke dispa
   assertEquals(service.verify(second.credential)?.workerId, "worker-1");
   assertEquals(service.verify(d1.credential)?.dispatchId, "dispatch-1");
 });
+
+Deno.test("SessionCredentialService: revokeDispatch ignores mismatched workerId", () => {
+  const clock = { nowMs: 0 };
+  const service = serviceAt(clock);
+  const d1 = service.issueForDispatch("worker-1", "dispatch-1");
+
+  service.revokeDispatch("worker-2", "dispatch-1");
+
+  assertEquals(service.verify(d1.credential)?.dispatchId, "dispatch-1");
+});
+
+Deno.test("SessionCredentialService: expired dispatch credential cleans up secondary indexes", () => {
+  const clock = { nowMs: 0 };
+  const service = serviceAt(clock, 1000);
+  const d1 = service.issueForDispatch("worker-1", "dispatch-1");
+  clock.nowMs = 1000;
+
+  assertEquals(service.verify(d1.credential), null);
+
+  const d2 = service.issueForDispatch("worker-1", "dispatch-1");
+  assertEquals(service.verify(d2.credential)?.dispatchId, "dispatch-1");
+});
+
+Deno.test("SessionCredentialService: revokeAllForWorker then issueForDispatch reuses dispatchId cleanly", () => {
+  const clock = { nowMs: 0 };
+  const service = serviceAt(clock);
+  service.issueForDispatch("worker-1", "dispatch-1");
+  service.issueForDispatch("worker-1", "dispatch-2");
+  service.issue("worker-1");
+
+  service.revokeAllForWorker("worker-1");
+
+  const fresh = service.issueForDispatch("worker-1", "dispatch-1");
+  assertEquals(service.verify(fresh.credential)?.dispatchId, "dispatch-1");
+});
+
+Deno.test("SessionCredentialService: interleaved issue and revoke maintains index consistency", () => {
+  const clock = { nowMs: 0 };
+  const service = serviceAt(clock);
+
+  const c1 = service.issue("worker-1");
+  const d1 = service.issueForDispatch("worker-1", "dispatch-1");
+  const d2 = service.issueForDispatch("worker-1", "dispatch-2");
+  const c2 = service.issue("worker-2");
+  const d3 = service.issueForDispatch("worker-2", "dispatch-3");
+
+  service.revokeDispatch("worker-1", "dispatch-1");
+  assertEquals(service.verify(d1.credential), null);
+  assertEquals(service.verify(d2.credential)?.dispatchId, "dispatch-2");
+  assertEquals(service.verify(c1.credential)?.workerId, "worker-1");
+
+  service.revokeAllForWorker("worker-1");
+  assertEquals(service.verify(c1.credential), null);
+  assertEquals(service.verify(d2.credential), null);
+
+  assertEquals(service.verify(c2.credential)?.workerId, "worker-2");
+  assertEquals(service.verify(d3.credential)?.dispatchId, "dispatch-3");
+});
