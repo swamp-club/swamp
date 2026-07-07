@@ -204,6 +204,55 @@ stored credentials in `~/.config/swamp/servers.json` (managed by
 `swamp auth server-login`). Token management is through
 `swamp access token mint/list/revoke`.
 
+When `--auth-mode oauth` is active, users authenticate via the OAuth device
+grant flow (RFC 8628) against swamp-club. The server acts as an OAuth client
+relay — it holds client credentials (auto-registered on first start or
+supplied via `--oauth-client-id`) and proxies the device authorization flow.
+The flow:
+
+1. User runs `swamp auth login --server <url>`
+2. CLI calls `GET /auth/info` on the serve instance to discover auth mode
+3. CLI calls `POST /auth/device` — serve starts a device grant against
+   swamp-club, returns a user code and verification URL
+4. User visits the URL, signs in to swamp-club, enters the code, approves
+5. CLI polls `POST /auth/device/token` — serve polls swamp-club's token
+   endpoint, gets an access token, calls the userinfo endpoint to retrieve
+   `sub`, `email`, `name`, and `collectives`
+6. Serve applies the admission policy: the user must be in
+   `--allowed-collectives` or `--allowed-users`; otherwise admission is
+   rejected
+7. On admission, serve mints a `swamp/server-token` with the user's
+   collectives snapshotted on the token record and returns
+   `<name>.<secret>` to the CLI
+8. CLI stores the server token via `ServerCredentialRepository` — subsequent
+   commands authenticate with it automatically
+
+After the device flow, OAuth-minted tokens are indistinguishable from
+manually-minted tokens. The WebSocket upgrade, cancel endpoint, and all
+handler authorization use the same `?token=<name>.<secret>` +
+`authenticateServerToken` path for both modes. The only difference is
+collectives: the `authorizeOrReject` function reads collectives from the
+token record (via a per-connection WeakMap set at upgrade time), enabling
+`idp-group:` grants to match for OAuth-authenticated users.
+
+Auto-registration: on first start with `--auth-mode oauth`, if no client
+credentials are stored, the serve instance reads the admin's swamp-club API
+key from `~/.config/swamp/auth.json`, calls
+`POST /api/auth/oauth2/register`, and stores the returned `client_id` and
+`client_secret` in the vault (keys: `oauth-client-id`,
+`oauth-client-secret`). Subsequent starts read from the vault. If the admin
+hasn't run `swamp auth login`, the server refuses to start. If no vault is
+initialized, the server refuses to start.
+
+Collectives are snapshotted at login time and become stale if the user's
+collective membership changes in swamp-club. Refresh is a later phase.
+
+v1 is swamp-club-specific: the OAuth client endpoint paths
+(`/api/auth/device/code`, `/api/auth/device/token`,
+`/api/auth/oauth2/userinfo`, `/api/auth/oauth2/register`) are hardcoded.
+The `--oauth-provider` flag accepts a custom URL but only swamp-club is
+tested.
+
 The token travels as a `?token=` query parameter on the WebSocket upgrade URL.
 This avoids the browser WebSocket limitation (no custom headers), but the
 plaintext will appear in any reverse proxy or load balancer access logs that

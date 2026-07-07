@@ -28,6 +28,13 @@ import { UserError } from "../../domain/errors.ts";
 import { parseTimeout } from "../duration_parser.ts";
 import { buildServeAuthConfig } from "../../domain/access/serve_auth_config.ts";
 import { handleConnection } from "../../serve/connection.ts";
+import { setConnectionCollectives } from "../../serve/handlers/shared.ts";
+import {
+  createDeviceAuthDeps,
+  handleDeviceAuth,
+} from "../../serve/device_auth_handler.ts";
+import { resolveOAuthClientCredentials } from "../../serve/oauth_registration.ts";
+import { VaultService } from "../../domain/vaults/vault_service.ts";
 import { authenticateServerToken } from "../../serve/token_auth.ts";
 import { parsePrincipal } from "../../domain/access/principal.ts";
 import { executeWorkflowWithLocks } from "../../serve/deps.ts";
@@ -756,6 +763,197 @@ export const serveCommand = new Command()
       );
     }
 
+    let oauthClientSecret = "";
+    if (authConfig.mode === "oauth") {
+      const vaultService = await VaultService.fromRepository(resolvedRepoDir);
+      const vaultNames = vaultService.getVaultNames();
+      if (vaultNames.length === 0) {
+        throw new UserError(
+          "oauth mode requires a vault — run 'swamp vault create local default' first",
+        );
+      }
+      const vaultName = vaultNames[0];
+      const credentials = await resolveOAuthClientCredentials(
+        {
+          getVaultSecret: async (v, k) => {
+            try {
+              return await vaultService.get(v, k);
+            } catch {
+              return null;
+            }
+          },
+          putVaultSecret: (v, k, val) => vaultService.put(v, k, val),
+          registerClient: async (providerUrl, signal) => {
+            const { startDeviceGrant, pollForToken } = await import(
+              "../../serve/oauth_client.ts"
+            );
+            const { BOOTSTRAP_CLIENT_ID } = await import(
+              "../../serve/oauth_registration.ts"
+            );
+            const { DeviceGrantPollError } = await import(
+              "../../serve/oauth_client.ts"
+            );
+
+            const grant = await startDeviceGrant(
+              providerUrl,
+              BOOTSTRAP_CLIENT_ID,
+              signal,
+            );
+
+            logger.info(
+              "First-time OAuth setup — visit {uri} and enter code: {code}",
+              { uri: grant.verificationUri, code: grant.userCode },
+            );
+            console.log("");
+            console.log(
+              `  Visit ${
+                grant.verificationUriComplete || grant.verificationUri
+              }`,
+            );
+            console.log(`  Verify code: ${grant.userCode}`);
+            console.log("");
+
+            const intervalMs = (grant.interval || 5) * 1000;
+            const deadline = Date.now() + grant.expiresIn * 1000;
+            let tokenResponse;
+            while (Date.now() < deadline) {
+              try {
+                tokenResponse = await pollForToken(
+                  providerUrl,
+                  BOOTSTRAP_CLIENT_ID,
+                  "",
+                  grant.deviceCode,
+                  signal,
+                );
+                break;
+              } catch (err) {
+                if (
+                  err instanceof DeviceGrantPollError &&
+                  (err.code === "authorization_pending" ||
+                    err.code === "slow_down")
+                ) {
+                  await new Promise((resolve) =>
+                    setTimeout(resolve, intervalMs)
+                  );
+                  continue;
+                }
+                throw err;
+              }
+            }
+            if (!tokenResponse) {
+              throw new Error("Bootstrap device grant timed out");
+            }
+
+            const resp = await fetch(
+              `${providerUrl}/api/auth/oauth2/register`,
+              {
+                method: "POST",
+                headers: {
+                  "content-type": "application/json",
+                  "authorization": `Bearer ${tokenResponse.accessToken}`,
+                },
+                body: JSON.stringify({
+                  client_name: `swamp-serve-${crypto.randomUUID().slice(0, 8)}`,
+                  redirect_uris: ["http://localhost"],
+                  grant_types: ["authorization_code"],
+                  scope: "openid profile email collectives",
+                }),
+                signal,
+              },
+            );
+            if (!resp.ok) {
+              const body = await resp.text().catch(() => "");
+              throw new Error(
+                `OAuth client registration failed: ${resp.status} ${resp.statusText}${
+                  body ? ` — ${body}` : ""
+                }`,
+              );
+            }
+            const data = await resp.json();
+            return {
+              clientId: data.client_id as string,
+              clientSecret: data.client_secret as string,
+              accessToken: tokenResponse.accessToken,
+            };
+          },
+        },
+        authConfig.oauthProvider,
+        vaultName,
+        authConfig.oauthClientId,
+        AbortSignal.timeout(300_000),
+      );
+      authConfig.oauthClientId = credentials.clientId;
+      oauthClientSecret = credentials.clientSecret;
+      logger.info(
+        "OAuth client credentials resolved (clientId: {clientId})",
+        { clientId: credentials.clientId },
+      );
+
+      if (credentials.accessToken) {
+        const { resolveUsername } = await import(
+          "../../serve/oauth_client.ts"
+        );
+        const { storeResolvedAdmins } = await import(
+          "../../serve/oauth_registration.ts"
+        );
+        const resolvedMap: Record<string, string> = {};
+        for (let i = 0; i < authConfig.admins.length; i++) {
+          const admin = authConfig.admins[i];
+          const username = admin.startsWith("user:") ? admin.slice(5) : admin;
+          try {
+            const sub = await resolveUsername(
+              authConfig.oauthProvider,
+              username,
+              credentials.accessToken,
+              AbortSignal.timeout(10_000),
+            );
+            authConfig.admins[i] = `user:${sub}`;
+            resolvedMap[username] = sub;
+            logger.info("Resolved admin {username} to user:{sub}", {
+              username,
+              sub,
+            });
+          } catch (err) {
+            throw new UserError(
+              `Failed to resolve admin '${admin}': ${
+                err instanceof Error ? err.message : String(err)
+              }. Ensure the username exists on ${authConfig.oauthProvider}.`,
+            );
+          }
+        }
+        await storeResolvedAdmins(
+          { putVaultSecret: (v, k, val) => vaultService.put(v, k, val) },
+          vaultName,
+          resolvedMap,
+        );
+      } else if (credentials.resolvedAdmins) {
+        for (let i = 0; i < authConfig.admins.length; i++) {
+          const admin = authConfig.admins[i];
+          const username = admin.startsWith("user:") ? admin.slice(5) : admin;
+          const cachedSub = credentials.resolvedAdmins[username];
+          if (cachedSub) {
+            authConfig.admins[i] = `user:${cachedSub}`;
+            logger.info(
+              "Using cached admin resolution: {username} → user:{sub}",
+              { username, sub: cachedSub },
+            );
+          } else {
+            throw new UserError(
+              `Admin '${admin}' not found in cached resolutions. ` +
+                "Clear stored credentials to re-register: " +
+                `swamp vault delete ${vaultName} oauth-client-id`,
+            );
+          }
+        }
+      } else {
+        throw new UserError(
+          "Cannot resolve admin usernames — no access token and no cached resolutions. " +
+            "Clear stored credentials to re-register: " +
+            `swamp vault delete ${vaultName} oauth-client-id`,
+        );
+      }
+    }
+
     const autoDefRepo = new YamlDefinitionRepository(
       resolvedRepoDir,
       undefined,
@@ -1053,13 +1251,6 @@ export const serveCommand = new Command()
           }
 
           if (authConfig.mode !== "none") {
-            if (authConfig.mode !== "token") {
-              return new Response(
-                "WebSocket authentication is not supported for this server configuration",
-                { status: 501 },
-              );
-            }
-
             if (!checkRateLimit(remoteAddr)) {
               logger.warn("WebSocket auth rate-limited from {ip}", {
                 ip: remoteAddr,
@@ -1097,6 +1288,7 @@ export const serveCommand = new Command()
               req,
               wsUpgradeOpts,
             );
+            setConnectionCollectives(socket, result.collectives);
             handleConnection(socket, connectionCtx, principal);
             return response;
           }
@@ -1195,6 +1387,34 @@ export const serveCommand = new Command()
             }
             return Response.json({ status: "cancelled", count });
           }
+        }
+
+        // Device authorization endpoints (OAuth mode only)
+        if (authConfig.mode === "oauth" && authConfig.oauthClientId) {
+          const deviceAuthDeps = createDeviceAuthDeps(
+            authConfig,
+            oauthClientSecret,
+            resolvedRepoDir,
+            repoContext,
+          );
+          const deviceAuthResponse = await handleDeviceAuth(
+            req,
+            deviceAuthDeps,
+          );
+          if (deviceAuthResponse) return deviceAuthResponse;
+        }
+
+        // Auth discovery (unauthenticated — mode is not sensitive)
+        if (
+          req.method === "GET" && new URL(req.url).pathname === "/auth/info"
+        ) {
+          const info: Record<string, string> = { mode: authConfig.mode };
+          if (authConfig.mode === "oauth") {
+            info.verificationBaseUri = authConfig.oauthProvider;
+          }
+          return new Response(JSON.stringify(info), {
+            headers: { "content-type": "application/json" },
+          });
         }
 
         // Health check endpoint

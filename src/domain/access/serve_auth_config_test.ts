@@ -74,26 +74,57 @@ Deno.test("buildServeAuthConfig: mode oauth without admins refuses", () => {
   );
 });
 
-Deno.test("buildServeAuthConfig: mode oauth without client-id refuses", () => {
+Deno.test("buildServeAuthConfig: mode oauth without admission restrictions refuses", () => {
   assertThrows(
     () =>
       buildServeAuthConfig({
         authMode: "oauth",
-        admins: "user:oauth|user-123",
+        admins: "swampadmin",
       }),
     UserError,
-    '--oauth-client-id is required when --auth-mode is "oauth"',
+    "--allowed-collectives or --allowed-users is required",
   );
+});
+
+Deno.test("buildServeAuthConfig: mode oauth without client-id succeeds for auto-registration", () => {
+  const config = buildServeAuthConfig({
+    authMode: "oauth",
+    admins: "swampadmin",
+    allowedCollectives: "acme-corp",
+  });
+  assertEquals(config.mode, "oauth");
+  assertEquals(config.oauthClientId, undefined);
+});
+
+Deno.test("buildServeAuthConfig: mode oauth with allowed-collectives succeeds", () => {
+  const config = buildServeAuthConfig({
+    authMode: "oauth",
+    admins: "swampadmin",
+    allowedCollectives: "acme-corp",
+  });
+  assertEquals(config.mode, "oauth");
+  assertEquals(config.allowedCollectives, ["acme-corp"]);
+});
+
+Deno.test("buildServeAuthConfig: mode oauth with allowed-users succeeds", () => {
+  const config = buildServeAuthConfig({
+    authMode: "oauth",
+    admins: "swampadmin",
+    allowedUsers: "user:alice",
+  });
+  assertEquals(config.mode, "oauth");
+  assertEquals(config.allowedUsers, ["user:alice"]);
 });
 
 Deno.test("buildServeAuthConfig: mode oauth with all required flags succeeds", () => {
   const config = buildServeAuthConfig({
     authMode: "oauth",
-    admins: "user:oauth|user-123",
+    admins: "swampadmin",
     oauthClientId: "my-client",
+    allowedCollectives: "acme-corp",
   });
   assertEquals(config.mode, "oauth");
-  assertEquals(config.admins, ["user:oauth|user-123"]);
+  assertEquals(config.admins, ["swampadmin"]);
   assertEquals(config.oauthClientId, "my-client");
   assertEquals(config.oauthProvider, "https://swamp-club.com");
   assertEquals(config.groupsField, "collectives");
@@ -176,8 +207,8 @@ Deno.test("buildServeAuthConfig: admins with empty name after colon refuses", ()
 Deno.test("buildServeAuthConfig: default oauth-provider is swamp-club.com", () => {
   const config = buildServeAuthConfig({
     authMode: "oauth",
-    admins: "user:oauth|user-123",
-    oauthClientId: "client",
+    admins: "swampadmin",
+    allowedCollectives: "acme-corp",
   });
   assertEquals(config.oauthProvider, "https://swamp-club.com");
 });
@@ -185,10 +216,44 @@ Deno.test("buildServeAuthConfig: default oauth-provider is swamp-club.com", () =
 Deno.test("buildServeAuthConfig: default groups-field is collectives", () => {
   const config = buildServeAuthConfig({
     authMode: "oauth",
-    admins: "user:oauth|user-123",
-    oauthClientId: "client",
+    admins: "swampadmin",
+    allowedCollectives: "acme-corp",
   });
   assertEquals(config.groupsField, "collectives");
+});
+
+Deno.test("buildServeAuthConfig: mode oauth rejects HTTP provider", () => {
+  assertThrows(
+    () =>
+      buildServeAuthConfig({
+        authMode: "oauth",
+        admins: "swampadmin",
+        allowedCollectives: "acme-corp",
+        oauthProvider: "http://evil.example.com",
+      }),
+    UserError,
+    "--oauth-provider must use HTTPS",
+  );
+});
+
+Deno.test("buildServeAuthConfig: mode oauth allows HTTP for localhost", () => {
+  const config = buildServeAuthConfig({
+    authMode: "oauth",
+    admins: "swampadmin",
+    allowedCollectives: "acme-corp",
+    oauthProvider: "http://localhost:8000",
+  });
+  assertEquals(config.oauthProvider, "http://localhost:8000");
+});
+
+Deno.test("buildServeAuthConfig: mode token without admission restrictions succeeds", () => {
+  const config = buildServeAuthConfig({
+    authMode: "token",
+    admins: "user:oauth|user-123",
+  });
+  assertEquals(config.mode, "token");
+  assertEquals(config.allowedCollectives, []);
+  assertEquals(config.allowedUsers, []);
 });
 
 Deno.test("buildServeAuthConfig: comma-separated admins trims whitespace", () => {

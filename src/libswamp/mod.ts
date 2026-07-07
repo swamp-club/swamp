@@ -1198,6 +1198,20 @@ export {
   createAuthLogoutDeps,
 } from "./auth/logout.ts";
 
+// Server login operations (OAuth device flow for swamp serve)
+export {
+  type AuthDiscovery,
+  createServerLoginDeps,
+  DeviceAuthPendingError,
+  type DeviceAuthResponse,
+  type DeviceTokenResponse,
+  serverLogin,
+  type ServerLoginData,
+  type ServerLoginDeps,
+  type ServerLoginEvent,
+  type ServerLoginInput,
+} from "./auth/server_login.ts";
+
 // Server credential storage
 export type {
   ServerCredential,

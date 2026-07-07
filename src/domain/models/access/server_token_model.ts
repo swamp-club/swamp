@@ -45,6 +45,9 @@ export const ServerTokenSchema = z.object({
   principalEmail: z.string().describe(
     "Display email (informational, not used for matching)",
   ),
+  collectives: z.array(z.string()).default([]).describe(
+    "Collective memberships snapshotted at login time (from OAuth userinfo)",
+  ),
   createdAt: z.string().datetime(),
   expiresAt: z.string().datetime(),
   lastUsedAt: z.string().datetime().optional(),
@@ -82,6 +85,7 @@ function isExpired(token: ServerToken, nowMs: number): boolean {
 const MintArgsSchema = z.object({
   principalId: z.string().min(1),
   principalEmail: z.string().min(1),
+  collectives: z.array(z.string()).default([]),
   vaultName: z.string().min(1),
   durationMs: z.number().int().positive().optional(),
 });
@@ -112,6 +116,7 @@ async function mint(
     state: "active",
     principalId: args.principalId,
     principalEmail: args.principalEmail,
+    collectives: args.collectives,
     createdAt: new Date(now).toISOString(),
     expiresAt: new Date(now + durationMs).toISOString(),
     vaultName: args.vaultName,
@@ -200,6 +205,7 @@ async function rotate(
     state: "active",
     principalId: existing.principalId,
     principalEmail: existing.principalEmail,
+    collectives: existing.collectives,
     createdAt: new Date(now).toISOString(),
     expiresAt: new Date(now + durationMs).toISOString(),
     vaultName: existing.vaultName,

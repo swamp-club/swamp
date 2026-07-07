@@ -43,7 +43,7 @@ export function splitServerToken(
 }
 
 export type ServerTokenAuthResult =
-  | { ok: true; principalId: string }
+  | { ok: true; principalId: string; collectives: readonly string[] }
   | { ok: false; error: string };
 
 /**
@@ -76,6 +76,7 @@ export async function authenticateServerToken(
   const libCtx = createLibSwampContext({});
 
   let principalId: string | undefined;
+  let collectives: readonly string[] = [];
   for await (
     const event of modelMethodRun(libCtx, deps, {
       modelIdOrName: split.name,
@@ -101,6 +102,9 @@ export async function authenticateServerToken(
       if (tokenRecord && typeof tokenRecord.principalId === "string") {
         principalId = tokenRecord.principalId;
       }
+      if (tokenRecord && Array.isArray(tokenRecord.collectives)) {
+        collectives = tokenRecord.collectives as string[];
+      }
     }
   }
 
@@ -115,5 +119,5 @@ export async function authenticateServerToken(
     name: split.name,
     principal: principalId,
   });
-  return { ok: true, principalId };
+  return { ok: true, principalId, collectives };
 }

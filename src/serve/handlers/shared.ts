@@ -125,6 +125,15 @@ export function isAccessModelType(
   return false;
 }
 
+const connectionCollectives = new WeakMap<WebSocket, readonly string[]>();
+
+export function setConnectionCollectives(
+  socket: WebSocket,
+  collectives: readonly string[],
+): void {
+  connectionCollectives.set(socket, collectives);
+}
+
 export function authorizeOrReject(
   socket: WebSocket,
   requestId: string,
@@ -155,9 +164,10 @@ export function authorizeOrReject(
     return false;
   }
 
+  const collectives = connectionCollectives.get(socket) ?? [];
   const service = ctx.policySnapshotLoader.decisionService;
   const decision = service.decide(
-    { principal, collectives: [] },
+    { principal, collectives },
     action,
     resource,
   );
@@ -166,7 +176,7 @@ export function authorizeOrReject(
 
   if (!decision) {
     const adminDecision = service.decide(
-      { principal, collectives: [] },
+      { principal, collectives },
       "admin",
       { kind: "access", name: "*", fields: {} },
     );
