@@ -161,6 +161,12 @@ export async function getUserInfo(
     );
   }
   const data = await resp.json();
+  if (typeof data.sub !== "string" || !data.sub) {
+    throw new Error("Userinfo response missing required 'sub' field");
+  }
+  if (typeof data.email !== "string" || !data.email) {
+    throw new Error("Userinfo response missing required 'email' field");
+  }
   const rawCollectives = data[groupsField];
   const collectives = Array.isArray(rawCollectives)
     ? rawCollectives.filter((c): c is string => typeof c === "string")

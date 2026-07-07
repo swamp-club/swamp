@@ -49,7 +49,9 @@ const logger = getSwampLogger(["serve", "device-auth"]);
  * real implementations.
  */
 export interface DeviceAuthDeps {
-  readonly authConfig: ServeAuthConfig;
+  readonly authConfig: Omit<ServeAuthConfig, "oauthClientId"> & {
+    oauthClientId: string;
+  };
   readonly repoDir: string;
   readonly repoContext: RepositoryContext;
   readonly startDeviceGrant: (
@@ -137,7 +139,7 @@ async function handleStartDeviceGrant(
     const signal = AbortSignal.timeout(30_000);
     const grant = await deps.startDeviceGrant(
       deps.authConfig.oauthProvider,
-      deps.authConfig.oauthClientId!,
+      deps.authConfig.oauthClientId,
       signal,
     );
     logger.info("Device grant started for provider {provider}", {
@@ -181,7 +183,7 @@ async function handleDeviceToken(
     const signal = AbortSignal.timeout(30_000);
     const tokenResponse = await deps.pollForToken(
       deps.authConfig.oauthProvider,
-      deps.authConfig.oauthClientId!,
+      deps.authConfig.oauthClientId,
       deps.clientSecret,
       deviceCode,
       signal,
@@ -335,7 +337,7 @@ async function mintServerTokenImpl(
 }
 
 export function createDeviceAuthDeps(
-  authConfig: ServeAuthConfig,
+  authConfig: ServeAuthConfig & { oauthClientId: string },
   clientSecret: string,
   repoDir: string,
   repoContext: RepositoryContext,

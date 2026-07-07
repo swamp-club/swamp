@@ -807,7 +807,7 @@ export const serveCommand = new Command()
               { uri: verifyUrl, code: grant.userCode },
             );
 
-            const intervalMs = (grant.interval || 5) * 1000;
+            let currentIntervalMs = (grant.interval || 5) * 1000;
             const deadline = Date.now() + grant.expiresIn * 1000;
             let tokenResponse;
             while (Date.now() < deadline) {
@@ -821,15 +821,19 @@ export const serveCommand = new Command()
                 );
                 break;
               } catch (err) {
-                if (
-                  err instanceof DeviceGrantPollError &&
-                  (err.code === "authorization_pending" ||
-                    err.code === "slow_down")
-                ) {
-                  await new Promise((resolve) =>
-                    setTimeout(resolve, intervalMs)
-                  );
-                  continue;
+                if (err instanceof DeviceGrantPollError) {
+                  if (err.code === "slow_down") {
+                    currentIntervalMs += 5000;
+                  }
+                  if (
+                    err.code === "authorization_pending" ||
+                    err.code === "slow_down"
+                  ) {
+                    await new Promise((resolve) =>
+                      setTimeout(resolve, currentIntervalMs)
+                    );
+                    continue;
+                  }
                 }
                 throw err;
               }
@@ -915,6 +919,30 @@ export const serveCommand = new Command()
             );
           }
         }
+        for (let i = 0; i < authConfig.allowedUsers.length; i++) {
+          const entry = authConfig.allowedUsers[i];
+          const username = entry.startsWith("user:") ? entry.slice(5) : entry;
+          try {
+            const sub = await resolveUsername(
+              authConfig.oauthProvider,
+              username,
+              credentials.accessToken,
+              AbortSignal.timeout(10_000),
+            );
+            authConfig.allowedUsers[i] = sub;
+            resolvedMap[`allowed:${username}`] = sub;
+            logger.info("Resolved allowed-user {username} to {sub}", {
+              username,
+              sub,
+            });
+          } catch (err) {
+            throw new UserError(
+              `Failed to resolve allowed-user '${entry}': ${
+                err instanceof Error ? err.message : String(err)
+              }. Ensure the username exists on ${authConfig.oauthProvider}.`,
+            );
+          }
+        }
         await storeResolvedAdmins(
           { putVaultSecret: (v, k, val) => vaultService.put(v, k, val) },
           vaultName,
@@ -939,9 +967,27 @@ export const serveCommand = new Command()
             );
           }
         }
+        for (let i = 0; i < authConfig.allowedUsers.length; i++) {
+          const entry = authConfig.allowedUsers[i];
+          const username = entry.startsWith("user:") ? entry.slice(5) : entry;
+          const cachedSub = credentials.resolvedAdmins[`allowed:${username}`];
+          if (cachedSub) {
+            authConfig.allowedUsers[i] = cachedSub;
+            logger.info(
+              "Using cached allowed-user resolution: {username} → {sub}",
+              { username, sub: cachedSub },
+            );
+          } else {
+            throw new UserError(
+              `Allowed-user '${entry}' not found in cached resolutions. ` +
+                "Clear stored credentials to re-register: " +
+                `swamp vault delete ${vaultName} oauth-client-id`,
+            );
+          }
+        }
       } else {
         throw new UserError(
-          "Cannot resolve admin usernames — no access token and no cached resolutions. " +
+          "Cannot resolve usernames — no access token and no cached resolutions. " +
             "Clear stored credentials to re-register: " +
             `swamp vault delete ${vaultName} oauth-client-id`,
         );
@@ -1405,8 +1451,12 @@ export const serveCommand = new Command()
               );
             }
           }
+          const oauthConfig = {
+            ...authConfig,
+            oauthClientId: authConfig.oauthClientId!,
+          };
           const deviceAuthDeps = createDeviceAuthDeps(
-            authConfig,
+            oauthConfig,
             oauthClientSecret,
             resolvedRepoDir,
             repoContext,
@@ -1422,11 +1472,11 @@ export const serveCommand = new Command()
         if (
           req.method === "GET" && new URL(req.url).pathname === "/auth/info"
         ) {
-          const info: Record<string, string> = { mode: authConfig.mode };
+          const authInfo: Record<string, string> = { mode: authConfig.mode };
           if (authConfig.mode === "oauth") {
-            info.verificationBaseUri = authConfig.oauthProvider;
+            authInfo.verificationBaseUri = authConfig.oauthProvider;
           }
-          return new Response(JSON.stringify(info), {
+          return new Response(JSON.stringify(authInfo), {
             headers: { "content-type": "application/json" },
           });
         }

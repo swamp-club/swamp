@@ -131,6 +131,7 @@ async function handleOAuthFlow(
   cliCtx: { outputMode: string },
 ): Promise<void> {
   const rawUrl = options.server as string;
+  const normalizedUrl = normalizeServerUrl(rawUrl);
   const deps = createServerLoginDeps();
   const input = { serverUrl: rawUrl, signal: AbortSignal.timeout(300_000) };
 
@@ -159,7 +160,9 @@ async function handleOAuthFlow(
             );
           } else {
             writeOutput(
-              `Visit: ${bold(event.verificationUri)}`,
+              `Visit ${bold(event.verificationUri)} and enter code ${
+                bold(event.userCode)
+              }`,
             );
           }
         }
@@ -180,13 +183,12 @@ async function handleOAuthFlow(
         }
         break;
       case "polling":
-        // Quiet in both modes — no spam
         break;
       case "completed":
         if (cliCtx.outputMode === "json") {
           console.log(JSON.stringify({
             status: "authenticated",
-            serverUrl: rawUrl,
+            serverUrl: normalizedUrl,
             principalId: event.data.principalId,
             principalEmail: event.data.principalEmail,
             displayName: event.data.displayName,
