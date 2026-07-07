@@ -137,6 +137,21 @@ Deno.test("queryData: allows results without modelType field", async () => {
   assertEquals(result.length, 1);
 });
 
+Deno.test("queryData: rejects when select projection is provided", async () => {
+  const dispatches = new DispatchRegistry();
+  withDispatch(dispatches);
+  const service = createService(dispatches);
+  await assertRejects(
+    () =>
+      service.queryData("worker-1", {
+        predicate: "true",
+        options: { select: "attributes.secretKey" },
+      }),
+    Error,
+    "not permitted from workers",
+  );
+});
+
 Deno.test("queryData: rejects predicate exceeding max length", async () => {
   const dispatches = new DispatchRegistry();
   withDispatch(dispatches);

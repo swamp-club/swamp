@@ -456,7 +456,7 @@ disposition — a proxy verb, worker-local, or shipped state. Fourteen verbs:
 | Verb               | Backed by                                                                  | Transport | Notes                                  |
 | ------------------ | -------------------------------------------------------------------------- | --------- | -------------------------------------- |
 | `getData`          | repo reads (`findByName`/`findById`/`getContent`/`stream`), `context.readResource`, `readModelData` | ws + h2   | ws resolves `latest`→version; h2 streams bytes |
-| `queryData`        | `dataQueryService` / `context.queryData`, incl. `select` projection and attribute loading | ws        | CEL predicate over the catalog; always live |
+| `queryData`        | `dataQueryService` / `context.queryData`, attribute loading (`select` projection rejected — bypasses denylist) | ws        | CEL predicate over the catalog; always live |
 | `listVersions`     | `repo.listVersions`, `findAllGlobal`/`findAllForModel` enumeration         | ws        | Version-history and cross-model enumeration |
 | `persistResource`  | resource writer (`writeResource`)                                          | h2        | Streams bytes; durable immediately     |
 | `persistFile`      | file writer `writeAll`/`writeText`/`writeStream`                           | h2        | Streams bytes; durable immediately     |

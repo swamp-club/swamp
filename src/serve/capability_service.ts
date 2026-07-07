@@ -253,6 +253,11 @@ export class CapabilityService {
     workerName: string,
     params: QueryDataParams & { dispatchId?: string },
   ): Promise<unknown[]> {
+    if (params.options?.select) {
+      throw new Error(
+        "Select projections are not permitted from workers",
+      );
+    }
     if (params.predicate.length > MAX_CAPABILITY_PREDICATE_LENGTH) {
       throw new Error("Query predicate exceeds maximum length");
     }
