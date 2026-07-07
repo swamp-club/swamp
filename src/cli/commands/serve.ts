@@ -1429,13 +1429,10 @@ export const serveCommand = new Command()
           }
         }
 
-        // Device authorization endpoints (OAuth mode only, rate-limited)
+        // Device authorization endpoints (OAuth mode only)
         if (authConfig.mode === "oauth" && authConfig.oauthClientId) {
           const url = new URL(req.url);
-          if (
-            url.pathname === "/auth/device" ||
-            url.pathname === "/auth/device/token"
-          ) {
+          if (url.pathname === "/auth/device") {
             const deviceRemoteAddr = trustProxy
               ? (req.headers.get("x-forwarded-for")
                 ?.split(",")[0]?.trim() ??
