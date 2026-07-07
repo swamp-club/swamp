@@ -151,6 +151,60 @@ Deno.test("bridgeCapabilityVerbs: cancel signal aborts bridged call", async () =
   );
 });
 
+Deno.test("bridgeCapabilityVerbs: child-injected dispatchId is overwritten by supervisor value", async () => {
+  const runnerPair = channelPair();
+  const orchPair = channelPair();
+
+  orchPair.b.register(
+    RemoteMethod.getData,
+    (params) => Promise.resolve({ data: params }),
+  );
+
+  bridgeCapabilityVerbs({
+    childChannel: runnerPair.b,
+    orchestratorChannel: orchPair.a,
+    dispatchId: "supervisor-dispatch",
+    signal: AbortSignal.timeout(5_000),
+  });
+
+  const result = await runnerPair.a.call<{ data: Record<string, unknown> }>(
+    RemoteMethod.getData,
+    {
+      modelType: "test",
+      modelId: "m1",
+      dataName: "out",
+      dispatchId: "malicious-dispatch",
+    },
+  );
+
+  assertEquals(result.data.dispatchId, "supervisor-dispatch");
+});
+
+Deno.test("bridgeCapabilityVerbs: params without dispatchId get supervisor value injected", async () => {
+  const runnerPair = channelPair();
+  const orchPair = channelPair();
+
+  orchPair.b.register(
+    RemoteMethod.deleteData,
+    (params) => Promise.resolve({ data: params }),
+  );
+
+  bridgeCapabilityVerbs({
+    childChannel: runnerPair.b,
+    orchestratorChannel: orchPair.a,
+    dispatchId: "supervisor-dispatch",
+    signal: AbortSignal.timeout(5_000),
+  });
+
+  const result = await runnerPair.a.call<{ data: Record<string, unknown> }>(
+    RemoteMethod.deleteData,
+    { modelType: "test", modelId: "m1", dataName: "out" },
+  );
+
+  assertEquals(result.data.dispatchId, "supervisor-dispatch");
+  assertEquals(result.data.modelType, "test");
+});
+
 Deno.test("bridgeCapabilityVerbs: exactly 9 verbs are bridged", () => {
   assertEquals(BRIDGED_VERBS.length, 9);
 });
