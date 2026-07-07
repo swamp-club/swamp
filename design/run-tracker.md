@@ -73,6 +73,20 @@ are purged on startup.
 All commands support `--server` for querying a remote `swamp serve` instance and
 `--json` for structured output.
 
+### Unhandled Rejection Guard
+
+`swamp serve` installs a global `unhandledrejection` and `error` event handler
+at startup (`src/serve/unhandled_rejection_guard.ts`). This prevents detached
+rejecting promises or uncaught exceptions in extension code from terminating the
+server process. The handler logs the error and calls `preventDefault()` to keep
+the process alive.
+
+The guard cannot correlate a detached rejection with a specific active run
+because the rejection may fire after the run's async context has already exited.
+If the rejection does orphan a run (e.g. the rejection fires during execution
+and prevents the run from completing normally), the heartbeat reaper will mark
+it as stale after the 90-second TTL.
+
 ### Local-only
 
 The tracker DB is NOT synced to remote datastores. PIDs and heartbeats are
