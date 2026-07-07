@@ -526,6 +526,11 @@ export class ExtensionLoader {
 
     await this.importAndRegisterBundle(entry);
 
+    if (!this.adapter.isFullyLoaded(typeNormalized)) {
+      catalog.removeBySourcePath(entry.source_path);
+      return;
+    }
+
     if (this.adapter.findExtensionsForType) {
       const extensions = this.adapter.findExtensionsForType(
         catalog,
@@ -654,9 +659,9 @@ export class ExtensionLoader {
 
     const exportKey = this.adapter.primaryExportKey;
     if (!module[exportKey]) {
-      throw new Error(
-        `Bundle has no ${exportKey} export: ${entry.bundle_path}`,
-      );
+      this.logger
+        .warn`Skipping bundle with no ${exportKey} export: ${entry.bundle_path}`;
+      return;
     }
 
     const parsed = this.adapter.validatePrimaryExport(module[exportKey]);

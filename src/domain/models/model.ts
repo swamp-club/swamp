@@ -856,10 +856,13 @@ export class ModelRegistry {
       const loader = this.typeLoader;
       const lazyEntry = this.lazyTypes.get(key);
       promise = loader(key, lazyEntry ?? undefined).then(() => {
-        // promoteFromLazy() already deleted the lazy entry during
-        // the loader call, so no lazyTypes cleanup needed here.
-        // Prune the resolved promise — it's no longer needed since
-        // the type is now fully registered in this.models.
+        // promoteFromLazy() deletes the lazy entry on success.
+        // If the loader skipped a broken bundle (no primary export),
+        // the type was never promoted — discard the lazy entry so
+        // subsequent calls treat it as unknown instead of retrying.
+        if (!this.models.has(key)) {
+          this.lazyTypes.delete(key);
+        }
         this.typeLoadPromises.delete(key);
       }).catch((err) => {
         this.typeLoadPromises.delete(key);
